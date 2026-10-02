@@ -107,6 +107,8 @@ pub(crate) enum Target {
     Release,
     /// A group filter or EQ knob (see `filter.rs`).
     Fx,
+    LoopStart,
+    LoopLength,
 }
 
 /// One external modulation assignment prepared for playback.
@@ -133,7 +135,11 @@ impl From<&ModAssignment> for Mod {
             ModTarget::Attack => Some(Target::Attack),
             ModTarget::Release => Some(Target::Release),
             ModTarget::Module { .. } => Some(Target::Fx),
-            // ponytail: group pan and loop modulation is kept for scripts, not played.
+            ModTarget::Group(ref p) if m.source == ModSource::Constant && m.lag_ms == 0 && m.shaper.is_none() && !m.invert => match p.as_str() {
+                "loopStart" => Some(Target::LoopStart),
+                "loopLength" => Some(Target::LoopLength),
+                _ => None,
+            },
             ModTarget::Group(_) => None,
         };
         Self {
@@ -192,11 +198,18 @@ pub struct ModTable {
     starts: Box<[u16]>,
     /// Envelope-time assignments with a modelled source.
     times: Box<[u16]>,
+    /// Constant loop-boundary offsets, read at each native 32-frame control step.
+    loops: Box<[u16]>,
 }
 
 impl From<&Group> for ModTable {
     fn from(group: &Group) -> Self {
-        let mods: Box<[Mod]> = group.mods.iter().map(Mod::from).collect();
+        let mods: Box<[Mod]> = group.mods.iter().map(|m| {
+            let mut prepared = Mod::from(m);
+            if matches!(prepared.route, Some((_, Target::LoopStart | Target::LoopLength)))
+                && !loop_control_supported(group, m) { prepared.route = None; }
+            prepared
+        }).collect();
         let routed = |want: fn(Target) -> bool| {
             (0..mods.len() as u16)
                 .filter(|&i| mods[i as usize].route.is_some_and(|(_, t)| want(t)))
@@ -209,6 +222,7 @@ impl From<&Group> for ModTable {
             voiced: voiced.into(),
             starts: routed(|t| t == Target::Start).into(),
             times: routed(|t| matches!(t, Target::Attack | Target::Release)).into(),
+            loops: routed(|t| matches!(t, Target::LoopStart | Target::LoopLength)).into(),
             mods,
         }
     }
@@ -271,7 +285,30 @@ impl Inputs<'_> {
     }
 }
 
+/// Native loop consumer is inactive when the sample has a preload-byte budget.
+/// Only the independently traced zero-budget mode and Constant source are enabled.
+pub(crate) fn loop_control_supported(group: &Group, m: &ModAssignment) -> bool {
+    group.source_mode == Some(0) && m.source == ModSource::Constant
+        && m.lag_ms == 0 && m.shaper.is_none() && !m.invert
+        && matches!(&m.target, ModTarget::Group(p) if p == "loopStart" || p == "loopLength")
+}
+
 impl ModTable {
+    pub(crate) fn has_loop_controls(&self) -> bool { !self.loops.is_empty() }
+
+    pub(crate) fn loop_offsets(&self) -> [f32; 2] {
+        let mut offsets = [0.; 2];
+        for &i in &self.loops {
+            let m = &self.mods[i as usize];
+            match m.route {
+                Some((_, Target::LoopStart)) => offsets[0] += m.intensity,
+                Some((_, Target::LoopLength)) => offsets[1] += m.intensity,
+                _ => {}
+            }
+        }
+        offsets
+    }
+
     /// Initial per-voice values: every source at its current value, unlagged.
     pub(crate) fn start(&self, input: &Inputs, bend_pitch: Option<f32>) -> [f32; VOICE_MODS] {
         let mut values = [0.0; VOICE_MODS];
@@ -330,7 +367,7 @@ impl ModTable {
                     };
                     semitones += 12.0 * m.intensity * v;
                 }
-                Target::Start | Target::Attack | Target::Release | Target::Fx => {}
+                Target::Start | Target::Attack | Target::Release | Target::Fx | Target::LoopStart | Target::LoopLength => {}
             }
         }
         (gain.max(0.0), semitones, settled)
@@ -538,12 +575,13 @@ pub(crate) enum Stage {
 
 /// Independently corroborated signed depth laws; only pitch allows >12 st.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum CubicDepth { Pitch, Cutoff }
+pub(crate) enum CubicDepth { Pitch, Cutoff, Loop }
 
 impl CubicDepth {
     fn target(target: &ModTarget) -> Option<Self> {
         match target {
             ModTarget::Pitch => Some(Self::Pitch),
+            ModTarget::Group(p) if p == "loopStart" || p == "loopLength" => Some(Self::Loop),
             ModTarget::Module { param, .. } if param == "filterCutoff" => Some(Self::Cutoff),
             _ => None,
         }
@@ -856,8 +894,8 @@ impl Address {
             // independently corroborate the cubic law. Cutoff stays normalized.
             Self::Intensity { cubic: Some(CubicDepth::Pitch), .. }
             | Self::InternalIntensity { cubic: Some(CubicDepth::Pitch), .. } => (2.0 * value as f32 / UNIT - 1.0).powi(3),
-            Self::Intensity { cubic: Some(CubicDepth::Cutoff), .. }
-            | Self::InternalIntensity { cubic: Some(CubicDepth::Cutoff), .. } => (2.0 * x - 1.0).powi(3),
+            Self::Intensity { cubic: Some(CubicDepth::Cutoff | CubicDepth::Loop), .. }
+            | Self::InternalIntensity { cubic: Some(CubicDepth::Cutoff | CubicDepth::Loop), .. } => (2.0 * x - 1.0).powi(3),
             Self::Intensity { bipolar: true, .. }
             | Self::InternalIntensity { bipolar: true, .. } => 2.0 * x - 1.0,
             Self::Filter(_, _, Knob::Bypass) | Self::InternalBypass(..) => f32::from(value != 0),
@@ -914,8 +952,8 @@ impl Address {
             },
             Self::Intensity { cubic: Some(CubicDepth::Pitch), .. }
             | Self::InternalIntensity { cubic: Some(CubicDepth::Pitch), .. } => return ((v.cbrt() + 1.0) * 0.5 * UNIT).round() as i32,
-            Self::Intensity { cubic: Some(CubicDepth::Cutoff), .. }
-            | Self::InternalIntensity { cubic: Some(CubicDepth::Cutoff), .. } => (v.cbrt() + 1.0) * 0.5,
+            Self::Intensity { cubic: Some(CubicDepth::Cutoff | CubicDepth::Loop), .. }
+            | Self::InternalIntensity { cubic: Some(CubicDepth::Cutoff | CubicDepth::Loop), .. } => (v.cbrt() + 1.0) * 0.5,
             Self::Intensity { bipolar: true, .. }
             | Self::InternalIntensity { bipolar: true, .. }
             | Self::Fx(_, _, FxParam::Pan)
@@ -1967,6 +2005,124 @@ mod tests {
         let edits = saved.saved();
         assert_eq!(edits.len(), 1);
         assert_eq!((edits[0].par, edits[0].value), (par(id::MOD_TARGET_MP_INTENSITY, 1), 1_221_125));
+    }
+
+    #[test]
+    fn constant_loop_controls_preserve_physical_cursor_stream_seams_and_clock_without_heap() {
+        use crate::{audio::Sample, engine::{Bank, Engine}, import::{Instrument, Loop, Zone}};
+        use super::super::map::{FOREVER, LoopMap, PlayMap};
+        let assignment = |param: &str, intensity| ModAssignment { name: "Constant".into(),
+            source: ModSource::Constant, target: ModTarget::Group(param.into()), intensity,
+            invert: false, lag_ms: 0, shaper: None };
+        let group = Group { mods: vec![assignment("pan", 0.25),
+            assignment("loopStart", 0.1266360729932785),
+            assignment("loopLength", -0.9170099496841431)],
+            modulators: vec![Modulator { name: "Constant".into(), targets: vec!["Pan".into(),
+                "Loop_Start".into(), "Loop_Length".into()], assignments: Some(0), volume_env: false,
+                bypassed: false, flex: false, envelope: None, kind: "external".into() }],
+            ..Group::default() };
+        let par = |id, index| EnginePar { id, group: 0, slot: 0, generic: index };
+        let start = Address::resolve(par(id::INTMOD_INTENSITY, 1), std::slice::from_ref(&group)).unwrap();
+        let length = Address::resolve(par(id::MOD_TARGET_MP_INTENSITY, 2), std::slice::from_ref(&group)).unwrap();
+        assert_eq!(start, Address::resolve(par(id::MOD_TARGET_MP_INTENSITY, 1), std::slice::from_ref(&group)).unwrap());
+        assert_eq!(length, Address::resolve(par(id::INTMOD_INTENSITY, 2), std::slice::from_ref(&group)).unwrap());
+        // Independent actual stored UI/timing + original inverse lookup produces
+        // these normalized writes, not values fitted from the saved depths.
+        assert!((start.decode(751_086) - 0.1266360729932785).abs() < 1e-7);
+        assert!((length.decode(14_233) + 0.9170099496841431).abs() < 1e-7);
+        assert!((start.encode(0.1266360729932785) - 751_086).abs() <= 1);
+        assert!((length.encode(-0.9170099496841431) - 14_233).abs() <= 1);
+        let saved = PlayMap { start: 0, end: 4096, reverse: false,
+            looped: Some(LoopMap { start: 0, end: 4096, xfade: 32, until_release: true, alternating: false }) };
+        let initial = saved.controlled_loop([0.1266360729932785, -0.9170099496841431], 4096).unwrap();
+        assert_eq!(initial.looped.unwrap(), LoopMap { start: 518, end: 858, xfade: 32,
+            until_release: true, alternating: false });
+        for (offsets, bounds) in [([-0.125, -0.125], (0, 3584)), ([0.125, 0.125], (0, 4096)),
+            ([0., -1.], (0, 4)), ([0.5, -1.], (2048, 2052))] {
+            let l = saved.controlled_loop(offsets, 4096).unwrap().looped.unwrap();
+            assert_eq!((l.start, l.end), bounds);
+            assert!(l.xfade <= l.start && l.xfade < l.end - l.start);
+        }
+        assert!((PlayMap { reverse: true, ..saved }).controlled_loop([0.; 2], 4096).is_none());
+        assert!((PlayMap { start: 1, ..saved }).controlled_loop([0.; 2], 4096).is_none());
+        let alternate = PlayMap { looped: Some(LoopMap { alternating: true, ..saved.looped.unwrap() }), ..saved };
+        assert!(alternate.controlled_loop([0.; 2], 4096).is_none());
+        assert!(saved.controlled_loop([f32::MAX, 0.], 4096).is_none());
+        assert!(saved.controlled_loop([f32::NAN, 0.], 4096).is_none());
+        let mut unsupported = group.clone(); unsupported.source_mode = Some(3);
+        assert!(!ModTable::from(&unsupported).has_loop_controls());
+        unsupported.source_mode = None;
+        assert!(!ModTable::from(&unsupported).has_loop_controls(), "old cache must not invent a source mode");
+        let frames: Vec<_> = (0..4096).map(|n| [(n as f32 * 0.031).sin() * 0.2; 2]).collect();
+        let path = std::env::temp_dir().join(format!("kontakto-loop-controls-{}.wav", std::process::id()));
+        let mut wav = b"RIFF".to_vec(); wav.extend((36u32 + 4096 * 8).to_le_bytes());
+        wav.extend(b"WAVEfmt "); wav.extend(16u32.to_le_bytes()); wav.extend(3u16.to_le_bytes());
+        wav.extend(2u16.to_le_bytes()); wav.extend(48_000u32.to_le_bytes()); wav.extend(384_000u32.to_le_bytes());
+        wav.extend(8u16.to_le_bytes()); wav.extend(32u16.to_le_bytes()); wav.extend(b"data");
+        wav.extend((4096u32 * 8).to_le_bytes());
+        for frame in &frames { for channel in frame { wav.extend(channel.to_le_bytes()); } }
+        std::fs::write(&path, wav).unwrap();
+        let zone = Zone { sample: path.clone(), tune: 1.37,
+            loop_range: Some(Loop { start: 0, end: 4096, crossfade: 32, until_release: true, alternating: false }),
+            ..Zone::default() };
+        let instrument = Instrument { groups: vec![group.clone()], zones: vec![zone.clone()], ..Default::default() };
+        let bare = Bank::load_bare(&instrument).unwrap();
+        assert_eq!(bare.samples[0].frames, 4096);
+        assert_eq!(bare.samples[0].spans[0].data.len(), 0);
+        let ram = Bank::from_samples(vec![group], vec![zone], vec![(path.clone(), Sample { rate: 48_000, frames })]).unwrap();
+        let create = |bank| {
+            let mut e = Engine::default(); e.attack = 0.; e.release = 1.; e.blocking_streams = true;
+            e.set_bank(Some(Box::new(bank))); e
+        };
+        let (mut a, mut b) = (create(ram), create(bare));
+        let (mut al, mut ar, mut bl, mut br) = ([0.; 128], [0.; 128], [0.; 128], [0.; 128]);
+        let render = |a: &mut Engine, b: &mut Engine, al: &mut [f32], ar: &mut [f32], bl: &mut [f32], br: &mut [f32]| {
+            a.render(al, ar); b.render(bl, br);
+            assert_eq!(al, bl, "stream configuration shares the resident physical path");
+            assert_eq!(ar, br);
+            assert!(al.iter().chain(ar.iter()).all(|x| x.is_finite()));
+        };
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            a.note_on(0, 60, 100); b.note_on(0, 60, 100);
+            assert_eq!(a.player.voices[0].map, initial, "saved crossfade survives start modulation");
+            assert_eq!(b.player.voices[0].map, initial);
+            for _ in 0..10 { render(&mut a, &mut b, &mut al, &mut ar, &mut bl, &mut br); }
+            render(&mut a, &mut b, &mut al[..13], &mut ar[..13], &mut bl[..13], &mut br[..13]);
+            for e in [&mut a, &mut b] {
+                let settings = &mut e.bank.as_mut().unwrap().settings;
+                assert!(write(settings, start, 0.125)); assert!(write(settings, length, -0.875));
+                assert_eq!(read(settings, length), Some(-0.875));
+                assert_eq!(settings[0].mods.mods[0].intensity, 0.25, "adjacent target stays unchanged");
+                e.player.touch();
+            }
+            render(&mut a, &mut b, &mut al[..19], &mut ar[..19], &mut bl[..19], &mut br[..19]);
+            assert_eq!(a.player.voices[0].map, initial, "fragment beginning at tick13 must finish the old step");
+            let v = &a.player.voices[0];
+            let physical = v.map.run(v.pos as u64, v.wraps).unwrap().frame as f64 + v.pos.fract();
+            render(&mut a, &mut b, &mut al, &mut ar, &mut bl, &mut br);
+            let v = &a.player.voices[0];
+            assert_eq!(v.map.looped.unwrap().start, 512);
+            assert_eq!(v.map.looped.unwrap().end, 1024);
+            assert!((v.pos - physical - 128. * v.plan.step as f64 / 4294967296.).abs() < 1e-8,
+                "a boundary edit preserves physical position and its fraction");
+            // The shortened-behind-cursor seam is explicitly deferred once,
+            // then retried when the old loop returns to an eligible position.
+            for e in [&mut a, &mut b] { assert!(write(&mut e.bank.as_mut().unwrap().settings, length, -0.9)); }
+            render(&mut a, &mut b, &mut al, &mut ar, &mut bl, &mut br);
+            for _ in 0..8 { render(&mut a, &mut b, &mut al, &mut ar, &mut bl, &mut br); }
+            assert_eq!(a.player.voices[0].loop_deferred_edits, 1);
+            assert!(a.player.voices[0].loop_deferred.is_none(), "eligible control tick retries without a new write");
+            let map = a.player.voices[0].map;
+            a.note_off(0, 60); b.note_off(0, 60);
+            assert_ne!(a.player.voices[0].wraps, FOREVER);
+            for e in [&mut a, &mut b] { assert!(write(&mut e.bank.as_mut().unwrap().settings, start, -0.5)); }
+            render(&mut a, &mut b, &mut al, &mut ar, &mut bl, &mut br);
+            assert_eq!(a.player.voices[0].map, map, "release keeps the final seam and tail");
+            for _ in 0..30 { render(&mut a, &mut b, &mut al, &mut ar, &mut bl, &mut br); }
+            assert_eq!(a.active_voices(), 0); assert_eq!(b.active_voices(), 0);
+        }), 0);
+        assert_eq!(b.underruns(), 0);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

@@ -155,6 +155,8 @@ impl From<&crate::import::FlexEnvelope> for Flex {
 /// A sample's resident data: one or more spans of decoded frames.
 pub(crate) struct SampleData {
     pub rate: u32,
+    /// Total physical frames, independent of resident spans or zone bounds.
+    pub frames: u64,
     pub(crate) spans: Vec<Span>,
     /// Some zone path leaves the resident spans and must stream.
     pub(crate) streamed: bool,
@@ -610,7 +612,7 @@ impl Bank {
                     Ok(())
                 };
                 let spans = read_spans().map(|()| kept);
-                (spans, streamed, header.rate, (source, path))
+                (spans, streamed, header.rate, header.frames, (source, path))
             },
         );
         check()?;
@@ -618,7 +620,7 @@ impl Bank {
         let mut samples = Vec::with_capacity(decoded.len());
         let mut streamed = Vec::with_capacity(decoded.len());
         let mut bytes = 0;
-        for (id, (spans, streamed_sample, rate, source)) in decoded.into_iter().enumerate() {
+        for (id, (spans, streamed_sample, rate, frames, source)) in decoded.into_iter().enumerate() {
             let (spans, streamed_sample) = match spans {
                 Ok(spans) => (spans, streamed_sample),
                 Err(e) => {
@@ -630,6 +632,7 @@ impl Bank {
             streamed.push(streamed_sample.then(|| resident::source(source)));
             samples.push(SampleData {
                 rate,
+                frames,
                 spans,
                 streamed: streamed_sample,
             });
@@ -768,6 +771,7 @@ impl Bank {
             }
             samples.push(SampleData {
                 rate: header.rate,
+                frames: header.frames,
                 spans: resident_spans,
                 streamed: true,
             });
@@ -809,6 +813,7 @@ impl Bank {
             .into_iter()
             .map(|(_, s)| SampleData {
                 rate: s.rate,
+                frames: s.frames.len() as u64,
                 spans: vec![Span {
                     start: 0,
                     data: Frames::new(Pcm::pack(&s.frames, false)),
@@ -981,6 +986,11 @@ impl Builder {
                             "loop crossfade shortened in {}",
                             zone.sample.display()
                         ));
+                    }
+                    if group.mods.iter().any(|m| super::params::loop_control_supported(group, m))
+                        && (zone.loop_range.as_ref().is_some_and(|l| l.alternating)
+                            || map.controlled_loop([0.; 2], frames).is_none()) {
+                        issues.note(format_args!("loop controls are not processed for cropped, reverse, alternating, absent or shorter-than-four-frame loops: {} (zone ID {zone_id})", zone.sample.display()));
                     }
                     let start_mod = zone
                         .start_mod
