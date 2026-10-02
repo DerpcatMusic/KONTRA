@@ -200,6 +200,7 @@ fn decode_svg(bytes: &[u8]) -> Result<Vector, String> {
             name,
             "text"
                 | "image"
+                | "feImage"
                 | "mask"
                 | "pattern"
                 | "script"
@@ -215,6 +216,15 @@ fn decode_svg(bytes: &[u8]) -> Result<Vector, String> {
     let filtered = xml
         .descendants()
         .any(|n| n.is_element() && n.tag_name().name() == "filter");
+    if filtered
+        && bytes
+            .len()
+            .saturating_mul(65)
+            .saturating_add(FILTER_CACHE_LIMIT)
+            > PIXEL_LIMIT
+    {
+        return Err("Filtered SVG exceeds normalized source memory budget".into());
+    }
     let mut options = usvg::Options::default();
     // No side-channel filesystem/network reads from SVG image hrefs.
     options.image_href_resolver = usvg::ImageHrefResolver {
@@ -279,6 +289,40 @@ impl moose::mui::mui::scene::RasterSource for FilteredSvg {
             .find(|i| i.width == width && i.height == height)
         {
             return Ok(image.clone());
+        }
+        let sx = width as f64 / self.tree.size().width() as f64;
+        let sy = height as f64 / self.tree.size().height() as f64;
+        fn temporary_bytes(group: &usvg::Group, scale: Affine) -> usize {
+            let mut total = 0usize;
+            for filter in group.filters() {
+                let r = filter.rect();
+                let bounds = (scale * vello_svg::util::to_affine(&group.abs_transform()))
+                    .transform_rect_bbox(vello_svg::kurbo::Rect::new(
+                        r.x() as f64,
+                        r.y() as f64,
+                        r.right() as f64,
+                        r.bottom() as f64,
+                    ));
+                let area = bounds.width().ceil() * bounds.height().ceil();
+                if !area.is_finite() || area < 0. || area > PIXEL_LIMIT as f64 {
+                    return usize::MAX;
+                }
+                // Allow every named primitive result plus source/work pixels.
+                total = total.saturating_add(
+                    (area as usize)
+                        .saturating_mul(4)
+                        .saturating_mul(filter.primitives().len().saturating_add(2)),
+                );
+            }
+            for node in group.children() {
+                if let usvg::Node::Group(g) = node {
+                    total = total.saturating_add(temporary_bytes(g, scale));
+                }
+            }
+            total
+        }
+        if temporary_bytes(self.tree.root(), Affine::scale_non_uniform(sx, sy)) > PIXEL_LIMIT {
+            return Err("SVG filter graph exceeds temporary pixel memory budget".into());
         }
         let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)
             .ok_or("Cannot allocate SVG filter intermediate")?;
