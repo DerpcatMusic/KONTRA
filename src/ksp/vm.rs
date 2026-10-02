@@ -389,6 +389,7 @@ pub struct SlotState {
     pub pgs_keys: Vec<u32>,
     pub persistent: Vec<VarId>,
     pub listener: Listener,
+    pub snapshot_type: i32,
     pub error: Option<String>,
 }
 
@@ -419,6 +420,7 @@ impl SlotState {
             pgs_keys: vec![u32::MAX; p.strings.len()],
             persistent: Vec::new(),
             listener: Listener::default(),
+            snapshot_type: 0,
             error: None,
         }
     }

@@ -80,6 +80,13 @@ pub struct NativeEdit {
 }
 
 
+/// The zone fields implemented by the mapping service.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ZonePar { Group, LowKey, HighKey }
+
+#[derive(Clone, Copy, Debug)]
+pub struct ZoneEdit { pub zone: i32, pub par: ZonePar, pub value: i32, pub slot: u8, pub id: i32 }
+
 pub trait KspEngine {
     fn play_note(&mut self, at: u32, note: &NoteSpec<'_>) -> Option<EventId>;
     /// Freeze per-note controls before a release callback can wait or create notes.
@@ -111,9 +118,14 @@ pub trait KspEngine {
     }
     fn group_count(&self) -> usize;
     fn zone_count(&self) -> usize { 0 }
-    /// Opaque positive identity of the source zone at `index`.
+    /// Stable zero-based source identity, independent of loaded-zone compaction.
     fn zone_id(&self, index: usize) -> Option<i32> {
-        (index < self.zone_count()).then(|| index as i32 + 1)
+        (index < self.zone_count()).then(|| index as i32)
+    }
+    fn zone_par(&self, _zone: i32, _par: ZonePar) -> Option<i32> { None }
+    /// Accepted edits remain pending until their prepared mapping is installed.
+    fn request_zone_edit(&mut self, _edit: ZoneEdit) -> Result<(), &'static str> {
+        Err("set_zone_par: zone mapping service unavailable")
     }
     fn group_name(&self, group: usize) -> &str;
     fn sample_rate(&self) -> f64;

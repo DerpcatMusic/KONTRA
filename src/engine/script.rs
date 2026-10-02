@@ -92,6 +92,8 @@ pub fn load_scripts_with_state(
         if let Some(address) = setup.address(par) { rt.native_state.restored(address, par, value); }
     }
     rt.init_engine_pars = setup.pars;
+    rt.init_zone_edits = setup.zone_edits;
+    rt.init_zone_source = instrument.zones.as_ptr() as usize;
     rt.init_controllers = setup.controllers;
     rt.init_irs = setup.loads;
     let errors = restore_errors.into_iter().chain(errors
@@ -206,6 +208,8 @@ pub(super) struct Host<'a> {
     pub writes: &'a mut Vec<Write>,
     pub write_index: &'a mut (u32, std::collections::HashMap<Address, usize>),
     pub ir_requests: &'a mut Vec<IrRequest>,
+    pub zone_inflight: &'a mut usize,
+    pub zone_requests: &'a mut std::collections::VecDeque<crate::ksp::engine::ZoneEdit>,
 }
 
 impl Host<'_> {
@@ -398,6 +402,21 @@ impl KspEngine for Host<'_> {
     }
 
     fn zone_count(&self) -> usize { self.bank.map_or(0, Bank::zone_count) }
+    fn zone_par(&self, zone: i32, par: crate::ksp::engine::ZonePar) -> Option<i32> {
+        self.bank?.zone_par(zone,par)
+    }
+    fn request_zone_edit(&mut self, edit: crate::ksp::engine::ZoneEdit) -> Result<(), &'static str> {
+        let bank = self.bank.ok_or("set_zone_par: no sample bank")?;
+        let id = usize::try_from(edit.zone).map_err(|_|"set_zone_par: invalid source zone ID")?;
+        let mut mapping = *bank.zone_state.as_ref().and_then(|s|s.maps.get(id)).ok_or("set_zone_par: invalid source zone ID")?;
+        if !bank.zone_editable(id) { return Err("set_zone_par: source zone has no playable sample; mapping unchanged"); }
+        mapping.set(edit.par,edit.value,bank.groups().len())?;
+        if self.zone_requests.len() == self.zone_requests.capacity() { return Err("set_zone_par: request queue exhausted"); }
+        self.zone_requests.push_back(edit);
+        *self.zone_inflight += 1;
+        Ok(())
+    }
+
 
     fn group_name(&self, group: usize) -> &str {
         self.bank
@@ -616,6 +635,8 @@ fn instrument((volume, pan, tune): (f32, f32, f32), p: GroupPar) -> Option<f32> 
 pub struct ScriptSetup<'a> {
     groups: &'a [Group],
     zones: usize,
+    zone_mappings: Vec<super::zone::Mapping>,
+    zone_edits: Vec<crate::ksp::engine::ZoneEdit>,
     /// The instrument's effects with the ones scripts loaded.
     fx: std::borrow::Cow<'a, ProgramFx>,
     path: &'a std::path::Path,
@@ -636,6 +657,8 @@ impl<'a> ScriptSetup<'a> {
         Self {
             groups: &instrument.groups,
             zones: instrument.zones.len(),
+            zone_mappings: instrument.zones.iter().map(super::zone::Mapping::from).collect(),
+            zone_edits: Vec::new(),
             fx: std::borrow::Cow::Borrowed(&instrument.fx),
             path: &instrument.path,
             rate,
@@ -751,6 +774,19 @@ impl KspEngine for ScriptSetup<'_> {
     }
 
     fn zone_count(&self) -> usize { self.zones }
+    fn zone_par(&self, zone: i32, par: crate::ksp::engine::ZonePar) -> Option<i32> {
+        usize::try_from(zone).ok().and_then(|id|self.zone_mappings.get(id)).map(|m|m.get(par))
+    }
+    fn request_zone_edit(&mut self, edit: crate::ksp::engine::ZoneEdit) -> Result<(), &'static str> {
+        let id = usize::try_from(edit.zone).map_err(|_|"set_zone_par: invalid source zone ID")?;
+        if self.zone_edits.len() >= self.zones.saturating_mul(3).saturating_add(64) { return Err("set_zone_par: init request queue exhausted"); }
+        self.zone_mappings.get_mut(id).ok_or("set_zone_par: invalid source zone ID")?.set(edit.par,edit.value,self.groups.len())?;
+        self.zone_edits.push(edit);
+        // Init runs on the loader. These IDs complete only after the bank and
+        // the prepared mappings have reached the playing engine.
+        Ok(())
+    }
+
 
     fn group_name(&self, group: usize) -> &str {
         self.groups.get(group).map_or("", |g| &g.name)
