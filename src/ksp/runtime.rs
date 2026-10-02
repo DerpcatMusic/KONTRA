@@ -2355,7 +2355,9 @@ impl Runtime {
                 let Some(e) = self.env.events.get_mut(ctx.event) else {
                     return;
                 };
-                if !std::mem::take(&mut e.release_ignored) {
+                // A host stop already cut the sound. Ignoring its release
+                // must not suppress the remaining slots' state cleanup.
+                if !std::mem::take(&mut e.release_ignored) || ctx.cleanup {
                     self.env.queue(Work::Release {
                         event: ctx.event,
                         slot: next,
