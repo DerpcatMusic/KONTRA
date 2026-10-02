@@ -1059,9 +1059,15 @@ pub(crate) fn filter_ir(ir: &mut [Vec<f32>; 2], low: f32, high: f32, rate: f32) 
     let highpass = low / rate >= 0.01;
     let lowpass = high / rate <= 0.45;
     if !highpass && !lowpass { return }
-    let cutoff = match (highpass, lowpass) { (true, true) => low.min(high), (true, false) => low, _ => high }.clamp(20.0, rate * 0.49);
-    // A Butterworth pole's envelope falls as exp(-2*pi*cutoff*t/sqrt(2)).
-    let tail = (rate * 16.0 / (2.0 * std::f32::consts::PI * cutoff * Q_MIN)).ceil() as usize;
+    // The bilinear Butterworth poles approach the unit circle at both DC and
+    // Nyquist. An analog cutoff estimate truncates the high-frequency decay.
+    // Sum each active section's exp(-16) decay length for the cascade.
+    let tail: usize = [(low, highpass), (high, lowpass)].into_iter().filter(|&(_, enabled)| enabled).map(|(hz, _)| {
+        let g = (std::f64::consts::PI * f64::from(hz.clamp(20.0, rate * 0.49)) / f64::from(rate)).tan();
+        let radius = ((1.0 - std::f64::consts::SQRT_2 * g + g * g)
+            / (1.0 + std::f64::consts::SQRT_2 * g + g * g)).sqrt();
+        (-16.0 / radius.ln()).ceil() as usize
+    }).sum();
     for channel in ir.iter_mut() { channel.resize(channel.len() + tail, 0.0); }
     let [left, right] = ir;
     for (response, hz, enabled) in [(Response::Low, high, lowpass), (Response::High, low, highpass)] {

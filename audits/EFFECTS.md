@@ -143,7 +143,10 @@ which reuses the existing non-resonant section. Thus 20 kHz is an active low-pas
 at 48 kHz and bypassed at 44.1 kHz. Parsed cutoffs and voice-filter laws remain
 unchanged. An independent direct-form impulse reference checks exact boundaries,
 adjacent values, multiple rates and zero audio-thread allocations; this gate is
-validation-pending. Unequal early/late preparation and its automatic boundary
+validation-pending. Worker padding uses the bilinear digital pole decay rather
+than an analog cutoff estimate, which truncated tails near Nyquist. The padding
+is a finite-tail approximation; the native prepared IR length is not established.
+Unequal early/late preparation and its automatic boundary
 remain unimplemented and explicitly reported.
 
 Large accumulated peaks alone do not establish preset correctness or justify a limiter.
