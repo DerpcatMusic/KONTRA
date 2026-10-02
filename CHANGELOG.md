@@ -335,6 +335,35 @@ updating favorites; no supplied IDs were repaired or compared with Kontakt.
   User zoom, cached snapshots and native file-picker tests do not certify every
   gesture, resource, preset or file-dialog workflow.
 
+### Candidates — not shipped
+
+These entries describe the next reviewed source batch. None is an accepted fix-count
+increment or a published release claim yet. Features and audit measurements do not
+advance the patch count. The existing accepted count remains 36.
+
+- Persistent load journals retain warnings beyond the bounded report examples
+  (`e12f8a0`). The focused gate passed and an actual Areia load delivered all 1,125
+  warnings; release acceptance is pending.
+- Explicit scripted AHD Only uses the shared envelope kernel (`de730e1`); the
+  focused gate passed. This does not certify every imported envelope or Kontakt's
+  sound.
+- Script-only Kontakt v3 snapshots apply saved script state while retaining native
+  instrument state (`76d1e09`). Vendor checks and actual Conflux application/audio
+  outputs passed; realtime underruns remain and full-library playback is unverified.
+- Library-root archive samples resolve from nested instrument directories
+  (`b29eef1`). Authored checks, actual archive members and 1,985 loaded Conflux zones
+  passed; successful loading does not establish complete playback or sound parity.
+- Counted native modulation arrays retain 64 external slots (`9bf2401`). Vendor
+  checks and actual byte-preservation checks passed. Preserving records does not
+  demonstrate processing every source or target.
+- Bounded Kontakt v0x103/v0x104 source identities (`e92be65`), off-thread journal
+  burst delivery (`3a36b64`), release-trigger Note Mono (`7c09b82`), modern v3/v4
+  compact snapshot records (`3801b2e`) and native group Send Levels routing
+  (`b77b748`) await their combined gates and release review.
+- Image resampling remains a pending candidate without a reviewed source checkpoint
+  or fix-count classification. Onset/source-identity metrics and audit delivery
+  instrumentation are observability features, not additional logical fix counts.
+
 ### Reviewed source changes
 
 > Forward init RPN messages after receiving script slots initialize
