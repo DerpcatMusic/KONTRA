@@ -6025,7 +6025,7 @@ end on"#.into()], ..Default::default() };
         wav.extend(8u32.to_le_bytes()); wav.extend(0.5f32.to_le_bytes()); wav.extend(0.25f32.to_le_bytes());
         std::fs::write(resources.join("Room.wav"), wav).unwrap();
         std::fs::write(resources.join("Broken.wav"), b"invalid audio").unwrap();
-        let band = IrBand { length_ratio: 1., low_cut_hz: 20., high_cut_hz: 20000. };
+        let band = IrBand { length_ratio: 1., low_cut_hz: 20., high_cut_hz: 24000. };
         let i = Instrument {
             path: dir.join("Instrument.nki"), groups: vec![Group::default()],
             fx: crate::fx::ProgramFx { insert: Chain { slots: vec![Effect {

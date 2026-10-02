@@ -136,6 +136,16 @@ existing coalesced worker rebuild path. Optional saved flags let older host stat
 retain the instrument's native flags. The existing live IR regression now checks
 switch callbacks, readback, restored impulse processing, stale settings and rate
 handoffs without audio-thread allocation; this API extension is validation-pending.
+Uniform IR cuts now use the native filter's rate-dependent bypass boundaries:
+high-pass is bypassed below cutoff/rate 0.01; low-pass is bypassed above 0.45.
+The native IR rebuild and shared biquad establish a two-pole Butterworth response,
+which reuses the existing non-resonant section. Thus 20 kHz is an active low-pass
+at 48 kHz and bypassed at 44.1 kHz. Parsed cutoffs and voice-filter laws remain
+unchanged. An independent direct-form impulse reference checks exact boundaries,
+adjacent values, multiple rates and zero audio-thread allocations; this gate is
+validation-pending. Unequal early/late preparation and its automatic boundary
+remain unimplemented and explicitly reported.
+
 Large accumulated peaks alone do not establish preset correctness or justify a limiter.
 
 ## DSP

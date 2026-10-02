@@ -1651,7 +1651,7 @@ fn fx_description(echo: usize) -> fx::ProgramFx {
     let band = params::IrBand {
         length_ratio: 1.0,
         low_cut_hz: 20.0,
-        high_cut_hz: 20_000.0,
+        high_cut_hz: 24_000.0,
     };
     let mut ir = vec![[0.0; 2]; echo + 1];
     (ir[0], ir[echo]) = ([1.0; 2], [0.5; 2]);

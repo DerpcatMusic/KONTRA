@@ -22,11 +22,11 @@ fn gainer(gain: f32) -> Effect {
 
 fn convolution(ir: &[f32]) -> Effect {
     let bytes = {
-        let mut b: Vec<u8> = [-1.0f32, 0.0, 0.0, 1.0, 20.0, 20e3, 1.0, 20.0, 20e3, -1.0]
+        let mut b: Vec<u8> = [-1.0f32, 0.0, 0.0, 1.0, 20.0, SR * 0.5, 1.0, 20.0, SR * 0.5, -1.0]
             .iter()
             .flat_map(|v| v.to_le_bytes())
             .collect();
-        // Raw-gain fixtures deliberately disable native Auto Gain.
+        // Raw-kernel fixtures disable native IR cuts and Auto Gain.
         b.extend([0, 0, 1, 1, 0]);
         b.extend([0u8; 8]);
         b.extend(0i32.to_le_bytes());
@@ -41,6 +41,66 @@ fn convolution(ir: &[f32]) -> Effect {
         frames: ir.iter().map(|&v| [v, v]).collect(),
     })));
     fx
+}
+
+#[test]
+fn convolution_ir_filter_boundaries_follow_native_rate_and_biquad_law_without_heap() {
+    // An independent direct-form Butterworth reference checks the reused SVF,
+    // including native bypass decisions at and beside their exact boundaries.
+    let reference = |signal: &mut [f32; 128], hz: f32, rate: f32, highpass: bool| {
+        let k = (std::f32::consts::PI * hz / rate).tan();
+        let k2 = k * k;
+        let n = 1.0 / (1.0 + std::f32::consts::SQRT_2 * k + k2);
+        let b = if highpass { [n, -2.0 * n, n] } else { [k2 * n, 2.0 * k2 * n, k2 * n] };
+        let a = [2.0 * (k2 - 1.0) * n, (1.0 - std::f32::consts::SQRT_2 * k + k2) * n];
+        let (mut x1, mut x2, mut y1, mut y2) = (0.0, 0.0, 0.0, 0.0);
+        for sample in signal {
+            let x = *sample;
+            let y = b[0] * x + b[1] * x1 + b[2] * x2 - a[0] * y1 - a[1] * y2;
+            (x2, x1, y2, y1) = (x1, x, y1, y);
+            *sample = y;
+        }
+    };
+    for (rate, low, high, hp, lp) in [
+        (48_000.0, 479.99, 21_600.1, false, false),
+        (48_000.0, 480.0, 24_000.0, true, false),
+        (48_000.0, 480.1, 24_000.0, true, false),
+        (48_000.0, 20.0, 21_600.0, false, true),
+        (48_000.0, 20.0, 21_599.9, false, true),
+        (48_000.0, 20.0, 20_000.0, false, true),
+        (44_100.0, 20.0, 20_000.0, false, false),
+        (24_000.0, 20.0, 20_000.0, false, false),
+        (48_000.0, 960.0, 6_000.0, true, true),
+    ] {
+        let mut fx = convolution(&[1.0, 0.5]);
+        let Params::Convolution(c) = &mut fx.params else { unreachable!() };
+        c.early.low_cut_hz = low;
+        c.early.high_cut_hz = high;
+        c.late = c.early;
+        c.ir = Some(Impulse(Arc::new(Sample { rate: rate as u32, frames: vec![[1.0; 2], [0.5; 2]] })));
+        let fx = ProgramFx { insert: Chain { slots: vec![fx] }, ..Default::default() };
+        assert!(fx.warnings().is_empty());
+        let mut processor = fx.processor(rate, 16);
+        let mut expected = [0.0; 128];
+        expected[..2].copy_from_slice(&[1.0, 0.5]);
+        if lp { reference(&mut expected, high, rate, false); }
+        if hp { reference(&mut expected, low, rate, true); }
+        let mut actual = [[0.0; 2]; 128];
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            for block in 0..8 {
+                let (mut l, mut r) = ([0.0; 16], [0.0; 16]);
+                if block == 0 { l[0] = 1.0; r[0] = 1.0; }
+                processor.process(&mut l, &mut r);
+                for n in 0..16 { actual[block * 16 + n] = [l[n], r[n]]; }
+            }
+        }), 0);
+        for (frame, (out, expected)) in actual.iter().zip(expected).enumerate() {
+            for value in out {
+                assert!((value - expected).abs() < 3e-6,
+                    "rate={rate} low={low} high={high} frame={frame}: {value} != {expected}");
+            }
+        }
+    }
 }
 
 #[test]
