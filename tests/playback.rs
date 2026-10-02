@@ -2370,6 +2370,7 @@ fn modulated_groups() -> Instrument {
             targets: vec![String::new()],
             assignments: Some(0),
             volume_env: false,
+            bypassed: false,
             flex: false,
             envelope: None,
             kind: String::new(),
