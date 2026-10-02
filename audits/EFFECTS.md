@@ -376,13 +376,25 @@ on both Amplifier sides, guards allocations and reports the actual state sizes.
 This separate follow-up also awaits compiled validation; no authentic local group
 preset or Kontakt audio reference was available.
 
-On the checked Rust 1.98.1 release build, both the old Drive and the new VoiceEffect
+The fixed filter/EQ capacity now covers all eight native insert slots and up to
+32 two-pole sections (eight four-band EQs), instead of four units/eight sections.
+The render loop visits compiled units and their actual sections; empty storage is
+not processed. The shared lane still accepts at most four active sections and
+larger chains use the per-voice path. One authored eight-EQ rack-reference check
+covers Amplifier splits 0/4/8, slot 7 native gain readback, changed finite PCM and
+allocation guards; compiled validation is pending. This addresses a capacity
+warning observed in external library reports; no installed authentic over-capacity
+group was available. Section state plus tuning keys add 1248 fixed bytes per voice
+(1.22 MiB for 1024 voices); the temporary control rows add 192 stack bytes. The
+compiled test reports the resulting VoiceFilter size.
+
+On the previously checked Rust 1.98.1 release build, both the old Drive and the new VoiceEffect
 enum are 72 bytes. The fixed voice state adds 128 bytes for per-slot gain/mixer
 smoothing and a four-byte type revision counter, and removes the old 16-byte
 aggregate smoothing matrix: 116 bytes of added inline fields per voice (116 KiB
 for 1024 voices); VoiceFilter is 1804 bytes. Live filter subtype
 changes invalidate shape-sensitive coefficient caches even when cutoff/resonance are
-unchanged. Existing filter-unit/section capacity limits, opaque filter subtypes,
+unchanged. Chains beyond the native eight-slot/32-section bound, opaque filter subtypes,
 unimplemented group send/dynamics families and reverb/IR shaping gaps remain explicit.
 
 Validation: the split 0/6/8 rack-reference PCM, changed native compressor threshold,
