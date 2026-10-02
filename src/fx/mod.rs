@@ -479,7 +479,7 @@ impl ProgramFx {
                 out.push(format!("{at}: Enhanced/Drums modes use an unverified transfer-curve proxy"));
             }
             if fx.kind == Kind::Distortion {
-                out.push(format!("{at}: Damping uses a low-pass approximation; native DC filtering is not applied"));
+                out.push(format!("{at}: native DC filtering and Damping parameter smoothing are not applied"));
             }
             if !fx.is_implemented() {
                 out.push(format!(
