@@ -1767,6 +1767,7 @@ fn bypassed_native_release_script_plays_only_selected_groups_for_every_duration(
             disallow_group($ALL_GROUPS)
             allow_group(1)
             $tail := play_note($EVENT_NOTE, $EVENT_VELOCITY, 0, {duration})
+            wait(1)
             message(get_event_par($tail, $EVENT_PAR_ZONE_ID))
         end on"#)));
         // Repeating the same key must preserve each release counter and avoid
@@ -1779,11 +1780,16 @@ fn bypassed_native_release_script_plays_only_selected_groups_for_every_duration(
             assert!(!e.voice_census().iter().any(|v| v.release_trigger));
             e.note_off(3, 60);
             render(&mut e, 32);
-            assert_eq!(e.script().unwrap().last_message(), "1", "zone prediction includes the selected release group");
+            // Generated Note work must first assign its engine voice. A child
+            // following this already released parent also receives End work,
+            // so its KSP event is gone even though its native sample continues.
+            assert_eq!(e.script().unwrap().last_message(), if duration < 0 { "0" } else { "2" },
+                "the selected zone has source ID2; a completed KSP event reports zero");
             let voices = e.voice_census();
             let tails: Vec<_> = voices.iter().filter(|v| v.release_trigger).collect();
             assert_eq!(tails.len(), 1, "duration={duration}, pedal={pedal}: exactly one selected manual release");
             assert_eq!((tails[0].group, tails[0].channel, tails[0].input_channel), (1, 3, Some(3)));
+            assert_eq!(tails[0].sample, 1, "the continuing release uses the selected group's sample");
             assert_eq!(tails[0].owner, if duration < 0 { Some((3, 60)) } else { None });
             assert_eq!(tails[0].phase, Phase::Attack, "the following-parent key-up must not prematurely release the tail");
             if pedal { render(&mut e, 2400); e.cc(3, 64, 0); }
