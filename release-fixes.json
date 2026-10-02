@@ -437,6 +437,79 @@
       ],
       "validation": "Production fractional_resizing_preserves_coverage_and_transparent_edge_color and pictures_are_made_to_the_pixel_once passed at 00b879d. Covers fractional/alpha behavior and retained enlargement, not universal resource or GPU performance parity.",
       "accepted": true
+    },
+    {
+      "id": "authored-performance-background",
+      "summary": "Retain authored performance-view background colors across live publications",
+      "source_commits": [
+        "c286fe420adbef24aef32f8eb2cd848b26596bb7"
+      ],
+      "validation": "Root reports authored background gates passed among eight focused production-library checks; actual replay and release acceptance pending. No universal layout or Lua UI parity claim.",
+      "accepted": false
+    },
+    {
+      "id": "native-ar-filter-identities",
+      "summary": "Map native AR filter identities to the intended responses and pole counts",
+      "source_commits": [
+        "aa416d3e6608f5e8d798d886be686c8693d362e6"
+      ],
+      "validation": "Root reports native mapping gate passed, covering the six authored AR LP/HP/BP identities. Actual preset replay and release acceptance pending; no calibrated Kontakt sound parity.",
+      "accepted": false
+    },
+    {
+      "id": "native-daft-filter-identities",
+      "summary": "Map native Daft LP/HP identities without inventing aliases for unproved IDs",
+      "source_commits": [
+        "aa416d3e6608f5e8d798d886be686c8693d362e6"
+      ],
+      "validation": "Root reports native mapping gate passed for Daft IDs70/71; IDs106/107 remain unsupported. Actual preset replay and release acceptance pending.",
+      "accepted": false
+    },
+    {
+      "id": "native-daft-filter-field-order",
+      "summary": "Decode native Daft cutoff/resonance after the retained leading parameter",
+      "source_commits": [
+        "aa416d3e6608f5e8d798d886be686c8693d362e6"
+      ],
+      "validation": "Root reports authored decoding, coefficient/PCM changes, live edit/readback and zero-heap gate passed. The leading parameter remains retained without an invented gain law; actual replay pending.",
+      "accepted": false
+    },
+    {
+      "id": "external-modulation-v104-footer",
+      "summary": "Decode external modulation v0x104 while retaining opaque footer bytes",
+      "source_commits": [
+        "486408c13a7dd38d02d494fbac82c9383cae7f03"
+      ],
+      "validation": "Vendor gate and actual byte-preservation review pending. Parsing/preservation does not implement every modulation route or opaque field.",
+      "accepted": false
+    },
+    {
+      "id": "physical-note-off-mode-ownership",
+      "summary": "Retain physical note-off ownership after channel mode changes",
+      "source_commits": [
+        "b629fbc72882ba373ade2b24dff7516be36b5caf"
+      ],
+      "validation": "Root reports focused route-owner gate passed among eight production-library checks. Actual preset replay and final acceptance pending.",
+      "accepted": false
+    },
+    {
+      "id": "native-lofi-frequency-direction",
+      "summary": "Make higher native LoFi frequency values sample more often without resetting state",
+      "source_commits": [
+        "fc9a7b64beade917a4bce5d114bf3411d0be5113"
+      ],
+      "validation": "Root reports authored direction/endpoints/retuning and zero-heap gate passed at44100/48000/96000Hz. Kontakt frequency calibration and sound parity remain unverified; actual preset replay pending.",
+      "accepted": false
+    },
+    {
+      "id": "maximum-consumption-first-stream-block",
+      "summary": "Keep the first maximum-consumption stream block resident",
+      "source_commits": [
+        "f084a9450464134cc07cd362a2270fe866fe6a77",
+        "451af4c0db758d27e6a0172514308869d53b0cd7"
+      ],
+      "validation": "4096-frame first-block stream gate pending. Fixture RAM-reference decoding is a follow-up to this unit, not a second defect count; no realtime-underrun elimination claim.",
+      "accepted": false
     }
   ]
 }

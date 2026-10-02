@@ -373,11 +373,36 @@ updating favorites; no supplied IDs were repaired or compared with Kontakt.
 
 ### Candidates — not shipped
 
-- The CLI recorder JSON helper and authored performance-view background colors
-  await their gates; neither is counted as an accepted fix or included in shipped
-  notes. Native filter mapping and Daft field work are not yet committed/reviewed.
-- Audit onset/source-identity metrics and delivery instrumentation are observability
-  features, not additional logical fix-count units.
+The following eight logical units are staged for release review, not accepted or
+published. Authored gates below do not replace the forthcoming six-preset and
+four-Conflux actual replay checks. The accepted fix count remains 47.
+
+- Authored performance-view background colors survive live publications
+  (`c286fe4`); the focused background gates passed. This does not establish every
+  layout, resource or Lua UI path.
+- Native AR filter identities select the intended LP/HP/BP response and pole count
+  (`aa416d3`); the authored mapping gate passed.
+- Native Daft LP/HP identities use IDs 70/71 (`aa416d3`); unproved IDs 106/107 remain
+  unsupported. This is distinct from the AR family identity correction.
+- Native Daft fields decode cutoff/resonance after a retained leading parameter
+  (`aa416d3`). Authored coefficient/PCM, edit/readback and zero-heap checks passed;
+  the leading parameter remains preserved without an invented gain law.
+- External modulation v0x104 records retain their opaque footer (`486408c`);
+  vendor and actual byte-preservation checks are pending. This is parsing and
+  preservation, not implementation of every modulation route or opaque field.
+- Physical note-off ownership survives channel mode changes (`b629fbc`); the
+  focused route-owner gate passed. Actual replay and acceptance remain pending.
+- Higher native LoFi frequency values sample more often without resetting held
+  samples or clock phase (`fc9a7b6`). Authored direction, endpoint, retuning and
+  zero-heap checks passed at 44.1/48/96 kHz; the frequency law is not calibrated
+  against Kontakt and sound parity remains unverified.
+- The first maximum-consumption stream block remains resident (`f084a94`, fixture
+  follow-up `451af4c`). The 4,096-frame stream gate is pending; this is not a claim
+  that realtime underruns are eliminated.
+- The passing Note Mono boolean check is a follow-up to the already counted
+  release-trigger Note Mono correction, not an additional fix-count unit.
+- The CLI recorder JSON helper still awaits its gate. Audit metrics and delivery
+  instrumentation are observability features, not additional logical defects.
 
 ### Reviewed source changes
 
