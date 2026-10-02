@@ -167,8 +167,59 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  macos-universal:
+    needs: build
+    runs-on: macos-15
+    concurrency:
+      group: nightly-build-macos-universal
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          pattern: KONTRA-nightly-macos-*
+          merge-multiple: true
+      - name: Universal installer orchestration checks
+        run: python3 .github/scripts/test_package_macos.py
+      - name: Compose, sign and notarize the universal installer
+        env:
+          APPLE_APPLICATION_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_APPLICATION_CERTIFICATE_P12_BASE64 }}
+          APPLE_INSTALLER_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_DEVELOPER_ID_APPLICATION: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION }}
+          APPLE_DEVELOPER_ID_INSTALLER: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          for name in APPLE_INSTALLER_CERTIFICATE_P12_BASE64 APPLE_DEVELOPER_ID_INSTALLER; do
+            [ -n "${!name:-}" ] || { echo "Missing required signing secret: $name" >&2; exit 1; }
+          done
+          for arch in arm64 x86_64; do
+            ditto -x -k "dist/KONTRA-nightly-macos-$arch.zip" inputs
+          done
+          version=$(python3 -c 'import json; print(json.load(open("inputs/KONTRA-nightly-macos-arm64/build-info.json"))["version"])')
+          source .github/scripts/macos_signing_keychain.sh
+          python3 .github/scripts/package_macos.py --arm64 inputs/KONTRA-nightly-macos-arm64 \
+            --x86-64 inputs/KONTRA-nightly-macos-x86_64 --stage universal-stage \
+            --revision "$GITHUB_SHA" --version "$version"
+          bash .github/scripts/package_macos.sh universal-stage dist/KONTRA-nightly-macos-universal.pkg
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: KONTRA-nightly-macos-universal
+          path: |
+            dist/KONTRA-nightly-macos-universal.pkg
+            dist/KONTRA-nightly-macos-universal.notarization.json
+          if-no-files-found: error
+          retention-days: 1
+
   release:
-    needs: [verify, build]
+    needs: [verify, build, macos-universal]
     runs-on: ubuntu-24.04
     concurrency:
       group: nightly-publish
