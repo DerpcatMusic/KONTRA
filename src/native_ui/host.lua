@@ -116,7 +116,7 @@ function native_component(target,props,children)
         return {kind="Component",target=target,props=props,children=children,modifiers={}}
     end
     assert(type(target)=="table" and target.kind,"Unsupported component target")
-    local supported={ZStack={children=true},Text={children=true,text=true},Rectangle={children=true,color=true},Image={children=true,file=true,resizable=true}}
+    local supported={ZStack={children=true},Text={children=true,text=true},Rectangle={children=true,color=true,corner_radius=true},Image={children=true,file=true,resizable=true}}
     assert(supported[target.kind],"Unsupported component")
     assert(target.kind=="ZStack" or #children==0,"Primitive children require ZStack")
     for key in pairs(props) do assert(supported[target.kind][key],"Unsupported primitive property: "..target.kind.."."..key) end
@@ -124,7 +124,11 @@ function native_component(target,props,children)
 end
 function native_modifier(node,name,props,args)
     local environment=name=="context" or name=="font_size" or name=="foreground_color"
-    assert(name=="frame" or name=="padding" or name=="hidden" or name=="on_tap_gesture" or environment,"Unsupported modifier: "..name)
+    assert(name=="frame" or name=="padding" or name=="hidden" or name=="background" or name=="on_tap_gesture" or environment,"Unsupported modifier: "..name)
+    if name=="background" then
+        assert(next(props)==nil and #args==1 and type(args[1])=="table" and args[1].kind,"Background requires a component")
+        return {kind="ZStack",props={},children={args[1],node},modifiers={background={}}}
+    end
     if name=="padding" then
         assert(#args<=1 and (#args==0 or next(props)==nil),"Invalid padding arguments")
         if #args==1 then props={left=args[1],right=args[1],top=args[1],bottom=args[1]} end
