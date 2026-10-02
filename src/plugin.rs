@@ -430,6 +430,7 @@ pub(crate) struct PartShared {
 }
 
 pub struct Shared {
+    native_asset_requests: ArrayQueue<NativeAssetJob>,
     instance_id: u64,
     diagnostic_audio: ArrayQueue<AudioDiagnostics>,
     diagnostic_free: ArrayQueue<AudioDiagnostics>,
@@ -716,6 +717,7 @@ impl Default for Shared {
         for _ in 0..2 { diagnostic_free.push(AudioDiagnostics::with_parts(RACK_SLOTS)).ok().unwrap(); }
         Self {
             instance_id: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
+            native_asset_requests: ArrayQueue::new(16),
             diagnostic_audio: ArrayQueue::new(2),
             diagnostic_free,
             diagnostic_latest: Mutex::new(None),
@@ -1151,6 +1153,48 @@ pub(crate) struct PersistenceSnapshot {
     ir: Vec<crate::fx::IrSlotSettings>,
     native: crate::engine::native_state::NativeSnapshot,
 }
+struct NativeAssetJob {
+    part: usize,
+    epoch: u64,
+    path: PathBuf,
+    scene: Arc<Mutex<crate::native_ui::Scene>>,
+    names: Vec<String>,
+}
+/// Asset decoding shares the serialized loader, never the Lua or paint thread.
+fn load_native_assets(params: &SamplerParams) {
+    for _ in 0..16 {
+        let Some(job) = params.shared.native_asset_requests.pop() else { break };
+        let current = |v: &PartView| v.script_epoch == job.epoch
+            && v.instrument.as_ref().is_some_and(|i| i.path == job.path)
+            && v.native_scene.as_ref().is_some_and(|scene| Arc::ptr_eq(scene, &job.scene));
+        let program = {
+            let view = params.shared.view.lock().unwrap();
+            let Some(v) = view.parts.get(job.part).filter(|v| current(v)) else { continue };
+            v.program
+        };
+        let mut trace = crate::diagnostics::LoadTrace::new(&job.path,program,Some(job.part));
+        trace.detail("operation","native_ui_assets");
+        trace.detail("script_epoch",job.epoch);
+        trace.stage("artwork");
+        let remaining=job.scene.lock().unwrap().remaining_asset_bytes();
+        let ready = crate::native_assets::Assets::prepare_bounded(&job.path,&job.names,remaining);
+        let errors: Vec<_> = ready.entries.iter().filter_map(|(name,result)|
+            result.as_ref().err().map(|error| format!("{name}: {error}"))).collect();
+        for error in &errors { trace.issue("artwork","native_ui_asset",error); }
+        trace.detail("assets_loaded",ready.entries.len()-errors.len());
+        // Match the scene pointer as well as its epoch: a failed editor scene
+        // may be removed without replacing the audio runtime.
+        let installed = {
+            let mut view = params.shared.view.lock().unwrap();
+            if let Some(v) = view.parts.get_mut(job.part).filter(|v| current(v)) {
+                job.scene.lock().unwrap().install_assets(ready);
+                if let Some(error) = errors.first() { v.native_status=format!("Native UI artwork unavailable: {error}"); }
+                true
+            } else { false }
+        };
+        trace.finish(if installed { if errors.is_empty() { "loaded" } else { "partial" } } else { "canceled" });
+    }
+}
 /// Prepare the supported legacy scene off-thread without changing classic controls.
 fn native_scene(i: &Instrument, rt: Option<&Runtime>, live: &mut Option<Box<Live>>, pages: &ScriptPages, trace: &mut crate::diagnostics::LoadTrace) -> (Option<Arc<Mutex<crate::native_ui::Scene>>>, String) {
     let Some(rt) = rt else { return (None, String::new()) };
@@ -1162,7 +1206,10 @@ fn native_scene(i: &Instrument, rt: Option<&Runtime>, live: &mut Option<Box<Live
             trace.detail("native_ui", scene.identity.as_str());
             if let Some(version) = &scene.target_version { trace.detail("native_ui_target_version", version.as_str()); }
             trace.detail("native_ui_modules", scene.resources.len());
-            trace.detail("native_ui_scope", "legacy text/rectangle/tap subset; images and remaining APIs unavailable");
+            for (name,result) in &scene.assets.entries {
+                if let Err(error)=result { trace.issue("artwork","native_ui_asset",format!("{name}: {error}")); }
+            }
+            trace.detail("native_ui_scope", "legacy scene subset; exact evaluated SVG/bitmap resources; remaining APIs diagnosed");
             (Some(Arc::new(Mutex::new(scene))), String::new())
         }
         Err(error) => {
@@ -1248,6 +1295,20 @@ fn prepare_interface(live: &Live, previous: Option<&Interface>, versions: &[(u64
 }
 
 impl Shared {
+    pub(crate) fn request_native_assets(&self, part: usize, epoch: u64, names: std::collections::BTreeSet<String>) -> Result<(),String> {
+        let view=self.view.lock().unwrap();
+        let v=view.parts.get(part).filter(|v| v.script_epoch==epoch)
+            .ok_or_else(|| "Native UI asset request has a stale source".to_owned())?;
+        let scene=v.native_scene.as_ref().ok_or("Native UI scene is unavailable")?.clone();
+        let path=v.instrument.as_ref().ok_or("Native UI source is unavailable")?.path.clone();
+        let missing=scene.lock().unwrap().reserve_assets(names).map_err(|e| e.to_string())?;
+        if missing.is_empty() { return Ok(()) }
+        if let Err(job)=self.native_asset_requests.push(NativeAssetJob {part,epoch,path,scene:scene.clone(),names:missing}) {
+            scene.lock().unwrap().cancel_assets(&job.names);
+            return Err("Native UI asset queue is full".into());
+        }
+        Ok(())
+    }
     /// Publish visible script state on the editor thread, with a worker fallback
     /// after the editor closes. Neither caller may keep this guard while loading.
     pub(crate) fn publish_live(&self, editor: bool) {
@@ -1958,6 +2019,7 @@ impl BackgroundTask for Load {
         drain_audio_diagnostics(params);
         params.shared.flush_ready();
         load_arrays(params);
+        load_native_assets(params);
         let mut freed = false;
         while params.shared.discard.pop().is_some() {
             freed = true;
@@ -4667,6 +4729,10 @@ pub(crate) mod tests {
         std::fs::write(resources.join("main.nui"), include_str!("../tests/fixtures/native-ui-scene/main.nui")).unwrap();
         std::fs::write(resources.join("components/init.nui"), include_str!("../tests/fixtures/native-ui-scene/components/card.nui")).unwrap();
         std::fs::write(resources.join("context.nui"), include_str!("../tests/fixtures/native-ui-scene/context.nui")).unwrap();
+        std::fs::create_dir_all(resources.join("assets/pics")).unwrap();
+        for name in ["ready","changed"] {
+            std::fs::write(resources.join(format!("assets/pics/{name}.svg")),r##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><path d="M0 0L40 0L40 20L0 20Z" fill="#ff0000"/></svg>"##).unwrap();
+        }
         std::fs::create_dir_all(directory.join("Resources/info")).unwrap();
         std::fs::write(directory.join("Resources/info/library.json"),r#"{"general":{"kontaktTargetVersion":"8.1"}}"#).unwrap();
         let i = Instrument { path: directory.join("fixture.nki"), scripts: vec![
@@ -4682,6 +4748,8 @@ pub(crate) mod tests {
         assert_eq!(scene.lock().unwrap().resources.len(),3);
         assert_eq!(scene.lock().unwrap().identity,"native_ui/main.nui");
         assert_eq!(scene.lock().unwrap().target_version.as_deref(),Some("8.1"));
+        let first_assets=scene.lock().unwrap().assets.clone();
+        assert_eq!(first_assets.entries["assets/pics/ready.svg"].as_ref().unwrap().size(),(40.,20.));
         std::fs::create_dir_all(directory.join("Resources/komplete_scripts")).unwrap();
         std::fs::write(directory.join("Resources/komplete_scripts/main.kscript"),"not Lua: this must never enter the legacy interpreter").unwrap();
         let typed=Instrument {path:i.path.clone(),scripts:vec!["on init\nload_native_ui(\"main.kscript\")\nexpose_controls\nend on".into()],..Default::default()};
@@ -4692,7 +4760,7 @@ pub(crate) mod tests {
         let p=SamplerParams::new();let mut dsp=Dsp::default();
         let epoch={let mut view=p.shared.view.lock().unwrap();
             let epoch=next_epoch(&mut view,0,None,live);
-            let v=&mut view.parts[0];v.native_scene=Some(scene.clone());v.script_pages=pages;v.interface=Some(Arc::new(rt.interface(0)));epoch};
+            let v=&mut view.parts[0];v.native_scene=Some(scene.clone());v.script_pages=pages;v.instrument=Some(Arc::new(Instrument {path:i.path.clone(),..Default::default()}));v.interface=Some(Arc::new(rt.interface(0)));epoch};
         dsp.script_epoch[0]=epoch;dsp.rack.parts[0].set_script(Some(rt));
         fn texts(node:&Node, out:&mut Vec<String>) {if let Paint::Text(text)=&node.paint {out.push(text.clone())}for c in &node.children {texts(c,out)}}
         let initial=scene.lock().unwrap().snapshot().unwrap();let mut labels=Vec::new();texts(&initial,&mut labels);
@@ -4716,19 +4784,30 @@ pub(crate) mod tests {
         assert_eq!(allocations(||{for _ in 0..8 {Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx);}}),0);
         p.shared.publish_live(true);
         let published=scene.lock().unwrap().snapshot().unwrap();
+        p.shared.request_native_assets(0,epoch,published.asset_names()).unwrap();
+        assert!(!scene.lock().unwrap().assets.entries.contains_key("assets/pics/changed.svg"),"editor evaluation only queues image work");
+        load_native_assets(&p);
+        let assets=scene.lock().unwrap().assets.clone();
+        assert!(assets.entries["assets/pics/changed.svg"].is_ok());
+        assert!(!first_assets.entries.contains_key("assets/pics/changed.svg"),"retained asset snapshots stay immutable");
         labels.clear();texts(&published,&mut labels);
         use moose::mui::mui::prelude::{Size,Font};
-        let spec=moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::paint_snapshot(&published,(640.,400.)))
+        let spec=moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::paint_snapshot_assets(&published,(640.,400.),&assets))
             .offered(Size::new(640.,400.)).font(Font::new(&include_bytes!("../assets/NotoSans.ttf")[..]).unwrap());
         let rendered=moose::mui::mui::scene::resolve(&spec).unwrap();
         assert_eq!(rendered.paint.iter().filter(|p| p.text.is_some()).count(),2,"both computed labels use the production MUI primitive adapter");
+        assert!(rendered.paint.iter().any(|p| matches!(p.paint,moose::mui::mui::scene::Paint::Vector {..})),"authored SVG reaches retained vector paint without bitmap conversion");
         assert_eq!(labels,["Amount:44:1","Remote:24:1"],"same scene observes callback results and retains local state");
         let rt=dsp.rack.parts[0].script().unwrap();
         assert_eq!(rt.interface(1).controls[1].properties["$CONTROL_PAR_VALUE"],crate::ksp::Value::Int(90));
         assert!(rt.diagnostics().is_empty(),"{:?}",rt.diagnostics());
-        std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') return function() return @ui.Image {file='picture.webp' resizable=false} end").unwrap();
+        p.shared.request_native_assets(0,epoch,["assets/pics/stale.svg".to_string()].into_iter().collect()).unwrap();
+        p.shared.view.lock().unwrap().parts[0].script_epoch=epoch+1;
+        load_native_assets(&p);
+        assert!(!scene.lock().unwrap().assets.entries.contains_key("assets/pics/stale.svg"),"stale image jobs are discarded before reading or publication");
+        std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') return function() return @ui.Ring {} end").unwrap();
         let error=Scene::prepare(&i.path,rt).unwrap_err().to_string();
-        assert!(error.contains("Unsupported native UI API")&&error.contains("Image"),"{error}");
+        assert!(error.contains("Unsupported native UI API")&&error.contains("Ring"),"{error}");
         assert!(crate::native_ui::frontend_test_invalid_sources());
         let mut reader=crate::resources::Resources::of(&i.path,"native_ui");
         assert!(reader.read_limited("components/init.nui",4).unwrap_err().contains("exceeds"),"payload bound precedes VM allocation");
