@@ -2555,13 +2555,15 @@ impl BackgroundTask for Load {
             drop(view);
             drop((retired, retired_snapshot));
             let mut current = params.selection.write().unwrap();
-            let retired = current.parts.get_mut(slot)
+            let retired = if let Some(p) = current.parts.get_mut(slot)
                 .filter(|p| target.as_ref() == Some(&p.source()))
-                .map(|p| (
+            {
+                Some((
                     std::mem::replace(&mut p.script_state, json),
                     std::mem::replace(&mut p.ir_settings, ir_settings),
                     std::mem::replace(&mut p.engine_state, engine_state),
-                ));
+                ))
+            } else { None };
             drop(current);
             drop(retired);
         }
