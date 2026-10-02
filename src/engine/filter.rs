@@ -1709,6 +1709,8 @@ mod tests {
     #[test]
     fn native_insert_order_and_amplifier_split_match_rack_dsp_without_heap() {
         use crate::{fx::{Effect, params::{Field, Filter}}, engine::{GroupSettings, params::{Address, self}}, ksp::EnginePar};
+        eprintln!("group voice state: Drive={} VoiceEffect={} VoiceFilter={} bytes",
+            std::mem::size_of::<blocks::Drive>(), std::mem::size_of::<VoiceEffect>(), std::mem::size_of::<VoiceFilter>());
         let effect = |slot, kind, values: &[f32], output_gain| Effect {
             slot, kind, version: 0, bypass: false, output_gain, dry_level: 0.0,
             params: Params::Fields(crate::fx::params::layout_names(kind).unwrap().iter().zip(values)
