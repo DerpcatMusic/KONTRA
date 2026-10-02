@@ -1339,6 +1339,9 @@ fn audit_patch_report(path: &Path, program: u32, snapshot: Option<&Path>, trace:
     let (mut square, mut nonfinite, mut next) = (0f64, 0usize, 0);
     let mut pace = kontakto::engine::Pace::start();
     let mut stalled = std::time::Duration::ZERO;
+    let mut first_underrun = None;
+    let mut underrun_blocks = 0;
+    let mut observed_underruns = engine.underruns();
     trace.stage("playback");
     for b in 0..blocks {
         let frame = (b * MAX_BLOCK) as u64;
@@ -1347,6 +1350,22 @@ fn audit_patch_report(path: &Path, program: u32, snapshot: Option<&Path>, trace:
             next += 1;
         }
         engine.render(&mut left, &mut right);
+        if engine.underruns() != observed_underruns {
+            underrun_blocks += 1;
+            if first_underrun.is_none() {
+                // CLI only, after rendering: retain one bounded voice census,
+                // never format/log from plugin audio or retain a per-block log.
+                let voices: Vec<_> = engine.voice_census().into_iter().filter(|v| v.streams).map(|v|
+                    serde_json::json!({"group":v.group, "note":v.note, "sample":v.sample,
+                        "virtual_source_position":v.pos, "source_frames_per_output_frame":v.step,
+                        "held":v.held, "release_trigger":v.release_trigger,
+                        "gain":v.gain, "envelope":v.envelope})).collect();
+                first_underrun = Some(serde_json::json!({"frame":frame,
+                    "audio_time_ms":frame as f64 * 1000.0 / RATE,
+                    "delta":engine.underruns() - observed_underruns, "streaming_voices_after_block":voices}));
+            }
+            observed_underruns = engine.underruns();
+        }
         for x in left.iter().chain(&right) {
             if x.is_finite() { square += f64::from(*x) * f64::from(*x) } else { nonfinite += 1 }
         }
@@ -1361,6 +1380,8 @@ fn audit_patch_report(path: &Path, program: u32, snapshot: Option<&Path>, trace:
     row["rss_peak_mib"] = status("VmHWM:").into();
     row["rms_db"] = ((20.0 * rms.max(1e-12).log10() * 10.0).round() / 10.0).into();
     row["underruns"] = engine.underruns().into();
+    row["underrun_blocks"] = underrun_blocks.into();
+    row["first_underrun"] = serde_json::json!(first_underrun);
     // The machine, not the engine: a render thread held off longer than a
     // device buffer would be a host dropout. Reported, not caught up.
     row["stall_ms"] = (stalled.as_millis() as u64).into();
