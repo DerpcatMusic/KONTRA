@@ -795,6 +795,7 @@ const CONTROL_TYPES: &[(&str, &str)] = &[
 pub fn control_type(kind: &str) -> i32 {
     CONTROL_TYPES.iter().position(|(k, _)| *k == kind).unwrap_or(0) as i32
 }
+pub const CONTROL_PAR_BASEPATH: i32 = SYMBOL_BASE + 20;
 pub const CONTROL_PAR_FILEPATH: i32 = SYMBOL_BASE + SYMBOLS.len() as i32 - 7;
 pub const UI_WF_PROP_FLAGS: i32 = SYMBOL_BASE + SYMBOLS.len() as i32 - 5;
 pub const ATTACHED_ZONE: i32 = SYMBOL_BASE + SYMBOLS.len() as i32 - 1;

@@ -2390,3 +2390,30 @@ fn transport_listener_start_and_stop_subscriptions_are_independent() {
         assert_eq!(rt.interface(slot).controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(count));
     }
 }
+
+#[test]
+fn file_selector_reads_path_modes_before_running_its_callback() {
+    let source = r#"on init
+make_perfview
+declare ui_file_selector $files
+declare ui_label $result(1,1)
+set_control_par_str(get_ui_id($files),$CONTROL_PAR_FILEPATH,"/presets/Restored.nka")
+set_control_par(get_ui_id($files),$CONTROL_PAR_FILE_TYPE,$NI_FILE_TYPE_ARRAY)
+end on
+on ui_control($files)
+set_text($result,fs_get_filename(get_ui_id($files),0) & ":" & fs_get_filename(get_ui_id($files),1) & ":" & fs_get_filename(get_ui_id($files),2))
+if (fs_get_filename(get_ui_id($files),0)="Quiet")
+set_engine_par($ENGINE_PAR_VOLUME,250000,-1,-1,-1)
+else
+set_engine_par($ENGINE_PAR_VOLUME,1000000,-1,-1,-1)
+end if
+end on"#;
+    let mut rig = Rig::new(&[source]);
+    assert_eq!(prop(&rig.rt.interface(0),0,"$CONTROL_PAR_FILEPATH"),"/presets/Restored.nka");
+    for (path, expected) in [("/presets/Quiet.nka","Quiet:Quiet.nka:/presets/Quiet.nka"), ("/presets/Loud.nka","Loud:Loud.nka:/presets/Loud.nka")] {
+        assert!(rig.rt.ui_file_selection(&mut rig.engine,0,0,path));
+        assert_eq!(prop(&rig.rt.interface(0),1,"$CONTROL_PAR_TEXT"),expected);
+    }
+    assert!(!rig.rt.ui_file_selection(&mut rig.engine,0,1,"/presets/Quiet.nka"));
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+}

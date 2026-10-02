@@ -968,8 +968,10 @@ impl Runtime {
                     && prog.vars[control.var as usize].ui.as_deref() == Some("ui_menu");
                 control.prepare(text_bytes, menu);
                 if prog.vars[control.var as usize].ui.as_deref() == Some("ui_file_selector") {
-                    let path = control.str_mut(b::CONTROL_PAR_FILEPATH).unwrap();
-                    path.reserve(vm::MAX_STRING_VAR_BYTES.saturating_sub(path.len()));
+                    for par in [b::CONTROL_PAR_FILEPATH, b::CONTROL_PAR_BASEPATH] {
+                        let path = control.str_mut(par).unwrap();
+                        path.reserve(vm::MAX_STRING_VAR_BYTES.saturating_sub(path.len()));
+                    }
                 }
             }
             for s in [&mut state.ui.title, &mut state.ui.wallpaper] {

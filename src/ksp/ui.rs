@@ -255,6 +255,7 @@ impl Ui {
         }
         if kind == "ui_file_selector" {
             c.set_str(b::CONTROL_PAR_FILEPATH, "")?;
+            c.set_str(b::CONTROL_PAR_BASEPATH, "")?;
         }
         if kind == "ui_table" {
             let [_, _, range, ..] = params else { return Err("Table range missing"); };
