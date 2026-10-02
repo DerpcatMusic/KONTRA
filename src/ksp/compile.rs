@@ -479,7 +479,7 @@ impl Program {
         let mut pending: Vec<u32> = self.callbacks.iter().skip(1).chain(&self.ui_callbacks).flatten().copied().collect();
         let mut visited = vec![false; self.code.len()];
         let slots: [HashMap<u32, usize>; 3] = std::array::from_fn(|t| self.vars.iter().enumerate()
-            .filter(|(_, v)| !v.poly && v.ty == [Ty::Int, Ty::Real, Ty::Str][t])
+            .filter(|(_, v)| !v.poly && v.len.is_none() && v.ty == [Ty::Int, Ty::Real, Ty::Str][t])
             .map(|(i, v)| (v.slot, i)).collect());
         while let Some(pc) = pending.pop() {
             let Some(seen) = visited.get_mut(pc as usize) else { continue; };
@@ -511,7 +511,7 @@ impl Program {
             for writable in [true, false] {
                 for (i, v) in self.vars.iter_mut().enumerate().filter(|(_, v)| !v.poly && v.ty == ty) {
                     if mutable[i] != writable { continue; }
-                    remap[t].insert(v.slot, next);
+                    if v.len.is_none() { remap[t].insert(v.slot, next); }
                     v.slot = next;
                     next += v.len.unwrap_or(1);
                 }
@@ -1837,6 +1837,7 @@ mod domain_tests {
         let p = compile(r#"on init
 declare %lookup[1000] := (7)
 declare %held[128]
+declare %empty[0]
 declare $scratch
 declare ~level
 declare @text
