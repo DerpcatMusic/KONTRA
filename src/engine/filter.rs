@@ -272,6 +272,11 @@ pub(crate) fn band_settings(freq: f32, bandwidth: f32, gain: f32) -> (f32, f32, 
     (EQ_MIN_HZ * 10f32.powf(EQ_DECADES * freq), BW_MIN + BW_SPAN * bandwidth, GAIN_DB * (2.0 * gain - 1.0))
 }
 
+/// Signed boost/cut of the current Solid G-EQ implementation.
+pub(crate) fn geq_gain_db(gain: f32) -> f32 {
+    GEQ_DB * (2.0 * gain - 1.0)
+}
+
 impl Proto {
     fn filter(response: Response, hz: f32, q: f32, rate: f32) -> Self {
         let g = (std::f32::consts::PI * hz.min(0.49 * rate) / rate).tan();
@@ -317,7 +322,7 @@ impl Proto {
     fn geq([gain, freq, shape]: [f32; 3], b: usize, rate: f32) -> Self {
         let (lo, hi) = GEQ_RANGES[b.min(3)];
         let hz = lo * (hi / lo).powf(freq);
-        let a = 10f32.powf(GEQ_DB * (2.0 * gain - 1.0) / 40.0);
+        let a = 10f32.powf(geq_gain_db(gain) / 40.0);
         let g = (std::f32::consts::PI * hz.min(0.49 * rate) / rate).tan();
         let outer = b == 0 || b == 3;
         if !outer || shape >= 0.5 {
