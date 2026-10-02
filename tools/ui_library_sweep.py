@@ -27,12 +27,12 @@ def cases(plan, libraries, modes, scales, view_scales=(0,), appearances=(0,)):
                     for scale in scales:
                         for view_scale in view_scales:
                             for appearance in appearances:
-                                identity = (patch["path"], program["program"], mode, scale, view_scale, appearance)
+                                identity = (patch["path"], patch.get("snapshot"), program["program"], mode, scale, view_scale, appearance)
                                 if identity in seen:
                                     continue
                                 seen.add(identity)
                                 yield {"library": library["name"], "library_root": library["path"], "patch": patch["path"],
-                                       "program": program["program"], "mode": mode, "view_scale": view_scale,
+                                       "snapshot": patch.get("snapshot"), "program": program["program"], "mode": mode, "view_scale": view_scale,
                                        "appearance": appearance, "device_scale": scale}
 
 
@@ -75,7 +75,7 @@ def main():
     selected = list(cases(plan, args.library, args.mode or list(MODES), args.device_scale or [1, 2], args.view_scale or [0], args.appearance or [0]))
     if args.dry_run:
         print(json.dumps({"cases": len(selected), "libraries": sorted({c["library"] for c in selected}),
-                          "programs": len({(c["patch"], c["program"]) for c in selected})}, indent=2))
+                          "programs": len({(c["patch"], c["snapshot"], c["program"]) for c in selected})}, indent=2))
         return
     # Never overwrite prior evidence, nor write into a caller's ordinary folder.
     args.output.mkdir(parents=True, exist_ok=False)
@@ -93,8 +93,10 @@ def main():
                    KONTRA_UI_BENCH_HOST_FRAMES=str(args.host_frames), RUST_MIN_STACK="16777216")
         # Every case has isolated preferences; the user's live editor is untouched.
         env["XDG_CONFIG_HOME"] = str((args.output / f"{name}-config").resolve())
-        for key in ["KONTRA_UI_BENCH_GPU", "KONTRA_UI_BENCH_CALLBACKS", "KONTRA_UI_BENCH_SHOT", "KONTRA_UI_BENCH_CONTROL_VARIABLE"]:
+        for key in ["KONTRA_UI_BENCH_GPU", "KONTRA_UI_BENCH_CALLBACKS", "KONTRA_UI_BENCH_SHOT", "KONTRA_UI_BENCH_CONTROL_VARIABLE", "KONTRA_UI_BENCH_SNAPSHOT", "KONTRA_UI_BENCH_PAGE"]:
             env.pop(key, None)
+        if case["snapshot"]:
+            env["KONTRA_UI_BENCH_SNAPSHOT"] = case["snapshot"]
         if not args.cpu:
             env["KONTRA_UI_BENCH_GPU"] = "1"
         if args.callbacks:

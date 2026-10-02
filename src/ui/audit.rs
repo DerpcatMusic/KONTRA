@@ -431,7 +431,13 @@ mod tests {
         let device_scale = std::env::var("KONTRA_UI_BENCH_DEVICE_SCALE").ok().map(|v| v.parse::<f64>().expect("device scale")).unwrap_or(1.);
         assert!([1.,1.5,2.].contains(&device_scale), "device scale must be 1, 1.5 or 2");
         let started = Instant::now();
-        let instrument = Arc::new(import::read_program(Path::new(&patch), program).unwrap());
+        let snapshot = std::env::var_os("KONTRA_UI_BENCH_SNAPSHOT");
+        let instrument = Arc::new(if let Some(snapshot) = &snapshot {
+            assert_eq!(program, 0, "snapshot restoration requires a single NKI program");
+            import::read_snapshot(Path::new(&patch), Path::new(snapshot)).unwrap()
+        } else {
+            import::read_program(Path::new(&patch), program).unwrap()
+        });
         let import_ms = started.elapsed().as_secs_f64() * 1000.;
         let started = Instant::now();
         let mut trace = crate::diagnostics::LoadTrace::new(Path::new(&patch), program, Some(0));
@@ -440,7 +446,7 @@ mod tests {
             return;
         };
         part.program = program;
-        println!("UI_BENCH program={program} mode={mode} device_scale={device_scale}");
+        println!("UI_BENCH program={program} mode={mode} device_scale={device_scale} snapshot_restored={}", snapshot.is_some());
         println!("UI_BENCH import_ms={import_ms:.3} setup_ms={:.3} controls={} pictures={}",
             started.elapsed().as_secs_f64() * 1000., part.interface.as_ref().unwrap().controls.len(), part.pictures.len());
         let shown = perf_view::layout(part.interface.as_ref().unwrap(), &part.pictures);
