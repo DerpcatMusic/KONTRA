@@ -6,7 +6,7 @@
 
 use super::cover::advance;
 use super::panel;
-use super::perf_view::{FONT, Kind, LINE, Shown, break_lines, caption_of, frame, keep_spaces, knob_like, prop, value};
+use super::perf_view::{FONT, Kind, LINE, Shown, break_lines, caption_of, drags_vertically, frame, keep_spaces, knob_like, prop, value};
 use crate::artwork::Picture;
 use crate::ksp::{Control, Interface, Value};
 use moose::mui::mui::scene::Image;
@@ -155,6 +155,24 @@ fn inside(a: &Shown, b: &Shown) -> f64 {
     iw * ih
 }
 
+/// A broad pictured field edited across its short axis is a value display,
+/// rather than a thumb moving along a track. Keep that authored display and
+/// its interaction; narrow faders and round knobs still use native faces.
+pub(super) fn native_control(s: &Shown, c: &Control) -> bool {
+    match s.kind {
+        Kind::Knob => true,
+        Kind::Slider => {
+            // Exclude compact value strips as well as long, skinny tracks.
+            let broad = s.picture.is_some() && !knob_like(prop(c, "$CONTROL_PAR_PICTURE"), s.w, s.h)
+                && s.w.min(s.h) >= 3. * FONT && s.w.max(s.h) < 3. * s.w.min(s.h);
+            let vertical = drags_vertically(s.kind, s.w, s.h, prop(c, "$CONTROL_PAR_PICTURE"),
+                int(c, "$CONTROL_PAR_MOUSE_BEHAVIOUR").unwrap_or(0));
+            !(broad && vertical != (s.h > s.w))
+        }
+        _ => false,
+    }
+}
+
 /// The plan for every control of `drawn` (in drawing order, each with the
 /// frame of its picture the original view shows).
 pub fn plan(interface: &Interface, _pictures: &HashMap<String, Arc<Picture>>, drawn: &[(Shown, Option<Arc<Image>>)], assets: &mut Assets, current_value: impl Fn(usize) -> Option<f64>) -> Vec<Plan> {
@@ -168,7 +186,7 @@ pub fn plan(interface: &Interface, _pictures: &HashMap<String, Arc<Picture>>, dr
     // only a uniquely matched control. Coincident animated layers form one
     // skin only when their frame count and phase agree; other artwork stays.
     let controls: Vec<usize> = drawn.iter().enumerate()
-        .filter(|(n, (s, _))| matches!(s.kind, Kind::Knob | Kind::Slider) && clear[*n] && !over_wave(drawn, s))
+        .filter(|(n, (s, _))| native_control(s, &interface.controls[s.control]) && clear[*n] && !over_wave(drawn, s))
         .map(|(n, _)| n).collect();
     let mut pairs = Vec::new();
     let mut counts = vec![0usize; drawn.len()];
@@ -419,6 +437,84 @@ fn names(interface: &Interface, drawn: &[(Shown, Option<Arc<Image>>)]) -> HashMa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pictured_value_fields_keep_callback_frames_while_faders_and_knobs_stay_native() {
+        // Areia's revealed graph is a 180x83, 128-frame slider edited
+        // vertically. Its articulation scrollbar is a 14x220 vertical track.
+        let script = r#"on init
+make_perfview
+set_ui_height_px(400)
+declare ui_switch $advanced
+declare ui_slider $graph(0,127)
+move_control_px($graph,10,100)
+set_control_par(get_ui_id($graph),$CONTROL_PAR_HIDE,16)
+set_control_par(get_ui_id($graph),$CONTROL_PAR_MOUSE_BEHAVIOUR,-1000)
+set_control_par_str(get_ui_id($graph),$CONTROL_PAR_PICTURE,"linear")
+declare ui_slider $scroll(0,1000000)
+move_control_px($scroll,210,100)
+set_control_par(get_ui_id($scroll),$CONTROL_PAR_MOUSE_BEHAVIOUR,-2350)
+set_control_par_str(get_ui_id($scroll),$CONTROL_PAR_PICTURE,"track")
+declare ui_slider $knob(0,127)
+move_control_px($knob,250,100)
+set_control_par_str(get_ui_id($knob),$CONTROL_PAR_PICTURE,"round")
+declare ui_slider $thin(0,127)
+move_control_px($thin,10,250)
+set_control_par(get_ui_id($thin),$CONTROL_PAR_MOUSE_BEHAVIOUR,-1000)
+set_control_par_str(get_ui_id($thin),$CONTROL_PAR_PICTURE,"thin")
+declare ui_slider $compact(0,127)
+move_control_px($compact,250,250)
+set_control_par(get_ui_id($compact),$CONTROL_PAR_MOUSE_BEHAVIOUR,-755)
+set_control_par_str(get_ui_id($compact),$CONTROL_PAR_PICTURE,"compact")
+declare ui_menu $shape
+add_menu_item($shape,"Linear",0)
+add_menu_item($shape,"Shelf",1)
+declare ui_label $status(1,1)
+set_text($status,"")
+end on
+on ui_control($advanced)
+set_control_par(get_ui_id($graph),$CONTROL_PAR_HIDE,0)
+end on
+on ui_control($shape)
+set_control_par_str(get_ui_id($graph),$CONTROL_PAR_PICTURE,"shelf")
+$graph := 0
+end on
+on ui_control($graph)
+set_text($status,"Edited")
+end on"#;
+        let mut engine = crate::ksp::LogEngine::new(Vec::new(), 48000.);
+        let (mut runtime, errors) = crate::ksp::Runtime::with_scripts(&[script], &mut engine, 8, Vec::new());
+        assert!(errors.iter().all(Option::is_none), "{errors:?}");
+        let image = |w, h, red| Arc::new(Image::rgba(w, h, [red,0,0,255].repeat(w as usize * h as usize)).unwrap());
+        let changed = image(180,83,200);
+        let shelf = image(180,83,100);
+        let mut frames = vec![image(180,83,20);128];
+        frames[96] = changed.clone();
+        let pictures: HashMap<_, _> = [
+            ("linear".into(), Arc::new(Picture { frames, stretch:[false;2], atlas:None })),
+            ("shelf".into(), Arc::new(Picture { frames:vec![shelf.clone();128], stretch:[false;2], atlas:None })),
+            ("track".into(), Arc::new(Picture { frames:vec![image(14,220,80);189], stretch:[false;2], atlas:None })),
+            ("round".into(), Arc::new(Picture { frames:vec![image(60,60,80);128], stretch:[false;2], atlas:None })),
+            ("thin".into(), Arc::new(Picture { frames:vec![image(180,18,80);128], stretch:[false;2], atlas:None })),
+            ("compact".into(), Arc::new(Picture { frames:vec![image(75,28,80);128], stretch:[false;2], atlas:None })),
+        ].into();
+        let shown = |u: &Interface, n| super::super::perf_view::layout(u, &pictures).into_iter().find(|s|s.control==n).unwrap();
+        assert!(!super::super::perf_view::layout(&runtime.interface(0), &pictures).iter().any(|s|s.control==1));
+        runtime.ui_control(&mut engine,0,0,1);
+        let u = runtime.interface(0);
+        assert!(!native_control(&shown(&u,1), &u.controls[1]), "the revealed broad graph keeps its picture");
+        for n in [2,3,4,5] {
+            assert!(native_control(&shown(&u,n), &u.controls[n]), "scrollbar, round knob, skinny and compact cross-axis faders {n} stay native");
+        }
+        runtime.ui_control(&mut engine,0,1,96);
+        let u = runtime.interface(0);
+        assert_eq!(prop(&u.controls[7], "$CONTROL_PAR_TEXT"), "Edited", "the authored graph callback still runs");
+        assert!(Arc::ptr_eq(&super::super::perf_view::frame_of(&shown(&u,1), &u.controls[1]).unwrap(), &changed));
+        runtime.ui_control(&mut engine,0,6,1);
+        let u = runtime.interface(0);
+        assert!(!native_control(&shown(&u,1), &u.controls[1]));
+        assert!(Arc::ptr_eq(&super::super::perf_view::frame_of(&shown(&u,1), &u.controls[1]).unwrap(), &shelf), "the menu callback switches the retained graph artwork");
+    }
 
     #[test]
     fn native_slider_names_update_and_original_controls_keep_their_text() {
