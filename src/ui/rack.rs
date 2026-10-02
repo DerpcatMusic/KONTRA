@@ -126,10 +126,13 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
             }
         }
     }
-    // Keep the row being resized, and measure a requested new row before
-    // deciding where to reveal it. Ordinary offscreen rows stay unbuilt.
+    // Keep active pointer/text edits mounted, and measure a requested new
+    // row before deciding where to reveal it. Other offscreen rows stay unbuilt.
     for (i, &slot) in order.iter().enumerate() {
         near[i] |= cx.state.resizing.is_some_and(|(s, _)| s == slot)
+            || cx.state.held.is_some_and(|(s, _, _)| s == slot)
+            || cx.state.typing.as_ref().is_some_and(|(s, _, _)| *s == slot)
+            || cx.state.renaming.as_ref().is_some_and(|(s, _)| *s == slot)
             || (cx.state.reveal == Some(slot) && !measured[i]);
     }
     wheel_taken();
