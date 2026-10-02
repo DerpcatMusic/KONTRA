@@ -1390,7 +1390,7 @@ impl Voice {
             table.first -= span.start as usize;
             let buf = &mut buf[..self.plan.n + 3];
             buf.fill([0.; 2]);
-            table.render(&span.data, cx.bank.settings[self.group as usize].wavetable.unwrap().position,
+            table.render(&span.data, &cx.bank.settings[self.group as usize].wavetable.unwrap(),
                 self.pos, self.plan.step as f64 / FIXED_ONE, &mut buf[1..self.plan.n + 1]);
             return (buf, 1 << 32);
         }

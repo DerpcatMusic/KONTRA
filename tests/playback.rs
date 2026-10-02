@@ -998,7 +998,8 @@ fn wavetable_cycles_ignore_sample_rate_and_root_and_keep_common_note_lifetimes()
             [if i < 2048 { x } else { -x }; 2]
         }).collect();
         let group = Group { volume_env: Some(kontakto::import::Ahdsr { attack_ms: 0., decay_ms: 0., hold_ms: 0., sustain: 1., release_ms: 1., attack_curve: 0., unknown_flag: 0, unknown_tail: Vec::new() }),
-            wavetable: Some(Wavetable { quality: 2, ..Default::default() }), ..Group::default() };
+            wavetable: Some(Wavetable { quality: 2, form1_type: 16, form1: 0.5,
+                inharmonic: 0.5, inharmonic_mode: 0, ..Default::default() }), ..Group::default() };
         engine_with(Bank::from_samples(vec![group], vec![Zone { sample: path.clone(), root, ..Zone::default() }],
             vec![(path.clone(), Sample { rate, frames })]).unwrap())
     };
@@ -1021,15 +1022,29 @@ fn wavetable_cycles_ignore_sample_rate_and_root_and_keep_common_note_lifetimes()
         assert_eq!(a.underruns(), 0);
     }
     let mut e = setup(44100, 0);
-    e.set_script(runtime("on init\nend on\non controller\nif ($CC_NUM = 1)\nset_engine_par($ENGINE_PAR_WT_POSITION,%CC[1] * 1000000 / 127,0,-1,-1)\nmessage(get_engine_par($ENGINE_PAR_WT_POSITION,0,-1,-1))\nend if\nend on"));
+    let source = "on init\nend on\non controller\nif ($CC_NUM = 1)\nset_engine_par($ENGINE_PAR_WT_POSITION,%CC[1] * 1000000 / 127,0,-1,-1)\nmessage(get_engine_par($ENGINE_PAR_WT_POSITION,0,-1,-1))\nend if\nif ($CC_NUM = 2)\nset_engine_par($ENGINE_PAR_WT_FORM_MODE,$NI_WT_FORM_ASYM2MP,0,-1,-1)\nset_engine_par($ENGINE_PAR_WT_FORM2_MODE,$NI_WT_FORM_LINEAR,0,-1,-1)\nset_engine_par($ENGINE_PAR_WT_FORM2,0,0,-1,-1)\nset_engine_par($ENGINE_PAR_WT_FORM,500000 + %CC[2] * 500000 / 127,0,-1,-1)\nmessage(get_engine_par($ENGINE_PAR_WT_FORM_MODE,0,-1,-1) & \":\" & get_engine_par($ENGINE_PAR_WT_FORM,0,-1,-1))\nend if\nend on";
+    let mut neutral = setup(44100, 0);
+    e.set_script(runtime(source));
+    neutral.set_script(runtime(source));
     let (mut l,mut r)=([0.;128],[0.;128]);
+    let (mut nl,mut nr)=([0.;128],[0.;128]);
     e.note_on(0,69,100);
+    neutral.note_on(0,69,100);
     e.render(&mut l,&mut r);
+    neutral.render(&mut nl,&mut nr);
     let before = e.voice_census()[0].pos;
     assert_eq!(allocations(|| { e.cc(0,1,127); e.render(&mut l,&mut r); }), 0);
+    neutral.cc(0,1,127); neutral.render(&mut nl,&mut nr);
+    assert_eq!((l,r),(nl,nr));
     assert_eq!(e.script().unwrap().last_message(), "1000000");
     let voice = &e.voice_census()[0];
     assert!((voice.pos - (before + 128. * voice.step).rem_euclid(2048.)).abs() < 1e-6, "table position does not restart phase");
+    assert_eq!(allocations(|| { e.cc(0,2,127); e.render(&mut l,&mut r);
+        neutral.cc(0,2,0); neutral.render(&mut nl,&mut nr); }),0);
+    assert_eq!(e.script().unwrap().last_message(), "16:1000000");
+    assert_eq!(neutral.script().unwrap().last_message(), "16:500000");
+    assert_eq!(e.voice_census()[0].pos, neutral.voice_census()[0].pos, "form controls preserve oscillator frequency and phase");
+    assert!(l.iter().zip(nl).any(|(a,b)| (a-b).abs()>0.01), "form amount reaches the phase readout");
     assert_eq!(allocations(|| { e.panic(); for _ in 0..8 { e.render(&mut l,&mut r); } }),0);
     assert_eq!(e.active_voices(),0);
 }

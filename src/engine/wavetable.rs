@@ -9,10 +9,25 @@ pub(super) const CYCLE: usize = 2048;
 /// Until their native laws are proven, active phase forms, randomized starts
 /// and the modulation oscillator retain the importer's unsupported warning.
 pub(super) fn supported(source: &crate::import::Wavetable, tracking: bool) -> bool {
-    tracking && source.form1_type == 0 && source.form2_type == 0
-        && source.inharmonic == 0. && source.mod_type == 0
+    tracking && form_supported(source.form1_type) && form_supported(source.form2_type)
+        && source.inharmonic_mode == 0 && source.mod_type == 0
         && source.phase_random == 0.
         && source.position.is_finite() && source.phase.is_finite()
+        && source.form1.is_finite() && source.form2.is_finite()
+}
+
+pub(super) fn form_supported(kind: i32) -> bool { matches!(kind, 0 | 16) }
+
+/// ASYM2MP moves the cycle midpoint while keeping both endpoints fixed.
+/// Native shared phase-form routine: 140567aa0, switch16→140567e4d.
+fn warp(phase: f32, amount: f32, kind: i32) -> f32 {
+    if kind != 16 { return phase; }
+    let offset = (amount.clamp(0., 1.) - 0.5) * 1.96;
+    if f64::from(phase) < 0.5 + f64::from(offset * 0.5) {
+        phase / (1. + offset)
+    } else {
+        (phase - 1.) / (1. - offset) + 1.
+    }
 }
 
 /// Resident, complete cycles prepared by the bank loader.
@@ -36,21 +51,23 @@ impl Table {
     pub fn render(
         self,
         data: &Pcm,
-        position: f32,
+        source: &crate::import::Wavetable,
         mut phase: f64,
         step: f64,
         out: &mut [Frame],
     ) -> f64 {
-        let position = f64::from(position.clamp(0., 1.)) * (self.cycles - 1) as f64;
+        let position = f64::from(source.position.clamp(0., 1.)) * (self.cycles - 1) as f64;
         let lo = position as usize;
         let hi = (lo + 1).min(self.cycles - 1);
         let blend = position.fract() as f32;
         for frame in out {
-            let a = self.read(data, lo, phase);
+            let read_phase = warp(warp((phase / CYCLE as f64) as f32,
+                source.form1, source.form1_type), source.form2, source.form2_type) as f64 * CYCLE as f64;
+            let a = self.read(data, lo, read_phase);
             let b = if lo == hi || blend == 0. {
                 a
             } else {
-                self.read(data, hi, phase)
+                self.read(data, hi, read_phase)
             };
             *frame = std::array::from_fn(|c| a[c] + (b[c] - a[c]) * blend);
             phase = (phase + step).rem_euclid(CYCLE as f64);
@@ -97,7 +114,7 @@ mod tests {
             let mut out = [[0.; 2]; 128];
             let mut phase = 0.;
             for block in 0..16 {
-                phase = table.render(&data, 0., phase, delta, &mut out);
+                phase = table.render(&data, &crate::import::Wavetable::default(), phase, delta, &mut out);
                 for (i, frame) in out.iter().enumerate() {
                     let expected = (((block * 128 + i) as f64 * delta) * std::f64::consts::TAU
                         / CYCLE as f64)
@@ -108,12 +125,34 @@ mod tests {
                     );
                 }
             }
-            table.render(&data, 0.5, 0., delta, &mut out);
+            table.render(&data, &crate::import::Wavetable { position: 0.5, ..Default::default() }, 0., delta, &mut out);
             assert!(out.iter().flatten().all(|x| x.abs() < 1e-7));
-            table.render(&data, 1., 0., delta, &mut out);
+            table.render(&data, &crate::import::Wavetable { position: 1., ..Default::default() }, 0., delta, &mut out);
             assert!(out[1][0] < 0.);
         }
         assert!(Table::new(0, CYCLE - 1).is_none());
         assert!(Table::new(1, CYCLE + 1).is_none());
+    }
+
+    #[test]
+    fn asym2mp_keeps_center_neutral_and_moves_midpoint_without_changing_period() {
+        for amount in [0., 0.25, 0.5, 0.75, 1.] {
+            let offset = (amount - 0.5) * 1.96;
+            let midpoint = 0.5 + offset * 0.5;
+            assert_eq!(warp(0., amount, 16), 0.);
+            assert_eq!(warp(1., amount, 16), 1.);
+            assert!((warp(midpoint, amount, 16) - 0.5).abs() < 1e-6);
+            for i in 0..2048 {
+                let phase = i as f32 / 2048.;
+                let expected = if phase < midpoint { phase * 0.5 / midpoint }
+                    else { 0.5 + (phase - midpoint) * 0.5 / (1. - midpoint) };
+                assert!((warp(phase, amount, 16) - expected).abs() < 3e-6);
+                assert_eq!(warp(phase, 0.5, 16), phase);
+                assert_eq!(warp(phase, amount, 0), phase);
+            }
+        }
+        assert!(supported(&crate::import::Wavetable { form1_type: 16, form1: 0.5,
+            inharmonic: 0.5, inharmonic_mode: 0, ..Default::default() }, true));
+        assert!(!supported(&crate::import::Wavetable { form1_type: 17, ..Default::default() }, true));
     }
 }

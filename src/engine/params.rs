@@ -521,7 +521,7 @@ pub(crate) enum GroupPar {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum WavePar { Position, Phase }
+pub(crate) enum WavePar { Position, Phase, Form, Form2, FormMode, Form2Mode }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Stage {
@@ -593,6 +593,11 @@ impl Address {
                 .ok()
                 .filter(|&g| (g as usize) < groups.len())
         };
+        let wave = || {
+            let g = group()?;
+            let source = groups[g as usize].wavetable.as_ref()?;
+            super::wavetable::supported(source, groups[g as usize].key_tracking).then_some(g)
+        };
         let modulator = |g: u16| {
             let m = usize::try_from(par.slot).ok()?;
             groups[g as usize].modulators.get(m)
@@ -613,8 +618,12 @@ impl Address {
         };
         let filter = |knob| insert(knob, FxParam::Filter(knob));
         Some(match par.id {
-            _ if crate::ksp::engine_par_name(par.id) == Some("$ENGINE_PAR_WT_POSITION") => Self::Wavetable(group()?, WavePar::Position),
-            _ if crate::ksp::engine_par_name(par.id) == Some("$ENGINE_PAR_WT_PHASE") => Self::Wavetable(group()?, WavePar::Phase),
+            _ if crate::ksp::engine_par_name(par.id) == Some("$ENGINE_PAR_WT_POSITION") => Self::Wavetable(wave()?, WavePar::Position),
+            _ if crate::ksp::engine_par_name(par.id) == Some("$ENGINE_PAR_WT_PHASE") => Self::Wavetable(wave()?, WavePar::Phase),
+            _ if crate::ksp::engine_par_name(par.id) == Some("$ENGINE_PAR_WT_FORM") => Self::Wavetable(wave()?, WavePar::Form),
+            _ if crate::ksp::engine_par_name(par.id) == Some("$ENGINE_PAR_WT_FORM2") => Self::Wavetable(wave()?, WavePar::Form2),
+            _ if crate::ksp::engine_par_name(par.id) == Some("$ENGINE_PAR_WT_FORM_MODE") => Self::Wavetable(wave()?, WavePar::FormMode),
+            _ if crate::ksp::engine_par_name(par.id) == Some("$ENGINE_PAR_WT_FORM2_MODE") => Self::Wavetable(wave()?, WavePar::Form2Mode),
             id::VOLUME | id::PAN | id::TUNE | id::OUTPUT_CHANNEL => {
                 let p = match par.id {
                     id::VOLUME => GroupPar::Volume,
@@ -796,6 +805,7 @@ impl Address {
     pub(crate) fn decode(self, value: i32) -> f32 {
         let x = (value as f32 / UNIT).clamp(0.0, 1.0);
         match self {
+            Self::Wavetable(_, WavePar::FormMode | WavePar::Form2Mode) => value as f32,
             Self::Wavetable(..) => x,
             // An instrument bus, or past the instrument output to output
             // channel `c` as bus `DIRECT + c` (a mic mixer's "Out 2").
@@ -855,6 +865,7 @@ impl Address {
     /// Inverse of [`decode`](Self::decode), rounded.
     pub(crate) fn encode(self, v: f32) -> i32 {
         let x = match self {
+            Self::Wavetable(_, WavePar::FormMode | WavePar::Form2Mode) => return v as i32,
             Self::Wavetable(..) => v,
             Self::Group(_, GroupPar::Output) => {
                 return match v {
@@ -1023,6 +1034,13 @@ pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32
             match p {
                 WavePar::Position => source.position = value.clamp(0., 1.),
                 WavePar::Phase => source.phase = value.clamp(0., 1.),
+                WavePar::Form => source.form1 = value.clamp(0., 1.),
+                WavePar::Form2 => source.form2 = value.clamp(0., 1.),
+                WavePar::FormMode | WavePar::Form2Mode => {
+                    if !super::wavetable::form_supported(value as i32) { return false; }
+                    if matches!(p, WavePar::FormMode) { source.form1_type = value as i32; }
+                    else { source.form2_type = value as i32; }
+                }
             }
         }
         Address::Group(g, p) => {
@@ -1137,7 +1155,9 @@ pub(crate) fn read(settings: &[GroupSettings], address: Address) -> Option<f32> 
     match address {
         Address::Wavetable(g, p) => {
             let source = settings.get(g as usize)?.wavetable.as_ref()?;
-            Some(match p { WavePar::Position => source.position, WavePar::Phase => source.phase })
+            Some(match p { WavePar::Position => source.position, WavePar::Phase => source.phase,
+                WavePar::Form => source.form1, WavePar::Form2 => source.form2,
+                WavePar::FormMode => source.form1_type as f32, WavePar::Form2Mode => source.form2_type as f32 })
         }
         Address::Group(g, p) => {
             let group = settings.get(g as usize)?;
