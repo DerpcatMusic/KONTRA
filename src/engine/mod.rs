@@ -456,6 +456,19 @@ impl Engine {
 
     /// Stop every performance context in one pass, preserving script/UI setup.
     pub fn panic(&mut self) {
+        // Libraries cache pedal state in their own globals. Resetting %CC alone
+        // leaves their next release callback believing the pedal is still down.
+        if let Some(rt) = self.script.as_ref() {
+            let down = [64usize, 66].map(|cc| rt.env.input.cc[cc] >= 64
+                || self.player.cc.iter().any(|row| row[cc] >= 64));
+            for channel in 0..16 {
+                for (cc, down) in [64, 66].into_iter().zip(down) {
+                    if down { self.cc(channel, cc, 0); }
+                }
+            }
+        }
+        // Pedal-up callbacks may release, create or wait on notes; cancel their
+        // remaining performance work too, so Panic cannot resurrect a voice.
         self.cancel_notes(u16::MAX);
         self.commands.retain(|command| !matches!(command.kind,
             script::Kind::Controller { cc: 1 | 11 | 64 | 66 | 128 | 129, .. }));

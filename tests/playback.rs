@@ -1613,6 +1613,57 @@ fn ksp_zone_ids_follow_real_mapping_before_and_after_render_and_survive_missing_
 }
 
 #[test]
+fn panic_clears_script_cached_pedals_and_fresh_notes_release_without_allocating() {
+    let mut e = scripted(r#"on init
+        SET_CONDITION(NO_SYS_SCRIPT_PEDAL)
+        declare %pedal[16]
+        declare ui_knob $user_setting (0, 100, 1)
+        $user_setting := 37
+    end on
+    on controller
+        if ($CC_NUM = 64 or $CC_NUM = 66)
+            %pedal[$MIDI_CHANNEL] := %CC[$CC_NUM]
+            if (%CC[$CC_NUM] = 0)
+                play_note(70, 100, 0, -1)
+                wait(100000)
+                play_note(71, 100, 0, 0)
+            end if
+        end if
+    end on
+    on release
+        if (%pedal[$MIDI_CHANNEL] >= 64)
+            ignore_event($EVENT_ID)
+        end if
+    end on"#);
+    for pedal in [64, 66] {
+        for channel in 0..16 {
+            e.cc(channel, pedal, 127);
+            e.note_on(channel, 60, 100);
+            e.note_off(channel, 60);
+        }
+        render(&mut e, 128);
+        assert!(e.active_voices() > 0, "the authored pedal holds key-up voices");
+        let (mut left, mut right) = ([0.; MAX_BLOCK], [0.; MAX_BLOCK]);
+        assert_eq!(allocations(|| {
+            e.panic();
+            for _ in 0..64 { e.render(&mut left, &mut right); }
+        }), 0);
+        assert_eq!(e.active_voices(), 0, "pedal-up work must not resurrect notes");
+        assert_eq!(e.pending_work(), [0, 0, 0]);
+        for channel in 0..16 {
+            e.note_on(channel, 60, 100);
+            render(&mut e, 128);
+            assert!(e.active_voices() > 0);
+            e.note_off(channel, 60);
+            render(&mut e, 1000);
+            assert_eq!(e.active_voices(), 0, "fresh note on channel {channel} releases after CC{pedal} Panic");
+        }
+        assert_eq!(e.script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(37));
+        assert!(e.script().unwrap().diagnostics().is_empty());
+    }
+}
+
+#[test]
 fn ksp_system_conditions_control_native_sustain_and_release_without_blocking_manual_samples() {
     let flags = "SET_CONDITION(NO_SYS_SCRIPT_PEDAL)\nSET_CONDITION(NO_SYS_SCRIPT_RLS_TRIG)";
     let disabled = format!("on init\n{flags}\nend on");
