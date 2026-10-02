@@ -701,6 +701,7 @@ impl Scene {
             .map(|frame| frame.get::<Option<String>>("alignment"))
             .transpose()?
             .flatten()
+            .or(props.get::<Option<String>>("alignment")?)
         {
             let (mut x, mut y) = (None, None);
             ensure!(

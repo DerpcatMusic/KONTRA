@@ -117,7 +117,7 @@ function native_component(target,props,children)
         return {kind="Component",target=target,props=props,children=children,modifiers={}}
     end
     assert(type(target)=="table" and target.kind,"Unsupported component target")
-    local supported={ZStack={children=true},Text={children=true,text=true},Rectangle={children=true,color=true,corner_radius=true},Image={children=true,file=true,resizable=true}}
+    local supported={ZStack={children=true,alignment=true},Text={children=true,text=true},Rectangle={children=true,color=true,corner_radius=true},Image={children=true,file=true,resizable=true}}
     assert(supported[target.kind],"Unsupported component")
     assert(target.kind=="ZStack" or #children==0,"Primitive children require ZStack")
     for key in pairs(props) do assert(supported[target.kind][key],"Unsupported primitive property: "..target.kind.."."..key) end
