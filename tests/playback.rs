@@ -2172,6 +2172,54 @@ end on"
 }
 
 #[test]
+fn repeated_group_restores_keep_latest_reads_and_sample_timing_without_allocating() {
+    let mut e = scripted("on init
+declare $i
+declare ui_label $latest(1,1)
+end on
+on note
+$i := 0
+while ($i < 2100)
+set_engine_par($ENGINE_PAR_VOLUME,0,1,-1,-1)
+set_engine_par($ENGINE_PAR_VOLUME,1000000,1,-1,-1)
+inc($i)
+end while
+set_text($latest,get_engine_par($ENGINE_PAR_VOLUME,1,-1,-1))
+wait(10000)
+set_engine_par($ENGINE_PAR_VOLUME,0,1,-1,-1)
+wait(10000)
+set_engine_par($ENGINE_PAR_VOLUME,1000000,1,-1,-1)
+end on");
+    let mut reference = scripted("on init
+set_engine_par($ENGINE_PAR_VOLUME,1000000,1,-1,-1)
+end on");
+    reference.note_on(0, 60, 100);
+    reference.note_on(0, 61, 100);
+    let expected = render(&mut reference, 1024);
+    let (mut left, mut right) = ([0.; 1024], [0.; 1024]);
+    assert_eq!(allocations(|| {
+        e.begin_audio_block(1024, 1, true);
+        e.note_on(0, 60, 100);
+        e.note_on(0, 61, 100);
+        // Both callbacks read their final same-sample write before rendering.
+        e.render(&mut left, &mut right);
+    }), 0);
+    let latest = &e.script().unwrap().interface(0).controls[0];
+    assert_eq!(latest.properties["$CONTROL_PAR_TEXT"], kontakto::ksp::Value::Text("1000000".into()));
+    assert!(close([left[400], right[400]], expected[400]));
+    assert!(close([left[479], right[479]], expected[479]));
+    assert!(left[481] < expected[481][0], "the distinct 10 ms write must remain");
+    assert!(left[959] < expected[959][0]);
+    assert!(left[961] > left[959], "the distinct 20 ms restore must remain");
+    assert_eq!(e.dropped_commands(), 0);
+    assert!(e.script().unwrap().diagnostics().is_empty());
+    e.note_off(0, 60);
+    e.note_off(0, 61);
+    render(&mut e, 48000);
+    assert_eq!(e.active_voices(), 0);
+}
+
+#[test]
 fn controllers_set_while_loading_drive_modulation() {
     let group = Group {
         mods: vec![volume_mod(ModSource::MidiCc(11), 0)],
