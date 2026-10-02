@@ -4434,6 +4434,39 @@ end on"#.into()],
     }
 
     #[test]
+    fn delayed_label_style_reaches_retained_live_without_audio_allocations() {
+        let script = r#"on init
+make_perfview
+declare ui_switch $page
+declare ui_label $caption(1,1)
+set_text($caption, "thresh.")
+end on
+on ui_control($page)
+set_control_par(get_ui_id($caption), $CONTROL_PAR_FONT_TYPE, 23)
+set_control_par(get_ui_id($caption), $CONTROL_PAR_TEXTPOS_Y, 0)
+set_control_par(get_ui_id($caption), $CONTROL_PAR_TEXT_ALIGNMENT, 1)
+set_control_par(get_ui_id($caption), $CONTROL_PAR_TEXT_COLOR, 8421504)
+end on"#;
+        let mut engine = crate::ksp::LogEngine::new(Vec::new(), 48_000.);
+        let (mut rt, errors) = Runtime::with_scripts(&[script], &mut engine, 8, Vec::new());
+        assert!(errors.iter().all(Option::is_none), "{errors:?}");
+        let mut live = rt.live();
+        let fields = ["$CONTROL_PAR_FONT_TYPE", "$CONTROL_PAR_TEXTPOS_Y", "$CONTROL_PAR_TEXT_ALIGNMENT", "$CONTROL_PAR_TEXT_COLOR"];
+        for field in fields {
+            assert!(!matches!(live.interface.as_ref().unwrap().controls[1].properties.get(field), Some(crate::ksp::Value::Int(_) | crate::ksp::Value::Real(_) | crate::ksp::Value::Text(_))), "unset metadata keeps the renderer's default: {field}");
+        }
+        assert_eq!(allocations(|| {
+            rt.ui_control(&mut engine, 0, 0, 1);
+            rt.refresh_live(&mut live);
+        }), 0, "first publication of delayed metadata must neither allocate nor free");
+        let caption = &live.interface.as_ref().unwrap().controls[1];
+        for (field, expected) in fields.into_iter().zip([23, 0, 1, 8421504]) {
+            assert_eq!(caption.properties.get(field), Some(&crate::ksp::Value::Int(expected)), "retained GUI snapshot must match the delayed callback: {field}");
+        }
+        assert_eq!(live, rt.live(), "retained and newly prepared views agree");
+    }
+
+    #[test]
     fn control_edits_run_the_script_and_report_back() {
         let script = "on init\nmake_perfview\ndeclare ui_switch $legato\nmake_persistent($legato)\ndeclare ui_label $l(1,1)\ndeclare %bad[1]\nend on\non ui_control($legato)\n%bad[3] := 1\nset_text($l, \"Legato\")\nset_key_color(36, $KEY_COLOR_BLUE)\nend on";
         let mut engine = crate::ksp::LogEngine::new(Vec::new(), 48_000.0);

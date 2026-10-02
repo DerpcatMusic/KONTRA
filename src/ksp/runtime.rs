@@ -1199,6 +1199,24 @@ impl Runtime {
                 each_text_in(v, &mut room);
             }
             c.menu.iter_mut().for_each(|(t, _)| room(t));
+            // Delayed callbacks can first assign these scalar style fields.
+            // Reserve their map nodes off-thread without inventing defaults:
+            // numeric/text readers ignore an empty array until Ui::refresh
+            // replaces it with the authored integer. Its Vec has no storage
+            // to allocate or free when that happens on the audio thread.
+            for name in [
+                "$CONTROL_PAR_FONT_TYPE",
+                "$CONTROL_PAR_FONT_TYPE_ON",
+                "$CONTROL_PAR_FONT_TYPE_OFF_PRESSED",
+                "$CONTROL_PAR_FONT_TYPE_ON_PRESSED",
+                "$CONTROL_PAR_FONT_TYPE_OFF_HOVER",
+                "$CONTROL_PAR_FONT_TYPE_ON_HOVER",
+                "$CONTROL_PAR_TEXTPOS_Y",
+                "$CONTROL_PAR_TEXT_ALIGNMENT",
+                "$CONTROL_PAR_TEXT_COLOR",
+            ] {
+                c.properties.entry(name.into()).or_insert_with(|| Value::IntArray(Vec::new()));
+            }
         }
         let menu_spares = interface.as_mut().map_or_else(Vec::new, |ui| {
             let state = &self.states[slot.unwrap()];
