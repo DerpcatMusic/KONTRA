@@ -164,6 +164,8 @@ fn script(source: &str, title: &str) -> Vec<u8> {
 
 fn groups(groups: &[Group]) -> Result<Vec<u8>> {
     ensure!(groups.len() <= crate::engine::MAX_GROUPS, "Too many groups for Kontakt");
+    ensure!(groups.iter().all(|g| g.wavetable.is_none()),
+        "The new-instrument writer does not encode wavetable sources; use the native group source writer to preserve an existing record");
     let mut private = Vec::new();
     for flag in GROUP_RECORDS.bytes() {
         private.extend(8u32.to_le_bytes());
