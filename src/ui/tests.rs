@@ -1855,6 +1855,35 @@ fn failed_load_diagnostics_remain_visible_without_an_instrument() {
 }
 
 #[test]
+fn automatic_performance_scale_fits_rack_height_and_explicit_zoom_stays_scrollable() {
+    let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(540)\ndeclare ui_slider $bottom(0,100)\nmove_control_px($bottom,40,500)\nend on");
+    p.selection.write().unwrap().parts[0].view = 1;
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        Arc::make_mut(view.parts[0].interface.as_mut().unwrap()).width = 732;
+        let image = Arc::new(moose::mui::mui::scene::Image::rgba(732,608,vec![40;732*608*4]).unwrap());
+        view.parts[0].wallpaper = Some(Arc::new(artwork::Picture {frames:vec![image],stretch:[false;2],atlas:None}));
+    }
+    let mut h = Harness::new(&p,2560.,1440.);
+    h.ui.set_scale(Some(1.5));
+    for height in [1440.,800.] {
+        h.size.height = height;
+        h.idle(8);
+        let scene = h.ui.scene().unwrap();
+        let rack = scene.surface("rack-view").unwrap().frame;
+        let stage = scene.surface("stage-0").unwrap().frame;
+        let bottom = scene.surface("kpv-0-0").unwrap().frame;
+        assert!(stage.y + stage.size.height <= rack.y + rack.size.height + 1., "auto fits the rack at {height}: stage={stage:?}, rack={rack:?}");
+        assert!(bottom.y + bottom.size.height <= rack.y + rack.size.height + 1., "bottom controls stay visible at {height}: {bottom:?}");
+    }
+    p.shared.libraries.edit(|s| s.view_scale = 3.);
+    h.idle(8);
+    let scene = h.ui.scene().unwrap();
+    assert!((scene.surface("stage-0").unwrap().frame.size.height - 1620.).abs() < 1., "explicit zoom is retained rather than fitted away");
+    assert!(scene.surface("rack-bar").is_some(), "explicit zoom can scroll");
+}
+
+#[test]
 fn the_vectorized_view_keeps_the_original_layout() {
     let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_slider $vol(0, 100)\nmove_control_px($vol, 30, 40)\nset_control_par_str(get_ui_id($vol), $CONTROL_PAR_PICTURE, \"knob\")\ndeclare ui_switch $legato\nmove_control_px($legato, 120, 40)\ndeclare ui_menu $mic\nadd_menu_item($mic, \"Close\", 0)\nmove_control_px($mic, 200, 90)\ndeclare ui_label $title(1,1)\nset_text($title, \"Tone\")\nmove_control_px($title, 30, 100)\nend on");
     {
