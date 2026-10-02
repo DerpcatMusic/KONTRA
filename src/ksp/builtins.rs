@@ -294,6 +294,8 @@ pub enum SysVar {
     DurationSixteenthTriplet,
     DurationBar,
     SongPosition,
+    SignatureNum,
+    SignatureDenom,
     TransportRunning,
     Tempo,
     CurrentScriptSlot,
@@ -335,6 +337,8 @@ pub fn sys_var(name: &str) -> Option<SysVar> {
         "$DURATION_SIXTEENTH_TRIPLET" => DurationSixteenthTriplet,
         "$DURATION_BAR" => DurationBar,
         "$NI_SONG_POSITION" => SongPosition,
+        "$SIGNATURE_NUM" => SignatureNum,
+        "$SIGNATURE_DENOM" => SignatureDenom,
         "$NI_TRANSPORT_RUNNING" => TransportRunning,
         "$NI_BPM" | "$NI_TEMPO" => Tempo,
         "$CURRENT_SCRIPT_SLOT" => CurrentScriptSlot,
@@ -650,7 +654,6 @@ pub fn constant(name: &str) -> Option<i32> {
         "$NI_VL_TMPRO_HQ" | "$NI_VL_TMRPO_HQ" => VL_TMPRO_HQ,
         // A plugin with an editor, in 4/4 unless the host says otherwise.
         "$NI_KONTAKT_IS_HEADLESS" | "$NI_KONTAKT_IS_STANDALONE" => 0,
-        "$SIGNATURE_NUM" | "$SIGNATURE_DENOM" => 4,
         _ => return None,
     })
 }

@@ -417,9 +417,9 @@ impl Engine {
     }
 
     /// Apply the host's transport before processing this block's callbacks.
-    pub fn set_transport(&mut self, playing: bool, tempo: f64, beats: f64) {
+    pub fn set_transport(&mut self, playing: bool, tempo: f64, beats: f64, signature: (u8, u8)) {
         if let Some((rt, mut host)) = self.scripted(self.script_channel) {
-            rt.set_host_transport(&mut host, playing, tempo, beats);
+            rt.set_host_transport(&mut host, playing, tempo, beats, signature);
         }
     }
 
