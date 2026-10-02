@@ -410,6 +410,9 @@ impl In {
 /// What a [`Router`] sends the part's engine.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Out {
+    /// The delivered original host input; generated articulation keyswitches
+    /// remain ordinary notes, even when their pitch equals this input.
+    HostNoteOn(crate::engine::HostNote, u8, u8, u8),
     NoteOn(u8, u8, u8),
     NoteOff(u8, u8),
     /// Script channel, physical input channel, key, velocity.
@@ -656,6 +659,10 @@ impl Router {
     /// Route one input to the part's engine: `home` is the part's channel,
     /// where channel mode plays everything.
     pub fn input(&mut self, ev: In, home: u8, output: &mut impl FnMut(Out)) {
+        let (ev, host_note) = match ev {
+            In::HostOn(note, velocity) => (In::NoteOn(note.channel, note.key, velocity), Some(note)),
+            ev => (ev, None),
+        };
         let r = self.route;
         let channel = ev.channel();
         let to = if r.by_channel() { home & 15 } else { channel };
@@ -671,8 +678,8 @@ impl Router {
             }
         } else { o });
         match ev {
-            // Exact events are handled at feed, where the engine owns their
-            // retained host tuple. Router-only callers must not erase identity.
+            // HostOn is normalized above with its identity retained for final
+            // delivery; the other exact events resolve engine-owned tuples.
             In::HostOn(..) | In::HostOff(..) | In::HostChoke(..) | In::HostExpression(..) => {},
             In::NoteOn(_, note, velocity) => {
                 let key = r.keys[note as usize & 127];
@@ -707,7 +714,9 @@ impl Router {
                 let bit = 1u128 << (note & 127);
                 if r.by_channel() { self.held_from[channel as usize] |= bit; }
                 else { self.held_from[channel as usize] &= !bit; }
-                if r.by_channel() {
+                if let Some(note) = host_note {
+                    out(Out::HostNoteOn(note, to, key, velocity));
+                } else if r.by_channel() {
                     out(Out::NoteOnFrom(to, channel, key, velocity));
                 } else {
                     out(Out::NoteOn(to, key, velocity));
@@ -904,6 +913,7 @@ impl Router {
 /// Apply what a router sends to its engine.
 pub(crate) fn apply(e: &mut Engine, o: Out) {
     match o {
+        Out::HostNoteOn(note, c, n, v) => { e.host_note_on(note, c, n, v); }
         Out::NoteOn(c, n, v) => e.note_on(c, n, v),
         Out::NoteOff(c, n) => e.note_off(c, n),
         Out::NoteOnFrom(c, owner, n, v) => e.note_on_from(c, owner, n, v),
@@ -933,10 +943,6 @@ pub(crate) fn feed(r: &mut Router, e: &mut Engine, ev: In, home: u8) {
     e.set_mpe_master_bend_range(r.master_bend_range.map(|(semitones, cents)|
         (f32::from(semitones) + f32::from(cents) / 100.).min(96.)));
     match ev {
-        In::HostOn(note, velocity) => r.input(In::NoteOn(note.channel, note.key, velocity), home, &mut |o| match o {
-            Out::NoteOn(c, n, v) | Out::NoteOnFrom(c, _, n, v) => { e.host_note_on(note, c, n, v); }
-            o => apply(e, o),
-        }),
         In::HostOff(pattern) | In::HostChoke(pattern) => {
             if matches!(ev,In::HostChoke(_)) { e.host_note_choke(pattern); } else { e.host_note_off(pattern); }
             let mut index = 0;
@@ -1278,13 +1284,32 @@ mod tests {
         let pattern=HostPattern { port:0,channel:2,key:60,id:10,clap:true };
         assert_eq!(crate::plugin::tests::allocations(|| {
             feed(&mut r,&mut e,In::HostOn(note,100),7);
+            assert_eq!(e.held_host_route(2,60),Some((7,60)),"the articulation keyswitch must not acquire the host tuple");
+            assert_eq!(e.host_note_drops(),0);
             feed(&mut r,&mut e,In::NoteOn(2,60,100),7); render(&mut e);
+            assert_eq!(e.active_voices(),2);
             r.set_route(Route::default());
             feed(&mut r,&mut e,In::NoteOff(2,60),7); render(&mut e);
             assert!(e.key_down(7,60)); assert_eq!(r.held[2][60],(7,60));
             assert_ne!(r.held_from[2] & (1u128<<60),0);
             feed(&mut r,&mut e,In::HostOff(pattern),7); render(&mut e);
             assert!(!e.key_down(7,60)); assert_eq!(r.held[2][60],(NONE,NONE));
+        }),0);
+
+        // Selection and original input can have the same pitch. The output
+        // role, rather than a key comparison, must distinguish their owners.
+        let (mut e,mut r)=three_articulation_part();
+        e.set_script(None);
+        r.route.arts[2].key=60;
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            r.switch(2,7,&mut |o| apply(&mut e,o));
+            assert!(e.host_note_at(0).is_none());
+            feed(&mut r,&mut e,In::HostOn(note,100),7);
+            assert_eq!(e.held_host_route(2,60),Some((7,60)));
+            assert_eq!(e.host_note_drops(),0);
+            assert!(e.key_down(7,60));
+            feed(&mut r,&mut e,In::HostOff(pattern),7);
+            assert!(!e.key_down(7,60));
         }),0);
     }
 
@@ -1298,6 +1323,8 @@ mod tests {
             let pattern=HostPattern { port:0,channel:2,key:60,id:10,clap:true };
             let mut actions=|| {
                 feed(&mut r,&mut e,In::HostOn(note,100),7);
+                assert_eq!(e.held_host_route(2,60),Some((7,60)));
+                assert_eq!(e.host_note_drops(),0);
                 feed(&mut r,&mut e,In::NoteOn(2,60,100),7);
                 render(&mut e);
                 feed(&mut r,&mut e,In::HostChoke(pattern),7);
