@@ -417,6 +417,9 @@ pub struct Program {
     pub reals: Vec<f64>,
     pub strings: Vec<Box<str>>,
     pub vars: Vec<Var>,
+    /// A pictured label selected by a direct literal-prefix + ui_menu value.
+    /// Conflicting or unknown direct assignments leave it unclassified.
+    pub picture_menus: HashMap<VarId, Option<VarId>>,
     /// `(slot, length)` per `VarId`, scalars as length 1: the interpreter's
     /// bounds checks, without `Var`'s other fields in the cache.
     pub elems: Vec<(u32, u32)>,
@@ -695,6 +698,7 @@ impl<'a> Compiler<'a> {
     fn unit(&mut self, block: &Block) -> Unit {
         self.calls.clear();
         let entry = self.label();
+        let picture_menus = self.p.picture_menus.clone();
         let result = match &block.body {
             Err(e) => Err(anyhow::anyhow!("{e}")),
             Ok(body) => self.stmts(body).and_then(|()| {
@@ -707,6 +711,7 @@ impl<'a> Compiler<'a> {
                 Ok(())
             }),
         };
+        if result.is_err() { self.p.picture_menus = picture_menus; }
         Unit {
             calls: std::mem::take(&mut self.calls),
             error: result.err().map(|e| format!("{e:#}")),
@@ -1657,6 +1662,27 @@ impl<'a> Compiler<'a> {
             (Builtin::Signbit, Some(Ty::Real)) => Builtin::SignbitReal,
             _ => b,
         };
+        if b == Builtin::SetControlParStr {
+            if let [Expr::Call(get_id, target), par, picture] = args
+                && self.name(*get_id) == "get_ui_id"
+                && matches!(self.fold(par), Some(Const::Int(p)) if p == builtins::CONTROL_PAR_PICTURE)
+                && let [Expr::Var(label, None)] = target.as_slice()
+                && let Some(&label) = self.var_ids.get(label)
+                && self.p.vars[label as usize].ui.as_deref() == Some("ui_label")
+            {
+                let menu = match picture {
+                    Expr::Binary(BinOp::Concat, prefix, source) if matches!(prefix.as_ref(), Expr::Str(_)) => {
+                        if let Expr::Var(menu, None) = source.as_ref() {
+                            self.var_ids.get(menu).copied().filter(|&v| self.p.vars[v as usize].ui.as_deref() == Some("ui_menu"))
+                        } else { None }
+                    }
+                    _ => None,
+                };
+                self.p.picture_menus.entry(label).and_modify(|saved| {
+                    if *saved != menu { *saved = None; }
+                }).or_insert(menu);
+            }
+        }
         self.emit(Op::Builtin(b, args.len() as u8));
         let ret = match sig.ret {
             Ret::Void => None,

@@ -123,7 +123,7 @@ fn inspect(i: &import::Instrument, u: &Interface, shown: &[Shown], pictures: &Ha
 fn vectorized(u: &Interface, shown: &[Shown], pictures: &HashMap<String, Arc<artwork::Picture>>, found: &mut Found) {
     use super::vector::plan;
     let drawn: Vec<_> = shown.iter().map(|s| (s.clone(), perf_view::frame_of(s, &u.controls[s.control]))).collect();
-    let plans = plan(u, pictures, &drawn);
+    let plans = plan(u, pictures, &drawn, &mut super::vector::Assets::default());
     let (vw, vh) = (f64::from(u.width), f64::from(u.height));
     // Each word's ink, absolute: (owner, x, y, w, h).
     let mut inks = Vec::new();
@@ -294,6 +294,8 @@ fn audit_one(i: &Arc<import::Instrument>, found: &mut Found, trace: &mut crate::
     trace.stage("script_callbacks");
     let mut engine = crate::engine::ScriptSetup::new(i, 48_000.0);
     (0..100).for_each(|_| rt.process(&mut engine, 480));
+    #[cfg(test)]
+    tests::select_benchmark_page(&mut rt, i, false);
     let script = crate::plugin::script_interface(Some(&rt));
     for d in script.status.lines().filter(|d| !d.trim().is_empty()) {
         trace.issue("scripts", crate::diagnostics::code(d), d);
@@ -303,6 +305,7 @@ fn audit_one(i: &Arc<import::Instrument>, found: &mut Found, trace: &mut crate::
         found.problems.retain(|k, _| k.starts_with("script"));
         return None;
     };
+    for warning in perf_view::font_fallbacks(&u) { trace.issue("ui", "font_fallback", &warning); }
     found.size = (u.width.max(0) as u32, u.height.max(0) as u32);
     let names = u.controls.iter().map(|c| prop(c, "$CONTROL_PAR_PICTURE")).filter(|n| !n.is_empty());
     trace.stage("artwork");
@@ -320,7 +323,7 @@ fn audit_one(i: &Arc<import::Instrument>, found: &mut Found, trace: &mut crate::
         }
     };
     if let Some(w) = &wallpaper
-        && (i64::from(w.frames[0].width) - i64::from(u.width)).abs() > 2
+        && (i64::from(w.atlas.map_or(w.frames[0].width, |a| a[0])) - i64::from(u.width)).abs() > 2
     {
         found.add("wallpaper narrower or wider than the view");
     }
@@ -392,8 +395,308 @@ fn shot(part: &PartView, code: u8, to: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn numbers_do_not_split_a_problem() {
         assert_eq!(super::general("Script 2: KSP line 41: no x1"), "Script N: KSP line N: no xN");
+    }
+
+    /// Fixture page changes use the authored callback, including its listeners.
+    pub(super) fn select_benchmark_page(runtime: &mut crate::ksp::Runtime, instrument: &import::Instrument, cold: bool) {
+        let Ok(variable) = std::env::var("KONTRA_UI_BENCH_PAGE") else { return };
+        let mut engine = crate::engine::ScriptSetup::new(instrument, 48000.);
+        if cold { (0..100).for_each(|_| runtime.process(&mut engine, 480)); }
+        let live = runtime.live();
+        let control = live.interface.as_ref().expect("page interface").controls.iter()
+            .position(|c| c.variable == variable).expect("authored page control exists");
+        runtime.ui_control(&mut engine, live.slot, control, 1);
+        (0..100).for_each(|_| runtime.process(&mut engine, 480));
+    }
+
+    /// Opt-in local measurement; prints timings/counts, never library payloads.
+    #[test]
+    #[ignore = "set KONTRA_UI_BENCH_PATCH to a locally owned instrument"]
+    fn real_instrument_frame_benchmark() {
+        use moose::mui::mui::vello::{self, vello_cpu::{Pixmap, RenderContext, Resources}};
+        let patch = std::env::var_os("KONTRA_UI_BENCH_PATCH").expect("KONTRA_UI_BENCH_PATCH");
+        let option = |key: &str, default: u32| std::env::var(key).ok().map(|v| v.parse().expect(key)).unwrap_or(default);
+        let program = option("KONTRA_UI_BENCH_PROGRAM", 0);
+        let mode = option("KONTRA_UI_BENCH_MODE", 1);
+        assert!((1..=3).contains(&mode), "mode must be Original=1, KONTRA=2, Vectorized=3");
+        let appearance = option("KONTRA_UI_BENCH_APPEARANCE", 0);
+        assert!(appearance <= 2, "appearance must be Plain=0, Color=1, Artwork=2");
+        let view_scale = std::env::var("KONTRA_UI_BENCH_VIEW_SCALE").ok().map(|v| v.parse::<f32>().expect("view scale")).unwrap_or(0.);
+        assert!([0.,0.5,1.,2.].contains(&view_scale), "view scale must be fit=0, .5, 1 or 2");
+        let device_scale = std::env::var("KONTRA_UI_BENCH_DEVICE_SCALE").ok().map(|v| v.parse::<f64>().expect("device scale")).unwrap_or(1.);
+        assert!([1.,1.5,2.].contains(&device_scale), "device scale must be 1, 1.5 or 2");
+        let started = Instant::now();
+        let snapshot = std::env::var_os("KONTRA_UI_BENCH_SNAPSHOT");
+        let instrument = Arc::new(if let Some(snapshot) = &snapshot {
+            assert_eq!(program, 0, "snapshot restoration requires a single NKI program");
+            import::read_snapshot(Path::new(&patch), Path::new(snapshot)).unwrap()
+        } else {
+            import::read_program(Path::new(&patch), program).unwrap()
+        });
+        let import_ms = started.elapsed().as_secs_f64() * 1000.;
+        let started = Instant::now();
+        let mut trace = crate::diagnostics::LoadTrace::new(Path::new(&patch), program, Some(0));
+        let Some(mut part) = audit_one(&instrument, &mut Found::default(), &mut trace) else {
+            println!("UI_BENCH status=skipped reason=no_performance_view program={program}");
+            return;
+        };
+        part.program = program;
+        println!("UI_BENCH program={program} mode={mode} device_scale={device_scale} snapshot_restored={}", snapshot.is_some());
+        println!("UI_BENCH import_ms={import_ms:.3} setup_ms={:.3} controls={} pictures={}",
+            started.elapsed().as_secs_f64() * 1000., part.interface.as_ref().unwrap().controls.len(), part.pictures.len());
+        let shown = perf_view::layout(part.interface.as_ref().unwrap(), &part.pictures);
+        let pictured = shown.iter()
+            .filter(|c| matches!(c.kind, Kind::Knob | Kind::Slider) && c.picture.as_ref().is_some_and(|p| p.frames.len() > 1))
+            .max_by(|a, b| (a.w * a.h).total_cmp(&(b.w * b.h)));
+        let Some(changed) = pictured.or_else(|| shown.iter().find(|c| matches!(c.kind, Kind::Knob | Kind::Slider) && c.picture.is_none())) else {
+            println!("UI_BENCH status=skipped reason=no_animated_knob_or_slider program={program}");
+            return;
+        };
+        let mut changed_control = changed.control;
+        println!("UI_BENCH control={changed_control} kind={:?} size={}x{} sprite_frames={}",
+            changed.kind, changed.w, changed.h, changed.picture.as_ref().map_or(0, |p| p.frames.len()));
+        let params = Arc::new(SamplerParams::new());
+        params.selection.write().unwrap().appearance = appearance as u8;
+        params.shared.libraries.edit(|s| s.view_scale = view_scale);
+        if let Some(root) = std::env::var_os("KONTRA_UI_BENCH_LIBRARY_ROOT") {
+            let root = PathBuf::from(root);
+            assert!(instrument.path.starts_with(&root), "selected program belongs to its library");
+            let library = crate::library::Library {
+                name: std::env::var("KONTRA_UI_BENCH_LIBRARY_NAME").expect("library name"),
+                hue: artwork::own_hue(&root), dir: root, ..Default::default()
+            };
+            let mut view = params.shared.view.lock().unwrap();
+            view.artwork = artwork::scan(std::slice::from_ref(&library));
+            view.shelf = Arc::new(crate::library::Shelf::new(vec![library]));
+        }
+        println!("UI_BENCH view_scale={view_scale} appearance={appearance} library_artwork={}", params.shared.view.lock().unwrap().artwork.len());
+        params.selection.write().unwrap().parts.push(Part {
+            path: instrument.path.to_string_lossy().into(),
+            program,
+            view: mode as u8,
+            ..Default::default()
+        });
+        params.shared.view.lock().unwrap().parts[0] = part.clone();
+        let mut ui = theme::ui();
+        ui.set_scale(Some(device_scale));
+        let art = Arc::<art::Art>::default();
+        let mut draw = build(&params, Arc::default(), Arc::default(), Arc::default(), art.clone());
+        let mut bridge = Bridge::new(params.clone());
+        let (width, height) = ((1180. * device_scale).round() as u16, (900. * device_scale).round() as u16);
+        let transform = vello::kurbo::Affine::scale(device_scale);
+        let mut ctx = RenderContext::new(width, height);
+        let mut resources = Resources::default();
+        let mut cache = vello::Cache::default();
+        let mut pixmap = Pixmap::new(width, height);
+        let mut gpu = std::env::var_os("KONTRA_UI_BENCH_GPU").map(|_| {
+            use vello::vello::wgpu;
+            fn wait<F: std::future::Future>(future: F) -> F::Output {
+                let mut future = std::pin::pin!(future);
+                let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+                loop {
+                    match future.as_mut().poll(&mut context) {
+                        std::task::Poll::Ready(result) => return result,
+                        std::task::Poll::Pending => std::thread::sleep(Duration::from_millis(1)),
+                    }
+                }
+            }
+            let instance = wgpu::Instance::default();
+            let adapter = wait(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                ..Default::default()
+            })).expect("GPU adapter");
+            let info = adapter.get_info();
+            println!("UI_BENCH adapter={info:?}");
+            assert_ne!(info.device_type, wgpu::DeviceType::Cpu, "software rasterizer cannot measure physical GPU performance");
+            let (device, queue) = wait(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+            let target = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("UI benchmark target"),
+                size: wgpu::Extent3d { width: u32::from(width), height: u32::from(height), depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let renderer = wait(vello::effects::GpuRenderer::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm,
+                [u32::from(width), u32::from(height)], vello::effects::Budget::default())).unwrap();
+            (device, renderer, target.create_view(&Default::default()))
+        });
+        let mut gpu_pixels = 0;
+        let tree = draw(&mut ui, &mut bridge);
+        ui.frame(tree, Some(Size::new(1180.,900.)), Input::default(),1./60.).unwrap();
+        let art_started = Instant::now();
+        while art.busy() && art_started.elapsed() < Duration::from_secs(10) { std::thread::sleep(Duration::from_millis(2)); }
+        assert!(!art.busy(), "library appearance preparation completes outside measurement");
+        let prefix = if mode == 2 { "ksp" } else { "kpv" };
+        let visible = shown.iter().filter(|c| matches!(c.kind, Kind::Knob | Kind::Slider))
+            .filter(|c| mode == 2 || c.picture.as_ref().is_none_or(|p| p.frames.len() > 1))
+            .filter(|c| ui.scene().unwrap().surface(&format!("{prefix}-0-{}", c.control)).is_some_and(|s| {
+                let r = s.frame;
+                r.x >= 0. && r.y >= 0. && r.x + r.size.width <= 1180. && r.y + r.size.height <= 900.
+            }))
+            .max_by(|a,b| (a.w*a.h).total_cmp(&(b.w*b.h)));
+        let Some(visible) = visible else {
+            println!("UI_BENCH status=skipped reason=no_visible_controllable_surface program={program}");
+            return;
+        };
+        changed_control = visible.control;
+        println!("UI_BENCH visible_control={changed_control}");
+        let frame_count = std::env::var("KONTRA_UI_BENCH_FRAMES").ok().and_then(|n| n.parse::<usize>().ok()).unwrap_or(24).clamp(4, 120);
+        for changing in [false, true] {
+            let mut times = [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+            let mut edit_ms = Vec::new();
+            let mut snapshot_ms = Vec::new();
+            let mut changed_renders = 0;
+            for frame in 0..frame_count + 8 {
+                fitted::ready();
+                if changing {
+                    let drawing_interface = params.shared.view.lock().unwrap().parts[0].interface.clone().unwrap();
+                    let control = &drawing_interface.controls[changed_control];
+                    let bound = |name, default| match control.properties.get(name) {
+                        Some(crate::ksp::Value::Int(n)) => *n,
+                        _ => default,
+                    };
+                    let (lo, hi) = (bound("$CONTROL_PAR_MIN_VALUE", 0), bound("$CONTROL_PAR_MAX_VALUE", 127));
+                    let start = Instant::now();
+                    params.shared.edit_control(0, changed_control, if frame % 2 == 0 {lo} else {hi});
+                    if frame >= 8 { edit_ms.push(start.elapsed().as_secs_f64() * 1000.); }
+                }
+                let start = Instant::now();
+                let snapshot = params.shared.view.lock().unwrap();
+                if frame >= 8 { snapshot_ms.push(start.elapsed().as_secs_f64() * 1000.); }
+                drop(snapshot);
+                let start = Instant::now();
+                let tree = draw(&mut ui, &mut bridge);
+                let built = Instant::now();
+                ui.frame(tree, Some(Size::new(1180., 900.)), Input::default(), 1. / 60.).unwrap();
+                let laid_out = Instant::now();
+                let scene = ui.scene().unwrap();
+                let scene_copy = scene.clone();
+                let cloned = Instant::now();
+                let painted = if let Some((device, renderer, target)) = &mut gpu {
+                    let stats = renderer.render(&scene_copy, transform, target).unwrap();
+                    gpu_pixels += stats.rendered_pixels;
+                    if changing && frame >= 8 && stats.renders > 0 { changed_renders += 1; }
+                    let painted = Instant::now();
+                    device.poll(vello::vello::wgpu::PollType::wait_indefinitely()).unwrap();
+                    painted
+                } else {
+                    ctx.reset();
+                    vello::paint(&mut vello::Cpu { ctx: &mut ctx, resources: &mut resources, cache: &mut cache }, &scene_copy, transform).unwrap();
+                    ctx.flush();
+                    let painted = Instant::now();
+                    ctx.render(&mut pixmap, &mut resources);
+                    painted
+                };
+                let rasterized = Instant::now();
+                if frame >= 8 {
+                    for (samples, (a, b)) in times.iter_mut().zip([(start, built), (built, laid_out), (laid_out, cloned), (cloned, painted), (painted, rasterized)]) {
+                        samples.push((b - a).as_secs_f64() * 1000.);
+                    }
+                }
+            }
+            if changing && gpu.is_some() {
+                assert_eq!(changed_renders, frame_count, "each changed control value must produce a GPU render");
+            }
+            let renderer_stages = if gpu.is_some() { ["gpu_prepare_upload_submit", "gpu_wait"] } else { ["cpu_paint", "cpu_raster"] };
+            for (stage, mut samples) in ["build", "layout", "scene_clone", renderer_stages[0], renderer_stages[1]].into_iter().zip(times)
+                .chain([("edit_control", edit_ms), ("snapshot_lock", snapshot_ms)]) {
+                if samples.is_empty() { continue; }
+                samples.sort_by(f64::total_cmp);
+                println!("UI_BENCH changing={changing} stage={stage} n={} mean_ms={:.3} median_ms={:.3} p99_ms={:.3}",
+                    samples.len(), samples.iter().sum::<f64>() / samples.len() as f64, samples[samples.len()/2], samples[((samples.len()-1) as f64 * 0.99).ceil() as usize]);
+            }
+        }
+        if std::env::var_os("KONTRA_UI_BENCH_CALLBACKS").is_some() {
+            let (runtime, errors) = crate::engine::load_scripts(&instrument, instrument.script_state.clone(), 48000.);
+            assert!(errors.is_empty(), "authored callback initialization failed");
+            let mut runtime = runtime.expect("performance instrument runtime");
+            select_benchmark_page(&mut runtime, &instrument, true);
+            let interface = runtime.live().interface.expect("performance interface");
+            let control = std::env::var("KONTRA_UI_BENCH_CONTROL_VARIABLE").ok().map_or(changed_control, |name| {
+                interface.controls.iter().position(|c| c.variable == name).expect("requested callback control exists")
+            });
+            let bound = |name, default| match interface.controls[control].properties.get(name) {
+                Some(crate::ksp::Value::Int(n)) => *n, _ => default,
+            };
+            let (low, high) = (bound("$CONTROL_PAR_MIN_VALUE", 0), bound("$CONTROL_PAR_MAX_VALUE", 127));
+            println!("UI_BENCH callback_control={control} callback_variable={} callback_min={low} callback_max={high}", interface.controls[control].variable);
+            let mut engine = crate::engine::Engine::default();
+            engine.set_bank(Some(Box::new(crate::engine::Bank::load_bare(&instrument).unwrap())));
+            engine.set_fx(crate::engine::effects(&instrument, Some(&runtime), 48000.));
+            engine.set_script(Some(runtime));
+            let mut observer_draw = None;
+            let mut rendered = Vec::new();
+            let mut rendered_changes = 0;
+            let mut publication_ms = Vec::new();
+            let mut observer = |published: &Arc<SamplerParams>| -> anyhow::Result<()> {
+                if observer_draw.is_none() {
+                    published.selection.write().unwrap().parts[0].view = mode as u8;
+                    published.selection.write().unwrap().appearance = appearance as u8;
+                    published.shared.libraries.edit(|s| s.view_scale = view_scale);
+                    let mut view = published.shared.view.lock().unwrap();
+                    let prepared = params.shared.view.lock().unwrap();
+                    view.artwork = prepared.artwork.clone();
+                    view.shelf = prepared.shelf.clone();
+                    view.parts[0].pictures = part.pictures.clone();
+                    view.parts[0].wallpaper = part.wallpaper.clone();
+                    drop(view);
+                    observer_draw = Some((Bridge::new(published.clone()), build(published, Arc::default(), Arc::default(), Arc::default(), art.clone())));
+                }
+                fitted::ready();
+                let start = Instant::now();
+                // Native MuiEditor publishes before its changed fingerprint;
+                // this headless pump has no Watch, so perform the same stage.
+                published.shared.publish_live(true);
+                publication_ms.push(start.elapsed().as_secs_f64()*1000.);
+                let (bridge, draw) = observer_draw.as_mut().unwrap();
+                let tree = draw(&mut ui, bridge);
+                ui.frame(tree, Some(Size::new(1180.,900.)), Input::default(),1./60.).unwrap();
+                let scene = ui.scene().unwrap();
+                if let Some((device, renderer, target)) = &mut gpu {
+                    let stats = renderer.render(scene, transform, target).unwrap();
+                    rendered_changes += usize::from(stats.renders > 0);
+                    device.poll(vello::vello::wgpu::PollType::wait_indefinitely()).unwrap();
+                } else {
+                    ctx.reset();
+                    vello::paint(&mut vello::Cpu {ctx: &mut ctx, resources: &mut resources, cache: &mut cache}, scene, transform).unwrap();
+                    ctx.flush();
+                    ctx.render(&mut pixmap, &mut resources);
+                }
+                rendered.push(start.elapsed().as_secs_f64()*1000.);
+                Ok(())
+            };
+            let edits = option("KONTRA_UI_BENCH_EDITS", 24).clamp(4,120) as usize;
+            let frames = option("KONTRA_UI_BENCH_HOST_FRAMES",128) as usize;
+            let (report, _) = crate::plugin::bench_ui_worker(engine, instrument.clone(), program, control, low, high, frames, edits, Some(&mut observer)).unwrap();
+            assert!(!rendered.is_empty(), "native publication must reach the observer");
+            assert_eq!(report["editor_frames"].as_u64().unwrap(), rendered.len() as u64, "every scheduled editor frame reaches the native UI renderer");
+            assert!(report["latest_edits_published"].as_u64().unwrap_or(0) > 0, "actual callback state must settle at least one queued edit: {report}");
+            rendered.sort_by(f64::total_cmp);
+            publication_ms.sort_by(f64::total_cmp);
+            println!("UI_BENCH_CALLBACK {}", serde_json::json!({"worker":report,"observer_frames":rendered.len(),"changed_gpu_frames":rendered_changes,
+                "live_publication_ms":{"mean":publication_ms.iter().sum::<f64>()/publication_ms.len() as f64,"p99":publication_ms[((publication_ms.len()-1) as f64*0.99).ceil() as usize]},
+                "callback_published_render_ms":{"mean":rendered.iter().sum::<f64>()/rendered.len() as f64,"p99":rendered[((rendered.len()-1) as f64*0.99).ceil() as usize]}}));
+        }
+        if let Some(to) = std::env::var_os("KONTRA_UI_BENCH_SHOT") {
+            ctx.reset();
+            vello::paint(&mut vello::Cpu { ctx: &mut ctx, resources: &mut resources, cache: &mut cache }, ui.scene().unwrap(), transform).unwrap();
+            ctx.flush();
+            ctx.render(&mut pixmap, &mut resources);
+            let rgba: Vec<u8> = pixmap.clone().take_unpremultiplied().iter().flat_map(|p| [p.r,p.g,p.b,p.a]).collect();
+            moose::core::screenshot::save_png(Path::new(&to), &rgba, u32::from(width), u32::from(height));
+        }
+        if gpu.is_some() {
+            assert!(gpu_pixels > 0, "real GPU UI renders pixels");
+        } else {
+            assert!(pixmap.take_unpremultiplied().iter().any(|p| p.a > 0), "real UI renders pixels");
+        }
     }
 }

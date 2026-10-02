@@ -89,8 +89,10 @@ pub(crate) fn filter_type(id: i32) -> Option<(Shape, u8)> {
         103 => ladder(High, 4, true),
         104 => ladder(Band, 2, true),
         105 => ladder(Band, 4, true),
-        106 => ladder(Low, 4, false),
-        107 => ladder(High, 4, false),
+        // NI's Daft filters have a 2-pole (12 dB/octave) response.
+        // The SVF is a linear proxy; Massive's nonlinear gain is unmodelled.
+        106 => return Some(svf(Low, 1)),
+        107 => return Some(svf(High, 1)),
         _ => return None,
     };
     Some((Shape::Model(model), model.sections()))
@@ -871,6 +873,26 @@ pub(crate) fn effect_knob(fx: &crate::fx::Effect, knob: Knob) -> Option<f32> {
     }
 }
 
+/// Offline convolution IR shaping with the same non-resonant SVF as the racks.
+/// Pad the decay before filtering so a short IR does not truncate the poles.
+pub(crate) fn filter_ir(ir: &mut [Vec<f32>; 2], low: f32, high: f32, rate: f32) {
+    let highpass = low > 20.5;
+    let lowpass = high < 19_990.0;
+    if !highpass && !lowpass { return }
+    let cutoff = match (highpass, lowpass) { (true, true) => low.min(high), (true, false) => low, _ => high }.clamp(20.0, rate * 0.49);
+    // A Butterworth pole's envelope falls as exp(-2*pi*cutoff*t/sqrt(2)).
+    let tail = (rate * 16.0 / (2.0 * std::f32::consts::PI * cutoff * Q_MIN)).ceil() as usize;
+    for channel in ir.iter_mut() { channel.resize(channel.len() + tail, 0.0); }
+    let [left, right] = ir;
+    for (response, hz, enabled) in [(Response::High, low, highpass), (Response::Low, high, lowpass)] {
+        if enabled {
+            let mut section = Section::default();
+            section.coefficients(Proto::filter(response, hz.clamp(20.0, rate * 0.49), Q_MIN, rate));
+            section.process(left, right);
+        }
+    }
+}
+
 /// A Filter/EQ effect in an instrument rack or bus: the group filter's
 /// sections at the stored knobs.
 pub(crate) struct RackFilter {
@@ -1575,6 +1597,38 @@ mod tests {
             }
         }
         20.0 * peak.log10()
+    }
+
+    #[test]
+    fn daft_two_pole_proxy_preserves_passbands_and_resonates_at_cutoff() {
+        let c = (1000.0 / CUTOFF_MIN_HZ).log2() / CUTOFF_OCTAVES;
+        for (id, response) in [(106, Response::Low), (107, Response::High)] {
+            let (shape, sections) = filter_type(id).unwrap();
+            assert_eq!(sections, 1, "Daft is a two-pole filter");
+            assert!(matches!(shape, Shape::Filter(r) if r == response));
+            // Actual saved ANALOG STRINGS resonance; the shared SVF keeps
+            // unity in the pass band instead of adding ladder feedback loss.
+            let proto = Proto::of(shape, [c, 0.594595, 0.0], 0, RATE);
+            let pass = if response == Response::Low { 10.0 } else { 20_000.0 };
+            assert!((proto.gain(pass, RATE) - 1.0).abs() < 0.01);
+            let mut s = Section::default();
+            s.coefficients(proto);
+            let expected = 20.0 * proto.gain(1000.0, RATE).log10();
+            assert!(expected > 10.0 && expected < 20.0);
+            assert!((gain_db(s, 1000.0) - expected).abs() < 0.1);
+            let proto = Proto::of(shape, [c, 0.0, 0.0], 0, RATE);
+            let (near, far) = if response == Response::Low { (4000.0, 8000.0) } else { (125.0, 62.5) };
+            let slope = 20.0 * (proto.gain(near, RATE) / proto.gain(far, RATE)).log10();
+            assert!((slope - 12.0).abs() < 2.0, "type {id}: {slope} dB/octave");
+            let mut s = Section::default();
+            for n in 0..200 {
+                let key = [(n % 20) as f32 / 19.0, (n % 11) as f32 / 10.0, 0.0];
+                s.coefficients(Proto::of(shape, key, 0, RATE));
+                let (mut left, mut right) = ([0.01; 64], [-0.01; 64]);
+                s.process(&mut left, &mut right);
+                assert!(left.iter().chain(&right).all(|v| v.is_finite() && v.abs() < 10.0));
+            }
+        }
     }
 
     #[test]

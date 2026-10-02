@@ -3,7 +3,7 @@
 Human-reviewed changes belong here before release. Dates and stable release headings
 are added when a release is actually published; commit history is not a changelog.
 
-## 0.2.0 — unreleased
+## 0.3.0 — unreleased
 
 ### Added
 
@@ -12,9 +12,17 @@ are added when a release is actually published; commit history is not a changelo
   revision, optional export source revision, UTC timestamp, target, profile and features.
 - Deliberate SemVer release preparation and reproducible nightly prereleases, with
   focused local checks and documented contributor workflow.
-- Structured support diagnostics and an application log view/export path.
+- Searchable structured Logs with failed-load context, source locations, bounded
+  recent history, and private support reports that include retained crash journals.
+  Reports identify omitted events, write errors and partial journal coverage.
 - Script condition inheritance between successfully initialized slots, native
   pedal/release conditions, and additional supported script syntax and zone queries.
+- Native NKSN snapshots applied to an explicit base instrument, including supported
+  saved controls, instrument/group FX, known envelopes and modulation assignments.
+  Three Analog Strings snapshots have production state checks and two decoded IRs each.
+- Typed native LFO parsing and writing for known fields, with 9,600 actual-library
+  chunks round-tripping byte-for-byte. Import preserves this metadata; LFO clocks,
+  waveform generation and routing remain unsupported, and some tables remain raw.
 
 ### Fixed
 
@@ -22,9 +30,27 @@ are added when a release is actually published; commit history is not a changelo
   selective sound-off across articulation channels sharing one engine channel.
 - Sustain release bookkeeping, generated-note lifecycle and MPE expression/tuning
   routing in the covered playback paths.
+- Bounded physical-input CC120 cleanup and Panic termination for previously lingering
+  Areia, Dolce and CHORUS script lifetimes. Reset restores recorded library device
+  defaults alongside standard controllers in native playback and scripts, fixing
+  all 12 previously silent legato fresh-note cases in the focused rerun.
+  The six-patch, 24-case run covers 670,704 blocks with zero measured render-thread
+  heap operations, nonfinite samples, drops, underruns or offline duration overruns;
+  every fresh post-Panic voice has positive gain/envelope levels and final held,
+  voice and pending state is clear. Three renders with effects disabled confirm
+  audible CC121 recovery and baseline-matching CC120/Panic recovery.
 - Zone ID mapping after import filtering and source-parser allocations in validated
   preset/container paths.
 - Browser scaling/layout and selected DSP effect processing paths.
+- Original interface wallpaper page offsets and viewport rendering, authored fader
+  travel, factory font color/state inheritance and explicit caption text colors.
+  Factory glyphs use the bundled font approximation; custom bitmap fonts remain
+  unsupported.
+- Editor publication of live script views through the existing bounded buffers,
+  without formatting diagnostic reports or writing journals in editor frames.
+- Internal pitch AHDSR routing to voice modulation, selected filter coefficients
+  and worker-built convolution cutoff processing. These changes do not establish
+  Kontakt parameter-law or sonic equivalence.
 
 ### Compatibility
 
@@ -32,3 +58,6 @@ Kontakt preset import, scripts and playback remain partial. Successful import or
 passing synthetic test does not establish sonic parity for every library. Existing
 compatibility notes and unsupported-operation diagnostics remain applicable; these
 changes do not announce complete format, script or sound equivalence.
+
+The focused offline results do not certify live-host deadlines or every library.
+Opaque snapshot source state and unknown saved scalars are warned and remain unapplied.

@@ -151,16 +151,15 @@ pub fn performance(
         .read(&format!("{}.txt", &filename[..filename.len() - 4]))?
         .unwrap_or_default();
     let layout = Layout::parse(&String::from_utf8_lossy(&text));
-    let frames = layout
-        .cut(&image)
-        .into_iter()
-        .collect::<Vec<_>>();
-    if frames.is_empty() {
+    let (fw, fh) = layout.frame_size(&image);
+    if fw == 0 || fh == 0 {
         return Err("Invalid instrument wallpaper frames".into());
     }
+    // Retain the original atlas once. Pixel offsets can start between animation frames.
     Ok(Some(Arc::new(Picture {
-        frames,
+        frames: vec![Arc::new(image)],
         stretch: layout.stretch,
+        atlas: Some([fw, fh]),
     })))
 }
 
@@ -184,16 +183,38 @@ pub struct Picture {
     /// "Horizontal" and "Vertical Resizable"); otherwise it keeps its own
     /// size that way.
     pub stretch: [bool; 2],
+    /// Wallpaper frame dimensions in the full image retained in `frames[0]`.
+    /// Control pictures use separate frames and leave this unset.
+    pub atlas: Option<[u32; 2]>,
 }
 
 impl Picture {
+    /// Select a wallpaper frame and an additional authored vertical pixel offset.
+    /// The returned origin is sampled/drawn from the same image, without copying pixels.
+    pub fn wallpaper(&self, state: i32, offset: i32) -> Option<(Arc<Image>, [u32; 2])> {
+        if let Some([fw, fh]) = self.atlas {
+            let image = self.frames.first()?.clone();
+            if fw == 0 || fh == 0 { return None; }
+            let across = (image.width / fw).max(1);
+            let down = (image.height / fh).max(1);
+            let state = (state.max(0) as u32).min(across.saturating_mul(down).saturating_sub(1));
+            let origin = [state % across * fw, (state / across * fh).saturating_add(offset.max(0) as u32).min(image.height)];
+            Some((image, origin))
+        } else {
+            let frame = self.frames.get((state.max(0) as usize).min(self.frames.len().saturating_sub(1)))?.clone();
+            let y = (offset.max(0) as u32).min(frame.height);
+            Some((frame, [0, y]))
+        }
+    }
+
     /// The size it draws at on a control `w` by `h`: its own, but along a
     /// way it stretches.
     pub fn size(&self, w: f64, h: f64) -> (f64, f64) {
         let f = &self.frames[0];
+        let [fw, fh] = self.atlas.unwrap_or([f.width, f.height]);
         (
-            if self.stretch[0] { w } else { f64::from(f.width) },
-            if self.stretch[1] { h } else { f64::from(f.height) },
+            if self.stretch[0] { w } else { f64::from(fw) },
+            if self.stretch[1] { h } else { f64::from(fh) },
         )
     }
 }
@@ -223,7 +244,7 @@ pub fn pictures_report<'a>(
             let layout = Layout::parse(&String::from_utf8_lossy(&text));
             let frames = layout.cut(&image);
             if frames.is_empty() { return Err(format!("Picture {file:?}: invalid frame dimensions in {sidecar:?}")); }
-            Ok(Picture { frames, stretch: layout.stretch })
+            Ok(Picture { frames, stretch: layout.stretch, atlas: None })
         })();
         match result {
             Ok(picture) => { out.insert(name.to_owned(), Arc::new(picture)); }
@@ -282,13 +303,14 @@ impl Layout {
         layout
     }
 
+    fn frame_size(&self, image: &Image) -> (u32, u32) {
+        if self.horizontal { (image.width / self.frames, image.height) }
+        else { (image.width, image.height / self.frames) }
+    }
+
     fn cut(&self, image: &Image) -> Vec<Arc<Image>> {
         let n = self.frames;
-        let (fw, fh) = if self.horizontal {
-            (image.width / n, image.height)
-        } else {
-            (image.width, image.height / n)
-        };
+        let (fw, fh) = self.frame_size(image);
         (0..n)
             .map_while(|f| {
                 let (x, y) = if self.horizontal {
@@ -612,6 +634,21 @@ mod tests {
         let frame = super::Layout::parse("").cut(&image).pop().unwrap();
         assert!(std::sync::Arc::ptr_eq(&frame.rgba, &image.rgba), "a full frame shares its pixels");
         assert!(super::crop(&image, u32::MAX, 0, 2, 1).is_none());
+    }
+
+    #[test]
+    fn wallpaper_atlases_keep_exact_offsets_without_frame_copies() {
+        use std::sync::Arc;
+        let image = Arc::new(super::Image::rgba(2, 6, [10, 20, 30, 255].repeat(12)).unwrap());
+        let vertical = super::Picture { frames: vec![image.clone()], stretch: [false; 2], atlas: Some([2, 3]) };
+        let (same, origin) = vertical.wallpaper(0, 2).unwrap();
+        assert!(Arc::ptr_eq(&same, &image));
+        assert_eq!(origin, [0, 2], "offset need not be a frame boundary");
+        assert_eq!(vertical.wallpaper(1, 1).unwrap().1, [0, 4]);
+        assert_eq!(vertical.wallpaper(-1, -20).unwrap().1, [0, 0]);
+        assert_eq!(vertical.wallpaper(i32::MAX, i32::MAX).unwrap().1, [0, 6]);
+        let across = super::Picture { frames: vec![image], stretch: [false; 2], atlas: Some([1, 6]) };
+        assert_eq!(across.wallpaper(1, 2).unwrap().1, [1, 2], "horizontal animation state remains independent of vertical pixel offset");
     }
 
     #[test]

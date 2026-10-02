@@ -282,6 +282,12 @@ pub fn info(ui: &mut Ui, cx: &mut Cx) -> El {
     if let Some(report) = &v.load_report {
         rows.push(section("Load diagnostics"));
         rows.push(body(format!("{} · {:.0} ms", report["status"].as_str().unwrap_or("unknown"), report["elapsed_ms"].as_f64().unwrap_or(0.))).lines(2).id("load-diagnostic-status"));
+        if let Some(reason) = report["failure"].as_str()
+            .or_else(|| report["failure"]["reason"].as_str())
+            .or_else(|| report["last_error"]["message"].as_str())
+        {
+            rows.push(body(reason).fill(Role::Warning).lines(4).id("load-diagnostic-failure"));
+        }
         rows.push(caption(report["path"].as_str().unwrap_or_default()).fill(Role::Dim).lines(4));
         if let Some(path) = report["log_path"].as_str() { rows.push(caption(format!("Log file: {path}")).fill(Role::Dim).lines(4)); }
         if let Some(error) = report["logging_error"].as_str() { rows.push(body(format!("Could not write the log: {error}")).lines(4)); }
@@ -293,10 +299,10 @@ pub fn info(ui: &mut Ui, cx: &mut Cx) -> El {
                 rows.push(caption(format!("{key}: {status} · {:.0} ms", report[key]["elapsed_ms"].as_f64().unwrap_or(0.))).fill(Role::Dim));
             }
         }
-        let issues: Vec<_> = ["issues", "script_restore", "artwork", "preload", "ram_fill"].into_iter().flat_map(|key| {
-            if key == "issues" { report[key].as_array() } else { report[key]["issues"].as_array() }.into_iter().flatten()
-        }).collect();
-        rows.push(caption(format!("{} recorded issues. Open Logs to inspect messages, stages and reasons for this load.", issues.len())).fill(secondary()).lines(3));
+        let reports = [report.as_ref(), &report["script_restore"], &report["artwork"], &report["preload"], &report["ram_fill"]];
+        let retained: usize = reports.iter().map(|report| report["issues"].as_array().map_or(0, Vec::len)).sum();
+        let omitted: u64 = reports.iter().map(|report| report["issues_omitted"].as_u64().unwrap_or(0)).sum();
+        rows.push(caption(format!("{retained} retained issue examples · {omitted} additional occurrences omitted from these reports. Open Logs for available messages, stages and reasons.")).fill(secondary()).lines(3).id("load-diagnostic-counts"));
         rows.push(logs_el);
     }
     if let Some(i) = current(cx) {

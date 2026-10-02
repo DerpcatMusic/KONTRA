@@ -34,6 +34,7 @@ mod menu;
 mod mixer;
 mod panel;
 mod perf_view;
+pub(crate) use perf_view::font_fallbacks;
 mod picker;
 mod rack;
 mod spectrum;
@@ -147,6 +148,9 @@ const ANIMATION_MS: u64 = 33;
 
 impl Watch {
     fn changed(&mut self, p: &SamplerParams, meters: &Meters, computer: &computer::Computer) -> bool {
+        // Completed script views must publish before the redraw fingerprint:
+        // an idle editor otherwise never builds to discover those changes.
+        p.shared.publish_live(true);
         let now = Instant::now();
         p.shared.watched.store(true, Ordering::Relaxed);
         let due = |at: Option<Instant>, every: u64| {
@@ -269,16 +273,24 @@ impl Watch {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn watch_live_change(p: &SamplerParams, update: impl FnOnce()) -> bool {
+    let (mut watch, meters, computer) = (Watch::default(), Meters::default(), computer::Computer::default());
+    watch.changed(p, &meters, &computer);
+    update();
+    watch.changed(p, &meters, &computer)
+}
+
 /// A copy of the loader's view for a frame to read, taken quickly: the
 /// script buffers it lends the audio thread (megabytes of persistent
-/// tables, the live interface) stay behind, as nothing on screen reads them
-/// and copying them held the lock the loader waits on.
+/// tables, the live interface) and saved JSON stay behind: frames do not
+/// read them, and copying them held the lock the loader waits on.
 fn shown(view: &Mutex<View>) -> View {
     let mut view = lock(view);
-    let lent: Vec<_> = (view.parts.iter_mut()).map(|v| (v.snapshot.take(), v.live.take())).collect();
+    let lent: Vec<_> = (view.parts.iter_mut()).map(|v| (v.snapshot.take(), v.live.take(), std::mem::take(&mut v.script_state))).collect();
     let copy = view.clone();
-    for (v, (snapshot, live)) in view.parts.iter_mut().zip(lent) {
-        (v.snapshot, v.live) = (snapshot, live);
+    for (v, (snapshot, live, saved)) in view.parts.iter_mut().zip(lent) {
+        (v.snapshot, v.live, v.script_state) = (snapshot, live, saved);
     }
     copy
 }
@@ -410,6 +422,7 @@ struct EditorState {
     ranges: HashMap<usize, (std::sync::Weak<import::Instrument>, [bool; 128])>,
     /// Each part's performance view as last read.
     panels: HashMap<usize, panel::Cache>,
+    vector_assets: vector::Assets,
     /// Pictures the original views asked for, by instrument, read or not.
     perf_asked: std::collections::HashSet<(PathBuf, String)>,
     started: Instant,
@@ -834,7 +847,7 @@ fn build(
     computer: Arc<computer::Computer>,
     picker: Arc<picker::Picker>,
     art: Arc<art::Art>,
-) -> impl FnMut(&mut Ui, &mut Bridge<SamplerParams>) -> El + Send + 'static {
+) -> impl FnMut(&mut Ui, &mut Bridge<SamplerParams>) -> El + Send + 'static + use<> {
     let mut state = EditorState {
         search: String::new(),
         source: None,
@@ -884,6 +897,7 @@ fn build(
         neighbors: Default::default(),
         ranges: HashMap::new(),
         panels: HashMap::new(),
+        vector_assets: vector::Assets::default(),
         perf_asked: Default::default(),
         started: Instant::now(),
         computer,

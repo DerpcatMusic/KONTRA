@@ -740,11 +740,34 @@ impl Router {
             }
             In::Pressure(_, value) => out(Out::Pressure(to, value)),
             In::PolyAt(_, note, value) => out(Out::PolyAt(to, self.key_of(channel, note), value)),
+            In::Cc(_, 121, value) => {
+                // The engine fences older callbacks first; the pressure-zero
+                // callbacks below belong to this reset and must survive it.
+                out(Out::Cc(to, 121, value));
+                let channels = self.stop_channels(channel);
+                for c in (0..16u8).filter(|&c| channels & (1 << c) != 0) {
+                    self.bend[c as usize] = 8192;
+                    let had_pressure = self.member_pressure[c as usize].take().is_some();
+                    self.rpn[c as usize] = Rpn { msb: 127, lsb: 127, cents: None };
+                    if r.member(c) {
+                        let reset_gain = had_pressure && !self.handles_pressure;
+                        for (to, key) in self.held[c as usize].into_iter().filter(|h| h.1 != NONE) {
+                            if had_pressure { out(Out::PolyAt(to, key, 0)); }
+                            self.set_expression(to, key, |x| {
+                                x.tune = 0.;
+                                if reset_gain { x.gain = 1.; }
+                            }, out);
+                        }
+                    }
+                }
+            }
             In::Cc(_, cc @ (120 | 123), value) => {
                 let channels = self.stop_channels(channel);
-                for owner in (0..16).filter(|owner| channels & (1 << owner) != 0) {
+                // Sound-off retains physical routing until key-up; a remap
+                // made meanwhile must not change where its release goes.
+                for owner in (0..16).filter(|owner| cc == 123 && channels & (1 << owner) != 0) {
                     let row = std::mem::replace(&mut self.held[owner], [(NONE, NONE); 128]);
-                    if cc == 123 && r.by_channel() {
+                    if r.by_channel() {
                         // Shared scripts still release only this physical input.
                         for (to, key) in row {
                             if key != NONE { out(Out::NoteOffFrom(to, owner as u8, key)); }
@@ -983,6 +1006,20 @@ mod tests {
         let mut r = Router::default();
         r.set_route(Route::new("lib.nki", a, mpe));
         r
+    }
+
+    #[test]
+    fn sound_off_keeps_the_original_noteoff_route_after_a_remap() {
+        let mut r = Router::default();
+        let mut before = Route::default();
+        before.keys[60] = 62;
+        r.set_route(before);
+        assert_eq!(run(&mut r,&[In::NoteOn(0,60,100)]),[Out::NoteOn(0,62,100)]);
+        assert_eq!(run(&mut r,&[In::Cc(0,120,0)]),[Out::Cc(0,120,0)]);
+        let mut after = Route::default();
+        after.keys[60] = 65;
+        r.set_route(after);
+        assert_eq!(run(&mut r,&[In::NoteOff(0,60)]),[Out::NoteOff(0,62)]);
     }
 
     #[test]
@@ -1285,8 +1322,8 @@ end on"#;
         }
         assert_eq!(e.voice_census().iter().filter(|v| v.note == 74).count(), 4, "UI callback has no physical origin");
         assert_eq!(e.cc_state()[0][7], 63);
-        assert!(r.held[0].iter().all(|h| h.1 == NONE));
-        assert!(!e.script().unwrap().key_down_from(0, 0, 60));
+        assert_eq!(r.held[0][60], (0,60), "sound-off keeps the physical release route");
+        assert!(e.script().unwrap().key_down_from(0, 0, 60));
         assert!(e.script().unwrap().key_down_from(1, 0, 60));
         e.cc(0, 64, 0);
         advance(&mut e, 512);
@@ -2088,6 +2125,158 @@ end on"#;
                         }
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn reset_all_controllers_clears_cached_pedals_and_mpe_without_stopping_keys() {
+        use crate::{audio::Sample, engine::Bank, import::{Group, Zone as SampleZone}};
+        let engine = |scripted: bool| {
+            let sample = Sample { rate: 48000, frames: (0..24000).map(|i| [i as f32 / 24000.; 2]).collect() };
+            let bank = Bank::from_samples(vec![Group::default()], vec![SampleZone::default()],
+                vec![(std::path::PathBuf::new(), sample)]).unwrap();
+            let mut e = Engine::default();
+            e.attack = 0.0001;
+            e.release = 0.001;
+            e.set_bank(Some(Box::new(bank)));
+            if scripted { e.set_script(Some(Box::new(runtime("on init\nend on")))); }
+            e
+        };
+        let mut e = engine(false);
+        e.set_script(Some(Box::new(runtime(r#"on init
+            SET_CONDITION(NO_SYS_SCRIPT_PEDAL)
+            declare %pedal[16]
+            declare %events[2048]
+            declare %held[2048]
+            declare $i
+            declare ui_knob $setting (0, 100, 1)
+            declare ui_knob $registered (0, 127, 1)
+        end on
+        on note
+            %events[128 * $MIDI_CHANNEL + $EVENT_NOTE] := $EVENT_ID
+            %held[128 * $MIDI_CHANNEL + $EVENT_NOTE] := 1
+        end on
+        on release
+            %held[128 * $MIDI_CHANNEL + $EVENT_NOTE] := 0
+            if (%pedal[$MIDI_CHANNEL] >= 64)
+                ignore_event($EVENT_ID)
+            end if
+        end on
+        on controller
+            if ($CC_NUM = 6 and %CC[100] < 127 and %CC[101] < 127)
+                $registered := %CC[6]
+            end if
+            if ($CC_NUM = 1 and %CC[1] = 99)
+                wait(10000)
+                set_controller(64, 127)
+            end if
+            if ($CC_NUM = 64 or $CC_NUM = 66)
+                %pedal[$MIDI_CHANNEL] := %CC[$CC_NUM]
+                if (%CC[$CC_NUM] < 64)
+                    $i := 0
+                    while ($i < 128)
+                        if (%held[128 * $MIDI_CHANNEL + $i] = 0 and %events[128 * $MIDI_CHANNEL + $i] # 0)
+                            note_off(%events[128 * $MIDI_CHANNEL + $i])
+                        end if
+                        inc($i)
+                    end while
+                end if
+            end if
+        end on
+        on ui_control($setting)
+            wait(20000)
+            $setting := 42 + %POLY_AT[61]
+        end on"#))));
+        for (cc, value) in [(0, 23), (32, 14), (7, 90), (10, 37), (74, 81), (91, 77),
+                            (2, 88), (65, 127), (67, 127), (98, 0), (99, 0), (100, 0), (101, 0)] {
+            e.cc(0, cc, value);
+        }
+        e.cc(0, 6, 31);
+        e.poly_pressure(0, 61, 92);
+        e.render(&mut [0.; 128], &mut [0.; 128]);
+        e.cc(0, 64, 127);
+        e.note_on(0, 60, 100);
+        e.note_off(0, 60);
+        e.note_on(0, 61, 100);
+        e.note_on(1, 64, 100);
+        e.cc(0, 1, 99);
+        e.cc(1, 1, 99);
+        e.ui_control(0, 0, 1);
+        e.cc(0, 121, 0);
+        assert!(e.key_down(0, 61) && e.key_down(1, 64));
+        let (mut left, mut right) = ([0.; 128], [0.; 128]);
+        for _ in 0..12 { e.render(&mut left, &mut right); }
+        assert_eq!(e.cc_state()[0][64], 0, "older delayed pedal-down must not undo CC121");
+        for (cc, value) in [(0, 23), (32, 14), (7, 90), (10, 37), (74, 81), (91, 77),
+                            (2, 0), (65, 0), (67, 0), (98, 127), (99, 127), (100, 127), (101, 127)] {
+            assert_eq!(e.cc_state()[0][cc], value, "CC{cc}: incorrect RP-015 reset");
+            assert_eq!(e.script().unwrap().env.input.cc[cc], i32::from(value));
+        }
+        assert_eq!(e.cc_state()[1][64], 127, "unrelated channel callbacks survive");
+        assert_eq!(e.script().unwrap().interface(0).controls[1].properties["$CONTROL_PAR_VALUE"], crate::ksp::Value::Int(31), "registered parameter changed while resetting its data-entry CC");
+        assert!(!e.voice_census().iter().any(|v| v.note == 60));
+        assert!(e.voice_census().iter().any(|v| v.note == 61));
+        assert_eq!(e.script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_VALUE"], crate::ksp::Value::Int(42));
+        e.note_off(0, 61);
+        e.cc(1, 64, 0);
+        e.note_off(1, 64);
+        for _ in 0..12 { e.render(&mut left, &mut right); }
+        assert_eq!(e.active_voices(), 0, "fresh releases see the reset script cache");
+        e.set_mpe_zone(Some((0, 1 << 1)));
+        e.cc(1, 64, 127);
+        e.note_on(1, 60, 100);
+        e.note_off(1, 60);
+        e.cc(0, 121, 0);
+        for _ in 0..12 { e.render(&mut left, &mut right); }
+        assert_eq!(e.active_voices(), 0, "MPE master reset also clears a member's authored pedal cache");
+        assert!(e.script().unwrap().diagnostics().is_empty());
+
+        for scripted in [false, true] {
+            for (zone, master, member, other) in [(Zone::Lower, 0, 1, 2), (Zone::Upper, 15, 14, 13)] {
+                let (mut e, mut reference) = (engine(scripted), engine(scripted));
+                let mut r = router(&Articulate::default(), &Mpe { zone, ..Mpe::default() });
+                for (channel, semitones, cents) in [(master, 6, 25), (member, 12, 50)] {
+                    for (cc, value) in [(101, 0), (100, 0), (6, semitones), (38, cents)] {
+                        feed(&mut r, &mut e, In::Cc(channel, cc, value), 0);
+                    }
+                }
+                for channel in [master, member, other] { feed(&mut r, &mut e, In::Bend(channel, 12288), 0); }
+                for (channel, note, pressure) in [(member, 60, 100), (other, 64, 80)] {
+                    feed(&mut r, &mut e, In::Pressure(channel, pressure), 0);
+                    feed(&mut r, &mut e, In::NoteOn(channel, note, 100), 0);
+                    reference.note_on(channel, note, 100);
+                    reference.set_expression_on(channel, note, Expression { tune: 9.375, gain: pressure_gain(pressure), ..Expression::default() });
+                }
+                let mut expected = [0.; 128];
+                e.render(&mut left, &mut right);
+                reference.render(&mut expected, &mut right);
+                feed(&mut r, &mut e, In::Cc(member, 121, 0), 0);
+                reference.set_expression_on(member, 60, Expression { tune: 3.125, ..Expression::default() });
+                assert!(e.key_down(member, 60) && e.key_down(other, 64));
+                feed(&mut r, &mut e, In::NoteOn(member, 67, 100), 0);
+                reference.note_on(member, 67, 100);
+                reference.set_expression_on(member, 67, Expression { tune: 3.125, ..Expression::default() });
+                e.render(&mut left, &mut right);
+                reference.render(&mut expected, &mut right);
+                assert!(left.iter().zip(expected).all(|(a, b)| (a - b).abs() < 1e-5), "member reset changed another member or restored stale expression");
+                feed(&mut r, &mut e, In::Cc(master, 121, 0), 0);
+                for (channel, note) in [(member, 60), (member, 67), (other, 64)] {
+                    reference.set_expression_on(channel, note, Expression::default());
+                }
+                assert_eq!(r.bend_range, (12, 50));
+                assert_eq!(r.master_bend_range, Some((6, 25)));
+                for channel in [master, member, other] { assert_eq!((r.rpn[channel as usize].msb, r.rpn[channel as usize].lsb), (127, 127)); }
+                feed(&mut r, &mut e, In::Cc(member, 6, 96), 0);
+                assert_eq!(r.bend_range, (12, 50), "data entry after reset has no selected RPN");
+                e.render(&mut left, &mut right);
+                reference.render(&mut expected, &mut right);
+                assert!(left.iter().zip(expected).all(|(a, b)| (a - b).abs() < 1e-5), "master reset failed to clear its whole MPE zone");
+                feed(&mut r, &mut e, In::Bend(member, 12288), 0);
+                for note in [60, 67] { reference.set_expression_on(member, note, Expression { tune: 6.25, ..Expression::default() }); }
+                e.render(&mut left, &mut right);
+                reference.render(&mut expected, &mut right);
+                assert!(left.iter().zip(expected).all(|(a, b)| (a - b).abs() < 1e-5), "reset lost negotiated cents/range");
             }
         }
     }

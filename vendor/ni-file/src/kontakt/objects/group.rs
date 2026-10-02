@@ -3,9 +3,9 @@
 use std::io::Cursor;
 
 use crate::{
-    kontakt::{objects::start_criteria_list::StartCriteriaList, StructuredObject},
-    read_bytes::ReadBytesExt,
     Error,
+    kontakt::{StructuredObject, objects::start_criteria_list::StartCriteriaList},
+    read_bytes::ReadBytesExt,
 };
 
 /// Type:           Chunk
@@ -50,6 +50,10 @@ const PRIVATE_TRAILER: usize = 24;
 impl Group {
     /// The group insert effect rack (8 slots), stored in the private data.
     pub fn insert_fx(&self) -> Result<super::BParamArrayBParFX8, Error> {
+        super::BParamArrayBParFX8::read(self.private_rack_reader()?, 8)
+    }
+
+    fn private_rack_reader(&self) -> Result<Cursor<&[u8]>, Error> {
         let data = &self.0.private_data;
         let records = PRIVATE_RECORDS * 12;
         if data.len() < records + PRIVATE_TRAILER
@@ -57,7 +61,25 @@ impl Group {
         {
             return Err(Error::Static("Unrecognized group private data"));
         }
-        super::BParamArrayBParFX8::read(Cursor::new(&data[records + PRIVATE_TRAILER..]), 8)
+        Ok(Cursor::new(&data[records + PRIVATE_TRAILER..]))
+    }
+
+    /// Opaque v0x102 source state after the private insert rack. Exposing its
+    /// serialization header/mode permits snapshot compatibility checks without
+    /// interpreting the remaining source parameters.
+    pub fn source_state(&self) -> Result<[u8; 32], Error> {
+        let mut reader = self.private_rack_reader()?;
+        super::BParamArrayBParFX8::read(&mut reader, 8)?;
+        // This flag is false in some valid groups; the source record still follows.
+        if reader.read_u8()? > 1 {
+            return Err(Error::Static("Invalid group source flag"));
+        }
+        let mut state = [0; 32];
+        std::io::Read::read_exact(&mut reader, &mut state)?;
+        if state[..3] != [0, 2, 1] {
+            return Err(Error::Static("Unsupported group source state version"));
+        }
+        Ok(state)
     }
 
     pub fn params(&self) -> Result<GroupParams, Error> {
@@ -79,7 +101,11 @@ impl Group {
             muted: reader.read_bool()?,
             soloed: reader.read_bool()?,
             interp_quality: reader.read_i32_le()?,
-            start_criteria: self.0.find_first(0x38).ok_or(Error::Static("Group has no start criteria list"))?.try_into()?,
+            start_criteria: self
+                .0
+                .find_first(0x38)
+                .ok_or(Error::Static("Group has no start criteria list"))?
+                .try_into()?,
         })
     }
 }
