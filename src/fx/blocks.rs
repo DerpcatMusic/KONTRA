@@ -776,9 +776,9 @@ impl Lines {
 
     #[inline]
     fn write(&mut self, l: f32, r: f32) {
-        self.pos = (self.pos + 1) & self.mask;
         self.buf[0][self.pos] = l;
         self.buf[1][self.pos] = r;
+        self.pos = (self.pos + 1) & self.mask;
     }
 
     fn clear(&mut self) {
