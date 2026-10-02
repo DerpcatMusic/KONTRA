@@ -958,6 +958,13 @@ pub fn display(id: i32, value: i32) -> Option<Disp> {
         // Stereo Modeller spread: 0 % mono, 100 % as recorded, 200 % widest.
         id::STEREO => Disp::Num(x * 200.0, 1),
         _ => match crate::ksp::engine_par_name(id)? {
+            name @ ("$ENGINE_PAR_COMP_ATTACK" | "$ENGINE_PAR_COMP_DECAY"
+                | "$ENGINE_PAR_LIM_RELEASE" | "$ENGINE_PAR_DL_TIME") => {
+                // These fields are stored in milliseconds. Reuse the DSP's
+                // conversion, including the limiter's current approximation.
+                let (kind, field) = crate::fx::blocks::engine_par(name)?;
+                Disp::Num(crate::fx::blocks::stored(kind, field, x), 1)
+            }
             "$ENGINE_PAR_IRC_PREDELAY" => {
                 Disp::Num(crate::fx::params::IrSettings::predelay_ms(x), 2)
             }
@@ -1165,6 +1172,20 @@ pub(crate) fn find_target(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn effect_time_callback_labels_use_dsp_milliseconds() {
+        let ui = crate::ksp::initialize("on init\nmake_perfview\ndeclare ui_slider $release(0,1000000)\n$release := 230000\nset_control_par_str(get_ui_id($release),$CONTROL_PAR_LABEL,get_engine_par_disp_ext($ENGINE_PAR_LIM_RELEASE,$release,-1,4,0) & \" ms\")\nend on", 0, 0).unwrap();
+        assert_eq!(ui.controls[0].properties["$CONTROL_PAR_LABEL"], crate::ksp::Value::Text("28.8 ms".into()));
+        for name in ["$ENGINE_PAR_COMP_ATTACK", "$ENGINE_PAR_COMP_DECAY", "$ENGINE_PAR_LIM_RELEASE", "$ENGINE_PAR_DL_TIME"] {
+            let id = (ENGINE_PAR_BASE..ENGINE_PAR_BASE + 512).find(|&id| crate::ksp::engine_par_name(id) == Some(name)).unwrap();
+            let (kind, field) = crate::fx::blocks::engine_par(name).unwrap();
+            for value in [0, 230000, 1000000] {
+                let Some(Disp::Num(shown, _)) = display(id, value) else { panic!("{name}") };
+                assert_eq!(shown, crate::fx::blocks::stored(kind, field, value as f32 / 1e6));
+            }
+        }
+    }
+
     use super::*;
     use crate::import::{Modulator, ShaperCurve};
 

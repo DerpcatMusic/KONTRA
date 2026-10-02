@@ -169,17 +169,44 @@ pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, dra
     let (vw, vh) = (f64::from(interface.width), f64::from(interface.height));
     let view = vw * vh;
     let names = names(interface, pictures, drawn);
+    let clear: Vec<bool> = drawn.iter().map(|(s, _)| s.picture.as_ref().is_some_and(|p| assets.clear(p))).collect();
+    // Structural skin pairing: an otherwise empty animated label can draw
+    // the face of a transparent control occupying the same rectangle. Hide
+    // only a unique pair; ambiguous artwork keeps its authored appearance.
+    let mut pairs = Vec::new();
+    let mut counts = vec![0usize; drawn.len()];
+    for (n, (label, _)) in drawn.iter().enumerate() {
+        let c = &interface.controls[label.control];
+        if label.kind != Kind::Label || !prop(c, "$CONTROL_PAR_TEXT").trim().is_empty()
+            || !label.picture.as_ref().is_some_and(|p| p.frames.len() > 1)
+        { continue; }
+        for (m, (control, _)) in drawn.iter().enumerate() {
+            if matches!(control.kind, Kind::Knob | Kind::Slider) && clear[m]
+                && !over_wave(drawn, control)
+                && inside(label, control) >= 0.9 * (label.w * label.h).max(control.w * control.h)
+            {
+                pairs.push((n, m));
+                counts[n] += 1;
+                counts[m] += 1;
+            }
+        }
+    }
+    let mut paired = vec![false; drawn.len()];
+    for (label, control) in pairs {
+        paired[label] = counts[label] == 1 && counts[control] == 1;
+    }
     let mut faces: Vec<Face> = Vec::with_capacity(drawn.len());
     for (n, (s, frame)) in drawn.iter().enumerate() {
         let c = &interface.controls[s.control];
         let picture = prop(c, "$CONTROL_PAR_PICTURE");
         let solid = frame.as_ref().map(|f| assets.opacity(f));
         // Clear in every state: a place to click, nothing to see.
-        let clear = s.picture.as_ref().is_some_and(|p| assets.clear(p));
+        let clear = clear[n];
         let said = !caption_of(c, s.kind, value(c)).0.trim().is_empty();
         let named = |w: &[&str]| [picture, c.variable.as_str()].iter().any(|n| panel::raw_words(n).iter().any(|x| w.contains(&x.as_str())));
         let lower = format!("{picture} {}", c.variable).to_lowercase();
         let face = match s.kind {
+            Kind::Label if paired[n] => Face::Clear,
             Kind::Switch | Kind::Button | Kind::Label if named(&["cover", "mask"]) => Face::Cover,
             Kind::Label if solid.is_some_and(|o| o >= 0.6) && s.w * s.h < 0.8 * view => {
                 let on = faces[..n].iter().zip(drawn).any(|(f, (o, _))| matches!(f, Face::Panel(_) | Face::Cover) && inside(o, s) >= 0.9 * s.w * s.h);
@@ -484,6 +511,47 @@ mod tests {
         drop(solid);
         assets.prune();
         assert!(assets.images.is_empty() && assets.pictures.is_empty(), "retired library metadata is reclaimed");
+    }
+
+    #[test]
+    fn animated_skin_pairs_replace_one_face_and_preserve_other_labels() {
+        // Real macro-page geometry: a 180-frame, 732x71 face behind a
+        // transparent 734x73 slider. No library pictures are needed.
+        let mut u = crate::ksp::initialize("on init\nmake_perfview\nset_ui_height_px(300)\ndeclare ui_label $face(1,1)\nset_text($face,\"\")\nmove_control_px($face,0,87)\nset_control_par_str(get_ui_id($face),$CONTROL_PAR_PICTURE,\"face\")\ndeclare ui_slider $macro(0,1000000)\nmove_control_px($macro,0,86)\nset_control_par_str(get_ui_id($macro),$CONTROL_PAR_PICTURE,\"transparent\")\nend on", 0, 8).unwrap();
+        u.width = 800;
+        let image = |w, h, alpha| Arc::new(Image::rgba(w, h, vec![alpha; w as usize * h as usize * 4]).unwrap());
+        let pictures: HashMap<_, _> = [
+            ("face".into(), Arc::new(Picture { frames: vec![image(732,71,255);180], stretch: [false;2], atlas: None })),
+            ("transparent".into(), Arc::new(Picture { frames: vec![image(734,73,0)], stretch: [false;2], atlas: None })),
+        ].into();
+        let plans = |u: &Interface| {
+            let drawn: Vec<_> = super::super::perf_view::layout(u, &pictures).into_iter()
+                .map(|s| {let image = super::super::perf_view::frame_of(&s, &u.controls[s.control]); (s,image)}).collect();
+            plan(u, &pictures, &drawn, &mut Assets::default())
+        };
+        let p = plans(&u);
+        assert_eq!(p[0].face, Face::Clear, "paired old thumb disappears");
+        assert_eq!(p[1].face, Face::Normal, "the native fader remains");
+        u.controls[0].properties.insert("$CONTROL_PAR_TEXT".into(), Value::Text("Macro".into()));
+        assert_ne!(plans(&u)[0].face, Face::Clear, "regular text labels remain");
+        u.controls[0].properties.insert("$CONTROL_PAR_TEXT".into(), Value::Text(String::new()));
+        let mut duplicate = u.controls[0].clone();
+        duplicate.id += 2;
+        u.controls.push(duplicate);
+        let p = plans(&u);
+        assert_ne!(p[0].face, Face::Clear, "ambiguous skins remain");
+        assert_ne!(p[2].face, Face::Clear);
+        u.controls.pop();
+        let mut waveform = u.controls[1].clone();
+        waveform.id += 2;
+        waveform.kind = "ui_waveform".into();
+        waveform.properties.remove("$CONTROL_PAR_PICTURE");
+        waveform.properties.insert("$CONTROL_PAR_WIDTH".into(), Value::Int(734));
+        waveform.properties.insert("$CONTROL_PAR_HEIGHT".into(), Value::Int(73));
+        u.controls.push(waveform);
+        let p = plans(&u);
+        assert_eq!(p[1].face, Face::Marker, "waveform position controls remain markers");
+        assert_ne!(p[0].face, Face::Clear, "waveform artwork is never paired away");
     }
 
     #[test]

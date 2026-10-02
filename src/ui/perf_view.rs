@@ -422,7 +422,8 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     for (n, (shown, _)) in drawn.iter().enumerate() {
         let c = &interface.controls[shown.control];
         let look = match plans.get(n) {
-            Some(plan) if !matches!(shown.kind, Kind::Label | Kind::Area | Kind::Other) => Look::Vector(plan),
+            Some(plan) if matches!(shown.kind, Kind::Knob | Kind::Slider)
+                || shown.kind == Kind::Label && plan.face == VFace::Clear => Look::Vector(plan),
             _ => {
                 // What its text sits on: its own picture, else what is under it.
                 let (cx_, cy) = (shown.x + shown.w / 2., shown.y + shown.h / 2.);
