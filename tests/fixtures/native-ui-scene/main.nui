@@ -2,12 +2,15 @@ local ui = require("native_ui")
 local connected,kontakt=pcall(require,"kontakt")
 assert(connected and kontakt.connect_parameter)
 local remote=kontakt.connect_parameter("Remote")
+local tint=ui.Color(0xFF0A141E):opacity(0.25):opacity(0.5)
+assert(tint.r==10 and tint.g==20 and tint.b==30 and tint.a==0.5)
+assert(ui.Color.white:opacity(0).a==0 and ui.Color.white.a==1)
 local Card = require("components")
 local context=require("context")
 return function()
     return @ui.ZStack {
         @ui.Rectangle {color=
-            ui.Color(10,20,30)}
+            tint}
         true and -- an authored conditional may continue after its comment
         @Card {parameter_id="Amount"}
         or @ui.ZStack {}

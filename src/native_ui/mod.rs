@@ -15,7 +15,7 @@ use std::sync::{
 pub(crate) enum Paint {
     Stack,
     Text(String),
-    Rectangle([f32; 3]),
+    Rectangle([f32; 4]),
     Asset(crate::native_assets::AssetRef),
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -530,6 +530,7 @@ impl Scene {
                     color.get::<f32>("r")? / 255.,
                     color.get::<f32>("g")? / 255.,
                     color.get::<f32>("b")? / 255.,
+                    color.get::<Option<f32>>("a")?.unwrap_or(1.),
                 ])
             }
             "Image" => {
