@@ -16,6 +16,7 @@ mod audit;
 mod bank;
 pub(crate) mod filter;
 mod map;
+mod lfo;
 mod host_notes;
 pub use host_notes::{HostNote, HostPattern, HostExpression, HostRef};
 pub mod overrides;
@@ -440,6 +441,7 @@ impl Engine {
 
     /// Apply the host's transport before processing this block's callbacks.
     pub fn set_transport(&mut self, playing: bool, tempo: f64, beats: f64, signature: (u8, u8)) {
+        self.player.tempo = tempo as f32;
         if let Some((rt, mut host)) = self.scripted(self.service_channel()) {
             rt.set_host_transport(&mut host, playing, tempo, beats, signature);
         }
@@ -1419,6 +1421,7 @@ struct Player {
     /// Voices may share lanes.
     shared: bool,
     rate: f64,
+    tempo: f32,
     /// KSP preprocessor flags bypass only these native system-script actions.
     native_sustain: bool,
     native_release_triggers: bool,
@@ -1483,6 +1486,7 @@ impl Player {
             dead: Vec::with_capacity(MAX_VOICES),
             shared: true,
             rate,
+            tempo: 120.,
             native_sustain: true,
             native_release_triggers: true,
             sustain: [false; 16],
@@ -1828,6 +1832,7 @@ impl Player {
             tune: 2f64.powf(ev.tune / 12.0),
             pitch: (f32::NAN, 1.0),
             mods,
+            pitch_lfo: lfo::Clock::default(),
             pitch_envs: {
                 let mut states = [Envelope::new(&Ahdsr::UNITY, self.rate as f32); params::PITCH_ENVS];
                 for (state, envelope) in states.iter_mut().zip(&settings.pitch_envelopes) {
@@ -2284,6 +2289,7 @@ impl Player {
             host_notes: &self.host_notes,
             tune: self.instrument.2 + tune,
             rate: self.rate as f32,
+            tempo: self.tempo,
             blocking,
             native_control_tick: self.now & 31 == 0,
             inputs: self.inputs,

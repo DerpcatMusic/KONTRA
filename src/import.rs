@@ -20,7 +20,7 @@ use std::{
 /// last place a first run looks. The app's libraries come from its settings.
 pub const LIBRARY_ROOT: &str = "/mnt/MAIN_STORAGE/Libraries/Kontakt";
 
-pub use crate::modulation::{Ahdsr, FlexEnvelope, FlexPoint, ModAssignment, ModEnvelope, ModSource, ModTarget, Modulator, ShaperCurve};
+pub use crate::modulation::{Ahdsr, FlexEnvelope, FlexPoint, ModAssignment, ModEnvelope, PitchLfo, ModSource, ModTarget, Modulator, ShaperCurve};
 
 /// Wavetable oscillator settings. Position and phase values are normalized.
 /// A zero form type is linear; other forms require an implemented phase map.
@@ -102,6 +102,8 @@ pub struct Group {
     pub modulators: Vec<Modulator>,
     /// Internal AHDSRs driving module parameters (filter cutoff, EQ gain).
     pub envelopes: Vec<ModEnvelope>,
+    #[serde(default)]
+    pub pitch_lfos: Vec<PitchLfo>,
     /// Group insert effects.
     pub fx: crate::fx::Chain,
     /// First insert slot after the Amplifier (0: all after, 8: all before).
@@ -122,7 +124,7 @@ pub struct Group {
 impl Default for Group {
     fn default() -> Self {
         Self { name: String::new(), start_criteria: Default::default(), gain: 1.0, pan: 0.0, tune: 1.0, key_tracking: true, reverse: false, source_mode: Some(0),
-            release_trigger: false, release_counter_ms: 0, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), fx: Default::default(), amp_split_slot: None, voice_group: None, interp_quality: 0, release_trigger_note_monophonic: false, wavetable: None }
+            release_trigger: false, release_counter_ms: 0, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), pitch_lfos: Vec::new(), fx: Default::default(), amp_split_slot: None, voice_group: None, interp_quality: 0, release_trigger_note_monophonic: false, wavetable: None }
     }
 }
 
@@ -406,6 +408,7 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
         group.mods = modulation.mods;
         group.modulators = modulation.modulators;
         group.envelopes = modulation.envelopes;
+        group.pitch_lfos = modulation.pitch_lfos;
         group.fx = fx;
     }
     let mut slots = 0;
@@ -790,6 +793,7 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
             mods: modulation.mods,
             modulators: modulation.modulators,
             envelopes: modulation.envelopes,
+            pitch_lfos: modulation.pitch_lfos,
             fx,
             amp_split_slot: u8::try_from(v.fx_idx_amp_split_point).ok().filter(|&slot| slot <= 8),
             voice_group: u32::try_from(v.voice_group_index).ok(),
@@ -811,7 +815,7 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
         let s = BParScript::try_from(c)?.params().context("Script parameters")?;
         if !s.bypass && let Some(text) = script_source(&path, slot, &s, &mut warnings) { scripts.push(text); script_state.push(crate::ksp::saved_persistence(&s.persistent)); }
     }
-    warnings.push("Modulation: the first volume AHDSR and flex envelopes shape each voice, internal pitch AHDSRs drive voice pitch, and velocity, key, CC, pitch bend and aftertouch drive supported volume, pitch, sample-start, envelope-time and group-effect targets; LFOs, additional volume envelopes, flexible pitch envelopes, external inversion, unsupported effect targets and other modulator parameters are not applied".into());
+    warnings.push("Modulation: the first volume AHDSR and flex envelopes shape each voice, internal pitch AHDSRs drive voice pitch, and velocity, key, CC, pitch bend and aftertouch drive supported volume, pitch, sample-start, envelope-time and group-effect targets; LFO states outside saved retriggered zero-delay sine-only Multi pitch, additional volume envelopes, flexible pitch envelopes, external inversion, unsupported effect targets and other modulator parameters are not applied".into());
     let parent = path.parent().context("Instrument has no parent")?;
     let root = path.ancestors().find(|p| p.join("Samples").is_dir()).unwrap_or(parent);
     let mut resolver = Resolver::new(root);
