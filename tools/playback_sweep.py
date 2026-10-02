@@ -58,12 +58,16 @@ def main():
                 observations = []
                 if result:
                     for case in result["cases"]:
+                        if case["peak"] <= 0.00001:
+                            issues.append(f'{case["case"]}: rendered silence at the selected musical key')
                         if case["nonfinite_samples"]:
                             issues.append(f'{case["case"]}: nonfinite audio')
                         if case["heap_operations_on_render_thread"]:
                             issues.append(f'{case["case"]}: {case["heap_operations_on_render_thread"]} heap operations')
                         if case["dropped_commands"]:
                             issues.append(f'{case["case"]}: dropped script commands')
+                        if case["underruns"]:
+                            issues.append(f'{case["case"]}: {case["underruns"]} stream underruns')
                         for stage in case["stages"]:
                             if stage["phase"] == "panic-after-declick" and (stage["voices"] or any(stage["held_keys_by_engine_channel"]) or any(stage["pending_commands_writes_releases"])):
                                 issues.append(f'{case["case"]}: pending voice/key/work after Panic')
