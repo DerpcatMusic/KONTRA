@@ -9,7 +9,7 @@ python3 tools/inspect_uvi.py --self-test
 python3 tools/inspect_uvi.py /path/to/bank.ufs /path/to/patch.uvip > private-inventory.jsonl
 ```
 
-The inspector reads exactly 328 bytes per UFS. Plain-XML UVIP reads are capped at 2 MiB, 10,000 elements and depth 64, and DTD/entity declarations are rejected. JSON keeps numeric UFS fields under their offsets, the raw header, every XML tag/attribute and source/text hashes. Embedded script text is not dumped. Unknown module names and API versions remain metadata and explicitly have no runtime support. Unknown UFS layouts and UVIP roots fail with an error; no extension or filename establishes playability.
+The inspector reads exactly 328 bytes per UFS. Plain-XML UVIP reads are capped at 2 MiB, 10,000 elements and depth 64, with node/depth limits enforced during tree construction. DTD/entity declarations are rejected by the parser callback regardless of XML encoding. JSON keeps numeric UFS fields under their offsets, the raw header, every XML tag/attribute and source/text hashes. Embedded script text is not dumped. Unknown module names and API versions remain metadata and explicitly have no runtime support. Unknown UFS layouts and UVIP roots fail with an error; no extension or filename establishes playability.
 
 The self-check uses entirely authored bytes and XML. It verifies unknown attributes/modules/API versions survive, opaque UFS bytes round-trip, and unsupported/malformed inputs fail. No third-party scripts, samples, keys or fixture bytes ship with this change.
 

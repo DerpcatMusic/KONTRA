@@ -43,27 +43,45 @@ def parse_header(header):
     }
 
 
+class BoundedTreeBuilder(ET.TreeBuilder):
+    def __init__(self):
+        super().__init__()
+        self.nodes = 0
+        self.depth = 0
+
+    def start(self, tag, attributes):
+        # Root depth is zero: at most 65 open elements represent depth <= 64.
+        if self.nodes >= 10000 or self.depth >= 65:
+            raise ValueError("UVIP XML exceeds depth/node limit during parsing")
+        self.nodes += 1
+        self.depth += 1
+        return super().start(tag, attributes)
+
+    def end(self, tag):
+        self.depth -= 1
+        return super().end(tag)
+
+    def doctype(self, name, public_id, system_id):
+        raise ValueError("UVIP XML declarations with DTD/entities are unsupported")
+
+
 def parse_program(data):
     if len(data) > XML_LIMIT:
         raise ValueError("UVIP XML exceeds 2 MiB metadata limit")
-    if b"<!doctype" in data.lower() or b"<!entity" in data.lower():
-        raise ValueError("UVIP XML declarations with DTD/entities are unsupported")
     try:
-        root = ET.fromstring(data)
+        root = ET.fromstring(data, parser=ET.XMLParser(target=BoundedTreeBuilder()))
     except ET.ParseError as error:
         raise ValueError(f"unsupported or malformed plain-XML UVIP: {error}") from error
     if root.tag != "UVI4" or not root.findall("Program"):
         raise ValueError("unsupported UVIP XML root/layout (UVI4/Program required)")
     nodes = []
-    pending = [(root, "UVI4", 0)]
+    pending = [(root, "UVI4")]
     while pending:
-        element, location, depth = pending.pop()
-        if depth > 64 or len(nodes) >= 10000:
-            raise ValueError("UVIP metadata exceeds depth/node limit")
+        element, location = pending.pop()
         text = (element.text or "").strip().encode("utf-8")
         nodes.append({"path": location, "tag": element.tag, "attributes": element.attrib,
                       "text_bytes": len(text), "text_sha256": hashlib.sha256(text).hexdigest()})
-        pending.extend((child, f"{location}/{child.tag}[{index}]", depth + 1)
+        pending.extend((child, f"{location}/{child.tag}[{index}]")
                        for index, child in reversed(list(enumerate(element))))
     return {"format": "UVI4 plain-XML UVIP", "nodes": nodes,
             "source_sha256": hashlib.sha256(data).hexdigest(),
@@ -108,7 +126,16 @@ def self_test():
     assert "authored placeholder" not in json.dumps(metadata)  # No embedded source dump.
     deep = b'<UVI4><Program>' + b'<x>' * 65 + b'</x>' * 65 + b'</Program></UVI4>'
     wide = b'<UVI4><Program>' + b'<x/>' * 10000 + b'</Program></UVI4>'
-    for invalid in (b'<UVI5><Program/></UVI5>', b'<UVI4/>', b'<UVI4>', deep, wide,
+    utf16_dtd = '<!DOCTYPE UVI4 [<!ENTITY authored "expanded">]><UVI4><Program>&authored;</Program></UVI4>'.encode("utf-16")
+    for invalid, expected_nodes in ((deep, 65), (wide, 10000), (utf16_dtd, 0)):
+        builder = BoundedTreeBuilder()
+        try:
+            ET.fromstring(invalid, parser=ET.XMLParser(target=builder))
+        except ValueError:
+            assert builder.nodes == expected_nodes and builder.depth <= 65
+        else:
+            raise AssertionError("XML construction was not bounded")
+    for invalid in (b'<UVI5><Program/></UVI5>', b'<UVI4/>', b'<UVI4>', deep, wide, utf16_dtd,
                     b'<!DOCTYPE UVI4><UVI4><Program/></UVI4>', b'x' * (XML_LIMIT + 1)):
         try:
             parse_program(invalid)
