@@ -2225,6 +2225,10 @@ mod tests {
         let env = ImportedAhdsr { attack_curve: 0., attack_ms: 100., hold_ms: 0., decay_ms: 0.,
             sustain: 1., release_ms: 100., unknown_flag: 0, unknown_tail: Vec::new() };
         let group = Group {
+            mods: vec![
+                target(ModTarget::Module { param: "filterCutoff".into(), slot: 0 }, None),
+                target(ModTarget::Module { param: "filterQ".into(), slot: 0 }, None),
+            ],
             envelopes: vec![ModEnvelope { env: env.clone(), targets: vec![] }, ModEnvelope { env, targets: vec![
                 target(ModTarget::Group("loopLength".into()), None),
                 target(ModTarget::Pitch, None),
@@ -2233,7 +2237,9 @@ mod tests {
                 target(ModTarget::Module { param: "filterQ".into(), slot: 0 }, None),
             ] }],
             modulators: vec![Modulator { name: "Envelope".into(), targets: vec![String::new(); 4],
-                assignments: None, volume_env: false, bypassed: true, flex: false, envelope: Some(1), kind: "ahdsr".into() }],
+                assignments: None, volume_env: false, bypassed: true, flex: false, envelope: Some(1), kind: "ahdsr".into() },
+                Modulator { name: "External".into(), targets: vec![String::new(); 2],
+                    assignments: Some(0), volume_env: false, bypassed: false, flex: false, envelope: None, kind: "external".into() }],
             fx: Chain { slots: vec![crate::fx::Effect { slot: 0, kind: Kind::Filter, version: 0,
                 bypass: false, output_gain: 1., dry_level: 1., params: Params::Filter(crate::fx::params::Filter {
                     filter_type: 2, cutoff: 0.3, resonance: 0., extra: [0.; 3] }) }] },
@@ -2246,6 +2252,11 @@ mod tests {
         let unipolar = address(id::MOD_TARGET_INTENSITY, 2).unwrap();
         let bypass = address(id::INTMOD_BYPASS, -1).unwrap();
         let legacy = address(id::INTMOD_INTENSITY, 2).unwrap();
+        let resonance = address(id::MOD_TARGET_MP_INTENSITY, 3).unwrap();
+        let external = |generic| Address::resolve(EnginePar { id: id::MOD_TARGET_MP_INTENSITY,
+            group: 0, slot: 1, generic }, &groups).unwrap();
+        let external_cutoff = external(0);
+        let external_resonance = external(1);
         assert_eq!(params::read(&settings, bypass), Some(1.), "saved native source is bypassed");
         assert_eq!(settings[0].filter.as_ref().unwrap().envelope_bypass_at(1), Some(true));
         assert!(settings[0].pitch_envelopes[0].bypass, "mixed source copies share saved bypass");
@@ -2281,10 +2292,32 @@ mod tests {
             }
             // Independent saved Analog magnitude, not generated from this decoder.
             assert!((legacy.decode(482_450).abs() - 0.00004324349).abs() < 1e-9);
+            // Actual Conflux group2/MOD ENV target1: UI raw507160 saved this
+            // cutoff magnitude; the authored callback passes that UI raw directly.
+            let native_depth = 0.000002936503_f32;
+            assert!((depth.decode(507_160) - native_depth).abs() < 1e-10);
+            assert_eq!(depth.encode(native_depth), 507_160);
+            assert_eq!(external_cutoff.encode(native_depth), 507_160);
+            assert!((external_cutoff.decode(507_160) - native_depth).abs() < 1e-10);
+            assert_eq!(resonance.decode(750_000), 0.5, "unverified resonance law stays linear");
+            assert_eq!(external_resonance.decode(750_000), 0.5);
+            for cutoff in [depth, external_cutoff] {
+                for (raw, expected) in [(250_000, -0.125), (750_000, 0.125), (-1, -1.), (1_000_001, 1.)] {
+                    assert_eq!(cutoff.decode(raw), expected);
+                    assert!(params::write(&mut settings, cutoff, cutoff.decode(raw)));
+                    assert_eq!(params::read(&settings, cutoff), Some(expected));
+                    assert_eq!(cutoff.encode(expected), raw.clamp(0, 1_000_000));
+                }
+                assert!(!params::write(&mut settings, cutoff, f32::NAN));
+                assert!(!params::write(&mut settings, cutoff, f32::INFINITY));
+                assert!(params::write(&mut settings, cutoff, 2.));
+                assert_eq!(params::read(&settings, cutoff), Some(1.), "cutoff remains bounded");
+            }
+            assert_eq!(settings[0].mods.mods[1].intensity, 0.5, "adjacent resonance target is unchanged");
             assert!(params::write(&mut settings, unipolar, unipolar.decode(500_000)));
             assert_eq!(params::read(&settings, unipolar), Some(0.25));
             assert!(params::write(&mut settings, depth, depth.decode(750_000)));
-            assert_eq!(params::read(&settings, depth), Some(0.5));
+            assert_eq!(params::read(&settings, depth), Some(0.125));
             assert_eq!(depth.encode(params::read(&settings, depth).unwrap()), 750_000);
             assert!(params::write(&mut settings, legacy, legacy.decode(750_000)));
             assert_eq!(params::read(&settings, legacy), Some(0.125));
@@ -2299,7 +2332,7 @@ mod tests {
                     assert_eq!(params::read(&settings, bypass), Some(0.));
                 }
                 if block == 32 {
-                    assert!(params::write(&mut settings, legacy, legacy.decode(250_000)));
+                    assert!(params::write(&mut settings, depth, depth.decode(250_000)));
                     assert_eq!(params::read(&settings, legacy), Some(-0.125));
                     assert_eq!(legacy.encode(params::read(&settings, legacy).unwrap()), 250_000);
                 }
@@ -2327,7 +2360,7 @@ mod tests {
         }), 0);
         assert!(difference > 1., "resuming the elapsed envelope changes actual PCM: {difference}");
         assert!(legacy_energy[0] > legacy_energy[1] * 4.,
-            "negative legacy cutoff depth must lower the low-pass response: {legacy_energy:?}");
+            "negative modern cutoff depth must lower the low-pass response: {legacy_energy:?}");
     }
 
     /// The rearranged SSE section matches Simper's textbook update.
