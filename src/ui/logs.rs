@@ -921,7 +921,7 @@ mod tests {
         tick(ui, state, params, Input::default());
     }
 
-    fn wait_export(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> ExportStatus {
+    fn wait_export(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>, previous: Option<u64>) -> ExportStatus {
         let until = std::time::Instant::now() + std::time::Duration::from_secs(8);
         loop {
             state.refresh(params);
@@ -930,7 +930,11 @@ mod tests {
                 if let Some(error) = &state.export_error {
                     panic!("Could not start export: {error}");
                 }
-                if let Some(status) = state.export.and_then(diagnostics::export_status)
+                // Completion can arrive after draw has disabled the button for
+                // Running. Wait for the completed request's enabled scene too,
+                // so the next activation is not sent to that stale scene.
+                if ui.scene().and_then(|scene| scene.surface("logs-export")).is_some_and(|surface| !surface.disabled)
+                    && let Some(status) = state.export.filter(|id| Some(*id) != previous).and_then(diagnostics::export_status)
                     && !matches!(status, ExportStatus::Running)
                 {
                     return status;
@@ -1155,8 +1159,9 @@ mod tests {
             std::env::temp_dir().join(format!("kontra-log-ui-{}-{stamp}", std::process::id()));
         state.destination = destination.to_string_lossy().into_owned();
         press(&mut ui, &mut state, &params, "logs-export-preview");
+        let previous = state.export;
         press(&mut ui, &mut state, &params, "logs-export");
-        let ExportStatus::Complete { path, .. } = wait_export(&mut ui, &mut state, &params) else {
+        let ExportStatus::Complete { path, .. } = wait_export(&mut ui, &mut state, &params, previous) else {
             panic!("support report should export")
         };
         assert_eq!(path, destination);
@@ -1169,10 +1174,12 @@ mod tests {
             "default export redacts local paths"
         );
         assert!(ui.scene().unwrap().surface("logs-export-status").is_some());
+        let previous = state.export;
         press(&mut ui, &mut state, &params, "logs-export");
+        assert!(state.export_thread.is_some(), "the re-enabled export button accepts a new request");
         assert!(
             matches!(
-                wait_export(&mut ui, &mut state, &params),
+                wait_export(&mut ui, &mut state, &params, previous),
                 ExportStatus::Failed { .. }
             ),
             "an existing destination fails without overwrite"
