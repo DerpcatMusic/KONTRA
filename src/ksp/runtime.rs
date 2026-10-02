@@ -1889,6 +1889,7 @@ impl Runtime {
                         && vm::variable_text(text).len() > state.mem.strs[i].capacity()
                     {
                         request.success = false;
+                        request.failure = Some("load_array_str: prepared string capacity exceeded");
                     }
                 } else if request.success {
                     match (var.ty, value) {
@@ -1911,7 +1912,7 @@ impl Runtime {
                 continue;
             }
             let request = self.env.array_results.pop_front().unwrap();
-            if !request.success { self.env.note("load_array_str: file not found, invalid array header, or prepared string capacity exceeded"); }
+            if let Some(failure) = request.failure { self.env.note(failure); }
             self.env.async_done.push((request.slot, request.id, i32::from(request.success)));
             self.env.array_retired.push_back(request);
             self.changes += 1;
