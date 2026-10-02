@@ -392,7 +392,7 @@ fn fetch(cx: &mut Cx, slot: usize, interface: &Interface) {
             }
             if !errors.is_empty() && let Some(load) = &mut v.load_report {
                 let load = Arc::make_mut(load);
-                load["status"] = "partial".into();
+                if load["status"] == "loaded" { load["status"] = "partial".into(); }
                 for issue in report["issues"].as_array().into_iter().flatten() {
                     let issues = load["issues"].as_array_mut().unwrap();
                     if !issues.contains(issue) { issues.push(issue.clone()); }
