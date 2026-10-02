@@ -3630,6 +3630,7 @@ fn growing_the_rack_keeps_voices_held_notes_and_recorded_targets_without_audio_h
     let mut schedulers = Align::with_slots(33);
     let mut new_routers: Vec<_> = (0..33).map(|_| Router::default()).collect();
     let mut targets = vec![false; 33];
+    let shortened = Mix { parts: rack.controls[..1].to_vec(), buses: rack.bus_controls };
     assert_eq!(allocations(|| {
         rack.adopt_parts(&mut prepared);
         align.adopt_parts(&mut schedulers);
@@ -3655,5 +3656,7 @@ fn growing_the_rack_keeps_voices_held_notes_and_recorded_targets_without_audio_h
         for _ in 0..8 { rack.render(128); }
         assert_eq!(rack.parts[0].active_voices(), 0);
         assert_eq!(rack.parts[32].active_voices(), 0, "key-up reaches its saved target after routing changes");
+        rack.set_controls(&shortened);
+        assert_eq!(rack.controls[32], Default::default(), "removed slots lose their old routing");
     }), 0, "growth, routing, alignment and playback must neither allocate nor free on audio");
 }

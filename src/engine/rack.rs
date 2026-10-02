@@ -184,12 +184,13 @@ impl Rack {
 
     pub fn set_controls(&mut self, mix: &Mix) {
         self.bus_controls = mix.buses;
-        for ((engine, old), new) in self.parts.iter_mut().zip(&mut self.controls).zip(&mix.parts) {
+        for (slot, (engine, old)) in self.parts.iter_mut().zip(&mut self.controls).enumerate() {
+            let new = mix.parts.get(slot).copied().unwrap_or_default();
             if (old.port, old.channel) != (new.port, new.channel) {
                 let rate = engine.rate();
                 engine.reset(rate);
             }
-            *old = *new;
+            *old = new;
         }
     }
 
