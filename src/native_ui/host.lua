@@ -135,6 +135,13 @@ function native_modifier(node,name,props,args)
     else
         assert(#args==0,"Unsupported positional native UI modifier: "..name)
     end
+    if name=="frame" then
+        for key,value in pairs(props) do
+            assert(((key=="width" or key=="height") and type(value)=="number" and value>=0 and value<=4096)
+                or (key=="alignment" and type(value)=="string"),"Unsupported frame property")
+        end
+        return {kind="ZStack",props={},children={node},modifiers={frame=props}}
+    end
     -- Environment modifiers compose as actual scopes. The closest scope wins,
     -- including two context keys on one component or nested overrides.
     if environment then
@@ -146,10 +153,7 @@ function native_modifier(node,name,props,args)
     end
     assert(node.modifiers[name]==nil,"Duplicate modifier")
     for key,value in pairs(props) do
-        if name=="frame" then
-            assert((key=="width" or key=="height") and type(value)=="number" and value>=0 and value<=4096,"Unsupported frame property")
-        elseif name=="context" then assert(key=="key" or key=="value","Unsupported context property")
-        else assert(key=="start" and type(value)=="function","Unsupported gesture property") end
+        assert(key=="start" and type(value)=="function","Unsupported gesture property")
     end
     node.modifiers[name]=props; return node
 end
