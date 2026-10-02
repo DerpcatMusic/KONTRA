@@ -326,6 +326,13 @@ impl Ui {
                         };
                         changed |= match (v, o.properties.get_mut(name)) {
                             (Prop::Int(n), Some(Value::Int(d))) => std::mem::replace(d, *n) != *n,
+                            // Runtime::live reserved this inactive scalar slot
+                            // off-thread. Replacing its storage-free marker
+                            // preserves authored absence until the first setter.
+                            (Prop::Int(n), Some(d)) if matches!(d, Value::IntArray(v) if v.is_empty() && v.capacity() == 0) => {
+                                *d = Value::Int(*n);
+                                true
+                            }
                             (Prop::Str(s), Some(Value::Text(d))) => copy_text(d, s),
                             _ => false,
                         }
