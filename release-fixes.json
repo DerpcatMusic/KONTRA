@@ -849,6 +849,28 @@
       ],
       "validation": "Independent native setter plus shared reader/writer corroborate target byte bit0x02 separately from invert. Four exact gates pass at7007e7514f3346a13978007159411bdc9fdef38d; authored internal/external records preserve raw magnitude/flags, target order/identity and neighboring unsupported laws, with imported positive/negative pitch and cutoff PCM matching physical references byte-exact. Loop frame law remains unimplemented.",
       "accepted": true
+    },
+    {
+      "id": "native-constant-loop-boundary-processing",
+      "summary": "Apply previously ignored saved and live Constant loop start/length controls on eligible native sampler paths",
+      "source_commits": [
+        "da3f857432215146b4c7047aea24b512695e461f",
+        "04f6b50ed5d60c007ee389d16dfbd2b9b188d4ad",
+        "8277f0119fd50d7c85f8d534fbc9fe326acde877",
+        "c69c9d272a39156db653d541cf0b4ff106c281f9"
+      ],
+      "validation": "Four exact gates pass on frozen b83ed44e4a8cbcc361dacee0c8d1d5795c2813ab; full playback suite passes 89 tests with 4 documented ignored tests. Constant loop bounds, physical fractional cursor, native ticks, RAM/stream PCM, partition-invariant LFO positions, release retirement and zero audio heap are checked. Actual six-preset replay is pending; no Kontakt sonic parity claim. Native signed frame law is independently traced. Reverse, alternating, cropped and other source modes remain diagnosed; invalid and behind-cursor edits defer safely.",
+      "accepted": true
+    },
+    {
+      "id": "saved-sine-multi-pitch-processing",
+      "summary": "Render previously ignored saved retriggered sine-only Multi pitch assignments without fragment-dependent phase drift",
+      "source_commits": [
+        "fcd60e49025bf732dd3144b05fd65cf5bc890426",
+        "e10908348bc74802fcaf31891ec3e1a3cb7d9ecc"
+      ],
+      "validation": "Four exact gates pass on frozen b83ed44e4a8cbcc361dacee0c8d1d5795c2813ab; full playback suite passes 89 tests with 4 documented ignored tests. Constant loop bounds, physical fractional cursor, native ticks, RAM/stream PCM, partition-invariant LFO positions, release retirement and zero audio heap are checked. Actual six-preset replay is pending; no Kontakt sonic parity claim. Source/control clock and interpolation-before-exponential conversion are independently traced. Standard sine/exp math is a numerical approximation; other waveforms, source phases, free-running ownership and live LFO parameters remain unsupported.",
+      "accepted": true
     }
   ]
 }

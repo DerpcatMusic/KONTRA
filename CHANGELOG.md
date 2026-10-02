@@ -10,6 +10,9 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Verified processing and diagnostics follow-ups
 
+- Native Constant loop start/length assignments now control eligible forward full-sample sampler loops on 32-frame ticks, preserve fractional cursor/crossfade/streaming, and retain the final release seam. Unsupported geometry and behind-cursor edits remain diagnosed and deferred. Voice diagnostics expose applied bounds separately from virtual position.
+- Saved retriggered, zero-delay sine-only Multi pitch assignments now run through a note-owned clock and audio-rate interpolation. Planner fragmentation no longer changes that clock. Four focused semantic/PCM/zero-heap gates and all 89 playback regressions pass; wider waveforms, free-running ownership and live LFO parameters remain unsupported. Actual reported-preset replay is pending.
+
 - Legacy and modern signed modulation aliases now share the verified pitch/cutoff laws and exact target identity. Other unsupported legacy target laws remain guarded.
 - Saved negative pitch and cutoff modulation now applies the native target sign bit independently of invert, with raw records preserved and both directions checked against physical-depth PCM references. Loop modulation remains incomplete.
 
