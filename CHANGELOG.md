@@ -8,8 +8,6 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ## Unreleased
 
-- Confirmed previous-session crashes now recover native host crash evidence and complete sanitized diagnostic activity, then automatically submit a receipt-checked support report and KONTRA issue through BUFFR’s reporting service. Failed reports remain available for retry; no host-wide crash handlers are installed.
-
 ### Verified processing and diagnostics follow-ups
 
 - Tube and Transistor Distortion now use their checked native scalar curves without the previous invented drive compensation. Independent signed boundaries, live Drive readback, group/rack routing and zero-heap gates pass. Damping/DC filtering remains explicitly approximate; whole-effect parity and corrected actual preset replay are not established.
@@ -456,7 +454,7 @@ updating favorites; no supplied IDs were repaired or compared with Kontakt.
 | Controllers/menus | Authored configured-home routing, value indices, persisted positions and physical ownership; actual six-Analog replay | Every library callback, Lua UI and host workflow remain outside this evidence. |
 | Diagnostics/editor | Bounded actions/excerpts and startup causes; zero writer-drop/write-error/retention-loss in the checked Morphology runs | One truncated information event per Morphology run; Void window/embedding repair remains unverified. |
 | Streaming/convolution | First-block RAM/zero-heap gate; checked zero-underrun preloaded runs and native three-IR selection/host roundtrip | Uninterrupted realtime performance and Kontakt convolution/sound parity are not established. |
-| Wavetable DSP | Source identity diagnostics and retained opaque metadata | New wavetable DSP remains incomplete/unshipped; no wavetable playback parity claim. |
+| Wavetable DSP | Resident 2048-frame cycles, note-based pitch, live position and Linear/ASYM2MP phase forms; nine actual Conflux captures | Native bandwidth-table preparation and High/Best anti-aliasing remain missing; no complete wavetable or preset playback parity claim. |
 
 - The accepted parsing/preservation gates cover bounded known source headers,
   modern compact snapshots and counted modulation slots. Three later checked
@@ -494,19 +492,64 @@ updating favorites; no supplied IDs were repaired or compared with Kontakt.
   finite resident renders without heap operations; their reference is the same
   engine with authored routing changes. Added inline fields measure 116 bytes per
   voice on the checked Rust 1.98.1 build, not a throughput or parity improvement.
-- Wavetable source diagnostics do not implement wavetable DSP. Partial group FX,
+- Wavetable record decoding alone does not establish DSP behavior. Partial group FX,
   decoded envelopes and selected compressor IDs do not establish Kontakt sonic
   equivalence; unsupported processing remains visible.
 - Larger racks remain bounded by memory, voice budgets and host/editor capabilities.
   User zoom, cached snapshots and native file-picker tests do not certify every
   gesture, resource, preset or file-dialog workflow.
 
+### Known limits
+
+#### Reviewed next-cut candidates — not shipped
+
+The following 13 distinct outcomes are source-reviewed candidates, not accepted
+fixes or published behavior. Runtime gates, actual factory checks and native hosted
+platform checks are pending for this cut; the accepted ledger remains 101.
+Follow-up and safety fixtures belong to their existing outcome, not new counts.
+
+- Optional VST3 note-length metadata no longer rejects ordinary host notes or
+  shortens their retained ownership; unused negative hints are ignored too.
+  Source: `a357e1e`, follow-up `401d59e`.
+- Legacy unsynchronized Delay Time uses the checked conversion across its admitted
+  absolute range. Source: `f191cc2`; fractional fixture follow-up `aaf2959`.
+- Delay writes the current input before advancing its ring clock, preserving the
+  intended sample position. Source: `4ec2958`.
+- Native Distortion Damping uses the checked native law. Source: `b3e453e`.
+- Distortion's native DC filter runs after Damping; scalar/SIMD summation follow-ups
+  remain one DC-processing outcome. Sources: `74e3c0e`, `cd940e2`.
+- macOS plug-in bundles retain the Finder package flag as well as `BNDL` metadata.
+  ZIP extraction and installed payload gates check Finder/Foundation recognition
+  and both plug-in factories. Actual hosted Mac execution remains pending;
+  this is not a Bitwig scan or playback claim. Source: `6001126`.
+- VST3 editor views retain their component while alive. Source: `3e76d60`.
+- VST3 resize frames retain their owner through attachment and replacement.
+  Source: `3784c67`.
+- VST3 run-loop registration follows the currently attached view.
+  Source: `e3822b2`.
+- The attached GUI view owns its lifetime independently of creation order.
+  Source: `be80724`.
+- Native editor startup and thread information is persisted before entering the
+  platform window path, preserving context if startup fails. Source: `c3763d1`.
+- Confirmed previous-session host crashes recover accessible native evidence and
+  complete sanitized diagnostic activity through the reused BUFFR reporter.
+  The private report includes the full sanitized evidence; the public issue is
+  limited to safe platform/host/format/build/failure metadata. Automatic reports
+  exclude library source excerpts, samples, access data and credentials. Full-hash
+  acknowledgements govern delivery; failed or delayed reports remain retryable.
+  No host-wide crash hook is installed, and host crashes do not establish KONTRA
+  fault ownership. Sources: `665ffee`, `72d3b9b`, `0c7b622`.
+- VST3 initial cents tuning is applied atomically with note onset, including
+  bounded handling of extreme finite values. Sources: `53ab06f`, `2d5822e`.
+
+These scopes do not implement Conflux's native Lua interface or establish complete
+Kontakt processing parity. Native crash evidence depends on the host/OS producing
+accessible artifacts. Manual local support exports can retain bounded, reviewed
+source excerpts; the automatic crash transport excludes them. Public/private
+report rendering is a support-service contract, not proof of host fault ownership.
+
 ### Candidates — not shipped
 
-- New wavetable DSP remains incomplete and unshipped. Diagnostic information-event
-  inventory splitting is future work, not a counted fix in this release.
-- The physical CC120 sibling-ownership follow-up must pass its gate before the
-  final source is shipped/installed; it belongs to the same counted CC120 unit.
 - Audit/source-identity metrics, the checked CLI JSON helper and delivery
   instrumentation are observability features, not additional logical defects.
 
