@@ -392,8 +392,154 @@ fn shot(part: &PartView, code: u8, to: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn numbers_do_not_split_a_problem() {
         assert_eq!(super::general("Script 2: KSP line 41: no x1"), "Script N: KSP line N: no xN");
+    }
+
+    /// Opt-in local measurement; prints timings/counts, never library payloads.
+    #[test]
+    #[ignore = "set KONTRA_UI_BENCH_PATCH to a locally owned instrument"]
+    fn real_instrument_frame_benchmark() {
+        use moose::mui::mui::vello::{self, vello_cpu::{Pixmap, RenderContext, Resources}};
+        let patch = std::env::var_os("KONTRA_UI_BENCH_PATCH").expect("KONTRA_UI_BENCH_PATCH");
+        let started = Instant::now();
+        let instrument = Arc::new(import::read_program(Path::new(&patch), 0).unwrap());
+        let import_ms = started.elapsed().as_secs_f64() * 1000.;
+        let started = Instant::now();
+        let mut trace = crate::diagnostics::LoadTrace::new(Path::new(&patch), 0, Some(0));
+        let part = audit_one(&instrument, &mut Found::default(), &mut trace).expect("performance view");
+        println!("UI_BENCH import_ms={import_ms:.3} setup_ms={:.3} controls={} pictures={}",
+            started.elapsed().as_secs_f64() * 1000., part.interface.as_ref().unwrap().controls.len(), part.pictures.len());
+        let shown = perf_view::layout(part.interface.as_ref().unwrap(), &part.pictures);
+        let changed = shown.iter()
+            .filter(|c| matches!(c.kind, Kind::Knob | Kind::Slider) && c.picture.as_ref().is_some_and(|p| p.frames.len() > 1))
+            .max_by(|a, b| (a.w * a.h).total_cmp(&(b.w * b.h))).expect("visible animated knob or slider");
+        let changed_control = changed.control;
+        println!("UI_BENCH control={changed_control} kind={:?} size={}x{} sprite_frames={}",
+            changed.kind, changed.w, changed.h, changed.picture.as_ref().unwrap().frames.len());
+        let params = Arc::new(SamplerParams::new());
+        params.selection.write().unwrap().parts.push(Part {
+            path: instrument.path.to_string_lossy().into(),
+            view: 1,
+            ..Default::default()
+        });
+        params.shared.view.lock().unwrap().parts[0] = part;
+        let mut ui = theme::ui();
+        let mut build = build(&params, Arc::default(), Arc::default(), Arc::default(), Arc::default());
+        let mut bridge = Bridge::new(params.clone());
+        let (width, height) = (1180u16, 900u16);
+        let mut ctx = RenderContext::new(width, height);
+        let mut resources = Resources::default();
+        let mut cache = vello::Cache::default();
+        let mut pixmap = Pixmap::new(width, height);
+        let mut gpu = std::env::var_os("KONTRA_UI_BENCH_GPU").map(|_| {
+            use vello::vello::wgpu;
+            fn wait<F: std::future::Future>(future: F) -> F::Output {
+                let mut future = std::pin::pin!(future);
+                let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+                loop {
+                    match future.as_mut().poll(&mut context) {
+                        std::task::Poll::Ready(result) => return result,
+                        std::task::Poll::Pending => std::thread::sleep(Duration::from_millis(1)),
+                    }
+                }
+            }
+            let instance = wgpu::Instance::default();
+            let adapter = wait(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                ..Default::default()
+            })).expect("GPU adapter");
+            let info = adapter.get_info();
+            println!("UI_BENCH adapter={info:?}");
+            assert_ne!(info.device_type, wgpu::DeviceType::Cpu, "software rasterizer cannot measure physical GPU performance");
+            let (device, queue) = wait(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+            let target = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("UI benchmark target"),
+                size: wgpu::Extent3d { width: u32::from(width), height: u32::from(height), depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let renderer = wait(vello::effects::GpuRenderer::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm,
+                [u32::from(width), u32::from(height)], vello::effects::Budget::default())).unwrap();
+            (device, renderer, target.create_view(&Default::default()))
+        });
+        let mut gpu_pixels = 0;
+        let frame_count = std::env::var("KONTRA_UI_BENCH_FRAMES").ok().and_then(|n| n.parse::<usize>().ok()).unwrap_or(24).clamp(4, 120);
+        for changing in [false, true] {
+            let mut times = [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+            let mut edit_ms = Vec::new();
+            let mut snapshot_ms = Vec::new();
+            let mut changed_renders = 0;
+            for frame in 0..frame_count + 8 {
+                if changing {
+                    let drawing_interface = params.shared.view.lock().unwrap().parts[0].interface.clone().unwrap();
+                    let control = &drawing_interface.controls[changed_control];
+                    let bound = |name, default| match control.properties.get(name) {
+                        Some(crate::ksp::Value::Int(n)) => *n,
+                        _ => default,
+                    };
+                    let (lo, hi) = (bound("$CONTROL_PAR_MIN_VALUE", 0), bound("$CONTROL_PAR_MAX_VALUE", 127));
+                    let start = Instant::now();
+                    params.shared.edit_control(0, changed_control, if frame % 2 == 0 {lo} else {hi});
+                    if frame >= 8 { edit_ms.push(start.elapsed().as_secs_f64() * 1000.); }
+                }
+                let start = Instant::now();
+                let snapshot = params.shared.view.lock().unwrap();
+                if frame >= 8 { snapshot_ms.push(start.elapsed().as_secs_f64() * 1000.); }
+                drop(snapshot);
+                let start = Instant::now();
+                let tree = build(&mut ui, &mut bridge);
+                let built = Instant::now();
+                ui.frame(tree, Some(Size::new(f64::from(width), f64::from(height))), Input::default(), 1. / 60.).unwrap();
+                let laid_out = Instant::now();
+                let scene = ui.scene().unwrap();
+                let scene_copy = scene.clone();
+                let cloned = Instant::now();
+                let painted = if let Some((device, renderer, target)) = &mut gpu {
+                    let stats = renderer.render(&scene_copy, vello::kurbo::Affine::IDENTITY, target).unwrap();
+                    gpu_pixels += stats.rendered_pixels;
+                    if changing && frame >= 8 && stats.renders > 0 { changed_renders += 1; }
+                    let painted = Instant::now();
+                    device.poll(vello::vello::wgpu::PollType::wait_indefinitely()).unwrap();
+                    painted
+                } else {
+                    ctx.reset();
+                    vello::paint(&mut vello::Cpu { ctx: &mut ctx, resources: &mut resources, cache: &mut cache }, &scene_copy, vello::kurbo::Affine::IDENTITY).unwrap();
+                    ctx.flush();
+                    let painted = Instant::now();
+                    ctx.render(&mut pixmap, &mut resources);
+                    painted
+                };
+                let rasterized = Instant::now();
+                if frame >= 8 {
+                    for (samples, (a, b)) in times.iter_mut().zip([(start, built), (built, laid_out), (laid_out, cloned), (cloned, painted), (painted, rasterized)]) {
+                        samples.push((b - a).as_secs_f64() * 1000.);
+                    }
+                }
+            }
+            if changing && gpu.is_some() {
+                assert_eq!(changed_renders, frame_count, "each changed control value must produce a GPU render");
+            }
+            let renderer_stages = if gpu.is_some() { ["gpu_prepare_upload_submit", "gpu_wait"] } else { ["cpu_paint", "cpu_raster"] };
+            for (stage, mut samples) in ["build", "layout", "scene_clone", renderer_stages[0], renderer_stages[1]].into_iter().zip(times)
+                .chain([("edit_control", edit_ms), ("snapshot_lock", snapshot_ms)]) {
+                if samples.is_empty() { continue; }
+                samples.sort_by(f64::total_cmp);
+                println!("UI_BENCH changing={changing} stage={stage} n={} mean_ms={:.3} median_ms={:.3} p99_ms={:.3}",
+                    samples.len(), samples.iter().sum::<f64>() / samples.len() as f64, samples[samples.len()/2], samples[((samples.len()-1) as f64 * 0.99).ceil() as usize]);
+            }
+        }
+        if gpu.is_some() {
+            assert!(gpu_pixels > 0, "real GPU UI renders pixels");
+        } else {
+            assert!(pixmap.take_unpremultiplied().iter().any(|p| p.a > 0), "real UI renders pixels");
+        }
     }
 }
