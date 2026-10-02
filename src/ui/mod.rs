@@ -75,6 +75,7 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
         .on_cancel(move |_| let_go(&cancel_params, &cancel_computer))
         .on_key(move |ui, event| key_computer.key(ui, &key_params, event))
         .hide_pointer(theme::pointer_hidden)
+        .native_timing(crate::diagnostics::native_timing_hook())
         .changed(move || watch.changed(&watch_params, &meters, &computer) || picker.ready() || art.ready() || fitted::ready())
         .fixed_zoom()
         .resizable((900, 600))
@@ -313,6 +314,8 @@ fn fingerprint(view: &View, h: &mut DefaultHasher) {
             }
         }
         (at(&v.instrument), at(&v.interface), at(&v.wallpaper)).hash(h);
+        v.live_revisions.hash(h);
+        for edit in v.edited_values() { edit.hash(h); }
         (Arc::as_ptr(&v.keys) as usize, Arc::as_ptr(&v.pictures) as usize).hash(h);
     }
 }
@@ -618,12 +621,7 @@ impl Cx<'_> {
             self.p.shared.queue_multi(path);
             return;
         }
-        let part = &mut self.selection.parts[slot];
-        part.path = path;
-        part.program = 0;
-        part.group = u32::MAX;
-        part.name.clear();
-        part.edits = Default::default();
+        replace_part(&mut self.selection.parts[slot], path);
         self.show(slot);
     }
 
@@ -676,7 +674,17 @@ fn library_of(shelf: &crate::library::Shelf, path: &Path) -> String {
     shelf.of(path).map(|l| l.name.clone()).unwrap_or_default()
 }
 
-/// Put `part` in the first empty slot; `None` when the rack is full.
+/// Instrument state belongs to its preset; rack routing and player settings stay.
+fn replace_part(part: &mut Part, path: String) {
+    part.path = path;
+    part.program = 0;
+    part.group = u32::MAX;
+    part.name.clear();
+    part.edits = Default::default();
+    part.script_state.clear();
+    part.ir_settings.clear();
+}
+
 /// A part for `path` on the input and output the settings give new parts.
 fn new_part(selection: &Selection, settings: &crate::library::Settings, path: String) -> Part {
     let (port, channel) = settings.new_input.unwrap_or_else(|| selection.next_input());
@@ -690,6 +698,7 @@ fn new_part(selection: &Selection, settings: &crate::library::Settings, path: St
     }
 }
 
+/// Put `part` in the first empty slot; `None` when the rack is full.
 fn add_part(selection: &mut Selection, part: Part) -> Option<usize> {
     let slot = selection
         .parts
@@ -821,11 +830,7 @@ fn native_files(p: &SamplerParams, picker: &picker::Picker, ui: &Ui, at: Point, 
             let path = path.to_string_lossy().into_owned();
             let slot = match target.filter(|_| n == 0) {
                 Some(slot) => {
-                    let part = &mut selection.parts[slot];
-                    part.path = path;
-                    part.program = 0;
-                    part.group = u32::MAX;
-                    part.name.clear();
+                    replace_part(&mut selection.parts[slot], path);
                     Some(slot)
                 }
                 None => {

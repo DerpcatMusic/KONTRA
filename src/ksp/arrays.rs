@@ -1,13 +1,13 @@
-//! Off-thread NKA reads. Requests and path storage are prepared before audio starts.
+//! Off-thread NKA files. Requests, paths and save snapshots are prepared before audio.
 use super::{compile::{Ty, Var, VarId}, Value};
 
 pub(super) const ARRAY_QUEUE: usize = 8;
 const PATH_BYTES: usize = 4096;
 
-/// An owned file job. Read/recycle it off the audio thread; installing its
+/// An owned file job. Perform/recycle it off the audio thread; installing its
 /// result retains the job for worker disposal, never dropping strings on audio.
 #[derive(Debug)]
-pub struct ArrayRead {
+pub struct ArrayJob {
     pub slot: u8,
     pub id: i32,
     pub(super) var: VarId,
@@ -16,6 +16,8 @@ pub struct ArrayRead {
     ty: Ty,
     len: usize,
     pub(super) values: Option<Value>,
+    pub(super) write: bool,
+    pub(super) snapshot: Option<Value>,
     pub(super) progress: usize,
     pub(super) validated: bool,
     pub(super) success: bool,
@@ -23,19 +25,34 @@ pub struct ArrayRead {
     detail: Option<String>,
 }
 
-impl ArrayRead {
+impl ArrayJob {
     pub(super) fn prepared(slot: u8, var: VarId, info: &Var) -> Self {
         Self { slot, id: -1, var, path: String::with_capacity(PATH_BYTES),
             name: info.name.trim_start_matches(['%', '!', '?', '$', '@', '~']).into(),
             ty: info.ty, len: info.len.unwrap_or(0) as usize, values: None,
-            progress: 0, validated: false, success: false, failure: None, detail: None }
+            write: false, snapshot: None, progress: 0, validated: false, success: false, failure: None, detail: None }
     }
     pub fn path(&self) -> &str { &self.path }
-    /// Files and parse buffers are owned only by this non-audio operation.
-    pub fn read(&mut self) -> bool {
+    pub fn is_write(&self) -> bool { self.write }
+    /// File I/O and parse buffers belong only to this non-audio operation.
+    pub fn perform(&mut self) -> bool {
         self.values = None;
         self.failure = None;
         self.detail = None;
+        if self.write {
+            match self.snapshot.as_ref().ok_or_else(|| "save_array_str: snapshot was not prepared".to_owned())
+                .and_then(|value| save_nka(&self.path, self.ty, &self.name, value))
+            {
+                Ok(()) => self.success = true,
+                Err(error) => {
+                    self.success = false;
+                    self.failure = Some("save_array_str: file could not be written; see diagnostics log");
+                    self.detail = Some(error);
+                }
+            }
+            self.validated = true;
+            return self.success;
+        }
         match read_file_path(&self.path) {
             Err(error) => {
                 self.failure = Some("load_array_str: file could not be read");
@@ -58,7 +75,7 @@ impl ArrayRead {
     /// Called by the worker after the audio thread has installed the result.
     pub fn recycle(&mut self) {
         self.values = None; self.detail = None; self.failure = None;
-        self.path.clear(); self.id = -1; self.progress = 0; self.validated = false; self.success = false;
+        self.path.clear(); self.write = false; self.id = -1; self.progress = 0; self.validated = false; self.success = false;
     }
 }
 
@@ -92,6 +109,58 @@ fn read_file_path(path: &str) -> Result<Vec<u8>, String> {
             crate::resources::read_file(&at)
         }
     }
+}
+
+/// Write a complete NKA beside its destination, then atomically replace it.
+/// A failed write never truncates the previous preset or creates its parent.
+pub(super) fn save_nka(path: &str, ty: Ty, name: &str, value: &Value) -> Result<(), String> {
+    use std::{fmt::Write as _, io::Write as _, path::Path, sync::atomic::{AtomicU64, Ordering}};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let path = Path::new(path);
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let filename = path.file_name().ok_or("save_array_str: destination has no filename")?;
+    let sigil = match ty { Ty::Int => '%', Ty::Real => '?', Ty::Str => '!' };
+    let mut text = format!("{sigil}{name}\n");
+    let mut emit = |value: &Value| -> Result<(), String> {
+        match (ty, value) {
+            (Ty::Int, Value::Int(n)) => writeln!(text, "{n}").unwrap(),
+            (Ty::Real, Value::Real(n)) if n.is_finite() => writeln!(text, "{n}").unwrap(),
+            (Ty::Str, Value::Text(t)) if !t.contains(['\r', '\n']) => {
+                text.push_str(t); text.push('\n');
+            }
+            (Ty::Str, Value::Text(_)) => return Err("save_array_str: NKA string contains a line break".into()),
+            _ => return Err("save_array_str: invalid typed snapshot value".into()),
+        }
+        Ok(())
+    };
+    match value {
+        Value::IntArray(values) if ty == Ty::Int => for n in values { emit(&Value::Int(*n))?; },
+        Value::RealArray(values) if ty == Ty::Real => for n in values { emit(&Value::Real(*n))?; },
+        Value::Array(values) => for value in values { emit(value)?; },
+        _ => return Err("save_array_str: snapshot is not an array".into()),
+    }
+    // Respect an existing read-only file, and retain its permissions when replacing it.
+    let permissions = match std::fs::metadata(path) {
+        Ok(meta) if meta.permissions().readonly() => return Err("save_array_str: destination is read-only".into()),
+        Ok(meta) => Some(meta.permissions()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(format!("save_array_str: destination metadata: {error}")),
+    };
+    let temporary = parent.join(format!(".{}.kontra-{}-{}.tmp", filename.to_string_lossy(),
+        std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary)
+        .map_err(|e| format!("save_array_str: create temporary file: {e}"))?;
+    let result = (|| {
+        file.write_all(text.as_bytes()).map_err(|e| format!("save_array_str: write file: {e}"))?;
+        file.flush().map_err(|e| format!("save_array_str: flush file: {e}"))?;
+        if let Some(permissions) = permissions { file.set_permissions(permissions)
+            .map_err(|e| format!("save_array_str: preserve permissions: {e}"))?; }
+        file.sync_all().map_err(|e| format!("save_array_str: sync file: {e}"))?;
+        drop(file);
+        std::fs::rename(&temporary, path).map_err(|e| format!("save_array_str: replace file: {e}"))
+    })();
+    if result.is_err() { let _ = std::fs::remove_file(temporary); }
+    result
 }
 
 /// Typed NKA arrays: the exact variable header, then one value per line.
@@ -134,6 +203,42 @@ mod tests {
         assert!(parse_nka(b"%values\nnot-a-number\n", Ty::Int, "values").unwrap_err().contains("integer"));
         assert!(parse_nka(b"?values\nNaN\n", Ty::Real, "values").unwrap_err().contains("non-finite"));
         assert!(parse_nka(b"?values\n1e999\n", Ty::Real, "values").is_err());
+    }
+
+    #[test]
+    fn nka_writes_typed_files_and_preserves_existing_bytes_on_failure() {
+        let root = std::env::temp_dir().join(format!("kontra-nka-write-{}",std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let cases = [
+            (Ty::Int,Value::IntArray(vec![-4,42]),b"%values\n-4\n42\n".to_vec()),
+            (Ty::Real,Value::RealArray(vec![0.25,-1.5]),b"?values\n0.25\n-1.5\n".to_vec()),
+            (Ty::Str,Value::Array(vec![Value::Text("Ω".into()),Value::Text("😀".into())]),"!values\nΩ\n😀\n".as_bytes().to_vec()),
+        ];
+        let path = root.join("values.nka");
+        for (ty,value,expected) in cases {
+            save_nka(&path.to_string_lossy(),ty,"values",&value).unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(),expected);
+            assert!(parse_nka(&expected,ty,"values").is_ok());
+        }
+        let before = std::fs::read(&path).unwrap();
+        assert!(save_nka(&path.to_string_lossy(),Ty::Str,"values",
+            &Value::Array(vec![Value::Text("two\nlines".into())])).unwrap_err().contains("line break"));
+        assert_eq!(std::fs::read(&path).unwrap(),before);
+        let permissions = std::fs::metadata(&path).unwrap().permissions();
+        let mut readonly = permissions.clone(); readonly.set_readonly(true);
+        std::fs::set_permissions(&path,readonly).unwrap();
+        assert!(save_nka(&path.to_string_lossy(),Ty::Int,"values",&Value::IntArray(vec![9]))
+            .unwrap_err().contains("read-only"));
+        assert_eq!(std::fs::read(&path).unwrap(),before);
+        std::fs::set_permissions(&path,permissions).unwrap();
+        assert!(save_nka(&root.join("missing/values.nka").to_string_lossy(),Ty::Int,"values",&Value::IntArray(vec![9]))
+            .unwrap_err().contains("create temporary"));
+        assert!(!root.join("missing").exists());
+        std::fs::create_dir(root.join("directory")).unwrap();
+        assert!(save_nka(&root.join("directory").to_string_lossy(),Ty::Int,"values",&Value::IntArray(vec![9]))
+            .unwrap_err().contains("replace file"));
+        assert!(!std::fs::read_dir(&root).unwrap().flatten().any(|e|e.file_name().to_string_lossy().ends_with(".tmp")));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

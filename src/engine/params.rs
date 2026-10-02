@@ -510,7 +510,7 @@ const BUS_OFFSET: i32 = 1000;
 /// Instrument buses.
 const BUSES: u8 = 16;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum GroupPar {
     Volume,
     Pan,
@@ -518,7 +518,7 @@ pub(crate) enum GroupPar {
     Output,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Stage {
     Attack,
     /// Attack curve, -1..=1.
@@ -530,7 +530,7 @@ pub(crate) enum Stage {
 }
 
 /// A modelled engine parameter.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Address {
     Group(u16, GroupPar),
     /// Volume, pan or tune of the whole instrument.
@@ -957,6 +957,9 @@ pub fn display(id: i32, value: i32) -> Option<Disp> {
         id::CUTOFF => Disp::Num(43.6 * (8.96 * x).exp2(), 1),
         // Stereo Modeller spread: 0 % mono, 100 % as recorded, 200 % widest.
         id::STEREO => Disp::Num(x * 200.0, 1),
+        // NI's Time is reverb duration. Display this implementation's decay
+        // in milliseconds, so scripted labels match the effective DSP.
+        id::RV2_TIME => Disp::Num(crate::fx::params::Reverb::time_seconds(x) * 1000., 1),
         _ => match crate::ksp::engine_par_name(id)? {
             name @ ("$ENGINE_PAR_COMP_ATTACK" | "$ENGINE_PAR_COMP_DECAY"
                 | "$ENGINE_PAR_LIM_RELEASE" | "$ENGINE_PAR_DL_TIME") => {
@@ -1172,6 +1175,17 @@ pub(crate) fn find_target(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reverb_time_callback_displays_the_effective_decay_in_milliseconds() {
+        let ui = crate::ksp::initialize("on init\nmake_perfview\ndeclare ui_slider $time(0,127)\ndeclare ui_label $caption(1,1)\nset_engine_par($ENGINE_PAR_RV2_TIME,370078,-1,0,0)\nset_control_par_str(get_ui_id($time),$CONTROL_PAR_LABEL,get_engine_par_disp($ENGINE_PAR_RV2_TIME,-1,0,0) & \" ms\")\nset_text($caption,get_engine_par_disp($ENGINE_PAR_RV2_TIME,-1,0,0) & \" ms\")\nend on", 0, 8).unwrap();
+        assert_eq!(ui.controls[0].properties["$CONTROL_PAR_LABEL"], crate::ksp::Value::Text("1099.5 ms".into()));
+        assert_eq!(ui.controls[1].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text("1099.5 ms".into()));
+        for (value, milliseconds) in [(0,200.), (500000,2000.), (1000000,20000.)] {
+            let Some(Disp::Num(shown, _)) = display(id::RV2_TIME, value) else { panic!("RV2_TIME display absent") };
+            assert_eq!(shown, milliseconds);
+        }
+    }
+
     #[test]
     fn effect_time_callback_labels_use_dsp_milliseconds() {
         let ui = crate::ksp::initialize("on init\nmake_perfview\ndeclare ui_slider $release(0,1000000)\n$release := 230000\nset_control_par_str(get_ui_id($release),$CONTROL_PAR_LABEL,get_engine_par_disp_ext($ENGINE_PAR_LIM_RELEASE,$release,-1,4,0) & \" ms\")\nend on", 0, 0).unwrap();

@@ -56,6 +56,7 @@ fn engine() -> Engine {
         loop_range: Some(Loop {
             start: 0,
             end: 100,
+            alternating: false,
             until_release: false,
             crossfade: 0,
         }),
@@ -80,6 +81,7 @@ fn layered(groups: Vec<Group>, values: &[f32]) -> Bank {
             loop_range: Some(Loop {
                 start: 0,
                 end: 100,
+                alternating: false,
                 until_release: false,
                 crossfade: 0,
             }),
@@ -307,7 +309,7 @@ fn release_counter_keeps_each_same_pitch_events_duration() {
             target: ModTarget::SampleStart, intensity: 1., invert: false, lag_ms: 0, shaper: None });
         let groups = vec![Group::default(), release];
         let zones = vec![Zone { sample: PathBuf::from("attack"), loop_range: Some(Loop {
-            start: 0, end: 100, until_release: false, crossfade: 0 }), ..Zone::default() },
+            start: 0, end: 100, alternating: false, until_release: false, crossfade: 0 }), ..Zone::default() },
             Zone { group: 1, sample: PathBuf::from("release"), start_mod: Some(1000), ..Zone::default() }];
         let ramp = Sample { rate: 48000, frames: (0..4000).map(|i| [i as f32 / 4000.; 2]).collect() };
         let bank = Bank::from_samples(groups, zones, vec![(PathBuf::from("attack"), constant([0.; 2], 100)),
@@ -427,6 +429,37 @@ fn max_step(out: &[Frame]) -> f32 {
 }
 
 #[test]
+fn alternating_loops_match_unrolled_pcm_at_fractional_and_high_rates() {
+    let source: Vec<Frame> = (0..256).map(|i| {
+        let x = ((i * 31 % 97) as f32 - 48.0) / 200.0;
+        [x, -0.7 * x]
+    }).collect();
+    // Independent authored reference: visit each endpoint once per turn.
+    let mut frames = source[..96].to_vec();
+    while frames.len() < 20000 {
+        frames.extend((32..95).rev().map(|i| source[i]));
+        frames.extend((33..96).map(|i| source[i]));
+    }
+    for rate in [24000, 48000, 156000, 1536000] {
+        let make = |looped: bool| {
+            let zone = Zone { loop_range: looped.then_some(Loop {
+                start: 32, end: 96, alternating: true, until_release: false, crossfade: 0,
+            }), ..Zone::default() };
+            engine_with(Bank::from_samples(vec![Group::default()], vec![zone],
+                vec![(PathBuf::new(), Sample { rate, frames: if looped { source.clone() } else { frames.clone() } })]).unwrap())
+        };
+        let (mut actual, mut reference) = (make(true), make(false));
+        actual.note_on(0, 60, 127);
+        reference.note_on(0, 60, 127);
+        assert_eq!(render(&mut actual, 512), render(&mut reference, 512), "rate {rate}");
+        // Until-end loops keep running during the voice's release envelope.
+        actual.note_off(0, 60);
+        reference.note_off(0, 60);
+        assert_eq!(render(&mut actual, 64), render(&mut reference, 64), "release, rate {rate}");
+    }
+}
+
+#[test]
 fn loop_crossfade_is_continuous_at_the_wrap() {
     let period = 97.3;
     let source = sine(period, 4000);
@@ -440,6 +473,7 @@ fn loop_crossfade_is_continuous_at_the_wrap() {
             loop_range: Some(Loop {
                 start,
                 end,
+                alternating: false,
                 until_release: false,
                 crossfade,
             }),
@@ -477,6 +511,7 @@ fn stolen_voices_fade_instead_of_clicking() {
         loop_range: Some(Loop {
             start: 0,
             end: 4800,
+            alternating: false,
             until_release: false,
             crossfade: 0,
         }),
@@ -518,6 +553,7 @@ fn voice_groups_limit_and_choke_their_members() {
     let loop_range = Some(Loop {
         start: 0,
         end: 1000,
+        alternating: false,
         until_release: false,
         crossfade: 0,
     });
@@ -564,6 +600,7 @@ fn envelope_follows_group_ahdsr() {
             loop_range: Some(Loop {
                 start: 0,
                 end: 100,
+                alternating: false,
                 until_release: false,
                 crossfade: 0,
             }),
@@ -634,6 +671,7 @@ fn flex_envelope_shapes_group_volume() {
             loop_range: Some(Loop {
                 start: 0,
                 end: 100,
+                alternating: false,
                 until_release: false,
                 crossfade: 0,
             }),
@@ -810,6 +848,7 @@ fn streamed_playback_matches_ram_playback() {
     let loop_range = Some(Loop {
         start: 30_000,
         end: 90_000,
+        alternating: false,
         until_release: true,
         crossfade: 3000,
     });
@@ -849,6 +888,18 @@ fn streamed_playback_matches_ram_playback() {
                 sample: path.clone(),
                 ..Zone::default()
             },
+        ),
+        (
+            Group::default(),
+            Zone { sample: path.clone(), tune: 3.25,
+                loop_range: Some(Loop { start: 30_000, end: 90_000, alternating: true, until_release: true, crossfade: 0 }),
+                ..Zone::default() },
+        ),
+        (
+            Group { reverse: true, ..Group::default() },
+            Zone { sample: path.clone(), tune: 3.25,
+                loop_range: Some(Loop { start: 30_000, end: 90_000, alternating: true, until_release: true, crossfade: 0 }),
+                ..Zone::default() },
         ),
     ];
     // Float and 24-bit sources, the latter also with a budget that shrinks the preload.
@@ -920,6 +971,7 @@ fn notes_during_the_preload_sound_as_after_it() {
         loop_range: Some(Loop {
             start: 30_000,
             end: 90_000,
+            alternating: false,
             until_release: true,
             crossfade: 3000,
         }),
@@ -1539,7 +1591,7 @@ fn ksp_zone_ids_follow_real_mapping_before_and_after_render_and_survive_missing_
     let path = dir.join("tone.wav");
     write_wav(&path, 48000);
     let zone = Zone { sample: path.clone(), low_key: 60, high_key: 60,
-        loop_range: Some(Loop { start: 0, end: 100, until_release: true, crossfade: 0 }),
+        loop_range: Some(Loop { start: 0, end: 100, alternating: false, until_release: true, crossfade: 0 }),
         ..Zone::default() };
     let groups = vec![Group::default(), Group { muted: true, ..Group::default() },
         Group { channel: 1, ..Group::default() }, Group { release_trigger: true, ..Group::default() }];
@@ -2023,15 +2075,18 @@ end on"#;
     });
     assert_eq!(count, 0, "first callback allocated or freed");
     let rt = e.script().unwrap();
-    assert!(rt.diagnostics().is_empty(), "{:?}", rt.diagnostics());
+    assert_eq!(rt.diagnostics(),vec![
+        "load_array: no file dialog here; nothing saved in this session".to_owned(),
+        "save_array: external file dialogs and mode-based saves are unavailable".to_owned(),
+    ],"unsupported dialogs must report failure rather than pretend to save");
     let ui = rt.interface(0);
     assert_eq!(ui.controls[1].menu.len(), 1);
     assert_eq!(rt.env.host.keyranges, vec![(36, 60, rt.last_message().to_owned())]);
     let saved = rt.persistence();
-    assert_eq!(saved[0]["%values"], Value::IntArray(vec![42, 73, 0, 0]));
+    assert_eq!(saved[0]["%values"], Value::IntArray(vec![0, 73, 0, 0]));
     assert_eq!(
         saved[0]["!strings"],
-        Value::Array(vec![Value::Text(rt.last_message().into()); 2])
+        Value::Array(vec![Value::Text(String::new()),Value::Text(rt.last_message().into())])
     );
     assert_eq!(rt.last_message().len(), 80);
 }
@@ -2166,6 +2221,54 @@ end on"
     });
     assert_eq!(count, 0, "the audio thread allocated");
     assert!(left.iter().any(|x| *x != 0.0));
+}
+
+#[test]
+fn repeated_group_restores_keep_latest_reads_and_sample_timing_without_allocating() {
+    let mut e = scripted("on init
+declare $i
+declare ui_label $latest(1,1)
+end on
+on note
+$i := 0
+while ($i < 2100)
+set_engine_par($ENGINE_PAR_VOLUME,0,1,-1,-1)
+set_engine_par($ENGINE_PAR_VOLUME,1000000,1,-1,-1)
+inc($i)
+end while
+set_text($latest,get_engine_par($ENGINE_PAR_VOLUME,1,-1,-1))
+wait(10000)
+set_engine_par($ENGINE_PAR_VOLUME,0,1,-1,-1)
+wait(10000)
+set_engine_par($ENGINE_PAR_VOLUME,1000000,1,-1,-1)
+end on");
+    let mut reference = scripted("on init
+set_engine_par($ENGINE_PAR_VOLUME,1000000,1,-1,-1)
+end on");
+    reference.note_on(0, 60, 100);
+    reference.note_on(0, 61, 100);
+    let expected = render(&mut reference, 1024);
+    let (mut left, mut right) = ([0.; 1024], [0.; 1024]);
+    assert_eq!(allocations(|| {
+        e.begin_audio_block(1024, 1, true);
+        e.note_on(0, 60, 100);
+        e.note_on(0, 61, 100);
+        // Both callbacks read their final same-sample write before rendering.
+        e.render(&mut left, &mut right);
+    }), 0);
+    let latest = &e.script().unwrap().interface(0).controls[0];
+    assert_eq!(latest.properties["$CONTROL_PAR_TEXT"], kontakto::ksp::Value::Text("1000000".into()));
+    assert!(close([left[400], right[400]], expected[400]));
+    assert!(close([left[479], right[479]], expected[479]));
+    assert!(left[481] < expected[481][0], "the distinct 10 ms write must remain");
+    assert!(left[959] < expected[959][0]);
+    assert!(left[961] > left[959], "the distinct 20 ms restore must remain");
+    assert_eq!(e.dropped_commands(), 0);
+    assert!(e.script().unwrap().diagnostics().is_empty());
+    e.note_off(0, 60);
+    e.note_off(0, 61);
+    render(&mut e, 48000);
+    assert_eq!(e.active_voices(), 0);
 }
 
 #[test]
@@ -2313,7 +2416,7 @@ fn muted_streamed_voices_pause_and_resume_exactly() {
     a.blocking_streams = true;
     let note = NoteEvent::new(0, 60, 100);
     let (id_a, id_b) = (a.start_event(&note).unwrap(), b.start_event(&note).unwrap());
-    let mut compare = |a: &mut Engine, b: &mut Engine, blocks: usize| {
+    let compare = |a: &mut Engine, b: &mut Engine, blocks: usize| {
         for block in 0..blocks {
             assert!(render(a, 128) == render(b, 128), "diverges in block {block}");
         }
@@ -2837,6 +2940,7 @@ fn all_sound_off_fades_fast_and_all_notes_off_respects_the_pedal() {
         loop_range: Some(Loop {
             start: 0,
             end: 4800,
+            alternating: false,
             until_release: false,
             crossfade: 0,
         }),
@@ -2906,6 +3010,7 @@ fn block_size_and_sample_rate_changes_keep_playback_intact() {
             loop_range: Some(Loop {
                 start: 0,
                 end: 4800,
+                alternating: false,
                 until_release: false,
                 crossfade: 0,
             }),
@@ -2962,6 +3067,7 @@ fn tiny_samples_and_loops_play_finitely() {
             loop_range: looped.map(|(start, end)| Loop {
                 start,
                 end,
+                alternating: false,
                 until_release: false,
                 crossfade: 0,
             }),
@@ -3097,7 +3203,7 @@ fn lanes_match_voices_rendered_alone_within_120_db() {
             .map(|g| Zone {
                 group: g,
                 sample: PathBuf::from(g.to_string()),
-                loop_range: Some(Loop { start: 1000, end: 19_000, until_release: false, crossfade: 300 }),
+                loop_range: Some(Loop { start: 1000, end: 19_000, alternating: false, until_release: false, crossfade: 300 }),
                 ..Zone::default()
             })
             .collect();
@@ -3206,7 +3312,7 @@ fn shared_filters_match_voices_filtered_alone_within_120_db() {
             .map(|g| Zone {
                 group: g,
                 sample: PathBuf::from((g % 4).to_string()),
-                loop_range: Some(Loop { start: 1000, end: 19_000, until_release: false, crossfade: 300 }),
+                loop_range: Some(Loop { start: 1000, end: 19_000, alternating: false, until_release: false, crossfade: 300 }),
                 ..Zone::default()
             })
             .collect();

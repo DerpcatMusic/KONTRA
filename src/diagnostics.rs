@@ -122,6 +122,8 @@ struct History {
 }
 enum Command {
     Event(LogEvent),
+    #[cfg(feature = "plugin")]
+    NativeTiming(moose::mui::window::NativeTimingReport, u64),
     Flush(mpsc::Sender<Result<(), String>>),
     Export {
         id: u64,
@@ -193,6 +195,9 @@ impl Session {
         let (sender, receiver) = mpsc::sync_channel(QUEUE_LIMIT);
         let worker_history = history.clone();
         let worker_path = path.clone();
+        #[cfg(feature = "plugin")]
+        let worker_id = id.clone();
+        let started = Instant::now();
         // Creation, serialization, rotation and export all happen off UI/audio.
         let worker = std::thread::Builder::new()
             .name("kontra-diagnostics".into())
@@ -204,6 +209,16 @@ impl Session {
                             if let Err(error) = journal.write_event(&event) {
                                 journal.error(error);
                             }
+                        }
+                        #[cfg(feature = "plugin")]
+                        Command::NativeTiming(report, capture_id) => {
+                            let data = native_timing_summary(&report, capture_id);
+                            let (mut row, bytes, truncated) = prepare_event(&worker_id, started, json!({
+                                "level":"info", "module":"ui", "event":"native_frame_timing",
+                                "code":"native_frame_timing", "data":data,
+                            }));
+                            retain_event(&mut lock(&journal.history), &mut row, bytes, truncated);
+                            if let Err(error) = journal.write_event(&row) { journal.error(error); }
                         }
                         Command::Flush(reply) => {
                             let _ = reply.send(journal.flush().map_err(|e| e.to_string()));
@@ -262,7 +277,7 @@ impl Session {
         let session = Arc::new(Self {
             id,
             path,
-            started: Instant::now(),
+            started,
             history,
             sender: Mutex::new(sender),
             worker: Mutex::new(worker),
@@ -334,6 +349,52 @@ pub fn log_path() -> Option<PathBuf> {
 pub fn event(level: LogLevel, module: &str, code: &str, details: Value) {
     emit(json!({"level":level,"module":module,"event":code,"code":code,"data":details}));
 }
+/// Enabled only at editor construction. The completed fixed buffer moves once
+/// to the joined diagnostics worker; native callbacks never summarize or format it.
+#[cfg(feature = "plugin")]
+pub(crate) fn native_timing_hook() -> Option<moose::mui::window::NativeTimingHook> {
+    if std::env::var("KONTRA_NATIVE_UI_TIMING").ok().as_deref() != Some("1") { return None; }
+    let lease = acquire();
+    let session = session();
+    let sender = lock(&session.sender).as_ref()?.clone();
+    let history = session.history.clone();
+    static NEXT_CAPTURE: AtomicU64 = AtomicU64::new(1);
+    Some(Arc::new(move |report| {
+        let _keep_worker_alive = &lease;
+        let capture_id = NEXT_CAPTURE.fetch_add(1, Ordering::Relaxed);
+        if sender.try_send(Command::NativeTiming(report, capture_id)).is_err() {
+            let mut history = lock(&history);
+            history.status.dropped_events += 1;
+            history.status.last_error = Some("Native UI timing report dropped: diagnostics worker queue unavailable".into());
+            REVISION.fetch_add(1, Ordering::Release);
+        }
+    }))
+}
+
+#[cfg(feature = "plugin")]
+fn native_timing_summary(report: &moose::mui::window::NativeTimingReport, capture_id: u64) -> Value {
+    use moose::mui::window::{NATIVE_METRICS, NATIVE_OUTCOMES, NATIVE_TIMING_LIMIT};
+    let summary = report.summary();
+    let metrics: serde_json::Map<_, _> = NATIVE_METRICS.iter().zip(summary.metrics).map(|(name, metric)| {
+        ((*name).into(), json!({"count":metric.count, "mean_ns":metric.mean_ns,
+            "p50_ns":metric.p50_ns, "p99_ns":metric.p99_ns, "max_ns":metric.max_ns}))
+    }).collect();
+    let outcomes: serde_json::Map<_, _> = NATIVE_OUTCOMES.iter().zip(summary.outcomes)
+        .map(|(name, count)| ((*name).into(), json!(count))).collect();
+    json!({"capture_id":capture_id, "build":build_identity(), "status":report.stop,
+        "samples_retained":report.count, "sample_capacity":NATIVE_TIMING_LIMIT, "capture_duration_limit_ms":10000,
+        "elapsed_ns":report.elapsed_ns, "capacity_stopped":report.stop == "capacity",
+        "window_closed_early":report.stop == "window_closed", "pointer_moves":report.pointer_moves,
+        "primary_drag_moves":report.drag_moves, "reentrant_callbacks":report.reentrant_callbacks,
+        "new_scenes":summary.new_scenes, "primary_drag_callbacks":summary.dragging_callbacks,
+        "physical_size":report.physical_size, "device_scale":report.device_scale, "geometry_changes":report.geometry_changes,
+        "first_callback_offset_ns":report.samples.first().filter(|_|report.count > 0).map(|s|s.offset_ns),
+        "last_callback_offset_ns":report.count.checked_sub(1).and_then(|i|report.samples.get(i)).map(|s|s.offset_ns),
+        "metrics":metrics, "outcomes":outcomes,
+        "measurement":"Native adapter callback wall time. Advance combines model polling, queued input, view builds and UI layout. Present combines CPU surface acquisition, render/upload/submit and presentation submission. Zero-duration or absent stages are excluded from stage statistics.",
+        "limitations":"No expected cadence exposed; no display deadline counts. Submission is not compositor/display FPS or GPU completion. No forced GPU synchronization. Reentrant callbacks are counted separately and are not timing samples."})
+}
+
 fn text(value: &Value, key: &str) -> Option<String> {
     value[key].as_str().map(str::to_owned)
 }
@@ -341,7 +402,7 @@ fn emit(value: Value) -> Option<String> {
     let session = session();
     emit_to(&session, value)
 }
-fn emit_to(session: &Session, value: Value) -> Option<String> {
+fn prepare_event(session_id: &str, started: Instant, value: Value) -> (LogEvent, usize, bool) {
     let data = value.get("data").cloned().unwrap_or_else(|| json!({}));
     let named = |key: &str| text(&value, key).or_else(|| text(&data, key));
     let number = |key: &str| value[key].as_u64().or_else(|| data[key].as_u64());
@@ -371,8 +432,8 @@ fn emit_to(session: &Session, value: Value) -> Option<String> {
         schema_version: SCHEMA_VERSION,
         sequence: 0,
         timestamp_ms: now(),
-        monotonic_ms: session.started.elapsed().as_millis() as u64,
-        session_id: session.id.clone(),
+        monotonic_ms: started.elapsed().as_millis() as u64,
+        session_id: session_id.to_owned(),
         level,
         module: named("module").unwrap_or_else(|| {
             if event_name == "runtime_issue" {
@@ -430,7 +491,6 @@ fn emit_to(session: &Session, value: Value) -> Option<String> {
     let mut bytes = serde_json::to_vec(&row)
         .map(|b| b.len())
         .unwrap_or(EVENT_BYTES + 1);
-    let mut history = lock(&session.history);
     if bytes > EVENT_BYTES {
         let mut summary = json!({"diagnostic_truncated":true,"original_bytes":bytes});
         for key in [
@@ -463,11 +523,15 @@ fn emit_to(session: &Session, value: Value) -> Option<String> {
             .unwrap_or(EVENT_BYTES);
         truncated = true;
     }
+    (row, bytes, truncated)
+}
+
+fn retain_event(history: &mut History, row: &mut LogEvent, bytes: usize, truncated: bool) {
     if truncated {
         history.status.truncated_events += 1;
     }
     history.status.total_events += 1;
-    history.status.level_counts[level.index()] += 1;
+    history.status.level_counts[row.level.index()] += 1;
     row.sequence = REVISION.fetch_add(1, Ordering::AcqRel) + 1;
     history.bytes += bytes;
     history.events.push_back((row.clone(), bytes));
@@ -477,6 +541,12 @@ fn emit_to(session: &Session, value: Value) -> Option<String> {
             history.status.history_evicted += 1;
         }
     }
+}
+
+fn emit_to(session: &Session, value: Value) -> Option<String> {
+    let (mut row, bytes, truncated) = prepare_event(&session.id, session.started, value);
+    let mut history = lock(&session.history);
+    retain_event(&mut history, &mut row, bytes, truncated);
     let result = lock(&session.sender)
         .as_ref()
         .map(|s| s.try_send(Command::Event(row)));

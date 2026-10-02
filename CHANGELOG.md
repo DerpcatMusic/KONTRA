@@ -20,11 +20,15 @@ are added when a release is actually published; commit history is not a changelo
 - Native NKSN snapshots applied to an explicit base instrument, including supported
   saved controls, instrument/group FX, known envelopes and modulation assignments.
   Three Analog Strings snapshots have production state checks and two decoded IRs each.
-- Bounded asynchronous `load_array_str` NKA reads with typed array/UI revision
-  updates, completion callbacks and distinct header, value, resource and capacity
-  diagnostics. Three real Analog factory loads and the retained rhythm table are
-  verified; callback/install/refresh paths record zero heap operations over 7,800
-  blocks of 128 samples. This does not add arbitrary array-file saving.
+- Bounded asynchronous `load_array_str` reads and explicit-path `save_array_str`
+  writes for typed NKA files, with retained array/UI revisions, completion callbacks
+  and header, value, resource, capacity and write diagnostics. Three real Analog
+  factory loads and the retained rhythm table are verified; read callback/install/
+  refresh paths record zero heap operations over 7,800 blocks of 128 samples. Two
+  unchanged-script browser-star callbacks write a copied favorites file with fresh
+  byte readback, restore its original bytes and record zero audio heap operations
+  over 6,300 blocks. All 11 original metadata files remain unchanged. Mode-based
+  saves and external file dialogs remain unavailable, returning status 0.
 - AHDSR/Flex envelope record writers that preserve opaque metadata. The selected
   782-file / 788-program corpus verifies 230,627 byte-exact record roundtrips and
   edited-value readbacks with zero errors.
@@ -33,11 +37,43 @@ are added when a release is actually published; commit history is not a changelo
   waveform generation and routing remain unsupported, some tables remain raw,
   and typed rate/phase metadata does not establish DSP behavior.
 - Named bitmap font loading for 256-glyph Windows-1252 RGBA strips declared during
-  initialization. Unit coverage and separate Areia Basic/Advanced Original-view
-  probes pass; exact font-resource census/capture verification remains pending.
+  initialization. Actual Areia Advanced resources verify two 256-glyph, 14-pixel
+  fonts with variable advances and the native gray/orange switch-state change;
+  broader font compatibility remains unverified.
+- Internal slot-to-slot MIDI2 note-controller callbacks, registered/assignable/bend
+  values, forwarding, waits and startup persistence delivery. External MIDI2 input
+  and multi-script MIDI-input callbacks remain absent; the selected 13-script
+  census contains no uses, so this does not establish an actual-library benefit.
+- Lossless native v2 filename-table records preserve segment kinds, UTF-16 units,
+  full timestamps, uninterpreted sample records and trailing metadata. Three actual
+  tables covering 102,026 sample references pass byte-exact and edited readback checks.
+  Existing raw chunk writing was already lossless; this adds typed editing access.
+- Imported zero-crossfade alternating sample loops share reflected playback mapping
+  between resident and streaming readers. Cache and NKI export retain their direction.
+  Crossfaded alternating loops retain metadata and warn about forward-crossfade fallback;
+  endpoint/interpolation equivalence with Kontakt remains unverified.
+- Opt-in native UI timing capture records one bounded ten-second drag window and
+  summarizes it on the diagnostics worker. It measures application callback and
+  presentation-submission time, without forced GPU synchronization or display-FPS claims.
 
 ### Fixed
 
+- Shared controls recover movement before the drag threshold, so closed physical
+  mouse paths return to their starting values at 100%, 150% and 200% display scale.
+
+- Host position, tempo, play/stop and time signature reach script callbacks before
+  MIDI input. Song position advances within the block at callback sample offsets;
+  bar duration follows the host meter. Start/stop listener subscriptions are independent.
+  Beat listeners still use elapsed-clock phase; missing host timeline validity is
+  an upstream limitation, so unavailable beat position cannot be distinguished from zero.
+- Repeated same-sample group parameter restores use a preallocated address lookup.
+  The checked Areia Core F3 channel-overlap burst drops zero writes instead of 854,
+  without increasing queue capacity; measured event-plus-render time stays near
+  baseline at 3.56 versus 3.53 ms. Distinct-sample timing and latest-value reads remain.
+- Instrument replacement clears previous script state and convolution settings;
+  source epochs on both live-request and snapshot queues reject stale updates.
+  A native Areia-to-CHORUS transition verifies the new logo, controls, header and
+  playable range, resolving the observed cross-instrument state contamination.
 - Physical note ownership, delayed callback cancellation, MIDI stop ordering and
   selective sound-off across articulation channels sharing one engine channel.
 - Sustain release bookkeeping, generated-note lifecycle and MPE expression/tuning
@@ -58,6 +94,8 @@ are added when a release is actually published; commit history is not a changelo
 - Zone ID mapping after import filtering and source-parser allocations in validated
   preset/container paths.
 - Browser scaling/layout and selected DSP effect processing paths.
+- RV2 Reverb Time captions use the existing DSP time conversion; the checked
+  Areia Advanced state displays 1099.5 ms. This does not establish Kontakt's law.
 - Original interface wallpaper page offsets and viewport rendering, authored fader
   travel, factory font color/state inheritance and explicit caption text colors.
   Factory glyphs still use the bundled font approximation.
@@ -69,6 +107,13 @@ are added when a release is actually published; commit history is not a changelo
   device scale 1.5; selected callbacks are checked, not every control action.
 - Warm Vectorized CPU planning drops 78% in one bounded paired Analog trial
   (2.567 to 0.566 ms). This does not establish overall GPU/frame/input latency.
+- Scalar edits avoid copying the imported interface under the view lock. A matched
+  Analog trial measures mean edit submission at 1.152 to 0.000240 ms; whole observed
+  frame means are 4.223 and 4.395 ms, providing no frame-rate improvement evidence.
+- Changed publications reuse unchanged control storage; a separate matched Analog
+  trial measures publication mean at 0.122 to 0.047 ms. Its final macro update copies
+  3 of 934 controls; startup updates copy more. Drawing uses published revisions
+  instead of scanning all control properties every frame. Native FPS remains unverified.
 - Internal pitch AHDSR routing to voice modulation, selected filter coefficients
   and worker-built convolution cutoff processing. These changes do not establish
   Kontakt parameter-law or sonic equivalence.
@@ -84,4 +129,6 @@ The focused offline results do not certify live-host deadlines or every library.
 Opaque snapshot source state and unknown saved scalars are warned and remain unapplied.
 
 Analog Strings' live factory-preset and rhythm menus use bounded NKA reads; selected
-menu checks do not establish that every action or preset works.
+menu checks do not establish that every action or preset works. The installed
+header-favorite preset ID is absent from its registry, preventing that lookup from
+updating favorites; no supplied IDs were repaired or compared with Kontakt.

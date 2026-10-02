@@ -301,7 +301,8 @@ fn room_height(ui: &Ui, slot: usize) -> f64 {
     (rack.frame.size.height - (stage.frame.y - part.frame.y).max(0.)).max(0.)
 }
 
-/// The scalar/table part of the memo key, also measured by the opt-in UI probe.
+/// Reference cost of the former scalar/table memo scan, measured by the opt-in UI probe.
+#[cfg(test)]
 pub(super) fn hash_properties(i: &Interface, h: &mut DefaultHasher) {
     for c in &i.controls {
         for (k, v) in &c.properties {
@@ -337,11 +338,13 @@ pub fn deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
     let mut h = DefaultHasher::new();
     (room(ui, slot).round() as i64, room_height(ui, slot).round() as i64, cx.settings.view_scale.to_bits()).hash(&mut h);
     shows(cx, slot).hash(&mut h);
+    v.live_revisions.hash(&mut h);
+    for edit in v.edited_values() { edit.hash(&mut h); }
     (Arc::as_ptr(&v.pictures) as usize, v.wallpaper.as_ref().map(|w| Arc::as_ptr(w) as usize)).hash(&mut h);
     if let Some(i) = &v.interface {
         (Arc::as_ptr(i) as usize, i.width, i.height, i.wallpaper_state, i.skin_offset).hash(&mut h);
-        // An edit may change the interface in place.
-        hash_properties(i, &mut h);
+        // Published interfaces are immutable; source revisions and pending
+        // scalar pairs above invalidate drawing without rescanning properties.
     }
     // A wave read since.
     if let (Some(i), Some(u)) = (&v.instrument, &v.interface) {
@@ -435,11 +438,12 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         .into_iter()
         .map(|shown| {
             let c = &interface.controls[shown.control];
-            let image = picture_frame(&shown, c, value(c));
+            let image = picture_frame(&shown, c, cx.view.parts[slot].control_value(shown.control).unwrap_or_else(|| value(c)));
             (shown, image)
         })
         .collect();
-    let plans = if vector { super::vector::plan(&interface, &pictures, &drawn, &mut cx.state.vector_assets) } else { Vec::new() };
+    let part = &cx.view.parts[slot];
+    let plans = if vector { super::vector::plan(&interface, &pictures, &drawn, &mut cx.state.vector_assets, |n| part.control_value(n)) } else { Vec::new() };
     for (n, (shown, _)) in drawn.iter().enumerate() {
         let c = &interface.controls[shown.control];
         let look = match plans.get(n) {
@@ -833,7 +837,7 @@ fn control(ui: &mut Ui, cx: &mut Cx, slot: usize, shown: &Shown, c: &Control, s:
     let dev = ui.scale().unwrap_or(1.);
     let (w, h) = ((shown.w * s * dev).round() / dev, (shown.h * s * dev).round() / dev);
     let hide = int(c, "$CONTROL_PAR_HIDE").unwrap_or(0);
-    let raw = value(c);
+    let raw = cx.view.parts[slot].control_value(shown.control).unwrap_or_else(|| value(c));
     let (min, max) = range(shown.kind, c);
     let (lo, hi) = (min.min(max), min.max(max).max(min.min(max) + 1.));
     let reset = f64::from(int(c, "$CONTROL_PAR_DEFAULT_VALUE").unwrap_or(0)).clamp(lo, hi);
@@ -1300,6 +1304,47 @@ mod tests {
                         let expected = 400_000. + travelled / distance * 1_000_000.;
                         assert!((value - expected).abs() < 1e-6, "{w}x{h}, view {view_scale}, device {device_scale}, step {step}: {value} != {expected}");
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn closed_physical_drag_keeps_the_starting_value_across_device_scales() {
+        // Native X11 samples are integer physical pixels. At scale 1.5 the
+        // first six-pixel move equals MUI's click threshold and is not yet
+        // a drag. Losing it moved Analog's 180-frame macro one frame left.
+        for scale in [1., 1.5, 2.] {
+            for vertical in [false, true] {
+                for fine in [false, true] {
+                    let mut ui = crate::ui::theme::ui();
+                    let size = Size::new(734., 734.);
+                    let root = || block(size.width, size.height).id("macro");
+                    ui.frame(root(), Some(size), Input::default(), 0.).unwrap();
+                    let mut value = 500_000.;
+                    let mut peak: f64 = 0.;
+                    // Repeat on the same ID so the second press must reset
+                    // the remembered first-drag frame too.
+                    for _ in 0..2 {
+                        for step in 0..=500 {
+                            let physical = (250. * (step as f64 / 500. * std::f64::consts::TAU * 2.).sin()).round();
+                            let delta = physical / scale;
+                            let at = if vertical { Point::new(400., 400. - delta) } else { Point::new(400. + delta, 400.) };
+                            let input = Input { pointer: PointerInput {
+                                pos: Some(at), buttons: Buttons::PRIMARY,
+                                mods: Mods { shift: fine, ..Default::default() }, ..Default::default()
+                            }, ..Default::default() };
+                            ui.frame(root(), Some(size), input, 0.012).unwrap();
+                            drive(&mut ui, "macro", &mut value, &(0. ..=1_000_000.), 734., vertical, 0.);
+                            peak = peak.max((value - 500_000.).abs());
+                        }
+                        assert!((value - 500_000.).abs() < 1e-6, "scale {scale}, vertical {vertical}, fine {fine}: {value}");
+                        assert_eq!(frame(value.round(), 0., 1_000_000., 180), frame(500_000., 0., 1_000_000., 180), "authored sprite returns to the same frame");
+                        ui.frame(root(), Some(size), Input::default(), 0.6).unwrap();
+                        drive(&mut ui, "macro", &mut value, &(0. ..=1_000_000.), 734., vertical, 0.);
+                    }
+                    let expected = 250. / scale / 734. * 1_000_000. * if fine { 0.1 } else { 1. };
+                    assert!((peak - expected).abs() < 1e-6, "the control moves through the full pointer excursion");
                 }
             }
         }

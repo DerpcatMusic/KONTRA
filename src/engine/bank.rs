@@ -1202,6 +1202,9 @@ fn play_map(zone: &Zone, group: &Group, frames: u64) -> Result<(PlayMap, bool), 
                 end: le,
                 xfade,
                 until_release: l.until_release,
+                // Crossfaded alternating metadata is retained by the importer,
+                // which warns that this combination uses forward crossfading.
+                alternating: l.alternating && l.crossfade == 0,
             })
         }
         None => None,

@@ -157,7 +157,7 @@ fn inside(a: &Shown, b: &Shown) -> f64 {
 
 /// The plan for every control of `drawn` (in drawing order, each with the
 /// frame of its picture the original view shows).
-pub fn plan(interface: &Interface, _pictures: &HashMap<String, Arc<Picture>>, drawn: &[(Shown, Option<Arc<Image>>)], assets: &mut Assets) -> Vec<Plan> {
+pub fn plan(interface: &Interface, _pictures: &HashMap<String, Arc<Picture>>, drawn: &[(Shown, Option<Arc<Image>>)], assets: &mut Assets, current_value: impl Fn(usize) -> Option<f64>) -> Vec<Plan> {
     assets.prune();
     let (vw, vh) = (f64::from(interface.width), f64::from(interface.height));
     let view = vw * vh;
@@ -259,7 +259,8 @@ pub fn plan(interface: &Interface, _pictures: &HashMap<String, Arc<Picture>>, dr
             continue;
         }
         let mut words = Vec::new();
-        let (said, align, top) = caption_of(c, s.kind, value(c));
+        let now = current_value(s.control).unwrap_or_else(|| value(c));
+        let (said, align, top) = caption_of(c, s.kind, now);
         // What lies on it, drawn after: its words go beside them.
         let on: Vec<(f64, f64)> = (drawn.iter().zip(&faces).skip(n + 1))
             .filter_map(|((o, _), f)| hides(o, &interface.controls[o.control], *f))
@@ -309,7 +310,7 @@ pub fn plan(interface: &Interface, _pictures: &HashMap<String, Arc<Picture>>, dr
                 }
                 if hide & 2 == 0 {
                     let label = prop(c, "$CONTROL_PAR_LABEL");
-                    let shown_value = if label.is_empty() { format!("{}", value(c).round()) } else { keep_spaces(label) };
+                    let shown_value = if label.is_empty() { format!("{}", now.round()) } else { keep_spaces(label) };
                     push(&mut words, &shown_value, (0., s.w + 2.), s.h - row, row, 1);
                 }
             }
@@ -425,7 +426,7 @@ mod tests {
         let pictures = HashMap::new();
         let read = |u: &Interface| {
             let drawn = super::super::perf_view::layout(u, &pictures).into_iter().map(|s| (s,None)).collect::<Vec<_>>();
-            plan(u, &pictures, &drawn, &mut Assets::default())
+            plan(u, &pictures, &drawn, &mut Assets::default(), |_| None)
         };
         let p = read(&u);
         assert!(p[0].words.is_empty() && p[2].words.is_empty(), "Original switch and label text is not replanned");
@@ -438,6 +439,17 @@ mod tests {
         u.controls[2].properties.insert("$CONTROL_PAR_POS_Y".into(), Value::Int(81));
         assert!(read(&u)[1].words.is_empty(), "a nearby authored Original label still suppresses a duplicate name");
         assert_eq!(prop(&u.controls[2], "$CONTROL_PAR_TEXT"), "Authored caption");
+        let mut gain = u.controls[1].clone();
+        gain.kind = "ui_knob".into();
+        gain.variable = "$gain".into();
+        gain.properties.insert("$CONTROL_PAR_POS_X".into(), Value::Int(400));
+        gain.properties.insert("$CONTROL_PAR_TEXT".into(), Value::Text("Gain".into()));
+        gain.properties.insert("$CONTROL_PAR_VALUE".into(), Value::Int(0));
+        u.controls.push(gain);
+        let drawn = super::super::perf_view::layout(&u, &pictures).into_iter().map(|s| (s,None)).collect::<Vec<_>>();
+        let projected = plan(&u, &pictures, &drawn, &mut Assets::default(), |n| (n == 3).then_some(77.));
+        assert!(projected[3].words.iter().any(|w| w.text == "77"), "native value words show the pending value");
+        assert_eq!(value(&u.controls[3]), 0., "callback metadata is not modified for drawing");
     }
 
     #[test]
@@ -451,8 +463,8 @@ mod tests {
             u.controls[0].properties.insert("$CONTROL_PAR_VALUE".into(), Value::Int(value));
             let drawn: Vec<_> = super::super::perf_view::layout(&u, &pictures).into_iter()
                 .map(|s| { let image = super::super::perf_view::frame_of(&s, &u.controls[s.control]); (s,image) }).collect();
-            let cached = plan(&u, &pictures, &drawn, &mut assets);
-            let fresh = plan(&u, &pictures, &drawn, &mut Assets::default());
+            let cached = plan(&u, &pictures, &drawn, &mut assets, |_| None);
+            let fresh = plan(&u, &pictures, &drawn, &mut Assets::default(), |_| None);
             assert!(cached.iter().zip(&fresh).all(|(a,b)| a.face == b.face && a.words == b.words), "live plans retain their faces and text");
             assert_eq!(assets.sampled, 1, "immutable pixels are sampled once across live value changes");
         }
@@ -460,8 +472,8 @@ mod tests {
         pictures.insert("clear".into(), Arc::new(Picture {frames: vec![solid.clone(); 9], stretch: [false; 2], atlas: None}));
         let drawn: Vec<_> = super::super::perf_view::layout(&u, &pictures).into_iter()
             .map(|s| { let image = super::super::perf_view::frame_of(&s, &u.controls[s.control]); (s,image) }).collect();
-        let cached = plan(&u, &pictures, &drawn, &mut assets);
-        let fresh = plan(&u, &pictures, &drawn, &mut Assets::default());
+        let cached = plan(&u, &pictures, &drawn, &mut assets, |_| None);
+        let fresh = plan(&u, &pictures, &drawn, &mut Assets::default(), |_| None);
         assert!(cached.iter().zip(&fresh).all(|(a,b)| a.face == b.face && a.words == b.words), "replaced artwork receives its new classification");
         assert_eq!(assets.sampled, 2);
         assert!(!matches!(cached[0].face, Face::Clear), "opaque replacement is visible");
@@ -498,7 +510,7 @@ mod tests {
         let plans = |u: &Interface| {
             let drawn: Vec<_> = super::super::perf_view::layout(u, &pictures).into_iter()
                 .map(|s| {let image = super::super::perf_view::frame_of(&s, &u.controls[s.control]); (s,image)}).collect();
-            plan(u, &pictures, &drawn, &mut Assets::default())
+            plan(u, &pictures, &drawn, &mut Assets::default(), |_| None)
         };
         let p = plans(&u);
         assert_eq!(p[0].face, Face::Clear, "paired old thumb disappears");
@@ -545,7 +557,7 @@ mod tests {
             u.controls[0].properties.insert("$CONTROL_PAR_VALUE".into(), Value::Int(value));
             let drawn: Vec<_> = super::super::perf_view::layout(&u, &pictures).into_iter()
                 .map(|s| {let image = super::super::perf_view::frame_of(&s, &u.controls[s.control]); (s,image)}).collect();
-            let p = plan(&u, &pictures, &drawn, &mut Assets::default());
+            let p = plan(&u, &pictures, &drawn, &mut Assets::default(), |_| None);
             assert_eq!(p[0].face, Face::Clear);
             assert!(p[1].skin, "native surface covers the replaced skin");
             assert!(p[1].words.iter().any(|w| w.text == caption), "selected menu text survives bitmap removal");
@@ -568,7 +580,7 @@ mod tests {
             for label in &mut u.controls[..2] { label.properties.insert("$CONTROL_PAR_PICTURE_STATE".into(), Value::Int(source)); }
             let drawn: Vec<_> = super::super::perf_view::layout(&u, &pictures).into_iter()
                 .map(|s| {let image = super::super::perf_view::frame_of(&s, &u.controls[s.control]); (s,image)}).collect();
-            let p = plan(&u, &pictures, &drawn, &mut Assets::default());
+            let p = plan(&u, &pictures, &drawn, &mut Assets::default(), |_| None);
             assert_ne!(p[0].face, Face::Clear);
             assert_ne!(p[1].face, Face::Clear);
             assert!(!p[2].skin, "source0 coinciding with slider0 is still a resizable display, not its face");

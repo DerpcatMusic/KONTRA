@@ -97,6 +97,75 @@ fn loop_slots_are_a_mask_not_a_count() {
     data.pop();
     assert!(LoopArray::read(Cursor::new(data)).is_err());
 }
+
+#[test]
+fn filename_table_records_preserve_native_metadata_and_edit_paths() {
+    use ni_file::kontakt::objects::{FNTableRecord, BFileNameSegmentRecord};
+    // Authored v2 table: all supported native segment kinds, exact UTF-16 code
+    // units (including an unpaired surrogate), full-width metadata and an
+    // uninterpreted extension. No proprietary table or filename is included.
+    let mut data = 2u16.to_le_bytes().to_vec();
+    data.extend(1u32.to_le_bytes()); // special files
+    data.extend(9i32.to_le_bytes());
+    for kind in [1, 2, 3, 4, 5, 6, 8, 9, 11] {
+        data.push(kind);
+        if matches!(kind, 1 | 2 | 4 | 5 | 8 | 9) {
+            data.extend(2u32.to_le_bytes());
+            data.extend(0xd800u16.to_le_bytes());
+            data.extend(0u16.to_le_bytes());
+        }
+    }
+    let sample_count_offset = data.len();
+    data.extend(1u32.to_le_bytes());
+    let sample_segments_offset = data.len();
+    data.extend(1i32.to_le_bytes());
+    data.push(4);
+    let sample_text_length_offset = data.len();
+    data.extend(1u32.to_le_bytes());
+    data.extend(65u16.to_le_bytes());
+    data.extend(u64::MAX.to_le_bytes());
+    data.extend(0x12345678u32.to_le_bytes());
+    data.extend(0u32.to_le_bytes()); // other files
+    let known_length = data.len();
+    data.extend([0xab, 0xcd, 0xef]);
+    let chunk = ni_file::kontakt::Chunk { id: 0x4b, data };
+    let mut record = FNTableRecord::try_from(&chunk).unwrap();
+    assert_eq!(record.samples[0].timestamp, u64::MAX);
+    assert_eq!(record.samples[0].unknown_record, 0x12345678);
+    assert_eq!(record.trailing_data, [0xab, 0xcd, 0xef]);
+    assert_eq!(record.to_chunk().unwrap().data, chunk.data);
+    let mut encoded = Vec::new();
+    record.write(&mut encoded).unwrap();
+    assert_eq!(ni_file::kontakt::Chunk::read(Cursor::new(encoded)).unwrap().data, chunk.data);
+    for end in 0..known_length {
+        let truncated = ni_file::kontakt::Chunk { id: 0x4b, data: chunk.data[..end].to_vec() };
+        assert!(FNTableRecord::try_from(&truncated).is_err(), "end={end}");
+    }
+    for (offset, bytes) in [
+        (sample_count_offset, u32::MAX.to_le_bytes()),
+        (sample_segments_offset, (-1i32).to_le_bytes()),
+        (sample_text_length_offset, u32::MAX.to_le_bytes()),
+    ] {
+        let mut malformed = chunk.data.clone();
+        malformed[offset..offset + 4].copy_from_slice(&bytes);
+        assert!(FNTableRecord::try_from(&ni_file::kontakt::Chunk { id: 0x4b, data: malformed }).is_err());
+    }
+    record.samples[0].filename.segments[0].text = Some("Authored.ncw".encode_utf16().collect());
+    let edited = FNTableRecord::try_from(&record.to_chunk().unwrap()).unwrap();
+    assert_eq!(edited, record);
+    assert_eq!(edited.special_files[0], FNTableRecord::try_from(&chunk).unwrap().special_files[0]);
+    record.samples[0].filename.segments.push(BFileNameSegmentRecord { kind: 11, text: Some(vec![65]) });
+    let mut output = Vec::new();
+    assert!(record.write(&mut output).is_err());
+    assert!(output.is_empty());
+    let mut wrong_version = chunk.data.clone();
+    wrong_version[0] = 3;
+    assert!(FNTableRecord::try_from(&ni_file::kontakt::Chunk { id: 0x4b, data: wrong_version }).is_err());
+    let mut unknown_segment = chunk.data.clone();
+    unknown_segment[10] = 255;
+    assert!(FNTableRecord::try_from(&ni_file::kontakt::Chunk { id: 0x4b, data: unknown_segment }).is_err());
+    assert!(FNTableRecord::try_from(&ni_file::kontakt::Chunk { id: 0x3d, data: chunk.data }).is_err());
+}
 #[test]
 fn zone_list_keeps_group_id() {
     let mut bytes = 1u32.to_le_bytes().to_vec();
