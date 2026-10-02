@@ -968,6 +968,13 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 m.env.note("set_zone_par: normal zones require snapshot mode 2 or 3");
                 let id = async_done(m, 0); return push_int(m, id);
             }
+            // NI: init edits are synchronous and return -1, so a shared
+            // helper's wait_async(-1) continues without an async callback.
+            if m.t.ctx.kind == Kind::Cb(Callback::Init) {
+                let edit=ZoneEdit {zone,par,value,slot:m.slot.index,id:-1};
+                if let Err(error)=m.engine.request_zone_edit(edit) {m.env.note(error);}
+                return push_int(m,-1);
+            }
             if m.env.pending_async.len() == m.env.pending_async.capacity() {
                 m.env.note("set_zone_par: pending async capacity exhausted");
                 let id = async_done(m, 0); return push_int(m, id);

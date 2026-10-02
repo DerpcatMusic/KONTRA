@@ -218,6 +218,7 @@ pub struct Engine {
     write_index: (u32, std::collections::HashMap<Address, usize>),
     ir_requests: Vec<IrRequest>,
     offline_zone: Option<(u64,Box<zone::Prepared>)>,
+    zone_queued_epoch: u64,
     zone_inflight: usize,
     zone_requests: std::collections::VecDeque<crate::ksp::engine::ZoneEdit>,
     /// Configured part channel for callbacks without a MIDI input owner.
@@ -253,6 +254,7 @@ impl Default for Engine {
             ir_requests: Vec::with_capacity(32),
             zone_requests: Default::default(),
             zone_inflight: 0,
+            zone_queued_epoch: 0,
             offline_zone: None,
             home_channel: 0,
             attack: 0.002,
@@ -280,6 +282,7 @@ impl Engine {
         self.ir_requests.clear();
         self.zone_requests.clear();
         self.zone_inflight = 0;
+        self.zone_queued_epoch = 0;
         let mut bank = bank;
         if let Some(bank) = bank.as_deref_mut() {
             std::mem::swap(&mut self.zone_requests, &mut bank.zone_spares);
@@ -368,6 +371,7 @@ impl Engine {
         self.ir_requests.clear();
         self.zone_requests.clear();
         self.zone_inflight = 0;
+        self.zone_queued_epoch = 0;
         let channel = self.service_channel();
         if let Some(rt) = script.as_deref_mut() {
             rt.set_sample_rate(self.player.rate);
@@ -1072,8 +1076,10 @@ impl Engine {
     fn queue_init_zone_edits(&mut self) {
         let Some(bank)=self.bank.as_deref() else { return };
         let Some(rt) = self.script.as_deref_mut() else { return };
-        if !bank.zone_init_source_matches(rt.init_zone_source) { return; }
-        for edit in rt.init_zone_edits.drain(..) {
+        if !bank.zone_init_source_matches(rt.init_zone_source) || self.zone_queued_epoch==rt.service_epoch { return; }
+        self.zone_queued_epoch=rt.service_epoch;
+        for &edit in &rt.init_zone_edits {
+            if edit.id<0 && bank.zone_init_epoch==rt.service_epoch {continue;}
             if self.zone_requests.len() < self.zone_requests.capacity() { self.zone_requests.push_back(edit); self.zone_inflight += 1; }
             else { rt.env.note("set_zone_par: init request queue exhausted"); }
         }
@@ -1105,6 +1111,7 @@ impl Engine {
             }
             prepared.completed+=1;
         }
+        if let Some(error)=prepared.error.take() {anyhow::bail!("Zone mapping: {error}");}
         Ok(true)
     }
 
@@ -1121,7 +1128,7 @@ impl Engine {
     }
 
     pub(crate) fn finish_zone_edit(&mut self, edit: crate::ksp::engine::ZoneEdit, success: bool) -> bool {
-        if let Some((rt,mut host)) = self.scripted(self.service_channel()) {
+        if edit.id>=0 && let Some((rt,mut host)) = self.scripted(self.service_channel()) {
             if !rt.service_complete(&mut host,edit.slot,edit.id,success) { return false; }
             if !success { rt.env.note("set_zone_par: mapping was not installed"); }
         }
