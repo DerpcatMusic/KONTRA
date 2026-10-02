@@ -24,7 +24,7 @@ pub(crate) struct Session<P: Params> {
     file_drop: Option<FileDrop>,
     cancel: Option<Box<dyn FnMut(&Ui) + Send>>,
     /// Native window/renderer diagnostics, outside painting and audio.
-    log: Option<Box<dyn FnMut(&str) + Send>>,
+    log: Option<window::LogHook>,
     /// The size `build` was designed at, fitted to the window; `None` is
     /// [`MuiEditor::fixed_zoom`].
     design: Option<Size>,
@@ -35,7 +35,9 @@ pub(crate) struct Session<P: Params> {
 
 impl<P: Params> View for Session<P> {
     fn log(&mut self, line: &str) {
-        if let Some(log) = &mut self.log { log(line); } else { eprintln!("{line}"); }
+        if let Some(log) = &self.log {
+            log.lock().unwrap_or_else(std::sync::PoisonError::into_inner)(line);
+        } else { eprintln!("{line}"); }
     }
     fn build(&mut self, ui: &mut Ui, _: &Input) -> El {
         let root = (self.build)(ui, &mut self.bridge);
@@ -189,7 +191,7 @@ impl<P: Params> MuiEditor<P> {
     /// Receive native window and GPU startup/failure diagnostics.
     #[must_use]
     pub fn on_log(self, f: impl FnMut(&str) + Send + 'static) -> Self {
-        lock(&self.shared).view.log = Some(Box::new(f));
+        lock(&self.shared).view.log = Some(Arc::new(Mutex::new(f)));
         self
     }
 
@@ -290,6 +292,9 @@ impl<P: Params> Editor for MuiEditor<P> {
             .attach(context.with_params(Arc::clone(&self.params)));
         // A request made while closed was for the last window.
         self.requests = Arc::default();
+        if let Some(log) = &lock(&self.shared).view.log {
+            self.requests.on_log(Arc::clone(log));
+        }
         if let Some(keys) = &self.keys {
             self.requests.on_key(Arc::clone(keys));
         }
