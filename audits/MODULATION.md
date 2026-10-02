@@ -426,9 +426,28 @@ matches the [original developer's published pitch measurements](https://communit
 1129961 gives 24 semitones, 1221125 gives 36, 1293701 gives 48, and 2000000 gives
 324. Those points use the existing 12-semitone/unit pitch scale. The law is inferred
 from primary experimental data and has not been calibrated against Kontakt renders;
-legacy volume/filter target scaling remains unsupported. Modern
-`MOD_TARGET_MP_INTENSITY` retains its distinct linear bipolar law. Finite extended
-legacy depths survive writes and readback instead of being clamped to one octave.
+legacy volume and other filter target scaling remains unsupported. The same
+cubic law is also corroborated for legacy AHDSR filter-cutoff depth. Modern
+`MOD_TARGET_MP_INTENSITY` uses cubic depth for independently verified pitch and
+filter-cutoff targets; other signed target laws remain unchanged. Finite extended
+pitch depths survive writes and readback instead of being clamped to one octave.
+
+For modern cutoff, Conflux's base saved `$Edit__Mods__ModEnv__Cutoff` is 507160.
+Its selected sound is group 2; internal source slot 1 is `MOD ENV`, and original
+target 1 is `MOD ENV -> CUTOFF`, parameter `filterCutoff`, filter module slot 0.
+The independently stored depth is 0.000002936503. The authored control callback
+passes its raw knob value directly to `MOD_TARGET_MP_INTENSITY` for that named
+target. Cubing the centered value 0.01432 reproduces the native magnitude;
+the former linear conversion made it about 4,877 times larger. Cube-root readback
+returns 507160. This corroborates the
+[original developer's published cubic measurement](https://vi-control.net/community/threads/the-formula-for-getting-the-ksp-modulator-intensity-value-from-desired-intensity-percentage.86187/page-2)
+(post 34, edited May 2025), without claiming Kontakt render calibration.
+Both internal and external cutoff depth addresses use this law and retain their
+normalized limits. Pitch alone permits extended modern depths. Unipolar depth,
+other signed targets, source flags, target polarity flags and shapers retain their
+existing behavior. The three inspected Conflux snapshots are script-only and
+provide no independent native target-depth records; their changed UI amounts
+are not treated as matched saved-depth evidence.
 
 Explicit `INTMOD_BYPASS` and modern `MOD_TARGET_INTENSITY` /
 `MOD_TARGET_MP_INTENSITY` now also address decoded AHDSRs driving group filter,
@@ -441,11 +460,14 @@ controls use the existing normalized module-offset law and modern intensity laws
 The [official KSP engine parameter reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters)
 defines modern bipolar depth with zero contribution at 500,000, positive maximum
 at 1,000,000 and inverted maximum at zero; it also identifies `INTMOD_BYPASS`
-as the internal modulator bypass control. Legacy filter `INTMOD_INTENSITY` and
-undecoded preset bypass flags remain unmapped.
+as the internal modulator bypass control. Legacy filter-cutoff
+`INTMOD_INTENSITY` is mapped; other legacy module laws remain unverified.
+The separately verified native source-bypass mapping initializes supported
+pitch/filter/EQ envelopes (see Native internal source switches below).
 The authored `module_envelope_controls_preserve_targets_and_elapsed_clock_without_heap`
 regression checks PCM bypass/resumption, clock continuity, live depth/readback,
-mixed-target addressing, finite output and allocation counts. Kontakt reference
+mixed-target addressing, the independent Conflux modern cutoff depth, signed
+PCM response, normalized bounds, finite output and allocation counts. Kontakt reference
 render parity has not been established.
 
 A bounded check against production revision `e68d28c` merged the actual Analog

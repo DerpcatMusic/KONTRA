@@ -536,6 +536,20 @@ pub(crate) enum Stage {
     AhdOnly,
 }
 
+/// Independently corroborated signed depth laws; only pitch allows >12 st.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum CubicDepth { Pitch, Cutoff }
+
+impl CubicDepth {
+    fn target(target: &ModTarget) -> Option<Self> {
+        match target {
+            ModTarget::Pitch => Some(Self::Pitch),
+            ModTarget::Module { param, .. } if param == "filterCutoff" => Some(Self::Cutoff),
+            _ => None,
+        }
+    }
+}
+
 /// A modelled engine parameter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Address {
@@ -552,8 +566,8 @@ pub(crate) enum Address {
         group: u16,
         index: u16,
         bipolar: bool,
-        /// Independently verified cubic law for signed pitch targets only.
-        cubic: bool,
+        /// Verified pitch or cutoff cubic law, separate from other MP targets.
+        cubic: Option<CubicDepth>,
     },
     /// An internal pitch/filter/EQ-envelope depth, in original target order.
     InternalIntensity {
@@ -561,8 +575,8 @@ pub(crate) enum Address {
         envelope: u8,
         target: u16,
         bipolar: bool,
-        /// Independently verified cubic law for signed pitch targets only.
-        cubic: bool,
+        /// Verified pitch or cutoff cubic law, separate from other MP targets.
+        cubic: Option<CubicDepth>,
     },
     /// Legacy cubic bipolar depth, measured for pitch and filter-cutoff targets.
     LegacyInternalIntensity { group: u16, envelope: u8, target: u16 },
@@ -687,7 +701,7 @@ impl Address {
                         group: g,
                         index: u16::try_from(index + target).ok()?,
                         bipolar,
-                        cubic: bipolar && matches!(groups[g as usize].mods.get(index + target)?.target, ModTarget::Pitch),
+                        cubic: if bipolar { CubicDepth::target(&groups[g as usize].mods.get(index + target)?.target) } else { None },
                     },
                     None => {
                         let envelope = m.envelope?;
@@ -707,7 +721,7 @@ impl Address {
                         let target = u16::try_from(target).ok()?;
                         if par.id == id::INTMOD_INTENSITY {
                             Self::LegacyInternalIntensity { group: g, envelope, target }
-                        } else { Self::InternalIntensity { group: g, envelope, target, bipolar, cubic: bipolar && matches!(routed, ModTarget::Pitch) } }
+                        } else { Self::InternalIntensity { group: g, envelope, target, bipolar, cubic: if bipolar { CubicDepth::target(routed) } else { None } } }
                     }
                 }
             }
@@ -841,10 +855,12 @@ impl Address {
             // Primary KSP measurements give cubic legacy depth; Analog cutoff
             // magnitudes corroborate it. Not Kontakt render calibrated.
             Self::LegacyInternalIntensity { .. } => (2. * value as f32 / UNIT - 1.).powi(3),
-            // Conflux's modern pitch writer uses cbrt(semitones / 12);
-            // its saved 2 st target corroborates the inverse cubic depth.
-            Self::Intensity { cubic: true, .. }
-            | Self::InternalIntensity { cubic: true, .. } => (2.0 * value as f32 / UNIT - 1.0).powi(3),
+            // Conflux's saved 2 st pitch target and raw507160 cutoff target
+            // independently corroborate the cubic law. Cutoff stays normalized.
+            Self::Intensity { cubic: Some(CubicDepth::Pitch), .. }
+            | Self::InternalIntensity { cubic: Some(CubicDepth::Pitch), .. } => (2.0 * value as f32 / UNIT - 1.0).powi(3),
+            Self::Intensity { cubic: Some(CubicDepth::Cutoff), .. }
+            | Self::InternalIntensity { cubic: Some(CubicDepth::Cutoff), .. } => (2.0 * x - 1.0).powi(3),
             Self::Intensity { bipolar: true, .. }
             | Self::InternalIntensity { bipolar: true, .. } => 2.0 * x - 1.0,
             Self::Filter(_, _, Knob::Bypass) | Self::InternalBypass(..) => f32::from(value != 0),
@@ -900,8 +916,10 @@ impl Address {
                 Stage::Decay | Stage::Release => time_value(v, LONG),
             },
             Self::LegacyInternalIntensity { .. } => return ((v.cbrt() + 1.) * 0.5 * UNIT).round() as i32,
-            Self::Intensity { cubic: true, .. }
-            | Self::InternalIntensity { cubic: true, .. } => return ((v.cbrt() + 1.0) * 0.5 * UNIT).round() as i32,
+            Self::Intensity { cubic: Some(CubicDepth::Pitch), .. }
+            | Self::InternalIntensity { cubic: Some(CubicDepth::Pitch), .. } => return ((v.cbrt() + 1.0) * 0.5 * UNIT).round() as i32,
+            Self::Intensity { cubic: Some(CubicDepth::Cutoff), .. }
+            | Self::InternalIntensity { cubic: Some(CubicDepth::Cutoff), .. } => (v.cbrt() + 1.0) * 0.5,
             Self::Intensity { bipolar: true, .. }
             | Self::InternalIntensity { bipolar: true, .. }
             | Self::Fx(_, _, FxParam::Pan)
@@ -1083,19 +1101,19 @@ pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32
             }
         }
         Address::Intensity { group, index, cubic, .. } => {
-            if cubic && !value.is_finite() { return false; }
+            if cubic.is_some() && !value.is_finite() { return false; }
             let m = settings
                 .get_mut(group as usize)
                 .and_then(|s| s.mods.mods.get_mut(index as usize));
             let Some(m) = m else {
                 return false;
             };
-            m.intensity = if cubic { value } else { value.clamp(-1.0, 1.0) };
+            m.intensity = if cubic == Some(CubicDepth::Pitch) { value } else { value.clamp(-1.0, 1.0) };
         }
         Address::InternalIntensity { group, envelope, target, .. }
         | Address::LegacyInternalIntensity { group, envelope, target } => {
             if !value.is_finite() { return false; }
-            let value = if matches!(address, Address::LegacyInternalIntensity { .. } | Address::InternalIntensity { cubic: true, .. }) {
+            let value = if matches!(address, Address::LegacyInternalIntensity { .. } | Address::InternalIntensity { cubic: Some(CubicDepth::Pitch), .. }) {
                 value
             } else { value.clamp(-1., 1.) };
             let Some(settings) = settings.get_mut(group as usize) else { return false; };
@@ -1442,7 +1460,7 @@ mod tests {
             group: 0,
             index: 0,
             bipolar: false,
-            cubic: false,
+            cubic: None,
         };
         assert!((intensity.decode(704_316) - 0.4961).abs() < 1e-3);
         // Areia sets these at init; its saved envelopes hold the same times.
@@ -1969,7 +1987,7 @@ mod tests {
                 group: 0,
                 index: 1,
                 bipolar: false,
-                cubic: false,
+                cubic: None,
             })
         );
         assert_eq!(
