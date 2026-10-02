@@ -3,6 +3,9 @@
 The optional plug-in adapter loads a requested `.nui` resource with embedded
 Lua 5.4. It lowers the supported `@component` form, resolves dotted resource
 module names, and retains the real resource bytes and module identity. Lua
+Entry resolution retains the optional `general.kontaktTargetVersion` metadata;
+an explicit `.kscript` entry is rejected before legacy Lua evaluation. Bare
+`load_native_ui` requests retain their legacy `.nui` intent.
 errors identify `.nui.lowered.lua`; line counts after a component are preserved,
 while locations inside the rewritten property/child tables refer to lowered Lua.
 
