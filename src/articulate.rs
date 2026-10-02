@@ -1344,11 +1344,13 @@ mod tests {
             e.ui_control(0,0,1);
             render(&mut e);
         });
-        assert_eq!(e.voice_census().len(),6);
+        // Service play_note has no parent mask: all three sample groups layer
+        // each domain's event, alongside the three articulated physical notes.
+        assert_eq!(e.voice_census().len(),12);
         assert!(e.voice_census().iter().all(|v| v.channel == 7));
         assert_eq!([e.cc_state()[0][23],e.cc_state()[1][23],e.cc_state()[2][23]], [7,7,7]);
         let before = e.voice_census();
-        assert_eq!(before.iter().filter(|v| v.input_channel.is_none()).count(),3);
+        assert_eq!(before.iter().filter(|v| v.input_channel.is_none()).count(),9);
         // A service note has no physical input_channel, but belongs to one
         // prepared bank. Cut that bank and preserve the other audible notes.
         no_audio_heap(|| {
@@ -1356,14 +1358,14 @@ mod tests {
             for _ in 0..5 { render(&mut e); }
         });
         let after = e.voice_census();
-        assert_eq!(after.len(),4, "CC120 must cut one physical and one service note in its bank");
-        assert_eq!(after.iter().filter(|v| v.input_channel.is_none()).count(),2);
+        assert_eq!(after.len(),8, "CC120 must cut the physical note and all three service-note layers in its bank");
+        assert_eq!(after.iter().filter(|v| v.input_channel.is_none()).count(),6);
         assert!(after.iter().all(|v| v.gain>0. && v.envelope>0.));
         assert_eq!([e.cc_state()[0][23],e.cc_state()[1][23],e.cc_state()[2][23]], [7,7,7]);
         // The common UI remains usable after the cut; replay starts a new
         // service note in each bank rather than canceling its script state.
         no_audio_heap(|| { e.ui_control(0,0,0); render(&mut e); });
-        assert_eq!(e.voice_census().len(),7);
+        assert_eq!(e.voice_census().len(),17);
         no_audio_heap(|| { for _ in 0..10 { render(&mut e); } });
         assert_eq!([e.cc_state()[0][24],e.cc_state()[1][24],e.cc_state()[2][24]], [17,17,17], "sound-off must retain shared UI wait continuations");
         no_audio_heap(|| { e.panic(); for _ in 0..5 { render(&mut e); } });
