@@ -71,6 +71,30 @@ impl Asset {
             Self::Bitmap(i) => size_of::<Image>().saturating_add(i.rgba.len()),
         })
     }
+    /// Called only by the existing serialized asset preparation worker.
+    pub fn prepare_pending_rasters(&self) -> Result<bool, String> {
+        match self {
+            Self::Vector(v) => v
+                .raster_source()
+                .map_or(Ok(false), |s| s.prepare_requested()),
+            Self::Bitmap(_) => Ok(false),
+        }
+    }
+    pub fn set_raster_waker(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        if let Self::Vector(v) = self {
+            if let Some(s) = v.raster_source() {
+                s.set_waker(wake);
+            }
+        }
+    }
+    /// Poll at the existing editor/watch boundary as well as on a paint miss,
+    /// so a full host job queue can retry without continuous repainting.
+    pub fn wake_pending_rasters(&self) -> bool {
+        match self {
+            Self::Vector(v) => v.raster_source().is_some_and(|s| s.wake_pending()),
+            Self::Bitmap(_) => false,
+        }
+    }
     pub fn size(&self) -> (f64, f64) {
         match self {
             Self::Vector(v) => (v.width, v.height),
@@ -240,7 +264,12 @@ fn decode_svg(bytes: &[u8]) -> Result<Vector, String> {
             Arc::new(FilteredSvg {
                 tree,
                 source: bytes.into(),
-                images: Mutex::new(Vec::new()),
+                state: Mutex::new(RasterState {
+                    images: Vec::with_capacity(2),
+                    pending: Vec::with_capacity(2),
+                    errors: Vec::with_capacity(2),
+                    ..RasterState::default()
+                }),
             }),
         )
         .ok_or_else(|| "Invalid filtered SVG extent".into());
@@ -255,22 +284,31 @@ fn decode_svg(bytes: &[u8]) -> Result<Vector, String> {
 // only the exact requested device-sized intermediate is rasterized. The source
 // belongs to this instrument's asset cache, with no global cache or worker.
 const FILTER_CACHE_LIMIT: usize = 8 << 20;
+#[derive(Default)]
+struct RasterState {
+    images: Vec<Image>,
+    pending: Vec<(u32, u32)>,
+    inflight: Option<(u32, u32)>,
+    errors: Vec<((u32, u32), String)>,
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+impl std::fmt::Debug for RasterState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RasterState")
+            .field("images", &self.images.len())
+            .field("pending", &self.pending)
+            .field("inflight", &self.inflight)
+            .finish_non_exhaustive()
+    }
+}
 #[derive(Debug)]
 struct FilteredSvg {
     tree: usvg::Tree,
     source: Arc<[u8]>,
-    images: Mutex<Vec<Image>>,
+    state: Mutex<RasterState>,
 }
-impl moose::mui::mui::scene::RasterSource for FilteredSvg {
-    fn retained_bytes(&self) -> usize {
-        // usvg's normalized tree expands source records/paths. Conservatively
-        // charge the source, an expansion allowance, and the full raster cache.
-        self.source
-            .len()
-            .saturating_mul(65)
-            .saturating_add(FILTER_CACHE_LIMIT)
-    }
-    fn rasterize(&self, width: u32, height: u32) -> Result<Image, String> {
+impl FilteredSvg {
+    fn charge(width: u32, height: u32) -> Result<usize, String> {
         let charge = (width as usize)
             .checked_mul(height as usize)
             .and_then(|n| n.checked_mul(4))
@@ -280,16 +318,11 @@ impl moose::mui::mui::scene::RasterSource for FilteredSvg {
                 "SVG filter requested device extent exceeds 8 MiB intermediate budget".into(),
             );
         }
-        let mut images = self
-            .images
-            .lock()
-            .map_err(|_| "SVG filter cache unavailable")?;
-        if let Some(image) = images
-            .iter()
-            .find(|i| i.width == width && i.height == height)
-        {
-            return Ok(image.clone());
-        }
+        Ok(charge)
+    }
+    // Worker-only: do not hold the cache lock while resvg executes.
+    fn render(&self, width: u32, height: u32) -> Result<Image, String> {
+        Self::charge(width, height)?;
         let sx = width as f64 / self.tree.size().width() as f64;
         let sy = height as f64 / self.tree.size().height() as f64;
         fn temporary_bytes(group: &usvg::Group, scale: Affine) -> usize {
@@ -349,14 +382,113 @@ impl moose::mui::mui::scene::RasterSource for FilteredSvg {
             }
         }
         let image = Image::rgba(width, height, rgba).ok_or("Invalid SVG filter pixels")?;
-        while !images.is_empty()
-            && (images.len() >= 2
-                || images.iter().map(|i| i.rgba.len()).sum::<usize>() + charge > FILTER_CACHE_LIMIT)
-        {
-            images.remove(0);
-        }
-        images.push(image.clone());
         Ok(image)
+    }
+}
+impl moose::mui::mui::scene::RasterSource for FilteredSvg {
+    fn retained_bytes(&self) -> usize {
+        self.source
+            .len()
+            .saturating_mul(65)
+            .saturating_add(FILTER_CACHE_LIMIT)
+    }
+    fn prepared_image(&self, width: u32, height: u32) -> Result<Option<Image>, String> {
+        Self::charge(width, height)?;
+        let Ok(mut state) = self.state.try_lock() else {
+            return Ok(None);
+        };
+        if let Some(image) = state
+            .images
+            .iter()
+            .find(|i| i.width == width && i.height == height)
+        {
+            return Ok(Some(image.clone()));
+        }
+        let size = (width, height);
+        if let Some((_, error)) = state.errors.iter().find(|(s, _)| *s == size) {
+            return Err(error.clone());
+        }
+        if state.inflight != Some(size) && !state.pending.contains(&size) {
+            if state.pending.len() == 2 {
+                state.pending.remove(0);
+            }
+            state.pending.push(size);
+        }
+        let wake = (!state.pending.is_empty())
+            .then(|| state.wake.clone())
+            .flatten();
+        drop(state);
+        if let Some(wake) = wake {
+            wake();
+        }
+        Ok(None)
+    }
+    fn set_waker(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        if let Ok(mut state) = self.state.lock() {
+            state.wake = Some(wake);
+        }
+    }
+    fn wake_pending(&self) -> bool {
+        let Ok(state) = self.state.try_lock() else {
+            return false;
+        };
+        let pending = !state.pending.is_empty();
+        let wake = pending.then(|| state.wake.clone()).flatten();
+        drop(state);
+        if let Some(wake) = wake {
+            wake();
+        }
+        pending
+    }
+    fn prepare_requested(&self) -> Result<bool, String> {
+        let mut changed = false;
+        let mut failure = None;
+        for _ in 0..2 {
+            let size = {
+                let mut state = self
+                    .state
+                    .lock()
+                    .map_err(|_| "SVG filter cache unavailable")?;
+                if state.pending.is_empty() {
+                    break;
+                }
+                let size = state.pending.remove(0);
+                state.inflight = Some(size);
+                size
+            };
+            let result = self.render(size.0, size.1);
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| "SVG filter cache unavailable")?;
+            state.inflight = None;
+            match result {
+                Ok(image) => {
+                    let charge = image.rgba.len();
+                    while !state.images.is_empty()
+                        && (state.images.len() >= 2
+                            || state.images.iter().map(|i| i.rgba.len()).sum::<usize>() + charge
+                                > FILTER_CACHE_LIMIT)
+                    {
+                        state.images.remove(0);
+                    }
+                    state.images.push(image);
+                }
+                Err(error) => {
+                    if state.errors.len() == 2 {
+                        state.errors.remove(0);
+                    }
+                    state.errors.push((size, error.clone()));
+                    failure = Some(error);
+                }
+            }
+            changed = true;
+        }
+        if let Some(error) = failure {
+            Err(error)
+        } else {
+            Ok(changed)
+        }
     }
 }
 #[derive(Default)]
@@ -565,27 +697,48 @@ mod tests {
         let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><defs><filter id="glow" x="0" y="0" width="20" height="20" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB"><feFlood flood-opacity="0" result="background"/><feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/><feOffset/><feGaussianBlur stdDeviation="2"/><feComposite in2="hardAlpha" operator="out"/><feColorMatrix type="matrix" values="0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .5 0"/><feBlend in2="background" mode="normal" result="effect"/><feBlend in="SourceGraphic" in2="effect" mode="normal"/></filter></defs><rect x="7" y="7" width="6" height="6" fill="#ff0000" filter="url(#glow)"/></svg>"##;
         let vector = Arc::new(decode_svg(svg).unwrap());
         let source = vector.raster_source().unwrap();
-        let first = source.rasterize(20, 20).unwrap();
-        let again = source.rasterize(20, 20).unwrap();
+        let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let wake_count = wakes.clone();
+        source.set_waker(Arc::new(move || {
+            wake_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }));
+        assert!(
+            source.prepared_image(20, 20).unwrap().is_none(),
+            "cold paint queues work without rasterizing"
+        );
+        assert!(
+            source.wake_pending(),
+            "pending jobs must retry a full host queue"
+        );
+        assert!(wakes.load(std::sync::atomic::Ordering::Relaxed) >= 2);
+        assert!(source.prepare_requested().unwrap());
+        assert!(!source.wake_pending());
+        let first = source.prepared_image(20, 20).unwrap().unwrap();
+        let again = source.prepared_image(20, 20).unwrap().unwrap();
+        assert!(
+            !source.prepare_requested().unwrap(),
+            "cache hit queues no work"
+        );
         assert!(
             Arc::ptr_eq(&first.rgba, &again.rgba),
             "same scale must reuse texture identity"
         );
-        let second = source.rasterize(40, 40).unwrap();
+        assert!(source.prepared_image(40, 40).unwrap().is_none());
+        assert!(source.prepare_requested().unwrap());
+        let second = source.prepared_image(40, 40).unwrap().unwrap();
         assert!(!Arc::ptr_eq(&first.rgba, &second.rgba));
         assert_eq!((second.width, second.height), (40, 40));
         let different = decode_svg(svg).unwrap();
-        let revised = different
-            .raster_source()
-            .unwrap()
-            .rasterize(20, 20)
-            .unwrap();
+        let different_source = different.raster_source().unwrap();
+        assert!(different_source.prepared_image(20, 20).unwrap().is_none());
+        assert!(different_source.prepare_requested().unwrap());
+        let revised = different_source.prepared_image(20, 20).unwrap().unwrap();
         assert!(
             !Arc::ptr_eq(&first.rgba, &revised.rgba),
             "new asset revision must own new pixels"
         );
         assert!(
-            source.rasterize(4096, 4096).is_err(),
+            source.prepared_image(4096, 4096).is_err(),
             "bounded cache cannot allocate arbitrary device extents"
         );
         let root = block(20., 20.).fill(scene::Fill::Vector(vector.clone(), scene::Fit::Fill));
