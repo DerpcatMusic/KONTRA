@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Verified processing and diagnostics follow-ups
 
+- Both Mac release architectures now require timestamped Developer ID signatures, Apple acceptance, and a validated stapled DMG; unsigned fallback is removed. Existing credentials were reused through the owned signing workflow. The next real Apple submission is pending.
+- Modern signed cutoff intensity now uses the independently corroborated cubic law and inverse readback, with normalized bounds retained. The actual Conflux saved value showed the old linear conversion overstating its depth by about 4,877×; other modulation laws are unchanged.
+- Native LFO waveform-specific v0x71–v0x73 records now decode and write losslessly with strict size/flag checks. Forty-two authored combinations and 60 actual selected records pass. LFO playback/freewheel behavior is still incomplete.
+- Nonunit convolution Size now reports its resampling approximation and affected Auto Gain energy explicitly. Native pitch-preserving IR time stretch remains unavailable.
 - Convolution IR high/low-pass bypass follows the checked native frequency/rate boundaries. Digital-pole decay padding fixes the reproduced near-Nyquist response truncation; independent numeric and shared routing/lifetime checks pass. Finite padding does not establish native prepared-length identity.
 - VST3 editor attachment now opens the editor before processor activation or state restoration. The actual host-shim regression reproduces the old blank-view path and passes attach/resize/restore/reopen after the fix; the specific Void report remains unconfirmed.
 - Native v0x103 external modulation now decodes with exact opaque-footer preservation. Actual Conflux checks recover 3,731 assignments, including 364 pitch-bend sources; 21 records with unsupported shapers still fail explicitly. Footer semantics remain unknown.

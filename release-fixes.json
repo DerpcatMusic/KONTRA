@@ -738,6 +738,44 @@
       ],
       "validation": "Independent direct-form Butterworth gate reproduces the old missing near-Nyquist frame and now passes exact/adjacent HP/LP thresholds, sample rates, cascades and zero processing heap. Reverse, Auto Gain, envelope, live IR, group send and playback tail gates all pass at56e7243. Padding remains finite exp(-16), not a claim of native prepared-length identity.",
       "accepted": true
+    },
+    {
+      "id": "modern-signed-cutoff-depth",
+      "summary": "Apply the independently checked cubic law to modern signed cutoff modulation",
+      "source_commits": [
+        "1da75f9b8ffd956f130d0ecbf6c710f4e409f11e"
+      ],
+      "validation": "Actual Conflux raw507160 and native filterCutoff2.936503e-6 corroborate f32 conversion. Focused native identity/readback/bounds/nonfinite/adjacent target/signed filter PCM/elapsed bypass-clock/zero-heap gate and extended pitch guard passed at9d7d8ce; other target laws remain unchanged.",
+      "accepted": true
+    },
+    {
+      "id": "strict-lfo-waveform-version-schema",
+      "summary": "Read and write the proven waveform-specific native LFO layouts",
+      "source_commits": [
+        "f740628974094f0258da1a4d9f8974b7dc904ae6"
+      ],
+      "validation": "Independent vendor gate passed42 authored version/waveform combinations, malformed flags/length/truncation checks, NaN/signed-zero byte preservation. Sixty actual LFO records across12selected groups/six Analog snapshots and their whole raw files roundtrip byte-exact. Production library typechecked; this is metadata compatibility, not audible LFO/freewheel parity.",
+      "accepted": true
+    },
+    {
+      "id": "explicit-convolution-size-proxy-diagnostics",
+      "summary": "Report nonunit convolution Size and its Auto Gain energy as approximate",
+      "source_commits": [
+        "064fad68ebe971ad50eab3063b99a8cfa716d524"
+      ],
+      "validation": "Focused uniform/unequal sizing, Auto Gain and envelope diagnostic assertions pass at9d7d8ce. Native CElastiqueMC uses pitch-preserving stretching; current resampling proxy is reported honestly without changing its PCM. Full native time stretch remains unavailable.",
+      "accepted": true
+    },
+    {
+      "id": "required-macos-notarization-gate",
+      "summary": "Require both Mac packages to be Developer ID signed and Apple accepted before publication",
+      "source_commits": [
+        "094369d3cbdbedf90eecadb54e1e1e144b46f038",
+        "0819e5aa945983cd330c7f958192cd914cc0b3a0",
+        "2fe0dc564f8dbf4603724bd9fc55bc442b6a931d"
+      ],
+      "validation": "Nineteen publication scenarios plus signing-script accepted/rejected/bad-ticket/missing-credential and package identity/hash gates passed; strict temporary-material permissions and wrapped-certificate handling checked. Existing Apple secrets successfully reused through owned Drop workflow37037003405. Actual Apple notarization of the next shipping source remains pending; no unsigned release fallback.",
+      "accepted": true
     }
   ]
 }
