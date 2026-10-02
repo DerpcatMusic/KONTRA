@@ -123,7 +123,7 @@ pub struct IrRequest {
     pub rack: Rack,
     pub slot: u8,
     pub script_slot: u8,
-    pub domain: u8,
+    pub scope: crate::ksp::CallbackScope,
     pub id: i32,
     pub settings: crate::fx::params::IrSettings,
     file: [u8; 1024],
@@ -132,7 +132,7 @@ pub struct IrRequest {
 
 impl IrRequest {
     pub(crate) fn rebuild(rack: Rack, slot: u8, settings: crate::fx::params::IrSettings) -> Self {
-        Self { rack, slot, settings, script_slot: 0, domain: 0, id: -1, file: [0; 1024], len: 0 }
+        Self { rack, slot, settings, script_slot: 0, scope: Default::default(), id: -1, file: [0; 1024], len: 0 }
     }
     pub fn file(&self) -> &str {
         std::str::from_utf8(&self.file[..self.len]).unwrap()
@@ -274,7 +274,7 @@ impl KspEngine for Host<'_> {
         self.common = common;
         self.ui_replay = ui_replay;
     }
-    fn request_ir_sample(&mut self, file: &str, slot: i32, generic: i32, script_slot: u8, id: i32) -> Option<bool> {
+    fn request_ir_sample(&mut self, file: &str, slot: i32, generic: i32, script_slot: u8, id: i32, scope: crate::ksp::CallbackScope) -> Option<bool> {
         let Some((rack, slot)) = params::rack(generic).zip(u8::try_from(slot).ok())
             .filter(|&(r, s)| self.fx.param(r, s, FxParam::Type) == Some(f32::from(crate::fx::Kind::Convolution.ser_id())))
         else { return Some(false) };
@@ -282,7 +282,7 @@ impl KspEngine for Host<'_> {
             return Some(false);
         }
         let settings = self.fx.ir_settings(rack, slot).unwrap_or(crate::fx::params::IrSettings::DEFAULT);
-        let mut request = IrRequest { rack, slot, script_slot, domain: self.domain, id, settings, file: [0; 1024], len: file.len() };
+        let mut request = IrRequest { rack, slot, script_slot, scope, id, settings, file: [0; 1024], len: file.len() };
         request.file[..file.len()].copy_from_slice(file.as_bytes());
         self.ir_requests.push(request);
         Some(true)

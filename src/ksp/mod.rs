@@ -19,6 +19,7 @@ mod performance_view;
 mod runtime;
 mod ui;
 mod vm;
+pub use vm::CallbackScope;
 
 #[cfg(test)]
 mod tests;

@@ -966,10 +966,10 @@ impl Engine {
     /// Install an off-thread-built IR, retaining slot gains and returning the
     /// old DSP for disposal off the audio thread. Failures keep the old IR.
     pub fn finish_ir(&mut self, slot: u8, id: i32, ir: Option<crate::fx::PreparedIr>) -> Option<crate::fx::PreparedIr> {
-        self.finish_ir_domain(slot, 0, id, ir)
+        self.finish_ir_scope(slot, Default::default(), id, ir)
     }
 
-    pub(crate) fn finish_ir_domain(&mut self, slot: u8, domain: u8, id: i32, ir: Option<crate::fx::PreparedIr>) -> Option<crate::fx::PreparedIr> {
+    pub(crate) fn finish_ir_scope(&mut self, slot: u8, scope: crate::ksp::CallbackScope, id: i32, ir: Option<crate::fx::PreparedIr>) -> Option<crate::fx::PreparedIr> {
         let (loaded, retired) = match ir {
             Some(ir) => match self.fx.replace_ir(ir) {
                 Ok(old) => (true, Some(old)),
@@ -978,7 +978,7 @@ impl Engine {
             None => (false, None),
         };
         if id >= 0 && let Some((rt, mut host)) = self.scripted(self.script_channel) {
-            rt.async_complete_domain(&mut host, slot, domain, id, loaded);
+            rt.async_complete_scope(&mut host, slot, scope, id, loaded);
         }
         retired
     }

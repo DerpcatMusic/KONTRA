@@ -149,7 +149,8 @@ pub trait KspEngine {
     }
     /// Queue an IR load off the audio thread. True defers completion until
     /// the host installs it; false fails immediately; None uses the init loader.
-    fn request_ir_sample(&mut self, _file: &str, _slot: i32, _generic: i32, _script_slot: u8, _id: i32) -> Option<bool> {
+    /// The requesting callback scope survives worker handoff unchanged.
+    fn request_ir_sample(&mut self, _file: &str, _slot: i32, _generic: i32, _script_slot: u8, _id: i32, _scope: super::CallbackScope) -> Option<bool> {
         None
     }
     /// `reset_rls_trig_counter`: restart `note`'s release-trigger counter.

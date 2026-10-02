@@ -546,7 +546,7 @@ pub struct Env {
     rng: u64,
     next_callback_id: i32,
     next_async_id: i32,
-    pub async_done: Vec<(u8, u8, i32, i32)>,
+    pub async_done: Vec<(u8, CallbackScope, i32, i32)>,
     /// Worker-backed IDs remain pending through validated installation.
     pub(super) pending_async: Vec<(u8, i32)>,
     async_ready: bool,
@@ -912,7 +912,8 @@ impl Runtime {
                 for &v in &p.array_jobs {
                     for _ in 0..2 {
                         let mut job = super::ArrayJob::prepared(state.index, v, &p.vars[v as usize]);
-                        job.domain = domain;
+                        job.storage = domain;
+                        job.scope = CallbackScope::performance(domain);
                         if p.array_writes.contains(&v) {
                             let mut snapshot = read_value(&state.mem, &p.vars[v as usize]);
                             let mut i = p.vars[v as usize].slot as usize;
@@ -958,6 +959,24 @@ impl Runtime {
             state.domain_listeners.push(canonical);
         }
         self.configuration_domain = Some(self.domain_count);
+        // Jobs are prepared for selected storage, not just the event domain:
+        // canonical callbacks and the first performance bank both use domain 0.
+        for (p, state) in self.programs.iter().zip(&self.states) {
+            for &v in &p.array_jobs {
+                for _ in 0..2 {
+                    let mut job = super::ArrayJob::prepared(state.index, v, &p.vars[v as usize]);
+                    job.storage = self.domain_count;
+                    job.scope = CallbackScope { domain:0, common:true, configuration:true, ui_replay:false };
+                    if p.array_writes.contains(&v) {
+                        let mut snapshot = read_value(&state.mem, &p.vars[v as usize]);
+                        let mut i = p.vars[v as usize].slot as usize;
+                        each_text_in(&mut snapshot, &mut |s| { s.reserve(state.mem.strs[i].capacity().saturating_sub(s.len())); i += 1; });
+                        job.snapshot = Some(snapshot);
+                    }
+                    self.env.array_spares.push(Box::new(job));
+                }
+            }
+        }
         // Fresh init services keep their existing due frame. Retag only the
         // prepared listener owners, without restarting performance callbacks.
         let timers = std::mem::replace(&mut self.env.timers, BinaryHeap::with_capacity(TIMER_CAPACITY));
@@ -2132,17 +2151,17 @@ impl Runtime {
 
     /// A worker finished an asynchronous load for this script slot.
     pub fn async_complete(&mut self, engine: &mut dyn KspEngine, slot: u8, id: i32, loaded: bool) {
-        self.async_complete_domain(engine, slot, 0, id, loaded);
+        self.async_complete_scope(engine, slot, CallbackScope::performance(0), id, loaded);
     }
 
-    pub(crate) fn async_complete_domain(&mut self, engine: &mut dyn KspEngine, slot: u8, domain: u8, id: i32, loaded: bool) {
+    pub(crate) fn async_complete_scope(&mut self, engine: &mut dyn KspEngine, slot: u8, scope: CallbackScope, id: i32, loaded: bool) {
         if slot as usize >= self.states.len() { return; }
         self.env.finish_async(slot, id);
         if !loaded {
             self.env.note("load_ir_sample: file not found, or that slot holds no convolution effect");
         }
         if self.env.async_done.len() < self.env.async_done.capacity() {
-            self.env.async_done.push((slot, domain, id, i32::from(loaded)));
+            self.env.async_done.push((slot, scope, id, i32::from(loaded)));
         } else {
             self.env.note("KSP async completion callback queue exhausted");
         }
@@ -2325,7 +2344,7 @@ impl Runtime {
             let Some(request) = self.env.array_results.front_mut() else { break };
             let Some((prog, state)) = self.programs.get(request.slot as usize)
                 .zip(self.states.get_mut(request.slot as usize)) else { break };
-            state.select(request.domain);
+            state.select(request.storage);
             let var = &prog.vars[request.var as usize];
             let values = match &request.values { Some(Value::Array(values)) => &values[..], _ => &[] };
             let len = values.len().min(var.len.unwrap_or(0) as usize);
@@ -2364,7 +2383,7 @@ impl Runtime {
             let request = self.env.array_results.pop_front().unwrap();
             if let Some(failure) = request.failure { self.env.note(failure); }
             self.env.finish_async(request.slot, request.id);
-            self.env.async_done.push((request.slot, request.domain, request.id, i32::from(request.success)));
+            self.env.async_done.push((request.slot, request.scope, request.id, i32::from(request.success)));
             self.env.array_retired.push_back(request);
             self.changes += 1;
             // Deliver completion before starting another load into the same
@@ -2517,11 +2536,11 @@ impl Runtime {
                 }
             }
             if completions < MAX_COMPLETIONS
-                && let Some((slot, domain, id, status)) = self.env.async_done.pop()
+                && let Some((slot, scope, id, status)) = self.env.async_done.pop()
             {
                 completions += 1;
                 let mut ctx = Ctx::new(slot, Kind::Cb(Callback::AsyncComplete));
-                ctx.domain = domain;
+                ctx.inherit_scope(scope);
                 ctx.async_id = id;
                 ctx.async_status = status;
                 self.spawn_cb(engine, slot, Callback::AsyncComplete, ctx);
@@ -3356,6 +3375,125 @@ pub(super) fn write_value_rt(
 mod prepared_listener_tests {
     use super::*;
     use crate::ksp::{EngineCall, LogEngine};
+
+    #[test]
+    fn prepared_async_jobs_keep_canonical_and_replay_storage_through_wakeup_and_controller_forwarding() {
+        let root = std::env::temp_dir().join(format!("kontra-async-scope-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&root).unwrap();
+        for value in [11,22,33] {
+            std::fs::write(root.join(format!("{value}.nka")),format!("%data\n{}",format!("{value}\n").repeat(600))).unwrap();
+        }
+        let source = format!(r#"on init
+make_perfview
+declare ui_slider $edit(0,127)
+declare ui_label $info(1,1)
+set_text($info,"seed")
+declare %data[600]
+declare $id
+declare $before
+declare $after
+declare $phase
+declare $completed
+declare $status
+end on
+on ui_control($edit)
+$id := load_array_str(%data,"{}/" & $edit & ".nka")
+$before := $NI_CALLBACK_ID
+$phase := 1
+wait_async($id)
+$after := $NI_CALLBACK_ID
+$phase := 2
+set_controller(23,%data[599])
+end on
+on async_complete
+inc($completed)
+$status := $NI_ASYNC_EXIT_STATUS
+set_text($info,"C:" & %data[599])
+set_controller(22,%data[599])
+end on"#,root.display());
+        let receiver = "on init\ndeclare $seen22\ndeclare $seen23\ndeclare $count\nend on\non controller\ninc($count)\nif ($CC_NUM=22)\n$seen22 := %CC[22]\nelse\n$seen23 := %CC[23]\nend if\nend on";
+        let canonical = CallbackScope { domain:0, common:true, configuration:true, ui_replay:false };
+        let replay = |domain| CallbackScope { domain, common:true, configuration:false, ui_replay:true };
+        let scopes = [canonical,replay(0),replay(1)];
+        for reference in [false,true] {
+            vm::REFERENCE.set(reference);
+            let mut engine = LogEngine::new(vec!["tone".into()],48000.);
+            let (mut rt,errors) = Runtime::with_scripts(&[&source,receiver],&mut engine,0,Vec::new());
+            assert!(errors.iter().all(Option::is_none),"{errors:?}");
+            rt.prepare_channel_domains((1<<1)|(1<<3),7);
+            rt.prepare_channel_configuration();
+            engine.calls.clear(); engine.calls.reserve(128);
+            let value = |rt:&Runtime, slot:usize, bank, name:&str| {
+                let var = rt.programs[slot].vars.iter().find(|v|&*v.name==name).unwrap();
+                read_value_view(rt.states[slot].mem.view(Some(bank)),var)
+            };
+            let mut begin = || {
+                rt.ui_control_configuration(&mut engine,0,0,11);
+                rt.ui_control_replay(&mut engine,1,0,0,22);
+                rt.ui_control_replay(&mut engine,3,0,0,33);
+                for _ in 0..4 { rt.process(&mut engine,128); }
+            };
+            #[cfg(feature="plugin")]
+            assert_eq!(crate::plugin::tests::allocations(||begin()),0);
+            #[cfg(not(feature="plugin"))]
+            begin();
+            let waiting:Vec<_> = rt.threads.iter().filter(|t|t.live && t.async_wait.is_some()).map(|t|t.ctx.scope()).collect();
+            for scope in scopes { assert!(waiting.contains(&scope)); }
+            assert_eq!(waiting.len(),3);
+            for (bank,scope) in [(2,canonical),(0,replay(0)),(1,replay(1))] {
+                let mut job = rt.pop_array_job().unwrap();
+                assert_eq!((job.storage,job.scope),(bank,scope),"canonical and private domain 0 are distinct worker destinations");
+                assert_eq!(value(&rt,0,bank,"$phase"),Value::Int(1));
+                assert!(job.perform(),"worker performs the actual delayed filesystem read");
+                let mut install = || { assert!(rt.finish_array_job(job).is_ok()); rt.process(&mut engine,128); };
+                #[cfg(feature="plugin")]
+                assert_eq!(crate::plugin::tests::allocations(||install()),0);
+                #[cfg(not(feature="plugin"))]
+                install();
+                assert_eq!(value(&rt,0,bank,"$phase"),Value::Int(1),"partial installation cannot wake the caller");
+                let mut finish = || { rt.process(&mut engine,128); rt.process(&mut engine,128); };
+                #[cfg(feature="plugin")]
+                assert_eq!(crate::plugin::tests::allocations(||finish()),0);
+                #[cfg(not(feature="plugin"))]
+                finish();
+                let mut retired = rt.pop_retired_array_job().unwrap();
+                assert_eq!((retired.storage,retired.scope),(bank,scope));
+                retired.recycle();
+                assert!(rt.finish_array_job(retired).is_ok());
+            }
+            for (bank,expected) in [(2,11),(0,22),(1,33)] {
+                assert_eq!(value(&rt,0,bank,"$phase"),Value::Int(2));
+                assert_eq!(value(&rt,0,bank,"$before"),value(&rt,0,bank,"$after"),"original callback survives the worker wait");
+                assert_eq!(value(&rt,0,bank,"$completed"),Value::Int(1));
+                assert_eq!(value(&rt,0,bank,"$status"),Value::Int(1));
+                assert_eq!(value(&rt,1,bank,"$seen22"),Value::Int(expected),"completion controller retains storage through the next slot");
+                assert_eq!(value(&rt,1,bank,"$seen23"),Value::Int(expected),"resumed caller retains storage through the next slot");
+                assert_eq!(value(&rt,1,bank,"$count"),Value::Int(2));
+            }
+            // The IR handoff uses this same scoped completion entry point;
+            // a failed worker result must keep replay suppression and storage.
+            let mut failed = || { for scope in scopes {
+                let id = rt.env.next_async();
+                rt.env.pending_async.push((0,id));
+                rt.async_complete_scope(&mut engine,0,scope,id,false);
+            } };
+            #[cfg(feature="plugin")]
+            assert_eq!(crate::plugin::tests::allocations(||failed()),0);
+            #[cfg(not(feature="plugin"))]
+            failed();
+            for bank in [0,1,2] {
+                assert_eq!(value(&rt,0,bank,"$completed"),Value::Int(2));
+                assert_eq!(value(&rt,0,bank,"$status"),Value::Int(0));
+            }
+            assert_eq!(rt.interface(0).controls[1].properties["$CONTROL_PAR_TEXT"],Value::Text("C:11".into()),"private completions do not overwrite canonical UI text");
+            assert!(rt.env.pending_async.is_empty());
+            assert!(rt.threads.iter().all(|t|!t.live));
+            assert!(rt.faults().next().is_none());
+        }
+        vm::REFERENCE.set(false);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn prepared_shared_and_performance_listeners_keep_signal_scope_through_waits_without_heap() {
