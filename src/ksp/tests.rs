@@ -2166,3 +2166,50 @@ fn a_waiting_ignored_release_finishes_state_cleanup_after_sound_off() {
     assert_eq!(rig.rt.env.events.live_count(),0);
     assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
 }
+
+#[test]
+fn internal_note_controller_rejects_init_and_invalid_ranges() {
+    assert!(initialize("on init\nset_note_controller(0,60,1)\nend on", 0, 0).is_err());
+    let mut rig = Rig::new(&[r#"on init
+declare ui_button $send
+end on
+on ui_control($send)
+set_note_controller(-1,60,1)
+set_note_controller(513,60,1)
+set_note_controller(0,128,1)
+set_note_controller(0,60,128)
+set_note_controller($VNC_PITCH_BEND,60,-8193)
+set_note_controller($VNC_PITCH_BEND,60,8192)
+end on"#, r#"on init
+declare ui_slider $received(0,100)
+end on
+on note_controller
+inc($received)
+end on"#]);
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 1);
+    assert_eq!(rig.rt.interface(1).controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(0));
+    let diagnostics = rig.rt.diagnostics();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].contains("controller, note or value out of range"), "{diagnostics:?}");
+}
+
+#[test]
+fn persistence_note_controllers_reach_later_slots_after_their_init() {
+    let rig = Rig::new(&[r#"on init
+end on
+on persistence_changed
+set_note_controller($VNC_PITCH_BEND,63,8191)
+end on"#, "on init\nend on", r#"on init
+declare ui_slider $received(0,100)
+declare ui_slider $note(0,127)
+declare ui_slider $value(-8192,8191)
+end on
+on note_controller
+inc($received)
+$note := $NC_NOTE
+$value := $NC_VALUE
+end on"#]);
+    for (i, value) in [1, 63, 8191].into_iter().enumerate() {
+        assert_eq!(rig.rt.interface(2).controls[i].properties["$CONTROL_PAR_VALUE"], Value::Int(value));
+    }
+}
