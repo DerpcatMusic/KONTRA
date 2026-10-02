@@ -4079,7 +4079,9 @@ pub(crate) mod tests {
                 && event.details["status"] == "failed"));
         Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx);
         assert_eq!(dsp.rack.parts[0].bank().unwrap() as *const Bank, bank);
-        println!("foreign snapshot rejected without replacing active state or bank");
+        assert_eq!(p.shared.generation[0].load(Ordering::Acquire), generation);
+        assert_eq!(dsp.script_epoch[0], epoch);
+        println!("foreign snapshot rejected without replacing active state, bank, generation or script epoch");
     }
 
     #[test]
