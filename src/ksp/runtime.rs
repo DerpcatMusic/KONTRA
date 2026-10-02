@@ -75,7 +75,7 @@ pub struct LiveFault {
 }
 
 /// What the host shows of running scripts, refreshed in place.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Live {
     /// Copied without formatting or allocating on the audio thread.
     pub faults: Vec<LiveFault>,
@@ -91,6 +91,28 @@ pub struct Live {
     menu_spares: Vec<Vec<(String, i32)>>,
     control_revisions: Vec<u64>,
     control_value_revisions: Vec<u64>,
+    interface_revision: u64,
+    keys_revision: u64,
+}
+
+impl Live {
+    /// Actual interface and keyboard changes in this reusable snapshot.
+    /// These counters are local to the buffer; compare them within one runtime epoch.
+    pub fn revisions(&self) -> (u64, u64) {
+        (self.interface_revision, self.keys_revision)
+    }
+}
+
+// Copying history is not part of a snapshot's semantic equality.
+impl PartialEq for Live {
+    fn eq(&self, other: &Self) -> bool {
+        self.faults == other.faults && self.notes == other.notes
+            && self.refresh_interface == other.refresh_interface
+            && self.interface_current == other.interface_current && self.slot == other.slot
+            && self.interface == other.interface && self.keys == other.keys
+            && self.menu_spares == other.menu_spares && self.control_revisions == other.control_revisions
+            && self.control_value_revisions == other.control_value_revisions
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1201,6 +1223,8 @@ impl Runtime {
         let mut live = Live {
             faults: Vec::with_capacity(FAULT_CAPACITY),
             notes: Vec::with_capacity(NOTE_CAPACITY),
+            interface_revision: 0,
+            keys_revision: 0,
             refresh_interface: true,
             interface_current: true,
             slot: slot.unwrap_or(0),
@@ -1260,11 +1284,14 @@ impl Runtime {
             && at.item != usize::MAX
         {
             let prog = &self.programs[live.slot];
-            at.changed |= state.ui.refresh(prog, &state.mem, out, &mut live.menu_spares, &mut live.control_revisions, &mut live.control_value_revisions, &mut at.value_revision, &mut at.item, &mut at.at, budget);
+            let changed = state.ui.refresh(prog, &state.mem, out, &mut live.menu_spares, &mut live.control_revisions, &mut live.control_value_revisions, &mut at.value_revision, &mut at.item, &mut at.at, budget);
+            if changed { live.interface_revision = live.interface_revision.wrapping_add(1); }
+            at.changed |= changed;
             if at.item != usize::MAX {
                 return false;
             }
         }
+        let mut keys_changed = false;
         for (note, key) in &mut live.keys {
             let host = self.env.host.keyboard.get(note);
             let mut changed = copy_text(&mut key.name, host.map_or("", |k| &k.name));
@@ -1283,8 +1310,10 @@ impl Runtime {
             let pressed = host.is_some_and(|k| k.pressed);
             changed |= key.pressed != pressed;
             key.pressed = pressed;
-            at.changed |= changed;
+            keys_changed |= changed;
         }
+        if keys_changed { live.keys_revision = live.keys_revision.wrapping_add(1); }
+        at.changed |= keys_changed;
         live.interface_current = true;
         true
     }

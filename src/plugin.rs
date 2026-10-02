@@ -548,6 +548,7 @@ pub(crate) struct PartView {
     pub(crate) snapshot_lent: Option<Instant>,
     /// Live view buffer for this slot's runtime while the loader holds it.
     pub(crate) live: Option<Box<Live>>,
+    pub(crate) live_revisions: Option<(u64, u64)>,
     /// Script slot that `interface` belongs to.
     pub(crate) script_slot: usize,
     /// Samples are being read for this slot.
@@ -976,6 +977,7 @@ fn next_epoch(
     v.snapshot = snapshot;
     v.snapshot_lent = None;
     v.live = live;
+    v.live_revisions = None;
     v.live_diagnostics = None;
     v.diagnostics_dirty = false;
     view.script_epoch
@@ -1004,14 +1006,19 @@ impl Shared {
                 let view = self.view.lock().unwrap();
                 let v = &view.parts[slot];
                 if epoch == 0 || epoch != v.script_epoch { continue; }
-                (v.interface.clone(), v.keys.clone(), v.live_diagnostics.clone(), !v.edited.is_empty())
+                let restore = v.edited.iter().any(|&(n, value, at)| now.saturating_duration_since(at) > EDIT_SETTLE
+                    && live.interface.as_ref().and_then(|i| i.controls.get(n)).is_some_and(|c|
+                        c.properties.get("$CONTROL_PAR_VALUE") != Some(&crate::ksp::Value::Int(value))));
+                (v.interface.clone(), v.live_revisions, v.live_diagnostics.clone(), restore)
             };
             // Prepare copies before taking the view lock: readers retain their
             // previous Arc snapshots, and the audio buffer is immediately reusable.
+            let revisions = live.revisions();
             let mut interface = (live.refresh_interface
-                && (previous.3 || previous.0.as_deref() != live.interface.as_ref()))
+                && (previous.3 || previous.1.is_none_or(|old| old.0 != revisions.0)))
                 .then(|| live.interface.clone().map(Arc::new));
-            let keys = (live.refresh_interface && *previous.1 != live.keys).then(|| Arc::new(live.keys.clone()));
+            let keys = (live.refresh_interface && previous.1.is_none_or(|old| old.1 != revisions.1))
+                .then(|| Arc::new(live.keys.clone()));
             let diagnostics = previous.2.filter(|old|
                 old.epoch == epoch && old.faults == live.faults && old.notes == live.notes
             ).unwrap_or_else(|| Arc::new(LiveDiagnostics {
@@ -1028,8 +1035,15 @@ impl Shared {
             if epoch == 0 || epoch != v.script_epoch { continue; }
             if let Some(interface) = &mut interface {
                 settle_edits(&mut v.edited, interface.as_mut().and_then(Arc::get_mut));
-                if v.interface.as_deref() != interface.as_deref() { v.interface = interface.take(); }
+                v.interface = interface.take();
+            } else if live.refresh_interface {
+                // Equal source revisions still acknowledge optimistic edits;
+                // a refused value restores once its grace period expires.
+                v.edited.retain(|&(n, value, at)| now.saturating_duration_since(at) <= EDIT_SETTLE
+                    && live.interface.as_ref().and_then(|i| i.controls.get(n)).is_some_and(|c|
+                        c.properties.get("$CONTROL_PAR_VALUE") != Some(&crate::ksp::Value::Int(value))));
             }
+            if live.refresh_interface { v.live_revisions = Some(revisions); }
             if let Some(keys) = keys { v.keys = keys; }
             if v.live_diagnostics.as_ref().is_none_or(|old| !Arc::ptr_eq(old, &diagnostics)) {
                 v.live_diagnostics = Some(diagnostics);
@@ -1549,6 +1563,7 @@ impl BackgroundTask for Load {
                 v.script_epoch = 0;
                 v.snapshot = None;
                 v.live = None;
+                v.live_revisions = None;
                 v.live_diagnostics = None;
                 v.diagnostics_dirty = false;
             };
@@ -3623,13 +3638,14 @@ mod tests {
         let mut buffer = AudioBuffer::from_slices_checked(&[], &mut outputs, 64);
         for value in [42, 84] {
             p.shared.edit_control(0, 0, value);
-            assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }), 0);
-            let (slot, epoch, mut live) = p.shared.lives.pop().expect("audio completes a live view");
-            assert_eq!((&*live as *const Live) as usize, address, "the same prepared buffer is recycled");
-            live.faults.push(LiveFault { slot: 0, line: 1, message: "synthetic runtime fault", count: value as u32 });
-            p.shared.lives.push((slot, epoch, live)).ok().unwrap();
             let retained = p.shared.view.lock().unwrap().parts[0].interface.clone().unwrap();
-            p.shared.publish_live(true);
+            assert!(crate::ui::watch_live_change(&p, || {
+                assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }), 0);
+                let (slot, epoch, mut live) = p.shared.lives.pop().expect("audio completes a live view");
+                assert_eq!((&*live as *const Live) as usize, address, "the same prepared buffer is recycled");
+                live.faults.push(LiveFault { slot: 0, line: 1, message: "synthetic runtime fault", count: value as u32 });
+                p.shared.lives.push((slot, epoch, live)).ok().unwrap();
+            }), "completed script changes wake an otherwise idle editor before build");
             assert_eq!(label(&p), Value::Text(format!("value {value}")), "callback-derived labels publish without Load");
             assert!(p.shared.view.lock().unwrap().parts[0].edited.is_empty());
             assert_eq!(p.shared.live_requests.len(), 1, "re-lending never waits for diagnostics or loading");
@@ -3638,6 +3654,30 @@ mod tests {
             assert!(p.shared.view.lock().unwrap().parts[0].load_report.as_ref().unwrap()["runtime"].is_null(), "UI never formats JSON");
             assert!(!loader.is_finished(), "another part's loader remains blocked");
         }
+        let retained = p.shared.view.lock().unwrap().parts[0].interface.clone().unwrap();
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }), 0);
+        let (slot, epoch, mut live) = p.shared.lives.pop().unwrap();
+        live.faults.push(LiveFault { slot: 0, line: 1, message: "synthetic runtime fault", count: 84 });
+        p.shared.lives.push((slot, epoch, live)).ok().unwrap();
+        p.shared.publish_live(true);
+        assert!(Arc::ptr_eq(&retained, p.shared.view.lock().unwrap().parts[0].interface.as_ref().unwrap()),
+            "unchanged revisions retain the published interface");
+        // Equal revisions preserve an optimistic value until its grace
+        // period ends, then restore a value the script refused exactly once.
+        p.shared.edit_control(0, 0, 99);
+        p.shared.edits.pop().unwrap(); // Simulate an edit rejected by the script.
+        let optimistic = p.shared.view.lock().unwrap().parts[0].interface.clone().unwrap();
+        let (slot, live) = p.shared.live_requests.pop().unwrap();
+        p.shared.lives.push((slot, 1, live)).ok().unwrap();
+        p.shared.publish_live(true);
+        assert!(Arc::ptr_eq(&optimistic, p.shared.view.lock().unwrap().parts[0].interface.as_ref().unwrap()),
+            "a pending edit does not recopy unchanged metadata");
+        p.shared.view.lock().unwrap().parts[0].edited[0].2 = Instant::now() - EDIT_SETTLE * 2;
+        let (slot, live) = p.shared.live_requests.pop().unwrap();
+        p.shared.lives.push((slot, 1, live)).ok().unwrap();
+        p.shared.publish_live(true);
+        assert_eq!(p.shared.view.lock().unwrap().parts[0].interface.as_ref().unwrap().controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(84));
+        assert!(p.shared.view.lock().unwrap().parts[0].edited.is_empty(), "refused optimistic edits eventually settle");
         bank_gate.wait();
         loader.join().unwrap();
         assert_eq!(p.shared.view.lock().unwrap().parts[0].load_report.as_ref().unwrap()["runtime"]["faults"][0]["count"], 84,
@@ -3645,7 +3685,8 @@ mod tests {
 
         // Replace the runtime after a view is prepared but before it commits.
         let (slot, mut live) = p.shared.live_requests.pop().unwrap();
-        live.interface.as_mut().unwrap().controls[1].properties.insert("$CONTROL_PAR_TEXT".into(), Value::Text("stale".into()));
+        dsp.rack.parts[0].ui_control(0, 0, 13);
+        dsp.rack.parts[0].script().unwrap().refresh_live(&mut live);
         p.shared.lives.push((slot, 1, live)).ok().unwrap();
         let publication_gate = Arc::new(Barrier::new(2));
         *p.shared.publish_gate.lock().unwrap() = Some(publication_gate.clone());

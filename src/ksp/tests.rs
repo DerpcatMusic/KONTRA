@@ -1922,3 +1922,53 @@ end on"#);
         assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
     }
 }
+
+#[test]
+fn live_revisions_distinguish_interface_keys_and_unchanged_callbacks() {
+    let source = r#"on init
+make_perfview
+declare ui_label $label(1,1)
+declare ui_table %table[2048](1,1,127)
+set_text($label, "start")
+end on
+on controller
+if ($CC_NUM = 1)
+set_text($label, "changed")
+set_skin_offset(23)
+else
+if ($CC_NUM = 2)
+set_key_name(60,"key")
+else
+%table[2000] := 1
+end if
+end if
+end on"#;
+    let mut rig = Rig::new(&[source]);
+    let mut live = rig.rt.live();
+    let initial = live.revisions();
+    rig.rt.controller(&mut rig.engine, 0, 1, 1);
+    rig.rt.refresh_live(&mut live);
+    let interface = live.revisions();
+    assert!(interface.0 > initial.0);
+    assert_eq!(interface.1, initial.1, "metadata/skin changes leave key revisions alone");
+    rig.rt.controller(&mut rig.engine, 0, 1, 1);
+    assert!(!rig.rt.refresh_live(&mut live));
+    assert_eq!(live.revisions(), interface, "identical setters/callbacks do not invalidate publication");
+    rig.rt.controller(&mut rig.engine, 0, 2, 1);
+    rig.rt.refresh_live(&mut live);
+    let keys = live.revisions();
+    assert_eq!(keys.0, interface.0, "keyboard changes do not invalidate the interface");
+    assert!(keys.1 > interface.1);
+    rig.rt.controller(&mut rig.engine, 0, 3, 1);
+    let mut refresh = Refresh::default();
+    while !rig.rt.refresh_live_within(&mut live, &mut refresh, 16) {}
+    let table = live.revisions();
+    assert!(table.0 > keys.0, "a changed array cell invalidates the completed snapshot");
+    assert_eq!(table.1, keys.1);
+    rig.rt.refresh_live_within(&mut live, &mut refresh, 16);
+    assert_eq!(live.revisions(), table, "sticky Refresh.changed never repeats revision bumps");
+    rig.rt.env.note("synthetic service note");
+    rig.rt.refresh_diagnostics(&mut live);
+    assert_eq!(live.revisions(), table, "diagnostics do not invalidate visual snapshots");
+    assert_eq!(live, rig.rt.live(), "copy history is excluded from semantic equality");
+}

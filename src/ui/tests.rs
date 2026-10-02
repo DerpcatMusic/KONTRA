@@ -2677,3 +2677,17 @@ fn the_cursor_follows_what_is_under_the_pointer() {
     cursor_at(&mut h, Point::new(corner.x + corner.size.width - 2., corner.y + corner.size.height - 2.));
     assert!(h.ui.get("window-corner").hovered, "the window's resize corner");
 }
+
+
+#[test]
+fn frame_views_leave_large_persistence_json_with_the_loader() {
+    let p = SamplerParams::new();
+    let saved = "x".repeat(1_000_000);
+    let address = saved.as_ptr();
+    p.shared.view.lock().unwrap().parts[0].script_state = saved;
+    let frame = super::shown(&p.shared.view);
+    assert!(frame.parts[0].script_state.is_empty(), "frames do not read persistence JSON");
+    let view = p.shared.view.lock().unwrap();
+    assert_eq!(view.parts[0].script_state.len(), 1_000_000);
+    assert_eq!(view.parts[0].script_state.as_ptr(), address, "the loader retains the original allocation");
+}
