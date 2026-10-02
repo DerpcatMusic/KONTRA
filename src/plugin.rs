@@ -551,6 +551,8 @@ pub struct Shared {
     port_names_revision: AtomicU64,
     // Last: bank/stream queues and their workers retire before the logging worker.
     _diagnostics: crate::diagnostics::DiagnosticLease,
+    // The crash marker retires after every retained worker and diagnostics lease.
+    _crash_session: Mutex<Option<crate::support::CrashSessionGuard>>,
 }
 /// How long an editor edit outranks a live view that disagrees with it.
 const EDIT_SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
@@ -711,10 +713,12 @@ pub(crate) struct View {
 }
 impl Default for Shared {
     fn default() -> Self {
+        let crash_session = crate::support::start_plugin_session();
         let initial_parts: [Arc<PartShared>; RACK_SLOTS] = std::array::from_fn(|_| Arc::default());
         let diagnostic_free = ArrayQueue::new(4);
         for _ in 0..2 { diagnostic_free.push(AudioDiagnostics::with_parts(RACK_SLOTS)).ok().unwrap(); }
-        Self {
+        let shared = Self {
+            _crash_session: Mutex::new(crash_session),
             instance_id: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
             diagnostic_audio: ArrayQueue::new(2),
             diagnostic_free,
@@ -803,7 +807,9 @@ impl Default for Shared {
                 status: "Choose a library and select a preset".into(),
                 watched_at: None,
             }),
-        }
+        };
+        if let Some(guard) = shared._crash_session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_mut() { guard.mark_initialized(); }
+        shared
     }
 }
 /// Samples [`Scope`] keeps: a spectrum's window and then some.
