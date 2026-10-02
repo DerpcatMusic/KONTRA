@@ -6,6 +6,7 @@ use super::lexer::{Interner, Sym, lex};
 use super::parser::{BinOp, Block, Declare, Expr, Stmt, StmtKind, UnOp, parse, preprocess};
 use anyhow::{Context, Result, bail, ensure};
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
 
 /// Per-array element ceiling (Kontakt's own limit) and per-script total.
 pub const MAX_ARRAY_LEN: u32 = 1_000_000;
@@ -410,6 +411,44 @@ impl Callback {
     }
 }
 
+/// Immutable cell-to-UI-revision ownership, shared by runtimes of one program.
+/// Unowned pages cost one directory entry instead of 256 unowned cells.
+#[derive(Debug, Default)]
+pub struct RevisionOwners {
+    pages: Box<[u32]>,
+    cells: Box<[u32]>,
+    pub count: usize,
+    bound: usize,
+}
+
+impl RevisionOwners {
+    fn new(vars: &[Var], ty: Ty) -> Self {
+        let vars = vars.iter().filter(|v| v.ui.is_some() && v.ty == ty);
+        let bound = vars.clone().map(|v| v.slot as usize + v.len.unwrap_or(1) as usize).max().unwrap_or(0);
+        let mut pages = vec![u32::MAX; bound.div_ceil(256)];
+        let mut cells = Vec::new();
+        let count = vars.clone().count();
+        for (owner, var) in vars.enumerate() {
+            for index in var.slot as usize..var.slot as usize + var.len.unwrap_or(1) as usize {
+                let page = &mut pages[index / 256];
+                if *page == u32::MAX {
+                    *page = cells.len() as u32;
+                    cells.extend([u32::MAX; 256]);
+                }
+                cells[*page as usize + index % 256] = owner as u32;
+            }
+        }
+        Self { pages: pages.into(), cells: cells.into(), count, bound }
+    }
+
+    pub fn get(&self, index: usize) -> Option<&u32> {
+        let &page = self.pages.get(index / 256)?;
+        (page != u32::MAX).then(|| &self.cells[page as usize + index % 256])
+    }
+
+    pub fn len(&self) -> usize { self.bound }
+}
+
 /// Immutable compiled script.
 #[derive(Debug, Default)]
 pub struct Program {
@@ -437,6 +476,7 @@ pub struct Program {
     pub real_slots: u32,
     pub strs: u32,
     pub poly: u32,
+    pub revision_owners: [Arc<RevisionOwners>; 3],
     pub sys_arrays: [Option<VarId>; 6],
     /// Script-local names for undeclared uppercase constants.
     pub auto_symbols: Vec<Box<str>>,
@@ -650,6 +690,8 @@ pub fn compile_with_conditions(
     fuse(&mut c.p.code);
     chain(&mut c.p.code);
     c.p.elems = c.p.vars.iter().map(|v| (v.slot, v.len.unwrap_or(1))).collect();
+    c.p.revision_owners = [Ty::Int, Ty::Real, Ty::Str]
+        .map(|ty| Arc::new(RevisionOwners::new(&c.p.vars, ty)));
     Ok(c.p)
 }
 
