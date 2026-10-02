@@ -54,7 +54,7 @@ def generate(output):
         subprocess.run(["cargo-about", "generate", "--locked", "--all-features", "--format", "json",
                         "--config", str(ROOT / "about.toml"), "--output-file", str(raw)],
                        cwd=ROOT, check=True)
-        data = json.loads(raw.read_text())
+        data = json.loads(raw.read_text(encoding="utf-8"))
     notices = render(data)  # Validate before creating output.
     output.mkdir(parents=True, exist_ok=True)
     for name in ("MOOSE", "MUI"):
@@ -75,6 +75,20 @@ def self_test():
     data = dict(crates=[dict(package=package, license="MIT")],
                 licenses=[dict(id="MIT", text="Copyright Example\nMIT license", used_by=[dict(crate=package)])])
     assert "Copyright Example" in render(data)
+    # cargo-about emits UTF-8, even when Windows' default code page is CP1252.
+    from unittest.mock import patch
+    with tempfile.TemporaryDirectory(prefix="kontra-notices-encoding-") as directory:
+        data["licenses"][0]["text"] = "Copyright Example \u201cUTF-8\u201d\nMIT license"
+        def cargo_about(command, **kwargs):
+            Path(command[command.index("--output-file") + 1]).write_bytes(
+                json.dumps(data, ensure_ascii=False).encode("utf-8"))
+        read_text = Path.read_text
+        def windows_read(path, encoding=None, **kwargs):
+            return read_text(path, encoding=encoding or "cp1252", **kwargs)
+        output = Path(directory) / "licenses"
+        with patch.object(subprocess, "run", cargo_about), patch.object(Path, "read_text", windows_read):
+            generate(output)
+        assert "\u201cUTF-8\u201d" in (output / "THIRD_PARTY_NOTICES.txt").read_text(encoding="utf-8")
     data["licenses"] = []
     try:
         render(data)

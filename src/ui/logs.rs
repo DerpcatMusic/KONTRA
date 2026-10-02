@@ -743,7 +743,14 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
     for i in range.clone() {
         let event = &snapshot.events[state.matches[i]];
         let id = format!("log-event-{}", event.sequence);
-        if ui.get(id.as_str()).activated() {
+        let title_id = format!("{id}-title");
+        let reason_id = format!("{id}-reason");
+        // Named text surfaces are hit targets in MUI; activation does not
+        // bubble. Both text lines belong to this same selectable event row.
+        if [id.as_str(), title_id.as_str(), reason_id.as_str()]
+            .iter()
+            .any(|target| ui.get(*target).activated())
+        {
             state.selected = Some(event.sequence);
         }
         let selected = state.selected == Some(event.sequence);
@@ -762,12 +769,12 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
                     })
                     .lines(1)
                     .min_w(0)
-                    .id(format!("{id}-title"))].justify(Justify::Start).w(Len::Pct(100.)).min_w(0),
+                    .id(title_id)].justify(Justify::Start).w(Len::Pct(100.)).min_w(0),
                 row![body(event.reason.as_deref().unwrap_or(&event.event))
                     .text_size(TEXT)
                     .lines(1)
                     .min_w(0)
-                    .id(format!("{id}-reason"))].justify(Justify::Start).w(Len::Pct(100.)).min_w(0),
+                    .id(reason_id)].justify(Justify::Start).w(Len::Pct(100.)).min_w(0),
             ]
             .gap(0)
             .align(Align::Start)
@@ -1100,6 +1107,33 @@ mod tests {
         );
         for removed in ["logs-library", "logs-patch", "logs-load"] {
             assert!(ui.scene().unwrap().surface(removed).is_none(), "only one search input remains");
+        }
+        // Exercise real pointer hits, not only keyboard activation of the row.
+        // Named title/reason surfaces must select exactly the same event as
+        // the blank area at the right of its parent row.
+        for target in ["title", "reason", "blank"] {
+            state.selected = None;
+            tick(&mut ui, &mut state, &params, Input::default());
+            let scene = ui.scene().unwrap();
+            let row = scene.surface("log-event-1002").unwrap().frame;
+            let at = if target == "blank" {
+                Point::new(row.x + row.size.width - INSET / 2., row.y + row.size.height / 2.)
+            } else {
+                let text = scene.surface(&format!("log-event-1002-{target}")).unwrap().frame;
+                Point::new(text.x + text.size.width / 2., text.y + text.size.height / 2.)
+            };
+            for down in [true, false] {
+                tick(&mut ui, &mut state, &params, Input {
+                    pointer: PointerInput {
+                        pos: Some(at),
+                        buttons: if down { Buttons::PRIMARY } else { Buttons::default() },
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                });
+            }
+            tick(&mut ui, &mut state, &params, Input::default());
+            assert_eq!(state.selected, Some(1002), "clicking event {target} selects the whole row");
         }
         press(&mut ui, &mut state, &params, "log-event-1002");
         assert_eq!(state.selected, Some(1002));

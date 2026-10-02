@@ -447,6 +447,45 @@ fn malformed_start_criteria_returns_error() {
 }
 
 #[test]
+fn start_criteria_preserve_sparse_rows_unknown_ids_and_edits() {
+    use ni_file::kontakt::objects::StartCriteriaList;
+    let mut raw = vec![0b1010];
+    for (mode, operator, cycle, sequencer) in [(99i32, -7i32, 0i32, 1), (3, 0, 2, 0)] {
+        raw.extend([0, 0x70, 0]);
+        raw.extend(mode.to_le_bytes());
+        raw.extend(operator.to_le_bytes());
+        for v in [24i16, 25, 64, 0, 127] { raw.extend(v.to_le_bytes()); }
+        for v in [cycle, -1, -2] { raw.extend(v.to_le_bytes()); }
+        raw.push(sequencer);
+    }
+    let records_len = raw.len();
+    raw.extend([0xA5, 0, 0xFF]);
+    let mut criteria = StartCriteriaList::read(Cursor::new(&raw)).unwrap();
+    assert_eq!(criteria.mask, 0b1010);
+    assert_eq!(criteria.items[0].mode, 99);
+    let mut written = Vec::new();
+    criteria.write(&mut written).unwrap();
+    assert_eq!(written, raw);
+    criteria.items[1].cycle_class = 7;
+    written.clear();
+    criteria.write(&mut written).unwrap();
+    let mut expected = raw.clone();
+    expected[56..60].copy_from_slice(&7i32.to_le_bytes());
+    assert_eq!(written, expected, "editing one field retains unknown IDs and sparse row mask");
+    assert_eq!(StartCriteriaList::read(Cursor::new(&written)).unwrap(), criteria);
+    criteria.mask = 1;
+    written.clear();
+    assert!(criteria.write(&mut written).is_err());
+    assert!(written.is_empty(), "reject mismatched masks before output");
+    for len in 0..records_len { assert!(StartCriteriaList::read(Cursor::new(&raw[..len])).is_err()); }
+    raw[records_len - 1] = 2;
+    assert!(StartCriteriaList::read(Cursor::new(&raw)).is_err());
+    raw[records_len - 1] = 0;
+    raw[1] = 2;
+    assert!(StartCriteriaList::read(Cursor::new(raw)).is_err());
+}
+
+#[test]
 fn group_conditions_are_found_by_id() {
     use ni_file::kontakt::{Chunk, StructuredObject, objects::Group};
     let mut group=Group(StructuredObject{version:0x90,public_data:vec![0;64],private_data:vec![],children:vec![Chunk{id:0x38,data:vec![0]}]});

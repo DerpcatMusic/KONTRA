@@ -25,6 +25,10 @@ pub use crate::modulation::{Ahdsr, FlexEnvelope, FlexPoint, ModAssignment, ModEn
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct Group {
     pub name: String,
+    /// Native group-start records, including unknown mode/operator IDs.
+    /// Retained for writing; playback does not yet evaluate these conditions.
+    #[serde(default)]
+    pub start_criteria: ni_file::kontakt::objects::StartCriteriaList,
     /// Linear amplitude ratio.
     pub gain: f32,
     pub pan: f32,
@@ -64,7 +68,7 @@ pub struct Group {
 
 impl Default for Group {
     fn default() -> Self {
-        Self { name: String::new(), gain: 1.0, pan: 0.0, tune: 1.0, key_tracking: true, reverse: false,
+        Self { name: String::new(), start_criteria: Default::default(), gain: 1.0, pan: 0.0, tune: 1.0, key_tracking: true, reverse: false,
             release_trigger: false, release_counter_ms: 0, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), fx: Default::default(), amp_split_slot: None, voice_group: None, interp_quality: 0 }
     }
 }
@@ -656,7 +660,11 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
             Ok(_) => {},
             Err(error) => warnings.push(format!("{}: source identity is not decoded: {error}; source-specific playback parameters are not applied", v.name)),
         }
-        if !v.start_criteria.items.is_empty() { warnings.push(format!("{}: native group start conditions are not implemented", v.name)); }
+        if !v.start_criteria.items.is_empty() || !v.start_criteria.unknown_tail.is_empty() {
+            let records: Vec<_> = v.start_criteria.items.iter()
+                .map(|c| (c.mode, c.next_criteria, c.cycle_class)).collect();
+            warnings.push(format!("{}: native group start conditions are retained but not evaluated (mask {}, raw mode/operator/cycle records {records:?}, {} opaque tail bytes); native numeric IDs are not verified", v.name, v.start_criteria.mask, v.start_criteria.unknown_tail.len()));
+        }
         if v.release_trigger_note_monophonic {warnings.push("Release-trigger note monophony is not imported".into());}
         let modulation = match crate::modulation::read_group(g) {
             Ok(modulation) => modulation,
@@ -677,6 +685,7 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
         // Gain and tuning are linear ratios (see audits/MODULATION.md).
         groups.push(Group {
             name: v.name,
+            start_criteria: v.start_criteria,
             gain: v.volume,
             pan: v.pan,
             tune: v.tune as f64,
@@ -748,7 +757,9 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
             order.push(file_id);
         }
         zone_ids.push(file_id);
-        ensure!([lk,hk,lv,hv,root].iter().chain(&fades).all(|v| (0..=127).contains(v)) && lk <= hk && lv <= hv, "Invalid zone mapping");
+        if let Some(reason) = zone_mapping_error([lk,hk], [lv,hv], root, fades) {
+            bail!("Invalid zone mapping in {}: zone {} v{:x}, group {group}, sample ID {file_id}: {reason}; keys {lk}..={hk}, velocity {lv}..={hv}, root {root}, fades {fades:?}", path.display(), zones.len(), so.version);
+        }
         let [fade_low_velocity, fade_high_velocity, fade_low_key, fade_high_key] = fades.map(|v| v as u8);
         ensure!(start >= 0 && end <= 0 && gain.is_finite() && pan.is_finite() && tune.is_finite() && tune > 0.0, "Invalid zone {} v{:x}: start {start}, end {end}, gain {gain}, pan {pan}, tune {tune}",zones.len(),so.version);
         let loops = so.find_first(0x39).map(LoopArray::try_from).transpose().with_context(|| format!("Zone {} loops",zones.len()))?;
@@ -840,6 +851,21 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
         kontakt_preload: program.dfd_channel_preload_size,
         dependencies,
     })
+}
+
+// Diagnose the original serialized values before narrowing them to MIDI bytes.
+fn zone_mapping_error(keys: [i16;2], velocity: [i16;2], root: i16, fades: [i16;4]) -> Option<String> {
+    for (field, value) in [
+        ("low key",keys[0]), ("high key",keys[1]),
+        ("low velocity",velocity[0]), ("high velocity",velocity[1]), ("root key",root),
+        ("low velocity fade",fades[0]), ("high velocity fade",fades[1]),
+        ("low key fade",fades[2]), ("high key fade",fades[3]),
+    ] {
+        if !(0..=127).contains(&value) { return Some(format!("{field} {value} is outside 0..=127")); }
+    }
+    if keys[0] > keys[1] { return Some(format!("low key {} exceeds high key {}",keys[0],keys[1])); }
+    if velocity[0] > velocity[1] { return Some(format!("low velocity {} exceeds high velocity {}",velocity[0],velocity[1])); }
+    None
 }
 
 /// (mount point, fs type, source) of the deepest mount containing `path`, from mountinfo text.
@@ -1081,6 +1107,17 @@ pub(crate) fn library_metadata(path: &Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod preset_tests {
+
+    #[test]
+    fn invalid_zone_mapping_names_rejected_values_without_narrowing() {
+        use super::zone_mapping_error;
+        assert_eq!(zone_mapping_error([0,127],[0,127],60,[0;4]), None);
+        assert_eq!(zone_mapping_error([-1,127],[0,127],60,[0;4]).unwrap(), "low key -1 is outside 0..=127");
+        assert_eq!(zone_mapping_error([0,127],[0,128],60,[0;4]).unwrap(), "high velocity 128 is outside 0..=127");
+        assert_eq!(zone_mapping_error([0,127],[0,127],60,[0,0,0,128]).unwrap(), "high key fade 128 is outside 0..=127");
+        assert_eq!(zone_mapping_error([61,60],[0,127],60,[0;4]).unwrap(), "low key 61 exceeds high key 60");
+        assert_eq!(zone_mapping_error([0,127],[100,99],60,[0;4]).unwrap(), "low velocity 100 exceeds high velocity 99");
+    }
 
     #[test]
     #[ignore = "requires the local Una Corda instruments; no proprietary fixtures"]
