@@ -50,7 +50,7 @@ pub fn notices(cx: &Cx, slot: usize) -> Option<El> {
     let v = &cx.view.parts[slot];
     let mut out = Vec::new();
     if v.status == "Loading snapshot…" {
-        out.push(banner(Role::Accent, v.status.clone()));
+        out.push(banner(Role::Ink, v.status.clone()));
     } else if let Some(reason) = v.status.strip_prefix("Snapshot was not loaded: ") {
         out.push(banner(Role::Danger, format!("Snapshot was not loaded: {reason}")));
     }
