@@ -2,7 +2,7 @@
 use anyhow::Result;
 use kontakto::{
     articulate::{self, Articulate, In, Mode, Mpe, Route, Router, Zone},
-    engine::{Engine, MAX_BLOCK, RACK_SLOTS, Rack},
+    engine::{Engine, MAX_BLOCK, Rack},
     import,
 };
 use serde_json::{Value, json};
@@ -107,7 +107,7 @@ fn snapshot(
 
 fn phase(
     rack: &mut Rack,
-    routers: &mut [Router; RACK_SLOTS],
+    routers: &mut [Router],
     meter: &mut Meter,
     name: &str,
     seconds: f64,
@@ -206,7 +206,7 @@ pub fn run(path: &Path, program: u32, snapshot: Option<&Path>, realtime: bool) -
     // A release reaches -60 dB at its stored time; -80 dB takes 4/3 of it.
     // This is an observation window, not a stuck-note verdict for script-defined tails.
     let tail_seconds = (maximum_release * 4. / 3. + 2.).max(8.);
-    let mut routers = std::array::from_fn(|_| Router::default());
+    let mut routers: Vec<_> = (0..rack.parts.len()).map(|_| Router::default()).collect();
     let mut cases = Vec::new();
     for case in [
         "notes-pedals-stops",

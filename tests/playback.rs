@@ -1333,9 +1333,9 @@ fn rack_midi_ports_audio_buses_and_route_changes_are_isolated() {
     rack.note_off_port(0, 0, 60);
     let out = rack.render(100);
     assert_eq!([out[3][0][99], out[3][1][99]], [0.5, 0.25]);
-    let mut controls = rack.controls;
+    let mut controls = rack.controls.clone();
     controls[1].port = 2;
-    rack.set_controls(Mix {
+    rack.set_controls(&Mix {
         parts: controls,
         buses: rack.bus_controls,
     });
@@ -1903,7 +1903,7 @@ fn following_child_freezes_preserve_start_and_release_budgets_without_allocating
     let mut routers: [Router; RACK_SLOTS] = std::array::from_fn(|_|Router::default());
     routers[0].set_route(Route::new("",&Articulate::default(),&Mpe { zone: Zone::Lower,..Mpe::default() }));
     for _ in 0..4 {
-        for _ in 0..100 { dispatch_to(&mut rack,&mut routers,1,In::NoteOn(1,60,100)); }
+        for _ in 0..100 { dispatch_to(&mut rack,&mut routers,[0],In::NoteOn(1,60,100)); }
         let (mut l,mut r)=([0.;128],[0.;128]); rack.parts[0].render(&mut l,&mut r);
     }
     assert_eq!(rack.parts[0].active_voices(),400);
@@ -1911,8 +1911,8 @@ fn following_child_freezes_preserve_start_and_release_budgets_without_allocating
     assert_eq!(allocations(|| {
         // Four hundred child freezes exceed the ordinary quota. A new Start
         // still fits, and the remaining ordinary quota fills with controllers.
-        dispatch_to(&mut rack,&mut routers,1,In::NoteOff(1,60));
-        dispatch_to(&mut rack,&mut routers,1,In::NoteOn(1,61,100));
+        dispatch_to(&mut rack,&mut routers,[0],In::NoteOff(1,60));
+        dispatch_to(&mut rack,&mut routers,[0],In::NoteOn(1,61,100));
         for _ in 1..kontakto::engine::MAX_COMMANDS { rack.parts[0].cc(1,1,100); }
         let (mut l,mut r)=([0.;128],[0.;128]);
         // The old children's delayed Releases arrive into the full ordinary
@@ -3727,4 +3727,59 @@ fn independent_listener_disable_and_delivery_do_not_allocate_on_audio() {
     assert_eq!(ui.controls[0].properties["$CONTROL_PAR_VALUE"],Value::Int(213));
     assert_eq!(ui.controls[1].properties["$CONTROL_PAR_VALUE"],Value::Int(3));
     assert!(rt.diagnostics().is_empty(),"{:?}",rt.diagnostics());
+}
+
+#[test]
+fn growing_the_rack_keeps_voices_held_notes_and_recorded_targets_without_audio_heap_operations() {
+    use kontakto::articulate::{self, In, Router};
+    use kontakto::timing::{Align, Holds, Timing};
+
+    let mut rack = Box::new(Rack::default());
+    rack.parts[0] = engine();
+    rack.note_on(0, 60, 127);
+    rack.render(32);
+    assert_eq!(rack.parts[0].active_voices(), 1);
+    let mut routers: Vec<_> = (0..rack.parts.len()).map(|_| Router::default()).collect();
+    let mut align = Align::default();
+    align.plan.on = true;
+    align.plan.parts.fill(Holds::of(&Timing { override_ms: Some(0.0), ..Timing::default() }, &[], 5.0));
+    align.arrive(&mut rack, &mut routers, 0, In::NoteOn(0, 61, 127), 0, 48_000.);
+    assert_eq!(align.next_due(), Some(240));
+
+    // Prepared on the worker; slot 32 also crosses the former u32 target mask.
+    let mut prepared = Box::new(Rack::with_slots(33));
+    prepared.parts[32] = engine();
+    prepared.controls[32].port = 1;
+    let mut schedulers = Align::with_slots(33);
+    let mut new_routers: Vec<_> = (0..33).map(|_| Router::default()).collect();
+    let mut targets = vec![false; 33];
+    let shortened = Mix { parts: rack.controls[..1].to_vec(), buses: rack.bus_controls };
+    assert_eq!(allocations(|| {
+        rack.adopt_parts(&mut prepared);
+        align.adopt_parts(&mut schedulers);
+        for (old, new) in routers.iter_mut().zip(&mut new_routers) {
+            std::mem::swap(old, new);
+        }
+        std::mem::swap(&mut routers, &mut new_routers);
+        assert_eq!(rack.parts[0].active_voices(), 1, "the playing engine survives growth");
+        assert_eq!(align.next_due(), Some(240), "its held note survives growth");
+        articulate::dispatch_record(&mut rack, &mut routers, 1, In::NoteOn(0, 62, 127), &mut targets);
+        rack.render(32);
+        assert!(targets[32], "the appended part receives input beyond bit 31");
+        assert_eq!(rack.parts[32].active_voices(), 1);
+        align.release(240, &mut rack, &mut routers);
+        rack.render(32);
+        assert_eq!(rack.parts[0].active_voices(), 2, "the preserved held note plays");
+        rack.controls[32].port = 2;
+        articulate::dispatch_to(&mut rack, &mut routers,
+            targets.iter_mut().enumerate().filter_map(|(slot, target)| std::mem::take(target).then_some(slot)),
+            In::NoteOff(0, 62));
+        articulate::dispatch_to(&mut rack, &mut routers, [0], In::NoteOff(0, 60));
+        articulate::dispatch_to(&mut rack, &mut routers, [0], In::NoteOff(0, 61));
+        for _ in 0..8 { rack.render(128); }
+        assert_eq!(rack.parts[0].active_voices(), 0);
+        assert_eq!(rack.parts[32].active_voices(), 0, "key-up reaches its saved target after routing changes");
+        rack.set_controls(&shortened);
+        assert_eq!(rack.controls[32], Default::default(), "removed slots lose their old routing");
+    }), 0, "growth, routing, alignment and playback must neither allocate nor free on audio");
 }

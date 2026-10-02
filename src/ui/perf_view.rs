@@ -373,7 +373,8 @@ fn fetch(cx: &mut Cx, slot: usize, interface: &Interface) {
     }
     let p = cx.p.clone();
     let program = v.program;
-    let generation = p.shared.generation[slot].load(std::sync::atomic::Ordering::Acquire);
+    let Some(shared) = p.shared.part(slot) else { return };
+    let generation = shared.generation.load(std::sync::atomic::Ordering::Acquire);
     let _ = std::thread::Builder::new().name("kontakto-pictures".into()).spawn(move || {
         let mut trace = crate::diagnostics::LoadTrace::new(&path, program, Some(slot));
         trace.detail("operation", "control_pictures");
@@ -385,7 +386,7 @@ fn fetch(cx: &mut Cx, slot: usize, interface: &Interface) {
         let mut view = p.shared.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let v = &mut view.parts[slot];
         if v.instrument.as_ref().is_some_and(|i| i.path == path) && v.program == program
-            && p.shared.generation[slot].load(std::sync::atomic::Ordering::Acquire) == generation
+            && shared.generation.load(std::sync::atomic::Ordering::Acquire) == generation
         {
             if !found.is_empty() {
                 let mut all = (*v.pictures).clone();

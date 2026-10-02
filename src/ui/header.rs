@@ -492,7 +492,7 @@ pub fn load_fraction(view: &View, p: &SamplerParams) -> f64 {
     let fractions: Vec<f64> = (view.parts.iter().enumerate())
         .filter(|(_, v)| v.loading)
         .map(|(n, _)| {
-            let done = p.shared.load_progress[n].load(Ordering::Relaxed);
+            let done = p.shared.part(n).map_or(0, |part| part.load_progress.load(Ordering::Relaxed));
             f64::from(done) / f64::from(crate::engine::LOAD_DONE)
         })
         .collect();

@@ -45,7 +45,6 @@ mod vector;
 mod viz;
 mod wave;
 
-use crate::engine::RACK_SLOTS;
 pub(crate) use panel::{articulations, sections};
 use crate::import;
 use crate::plugin::{Load, Part, PartView, SamplerParams, Selection, View, mix};
@@ -242,12 +241,12 @@ impl Watch {
             let pending = view.scanned != p.shared.libraries.wanted()
                 || lock(&p.shared.multi_request).is_some()
                 || lock(&p.shared.snapshot_request).is_some()
-                || (0..RACK_SLOTS).any(|n| {
+                || (0..view.parts.len().max(selection.parts.len())).any(|n| {
                     let (path, program, snapshot) = selection
                         .parts
                         .get(n)
                         .map_or(("", 0, ""), |p| (p.path.as_str(), p.program, p.snapshot.as_str()));
-                    match &view.parts[n].attempted {
+                    match view.parts.get(n).and_then(|v| v.attempted.as_ref()) {
                         Some((a, b, c)) => (a.as_str(), *b, c.as_str()) != (path, program, snapshot),
                         None => !path.is_empty(),
                     }
@@ -258,8 +257,8 @@ impl Watch {
         // level, frames run on the animation clock; the fall to silence
         // changes the signature, so the last one draws them empty.
         let m = &p.shared.meters;
-        let sounding = (m.parts.iter().chain(&m.buses).chain([&m.master]))
-            .any(|meter| crate::plugin::Meters::read(meter) != [0.; 2]);
+        let sounding = p.shared.with_parts(|parts| parts.iter().any(|part| crate::plugin::Meters::read(&part.meter) != [0.; 2]))
+            || m.buses.iter().chain([&m.master]).any(|meter| crate::plugin::Meters::read(meter) != [0.; 2]);
         // The sound editor's playheads, and the values scripts move under it.
         // A host that stops calling the audio thread leaves its last voices
         // behind: once it has been still a while, they are gone.
@@ -503,7 +502,7 @@ type Libraries = std::collections::BTreeMap<String, Vec<usize>>;
 /// One frame's inputs: the loader's view, the rack being edited, the editor state.
 struct Cx<'a> {
     p: &'a Arc<SamplerParams>,
-    view: &'a View,
+    view: View,
     /// The app's settings as this frame began: library folders and covers.
     settings: Arc<crate::library::Settings>,
     selection: Selection,
@@ -625,17 +624,20 @@ impl Cx<'_> {
         }
     }
 
+    // The frame snapshot predates these edits: prepare its new rows as well as
+    // the shared atomics before any header or control indexes the appended slot.
+    fn ensure_parts(&mut self) {
+        self.p.shared.ensure_parts(self.selection.parts.len());
+        self.view.parts.resize_with(self.view.parts.len().max(self.selection.parts.len()), PartView::default);
+    }
+
     /// Add an instrument to the first free slot and show it.
     fn add(&mut self, path: String) {
         self.remember(&path);
         let part = new_part(&self.selection, &self.settings, path);
-        match add_part(&mut self.selection, part) {
-            Some(slot) => self.show(slot),
-            None => {
-                self.state.notice =
-                    "The rack is full (16 instruments). Remove one to add another.".into()
-            }
-        }
+        let slot = add_part(&mut self.selection, part);
+        self.ensure_parts();
+        self.show(slot);
     }
 
     /// Apply to an explicit base, leaving the part intact until validation.
@@ -662,14 +664,11 @@ impl Cx<'_> {
         let Some(part) = self.selection.parts.get(slot).cloned() else {
             return;
         };
-        match add_part(&mut self.selection, part) {
-            Some(copy) => {
-                move_part(&mut self.selection, copy, slot);
-                move_part(&mut self.selection, slot, copy);
-                self.show(copy);
-            }
-            None => self.state.notice = "The rack is full (16 instruments).".into(),
-        }
+        let copy = add_part(&mut self.selection, part);
+        self.ensure_parts();
+        move_part(&mut self.selection, copy, slot);
+        move_part(&mut self.selection, slot, copy);
+        self.show(copy);
     }
 
     /// Empty `slot` and show whichever part now comes first.
@@ -732,13 +731,13 @@ fn new_part(selection: &Selection, settings: &crate::library::Settings, path: St
     }
 }
 
-/// Put `part` in the first empty slot; `None` when the rack is full.
-fn add_part(selection: &mut Selection, part: Part) -> Option<usize> {
+/// Put `part` in the first empty slot, or append a new slot.
+fn add_part(selection: &mut Selection, part: Part) -> usize {
     let slot = selection
         .parts
         .iter()
         .position(|p| p.path.is_empty())
-        .or_else(|| (selection.parts.len() < RACK_SLOTS).then_some(selection.parts.len()))?;
+        .unwrap_or(selection.parts.len());
     if slot == selection.parts.len() {
         selection.parts.push(part);
     } else {
@@ -746,7 +745,7 @@ fn add_part(selection: &mut Selection, part: Part) -> Option<usize> {
     }
     selection.order.retain(|n| *n != slot as u32);
     selection.order.push(slot as u32);
-    Some(slot)
+    slot
 }
 
 /// Move `from` to just before `before` in the rack order.
@@ -765,7 +764,6 @@ fn move_part(selection: &mut Selection, from: usize, before: usize) {
 
 /// Clamp what the host restored and keep `order` a permutation of loaded slots.
 fn sanitize(selection: &mut Selection) {
-    selection.parts.truncate(RACK_SLOTS);
     for part in &mut selection.parts {
         part.channel = part.channel.clamp(-1, 15);
         part.port = part.port.min(3);
@@ -787,7 +785,7 @@ fn sanitize(selection: &mut Selection) {
             0.
         };
     }
-    let mut seen = [false; RACK_SLOTS];
+    let mut seen = vec![false; selection.parts.len()];
     let parts = &selection.parts;
     selection.order.retain(|n| {
         let n = *n as usize;
@@ -857,32 +855,20 @@ fn native_files(p: &SamplerParams, picker: &picker::Picker, ui: &Ui, at: Point, 
     let mut selection = write(&p.selection);
     // A part's header takes the file in place of the part.
     let target = (0..selection.parts.len()).find(|n| inside(&format!("header-{n}")));
-    let free = RACK_SLOTS.saturating_sub(
-        selection
-            .parts
-            .iter()
-            .filter(|p| !p.path.is_empty())
-            .count(),
-    );
-    if paths.len() > free + usize::from(target.is_some()) {
-        return false;
-    }
     if dropped {
         for (n, path) in paths.iter().enumerate() {
             let path = path.to_string_lossy().into_owned();
             let slot = match target.filter(|_| n == 0) {
                 Some(slot) => {
                     replace_part(&mut selection.parts[slot], path);
-                    Some(slot)
+                    slot
                 }
                 None => {
                     let part = new_part(&selection, &p.shared.libraries.settings(), path);
                     add_part(&mut selection, part)
                 }
             };
-            if let Some(slot) = slot {
-                p.shared.focus_request.store(slot as u64, Ordering::Relaxed);
-            }
+            p.shared.focus_request.store(slot as u64, Ordering::Relaxed);
         }
     }
     true
@@ -966,12 +952,14 @@ fn build(
             state.last_poll = Instant::now();
         }
         let p = bridge.params().clone();
-        let view = shown(&p.shared.view);
         let mut selection = read(&p.selection).clone();
+        p.shared.ensure_parts(selection.parts.len());
+        let mut view = shown(&p.shared.view);
+        view.parts.resize_with(view.parts.len().max(selection.parts.len()), PartView::default);
         let before = selection.clone();
         sanitize(&mut selection);
-        let focus = p.shared.focus_request.swap(128, Ordering::Relaxed);
-        if focus < RACK_SLOTS as u64 {
+        let focus = p.shared.focus_request.swap(u64::MAX, Ordering::Relaxed);
+        if focus < selection.parts.len() as u64 {
             state.select(focus as usize);
             state.notice.clear();
         }
@@ -984,7 +972,7 @@ fn build(
 
         let mut cx = Cx {
             p: &p,
-            view: &view,
+            view,
             settings: p.shared.libraries.settings(),
             selection,
             state: &mut state,
@@ -1017,7 +1005,7 @@ fn build(
         cx.state.meters.logs_visible.store(cx.state.tab == Tab::Logs, Ordering::Relaxed);
 
         let ui_zoom = cx.settings.editor_scale();
-        let Cx { mut selection, .. } = cx;
+        let Cx { mut selection, view, .. } = cx;
         if selection != before {
             // Parts added, removed or rerouted are routed at once.
             p.shared.reroute(&mut selection);

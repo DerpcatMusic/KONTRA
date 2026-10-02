@@ -59,18 +59,31 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     if ui.get("rack-view").clicked {
         cx.state.selected_none();
     }
-    let (view_h, content_h, frames) = {
+    let (view_h, content_h) = {
         let frame = |id: &str| ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame);
-        let content = frame("rack-content");
-        let frames: Vec<Option<(f64, f64)>> = (order.iter())
-            .map(|slot| {
-                let f = frame(&format!("part-{slot}"))?;
-                Some((f.y - content?.y, f.size.height))
-            })
-            .collect();
-        let view_h = frame("rack-view").map_or(0., |f| f.size.height);
-        (view_h, content.map_or(0., |f| f.size.height), frames)
+        (frame("rack-view").map_or(0., |f| f.size.height), frame("rack-content").map_or(0., |f| f.size.height))
     };
+    // Offscreen rows have no widget subtree or surface. Reconstruct their
+    // positions from the same known body/fixed heights used by part(), rather
+    // than asking the layout to keep every header alive just to locate it.
+    let mut top = 0.;
+    let mut measured = Vec::with_capacity(order.len());
+    let frames: Vec<Option<(f64, f64)>> = order.iter().map(|&slot| {
+        let frame = |id: String| ui.scene().and_then(|s| s.surface(&id)).map(|s| s.frame.size.height);
+        if let Some(body) = frame(format!("body-{slot}")) { cx.state.bodies.insert(slot, body); }
+        let part = &cx.selection.parts[slot];
+        let natural = cx.state.bodies.get(&slot).map(|b| SLIM + b);
+        let set = (!part.collapsed && part.height > 0.).then_some(f64::from(part.height));
+        let target = target_height(part.collapsed, set, natural);
+        let prior = frame(format!("part-{slot}"));
+        measured.push(part.collapsed || natural.is_some() || prior.is_some());
+        let height = cx.state.resizing.filter(|(s, _)| *s == slot).map(|(_, h)| h)
+            .or_else(|| target.map(|h| ui.tween_with(format!("part-h-{slot}"), h, quick()).round()))
+            .or(prior).unwrap_or(SLIM).max(SLIM);
+        let result = Some((top, height));
+        top += height;
+        result
+    }).collect();
     let sticky = !cx.selection.sticky_off;
     let n = order.len();
     // Where part `i`'s header shows with the rack scrolled to `y`: in place,
@@ -79,6 +92,12 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
         let at = top - y;
         if !sticky {
             return at;
+        }
+        // Keep the stacked rack headers while they fit. A larger rack uses
+        // its current body's sticky header, pushed away by that body's end;
+        // reserving n header pitches would otherwise cover the whole view.
+        if n as f64 * SLIM > view_h {
+            return at.max(0.).min(at + frames[i].map_or(SLIM, |f| f.1) - SLIM);
         }
         let (above, below) = (i as f64 * SLIM, view_h - (n - i) as f64 * SLIM);
         if at < above { above } else { at.min(below).max(above) }
@@ -95,13 +114,22 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
         match *f {
             Some((top, h)) if view_h > 0. => {
                 stuck[i] = sticky && (place(i, top, drawn) - (top - drawn)).abs() > 0.5;
-                near[i] = top - drawn + h > -view_h && top - drawn < 2. * view_h;
+                near[i] = top - drawn + h > -SLIM && top - drawn < view_h + SLIM;
             }
             _ => {
                 near[i] = unplaced < UNPLACED;
                 unplaced += 1;
             }
         }
+    }
+    // Keep active pointer/text edits mounted, and measure a requested new
+    // row before deciding where to reveal it. Other offscreen rows stay unbuilt.
+    for (i, &slot) in order.iter().enumerate() {
+        near[i] |= cx.state.resizing.is_some_and(|(s, _)| s == slot)
+            || cx.state.held.is_some_and(|(s, _, _)| s == slot)
+            || cx.state.typing.as_ref().is_some_and(|(s, _, _)| *s == slot)
+            || cx.state.renaming.as_ref().is_some_and(|(s, _)| *s == slot)
+            || (cx.state.reveal == Some(slot) && !measured[i]);
     }
     wheel_taken();
     let mut items = Vec::with_capacity(n + 3);
@@ -111,9 +139,19 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
         (&stuck, &near, cx.state.resizing.map(|(s, h)| (s, h.to_bits()))).hash(&mut h);
         h
     };
+    let mut omitted = 0.;
     for (i, &slot) in order.iter().enumerate() {
-        items.push(part(ui, cx, slot, stuck[i], near[i], &mut shape));
+        if !near[i] {
+            omitted += frames[i].map_or(SLIM, |f| f.1);
+            continue;
+        }
+        if omitted > 0. {
+            items.push(block(Len::Pct(100.), omitted).shrink(0));
+            omitted = 0.;
+        }
+        items.push(part(ui, cx, slot, stuck[i], true, &mut shape));
     }
+    if omitted > 0. { items.push(block(Len::Pct(100.), omitted).shrink(0)); }
     if order.is_empty() {
         add_drop(ui, cx, "rack-welcome");
         // The welcome itself uses flex-basis zero to fill its parent. Give
@@ -128,7 +166,10 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     // existing scroll content, so the footer can scroll completely above it.
     items.push(empty(ui, cx, view_h.max(240.)));
     let headers: Vec<(usize, El)> = (0..n)
-        .filter(|&i| stuck[i] && frames[i].is_some())
+        .filter(|&i| stuck[i] && frames[i].is_some_and(|(top, _)| {
+            let at = place(i, top, drawn);
+            at + SLIM > 0. && at < view_h
+        }))
         .map(|i| (i, col![header_at(ui, cx, order[i], true), rule()].gap(0).w(Len::Pct(100.))))
         .collect();
     // A knob under the pointer turns; the rack scrolls otherwise.
@@ -140,10 +181,10 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     if let Some(w) = wheel {
         state.rack_y += w.y;
     }
-    let pitch = |i: usize| if sticky { i as f64 * SLIM } else { 0. };
+    let pitch = |i: usize| if sticky && n as f64 * SLIM <= view_h { i as f64 * SLIM } else { 0. };
     if let Some(at) = (state.reveal)
         .and_then(|slot| order.iter().position(|s| *s == slot))
-        .and_then(|i| Some(frames[i]?.0 - pitch(i)))
+        .and_then(|i| measured[i].then(|| frames[i].unwrap().0 - pitch(i)))
     {
         state.rack_y = at;
         state.reveal = None;
@@ -186,6 +227,14 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
         row_items.push(block(8, Len::Pct(100.)).shrink(0));
     }
     row(row_items).gap(0).align(Align::Stretch).flex(1).min_h(0)
+}
+
+fn target_height(collapsed: bool, set: Option<f64>, natural: Option<f64>) -> Option<f64> {
+    match (collapsed, set, natural) {
+        (true, ..) => Some(SLIM),
+        (false, Some(h), n) => Some(n.map_or(h, |n| h.min(n))),
+        (false, None, n) => n,
+    }
 }
 
 /// One part: its header, as much of its notices and controls as its height
@@ -237,11 +286,7 @@ fn part(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool, near: bool, shape: &
     }
     let dragging = state.resizing.filter(|(s, _)| *s == slot).map(|(_, h)| h);
     let set = (!p.collapsed && p.height > 0.).then_some(f64::from(p.height));
-    let target = match (p.collapsed, set, natural) {
-        (true, ..) => Some(SLIM),
-        (false, Some(h), n) => Some(n.map_or(h, |n| h.min(n))),
-        (false, None, n) => n,
-    };
+    let target = target_height(p.collapsed, set, natural);
     // Not yet laid out whole: all of it, unsprung, so the next frame knows how much that is.
     let height = dragging.or(target).map(|to| {
         // On whole points: the rack below stays sharp while it springs.
@@ -435,7 +480,7 @@ pub fn header(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
 /// How far `slot`'s samples have loaded, 0..1, while they load.
 pub(super) fn loading(cx: &Cx, slot: usize) -> Option<f64> {
     cx.view.parts[slot].loading.then(|| {
-        let done = cx.p.shared.load_progress[slot].load(Ordering::Relaxed);
+        let done = cx.p.shared.part(slot).map_or(0, |part| part.load_progress.load(Ordering::Relaxed));
         (f64::from(done) / f64::from(crate::engine::LOAD_DONE)).clamp(0., 1.)
     })
 }
@@ -595,10 +640,10 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     let (mut solo, mut mute) = (part.solo, part.mute);
     let switches = solo_mute(ui, &slot.to_string(), &mut solo, &mut mute);
     (part.solo, part.mute) = (solo, mute);
-    let p = cx.p.clone();
-    let level = move || crate::plugin::Meters::read(&p.shared.meters.parts[slot]);
-    let p = cx.p.clone();
-    let dot = activity_dot(move || crate::plugin::Meters::read(&p.shared.meters.parts[slot]) != [0.; 2]);
+    let shared = cx.p.shared.part(slot);
+    let meter = shared.clone();
+    let level = move || meter.as_ref().map_or([0.; 2], |part| crate::plugin::Meters::read(&part.meter));
+    let dot = activity_dot(move || shared.as_ref().is_some_and(|part| crate::plugin::Meters::read(&part.meter) != [0.; 2]));
     if remove {
         cx.remove(slot);
     }

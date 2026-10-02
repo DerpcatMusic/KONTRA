@@ -208,7 +208,7 @@ impl Holds {
 }
 
 /// Everything the audio thread aligns by, from the loader.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct Plan {
     /// Auto-align is on.
     pub on: bool,
@@ -216,12 +216,12 @@ pub struct Plan {
     pub transport_only: bool,
     /// Reported latency, ms.
     pub latency_ms: f32,
-    pub parts: [Holds; RACK_SLOTS],
+    pub parts: Vec<Holds>,
 }
 
 impl Default for Plan {
     fn default() -> Self {
-        Self { on: false, transport_only: false, latency_ms: 0.0, parts: [Holds::default(); RACK_SLOTS] }
+        Self { on: false, transport_only: false, latency_ms: 0.0, parts: vec![Holds::default(); RACK_SLOTS] }
     }
 }
 
@@ -418,7 +418,7 @@ impl Scheduler {
     }
 
     /// Play what is due by frame `now` on `slot` of `rack`.
-    pub fn release(&mut self, now: u64, rack: &mut Rack, routers: &mut [Router; RACK_SLOTS], slot: usize) {
+    pub fn release(&mut self, now: u64, rack: &mut Rack, routers: &mut [Router], slot: usize) {
         while self.len > 0 && self.at(0).due <= now {
             let q = *self.at(0);
             self.head = (self.head + 1) % CAPACITY;
@@ -438,7 +438,7 @@ impl Scheduler {
     }
 }
 
-fn play(rack: &mut Rack, routers: &mut [Router; RACK_SLOTS], slot: usize, q: Queued) {
+fn play(rack: &mut Rack, routers: &mut [Router], slot: usize, q: Queued) {
     let (e, c, r) = (&mut rack.parts[slot], &rack.controls[slot], &mut routers[slot]);
     if let (In::NoteOn(channel, ..), true) = (q.ev, q.art != NO_ART) {
         r.select(usize::from(q.art), channel, e);
@@ -456,11 +456,30 @@ pub struct Align {
 
 impl Default for Align {
     fn default() -> Self {
-        Self { plan: Plan::default(), parts: (0..RACK_SLOTS).map(|_| Scheduler::default()).collect(), clock: 0 }
+        Self::with_slots(RACK_SLOTS)
     }
 }
 
 impl Align {
+    /// Allocate scheduler storage on the worker before handing it to audio.
+    pub fn with_slots(slots: usize) -> Self {
+        Self {
+            plan: Plan { on: false, transport_only: false, latency_ms: 0.0, parts: vec![Holds::default(); slots] },
+            parts: (0..slots).map(|_| Scheduler::default()).collect(),
+            clock: 0,
+        }
+    }
+
+    /// Adopt larger worker-prepared scheduler storage, retaining held notes.
+    /// The clock and current plan stay in place; `prepared` retires off audio.
+    pub fn adopt_parts(&mut self, prepared: &mut Self) {
+        assert!(prepared.parts.len() >= self.parts.len());
+        for (current, next) in self.parts.iter_mut().zip(&mut prepared.parts) {
+            std::mem::swap(current, next);
+        }
+        std::mem::swap(&mut self.parts, &mut prepared.parts);
+    }
+
     /// Whether notes are held back now.
     pub fn holding(&self, playing: bool) -> bool {
         self.plan.on && (playing || !self.plan.transport_only)
@@ -468,18 +487,21 @@ impl Align {
 
     /// Take host input `ev` from `port`, arriving at frame `now`: hold it
     /// back for each part it reaches.
-    pub fn arrive(&mut self, rack: &mut Rack, routers: &mut [Router; RACK_SLOTS], port: u8, ev: In, now: u64, rate: f64) {
-        let reached = articulate::reach(rack, routers, port, ev);
-        for slot in (0..RACK_SLOTS).filter(|s| reached & 1 << s != 0) {
-            let holds = &self.plan.parts[slot];
+    pub fn arrive(&mut self, rack: &mut Rack, routers: &mut [Router], port: u8, ev: In, now: u64, rate: f64) {
+        let empty = Holds::default();
+        for slot in 0..self.parts.len().min(rack.parts.len()).min(routers.len()) {
+            if !articulate::reaches(&rack.controls[slot], &routers[slot], port, ev) {
+                continue;
+            }
+            let holds = self.plan.parts.get(slot).unwrap_or(&empty);
             if let Some(ev) = self.parts[slot].arrive(ev, now, holds, rate, &routers[slot]) {
-                articulate::dispatch_to(rack, routers, 1 << slot, ev);
+                articulate::dispatch_to(rack, routers, [slot], ev);
             }
         }
     }
 
     /// Play everything due by frame `now`.
-    pub fn release(&mut self, now: u64, rack: &mut Rack, routers: &mut [Router; RACK_SLOTS]) {
+    pub fn release(&mut self, now: u64, rack: &mut Rack, routers: &mut [Router]) {
         for (slot, s) in self.parts.iter_mut().enumerate() {
             s.release(now, rack, routers, slot);
         }
@@ -493,7 +515,7 @@ impl Align {
     }
 
     /// Play everything held, now.
-    pub fn flush(&mut self, rack: &mut Rack, routers: &mut [Router; RACK_SLOTS]) {
+    pub fn flush(&mut self, rack: &mut Rack, routers: &mut [Router]) {
         self.release(u64::MAX, rack, routers);
         for s in self.parts.iter_mut() {
             s.clear();

@@ -146,25 +146,26 @@ impl Listed {
 struct LibraryDrag(String);
 
 pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
-    let view = cx.view;
+    let catalog = cx.view.shelf.clone();
+    let presets = cx.view.files.clone();
     let multis = cx.state.multis;
     // Which library each file is in, worked out once per scan.
     let (files, shelf, kind, grouped) = &mut cx.state.libraries;
-    let scanned = Arc::as_ptr(&view.shelf) as usize;
-    if !files.upgrade().is_some_and(|f| Arc::ptr_eq(&f, &view.files)) || *shelf != scanned || *kind != multis {
+    let scanned = Arc::as_ptr(&catalog) as usize;
+    if !files.upgrade().is_some_and(|f| Arc::ptr_eq(&f, &presets)) || *shelf != scanned || *kind != multis {
         let mut by: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-        for (n, file) in view.files.iter().enumerate().filter(|(_, f)| import::is_multi(f) == multis) {
-            let library = super::library_of(&view.shelf, file);
+        for (n, file) in presets.iter().enumerate().filter(|(_, f)| import::is_multi(f) == multis) {
+            let library = super::library_of(&catalog, file);
             if !library.is_empty() {
                 by.entry(library).or_default().push(n);
             }
         }
-        (*files, *shelf, *kind, *grouped) = (Arc::downgrade(&view.files), scanned, multis, Arc::new(by));
+        (*files, *shelf, *kind, *grouped) = (Arc::downgrade(&presets), scanned, multis, Arc::new(by));
     }
     let grouped = grouped.clone();
     let settings = cx.settings.clone();
     // The libraries as listed: pinned ones, then by the sort chosen.
-    let arranged: Vec<&Library> = settings.arrange(grouped.keys().filter_map(|name| view.shelf.named(name)));
+    let arranged: Vec<&Library> = settings.arrange(grouped.keys().filter_map(|name| catalog.named(name)));
     let dirs: Vec<String> = arranged.iter().map(|l| l.dir.to_string_lossy().into_owned()).collect();
     // Favorites and recents of the kind picked.
     let kind = |paths: &[String]| -> Vec<PathBuf> {
@@ -327,7 +328,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         }
         // A library dragged onto another goes before it.
         let dir = match source {
-            Source::Library(name) => view.shelf.named(name).map(|l| l.dir.to_string_lossy().into_owned()),
+            Source::Library(name) => catalog.named(name).map(|l| l.dir.to_string_lossy().into_owned()),
             _ => None,
         };
         let mut over = false;
@@ -363,7 +364,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             _ => None,
         };
         let about = match source {
-            Source::Library(name) => view.shelf.named(name).map(|l| about(l, dir.as_deref().is_some_and(pinned))),
+            Source::Library(name) => catalog.named(name).map(|l| about(l, dir.as_deref().is_some_and(pinned))),
             _ => None,
         };
         let el = source_row(id, label, count, thumb, chosen, progress, about);
@@ -376,7 +377,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         // A rule under Recent, and under the pinned libraries.
         let last_pinned = dir.as_deref().is_some_and(pinned)
             && sources.get(n + 1).is_some_and(|(_, s)| match s {
-                Source::Library(name) => !view.shelf.named(name).is_some_and(|l| pinned(&l.dir.to_string_lossy())),
+                Source::Library(name) => !catalog.named(name).is_some_and(|l| pinned(&l.dir.to_string_lossy())),
                 _ => false,
             });
         if source == &Source::Recent || last_pinned {
@@ -400,7 +401,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     }
     let scanning = cx.p.shared.libraries.scanning();
     if arranged.is_empty() && scanning.is_none() {
-        if view.files.is_empty() {
+        if presets.is_empty() {
             // First, so its buttons are in view above favorites and recent.
             rows.insert(0, empty_state(ui, cx));
         } else {
@@ -430,7 +431,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     let needle = cx.state.search.to_lowercase();
     let made_of = {
         let mut h = DefaultHasher::new();
-        (Arc::as_ptr(&view.files) as usize, view.files.len(), Arc::as_ptr(&view.shelf) as usize, multis).hash(&mut h);
+        (Arc::as_ptr(&presets) as usize, presets.len(), Arc::as_ptr(&catalog) as usize, multis).hash(&mut h);
         (&cx.state.source, &needle, &favorites, &recent, &dirs, &settings.folders).hash(&mut h);
         h.finish()
     };
@@ -490,7 +491,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     }
     let mut above = Vec::new();
     if let Some(Source::Library(name)) = &cx.state.source
-        && let Some(library) = view.shelf.named(name)
+        && let Some(library) = catalog.named(name)
     {
         let size = cx.p.shared.libraries.size(&library.dir);
         above.push(library_heading(library, size));
@@ -602,7 +603,7 @@ fn list(
     recent: &[PathBuf],
     needle: &str,
 ) -> Vec<Row> {
-    let view = cx.view;
+    let view = &cx.view;
     let words: Vec<&str> = needle.split_whitespace().collect();
     // A preset's library and its folders inside it.
     let place = |path: &Path| -> (String, String) {

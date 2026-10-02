@@ -86,21 +86,21 @@ enum Meter {
 }
 
 impl Meter {
-    fn level(self, p: &SamplerParams) -> [f32; 2] {
+    fn level(self, p: &SamplerParams, part: Option<&crate::plugin::PartShared>) -> [f32; 2] {
         let m = &p.shared.meters;
-        Meters::read(match self {
-            Self::Part(n) => &m.parts[n],
-            Self::Bus(n) => &m.buses[n],
-            Self::Master => &m.master,
-        })
+        match self {
+            Self::Part(_) => part.map_or([0.; 2], |part| Meters::read(&part.meter)),
+            Self::Bus(n) => Meters::read(&m.buses[n]),
+            Self::Master => Meters::read(&m.master),
+        }
     }
 
-    fn clip(self, p: &SamplerParams) -> &AtomicBool {
+    fn clip<'a>(self, p: &'a SamplerParams, part: Option<&'a crate::plugin::PartShared>) -> Option<&'a AtomicBool> {
         let c = &p.shared.meters.clips;
         match self {
-            Self::Part(n) => &c.parts[n],
-            Self::Bus(n) => &c.buses[n],
-            Self::Master => &c.master,
+            Self::Part(_) => part.map(|part| &part.clip),
+            Self::Bus(n) => Some(&c.buses[n]),
+            Self::Master => Some(&c.master),
         }
     }
 }
@@ -855,9 +855,12 @@ fn channel(ui: &mut Ui, cx: &mut Cx, id: &str, name: &str, db: &mut f64, reset: 
 /// at 0 dBFS until clicked. Read as it is laid out, like [`meter_v`].
 fn meter_held(ui: &mut Ui, cx: &mut Cx, id: &str, meter: Meter) -> El {
     let p = cx.p.clone();
+    // Capture one stable registry entry when building; painted meter frames
+    // read its atomics directly and never acquire the growing registry lock.
+    let part = match meter { Meter::Part(n) => p.shared.part(n), _ => None };
     let hold = cx.state.mixer.holds.entry(id.to_owned()).or_default().clone();
     if ui.get(id).clicked {
-        meter.clip(&p).store(false, Relaxed);
+        if let Some(clip) = meter.clip(&p, part.as_deref()) { clip.store(false, Relaxed); }
         *hold.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Hold::default();
     }
     let watch = cx.state.meters.clone();
@@ -868,14 +871,14 @@ fn meter_held(ui: &mut Ui, cx: &mut Cx, id: &str, meter: Meter) -> El {
         let (top, h) = (margin, (s.height - 2. * margin).max(1.));
         let y = |u: f64| top + h * (1. - u);
         let clip = Color::oklch(0.64, 0.21, 27.);
-        let lit = meter.clip(&p).load(Relaxed);
+        let lit = meter.clip(&p, part.as_deref()).is_some_and(|clip| clip.load(Relaxed));
         let mut draw = vec![Draw::fill(
             rect(0., 0., s.width, (margin - 1.).max(2.)),
             if lit { Fill::from(clip) } else { Role::Ink.alpha(0.1) },
         )];
         let now = Instant::now();
         let mut hold = hold.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        for (n, level) in meter.level(&p).into_iter().enumerate() {
+        for (n, level) in meter.level(&p, part.as_deref()).into_iter().enumerate() {
             let x = n as f64 * (bar + 1.);
             draw.push(Draw::fill(rect(x, top, bar, h), Role::Ink.alpha(0.16)));
             let u = meter_scale(level);

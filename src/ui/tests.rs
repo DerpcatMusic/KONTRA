@@ -717,7 +717,8 @@ fn rack_interactions() {
     let Some((0, Play::Note(60, soft))) = p.shared.keyboard.pop() else { panic!("C plays") };
     assert!(soft < loud, "the top of a key plays softer: {soft} vs {loud}");
     assert_eq!(p.shared.keyboard.pop(), Some((0, Play::Note(60, 0))));
-    p.shared.key_owners[61].store(1, Ordering::Relaxed);
+    p.shared.press_key(1, 61, 1);
+    assert_eq!(p.shared.keyboard.pop(), Some((1, Play::Note(61, 1))));
     p.shared.release_keyboard();
     assert_eq!(p.shared.keyboard.pop(), Some((1, Play::Note(61, 0))));
     p.shared.release_keyboard();
@@ -777,14 +778,16 @@ fn rack_interactions() {
         "a dropped file takes the free slot"
     );
     assert!(!native_files(&p, &Default::default(), ui, at, &[PathBuf::from("bad.wav")], true));
-    assert!(!native_files(
+    let before_append = parts(&p).len();
+    assert!(native_files(
         &p,
         &Default::default(),
         ui,
         at,
-        &vec![PathBuf::from("full.nki"); RACK_SLOTS],
+        &vec![PathBuf::from("full.nki"); 17],
         true
     ));
+    assert_eq!(parts(&p).len(), before_append + 17, "a native drop grows the rack rather than rejecting files");
     let at = center(ui, "header-1");
     assert!(native_files(&p, &Default::default(), ui, at, &files, true));
     assert!(
@@ -1197,7 +1200,7 @@ fn racked(
             view.parts[slot].loading = true;
             view.parts[slot].bytes = 0;
             let done = (f64::from(crate::engine::LOAD_DONE) * done) as u32;
-            p.shared.load_progress[slot].store(done, Ordering::Relaxed);
+            p.shared.part(slot).unwrap().load_progress.store(done, Ordering::Relaxed);
         }
         view.parts[2].instrument = None;
         view.parts[2].interface = None;
@@ -1549,7 +1552,7 @@ fn screenshot() {
                 p.shared.scope.push(&signal);
             }
             if state.starts_with("mixer") {
-                p.shared.meters.clips.parts[1].store(true, Ordering::Relaxed);
+                p.shared.part(1).unwrap().clip.store(true, Ordering::Relaxed);
                 // Mid-song: parts on two buses, one sending to a named third.
                 let mut selection = p.selection.write().unwrap();
                 for (slot, part) in selection.parts.iter_mut().enumerate() {
@@ -1564,10 +1567,12 @@ fn screenshot() {
                 selection.bus_mut(1).gain = -4.5;
                 drop(selection);
                 let m = &p.shared.meters;
-                for (meter, [l, r]) in m.parts.iter().zip([[0.5, 0.42], [0.9, 1.05], [0.05, 0.03]]) {
-                    meter[0].store(f32::to_bits(l), Ordering::Relaxed);
-                    meter[1].store(f32::to_bits(r), Ordering::Relaxed);
-                }
+                p.shared.with_parts(|parts| {
+                    for (part, [l, r]) in parts.iter().zip([[0.5, 0.42], [0.9, 1.05], [0.05, 0.03]]) {
+                        part.meter[0].store(f32::to_bits(l), Ordering::Relaxed);
+                        part.meter[1].store(f32::to_bits(r), Ordering::Relaxed);
+                    }
+                });
                 for (meter, [l, r]) in m.buses.iter().zip([[0.7, 0.6], [0.04, 0.03], [0.2, 0.25]]) {
                     meter[0].store(f32::to_bits(l), Ordering::Relaxed);
                     meter[1].store(f32::to_bits(r), Ordering::Relaxed);
@@ -2352,7 +2357,7 @@ fn mixer_meters_paint_without_a_rebuild() {
     let root = (h.build)(&mut h.ui, &mut h.bridge);
     h.ui.frame(root.clone(), Some(h.size), Input::default(), 0.).unwrap();
     let quiet = pixels(&h.ui, width, height);
-    for m in &p.shared.meters.parts[0] {
+    for m in &p.shared.part(0).unwrap().meter {
         m.store(0.8f32.to_bits(), Ordering::Relaxed);
     }
     h.ui.frame(root, Some(h.size), Input::default(), 0.).unwrap();
@@ -2375,7 +2380,7 @@ fn mixer_meters_paint_without_a_rebuild() {
     let mut changed = || watch.changed(&p, &meters, &computer);
     let settle = Duration::from_millis(ANIMATION_MS + 5);
     let level = |v: f32| {
-        for m in &p.shared.meters.parts[0] {
+        for m in &p.shared.part(0).unwrap().meter {
             m.store(v.to_bits(), Ordering::Relaxed);
         }
     };
@@ -2430,7 +2435,7 @@ fn editor_opens_while_parts_load() {
         h.idle(1);
         (worst, frames) = (worst.max(t.elapsed()), frames + 1);
         for (slot, last) in last.iter_mut().enumerate() {
-            let now = p.shared.load_progress[slot].load(Ordering::Relaxed);
+            let now = p.shared.part(slot).unwrap().load_progress.load(Ordering::Relaxed);
             assert!(now >= *last, "slot {slot} progress fell from {last} to {now}");
             *last = now;
         }
@@ -2988,4 +2993,70 @@ fn optimistic_values_keep_callback_snapshots_immutable_and_invalidate_views() {
     let revision = signature(&view);
     view.parts[0].live_revisions = Some((2,0));
     assert_ne!(signature(&view), revision, "a reused snapshot address cannot hide a new source revision");
+}
+
+#[test]
+fn rack_growth_preserves_restored_slots_and_same_frame_duplicate() {
+    let p = Arc::new(SamplerParams::new());
+    {
+        let mut selection = write(&p.selection);
+        selection.parts = (0..129).map(|n| Part {
+            path: format!("/virtual/Restored/Part {n}.nki"),
+            collapsed: true,
+            ..Default::default()
+        }).collect();
+        selection.order = vec![128, 0, 128, 400];
+    }
+    // Slot128 was formerly also the no-focus sentinel. It remains a real
+    // requested part, independently of the current registry capacity.
+    p.shared.focus_request.store(128, Ordering::Relaxed);
+    let mut h = Harness::new(&p, 1180., 760.);
+    h.idle(2);
+    assert_eq!(read(&p.selection).parts.len(), 129, "restoration never truncates the rack");
+    assert_eq!(read(&p.selection).order.len(), 129, "order covers every occupied slot once");
+    assert_eq!(selected_slot(&p), 128);
+    assert_eq!(p.shared.focus_request.load(Ordering::Relaxed), u64::MAX);
+    assert!(lock(&p.shared.view).parts.len() >= 129);
+    // This append runs inside the editor frame, after its view was captured.
+    // Rendering the new part must use a prepared row, not the prior snapshot's
+    // length, and selection/routing still commit through the ordinary path.
+    h.tick(Input {
+        keys: vec![KeyPress { key: Key::Char('d'), mods: Mods { ctrl: true, ..Default::default() } }],
+        ..Default::default()
+    });
+    h.idle(1); // The harness delivers keys to the following editor build.
+    assert_eq!(read(&p.selection).parts.len(), 130);
+    assert_eq!(read(&p.selection).parts[129].path, read(&p.selection).parts[128].path);
+    assert_eq!(selected_slot(&p), 129);
+    assert!(p.shared.part(129).is_some(), "meter/loader atomics are prepared before rendering");
+    assert!(lock(&p.shared.view).parts.len() >= 130);
+    h.idle(3);
+    assert!(h.ui.scene().unwrap().surface("header-129").is_some(), "the duplicated part is revealed");
+    let bounded = |h: &Harness, count: usize| {
+        let scene = h.ui.scene().unwrap();
+        let viewport = scene.surface("rack-view").unwrap().frame;
+        let headers = (0..count).filter(|n| scene.surface(&format!("header-{n}")).is_some()).count();
+        assert!(headers <= (viewport.size.height / rack::SLIM).ceil() as usize + 4,
+            "header subtrees follow the viewport, not {count} stored parts: {headers}, {viewport:?}");
+        assert!(scene.surface("rack-content").unwrap().frame.size.height >= count as f64 * rack::SLIM,
+            "offscreen rows retain their scroll extent");
+    };
+    bounded(&h, 130);
+    // Put the selected source at the far end, then exercise the real keyboard
+    // append/reveal path there. A virtual row has no old surface to scroll to.
+    write(&p.selection).order.rotate_left(2);
+    h.idle(2);
+    h.tick(Input {
+        keys: vec![KeyPress { key: Key::Char('d'), mods: Mods { ctrl: true, ..Default::default() } }],
+        ..Default::default()
+    });
+    h.idle(1); // Dispatch the queued shortcut through the normal build path.
+    assert_eq!(read(&p.selection).parts.len(), 131);
+    h.idle(60); // Allow the ordinary rack scroll spring to finish.
+    let scene = h.ui.scene().unwrap();
+    let viewport = scene.surface("rack-view").unwrap().frame;
+    let header = scene.surface("header-130").expect("the appended virtual row is revealed").frame;
+    assert!(header.y < viewport.y + viewport.size.height && header.y + header.size.height > viewport.y,
+        "revealed header intersects the viewport: {header:?}, {viewport:?}");
+    bounded(&h, 131);
 }
