@@ -155,8 +155,8 @@ impl ControlState {
             b::CONTROL_PAR_LABEL,
             b::CONTROL_PAR_HELP,
             b::CONTROL_PAR_PICTURE,
-            b::CONTROL_PAR_SHORT_NAME,
-            b::CONTROL_PAR_AUTOMATION_NAME,
+            b::symbol("$CONTROL_PAR_SHORT_NAME").unwrap(),
+            b::symbol("$CONTROL_PAR_AUTOMATION_NAME").unwrap(),
         ] {
             if self.get(par).is_none() {
                 self.set_str(par, "").unwrap();
