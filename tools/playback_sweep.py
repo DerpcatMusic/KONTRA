@@ -48,7 +48,12 @@ def main():
                     with report_path.open("w") as stdout, stderr_path.open("w") as stderr:
                         status = subprocess.run(command, stdout=stdout, stderr=stderr).returncode
                     if status == 0:
-                        result = json.loads(report_path.read_text())
+                        try:
+                            result = json.loads(report_path.read_text())
+                        except json.JSONDecodeError:
+                            status = 1
+                            with stderr_path.open("a") as stderr:
+                                stderr.write("playback-audit did not return JSON; check the binary build and command support\n")
                 issues = []
                 observations = []
                 if result:

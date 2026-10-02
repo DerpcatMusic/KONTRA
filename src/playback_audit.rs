@@ -89,6 +89,7 @@ fn snapshot(
     }
     let notes: Vec<_> = census.iter().map(|v| json!({
         "channel":v.channel, "note":v.note, "group":v.group, "phase":format!("{:?}",v.phase),
+        "event":v.event.0,"physical_channel":v.input_channel,"owner":v.owner,"held":v.held,
         "released":v.released, "release_trigger":v.release_trigger, "level":v.gain * v.envelope,
     })).collect();
     json!({
@@ -113,12 +114,6 @@ fn phase(
     realtime: bool,
 ) -> Value {
     let (start_samples, start_square) = (meter.samples, meter.square);
-    meter.measured(0, || {
-        rack.parts[0].begin_audio_block(MAX_BLOCK, 1, !realtime);
-        for &event in events {
-            articulate::play(rack, routers, 0, event);
-        }
-    });
     let mut frames = (seconds * super::RATE).round() as u64;
     let (mut left, mut right) = ([0.; MAX_BLOCK], [0.; MAX_BLOCK]);
     let mut pace = kontakto::engine::Pace::start();
@@ -132,7 +127,14 @@ fn phase(
         let n = frames.min(MAX_BLOCK as u64) as usize;
         meter.measured(n, || {
             rack.parts[0].begin_audio_block(n, 1, !realtime);
-            rack.parts[0].render(&mut left[..n], &mut right[..n]);
+            if elapsed == 0 {
+                for &event in events {
+                    articulate::play(rack, routers, 0, event);
+                }
+            }
+            let buses = rack.render(n);
+            left[..n].copy_from_slice(&buses[0][0][..n]);
+            right[..n].copy_from_slice(&buses[0][1][..n]);
         });
         for &x in left[..n].iter().chain(&right[..n]) {
             if !x.is_finite() {
@@ -222,6 +224,8 @@ pub fn run(path: &Path, program: u32, realtime: bool) -> Result<Value> {
             routers[0].select(0, 0, &mut rack.parts[0]);
         }
         let mut meter = Meter::default();
+        let (underruns_before, dropped_before) =
+            (rack.parts[0].underruns(), rack.parts[0].dropped_commands());
         let mut stages = Vec::new();
         let control_channel = if mpe.zone == Zone::Upper { 15 } else { 0 };
         let mut go = |name, seconds, events: &[In]| {
@@ -280,6 +284,67 @@ pub fn run(path: &Path, program: u32, realtime: bool) -> Result<Value> {
             go("all-sound-note", 0.25, &[In::NoteOn(0, note, 100)]);
             go("all-sound-off", 0.1, &[In::Cc(0, 120, 0)]);
         } else if case == "channel-articulations" {
+            go(
+                "same-pitch-three-channels",
+                0.5,
+                &[
+                    In::NoteOn(0, note, 100),
+                    In::NoteOn(1, note, 95),
+                    In::NoteOn(2, note, 90),
+                ],
+            );
+            go("same-pitch-channel-two-off", 0.25, &[In::NoteOff(2, note)]);
+            go(
+                "same-pitch-channel-zero-retrigger",
+                0.25,
+                &[In::NoteOn(0, note, 85)],
+            );
+            go("same-pitch-channel-zero-off", 0.25, &[In::NoteOff(0, note)]);
+            go("same-pitch-channel-one-off", 0.5, &[In::NoteOff(1, note)]);
+            go(
+                "same-pitch-reordered-ons",
+                0.5,
+                &[
+                    In::NoteOn(2, note, 100),
+                    In::NoteOn(0, note, 95),
+                    In::NoteOn(1, note, 90),
+                ],
+            );
+            go(
+                "same-pitch-reordered-off-zero",
+                0.25,
+                &[In::NoteOff(0, note)],
+            );
+            go(
+                "same-pitch-reordered-off-two",
+                0.25,
+                &[In::NoteOff(2, note)],
+            );
+            go("same-pitch-reordered-off-one", 0.5, &[In::NoteOff(1, note)]);
+            go(
+                "same-pitch-channel-sustain",
+                0.25,
+                &[
+                    In::Cc(0, 64, 127),
+                    In::NoteOn(1, note, 100),
+                    In::NoteOn(2, note, 90),
+                ],
+            );
+            go(
+                "same-pitch-sustain-keys-up",
+                0.25,
+                &[In::NoteOff(1, note), In::NoteOff(2, note)],
+            );
+            go(
+                "same-pitch-sustain-retrigger",
+                0.25,
+                &[In::NoteOn(1, note, 80)],
+            );
+            go(
+                "same-pitch-sustain-release",
+                0.5,
+                &[In::NoteOff(1, note), In::Cc(0, 64, 0)],
+            );
             go(
                 "three-channel-chord",
                 0.5,
@@ -412,7 +477,7 @@ pub fn run(path: &Path, program: u32, realtime: bool) -> Result<Value> {
             "heap_operations_on_render_thread":meter.heap,"blocks":meter.blocks,
             "render_ms":meter.wall_ms,"max_block_or_event_ms":meter.max_ms,"blocks_exceeding_duration":meter.over_deadline,
             "peak":meter.peak,"rms":(meter.square/meter.samples.max(1) as f64).sqrt(),"nonfinite_samples":meter.nonfinite,
-            "underruns":rack.parts[0].underruns(),"dropped_commands":rack.parts[0].dropped_commands(),"script_diagnostics":diagnostics,
+            "underruns":rack.parts[0].underruns()-underruns_before,"dropped_commands":rack.parts[0].dropped_commands()-dropped_before,"script_diagnostics":diagnostics,
         }));
     }
     Ok(json!({
@@ -421,7 +486,7 @@ pub fn run(path: &Path, program: u32, realtime: bool) -> Result<Value> {
         "samples":sample_count,"streamed_samples":streamed_samples,"skipped_zones":skipped_zones,"load_issues":load_issues,
         "script_errors":script_errors,"warnings":instrument.warnings,"realtime":realtime,
         "tail_observation_seconds":tail_seconds,"maximum_imported_release_seconds":maximum_release,
-        "timing_scope":if realtime {"paced nonblocking engine render; host/GPU overhead excluded"} else {"offline blocking engine render; disk waits may exceed a realtime deadline"},
+        "timing_scope":if realtime {"paced nonblocking rack render, including instrument FX, direct output and part mixing; host/GPU overhead excluded"} else {"offline blocking rack render, including instrument FX, direct output and part mixing; disk waits may exceed a realtime deadline"},
         "cases":cases,
     }))
 }
