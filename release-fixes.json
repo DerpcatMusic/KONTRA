@@ -952,6 +952,138 @@
       ],
       "validation": "Independent physical cursor/PCM, 32-frame clock, block partition, retrigger/release and zero-heap gates pass; malformed/synchronized states remain rejected. Standalone clock math passes 18 cases across 44.1/48/96k. Finite millisecond fades do not establish a cause for longer preset repetition/thinness. Combined clean 131302b optimized production-feature gates: all 510 library tests and 89 playback regressions pass (30/4 ignored). Frozen executable SHA d1080da925e7118b46f3f0d5fa7e752404b00b7aef52777bb1c7ee118efadfb5; no actual-preset sonic parity claim.",
       "accepted": true
+    },
+    {
+      "id": "vst3-optional-note-length-admission",
+      "summary": "Admit VST3 notes with optional unused length metadata without shortening routed ownership",
+      "source_commits": [
+        "a357e1eaa1ef3c909d73e49d99b5babf191c95a0",
+        "401d59e835d9ce5eae8435fd4632a033dce80649"
+      ],
+      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published.",
+      "accepted": false
+    },
+    {
+      "id": "legacy-delay-time-conversion",
+      "summary": "Correct legacy unsynchronized Delay Time conversion over its admitted absolute range",
+      "source_commits": [
+        "f191cc20318091fae1efddd4715037fdf236217a",
+        "aaf2959fe340562a1222d50a2a8daec1a6c672c6"
+      ],
+      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published.",
+      "accepted": false
+    },
+    {
+      "id": "delay-ring-write-clock",
+      "summary": "Write Delay input before advancing its ring cursor",
+      "source_commits": [
+        "4ec295836e026ac23022e0b1c6f53b706855991b"
+      ],
+      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published.",
+      "accepted": false
+    },
+    {
+      "id": "distortion-native-damping-law",
+      "summary": "Use the checked native Distortion Damping law",
+      "source_commits": [
+        "b3e453e144b9ab01b8a251d87583c6a7cf435938"
+      ],
+      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published.",
+      "accepted": false
+    },
+    {
+      "id": "distortion-native-dc-filter-order",
+      "summary": "Apply native Distortion DC rejection after Damping with its checked scalar/SIMD sum order",
+      "source_commits": [
+        "74e3c0eb43e8b0a879784777ab7d78675fe18c6e",
+        "cd940e2490afa2a54ba1c8965e5699083eb742fe"
+      ],
+      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published.",
+      "accepted": false
+    },
+    {
+      "id": "macos-plugin-finder-bundle-recognition",
+      "summary": "Preserve Finder package flags and validate native recognition for both macOS plugin formats",
+      "source_commits": [
+        "60011265897a045e915c5b74b28834f11541008f"
+      ],
+      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published. Real hosted macOS Swift/Finder/factory, signing and notarization gates remain pending; no Bitwig host-scan or playback claim.",
+      "accepted": false
+    },
+    {
+      "id": "vst3-component-editor-view-lifetime",
+      "summary": "Retain the VST3 component while editor views remain alive",
+      "source_commits": [
+        "3e76d6013fd7fbb85f250ec4290badb3ab1fb21b"
+      ],
+      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published.",
+      "accepted": false
+    },
+    {
+      "id": "vst3-editor-resize-frame-lifetime",
+      "summary": "Retain VST3 resize frame ownership across attachment and replacement",
+      "source_commits": [
+        "3784c6720bd6f8807391014f270dd9d2f1ff37e0"
+      ],
+      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published.",
+      "accepted": false
+    },
+    {
+      "id": "vst3-view-run-loop-registration",
+      "summary": "Keep run-loop registration associated with the current VST3 view",
+      "source_commits": [
+        "e3822b263005bd54039766cc9d21969b01b9b694"
+      ],
+      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published.",
+      "accepted": false
+    },
+    {
+      "id": "vst3-attached-gui-view-owner",
+      "summary": "Track attached GUI view ownership independently of view creation order",
+      "source_commits": [
+        "be80724d39ffa3a1f843333d33879e0da684fe24"
+      ],
+      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published.",
+      "accepted": false
+    },
+    {
+      "id": "native-editor-pre-entry-diagnostics",
+      "summary": "Persist native editor startup and thread context before platform window entry",
+      "source_commits": [
+        "c3763d1985b43189bda60b79110f8a7e26ca55fe"
+      ],
+      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published.",
+      "accepted": false
+    },
+    {
+      "id": "confirmed-crash-recovery-report-delivery",
+      "summary": "Recover confirmed prior host crash evidence and retain complete sanitized reports until acknowledged",
+      "source_commits": [
+        "665ffeeb963d533cfb9ef43b398827fe0a1fc242",
+        "72d3b9b6a8e815bc8ecae0090d1e438a3124c075",
+        "0c7b622a1bad87c8aa26debec7b209922dbc8484"
+      ],
+      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published. Driver-free recovery/delivery fixtures do not establish a real-world host-crash-to-server end-to-end result or KONTRA fault attribution. Native OS evidence and support-service public/private policy remain separate requirements.",
+      "accepted": false
+    },
+    {
+      "id": "vst3-initial-cents-atomic-onset",
+      "summary": "Apply VST3 initial cents tuning atomically with bounded note onset",
+      "source_commits": [
+        "53ab06fd060ef5584899b74a8e9fcbb21ce84053",
+        "2d5822e18ac85666e936e6d2416fdf07637c4048"
+      ],
+      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published.",
+      "accepted": false
+    },
+    {
+      "id": "zero-rate-integer-sample-tap-panic",
+      "summary": "Avoid a zero-stride iterator panic while rendering zero-rate integer sample taps",
+      "source_commits": [
+        "4529cbf592b0b4809129db180fbdaeb523f62de4"
+      ],
+      "validation": "Source-reviewed candidate only. Final frozen optimized runtime gates and actual factory checks pending; not accepted or published. Shared correction follows the reproduced step_by(0) failure in extreme initial-tuning coverage; safety and negative-length fixtures do not add counts.",
+      "accepted": false
     }
   ]
 }
