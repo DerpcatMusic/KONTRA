@@ -531,13 +531,14 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             push_int(m, id)
         }
         NoteOff => {
-            if argc == 2 {
-                m.stk.int();
-            }
+            let delay = (argc == 2).then(|| m.stk.int());
             let [id] = ints(m);
+            if delay.is_some_and(|us| us < 0) {
+                return Err(Fault("note_off time offset must be nonnegative"));
+            }
             for k in 0..targets(m, id) {
                 let id = m.env.targets[k];
-                m.env.note_off(slot, id);
+                m.env.note_off(slot, id, delay);
             }
             Ok(Step::Next)
         }
