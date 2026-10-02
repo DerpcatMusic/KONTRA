@@ -454,8 +454,20 @@ fn render(args: &[String]) -> Result<()> {
         engine.dropped_commands()
     );
     if let Some(rt) = engine.script() {
-        for line in rt.diagnostics() {
-            eprintln!("Script: {line}");
+        let diagnostics = rt.diagnostics();
+        for line in &diagnostics { eprintln!("Script: {line}"); }
+        if !diagnostics.is_empty() {
+            let context = kontakto::diagnostics::script_runtime_report(rt, &instrument.scripts);
+            eprintln!("Script runtime context: {}", serde_json::to_string_pretty(&context)?);
+            let mut trace = kontakto::diagnostics::LoadTrace::new(&instrument.path, 0, None);
+            trace.detail("operation", "render_runtime_diagnostics");
+            trace.script_runtime(rt, &instrument.scripts);
+            let report = trace.finish("rendered");
+            for issue in report["issues"].as_array().into_iter().flatten() {
+                if let Some(excerpt) = issue["source_excerpt"]["text"].as_str() {
+                    eprintln!("Script source context (numbered lines; > marks the fault):\n{excerpt}");
+                }
+            }
         }
     }
     for warning in instrument.warnings {
@@ -1046,7 +1058,7 @@ fn ksp_run(path:&Path,notes:&[String])->Result<()> {
     let report=serde_json::json!({
         "instrument":instrument.name,"groups":instrument.groups.len(),"slots":rt.slots(),
         "init_errors":init_errors,"init_ms":(init_ms*10.0).round()/10.0,"init_engine_pars":init_engine_pars,
-        "diagnostics":rt.diagnostics(),"sample_rate":RATE,"calls":engine.calls,
+        "diagnostics":rt.diagnostics(),"script_runtime":kontakto::diagnostics::script_runtime_report(&rt, &instrument.scripts),"sample_rate":RATE,"calls":engine.calls,
     });
     println!("{}",serde_json::to_string_pretty(&report)?);
     Ok(())
@@ -1414,9 +1426,8 @@ fn audit_patch_report(path: &Path, program: u32, snapshot: Option<&Path>, trace:
     }
     let rms = (square / (blocks * MAX_BLOCK * 2) as f64).sqrt();
     if let Some(rt) = engine.script() {
-        let diagnostics = rt.diagnostics();
-        warnings += diagnostics.len();
-        for d in diagnostics { trace.issue("scripts", kontakto::diagnostics::code(&d), d); }
+        warnings += trace.script_runtime(rt, &instrument.scripts);
+        row["script_runtime"] = kontakto::diagnostics::script_runtime_report(rt, &instrument.scripts);
     }
     row["rss_peak_mib"] = status("VmHWM:").into();
     row["rms_db"] = ((20.0 * rms.max(1e-12).log10() * 10.0).round() / 10.0).into();

@@ -28,7 +28,7 @@ pub use engine::{
     NoteLength, NoteSpec, VoicePar, engine_par_name,
 };
 pub use inventory::requirements;
-pub use runtime::{Live, LiveFault, MAX_SLOTS, Persisted, Refresh, Runtime, settle_persistence};
+pub use runtime::{FaultAction, FaultContext, Live, LiveFault, MAX_SLOTS, Persisted, Refresh, Runtime, settle_persistence};
 pub(crate) use runtime::{EVENT_CAPACITY, reset_controller_value};
 
 use anyhow::Result;

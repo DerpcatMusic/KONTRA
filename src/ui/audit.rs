@@ -298,8 +298,8 @@ fn audit_one(i: &Arc<import::Instrument>, found: &mut Found, trace: &mut crate::
     #[cfg(test)]
     tests::select_benchmark_page(&mut rt, i, false);
     let script = crate::plugin::script_interface(Some(&rt));
+    trace.script_runtime(&rt, &i.scripts);
     for d in script.status.lines().filter(|d| !d.trim().is_empty()) {
-        trace.script_issue(crate::diagnostics::code(d), d, &i.scripts);
         found.add(format!("script: {}", general(d)));
     }
     let Some(u) = script.interface.clone().filter(|u| u.performance && !u.controls.is_empty()) else {
