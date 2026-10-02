@@ -133,6 +133,8 @@ pub trait KspEngine {
     /// parameter; the runtime then stores the value itself and reports it.
     fn set_engine_par(&mut self, at: u32, par: EnginePar, value: i32) -> bool;
     fn engine_par(&self, par: EnginePar) -> Option<i32>;
+    /// Parameters whose display law depends on another current engine setting.
+    fn engine_par_display(&self, _par: EnginePar, _value: i32) -> Option<crate::engine::Disp> { None }
     /// Index within a group of the first modulator whose name `is` accepts.
     fn find_mod(&self, _group: usize, _is: &dyn Fn(&str) -> bool) -> Option<usize> {
         None

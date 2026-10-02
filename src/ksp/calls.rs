@@ -1050,7 +1050,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 return push_int(m, v);
             }
             // Shown by Kontakt's value law, as its own knobs show it.
-            match crate::engine::engine_par_display(p.id, v) {
+            match m.engine.engine_par_display(p, v).or_else(|| crate::engine::engine_par_display(p.id, v)) {
                 Some(shown) => push_fmt(m, format_args!("{shown}")),
                 None => push_fmt(m, format_args!("{v}")),
             }

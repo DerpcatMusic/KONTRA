@@ -217,6 +217,10 @@ impl Host<'_> {
     fn address(&self, par: EnginePar) -> Option<Address> {
         let address = Address::resolve(par, self.bank?.groups())?;
         match address {
+            // A saved beat multiplier can predate our named KSP unit set.
+            // Permit changing its unit without inventing a numeric readback.
+            Address::Fx(rack, slot, FxParam::Field(FxKind::Delay, 4))
+                if self.fx.delay_fields(rack, slot).is_some() => Some(address),
             Address::Fx(rack, slot, param) => self.fx.param(rack, slot, param).map(|_| address),
             _ => Some(address),
         }
@@ -263,6 +267,17 @@ impl Host<'_> {
         let i = self.commands.partition_point(|c| c.at <= at);
         self.commands.insert(i, Command { at, channel, input_channel, id, kind });
         true
+    }
+
+    fn delay_fields(&self, rack: Rack, slot: u8) -> Option<crate::fx::blocks::Fields> {
+        let (mut fields, tempo) = self.fx.delay_fields(rack, slot)?;
+        for w in self.writes.iter() {
+            if let Address::Fx(r, s, FxParam::Field(FxKind::Delay, n)) = w.address
+                && (r, s) == (rack, slot) {
+                crate::fx::blocks::set_delay_field(&mut fields, n, w.value, tempo);
+            }
+        }
+        Some(fields)
     }
 }
 
@@ -441,6 +456,11 @@ impl KspEngine for Host<'_> {
         if !loaded(address, value, |r, s| self.fx.param(r, s, FxParam::Type)) {
             return false;
         }
+        if let Address::Fx(r, s, FxParam::Field(FxKind::Delay, n @ (0 | 4))) = address {
+            let Some(mut fields) = self.delay_fields(r, s) else { return false };
+            let tempo = self.fx.delay_fields(r, s).map_or(120.0, |(_, tempo)| tempo);
+            if !crate::fx::blocks::set_delay_field(&mut fields, n, value, tempo) { return false }
+        }
         // Render applies every parameter before notes at the same sample. Keep
         // its last value, including what later callbacks read, without queuing
         // a full group-envelope restore again for each articulation switch.
@@ -450,7 +470,10 @@ impl KspEngine for Host<'_> {
             self.write_index.1.extend(self.writes.iter().enumerate()
                 .filter(|(_, w)| w.at == at).map(|(i, w)| (w.address, i)));
         }
-        if let Some(&i) = self.write_index.1.get(&address) {
+        // Time and Unit writes restore each other's saved cache. Keep their
+        // ordering even when one callback changes the same address twice.
+        let delay_clock = matches!(address, Address::Fx(_, _, FxParam::Field(FxKind::Delay, 0 | 4)));
+        if !delay_clock && let Some(&i) = self.write_index.1.get(&address) {
             self.writes[i].value = value;
             self.writes[i].par = par;
             self.writes[i].native = native;
@@ -471,6 +494,11 @@ impl KspEngine for Host<'_> {
     /// The latest queued value, else the engine's current one.
     fn engine_par(&self, par: EnginePar) -> Option<i32> {
         let address = self.address(par)?;
+        if let Address::Fx(r, s, FxParam::Field(FxKind::Delay, n @ (0 | 4))) = address {
+            let fields = self.delay_fields(r, s)?;
+            let tempo = self.fx.delay_fields(r, s)?.1;
+            return Some(address.encode(crate::fx::blocks::normalized_field(FxKind::Delay, n, &fields, tempo)?));
+        }
         let queued = self.writes.iter().rev().find(|w| w.address == address);
         let value = match queued {
             Some(w) => w.value,
@@ -482,6 +510,11 @@ impl KspEngine for Host<'_> {
             },
         };
         Some(address.encode(value))
+    }
+
+    fn engine_par_display(&self, par: EnginePar, value: i32) -> Option<super::Disp> {
+        let Address::Fx(r, s, FxParam::Field(FxKind::Delay, 0)) = self.address(par)? else { return None };
+        crate::fx::blocks::delay_display(&self.delay_fields(r, s)?, value)
     }
 
     fn find_mod(&self, group: usize, is: &dyn Fn(&str) -> bool) -> Option<usize> {
@@ -716,6 +749,10 @@ impl<'a> ScriptSetup<'a> {
     fn address(&self, par: EnginePar) -> Option<Address> {
         let address = Address::resolve(par, self.groups)?;
         match address {
+            // Preserve unclassified native beat values while permitting a
+            // transition to one of the documented named units.
+            Address::Fx(rack, slot, FxParam::Field(FxKind::Delay, 4))
+                if self.fx.delay_fields(rack, slot).is_some() => Some(address),
             Address::Fx(rack, slot, param) => self.fx.param(rack, slot, param).map(|_| address),
             _ => Some(address),
         }
@@ -810,6 +847,11 @@ impl KspEngine for ScriptSetup<'_> {
             self.loads.retain(|l| (l.rack, l.slot) != (rack, slot) || !matches!(l.load, Load::Convolution(_)));
             self.loads.push(ScriptIr { rack, slot, load: Load::Convolution(settings) });
         }
+        if let Address::Fx(r, s, FxParam::Field(FxKind::Delay, n @ (0 | 4))) = address {
+            if !self.fx.to_mut().set_delay_field(r, s, n, v) { return false }
+            self.pars.push((par, value));
+            return true;
+        }
         match address {
             Address::GroupType(g, s) => return params::group_type(self.groups, g, s) == Some(v),
             Address::Fx(rack, slot, FxParam::Type) if self.fx.param(rack, slot, FxParam::Type) != Some(v) => {
@@ -852,6 +894,11 @@ impl KspEngine for ScriptSetup<'_> {
             _ => params::read(&self.settings, address)?,
         };
         Some(address.encode(value))
+    }
+
+    fn engine_par_display(&self, par: EnginePar, value: i32) -> Option<super::Disp> {
+        let Address::Fx(r, s, FxParam::Field(FxKind::Delay, 0)) = self.address(par)? else { return None };
+        crate::fx::blocks::delay_display(&self.fx.delay_fields(r, s)?, value)
     }
 
     fn find_mod(&self, group: usize, is: &dyn Fn(&str) -> bool) -> Option<usize> {

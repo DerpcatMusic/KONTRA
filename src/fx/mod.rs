@@ -270,7 +270,7 @@ impl ProgramFx {
                 *levels.sends.get(n as usize)?
             }
             (FxParam::Field(kind, n), params) if kind == fx.kind => {
-                blocks::normalized(kind, n, *blocks::fields(params)?.get(n as usize)?)
+                blocks::normalized_field(kind, n, &blocks::fields(params)?, 120.0)?
             }
             _ => return None,
         })
@@ -345,6 +345,32 @@ impl ProgramFx {
             Rack::Main => &mut self.main,
             Rack::Bus(b) => &mut self.buses.iter_mut().find(|bus| bus.index == b as usize)?.chain,
         })
+    }
+
+    pub(crate) fn delay_fields(&self, rack: Rack, slot: u8) -> Option<blocks::Fields> {
+        let chain = match rack {
+            Rack::Insert => &self.insert, Rack::Send => &self.send, Rack::Main => &self.main,
+            Rack::Bus(b) => &self.buses.iter().find(|bus| bus.index == b as usize)?.chain,
+        };
+        let fx = chain.slots.iter().find(|fx| fx.slot == slot as usize && fx.kind == Kind::Delay)?;
+        blocks::fields(&fx.params)
+    }
+
+    /// Init updates saved fields without constructing an audio delay line.
+    pub(crate) fn set_delay_field(&mut self, rack: Rack, slot: u8, field: u8, value: f32) -> bool {
+        let Some(fx) = self.chain_mut(rack).and_then(|c| c.slots.iter_mut()
+            .find(|fx| fx.slot == slot as usize && fx.kind == Kind::Delay)) else { return false };
+        let Some(mut fields) = blocks::fields(&fx.params) else { return false };
+        if !blocks::set_delay_field(&mut fields, field, value, 120.0) { return false }
+        let Params::Fields(list) = &mut fx.params else { return false };
+        if list.len() < 8 { return false }
+        for (field, value) in list.iter_mut().zip(fields) {
+            field.value = match field.value {
+                params::Value::Flag(_) => params::Value::Flag(value != 0.0),
+                _ => params::Value::Number(value),
+            };
+        }
+        true
     }
 
     /// The convolution slot at `rack`/`slot`, if there is one.

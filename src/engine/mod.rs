@@ -350,7 +350,8 @@ impl Engine {
     /// Install the program effects, built for [`rate`](Self::rate) with
     /// blocks of [`MAX_BLOCK`]; returns the previous processor for disposal
     /// off the audio thread.
-    pub fn set_fx(&mut self, fx: FxProcessor) -> FxProcessor {
+    pub fn set_fx(&mut self, mut fx: FxProcessor) -> FxProcessor {
+        fx.set_tempo(self.player.tempo);
         let old = std::mem::replace(&mut self.fx, fx);
         self.replay(|a| matches!(a, Address::Fx(..)));
         if let Some(rt) = self.script.as_deref() { rt.native_state.replay_fx(&mut self.fx); }
@@ -467,7 +468,10 @@ impl Engine {
 
     /// Apply the host's transport before processing this block's callbacks.
     pub fn set_transport(&mut self, playing: bool, tempo: f64, beats: f64, signature: (u8, u8)) {
-        self.player.tempo = tempo as f32;
+        if tempo.is_finite() && tempo > 0.0 && (tempo as f32).is_finite() && tempo as f32 > 0.0 {
+            self.player.tempo = tempo as f32;
+            self.fx.set_tempo(self.player.tempo);
+        }
         if let Some((rt, mut host)) = self.scripted(self.service_channel()) {
             rt.set_host_transport(&mut host, playing, tempo, beats, signature);
         }
