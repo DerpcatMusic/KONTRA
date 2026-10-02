@@ -480,11 +480,15 @@ mod tests {
         let Ok(variable) = std::env::var("KONTRA_UI_BENCH_PAGE") else { return };
         let mut engine = crate::engine::ScriptSetup::new(instrument, 48000.);
         if cold { (0..100).for_each(|_| runtime.process(&mut engine, 480)); }
-        let live = runtime.live();
-        let control = live.interface.as_ref().expect("page interface").controls.iter()
-            .position(|c| c.variable == variable).expect("authored page control exists");
-        runtime.ui_control(&mut engine, live.slot, control, 1);
-        (0..100).for_each(|_| runtime.process(&mut engine, 480));
+        // Some authored pages have a top-level and an inner tab. Execute each
+        // callback in order; changing visibility directly would bypass scripts.
+        for variable in variable.split(',').map(str::trim).filter(|v| !v.is_empty()) {
+            let live = runtime.live();
+            let control = live.interface.as_ref().expect("page interface").controls.iter()
+                .position(|c| c.variable == variable).expect("authored page control exists");
+            runtime.ui_control(&mut engine, live.slot, control, 1);
+            (0..100).for_each(|_| runtime.process(&mut engine, 480));
+        }
     }
 
     /// Opt-in local measurement; prints timings/counts, never library payloads.
@@ -703,6 +707,8 @@ mod tests {
             let control = std::env::var("KONTRA_UI_BENCH_CONTROL_VARIABLE").ok().map_or(changed_control, |name| {
                 interface.controls.iter().position(|c| c.variable == name).expect("requested callback control exists")
             });
+            assert!(perf_view::layout(&interface, &part.pictures).iter().any(|shown| shown.control == control),
+                "callback benchmark control must be visible after authored page selection");
             let bound = |name, default| match interface.controls[control].properties.get(name) {
                 Some(crate::ksp::Value::Int(n)) => *n, _ => default,
             };
