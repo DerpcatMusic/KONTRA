@@ -141,10 +141,30 @@ pub fn open<V: View + Send + 'static>(
     requests: Arc<Requests>,
 ) -> Option<Window> {
     // baseview panics on a handle it cannot read.
-    if let Err(e) = parent.window_handle() {
-        log(&shared, &format!("mui-baseview: no parent window ({e})"));
-        return None;
+    let handle = match parent.window_handle() {
+        Ok(handle) => handle,
+        Err(e) => {
+            log(&shared, &format!("mui-baseview: no parent window ({e})"));
+            return None;
+        }
+    };
+    // KONTAKTO patch: baseview's Linux child is X11, including under a
+    // Wayland desktop. Diagnose the API, never print a host's raw handle.
+    #[cfg(target_os = "linux")]
+    {
+        let api = match linux_parent_api(handle.as_raw()) {
+            Ok(api) => api,
+            Err(reason) => {
+                log(&shared, &format!("mui-baseview: window failed ({reason})"));
+                return None;
+            }
+        };
+        log(&shared, &format!("mui-baseview: native window init api={api} DISPLAY_present={} WAYLAND_DISPLAY_present={} logical_size={size:?} scale_override={scale:?}",
+            std::env::var_os("DISPLAY").is_some_and(|v| !v.is_empty()),
+            std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())));
     }
+    #[cfg(not(target_os = "linux"))]
+    let _ = handle;
     let settings = settings(title, size)
         .with_parent(parent)
         .with_scale_factor_override(scale);
@@ -193,9 +213,11 @@ fn build<V: View + Send + 'static>(
     move |cx: WindowContext| {
         let size = cx.size();
         let physical = (size.physical.width, size.physical.height);
+        log(&shared, &format!("mui-baseview: native window init creating accessibility adapter; physical_size={physical:?} device_scale={}", size.scale_factor));
         let mut handler = Handler::new(shared, requests, physical, size.scale_factor);
         handler.a11y = Some(A11y::new());
         handler.parented = parented;
+        log(&handler.shared, "mui-baseview: native window ready; waiting for first frame");
         let timed = handler.timing.is_some();
         Ok(Adapter {
             cx,
@@ -791,6 +813,26 @@ fn log<V: View>(shared: &Mutex<Shared<V>>, line: &str) {
     lock(shared).view.log(line);
 }
 
+#[cfg(target_os = "linux")]
+fn linux_parent_api(handle: raw_window_handle::RawWindowHandle) -> Result<&'static str, &'static str> {
+    use raw_window_handle::RawWindowHandle;
+    match handle {
+        RawWindowHandle::Xlib(_) => Ok("X11/Xlib"),
+        RawWindowHandle::Xcb(_) => Ok("X11/Xcb"),
+        RawWindowHandle::Wayland(_) => Err("native Wayland embedding is unavailable; this editor requires an X11 parent window and XWayland in a Wayland session"),
+        _ => Err("unsupported Linux parent window API; this editor requires an X11 parent window"),
+    }
+}
+
+/// KONTAKTO patch: retain wgpu's panic cause instead of discarding the
+/// shader/backend diagnostic when the native initialization unwinds.
+fn gpu_panic_reason(payload: &(dyn std::any::Any + Send)) -> String {
+    let reason = payload.downcast_ref::<String>().map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or("non-string panic payload");
+    format!("panic while creating GPU resources: {reason}")
+}
+
 /// KONTAKTO patch: do not initialize Vulkan implicitly in Windows hosts.
 /// Explicit WGPU_BACKEND remains authoritative, including an empty/invalid
 /// request which must fail visibly rather than silently select another API.
@@ -826,7 +868,7 @@ fn open_gpu(window: &WindowContext, size: (u32, u32), mut report: impl FnMut(&st
             adapter.backend, adapter.name, adapter.device_type, adapter.vendor, adapter.device, adapter.driver, adapter.driver_info));
         Ok(gpu)
     }))
-    .map_err(|_| "panic while creating GPU resources".to_owned())?
+    .map_err(|payload| gpu_panic_reason(payload.as_ref()))?
 }
 
 mod a11y;

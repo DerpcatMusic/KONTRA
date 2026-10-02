@@ -250,10 +250,10 @@ pub fn layout(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -
 }
 
 /// Whether `part`'s library has a performance view of its own to show:
-/// a script's view with a wallpaper or pictures.
+/// a script's view with authored pictures or a background color.
 pub fn available(v: &crate::plugin::PartView) -> bool {
-    v.interface.as_ref().is_some_and(|i| i.performance && !i.controls.is_empty())
-        && (v.wallpaper.is_some() || !v.pictures.is_empty())
+    v.interface.as_ref().is_some_and(|i| i.performance && !i.controls.is_empty()
+        && (i.background_color.is_some() || v.wallpaper.is_some() || !v.pictures.is_empty()))
 }
 
 /// The mode a part showing `view` ([`crate::plugin::Part::view`]) is in,
@@ -482,6 +482,9 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         interface.fonts.hash(&mut h);
         h.finish()
     };
+    let background_luma = interface.background_color.map(|color|
+        (0.2126 * ((color >> 16) & 255) as f32 + 0.7152 * ((color >> 8) & 255) as f32
+            + 0.0722 * (color & 255) as f32) / 255.);
     for (n, (shown, _)) in drawn.iter().enumerate() {
         let c = &interface.controls[shown.control];
         let look = match plans.get(n) {
@@ -492,7 +495,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
                 let (cx_, cy) = (shown.x + shown.w / 2., shown.y + shown.h / 2.);
                 let under = [-0.25, 0., 0.25]
                     .iter()
-                    .filter_map(|dx| luma_under(&drawn[..=n], wallpaper.as_ref().map(|(image, origin)| (image.as_ref(), *origin)), cx_ + dx * shown.w, cy))
+                    .filter_map(|dx| luma_under(&drawn[..=n], wallpaper.as_ref().map(|(image, origin)| (image.as_ref(), *origin)), cx_ + dx * shown.w, cy).or(background_luma))
                     .fold(None, |m: Option<(f32, u32)>, l| Some(m.map_or((l, 1), |(t, k)| (t + l, k + 1))))
                     .map(|(t, k)| t / k as f32);
                 Look::Original(under)
@@ -530,7 +533,10 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         .w(px(w * s))
         .h(px(h * s))
         .shrink(0)
-        .fill(Color::srgb(0., 0., 0.))
+        .fill({
+            let color = interface.background_color.unwrap_or(0);
+            Color::srgb(((color >> 16) & 255) as f32 / 255., ((color >> 8) & 255) as f32 / 255., (color & 255) as f32 / 255.)
+        })
         .clip()
         .named(if vector { "Vectorized performance view" } else { "Original performance view" });
     // Centred by a whole-pixel inset in the part's width (which the memo

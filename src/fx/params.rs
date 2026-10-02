@@ -56,8 +56,9 @@ pub struct Filter {
     pub cutoff: f32,
     /// 0..=1, `$ENGINE_PAR_RESONANCE` / 1e6.
     pub resonance: f32,
-    /// Further knobs some types store after resonance (normalized; up to
-    /// three are kept): drive, formant talk/size... See `audits/EFFECTS.md`.
+    /// Further stored parameters (up to three are kept). Daft stores its
+    /// leading parameter here, before cutoff/resonance on disk. Its gain
+    /// law is unverified; see `audits/EFFECTS.md`.
     #[serde(default)]
     pub extra: [f32; 3],
 }
@@ -304,7 +305,7 @@ pub(super) fn defaults(kind: Kind) -> Params {
     }
 }
 
-pub(super) fn parse(kind: Kind, data: &[u8]) -> Params {
+pub(crate) fn parse(kind: Kind, data: &[u8]) -> Params {
     let mut r = Reader(data);
     let typed = match kind {
         Kind::Gainer => r.f32().map(|gain| Params::Gainer(Gainer { gain })),
@@ -362,9 +363,13 @@ fn filter(r: &mut Reader) -> Option<Params> {
             .collect::<Option<_>>()?;
         return Some(Params::Eq(Eq { bands }));
     }
-    let [cutoff, resonance] = r.array()?;
     let mut extra = [0.0; 3];
-    for x in extra.iter_mut().take(r.0.len() / 4) {
+    // Native Daft records store a leading parameter, then cutoff/resonance.
+    // Selected-group values match the authored cutoff/resonance controls.
+    let leading = usize::from(matches!(filter_type, 70 | 71));
+    if leading != 0 { extra[0] = r.f32()?; }
+    let [cutoff, resonance] = r.array()?;
+    for x in extra.iter_mut().skip(leading).take(r.0.len() / 4) {
         *x = r.f32()?;
     }
     Some(Params::Filter(Filter { filter_type, cutoff, resonance, extra }))

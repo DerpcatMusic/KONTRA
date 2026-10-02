@@ -442,6 +442,7 @@ fn element(m: &mut Machine, pc: usize, v: VarId, index: i32) -> Option<usize> {
     match u32::try_from(index) {
         Ok(i) if i < var.len.unwrap_or(1) => Some((var.slot + i) as usize),
         _ => {
+            m.env.fault_context = Some(super::runtime::FaultContext::ArrayIndex { variable: v, index, length: var.len.unwrap_or(1) });
             m.env.fault(
                 m.slot.index,
                 // `pc` is already past the faulting op, like a builtin's.
@@ -461,6 +462,7 @@ pub const DIV_ZERO: &str = "Integer division by zero (0)";
 
 /// Run until the callback finishes, suspends, faults or exhausts `fuel`.
 pub fn exec(m: &mut Machine, fuel: &mut u64) -> Exec<Yield> {
+    m.env.fault_action = Some(m.t.ctx);
     // Locals, not the caller's memory: `run` inlines and keeps both in registers.
     let (mut pc, mut left) = (m.t.pc as usize, *fuel);
     let result = run(m, &mut pc, &mut left);
@@ -927,7 +929,8 @@ fn reference() -> bool {
 
 #[cold]
 #[inline(never)]
-fn out_of_bounds(env: &mut Env, slot: u8, pc: usize) {
+fn out_of_bounds(env: &mut Env, slot: u8, pc: usize, variable: VarId, index: i32, length: u32) {
+    env.fault_context = Some(super::runtime::FaultContext::ArrayIndex { variable, index, length });
     env.fault(slot, pc as u32, OUT_OF_BOUNDS);
 }
 
@@ -994,10 +997,11 @@ fn hot(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> {
     macro_rules! elem {
         ($v:expr, $i:expr, $at:expr) => {{
             let (base, len) = elems[$v as usize];
-            match u32::try_from($i) {
+            let index = $i;
+            match u32::try_from(index) {
                 Ok(i) if i < len => Some((base + i) as usize),
                 _ => {
-                    out_of_bounds(env, slot, $at);
+                    out_of_bounds(env, slot, $at, $v, index, len);
                     None
                 }
             }

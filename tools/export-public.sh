@@ -155,7 +155,7 @@ ksp='^[[:space:]]*"?(declare (const |ui_|polyphonic |global |read |pers |[%$!@~?
 while IFS=: read -r f n; do
   case $f in
     *.rs) case $f in
-      ./src/ksp/tests.rs) limit=187 ;; # Authored selector path-mode fixture.
+      ./src/ksp/tests.rs) limit=200 ;; # Authored selector, structured fault and native-menu persistence fixtures.
       ./src/articulate.rs) limit=31 ;;
       ./tests/playback.rs) limit=79 ;;
       ./src/plugin.rs) limit=92 ;; # Authored native-send, source-context, script-page and persistence-lock fixtures.

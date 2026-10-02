@@ -2020,6 +2020,24 @@ fn popup_retires_tooltips_and_consumes_its_outside_dismissal_click() {
     assert_eq!(control_value(&p, 0), crate::ksp::Value::Int(1), "normal interaction resumes once the popup closes");
 }
 
+#[test]
+fn original_and_vectorized_views_retain_authored_background_without_wallpaper() {
+    let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(200)\nset_ui_color(0285078h)\ndeclare ui_knob $value(0,100,1)\nmove_control_px($value,30,40)\nend on");
+    for mode in [1, 3] {
+        p.selection.write().unwrap().parts[0].view = mode;
+        let mut h = Harness::new(&p, 1180., 760.);
+        let frame = h.ui.scene().unwrap().surface("kpv-0-0").unwrap().frame;
+        let at = ((frame.y + 30.) as usize * 1180 + (frame.x + 200.) as usize) * 4;
+        let painted = pixels(&h.ui, 1180, 760);
+        assert_eq!(&painted[at..at+4], &[40, 80, 120, 255], "mode {mode} retains authored backdrop even without image assets");
+        publish_interface(&p, |i| i.background_color = Some(0x78a0c8));
+        h.idle(2);
+        let changed = pixels(&h.ui, 1180, 760);
+        assert_eq!(&changed[at..at+4], &[120, 160, 200, 255], "published color invalidates the view memo");
+        publish_interface(&p, |i| i.background_color = Some(0x285078));
+    }
+}
+
 /// Offsets select a pixel window across page boundaries, rather than rounding
 /// to a frame, and a new script snapshot invalidates the view memo.
 #[test]

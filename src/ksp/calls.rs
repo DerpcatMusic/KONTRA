@@ -1225,7 +1225,12 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let c = control(m, id)?;
             let v = if p == b::CONTROL_PAR_NUM_ITEMS {
                 m.slot.ui.controls[c].menu.len() as i32
-            } else if p == b::CONTROL_PAR_SELECTED_ITEM_IDX {
+            } else if p == b::CONTROL_PAR_SELECTED_ITEM_IDX
+                || (p == b::CONTROL_PAR_VALUE
+                    && m.prog.vars[m.slot.ui.controls[c].var as usize].ui.as_deref() == Some("ui_menu"))
+            {
+                // KSP's menu VALUE getter reports the entry index; the variable
+                // itself retains the value supplied to add_menu_item().
                 m.slot.ui.controls[c].selected_menu(m.prog, &m.slot.mem).map_or(-1, |i| i as i32)
             } else if p == b::CONTROL_PAR_VALUE {
                 let var = &m.prog.vars[m.slot.ui.controls[c].var as usize];
@@ -1428,7 +1433,12 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             m.slot.ui.skin_offset = pixels;
             Ok(Step::Next)
         }
-        SetUiColor | SetSnapshotType | DisableLogging | FsNavigate => {
+        SetUiColor => {
+            let [color] = ints(m);
+            m.slot.ui.background_color = Some(color as u32 & 0xffffff);
+            Ok(Step::Next)
+        }
+        SetSnapshotType | DisableLogging | FsNavigate => {
             if f == FsNavigate {
                 m.stk.int();
                 m.env.note("fs_navigate: file navigation is unavailable; select a file with the picker");
@@ -1678,6 +1688,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 .and_then(|p| p.get(&*var.name))
             {
                 write_value_rt(&mut m.slot.mem, var, value, m.env.loading)?;
+                if let Some(c) = m.slot.ui.control_of(v) {
+                    m.slot.ui.controls[c].restore_menu(m.prog, &mut m.slot.mem, value, m.env.loading);
+                }
             }
             if let Some(c) = m.slot.ui.control_of(v) {
                 snap_menu(m, c);
@@ -1815,6 +1828,7 @@ fn snap_menu(m: &mut Machine, c: usize) {
 }
 
 fn set_value(m: &mut Machine, c: usize, value: i32) {
+    m.slot.ui.controls[c].native_menu_index = None;
     let var = &m.prog.vars[m.slot.ui.controls[c].var as usize];
     if var.ty == Ty::Int && var.len.is_none() {
         m.slot.mem.ints[var.slot as usize] = value;

@@ -87,7 +87,7 @@ fn main() -> Result<()> {
   Some("audit-libraries") => audit_libraries(&args[2..])?,
   #[cfg(feature = "plugin")]
   Some("audit-latency") => for p in &args[2..] {match kontakto::timing::audit(Path::new(p)) {Ok(v)=>println!("{}",serde_json::to_string(&v)?),Err(e)=>eprintln!("{p}: {e:#}")}},
-  Some("audit-patch") => audit_patch(Path::new(args.get(2).context("audit-patch requires an NKI path")?))?,
+  Some("audit-patch") => audit_patch(&args[2..])?,
   Some("bench-stream") => bench_stream(Path::new(args.get(2).context("bench-stream requires an NKI path")?),args.get(3).map(|s|s.parse()).transpose()?.unwrap_or(64),args.get(4).map(|s|s.parse()).transpose()?.unwrap_or(10.0))?,
   #[cfg(feature = "plugin")]
   Some("bench-host") => kontakto::bench_host(&args[4..],args.get(2).context("bench-host <seconds> <notes> <instrument.nki>...")?.parse()?,args.get(3).context("bench-host <seconds> <notes> <instrument.nki>...")?.parse()?)?,
@@ -101,7 +101,7 @@ fn main() -> Result<()> {
   Some("audit-ui") => kontakto::audit_ui(&args[2..])?,
   Some("create-library") => create_library(&args[2..])?,
   Some("bench-script") => bench_script(Path::new(args.get(2).context("bench-script requires an NKI path")?),args.get(3).map(|s|s.parse()).transpose()?.unwrap_or(20.0))?,
-  None | Some("--help" | "-h") => println!("kontakto --version\nkontakto --build-info\nkontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-ksp [root...] [--json out.json]\nkontakto audit-dsp [root...]\nkontakto audit-ui [root...] [--shots DIR] [--json out.json]\nkontakto audit-archives [folder]\nkontakto export-multi-state <mapping.kontra-multi> <output.state>\nkontakto compare-plugin-state <expected.state> <readback.state>\nkontakto playback-audit <instrument.nki|multi.nkm> [program=0] [--realtime] [--snapshot preset.nksn]\nkontakto render [--dry] [--no-script] [--realtime] [--bare] [--notes 60@0-600,62@500-1100:90] [--cc 11@0:40,11@500:127] <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto ksp-run <instrument.nki> [note[@on_ms[-off_ms]][:velocity]...]\nkontakto bench [voices=1000] [bits=24|16|32] [layers=1] [--root] [--no-lanes]\nkontakto bench-script <instrument.nki> [seconds=20]\nkontakto bench-ui-control <instrument.nki> <control-variable> [edits=60]\nkontakto audit-libraries [root] [--out audits/LIBRARIES.md]\nkontakto bench-load <instrument.nki>...\nkontakto bench-stream <instrument.nki> [notes=64] [seconds=10]\nkontakto create-library <samples folder> [--name NAME] [--vendor NAME] [--out DIR] [--kontra-only|--kontakt-only]"),
+  None | Some("--help" | "-h") => println!("kontakto --version\nkontakto --build-info\nkontakto scan [folder]\nkontakto inspect <instrument.nki>\nkontakto inspect-multi <multi.nkm>\nkontakto inspect-mods <instrument.nki>\nkontakto inspect-fx <instrument.nki>\nkontakto audit-fx [folder]\nkontakto ui <instrument.nki>\nkontakto audit [folder]\nkontakto audit-structure [folder]\nkontakto audit-scripts [folder]\nkontakto audit-ksp [root...] [--json out.json]\nkontakto audit-dsp [root...]\nkontakto audit-ui [root...] [--shots DIR] [--json out.json]\nkontakto audit-archives [folder]\nkontakto export-multi-state <mapping.kontra-multi> <output.state>\nkontakto compare-plugin-state <expected.state> <readback.state>\nkontakto playback-audit <instrument.nki|multi.nkm> [program=0] [--realtime] [--snapshot preset.nksn]\nkontakto render [--dry] [--no-script] [--realtime] [--bare] [--notes 60@0-600,62@500-1100:90] [--cc 11@0:40,11@500:127] <instrument.nki> <output.wav> [group=all] [note=first root] [velocity=zone midpoint]\nkontakto ksp-run <instrument.nki> [note[@on_ms[-off_ms]][:velocity]...]\nkontakto bench [voices=1000] [bits=24|16|32] [layers=1] [--root] [--no-lanes]\nkontakto bench-script <instrument.nki> [seconds=20]\nkontakto bench-ui-control <instrument.nki> <control-variable> [edits=60]\nkontakto audit-libraries [root] [--out audits/LIBRARIES.md]\nkontakto audit-patch <instrument.nki|multi.nkm> [--program 0] [--snapshot preset.nksn]\nkontakto bench-load <instrument.nki>...\nkontakto bench-stream <instrument.nki> [notes=64] [seconds=10]\nkontakto create-library <samples folder> [--name NAME] [--vendor NAME] [--out DIR] [--kontra-only|--kontakt-only]"),
   Some(command) => anyhow::bail!("Unknown command: {command}. Use --help for supported commands"),
  }
  Ok(())
@@ -454,8 +454,20 @@ fn render(args: &[String]) -> Result<()> {
         engine.dropped_commands()
     );
     if let Some(rt) = engine.script() {
-        for line in rt.diagnostics() {
-            eprintln!("Script: {line}");
+        let diagnostics = rt.diagnostics();
+        for line in &diagnostics { eprintln!("Script: {line}"); }
+        if !diagnostics.is_empty() {
+            let context = kontakto::diagnostics::script_runtime_report(rt, &instrument.scripts);
+            eprintln!("Script runtime context: {}", serde_json::to_string_pretty(&context)?);
+            let mut trace = kontakto::diagnostics::LoadTrace::new(&instrument.path, 0, None);
+            trace.detail("operation", "render_runtime_diagnostics");
+            trace.script_runtime(rt, &instrument.scripts);
+            let report = trace.finish("rendered");
+            for issue in report["issues"].as_array().into_iter().flatten() {
+                if let Some(excerpt) = issue["source_excerpt"]["text"].as_str() {
+                    eprintln!("Script source context (numbered lines; > marks the fault):\n{excerpt}");
+                }
+            }
         }
     }
     for warning in instrument.warnings {
@@ -1046,7 +1058,7 @@ fn ksp_run(path:&Path,notes:&[String])->Result<()> {
     let report=serde_json::json!({
         "instrument":instrument.name,"groups":instrument.groups.len(),"slots":rt.slots(),
         "init_errors":init_errors,"init_ms":(init_ms*10.0).round()/10.0,"init_engine_pars":init_engine_pars,
-        "diagnostics":rt.diagnostics(),"sample_rate":RATE,"calls":engine.calls,
+        "diagnostics":rt.diagnostics(),"script_runtime":kontakto::diagnostics::script_runtime_report(&rt, &instrument.scripts),"sample_rate":RATE,"calls":engine.calls,
     });
     println!("{}",serde_json::to_string_pretty(&report)?);
     Ok(())
@@ -1233,9 +1245,18 @@ fn libraries_table(rows: &[serde_json::Value]) -> String {
 }
 
 /// `audit-libraries`' child: load and play one instrument, one JSON line.
-fn audit_patch(path: &Path) -> Result<()> {
-    let mut trace = kontakto::diagnostics::LoadTrace::new(path, 0, None);
-    let result = audit_patch_report(path, &mut trace);
+fn audit_patch(args: &[String]) -> Result<()> {
+    let path = Path::new(args.first().context("audit-patch requires an NKI/NKM path")?);
+    let program = args.iter().position(|s| s == "--program")
+        .map(|n| -> Result<u32> { Ok(args.get(n + 1).context("--program requires a program number")?.parse()?) })
+        .transpose()?.unwrap_or(0);
+    let snapshot = args.iter().position(|s| s == "--snapshot")
+        .map(|n| args.get(n + 1).context("--snapshot requires an NKSN path"))
+        .transpose()?.map(Path::new);
+    ensure!(snapshot.is_none() || program == 0, "snapshots require program 0 of a base NKI");
+    let mut trace = kontakto::diagnostics::LoadTrace::new(path, program, None);
+    trace.detail("snapshot", serde_json::json!(snapshot));
+    let result = audit_patch_report(path, program, snapshot, &mut trace);
     let (mut row, status) = match &result {
         Ok(row) => (row.clone(), if row["status"] == "FAIL" { "failed" } else { "loaded" }),
         Err(e) => {
@@ -1245,14 +1266,72 @@ fn audit_patch(path: &Path) -> Result<()> {
     };
     trace.detail("audit", row.clone());
     row["diagnostics"] = (*trace.finish(status)).clone();
+    // Identity is recorded as soon as import succeeds, including later failures.
+    row["applied_instrument"] = row["diagnostics"]["details"]["applied_instrument"].clone();
+    let flush_error = kontakto::diagnostics::flush(std::time::Duration::from_secs(5)).err();
+    let recorder = kontakto::diagnostics::snapshot();
+    row["recorder"] = serde_json::json!({
+        "scope":"current process session, through audit-patch completion",
+        "session_id":recorder.events.first().map(|event| &event.session_id),
+        "flush_complete":flush_error.is_none(), "flush_error":flush_error,
+        "status":recorder.status,
+    });
     println!("{row}");
     result.map(|_| ())
 }
 
-fn audit_patch_report(path: &Path, trace: &mut kontakto::diagnostics::LoadTrace) -> Result<serde_json::Value> {
+#[test]
+fn audit_patch_rejects_invalid_selection() {
+    for (args, expected) in [
+        (vec![], "audit-patch requires an NKI/NKM path"),
+        (vec!["missing.nki", "--program"], "--program requires a program number"),
+        (vec!["missing.nki", "--program", "-1"], "invalid digit"),
+        (vec!["missing.nki", "--snapshot"], "--snapshot requires an NKSN path"),
+        (vec!["missing.nki", "--program", "1", "--snapshot", "preset.nksn"], "snapshots require program 0"),
+    ] {
+        let args = args.into_iter().map(String::from).collect::<Vec<_>>();
+        assert!(format!("{:#}", audit_patch(&args).unwrap_err()).contains(expected));
+    }
+}
+
+// Reuse the cache's metadata identities and standard fingerprint approach.
+// Hash imported persistence rather than publishing variable names/values.
+fn audit_applied_identity(instrument: &import::Instrument, program: u32, snapshot: Option<&Path>) -> Result<serde_json::Value> {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::hash::DefaultHasher::new();
+    serde_json::to_vec(&instrument.script_state)?.hash(&mut hash);
+    Ok(serde_json::json!({
+        "name":instrument.name, "base_path":instrument.path, "program":program,
+        "snapshot":snapshot, "dependencies":instrument.dependencies,
+        "script_slots":instrument.scripts.len(),
+        "persisted_slots":instrument.script_state.len(),
+        "groups":instrument.groups.len(), "zones":instrument.zones.len(),
+        "script_state_fingerprint":format!("{:016x}", hash.finish()),
+        "fingerprint_scope":"imported script persistence; std DefaultHasher over serde JSON, non-cryptographic; supported effects/group state are identified by source dependency stamps, not certified by this fingerprint",
+    }))
+}
+
+#[test]
+fn audit_applied_identity_tracks_imported_name_and_persistence_without_payloads() {
+    let mut instrument = import::Instrument { name:"Authored applied snapshot".into(), path:"Authored base.nki".into(), ..Default::default() };
+    instrument.script_state.push(kontakto::ksp::Persisted::new());
+    let before = audit_applied_identity(&instrument, 0, Some(Path::new("Authored preset.nksn"))).unwrap();
+    instrument.script_state[0].insert("private_authored_fixture".into(), kontakto::ksp::Value::Int(42));
+    let after = audit_applied_identity(&instrument, 0, Some(Path::new("Authored preset.nksn"))).unwrap();
+    assert_eq!(after["name"], "Authored applied snapshot");
+    assert_eq!(after["snapshot"], "Authored preset.nksn");
+    assert_ne!(before["script_state_fingerprint"], after["script_state_fingerprint"]);
+    assert!(!after.to_string().contains("private_authored_fixture"));
+}
+
+fn audit_patch_report(path: &Path, program: u32, snapshot: Option<&Path>, trace: &mut kontakto::diagnostics::LoadTrace) -> Result<serde_json::Value> {
     let started = std::time::Instant::now();
     trace.stage("import");
-    let instrument = import::read(path).inspect_err(|e| trace.fail(format!("{e:#}")))?;
+    let instrument = match snapshot {
+        Some(snapshot) => import::read_snapshot(path, snapshot),
+        None => import::read_program(path, program),
+    }.inspect_err(|e| trace.fail(format!("{e:#}")))?;
+    trace.detail("applied_instrument", audit_applied_identity(&instrument, program, snapshot)?);
     for w in &instrument.warnings { trace.issue("import", kontakto::diagnostics::code(w), w); }
     for name in &instrument.missing_samples { trace.issue("samples", "missing", name); }
     trace.stage("scripts");
@@ -1313,6 +1392,9 @@ fn audit_patch_report(path: &Path, trace: &mut kontakto::diagnostics::LoadTrace)
     let (mut square, mut nonfinite, mut next) = (0f64, 0usize, 0);
     let mut pace = kontakto::engine::Pace::start();
     let mut stalled = std::time::Duration::ZERO;
+    let mut first_underrun = None;
+    let mut underrun_blocks = 0;
+    let mut observed_underruns = engine.underruns();
     trace.stage("playback");
     for b in 0..blocks {
         let frame = (b * MAX_BLOCK) as u64;
@@ -1321,6 +1403,22 @@ fn audit_patch_report(path: &Path, trace: &mut kontakto::diagnostics::LoadTrace)
             next += 1;
         }
         engine.render(&mut left, &mut right);
+        if engine.underruns() != observed_underruns {
+            underrun_blocks += 1;
+            if first_underrun.is_none() {
+                // CLI only, after rendering: retain one bounded voice census,
+                // never format/log from plugin audio or retain a per-block log.
+                let voices: Vec<_> = engine.voice_census().into_iter().filter(|v| v.streams).map(|v|
+                    serde_json::json!({"group":v.group, "note":v.note, "sample":v.sample,
+                        "virtual_source_position":v.pos, "source_frames_per_output_frame_before_limit":v.step,
+                        "held":v.held, "release_trigger":v.release_trigger,
+                        "gain":v.gain, "envelope":v.envelope})).collect();
+                first_underrun = Some(serde_json::json!({"frame":frame,
+                    "audio_time_ms":frame as f64 * 1000.0 / RATE,
+                    "delta":engine.underruns() - observed_underruns, "streaming_voices_after_block":voices}));
+            }
+            observed_underruns = engine.underruns();
+        }
         for x in left.iter().chain(&right) {
             if x.is_finite() { square += f64::from(*x) * f64::from(*x) } else { nonfinite += 1 }
         }
@@ -1328,13 +1426,14 @@ fn audit_patch_report(path: &Path, trace: &mut kontakto::diagnostics::LoadTrace)
     }
     let rms = (square / (blocks * MAX_BLOCK * 2) as f64).sqrt();
     if let Some(rt) = engine.script() {
-        let diagnostics = rt.diagnostics();
-        warnings += diagnostics.len();
-        for d in diagnostics { trace.issue("scripts", kontakto::diagnostics::code(&d), d); }
+        warnings += trace.script_runtime(rt, &instrument.scripts);
+        row["script_runtime"] = kontakto::diagnostics::script_runtime_report(rt, &instrument.scripts);
     }
     row["rss_peak_mib"] = status("VmHWM:").into();
     row["rms_db"] = ((20.0 * rms.max(1e-12).log10() * 10.0).round() / 10.0).into();
     row["underruns"] = engine.underruns().into();
+    row["underrun_blocks"] = underrun_blocks.into();
+    row["first_underrun"] = serde_json::json!(first_underrun);
     // The machine, not the engine: a render thread held off longer than a
     // device buffer would be a host dropout. Reported, not caught up.
     row["stall_ms"] = (stalled.as_millis() as u64).into();

@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Added
 
+- Headless `audit-patch` accepts explicit snapshot and program selection while
+  using the existing import, script, bank, effect and paced note/chord path.
+  It retains structured load stages and diagnostics without opening an editor.
+
 - Experimental Bitwig VST3 project inspection and explicit SavedMulti-to-KONTRA
   migration create a new project copy and report; source bytes are rechecked and
   retained. Shared plug-in-state entries and overlapping device mappings are
@@ -95,6 +99,11 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Changed
 
+- Paced headless audit JSON records first stream underruns, voice consumption and
+  delivery status, and labels the uncapped voice pitch ratio precisely. The checked
+  JSON helper and source/onset metrics are observability features, not additional
+  fix-count units or throughput improvements.
+
 - Rack headers give instrument titles more room beside
   compact MIDI and output routing controls. Combined 900/1180/1920 viewport
   bounds and routing/navigation/mute/remove callback checks pass.
@@ -108,6 +117,84 @@ below record reviewed source checkpoints; they are not claims about pending work
   effect indicators disclose partial processing instead of implying every FX runs.
 
 ### Fixed
+
+- Authored performance-view background colors survive live publications; both
+  focused background gates passed. This does not establish every layout or Lua UI.
+- Native AR identities select the intended LP/HP/BP response and pole count. Native
+  Daft LP/HP identities use IDs 70/71; unproved IDs 106/107 remain unsupported.
+  These are two separately reviewed family-identity corrections.
+- Native Daft cutoff/resonance decode after the retained leading parameter.
+  Coefficient/PCM changes, live readback and zero-heap checks passed; the leading
+  parameter remains preserved without an invented gain law.
+- External modulation v0x104 records preserve opaque footer bytes through checked
+  vendor parsing/roundtrips. This does not implement every route or opaque field.
+- Physical note-off ownership survives channel mode changes. CC120 stop fades
+  clear held ownership so late key-up cannot start post-stop release tails.
+  These are separate routing and All Sound Off corrections; the physical-sibling
+  follow-up is part of the same CC120 fix, not another count.
+- Higher native LoFi frequency values sample more often without resetting held
+  samples or clock phase. Authored direction/endpoints/retuning and zero-heap
+  checks passed at 44.1/48/96 kHz. Six matched actual checks changed four outputs
+  toward effect-off baselines and left two unchanged; the law is not calibrated
+  against Kontakt and sound parity remains unverified.
+- The first maximum-consumption stream block remains resident; the 4,096-frame
+  RAM-coverage and zero-heap gate passed. This does not claim that all realtime
+  underruns are eliminated.
+- Documented `ui_menu` `$CONTROL_PAR_VALUE` queries return the selected entry
+  index. Native persisted menus restore entry positions with retained origin/
+  host state. Getter and persistence are two distinct corrections; both gates passed.
+- Template-named snapshots bind to the checked instrument while rejecting foreign
+  names/truncated metadata. Explicit modulation removals retain sibling identities;
+  additions, replacements, malformed records and incompatible FX topology remain
+  rejected. Binding and removal are two independently reviewed fixes.
+- GPU startup diagnostics retain their cause and identify Linux embedding failures.
+  This improves diagnosis; repair of Void blank windows or every host embedding
+  failure remains unverified.
+- Headless runtime faults retain callback/event actions, array variable/index/
+  length and bounded readable source context. The zero-heap gate passed; repeated
+  events update the latest action without growing or duplicating retained faults.
+- Ownerless UI/listener CC and MPE actions use the configured part home; the
+  routing/zero-heap gate passed. MIDI-owned callbacks retain their ownership.
+- Legacy AHDSR cutoff intensity reaches the filter through the checked cubic depth
+  law. Authored PCM/readback/zero-heap gates passed; original preset processing and
+  calibrated Kontakt sound parity remain unverified.
+
+- Persistent load journals retain warnings beyond the bounded report examples;
+  an actual Areia load delivered all 1,125 warnings. Off-thread burst capture and
+  export also retain 4,098 warning records with explicit delivery status. These
+  are two distinct corrections: capture coverage and delivery under bursts.
+- Explicit scripted AHD Only uses the shared envelope kernel; its focused gate
+  passed. This does not establish every imported envelope or Kontakt's sound.
+- Script-only Kontakt v3 snapshots apply saved script state without replacing
+  native instrument state. Vendor checks and independent application of three
+  actual Conflux presets with audio outputs passed. Initial realtime underruns
+  were observed; later four preloaded Conflux runs at `1f62da4` had zero underruns
+  and complete journal delivery, without a general realtime-performance claim.
+- Library-root archive samples resolve from nested instrument directories.
+  Authored checks, actual archive members and 1,985 playable Conflux zones passed;
+  loading does not establish full-library playback or sound parity.
+- Counted native modulation arrays preserve 64 external slots, high slot identities
+  and unknown bytes. Vendor and actual byte-preservation checks passed; preserving
+  records does not demonstrate processing every modulation source or target.
+- Bounded Kontakt v0x103/v0x104 source headers retain known identities without
+  interpreting opaque source state. Modern v3/v4 compact snapshot records preserve
+  mode-dependent source fields and counted slots through checked roundtrips.
+  These are parsing/preservation fixes; the later three checked Morphology
+  applications below do not establish complete native processing.
+- Release-trigger Note Mono cuts only matching sounding release tails and remains
+  preserved when writing native start-condition records. Both production checks
+  passed; arbitrary imported start conditions remain outside this validation.
+- Native group Send Levels taps feed the existing instrument returns in decoded
+  order. Analytical dry gain, return tails and zero-heap checks passed; this does
+  not establish Kontakt bus assignment or sound equivalence.
+- Fractional image resizing preserves coverage and transparent edge colors while
+  retaining already enlarged pictures instead of resizing them repeatedly. Both
+  focused image/UI checks passed; no GPU throughput or universal resource claim.
+
+- Ordinary import preserves readable modulation slots when one bounded sibling
+  record is undecodable. Unknown slots keep their positions and precise warnings;
+  valid envelopes and later target identities survive. Snapshot decoding remains
+  strict, and malformed container boundaries still fail.
 
 - Process all eight native filter/EQ inserts and up to 32 sections instead of
   truncating supported chains. Eight four-band GEQs match the existing rack
@@ -292,6 +379,37 @@ updating favorites; no supplied IDs were repaired or compared with Kontakt.
 
 ### Known limits
 
+- The `1bbd31c` actual six-Analog replay returned empty runtime-fault lists;
+  Prelude3's earlier out-of-bounds fault was absent. Three native convolution IR
+  ordinal/caption selections and host roundtrip ran through 750 blocks. These
+  validate the checked processing/state paths, not Kontakt IR sound equivalence.
+- Three actual Morphology snapshots (Default, PlipPlop and Whistling) applied to
+  the checked bank with 933 groups, 3,495 zones and 458 samples, with zero init/
+  runtime faults, nonfinite samples or observed underruns. Partial source warnings
+  remain. Each run recorded `truncated_events = 1`: its roughly 91.8 KB
+  `load_finished` information event exceeded the event bound. Writer-drop,
+  write-error and retention-loss counters were zero; truncation was not zero.
+
+#### Semantic coverage and remaining gaps
+
+| Area | Checked scope | Remaining gap |
+| --- | --- | --- |
+| Snapshots/source records | Known bounded headers, counted slots, template binding/removal; three actual Morphology applications | Opaque source state, arbitrary topology edits and complete-library compatibility remain unsupported/unverified. |
+| Native FX | Authored AR/Daft identities/layout, cubic legacy depth, live PCM/readback; six matched actual LoFi checks | Original Kontakt frequency/drive/depth calibration and full processing parity remain unverified. |
+| Controllers/menus | Authored configured-home routing, value indices, persisted positions and physical ownership; actual six-Analog replay | Every library callback, Lua UI and host workflow remain outside this evidence. |
+| Diagnostics/editor | Bounded actions/excerpts and startup causes; zero writer-drop/write-error/retention-loss in the checked Morphology runs | One truncated information event per Morphology run; Void window/embedding repair remains unverified. |
+| Streaming/convolution | First-block RAM/zero-heap gate; checked zero-underrun preloaded runs and native three-IR selection/host roundtrip | Uninterrupted realtime performance and Kontakt convolution/sound parity are not established. |
+| Wavetable DSP | Source identity diagnostics and retained opaque metadata | New wavetable DSP remains incomplete/unshipped; no wavetable playback parity claim. |
+
+- The accepted parsing/preservation gates cover bounded known source headers,
+  modern compact snapshots and counted modulation slots. Three later checked
+  Morphology snapshots apply, but successful decoding/application does not
+  implement unsupported DSP or establish complete-library compatibility.
+- Three actual Conflux snapshots apply independently, and library-root resolution
+  loads 1,985 playable zones. Initial runs had realtime underruns; four later
+  preloaded runs at `1f62da4` had none. These limited checks do not certify
+  uninterrupted performance, complete-library playback or Kontakt sound parity.
+
 - Root's shipping-profile focused checks through `e68d28c` passed 20 library checks
   and all 83 playback checks (4 ignored). NI's 13 focused checks passed. These results
   do not certify every actual library or a Windows/macOS DAW.
@@ -326,7 +444,70 @@ updating favorites; no supplied IDs were repaired or compared with Kontakt.
   User zoom, cached snapshots and native file-picker tests do not certify every
   gesture, resource, preset or file-dialog workflow.
 
+### Candidates — not shipped
+
+- New wavetable DSP remains incomplete and unshipped. Diagnostic information-event
+  inventory splitting is future work, not a counted fix in this release.
+- The physical CC120 sibling-ownership follow-up must pass its gate before the
+  final source is shipped/installed; it belongs to the same counted CC120 unit.
+- Audit/source-identity metrics, the checked CLI JSON helper and delivery
+  instrumentation are observability features, not additional logical defects.
+
 ### Reviewed source changes
+
+> Retain authored performance-view background colors through live publication
+
+> Correct native AR and Daft filter identities and stored parameter order
+
+> Decode Kontakt external modulation v0x104 with opaque footer retention
+
+> Preserve physical note-off ownership after channel mode changes
+
+> Correct native LoFi frequency direction without claiming calibrated parity
+
+> Keep the first maximum-consumption stream block resident
+
+> Decode each RAM reference in the stream-start fixture
+
+> Cancel held voice ownership immediately on All Sound Off
+
+> Return selected menu index from KSP VALUE getter
+
+> Bind template-named snapshots and apply explicit modulation removals
+
+> Retain GPU startup causes and diagnose Linux embedding
+
+> Retain runtime fault actions and source context in headless diagnostics
+
+> Route ownerless script controllers through the configured part home
+
+> Route legacy AHDSR cutoff intensity through measured cubic depth
+
+> Restore native persisted menus by entry position
+
+> Require init callback context in keyboard fault regression
+
+> Journal load warnings beyond bounded report examples
+
+> Implement explicit scripted AHD Only with the shared envelope kernel
+
+> Support script-only Kontakt v3 snapshots without replacing native state
+
+> Resolve library-root archive samples from nested instrument folders
+
+> Decode counted native modulation arrays with 64 external slots
+
+> Read bounded native source identities in Kontakt v0x103 and v0x104
+
+> Preserve load diagnostic bursts and report audit delivery status
+
+> Preserve and apply release-trigger Note Mono
+
+> Decode and preserve modern v3 snapshot and v4 compact source records
+
+> Route native group Send Levels taps into existing instrument returns
+
+> Preserve fractional image coverage and transparent sprite edges
 
 > Forward init RPN messages after receiving script slots initialize
 

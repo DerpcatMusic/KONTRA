@@ -83,7 +83,7 @@ impl Group {
     }
 
     /// Read only the seven-byte identity whose location is verified in legacy
-    /// v0x102 groups and Kontakt 8 v0x106 groups. Their remaining private bytes
+    /// v0x102/0x103/0x104 groups and Kontakt 8 v0x106 groups. Their remaining private bytes
     /// remain opaque; this does not establish their source-record length or
     /// implement wavetable/time-stretch playback. Snapshot state stays strict.
     pub fn source_identity(&self) -> Result<SourceIdentity, Error> {
@@ -92,7 +92,7 @@ impl Group {
             return Err(Error::Static("Unsupported structured group source identity"));
         }
         let version = reader.read_u16_le()?;
-        if !matches!(version, 0x102 | 0x106) {
+        if !matches!(version, 0x102 | 0x103 | 0x104 | 0x106) {
             return Err(Error::Generic(format!("Unsupported group source identity version 0x{version:x}")));
         }
         Ok(SourceIdentity { flag, structured: false, version, mode: reader.read_u32_le()? })
@@ -136,5 +136,45 @@ impl Group {
                 .ok_or(Error::Static("Group has no start criteria list"))?
                 .try_into()?,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_identity_reads_known_headers_without_interpreting_opaque_state() {
+        let mut private = Vec::new();
+        for _ in 0..136 { private.extend(8u32.to_le_bytes()); private.extend([0; 8]); }
+        private.extend([0; 24]);
+        private.extend([0, 0x13, 0]);
+        private.extend(8u32.to_le_bytes());
+        private.extend([0; 8]);
+        private.push(0); // Native source-presence flag.
+        let source = private.len();
+        private.extend([0; 7]);
+        private.extend([0xde, 0xad]); // Unknown remaining source fields.
+        let mut group = Group(StructuredObject { version: 1, private_data: private,
+            public_data: Vec::new(), children: Vec::new() });
+        for version in [0x102u16, 0x103, 0x104, 0x106] {
+            for mode in [0u32, 3, 9] {
+                group.0.private_data[source + 1..source + 3].copy_from_slice(&version.to_le_bytes());
+                group.0.private_data[source + 3..source + 7].copy_from_slice(&mode.to_le_bytes());
+                let original = group.0.private_data.clone();
+                let identity = group.source_identity().unwrap();
+                assert_eq!((identity.version, identity.mode), (version, mode));
+                assert!(!identity.structured);
+                assert_eq!(group.0.private_data, original);
+            }
+        }
+        group.0.private_data.truncate(source + 6);
+        assert!(group.source_identity().is_err());
+        group.0.private_data.resize(source + 7, 0);
+        group.0.private_data[source + 1..source + 3].copy_from_slice(&0x105u16.to_le_bytes());
+        assert!(group.source_identity().is_err());
+        group.0.private_data[source + 1..source + 3].copy_from_slice(&0x104u16.to_le_bytes());
+        group.0.private_data[source] = 1;
+        assert!(group.source_identity().is_err());
     }
 }
