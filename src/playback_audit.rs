@@ -301,6 +301,7 @@ pub fn run(path: &Path, program: u32, snapshot: Option<&Path>, realtime: bool) -
             );
             go("reset-all-controllers", 0.25, &[In::Cc(0, 121, 0)]);
             go("reset-controllers-held-key-release", 0.25, &[In::NoteOff(0, note + 2)]);
+            go("reset-controllers-expression-restore", 0.05, &[In::Cc(0, 1, 100), In::Cc(0, 11, 127)]);
             go("all-sound-note", 0.25, &[In::NoteOn(0, note, 100)]);
             go("all-sound-off", 0.1, &[In::Cc(0, 120, 0)]);
         } else if case == "channel-articulations" {
