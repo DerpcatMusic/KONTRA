@@ -181,7 +181,7 @@
       "source_commits": [
         "480aa9cd23bde033f5c697804c827b6eb122563a"
       ],
-      "validation": "Actual two fmt20 samples decode completely; all15 private authored cases and combined57efa33 audio regression passed.",
+      "validation": "Two actual samples with 20-byte format descriptors decode completely; all 15 authored descriptor cases and the combined 57efa33 audio regression passed.",
       "accepted": true
     },
     {
@@ -190,7 +190,7 @@
       "source_commits": [
         "315e2c1f565f2977ecdc1bd635fef3d5b6ea2704"
       ],
-      "validation": "Combined57efa33 real UI footer switch and zero-heap backend page/late-buffer/epoch regressions passed; CircleBells payload notlocal.",
+      "validation": "Combined 57efa33 UI footer switching and zero-heap backend page, delayed-buffer and epoch regressions passed; the Circle Bells payload was unavailable locally.",
       "accepted": true
     },
     {
@@ -199,7 +199,7 @@
       "source_commits": [
         "a968ae08205503741f2f486ca6d50fb70fa59b63"
       ],
-      "validation": "Combined57efa33 namedMAIN/GROUP/INSERT initialization and strict invalidselector regression passed; real Conflux fullinitialization proof pending.",
+      "validation": "Combined 57efa33 named MAIN/GROUP/INSERT initialization and strict unknown-selector checks passed. Actual Conflux loading at 0c0019a initializes three script slots with 378, 22 and 1 controls, without errors. Native Lua execution and unsupported meter taps remain absent; full playback remains unverified.",
       "accepted": true
     },
     {
@@ -208,7 +208,7 @@
       "source_commits": [
         "e9fca603d5642976a9735048abdc1d7b9aa1339b"
       ],
-      "validation": "Actual Conflux resource loads378controls11families and100 callbacks withoutheapoperations; unsupportedleveltap andLuaUI remainexplicit.",
+      "validation": "The actual Conflux resource loads 378 controls across 11 families; 100 selected binding callbacks record zero heap operations. Unsupported meter taps and native Lua UI remain explicit limitations.",
       "accepted": true
     },
     {
@@ -218,7 +218,7 @@
         "552377acd5d06d390983ba4c0e168b4262483437",
         "fcdcd519c16a8ce179ae111a36c36643ccb5c4aa"
       ],
-      "validation": "Combined57efa33 malformed-source/runtime-argument zero-audio-heap regression passed; fcdcd51 compiled journal/export and actual Logs Copy all numbered-code checks passed unchanged.",
+      "validation": "Combined 57efa33 malformed-source/runtime-argument zero-audio-heap regression passed; fcdcd51 compiled journal/export and actual Logs Copy all numbered-code checks passed unchanged.",
       "accepted": true
     }
   ]

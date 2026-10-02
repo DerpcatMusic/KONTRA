@@ -95,6 +95,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Changed
 
+- **Pending validation:** rack headers give instrument titles more room beside
+  compact MIDI and output routing controls. The next combined editor checks
+  remain open.
+
 - Logs search is simpler and copying includes complete retained diagnostic details;
   event text is owned before the query changes. Rack header artwork is more visible.
 - Encrypted preset access failures explain the lookup boundary; XML fields tolerate
@@ -104,6 +108,18 @@ below record reviewed source checkpoints; they are not claims about pending work
   effect indicators disclose partial processing instead of implying every FX runs.
 
 ### Fixed
+
+- **Pending validation:** native group feedback compressor, limiter, Solid Bus
+  Compressor and Transient Master stages reuse bounded rack processing at the
+  decoded Amplifier split. The next audio/allocation gates remain open; this
+  does not establish native Kontakt parameter or sound equivalence.
+- **Pending validation:** import and NKI writing retain native group start records.
+  Record preservation does not implement every start condition or establish
+  arbitrary imported-preset editing.
+- **Pending validation:** periodic audio snapshots wake a separate managed worker
+  during instrument loads. Cumulative playback counters retain their baseline
+  across generation changes, preventing repeated totals from appearing as new
+  drops or underruns; the next queue/delta regression gates remain open.
 
 - Parse/runtime diagnostics now show readable bounded source context with slot,
   line/column markers and the relevant command arguments. Serialized event data
@@ -120,7 +136,9 @@ below record reviewed source checkpoints; they are not claims about pending work
   The unavailable Emotional Piano payload has not been independently validated.
 - Accept documented symbolic MAIN/GROUP/INSERT level-meter chain selectors while
   retaining rejection of invalid selectors. This is not a claim that every meter
-  source or an entire Conflux initialization now works.
+  source works. The actual checked preset initializes three script slots with
+  378, 22 and 1 controls without errors; Lua, unsupported taps and full playback
+  remain separate limits.
 - Accept Creator Tools null menu lists for exported empty menus. The actual checked
   Conflux resource loads 378 controls in 11 families; 100 callback operations show
   no measured heap operations. Lua UI and unsupported level taps remain explicit.
