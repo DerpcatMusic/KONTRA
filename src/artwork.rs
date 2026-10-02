@@ -384,7 +384,7 @@ fn wallpaper(scripts: &[String]) -> Option<String> {
 pub(crate) fn decode(bytes: &[u8]) -> Option<Image> {
     decode_report(bytes).ok()
 }
-fn decode_report(bytes: &[u8]) -> Result<Image, String> {
+pub(crate) fn decode_report(bytes: &[u8]) -> Result<Image, String> {
     if bytes.starts_with(b"\x89PNG") { return decode_png_report(bytes); }
     if bytes.starts_with(&[0xff, 0xd8]) {
         use zune_jpeg::zune_core::{bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions};
