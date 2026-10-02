@@ -1,0 +1,10 @@
+local ui = require "native_ui"
+local Card = require "components.card"
+return function ()
+    return @ui.ZStack {
+        @Card { parameter_id = "Amount" }
+        @Card { parameter_id = "Remote" }
+        @ui.Text { text = "literal @ is preserved" }
+        @ui.Rectangle { color = ui.Color(10, 20, 30) }
+    }.frame(width = 640, height = 400)
+end

@@ -1,0 +1,17 @@
+local ui = require "native_ui"
+local kontakt = require "kontakt"
+return function (props)
+    local parameter = kontakt.connect_parameter(props.parameter_id)
+    local read, write = ui.create_state(0)
+    local label = ui.create_computed(function ()
+        return props.parameter_id .. ":" .. parameter:value() .. ":" .. read()
+    end)
+    return @ui.Text {
+        text = label
+    }.frame(width = 180, height = 24)
+    .on_tap_gesture(start = function (event)
+        assert(event.kind == "fixture_tap")
+        parameter:set_value(parameter:value() + 5)
+        write(read() + 1)
+    end)
+end
