@@ -2375,7 +2375,7 @@ mod tests {
             fx: crate::fx::Chain { slots: vec![crate::fx::Effect { slot: 0, kind: crate::fx::Kind::Filter,
                 version: 0, bypass: false, output_gain: 1., dry_level: 1.,
                 params: crate::fx::params::Params::Filter(crate::fx::params::Filter {
-                    filter_type: 2, cutoff: 0.3, resonance: 0., extra: [0.; 3] }) }] },
+                    filter_type: 2, cutoff: 0.3, resonance: 0., extra: [0.; 3], native_flag: None }) }] },
             ..Group::default()
         };
         let render = |group: Group, source: &str, pitch_raw: i32, cutoff_raw: i32| {
