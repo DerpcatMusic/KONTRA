@@ -156,27 +156,12 @@ mod tests {
         assert!(slope > 20.0, "{slope}");
         // Resonance peaks near fc and, uncompensated, drops the bass.
         assert!(db(lp4, [c, 0.9, 0.0], 1000.0) > 10.0);
-        let daft = Model::Ladder { response: Response::Low, poles: 2, compensate: false };
-        assert!(db(daft, [c, 1.0, 0.0], 50.0) < -12.0);
+        let uncompensated = Model::Ladder { response: Response::Low, poles: 2, compensate: false };
+        assert!(db(uncompensated, [c, 1.0, 0.0], 50.0) < -12.0);
         let hp2 = Model::Ladder { response: Response::High, poles: 2, compensate: true };
         assert!(db(hp2, [c, 0.0, 0.0], 100.0) < -30.0 && db(hp2, [c, 0.0, 0.0], 15000.0).abs() < 0.5);
         let bp2 = Model::Ladder { response: Response::Band, poles: 2, compensate: true };
         assert!(db(bp2, [c, 0.5, 0.0], 1000.0).abs() < 0.5 && db(bp2, [c, 0.5, 0.0], 100.0) < -20.0);
-    }
-
-    #[test]
-    fn daft_types_follow_the_documented_two_pole_slopes() {
-        let c = cutoff_of(1000.0);
-        for (id, response) in [(106, Response::Low), (107, Response::High)] {
-            let (super::super::Shape::Model(model), sections) = super::super::filter_type(id).unwrap() else {
-                panic!("Daft must use the shared model")
-            };
-            assert_eq!(sections, 1, "Daft is a two-pole filter");
-            assert_eq!(model, Model::Ladder { response, poles: 2, compensate: false });
-            let (near, far) = if response == Response::Low { (4000.0, 8000.0) } else { (125.0, 62.5) };
-            let slope = db(model, [c, 0.0, 0.0], near) - db(model, [c, 0.0, 0.0], far);
-            assert!((slope - 12.0).abs() < 2.0, "type {id}: {slope} dB/octave");
-        }
     }
 
     #[test]

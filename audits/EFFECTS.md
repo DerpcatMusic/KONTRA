@@ -289,7 +289,7 @@ Filter type ids (`engine::filter::filter_type`, `KSP_FILTER_TYPES`):
 the type id itself (ANALOG STRINGS sets 106 on slots storing 106). All are the linear
 response of the analog topology factored into the same TPT sections
 (`src/engine/filter/models.rs`): ladders are 2 or 4 one-pole stages in a feedback loop,
-pass band compensated (AR) or dropping by `1 + k` (Daft); formant: three vowel formants
+pass band compensated (AR); formant: three vowel formants
 as peaking sections, Talk morphing A-E-I-O-U, Size shifting, Sharp narrowing them
 (`FORMANT_TALK/SHARP/SIZE`); phaser: four first-order all-passes summed with the input
 (its feedback is not modelled).
@@ -298,15 +298,16 @@ as peaking sections, Talk morphing A-E-I-O-U, Size shifting, Sharp narrowing the
 
 The [NI filter reference](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/filter-reference)
 describes Daft LP and HP as two-pole filters with a 12 dB/octave slope.
-Subtype 106/107 now selects one two-pole section, correcting the previous
-four-pole mapping. ANALOG STRINGS has 283 stored type-106 group slots, including
+Subtype 106/107 now selects the existing two-pole SVF with unity pass-band
+gain, correcting the previous four-pole ladder mapping. ANALOG STRINGS has 283 stored type-106 group slots, including
 261 active slots with the same cutoff/resonance settings.
 
-**Approximation remains:** this is the existing linear ladder proxy, not the
-nonlinear Massive algorithm. Its resonance law and pass-band attenuation have
-not been matched to Kontakt measurements; the slope correction does not claim
-gain, resonance, saturation, or waveform parity. No new gain/resonance law was
-invented to conceal that gap.
+**Approximation remains:** the existing SVF provides a stable linear response,
+not the nonlinear Massive algorithm. It uses the existing cutoff and Q laws;
+resonance peaks at the cutoff and does not add a feedback-related pass-band
+loss. This avoids the large attenuation of the uncompensated two-pole ladder
+proxy. No new gain/resonance law was invented; exact Kontakt gain, resonance,
+saturation, and waveform parity still require reference renders.
 
 Rack effects (`src/fx/blocks.rs`; stored values are what presets hold, scripts set
 normalized x = value/1e6 through a law):
