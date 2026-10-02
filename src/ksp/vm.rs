@@ -205,6 +205,20 @@ pub(super) fn append_text(dst: &mut String, src: &str, loading: bool) -> Exec<()
     Ok(())
 }
 
+/// Kontakt bounds stored @ variables and ! array elements to 320 characters.
+/// https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables
+/// Overflow keeps the Unicode prefix; expression and host metadata buffers keep
+/// their separate capacities. NI documents the bound, not overflow handling.
+pub(super) const MAX_STRING_VAR_CHARS: usize = 320;
+pub(super) const MAX_STRING_VAR_BYTES: usize = MAX_STRING_VAR_CHARS * 4;
+pub(super) fn variable_text(text: &str) -> &str {
+    let end = text.char_indices().nth(MAX_STRING_VAR_CHARS).map_or(text.len(), |(at,_)| at);
+    &text[..end]
+}
+pub(super) fn put_variable_text(dst: &mut String, src: &str, loading: bool) -> Exec<()> {
+    put_text(dst, variable_text(src), loading)
+}
+
 pub(super) fn put_text(dst: &mut String, src: &str, loading: bool) -> Exec<()> {
     if src.len() > 65536 {
         return Err(Fault("KSP string length limit"));
@@ -584,7 +598,7 @@ fn step(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> 
             Op::LdS(i) => s.strs.push_str(&mem.strs[i as usize])?,
             Op::StS(i) => {
                 let dst = &mut mem.strs[i as usize];
-                put_text(dst, s.strs.pop(), m.env.loading)?;
+                put_variable_text(dst, s.strs.pop(), m.env.loading)?;
             }
             Op::LdPoly(i) => {
                 let row = m.t.ctx.poly_row * m.prog.poly;
@@ -631,7 +645,7 @@ fn step(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> 
                 let text = m.stk.strs.pop();
                 if let Some(e) = e {
                     let dst = &mut m.slot.mem.strs[e];
-                    put_text(dst, text, m.env.loading)?;
+                    put_variable_text(dst, text, m.env.loading)?;
                 }
             }
             Op::Sys(v) => {
@@ -1351,7 +1365,7 @@ fn init_array(m: &mut Machine, i: u32) -> Exec<()> {
             let dst = &mut mem.strs[base..base + len];
             for (j, s) in dst.iter_mut().enumerate() {
                 let k = d[j.min(d.len() - 1)];
-                put_text(s, &m.prog.strings[k as usize], m.env.loading)?;
+                put_variable_text(s, &m.prog.strings[k as usize], m.env.loading)?;
             }
         }
     }

@@ -282,7 +282,7 @@ inc($i)
 end while
 else
 if ($edit = 3)
-sort_array(%table,0)
+sort(%table,0)
 else
 if ($edit = 4)
 get_event_ids(%table)
@@ -340,6 +340,40 @@ end on"#;
     assert_eq!(table(&live)[0],99);
     assert_eq!(finish(&rig.rt,&mut live),(1,false), "unchanged arrays are skipped only after complete delivery");
     assert!(rig.rt.diagnostics().is_empty(), "{:?}",rig.rt.diagnostics());
+}
+
+#[test]
+fn stored_strings_bound_unicode_and_continue_repeated_notes() {
+    let mut rig = Rig::new(&[r#"on init
+make_perfview
+declare ui_text_edit @text
+declare @ascii
+declare !rows[1]
+declare $notes
+make_persistent(@text)
+make_persistent(@ascii)
+make_persistent(!rows)
+make_persistent($notes)
+end on
+on note
+@ascii := @ascii & "abcde"
+@text := @text & "😀"
+!rows[0] := @text
+message(@text)
+inc($notes)
+end on"#]);
+    let mut live = rig.rt.live();
+    for _ in 0..800 { rig.on(0,60).off(0,60).block(64); }
+    let saved = rig.rt.persistence();
+    assert_eq!(saved[0]["@ascii"],Value::Text("abcde".repeat(64)));
+    assert_eq!(saved[0]["@text"],Value::Text("😀".repeat(320)));
+    assert_eq!(saved[0]["!rows"],Value::Array(vec![Value::Text("😀".repeat(320))]));
+    assert_eq!(saved[0]["$notes"],Value::Int(800),"debug text cannot abort musical callbacks");
+    assert_eq!(rig.rt.last_message(),"😀".repeat(320));
+    assert!(rig.rt.refresh_live(&mut live));
+    assert_eq!(prop(live.interface.as_ref().unwrap(),0,"$CONTROL_PAR_VALUE"),"😀".repeat(320),"prepared live text holds the entire stored value");
+    assert!(!rig.rt.refresh_live(&mut live));
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
 }
 
 // ---- Initialization (ported from the init-only interpreter) ---------------------------
