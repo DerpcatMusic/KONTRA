@@ -460,9 +460,10 @@ fn neighbors(cx: &mut Cx, slot: usize) -> [Option<String>; 2] {
     found
 }
 
-/// Below this width the header packs its controls tighter and the load
-/// chip drops its word.
+/// Below this width routing uses the existing icon buttons; the part menu
+/// keeps the duplicate Remove action so the name has meaningful room.
 const ONE_LINE: f64 = 860.;
+const NAME_MIN: f64 = 120.;
 
 /// The header banner: the library's artwork fading out over this width, and
 /// taller than any header so covering one only ever crops it top and bottom.
@@ -597,7 +598,10 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     if more {
         menu::open_under(ui, cx, menu::Target::Part(slot), &more_id);
     }
-    let (remove, remove_el) = icon_button(ui, format!("remove-{slot}"), Icon::Close, "Remove from rack", false);
+    let (remove, remove_el) = if narrow { (false, None) } else {
+        let (hit, el) = icon_button(ui, format!("remove-{slot}"), Icon::Close, "Remove from rack", false);
+        (hit, Some(el))
+    };
 
     let midi_id = format!("midi-{slot}");
     let output_id = format!("output-{slot}");
@@ -610,11 +614,15 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
         format!("{}{channel}", char::from(b'A' + part.port.min(3)))
     };
     let output_text = cx.selection.bus(part.output.into()).label(part.output.into());
-    let (midi, midi_el) = route(ui, midi_id.as_str(), Icon::MidiIn, &midi_text, "D16", "MIDI input");
+    let (midi, midi_el) = if narrow {
+        icon_button(ui, midi_id.as_str(), Icon::MidiIn, &format!("MIDI input: {midi_text}"), false)
+    } else { route(ui, midi_id.as_str(), Icon::MidiIn, &midi_text, "D16", "MIDI input") };
     if midi {
         menu::open_under(ui, cx, menu::Target::Midi(slot), &midi_id);
     }
-    let (output, output_el) = route(ui, output_id.as_str(), Icon::AudioOut, &output_text, "st.16", "Output");
+    let (output, output_el) = if narrow {
+        icon_button(ui, output_id.as_str(), Icon::AudioOut, &format!("Output: {output_text}"), false)
+    } else { route(ui, output_id.as_str(), Icon::AudioOut, &output_text, "st.16", "Output") };
     if output {
         menu::open_under(ui, cx, menu::Target::Output(slot), &output_id);
     }
@@ -657,10 +665,12 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     let mut name_row = vec![title, prev_el, next_el];
     name_row.extend(chip);
     let name_row = row(name_row).gap(0).align(Align::Center).flex(1).min_w(0);
-    let mix = cluster(vec![midi_el, output_el, pan_el, gain_el, tune_el]).gap(SPACE);
-    let mut tail = vec![switches, dot];
+    let mix = cluster(vec![midi_el, output_el, pan_el, gain_el, tune_el]).gap(if narrow { TIGHT } else { SPACE });
+    let mut tail = vec![switches];
+    if !narrow { tail.push(dot); }
     tail.extend(view_el);
-    tail.extend([more_el, remove_el]);
+    tail.push(more_el);
+    tail.extend(remove_el);
     let tail = cluster(tail).gap(TIGHT + 1.);
     let body = row![fold_el, name_row, mix, tail]
         .gap(if narrow { TIGHT } else { SPACE })
@@ -761,7 +771,7 @@ fn title(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         let field = text_edit(ui, edit_id.as_str(), text, TextOpts::default());
         let cancel = ui.keys(edit_id.as_str()).iter().any(|k| k.key == Key::Escape);
         let done = field.changed.submitted || (existed && !ui.focused(edit_id.as_str()));
-        let el = field.el.h(STRIP).flex(1).min_w(0).named("Part name");
+        let el = field.el.h(STRIP).flex(1).min_w(NAME_MIN).named("Part name");
         if cancel {
             cx.state.renaming = None;
         } else if done {
@@ -796,7 +806,7 @@ fn title(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         .text_weight(Weight::SEMIBOLD)
         .fill(if muted { secondary() } else { Fill::from(Role::Ink) })
         .lines(1)
-        .min_w(0)
+        .min_w(NAME_MIN)
         .shrink(1)
         .cursor(Cursor::Grab)
         .tip(format!("{name}\n{facts}\nDrag to reorder · double-click to rename"))
