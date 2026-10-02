@@ -54,7 +54,7 @@ pub(super) fn try_auto_report_pending_incident() {
             return;
         }
         let identity = HOST_IDENTITY.lock_unpoisoned().clone();
-        let platform = platform::snapshot();
+        let platform = platform::snapshot(&std::sync::atomic::AtomicBool::new(false));
         let diagnostics = redact_log(&crash::complete_diagnostics(&incident.id));
         let mut payload = ReportPayload {
             schema: 3, product: "kontra", version: crate::build_info::BUILD.version,
@@ -63,7 +63,7 @@ pub(super) fn try_auto_report_pending_incident() {
             incident_build_id: None, crash_fingerprint: None,
             os_name: platform.os_name.clone(), os_version: platform.os_version.clone(),
             arch: platform.process_architecture.clone(), host_name: identity.0, plugin_format: identity.1,
-            description: "KONTRA closed unexpectedly during the previous host session. This report was sent automatically after KONTRA reloaded.".into(),
+            description: "The previous host session ended with a confirmed crash while KONTRA was loaded. Fault attribution is unknown unless the attached exception and stack establish it. This report was sent automatically after KONTRA reloaded.".into(),
             diagnostics_attached: true, diagnostics: Some(bounded_diagnostics(diagnostics.clone())),
             diagnostics_full: Some(diagnostics), machine_hashes: Vec::new(),
         };
