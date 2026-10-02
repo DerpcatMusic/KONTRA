@@ -658,3 +658,37 @@ applied. The 2,400-record Analog census has 2,180 sources with saved bypass,
 so future LFO playback must retain that switch as well as target smoothing.
 None of this establishes reference Kontakt sonic parity or resolves all six
 reported Analog preset differences.
+
+## LFO waveform schema and clock follow-up (2026-10-02)
+
+The first BParLFO public integer is a waveform selector, not a layout ID.
+The native typed reader uses the same packed prefix for versions 0x71 and
+0x72: waveform types 0..4 have 47 public bytes, while types 5 and 6 append
+five mix levels for 67 bytes. Version 0x73 appends one additional boolean
+to either form. The shared decoder/writer now retains these exact forms,
+rejects mismatched lengths and invalid boolean bytes, and leaves unknown
+versions/types opaque. Type 6's name and the additional boolean's meaning
+remain unassigned. One authored roundtrip gate covers all accepted
+waveforms, versions and structured/unstructured envelopes, including
+truncation, signed zero and NaN bit preservation. This broadens format
+decoding; it does not enable an audible LFO source.
+
+Independent native note-value frequency/time getters corroborate the
+documented sync units: at tempo T, note value N and count C, synchronized
+frequency is T/(60*N*C) Hz and synchronized fade-in is 60000*N*C/T ms.
+An unsynchronized frequency remains Hz. Native preparation converts this
+frequency to a source phase step using sample rate, and passes the saved
+phase directly as cycles. The serialized sync fields at25/29/38/42 and
+booleans33/46 are still retained neutrally: generic converter bounds and
+integer-count controls occupy other native members and must not be
+inferred from these serialized fields.
+
+The [Kontakt modulation reference](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/modulation)
+distinguishes legacy Multi's ripples from Multi Digital. The identified
+legacy Multi processor uses interpolated waveform tables, signed mixer
+levels and normalization by max(1, sum of absolute mixer levels). Its
+source scheduling also compensates phase at block boundaries and accepts
+frequency/phase modulation buffers. These details, plus group freewheel
+ownership, prevent treating a generic per-voice digital oscillator as
+verified playback. No proprietary waveform tables, arbitrary calibration,
+source bypass clock law or amplitude-lifetime change is included here.
