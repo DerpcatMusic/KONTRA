@@ -378,11 +378,12 @@ pub struct Shared {
     ready: ArrayQueue<(usize, u64, Handoff)>,
     discard: ArrayQueue<Retired>,
     /// Persistence snapshots: the loader lends one per scripted slot, the audio thread fills it in place and returns it.
-    snapshot_requests: ArrayQueue<(usize, Box<PersistenceSnapshot>)>,
+    snapshot_requests: ArrayQueue<(usize, u64, Box<PersistenceSnapshot>)>,
     /// Refreshed snapshots, and whether any value in them changed.
     snapshots: ArrayQueue<(usize, u64, Box<PersistenceSnapshot>, bool)>,
-    /// Live script views, lent and refreshed the same way.
-    live_requests: ArrayQueue<(usize, Box<Live>)>,
+    /// Live script views, lent and refreshed the same way. The source epoch
+    /// travels with each buffer so replacements cannot refresh an old shape.
+    live_requests: ArrayQueue<(usize, u64, Box<Live>)>,
     lives: ArrayQueue<(usize, u64, Box<Live>)>,
     /// One non-audio publisher; the timestamp distinguishes editor frames from loader polling.
     live_publish: Mutex<Option<Instant>>,
@@ -1120,9 +1121,9 @@ impl Shared {
                 && let Some(mut live) = v.live.take()
             {
                 live.refresh_interface = shown;
-                match self.live_requests.push((slot, live)) {
+                match self.live_requests.push((slot, v.script_epoch, live)) {
                     Ok(()) => v.diagnostics_lent = Some(now),
-                    Err((_, live)) => v.live = Some(live),
+                    Err((_, _, live)) => v.live = Some(live),
                 }
             }
         }
@@ -2080,9 +2081,9 @@ impl BackgroundTask for Load {
             if v.snapshot_lent.is_none_or(|t| t.elapsed() >= SNAPSHOT_EVERY)
                 && let Some(snapshot) = v.snapshot.take()
             {
-                match params.shared.snapshot_requests.push((slot, snapshot)) {
+                match params.shared.snapshot_requests.push((slot, v.script_epoch, snapshot)) {
                     Ok(()) => v.snapshot_lent = Some(Instant::now()),
-                    Err((_, snapshot)) => v.snapshot = Some(snapshot),
+                    Err((_, _, snapshot)) => v.snapshot = Some(snapshot),
                 }
             }
         }
@@ -2605,7 +2606,7 @@ impl PluginLogic for Sampler {
         };
         if s.live.is_none() && !p.shared.lives.is_full() {
             s.live = (p.shared.live_requests.pop())
-                .map(|(slot, live)| (slot, version(s, slot), live, Refresh::default()));
+                .map(|(slot, epoch, live)| (slot, (epoch, version(s, slot).1), live, Refresh::default()));
         }
         if let Some((slot, seen, live, at)) = &mut s.live {
             let done = seen.0 != s.script_epoch[*slot]
@@ -2812,7 +2813,7 @@ impl PluginLogic for Sampler {
         }
         if s.snapshot.is_none() && !p.shared.snapshots.is_full() {
             s.snapshot = (p.shared.snapshot_requests.pop())
-                .map(|(slot, saved)| (slot, version(s, slot), saved, Refresh::default()));
+                .map(|(slot, epoch, saved)| (slot, (epoch, version(s, slot).1), saved, Refresh::default()));
         }
         if let Some((slot, seen, saved, at)) = &mut s.snapshot {
             let done = seen.0 != s.script_epoch[*slot]
@@ -2822,7 +2823,7 @@ impl PluginLogic for Sampler {
             if done && let Some((slot, seen, saved, at)) = s.snapshot.take() {
                 let mut saved = saved;
                 let mut changed = at.changed;
-                for value in &mut saved.ir {
+                for value in saved.ir.iter_mut().filter(|_| seen.0 == s.script_epoch[slot]) {
                     if let Some(settings) = s.rack.parts[slot].fx().ir_settings(value.rack, value.slot) {
                         changed |= value.settings != settings;
                         value.settings = settings;
@@ -3752,13 +3753,13 @@ mod tests {
         let optimistic = p.shared.view.lock().unwrap().parts[0].interface.clone().unwrap();
         assert_eq!(p.shared.view.lock().unwrap().parts[0].control_value(0), Some(99.));
         assert_eq!(optimistic.controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(84));
-        let (slot, live) = p.shared.live_requests.pop().unwrap();
+        let (slot, _, live) = p.shared.live_requests.pop().unwrap();
         p.shared.lives.push((slot, 1, live)).ok().unwrap();
         p.shared.publish_live(true);
         assert!(Arc::ptr_eq(&optimistic, p.shared.view.lock().unwrap().parts[0].interface.as_ref().unwrap()),
             "a pending edit does not recopy unchanged metadata");
         p.shared.view.lock().unwrap().parts[0].edited[0].2 = Instant::now() - EDIT_SETTLE * 2;
-        let (slot, live) = p.shared.live_requests.pop().unwrap();
+        let (slot, _, live) = p.shared.live_requests.pop().unwrap();
         p.shared.lives.push((slot, 1, live)).ok().unwrap();
         p.shared.publish_live(true);
         assert_eq!(p.shared.view.lock().unwrap().parts[0].interface.as_ref().unwrap().controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(84));
@@ -3771,7 +3772,7 @@ mod tests {
             "Load eventually formats the latest raw diagnostics");
 
         // Replace the runtime after a view is prepared but before it commits.
-        let (slot, mut live) = p.shared.live_requests.pop().unwrap();
+        let (slot, _, mut live) = p.shared.live_requests.pop().unwrap();
         dsp.rack.parts[0].ui_control(0, 0, 13);
         dsp.rack.parts[0].script().unwrap().refresh_live(&mut live);
         p.shared.lives.push((slot, 1, live)).ok().unwrap();
@@ -3789,7 +3790,7 @@ mod tests {
         assert_eq!(label(&p), Value::Text("value 84".into()), "prepared old-epoch views cannot overwrite a restore");
         assert_eq!(p.shared.live_requests.len(), 1, "only the new runtime's buffer is lent");
 
-        let (slot, mut live) = p.shared.live_requests.pop().unwrap();
+        let (slot, _, mut live) = p.shared.live_requests.pop().unwrap();
         live.interface.as_mut().unwrap().controls[1].properties.insert("$CONTROL_PAR_TEXT".into(), Value::Text("hidden update".into()));
         p.shared.lives.push((slot, 2, live)).ok().unwrap();
         p.shared.publish_live(false);
@@ -3802,7 +3803,7 @@ mod tests {
         }
         p.shared.publish_live(false);
         assert_eq!(label(&p), Value::Text("hidden update".into()), "closed editors retain worker fallback");
-        assert!(!p.shared.live_requests.pop().unwrap().1.refresh_interface, "hidden views only refresh diagnostics");
+        assert!(!p.shared.live_requests.pop().unwrap().2.refresh_interface, "hidden views only refresh diagnostics");
     }
 
     #[test]
@@ -4188,6 +4189,87 @@ end on"#,dir.display());
     }
 
     #[test]
+    fn replacement_runtimes_reject_queued_old_views_and_snapshots_without_audio_allocations() {
+        use crate::ksp::Value;
+        let runtime = |count, name: &str, saved| {
+            let mut source = format!("on init\nmake_perfview\ndeclare $saved := {saved}\nmake_persistent($saved)\nset_control_par_str($INST_WALLPAPER_ID,$CONTROL_PAR_PICTURE,\"{name}\")\ndeclare ui_slider $s(0,100)\n");
+            for n in 1..count { source.push_str(&format!("declare ui_label $l{n}(1,1)\n")); }
+            source.push_str("end on\non ui_control($s)\n$saved := $s\nend on");
+            let (rt, errors) = Runtime::with_scripts(&[source], &mut crate::ksp::LogEngine::default(), 0, Vec::new());
+            assert!(errors.iter().all(Option::is_none));
+            rt
+        };
+        // Actual replacement sizes: Areia's 847 controls and CHORUS's 572.
+        let old = runtime(847, "old", 11);
+        let new = runtime(572, "new", 22);
+        let old_live = Box::new(old.live());
+        let old_address = (&*old_live as *const Live) as usize;
+        let old_saved = Box::new(PersistenceSnapshot { script: old.persistence(), ir: Vec::new() });
+        let saved_address = (&*old_saved as *const PersistenceSnapshot) as usize;
+        let new_live = Box::new(new.live());
+        let new_interface = Arc::new(new_live.interface.clone().unwrap());
+        let new_saved = Box::new(PersistenceSnapshot { script: new.persistence(), ir: Vec::new() });
+        let p = SamplerParams::new();
+        {
+            let mut view = p.shared.view.lock().unwrap();
+            view.script_epoch = 1;
+            view.parts[0].script_epoch = 1;
+            view.parts[0].live = Some(old_live);
+        }
+        p.shared.publish_live(true); // Old buffer is queued before installation.
+        p.shared.snapshot_requests.push((0, 1, old_saved)).ok().unwrap();
+        {
+            let mut view = p.shared.view.lock().unwrap();
+            assert_eq!(next_epoch(&mut view, 0, None, Some(new_live)), 2);
+            view.parts[0].interface = Some(new_interface.clone());
+        }
+        let mut dsp = Dsp::default();
+        dsp.until_poll = usize::MAX;
+        dsp.script_epoch[0] = 1;
+        dsp.rack.parts[0].set_script(Some(Box::new(old)));
+        p.shared.ready.push((0, 0, Handoff::Script { script: Some(Box::new(new)), epoch: 2 })).ok().unwrap();
+        let transport = TransportInfo::default();
+        let mut outgoing = EventList::with_capacity(0);
+        let none = EventList::with_capacity(0);
+        let mut cx = ProcessContext::new(&transport, 48000., 64, &mut outgoing);
+        let mut left = [0f32;64];
+        let mut right = [0f32;64];
+        let mut outputs = [&mut left[..], &mut right[..]];
+        let mut buffer = AudioBuffer::from_slices_checked(&[], &mut outputs, 64);
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }), 0);
+        let (slot, epoch, live) = p.shared.lives.pop().unwrap();
+        assert_eq!((slot, epoch), (0, 1), "a stale buffer retains its source epoch");
+        assert_eq!((&*live as *const Live) as usize, old_address);
+        assert_eq!(live.interface.as_ref().unwrap().controls.len(), 847);
+        assert_eq!(live.interface.as_ref().unwrap().wallpaper, "old", "rejected buffers are never refreshed");
+        p.shared.lives.push((slot, epoch, live)).ok().unwrap();
+        let (slot, epoch, saved, changed) = p.shared.snapshots.pop().unwrap();
+        assert_eq!((slot, epoch, changed), (0, 1, false));
+        assert_eq!((&*saved as *const PersistenceSnapshot) as usize, saved_address);
+        assert_eq!(saved.script[0]["$saved"], Value::Int(11));
+        drop(saved); // Stale snapshots are retired on this worker/test thread.
+        p.shared.publish_live(true); // Rejects the old view and lends the new one.
+        assert!(Arc::ptr_eq(&new_interface, p.shared.view.lock().unwrap().parts[0].interface.as_ref().unwrap()));
+        assert!(p.shared.lives.is_empty() && p.shared.snapshots.is_empty());
+        assert_eq!(p.shared.live_requests.len(), 1, "the stale buffer is returned exactly once");
+        p.shared.snapshot_requests.push((0, 2, new_saved)).ok().unwrap();
+        assert_eq!(allocations(|| {
+            dsp.rack.parts[0].ui_control(0, 0, 37);
+            for _ in 0..100 { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }
+        }), 0);
+        let (_, epoch, saved, changed) = p.shared.snapshots.pop().unwrap();
+        assert_eq!(epoch, 2);
+        assert!(changed);
+        assert_eq!(saved.script[0]["$saved"], Value::Int(37), "new snapshots refresh normally");
+        p.shared.publish_live(true);
+        let view = p.shared.view.lock().unwrap();
+        let interface = view.parts[0].interface.as_ref().unwrap();
+        assert_eq!(interface.controls.len(), 572);
+        assert_eq!(interface.wallpaper, "new");
+        assert_eq!(interface.controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(37));
+    }
+
+    #[test]
     fn changed_live_views_wake_publication_without_allocating_or_busy_polling() {
         use moose::core::tasks::{TaskSpawner, TaskSpawnerBundle};
         let source = "on init\nmake_perfview\ndeclare ui_slider $s(0,100)\nend on";
@@ -4201,7 +4283,7 @@ end on"#,dir.display());
         let live = Box::new(rt.live());
         dsp.rack.parts[0].set_script(Some(Box::new(rt)));
         dsp.rack.parts[0].ui_control(0, 0, 42);
-        p.shared.live_requests.push((0, live)).ok().unwrap();
+        p.shared.live_requests.push((0, dsp.script_epoch[0], live)).ok().unwrap();
         moose::core::tasks::warm_pool();
         let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut tasks = TaskSpawnerBundle::new();
@@ -4222,7 +4304,7 @@ end on"#,dir.display());
         assert_eq!(runs.load(Ordering::Acquire), 1, "changed view wakes the real task lane");
         for _ in 0..8 {
             let (slot, _, live) = p.shared.lives.pop().unwrap();
-            p.shared.live_requests.push((slot, live)).ok().unwrap();
+            p.shared.live_requests.push((slot, dsp.script_epoch[slot], live)).ok().unwrap();
             assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }), 0);
         }
         drop(tasks);
@@ -4695,7 +4777,7 @@ end on"#.into()],
             script: dsp.rack.parts[0].script().unwrap().persistence(),
             ir: vec![crate::fx::IrSlotSettings { rack: crate::fx::Rack::Insert, slot: 0, settings: crate::fx::params::IrSettings::DEFAULT, file: None }],
         };
-        p.shared.snapshot_requests.push((0, Box::new(snapshot))).ok().unwrap();
+        p.shared.snapshot_requests.push((0, dsp.script_epoch[0], Box::new(snapshot))).ok().unwrap();
         assert_eq!(allocations(|| {
             dsp.rack.parts[0].ui_control(0, 1, 1000000);
             dsp.rack.parts[0].ui_control(0, 2, 250000);
@@ -4830,7 +4912,7 @@ end on"#;
             "the view shows an edit at once"
         );
         let live = p.shared.view.lock().unwrap().parts[0].live.take().unwrap();
-        p.shared.live_requests.push((0, live)).ok().unwrap();
+        p.shared.live_requests.push((0, dsp.script_epoch[0], live)).ok().unwrap();
 
         let mut outputs = vec![vec![0f32; 64]; 2];
         let mut refs: Vec<_> = outputs.iter_mut().map(|o| o.as_mut_slice()).collect();
@@ -4851,9 +4933,9 @@ end on"#;
         p.shared.edit_control(0, 0, 1);
         Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx);
         let (slot, _, live) = p.shared.lives.pop().unwrap();
-        p.shared.live_requests.push((slot, live)).ok().unwrap();
+        p.shared.live_requests.push((slot, dsp.script_epoch[slot], live)).ok().unwrap();
         let saved = Box::new(PersistenceSnapshot { script: dsp.rack.parts[0].script().unwrap().persistence(), ir: Vec::new() });
-        p.shared.snapshot_requests.push((0, saved)).ok().unwrap();
+        p.shared.snapshot_requests.push((0, dsp.script_epoch[0], saved)).ok().unwrap();
         // As if the scripts changed since: both refresh in full.
         (dsp.live_seen[0], dsp.snapshot_seen[0]) = ((u64::MAX, 0), (u64::MAX, 0));
         let calls = allocations(|| {
