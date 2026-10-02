@@ -18,8 +18,8 @@ pub use ni_file::kontakt::objects::{
 
 const INTERNAL_MODS_ID: u16 = 0x3B;
 const EXTERNAL_MODS_ID: u16 = 0x3C;
-/// Pitch envelopes kept in each preallocated voice.
-pub(crate) const PITCH_ENVS: usize = 4;
+/// Kontakt groups have sixteen internal-modulator slots (InternalModArray16).
+pub(crate) const PITCH_ENVS: usize = 16;
 /// Pitch modulation at intensity 1.0 spans one octave (PB_PITCH stores 2/12).
 const PITCH_SEMITONES_PER_INTENSITY: f32 = 12.0;
 
@@ -248,10 +248,6 @@ pub(crate) fn read_group(group: &RawGroup) -> Result<GroupModulation> {
         }
     }
 
-    let pitch_envelopes = out.envelopes.iter().filter(|e| e.targets.iter().any(|t| t.target == ModTarget::Pitch)).count();
-    if pitch_envelopes > PITCH_ENVS {
-        out.warnings.push(format!("Group has {pitch_envelopes} pitch AHDSRs; playback applies the first {PITCH_ENVS}"));
-    }
     Ok(out)
 }
 

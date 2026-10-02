@@ -1464,8 +1464,13 @@ impl Player {
             tune: 2f64.powf(ev.tune / 12.0),
             pitch: (f32::NAN, 1.0),
             mods,
-            pitch_envs: std::array::from_fn(|i| Envelope::new(
-                &settings.pitch_envelopes.get(i).map_or(Ahdsr::UNITY, |p| p.env), self.rate as f32)),
+            pitch_envs: {
+                let mut states = [Envelope::new(&Ahdsr::UNITY, self.rate as f32); params::PITCH_ENVS];
+                for (state, envelope) in states.iter_mut().zip(&settings.pitch_envelopes) {
+                    *state = Envelope::new(&envelope.env, self.rate as f32);
+                }
+                states
+            },
             modulated: (1.0, 0.0),
             settled: None,
             stream,

@@ -409,10 +409,27 @@ The [Kontakt modulation manual](https://docs.native-instruments.com/ni-tech-manu
 describes internal envelopes as modulation sources and AHDSR stage behavior. This
 implementation uses the existing engine's per-block pitch control rate; sample
 accurate pitch curves and Kontakt reference-render parity have not been verified.
-Four pitch envelopes fit in the preallocated voice workspace; import warns if a
-group exceeds that limit. No allocation occurs when processing these envelopes.
+Every one of Kontakt's sixteen internal-modulator slots fits in the preallocated
+voice workspace; no pitch envelope is truncated. Artificial groups exceeding the
+native slot count fail bank preparation explicitly. No allocation occurs when processing these envelopes.
 LFO objects remain opaque, and the ambiguous external invert byte remains ignored.
 Mixed volume/pitch envelopes and flexible pitch envelopes remain unsupported.
+
+The explicit KSP `INTMOD_BYPASS` button now removes pitch modulation while its
+AHDSR clock continues. Preset mode/bypass flag bytes remain undecoded. The original
+NI-authored [Kontakt Script Language Manual](https://www.danielrdehaan.com/attachments/kontakt_script_language.pdf)
+(pp. 64-65 and 87) documents internal modulator/assignment addressing and the bypass
+button; that PDF is a verbatim historical manual hosted by a third party. Legacy
+`INTMOD_INTENSITY` scaling is still unverified against primary documentation and
+remains unsupported rather than reusing modern linear MP scaling.
+
+A content-free raw-modulator census of the configured 782 presets (788 programs)
+completed with zero failures: 226,278 groups, 223,743 AHDSRs, 6,884 flex envelopes,
+2,400 opaque LFO objects, and 483 AHDSR pitch targets. The maximum occupied internal
+slots was eight. Every group had at most one volume AHDSR, one volume flex, and one
+pitch AHDSR; no flex pitch targets or mixed volume/pitch envelopes occurred. Further
+same-kind volume envelopes are therefore an explicit remaining feature, rather than
+an assumed source of this corpus's missing modulation.
 
 Run `pitch_envelope_uses_ahdsr_and_script_addresses` for the focused DSP/script
 regression. Run the ignored `analog_strings_pitch_envelopes_are_routed` with
