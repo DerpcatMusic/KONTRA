@@ -5046,6 +5046,7 @@ end on"#.into()], ..Default::default() };
         assert!(rt.engine_state().is_empty(), "prepared defaults are not saved edits");
         let mut snapshot = snapshot.unwrap();
         let mut engine = Engine::default();
+        engine.set_bank(Some(Box::new(Bank::from_samples(Vec::new(),Vec::new(),Vec::new()).unwrap())));
         engine.set_fx(crate::engine::effects(&i, Some(&rt), 48000.));
         engine.set_script(Some(rt));
         let mut left = [0.;64]; let mut right = [0.;64];
@@ -5088,7 +5089,7 @@ end on"#.into()], ..Default::default() };
         assert!(errors.is_empty(),"{errors:?}"); let rt = rt.unwrap();
         assert_eq!(rt.interface(0).controls[0].properties["$CONTROL_PAR_VALUE"],Value::Int(125000));
         assert_eq!(rt.interface(0).controls[1].properties["$CONTROL_PAR_VALUE"],Value::Int(1));
-        let mut restored = Engine::default(); restored.set_fx(crate::engine::effects(&i,Some(&rt),48000.)); restored.set_script(Some(rt));
+        let mut restored = Engine::default(); restored.set_bank(Some(Box::new(Bank::from_samples(Vec::new(),Vec::new(),Vec::new()).unwrap()))); restored.set_fx(crate::engine::effects(&i,Some(&rt),48000.)); restored.set_script(Some(rt));
         assert_eq!(restored.fx().param(Rack::Insert,7,FxParam::SendLevel(0)),Some(expected_send));
         assert_eq!(restored.fx().param(Rack::Insert,7,FxParam::Bypass),Some(0.));
         // Unsupported foreign shape is reported and cannot seed another target.
