@@ -650,6 +650,7 @@ mod tests {
             let frames = option("KONTRA_UI_BENCH_HOST_FRAMES",128) as usize;
             let (report, _) = crate::plugin::bench_ui_worker(engine, instrument.clone(), program, control, low, high, frames, edits, Some(&mut observer)).unwrap();
             assert!(!rendered.is_empty(), "native publication must reach the observer");
+            assert!(report["latest_edits_published"].as_u64().unwrap_or(0) > 0, "actual callback state must settle at least one queued edit: {report}");
             rendered.sort_by(f64::total_cmp);
             println!("UI_BENCH_CALLBACK {}", serde_json::json!({"worker":report,"observer_frames":rendered.len(),"changed_gpu_frames":rendered_changes,
                 "callback_published_render_ms":{"mean":rendered.iter().sum::<f64>()/rendered.len() as f64,"p99":rendered[((rendered.len()-1) as f64*0.99).ceil() as usize]}}));
