@@ -66,7 +66,17 @@ impl NIFileType {
                         container = Some(item);
                         NIFileType::NISContainer
                     }
-                    Err(_) => NIFileType::Unknown,
+                    Err(error) => {
+                        // A recognized NIS signature is a malformed NIS file,
+                        // not an unknown format. Retain its actual decoder error.
+                        let at = reader.stream_position()?;
+                        reader.seek(std::io::SeekFrom::Start(12))?;
+                        let mut signature = [0; 4];
+                        let nis = reader.read_exact(&mut signature).is_ok() && &signature == b"hsin";
+                        reader.seek(std::io::SeekFrom::Start(at))?;
+                        if nis { return Err(error); }
+                        NIFileType::Unknown
+                    }
                 }
             }
         };

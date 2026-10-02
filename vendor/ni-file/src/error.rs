@@ -8,6 +8,12 @@ pub type Error = NIFileError;
 #[derive(thiserror::Error, Debug)]
 #[non_exhaustive]
 pub enum NIFileError {
+    #[error("{context}: {source}")]
+    Context {
+        context: String,
+        #[source]
+        source: Box<NIFileError>,
+    },
     #[error("Generic error: {0}")]
     Generic(String),
 
@@ -40,4 +46,10 @@ pub enum NIFileError {
 
     #[error("Static error: {0}")]
     Static(&'static str),
+}
+
+impl NIFileError {
+    pub(crate) fn context(context: String, source: impl Into<Self>) -> Self {
+        Self::Context { context, source: Box::new(source.into()) }
+    }
 }
