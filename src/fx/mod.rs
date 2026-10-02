@@ -147,7 +147,7 @@ impl Effect {
             bypass: state.bypass,
             output_gain: state.output_gain,
             dry_level: state.dry_level,
-            params: params::parse(kind, &object.public_data),
+            params: params::parse_versioned(kind, object.version, &object.public_data),
         })
     }
 

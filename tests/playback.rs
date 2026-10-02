@@ -3550,7 +3550,7 @@ fn shared_filters_match_voices_filtered_alone_within_120_db() {
     };
     let band = |freq_hz, gain_db| params::EqBand { freq_hz, bandwidth_oct: 1.0, gain_db };
     let eq = |bands| Params::Eq(params::Eq { bands });
-    let low = |cutoff| Params::Filter(params::Filter { filter_type: 5, cutoff, resonance: 0.3, extra: [0.0; 3] });
+    let low = |cutoff| Params::Filter(params::Filter { filter_type: 5, cutoff, resonance: 0.3, extra: [0.0; 3], native_flag: None });
     let knob = |source, param: &str, slot| ModAssignment {
         name: String::new(),
         source,
@@ -3823,7 +3823,7 @@ fn instrument_rack_filter_eq_and_stereo_controls_change_playing_audio() {
     let effect = |slot, kind, params| Effect { slot, kind, version: 0, bypass: false, output_gain: 1.0, dry_level: 0.0, params };
     let mut i = instrument(vec![Group::default()], vec![Zone::default()]);
     i.fx.insert = Chain { slots: vec![
-        effect(0, Kind::Filter, Params::Filter(params::Filter { filter_type: 2, cutoff: 1.0, resonance: 0.0, extra: [0.0; 3] })),
+        effect(0, Kind::Filter, Params::Filter(params::Filter { filter_type: 2, cutoff: 1.0, resonance: 0.0, extra: [0.0; 3], native_flag: None })),
         effect(1, Kind::Filter, Params::Eq(params::Eq { bands: vec![params::EqBand { freq_hz: 3000.0, bandwidth_oct: 1.0, gain_db: 0.0 }] })),
         effect(2, Kind::StereoModeller, Params::StereoModeller(params::StereoModeller { spread: 0.0, pan: 0.0, pseudo_stereo: false })),
     ] };
