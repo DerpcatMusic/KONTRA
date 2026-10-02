@@ -4664,7 +4664,7 @@ pub(crate) mod tests {
         let resources = directory.join("Resources/native_ui");
         std::fs::create_dir_all(resources.join("components")).unwrap();
         std::fs::write(resources.join("main.nui"), include_str!("../tests/fixtures/native-ui-scene/main.nui")).unwrap();
-        std::fs::write(resources.join("components/card.nui"), include_str!("../tests/fixtures/native-ui-scene/components/card.nui")).unwrap();
+        std::fs::write(resources.join("components/init.nui"), include_str!("../tests/fixtures/native-ui-scene/components/card.nui")).unwrap();
         let i = Instrument { path: directory.join("fixture.nki"), scripts: vec![
             "on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $Amount(0,100)\n$Amount := 17\nend on\non ui_control($Amount)\n$Amount := $Amount*2\nend on".into(),
             "on init\nmake_perfview\ndeclare ui_slider $Remote(0,100)\n$Remote := 9\ndeclare ui_slider $Amount(0,100)\n$Amount := 90\nend on\non ui_control($Remote)\n$Remote := $Remote+10\nend on".into()
@@ -4716,12 +4716,17 @@ pub(crate) mod tests {
         assert!(error.contains("Unsupported native UI API")&&error.contains("Image"),"{error}");
         assert!(crate::native_ui::frontend_test_invalid_sources());
         let mut reader=crate::resources::Resources::of(&i.path,"native_ui");
-        assert!(reader.read_limited("components/card.nui",4).unwrap_err().contains("exceeds"),"payload bound precedes VM allocation");
+        assert!(reader.read_limited("components/init.nui",4).unwrap_err().contains("exceeds"),"payload bound precedes VM allocation");
         std::fs::write(resources.join("main.nui"),"local ui=require('native_ui')\nlocal tree=@ui.ZStack {\n @ui.Text {text='caption' -- authored property comment\n }\n}.frame(width=640,height=400)\nerror('authored source line')\nreturn tree").unwrap();
         let error=format!("{:#}",Scene::prepare(&i.path,rt).unwrap_err());
         assert!(error.contains("main.nui.lowered.lua:6:")&&error.contains("authored source line"),"lowered source identifies its origin and preserves lines after components: {error}");
         std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') local child=@ui.Text{text='a'} return @ui.ZStack{child,child}.frame(width=10,height=10)").unwrap();
         assert!(format!("{:#}",Scene::prepare(&i.path,rt).unwrap_err()).contains("Aliased native UI node"));
+        std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') return @{ @ui.Text{text='fragment'} }.frame(width=10,height=10)").unwrap();
+        let mut fragment=Scene::prepare(&i.path,rt).unwrap().unwrap();
+        assert_eq!(fragment.snapshot().unwrap().children.len(),1,"anonymous authored groups compose their children");
+        std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') return @ui.Text{text='positional'}.frame(42)").unwrap();
+        assert!(format!("{:#}",Scene::prepare(&i.path,rt).unwrap_err()).contains("Unsupported positional native UI modifier: frame"),"positional arguments reach the host validation rather than being misparsed");
         std::fs::remove_dir_all(directory).unwrap();
     }
 

@@ -226,7 +226,8 @@ impl Scene {
                     return Err(invalid(format!("Circular native UI module: {name}")));
                 }
                 let result = (|| {
-                    let file = format!("{}.nui", name.replace('.', "/"));
+                    let path = name.replace('.', "/");
+                    let mut file = format!("{path}.nui");
                     let mut modules = loader.lock().unwrap();
                     if modules.sealed {
                         return Err(invalid(format!(
@@ -237,11 +238,25 @@ impl Scene {
                         return Err(invalid("Native UI resource budget exceeded"));
                     }
                     let limit = (8 * 1024 * 1024 - modules.bytes).min(1024 * 1024);
-                    let bytes = modules
+                    let bytes = match modules
                         .resources
                         .read_limited(&file, limit)
                         .map_err(invalid)?
-                        .ok_or_else(|| invalid(format!("Native UI module missing: {file}")))?;
+                    {
+                        Some(bytes) => bytes,
+                        None => {
+                            file = format!("{path}/init.nui");
+                            modules
+                                .resources
+                                .read_limited(&file, limit)
+                                .map_err(invalid)?
+                                .ok_or_else(|| {
+                                    invalid(format!(
+                                        "Native UI module missing: {path}.nui or {file}"
+                                    ))
+                                })?
+                        }
+                    };
                     if bytes.len() > 1024 * 1024
                         || modules.count >= 256
                         || modules.bytes + bytes.len() > 8 * 1024 * 1024
@@ -449,7 +464,7 @@ pub(crate) fn frontend_test_invalid_sources() -> bool {
         "@ui.",
         "@ui.Text{text='unterminated}",
         "@ui.Text{text='a',text='b'}",
-        "@ui.Text{}.frame(42)",
+        "@ui.Text{}.frame(width=)",
     ]
     .iter()
     .all(|s| frontend::lower(s).is_err())

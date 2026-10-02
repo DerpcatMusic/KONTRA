@@ -46,8 +46,9 @@ function native_component(target,props,children)
     local id=component_id;component_id=component_id+1
     return {id=id,kind=target.kind,props=props,children=children,modifiers={}}
 end
-function native_modifier(node,name,props)
+function native_modifier(node,name,props,args)
     assert(name=="frame" or name=="on_tap_gesture","Unsupported modifier: "..name)
+    assert(#args==0,"Unsupported positional native UI modifier: "..name)
     assert(node.modifiers[name]==nil,"Duplicate modifier")
     for key,value in pairs(props) do
         if name=="frame" then

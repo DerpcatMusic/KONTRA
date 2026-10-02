@@ -186,15 +186,18 @@ impl Parser<'_> {
         ensure!(self.depth <= 64, "Native UI component nesting exceeds 64");
         self.require("@")?;
         self.skip();
-        let mut name = self.token().to_owned();
-        ensure!(ident(&name), "Invalid native UI component name");
-        self.at += 1;
-        while self.token() == "." {
+        let mut name = "native_ui_host.ZStack".to_owned();
+        if self.token() != "{" {
+            name = self.token().to_owned();
+            ensure!(ident(&name), "Invalid native UI component name");
             self.at += 1;
-            ensure!(ident(self.token()), "Incomplete native UI component name");
-            name.push('.');
-            name.push_str(self.token());
-            self.at += 1;
+            while self.token() == "." {
+                self.at += 1;
+                ensure!(ident(self.token()), "Incomplete native UI component name");
+                name.push('.');
+                name.push_str(self.token());
+                self.at += 1;
+            }
         }
         self.require("{")?;
         let (props, children) = self.fields("}", true)?;
@@ -213,8 +216,8 @@ impl Parser<'_> {
             ensure!(ident(&modifier), "Incomplete native UI modifier name");
             self.at += 1;
             self.require("(")?;
-            let (props, _) = self.fields(")", false)?;
-            out = format!("native_modifier({out},\"{modifier}\",{{{props}}})");
+            let (props, arguments) = self.fields(")", true)?;
+            out = format!("native_modifier({out},\"{modifier}\",{{{props}}},{{{arguments}}})");
         }
         // Keep later Lua locations on their original resource lines. Locations
         // inside reordered property/child tables are explicitly named lowered.lua.
