@@ -561,7 +561,7 @@ pub(crate) enum Address {
     Envelope(u16, Stage),
     /// A group's module envelope (filter, EQ), by `Group::envelopes` index.
     ModEnvelope(u16, u8, Stage),
-    /// A modulation assignment's intensity; `bipolar` for the MP variant.
+    /// A modulation assignment's intensity; `bipolar` for either signed alias.
     Intensity {
         group: u16,
         index: u16,
@@ -578,8 +578,6 @@ pub(crate) enum Address {
         /// Verified pitch or cutoff cubic law, separate from other MP targets.
         cubic: Option<CubicDepth>,
     },
-    /// Legacy cubic bipolar depth, measured for pitch and filter-cutoff targets.
-    LegacyInternalIntensity { group: u16, envelope: u8, target: u16 },
     /// Explicit KSP bypass, separate from the undecoded preset flags.
     InternalBypass(u16, u8),
     Fx(Rack, u8, FxParam),
@@ -694,14 +692,19 @@ impl Address {
                 let m = modulator(g)?;
                 let target = usize::try_from(par.generic).unwrap_or(0);
                 (target < m.targets.len()).then_some(())?;
-                let bipolar = par.id == id::MOD_TARGET_MP_INTENSITY;
+                // Kontakt registers both signed names as parameter 449. Restrict
+                // newly accepted legacy targets to the independently proved laws.
+                let bipolar = par.id != id::MOD_TARGET_INTENSITY;
                 match m.assignments {
-                    Some(_) if par.id == id::INTMOD_INTENSITY => return None,
-                    Some(index) => Self::Intensity {
-                        group: g,
-                        index: u16::try_from(index + target).ok()?,
-                        bipolar,
-                        cubic: if bipolar { CubicDepth::target(&groups[g as usize].mods.get(index + target)?.target) } else { None },
+                    Some(index) => {
+                        let cubic = CubicDepth::target(&groups[g as usize].mods.get(index + target)?.target);
+                        if par.id == id::INTMOD_INTENSITY && cubic.is_none() { return None; }
+                        Self::Intensity {
+                            group: g,
+                            index: u16::try_from(index + target).ok()?,
+                            bipolar,
+                            cubic: if bipolar { cubic } else { None },
+                        }
                     },
                     None => {
                         let envelope = m.envelope?;
@@ -719,9 +722,7 @@ impl Address {
                         }
                         let envelope = u8::try_from(envelope).ok()?;
                         let target = u16::try_from(target).ok()?;
-                        if par.id == id::INTMOD_INTENSITY {
-                            Self::LegacyInternalIntensity { group: g, envelope, target }
-                        } else { Self::InternalIntensity { group: g, envelope, target, bipolar, cubic: if bipolar { CubicDepth::target(routed) } else { None } } }
+                        Self::InternalIntensity { group: g, envelope, target, bipolar, cubic: if bipolar { CubicDepth::target(routed) } else { None } }
                     }
                 }
             }
@@ -811,7 +812,6 @@ impl Address {
                 | Self::ModEnvelope(..)
                 | Self::InternalIntensity { .. }
                 | Self::InternalBypass(..)
-                | Self::LegacyInternalIntensity { .. }
                 | Self::Intensity { .. }
                 | Self::Filter(..)
         )
@@ -852,9 +852,6 @@ impl Address {
                 Stage::Attack | Stage::Hold => time(x, SHORT),
                 Stage::Decay | Stage::Release => time(x, LONG),
             },
-            // Primary KSP measurements give cubic legacy depth; Analog cutoff
-            // magnitudes corroborate it. Not Kontakt render calibrated.
-            Self::LegacyInternalIntensity { .. } => (2. * value as f32 / UNIT - 1.).powi(3),
             // Conflux's saved 2 st pitch target and raw507160 cutoff target
             // independently corroborate the cubic law. Cutoff stays normalized.
             Self::Intensity { cubic: Some(CubicDepth::Pitch), .. }
@@ -915,7 +912,6 @@ impl Address {
                 Stage::Attack | Stage::Hold => time_value(v, SHORT),
                 Stage::Decay | Stage::Release => time_value(v, LONG),
             },
-            Self::LegacyInternalIntensity { .. } => return ((v.cbrt() + 1.) * 0.5 * UNIT).round() as i32,
             Self::Intensity { cubic: Some(CubicDepth::Pitch), .. }
             | Self::InternalIntensity { cubic: Some(CubicDepth::Pitch), .. } => return ((v.cbrt() + 1.0) * 0.5 * UNIT).round() as i32,
             Self::Intensity { cubic: Some(CubicDepth::Cutoff), .. }
@@ -1110,10 +1106,9 @@ pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32
             };
             m.intensity = if cubic == Some(CubicDepth::Pitch) { value } else { value.clamp(-1.0, 1.0) };
         }
-        Address::InternalIntensity { group, envelope, target, .. }
-        | Address::LegacyInternalIntensity { group, envelope, target } => {
+        Address::InternalIntensity { group, envelope, target, .. } => {
             if !value.is_finite() { return false; }
-            let value = if matches!(address, Address::LegacyInternalIntensity { .. } | Address::InternalIntensity { cubic: Some(CubicDepth::Pitch), .. }) {
+            let value = if matches!(address, Address::InternalIntensity { cubic: Some(CubicDepth::Pitch), .. }) {
                 value
             } else { value.clamp(-1., 1.) };
             let Some(settings) = settings.get_mut(group as usize) else { return false; };
@@ -1218,8 +1213,7 @@ pub(crate) fn read(settings: &[GroupSettings], address: Address) -> Option<f32> 
             .mods
             .get(index as usize)
             .map(|m| m.intensity),
-        Address::InternalIntensity { group, envelope, target, .. }
-        | Address::LegacyInternalIntensity { group, envelope, target } => {
+        Address::InternalIntensity { group, envelope, target, .. } => {
             let settings = settings.get(group as usize)?;
             settings.pitch_envelopes.iter().find(|e| e.index == envelope)
                 .and_then(|e| e.targets.iter().find(|t| t.0 == target)).map(|t| t.2.intensity)
@@ -1770,6 +1764,7 @@ mod tests {
 
         // A held +6 semitone pitch envelope must reach the actual resampler.
         let legacy = Address::resolve(EnginePar { id: id::INTMOD_INTENSITY, group: 0, slot: 0, generic: 0 }, &groups).unwrap();
+        assert_eq!(legacy, address, "internal pitch aliases share the same law and target");
         for (value, semitones) in [(0, -12.), (250_000, -1.5), (500_000, 0.), (750_000, 1.5),
             (1_000_000, 12.), (1_129_961, 24.), (1_221_125, 36.), (1_293_701, 48.), (2_000_000, 324.)] {
             let depth = legacy.decode(value);
@@ -1935,6 +1930,10 @@ mod tests {
         let mut settings = [GroupSettings::from(&groups[0])];
         let par = |id, generic| EnginePar { id, group: 0, slot: 1, generic };
         let pitch = Address::resolve(par(id::MOD_TARGET_MP_INTENSITY, 1), &groups).unwrap();
+        let legacy = Address::resolve(par(id::INTMOD_INTENSITY, 1), &groups).unwrap();
+        assert_eq!(legacy, pitch, "native parameter449 aliases resolve to the same exact target");
+        assert!(Address::resolve(par(id::INTMOD_INTENSITY, 0), &groups).is_none(),
+            "unverified external volume law remains unsupported for the legacy alias");
         let volume = Address::resolve(par(id::MOD_TARGET_MP_INTENSITY, 0), &groups).unwrap();
         let unipolar = Address::resolve(par(id::MOD_TARGET_INTENSITY, 1), &groups).unwrap();
         assert_eq!(volume.decode(750_000), 0.5, "unverified non-pitch law remains unchanged");
@@ -1944,12 +1943,15 @@ mod tests {
         let mut native = super::super::native_state::NativeState::default();
         native.prepare(pitch, par(id::MOD_TARGET_MP_INTENSITY, 1), pitch.encode(1.));
         native.prepare(unipolar, par(id::MOD_TARGET_INTENSITY, 1), unipolar.encode(1.));
+        native.prepare(legacy, par(id::INTMOD_INTENSITY, 1), legacy.encode(1.));
         assert_eq!(native.capacity().0, 1, "aliases share the physical target");
         let mut saved = native.snapshot();
         assert_eq!(crate::plugin::tests::allocations(|| {
             for (raw, st) in [(0, -12.), (250_000, -1.5), (500_000, 0.),
                 (750_000, 1.5), (775_160, 2.), (1_000_000, 12.), (1_129_961, 24.), (1_221_125, 36.)] {
                 let physical = pitch.decode(raw);
+                assert_eq!(legacy.decode(raw), physical);
+                assert_eq!(legacy.encode(physical), pitch.encode(physical));
                 assert!((physical * 12. - st).abs() < 1e-3);
                 assert!((pitch.encode(physical) - raw).abs() <= 1);
                 assert!(write(&mut settings, pitch, physical));
@@ -1965,6 +1967,69 @@ mod tests {
         let edits = saved.saved();
         assert_eq!(edits.len(), 1);
         assert_eq!((edits[0].par, edits[0].value), (par(id::MOD_TARGET_MP_INTENSITY, 1), 1_221_125));
+    }
+
+    #[test]
+    fn signed_intensity_aliases_reach_external_pitch_and_cutoff_pcm_without_heap() {
+        use crate::{audio::Sample, engine::{Bank, Engine, ScriptSetup}, import::{Instrument, Zone},
+            ksp::{Runtime, Value}};
+        let assignment = |target, intensity| ModAssignment { name: "Constant".into(),
+            source: ModSource::Constant, target, intensity, invert: false, lag_ms: 0, shaper: None };
+        let group = Group {
+            mods: vec![assignment(ModTarget::Volume, 1.), assignment(ModTarget::Pitch, 0.),
+                assignment(ModTarget::Module { param: "filterCutoff".into(), slot: 0 }, 0.)],
+            modulators: vec![Modulator { name: "Constant".into(), targets: vec!["Volume".into(),
+                "Pitch".into(), "Cutoff".into()], assignments: Some(0), volume_env: false,
+                bypassed: false, flex: false, envelope: None, kind: "external".into() }],
+            fx: crate::fx::Chain { slots: vec![crate::fx::Effect { slot: 0, kind: crate::fx::Kind::Filter,
+                version: 0, bypass: false, output_gain: 1., dry_level: 1.,
+                params: crate::fx::params::Params::Filter(crate::fx::params::Filter {
+                    filter_type: 2, cutoff: 0.3, resonance: 0., extra: [0.; 3] }) }] },
+            ..Group::default()
+        };
+        let render = |group: Group, source: &str, pitch_raw, cutoff_raw| {
+            let instrument = Instrument { groups: vec![group.clone()], ..Default::default() };
+            let mut setup = ScriptSetup::new(&instrument, 48_000.);
+            let (rt, errors) = Runtime::with_scripts(&[source], &mut setup, 0, Vec::new());
+            assert!(errors.iter().all(Option::is_none), "{errors:?}");
+            for (name, expected) in [("$p", pitch_raw), ("$c", cutoff_raw)] {
+                let Value::Int(raw) = rt.persistence()[0][name] else { panic!("missing readback"); };
+                assert!((raw - expected).abs() <= 1, "{name}: {raw} != {expected}");
+            }
+            let sample = Sample { rate: 48_000, frames: (0..8192).map(|n|
+                [(std::f32::consts::TAU * 2000. * n as f32 / 48_000.).sin() * 0.25; 2]).collect() };
+            let bank = Bank::from_samples(vec![group], vec![Zone::default()],
+                vec![(std::path::PathBuf::new(), sample)]).unwrap();
+            let mut engine = Engine::default();
+            engine.set_bank(Some(Box::new(bank)));
+            engine.set_script(Some(Box::new(rt)));
+            let (mut l, mut r) = ([0.; 2048], [0.; 2048]);
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                engine.note_on(0, 60, 100);
+                engine.render(&mut l, &mut r);
+            }), 0);
+            assert!(l.iter().chain(&r).all(|x| x.is_finite()));
+            l
+        };
+        let mut power = [0.; 2];
+        for (i, cutoff_raw) in [250_000, 750_000].into_iter().enumerate() {
+            // Independently saved Conflux 2 st target; signed midpoint probes
+            // also exercise an audible cutoff change rather than readback alone.
+            let pitch_raw = 775_160;
+            let readback = "declare $p := get_engine_par($ENGINE_PAR_MOD_TARGET_MP_INTENSITY,0,0,1)\nmake_persistent($p)\ndeclare $c := get_engine_par($ENGINE_PAR_INTMOD_INTENSITY,0,0,2)\nmake_persistent($c)\nend on";
+            let source = |name| format!("on init\nset_engine_par({name},{pitch_raw},0,0,1)\nset_engine_par({name},{cutoff_raw},0,0,2)\n{readback}");
+            let legacy = render(group.clone(), &source("$ENGINE_PAR_INTMOD_INTENSITY"), pitch_raw, cutoff_raw);
+            let modern = render(group.clone(), &source("$ENGINE_PAR_MOD_TARGET_MP_INTENSITY"), pitch_raw, cutoff_raw);
+            let mut reference = group.clone();
+            reference.mods[1].intensity = 0.16666558385;
+            reference.mods[2].intensity = if i == 0 { -0.125 } else { 0.125 };
+            let reference = render(reference, &format!("on init\n{readback}"), pitch_raw, cutoff_raw);
+            assert_eq!(legacy, modern, "aliases must produce identical PCM");
+            assert!(legacy.iter().zip(reference).all(|(a,b)| (a-b).abs() < 1e-6),
+                "signed setters must match independently supplied physical depths");
+            power[i] = legacy.iter().map(|&x| f64::from(x).powi(2)).sum::<f64>();
+        }
+        assert!(power[1] > power[0] * 4., "cutoff depth changes the real filter response: {power:?}");
     }
 
     #[test]

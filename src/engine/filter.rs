@@ -2252,10 +2252,14 @@ mod tests {
         let unipolar = address(id::MOD_TARGET_INTENSITY, 2).unwrap();
         let bypass = address(id::INTMOD_BYPASS, -1).unwrap();
         let legacy = address(id::INTMOD_INTENSITY, 2).unwrap();
+        assert_eq!(legacy, depth, "internal cutoff aliases share the exact target and law");
         let resonance = address(id::MOD_TARGET_MP_INTENSITY, 3).unwrap();
         let external = |generic| Address::resolve(EnginePar { id: id::MOD_TARGET_MP_INTENSITY,
             group: 0, slot: 1, generic }, &groups).unwrap();
         let external_cutoff = external(0);
+        let external_legacy = Address::resolve(EnginePar { id: id::INTMOD_INTENSITY,
+            group: 0, slot: 1, generic: 0 }, &groups).unwrap();
+        assert_eq!(external_legacy, external_cutoff);
         let external_resonance = external(1);
         assert_eq!(params::read(&settings, bypass), Some(1.), "saved native source is bypassed");
         assert_eq!(settings[0].filter.as_ref().unwrap().envelope_bypass_at(1), Some(true));
@@ -2302,7 +2306,7 @@ mod tests {
             assert!((external_cutoff.decode(507_160) - native_depth).abs() < 1e-10);
             assert_eq!(resonance.decode(750_000), 0.5, "unverified resonance law stays linear");
             assert_eq!(external_resonance.decode(750_000), 0.5);
-            for cutoff in [depth, external_cutoff] {
+            for cutoff in [depth, legacy, external_cutoff, external_legacy] {
                 for (raw, expected) in [(250_000, -0.125), (750_000, 0.125), (-1, -1.), (1_000_001, 1.)] {
                     assert_eq!(cutoff.decode(raw), expected);
                     assert!(params::write(&mut settings, cutoff, cutoff.decode(raw)));

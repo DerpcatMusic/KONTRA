@@ -26,11 +26,6 @@ fn key(address: Address) -> Address {
             envelope,
             target,
             ..
-        }
-        | Address::LegacyInternalIntensity {
-            group,
-            envelope,
-            target,
         } => Address::InternalIntensity {
             group,
             envelope,
