@@ -1428,7 +1428,12 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             m.slot.ui.skin_offset = pixels;
             Ok(Step::Next)
         }
-        SetUiColor | SetSnapshotType | DisableLogging | FsNavigate => {
+        SetUiColor => {
+            let [color] = ints(m);
+            m.slot.ui.background_color = Some(color as u32 & 0xffffff);
+            Ok(Step::Next)
+        }
+        SetSnapshotType | DisableLogging | FsNavigate => {
             if f == FsNavigate {
                 m.stk.int();
                 m.env.note("fs_navigate: file navigation is unavailable; select a file with the picker");

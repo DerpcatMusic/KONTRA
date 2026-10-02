@@ -184,6 +184,7 @@ pub struct Ui {
     pub title: String,
     pub wallpaper: String,
     pub wallpaper_state: i32,
+    pub background_color: Option<u32>,
     pub skin_offset: i32,
     pub listeners: BTreeMap<&'static str, i32>,
     pub diagnostics: BTreeSet<Cow<'static, str>>,}
@@ -201,6 +202,7 @@ impl Ui {
             title: String::new(),
             wallpaper: String::new(),
             wallpaper_state: 0,
+            background_color: None,
             skin_offset: 0,
             listeners: BTreeMap::new(),
             diagnostics: BTreeSet::new(),        }
@@ -310,6 +312,7 @@ impl Ui {
             budget,
         );
         changed |= std::mem::replace(&mut out.skin_offset, self.skin_offset) != self.skin_offset;
+        changed |= std::mem::replace(&mut out.background_color, self.background_color) != self.background_color;
         for (index, (c, o)) in self.controls.iter().zip(&mut out.controls).enumerate().skip(*next) {
             if left == 0 {
                 break;
@@ -458,6 +461,7 @@ impl Ui {
             title: self.title.clone(),
             wallpaper: self.wallpaper.clone(),
             wallpaper_state: self.wallpaper_state,
+            background_color: self.background_color,
             skin_offset: self.skin_offset,
             controls,
             fonts: self.fonts.clone(),

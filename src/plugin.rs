@@ -1210,6 +1210,7 @@ fn prepare_interface(live: &Live, previous: Option<&Interface>, versions: &[(u64
         performance: source.performance, width: source.width, height: source.height,
         title: source.title.clone(), wallpaper: source.wallpaper.clone(),
         wallpaper_state: source.wallpaper_state, skin_offset: source.skin_offset,
+        background_color: source.background_color,
         fonts: source.fonts.clone(), controls: Vec::new(),
         diagnostics: source.diagnostics.clone(), listeners: source.listeners.clone(),
     };

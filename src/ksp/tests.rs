@@ -241,6 +241,25 @@ fn callback_only_scripts_do_not_require_an_empty_init() {
 }
 
 #[test]
+fn performance_background_colors_refresh_and_preserve_key_revisions() {
+    let mut rig = Rig::new(&[
+        "on init\nmake_perfview\nset_ui_color(0ff0000h)\ndeclare ui_switch $page\nend on\non ui_control($page)\nset_ui_color(000ff00h)\nend on",
+    ]);
+    let mut live = rig.rt.live();
+    assert_eq!(live.interface.as_ref().unwrap().background_color, Some(0xff0000));
+    let revisions = live.revisions();
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 1);
+    assert!(rig.rt.refresh_live(&mut live));
+    assert_eq!(live.interface.as_ref().unwrap().background_color, Some(0x00ff00));
+    assert!(live.revisions().0 > revisions.0);
+    assert_eq!(live.revisions().1, revisions.1, "background changes leave keyboard metadata alone");
+    let changed = live.revisions();
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 1);
+    assert!(!rig.rt.refresh_live(&mut live), "identical colors must not invalidate publication");
+    assert_eq!(live.revisions(), changed);
+}
+
+#[test]
 fn wallpaper_frames_follow_script_changes_in_the_live_view() {
     let mut rig = Rig::new(&[
         "on init\nmake_perfview\ndeclare ui_switch $tab\nend on\non ui_control($tab)\nset_control_par($INST_WALLPAPER_ID,$CONTROL_PAR_PICTURE_STATE,$tab)\nend on",
