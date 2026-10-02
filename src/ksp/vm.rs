@@ -62,6 +62,8 @@ pub struct CallbackScope {
     pub common: bool,
     pub configuration: bool,
     pub ui_replay: bool,
+    /// Shared UI edit identity; zero means no common worker operation.
+    pub common_input: u64,
 }
 
 impl CallbackScope {
@@ -78,6 +80,8 @@ pub struct Ctx {
     pub configuration: bool,
     /// Repeat performance effects of a common callback, using the one shared UI.
     pub ui_replay: bool,
+    pub common_input: u64,
+    pub array_call: u32,
     pub kind: Kind,
     pub event: i32,
     pub callback_id: i32,
@@ -108,13 +112,14 @@ pub struct Ctx {
 impl Ctx {
     pub(super) fn scope(&self) -> CallbackScope {
         CallbackScope { domain: self.domain, common: self.common,
-            configuration: self.configuration, ui_replay: self.ui_replay }
+            configuration: self.configuration, ui_replay: self.ui_replay, common_input: self.common_input }
     }
     pub(super) fn inherit_scope(&mut self, scope: CallbackScope) {
         self.domain = scope.domain;
         self.common = scope.common;
         self.configuration = scope.configuration;
         self.ui_replay = scope.ui_replay;
+        self.common_input = scope.common_input;
     }
     pub fn new(slot: u8, kind: Kind) -> Self {
         Self {
@@ -123,6 +128,8 @@ impl Ctx {
             common: false,
             configuration: false,
             ui_replay: false,
+            common_input: 0,
+            array_call: 0,
             kind,
             event: 0,
             callback_id: 0,

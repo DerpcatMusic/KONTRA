@@ -4,6 +4,56 @@ use super::{compile::{Ty, Var, VarId}, Value};
 pub(super) const ARRAY_QUEUE: usize = 8;
 const PATH_BYTES: usize = 4096;
 
+/// Audio-owned subscribers remain available while the owned job is on its worker.
+/// One canonical owner and at most the sixteen prepared physical origins.
+#[derive(Clone, Copy)]
+pub(super) struct Subscriber {
+    pub scope: super::vm::CallbackScope,
+    pub storage: u8,
+    pub id: i32,
+    pub status: Option<bool>,
+}
+
+pub(super) struct SharedArray {
+    pub root: i32,
+    pub slot: u8,
+    var: VarId,
+    input: u64,
+    kind: super::vm::Kind,
+    call: u32,
+    write: bool,
+    path: [u8; PATH_BYTES],
+    len: usize,
+    pub subscribers: [Option<Subscriber>; 17],
+    pub count: usize,
+    pub copied: usize,
+    pub notified: usize,
+    pub source_success: Option<bool>,
+}
+
+impl SharedArray {
+    pub fn new(job: &ArrayJob, kind: super::vm::Kind, call: u32) -> Self {
+        let mut shared = Self { root:job.id, slot:job.slot, var:job.var,
+            input:job.scope.common_input, kind, call, write:job.write,
+            path:[0;PATH_BYTES], len:job.path.len(), subscribers:[None;17],
+            count:1, copied:0, notified:0, source_success:None };
+        shared.path[..shared.len].copy_from_slice(job.path.as_bytes());
+        shared.subscribers[0] = Some(Subscriber { scope:job.scope, storage:job.storage, id:job.id, status:None });
+        shared
+    }
+    pub fn matches(&self, slot:u8, var:VarId, scope:super::vm::CallbackScope,
+        kind:super::vm::Kind, call:u32, write:bool, path:&str) -> bool {
+        self.slot==slot && self.var==var && self.input==scope.common_input
+            && self.kind==kind && self.call==call && self.write==write && self.path[..self.len]==*path.as_bytes()
+    }
+    pub fn subscribe(&mut self, scope:super::vm::CallbackScope, storage:u8, id:i32) -> bool {
+        if self.count==self.subscribers.len() { return false }
+        self.subscribers[self.count] = Some(Subscriber { scope,storage,id,status:None });
+        self.count+=1;
+        true
+    }
+}
+
 /// An owned file job. Perform/recycle it off the audio thread; installing its
 /// result retains the job for worker disposal, never dropping strings on audio.
 #[derive(Debug)]
@@ -171,7 +221,7 @@ pub(super) fn save_nka(path: &str, ty: Ty, name: &str, value: &Value) -> Result<
 /// cell with zero. NI documents typed arrays, not malformed-file coercion.
 pub(super) fn nka(bytes: &[u8], ty: Ty, name: &str) -> Option<Value> { parse_nka(bytes, ty, name).ok() }
 
-fn parse_nka(bytes: &[u8], ty: Ty, name: &str) -> Result<Value, &'static str> {
+pub(super) fn parse_nka(bytes: &[u8], ty: Ty, name: &str) -> Result<Value, &'static str> {
     let text = String::from_utf8_lossy(bytes);
     let mut lines = text.lines().map(|l| l.strip_suffix('\r').unwrap_or(l));
     let head = lines.next().ok_or("load_array_str: missing NKA array header")?.trim();

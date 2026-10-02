@@ -440,6 +440,33 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 let v = m.stk.var();
                 let id = m.env.next_async();
                 let saving = f == SaveArrayStr;
+                let scope = m.t.ctx.scope();
+                let call = m.t.ctx.array_call;
+                m.t.ctx.array_call = call.saturating_add(1);
+                if scope.ui_replay && scope.common_input != 0
+                    && let Some(shared) = m.env.shared_arrays.iter_mut().find(|s|
+                        s.matches(slot,v,scope,m.t.ctx.kind,call,saving,m.stk.strs.top()))
+                {
+                    m.stk.strs.pop();
+                    if m.env.pending_async.len() < m.env.pending_async.capacity()
+                        && shared.subscribe(scope,m.slot.domain,id)
+                    {
+                        m.env.pending_async.push((slot,id));
+                    } else {
+                        m.env.note("KSP common array subscriber capacity exhausted; replay operation failed");
+                        if m.env.async_done.len() < m.env.async_done.capacity() { m.env.async_done.push((slot,scope,id,0)); }
+                        else { m.env.note("KSP async completion callback queue exhausted"); }
+                    }
+                    return push_int(m,id);
+                }
+                if scope.ui_replay && scope.common_input != 0 {
+                    m.stk.strs.pop();
+                    m.env.note(if saving {"save_array_str: replay has no matching canonical operation; file was not written"}
+                        else {"load_array_str: replay has no matching canonical operation; array was not changed"});
+                    if m.env.async_done.len() < m.env.async_done.capacity() { m.env.async_done.push((slot,scope,id,0)); }
+                    else { m.env.note("KSP async completion callback queue exhausted"); }
+                    return push_int(m,id);
+                }
                 if saving {
                     let var = &m.prog.vars[v as usize];
                     let n = u64::from(var.len.unwrap_or(1));
@@ -460,9 +487,11 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 let path = m.stk.strs.pop();
                 let spare = m.env.array_spares.iter().position(|r| r.slot == slot && r.var == v && r.storage == m.slot.domain);
                 if m.env.array_inflight < super::arrays::ARRAY_QUEUE
+                    && (!scope.configuration || scope.common_input==0 || m.env.shared_arrays.len()<m.env.shared_arrays.capacity())
                     && m.env.pending_async.len() < m.env.pending_async.capacity()
                     && let Some(spare) = spare
                     && path.len() <= m.env.array_spares[spare].path.capacity()
+                    && path.len() <= 4096
                 {
                     let mut request = m.env.array_spares.swap_remove(spare);
                     request.path.push_str(path);
@@ -472,6 +501,10 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                     if saving {
                         refresh_value(&m.slot.mem, &m.prog.vars[v as usize],
                             request.snapshot.as_mut().expect("prepared array save snapshot"));
+                    }
+                    if scope.configuration && scope.common_input != 0 {
+                        debug_assert!(m.env.shared_arrays.len() < m.env.shared_arrays.capacity());
+                        m.env.shared_arrays.push(super::arrays::SharedArray::new(&request,m.t.ctx.kind,call));
                     }
                     m.env.array_requests.push_back(request);
                     m.env.pending_async.push((slot, id));
@@ -926,6 +959,8 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             }
             let l = &mut m.slot.listener;
             let mut scope = m.t.ctx.scope();
+            // A subscription creates future callbacks, not continuations of this edit.
+            scope.common_input = 0;
             if matches!(m.t.ctx.kind, super::vm::Kind::Cb(
                 super::compile::Callback::Init | super::compile::Callback::PersistenceChanged)) {
                 scope.common = true;
