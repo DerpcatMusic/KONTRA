@@ -2868,6 +2868,105 @@ fn census(voices: &[crate::engine::VoiceInfo]) {
     );
 }
 
+/// Profile real script control edits separately from view copying and saved-state
+/// serialization. Sample headers and effects are installed, but no notes play.
+pub fn bench_ui_control(path: &Path, variable: &str, edits: usize) -> anyhow::Result<()> {
+    anyhow::ensure!((1..=10000).contains(&edits), "edits must be 1..10000");
+    let instrument = import::read(path)?;
+    let (runtime, errors) = crate::engine::load_scripts(&instrument, instrument.script_state.clone(), 48000.0);
+    anyhow::ensure!(errors.is_empty(), "Script initialization failed: {errors:?}");
+    let runtime = runtime.ok_or_else(|| anyhow::anyhow!("Instrument has no scripts"))?;
+    let mut live = runtime.live();
+    let interface = live.interface.as_ref().ok_or_else(|| anyhow::anyhow!("No performance view"))?;
+    let control = interface.controls.iter().position(|c| c.variable == variable)
+        .ok_or_else(|| anyhow::anyhow!("Control {variable} not found"))?;
+    let range = |name: &str, default| match interface.controls[control].properties.get(name) {
+        Some(crate::ksp::Value::Int(value)) => *value, _ => default,
+    };
+    let (low, high) = (range("$CONTROL_PAR_MIN_VALUE", 0), range("$CONTROL_PAR_MAX_VALUE", 1000000));
+    let mut saved = runtime.persistence();
+    let controls = interface.controls.len();
+    let mut engine = Engine::default();
+    engine.set_bank(Some(Box::new(Bank::load_bare(&instrument)?)));
+    engine.set_fx(crate::engine::effects(&instrument, Some(&runtime), 48000.0));
+    engine.set_script(Some(runtime));
+    let (mut left, mut right) = ([0.0f32; 128], [0.0f32; 128]);
+    let mut times = BTreeMap::<&str, Vec<f64>>::new();
+    let mut record = |stage, time: Instant| {
+        times.entry(stage).or_default().push(time.elapsed().as_secs_f64() * 1e3);
+    };
+    // The same mutex scope as the publication worker, without involving drawing.
+    let view = Mutex::new(live.interface.clone().map(Arc::new));
+    let (mut json_bytes, mut live_passes, mut saved_passes, mut changed_edits) = (0, 0, 0, 0);
+    for edit in 0..edits {
+        let value = (i64::from(low) + (i64::from(high) - i64::from(low)) * (edit % 101) as i64 / 100) as i32;
+        engine.begin_audio_block(128, 1, false);
+        let at = Instant::now();
+        engine.ui_control(live.slot, control, value);
+        record("callback_ms", at);
+        let at = Instant::now();
+        // 21.3 ms of audio allows authored macro wait(2000) continuations to run.
+        for _ in 0..8 { engine.render(&mut left, &mut right); }
+        record("deferred_callbacks_and_idle_effects_ms", at);
+        let rt = engine.script().unwrap();
+        let at = Instant::now();
+        let mut refresh = Refresh::default();
+        loop {
+            live_passes += 1;
+            if rt.refresh_live_within(&mut live, &mut refresh, LIVE_BUDGET) { break }
+        }
+        record("live_refresh_ms", at);
+        let at = Instant::now();
+        let mut locked = view.lock().unwrap();
+        let copied = live.interface.clone();
+        if locked.as_deref() != copied.as_ref() { *locked = copied.map(Arc::new); }
+        drop(locked);
+        record("live_publication_lock_ms", at);
+        let at = Instant::now();
+        // A retained drawing snapshot makes Arc::make_mut copy the full view
+        // in Shared::edit_control; keep one here to measure that path.
+        let mut locked = view.lock().unwrap();
+        let retained = locked.clone();
+        if let Some(c) = locked.as_mut().and_then(|i| Arc::make_mut(i).controls.get_mut(control)) {
+            c.properties.insert("$CONTROL_PAR_VALUE".into(), crate::ksp::Value::Int(value));
+        }
+        drop(locked);
+        record("optimistic_edit_lock_ms", at);
+        drop(retained);
+        let at = Instant::now();
+        let mut refresh = Refresh::default();
+        loop {
+            saved_passes += 1;
+            if rt.refresh_persistence_within(&mut saved, &mut refresh, REFRESH_BUDGET) { break }
+        }
+        changed_edits += usize::from(refresh.changed);
+        record("persistence_refresh_ms", at);
+        let at = Instant::now();
+        let locked = view.lock().unwrap();
+        if crate::ksp::settle_persistence(&mut saved) {
+            let json = serde_json::to_string(&saved)?;
+            json_bytes = json.len();
+            std::hint::black_box(json);
+        }
+        drop(locked);
+        record("persistence_serialize_lock_ms", at);
+    }
+    drop(record);
+    let stages: BTreeMap<_, _> = times.into_iter().map(|(stage, mut values)| {
+        values.sort_by(f64::total_cmp);
+        let mean = values.iter().sum::<f64>() / values.len() as f64;
+        (stage, serde_json::json!({"mean":mean,"p50":values[values.len()/2],"p99":values[(values.len()*99/100).min(values.len()-1)],"max":values[values.len()-1]}))
+    }).collect();
+    println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+        "instrument":instrument.name,"control":variable,"edits":edits,"controls":controls,
+        "persistent_json_bytes":json_bytes,"changed_edits":changed_edits,
+        "live_refresh_passes_per_edit":live_passes as f64/edits as f64,
+        "persistence_refresh_passes_per_edit":saved_passes as f64/edits as f64,
+        "stages_ms":stages,"diagnostics":engine.script().unwrap().diagnostics()
+    }))?);
+    Ok(())
+}
+
 pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Result<()> {
     use moose::core::bus_routing::{BusActivation, BusRouting};
     use std::time::Duration;
