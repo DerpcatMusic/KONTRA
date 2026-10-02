@@ -402,7 +402,7 @@ normalized x = value/1e6 through a law):
 | Chorus, Flanger | modulated delay lines, feedback (flanger) | normalized | low |
 | Phaser | 6 allpasses | normalized | low |
 | Transient Master, Lo-Fi, Skreamer, Tape Saturator | per-sample shapers (Pade tanh), Lo-Fi bit/rate reduction | normalized | low |
-| Distortion | native Tube scalar core; Transistor transfer and Damping/DC filtering remain warned approximations | direct normalized Drive; independent linear Output | Tube core grounded; full effect approximate |
+| Distortion | native Tube and Transistor scalar cores; Damping/DC filtering remains a warned approximation | direct normalized Drive; independent linear Output | scalar laws grounded; full effect approximate |
 | Saturation | native Classic piecewise quadratic/cubic transfer; Enhanced/Drums retain a warned proxy | Shape -1..1; linear Output | Classic law grounded; other modes unverified |
 | Filter, EQ, Solid G-EQ | the group filter sections (`RackFilter`) | as group filters; G-EQ +-15 dB, bands 30-450, 200-2500, 600-7000, 1500-16k Hz, shelves unless the bell switch is on | low |
 
@@ -419,10 +419,14 @@ both group and rack inserts. Drive 0 passes the core input unchanged; it does
 not introduce clipping or invented drive compensation. The sign-specific blend
 boundaries are Drive 0.25 and 0.75. The common linear Output follows processing.
 The existing Damping low-pass approximation remains, native DC filtering is not
-implemented, and Transistor mode retains its former proxy. Group/rack diagnostics
-name these remaining gaps. This is a scalar core correction, not whole-effect
-native equivalence. Numeric boundary and allocation/routing gates are authored;
-combined compilation and validation are pending.
+implemented. Transistor now uses its native piecewise linear/power scalar law,
+with linked inverse thresholds, float negative power and double positive power.
+Drive 0 and input beyond the native quarter-amplitude range preserve input.
+Group/rack diagnostics name the remaining filtering gaps. This is a scalar core
+correction, not whole-effect native equivalence. Numeric boundary and allocation/routing gates are authored;
+combined compilation and validation are pending. The Transistor power branches
+cost more than the old hard-clip proxy; no throughput/FPS improvement is claimed.
+Both kernels reuse existing coefficients and add no per-voice state.
 
 Classic Saturation now uses the native parameter binding and scalar transfer law,
 shared by rack and group inserts. With Shape `s`, let `a = 4s`. For `s >= 0.25`,
