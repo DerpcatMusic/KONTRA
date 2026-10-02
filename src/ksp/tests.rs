@@ -63,6 +63,9 @@ fn performance_view_loads_hierarchy_defaults_callbacks_and_resource_cache_identi
     let invalid = "on init\nload_performance_view(\"fixture\")\n$Section__Amount := $missing\nend on";
     let (_, errors) = Runtime::with_scripts(&[invalid], &mut engine, 8, Vec::new());
     assert!(errors.iter().any(|d| d.contains("line 3")), "{errors:?}");
+    let incompatible = "on init\nmake_perfview\nload_performance_view(\"fixture\")\nend on";
+    let (_, errors) = Runtime::with_scripts(&[incompatible], &mut engine, 8, Vec::new());
+    assert!(errors.iter().any(|d| d.contains("cannot be combined")), "{errors:?}");
     std::fs::write(&path,b"{}").unwrap();
     let (_, errors) = Runtime::with_scripts(&[source], &mut engine, 8, Vec::new());
     assert!(errors.iter().any(|d| d.contains("Performance view") && d.contains("line 3")), "{errors:?}");
