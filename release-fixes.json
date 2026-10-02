@@ -528,6 +528,69 @@
       ],
       "validation": "Root reports focused ui_menu CONTROL_PAR_VALUE runtime gate passed in the twelve-check runtime set. Exact candidate actual replays and release acceptance remain pending; no every-menu or Lua UI parity claim.",
       "accepted": false
+    },
+    {
+      "id": "template-snapshot-binding",
+      "summary": "Bind template-named snapshots to the verified instrument without weakening identity guards",
+      "source_commits": [
+        "0ebf976e9d7c8c614b125b5985b3c20ebb3ac8d4"
+      ],
+      "validation": "Root reports template-binding production gate passed at 9bbce5e, including rejecting foreign names and truncated metadata. Fresh actual Morphology replay pending; no arbitrary snapshot binding claim.",
+      "accepted": false
+    },
+    {
+      "id": "snapshot-modulation-slot-removal",
+      "summary": "Apply explicit snapshot modulation removals while preserving sibling identities",
+      "source_commits": [
+        "0ebf976e9d7c8c614b125b5985b3c20ebb3ac8d4"
+      ],
+      "validation": "Root reports slot-removal production gate passed at 9bbce5e. Malformed removed records, additions, sibling replacement and incompatible effect topology remain rejected; fresh actual replay pending.",
+      "accepted": false
+    },
+    {
+      "id": "gpu-startup-cause-retention",
+      "summary": "Retain GPU startup causes and diagnose Linux editor embedding",
+      "source_commits": [
+        "4bfa3ad26667f487608a2e5b85651f6913fb862d"
+      ],
+      "validation": "Root includes startup-cause retention in this reviewed candidate; fresh actual Void/editor validation and final acceptance pending. Diagnostics do not establish that blank windows or embedding are repaired.",
+      "accepted": false
+    },
+    {
+      "id": "structured-runtime-fault-actions",
+      "summary": "Retain runtime fault actions, array values and readable source context in headless diagnostics",
+      "source_commits": [
+        "515a2f5aab7fcd03e0b4ce8ab2273d122c0e36d0"
+      ],
+      "validation": "Root reports structured action/excerpt and zero-heap gate passed at 9bbce5e. Fault locations remain bounded; repeated events update the latest action without duplicating retained locations. Fresh actual replay pending.",
+      "accepted": false
+    },
+    {
+      "id": "ownerless-controller-home-routing",
+      "summary": "Route ownerless script controllers through the configured part home",
+      "source_commits": [
+        "44ea2c58e36c221aba2ce31ace1966a8ef4883ca"
+      ],
+      "validation": "Root reports home UI/listener CC and MPE zero-heap gates passed at 9bbce5e. Covers configured-home routing for callbacks without a MIDI owner; fresh actual replay pending.",
+      "accepted": false
+    },
+    {
+      "id": "legacy-cutoff-envelope-intensity",
+      "summary": "Apply legacy AHDSR cutoff intensity using the checked cubic depth law",
+      "source_commits": [
+        "91a4b02ef5730c3b281747f16dbe80b071ffd3f7"
+      ],
+      "validation": "Root reports legacy filter-envelope cubic PCM, readback and zero-heap gate passed at 9bbce5e. Authored processing evidence does not establish every original preset or calibrated Kontakt sound parity; fresh actual replay pending.",
+      "accepted": false
+    },
+    {
+      "id": "native-persisted-menu-position",
+      "summary": "Restore native persisted menu selections by entry position",
+      "source_commits": [
+        "9bbce5ecae976978c80a72b6b900430fc6127e52"
+      ],
+      "validation": "Root reports native menu origin, host-state and zero-heap gate passed at 9bbce5e. Distinct from the ui_menu VALUE getter correction; fresh actual replay and final acceptance pending.",
+      "accepted": false
     }
   ]
 }
