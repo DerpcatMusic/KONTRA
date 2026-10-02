@@ -349,6 +349,60 @@ fn repeated_equal_table_cell_assignments_do_not_consume_live_array_copy_budget()
 }
 
 #[test]
+fn delayed_effect_control_remapping_prepares_short_and_automation_names_without_heap_work() {
+    // Dynamic effect panels remap controls after persistence_changed yields.
+    // SHORT_NAME and AUTOMATION_NAME are ordinary string setters, not init-only
+    // automation IDs: https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters
+    let source = r#"on init
+make_perfview
+declare ui_switch $enabled
+declare ui_slider $amount(0,1000000)
+declare %ids[2]
+%ids[0] := get_ui_id($enabled)
+%ids[1] := get_ui_id($amount)
+declare $i
+end on
+function remap
+$i := 0
+while ($i < 2)
+set_control_par_str(%ids[$i],$CONTROL_PAR_TEXT,"FX parameter " & $i)
+set_control_par_str(%ids[$i],$CONTROL_PAR_AUTOMATION_NAME,"Effect " & $i)
+set_control_par_str(%ids[$i],$CONTROL_PAR_SHORT_NAME,"Param " & $i)
+inc($i)
+end while
+end function
+on persistence_changed
+wait(100000)
+call remap
+end on
+on ui_control($enabled)
+call remap
+end on"#;
+    let mut rig = Rig::new(&[source]);
+    let mut live = rig.rt.live();
+    let mut exercise = || {
+        for _ in 0..50 {
+            rig.rt.begin_audio_block(128, 1, false);
+            rig.rt.process(&mut rig.engine, 128);
+        }
+        rig.rt.ui_control(&mut rig.engine, 0, 0, 1);
+        rig.rt.refresh_live(&mut live);
+    };
+    #[cfg(feature = "plugin")]
+    assert_eq!(crate::plugin::tests::allocations(|| exercise()), 0);
+    #[cfg(not(feature = "plugin"))]
+    exercise();
+    assert!(rig.rt.diagnostics().is_empty(), "{:?}", rig.rt.diagnostics());
+    for i in 0..2 {
+        let ui = live.interface.as_ref().unwrap();
+        assert_eq!(prop(ui, i, "$CONTROL_PAR_TEXT"), format!("FX parameter {i}"));
+        assert_eq!(prop(ui, i, "$CONTROL_PAR_SHORT_NAME"), format!("Param {i}"));
+        assert_eq!(prop(ui, i, "$CONTROL_PAR_AUTOMATION_NAME"), format!("Effect {i}"));
+    }
+    assert_eq!(live, rig.rt.live(), "retained controls publish the delayed metadata");
+}
+
+#[test]
 fn unrelated_scalar_edits_do_not_recopy_large_menus_but_menu_mutations_remain_visible() {
     let mut source = String::from("on init\nmake_perfview\ndeclare ui_slider $edit(0,10)\n");
     for n in 0..100 {

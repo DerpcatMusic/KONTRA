@@ -264,7 +264,7 @@ impl ProgramFx {
             (FxParam::Dry, _) => fx.dry_level,
             (FxParam::Type, _) => f32::from(fx.kind.ser_id()),
             (FxParam::Reverb(n), Params::Reverb(p)) => *{ *p }.field(n)?,
-            (FxParam::Convolution(n), Params::Convolution(p)) => *params::IrSettings::from_convolution(p).values.get(n as usize)?,
+            (FxParam::Convolution(n), Params::Convolution(p)) => params::IrSettings::from_convolution(p).value(n)?,
             (FxParam::Filter(knob), _) => crate::engine::filter::effect_knob(fx, knob)?,
             (FxParam::SendLevel(n), Params::SendLevels(levels)) => {
                 *levels.sends.get(n as usize)?
@@ -427,7 +427,7 @@ impl ProgramFx {
                 let slot = u8::try_from(s.slot).ok()?;
                 let settings = loads.iter().rev().find_map(|l| match l.load {
                     Load::Convolution(v) if (l.rack, l.slot) == (rack, slot) => Some(v), _ => None,
-                }).unwrap_or_else(|| params::IrSettings::from_convolution(p));
+                }).unwrap_or_else(|| params::IrSettings::from_convolution(p)).inherit_flags(params::IrSettings::from_convolution(p));
                 let file = loads.iter().rev().find_map(|l| match &l.load {
                     Load::Ir { file, .. } if (l.rack, l.slot) == (rack, slot) => Some(file.clone()), _ => None,
                 });
@@ -443,7 +443,7 @@ impl ProgramFx {
         if let Some(settings) = loads.iter().rev().find_map(|l| match l.load {
             Load::Convolution(s) if (l.rack, l.slot) == (rack, slot) => Some(s),
             _ => None,
-        }) { ir.settings = settings; }
+        }) { ir.settings = settings.inherit_flags(ir.settings); }
         Some(ir)
     }
 
@@ -482,6 +482,15 @@ impl ProgramFx {
             }
             match &fx.params {
                 Params::Convolution(c) => {
+                    if c.auto_gain() && ((c.envelope_active() && !c.envelope_supported())
+                        || c.early.low_cut_hz != c.late.low_cut_hz
+                        || c.early.high_cut_hz != c.late.high_cut_hz
+                        || c.early.length_ratio != 1.0 || c.late.length_ratio != 1.0) {
+                        out.push(format!("{at}: Auto Gain uses the approximated IR; unsupported native shaping changes its energy"));
+                    }
+                    if c.envelope_active() && !c.envelope_supported() {
+                        out.push(format!("{at}: native IR Volume Envelope is not applied; eight finite time/level knots are required"));
+                    }
                     if let Some(e) = &c.ir_error {
                         out.push(format!("{at}: impulse response unavailable ({e})"));
                     }
@@ -490,6 +499,9 @@ impl ProgramFx {
                     }
                     if c.early.length_ratio != c.late.length_ratio {
                         out.push(format!("{at}: independent early/late IR sizing is not applied; late size stretches the whole IR"));
+                    }
+                    if c.early.length_ratio != 1.0 || c.late.length_ratio != 1.0 {
+                        out.push(format!("{at}: IR Size uses a resampling approximation; native pitch-preserving time stretching is not applied"));
                     }
                 }
                 Params::SendLevels(s) => {

@@ -8,6 +8,32 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ## Unreleased
 
+### Verified processing and diagnostics follow-ups
+
+- Both Mac release architectures now require timestamped Developer ID signatures, Apple acceptance, and a validated stapled DMG; unsigned fallback is removed. Existing credentials were reused through the owned signing workflow. The next real Apple submission is pending.
+- Modern signed cutoff intensity now uses the independently corroborated cubic law and inverse readback, with normalized bounds retained. The actual Conflux saved value showed the old linear conversion overstating its depth by about 4,877×; other modulation laws are unchanged.
+- Native LFO waveform-specific v0x71–v0x73 records now decode and write losslessly with strict size/flag checks. Forty-two authored combinations and 60 actual selected records pass. LFO playback/freewheel behavior is still incomplete.
+- Nonunit convolution Size now reports its resampling approximation and affected Auto Gain energy explicitly. Native pitch-preserving IR time stretch remains unavailable.
+- Convolution IR high/low-pass bypass follows the checked native frequency/rate boundaries. Digital-pole decay padding fixes the reproduced near-Nyquist response truncation; independent numeric and shared routing/lifetime checks pass. Finite padding does not establish native prepared-length identity.
+- VST3 editor attachment now opens the editor before processor activation or state restoration. The actual host-shim regression reproduces the old blank-view path and passes attach/resize/restore/reopen after the fix; the specific Void report remains unconfirmed.
+- Native v0x103 external modulation now decodes with exact opaque-footer preservation. Actual Conflux checks recover 3,731 assignments, including 364 pitch-bend sources; 21 records with unsupported shapers still fail explicitly. Footer semantics remain unknown.
+- Live convolution Reverse and Auto Gain now rebuild on the worker and survive saved-state restoration; stale completions retain the current kernel.
+- Enabled eight-knot IR volume envelopes use checked amplitude interpolation before Auto Gain, with predelay kept separate. Malformed active curves retain diagnostics.
+- Delayed script callbacks can update prepared short and automation control names without allocating on the audio thread. Three actual Conflux preset probes each pass 750 listener blocks without the property fault and confirm their authored −12/+12 semitone tuning; authored arithmetic warnings remain visible.
+- Resident wavetable taps dispatch PCM once per block. Matched-output thread-CPU measurements show 1.55x/2.00x/1.73x speedups for F32/I16/I24 in this kernel; packed decoding and total-plugin performance are not included in that claim.
+- Nightly packages build alongside the unchanged shipping checks; publication still requires both to pass for the same source commit. Duplicate ordinary main-push CI is removed. Hosted timing improvement is not yet measured.
+- Uncaptured native GPU failures now reach persistent diagnostics after device rebuilds; original stderr and device-loss recovery remain intact. Void blank-editor repair is not yet confirmed.
+- Registered per-note MIDI2 brightness now follows its retained note, including start-only modulation. Ambiguous host brightness is explicitly diagnosed instead of changing channel CC74 or a newer same-pitch note.
+- Saved convolution Auto Gain now uses the checked prepared stereo-energy rule, threshold and cap while preserving dry output. Unequal early/late shaping remains approximate.
+- Saved pitch and filter/EQ envelope bypass now uses the verified source flag, advances its clock and resumes without restarting. Amplitude/Flex bypass lifetime is still under investigation.
+- Wavetable source records are read and edited without losing opaque bytes. The engine prepares resident 2048-frame cycles with note-based pitch, live position, and verified Linear/ASYM2MP phase forms. Nine actual Conflux captures across three patches confirm octave pitch ratios and zero underruns. Preset tuning and scripted pedal behavior remain under investigation. Native bandwidth-table preparation is missing for all quality settings, including High/Best anti-aliasing. Unsupported states are counted instead of played as ordinary samples.
+
+### Fixed after 0.3.64
+
+- Modern signed pitch intensity now follows the checked cubic conversion and retains 24/36-semitone values; non-pitch modulation laws are unchanged.
+- Convolution Reverse now reverses the source impulse response before rate conversion and predelay. Auto Gain uses the verified prepared-energy law, and live switches and eight-knot IR Volume Envelope passed focused processing checks. Unequal early/late shaping remains approximate.
+- Large load dependency lists now use bounded typed journal chunks that can be reassembled completely in support reports. Source excerpts and path redaction remain intact; oversized individual values still report truncation.
+
 ### Added
 
 - Headless `audit-patch` accepts explicit snapshot and program selection while

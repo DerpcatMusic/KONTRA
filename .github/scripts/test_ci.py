@@ -75,12 +75,18 @@ class Gates(unittest.TestCase):
         self.assertIn("  push:\n    branches: [main]", nightly)
         self.assertNotIn("schedule:", nightly)
         self.assertIn("    uses: ./.github/workflows/ci.yml\n    with:\n      release_validation: true", nightly)
-        self.assertIn("    needs: verify\n", nightly)
-        self.assertIn("    needs: [verify, build]\n", nightly)
+        build = nightly.split("  build:\n", 1)[1].split("\n  release:\n", 1)[0]
+        self.assertNotIn("needs:", build)
+        release = nightly.split("\n  release:\n", 1)[1]
+        self.assertIn("    needs: [verify, build]\n", release)
         self.assertIn("          ref: ${{ github.sha }}", nightly)
         self.assertIn("            ${{ env.STAGE }}.zip.sha256", nightly)
         self.assertIn("      cancel-in-progress: false", nightly)
         ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        triggers = ci.split("\non:\n", 1)[1].split("\npermissions:\n", 1)[0]
+        self.assertNotIn("  push:", triggers)
+        for event in ("pull_request", "merge_group", "workflow_dispatch", "workflow_call"):
+            self.assertIn("  " + event + ":", triggers)
         self.assertNotIn("paths-ignore", ci)
         self.assertIn("FORCE: ${{ inputs.release_validation ||", ci)
         self.assertIn("python3 tools/version.py check\n          python3 tools/version.py self-test", ci)

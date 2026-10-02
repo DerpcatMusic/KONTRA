@@ -592,6 +592,190 @@
       ],
       "validation": "Root reports native menu origin, host-state and zero-heap gate passed at 9bbce5e. Distinct from the ui_menu VALUE getter correction; Root accepted this narrow logical unit after the complete focused gates and actual replay verdict: six Analog runtime-fault lists empty at 1bbd31c, three Morphology snapshots applied without init/runtime faults, nonfinite samples or measured underruns; unsupported source warnings remain.",
       "accepted": true
+    },
+    {
+      "id": "modern-signed-pitch-depth",
+      "summary": "Decode modern signed pitch intensity with the independently verified cubic law",
+      "source_commits": [
+        "a70e26e2257f50bae59d5283fccb8a7330f238fe"
+      ],
+      "validation": "Focused production gates passed for native writer/readback/aliases/24-36-semitone actual resampler PCM and zero heap. Non-pitch laws and opaque native flags are unchanged; Conflux v0x103 assignments remain unsupported.",
+      "accepted": true
+    },
+    {
+      "id": "convolution-source-reverse",
+      "summary": "Apply native convolution Reverse before resampling and predelay",
+      "source_commits": [
+        "03cdd86fda80c7c7025e272db9da428dc3072cef"
+      ],
+      "validation": "Asymmetric stereo impulse gate passed at both sample rates with predelay, preserved raw gain and zero processing heap. Native flag identities are corroborated; Auto Gain and Volume Envelope remain explicit unsupported processing, so full convolution parity is not claimed. Follow-up saved/live Auto Gain and eight-knot Volume Envelope are now independently checked; the original unsupported wording describes that earlier checkpoint only.",
+      "accepted": true
+    },
+    {
+      "id": "bounded-load-detail-inventories",
+      "summary": "Preserve large dependency inventories in bounded journal chunks",
+      "source_commits": [
+        "c1935458400b3a4251d16f827918987220bf91d1"
+      ],
+      "validation": "Production >64KiB inventory gate passed: ordered complete journal/support-export reassembly, correct source excerpts and path redaction, zero truncation/drop/write failures. Individual oversized values retain explicit existing truncation behavior; actual Morphology replay is pending. Actual Morphology Default replay at6b1c08f retained all465dependencies in12chunks and all71events, zero drops/write errors/truncation; source identity and reported audio metrics unchanged.",
+      "accepted": true
+    },
+    {
+      "id": "runtime-gpu-error-forwarding",
+      "summary": "Retain uncaptured GPU errors after native device rebuilds",
+      "source_commits": [
+        "db49fcf48f3181b911d36ae712d2c8846e62e41c"
+      ],
+      "validation": "Three full mui-baseview driver-free release gates passed: independent model lock, busy/poisoned/reentrant sinks and caught-window-panic usability. Full plugin library compiled the hook. Initialization errors can still precede attachment; Void blank-editor repair remains unverified.",
+      "accepted": true
+    },
+    {
+      "id": "registered-per-note-brightness-ownership",
+      "summary": "Keep registered MIDI2 brightness on its retained note instead of channel CC74",
+      "source_commits": [
+        "fb4afdf9f8c84b69945b0533648255c396ce1477",
+        "29dced060a34e4ff1c7159c31def78af283157be",
+        "4ca45ebdb5adec4155b9cb220fd0e8a1d54ccf96"
+      ],
+      "validation": "Production PCM and zero-heap gates passed for retained/transposed ownership, MPE, channel fallback, start-only sample offset and exact old-ID/new-note ingress. CLAP/normalized host brightness has an unverified value law and is explicitly diagnosed as unsupported; full host-ID expression support remains pending.",
+      "accepted": true
+    },
+    {
+      "id": "convolution-prepared-energy-auto-gain",
+      "summary": "Apply saved native Auto Gain from the prepared stereo IR energy",
+      "source_commits": [
+        "5bb15078ccf0e107d6a04bc1db4aff0b911c742a"
+      ],
+      "validation": "Production asymmetric stereo impulse, mono/empty/threshold/cap, dry preservation, rate/size/predelay and zero-heap gate passed. Native shared setter and actual effect runtime corroborate the law. Unequal ER/LR shaping remains approximate; live flag controls are pending.",
+      "accepted": true
+    },
+    {
+      "id": "saved-pitch-filter-envelope-bypass",
+      "summary": "Initialize native pitch and filter/EQ envelope bypass from its verified saved flag",
+      "source_commits": [
+        "7dc07308a251c8427177048d2f93a44e67d69c26",
+        "ec3d5cb076d67883e29d7fcb701bbf5cc731c1c0"
+      ],
+      "validation": "Production raw flag fixture and elapsed-clock/live-resume mixed pitch/filter PCM/readback/zero-heap gates passed. Flag0 is UI router state, flag1 bypass. All twelve selected actual Analog amplitude envelopes are active; amplitude/Flex bypass lifetime remains unverified and no amplitude lifetime change was accepted.",
+      "accepted": true
+    },
+    {
+      "id": "live-convolution-native-switches",
+      "summary": "Route live convolution Reverse and Auto Gain through worker preparation and saved state",
+      "source_commits": [
+        "54bf96046cb512a38be148f020bfdfefb278cf35"
+      ],
+      "validation": "Focused authored KSP live-control/readback, worker completion, JSON/script reload, legacy native inheritance, stale-epoch/rate rejection, asymmetric PCM and zero audio heap gate passed at bd09edb.",
+      "accepted": true
+    },
+    {
+      "id": "convolution-native-volume-envelope",
+      "summary": "Apply enabled eight-knot IR envelopes with native amplitude interpolation before Auto Gain",
+      "source_commits": [
+        "a27836063b63358a752ac53f006cc20699b72198"
+      ],
+      "validation": "Independent numeric amplitude, rounding, sorted/duplicate knots, rate/size, predelay and Auto Gain order gates passed at bd09edb with zero processing heap. Unequal early/late shaping remains approximate; malformed active curves are diagnosed.",
+      "accepted": true
+    },
+    {
+      "id": "prepared-dynamic-control-names",
+      "summary": "Prepare control short and automation names before delayed script callbacks",
+      "source_commits": [
+        "9dfef7c7ca45946644517122174a734c2bc49757",
+        "ba11ff291b8b4920e563e58a92c7b09f208f0c57"
+      ],
+      "validation": "Authored persistence/UI callback, delayed effect remapping, repeated readback, fresh/live equivalence and zero audio heap gate passed at bd09edb. Actual Conflux callback replay is pending; tuning/pedal intent remains unresolved. Actual frozen64469ee Conflux three-preset metadata probes each ran750 listener blocks with zero unprepared-property faults; raw/final tune and accepted native TUNE writes confirm authored -12/+12 semitones. Authored divide-by-zero boolean warnings remain visible.",
+      "accepted": true
+    },
+    {
+      "id": "resident-wavetable-source-playback",
+      "summary": "Play native wavetable sources as resident periodic cycles instead of ordinary samples",
+      "source_commits": [
+        "1558ea0b6e2936064033362af16a4542db0fe4d3",
+        "666907d0d44bcd150c40443e3b9daedf21e58d59",
+        "fa388482565baaf110669999bf76c6d0de1f3598",
+        "1296d3fa914fbc8e324e34d3062f572cbd866449",
+        "b6653e6df75ba1f10dfcbb7a2d2655376c092e6a",
+        "3fe32935d574faa939723123b891e55309133c90",
+        "76a4fe49c2a54dff22d2a21411b4b6ec46d8a9b9"
+      ],
+      "validation": "Thirteen focused processing/import/write/lifetime/heap gates and nine actual Conflux captures across three patches passed. Octave ratios are exactly two and actual source census confirms five 2048-frame cycles, zero underruns. High/Best anti-aliasing, additional forms and active inharmonic/audio-rate modes remain unsupported; preset tuning and scripted pedal intent remain unresolved. Actual64469ee metadata confirms saved -1200/+1200 cent WT tuning and accepted333334/666666 native TUNE writes. Native bandwidth-table preparation remains missing for ALL qualities; no quality is claimed exact.",
+      "accepted": true
+    },
+    {
+      "id": "resident-wavetable-tap-dispatch",
+      "summary": "Dispatch resident PCM once per wavetable block instead of decoding each tap through window",
+      "source_commits": [
+        "246618a7a6cec7d695898cade99f39365fa5903a"
+      ],
+      "validation": "All four PCM formats match reference output and phase exactly across morph/forms/cycle seams. Seven alternating thread-CPU rounds at bd09edb measured 1.55x F32, 2.00x I16 and 1.73x I24 kernel speedups; packed fallback is effectively unchanged. These are kernel measurements, not total plugin or UI speed claims.",
+      "accepted": true
+    },
+    {
+      "id": "vst3-inactive-editor-attachment",
+      "summary": "Open VST3 editor on attachment before processor activation or state restoration",
+      "source_commits": [
+        "f2afdedbc724b9d1f697dadf24c9311f3b1a94bb"
+      ],
+      "validation": "Actual full VST3-shim driver-free probe reproduces baseline success-with-zero-editor-opens and passes inactive attachment, resize, later state restore/activation, remove and reopen after the fix; strict C++ compile passed. This proves the attachment defect, not that the unidentified Void DAW/format report is repaired.",
+      "accepted": true
+    },
+    {
+      "id": "native-external-modulation-v103",
+      "summary": "Decode native v103 external modulation while retaining its exact opaque footer",
+      "source_commits": [
+        "3353e67b6157636649a41b0203d658d2b6d05a13"
+      ],
+      "validation": "Focused vendor malformed/truncated/excess-footer and byte-exact roundtrip gate passed. Actual Conflux 3731 typed assignments preserve raw chunks byte-exact, including 364 PitchBend sources and four individually checked PB depth/name/footer records. Twenty-one unsupported shaper records remain strict errors; opaque footer semantics are not guessed. Full production Conflux replay is pending.",
+      "accepted": true
+    },
+    {
+      "id": "native-ir-filter-boundaries-and-decay",
+      "summary": "Apply native convolution filter bypass thresholds and retain digital-pole decay",
+      "source_commits": [
+        "2ecc8affce681ec9bf39e817492963d12e1c8c70",
+        "56e7243838bb1491ed1b2301082ce339ba731b48"
+      ],
+      "validation": "Independent direct-form Butterworth gate reproduces the old missing near-Nyquist frame and now passes exact/adjacent HP/LP thresholds, sample rates, cascades and zero processing heap. Reverse, Auto Gain, envelope, live IR, group send and playback tail gates all pass at56e7243. Padding remains finite exp(-16), not a claim of native prepared-length identity.",
+      "accepted": true
+    },
+    {
+      "id": "modern-signed-cutoff-depth",
+      "summary": "Apply the independently checked cubic law to modern signed cutoff modulation",
+      "source_commits": [
+        "1da75f9b8ffd956f130d0ecbf6c710f4e409f11e"
+      ],
+      "validation": "Actual Conflux raw507160 and native filterCutoff2.936503e-6 corroborate f32 conversion. Focused native identity/readback/bounds/nonfinite/adjacent target/signed filter PCM/elapsed bypass-clock/zero-heap gate and extended pitch guard passed at9d7d8ce; other target laws remain unchanged.",
+      "accepted": true
+    },
+    {
+      "id": "strict-lfo-waveform-version-schema",
+      "summary": "Read and write the proven waveform-specific native LFO layouts",
+      "source_commits": [
+        "f740628974094f0258da1a4d9f8974b7dc904ae6"
+      ],
+      "validation": "Independent vendor gate passed42 authored version/waveform combinations, malformed flags/length/truncation checks, NaN/signed-zero byte preservation. Sixty actual LFO records across12selected groups/six Analog snapshots and their whole raw files roundtrip byte-exact. Production library typechecked; this is metadata compatibility, not audible LFO/freewheel parity.",
+      "accepted": true
+    },
+    {
+      "id": "explicit-convolution-size-proxy-diagnostics",
+      "summary": "Report nonunit convolution Size and its Auto Gain energy as approximate",
+      "source_commits": [
+        "064fad68ebe971ad50eab3063b99a8cfa716d524"
+      ],
+      "validation": "Focused uniform/unequal sizing, Auto Gain and envelope diagnostic assertions pass at9d7d8ce. Native CElastiqueMC uses pitch-preserving stretching; current resampling proxy is reported honestly without changing its PCM. Full native time stretch remains unavailable.",
+      "accepted": true
+    },
+    {
+      "id": "required-macos-notarization-gate",
+      "summary": "Require both Mac packages to be Developer ID signed and Apple accepted before publication",
+      "source_commits": [
+        "094369d3cbdbedf90eecadb54e1e1e144b46f038",
+        "0819e5aa945983cd330c7f958192cd914cc0b3a0",
+        "2fe0dc564f8dbf4603724bd9fc55bc442b6a931d"
+      ],
+      "validation": "Nineteen publication scenarios plus signing-script accepted/rejected/bad-ticket/missing-credential and package identity/hash gates passed; strict temporary-material permissions and wrapped-certificate handling checked. Existing Apple secrets successfully reused through owned Drop workflow37037003405. Actual Apple notarization of the next shipping source remains pending; no unsigned release fallback.",
+      "accepted": true
     }
   ]
 }

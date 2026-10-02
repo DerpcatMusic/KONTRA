@@ -159,3 +159,15 @@ requires Python 3.11+ and is intentionally manual; no bot makes release decision
 Its focused check is `python3 tools/version.py self-test`; Cargo includes
 `embedded_build_identity_matches_cargo_and_manifest` to check the manifest and plugin
 version against the package version.
+
+Mac publication requires `APPLE_APPLICATION_CERTIFICATE_P12_BASE64`,
+`APPLE_CERTIFICATE_PASSWORD`, `APPLE_DEVELOPER_ID_APPLICATION`, `APPLE_ID`,
+`APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID` as Actions secrets available to
+this repository. Both hosted Mac architectures sign with Developer ID, submit a
+DMG to Apple, and require Accepted status, validated stapling and Gatekeeper
+assessment before publishing. Missing credentials or validation failures leave
+the existing release intact; there is no unsigned fallback. ZIPs retain their
+existing native products and include the notarized DMG and hash-bound receipt.
+Open the DMG in Finder so Gatekeeper can ingest its ticket before copying the
+products; direct ZIP extraction is not an offline-ticket installation path.
+See [Apple's distribution guidance](https://developer.apple.com/documentation/xcode/packaging-mac-software-for-distribution).

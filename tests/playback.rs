@@ -988,6 +988,158 @@ fn transposed_stream_starts_have_a_resident_first_block_without_audio_heap_work(
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+#[test]
+fn wavetable_cycles_ignore_sample_rate_and_root_and_keep_common_note_lifetimes() {
+    use kontakto::import::Wavetable;
+    let path = PathBuf::from("authored-five-cycle-table");
+    let setup = |rate, root| {
+        let frames = (0..5 * 2048).map(|i| {
+            let x = ((i % 2048) as f32 * std::f32::consts::TAU / 2048.).sin() * 0.2;
+            [if i < 2048 { x } else { -x }; 2]
+        }).collect();
+        let group = Group { volume_env: Some(kontakto::import::Ahdsr { attack_ms: 0., decay_ms: 0., hold_ms: 0., sustain: 1., release_ms: 1., attack_curve: 0., unknown_flag: 0, unknown_tail: Vec::new() }),
+            wavetable: Some(Wavetable { quality: 2, form1_type: 16, form1: 0.5,
+                inharmonic: 0.5, inharmonic_mode: 0, ..Default::default() }), ..Group::default() };
+        engine_with(Bank::from_samples(vec![group], vec![Zone { sample: path.clone(), root, ..Zone::default() }],
+            vec![(path.clone(), Sample { rate, frames })]).unwrap())
+    };
+    for note in [33, 69, 96, 127] {
+        let (mut a, mut b) = (setup(44100, 0), setup(132300, 127));
+        let (mut al, mut ar, mut bl, mut br) = ([0.;128], [0.;128], [0.;128], [0.;128]);
+        assert_eq!(allocations(|| { a.note_on(0, note, 100); b.note_on(0, note, 100); }), 0);
+        for _ in 0..200 {
+            assert_eq!(allocations(|| { a.render(&mut al, &mut ar); b.render(&mut bl, &mut br); }), 0);
+            assert_eq!((al, ar), (bl, br), "sample metadata changed oscillator pitch at note {note}");
+        }
+        let voice = &a.voice_census()[0];
+        let expected = 440. * 2f64.powf((f64::from(note) - 69.) / 12.) * 2048. / 48000.;
+        assert!((voice.step - expected).abs() < 1e-10);
+        assert!((0. ..2048.).contains(&voice.pos));
+        assert_eq!(allocations(|| { a.cc(0,64,127); a.note_off(0,note); a.render(&mut al, &mut ar); }), 0);
+        assert_eq!(a.active_voices(), 1, "sustain retains the oscillator");
+        assert_eq!(allocations(|| { a.cc(0,64,0); for _ in 0..8 { a.render(&mut al, &mut ar); } }), 0);
+        assert_eq!(a.active_voices(), 0, "pedal-up releases its common envelope");
+        assert_eq!(a.underruns(), 0);
+    }
+    let mut e = setup(44100, 0);
+    let source = "on init\nend on\non controller\nif ($CC_NUM = 1)\nset_engine_par($ENGINE_PAR_WT_POSITION,%CC[1] * 1000000 / 127,0,-1,-1)\nmessage(get_engine_par($ENGINE_PAR_WT_POSITION,0,-1,-1))\nend if\nif ($CC_NUM = 2)\nset_engine_par($ENGINE_PAR_WT_FORM_MODE,$NI_WT_FORM_ASYM2MP,0,-1,-1)\nset_engine_par($ENGINE_PAR_WT_FORM2_MODE,$NI_WT_FORM_LINEAR,0,-1,-1)\nset_engine_par($ENGINE_PAR_WT_FORM2,0,0,-1,-1)\nset_engine_par($ENGINE_PAR_WT_FORM,500000 + %CC[2] * 500000 / 127,0,-1,-1)\nmessage(get_engine_par($ENGINE_PAR_WT_FORM_MODE,0,-1,-1) & \":\" & get_engine_par($ENGINE_PAR_WT_FORM,0,-1,-1))\nend if\nend on";
+    let mut neutral = setup(44100, 0);
+    e.set_script(runtime(source));
+    neutral.set_script(runtime(source));
+    let (mut l,mut r)=([0.;128],[0.;128]);
+    let (mut nl,mut nr)=([0.;128],[0.;128]);
+    e.note_on(0,69,100);
+    neutral.note_on(0,69,100);
+    e.render(&mut l,&mut r);
+    neutral.render(&mut nl,&mut nr);
+    let before = e.voice_census()[0].pos;
+    assert_eq!(allocations(|| { e.cc(0,1,127); e.render(&mut l,&mut r); }), 0);
+    neutral.cc(0,1,127); neutral.render(&mut nl,&mut nr);
+    assert_eq!((l,r),(nl,nr));
+    assert_eq!(e.script().unwrap().last_message(), "1000000");
+    let voice = &e.voice_census()[0];
+    assert!((voice.pos - (before + 128. * voice.step).rem_euclid(2048.)).abs() < 1e-6, "table position does not restart phase");
+    assert_eq!(allocations(|| { e.cc(0,2,127); e.render(&mut l,&mut r);
+        neutral.cc(0,2,0); neutral.render(&mut nl,&mut nr); }),0);
+    assert_eq!(e.script().unwrap().last_message(), "16:1000000");
+    assert_eq!(neutral.script().unwrap().last_message(), "16:500000");
+    assert_eq!(e.voice_census()[0].pos, neutral.voice_census()[0].pos, "form controls preserve oscillator frequency and phase");
+    assert!(l.iter().zip(nl).any(|(a,b)| (a-b).abs()>0.01), "form amount reaches the phase readout");
+    assert_eq!(allocations(|| { e.panic(); for _ in 0..8 { e.render(&mut l,&mut r); } }),0);
+    assert_eq!(e.active_voices(),0);
+}
+
+#[test]
+fn wavetable_clock_handles_large_pitch_and_retune_at_both_phase_endpoints() {
+    use kontakto::import::Wavetable;
+    for phase in [0., 1.] {
+        for tune in [1., 1e12, 1e280] {
+            let path = PathBuf::from("authored-large-pitch-table");
+            let frames = (0..2048).map(|i| [0.2 * (i as f32 * std::f32::consts::TAU / 2048.).sin();2]).collect();
+            let bank = Bank::from_samples(vec![Group { wavetable:Some(Wavetable { phase,
+                ..Default::default() }), ..Group::default() }], vec![Zone { sample:path.clone(),
+                tune, start_mod:Some(2047), ..Zone::default() }],
+                vec![(path,Sample { rate:44100,frames })]).unwrap();
+            let mut e = engine_with(bank);
+            let mut note = NoteEvent::new(0,127,100);
+            note.offset_us = u64::MAX;
+            let mut id = None;
+            assert_eq!(allocations(|| { id = e.start_event(&note); }),0);
+            let id = id.unwrap();
+            let (mut left,mut right)=([0.;128],[0.;128]);
+            for (pitch,n) in [(-324.,1),(324.,127),(0.,3),(324.,64),(-324.,128),(0.,17)] {
+                let before=e.voice_census()[0].pos;
+                assert!((0. ..2048.).contains(&before));
+                e.tune=pitch as f32;
+                assert_eq!(allocations(|| { e.change_event(id,EventChange::Tune(pitch));
+                    e.render(&mut left[..n],&mut right[..n]); }),0);
+                assert!(left[..n].iter().chain(&right[..n]).all(|x| x.is_finite()));
+                let voice=&e.voice_census()[0];
+                assert!(voice.step.is_finite());
+                let clock=(voice.step.rem_euclid(2048.) * (1u64<<32) as f64) as u64;
+                let expected=(before+(clock*n as u64) as f64/(1u64<<32) as f64).rem_euclid(2048.);
+                assert_eq!(voice.pos,expected,"phase {phase}, zone tune {tune}, retune {pitch}, block {n}");
+                assert!((0. ..2048.).contains(&voice.pos));
+                assert!(!voice.streams);
+            }
+            assert_eq!(e.underruns(),0);
+            assert_eq!(allocations(|| { e.panic(); for _ in 0..8 { e.render(&mut left,&mut right); } }),0);
+            assert_eq!(e.active_voices(),0);
+        }
+    }
+}
+
+#[test]
+fn unsupported_wavetable_forms_are_counted_without_substituting_sample_playback() {
+    use kontakto::import::Wavetable;
+    let path = PathBuf::from("authored-rejected-wave-form");
+    let groups = vec![Group { wavetable: Some(Wavetable { form1_type: 16, form1: 0.5,
+        ..Default::default() }), ..Group::default() },
+        Group { wavetable: Some(Wavetable { form1_type: 17,
+            ..Default::default() }), ..Group::default() }];
+    let bank = Bank::from_samples(groups, vec![Zone { sample:path.clone(), ..Zone::default() },
+        Zone { sample:path.clone(), group:1, ..Zone::default() }],
+        vec![(path, Sample { rate:44100, frames:vec![[0.2;2];2048] })]).unwrap();
+    assert_eq!(bank.skipped_zones,1);
+    assert_eq!(bank.zone_skip_counts.unsupported_source,1);
+    assert_eq!(bank.zone_skip_counts.invalid_sample_bounds,0);
+    assert!(bank.issues.iter().any(|issue| issue.contains("group 1, forms 17/0") && issue.contains("zone excluded")));
+    let mut e = engine_with(bank);
+    e.note_on(0,69,100);
+    assert_eq!(e.active_voices(),1,"rejected form must not become an ordinary sample voice");
+}
+
+#[test]
+fn bare_wavetable_bank_and_its_upgrade_keep_complete_tables_and_voice_phase() {
+    use kontakto::import::Wavetable;
+    let dir = std::env::temp_dir().join(format!("kontra-wavetable-fill-{}",std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("five-cycles.wav");
+    write_wav_bits(&path, 5*2048, 16);
+    let instrument = instrument(vec![Group { wavetable: Some(Wavetable { phase: 0.5, quality: 2, ..Default::default() }), ..Group::default() }],
+        vec![Zone { sample:path.clone(),root:0,high_key:63,end:4*2048,..Zone::default() },
+            Zone { sample:path,root:0,low_key:64,start:3*2048,start_mod:Some(4095),..Zone::default() }]);
+    let (bare,loaded)=(Bank::load_bare(&instrument).unwrap(),Bank::load(&instrument).unwrap());
+    let mut a=engine_with(bare);
+    let mut b=engine_with(loaded);
+    let upgrade=Box::new(Bank::load(&instrument).unwrap());
+    let(mut al,mut ar,mut bl,mut br)=([0.;128],[0.;128],[0.;128],[0.;128]);
+    let mut note=NoteEvent::new(0,96,100);
+    note.offset_us=u64::MAX;
+    assert_eq!(allocations(|| { a.start_event(&note);b.start_event(&note); }),0);
+    for _ in 0..10 {
+        assert_eq!(allocations(|| {a.render(&mut al,&mut ar);b.render(&mut bl,&mut br);}),0);
+        assert_eq!((al,ar),(bl,br));
+    }
+    let mut retired=None;
+    assert_eq!(allocations(|| { retired=a.upgrade_bank(upgrade);a.render(&mut al,&mut ar);b.render(&mut bl,&mut br); }),0);
+    assert!(retired.is_some());
+    assert_eq!((al,ar),(bl,br));
+    assert_eq!(a.underruns(),0);
+    assert!(Bank::load_within(&instrument,1).is_err(),"a partial table cannot be published as a supported oscillator");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// A bare bank (nothing resident: what the plugin plays while the preload
 /// loads) sounds as the preloaded bank does, and a note started on it carries
 /// on identically when the preloaded bank takes over mid-note.
@@ -1499,7 +1651,7 @@ fn fx_description(echo: usize) -> fx::ProgramFx {
     let band = params::IrBand {
         length_ratio: 1.0,
         low_cut_hz: 20.0,
-        high_cut_hz: 20_000.0,
+        high_cut_hz: 24_000.0,
     };
     let mut ir = vec![[0.0; 2]; echo + 1];
     (ir[0], ir[echo]) = ([1.0; 2], [0.5; 2]);
@@ -2218,6 +2370,7 @@ fn modulated_groups() -> Instrument {
             targets: vec![String::new()],
             assignments: Some(0),
             volume_env: false,
+            bypassed: false,
             flex: false,
             envelope: None,
             kind: String::new(),

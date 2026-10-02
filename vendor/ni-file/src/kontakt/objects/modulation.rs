@@ -138,7 +138,7 @@ pub enum ModSource {
 ///
 /// Type:           Chunk<StructuredObject>, fields in private data
 /// SerType:        0x0C
-/// Versions:       0x100, 0x101, 0x102, 0x104
+/// Versions:       0x100, 0x101, 0x102, 0x103, 0x104
 /// Kontakt 7:      BParExternalMod
 #[derive(Debug)]
 pub struct ExternalMod(pub StructuredObject);
@@ -158,14 +158,15 @@ pub struct ExternalModParams {
     /// for some CCs), two when unassigned.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub unknown_source_data: Vec<u8>,
-    /// Two additional private footer bytes in v0x104; semantics unknown.
+    /// Additional private footer bytes: one in v0x103, two in v0x104.
+    /// Their semantics are unknown; retain them without treating them as flags.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub unknown_tail: Vec<u8>,
 }
 
 impl ExternalMod {
     pub fn params(&self) -> Result<ExternalModParams, Error> {
-        if !matches!(self.0.version, 0x100..=0x102 | 0x104) {
+        if !matches!(self.0.version, 0x100..=0x104) {
             return Err(Error::Generic(format!(
                 "Unsupported BParExternalMod version 0x{:X}",
                 self.0.version
@@ -186,7 +187,10 @@ impl ExternalMod {
         };
         let unknown_source_data = reader.read_bytes(unknown_len)?;
         let unknown_id = reader.read_u32_le()?;
-        let unknown_tail = if self.0.version == 0x104 { reader.read_bytes(2)? } else { Vec::new() };
+        // The native versioned reader appends one byte at 0x103, then a
+        // second at 0x104. The common source/target layout is unchanged.
+        let tail_len = self.0.version.saturating_sub(0x102) as usize;
+        let unknown_tail = reader.read_bytes(tail_len)?;
         ensure_consumed(&reader)?;
 
         Ok(ExternalModParams {
@@ -423,6 +427,22 @@ mod tests {
         modulator.0.version = 0x102;
         assert!(modulator.params().unwrap().unknown_tail.is_empty());
         modulator.0.version = 0x103;
-        assert!(modulator.params().is_err());
+        assert!(modulator.params().is_err(), "the v0x103 footer is required");
+        modulator.0.private_data.push(0x80);
+        let parsed = modulator.params().unwrap();
+        assert_eq!(parsed.source, ModSource::Velocity);
+        assert_eq!(parsed.targets[0].intensity, 0.75);
+        assert_eq!(parsed.unknown_tail, [0x80]);
+        let mut chunk = chunk;
+        chunk.data[1..3].copy_from_slice(&0x103u16.to_le_bytes());
+        chunk.data[3..7].copy_from_slice(&(modulator.0.private_data.len() as u32).to_le_bytes());
+        chunk.data.splice(7..7 + private.len(), modulator.0.private_data.clone());
+        let mut original = Vec::new(); chunk.write(&mut original).unwrap();
+        let raw = Chunk::read(Cursor::new(&original)).unwrap();
+        assert_eq!(ExternalMod::try_from(&raw).unwrap().params().unwrap(), parsed);
+        let mut rewritten = Vec::new(); raw.write(&mut rewritten).unwrap();
+        assert_eq!(rewritten, original);
+        modulator.0.private_data.push(0xff);
+        assert!(modulator.params().is_err(), "v0x103 does not accept the v0x104 footer");
     }
 }
