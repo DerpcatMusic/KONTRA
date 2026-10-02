@@ -14,12 +14,12 @@ below record reviewed source checkpoints; they are not claims about pending work
 - Registered per-note MIDI2 brightness now follows its retained note, including start-only modulation. Ambiguous host brightness is explicitly diagnosed instead of changing channel CC74 or a newer same-pitch note.
 - Saved convolution Auto Gain now uses the checked prepared stereo-energy rule, threshold and cap while preserving dry output. Unequal early/late shaping remains approximate.
 - Saved pitch and filter/EQ envelope bypass now uses the verified source flag, advances its clock and resumes without restarting. Amplitude/Flex bypass lifetime is still under investigation.
-- Wavetable source records are read and edited without losing opaque bytes. The candidate engine prepares resident 2048-frame cycles with note-based pitch, live position, and verified Linear/ASYM2MP phase forms. Unsupported states are counted instead of played as ordinary samples. High/Best anti-aliasing is not implemented; actual-library validation is pending.
+- Wavetable source records are read and edited without losing opaque bytes. The engine prepares resident 2048-frame cycles with note-based pitch, live position, and verified Linear/ASYM2MP phase forms. Nine actual Conflux captures across three patches confirm octave pitch ratios and zero underruns. Preset tuning and scripted pedal behavior remain under investigation; High/Best anti-aliasing is not implemented. Unsupported states are counted instead of played as ordinary samples.
 
 ### Fixed after 0.3.64
 
 - Modern signed pitch intensity now follows the checked cubic conversion and retains 24/36-semitone values; non-pitch modulation laws are unchanged.
-- Convolution Reverse now reverses the source impulse response before rate conversion and predelay. Auto Gain and active IR Volume Envelope are explicitly reported as unsupported; no gain normalization is guessed.
+- Convolution Reverse now reverses the source impulse response before rate conversion and predelay. Saved Auto Gain uses the verified prepared-energy law; live switches and active IR Volume Envelope are undergoing focused verification. Unequal early/late shaping remains approximate.
 - Large load dependency lists now use bounded typed journal chunks that can be reassembled completely in support reports. Source excerpts and path redaction remain intact; oversized individual values still report truncation.
 
 ### Added
