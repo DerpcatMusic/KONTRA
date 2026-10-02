@@ -1278,7 +1278,7 @@ impl Shared {
             let mut new_issues = Vec::new();
             for fault in runtime["faults"].as_array().into_iter().flatten() {
                 let known = previous["runtime"]["faults"].as_array().into_iter().flatten().any(|old|
-                    old["slot"] == fault["slot"] && old["line"] == fault["line"] && old["message"] == fault["message"]
+                    old["slot"] == fault["slot"] && old["line"] == fault["line"] && old["message"] == fault["message"] && old["context"] == fault["context"]
                 );
                 if !known { new_issues.push(fault.clone()); }
             }
@@ -1293,7 +1293,7 @@ impl Shared {
             {
                 new_issues.push(serde_json::json!({"code":"fault_diagnostics_omitted","message":message,"fault_occurrences_omitted":diagnostics.fault_occurrences_omitted}));
             }
-            let status = diagnostics.faults.iter().map(|f| format!("Slot {} line {}: {} ({}x)", f.slot, f.line, f.message, f.count))
+            let status = diagnostics.faults.iter().map(|f| f.to_string())
                 .chain(diagnostics.notes.iter().map(|n| (*n).to_owned())).chain(omitted).collect::<Vec<_>>().join("\n");
             let load_id = previous["script_restore"]["load_id"].as_str().or_else(|| previous["load_id"].as_str()).map(str::to_owned);
             let mut report = (*previous).clone();
@@ -4270,7 +4270,7 @@ end on"#;
                 assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }), 0);
                 let (slot, epoch, mut live) = p.shared.lives.pop().expect("audio completes a live view");
                 assert_eq!((&*live as *const Live) as usize, address, "the same prepared buffer is recycled");
-                live.faults.push(LiveFault { slot: 0, line: 1, message: "synthetic runtime fault", count: value as u32 });
+                live.faults.push(LiveFault { slot: 0, line: 1, message: "synthetic runtime fault", context: None, count: value as u32 });
                 p.shared.lives.push((slot, epoch, live)).ok().unwrap();
             }), "completed script changes wake an otherwise idle editor before build");
             assert_eq!(label(&p), Value::Text(format!("value {value}")), "callback-derived labels publish without Load");
@@ -4284,7 +4284,7 @@ end on"#;
         let retained = p.shared.view.lock().unwrap().parts[0].interface.clone().unwrap();
         assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }), 0);
         let (slot, epoch, mut live) = p.shared.lives.pop().unwrap();
-        live.faults.push(LiveFault { slot: 0, line: 1, message: "synthetic runtime fault", count: 84 });
+        live.faults.push(LiveFault { slot: 0, line: 1, message: "synthetic runtime fault", context: None, count: 84 });
         p.shared.lives.push((slot, epoch, live)).ok().unwrap();
         p.shared.publish_live(true);
         assert!(Arc::ptr_eq(&retained, p.shared.view.lock().unwrap().parts[0].interface.as_ref().unwrap()),
