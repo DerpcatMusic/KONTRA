@@ -409,6 +409,10 @@ impl Ui {
                     ),
                 };
                 properties.insert("$CONTROL_PAR_VALUE".into(), value);
+                if let Some(Some(menu)) = prog.picture_menus.get(&c.var) {
+                    let id = self.var_ids[*menu as usize];
+                    if id > 0 { properties.insert("picture menu".into(), Value::Int(id)); }
+                }
                 Control {
                     id: self.var_ids[c.var as usize],
                     variable: var.name.to_string(),

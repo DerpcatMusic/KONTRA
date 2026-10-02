@@ -214,6 +214,20 @@ pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, dra
                 && int(c, "$CONTROL_PAR_PICTURE_STATE") == int(&interface.controls[sibling.control], "$CONTROL_PAR_PICTURE_STATE")
         });
     }
+    // Names encoded in pictures can still come from authoritative menu text.
+    // This ID is compiled from the authored picture expression, not guessed
+    // from a variable or picture name. More than one source is ambiguous.
+    let mut skin_names: HashMap<usize, Option<(i32, String)>> = HashMap::new();
+    for &(label, control) in &pairs {
+        if !paired[label] { continue; }
+        let c = &interface.controls[drawn[label].0.control];
+        let Some(id) = int(c, "picture menu") else { continue; };
+        let Some(menu) = interface.controls.iter().find(|c| c.id == id && c.kind == "ui_menu") else { continue; };
+        let Some((text, _)) = menu.menu.iter().find(|(_, v)| f64::from(*v) == value(menu)) else { continue; };
+        skin_names.entry(control).and_modify(|source| {
+            if source.as_ref().is_none_or(|(old, _)| *old != id) { *source = None; }
+        }).or_insert(Some((id, text.clone())));
+    }
     let mut faces: Vec<Face> = Vec::with_capacity(drawn.len());
     for (n, (s, frame)) in drawn.iter().enumerate() {
         let c = &interface.controls[s.control];
@@ -338,6 +352,9 @@ pub fn plan(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, dra
                 }
             }
             _ => {}
+        }
+        if let Some(Some((_, name))) = skin_names.get(&n) {
+            push(&mut words, name, (0., s.w), 2., FONT * 1.4, 1);
         }
         // What a control drawn later covers, or what lies outside the
         // view, the original does not show either.
@@ -586,6 +603,30 @@ mod tests {
         let p = plans(&u);
         assert_eq!(p[1].face, Face::Marker, "waveform position controls remain markers");
         assert_ne!(p[0].face, Face::Clear, "waveform artwork is never paired away");
+    }
+
+    #[test]
+    fn menu_selected_picture_skins_use_the_authored_menu_caption() {
+        let script = "on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_menu $selector\nadd_menu_item($selector,\"Rhythm\",13)\nadd_menu_item($selector,\"Filter\",4)\n$selector := 13\nset_control_par(get_ui_id($selector),$CONTROL_PAR_HIDE,16)\ndeclare ui_label $name(1,1)\nset_text($name,\"\")\nset_control_par_str(get_ui_id($name),$CONTROL_PAR_PICTURE,\"face_\" & $selector)\nset_control_par(get_ui_id($name),$CONTROL_PAR_PICTURE_STATE,101)\ndeclare ui_slider $amount(0,1000000)\n$amount := 568554\nset_control_par_str(get_ui_id($amount),$CONTROL_PAR_PICTURE,\"transparent\")\nend on";
+        let mut u = crate::ksp::initialize(script, 0, 8).unwrap();
+        u.width = 800;
+        assert_eq!(u.controls[1].properties["picture menu"], Value::Int(u.controls[0].id));
+        let pictures: HashMap<_, _> = [
+            ("face_13".into(), Arc::new(Picture { frames: vec![Arc::new(Image::rgba(732,71,vec![255;732*71*4]).unwrap());180], stretch: [false;2], atlas: None })),
+            ("transparent".into(), Arc::new(Picture { frames: vec![Arc::new(Image::rgba(734,73,vec![0;734*73*4]).unwrap())], stretch: [false;2], atlas: None })),
+        ].into();
+        for (value, caption) in [(13,"Rhythm"),(4,"Filter")] {
+            u.controls[0].properties.insert("$CONTROL_PAR_VALUE".into(), Value::Int(value));
+            let drawn: Vec<_> = super::super::perf_view::layout(&u, &pictures).into_iter()
+                .map(|s| {let image = super::super::perf_view::frame_of(&s, &u.controls[s.control]); (s,image)}).collect();
+            let p = plan(&u, &pictures, &drawn, &mut Assets::default());
+            assert_eq!(p[0].face, Face::Clear);
+            assert!(p[1].skin, "native surface covers the replaced skin");
+            assert!(p[1].words.iter().any(|w| w.text == caption), "selected menu text survives bitmap removal");
+        }
+        let unknown = script.replace("end on", "set_control_par_str(get_ui_id($name),$CONTROL_PAR_PICTURE,\"another\")\nend on");
+        let u = crate::ksp::initialize(&unknown, 0, 8).unwrap();
+        assert!(!u.controls[1].properties.contains_key("picture menu"), "an ambiguous direct assignment has no inferred source");
     }
 
     #[test]
