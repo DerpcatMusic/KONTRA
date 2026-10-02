@@ -660,7 +660,7 @@ mod tests {
             vello::paint(&mut vello::Cpu { ctx: &mut ctx, resources: &mut resources, cache: &mut cache }, ui.scene().unwrap(), transform).unwrap();
             ctx.flush();
             ctx.render(&mut pixmap, &mut resources);
-            let rgba: Vec<u8> = pixmap.take_unpremultiplied().iter().flat_map(|p| [p.r,p.g,p.b,p.a]).collect();
+            let rgba: Vec<u8> = pixmap.clone().take_unpremultiplied().iter().flat_map(|p| [p.r,p.g,p.b,p.a]).collect();
             moose::core::screenshot::save_png(Path::new(&to), &rgba, u32::from(width), u32::from(height));
         }
         if gpu.is_some() {

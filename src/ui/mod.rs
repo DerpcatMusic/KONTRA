@@ -834,7 +834,7 @@ fn build(
     computer: Arc<computer::Computer>,
     picker: Arc<picker::Picker>,
     art: Arc<art::Art>,
-) -> impl FnMut(&mut Ui, &mut Bridge<SamplerParams>) -> El + Send + 'static {
+) -> impl FnMut(&mut Ui, &mut Bridge<SamplerParams>) -> El + Send + 'static + use<> {
     let mut state = EditorState {
         search: String::new(),
         source: None,
