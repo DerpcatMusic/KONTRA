@@ -497,7 +497,10 @@ pub fn run(path: &Path, program: u32, snapshot: Option<&Path>, realtime: bool) -
             .script()
             .map(|rt| rt.diagnostics())
             .unwrap_or_default();
+        let script_runtime = rack.parts[0].script().map(|rt|
+            kontakto::diagnostics::script_runtime_report(rt, &instrument.scripts));
         cases.push(json!({
+            "script_runtime":script_runtime,
             "case":case,"articulations_found":found.len(),"stages":stages,"panic_ms":panic_ms,
             "heap_operations_on_render_thread":meter.heap,"blocks":meter.blocks,
             "render_ms":meter.wall_ms,"max_block_or_event_ms":meter.max_ms,"blocks_exceeding_duration":meter.over_deadline,

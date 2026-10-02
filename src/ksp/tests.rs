@@ -1614,6 +1614,52 @@ fn listener_faults_preserve_command_signal_parameter_and_distinct_runtime_values
 }
 
 #[test]
+fn headless_fault_context_preserves_array_action_and_source_without_audio_allocations() {
+    let sources = vec!["on init\nend on".to_string(),
+        "on init\ndeclare %bad[2]\ndeclare $index := 3\ndeclare $result\nend on\non note\nignore_event($EVENT_ID)\n$result := %bad[$index]\nend on".to_string()];
+    for reference in [false, true] {
+        super::vm::REFERENCE.set(reference);
+        let mut rig = Rig::new(&[&sources[0], &sources[1]]);
+        rig.engine.calls.reserve(16);
+        let mut live = rig.rt.live();
+        let mut first_event = None;
+        let mut exercise = || {
+            rig.rt.set_midi_channel(2);
+            rig.rt.note_on(&mut rig.engine, 0, 60, 100);
+            first_event = rig.rt.faults().next().unwrap().last_action.unwrap().event_id;
+            rig.rt.note_on(&mut rig.engine, 0, 62, 90);
+            rig.rt.refresh_diagnostics(&mut live);
+        };
+        #[cfg(feature = "plugin")]
+        assert_eq!(crate::plugin::tests::allocations(|| exercise()), 0);
+        #[cfg(not(feature = "plugin"))]
+        exercise();
+        assert_eq!(live.faults.len(), 1, "new event IDs must not grow retained fault locations");
+        assert_eq!((live.faults[0].slot, live.faults[0].line, live.faults[0].count), (2, 8, 2));
+        let action = live.faults[0].last_action.unwrap();
+        assert_eq!((action.callback, action.note, action.midi_channel), ("note", Some(62), Some(2)));
+        assert!(action.callback_id > 0 && action.event_id.is_some());
+        assert_ne!(first_event, action.event_id, "the retained action identifies the latest occurrence");
+        assert!(rig.rt.env.fault_action.is_none(), "a later unrelated service cannot inherit callback context");
+        let context = crate::diagnostics::script_runtime_report(&rig.rt, &sources);
+        let fault = &context["faults"][0];
+        assert_eq!(fault["array"], serde_json::json!({"name":"%bad","index":3,"length":2}));
+        assert_eq!(fault["script_slot"], 1);
+        assert_eq!(fault["last_action"]["callback"], "note");
+        assert_eq!(fault["source_excerpt"]["script_slot"], 2);
+        assert!(crate::diagnostics::excerpt_text(fault).unwrap().contains(">      8 | $result := %bad[$index]"));
+        let mut trace = crate::diagnostics::LoadTrace::new(std::path::Path::new("Authored context.nki"), 0, None);
+        assert_eq!(trace.script_runtime(&rig.rt, &sources), 1);
+        let report = trace.finish("loaded");
+        assert_eq!(report["issues"].as_array().unwrap().len(), 1, "the rendered string must not duplicate its structured fault");
+        assert_eq!(report["issues"][0]["array"], fault["array"]);
+        assert_eq!(report["issues"][0]["last_action"], fault["last_action"]);
+        assert!(crate::diagnostics::excerpt_text(&report["issues"][0]).is_some());
+    }
+    super::vm::REFERENCE.set(false);
+}
+
+#[test]
 fn note_fault_context_is_bounded_distinct_and_does_not_leak_to_another_callback() {
     use super::runtime::FaultContext;
     let script = "on init\ndeclare ui_knob $bad(0,256,1)\ndeclare ui_button $other\nend on\non ui_control($bad)\nset_key_color($bad,$KEY_COLOR_RED)\nend on\non ui_control($other)\n$other := 1 / $other\nend on";
