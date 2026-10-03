@@ -1171,6 +1171,190 @@
       ],
       "validation": "Frozen coherent source cfef7b04f9243988e71828171c04d0e8519f0704 passes locked all-targets/all-features check, optimized production build, all 555 library regressions (30 ignored) and all 89 playback regressions (4 ignored). Frozen lib-test SHA256 fe33b9577cf2e49d808d685901ad6ec166e39bdab7da9bc0b8b395ddf1b5dfa5; production CDLL 45802d001a477db4f223038d660bed8f4daf160d05182c9ae767fa54bbc83bae. These scoped semantic and PCM checks do not establish whole-library sonic parity. Independent physical cursor/fade/PCM, mixed-source removal, mid-tick commands,13/19 versus128 fragmentation, seeded restoration, release lifetime and zero-heap gate pass. Wider waves, free-running clocks and live frequency remain unsupported.",
       "accepted": true
+    },
+    {
+      "id": "single-rate-native-ladder-lp4",
+      "summary": "Process native Ladder LP4 with the shared nonlinear four-pole kernel, signed Gain and correct insert ordering",
+      "source_commits": [
+        "597266e8ba5baea872cc44f6432a3ca8f594bcc2",
+        "224d11883646fc87032682b47d064c5145654c15",
+        "cabde651d5c3696ad8ce205423b3564952c45068"
+      ],
+      "validation": "Pending acceptance. Fresh isolated source 9c1f7d149652f537683fbb58a5912ecf5a4bc12c passed locked all-targets/all-features checking, test compilation and production build. Frozen library test executable d197d5c85727 passed six Ladder regressions; BUFFR durable-file 10, flight-recorder 11 and optional-date one vendor regression passed, with all 477 tracked source hashes unchanged. Linux native strict-MPE CLAP and authored-tone VST3 gates passed as reported by the maintainer. Reporter focus has 57 passes and one failed restart fixture; corrected actor-lifecycle fixture, final coherent full library/playback and fresh native/vendor provenance remain release prerequisites. No production GitHub upload/issue roundtrip or Mac user-crash cause is established. Independent double/scalar/PCM, rate, bounded resonance, partition/reset and zero-heap references pass. Generated math tables only. High Quality oversampling, other Ladder modes and full audible/native transition equivalence remain unproved.",
+      "accepted": false
+    },
+    {
+      "id": "ladder-ordinary-physical-control-clock",
+      "summary": "Apply ordinary Ladder Gain, resonance and cutoff steps on the native physical control clock",
+      "source_commits": [
+        "396d7d494e221e6fee6b940a9739592550517f8a",
+        "ef5c829e9f52f874d6b54b80f07ddfa40afd4c19"
+      ],
+      "validation": "Pending acceptance. Fresh isolated source 9c1f7d149652f537683fbb58a5912ecf5a4bc12c passed locked all-targets/all-features checking, test compilation and production build. Frozen library test executable d197d5c85727 passed six Ladder regressions; BUFFR durable-file 10, flight-recorder 11 and optional-date one vendor regression passed, with all 477 tracked source hashes unchanged. Linux native strict-MPE CLAP and authored-tone VST3 gates passed as reported by the maintainer. Reporter focus has 57 passes and one failed restart fixture; corrected actor-lifecycle fixture, final coherent full library/playback and fresh native/vendor provenance remain release prerequisites. No production GitHub upload/issue roundtrip or Mac user-crash cause is established. Includes consistent post-reset target snapshots, retargeting, small-delta settlement and arbitrary partitions. Reset correction is one parent outcome, not an additional count.",
+      "accepted": false
+    },
+    {
+      "id": "ladder-versioned-cutoff-clock-mode",
+      "summary": "Retain version144\u2013146 Ladder cutoff boundary snapshots independently of the Gain/resonance clock",
+      "source_commits": [
+        "3d5a34b1ddb58211ea38e7d9d76ec3c4c6c59b5c"
+      ],
+      "validation": "Pending acceptance. Fresh isolated source 9c1f7d149652f537683fbb58a5912ecf5a4bc12c passed locked all-targets/all-features checking, test compilation and production build. Frozen library test executable d197d5c85727 passed six Ladder regressions; BUFFR durable-file 10, flight-recorder 11 and optional-date one vendor regression passed, with all 477 tracked source hashes unchanged. Linux native strict-MPE CLAP and authored-tone VST3 gates passed as reported by the maintainer. Reporter focus has 57 passes and one failed restart fixture; corrected actor-lifecycle fixture, final coherent full library/playback and fresh native/vendor provenance remain release prerequisites. No production GitHub upload/issue roundtrip or Mac user-crash cause is established. Known stored versions only; unknown versions are diagnosed. High Quality is a separate byte. Nonzero secondary-clock activation/native lifecycle remains unsupported or unproved.",
+      "accepted": false
+    },
+    {
+      "id": "ladder-enabled-route-control-cadence",
+      "summary": "Keep enabled Ladder modulation routes on persistent control ticks even at zero depth or unchanged values",
+      "source_commits": [
+        "85bdef597db5608aa6c087345a9f100b1551c244"
+      ],
+      "validation": "Pending acceptance. Fresh isolated source 9c1f7d149652f537683fbb58a5912ecf5a4bc12c passed locked all-targets/all-features checking, test compilation and production build. Frozen library test executable d197d5c85727 passed six Ladder regressions; BUFFR durable-file 10, flight-recorder 11 and optional-date one vendor regression passed, with all 477 tracked source hashes unchanged. Linux native strict-MPE CLAP and authored-tone VST3 gates passed as reported by the maintainer. Reporter focus has 57 passes and one failed restart fixture; corrected actor-lifecycle fixture, final coherent full library/playback and fresh native/vendor provenance remain release prerequisites. No production GitHub upload/issue roundtrip or Mac user-crash cause is established. Independent control-grid/routing/readback and zero audio-heap gates; no whole-preset or native deadline claim.",
+      "accepted": false
+    },
+    {
+      "id": "clap-mpe-input-capability",
+      "summary": "Advertise configured CLAP MPE input capability while retaining preferred CLAP notes and ordinary output dialects",
+      "source_commits": [
+        "c5029f1668f36673339b5a8bc73b0f15570d6330",
+        "ebb5c8a164277be2d96e76b8cc583260d40eee57",
+        "ea202b87abb6b77c86fa6a8e95a3c5c6d48bb889"
+      ],
+      "validation": "Pending acceptance. Fresh isolated source 9c1f7d149652f537683fbb58a5912ecf5a4bc12c passed locked all-targets/all-features checking, test compilation and production build. Frozen library test executable d197d5c85727 passed six Ladder regressions; BUFFR durable-file 10, flight-recorder 11 and optional-date one vendor regression passed, with all 477 tracked source hashes unchanged. Linux native strict-MPE CLAP and authored-tone VST3 gates passed as reported by the maintainer. Reporter focus has 57 passes and one failed restart fixture; corrected actor-lifecycle fixture, final coherent full library/playback and fresh native/vendor provenance remain release prerequisites. No production GitHub upload/issue roundtrip or Mac user-crash cause is established. Actual Linux exported CLAP original-tone processing with required MPE passes; configured lower-zone member/manager bend and pedals, all input ports and unchanged output ports checked. No automatic zone negotiation or Mac/Windows DAW claim.",
+      "accepted": false
+    },
+    {
+      "id": "filename-optional-calendar-view",
+      "summary": "Keep filename mappings and raw timestamps when optional calendar dates cannot be represented",
+      "source_commits": [
+        "7d65330697e6b82ab7fd60ab0cf7c98fcd570302"
+      ],
+      "validation": "Pending acceptance. Fresh isolated source 9c1f7d149652f537683fbb58a5912ecf5a4bc12c passed locked all-targets/all-features checking, test compilation and production build. Frozen library test executable d197d5c85727 passed six Ladder regressions; BUFFR durable-file 10, flight-recorder 11 and optional-date one vendor regression passed, with all 477 tracked source hashes unchanged. Linux native strict-MPE CLAP and authored-tone VST3 gates passed as reported by the maintainer. Reporter focus has 57 passes and one failed restart fixture; corrected actor-lifecycle fixture, final coherent full library/playback and fresh native/vendor provenance remain release prerequisites. No production GitHub upload/issue roundtrip or Mac user-crash cause is established. Authored preK5.1/current filename records, raw date extremes, exact roundtrip and malformed truncations; no private sample or native table bytes published.",
+      "accepted": false
+    },
+    {
+      "id": "readable-restored-delivery-receipt",
+      "summary": "Expose readable delivery status, report ID and allowed public issue link in Logs and restore whitelisted receipt fields",
+      "source_commits": [
+        "de15ed2597a59d9c92865d152d110372e2a9ec55"
+      ],
+      "validation": "Pending acceptance. Fresh isolated source 9c1f7d149652f537683fbb58a5912ecf5a4bc12c passed locked all-targets/all-features checking, test compilation and production build. Frozen library test executable d197d5c85727 passed six Ladder regressions; BUFFR durable-file 10, flight-recorder 11 and optional-date one vendor regression passed, with all 477 tracked source hashes unchanged. Linux native strict-MPE CLAP and authored-tone VST3 gates passed as reported by the maintainer. Reporter focus has 57 passes and one failed restart fixture; corrected actor-lifecycle fixture, final coherent full library/playback and fresh native/vendor provenance remain release prerequisites. No production GitHub upload/issue roundtrip or Mac user-crash cause is established. Receipt/schema and public-URL fixtures pass. No private service fields or arbitrary issue URLs restored; production crash-to-issue roundtrip remains unproved.",
+      "accepted": false
+    },
+    {
+      "id": "native-report-host-and-fatal-confirmation",
+      "summary": "Require the recorded host executable/application and documented fatal Mac metadata before native crash confirmation",
+      "source_commits": [
+        "de15ed2597a59d9c92865d152d110372e2a9ec55",
+        "2031e2c6deb774adad8b39b55b30fd941c475577"
+      ],
+      "validation": "Pending acceptance. Fresh isolated source 9c1f7d149652f537683fbb58a5912ecf5a4bc12c passed locked all-targets/all-features checking, test compilation and production build. Frozen library test executable d197d5c85727 passed six Ladder regressions; BUFFR durable-file 10, flight-recorder 11 and optional-date one vendor regression passed, with all 477 tracked source hashes unchanged. Linux native strict-MPE CLAP and authored-tone VST3 gates passed as reported by the maintainer. Reporter focus has 57 passes and one failed restart fixture; corrected actor-lifecycle fixture, final coherent full library/playback and fresh native/vendor provenance remain release prerequisites. No production GitHub upload/issue roundtrip or Mac user-crash cause is established. Linux executable, Mac type309/PID/application/exception and Windows WER application are checked. Missing, simulated/nonfatal, oversized or mismatched evidence stays unconfirmed. Confirmation does not assign KONTRA fault ownership.",
+      "accepted": false
+    },
+    {
+      "id": "native-report-quoted-path-redaction",
+      "summary": "Redact quoted Unix paths, either Windows drive separator and UNC assignments while retaining exception/frame symbols",
+      "source_commits": [
+        "de15ed2597a59d9c92865d152d110372e2a9ec55"
+      ],
+      "validation": "Pending acceptance. Fresh isolated source 9c1f7d149652f537683fbb58a5912ecf5a4bc12c passed locked all-targets/all-features checking, test compilation and production build. Frozen library test executable d197d5c85727 passed six Ladder regressions; BUFFR durable-file 10, flight-recorder 11 and optional-date one vendor regression passed, with all 477 tracked source hashes unchanged. Linux native strict-MPE CLAP and authored-tone VST3 gates passed as reported by the maintainer. Reporter focus has 57 passes and one failed restart fixture; corrected actor-lifecycle fixture, final coherent full library/playback and fresh native/vendor provenance remain release prerequisites. No production GitHub upload/issue roundtrip or Mac user-crash cause is established. Authored pattern fixtures; not a guarantee for arbitrary unseen native fields. Automatic uploads remain sanitized; manual archived originals are explicitly unredacted.",
+      "accepted": false
+    },
+    {
+      "id": "bounded-journal-capture-private-originals",
+      "summary": "Bound recovered journal capture and preserve complete private originals with explicit integrity and loss accounting",
+      "source_commits": [
+        "d108ea5fd3bbe8772315fe7cbbad75cfd5f48721",
+        "95bd8792ca021e7ce4f0a39024ee72baccd884f0",
+        "a949b387cfec11c2865cee4205b9089b89b10344",
+        "2f1572c8628e4e200392a8b62b9e62160eea6cb7"
+      ],
+      "validation": "Pending acceptance. Fresh isolated source 9c1f7d149652f537683fbb58a5912ecf5a4bc12c passed locked all-targets/all-features checking, test compilation and production build. Frozen library test executable d197d5c85727 passed six Ladder regressions; BUFFR durable-file 10, flight-recorder 11 and optional-date one vendor regression passed, with all 477 tracked source hashes unchanged. Linux native strict-MPE CLAP and authored-tone VST3 gates passed as reported by the maintainer. Reporter focus has 57 passes and one failed restart fixture; corrected actor-lifecycle fixture, final coherent full library/playback and fresh native/vendor provenance remain release prerequisites. No production GitHub upload/issue roundtrip or Mac user-crash cause is established. 128startup/2048recent records, original BLAKE3/size, sequence gaps/omissions and drops including omitted records. Full original is retained locally after acknowledgement, with no automatic pruning. Count corrections and omitted-slot refixture stay in this outcome. Vendor full checks also pass at2f.",
+      "accepted": false
+    },
+    {
+      "id": "live-durable-publisher-recovery-protection",
+      "summary": "Exclude a live durable publisher's lock and in-flight files from stale-session recovery",
+      "source_commits": [
+        "00c036224293dda305a8bab26d93e16fa50ff911"
+      ],
+      "validation": "Pending acceptance. Fresh isolated source 9c1f7d149652f537683fbb58a5912ecf5a4bc12c passed locked all-targets/all-features checking, test compilation and production build. Frozen library test executable d197d5c85727 passed six Ladder regressions; BUFFR durable-file 10, flight-recorder 11 and optional-date one vendor regression passed, with all 477 tracked source hashes unchanged. Linux native strict-MPE CLAP and authored-tone VST3 gates passed as reported by the maintainer. Reporter focus has 57 passes and one failed restart fixture; corrected actor-lifecycle fixture, final coherent full library/playback and fresh native/vendor provenance remain release prerequisites. No production GitHub upload/issue roundtrip or Mac user-crash cause is established. Distinct existing session-scanner defect: recovery must not delete live publication coordination artifacts. The augmented namespace test explicitly preserves live marker/lock/temporary bytes.",
+      "accepted": false
+    },
+    {
+      "id": "deferred-unconfirmed-incident-progress",
+      "summary": "Preserve unconfirmed incidents privately without blocking later confirmed recovery and delivery",
+      "source_commits": [
+        "ae119ad5bb10ec44bbfe91bd607825e760cb6f48",
+        "5e4e345912b645ddf552453f4a4d28f43059975c",
+        "2f1572c8628e4e200392a8b62b9e62160eea6cb7"
+      ],
+      "validation": "Pending acceptance. Fresh isolated source 9c1f7d149652f537683fbb58a5912ecf5a4bc12c passed locked all-targets/all-features checking, test compilation and production build. Frozen library test executable d197d5c85727 passed six Ladder regressions; BUFFR durable-file 10, flight-recorder 11 and optional-date one vendor regression passed, with all 477 tracked source hashes unchanged. Linux native strict-MPE CLAP and authored-tone VST3 gates passed as reported by the maintainer. Reporter focus has 57 passes and one failed restart fixture; corrected actor-lifecycle fixture, final coherent full library/playback and fresh native/vendor provenance remain release prerequisites. No production GitHub upload/issue roundtrip or Mac user-crash cause is established. Bounded32record rechecks and retained discovery cursor, cancellation/failure preservation and exact acknowledged duplicate cleanup. Cleanup/refixture corrections do not add counts.",
+      "accepted": false
+    },
+    {
+      "id": "serialized-support-wire-size-cap",
+      "summary": "Enforce the actual serialized UTF8 service JSON cap before network submission",
+      "source_commits": [
+        "c0f1d578aefc7cc835f9e885475a42381509ea0a"
+      ],
+      "validation": "Pending acceptance. Fresh isolated source 9c1f7d149652f537683fbb58a5912ecf5a4bc12c passed locked all-targets/all-features checking, test compilation and production build. Frozen library test executable d197d5c85727 passed six Ladder regressions; BUFFR durable-file 10, flight-recorder 11 and optional-date one vendor regression passed, with all 477 tracked source hashes unchanged. Linux native strict-MPE CLAP and authored-tone VST3 gates passed as reported by the maintainer. Reporter focus has 57 passes and one failed restart fixture; corrected actor-lifecycle fixture, final coherent full library/playback and fresh native/vendor provenance remain release prerequisites. No production GitHub upload/issue roundtrip or Mac user-crash cause is established. Complete serialized body/escaping is counted, not estimated fields; over-cap evidence stays local for support review. Service storage/deployment itself is not a KONTRA patch increment.",
+      "accepted": false
+    },
+    {
+      "id": "bounded-legacy-and-native-evidence-reads",
+      "summary": "Bound legacy report/native reads and preserve complete oversized originals before retiring their local slots",
+      "source_commits": [
+        "052c863c7ed7f88709285c48727073d53dc2d0f1",
+        "2031e2c6deb774adad8b39b55b30fd941c475577"
+      ],
+      "validation": "Pending acceptance. Fresh isolated source 9c1f7d149652f537683fbb58a5912ecf5a4bc12c passed locked all-targets/all-features checking, test compilation and production build. Frozen library test executable d197d5c85727 passed six Ladder regressions; BUFFR durable-file 10, flight-recorder 11 and optional-date one vendor regression passed, with all 477 tracked source hashes unchanged. Linux native strict-MPE CLAP and authored-tone VST3 gates passed as reported by the maintainer. Reporter focus has 57 passes and one failed restart fixture; corrected actor-lifecycle fixture, final coherent full library/playback and fresh native/vendor provenance remain release prerequisites. No production GitHub upload/issue roundtrip or Mac user-crash cause is established. 8MiB buffered local inputs, complete private streaming archive+manifest, explicit bounded native prefix/suffix and no partial-JSON confirmation. Archive failure/cancellation preserves the source; no automatic raw-file upload.",
+      "accepted": false
+    },
+    {
+      "id": "independent-durable-incident-queue",
+      "summary": "Retain independent keyed crash incidents with atomic exact-ID acknowledgement, safe migration and onward confirmed delivery",
+      "source_commits": [
+        "1fdcbb9b23fa8738cbcb9bf333a294aad181050b",
+        "43c529ad20cbb60ac63d2c62c87be86f909bbe9f",
+        "d1c899491e82682e56de21ebe75e690c4eeb46e7",
+        "49bbc50d593f53b1dae932c6817ff1d752fe1231",
+        "84605c87f8a650b91c02b631b719de55598b88fe",
+        "b9e1782ade2d44232b389c6572790e038755ab8c"
+      ],
+      "validation": "Pending acceptance. Fresh isolated source 9c1f7d149652f537683fbb58a5912ecf5a4bc12c passed locked all-targets/all-features checking, test compilation and production build. Frozen library test executable d197d5c85727 passed six Ladder regressions; BUFFR durable-file 10, flight-recorder 11 and optional-date one vendor regression passed, with all 477 tracked source hashes unchanged. Linux native strict-MPE CLAP and authored-tone VST3 gates passed as reported by the maintainer. Reporter focus has 57 passes and one failed restart fixture; corrected actor-lifecycle fixture, final coherent full library/playback and fresh native/vendor provenance remain release prerequisites. No production GitHub upload/issue roundtrip or Mac user-crash cause is established. b9 proves exact keyed/migration/CAS, acknowledged queue drain after real permit drop, interleaved adoption and failed-retirement stop. Uses controlled local delivery fixtures, not production service upload. 49/fef,846 andb9 fixture synchronization remain grouped under multiqueue; accepted123permit release is not recounted.",
+      "accepted": false
+    },
+    {
+      "id": "manual-private-crash-evidence-export",
+      "summary": "Include exact archived private crash originals and saved delivery/queue records in reviewed manual support exports",
+      "source_commits": [
+        "e578c7b8d12864a328d86da32cd4987cd2dd025c",
+        "d2f512874b66719dfda13b71c7e9341f5fd42e04"
+      ],
+      "validation": "Pending acceptance. Fresh isolated source 9c1f7d149652f537683fbb58a5912ecf5a4bc12c passed locked all-targets/all-features checking, test compilation and production build. Frozen library test executable d197d5c85727 passed six Ladder regressions; BUFFR durable-file 10, flight-recorder 11 and optional-date one vendor regression passed, with all 477 tracked source hashes unchanged. Linux native strict-MPE CLAP and authored-tone VST3 gates passed as reported by the maintainer. Reporter focus has 57 passes and one failed restart fixture; corrected actor-lifecycle fixture, final coherent full library/playback and fresh native/vendor provenance remain release prerequisites. No production GitHub upload/issue roundtrip or Mac user-crash cause is established. Actual local export fixture checks exact original bytes, bounded ownership metadata, changed journal identity, per-file missing/active/incomplete coverage and owner replacement. Copies are unredacted regardless of structured-log toggle; no OS-directory search or binary dump copying. Root classifies this distinct Added outcome as countable.",
+      "accepted": false
+    },
+    {
+      "id": "recorded-incident-metadata-and-stable-wire-evidence",
+      "summary": "Report the recorded incident host/build/system and keep submitted evidence invariant across later reopening contexts",
+      "source_commits": [
+        "557c2a691da99db431513969621b5fa1f67ac0fd",
+        "f4a2a4fc0decc56c1204ca0b419bf36c9d03c323",
+        "1448126aca3c59b597896bc6e5edaf84c2469905"
+      ],
+      "validation": "Pending acceptance. Fresh isolated source 9c1f7d149652f537683fbb58a5912ecf5a4bc12c passed locked all-targets/all-features checking, test compilation and production build. Frozen library test executable d197d5c85727 passed six Ladder regressions; BUFFR durable-file 10, flight-recorder 11 and optional-date one vendor regression passed, with all 477 tracked source hashes unchanged. Linux native strict-MPE CLAP and authored-tone VST3 gates passed as reported by the maintainer. Reporter focus has 57 passes and one failed restart fixture; corrected actor-lifecycle fixture, final coherent full library/playback and fresh native/vendor provenance remain release prerequisites. No production GitHub upload/issue roundtrip or Mac user-crash cause is established. Recorded metadata first, explicit unknowns, recorded process fallback; complete evidence renderer excludes current BUILD-dependent wording. Current reporter context is a separate local diagnostics event, not submitted private-full evidence. No production roundtrip or native Mac cause claim. These correction leaves are one invariant/outcome, not three counts.",
+      "accepted": false
+    },
+    {
+      "id": "oversized-automatic-report-manual-disposition",
+      "summary": "Retain over-limit complete reports for manual export without blocking other queued incidents or claiming automatic retry or delivery",
+      "source_commits": [
+        "cc5116fa449217f2d270cad5a0c46b33908c2cd8",
+        "852c196917bde2abe249f3e55fb4168f61b9b7eb",
+        "9c1f7d149652f537683fbb58a5912ecf5a4bc12c"
+      ],
+      "validation": "Pending acceptance. Fresh isolated source 9c1f7d149652f537683fbb58a5912ecf5a4bc12c passed locked all-targets/all-features checking, test compilation and production build. Frozen library test executable d197d5c85727 passed six Ladder regressions; BUFFR durable-file 10, flight-recorder 11 and optional-date one vendor regression passed, with all 477 tracked source hashes unchanged. Linux native strict-MPE CLAP and authored-tone VST3 gates passed as reported by the maintainer. Reporter focus has 57 passes and one failed restart fixture; corrected actor-lifecycle fixture, final coherent full library/playback and fresh native/vendor provenance remain release prerequisites. No production GitHub upload/issue roundtrip or Mac user-crash cause is established. Typed 16 MiB serialized-JSON overflow preserves the exact private source before durable source-digest/recipe/limit-bound manual disposition. No network acknowledgement or incident deletion is invented. Unchanged evidence is skipped after permit release so other queued incidents can proceed once; changed source/recipe/limit is reevaluated. Offline delivery and unrelated failures do not acquire this terminal disposition. Logs and restored receipt truthfully say manual export required with automatic retry paused. Continuation/idempotence and tiny receipt refinements are grouped into this single outcome; original serializer cap and manual-export feature are not recounted. No production service roundtrip proof.",
+      "accepted": false
     }
   ]
 }
