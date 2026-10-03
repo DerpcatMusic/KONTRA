@@ -13,6 +13,7 @@ pub enum Params {
     SendLevels(SendLevels),
     StereoModeller(StereoModeller),
     Reverb(Reverb),
+    LegacyReverb(LegacyReverb),
     Convolution(Box<Convolution>),
     Filter(Filter),
     Eq(Eq),
@@ -45,6 +46,17 @@ pub struct StereoModeller {
     /// -1 left .. 1 right.
     pub pan: f32,
     pub pseudo_stereo: bool,
+}
+
+/// Version 0x50 `BParFXReverb`, in serialization order. These are physical
+/// saved values, distinct from the later RV2 algorithm and its parameters.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct LegacyReverb {
+    pub predelay_ms: f32,
+    pub size: f32,
+    pub stereo: f32,
+    pub color: f32,
+    pub damping: f32,
 }
 
 /// `BParFXFilter` with a filter type: normalized knobs, see `audits/EFFECTS.md`.
@@ -383,6 +395,19 @@ pub(super) fn defaults(kind: Kind) -> Params {
 
 /// Versioned records cannot be recognized safely from their byte count alone.
 pub(crate) fn parse_versioned(kind: Kind, version: u16, data: &[u8]) -> Params {
+    if kind == Kind::LegacyReverb {
+        // Both the native reader and writer require exactly this revision
+        // and five floats. Preserve other revisions as opaque parameters.
+        if version == 0x50 && data.len() == 20 {
+            let mut r = Reader(data);
+            if let Some([predelay_ms, size, stereo, color, damping]) = r.array() {
+                return Params::LegacyReverb(LegacyReverb {
+                    predelay_ms, size, stereo, color, damping,
+                });
+            }
+        }
+        return Params::Opaque { bytes: data.len() };
+    }
     if kind == Kind::Filter && data.get(..4).is_some_and(|b| {
         (30..=41).contains(&i32::from_le_bytes(b.try_into().unwrap()))
     }) {
@@ -789,4 +814,29 @@ mod tests {
         assert!(matches!(f[5].value, Value::Flag(true)));
         assert!(matches!(parse(Kind::Twang, &data), Params::Opaque { .. }));
     }
+    #[test]
+    fn legacy_reverb_versioned_physical_fields_preserve_exact_order_and_bits() {
+        let values = [23.25f32, 0.625, 0.375, 0.875, 0.125];
+        let bytes: Vec<_> = values.into_iter().flat_map(f32::to_le_bytes).collect();
+        let Params::LegacyReverb(p) = parse_versioned(Kind::LegacyReverb, 0x50, &bytes)
+            else { panic!("known physical five-field record") };
+        assert_eq!([p.predelay_ms, p.size, p.stereo, p.color, p.damping].map(f32::to_bits), values.map(f32::to_bits));
+        let restored: Params = serde_json::from_str(&serde_json::to_string(&Params::LegacyReverb(p)).unwrap()).unwrap();
+        let Params::LegacyReverb(restored) = restored else { panic!("cache variant") };
+        assert_eq!(restored.color.to_bits(), p.color.to_bits());
+        for revision in [0, 0x4f, 0x51] {
+            assert!(matches!(parse_versioned(Kind::LegacyReverb, revision, &bytes), Params::Opaque { bytes: 20 }));
+        }
+        for len in 0..20 {
+            assert!(matches!(parse_versioned(Kind::LegacyReverb, 0x50, &bytes[..len]), Params::Opaque { .. }));
+        }
+        let mut extra = bytes.clone(); extra.push(0);
+        assert!(matches!(parse_versioned(Kind::LegacyReverb, 0x50, &extra), Params::Opaque { bytes: 21 }));
+        let nonfinite: Vec<_> = [f32::NAN, -0.0, 1.0, 0.0, 0.5].into_iter().flat_map(f32::to_le_bytes).collect();
+        let Params::LegacyReverb(p) = parse_versioned(Kind::LegacyReverb, 0x50, &nonfinite)
+            else { panic!("decode preserves saved bits; DSP validates separately") };
+        assert!(p.predelay_ms.is_nan());
+        assert_eq!(p.size.to_bits(), (-0.0f32).to_bits());
+    }
+
 }
