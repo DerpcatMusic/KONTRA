@@ -1193,15 +1193,21 @@ fn racked(
                 instrument: Some(i.clone()),
                 active: i.name.clone(),
                 bytes: 180 << 20,
-                loading: state == "error" && slot == 2,
-                status: if state == "error" && slot == 0 {
-                    "Load failed: missing sample data in archive".into()
-                } else {
-                    format!("{} groups · {} zones", i.groups.len(), i.zones.len())
-                },
+                status: format!("{} groups · {} zones", i.groups.len(), i.zones.len()),
                 ..Default::default()
             };
         }
+    }
+    rack_state(&p, state);
+    p
+}
+
+/// State changes are isolated from the expensive library/script preparation.
+fn rack_state(p: &Arc<SamplerParams>, state: &str) {
+    if state == "error" {
+        let mut view = p.shared.view.lock().unwrap();
+        view.parts[2].loading = true;
+        view.parts[0].status = "Load failed: missing sample data in archive".into();
     }
     p.selection.write().unwrap().appearance = match state {
         "color" => 1,
@@ -1258,7 +1264,36 @@ fn racked(
             p.shared.heard[note].store(velocity, Ordering::Relaxed);
         }
     }
+}
+
+fn copied_rack(prepared: &Arc<SamplerParams>, state: &str) -> Arc<SamplerParams> {
+    let p = Arc::new(SamplerParams::new());
+    *p.selection.write().unwrap() = prepared.selection.read().unwrap().clone();
+    *p.shared.view.lock().unwrap() = prepared.shared.view.lock().unwrap().clone();
+    rack_state(&p, state);
     p
+}
+
+#[test]
+fn screenshot_rack_copies_keep_state_and_publications_independent() {
+    let prepared = scripted_part("on init\nmake_perfview\ndeclare ui_knob $gain(0,100,1)\nend on");
+    let original = prepared.shared.view.lock().unwrap().parts[0].interface.clone().unwrap();
+    let colored = copied_rack(&prepared, "color");
+    let pressed = copied_rack(&prepared, "pressed");
+    assert_eq!(colored.selection.read().unwrap().appearance, 1);
+    assert_eq!(pressed.selection.read().unwrap().appearance, 0);
+    assert_eq!(prepared.selection.read().unwrap().appearance, 0);
+    assert_eq!(pressed.shared.heard[14].load(Ordering::Relaxed), 127);
+    assert_eq!(colored.shared.heard[14].load(Ordering::Relaxed), 0);
+    assert_eq!(prepared.shared.heard[14].load(Ordering::Relaxed), 0);
+    publish_interface(&colored, |ui| {
+        ui.controls[0].properties.insert("$CONTROL_PAR_VALUE".into(), crate::ksp::Value::Int(42));
+    });
+    for p in [&prepared, &pressed] {
+        let retained = p.shared.view.lock().unwrap().parts[0].interface.clone().unwrap();
+        assert!(Arc::ptr_eq(&original, &retained));
+        assert_eq!(retained.controls[0].properties["$CONTROL_PAR_VALUE"], crate::ksp::Value::Int(0));
+    }
 }
 
 /// Prints a library instrument's script controls as authored and as the
@@ -1555,6 +1590,12 @@ fn screenshot() {
         .filter_map(|w| w.trim().parse().ok())
         .map(|w: u16| (w, if w < 1000 { 600 } else if w > 1500 { 1000 } else { 760 }))
         .collect();
+    // Prepare each library variant once; every state/width still gets fresh
+    // shared state, selection and view. Interfaces and artwork are immutable Arcs.
+    let loaded_rack = racked(&files, &instruments, true, "perform");
+    let empty_rack = racked(&files, &instruments, false, "perform");
+    let covers_rack = racked(&files, &instruments, false, "covers");
+    let no_libraries_rack = racked(&files, &instruments, false, "no-libraries");
     // Sticky headers need a second part to scroll past the first.
     let sticky_ok = instruments.len() > 1;
     for &(state, loaded, presses) in states
@@ -1563,7 +1604,13 @@ fn screenshot() {
         .filter(|(s, loaded, _)| wanted(s) && (*s != "sticky" || sticky_ok) && (!loaded || !instruments.is_empty()))
     {
         for &(width, height) in &sizes {
-            let p = racked(&files, &instruments, loaded, state);
+            let prepared = match state {
+                "covers" => &covers_rack,
+                "no-libraries" => &no_libraries_rack,
+                _ if loaded => &loaded_rack,
+                _ => &empty_rack,
+            };
+            let p = copied_rack(prepared, state);
             if state == "library-ui" { p.selection.write().unwrap().parts.iter_mut().for_each(|p| p.view = 1); }
             if state == "sound-edited" {
                 use crate::engine::overrides::{Override, Param};
