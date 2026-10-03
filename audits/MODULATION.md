@@ -778,8 +778,9 @@ retrigger enabled, zero phase, synchronized positive note value
 and count>=1, sine weight magnitude<=1, and the other four weights zero.
 Only ordinary sampler pitch targets with finite signed depth, zero lag,
 no inversion and no enabled shaper are applied. External assignments to
-the source's own parameters exclude it. Other states and live LFO timing/bypass engine
-parameter writes retain explicit unsupported diagnostics. Admitted pitch sources
+the source's own parameters exclude it. Other states and live LFO timing engine
+parameter writes retain explicit unsupported diagnostics. Live source bypass is
+applied only to these prepared pitch LFOs, by original source slot. Admitted pitch sources
 retain each original target index and signed depth. Signed legacy and modern
 intensity aliases and unsigned target intensity address those individual routes,
 update the prepared sum without allocation or phase reset, and share one physical
@@ -862,3 +863,29 @@ source frames; it is a standalone math check, not an engine PCM result.
 Primary control semantics: [Kontakt modulation reference](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/modulation).
 The mathematical legacy distinction comes from independent native dataflow,
 not from interpreting the manual's general description as an exact curve.
+
+### Live bypass of prepared pitch LFOs
+
+`$ENGINE_PAR_INTMOD_BYPASS` controls each admitted pitch source's prepared
+bypass flag. The source slot is preserved independently from envelope indices
+and insert-effect slots. Existing native edit storage seeds getters, applies
+changes without audio-thread allocation, and restores edits before init getters.
+Unprepared free-running or wider-wave sources remain unsupported; this does not
+implement their clocks or enable non-pitch routes.
+
+Independent native source processing skips both waveform generation and target
+binding for a bypassed source. The pitch consumer validates the current target
+buffer before interpolating it: when no active source binds pitch, it uses base
+pitch and leaves its previous/current interpolation state intact. With another
+active source, only the remaining contribution enters the ordinary control-point
+sum. Phase and legacy fade progression pause while bypassed; the separate
+audio interpolation offset continues. KONTRA retains the existing note-clock
+32-frame adapter and its documented native host-alignment boundary.
+
+The focused gate uses an independent linear-source PCM reference for single and
+mixed sources, mid-tick removal/resumption, paused phase/fade, all-source bypass,
+13/19 versus128 fragments, release retirement, zero heap, readback, restoration
+and a fresh load without prior edits. Actual-library parity remains a separate
+validation task. The general parameter contract is documented in the
+[Kontakt engine parameter reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters#modulation);
+the clock and interpolation behavior is grounded in independent native dataflow.
