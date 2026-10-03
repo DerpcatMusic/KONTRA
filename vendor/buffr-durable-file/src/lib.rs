@@ -23,6 +23,51 @@ pub fn lock_path(path: &Path) -> Option<PathBuf> {
     Some(parent.join(lock_file_name(file_name)))
 }
 
+/// Holds the same advisory lock as publication, with bounded acquisition.
+/// Keep the returned file alive through any read-and-retire operation. This
+/// coordinates only callers using this lock; it cannot serialize external edits.
+pub fn acquire_publisher_lock(
+    path: &Path,
+    wait: std::time::Duration,
+) -> std::io::Result<std::fs::File> {
+    publisher_lock(path, Some(wait))
+}
+
+fn publisher_lock(
+    path: &Path,
+    wait: Option<std::time::Duration>,
+) -> std::io::Result<std::fs::File> {
+    use fs4::FileExt;
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("publication path has no parent"))?;
+    std::fs::create_dir_all(parent).map_err(|error| at_path("create", parent, error))?;
+    let lock_path = lock_path(path)
+        .ok_or_else(|| std::io::Error::other("publication path has an invalid filename"))?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|error| at_path("open", &lock_path, error))?;
+    if let Some(wait) = wait {
+        let deadline = std::time::Instant::now() + wait;
+        loop {
+            match lock.try_lock() {
+                Ok(()) => break,
+                Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => return Err(at_path("lock", &lock_path, error.into())),
+            }
+        }
+    } else {
+        FileExt::lock(&lock).map_err(|error| at_path("lock", &lock_path, error))?;
+    }
+    Ok(lock)
+}
+
 fn lock_file_name(file_name: &str) -> String {
     format!("{ARTIFACT_PREFIX}{file_name}{LOCK_SUFFIX}")
 }
@@ -169,8 +214,6 @@ fn publish_streaming_with_lock(
     lock_wait: Option<std::time::Duration>,
     write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
-    use fs4::FileExt;
-
     #[cfg(not(unix))]
     let _ = private;
 
@@ -182,28 +225,7 @@ fn publish_streaming_with_lock(
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| std::io::Error::other("publication path has an invalid filename"))?;
-    let lock_path = parent.join(lock_file_name(file_name));
-    let lock_file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&lock_path)
-        .map_err(|error| at_path("open", &lock_path, error))?;
-    if let Some(wait) = lock_wait {
-        let deadline = std::time::Instant::now() + wait;
-        loop {
-            match lock_file.try_lock() {
-                Ok(()) => break,
-                Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                Err(error) => return Err(at_path("lock", &lock_path, error.into())),
-            }
-        }
-    } else {
-        FileExt::lock(&lock_file).map_err(|error| at_path("lock", &lock_path, error))?;
-    }
+    let _publisher_lock = publisher_lock(path, lock_wait)?;
 
     let (temporary, mut temp_file) = loop {
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
