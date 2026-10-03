@@ -927,8 +927,20 @@ fn join_support_workers(workers: Vec<std::thread::JoinHandle<()>>) {
 }
 
 pub(crate) fn refresh_pending_incident(incident_id: &str) -> Option<CrashIncident> {
-    let incident = pending_incident().filter(|incident| incident.id == incident_id)?;
+    let (incident, observed_hash) = pending_snapshot(incident_id).or_else(|| {
+        pending_incident()
+            .filter(|i| i.id == incident_id)
+            .map(|i| (i, String::new()))
+    })?;
     if incident.kind != IncidentKind::UncleanExit || incident.panic.is_some() {
+        if let Some(current) = REPORTER
+            .pending
+            .lock_unpoisoned()
+            .as_mut()
+            .filter(|i| i.id == incident_id)
+        {
+            *current = incident.clone();
+        }
         return Some(incident);
     }
 
@@ -943,10 +955,13 @@ pub(crate) fn refresh_pending_incident(incident_id: &str) -> Option<CrashInciden
     let current = pending
         .as_mut()
         .filter(|current| current.id == incident_id)?;
-    let mut refreshed = current.clone();
-    if apply_delayed_crash_evidence(&mut refreshed, &evidence) && save_pending_incident(&refreshed)
+    let mut refreshed = incident;
+    if apply_delayed_crash_evidence(&mut refreshed, &evidence)
+        && save_pending_if_unchanged(&refreshed, &observed_hash)
     {
         *current = refreshed;
+    } else if let Some(latest) = load_pending_by_id(incident_id) {
+        *current = latest;
     }
     Some(current.clone())
 }
@@ -1015,9 +1030,8 @@ fn incident_diagnostics(incident_id: &str, base: &str, complete: bool) -> String
     // this -- and reading only from disk then silently dropped every frame,
     // every correlated evidence block and the whole platform section while the
     // payload still went out classified `platform_crash`.
-    let Some(incident) = pending_incident()
-        .filter(|incident| incident.id == incident_id)
-        .or_else(|| load_pending_by_id(incident_id))
+    let Some(incident) = load_pending_by_id(incident_id)
+        .or_else(|| pending_incident().filter(|incident| incident.id == incident_id))
     else {
         return base.to_string();
     };
@@ -1452,15 +1466,15 @@ fn find_stale_candidate(stopping: &AtomicBool, confirmed_only: bool) -> Option<R
 
 fn recover_pending_slot(pending: &Mutex<Option<CrashIncident>>, stopping: &AtomicBool) -> bool {
     let previous = pending.lock_unpoisoned().clone();
-    if !migrate_legacy_pending(stopping) {
-        return false;
-    }
     if previous
         .as_ref()
         .is_some_and(CrashIncident::auto_reportable)
     {
         return false;
     }
+    // Migration failure retains the legacy source, but cannot block independent
+    // keyed reports: no recovered incident writes that shared legacy path.
+    let _ = migrate_legacy_pending(stopping);
     let (queued, unknown) =
         find_pending_candidates(stopping, previous.as_ref().map(|i| i.id.as_str()));
     let queued_candidate = |incident: CrashIncident| RecoveredCandidate {
@@ -1604,6 +1618,21 @@ impl RecoveredCandidate {
             panic_path,
             mut incident,
         } = self;
+        if keyed_pending_incident_path(&incident.id).as_ref() == Some(&marker_path) {
+            let _publisher_lock = buffr_durable_file::acquire_publisher_lock(
+                &marker_path,
+                std::time::Duration::from_millis(500),
+            )
+            .ok()?;
+            if stopping.load(Ordering::Acquire) {
+                return None;
+            }
+            // Another host may have refreshed this ID since discovery. Adopt
+            // its latest durable bytes; never write the observed snapshot back.
+            return read_json::<CrashIncident>(&marker_path)
+                .and_then(normalize_pending)
+                .filter(|current| current.id == incident.id);
+        }
         let mut archived = journal_path.is_none();
         if let Some(journal) = journal_path.as_ref() {
             let name = format!("{}.dfr", incident.id);
@@ -1647,7 +1676,7 @@ impl RecoveredCandidate {
                 &panic_path,
             );
         }
-        Some(incident)
+        load_pending_by_id(&incident.id).or(Some(incident))
     }
 }
 
@@ -2056,10 +2085,89 @@ fn normalize_pending(mut incident: CrashIncident) -> Option<CrashIncident> {
     Some(incident)
 }
 
-fn load_pending_by_id(incident_id: &str) -> Option<CrashIncident> {
+fn pending_snapshot(incident_id: &str) -> Option<(CrashIncident, String)> {
     let path = keyed_pending_incident_path(incident_id)?;
-    let incident: CrashIncident = read_json(&path)?;
-    normalize_pending(incident).filter(|i| i.id == incident_id)
+    let bytes = super::read_bounded_file(&path, super::LOCAL_REPORT_BYTES).ok()??;
+    let incident = normalize_pending(serde_json::from_slice::<CrashIncident>(&bytes).ok()?)?;
+    (incident.id == incident_id).then(|| (incident, blake3::hash(&bytes).to_hex().to_string()))
+}
+
+fn load_pending_by_id(incident_id: &str) -> Option<CrashIncident> {
+    pending_snapshot(incident_id).map(|(incident, _)| incident)
+}
+
+fn save_pending_if_unchanged(incident: &CrashIncident, expected_hash: &str) -> bool {
+    let Some(path) = keyed_pending_incident_path(&incident.id) else {
+        return false;
+    };
+    let Ok(bytes) = serde_json::to_vec(incident) else {
+        return false;
+    };
+    buffr_durable_file::publish_private_streaming(
+        &path,
+        std::time::Duration::from_millis(500),
+        |file| {
+            let Some(current) = super::read_bounded_file(&path, super::LOCAL_REPORT_BYTES)? else {
+                return Err(std::io::Error::from(std::io::ErrorKind::InvalidData));
+            };
+            if blake3::hash(&current).to_hex().as_str() != expected_hash {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "incident changed during evidence collection",
+                ));
+            }
+            let previous: CrashIncident =
+                serde_json::from_slice(&current).map_err(std::io::Error::other)?;
+            if !same_pending_identity(&previous, incident)
+                || (previous.auto_reportable() && !incident.auto_reportable())
+            {
+                return Err(std::io::Error::from(std::io::ErrorKind::InvalidData));
+            }
+            preserve_original_file(
+                &path,
+                "keyed-pending-before-proof-refresh",
+                &AtomicBool::new(false),
+                Some((current.len() as u64, expected_hash)),
+            )?;
+            std::io::Write::write_all(file, &bytes)
+        },
+    )
+    .is_ok()
+}
+
+/// Add stronger proof without replacing the current host/build/journal fields.
+/// A matching ID alone cannot authorize joining evidence from another identity.
+fn same_pending_identity(current: &CrashIncident, incoming: &CrashIncident) -> bool {
+    current.id == incoming.id
+        && current.pid == incoming.pid
+        && current.started_at == incoming.started_at
+        && comparable_process_name(&current.host_process)
+            == comparable_process_name(&incoming.host_process)
+        && current.version == incoming.version
+        && current.build_id == incoming.build_id
+        && current.plugin_api == incoming.plugin_api
+        && current.os == incoming.os
+        && current.architecture == incoming.architecture
+}
+
+fn stronger_pending_proof(
+    current: &CrashIncident,
+    incoming: &CrashIncident,
+) -> Option<CrashIncident> {
+    if current.auto_reportable()
+        || !incoming.auto_reportable()
+        || !same_pending_identity(current, incoming)
+    {
+        return None;
+    }
+    let mut merged = current.clone();
+    merged.kind = incoming.kind;
+    merged.panic = incoming.panic.clone();
+    merged.evidence_signature = incoming.evidence_signature.clone();
+    merged.platform_evidence = incoming.platform_evidence.clone();
+    merged.detected_at = merged.detected_at.max(incoming.detected_at);
+    merged.dropped_events = merged.dropped_events.max(incoming.dropped_events);
+    Some(merged)
 }
 
 fn save_pending_incident(incident: &CrashIncident) -> bool {
@@ -2074,9 +2182,35 @@ fn save_pending_incident(incident: &CrashIncident) -> bool {
     match buffr_durable_file::publish_private_streaming(
         &path,
         std::time::Duration::from_millis(500),
-        |file| std::io::Write::write_all(file, &bytes),
+        |file| match super::read_bounded_file(&path, super::LOCAL_REPORT_BYTES) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::io::Write::write_all(file, &bytes)
+            }
+            Ok(Some(existing)) => {
+                let current: CrashIncident =
+                    serde_json::from_slice(&existing).map_err(std::io::Error::other)?;
+                if current.source_schema < 5 || !same_pending_identity(&current, incident) {
+                    return Err(std::io::Error::from(std::io::ErrorKind::InvalidData));
+                }
+                if let Some(merged) = stronger_pending_proof(&current, incident) {
+                    let digest = blake3::hash(&existing).to_hex().to_string();
+                    preserve_original_file(
+                        &path,
+                        "keyed-pending-before-stronger-proof",
+                        &AtomicBool::new(false),
+                        Some((existing.len() as u64, &digest)),
+                    )?;
+                    let merged = serde_json::to_vec(&merged).map_err(std::io::Error::other)?;
+                    std::io::Write::write_all(file, &merged)
+                } else {
+                    Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists))
+                }
+            }
+            _ => Err(std::io::Error::from(std::io::ErrorKind::InvalidData)),
+        },
     ) {
         Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => true,
         Err(error) => {
             crate::diagnostics::event(
                 crate::diagnostics::LogLevel::Error,
@@ -2129,7 +2263,8 @@ fn find_pending_candidates(
         if stopping.load(Ordering::Acquire) {
             return (None, None);
         }
-        let Some(mut incident) = read_json::<CrashIncident>(path).and_then(normalize_pending)
+        let Some((mut incident, observed_hash)) =
+            name.strip_suffix(".json").and_then(pending_snapshot)
         else {
             if std::fs::metadata(path).is_ok_and(|m| m.len() > super::LOCAL_REPORT_BYTES as u64) {
                 let _ = preserve_original_file(
@@ -2153,9 +2288,12 @@ fn find_pending_candidates(
                 stopping,
             );
             if apply_delayed_crash_evidence(&mut incident, &evidence)
-                && !save_pending_incident(&incident)
+                && !save_pending_if_unchanged(&incident, &observed_hash)
             {
-                continue; // Keep the durable original if refreshed proof cannot be saved.
+                let Some(latest) = load_pending_by_id(&incident.id) else {
+                    continue;
+                };
+                incident = latest; // Never overwrite another host's fresher evidence.
             }
         }
         let selection = if incident.auto_reportable() {
@@ -2241,11 +2379,30 @@ fn migrate_legacy_pending(stopping: &AtomicBool) -> bool {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                         std::io::Write::write_all(file, &serialized)
                     }
-                    Ok(Some(existing))
-                        if serde_json::from_slice::<CrashIncident>(&existing)
-                            .is_ok_and(|i| i.id == incident.id && i.source_schema >= 5) =>
-                    {
-                        Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists))
+                    Ok(Some(existing)) => {
+                        let current: CrashIncident =
+                            serde_json::from_slice(&existing).map_err(std::io::Error::other)?;
+                        if current.source_schema < 5 || !same_pending_identity(&current, &incident)
+                        {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "legacy/keyed incident identity differs; legacy original retained",
+                            ));
+                        }
+                        if let Some(merged) = stronger_pending_proof(&current, &incident) {
+                            let digest = blake3::hash(&existing).to_hex().to_string();
+                            preserve_original_file(
+                                &destination,
+                                "keyed-pending-before-legacy-proof",
+                                stopping,
+                                Some((existing.len() as u64, &digest)),
+                            )?;
+                            let merged =
+                                serde_json::to_vec(&merged).map_err(std::io::Error::other)?;
+                            std::io::Write::write_all(file, &merged)
+                        } else {
+                            Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists))
+                        }
                     }
                     _ => Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
@@ -3220,7 +3377,8 @@ mod tests {
         // evidence; its complete older original still survives privately.
         let mut updated = incident.clone();
         updated.platform_evidence.push_str(" + later proof");
-        assert!(save_pending_incident(&updated));
+        let observed = pending_snapshot(&incident.id).unwrap().1;
+        assert!(save_pending_if_unchanged(&updated, &observed));
         let updated_bytes = std::fs::read(&destination).unwrap();
         buffr_durable_file::publish_private(&pending_incident_path(), &bytes).unwrap();
         assert!(migrate_legacy_pending(&AtomicBool::new(false)));
@@ -3279,6 +3437,139 @@ mod tests {
                 .0
                 .is_none()
         );
+    }
+
+    #[test]
+    fn observed_queue_snapshots_cannot_overwrite_newer_same_id_proof() {
+        const CHILD: &str = "KONTRA_PENDING_FRESHNESS_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "support::crash::tests::observed_queue_snapshots_cannot_overwrite_newer_same_id_proof", "--test-threads=1"])
+                .env(CHILD, "1").env("KONTRA_REPORT_DIR", directory.path())
+                .env("KONTRA_DISABLE_NETWORK", "1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let mut observed = test_incident("0.3.115", "authored-freshness");
+        observed.id = "0123456789abcdef".into();
+        observed.host_name = "current host metadata".into();
+        observed.pid = u32::MAX - 170;
+        assert!(save_pending_incident(&observed));
+        let path = keyed_pending_incident_path(&observed.id).unwrap();
+        let observed_hash = pending_snapshot(&observed.id).unwrap().1;
+        let candidate = RecoveredCandidate {
+            marker_path: path.clone(),
+            journal_path: None,
+            panic_path: panic_marker_path(observed.pid),
+            incident: observed.clone(),
+        };
+        let mut confirmed = observed.clone();
+        confirmed.kind = IncidentKind::PlatformCrash;
+        confirmed.platform_evidence = "authored first confirmed exception and frame".into();
+        let confirmed_bytes = serde_json::to_vec(&confirmed).unwrap();
+        let publisher_path = path.clone();
+        let published = confirmed_bytes.clone();
+        std::thread::spawn(move || {
+            buffr_durable_file::publish_private_streaming(
+                &publisher_path,
+                std::time::Duration::from_secs(2),
+                |file| std::io::Write::write_all(file, &published),
+            )
+        })
+        .join()
+        .unwrap()
+        .unwrap();
+        let adopted = candidate.consume(&AtomicBool::new(false)).unwrap();
+        assert!(adopted.auto_reportable());
+        assert_eq!(adopted.platform_evidence, confirmed.platform_evidence);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            confirmed_bytes,
+            "adoption must not republish stale bytes"
+        );
+        assert!(!save_pending_if_unchanged(&observed, &observed_hash));
+        assert_eq!(std::fs::read(&path).unwrap(), confirmed_bytes);
+        let prior_hash = pending_snapshot(&confirmed.id).unwrap().1;
+        let mut latest = confirmed.clone();
+        latest.platform_evidence =
+            "authored later complete exception and additional native frame".into();
+        let latest_bytes = serde_json::to_vec(&latest).unwrap();
+        let publisher_path = path.clone();
+        let published = latest_bytes.clone();
+        std::thread::spawn(move || {
+            buffr_durable_file::publish_private_streaming(
+                &publisher_path,
+                std::time::Duration::from_secs(2),
+                |file| std::io::Write::write_all(file, &published),
+            )
+        })
+        .join()
+        .unwrap()
+        .unwrap();
+        assert!(!save_pending_if_unchanged(&confirmed, &prior_hash));
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            latest_bytes,
+            "stale confirmed proof cannot overwrite fresher frames"
+        );
+        assert!(save_pending_incident(&observed)); // Initial re-recovery adopts rather than replaces.
+        assert_eq!(std::fs::read(&path).unwrap(), latest_bytes);
+
+        // Confirmed legacy proof safely upgrades an unknown keyed record while
+        // preserving its current metadata and both complete private originals.
+        let mut keyed_unknown = observed.clone();
+        keyed_unknown.id = "fedcba9876543210".into();
+        assert!(save_pending_incident(&keyed_unknown));
+        let unknown_path = keyed_pending_incident_path(&keyed_unknown.id).unwrap();
+        let unknown_bytes = std::fs::read(&unknown_path).unwrap();
+        let mut legacy = keyed_unknown.clone();
+        legacy.kind = IncidentKind::PlatformCrash;
+        legacy.host_name = "older legacy host label".into();
+        legacy.platform_evidence = "authored confirmed legacy exception and stack".into();
+        let legacy_bytes = serde_json::to_vec_pretty(&legacy).unwrap();
+        buffr_durable_file::publish_private(&pending_incident_path(), &legacy_bytes).unwrap();
+        assert!(migrate_legacy_pending(&AtomicBool::new(false)));
+        let merged = load_pending_by_id(&legacy.id).unwrap();
+        assert!(merged.auto_reportable());
+        assert_eq!(merged.host_name, keyed_unknown.host_name);
+        assert_eq!(merged.platform_evidence, legacy.platform_evidence);
+        assert!(!pending_incident_path().exists());
+        for original in [&unknown_bytes, &legacy_bytes] {
+            let hash = blake3::hash(original).to_hex().to_string();
+            assert_eq!(
+                std::fs::read(reports_dir().join("originals").join(format!("{hash}.raw"))).unwrap(),
+                *original
+            );
+            assert!(
+                reports_dir()
+                    .join("originals")
+                    .join(format!("{hash}.json"))
+                    .exists()
+            );
+        }
+        // A busy unrelated legacy publisher cannot inhibit independent keyed
+        // recovery. The legacy bytes themselves stay untouched.
+        buffr_durable_file::publish_private(&pending_incident_path(), &legacy_bytes).unwrap();
+        let legacy_lock = buffr_durable_file::acquire_publisher_lock(
+            &pending_incident_path(),
+            std::time::Duration::ZERO,
+        )
+        .unwrap();
+        let pending = Mutex::new(None);
+        assert!(recover_pending_slot(&pending, &AtomicBool::new(false)));
+        assert!(
+            pending
+                .lock_unpoisoned()
+                .as_ref()
+                .unwrap()
+                .auto_reportable()
+        );
+        assert_eq!(
+            std::fs::read(pending_incident_path()).unwrap(),
+            legacy_bytes
+        );
+        drop(legacy_lock);
     }
 
     #[test]
