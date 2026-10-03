@@ -699,6 +699,7 @@ impl VoiceFade {
     }
 }
 struct Voice {
+    root: Option<script::HostRoot>,
     note: script::Note,
     started: u64,
     instance: u64,
@@ -1562,7 +1563,7 @@ impl<'a> Renderer<'a> {
             && f64::from(note.velocity) >= self.number(id, "LowVelocity", 1.)?
             && f64::from(note.velocity) <= self.number(id, "HighVelocity", 127.)?)
     }
-    fn start(&mut self, note: &script::Note) -> Result<()> {
+    fn start(&mut self, note: &script::Note, root: Option<script::HostRoot>) -> Result<()> {
         ensure!(
             note.id > 0
                 && note.note < 128
@@ -1825,6 +1826,7 @@ impl<'a> Renderer<'a> {
                 .checked_add(1)
                 .context("UVI voice instance identity overflow")?;
             let mut voice = Voice {
+                root,
                 note: note.clone(),
                 started: self.frame,
                 instance: self.next_instance,
@@ -1935,9 +1937,17 @@ impl<'a> Renderer<'a> {
         }
         self.release_pending()
     }
+    #[cfg(test)]
     fn apply_note(&mut self, action: &script::Action) -> Result<()> {
+        self.apply_note_rooted(action, None)
+    }
+    fn apply_note_rooted(
+        &mut self,
+        action: &script::Action,
+        root: Option<script::HostRoot>,
+    ) -> Result<()> {
         match action {
-            script::Action::Start(note) => self.start(note)?,
+            script::Action::Start(note) => self.start(note, root)?,
             script::Action::ReleaseNote {
                 id,
                 note,
@@ -2804,11 +2814,54 @@ impl<'a> Renderer<'a> {
         self.frame += 1;
         Ok([output[0], output[1]])
     }
+    /// Active per-launch instances, including sustain and owned DSP lifetime.
+    /// Shared Layer/Program/Aux processors do not belong to one backend token.
+    pub fn sounding_roots(&self) -> Vec<script::HostRoot> {
+        let mut roots = self
+            .voices
+            .iter()
+            .filter_map(|voice| voice.root)
+            .collect::<Vec<_>>();
+        roots.sort_unstable_by_key(|root| (root.epoch, root.generation, root.token));
+        roots.dedup();
+        roots
+    }
     /// Events are at absolute output frame positions. Host parameter commands
     /// at a frame precede note commands, so initialization affects the attack.
     pub fn render(
         &mut self,
         notes: &[script::Command],
+        host: &[host::Command],
+        frames: usize,
+    ) -> Result<Vec<[f32; 2]>> {
+        self.render_inner(notes, None, host, frames)
+    }
+    /// Activation-local ancestry annotates terminal launches; it never changes
+    /// opaque Lua ID/key/layer release matching or core note identity.
+    pub fn render_with_roots(
+        &mut self,
+        notes: &[script::Command],
+        roots: &[Option<script::HostRoot>],
+        host: &[host::Command],
+        frames: usize,
+    ) -> Result<Vec<[f32; 2]>> {
+        ensure!(
+            roots.len() == notes.len(),
+            "Hosted command ancestry length mismatch"
+        );
+        ensure!(
+            roots
+                .iter()
+                .flatten()
+                .all(|r| r.epoch > 0 && r.generation > 0 && r.token > 0),
+            "Invalid hosted ancestry"
+        );
+        self.render_inner(notes, Some(roots), host, frames)
+    }
+    fn render_inner(
+        &mut self,
+        notes: &[script::Command],
+        roots: Option<&[Option<script::HostRoot>]>,
         host: &[host::Command],
         frames: usize,
     ) -> Result<Vec<[f32; 2]>> {
@@ -2890,7 +2943,7 @@ impl<'a> Renderer<'a> {
                 })?;
             }
             while notes.get(ni).is_some_and(|c| c.frame == self.frame) {
-                self.apply_note(&notes[ni].action)?;
+                self.apply_note_rooted(&notes[ni].action, roots.and_then(|roots| roots[ni]))?;
                 ni += 1;
             }
             output.push(self.next_frame()?);
@@ -5342,5 +5395,57 @@ mod tests {
                 .is_err()
         );
         assert_eq!(renderer.current_frame(), 16900);
+    }
+    #[test]
+    fn backend_launch_ancestry_preserves_fifo_and_legacy_pcm() {
+        let program = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" NoteTracking="0"/></Oscillators></Keygroup><Keygroup><Oscillators><SamplePlayer SamplePath="a" NoteTracking="0"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let samples = HashMap::from([("a".into(), Arc::new(sample(1)))]);
+        let mut rooted = Renderer::new(&program, samples.clone(), 48000).unwrap();
+        let mut legacy = Renderer::new(&program, samples, 48000).unwrap();
+        let root = |token| script::HostRoot {
+            epoch: 7,
+            generation: 9,
+            token,
+        };
+        let starts = [
+            script::Command {
+                frame: 0,
+                action: script::Action::Start(note(7)),
+            },
+            script::Command {
+                frame: 0,
+                action: script::Action::Start(note(7)),
+            },
+        ];
+        let audio = rooted
+            .render_with_roots(&starts, &[Some(root(1)), Some(root(2))], &[], 1)
+            .unwrap();
+        assert_eq!(audio, legacy.render(&starts, &[], 1).unwrap());
+        assert_eq!(audio, [[2., 2.]]);
+        assert_eq!(rooted.sounding_roots(), [root(1), root(2)]);
+        let off = [script::Command {
+            frame: 1,
+            action: script::Action::ReleaseNote {
+                id: 7,
+                note: 60,
+                channel: 0,
+                layer: None,
+            },
+        }];
+        // A release's ancestry is advisory: actual terminal matching stays FIFO,
+        // and all keygroup siblings of the oldest launch retire together.
+        let audio = rooted
+            .render_with_roots(&off, &[Some(root(2))], &[], 1)
+            .unwrap();
+        assert_eq!(audio, legacy.render(&off, &[], 1).unwrap());
+        assert_eq!(audio, [[2., 2.]]);
+        assert_eq!(rooted.sounding_roots(), [root(2)]);
+        let frame = rooted.current_frame();
+        assert!(
+            rooted
+                .render_with_roots(&[], &[Some(root(1))], &[], 1)
+                .is_err()
+        );
+        assert_eq!(rooted.current_frame(), frame);
     }
 }

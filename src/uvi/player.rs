@@ -8,6 +8,8 @@ use super::{
 use anyhow::{Context, Result, ensure};
 use std::collections::BTreeMap;
 
+pub use super::script::HostedInput;
+
 pub const MAX_UI_EDITS: usize = 64;
 
 /// Owned, fixed-size widget edit on the same absolute clock as MIDI inputs.
@@ -49,6 +51,7 @@ pub(crate) fn input_is_valid(input: &script::Input) -> bool {
 /// Audio and diagnostics from one exclusive frame interval.
 #[derive(Debug)]
 pub struct Rendered {
+    pub host_completions: Vec<script::HostCompletion>,
     pub audio: Vec<[f32; 2]>,
     pub commands: usize,
     pub host_commands: usize,
@@ -69,6 +72,7 @@ pub struct Player<'a> {
     resource_revision: u64,
     frame: u64,
     failed: bool,
+    hosted: bool,
 }
 
 impl<'a> Player<'a> {
@@ -78,20 +82,53 @@ impl<'a> Player<'a> {
         resources: BankResources,
         sample_rate: u32,
     ) -> Result<Self> {
+        Self::new_inner(program, modules, resources, sample_rate, None)
+    }
+    pub fn new_hosted(
+        program: &'a Program,
+        modules: BTreeMap<String, Vec<u8>>,
+        resources: BankResources,
+        sample_rate: u32,
+        epoch: u64,
+        generation: u64,
+    ) -> Result<Self> {
+        Self::new_inner(
+            program,
+            modules,
+            resources,
+            sample_rate,
+            Some((epoch, generation)),
+        )
+    }
+    fn new_inner(
+        program: &'a Program,
+        modules: BTreeMap<String, Vec<u8>>,
+        resources: BankResources,
+        sample_rate: u32,
+        activation: Option<(u64, u64)>,
+    ) -> Result<Self> {
+        let hosted = activation.is_some();
         let unsupported = super::playback::preflight(program);
         ensure!(
             unsupported.is_empty(),
             "Native UVI graph preflight failed: {}",
             serde_json::to_string(&unsupported)?
         );
-        let session = Session::new_program_chain(
-            program,
-            modules,
-            Some(resources.capability()),
-            sample_rate,
-        )?;
-        // Initialization may have resolved additional sample/impulse aliases.
-        let renderer = Renderer::new(program, resources.samples(), sample_rate)?;
+        let capability = Some(resources.capability());
+        let session = if let Some((epoch, generation)) = activation {
+            Session::new_hosted_program_chain(
+                program,
+                modules,
+                capability,
+                sample_rate,
+                epoch,
+                generation,
+            )?
+        } else {
+            Session::new_program_chain(program, modules, capability, sample_rate)?
+        };
+        let samples = resources.samples();
+        let renderer = Renderer::new(program, samples, sample_rate)?;
         let resource_revision = resources.revision();
         Ok(Self {
             session,
@@ -100,9 +137,14 @@ impl<'a> Player<'a> {
             resource_revision,
             frame: 0,
             failed: false,
+            hosted,
         })
     }
-
+    pub fn acknowledge_host_completions(&mut self, roots: &[script::HostRoot]) -> Result<()> {
+        ensure!(!self.failed, "UVI player must be replaced after a failure");
+        ensure!(self.hosted, "Player has no hosted activation");
+        self.session.acknowledge_host_completions(roots)
+    }
     pub fn sample_rate(&self) -> u32 {
         self.session.sample_rate()
     }
@@ -139,6 +181,24 @@ impl<'a> Player<'a> {
         &mut self,
         inputs: &[script::Input],
         ui_inputs: &[UiInput],
+        frames: usize,
+    ) -> Result<Rendered> {
+        self.render_with_controls(inputs, ui_inputs, &[], frames)
+    }
+    pub fn render_hosted(
+        &mut self,
+        inputs: &[script::Input],
+        hosted: &[HostedInput],
+        frames: usize,
+    ) -> Result<Rendered> {
+        ensure!(self.hosted, "Player has no hosted activation");
+        self.render_with_controls(inputs, &[], hosted, frames)
+    }
+    fn render_with_controls(
+        &mut self,
+        inputs: &[script::Input],
+        ui_inputs: &[UiInput],
+        hosted: &[HostedInput],
         frames: usize,
     ) -> Result<Rendered> {
         ensure!(
@@ -178,15 +238,32 @@ impl<'a> Player<'a> {
                     .all(|pair| pair[0].frame <= pair[1].frame),
             "Invalid UVI player UI input sequence"
         );
+        ensure!(
+            hosted.len() <= script::HOST_ROOT_CAPACITY
+                && hosted
+                    .windows(2)
+                    .all(|pair| pair[0].frame() <= pair[1].frame())
+                && hosted
+                    .iter()
+                    .all(|event| event.frame() >= self.frame && event.frame() < end),
+            "Invalid hosted input sequence"
+        );
+        // Token admission uses the backend ledger before any UI, callback or
+        // clock mutation. Execution failures remain fatal once processing starts.
+        if !hosted.is_empty() {
+            self.session.validate_hosted_inputs(hosted)?;
+        }
         let result = (|| {
             let mut rejected_ui = 0u64;
-            let processed = if ui_inputs.is_empty() {
+            let processed = if ui_inputs.is_empty() && hosted.is_empty() {
                 self.session.process(inputs, end - 1)?
             } else {
-                let (mut midi, mut ui) = (0, 0);
-                while midi < inputs.len() || ui < ui_inputs.len() {
+                let (mut midi, mut ui, mut hosted_index) = (0, 0, 0);
+                while midi < inputs.len() || ui < ui_inputs.len() || hosted_index < hosted.len() {
                     if ui < ui_inputs.len()
                         && (midi == inputs.len() || ui_inputs[ui].frame <= inputs[midi].frame)
+                        && (hosted_index == hosted.len()
+                            || ui_inputs[ui].frame <= hosted[hosted_index].frame())
                     {
                         let input = &ui_inputs[ui];
                         match self.session.edit_ui(&input.edit, input.frame) {
@@ -197,6 +274,19 @@ impl<'a> Player<'a> {
                             }
                         }
                         ui += 1;
+                    } else if hosted_index < hosted.len()
+                        && (midi == inputs.len()
+                            || hosted[hosted_index].frame() <= inputs[midi].frame)
+                    {
+                        match hosted[hosted_index] {
+                            HostedInput::On { root, input } => {
+                                self.session.host_note_on(root, input)?
+                            }
+                            HostedInput::Off { root, frame } => {
+                                self.session.host_note_off(root, frame)?
+                            }
+                        }
+                        hosted_index += 1;
                     } else {
                         self.session.input(inputs[midi])?;
                         midi += 1;
@@ -210,12 +300,28 @@ impl<'a> Player<'a> {
                     .install_prepared_samples(self.resources.samples())?;
                 self.resource_revision = self.resources.revision();
             }
-            let audio =
-                self.renderer
-                    .render(&processed.commands, &processed.host_commands, frames)?;
+            let (audio, host_completions) = if self.hosted {
+                let audio = self.renderer.render_with_roots(
+                    &processed.commands,
+                    &processed.command_roots,
+                    &processed.host_commands,
+                    frames,
+                )?;
+                let host_completions = self
+                    .session
+                    .complete_host_roots(end, &self.renderer.sounding_roots())?;
+                (audio, host_completions)
+            } else {
+                (
+                    self.renderer
+                        .render(&processed.commands, &processed.host_commands, frames)?,
+                    Vec::new(),
+                )
+            };
             self.frame = end;
             Ok(Rendered {
                 audio,
+                host_completions,
                 commands: processed.commands.len(),
                 host_commands: processed.host_commands.len(),
                 logs: processed.logs,

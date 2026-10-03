@@ -27,6 +27,31 @@ const TEMPO: f64 = 120.;
 const LIMIT: usize = 65_536;
 // Bound retirement latency even when allocation-driven GC completes between drains.
 const GC_MAX_DRAINS: u8 = 64;
+pub const HOST_ROOT_CAPACITY: usize = 4096;
+/// UVI backend ancestry within one activation. The core adapter owns any
+/// corresponding DAW note identity; this token does not replace that registry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct HostRoot {
+    pub epoch: u64,
+    pub generation: u64,
+    pub token: u64,
+}
+/// A root has no held input, pending rooted work or descendant DSP voice at
+/// this exclusive rendered boundary. Shared effect tails may still continue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostCompletion {
+    pub root: HostRoot,
+    pub frame: u64,
+}
+#[derive(Clone, Copy)]
+struct RootInput {
+    id: u32,
+    channel: u8,
+    note: u8,
+    held: bool,
+    ended: Option<u64>,
+}
+
 // A measured sequencer callback uses 2.011M instructions for finite UI updates.
 // Leave headroom while bounding every outer resume, including nested run/pcall.
 const FUEL: u32 = 4_000_000;
@@ -159,6 +184,20 @@ pub enum InputKind {
 pub struct Input {
     pub frame: u64,
     pub kind: InputKind,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum HostedInput {
+    On { root: HostRoot, input: Input },
+    Off { root: HostRoot, frame: u64 },
+}
+impl HostedInput {
+    pub fn frame(&self) -> u64 {
+        match self {
+            Self::On { input, .. } => input.frame,
+            Self::Off { frame, .. } => *frame,
+        }
+    }
 }
 
 /// Immutable opaque Lua handle; command streams retain the internal integer ID.
@@ -339,6 +378,7 @@ struct Task {
     thread: Thread,
     args: MultiValue,
     parent: Option<u64>,
+    root: Option<HostRoot>,
     processor: Option<NodeId>,
     layer: Option<NodeId>,
 }
@@ -346,6 +386,7 @@ struct Task {
 struct Forward {
     event: Table,
     action: Action,
+    root: Option<HostRoot>,
     after: Option<NodeId>,
     layer: Option<NodeId>,
 }
@@ -457,6 +498,12 @@ struct State {
     serial: u64,
     next_id: u32,
     current: Option<u64>,
+    current_root: Option<HostRoot>,
+    root_activation: Option<(u64, u64)>,
+    last_root: u64,
+    roots: HashMap<HostRoot, RootInput>,
+    posted_roots: HashMap<(Option<NodeId>, u32), Option<HostRoot>>,
+    command_roots: Vec<Option<HostRoot>>,
     current_processor: Option<NodeId>,
     current_layer: Option<NodeId>,
     chain: Option<EventChain>,
@@ -477,6 +524,13 @@ struct State {
 }
 
 impl State {
+    fn live_root(&self, root: Option<HostRoot>) -> Option<HostRoot> {
+        root.filter(|root| {
+            self.roots
+                .get(root)
+                .is_some_and(|owner| owner.ended.is_none())
+        })
+    }
     fn note_held(&self, trigger: u64) -> bool {
         self.triggers
             .get(&trigger)
@@ -579,6 +633,9 @@ impl State {
             }
         }
         self.commands.push(Command { frame, action });
+        if self.root_activation.is_some() {
+            self.command_roots.push(self.live_root(self.current_root));
+        }
         Ok(())
     }
 
@@ -598,6 +655,7 @@ impl State {
             Forward {
                 event: event.clone(),
                 action,
+                root: self.live_root(self.current_root),
                 after: self.current_processor,
                 layer: self.current_layer,
             },
@@ -623,6 +681,10 @@ impl State {
             return Ok(false);
         };
         events.raw_set(id, Value::Nil)?;
+        let root = self
+            .posted_roots
+            .remove(&(self.current_processor, id))
+            .flatten();
         if posted
             .raw_get::<Option<u64>>("_expires")?
             .is_some_and(|end| self.now >= end)
@@ -634,7 +696,11 @@ impl State {
         event.set("type", 128)?;
         event.raw_set("_duration", Value::Nil)?;
         event.raw_set("_follows", Value::Nil)?;
-        self.post(lua, &event, 0.)?;
+        let previous = self.current_root;
+        self.current_root = self.live_root(root);
+        let result = self.post(lua, &event, 0.);
+        self.current_root = previous;
+        result?;
         Ok(true)
     }
 
@@ -1112,13 +1178,17 @@ fn resume_task(
     resumes.set(resumes.get() + 1);
     depth.set(depth.get() + 1);
     let previous = state.borrow().current;
+    let previous_root = state.borrow().current_root;
     let previous_processor = state.borrow().current_processor;
     let previous_layer = state.borrow().current_layer;
     state.borrow_mut().current = task.parent;
+    let root = state.borrow().live_root(task.root);
+    state.borrow_mut().current_root = root;
     state.borrow_mut().current_processor = task.processor;
     state.borrow_mut().current_layer = task.layer;
     let result = task.thread.resume::<MultiValue>(task.args);
     state.borrow_mut().current = previous;
+    state.borrow_mut().current_root = previous_root;
     state.borrow_mut().current_processor = previous_processor;
     state.borrow_mut().current_layer = previous_layer;
     depth.set(depth.get() - 1);
@@ -1145,6 +1215,7 @@ fn resume_task(
                 thread: task.thread,
                 args: MultiValue::new(),
                 parent: task.parent,
+                root: task.root,
                 processor: task.processor,
                 layer: task.layer,
             },
@@ -1341,6 +1412,7 @@ impl Runtime {
         layer: Option<NodeId>,
         parent: Option<u64>,
         selected: Option<&[NodeId]>,
+        root: Option<HostRoot>,
     ) -> Result<()> {
         let targets = self
             .state
@@ -1380,6 +1452,7 @@ impl Runtime {
                                 thread,
                                 args: MultiValue::from_vec(vec![Value::Table(event)]),
                                 parent,
+                                root,
                                 processor: Some(processor),
                                 layer,
                             },
@@ -1387,7 +1460,7 @@ impl Runtime {
                         continue;
                     }
                 }
-                self.deliver(event, Some(processor), layer, parent, selected)?;
+                self.deliver(event, Some(processor), layer, parent, selected, root)?;
             } else {
                 // Automatic Layer dispatch retains offsets. An authored postEvent
                 // callback snapshots only documented event fields, resetting it.
@@ -1408,7 +1481,11 @@ impl Runtime {
                     );
                     let mut state = self.state.borrow_mut();
                     let now = state.now;
-                    state.release_note(now, id, note, channel - 1, Some(layer))?;
+                    let previous_root = state.current_root;
+                    state.current_root = state.live_root(root);
+                    let result = state.release_note(now, id, note, channel - 1, Some(layer));
+                    state.current_root = previous_root;
+                    result?;
                     continue;
                 }
                 if event.get::<u32>("type")? == 144
@@ -1429,9 +1506,12 @@ impl Runtime {
                 let mut state = self.state.borrow_mut();
                 let chain = state.chain.take();
                 let previous = state.current;
+                let previous_root = state.current_root;
                 state.current = parent;
+                state.current_root = state.live_root(root);
                 let result = state.post(&self.lua, &event, 0.);
                 state.current = previous;
+                state.current_root = previous_root;
                 state.chain = chain;
                 result?;
             }
@@ -1563,8 +1643,22 @@ impl Runtime {
                                 .ok_or_else(|| mlua::Error::runtime("UVI timeline overflow"))?;
                             posted.raw_set("_expires", expires)?;
                         }
+                        if state.root_activation.is_some() {
+                            let key = (state.current_processor, id);
+                            if !state.posted_roots.contains_key(&key)
+                                && state.posted_roots.len() >= LIMIT
+                            {
+                                return Err(mlua::Error::runtime(
+                                    "UVI posted root metadata limit exceeded",
+                                ));
+                            }
+                            let root = state.live_root(state.current_root);
+                            state.posted_roots.insert(key, root);
+                        }
                         events.raw_set(id, posted)?;
                     } else {
+                        let key = (state.current_processor, id);
+                        state.posted_roots.remove(&key);
                         events.raw_set(id, Value::Nil)?;
                     }
                 }
@@ -1599,12 +1693,14 @@ impl Runtime {
                 let now = state.now;
                 let processor = state.current_processor;
                 let layer = state.current_layer;
+                let root = state.live_root(state.current_root);
                 state.schedule(
                     now,
                     Task {
                         thread: lua.create_thread(f)?,
                         args,
                         parent: None,
+                        root,
                         processor,
                         layer,
                     },
@@ -1623,11 +1719,16 @@ impl Runtime {
                 };
                 let processor = run_state.borrow().current_processor;
                 let layer = run_state.borrow().current_layer;
+                let root = {
+                    let state = run_state.borrow();
+                    state.live_root(state.current_root)
+                };
                 resume_task(
                     Task {
                         thread: lua.create_thread(f)?,
                         args,
                         parent: None,
+                        root,
                         processor,
                         layer,
                     },
@@ -1936,12 +2037,14 @@ impl Runtime {
         let now = state.now;
         let processor = state.current_processor;
         let layer = state.current_layer;
+        let root = state.live_root(state.current_root);
         state.schedule(
             now,
             Task {
                 thread,
                 args,
                 parent,
+                root,
                 processor,
                 layer,
             },
@@ -2039,11 +2142,19 @@ impl Runtime {
                     Action::Start(note) => note.layers.as_deref(),
                     _ => None,
                 };
-                self.deliver(&event, forward.after, forward.layer, parent, selected)?;
+                self.deliver(
+                    &event,
+                    forward.after,
+                    forward.layer,
+                    parent,
+                    selected,
+                    forward.root,
+                )?;
             }
         }
         let mut state = self.state.borrow_mut();
         state.current = None;
+        state.current_root = None;
         state.current_processor = None;
         state.current_layer = None;
         Ok(())
@@ -2058,7 +2169,7 @@ impl Runtime {
             .named_registry_value::<Option<Table>>("kontakto.uvi.posted_events")?
         {
             for scope in scopes.pairs::<u64, Table>() {
-                let (_, events) = scope?;
+                let (scope, events) = scope?;
                 let expired = events
                     .clone()
                     .pairs::<u32, Table>()
@@ -2076,6 +2187,14 @@ impl Runtime {
                     .collect::<mlua::Result<Vec<_>>>()?;
                 for id in expired {
                     events.raw_set(id, Value::Nil)?;
+                    self.state.borrow_mut().posted_roots.remove(&(
+                        if scope == 0 {
+                            None
+                        } else {
+                            Some((scope - 1) as usize)
+                        },
+                        id,
+                    ));
                 }
             }
         }
@@ -2146,7 +2265,7 @@ impl Runtime {
             .named_registry_value::<Option<Table>>("kontakto.uvi.posted_events")?
         {
             for scope in scopes.pairs::<u64, Table>() {
-                let (_, events) = scope?;
+                let (scope, events) = scope?;
                 let retired = events
                     .clone()
                     .pairs::<u32, Table>()
@@ -2154,6 +2273,14 @@ impl Runtime {
                     .collect::<mlua::Result<Vec<_>>>()?;
                 for id in retired.into_iter().filter(|id| !retained.contains(id)) {
                     events.raw_set(id, Value::Nil)?;
+                    state.posted_roots.remove(&(
+                        if scope == 0 {
+                            None
+                        } else {
+                            Some((scope - 1) as usize)
+                        },
+                        id,
+                    ));
                 }
             }
         }
@@ -2178,6 +2305,9 @@ impl Runtime {
     }
 
     fn input(&mut self, input: Input) -> Result<()> {
+        self.input_rooted(input, None)
+    }
+    fn input_rooted(&mut self, input: Input, mut root: Option<HostRoot>) -> Result<()> {
         validate_input(&input)?;
         self.advance(input.frame)?;
         if let InputKind::Transport {
@@ -2237,6 +2367,19 @@ impl Runtime {
                         "UVI held input limit exceeded"
                     );
                     let id = s.id()?;
+                    if let Some(root) = root {
+                        s.last_root = root.token;
+                        s.roots.insert(
+                            root,
+                            RootInput {
+                                id,
+                                channel,
+                                note,
+                                held: true,
+                                ended: None,
+                            },
+                        );
+                    }
                     s.input_velocities.insert(id, velocity);
                     s.keys.entry((channel, note)).or_default().push_back(id);
                     event.set("type", 144)?;
@@ -2251,13 +2394,33 @@ impl Runtime {
                 }
                 InputKind::NoteOff { channel, note } => {
                     ensure!(channel < 16 && note < 128, "Invalid UVI MIDI input");
-                    let Some(id) = s
-                        .keys
-                        .get_mut(&(channel, note))
-                        .and_then(VecDeque::pop_front)
-                    else {
-                        return Ok(());
+                    let id = if let Some(root) = root {
+                        let selected = s.roots[&root].id;
+                        let queue = s
+                            .keys
+                            .get_mut(&(channel, note))
+                            .context("Missing hosted key queue")?;
+                        let index = queue
+                            .iter()
+                            .position(|id| *id == selected)
+                            .context("Missing hosted key")?;
+                        queue.remove(index).unwrap()
+                    } else {
+                        let Some(id) = s
+                            .keys
+                            .get_mut(&(channel, note))
+                            .and_then(VecDeque::pop_front)
+                        else {
+                            return Ok(());
+                        };
+                        id
                     };
+                    if let Some((token, owner)) =
+                        s.roots.iter_mut().find(|(_, owner)| owner.id == id)
+                    {
+                        owner.held = false;
+                        root = Some(*token);
+                    }
                     event.set("type", 128)?;
                     event.set("id", voice_handle(&self.lua, id)?)?;
                     event.set("note", note)?;
@@ -2325,7 +2488,7 @@ impl Runtime {
             }
         };
         if self.state.borrow().chain.is_some() {
-            self.deliver(&event, None, None, parent, None)?;
+            self.deliver(&event, None, None, parent, None, root)?;
             return self.advance(input.frame);
         }
         let parent = self.state.borrow_mut().receive(&self.lua, &event, None)?;
@@ -2345,6 +2508,8 @@ impl Runtime {
 #[derive(Debug, Serialize)]
 pub struct Processed {
     pub commands: Vec<Command>,
+    #[serde(skip)]
+    pub command_roots: Vec<Option<HostRoot>>,
     pub host_commands: Vec<host::Command>,
     /// Local diagnostics may contain proprietary/private script data.
     #[serde(skip)]
@@ -2404,6 +2569,185 @@ impl Session {
         })
     }
 
+    pub fn new_hosted_program_chain(
+        program: &Program,
+        modules: BTreeMap<String, Vec<u8>>,
+        resources: Option<host::Resources>,
+        sample_rate: u32,
+        epoch: u64,
+        generation: u64,
+    ) -> Result<Self> {
+        ensure!(epoch > 0 && generation > 0, "Invalid hosted activation");
+        let session = Self::new_program_chain(program, modules, resources, sample_rate)?;
+        {
+            let mut state = session.runtime.state.borrow_mut();
+            let initialized_commands = state.commands.len();
+            debug_assert!(state.command_roots.is_empty());
+            state.command_roots.resize(initialized_commands, None);
+            state.root_activation = Some((epoch, generation));
+        }
+        Ok(session)
+    }
+    /// Read-only admission for an entire bounded packet, before callbacks or
+    /// clock mutation. Lua cannot change this ledger; only host admission and
+    /// post-render completion acknowledgement add or remove its roots.
+    pub fn validate_hosted_inputs(&self, inputs: &[HostedInput]) -> Result<()> {
+        ensure!(
+            inputs.len() <= HOST_ROOT_CAPACITY,
+            "Hosted input packet exceeds capacity"
+        );
+        let state = self.runtime.state.borrow();
+        let mut admitted = HashSet::new();
+        let mut count = state.roots.len();
+        let mut last_token = state.last_root;
+        let mut last_frame = state.now;
+        for event in inputs {
+            ensure!(event.frame() >= last_frame, "Hosted input precedes clock");
+            last_frame = event.frame();
+            let root = match event {
+                HostedInput::On { root, .. } | HostedInput::Off { root, .. } => *root,
+            };
+            ensure!(
+                state.root_activation == Some((root.epoch, root.generation)) && root.token > 0,
+                "Stale hosted activation"
+            );
+            match event {
+                HostedInput::On { input, .. } => {
+                    validate_input(input)?;
+                    ensure!(
+                        matches!(input.kind, InputKind::NoteOn { .. }),
+                        "Invalid hosted note on"
+                    );
+                    ensure!(root.token > last_token, "Stale or duplicate hosted root");
+                    ensure!(count < HOST_ROOT_CAPACITY, "Hosted root ledger full");
+                    admitted.insert(root.token);
+                    last_token = root.token;
+                    count += 1;
+                }
+                HostedInput::Off { .. } => {
+                    ensure!(
+                        admitted.contains(&root.token)
+                            || state
+                                .roots
+                                .get(&root)
+                                .is_some_and(|owner| owner.ended.is_none()),
+                        "Unknown or complete hosted root"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+    pub fn host_note_on(&mut self, root: HostRoot, input: Input) -> Result<()> {
+        validate_input(&input)?;
+        ensure!(
+            matches!(input.kind, InputKind::NoteOn { .. }) && input.frame >= self.current_frame(),
+            "Invalid hosted note on"
+        );
+        {
+            let state = self.runtime.state.borrow();
+            ensure!(
+                state.root_activation == Some((root.epoch, root.generation))
+                    && root.token > state.last_root,
+                "Stale or duplicate hosted root"
+            );
+            ensure!(
+                state.roots.len() < HOST_ROOT_CAPACITY,
+                "Hosted root ledger full"
+            );
+        }
+        self.runtime.input_rooted(input, Some(root))
+    }
+    pub fn host_note_off(&mut self, root: HostRoot, frame: u64) -> Result<()> {
+        ensure!(
+            frame >= self.current_frame(),
+            "Hosted note off precedes clock"
+        );
+        let owner = *self
+            .runtime
+            .state
+            .borrow()
+            .roots
+            .get(&root)
+            .context("Unknown hosted root")?;
+        ensure!(owner.ended.is_none(), "Hosted root already complete");
+        if !owner.held {
+            return self.advance(frame);
+        }
+        self.runtime.input_rooted(
+            Input {
+                frame,
+                kind: InputKind::NoteOff {
+                    channel: owner.channel,
+                    note: owner.note,
+                },
+            },
+            Some(root),
+        )
+    }
+    /// Called only after drain commands were rendered. Live instances include
+    /// their sustain/envelope/per-voice processor lifetime, never shared FX.
+    pub fn complete_host_roots(
+        &mut self,
+        rendered_until: u64,
+        sounding: &[HostRoot],
+    ) -> Result<Vec<HostCompletion>> {
+        ensure!(
+            sounding.len() <= HOST_ROOT_CAPACITY,
+            "Hosted census exceeds voice capacity"
+        );
+        ensure!(
+            rendered_until
+                == self
+                    .current_frame()
+                    .checked_add(1)
+                    .context("Root boundary overflow")?,
+            "Hosted census clock mismatch"
+        );
+        let mut state = self.runtime.state.borrow_mut();
+        let mut pinned = sounding.iter().copied().collect::<HashSet<_>>();
+        pinned.extend(state.tasks.values().filter_map(|task| task.root));
+        pinned.extend(state.forwards.values().filter_map(|forward| forward.root));
+        pinned.extend(state.command_roots.iter().flatten().copied());
+        for (root, owner) in &mut state.roots {
+            if owner.ended.is_none() && !owner.held && !pinned.contains(root) {
+                owner.ended = Some(rendered_until);
+            }
+        }
+        let mut completed = state
+            .roots
+            .iter()
+            .filter_map(|(root, owner)| {
+                owner
+                    .ended
+                    .map(|frame| HostCompletion { root: *root, frame })
+            })
+            .collect::<Vec<_>>();
+        completed.sort_by_key(|completion| (completion.frame, completion.root.token));
+        Ok(completed)
+    }
+    /// Transfer source ownership only after a bounded completion queue accepted
+    /// these tokens. Queue-full retry preserves both the ledger and end boundary.
+    pub fn acknowledge_host_completions(&mut self, roots: &[HostRoot]) -> Result<()> {
+        ensure!(
+            roots.len() <= HOST_ROOT_CAPACITY,
+            "Hosted completion acknowledgement exceeds capacity"
+        );
+        let mut state = self.runtime.state.borrow_mut();
+        let mut unique = HashSet::new();
+        ensure!(
+            roots.iter().all(|root| unique.insert(*root)
+                && state
+                    .roots
+                    .get(root)
+                    .is_some_and(|owner| owner.ended.is_some())),
+            "Duplicate, unknown or active hosted completion"
+        );
+        for root in roots {
+            state.roots.remove(root);
+        }
+        Ok(())
+    }
     pub fn sample_rate(&self) -> u32 {
         self.runtime.state.borrow().sample_rate
     }
@@ -2493,12 +2837,28 @@ impl Session {
         self.runtime.prune()?;
         let mut state = self.runtime.state.borrow_mut();
         let until = state.now;
-        let (mut commands, future): (Vec<_>, Vec<_>) = std::mem::take(&mut state.commands)
-            .into_iter()
-            .partition(|command| command.frame <= until);
-        state.commands = future;
-        commands.retain(|command| !matches!(&command.action, Action::Start(note) if state.voices.get(&note.id).is_some_and(|v| v.canceled)));
-        commands.sort_by_key(|command| command.frame);
+        let commands = std::mem::take(&mut state.commands);
+        let (commands, command_roots) = if state.root_activation.is_some() {
+            let roots = std::mem::take(&mut state.command_roots);
+            assert_eq!(commands.len(), roots.len());
+            let (mut ready, future): (Vec<_>, Vec<_>) = commands
+                .into_iter()
+                .zip(roots)
+                .partition(|(command, _)| command.frame <= until);
+            (state.commands, state.command_roots) = future.into_iter().unzip();
+            ready.retain(|(command,_)| !matches!(&command.action, Action::Start(note) if state.voices.get(&note.id).is_some_and(|v| v.canceled)));
+            ready.sort_by_key(|(command, _)| command.frame);
+            ready.into_iter().unzip()
+        } else {
+            debug_assert!(state.command_roots.is_empty());
+            let (mut ready, future): (Vec<_>, Vec<_>) = commands
+                .into_iter()
+                .partition(|command| command.frame <= until);
+            state.commands = future;
+            ready.retain(|command| !matches!(&command.action, Action::Start(note) if state.voices.get(&note.id).is_some_and(|v| v.canceled)));
+            ready.sort_by_key(|command| command.frame);
+            (ready, Vec::new())
+        };
         let mut host_commands = Vec::new();
         if let Some(host) = &self.runtime.host {
             let mut pending = host.commands.borrow_mut();
@@ -2515,6 +2875,7 @@ impl Session {
         self.runtime.resumes.set(0);
         Ok(Processed {
             commands,
+            command_roots,
             host_commands,
             logs,
             dropped_logs,
@@ -2686,6 +3047,7 @@ fn collect(mut rt: Runtime, inputs: &[Input], until: u64) -> Result<Processed> {
     host_commands.retain(|c| c.frame <= until);
     host_commands.sort_by_key(|c| c.frame);
     Ok(Processed {
+        command_roots: Vec::new(),
         commands,
         host_commands,
         logs: std::mem::take(&mut state.logs),
@@ -4189,5 +4551,593 @@ mod tests {
             )
             .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod hosted_tests {
+    use super::*;
+    fn done(s: &mut Session, frame: u64, sounding: &[HostRoot]) -> Result<Vec<HostRoot>> {
+        let completed = s.complete_host_roots(frame, sounding)?;
+        let roots = completed.iter().map(|c| c.root).collect::<Vec<_>>();
+        s.acknowledge_host_completions(&roots)?;
+        Ok(roots)
+    }
+    fn root(token: u64) -> HostRoot {
+        HostRoot {
+            epoch: 7,
+            generation: 9,
+            token,
+        }
+    }
+    fn program(source: &str) -> Program {
+        super::super::program::parse_program(&format!("<Program><EventProcessors><ScriptProcessor><script><![CDATA[{source}]]></script></ScriptProcessor></EventProcessors><Layers><Layer/></Layers></Program>")).unwrap()
+    }
+    fn session(source: &str) -> Session {
+        Session::new_hosted_program_chain(&program(source), BTreeMap::new(), None, 48000, 7, 9)
+            .unwrap()
+    }
+    fn on(frame: u64, velocity: u8) -> Input {
+        Input {
+            frame,
+            kind: InputKind::NoteOn {
+                channel: 0,
+                note: 60,
+                velocity,
+            },
+        }
+    }
+    fn ids(out: &Processed) -> Vec<u32> {
+        out.commands
+            .iter()
+            .filter_map(|c| match &c.action {
+                Action::Start(n) => Some(n.id),
+                Action::ReleaseNote { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect()
+    }
+    #[test]
+    fn hosted_packet_admission_rejects_invalid_suffix_without_mutation() {
+        let mut s =
+            session("function onNote(e)postEvent(e)end function onRelease(e)postEvent(e)end");
+        s.host_note_on(root(1), on(0, 100)).unwrap();
+        s.host_note_off(root(1), 1).unwrap();
+        s.drain().unwrap();
+        assert_eq!(s.complete_host_roots(2, &[]).unwrap().len(), 1);
+        let prefix = HostedInput::On {
+            root: root(2),
+            input: on(10, 100),
+        };
+        let before = {
+            let state = s.runtime.state.borrow();
+            (
+                state.now,
+                state.next_id,
+                state.last_root,
+                state.roots.len(),
+                state.commands.len(),
+                state.tasks.len(),
+                state.forwards.len(),
+            )
+        };
+        for suffix in [
+            HostedInput::On {
+                root: root(2),
+                input: on(11, 100),
+            },
+            HostedInput::On {
+                root: root(1),
+                input: on(11, 100),
+            },
+            HostedInput::On {
+                root: HostRoot {
+                    epoch: 8,
+                    ..root(3)
+                },
+                input: on(11, 100),
+            },
+            HostedInput::On {
+                root: HostRoot {
+                    generation: 10,
+                    ..root(3)
+                },
+                input: on(11, 100),
+            },
+            HostedInput::On {
+                root: root(0),
+                input: on(11, 100),
+            },
+            HostedInput::Off {
+                root: root(99),
+                frame: 11,
+            },
+            HostedInput::Off {
+                root: root(1),
+                frame: 11,
+            },
+            HostedInput::Off {
+                root: HostRoot {
+                    epoch: 8,
+                    ..root(2)
+                },
+                frame: 11,
+            },
+            HostedInput::Off {
+                root: root(2),
+                frame: 9,
+            },
+            HostedInput::On {
+                root: root(3),
+                input: Input {
+                    frame: 11,
+                    kind: InputKind::NoteOff {
+                        channel: 0,
+                        note: 60,
+                    },
+                },
+            },
+            HostedInput::On {
+                root: root(3),
+                input: on(11, 255),
+            },
+        ] {
+            assert!(s.validate_hosted_inputs(&[prefix, suffix]).is_err());
+            let state = s.runtime.state.borrow();
+            assert_eq!(
+                before,
+                (
+                    state.now,
+                    state.next_id,
+                    state.last_root,
+                    state.roots.len(),
+                    state.commands.len(),
+                    state.tasks.len(),
+                    state.forwards.len()
+                )
+            );
+        }
+        let valid = [
+            prefix,
+            HostedInput::Off {
+                root: root(2),
+                frame: 11,
+            },
+            HostedInput::Off {
+                root: root(2),
+                frame: 12,
+            },
+        ];
+        s.validate_hosted_inputs(&valid).unwrap();
+        assert_eq!(s.current_frame(), 1);
+        for event in valid {
+            match event {
+                HostedInput::On { root, input } => s.host_note_on(root, input).unwrap(),
+                HostedInput::Off { root, frame } => s.host_note_off(root, frame).unwrap(),
+            }
+        }
+        s.drain().unwrap();
+        assert_eq!(
+            s.complete_host_roots(13, &[]).unwrap(),
+            [
+                HostCompletion {
+                    root: root(1),
+                    frame: 2
+                },
+                HostCompletion {
+                    root: root(2),
+                    frame: 13
+                }
+            ]
+        );
+    }
+    #[test]
+    fn hosted_packet_admission_counts_pending_completions_and_same_batch_off() {
+        let mut s = session("function onNote(e)end");
+        for token in 1..HOST_ROOT_CAPACITY as u64 {
+            s.host_note_on(root(token), on(0, 100)).unwrap();
+        }
+        s.host_note_off(root(1), 1).unwrap();
+        s.drain().unwrap();
+        assert_eq!(s.complete_host_roots(2, &[]).unwrap().len(), 1);
+        let next = HOST_ROOT_CAPACITY as u64;
+        let packet = [
+            HostedInput::On {
+                root: root(next),
+                input: on(10, 100),
+            },
+            HostedInput::Off {
+                root: root(next),
+                frame: 11,
+            },
+            HostedInput::On {
+                root: root(next + 1),
+                input: on(12, 100),
+            },
+        ];
+        assert!(s.validate_hosted_inputs(&packet).is_err());
+        assert_eq!(s.current_frame(), 1);
+        assert_eq!(s.runtime.state.borrow().last_root, next - 1);
+        assert_eq!(s.runtime.state.borrow().roots.len(), HOST_ROOT_CAPACITY - 1);
+        s.validate_hosted_inputs(&packet[..2]).unwrap();
+        let oversized = vec![
+            HostedInput::Off {
+                root: root(2),
+                frame: 10
+            };
+            HOST_ROOT_CAPACITY + 1
+        ];
+        assert!(s.validate_hosted_inputs(&oversized).is_err());
+        s.acknowledge_host_completions(&[root(1)]).unwrap();
+        s.validate_hosted_inputs(&packet).unwrap();
+        assert_eq!(s.current_frame(), 1);
+        assert_eq!(s.runtime.state.borrow().roots.len(), HOST_ROOT_CAPACITY - 2);
+    }
+    #[test]
+    fn hosted_initialization_commands_are_backfilled_once_before_rooted_input() {
+        let source = "function onInit()postEvent{type=Event.NoteOn,note=61,velocity=90};wait(5);postEvent{type=Event.NoteOn,note=62,velocity=80}end function onNote(e)postEvent(e)end";
+        let mut s = session(source);
+        {
+            let state = s.runtime.state.borrow();
+            assert_eq!(state.commands.len(), 1);
+            assert_eq!(state.command_roots, [None]);
+        }
+        s.host_note_on(root(1), on(0, 100)).unwrap();
+        let out = s.drain().unwrap();
+        assert_eq!(ids(&out), [1, 2]);
+        assert_eq!(out.command_roots, [None, Some(root(1))]);
+        assert!(s.drain().unwrap().command_roots.is_empty());
+        s.advance(240).unwrap();
+        let out = s.drain().unwrap();
+        assert_eq!(ids(&out), [3]);
+        assert_eq!(out.command_roots, [None]);
+        s.host_note_on(root(2), on(240, 100)).unwrap();
+        assert_eq!(s.drain().unwrap().command_roots, [Some(root(2))]);
+    }
+    #[test]
+    fn legacy_commands_and_posted_registrations_allocate_no_root_storage() {
+        let p = program(
+            "function onInit()postEvent{type=Event.NoteOn,note=61,velocity=90}end function onNote(e)postEvent(e);postEvent(table.copy(e),5)end function onRelease(e)postEvent(e)end",
+        );
+        let mut s = Session::new_program_chain(&p, BTreeMap::new(), None, 48000).unwrap();
+        for frame in 0..32 {
+            s.input(on(frame, 100)).unwrap();
+            let state = s.runtime.state.borrow();
+            assert!(state.root_activation.is_none());
+            assert!(state.command_roots.is_empty());
+            assert_eq!(state.command_roots.capacity(), 0);
+            assert!(state.posted_roots.is_empty());
+            assert_eq!(state.posted_roots.capacity(), 0);
+        }
+        let out = s.drain().unwrap();
+        assert!(!out.commands.is_empty());
+        assert_eq!(out.command_roots.capacity(), 0);
+        s.advance(300).unwrap();
+        let out = s.drain().unwrap();
+        assert_eq!(out.commands.len(), 32);
+        assert_eq!(out.command_roots.capacity(), 0);
+        let offline = process_program_chain(&p, BTreeMap::new(), None, &[on(0, 100)], 300).unwrap();
+        assert!(!offline.commands.is_empty());
+        assert_eq!(offline.command_roots.capacity(), 0);
+    }
+    #[test]
+    fn hosted_completion_acknowledgements_validate_entire_batch_before_removal() {
+        let mut s = session("function onNote(e)end");
+        s.host_note_on(root(1), on(0, 100)).unwrap();
+        s.host_note_on(root(2), on(0, 100)).unwrap();
+        s.host_note_off(root(1), 1).unwrap();
+        s.drain().unwrap();
+        let expected = [HostCompletion {
+            root: root(1),
+            frame: 2,
+        }];
+        assert_eq!(s.complete_host_roots(2, &[]).unwrap(), expected);
+        for rejected in [
+            vec![root(1), root(1)],
+            vec![root(1), root(2)],
+            vec![
+                root(1),
+                HostRoot {
+                    epoch: 8,
+                    ..root(1)
+                },
+            ],
+            vec![root(1); HOST_ROOT_CAPACITY + 1],
+        ] {
+            assert!(s.acknowledge_host_completions(&rejected).is_err());
+            assert_eq!(s.current_frame(), 1);
+            assert_eq!(s.runtime.state.borrow().roots.len(), 2);
+            assert_eq!(s.complete_host_roots(2, &[]).unwrap(), expected);
+        }
+        assert!(s.host_note_off(root(1), 100).is_err());
+        assert_eq!(s.current_frame(), 1);
+        s.acknowledge_host_completions(&[root(1)]).unwrap();
+        assert!(s.acknowledge_host_completions(&[root(1)]).is_err());
+        assert_eq!(s.current_frame(), 1);
+        assert_eq!(s.runtime.state.borrow().roots.len(), 1);
+    }
+    #[test]
+    fn hosted_exact_same_key_overlap_preserves_legacy_fifo() {
+        let mut s =
+            session("function onNote(e)postEvent(e)end function onRelease(e)postEvent(e)end");
+        s.host_note_on(root(1), on(0, 100)).unwrap();
+        s.host_note_on(root(2), on(0, 80)).unwrap();
+        s.host_note_off(root(2), 1).unwrap();
+        s.input(on(1, 90)).unwrap();
+        s.input(Input {
+            frame: 2,
+            kind: InputKind::NoteOff {
+                channel: 0,
+                note: 60,
+            },
+        })
+        .unwrap();
+        let out = s.drain().unwrap();
+        assert_eq!(ids(&out), [1, 2, 2, 3, 1]);
+        assert_eq!(
+            out.command_roots,
+            [
+                Some(root(1)),
+                Some(root(2)),
+                Some(root(2)),
+                None,
+                Some(root(1))
+            ]
+        );
+        assert_eq!(done(&mut s, 3, &[root(1)]).unwrap(), [root(2)]);
+        assert_eq!(done(&mut s, 3, &[]).unwrap(), [root(1)]);
+        assert!(done(&mut s, 3, &[]).unwrap().is_empty());
+    }
+    #[test]
+    fn hosted_consumed_note_is_pinned_until_physical_release() {
+        let mut s = session("function onNote(e)end");
+        s.host_note_on(root(1), on(0, 100)).unwrap();
+        assert!(s.drain().unwrap().commands.is_empty());
+        assert!(done(&mut s, 1, &[]).unwrap().is_empty());
+        s.host_note_off(root(1), 2).unwrap();
+        let out = s.drain().unwrap();
+        assert_eq!(out.command_roots, [Some(root(1))]);
+        assert_eq!(done(&mut s, 3, &[]).unwrap(), [root(1)]);
+        assert!(done(&mut s, 3, &[]).unwrap().is_empty());
+    }
+    #[test]
+    fn hosted_delayed_and_run_spawn_descendants_pin_without_held_parent() {
+        let mut s = session(
+            r#"
+            function onNote(e)
+                postEvent(e,100)
+                spawn(function() assert(not isNoteHeld());wait(150);playNote(62,100,10);wait(10);fadeout(e.id,0,false) end)
+                run(function() assert(not isNoteHeld());wait(120);playNote(61,100,10) end)
+            end
+            function onRelease(e)postEvent(e)end
+        "#,
+        );
+        s.host_note_on(root(1), on(0, 100)).unwrap();
+        s.host_note_off(root(1), 48).unwrap();
+        s.drain().unwrap();
+        assert!(done(&mut s, 49, &[]).unwrap().is_empty());
+        s.advance(4800).unwrap();
+        let out = s.drain().unwrap();
+        assert!(
+            out.commands
+                .iter()
+                .any(|c| matches!(&c.action,Action::Start(n) if n.note==60))
+        );
+        assert!(out.command_roots.iter().all(|r| *r == Some(root(1))));
+        assert!(done(&mut s, 4801, &[]).unwrap().is_empty());
+        s.advance(6250).unwrap();
+        let out = s.drain().unwrap();
+        assert!(
+            out.commands
+                .iter()
+                .any(|c| matches!(&c.action,Action::Start(n) if n.note==61))
+        );
+        assert!(out.command_roots.iter().all(|r| *r == Some(root(1))));
+        assert!(done(&mut s, 6251, &[]).unwrap().is_empty());
+        s.advance(7700).unwrap();
+        let out = s.drain().unwrap();
+        assert!(
+            out.commands
+                .iter()
+                .any(|c| matches!(&c.action,Action::Start(n) if n.note==62))
+        );
+        assert!(out.command_roots.iter().all(|r| *r == Some(root(1))));
+        assert!(done(&mut s, 7701, &[root(1)]).unwrap().is_empty());
+        assert_eq!(done(&mut s, 7701, &[]).unwrap(), [root(1)]);
+    }
+    #[test]
+    fn hosted_scoped_release_hint_survives_ui_context_without_root() {
+        let p=super::super::program::parse_program(r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
+            local id
+            function onNote(e)id=e.id;postEvent(e);postEvent(table.copy(e))end
+            function onRelease(e)end
+            function onInit() release=Button("Release");release.changed=function()assert(releaseVoice(id));fadeout(id,0,false)end end
+        ]]></script></ScriptProcessor></EventProcessors><Layers><Layer><EventProcessors><ScriptProcessor><script><![CDATA[
+            function onNote(e)postEvent(e)end
+            function onRelease(e)playNote(72,100,10)end
+        ]]></script></ScriptProcessor></EventProcessors></Layer></Layers></Program>"#).unwrap();
+        let mut s =
+            Session::new_hosted_program_chain(&p, BTreeMap::new(), None, 48000, 7, 9).unwrap();
+        s.host_note_on(root(1), on(0, 100)).unwrap();
+        s.host_note_off(root(1), 1).unwrap();
+        let out = s.drain().unwrap();
+        assert_eq!(
+            out.commands
+                .iter()
+                .filter(|c| matches!(c.action, Action::Start(_)))
+                .count(),
+            2
+        );
+        assert!(done(&mut s, 2, &[root(1)]).unwrap().is_empty());
+        let processor = s.runtime.environments.keys().copied().min().unwrap();
+        s.edit_ui(
+            &host::UiEdit {
+                processor,
+                widget: 1,
+                value: host::UiEditValue::Push,
+                modifiers: host::UiModifiers::default(),
+            },
+            2,
+        )
+        .unwrap();
+        let out = s.drain().unwrap();
+        let generated = out
+            .commands
+            .iter()
+            .position(|c| matches!(&c.action,Action::Start(n) if n.note==72))
+            .unwrap();
+        assert_eq!(out.command_roots[generated], Some(root(1)));
+        assert!(done(&mut s, 3, &[]).unwrap().is_empty());
+        s.advance(500).unwrap();
+        s.drain().unwrap();
+        assert_eq!(done(&mut s, 501, &[]).unwrap(), [root(1)]);
+    }
+    #[test]
+    fn hosted_closed_retained_handle_and_registration_cannot_revive_root() {
+        let p=super::super::program::parse_program(r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
+            local saved
+            function onNote(e)if not saved then saved=e.id end;postEvent(e)end
+            function onRelease(e)fadeout(e.id,0,false)end
+            function onController(e)
+                if e.value==1 then assert(releaseVoice(saved))
+                else postEvent({type=Event.NoteOn,id=saved,note=70,velocity=100}) end
+            end
+        ]]></script></ScriptProcessor></EventProcessors><Layers><Layer><EventProcessors><ScriptProcessor><script><![CDATA[
+            function onNote(e)postEvent(e)end
+            function onRelease(e)playNote(72,100,1)end
+        ]]></script></ScriptProcessor></EventProcessors></Layer></Layers></Program>"#).unwrap();
+        let mut s =
+            Session::new_hosted_program_chain(&p, BTreeMap::new(), None, 48000, 7, 9).unwrap();
+        s.host_note_on(root(1), on(0, 100)).unwrap();
+        s.host_note_off(root(1), 1).unwrap();
+        s.advance(50).unwrap();
+        s.drain().unwrap();
+        assert_eq!(done(&mut s, 51, &[]).unwrap(), [root(1)]);
+        s.host_note_on(root(2), on(51, 100)).unwrap();
+        s.drain().unwrap();
+        s.input(Input {
+            frame: 52,
+            kind: InputKind::Controller {
+                channel: 0,
+                controller: 1,
+                value: 1,
+            },
+        })
+        .unwrap();
+        let out = s.drain().unwrap();
+        assert!(out.command_roots.iter().all(Option::is_none));
+        s.input(Input {
+            frame: 53,
+            kind: InputKind::Controller {
+                channel: 0,
+                controller: 1,
+                value: 2,
+            },
+        })
+        .unwrap();
+        let out = s.drain().unwrap();
+        assert!(out.command_roots.iter().all(Option::is_none));
+        assert!(
+            out.commands
+                .iter()
+                .any(|c| matches!(&c.action,Action::Start(n) if n.id==1 && n.note==70))
+        );
+        assert!(s.runtime.state.borrow().roots.contains_key(&root(2)));
+    }
+    #[test]
+    fn hosted_stale_duplicate_and_capacity_reject_before_clock_mutation() {
+        let mut s = session("function onNote(e)end");
+        for bad in [
+            HostRoot {
+                epoch: 8,
+                ..root(1)
+            },
+            HostRoot {
+                generation: 10,
+                ..root(1)
+            },
+            root(0),
+        ] {
+            assert!(s.host_note_on(bad, on(100, 100)).is_err());
+            assert_eq!(s.current_frame(), 0);
+            assert_eq!(s.runtime.state.borrow().next_id, 0);
+        }
+        for id in 1..=HOST_ROOT_CAPACITY as u64 {
+            s.host_note_on(root(id), on(0, 100)).unwrap();
+        }
+        assert!(
+            s.host_note_on(root(HOST_ROOT_CAPACITY as u64 + 1), on(100, 100))
+                .is_err()
+        );
+        assert!(s.host_note_on(root(1), on(100, 100)).is_err());
+        assert_eq!(s.current_frame(), 0);
+        s.host_note_off(root(1), 1).unwrap();
+        s.drain().unwrap();
+        assert_eq!(done(&mut s, 2, &[]).unwrap(), [root(1)]);
+        assert!(s.host_note_off(root(1), 100).is_err());
+        assert_eq!(s.current_frame(), 1);
+        s.host_note_on(root(HOST_ROOT_CAPACITY as u64 + 1), on(2, 100))
+            .unwrap();
+        assert_eq!(s.runtime.state.borrow().roots.len(), HOST_ROOT_CAPACITY);
+    }
+    #[test]
+    fn hosted_same_opaque_id_keeps_distinct_per_post_root_ancestry() {
+        let mut s = session(
+            "local shared;function onNote(e)if shared then e.id=shared else shared=e.id end;postEvent(e);postEvent(table.copy(e))end function onRelease(e)postEvent(e)end",
+        );
+        s.host_note_on(root(1), on(0, 100)).unwrap();
+        s.host_note_on(root(2), on(0, 80)).unwrap();
+        let out = s.drain().unwrap();
+        assert_eq!(ids(&out), [1, 1, 1, 1]);
+        assert_eq!(
+            out.command_roots,
+            [Some(root(1)), Some(root(1)), Some(root(2)), Some(root(2))]
+        );
+        s.host_note_off(root(1), 1).unwrap();
+        s.host_note_off(root(2), 1).unwrap();
+        s.drain().unwrap();
+        assert!(done(&mut s, 2, &[root(1), root(2)]).unwrap().is_empty());
+        assert_eq!(done(&mut s, 2, &[root(2)]).unwrap(), [root(1)]);
+        assert_eq!(done(&mut s, 2, &[]).unwrap(), [root(2)]);
+    }
+    #[test]
+    fn hosted_completion_backpressure_preserves_capacity_boundary_and_closed_policy() {
+        let mut s = session(
+            "local id;function onNote(e)if not id then id=e.id end end function onController(e)postEvent({type=Event.NoteOn,id=id,note=70,velocity=100})end",
+        );
+        for id in 1..=HOST_ROOT_CAPACITY as u64 {
+            s.host_note_on(root(id), on(0, 100)).unwrap();
+        }
+        s.host_note_off(root(1), 1).unwrap();
+        s.drain().unwrap();
+        let expected = HostCompletion {
+            root: root(1),
+            frame: 2,
+        };
+        assert_eq!(s.complete_host_roots(2, &[]).unwrap(), [expected]);
+        assert!(
+            s.host_note_on(root(HOST_ROOT_CAPACITY as u64 + 1), on(100, 100))
+                .is_err()
+        );
+        assert!(s.acknowledge_host_completions(&[root(2)]).is_err());
+        assert_eq!(s.current_frame(), 1);
+        s.input(Input {
+            frame: 3,
+            kind: InputKind::Controller {
+                channel: 0,
+                controller: 1,
+                value: 1,
+            },
+        })
+        .unwrap();
+        let out = s.drain().unwrap();
+        assert!(out.command_roots.iter().all(Option::is_none));
+        assert_eq!(s.complete_host_roots(4, &[]).unwrap(), [expected]);
+        assert_eq!(s.runtime.state.borrow().roots.len(), HOST_ROOT_CAPACITY);
+        s.acknowledge_host_completions(&[root(1)]).unwrap();
+        assert!(s.complete_host_roots(4, &[]).unwrap().is_empty());
+        s.host_note_on(root(HOST_ROOT_CAPACITY as u64 + 1), on(4, 100))
+            .unwrap();
+        assert_eq!(s.runtime.state.borrow().roots.len(), HOST_ROOT_CAPACITY);
     }
 }
