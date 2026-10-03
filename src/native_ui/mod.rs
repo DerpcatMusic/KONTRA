@@ -39,6 +39,7 @@ pub(crate) struct Node {
     pub disabled: bool,
     pub opacity: f32,
     pub background: bool,
+    pub overlay: bool,
     pub tap: bool,
     pub children: Vec<Node>,
 }
@@ -612,6 +613,7 @@ impl Scene {
         let props: Table = node.get("props")?;
         let modifiers: Table = node.get("modifiers")?;
         let background = modifiers.get::<Option<Table>>("background")?.is_some();
+        let overlay = modifiers.get::<Option<Table>>("overlay")?.is_some();
         let (mut text_size, mut text_color, mut hidden, mut disabled, mut opacity, mut text_bold, mut text_lines) = style;
         if let Some(modifier) = modifiers.get::<Option<Table>>("opacity")? {
             let value = match modifier.get::<Value>("value")? {
@@ -817,7 +819,7 @@ impl Scene {
                 retained,
             )?);
         }
-        ensure!(!background || nodes.len()==2,"Invalid native UI background wrapper");
+        ensure!((!background && !overlay) || nodes.len()==2,"Invalid native UI decoration wrapper");
         let anchor = if let Some(modifier) = modifiers.get::<Option<Table>>("align")? {
             let value = match modifier.get::<Value>("value")? {
                 Value::Function(f) => f.call::<Value>(())?, value => value,
@@ -846,6 +848,7 @@ impl Scene {
             disabled,
             opacity,
             background,
+            overlay,
             tap: has_tap,
             children: nodes,
         })

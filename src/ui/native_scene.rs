@@ -50,7 +50,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, part: usize) -> Option<El> {
                 let anchor = child.anchor.unwrap_or(node.alignment);
                 let el = draw(ui, cx, part, epoch, scene, child, assets)
                     .anchor(anchor.0, anchor.1);
-                if node.background && index==0 { el.underlay() } else { el }
+                if node.background && index==0 { el.underlay() } else if node.overlay && index==1 { el.overlay() } else { el }
             })
             .collect();
         let el = primitive(node, children, assets);
@@ -182,7 +182,7 @@ pub(crate) fn scene_tree(node: &Node, assets: &crate::native_assets::Assets) -> 
         .map(|(index, child)| {
             let anchor = child.anchor.unwrap_or(node.alignment);
             let el = scene_tree(child, assets).anchor(anchor.0, anchor.1);
-            if node.background && index==0 { el.underlay() } else { el }
+            if node.background && index==0 { el.underlay() } else if node.overlay && index==1 { el.overlay() } else { el }
         })
         .collect();
     primitive(node, children, assets).id(format!("native-snapshot-{}", node.id))

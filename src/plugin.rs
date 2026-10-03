@@ -4882,6 +4882,42 @@ end on"#;
     }
 
     #[test]
+    fn native_ui_overlays_keep_foreground_geometry_local_paint_order_and_exact_callbacks() {
+        use crate::native_ui::{Node,Paint,Scene};
+        let directory=std::env::temp_dir().join(format!("kontra-native-overlay-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let resources=directory.join("Resources/native_ui");std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("main.nui"),r#"
+            local ui=require('native_ui') local mode=require('kontakt').connect_parameter('Mode')
+            return @ui.Rectangle {color=ui.Color.red}.frame(width=20,height=10)
+                .on_tap_gesture(start=function() mode:set_value(mode:value()+1) end)
+                .overlay(@ui.Rectangle {color=ui.Color(0,0,255)}.frame(width=50,height=30)
+                    .on_tap_gesture(start=function() mode:set_value(mode:value()+2) end).align('top right'))
+                .background(@ui.Rectangle {color=ui.Color(0,255,0)})
+        "#).unwrap();
+        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $Mode(0,10)\nend on".into()],..Default::default()};
+        let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
+        let mut scene=Scene::prepare(&instrument.path,&rt).unwrap().unwrap();let mut live=first_script_live(&rt);rt.prepare_native_controls(&mut live);
+        let mut engine=Engine::default();engine.set_script(Some(rt));
+        fn nodes<'a>(node:&'a Node,result:&mut Vec<&'a Node>){result.push(node);for child in &node.children{nodes(child,result)}}
+        for mode in [0,3] {
+            let (mut left,mut right)=([0.;64],[0.;64]);
+            assert_eq!(allocations(||{engine.ui_control(0,0,mode);engine.render(&mut left,&mut right);engine.script().unwrap().refresh_live(&mut live);}),0);
+            scene.observe(&live);let root=scene.snapshot().unwrap();let mut all=Vec::new();nodes(&root,&mut all);
+            let rendered=moose::mui::mui::scene::resolve(&moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::scene_tree(&root,&scene.assets).clip())).unwrap();
+            assert_eq!((rendered.layout.size.width,rendered.layout.size.height),(20.,10.),"oversized decoration does not enlarge the foreground");
+            let colored:Vec<_>=[[0.,1.,0.,1.],[1.,0.,0.,1.],[0.,0.,1.,1.]].into_iter().map(|color|*all.iter().find(|node|matches!(node.paint,Paint::Rectangle(c,_) if c==color)).unwrap()).collect();
+            let order:Vec<_>=colored.iter().map(|node|{let key=format!("native-snapshot-{}",node.id);rendered.paint.iter().position(|p|p.key.as_str()==key&&p.layer==moose::mui::mui::scene::Layer::Fill).unwrap()}).collect();
+            assert!(order[0]<order[1]&&order[1]<order[2],"background precedes foreground; overlay paints last locally");
+            let overlay=rendered.surface(&format!("native-snapshot-{}",colored[2].id)).unwrap();assert_eq!((overlay.frame.x,overlay.frame.y,overlay.frame.size.width,overlay.frame.size.height),(-30.,0.,50.,30.));
+            let targets:Vec<_>=all.iter().filter(|node|node.tap).collect();assert_eq!(targets.len(),2);
+            let edits:Vec<_>=targets.iter().flat_map(|node|scene.tap(node.id).unwrap()).collect();assert_eq!(edits.iter().map(|edit|(edit.slot,edit.control,edit.value)).collect::<Vec<_>>(),vec![(0,0,mode+1),(0,0,mode+2)]);
+            for edit in edits {assert_eq!(allocations(||{engine.ui_control(edit.slot,edit.control,edit.value);engine.render(&mut left,&mut right);engine.script().unwrap().refresh_live(&mut live);}),0);}
+            scene.observe(&live);let edits=scene.tap(targets[1].id).unwrap();assert_eq!(edits[0].value,mode+4,"real KSP publication is read by the retained overlay callback");
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn native_ui_text_limits_and_weight_use_nearest_scopes_and_real_mui_lines() {
         use crate::native_ui::{Node,Paint,Scene};
         let directory=std::env::temp_dir().join(format!("kontra-native-text-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
