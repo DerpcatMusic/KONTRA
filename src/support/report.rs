@@ -311,6 +311,36 @@ fn redact_token(token: &str) -> String {
     dependency_suffix(token).unwrap_or_else(|| "[redacted]".to_string())
 }
 
+// The service limit applies to serialized UTF-8 JSON, including escape expansion
+// and the preview. Stop accumulating serialized bytes at that limit before a
+// request; pending evidence is retained without an acknowledgement.
+fn bounded_report_body(value: &impl serde::Serialize, limit: usize) -> Result<Vec<u8>, String> {
+    struct Body {
+        bytes: Vec<u8>,
+        limit: usize,
+    }
+    impl std::io::Write for Body {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
+                return Err(std::io::Error::other(
+                    "The complete report exceeds the 16 MiB JSON upload limit. It remains local; export it for support.",
+                ));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut body = Body {
+        bytes: Vec::new(),
+        limit,
+    };
+    serde_json::to_writer(&mut body, value).map_err(|error| error.to_string())?;
+    Ok(body.bytes)
+}
+
 fn send_report(payload: ReportPayload) -> Result<DeliveredReport, String> {
     let mut payload = payload;
     if let Some(incident_id) = payload.incident_id.as_deref()
@@ -336,7 +366,7 @@ fn send_report(payload: ReportPayload) -> Result<DeliveredReport, String> {
         .diagnostics_full
         .as_ref()
         .map(|text| format!("{:x}", sha2::Sha256::digest(text.as_bytes())));
-    let body = serde_json::to_string(&payload).map_err(|error| error.to_string())?;
+    let body = bounded_report_body(&payload, 16 * 1024 * 1024)?;
     let (status, text) = request_agent()?
         .post(REPORT_URL)
         .config()
@@ -450,6 +480,19 @@ mod tests {
         ] {
             assert!(public_issue_url(url).is_none(), "{url}");
         }
+    }
+
+    #[test]
+    fn upload_limit_counts_complete_serialized_utf8_json_and_escape_expansion() {
+        let value = serde_json::json!({"diagnostics_full":"😀\n\"\\", "diagnostics":"preview"});
+        let complete = serde_json::to_vec(&value).unwrap();
+        assert_eq!(
+            bounded_report_body(&value, complete.len()).unwrap(),
+            complete
+        );
+        let error = bounded_report_body(&value, complete.len() - 1).unwrap_err();
+        assert!(error.contains("JSON upload limit") && error.contains("remains local"));
+        assert!(bounded_report_body(&value, 0).is_err());
     }
 
     #[test]
