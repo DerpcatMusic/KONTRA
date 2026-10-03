@@ -36,12 +36,13 @@ pub struct EnvelopeAhdsr {
     pub release_ms: f32,
     /// Sustain level as a linear gain, 0..=1.
     pub sustain: f32,
-    /// Boolean flag of unknown meaning (possibly retrigger or AHD-only mode).
-    #[cfg_attr(feature = "serde", serde(skip))]
+    /// Native AHD-only flag; nonzero ignores key release and ends after decay.
+    /// Consumers still validate the mode and independent source/target flags.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub unknown_flag: u8,
     /// At least 52 trailing bytes: four `(f32, f32, f32, bool)` records
     /// of unknown meaning, plus any opaque extension bytes.
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub unknown_tail: Vec<u8>,
 }
 
@@ -61,7 +62,7 @@ impl EnvelopeAhdsr {
     }
 
     /// Encode editable parameters while preserving the unknown flag/tail.
-    /// Requires metadata from a complete record, not a runtime-cache copy.
+    /// Requires metadata from a complete record; legacy caches without it are rejected.
     pub fn to_chunk(&self) -> Result<Chunk, Error> {
         self.validate()?;
         let length = self

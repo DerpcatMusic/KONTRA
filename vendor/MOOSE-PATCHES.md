@@ -44,6 +44,22 @@ enumerated the ports; they are current whenever it asks again.
 
 Upstream: this is additive and default-off; worth offering to MOOSE as is.
 
+## Native editor parent contracts
+
+VST3 attachment now rejects null parents, unsupported or null platform types,
+and missing open callbacks before changing attachment ownership. CLAP parent
+assignment checks the window and API before interpreting the native-handle
+union; null and unsupported representations never enter the editor. Valid
+NSView, HWND and X11 behavior is preserved. The actual-shim `editor_attach.cpp`
+gate covers rejected attachment state and valid attach/remove/reopen; the CLAP
+unit fixture covers the native union parser used by `set_parent`.
+
+These checks enforce the [VST3 platform pointer contract](https://steinbergmedia.github.io/vst3_doc/base/group__platformUIType.html)
+and prevent malformed native arguments from reaching AppKit or other window
+APIs. They do not identify the cause of any reported Mac DAW crash. The existing
+`Editor::open` and VST3 `gui_open` return no success value, so these argument
+checks do not turn native renderer failure into a verified successful opening.
+
 ## Explicit CLAP MPE input capability
 
 The vendored `moose-clap` has a default-off `mpe-input` feature. KONTRA

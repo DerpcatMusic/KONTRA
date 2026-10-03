@@ -3,6 +3,7 @@
 import json
 import hashlib
 import os
+import re
 import plistlib
 from pathlib import Path
 import subprocess
@@ -50,6 +51,20 @@ assert all(fix['summary'] in structured.split('### Fixed', 1)[1] for fix in revi
 assert all(fix['summary'] in structured.split('### Changed', 1)[1].split('### Fixed', 1)[0]
            for fix in reviewed[3:])
 assert 'No reviewed changes in this category' not in structured.split('### Changed', 1)[1]
+# The actual 123 -> 141 chapter has versioned Added/Fixed/Known limits
+# headings. Every reviewed outcome and limitation must survive in its category.
+changelog = Path(__file__).resolve().parents[2].joinpath('CHANGELOG.md').read_text()
+batch = changelog.split('## Accepted 0.3.141', 1)[1].split('### Fixed after 0.3.115', 1)[0]
+versioned = render('example/KONTRA', 'a'*40, '0.3.141-nightly.test', 'a'*40,
+                   '## Unreleased\n' + batch + '\n### Changed after 0.3.123\n- Authored metadata change.\n',
+                   previous_notes, previous, [commit], [])
+for category, count in (('Added', 3), ('Fixed', 15), ('Known limits', 5)):
+    block = re.search(r'(?ms)^### ' + category + r' (?:after|for) [^\n]+\n(.*?)(?=^### |\Z)', batch).group(1)
+    bullets = re.findall(r'^- .+$', block, re.M)
+    assert len(bullets) == count
+    rendered = versioned.split('### ' + category + '\n', 1)[1].split('\n### ', 1)[0]
+    assert all(bullet in rendered for bullet in bullets), category
+assert 'Authored metadata change.' in versioned.split('### Changed\n', 1)[1].split('\n### ', 1)[0]
 bootstrap = generate(notes_api, 'example/KONTRA', 'a'*40, '0.3.1-nightly.test', None, current_notes)
 assert 'First published snapshot' in bootstrap and 'Existing wrapped feature.' in bootstrap
 def missing_old_notes(path, *args):
@@ -144,16 +159,30 @@ elif name=="security" and args[0]=="verify-cert" and os.environ["SIGNING_CASE"]=
 elif name=="security" and args[0]=="find-certificate": print("synthetic-public-certificate")
 elif name=="curl": pathlib.Path(args[args.index("-o")+1]).write_bytes(b"synthetic-public-certificate")
 elif name=="codesign" and "--sign" in args:
+    if args[-1].endswith(".dmg") and os.environ["SIGNING_CASE"]=="bad-dmg-sign": sys.exit(1)
     assert json.loads(state.read_text())[0]==args[args.index("--keychain")+1], "signing keychain was not selected"
 elif name=="uuidgen": print("12345678-1234-1234-1234-123456789abc")
-elif name=="hdiutil" and args[0]=="create": pathlib.Path(args[-1]).write_bytes(b"fixture"+b"koly"+b"\0"*508)
+elif name=="hdiutil" and args[0]=="create":
+    assert "-quiet" not in args
+    if os.environ["SIGNING_CASE"]=="bad-dmg-create": sys.exit(7)
+    pathlib.Path(args[-1]).write_bytes(b"fixture"+b"koly"+b"\0"*508)
 elif name=="xcrun" and args[:1]==["SetFile"]: raise AssertionError("FinderInfo is forbidden on signed code")
-elif name=="xcrun" and args[:1]==["swift"]: assert args[2]=="--register" and args[3].endswith("KONTRA.app")
+elif name=="xcrun" and args[:1]==["swift"]:
+    assert args[2]=="--register" and args[3].endswith("KONTRA.app")
+    if os.environ["SIGNING_CASE"]=="bad-swift-after-output":
+        print('{"factory_classes":1}')
+        sys.exit(1)
 elif name=="xcrun" and args[:2]==["notarytool","submit"]:
+    if os.environ["SIGNING_CASE"]=="bad-notary-submit":
+        print(json.dumps(dict(status="Invalid",id="12345678-1234-1234-1234-123456789abc",statusCode=503,message="synthetic-fixture",unexpected_private_field="synthetic-installer-fixture")))
+        sys.exit(1)
+    if os.environ["SIGNING_CASE"]=="bad-notary-json":
+        print("synthetic-fixture")
+        sys.exit(1)
     print(json.dumps(dict(status="Invalid" if os.environ["SIGNING_CASE"]=="rejected" else "Accepted",id="12345678-1234-1234-1234-123456789abc")))
 elif name=="xcrun" and args[:2]==["stapler","validate"] and os.environ["SIGNING_CASE"]=="bad-ticket": sys.exit(1)
 '''
-for case in ("accepted", "duplicate-ca", "duplicate-p12", "bad-ca-import", "bad-chain", "rejected", "bad-ticket"):
+for case in ("accepted", "duplicate-ca", "duplicate-p12", "bad-ca-import", "bad-chain", "rejected", "bad-ticket", "bad-swift-after-output", "bad-dmg-create", "bad-dmg-sign", "bad-notary-submit", "bad-notary-json"):
     with tempfile.TemporaryDirectory(prefix="kontra-signing-check-") as directory:
         root=Path(directory); tools=root/"tools"; tools.mkdir(); script=tools/"mock";script.write_text(native_mock);script.chmod(0o755)
         for name in ("uuidgen","security","lipo","codesign","hdiutil","xcrun","spctl","curl"): tools.joinpath(name).symlink_to("mock")
@@ -166,13 +195,25 @@ for case in ("accepted", "duplicate-ca", "duplicate-p12", "bad-ca-import", "bad-
         env["APPLE_APPLICATION_CERTIFICATE_P12_BASE64"]=base64.b64encode(b"synthetic-fixture").decode()+"\n"
         env["APPLE_INSTALLER_CERTIFICATE_P12_BASE64"]=base64.b64encode(b"synthetic-installer-fixture").decode()+"\n"
         result=subprocess.run(["bash",str(signing)],env=env,capture_output=True,text=True)
-        assert result.returncode==(0 if case in ("accepted", "duplicate-ca", "duplicate-p12") else 1),(case,result.stderr)
+        assert result.returncode==(0 if case in ("accepted", "duplicate-ca", "duplicate-p12") else 7 if case=="bad-dmg-create" else 1),(case,result.stderr)
         assert (stage/"notarization.json").exists()==(case in ("accepted", "duplicate-ca", "duplicate-p12"))
         calls=root.joinpath("calls").read_text()
         assert "security delete-keychain" in calls
         assert json.loads(root.joinpath("calls.keychains").read_text())==["/Users/test user/login.keychain-db", "/Library/Keychains/System.keychain"], "original keychains were not restored"
         if case in ("bad-ca-import", "bad-chain"):
             assert "xcrun notarytool submit" not in calls
+        phases={"bad-swift-after-output":"Native bundle/factory verification", "bad-dmg-create":"DMG creation", "bad-dmg-sign":"DMG signing", "bad-notary-submit":"Apple notarization submission", "bad-notary-json":"Apple notarization submission"}
+        if case in phases:
+            assert phases[case]+" failed (exit " in result.stderr
+            assert "synthetic-fixture" not in result.stdout+result.stderr
+            assert "synthetic-installer-fixture" not in result.stdout+result.stderr
+            assert "xcrun stapler staple" not in calls
+        if case=="bad-swift-after-output": assert "hdiutil create" not in calls
+        if case in ("bad-dmg-create", "bad-dmg-sign"): assert "xcrun notarytool submit" not in calls
+        if case=="bad-notary-submit":
+            assert '"statusCode": 503' in result.stderr and '"status": "Invalid"' in result.stderr
+            assert "unexpected_private_field" not in result.stderr and '"message"' not in result.stderr
+        if case=="bad-notary-json": assert "without a parseable result" in result.stderr
         if case in ("accepted", "duplicate-ca", "duplicate-p12"):
             receipt=json.loads(stage.joinpath("notarization.json").read_text())
             assert receipt["status"]=="Accepted" and receipt["stapled"] and receipt["signatures_verified"]

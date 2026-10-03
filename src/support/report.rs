@@ -45,7 +45,7 @@ struct DeliveredReport {
     issue_url: Option<String>,
 }
 
-fn public_issue_url(url: &str) -> Option<String> {
+pub(crate) fn public_issue_url(url: &str) -> Option<String> {
     let number = url.strip_prefix("https://github.com/DerpcatMusic/KONTRA/issues/")?;
     (number.len() <= 20
         && !number.is_empty()
