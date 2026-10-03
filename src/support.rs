@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 mod crash;
+mod export;
+pub(crate) use export::export_crash_evidence;
 mod platform;
 mod report;
 pub(crate) use crash::flush_journal;

@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, SyncSender, TrySendError},
     },
     thread::JoinHandle,
@@ -146,6 +146,7 @@ struct Session {
     history: Arc<Mutex<History>>,
     sender: Mutex<Option<SyncSender<Command>>>,
     worker: Mutex<Option<JoinHandle<()>>>,
+    export_stopping: Arc<AtomicBool>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -204,6 +205,8 @@ impl Session {
         #[cfg(feature = "plugin")]
         let worker_id = id.clone();
         let started = Instant::now();
+        let export_stopping = Arc::new(AtomicBool::new(false));
+        let worker_stopping = export_stopping.clone();
         // Creation, serialization, rotation and export all happen off UI/audio.
         let worker = std::thread::Builder::new()
             .name("kontra-diagnostics".into())
@@ -249,12 +252,13 @@ impl Session {
                             });
                             let mut snapshot = snapshot;
                             snapshot.status = lock(&journal.history).status.clone();
-                            let result = export_bundle(
+                            let result = export_bundle_with_cancel(
                                 &path,
                                 &context,
                                 &snapshot,
                                 &journal.path,
                                 flush_error,
+                                &worker_stopping,
                             );
                             let status = match result {
                                 Ok(coverage) => ExportStatus::Complete {
@@ -294,6 +298,7 @@ impl Session {
             history,
             sender: Mutex::new(sender),
             worker: Mutex::new(worker),
+            export_stopping,
         });
         emit_to(
             &session,
@@ -733,6 +738,7 @@ fn stop(manager: &mut Option<Arc<Session>>) -> Result<(), String> {
     let Some(session) = manager.take() else {
         return Ok(());
     };
+    session.export_stopping.store(true, Ordering::Release);
     let sender = lock(&session.sender).take();
     if let Some(sender) = sender {
         let _ = sender.send(Command::Stop);
@@ -1009,8 +1015,8 @@ pub fn export_preview(context: &Value) -> Value {
     let mut preview = json!({
         "schema_version": SCHEMA_VERSION, "build":build_identity(), "context":context,
         "redact_paths":redact, "status":history.status,
-        "contents":["report.json","README.txt","events.jsonl","journal.jsonl (current and retained inactive sessions)"],
-        "privacy":"Bounded script excerpts around faults are included. Full scripts, sample bytes, ciphertext and access credentials are excluded. Paths are redacted by default. Review the preview before sharing.",
+        "contents":["report.json","README.txt","events.jsonl","journal.jsonl (current and retained inactive sessions)", "crash-evidence/manifest.json", "crash-evidence/ (complete archived private crash originals and saved delivery records)"],
+        "privacy":"Structured logs include bounded script excerpts and redact paths by default. Exact archived private crash originals and saved delivery records are also included UNREDACTED; they may contain personal paths or sensitive native fields. These local copies are never added to automatic uploads. This export does not search OS reports or copy binary process dumps. Review before sharing.",
         "history_limit":HISTORY_LIMIT,"history_bytes_limit":HISTORY_BYTES,
         "journal_limit_bytes":LOG_LIMIT,"rotations_retained":1,
         "inactive_retention_bytes":64*1024*1024,"inactive_retention_days":7,
@@ -1171,12 +1177,17 @@ fn export_journals(
     }
     (paths, guards, active_omitted)
 }
-fn export_bundle(
+#[cfg(test)]
+fn export_bundle(destination: &Path, context: &Value, snapshot: &DiagnosticSnapshot, journal: &Path, flush_error: Option<String>) -> std::io::Result<ExportCoverage> {
+    export_bundle_with_cancel(destination, context, snapshot, journal, flush_error, &AtomicBool::new(false))
+}
+fn export_bundle_with_cancel(
     destination: &Path,
     context: &Value,
     snapshot: &DiagnosticSnapshot,
     journal: &Path,
     flush_error: Option<String>,
+    stopping: &AtomicBool,
 ) -> std::io::Result<ExportCoverage> {
     let redact = context["redact_paths"].as_bool().unwrap_or(true);
     // create_dir provides the atomic no-overwrite boundary, including symlinks.
@@ -1237,6 +1248,7 @@ fn export_bundle(
                 source_sessions.push(source_session.clone());
             }
             for line in BufReader::new(input).lines() {
+                if stopping.load(Ordering::Acquire) { return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "Support export canceled")); }
                 let line = match line {
                     Ok(line) => line,
                     Err(error) => {
@@ -1263,7 +1275,13 @@ fn export_bundle(
             }
         }
         output.sync_all()?;
-        let partial = flush_error.is_some()
+        let crash = crate::support::export_crash_evidence(destination, stopping)?;
+        let crash_partial = crash.manifest["coverage"] != "complete_at_capture";
+        journal_warnings.extend(crash.warnings);
+        report["private_crash_evidence"] = crash.manifest;
+        report["privacy"]["private_crash_originals_unredacted"] = json!(true);
+        report["privacy"]["guarantees_scope"] = json!("structured_logs_only; exact private originals may contain sensitive native fields");
+        let partial = crash_partial || flush_error.is_some()
             || snapshot.status.write_errors > 0
             || snapshot.status.dropped_events > 0
             || malformed > 0
@@ -1285,7 +1303,7 @@ fn export_bundle(
             &serde_json::to_vec_pretty(&report)?,
         )?;
         let readme = format!(
-            "KONTRA diagnostic report\n\nBuild: {}\nPaths redacted: {redact}\nRecent events: {} (bounded to {HISTORY_LIMIT} rows / {} bytes)\nSession events: {}\nDropped before journal: {}\nWrite errors: {}\nJournal rows exported: {rows}\nMalformed journal rows omitted: {malformed}\n\nreport.json: build, system, caller-provided host/audio configuration, recent issues and counters.\nevents.jsonl: bounded recent in-memory history, including events lost before disk.\njournal.jsonl: current journal and one retained rotation, in chronological order.\n\nJournals rotate before exceeding 8MiB; at most two files per active session.\nInactive sessions are pruned to 64MiB / 7 days; active sessions are never deleted.\nAbrupt process termination may lose queued events; stage-start records show the last observed operation.\nBounded script excerpts around faults are included; full scripts, sample assets, ciphertext and access credentials are excluded.\nPath redaction preserves file basenames; review diagnostic messages and library names before sharing.\n",
+            "KONTRA diagnostic report\n\nBuild: {}\nStructured log paths redacted: {redact}\nRecent events: {} (bounded to {HISTORY_LIMIT} rows / {} bytes)\nSession events: {}\nDropped before journal: {}\nWrite errors: {}\nJournal rows exported: {rows}\nMalformed journal rows omitted: {malformed}\n\nreport.json: build, system, caller-provided host/audio configuration, recent issues and counters.\nevents.jsonl: bounded recent in-memory history, including events lost before disk.\njournal.jsonl: current journal and one retained rotation, in chronological order.\n\nJournals rotate before exceeding 8MiB; at most two files per active session.\nInactive sessions are pruned to 64MiB / 7 days; active sessions are never deleted.\nAbrupt process termination may lose queued events; stage-start records show the last observed operation.\nStructured logs include bounded script excerpts and exclude full scripts, sample assets, ciphertext and access credentials. These guarantees do not apply to exact private crash originals below.\nPath redaction preserves file basenames; review diagnostic messages and library names before sharing.\n\ncrash-evidence/manifest.json: per-source ownership and complete/partial/missing/active coverage.\ncrash-evidence/: exact archived private crash journals, native originals and saved incident/delivery records. These copies are UNREDACTED, even when structured-log path redaction is enabled, and may contain sensitive native fields. They are included only in this user-requested local export, never automatic uploads. The export does not search OS crash-report directories or copy binary process dumps. Missing, active or unavailable sources are labeled in the manifest, with retained source paths and available content hashes. Review before sharing.\n",
             snapshot.build["version"].as_str().unwrap_or("unknown"),
             snapshot.events.len(),
             HISTORY_BYTES,
@@ -1768,6 +1786,110 @@ pub fn code(message: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn manual_support_export_preserves_private_crash_originals_and_reports_missing_or_busy_sources() {
+        const CHILD: &str = "KONTRA_MANUAL_CRASH_EXPORT_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "diagnostics::tests::manual_support_export_preserves_private_crash_originals_and_reports_missing_or_busy_sources", "--test-threads=1"])
+                .env(CHILD,"1").env("KONTRA_REPORT_DIR", directory.path().join("private-cache"))
+                .env("KONTRA_DISABLE_NETWORK","1").status().unwrap();
+            assert!(status.success()); return;
+        }
+        let cache=PathBuf::from(std::env::var_os("KONTRA_REPORT_DIR").unwrap());
+        let root=cache.join("crash-reports");
+        for name in ["originals","pending","deferred","sessions","panics"] { std::fs::create_dir_all(root.join(name)).unwrap(); }
+        let id="0123456789abcdef";
+        let original=vec![0x5a_u8;384*1024];
+        let original_path=root.join("originals").join(format!("{id}.dfr"));
+        std::fs::write(&original_path,&original).unwrap();
+        let native=b"Native private original: /home/authored-user/library; private_key=authored-not-a-real-key\n".repeat(4096);
+        let native_hash=blake3::hash(&native).to_hex().to_string();
+        let native_path=root.join("originals").join(format!("{native_hash}.raw"));
+        std::fs::write(&native_path,&native).unwrap();
+        let mismatched_hash="e".repeat(64);
+        let mismatched_native=root.join("originals").join(format!("{mismatched_hash}.raw"));
+        std::fs::write(&mismatched_native,b"changed native content no longer matches saved identity").unwrap();
+        std::fs::write(root.join("originals").join(format!("{native_hash}.json")),serde_json::to_vec(&json!({"status":"native-original-unverified","bytes":native.len(),"blake3":native_hash,"local_file":format!("originals/{native_hash}.raw"),"automatically_uploaded":false})).unwrap()).unwrap();
+        let missing="fedcba9876543210";
+        let missing_hash="d".repeat(64);
+        let pending_bytes=serde_json::to_vec(&json!({"id":id,"local_journal":{"local_file":format!("originals/{missing}.dfr"),"bytes":384*1024,"blake3":missing_hash,"omitted_slots":87,"capture_error":"authored original unavailable"}})).unwrap();
+        std::fs::write(root.join("pending.json"),&pending_bytes).unwrap();
+        std::fs::write(root.join("pending").join(format!("{id}.json")),&pending_bytes).unwrap();
+        std::fs::write(root.join("deferred-cursor.json"),b"7").unwrap();
+        let deferred=root.join("deferred").join(format!("{id}.json"));
+        let deferred_bytes=serde_json::to_vec(&json!({"id":id,"local_journal":{"local_file":format!("originals/{id}.dfr")}})).unwrap();
+        std::fs::write(&deferred,&deferred_bytes).unwrap();
+        let receipt=serde_json::to_vec(&json!({"incident_id":id,"report_id":"authored-receipt","status":"delivered"})).unwrap();
+        std::fs::write(cache.join("last-report.json"),&receipt).unwrap();
+        // An actual publisher lock holds only this source. Export must omit it
+        // without waiting or losing any other evidence, then include it on retry.
+        let publisher=File::options().create(true).truncate(false).read(true).write(true)
+            .open(buffr_durable_file::lock_path(&deferred).unwrap()).unwrap();publisher.lock().unwrap();
+        std::fs::write(root.join("sessions/live.json"),serde_json::to_vec(&json!({"pid":std::process::id(),"host_process":"current-host","journal_file":"live.dfr"})).unwrap()).unwrap();
+        std::fs::write(root.join("sessions/live.dfr"),b"live source must not be copied").unwrap();
+        std::fs::write(root.join("sessions/orphan.dfr"),b"unverified owner must not be copied").unwrap();
+        std::fs::write(root.join("sessions/dead.json"),serde_json::to_vec(&json!({"pid":u32::MAX,"host_process":"authored-dead-host","journal_file":"dead.dfr"})).unwrap()).unwrap();
+        std::fs::write(root.join("sessions/dead.dfr"),&original).unwrap();
+        std::fs::write(root.join("panics/4294967295.json"),b"{\"authored\":true}").unwrap();
+        std::fs::write(root.join("deferred/1111111111111111.json"),br#"{"local_journal":{"local_file":"../outside-private.txt"}}"#).unwrap();
+        let outside=cache.join("outside-private.txt");std::fs::write(&outside,b"outside ownership boundary").unwrap();
+        #[cfg(unix)] {
+            std::os::unix::fs::symlink(&outside,root.join("originals").join(format!("{}.raw","f".repeat(64)))).unwrap();
+        }
+        let directory=tempfile::tempdir().unwrap();let logs=directory.path().join("logs");std::fs::create_dir(&logs).unwrap();
+        let journal=logs.join("session-authored.jsonl");std::fs::write(&journal,b"{\"data\":{\"path\":\"/home/authored-user/library/file.nki\"}}\n").unwrap();
+        let snapshot=DiagnosticSnapshot { revision:0,events:Vec::new(),status:LogStatus::default(),build:json!({"version":"authored"}) };
+        let bundle=directory.path().join("report");
+        let coverage=export_bundle(&bundle,&json!({"redact_paths":true}),&snapshot,&journal,None).unwrap();assert!(coverage.partial);
+        let copied=bundle.join("crash-evidence/crash-reports/originals");
+        assert_eq!(std::fs::read(copied.join(format!("{id}.dfr"))).unwrap(),original);
+        assert_eq!(std::fs::read(copied.join(format!("{native_hash}.raw"))).unwrap(),native);
+        assert_eq!(std::fs::read(bundle.join("crash-evidence/last-report.json")).unwrap(),receipt);
+        assert_eq!(std::fs::read(bundle.join("crash-evidence/crash-reports/pending.json")).unwrap(),pending_bytes);
+        assert_eq!(std::fs::read(bundle.join(format!("crash-evidence/crash-reports/pending/{id}.json"))).unwrap(),pending_bytes);
+        assert_eq!(std::fs::read(bundle.join("crash-evidence/crash-reports/deferred-cursor.json")).unwrap(),b"7");
+        assert_eq!(std::fs::read(bundle.join("crash-evidence/crash-reports/sessions/dead.dfr")).unwrap(),original);
+        assert_eq!(std::fs::read(bundle.join("crash-evidence/crash-reports/panics/4294967295.json")).unwrap(),b"{\"authored\":true}");
+        let manifest:Value=serde_json::from_slice(&std::fs::read(bundle.join("crash-evidence/manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest["automatically_uploaded"],false);assert_eq!(manifest["paths_redacted"],false);
+        let status=|path:&str|manifest["entries"].as_array().unwrap().iter().find(|e|e["source"]==path).unwrap()["status"].as_str().unwrap().to_owned();
+        assert_eq!(status(&format!("crash-reports/originals/{missing}.dfr")),"missing");
+        let missing_entry=manifest["entries"].as_array().unwrap().iter().find(|e|e["source"]==format!("crash-reports/originals/{missing}.dfr")).unwrap();
+        assert_eq!(missing_entry["recorded_original"]["blake3"],missing_hash);
+        assert_eq!(missing_entry["recorded_original"]["bytes"],384*1024);
+        assert_eq!(missing_entry["recorded_original"]["omitted_slots"],87);
+        assert_eq!(missing_entry["recorded_original"]["capture_error_present"],true);
+        assert_eq!(status(&format!("crash-reports/originals/{mismatched_hash}.raw")),"incomplete");
+        assert!(!copied.join(format!("{mismatched_hash}.raw")).exists());
+        assert_eq!(std::fs::read(&mismatched_native).unwrap(),b"changed native content no longer matches saved identity");
+        assert_eq!(status(&format!("crash-reports/deferred/{id}.json")),"publisher_active_omitted");
+        assert_eq!(status("crash-reports/sessions/live.json"),"active_or_unverified_owner_omitted");
+        assert_eq!(status("crash-reports/sessions/orphan.dfr"),"active_or_unverified_owner_omitted");
+        assert!(!bundle.join("crash-evidence/crash-reports/sessions/live.dfr").exists());
+        assert!(!bundle.join("outside-private.txt").exists());
+        assert_eq!(std::fs::read(&outside).unwrap(),b"outside ownership boundary");
+        assert!(!std::fs::read_to_string(bundle.join("journal.jsonl")).unwrap().contains("authored-user"),"structured redaction remains active");
+        assert!(std::fs::read_to_string(bundle.join("README.txt")).unwrap().contains("UNREDACTED"));
+        assert!(export_preview(&json!({}))["privacy"].as_str().unwrap().contains("UNREDACTED"));
+        #[cfg(unix)] { use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(copied.join(format!("{id}.dfr"))).unwrap().permissions().mode()&0o777,0o600);
+            assert_eq!(std::fs::metadata(bundle.join("crash-evidence")).unwrap().permissions().mode()&0o777,0o700);
+        }
+        assert!(export_bundle(&bundle,&json!({}),&snapshot,&journal,None).is_err(),"existing destinations cannot overwrite sources or exports");
+        drop(publisher);
+        let retry=directory.path().join("retry");export_bundle(&retry,&json!({}),&snapshot,&journal,None).unwrap();
+        assert_eq!(std::fs::read(retry.join(format!("crash-evidence/crash-reports/deferred/{id}.json"))).unwrap(),deferred_bytes);
+        let canceled=directory.path().join("canceled");
+        assert!(export_bundle_with_cancel(&canceled,&json!({}),&snapshot,&journal,None,&AtomicBool::new(true)).is_err());
+        assert!(canceled.join("INCOMPLETE.txt").exists());
+        assert_eq!(std::fs::read(&original_path).unwrap(),original);assert_eq!(std::fs::read(&native_path).unwrap(),native);
+        let overlap=cache.join("manual-report");assert!(export_bundle(&overlap,&json!({}),&snapshot,&journal,None).is_err());
+        assert_eq!(std::fs::read(&original_path).unwrap(),original);
+    }
+
+
     use super::*;
 
     #[test]
@@ -1979,6 +2101,7 @@ mod tests {
             })),
             sender: Mutex::new(Some(blocked)),
             worker: Mutex::new(None),
+            export_stopping: Arc::new(AtomicBool::new(false)),
         };
         emit_to(&stalled, row.clone());
         emit_to(&stalled, row.clone());
