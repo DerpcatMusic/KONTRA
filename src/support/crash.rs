@@ -447,6 +447,8 @@ enum ReporterControl {
     Submitted(String),
     Resume(String),
     ScanQueue(bool, Option<String>),
+    #[cfg(test)]
+    Barrier(mpsc::SyncSender<()>),
 }
 
 struct ReporterRuntime {
@@ -1177,6 +1179,10 @@ fn reporter_worker(
     let mut resumable_id: Option<String> = None;
     while let Ok(control) = control_receiver.recv() {
         match control {
+            #[cfg(test)]
+            ReporterControl::Barrier(reply) => {
+                let _ = reply.send(());
+            }
             ReporterControl::Register(instance_id, acknowledge) => {
                 let mut current = new_session_marker(instance_id, &run_token);
                 if let (Some(recorder), Some(journal_file)) =
@@ -3921,8 +3927,13 @@ mod tests {
         began.recv_timeout(timeout).unwrap();
         assert!(outcome_receiver.recv_timeout(timeout).unwrap());
         release.send(()).unwrap();
+        // FIFO acknowledgement keeps this publisher lock held until the real
+        // Submitted handler has completed its bounded failed retirement.
+        let (barrier, reached) = mpsc::sync_channel(1);
+        assert!(REPORTER.send(ReporterControl::Barrier(barrier)));
+        reached.recv_timeout(timeout).unwrap();
         assert!(matches!(
-            event_receiver.recv_timeout(std::time::Duration::from_secs(1)),
+            event_receiver.recv_timeout(std::time::Duration::from_millis(25)),
             Err(mpsc::RecvTimeoutError::Timeout)
         ));
         assert_eq!(std::fs::read(&second_path).unwrap(), second_bytes);
