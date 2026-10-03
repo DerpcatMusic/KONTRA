@@ -135,7 +135,7 @@ function native_component(target,props,children)
 end
 function native_modifier(node,name,props,args)
     local environment=name=="context" or name=="font_size" or name=="foreground_color" or name=="bold" or name=="line_limit"
-    assert(name=="frame" or name=="padding" or name=="hidden" or name=="disabled" or name=="opacity" or name=="offset" or name=="align" or name=="background" or name=="overlay" or name=="on_tap_gesture" or environment,"Unsupported modifier: "..name)
+    assert(name=="frame" or name=="padding" or name=="hidden" or name=="disabled" or name=="opacity" or name=="offset" or name=="align" or name=="background" or name=="overlay" or name=="on_tap_gesture" or name=="on_hover_gesture" or environment,"Unsupported modifier: "..name)
     if name=="overlay" then
         assert(next(props)==nil and #args==1 and type(args[1])=="table" and args[1].kind,"Overlay requires a component")
         return {kind="ZStack",props={},children={node,args[1]},modifiers={overlay={}}}
@@ -216,7 +216,7 @@ function native_modifier(node,name,props,args)
     end
     assert(node.modifiers[name]==nil,"Duplicate modifier")
     for key,value in pairs(props) do
-        assert(key=="start" and type(value)=="function","Unsupported gesture property")
+        assert((name=="on_tap_gesture" and key=="start" or name=="on_hover_gesture" and (key=="enter" or key=="move" or key=="exit")) and type(value)=="function","Unsupported gesture property")
     end
     node.modifiers[name]=props; return node
 end
@@ -236,12 +236,12 @@ function native_expand(node,path,inherited)
     local instance=instances[key]
     if not instance then
         assert(instance_count<4096,"Native UI state-instance budget exceeded")
-        instance={states={}};instances[key]=instance;instance_count=instance_count+1
+        instance_count=instance_count+1;instance={states={},id=instance_count};instances[key]=instance
     end
     instance.context=context;instance.hook=0
     local previous=active;active=instance
     local child=node.target(node.props)
     active=previous
     assert(type(child)=="table" and child.kind,"Native component function returned no component")
-    return {kind="ZStack",props={},children={child},modifiers=node.modifiers},context
+    return {kind="ZStack",props={},children={child},modifiers=node.modifiers,owner=instance.id},context
 end

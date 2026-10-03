@@ -41,6 +41,7 @@ pub(crate) struct Node {
     pub background: bool,
     pub overlay: bool,
     pub tap: bool,
+    pub hover: bool,
     pub children: Vec<Node>,
 }
 impl Node {
@@ -68,6 +69,19 @@ pub(crate) struct Edit {
     pub control: usize,
     pub value: i32,
 }
+#[derive(Clone, Copy, PartialEq)]
+struct HoverInput {
+    position: moose::mui::mui::prelude::Point,
+    frame: moose::mui::mui::layout::Frame,
+    mods: moose::mui::mui::prelude::Mods,
+}
+struct Hover {
+    callbacks: [Option<Function>; 3],
+    present: bool,
+    enabled: bool,
+    inside: bool,
+    last: Option<HoverInput>,
+}
 struct Binding {
     slot: usize,
     control: usize,
@@ -92,6 +106,7 @@ pub(crate) struct Scene {
     revision: Arc<AtomicU64>,
     output_meters: Arc<crate::fx::OutputMeters>,
     gestures: Vec<Option<Function>>,
+    hovers: Vec<Option<Hover>>,
     identities: BTreeMap<String, usize>,
     pub(crate) assets: Arc<crate::native_assets::Assets>,
     asset_pending: BTreeSet<String>,
@@ -429,6 +444,7 @@ impl Scene {
             revision,
             output_meters: rt.output_meters.clone(),
             gestures: Vec::new(),
+            hovers: Vec::new(),
             identities: BTreeMap::new(),
             assets: Arc::default(),
             asset_pending: BTreeSet::new(),
@@ -567,6 +583,9 @@ impl Scene {
     fn snapshot_raw(&mut self) -> Result<Node> {
         self.instructions.store(0, Ordering::Relaxed);
         self.gestures.clear();
+        for hover in self.hovers.iter_mut().flatten() {
+            hover.present = false;
+        }
         let mut seen = BTreeSet::new();
         let root = self.root.clone();
         let mut retained = Vec::new();
@@ -602,14 +621,21 @@ impl Scene {
         );
         // Keep visited tables alive so Lua GC cannot reuse a checked pointer.
         retained.push(node.clone());
+        let expand: Function = self.lua.globals().get("native_expand")?;
+        let (node, context): (Table, Table) = expand.call((node, path.clone(), context))?;
+        // The existing bounded component state owner distinguishes a replaced
+        // component at the same child path; its old hover exit stays owned by it.
+        let path = if let Some(owner) = node.get::<Option<usize>>("owner")? {
+            format!("{path}@{owner}")
+        } else {
+            path
+        };
         ensure!(
             self.identities.len() < 4096 || self.identities.contains_key(&path),
             "Native UI identity budget exceeded"
         );
         let next = self.identities.len();
         let id = *self.identities.entry(path.clone()).or_insert(next);
-        let expand: Function = self.lua.globals().get("native_expand")?;
-        let (node, context): (Table, Table) = expand.call((node, path.clone(), context))?;
         let props: Table = node.get("props")?;
         let modifiers: Table = node.get("modifiers")?;
         let background = modifiers.get::<Option<Table>>("background")?.is_some();
@@ -806,6 +832,24 @@ impl Scene {
         if let Some(g) = gesture.filter(|_| !hidden && !disabled) {
             self.gestures[id] = Some(g);
         }
+        let hover: Option<Table> = modifiers.get("on_hover_gesture")?;
+        let has_hover = hover.is_some() && !hidden && !disabled;
+        if let Some(hover) = hover {
+            let callbacks = [hover.get("enter")?, hover.get("move")?, hover.get("exit")?];
+            if self.hovers.len() <= id {
+                self.hovers.resize_with(id + 1, || None);
+            }
+            let entry = self.hovers[id].get_or_insert(Hover {
+                callbacks: [None, None, None],
+                present: true,
+                enabled: false,
+                inside: false,
+                last: None,
+            });
+            entry.callbacks = callbacks;
+            entry.present = true;
+            entry.enabled = has_hover;
+        }
         let children: Table = node.get("children")?;
         let mut nodes = Vec::new();
         for (index, child) in children.sequence_values::<Table>().enumerate() {
@@ -850,11 +894,93 @@ impl Scene {
             background,
             overlay,
             tap: has_tap,
+            hover: has_hover,
             children: nodes,
         })
     }
     pub(crate) fn take_edits(&self) -> Vec<Edit> {
         std::mem::take(&mut self.parameters.lock().unwrap().edits)
+    }
+    /// Observe the actual displayed MUI scene. Parent and child hover regions
+    /// each track their own enter/move/exit, including ancestor clipping.
+    pub(crate) fn hover(&mut self, ui: &moose::mui::mui::Ui, prefix: &str) -> Result<Vec<Edit>> {
+        self.instructions.store(0, Ordering::Relaxed);
+        self.parameters.lock().unwrap().edits.clear();
+        let pointer = ui.pointer();
+        let mut hit = moose::mui::mui::input::Hit::default();
+        // Retired owners exit before replacements enter at the same location.
+        for retiring in [true, false] {
+            for (id, entry) in self.hovers.iter_mut().enumerate() {
+                let Some(hover) = entry else {
+                    continue;
+                };
+                if (!hover.present || !hover.enabled) != retiring {
+                    continue;
+                }
+                let surface = ui
+                    .scene()
+                    .and_then(|scene| scene.surface(&format!("{prefix}-{id}")));
+                let input = pointer
+                    .pos
+                    .zip(surface)
+                    .map(|(position, surface)| HoverInput {
+                        position,
+                        frame: surface.frame,
+                        mods: pointer.mods,
+                    });
+                let inside = if hover.present && hover.enabled {
+                    if let (Some(input), Some(surface)) = (input, surface) {
+                        hit.clear();
+                        hit.push_placed(
+                            "hover",
+                            None,
+                            &surface.path,
+                            surface.offset,
+                            surface.clip,
+                            surface.clip_paths(),
+                        )
+                        .map_err(|error| {
+                            anyhow::anyhow!("Native UI hover hit geometry: {error}")
+                        })?;
+                        !surface.disabled && hit.at(input.position).is_some()
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                let phase = match (hover.inside, inside) {
+                    (false, true) => Some(0),
+                    (true, false) => Some(2),
+                    (true, true) if input.zip(hover.last).is_some_and(|(now, last)| now.position != last.position) => Some(1),
+                    _ => None,
+                };
+                hover.inside = inside;
+                // Leaving the editor has no pointer position. Preserve the last
+                // real position/frame, while using current keyboard modifiers.
+                let event_input = input.or(hover.last.map(|mut last| {
+                    last.mods = pointer.mods;
+                    last
+                }));
+                if inside {
+                    hover.last = input;
+                }
+                if let Some(phase) = phase {
+                    if let (Some(callback), Some(input)) = (&hover.callbacks[phase], event_input) {
+                        let event =
+                            hover_event(&self.lua, input, ["enter", "move", "exit"][phase])?;
+                        self.parameters.lock().unwrap().gesture_active = true;
+                        let result = callback.call::<()>(event);
+                        self.parameters.lock().unwrap().gesture_active = false;
+                        result?;
+                    }
+                }
+                if !hover.present {
+                    *entry = None;
+                }
+            }
+        }
+        Ok(self.take_edits())
     }
     pub(crate) fn tap(&mut self, id: usize) -> Result<Vec<Edit>> {
         self.instructions.store(0, Ordering::Relaxed);
@@ -872,6 +998,34 @@ impl Scene {
         result?;
         Ok(self.take_edits())
     }
+}
+
+fn hover_event(lua: &Lua, input: HoverInput, phase: &str) -> mlua::Result<Table> {
+    let event = lua.create_table()?;
+    event.set("kind", phase)?;
+    let position = lua.create_table()?;
+    position.set("x", input.position.x - input.frame.x)?;
+    position.set("y", input.position.y - input.frame.y)?;
+    event.set("position", position)?;
+    let frame = lua.create_table()?;
+    frame.set("x", input.frame.x)?;
+    frame.set("y", input.frame.y)?;
+    frame.set("width", input.frame.size.width)?;
+    frame.set("height", input.frame.size.height)?;
+    event.set("frame", frame)?;
+    let modifiers = lua.create_table()?;
+    modifiers.set("alt", input.mods.alt)?;
+    modifiers.set("shift", input.mods.shift)?;
+    modifiers.set(
+        "control",
+        if cfg!(target_os = "macos") {
+            input.mods.cmd
+        } else {
+            input.mods.ctrl
+        },
+    )?;
+    event.set("modifiers", modifiers)?;
+    Ok(event)
 }
 
 fn parse_alignment(name: &str) -> Result<((Align, Align), bool, bool)> {

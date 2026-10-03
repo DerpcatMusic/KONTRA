@@ -4882,6 +4882,102 @@ end on"#;
     }
 
     #[test]
+    fn native_ui_hover_uses_real_pointer_frames_and_retires_exact_component_owners() {
+        use crate::native_ui::{Node,Paint,Scene};
+        use moose::mui::mui::prelude::*;
+        let directory=std::env::temp_dir().join(format!("kontra-native-hover-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let resources=directory.join("Resources/native_ui");std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("main.nui"),r#"
+            local ui=require('native_ui') local k=require('kontakt')
+            local mode=k.connect_parameter('Mode') local count=k.connect_parameter('Count')
+            local log=''
+            local function record(owner,phase,e)
+                assert(e.kind==phase)
+                assert(e.frame.width==20 and e.frame.height==10)
+                if log=='' then
+                    assert(e.position.x==2 and e.position.y==3)
+                    assert(e.frame.x==35 and e.frame.y==18)
+                    assert(e.modifiers.alt and e.modifiers.shift and e.modifiers.control)
+                end
+                log=log..owner..string.sub(phase,1,1)
+                count:set_value(count:value()+1)
+            end
+            local function A()
+                return @ui.Rectangle {color=ui.Color.red}.frame(width=20,height=10)
+                    .on_hover_gesture(enter=function(e)record('A','enter',e)end,
+                        move=function(e)record('A','move',e)end,exit=function(e)record('A','exit',e)end)
+                    .offset(x=5,y=3).hidden(mode:value()==1).disabled(mode:value()==2).frame(width=80,height=40)
+            end
+            local function B()
+                return @ui.Rectangle {color=ui.Color.white}.frame(width=20,height=10)
+                    .on_hover_gesture(enter=function(e)record('B','enter',e)end,
+                        exit=function(e)record('B','exit',e)end)
+                    .offset(x=5,y=3).frame(width=80,height=40)
+            end
+            local function Main()
+                return @ui.ZStack {
+                    mode:value()==5 and @ui.Rectangle {color=ui.Color.black}.frame(width=80,height=40)
+                        or mode:value()==4 and @B{} or @A{}
+                    @ui.Text {text=ui.create_computed(function() return log end)}
+                }.frame(width=80,height=40)
+            end
+            return @Main{}
+        "#).unwrap();
+        let script="on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_value_edit $Mode(0,5,1)\ndeclare ui_value_edit $Count(0,9999,1)\nend on\non ui_control($Count)\n$Count := $Count*2\nend on";
+        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec![script.into(),"on init\nmake_perfview\ndeclare ui_value_edit $Count(0,9999,1)\n$Count := 90\nend on".into()],..Default::default()};
+        let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
+        let scene=Arc::new(Mutex::new(Scene::prepare(&instrument.path,&rt).unwrap().unwrap()));let mut live=first_script_live(&rt);rt.prepare_native_controls(&mut live);
+        let p=Arc::new(SamplerParams::new());let epoch={let mut view=p.shared.view.lock().unwrap();let epoch=next_epoch(&mut view,0,None,Some(live));view.parts[0].native_scene=Some(scene.clone());epoch};
+        let mut dsp=Dsp::default();dsp.script_epoch[0]=epoch;dsp.rack.parts[0].set_script(Some(rt));
+        let mut ui=Ui::default().font(Font::new(&include_bytes!("../assets/NotoSans.ttf")[..]).unwrap());
+        let inside=PointerInput{pos:Some(Point::new(37.,21.)),mods:Mods{shift:true,alt:true,ctrl:true,cmd:true},..Default::default()};
+        fn label(node:&Node)->Option<&str>{if let Paint::Text(text)=&node.paint{Some(text)}else{node.children.iter().find_map(label)}}
+        fn frame(scene:&Arc<Mutex<Scene>>,ui:&mut Ui,pointer:PointerInput)->Node{
+            let mut scene=scene.lock().unwrap();let root=scene.snapshot().unwrap();
+            ui.frame(crate::ui::native_scene::scene_tree(&root,&scene.assets).clip(),None,pointer,0.016).unwrap();root
+        }
+        let root=frame(&scene,&mut ui,inside);
+        fn owner(node:&Node)->Option<usize>{if node.hover{Some(node.id)}else{node.children.iter().find_map(owner)}}
+        let first_owner=owner(&root).unwrap();
+        let edits=scene.lock().unwrap().hover(&ui,"native-snapshot").unwrap();assert_eq!(edits.len(),1);assert_eq!((edits[0].slot,edits[0].control,edits[0].value),(0,1,1));
+        for edit in edits{assert!(p.shared.edit_control_slot(0,epoch,edit.slot,edit.control,edit.value));}
+        let live=p.shared.view.lock().unwrap().parts[0].live.take().unwrap();p.shared.live_requests.push((0,epoch,live)).ok().unwrap();
+        let (mut left,mut right)=([0.;64],[0.;64]);let mut slices=[left.as_mut_slice(),right.as_mut_slice()];let mut buffer=AudioBuffer::from_slices_checked(&[],&mut slices,64);
+        let transport=TransportInfo::default();let mut output=EventList::with_capacity(4);let events=EventList::with_capacity(1);let mut cx=ProcessContext::new(&transport,48000.,64,&mut output);
+        assert_eq!(allocations(||{for _ in 0..8{Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx);}}),0,"real hover callback handoff/publication stays allocation-free on audio");p.shared.publish_live(true);
+        assert_eq!(dsp.rack.parts[0].script().unwrap().interface(0).controls[1].properties["$CONTROL_PAR_VALUE"],crate::ksp::Value::Int(2));
+        assert!(scene.lock().unwrap().hover(&ui,"native-snapshot").unwrap().is_empty(),"stationary pointer does not repeat enter/move");
+        let moved=PointerInput{pos:Some(Point::new(38.,22.)),..inside};frame(&scene,&mut ui,moved);
+        let edits=scene.lock().unwrap().hover(&ui,"native-snapshot").unwrap();assert_eq!(edits[0].value,3,"hover reads real callback publication, not the submitted value");
+        let outside=PointerInput{pos:None,..inside};frame(&scene,&mut ui,outside);assert_eq!(scene.lock().unwrap().hover(&ui,"native-snapshot").unwrap().len(),1);
+        assert!(scene.lock().unwrap().hover(&ui,"native-snapshot").unwrap().is_empty(),"surface exit is delivered once with the last real coordinates");
+        frame(&scene,&mut ui,inside);assert_eq!(scene.lock().unwrap().hover(&ui,"native-snapshot").unwrap().len(),1);
+        for mode in [1,0,2,0] {
+            let mut snapshot=dsp.rack.parts[0].script().unwrap().live();dsp.rack.parts[0].script().unwrap().prepare_native_controls(&mut snapshot);
+            assert_eq!(allocations(||{dsp.rack.parts[0].ui_control(0,0,mode);dsp.rack.parts[0].render(&mut left,&mut right);dsp.rack.parts[0].script().unwrap().refresh_live(&mut snapshot);}),0);
+            scene.lock().unwrap().observe(&snapshot);let root=frame(&scene,&mut ui,inside);
+            assert_eq!(owner(&root).is_none(),mode==1||mode==2);
+            assert_eq!(scene.lock().unwrap().hover(&ui,"native-snapshot").unwrap().len(),1,"hidden/disabled exits and re-entry each occur once");
+            assert!(scene.lock().unwrap().hover(&ui,"native-snapshot").unwrap().is_empty());
+        }
+        for (step,mode) in [4,5,4].into_iter().enumerate() {
+            let mut snapshot=dsp.rack.parts[0].script().unwrap().live();dsp.rack.parts[0].script().unwrap().prepare_native_controls(&mut snapshot);
+            dsp.rack.parts[0].ui_control(0,0,mode);dsp.rack.parts[0].render(&mut left,&mut right);dsp.rack.parts[0].script().unwrap().refresh_live(&mut snapshot);scene.lock().unwrap().observe(&snapshot);
+            let root=frame(&scene,&mut ui,inside);
+            if mode==4{assert_ne!(owner(&root),Some(first_owner),"different component types at the same path have distinct bounded owners");}
+            assert_eq!(scene.lock().unwrap().hover(&ui,"native-snapshot").unwrap().len(),if step==0{2}else{1});
+        }
+        let root=scene.lock().unwrap().snapshot().unwrap();assert_eq!(label(&root),Some("AeAmAxAeAxAeAxAeAxBeBxBe"),"old exit precedes replacement enter; removal is not a silent lost exit");
+        let newer=next_epoch(&mut p.shared.view.lock().unwrap(),0,None,None);assert_ne!(newer,epoch);
+        frame(&scene,&mut ui,outside);let stale=scene.lock().unwrap().hover(&ui,"native-snapshot").unwrap();assert_eq!(stale.len(),1);
+        assert!(!p.shared.edit_control_slot(0,epoch,stale[0].slot,stale[0].control,stale[0].value));
+        std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') return @ui.Rectangle {color=ui.Color.red}.frame(width=20,height=10).on_hover_gesture(enter=function() while true do pcall(function()while true do end end)end end)").unwrap();
+        let mut runaway=Scene::prepare(&instrument.path,dsp.rack.parts[0].script().unwrap()).unwrap().unwrap();let root=runaway.snapshot().unwrap();ui.frame(crate::ui::native_scene::scene_tree(&root,&runaway.assets),None,PointerInput{pos:Some(Point::new(2.,3.)),..inside},0.016).unwrap();
+        assert!(format!("{:#}",runaway.hover(&ui,"native-snapshot").unwrap_err()).contains("instruction budget exceeded"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn native_ui_overlays_keep_foreground_geometry_local_paint_order_and_exact_callbacks() {
         use crate::native_ui::{Node,Paint,Scene};
         let directory=std::env::temp_dir().join(format!("kontra-native-overlay-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));

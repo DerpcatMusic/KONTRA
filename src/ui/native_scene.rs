@@ -32,6 +32,9 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, part: usize) -> Option<El> {
             v.native_status = error;
         }
     }
+    gesture(cx, part, epoch, &scene, |scene| {
+        scene.hover(ui, &format!("native-ui-{part}"))
+    });
     let assets = scene.lock().unwrap().assets.clone();
     fn draw(
         ui: &mut Ui,
@@ -56,44 +59,12 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, part: usize) -> Option<El> {
             })
             .collect();
         let el = primitive(node, children, assets);
+        let el = if node.hover { el.tracks_pointer() } else { el };
         let id = format!("native-ui-{part}-{}", node.id);
         if node.tap {
             let response = ui.get(id.as_str());
             if response.clicked || response.key_activated {
-                let (edits, error) = {
-                    let mut scene = scene.lock().unwrap();
-                    match scene.tap(node.id) {
-                        Ok(edits) => (edits, None),
-                        Err(error) => (
-                            scene.take_edits(),
-                            Some(format!("Native UI gesture failed: {error:#}")),
-                        ),
-                    }
-                };
-                let mut failure = error;
-                for edit in edits {
-                    if !cx.p.shared.edit_control_slot(
-                        part,
-                        epoch,
-                        edit.slot,
-                        edit.control,
-                        edit.value,
-                    ) {
-                        failure = Some(
-                            "Native UI control edit rejected: stale source or full queue".into(),
-                        );
-                    }
-                }
-                if let Some(message) = failure {
-                    let mut view = cx.p.shared.view.lock().unwrap();
-                    if let Some(v) = view.parts.get_mut(part).filter(|v| v.script_epoch == epoch) {
-                        v.native_status = message.clone();
-                    }
-                    drop(view);
-                    if let Some(i) = super::instrument::instrument_of(cx, part) {
-                        crate::diagnostics::resource(&i.path, "native_ui/gesture", &message);
-                    }
-                }
+                gesture(cx, part, epoch, scene, |scene| scene.tap(node.id));
             }
             el.cursor(Cursor::Hand)
                 .focusable()
@@ -110,6 +81,39 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, part: usize) -> Option<El> {
             .shrink(0)
             .named("Native UI subset scene"),
     )
+}
+
+// Lua stays on the editor thread; release its mutex before locking Shared or
+// enqueueing exact-slot, epoch-checked KSP edits.
+fn gesture(
+    cx: &mut Cx,
+    part: usize,
+    epoch: u64,
+    scene: &std::sync::Arc<std::sync::Mutex<crate::native_ui::Scene>>,
+    run: impl FnOnce(&mut crate::native_ui::Scene) -> anyhow::Result<Vec<crate::native_ui::Edit>>,
+) {
+    let (edits, mut failure) = {
+        let mut scene = scene.lock().unwrap();
+        match run(&mut scene) {
+            Ok(edits) => (edits, None),
+            Err(error) => (scene.take_edits(), Some(format!("Native UI gesture failed: {error:#}"))),
+        }
+    };
+    for edit in edits {
+        if !cx.p.shared.edit_control_slot(part, epoch, edit.slot, edit.control, edit.value) {
+            failure = Some("Native UI control edit rejected: stale source or full queue".into());
+        }
+    }
+    if let Some(message) = failure {
+        let mut view = cx.p.shared.view.lock().unwrap();
+        if let Some(v) = view.parts.get_mut(part).filter(|v| v.script_epoch == epoch) {
+            v.native_status = message.clone();
+        }
+        drop(view);
+        if let Some(i) = super::instrument::instrument_of(cx, part) {
+            crate::diagnostics::resource(&i.path, "native_ui/gesture", &message);
+        }
+    }
 }
 
 // Both native editor rendering and the authored headless gate use this mapping.
@@ -187,7 +191,9 @@ pub(crate) fn scene_tree(node: &Node, assets: &crate::native_assets::Assets) -> 
             if node.background && index==0 { el.underlay() } else if node.overlay && index==1 { el.overlay() } else { el }
         })
         .collect();
-    primitive(node, children, assets).id(format!("native-snapshot-{}", node.id))
+    let el = primitive(node, children, assets);
+    let el = if node.hover { el.tracks_pointer() } else { el };
+    el.id(format!("native-snapshot-{}", node.id))
 }
 
 // Admission uses the same font/layout/asset adapter as editor rendering, not
