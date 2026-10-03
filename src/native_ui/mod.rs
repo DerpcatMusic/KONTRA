@@ -94,6 +94,9 @@ struct MeterBinding { slot: usize, control: usize, reader: Arc<crate::fx::MeterR
 #[derive(Default)]
 struct Parameters {
     bindings: BTreeMap<String, Binding>,
+    unsupported: BTreeSet<String>,
+    missing_reads: BTreeSet<u64>,
+    warnings: Vec<String>,
     meters: BTreeMap<String, MeterBinding>,
     edits: Vec<Edit>,
     gesture_active: bool,
@@ -190,8 +193,10 @@ impl Scene {
                 meter: c.meter,
             });
         }
+        p.unsupported.extend(rt.native_control_identifiers()
+            .filter(|name| !p.bindings.contains_key(*name)).map(str::to_owned));
         ensure!(
-            p.bindings.len() <= 4096,
+            p.bindings.len() + p.unsupported.len() <= 4096,
             "Native UI scalar registry exceeds 4096 controls"
         );
         let parameters = Arc::new(Mutex::new(p));
@@ -246,6 +251,39 @@ impl Scene {
                 Ok((b.slot, b.control))
             })?,
         )?;
+        let p = parameters.clone();
+        let source = instrument.to_owned();
+        lua.globals().set("native_read", lua.create_function(move |_, name: String| {
+            let mut p = p.lock().unwrap();
+            if let Some(b) = p.bindings.get(&name) {
+                let value = if matches!(b.kind.as_ref(), "ui_button" | "ui_switch") {
+                    Value::Boolean(b.value != 0)
+                } else { Value::Integer(i64::from(b.value)) };
+                return Ok((value, Some(b.slot), Some(b.control)));
+            }
+            if p.unsupported.contains(&name) {
+                return Err(invalid(format!("Unsupported exposed control connection kind: {name}")));
+            }
+            // The native legacy registry returns an i32-zero variant on an
+            // exact-name miss. Do not invent a control owner or accept a write.
+            use std::hash::{Hash, Hasher};
+            let mut hash = std::collections::hash_map::DefaultHasher::new();
+            name.hash(&mut hash);
+            let key = hash.finish();
+            let warning = if p.missing_reads.contains(&key) { None }
+                else if p.missing_reads.len() < 64 {
+                    p.missing_reads.insert(key);
+                    Some(format!("Missing exposed scalar binding {:?}: legacy reads return integer 0; writes remain unavailable", name.chars().take(320).collect::<String>()))
+                } else if p.warnings.len() == 64 {
+                    Some("Further missing native UI binding warnings omitted (64 distinct names retained)".into())
+                } else { None };
+            if let Some(warning) = warning {
+                p.warnings.push(warning.clone());
+                drop(p);
+                crate::diagnostics::resource(&source, "native_ui/parameter", &warning);
+            }
+            Ok((Value::Integer(0), None, None))
+        })?)?;
         let p = parameters.clone();
         let levels = rt.output_meters.clone();
         lua.globals().set("native_connect_level_meter", lua.create_function(move |lua, name: String| {
@@ -571,6 +609,9 @@ impl Scene {
     }
     pub(crate) fn revision(&self) -> u64 {
         self.revision.load(Ordering::Relaxed).wrapping_add(self.output_meters.revision())
+    }
+    pub(crate) fn connection_warnings(&self) -> Vec<String> {
+        self.parameters.lock().unwrap().warnings.clone()
     }
     pub(crate) fn observe(&self, live: &Live) {
         let mut p = self.parameters.lock().unwrap();

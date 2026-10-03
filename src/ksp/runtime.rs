@@ -1477,6 +1477,13 @@ impl Runtime {
         Ok(name.map(|name| (name, self.states.iter().any(|s| s.error.is_none() && s.ui.exposed))))
     }
 
+    /// All declared UI identifiers, including connection kinds not yet supported.
+    pub(crate) fn native_control_identifiers(&self) -> impl Iterator<Item = &str> {
+        self.states.iter().enumerate().filter(|(_, s)| s.error.is_none())
+            .flat_map(|(slot, state)| state.ui.controls.iter().map(move |control|
+                self.programs[slot].vars[control.var as usize].name.trim_start_matches(['$', '%', '~', '?', '@', '!'])))
+    }
+
     /// Prepare scalar connections once off-thread; all subsequent reads are bounded.
     pub(crate) fn prepare_native_controls(&self, live: &mut Live) {
         live.native_controls.clear();
