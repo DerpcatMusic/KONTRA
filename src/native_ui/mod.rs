@@ -1102,9 +1102,9 @@ impl Scene {
                 if !retired && response.pressed && gesture.capture.is_none() {
                     if let Some(input) = current {
                         let callbacks = gesture.callbacks.clone();
-                        if let Some(callback) = &callbacks.tap[0] { calls.push((callback.clone(),input,"start",[0.,0.])); }
+                        if let Some(callback) = &callbacks.tap[0] { calls.push((callback.clone(),input,"start",[0.,0.],input.position)); }
                         if response.double_clicked {
-                            if let Some(callback) = &callbacks.tap[1] { calls.push((callback.clone(),input,"double",[0.,0.])); }
+                            if let Some(callback) = &callbacks.tap[1] { calls.push((callback.clone(),input,"double",[0.,0.],input.position)); }
                         }
                         gesture.capture = Some(PointerCapture { callbacks, origin:input.position, last:input, delivered:input.position, dragging:false });
                     }
@@ -1120,26 +1120,26 @@ impl Scene {
                         let travel = input.position-capture.origin;
                         if !capture.dragging && travel.hypot() >= capture.callbacks.threshold && travel.hypot()>0. {
                             capture.dragging = true;
-                            if let Some(callback) = &capture.callbacks.drag[0] { calls.push((callback.clone(),input,"start",[travel.x,travel.y])); }
+                            if let Some(callback) = &capture.callbacks.drag[0] { calls.push((callback.clone(),input,"start",[travel.x,travel.y],capture.origin)); }
                         }
                         if capture.dragging && input.position != capture.delivered {
                             let delta = input.position-capture.delivered;
-                            if let Some(callback) = &capture.callbacks.drag[1] { calls.push((callback.clone(),input,"update",[delta.x,delta.y])); }
+                            if let Some(callback) = &capture.callbacks.drag[1] { calls.push((callback.clone(),input,"update",[delta.x,delta.y],capture.origin)); }
                             capture.delivered = input.position;
                         }
                     }
                     capture.last = input;
                     if finish {
                         if capture.dragging {
-                            if let Some(callback) = &capture.callbacks.drag[2] { calls.push((callback.clone(),input,"complete",[0.,0.])); }
+                            if let Some(callback) = &capture.callbacks.drag[2] { calls.push((callback.clone(),input,"complete",[0.,0.],capture.origin)); }
                         }
-                        if let Some(callback) = &capture.callbacks.tap[2] { calls.push((callback.clone(),input,"complete",[0.,0.])); }
+                        if let Some(callback) = &capture.callbacks.tap[2] { calls.push((callback.clone(),input,"complete",[0.,0.],capture.origin)); }
                         gesture.capture = None;
                     }
                 }
-                for (callback,input,phase,delta) in calls {
+                for (callback,input,phase,delta,origin) in calls {
                     self.parameters.lock().unwrap().gesture_active = true;
-                    let result = pointer_event(&self.lua,input,phase,delta).and_then(|event|callback.call::<()>(event));
+                    let result = pointer_event(&self.lua,input,phase,delta,origin).and_then(|event|callback.call::<()>(event));
                     self.parameters.lock().unwrap().gesture_active = false;
                     result?;
                 }
@@ -1168,8 +1168,11 @@ impl Scene {
     }
 }
 
-fn pointer_event(lua: &Lua, input: HoverInput, phase: &str, delta: [f64;2]) -> mlua::Result<Table> {
+fn pointer_event(lua: &Lua, input: HoverInput, phase: &str, delta: [f64;2], origin: moose::mui::mui::prelude::Point) -> mlua::Result<Table> {
     let event = hover_event(lua,input,phase)?;
+    let start = lua.create_table()?;
+    start.set("x",origin.x-input.frame.x)?; start.set("y",origin.y-input.frame.y)?;
+    event.set("start_position",start)?;
     let movement = lua.create_table()?;
     movement.set("x",delta[0])?; movement.set("y",delta[1])?;
     event.set("delta",movement)?;
