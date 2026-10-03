@@ -92,6 +92,7 @@ pub struct JournalCapture {
     pub blake3: String,
     pub valid_slots: u64,
     pub omitted_slots: u64,
+    pub dropped_events: u64,
 }
 
 /// Bounded startup/recent capture with a digest of the complete original file.
@@ -115,6 +116,7 @@ pub fn capture(
     let mut first = BTreeMap::new();
     let mut last = BTreeMap::new();
     let mut valid_slots = 0_u64;
+    let mut dropped_events = 0_u64;
     let mut slot = [0_u8; SLOT_BYTES];
     for _ in 0..bytes / SLOT_BYTES as u64 {
         if stopping.load(Ordering::Acquire) {
@@ -129,6 +131,9 @@ pub fn capture(
             continue;
         };
         valid_slots += 1;
+        if record.action == "diagnostic_overflow" {
+            dropped_events = dropped_events.max(u64::try_from(record.value_a).unwrap_or(0));
+        }
         if head != 0 {
             first
                 .entry(record.sequence)
@@ -161,6 +166,7 @@ pub fn capture(
         blake3: hasher.finalize().to_hex().to_string(),
         valid_slots,
         omitted_slots,
+        dropped_events,
     })
 }
 
@@ -223,7 +229,12 @@ mod tests {
             journal
                 .write(&Record {
                     sequence,
-                    action: format!("event-{sequence}"),
+                    action: if sequence == 15 {
+                        "diagnostic_overflow".into()
+                    } else {
+                        format!("event-{sequence}")
+                    },
+                    value_a: if sequence == 15 { 87 } else { 0 },
                     ..Default::default()
                 })
                 .unwrap();
@@ -248,6 +259,13 @@ mod tests {
         );
         assert_eq!(captured.valid_slots, 31);
         assert_eq!(captured.omitted_slots, 26);
+        assert_eq!(captured.dropped_events, 87);
+        assert!(
+            !captured
+                .records
+                .iter()
+                .any(|r| r.action == "diagnostic_overflow")
+        );
         assert_eq!(captured.bytes, original.len() as u64);
         assert_eq!(
             captured.blake3,
