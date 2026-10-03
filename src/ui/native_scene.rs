@@ -47,7 +47,9 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, part: usize) -> Option<El> {
             .iter()
             .enumerate()
             .map(|(index, child)| {
-                let anchor = child.anchor.unwrap_or(node.alignment);
+                // A placement guide also governs the transparent scope when it is
+                // offered a box smaller than its intrinsic child (e.g. overlay).
+                let anchor = node.anchor.or(child.anchor).unwrap_or(node.alignment);
                 let el = draw(ui, cx, part, epoch, scene, child, assets)
                     .anchor(anchor.0, anchor.1);
                 if node.background && index==0 { el.underlay() } else if node.overlay && index==1 { el.overlay() } else { el }
@@ -180,7 +182,7 @@ pub(crate) fn scene_tree(node: &Node, assets: &crate::native_assets::Assets) -> 
         .iter()
         .enumerate()
         .map(|(index, child)| {
-            let anchor = child.anchor.unwrap_or(node.alignment);
+            let anchor = node.anchor.or(child.anchor).unwrap_or(node.alignment);
             let el = scene_tree(child, assets).anchor(anchor.0, anchor.1);
             if node.background && index==0 { el.underlay() } else if node.overlay && index==1 { el.overlay() } else { el }
         })
