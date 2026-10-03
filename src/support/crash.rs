@@ -13,6 +13,19 @@ const EVENT_CHANNEL_CAPACITY: usize = 512;
 const RT_CHANNEL_CAPACITY: usize = 128;
 // Preserve the complete session on the existing journal worker.
 const JOURNAL_BYTES: usize = 0;
+const RECOVERED_HEAD_RECORDS: usize = 128;
+const RECOVERED_TAIL_RECORDS: usize = 2048;
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+struct LocalJournalEvidence {
+    bytes: u64,
+    blake3: String,
+    valid_slots: u64,
+    omitted_slots: u64,
+    local_file: String,
+    #[serde(default)]
+    capture_error: Option<String>,
+}
 #[cfg(test)]
 const MAX_DIAGNOSTIC_EVENTS: usize = 256;
 const MAX_EVIDENCE_CHARS: usize = 32_000;
@@ -142,6 +155,8 @@ pub struct CrashIncident {
     source_schema: u8,
     #[serde(default)]
     host_finished_unload: bool,
+    #[serde(default)]
+    local_journal: Option<LocalJournalEvidence>,
 }
 
 /// A recovered incident with the given provenance, for tests in this module's
@@ -169,6 +184,7 @@ pub(super) fn test_incident(version: &str, build_id: &str) -> CrashIncident {
         platform_evidence: String::new(),
         source_schema: 5,
         host_finished_unload: false,
+        local_journal: None,
     }
 }
 
@@ -367,6 +383,23 @@ impl CrashIncident {
                 "\nPersisted records: {}\nSequence coverage: {first}..{last}\nMissing sequences within coverage: {gaps}",
                 self.events.len()
             );
+            if let Some(source) = &self.local_journal {
+                let _ = write!(
+                    output,
+                    "\nOriginal local journal: {}\nOriginal journal bytes: {}\nOriginal journal BLAKE3: {}\nValidated journal slots: {}\nJournal slots omitted from this report: {}",
+                    source.local_file,
+                    source.bytes,
+                    source.blake3,
+                    source.valid_slots,
+                    source.omitted_slots
+                );
+                if source.omitted_slots != 0 || source.capture_error.is_some() {
+                    output.push_str("\nPARTIAL JOURNAL REPORT: startup/recent records are included; the complete original remains local.");
+                }
+                if let Some(error) = &source.capture_error {
+                    let _ = write!(output, "\nJournal capture error: {error}");
+                }
+            }
         }
         let platform = self.platform.render();
         if !platform.is_empty() {
@@ -1207,8 +1240,51 @@ fn detect_stale_sessions(stopping: &AtomicBool) -> Option<CrashIncident> {
             cleanup_session_files(&path, journal_path.as_deref(), &panic_path);
             continue;
         }
+        let mut local_journal = None;
         if let Some(journal_path) = journal_path.as_ref() {
-            let records = derpcat_flight_recorder::read_journal(journal_path, usize::MAX);
+            let capture = derpcat_flight_recorder::capture_journal(
+                journal_path,
+                RECOVERED_HEAD_RECORDS,
+                RECOVERED_TAIL_RECORDS,
+                stopping,
+            );
+            let records = match capture {
+                Ok(capture) => {
+                    local_journal = Some(LocalJournalEvidence {
+                        bytes: capture.bytes,
+                        blake3: capture.blake3,
+                        valid_slots: capture.valid_slots,
+                        omitted_slots: capture.omitted_slots,
+                        local_file: format!(
+                            "sessions/{}",
+                            journal_path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                        ),
+                        capture_error: None,
+                    });
+                    capture.records
+                }
+                Err(error) => {
+                    if stopping.load(Ordering::Acquire) {
+                        return None;
+                    }
+                    local_journal = Some(LocalJournalEvidence {
+                        bytes: std::fs::metadata(journal_path).map_or(0, |m| m.len()),
+                        local_file: format!(
+                            "sessions/{}",
+                            journal_path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                        ),
+                        capture_error: Some(error.to_string()),
+                        ..Default::default()
+                    });
+                    Vec::new()
+                }
+            };
             marker.dropped_events = records
                 .iter()
                 .filter(|record| record.action == "diagnostic_overflow")
@@ -1278,6 +1354,7 @@ fn detect_stale_sessions(stopping: &AtomicBool) -> Option<CrashIncident> {
                 platform_evidence: evidence.text,
                 source_schema: marker.schema,
                 host_finished_unload,
+                local_journal,
                 events: marker.events,
             },
         };
@@ -1308,9 +1385,9 @@ fn detect_stale_sessions(stopping: &AtomicBool) -> Option<CrashIncident> {
         if let Some(unknown) = unknown {
             unknown.cleanup();
         }
-        Some(candidate.consume())
+        Some(candidate.consume(stopping))
     } else {
-        unknown.map(RecoveredCandidate::consume)
+        unknown.map(|candidate| candidate.consume(stopping))
     }
 }
 
@@ -1330,19 +1407,98 @@ impl RecoveredCandidate {
         );
     }
 
-    fn consume(self) -> CrashIncident {
+    fn consume(self, stopping: &AtomicBool) -> CrashIncident {
         let Self {
             marker_path,
             journal_path,
             panic_path,
-            incident,
+            mut incident,
         } = self;
+        let mut archived = journal_path.is_none();
+        if let Some(journal) = journal_path.as_ref() {
+            let name = format!("{}.dfr", incident.id);
+            let archive = reports_dir().join("originals").join(&name);
+            if let Err(error) =
+                archive_original(journal, &archive, incident.local_journal.as_ref(), stopping)
+            {
+                if let Some(source) = incident.local_journal.as_mut() {
+                    source.capture_error = Some(format!(
+                        "Original archival failed: {error}. The session source remains local; it may differ from the captured digest."
+                    ));
+                }
+                crate::diagnostics::event(
+                    crate::diagnostics::LogLevel::Warning,
+                    "support",
+                    "original_journal_archive_failed",
+                    serde_json::json!({"reason":format!("Original journal remains in local session storage; archival failed: {error}")}),
+                );
+            } else {
+                archived = true;
+                if let Some(source) = incident.local_journal.as_mut() {
+                    source.local_file = format!("originals/{name}");
+                }
+            }
+        }
+        if stopping.load(Ordering::Acquire) {
+            return incident;
+        }
         // Keep the original files if the recovered incident cannot be saved.
         if save_pending_incident(&incident) {
-            cleanup_session_files(&marker_path, journal_path.as_deref(), &panic_path);
+            cleanup_session_files(
+                &marker_path,
+                if archived {
+                    journal_path.as_deref()
+                } else {
+                    None
+                },
+                &panic_path,
+            );
         }
         incident
     }
+}
+
+fn archive_original(
+    source: &Path,
+    archive: &Path,
+    expected: Option<&LocalJournalEvidence>,
+    stopping: &AtomicBool,
+) -> std::io::Result<()> {
+    use std::io::{Read as _, Write as _};
+    let mut original = std::fs::File::open(source)?;
+    buffr_durable_file::publish_private_streaming(
+        archive,
+        std::time::Duration::from_millis(500),
+        |destination| {
+            let mut buffer = [0_u8; 64 * 1024];
+            let mut hasher = blake3::Hasher::new();
+            let mut total = 0_u64;
+            loop {
+                if stopping.load(Ordering::Acquire) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "original archival stopped",
+                    ));
+                }
+                let bytes = original.read(&mut buffer)?;
+                if bytes == 0 {
+                    if let Some(expected) = expected.filter(|e| !e.blake3.is_empty()) {
+                        if total != expected.bytes
+                            || hasher.finalize().to_hex().as_str() != expected.blake3.as_str()
+                        {
+                            return Err(std::io::Error::other(
+                                "original journal changed after capture; session source retained",
+                            ));
+                        }
+                    }
+                    return Ok(());
+                }
+                hasher.update(&buffer[..bytes]);
+                total += bytes as u64;
+                destination.write_all(&buffer[..bytes])?;
+            }
+        },
+    )
 }
 
 fn cleanup_session_files(marker: &Path, journal: Option<&Path>, panic: &Path) {
@@ -1749,7 +1905,23 @@ mod tests {
             "authored startup",
         );
         assert!(recorder.flush(std::time::Duration::from_secs(2)));
+        // Exceed the recovered window through the actual recorder/consumer, without
+        // queue overflow. Complete originals must survive the bounded report view.
+        for sequence in 0..(RECOVERED_HEAD_RECORDS + RECOVERED_TAIL_RECORDS + 17) {
+            recorder.sink().record(
+                Subsystem::Host,
+                "fixture_event",
+                Phase::Started,
+                Default::default(),
+                format!("authored event {sequence}"),
+            );
+            if sequence % 16 == 0 {
+                assert!(recorder.flush(std::time::Duration::from_secs(2)));
+            }
+        }
+        assert!(recorder.flush(std::time::Duration::from_secs(2)));
         assert!(recorder.shutdown(std::time::Duration::from_secs(2)));
+        let original_journal = std::fs::read(&journal).unwrap();
         assert!(persist_json(&marker_path, &marker));
         let panic = PanicMarker {
             at: now_unix(),
@@ -1786,6 +1958,37 @@ mod tests {
                 .contains("src/fixture.rs:9:2")
         );
         assert!(!marker_path.exists() && !journal.exists());
+        let source = recovered.local_journal.as_ref().unwrap();
+        assert!(source.omitted_slots > 0);
+        assert_eq!(
+            recovered.events.len(),
+            RECOVERED_HEAD_RECORDS + RECOVERED_TAIL_RECORDS
+        );
+        assert_eq!(source.bytes, original_journal.len() as u64);
+        assert_eq!(
+            source.blake3,
+            blake3::hash(&original_journal).to_hex().to_string()
+        );
+        let archive = reports_dir().join(&source.local_file);
+        assert_eq!(std::fs::read(&archive).unwrap(), original_journal);
+        assert!(
+            recovered
+                .render_diagnostics(true)
+                .contains("PARTIAL JOURNAL REPORT")
+        );
+        assert!(
+            recovered
+                .render_diagnostics(true)
+                .contains("authored event 2192")
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&archive).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
         assert_eq!(load_pending_incident().unwrap().id, recovered.id);
         assert!(
             detect_stale_sessions(&AtomicBool::new(false)).is_none(),
@@ -1895,6 +2098,26 @@ mod tests {
         );
         assert!(detect_stale_sessions(&AtomicBool::new(false)).is_none());
     }
+    #[test]
+    fn original_archive_failure_and_cancellation_preserve_source_and_prior_archive() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("session.dfr");
+        let archive = directory.path().join("original.dfr");
+        std::fs::write(&source, b"authored original").unwrap();
+        std::fs::write(&archive, b"prior private archive").unwrap();
+        let expected = LocalJournalEvidence {
+            bytes: 16,
+            blake3: blake3::hash(b"different source").to_hex().to_string(),
+            ..Default::default()
+        };
+        assert!(
+            archive_original(&source, &archive, Some(&expected), &AtomicBool::new(false)).is_err()
+        );
+        assert!(archive_original(&source, &archive, None, &AtomicBool::new(true)).is_err());
+        assert_eq!(std::fs::read(&source).unwrap(), b"authored original");
+        assert_eq!(std::fs::read(&archive).unwrap(), b"prior private archive");
+    }
+
     #[test]
     fn delayed_evidence_only_upgrades_unclean_exit() {
         let late_dump = CrashEvidence {

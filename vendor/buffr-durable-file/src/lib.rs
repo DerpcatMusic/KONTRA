@@ -134,6 +134,16 @@ pub fn publish_streaming(
     publish_streaming_with(path, false, replace_path, write)
 }
 
+/// Private counterpart of `publish_streaming`, using the same durable atomic
+/// publication and owner-only Unix permissions as `publish_private`.
+pub fn publish_private_streaming(
+    path: &Path,
+    wait: std::time::Duration,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    publish_streaming_with_lock(path, true, replace_path, Some(wait), write)
+}
+
 fn publish_with(
     path: &Path,
     bytes: &[u8],
@@ -559,6 +569,33 @@ mod tests {
 
     /// A failing replace, a failing writer or a panicking writer keeps the prior
     /// file byte-identical and removes the temporary.
+    #[test]
+    fn private_streaming_publication_retains_previous_bytes_on_interruption() {
+        let dir = Dir::new();
+        let path = dir.0.join("original.dfr");
+        publish_private_streaming(&path, std::time::Duration::from_millis(100), |file| {
+            file.write_all(b"private original")
+        })
+        .unwrap();
+        let error =
+            publish_private_streaming(&path, std::time::Duration::from_millis(100), |file| {
+                file.write_all(b"partial replacement")?;
+                Err(std::io::ErrorKind::Interrupted.into())
+            })
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        assert_eq!(std::fs::read(&path).unwrap(), b"private original");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        dir.assert_no_temporaries();
+    }
+
     #[test]
     fn failed_publication_preserves_prior_file_and_cleans_temporary() {
         let dir = Dir::new();
