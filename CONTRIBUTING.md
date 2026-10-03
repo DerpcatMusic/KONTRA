@@ -51,6 +51,12 @@ checks have also passed on Rust 1.98.1; the minimum has not been independently t
 
 Start from the current development branch, create a focused branch, and commit a
 coherent change after its relevant checks pass. Keep unrelated work separate.
+
+Use Cargo's default `target/` directory for each worktree, or set an explicit
+`CARGO_TARGET_DIR` unique to that worktree. Do not share it between worktrees
+with different local path-dependency sources: cached dependency metadata can
+make a successful build or test run insufficient proof of the intended source.
+
 Use Conventional Commits, for example `fix(engine): preserve release ownership` or
 `feat(diagnostics): export build identity`. The prefix helps review; it does not
 trigger an automatic version bump. Mark incompatible changes with `!` or a
@@ -62,7 +68,7 @@ small targeted KSP suite; explicit clippy and nextest jobs are also available. D
 run the complete sample-library suite on every edit. For a focused regression:
 
 ```sh
-cargo nextest run --release -E 'test(regression_name)'
+CARGO_TARGET_DIR="$PWD/target" cargo nextest run --release -E 'test(regression_name)'
 ```
 
 Nextest runs at most two tests concurrently and does not retry failures. Before
@@ -144,6 +150,14 @@ python3 tools/version.py manifest --file path/to/kontra-build.json
 `SOURCE_DATE_EPOCH` fixes the UTC timestamp for reproducible build identity; without
 it, the timestamp records the build time. This does not by itself guarantee identical
 binary bytes across toolchains or machines.
+
+For release validation, retain Cargo's `--message-format=json` compiler output,
+a manifest of tracked source-file hashes (including local path dependencies),
+the toolchain/build arguments and hashes of the exact tested executables alongside
+the test results. After suspected cache contamination, rebuild in a fresh target
+directory and rerun the required gates; earlier results remain evidence of their
+observed behavior, not proof of the final source/dependency cohort.
+
 [The reproducible-builds specification](https://reproducible-builds.org/docs/source-date-epoch/)
 describes the convention. The manifest records the chosen epoch explicitly.
 
