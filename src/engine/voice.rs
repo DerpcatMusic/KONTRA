@@ -635,6 +635,33 @@ impl Envelope {
     }
 }
 
+/// Primary amplitude consumer; Flex and pitch/module sources keep their
+/// independently admitted clocks in `Envelope`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Amplitude {
+    Ordinary(Envelope),
+    Native(super::ahdsr::Native),
+}
+impl Amplitude {
+    pub fn new(p: &Ahdsr, rate: f32, native: bool) -> Self {
+        if native { Self::Native(super::ahdsr::Native::new(p, rate)) }
+        else { Self::Ordinary(Envelope::new(p, rate)) }
+    }
+    pub fn release(&mut self, flex: Option<&Flex>) { match self {
+        Self::Ordinary(e) => e.release(flex), Self::Native(e) => e.release(),
+    } }
+    pub fn done(&self) -> bool { match self { Self::Ordinary(e) => e.done(), Self::Native(e) => e.done() } }
+    pub fn level(&self) -> f32 { match self { Self::Ordinary(e) => e.level(), Self::Native(e) => e.level() } }
+    pub fn phase(&self) -> Phase { match self { Self::Ordinary(e) => e.phase(), Self::Native(e) => e.phase() } }
+    fn shape(&self, n: usize) -> Option<Shape> { match self { Self::Ordinary(e) => e.shape(n), Self::Native(_) => None } }
+    pub fn skip(&mut self, n: usize, flex: Option<&Flex>, rate: f32) { match self {
+        Self::Ordinary(e) => e.skip(n, flex, rate), Self::Native(e) => e.skip(n),
+    } }
+    pub fn render(&mut self, out: &mut [f32], flex: Option<&Flex>, rate: f32) { match self {
+        Self::Ordinary(e) => e.render(out, flex, rate), Self::Native(e) => e.render(out),
+    } }
+}
+
 /// Linear gain ramp for steals, chokes and scripted fades.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Fade {
@@ -985,7 +1012,7 @@ pub(crate) struct Voice {
     pub settled: Option<u32>,
     pub stream: Option<Stream>,
     /// AHDSR envelope (the engine defaults without one, unity with only a flex).
-    pub env: Envelope,
+    pub env: Amplitude,
     /// The group's flex envelope, multiplied with `env`.
     pub flex: Option<Envelope>,
     pub fade: Fade,

@@ -13,6 +13,7 @@
 //! time-stamped commands that [`Engine::render`] applies at their frame.
 
 mod audit;
+mod ahdsr;
 mod bank;
 pub(crate) mod filter;
 mod map;
@@ -1961,7 +1962,7 @@ impl Player {
             modulated: (1.0, 0.0),
             settled: None,
             stream,
-            env: Envelope::new(&envelope, self.rate as f32),
+            env: voice::Amplitude::new(&envelope, self.rate as f32, settings.native_volume_env),
             flex: settings.flex.as_ref().map(|_| Envelope::flex()),
             fade: Fade::FULL,
             base_level,
