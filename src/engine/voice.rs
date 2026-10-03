@@ -1161,9 +1161,9 @@ impl Voice {
         let (travel, last) = if curved_pitch {
             let mut preview = self.pitch_lfo;
             let mut positions = [0; MAX_BLOCK];
-            preview.positions(&group.pitch_lfos, cx.rate, cx.tempo, self.step * self.tune * self.pitch.1, &mut positions[..n])
+            preview.positions(&group.pitch_lfos, &[], cx.rate, cx.tempo, self.step * self.tune * self.pitch.1, &mut positions[..n], None)
         } else {
-            self.pitch_lfo.skip_bypassed(n);
+            if group.volume_lfos.is_empty() { self.pitch_lfo.skip_bypassed(n); }
             (fixed_step * n as u64, fixed_step * (n as u64 - 1))
         };
         let level = self.base_level * group.gain * modulation * self.volume * x.gain;
@@ -1205,7 +1205,7 @@ impl Voice {
         let mut lane = None;
         // One gain all block, before any filter: the voice's frames can be
         // summed, weighted, with others resampled alike.
-        if let Some(class) = class.filter(|_| self.wavetable.is_none() && !curved_pitch && !muted && !declick && self.gains == target && self.fade.steady()) {
+        if let Some(class) = class.filter(|_| self.wavetable.is_none() && !curved_pitch && group.volume_lfos.is_empty() && !muted && !declick && self.gains == target && self.fade.steady()) {
             let flex = match &self.flex {
                 Some(env) => env.shape(n),
                 None => Some(Shape::Flat(1.0)),
@@ -1302,10 +1302,11 @@ impl Voice {
         let Plan { n, step, target, muted, declick, .. } = self.plan;
         let group = &cx.bank.settings[self.group as usize];
         let own = group.filter.as_ref().filter(|_| !bare);
-        if self.plan.curved_pitch {
+        if self.plan.curved_pitch || !group.volume_lfos.is_empty() {
             let base_step = self.step * self.tune * self.pitch.1;
-            self.pitch_lfo.positions(&group.pitch_lfos, cx.rate, cx.tempo, base_step,
-                &mut scratch.positions[..n]);
+            let volume = (!group.volume_lfos.is_empty()).then_some(&mut scratch.out[0][..n]);
+            self.pitch_lfo.positions(&group.pitch_lfos, &group.volume_lfos, cx.rate, cx.tempo, base_step,
+                &mut scratch.positions[..n], volume);
         }
         let amp = &mut scratch.amp[..n];
         let flex = &mut scratch.flex[..n];
@@ -1324,6 +1325,9 @@ impl Voice {
                 amp.iter_mut().zip(flex.iter()).for_each(|(a, f)| *a *= f);
             }
             self.fade.apply(amp);
+            if !group.volume_lfos.is_empty() {
+                amp.iter_mut().zip(&scratch.out[0][..n]).for_each(|(a, volume)| *a *= volume);
+            }
             if let Some(end) = declick {
                 let declick = DECLICK * cx.rate;
                 for (i, a) in amp.iter_mut().enumerate() {

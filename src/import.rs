@@ -20,7 +20,7 @@ use std::{
 /// last place a first run looks. The app's libraries come from its settings.
 pub const LIBRARY_ROOT: &str = "/mnt/MAIN_STORAGE/Libraries/Kontakt";
 
-pub use crate::modulation::{Ahdsr, FlexEnvelope, FlexPoint, ModAssignment, ModEnvelope, PitchLfo, ModSource, ModTarget, Modulator, ShaperCurve};
+pub use crate::modulation::{Ahdsr, FlexEnvelope, FlexPoint, ModAssignment, ModEnvelope, PitchLfo, VolumeLfo, ModSource, ModTarget, Modulator, ShaperCurve};
 
 /// Wavetable oscillator settings. Position and phase values are normalized.
 /// A zero form type is linear; other forms require an implemented phase map.
@@ -119,12 +119,15 @@ pub struct Group {
     pub release_trigger_note_monophonic: bool,
     #[serde(default)]
     pub wavetable: Option<Wavetable>,
+    /// Saved sine-only internal volume destinations; appended for legacy cache compatibility.
+    #[serde(default)]
+    pub volume_lfos: Vec<VolumeLfo>,
 }
 
 impl Default for Group {
     fn default() -> Self {
         Self { name: String::new(), start_criteria: Default::default(), gain: 1.0, pan: 0.0, tune: 1.0, key_tracking: true, reverse: false, source_mode: Some(0),
-            release_trigger: false, release_counter_ms: 0, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), pitch_lfos: Vec::new(), fx: Default::default(), amp_split_slot: None, voice_group: None, interp_quality: 0, release_trigger_note_monophonic: false, wavetable: None }
+            release_trigger: false, release_counter_ms: 0, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), pitch_lfos: Vec::new(), fx: Default::default(), amp_split_slot: None, voice_group: None, interp_quality: 0, release_trigger_note_monophonic: false, wavetable: None, volume_lfos: Vec::new() }
     }
 }
 
@@ -409,6 +412,7 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
         group.modulators = modulation.modulators;
         group.envelopes = modulation.envelopes;
         group.pitch_lfos = modulation.pitch_lfos;
+        group.volume_lfos = modulation.volume_lfos;
         group.fx = fx;
     }
     let mut slots = 0;
@@ -794,6 +798,7 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
             modulators: modulation.modulators,
             envelopes: modulation.envelopes,
             pitch_lfos: modulation.pitch_lfos,
+            volume_lfos: modulation.volume_lfos,
             fx,
             amp_split_slot: u8::try_from(v.fx_idx_amp_split_point).ok().filter(|&slot| slot <= 8),
             voice_group: u32::try_from(v.voice_group_index).ok(),

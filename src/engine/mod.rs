@@ -17,6 +17,7 @@ mod bank;
 pub(crate) mod filter;
 mod map;
 mod lfo;
+mod lfo_volume;
 mod host_notes;
 pub use host_notes::{HostNote, HostPattern, HostExpression, HostRef};
 pub mod overrides;
