@@ -377,8 +377,11 @@ summed with the input, without native feedback modelling.
 
 Subtype 33 uses a shared nonlinear four-pole kernel in group inserts and program
 racks. Versioned records preserve the leading Gain value, cutoff, resonance and
-raw flag. The Gain value zero is 0 dB, and its normalized range is 0..12 dB;
-slot output gain remains a separate operation. The cutoff law spans approximately
+raw flag. Direct Gain is 12 times the stored value in dB: zero is 0 dB,
+0.5 is +6 dB, and 1 is +12 dB. Negative stored values retain their attenuation.
+The public KSP value divides by 1,000,000 without a bipolar offset; enabled
+Gain modulation clamps its summed value to 0..1 before the same gain law.
+Slot output gain remains a separate operation. The cutoff law spans approximately
 25.957..19,912.266 Hz. KSP readback uses normalized values, while cutoff and Gain
 captions use those effective units.
 
@@ -387,7 +390,9 @@ resonance feedback, its low-frequency correction, and resonance compensation.
 The exponential interpolation entries are generated from a mathematical law;
 no captured tables are included. The response graph shows its small-signal
 transfer, which differs from large-signal saturation. Native control smoothing, its conditional cutoff limiter
-and High Quality oversampling remain explicit diagnostics. Other Ladder modes
+and High Quality oversampling remain explicit diagnostics. Bypass and subtype
+changes clear local histories; the native transition lifecycle is unverified
+and reported separately. Other Ladder modes
 retain their named constants and decoded records but remain unsupported.
 These limits matter: enabling processing does not establish whole-effect
 audible equivalence. NI documents the LP4 topology, Gain and High Quality

@@ -172,6 +172,23 @@ mod tests {
         assert!((cutoff(1.0) - 19912.266).abs() < 0.01);
         assert_eq!(exponential(1200.0), 1.0, "native Gain0 is unity");
         assert!((exponential(1200.0 + 119.58941) - 10_f32.powf(12.0 / 20.0)).abs() < 0.0001);
+        // Independent dB gain and DC/soft-clip law, including signed direct Gain.
+        for rate in [32_000.0, 44_100.0, 48_000.0, 96_000.0] {
+            for raw in [-1.0_f32,-0.25,0.0,0.5,1.0] {
+                let mut filter=Ladder::default();
+                filter.tune([0.5,0.0,raw],rate);
+                let amplitude=0.0001_f64 * 10_f64.powf(12.0*f64::from(raw)/20.0);
+                let expected=1.02 * amplitude * (1.0-amplitude/48.0);
+                let mut last=0.0;
+                for _ in 0..128 {
+                    let (mut l,mut r)=([0.0001;128],[-0.0001;128]);
+                    filter.process(&mut l,&mut r);
+                    last=l[127];
+                    assert!((l[127]+r[127]).abs()<1e-8);
+                }
+                assert!((f64::from(last)-expected).abs()<2e-8,"signed Gain{raw} rate{rate}");
+            }
+        }
         for rate in [32_000.0, 44_100.0, 48_000.0, 96_000.0] {
             for frequency in [0.0, 0.5, 1.0] {
                 let mut filter = Ladder::default();
