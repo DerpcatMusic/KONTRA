@@ -17,6 +17,10 @@ python3 tools/dev.py check --core
 python3 tools/dev.py test ui::tests::idle_editor_rebuilds_only_when_something_moves
 python3 tools/dev.py test --target playback root_pitch_octave_reverse_and_end_bounds loop_crossfade_is_continuous_at_the_wrap
 
+# Named library kernel tests can use the same core feature selection.
+# Use a fully qualified test name from the selected core configuration.
+python3 tools/dev.py test --core <exact-library-test-name>
+
 # Inspect a command without running Cargo or mutating a target directory.
 python3 tools/dev.py --print check --target all
 ```
@@ -41,7 +45,10 @@ mtime or a previously frozen release binary. Every requested name must match an
 actual test exactly; names with no match fail. Ignored tests require an explicit
 `--ignored`, and normal tests cannot accidentally be omitted by that flag.
 Multiple names reuse the same compiled executable, running sequentially with
-one test thread. No complete-suite or screenshot test is removed: request
+one test thread. `--core` is limited to the library target for checks and tests;
+playback tests keep the normal feature configuration. Unconditional Cargo
+dev-dependencies can still compile in core test mode. No complete-suite or
+screenshot test is removed: request
 `ui::tests::screenshot` explicitly when its images matter, and run the existing
 full release/native gate batch before shipping.
 
