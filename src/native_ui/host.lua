@@ -150,8 +150,14 @@ function native_modifier(node,name,props,args)
         end
         -- Authentic legacy modules supply a named alignment. The existing
         -- snapshot parser validates the string and MUI owns the local layout.
-        local children=name=="overlay" and {node,args[1]} or {args[1],node}
-        return {kind="ZStack",props=props,children=children,modifiers={[name]={}}}
+        local decoration=args[1]
+        if props.alignment~=nil then
+            -- Carry the guide through transparent conditional stacks just as
+            -- an explicit .align() does, without changing the foreground.
+            decoration={kind="ZStack",props={},children={decoration},modifiers={align={value=props.alignment}}}
+        end
+        local children=name=="overlay" and {node,decoration} or {decoration,node}
+        return {kind="ZStack",props={},children=children,modifiers={[name]={}}}
     end
     if name=="padding" then
         assert(#args<=1 and (#args==0 or next(props)==nil),"Invalid padding arguments")

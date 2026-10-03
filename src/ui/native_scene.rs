@@ -150,6 +150,9 @@ fn primitive(
             };
             el.w(node.width.map_or(Len::Auto, Len::Px))
                 .h(node.height.map_or(Len::Auto, Len::Px)).pad(node.padding)
+                // Native layout scopes have rectangular bounds. Their empty
+                // frame area must not acquire MUI's themed rounded hit contour.
+                .radius(0.)
         },
         Paint::Asset(reference) => {
             let asset = assets.entries.get(&reference.resource).and_then(|a|a.as_ref().ok());
