@@ -1,6 +1,6 @@
 //! Real-time DSP state built from a [`ProgramFx`] description.
 
-use super::{Effect, Kind, Params, ProgramFx, blocks::Block, convolution::Convolver, params, reverb::Reverb};
+use super::{Effect, Kind, Params, ProgramFx, blocks::Block, convolution::Convolver, params, legacy_reverb, reverb::Reverb};
 use std::ops::Range;
 
 /// Input at or below this level (−120 dBFS) counts as silence for tail tracking.
@@ -217,6 +217,7 @@ enum Dsp {
     },
     /// The settings are kept for scripts that change one at a time.
     Reverb(Box<Reverb>, params::Reverb),
+    LegacyReverb(Box<legacy_reverb::Reverb>),
     Convolution(Box<[Convolver; 2]>),
     /// Everything in `fx::blocks`.
     Block(Box<Block>),
@@ -396,7 +397,16 @@ impl FxProcessor {
                 .flat_map(|b| &b[..n]).fold(0.0f32, |p, x| p.max(x.abs()))
         } else { 0.0 };
         let peak = left.iter().chain(right.iter()).fold(group_peak, |p, x| p.max(x.abs()));
-        let awake = sleep.feed_peak(n, peak, |peak| tail(self.slots(), peak));
+        // Native legacy Reverb reports activity from its delay state. Hold
+        // the rack awake until it drains, then start the existing static
+        // downstream tails. Other processors keep their ordinary fast path.
+        let native_tail = self.slots().any(Slot::native_tail);
+        let awake = if native_tail && peak <= SILENCE {
+            sleep.silent = 0;
+            true
+        } else {
+            sleep.feed_peak(n, peak, |peak| tail(self.slots(), peak))
+        };
         self.sleep = sleep;
         if !awake {
             return;
@@ -466,13 +476,18 @@ impl FxProcessor {
         let n = left.len().min(right.len()).min(self.max_block);
         self.fresh_outs();
         for bus in &mut self.buses {
-            if !bus.fed && bus.sleep.sleeping() {
+            let native_tail = bus.chain.iter().any(Slot::native_tail);
+            if !bus.fed && bus.sleep.sleeping() && !native_tail {
                 continue;
             }
             bus.fed = false;
             let [il, ir] = &mut bus.input;
             let (il, ir) = (&mut il[..n], &mut ir[..n]);
-            bus.sleep.feed(il, ir, |peak| tail(bus.chain.iter(), peak));
+            if native_tail && il.iter().chain(ir.iter()).all(|x| x.abs() <= SILENCE) {
+                bus.sleep.silent = 0;
+            } else {
+                bus.sleep.feed(il, ir, |peak| tail(bus.chain.iter(), peak));
+            }
             for slot in &mut bus.chain {
                 slot.process(il, ir);
             }
@@ -826,6 +841,10 @@ fn balance(gain: f32, pan: f32) -> [f32; 2] {
 }
 
 impl Slot {
+    fn native_tail(&self) -> bool {
+        !self.bypass && matches!(&self.dsp, Dsp::LegacyReverb(rv) if rv.awake())
+    }
+
     fn new(fx: &Effect, sample_rate: f32, max_block: usize) -> Option<Self> {
         let dsp = Dsp::new(&fx.params, sample_rate, max_block).or_else(|| Block::new(fx, sample_rate).map(Dsp::Block))?;
         // A filter or EQ storing both levels at 0 would mute the rack;
@@ -880,6 +899,7 @@ impl Dsp {
                 gains: [(1.0 - p.pan).clamp(0.0, 1.0), (1.0 + p.pan).clamp(0.0, 1.0)],
             },
             Params::Reverb(p) => Dsp::Reverb(Box::new(Reverb::new(p, sample_rate)), *p),
+            Params::LegacyReverb(p) => Dsp::LegacyReverb(Box::new(legacy_reverb::Reverb::new(p, sample_rate)?)),
             Params::Convolution(p) => {
                 let ir = prepare_ir(p, sample_rate)?;
                 Dsp::Convolution(Box::new(ir.map(|ch| Convolver::new(&ch, max_block))))
@@ -892,6 +912,7 @@ impl Dsp {
         match self {
             Dsp::Gain(_) | Dsp::Stereo { .. } => {}
             Dsp::Reverb(rv, _) => rv.clear(),
+            Dsp::LegacyReverb(rv) => rv.clear(),
             Dsp::Convolution(conv) => conv.iter_mut().for_each(Convolver::clear),
             Dsp::Block(b) => b.clear(),
         }
@@ -900,7 +921,7 @@ impl Dsp {
     /// Frames of output above −120 dBFS after input at most `peak` falls silent.
     fn tail(&self, peak: f32) -> usize {
         match self {
-            Dsp::Gain(_) | Dsp::Stereo { .. } => 0,
+            Dsp::Gain(_) | Dsp::Stereo { .. } | Dsp::LegacyReverb(_) => 0,
             Dsp::Reverb(rv, _) => rv.tail(peak),
             Dsp::Convolution(conv) => conv[0].tail(peak).max(conv[1].tail(peak)),
             Dsp::Block(b) => b.tail(peak),
@@ -922,6 +943,7 @@ impl Dsp {
                 }
             }
             Dsp::Reverb(rv, _) => rv.process(left, right),
+            Dsp::LegacyReverb(rv) => rv.process(left, right),
             Dsp::Block(b) => b.process(left, right),
             Dsp::Convolution(conv) => {
                 conv[0].process(left);

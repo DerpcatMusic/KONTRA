@@ -1143,3 +1143,101 @@ end on"#);
         }
     }
 }
+
+#[test]
+fn legacy_reverb_saved_engine_rack_tail_bypass_and_resume_without_heap() {
+    use crate::engine::{Bank, Engine, effects, load_scripts};
+    use crate::import::{Group, Instrument, Zone};
+    use std::path::PathBuf;
+    let bytes: Vec<_> = [0.0f32,0.5,1.0,0.5,0.5].into_iter().flat_map(f32::to_le_bytes).collect();
+    let mut saved = effect(Kind::LegacyReverb, params::parse_versioned(Kind::LegacyReverb,0x50,&bytes));
+    saved.version=0x50;
+    let program=ProgramFx { insert: Chain { slots: vec![saved.clone()] }, ..Default::default() };
+    assert!(saved.is_implemented());
+    assert!(!program.warnings().iter().any(|w|w.contains("not implemented")));
+    let make=|bypass| {
+        let path=PathBuf::from("authored-legacy-reverb-pulse");
+        let mut instrument=Instrument { groups:vec![Group::default()], zones:vec![Zone {
+            sample:path.clone(),low_key:60,high_key:60,root:60, ..Default::default()
+        }],fx:program.clone(), ..Default::default() };
+        instrument.fx.insert.slots[0].bypass=bypass;
+        instrument.scripts=vec![r#"on init
+            declare ui_switch $bypass
+            $bypass := get_engine_par($ENGINE_PAR_EFFECT_BYPASS,-1,0,$NI_INSERT_BUS)
+        end on
+        on ui_control($bypass)
+            set_engine_par($ENGINE_PAR_EFFECT_BYPASS,$bypass,-1,0,$NI_INSERT_BUS)
+        end on"#.into()];
+        let mut frames=vec![[0.0;2];32000];frames[..128].fill([0.5;2]);
+        let bank=Bank::from_samples(instrument.groups.clone(),instrument.zones.clone(),vec![(path,
+            Sample {rate:SR as u32,frames})]).unwrap();
+        let(rt,errors)=load_scripts(&instrument,Vec::new(),SR as f64);assert!(errors.is_empty(),"{errors:?}");
+        let mut engine=Engine::default();engine.attack=0.0;engine.set_bank(Some(Box::new(bank)));
+        engine.set_fx(effects(&instrument,rt.as_deref(),SR));engine.set_script(rt);
+        engine
+    };
+    let(mut wet,mut dry)=(make(false),make(true));
+    let(mut actual_l,mut actual_r,mut dry_l,mut dry_r)=(vec![0.0;4096],vec![0.0;4096],vec![0.0;4096],vec![0.0;4096]);
+    assert_eq!(crate::plugin::tests::allocations(|| {
+        wet.note_on(0,60,127);dry.note_on(0,60,127);
+        for i in (0..4096).step_by(128) {
+            wet.render(&mut actual_l[i..i+128],&mut actual_r[i..i+128]);
+            dry.render(&mut dry_l[i..i+128],&mut dry_r[i..i+128]);
+        }
+    }),0);
+    let first=dry_l.iter().position(|v|*v!=0.0).expect("resident pulse reaches amplifier");
+    assert!(actual_l[..first+1214].iter().all(|v|*v==0.0));
+    let Params::LegacyReverb(p)=saved.params else {panic!("typed saved params")};
+    // Physical direct feedthrough: four allpasses contribute (-.5)^4.
+    // Independently derive filter's first coefficient from the scalar anchor.
+    let b0=f32::from_bits(1018724656);
+    let onset=((dry_l[first]*0.015)*b0)*0.0625;
+    assert!((actual_l[first+1214]-onset).abs()<1e-9,"resident Engine consumes saved Reverb rather than silently dropping it");
+    assert!(actual_l.iter().chain(&actual_r).all(|v|v.is_finite()));
+    assert!(actual_l.iter().any(|v|v.abs()>1e-5));
+    assert_eq!(dry.fx().param(Rack::Insert,0,FxParam::Bypass),Some(1.0));
+    let mut l=[0.0;128];let mut r=[0.0;128];
+    assert_eq!(crate::plugin::tests::allocations(|| {
+        wet.ui_control(0,0,1);wet.render(&mut l,&mut r);
+    }),0);
+    assert_eq!(wet.fx().param(Rack::Insert,0,FxParam::Bypass),Some(1.0));
+    assert!(l.iter().chain(&r).all(|v|*v==0.0));
+    assert_eq!(crate::plugin::tests::allocations(|| {
+        wet.ui_control(0,0,0);wet.render(&mut l,&mut r);
+    }),0);
+    assert_eq!(wet.fx().param(Rack::Insert,0,FxParam::Bypass),Some(0.0));
+    assert!(l.iter().chain(&r).any(|v|v.abs()>1e-6),"frozen tail resumes while resident source is now silent");
+
+    for rack in [Rack::Insert,Rack::Send,Rack::Main,Rack::Bus(3)] {
+        let chain=Chain {slots:vec![effect(Kind::LegacyReverb,Params::LegacyReverb(p))]};
+        let program=match rack {
+            Rack::Insert=>ProgramFx {insert:chain,..Default::default()},
+            Rack::Main=>ProgramFx {main:chain,..Default::default()},
+            Rack::Send=>{
+                let mut tap=effect(Kind::SendLevels,Params::SendLevels(params::SendLevels {sends:vec![1.0],outputs:Vec::new()}));tap.slot=7;
+                ProgramFx {insert:Chain {slots:vec![tap,gainer(0.0)]},send:chain,..Default::default()}
+            }
+            Rack::Bus(b)=>ProgramFx {buses:vec![super::Bus {index:b as usize,name:String::new(),volume:1.0,pan:0.0,output:-1,chain}],..Default::default()},
+        };
+        let(mut actual,mut reference)=(program.processor(SR,128),program.processor(SR,128));
+        let drive=|fx:&mut FxProcessor,l:&mut[f32],r:&mut[f32]| {
+            if let Rack::Bus(b)=rack {
+                let(il,ir)=fx.bus_input(b,0..l.len()).unwrap();il.copy_from_slice(l);ir.copy_from_slice(r);l.fill(0.0);r.fill(0.0);fx.mix_buses(l,r);
+            }
+            fx.process(l,r);
+        };
+        let(mut al,mut ar,mut rl,mut rr)=([0.0;128],[0.0;128],[0.0;128],[0.0;128]);
+        for block in 0..40 {
+            al.fill(0.0);ar.fill(0.0);rl.fill(0.0);rr.fill(0.0);
+            if block==0 {al[0]=1.0;rl[0]=1.0;}
+            assert_eq!(crate::plugin::tests::allocations(|| {drive(&mut actual,&mut al,&mut ar);drive(&mut reference,&mut rl,&mut rr);}),0);
+            assert_eq!((al,ar),(rl,rr));
+        }
+        assert!(actual.set_param(rack,0,FxParam::Bypass,1.0));
+        for _ in 0..3 {al.fill(0.0);ar.fill(0.0);drive(&mut actual,&mut al,&mut ar);assert!(al.iter().chain(&ar).all(|v|*v==0.0));}
+        assert!(actual.set_param(rack,0,FxParam::Bypass,0.0));
+        al.fill(0.0);ar.fill(0.0);rl.fill(0.0);rr.fill(0.0);
+        assert_eq!(crate::plugin::tests::allocations(|| {drive(&mut actual,&mut al,&mut ar);drive(&mut reference,&mut rl,&mut rr);}),0);
+        assert_eq!((al,ar),(rl,rr),"{rack:?}: bypass retains physical delay/filter state");
+    }
+}

@@ -12,6 +12,7 @@ mod kind;
 pub mod params;
 mod processor;
 mod reverb;
+mod legacy_reverb;
 
 pub use kind::{Kind, ksp_effect_type};
 pub use crate::engine::filter::Knob as FilterParam;
@@ -182,6 +183,7 @@ impl Effect {
     pub fn is_implemented(&self) -> bool {
         match &self.params {
             Params::Gainer(_) | Params::StereoModeller(_) | Params::Reverb(_) => true,
+            Params::LegacyReverb(p) => p.supported(),
             Params::SendLevels(_) => true,
             Params::Convolution(c) => c.ir.is_some(),
             Params::Filter(f) => crate::engine::filter::filter_type(f.filter_type).is_some(),
@@ -558,6 +560,14 @@ impl ProgramFx {
                 ));
             }
             match &fx.params {
+                Params::LegacyReverb(p) => {
+                    if !p.supported() {
+                        out.push(format!("{at}: legacy Reverb saved values outside finite normalized controls/nonnegative predelay are retained but not processed"));
+                    } else {
+                        out.push(format!("{at}: legacy Reverb uses saved physical controls; live legacy parameter controls are not applied"));
+                        out.push(format!("{at}: legacy Reverb activation uses input-silence detection; native activation by silent live sources remains unverified"));
+                    }
+                }
                 Params::Filter(f) if f.filter_type == 33 => {
                     out.push(format!("{at}: Ladder LP4 bypass and subtype changes clear filter history; the native transition lifecycle is unverified"));
                     out.push(format!("{at}: Ladder LP4 repeated modulation control smoothing timing and nonzero secondary cutoff-clock activation remain unverified"));

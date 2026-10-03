@@ -146,6 +146,7 @@ pub fn detail(e: &Effect) -> String {
             r.time * 100.,
             r.size * 100.
         ),
+        Params::LegacyReverb(r) => format!("Pre-delay {:.1} ms · size {:.0}%", r.predelay_ms, r.size * 100.),
         Params::Convolution(c) => c
             .ir_file
             .as_deref()
