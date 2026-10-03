@@ -1,4 +1,5 @@
 use crate::Record;
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -81,7 +82,12 @@ pub fn read(path: &Path, limit: usize) -> std::io::Result<Vec<Record>> {
     let mut file = File::open(path)?;
     let file_len = file.metadata()?.len();
     let slots = file_len / SLOT_BYTES as u64;
-    let mut records = Vec::with_capacity(limit.min(slots as usize));
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    // Retain only the requested newest records while scanning; sorting every
+    // record and truncating afterwards consumed the whole append-only journal.
+    let mut records = BTreeMap::new();
     let mut slot = [0_u8; SLOT_BYTES];
 
     for index in 0..slots {
@@ -112,13 +118,63 @@ pub fn read(path: &Path, limit: usize) -> std::io::Result<Vec<Record>> {
         {
             continue;
         }
-        records.push(record);
+        records.entry(record.sequence).or_insert(record);
+        if records.len() > limit {
+            records.pop_first();
+        }
     }
 
-    records.sort_unstable_by_key(|record| record.sequence);
-    records.dedup_by_key(|record| record.sequence);
-    if records.len() > limit {
-        records.drain(..records.len() - limit);
+    Ok(records.into_values().collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_reads_keep_newest_valid_records_in_append_and_ring_journals() {
+        for budget in [0, SLOT_BYTES * 8] {
+            let directory =
+                std::env::temp_dir().join(format!("dfr-bounded-{}-{budget}", std::process::id()));
+            std::fs::create_dir_all(&directory).unwrap();
+            let path = directory.join("events.dfr");
+            let mut journal = Journal::create(&path, budget).unwrap();
+            for sequence in 1..=32 {
+                journal
+                    .write(&Record {
+                        sequence,
+                        action: format!("event-{sequence}"),
+                        ..Default::default()
+                    })
+                    .unwrap();
+            }
+            journal.sync().unwrap();
+            let newest = read(&path, 3).unwrap();
+            assert_eq!(
+                newest.iter().map(|r| r.sequence).collect::<Vec<_>>(),
+                [30, 31, 32]
+            );
+            assert_eq!(newest[2].action, "event-32");
+            assert!(read(&path, 0).unwrap().is_empty());
+            // Corrupt the newest slot's checksum. The bounded view must step
+            // back to valid records rather than count that slot as evidence.
+            let index = if budget == 0 { 32 } else { 32 % 8 };
+            journal
+                .file
+                .seek(SeekFrom::Start(index * SLOT_BYTES as u64 + 20))
+                .unwrap();
+            journal.file.write_all(&[0_u8; 32]).unwrap();
+            journal.sync().unwrap();
+            assert_eq!(
+                read(&path, 3)
+                    .unwrap()
+                    .iter()
+                    .map(|r| r.sequence)
+                    .collect::<Vec<_>>(),
+                [29, 30, 31]
+            );
+            drop(journal);
+            std::fs::remove_dir_all(directory).unwrap();
+        }
     }
-    Ok(records)
 }
