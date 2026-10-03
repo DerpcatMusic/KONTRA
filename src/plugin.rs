@@ -5142,6 +5142,26 @@ end on"#;
             local ui=require('native_ui') local k=require('kontakt')
             local mode=k.connect_parameter('Mode') local count=k.connect_parameter('Count')
             local log=''
+            local function Child()
+                return @ui.Rectangle {color=ui.Color.white}.frame(width=10,height=10)
+                    .on_tap_gesture(start=function(e)
+                        assert(e.frame.x==60 and e.frame.y==28 and e.position.x==2 and e.position.y==3)
+                        log=log..'Cs'
+                    end,complete=function(e)log=log..'Cc'end)
+            end
+            local function DragChild()
+                return @ui.Rectangle {color=ui.Color.white}.frame(width=10,height=10)
+                    .on_tap_gesture(start=function(e)log=log..'Cs'end,complete=function(e)log=log..'Cc'end)
+                    .on_drag_gesture(threshold=1,update=function(e)
+                        assert(e.frame.x==60 and e.frame.y==28 and e.delta.x==5 and e.delta.y==0)
+                        count:set_value(777) log=log..'Cu'
+                    end)
+            end
+            local function Sibling()
+                return @ui.Rectangle {color=ui.Color.white}.frame(width=40,height=20)
+                    .on_tap_gesture(start=function(e)log=log..'Ss'end,complete=function(e)log=log..'Sc'end)
+                    .offset(x=5,y=3)
+            end
             local function Target()
                 local accumulator=0
                 local function record(phase,e)
@@ -5150,7 +5170,10 @@ end on"#;
                     assert(e.modifiers.alt and e.modifiers.shift and e.modifiers.control)
                     log=log..phase
                 end
-                return @ui.Rectangle {color=ui.Color.red}.frame(width=40,height=20)
+                return @ui.ZStack {
+                    @ui.Rectangle {color=ui.Color.red}.frame(width=40,height=20)
+                    @{ mode:value()==5 and @Child{} or mode:value()==6 and @DragChild{} or @ui.ZStack{} }
+                }.frame(width=40,height=20)
                     .on_tap_gesture(start=function(e)
                         assert(e.position.x==2 and e.position.y==3)
                         record('Ts',e)
@@ -5162,18 +5185,19 @@ end on"#;
                             count:set_value(math.floor(accumulator))
                             record('Du',e)
                         end,complete=function(e)record('Dc',e)end)
-                    .offset(x=5,y=3).hidden(mode:value()==1).disabled(mode:value()==2)
+                    .offset(x=function()return mode:value()==7 and 15 or 5 end,y=3).hidden(mode:value()==1).disabled(mode:value()==2)
             end
             local function Main()
                 return @ui.ZStack {
                     mode:value()==3 and @ui.Rectangle {color=ui.Color.black}.frame(width=40,height=20) or @Target{}
+                    @{ mode:value()==4 and @Sibling{} or @ui.ZStack{} }
                     @ui.Text {text=ui.create_computed(function()return log end)}.disabled(true)
                 }.frame(width=120,height=60)
             end
             return @Main{}
         "#).unwrap();
         let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec![
-            "on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_value_edit $Mode(0,3,1)\ndeclare ui_value_edit $Count(0,9999,1)\nend on\non ui_control($Count)\n$Count := $Count*2\nend on".into(),
+            "on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_value_edit $Mode(0,7,1)\ndeclare ui_value_edit $Count(0,9999,1)\nend on\non ui_control($Count)\n$Count := $Count*2\nend on".into(),
             "on init\nmake_perfview\ndeclare ui_value_edit $Count(0,9999,1)\n$Count := 90\nend on".into()],..Default::default()};
         let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
         let mut scene=Scene::prepare(&instrument.path,&rt).unwrap().unwrap();let mut live=first_script_live(&rt);rt.prepare_native_controls(&mut live);
@@ -5185,6 +5209,7 @@ end on"#;
         fn label(node:&Node)->Option<&str>{if let Paint::Text(text)=&node.paint{Some(text)}else{node.children.iter().find_map(label)}}
         assert!(frame(&mut scene,&mut ui,pointer).is_empty());
         let down=PointerInput{buttons:Buttons::PRIMARY,..pointer};assert!(frame(&mut scene,&mut ui,down).is_empty());
+        assert_eq!(label(&scene.snapshot().unwrap()),Some("Ts"),"tap-only paint descendants route the real press to the nearest owner");
         assert!(frame(&mut scene,&mut ui,PointerInput{pos:Some(Point::new(48.,26.)),..down}).is_empty(),"real 1px movement is below the authored 4px threshold");
         let mut edits=frame(&mut scene,&mut ui,PointerInput{pos:Some(Point::new(52.,26.)),..down});assert_eq!(edits[0].value,5,"first drag includes movement accumulated before crossing threshold");
         let next=frame(&mut scene,&mut ui,PointerInput{pos:Some(Point::new(55.,26.)),..down});assert_eq!(next[0].value,8,"press-time closure survives intervening reactive snapshots");edits.extend(next);
@@ -5215,6 +5240,27 @@ end on"#;
             let after=label(&scene.snapshot().unwrap()).unwrap().to_owned();assert_eq!(after,format!("{before}Tc"));
             assert!(frame(&mut scene,&mut ui,down).is_empty());assert_eq!(label(&scene.snapshot().unwrap()),Some(after.as_str()));
         }
+        for mode in [4,5,6] {
+            let mut snapshot=dsp.rack.parts[0].script().unwrap().live();dsp.rack.parts[0].script().unwrap().prepare_native_controls(&mut snapshot);
+            dsp.rack.parts[0].ui_control(0,0,mode);dsp.rack.parts[0].render(&mut left,&mut right);dsp.rack.parts[0].script().unwrap().refresh_live(&mut snapshot);scene.observe(&snapshot);
+            let idle=if mode==4 {pointer} else {PointerInput{pos:Some(Point::new(62.,31.)),..pointer}};
+            frame(&mut scene,&mut ui,idle);let before=label(&scene.snapshot().unwrap()).unwrap().to_owned();
+            assert!(frame(&mut scene,&mut ui,PointerInput{buttons:Buttons::PRIMARY,..idle}).is_empty());
+            let moved=PointerInput{pos:Some(Point::new(67.,31.)),buttons:Buttons::PRIMARY,..idle};
+            if mode==5 { assert!(frame(&mut scene,&mut ui,moved).is_empty(),"tap-only interactive child consumes the press; parent's drag does not run"); }
+            if mode==6 { let edits=frame(&mut scene,&mut ui,moved);assert_eq!(edits.iter().map(|edit|(edit.slot,edit.control,edit.value)).collect::<Vec<_>>(),[(0,1,777)],"nearest nested drag owns this capture instead of the ancestor"); }
+            let released=if mode==4 {idle} else {PointerInput{buttons:Buttons::default(),..moved}};
+            assert!(frame(&mut scene,&mut ui,released).is_empty());
+            let expected=if mode==4 {"SsSc"} else if mode==5 {"CsCc"} else {"CsCuCc"};
+            assert_eq!(label(&scene.snapshot().unwrap()),Some(format!("{before}{expected}").as_str()),"competing overlapping surfaces and nested owners do not duplicate an ancestor's phases");
+        }
+        let mut snapshot=dsp.rack.parts[0].script().unwrap().live();dsp.rack.parts[0].script().unwrap().prepare_native_controls(&mut snapshot);
+        dsp.rack.parts[0].ui_control(0,0,0);dsp.rack.parts[0].render(&mut left,&mut right);dsp.rack.parts[0].script().unwrap().refresh_live(&mut snapshot);scene.observe(&snapshot);
+        frame(&mut scene,&mut ui,pointer);frame(&mut scene,&mut ui,down);
+        dsp.rack.parts[0].ui_control(0,0,7);dsp.rack.parts[0].render(&mut left,&mut right);dsp.rack.parts[0].script().unwrap().refresh_live(&mut snapshot);scene.observe(&snapshot);
+        let moved=PointerInput{pos:Some(Point::new(52.,26.)),..down};let edits=frame(&mut scene,&mut ui,moved);
+        assert_eq!(edits[0].value,5,"captured geometry/closure stays at the real press while reactive layout moves the painted owner");
+        assert!(frame(&mut scene,&mut ui,PointerInput{buttons:Buttons::default(),..moved}).is_empty());
         assert!(dsp.rack.parts[0].script().unwrap().diagnostics().is_empty());
         std::fs::remove_dir_all(directory).unwrap();
     }
