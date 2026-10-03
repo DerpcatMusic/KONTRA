@@ -8,6 +8,46 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ## Unreleased
 
+### Candidate reporter and DSP review — not yet accepted
+
+Eighteen proposed outcomes would advance the accepted baseline from 0.3.123 to
+0.3.141 only after maintainer acceptance. All corresponding ledger entries remain
+unaccepted. The corrected reporter restart fixture and final coherent gates are
+pending; these notes describe the proposed next cut, not a published release.
+
+### Added — pending review
+
+- Add single-rate native Ladder LP4 processing with the checked nonlinear four-pole kernel, signed Gain and correct insert ordering.
+- Expose delivery status, report ID and an allowed public issue link in Logs, and restore only reviewed receipt fields on a later launch.
+- Include exact locally archived crash originals and saved queue/delivery records in manual support exports, with missing, busy or changed-source coverage. Original copies are unredacted regardless of the structured-log toggle; OS-wide searches and binary dump copying are excluded.
+
+### Fixed — pending review
+
+- Apply ordinary Ladder Gain, resonance and cutoff steps on the physical control clock, with consistent reset/retarget snapshots and fragmented-block behavior.
+- Preserve the stored version 144–146 cutoff boundary-snapshot law independently of the Gain/resonance clock; unknown versions remain diagnosed.
+- Keep enabled Ladder routes on persistent control ticks even when their depth is zero or target value is unchanged.
+- Advertise configured CLAP MPE input while retaining preferred CLAP notes and existing output dialects. The Linux original-tone gate checks member/manager expression and pedals; automatic zone negotiation is not added.
+- Retain filename mappings and raw timestamps when an optional calendar-date view cannot represent the saved value.
+- Require the recorded host executable/application and documented fatal OS metadata before confirming a native crash. Missing, simulated, nonfatal, oversized and mismatched evidence stays unconfirmed; confirmation does not assign plug-in fault ownership.
+- Redact authored cases of quoted Unix paths, Windows drive paths and UNC assignments while preserving useful exception/frame symbols. Unseen native fields are not certified safe by these fixtures.
+- Bound recovered journal submissions to 128 startup and 2,048 recent records, with complete-original size/hash and explicit omitted-slot/drop accounting. Complete private originals survive acknowledgement and are not automatically pruned.
+- Keep an active durable publisher’s lock and in-flight files out of stale-session recovery cleanup.
+- Retain unconfirmed incidents privately without blocking later confirmed delivery; recheck up to 32 deferred records per registration and keep a discovery cursor across launches.
+- Measure the complete serialized UTF-8 JSON body, including escaping, before network submission instead of estimating individual fields.
+- Bound legacy/native buffered reads and stream complete oversized originals into a private archive before retiring local source slots. Prefix/suffix views do not confirm partial native JSON, and failed preservation leaves the source intact.
+- Keep independent keyed incidents, durable legacy migration and exact-ID acknowledgement. After acknowledgement and permit release, bounded actor scans can drain later confirmed incidents in the same host; offline delivery or failed retirement stops continuation without losing pending evidence.
+- Use recorded incident host/build/system metadata with explicit unknowns, and render/hash submitted evidence independently of a later reopening host or current build. Reopening context is a separate local diagnostics event, excluded from the submitted report.
+- Preserve complete private evidence before recording a source-digest/recipe/limit-bound manual-export disposition for packets over the 16 MiB JSON limit. No acknowledgement, deletion or delivery is invented. Release the worker permit so other queued incidents can proceed once; changed evidence or policy is reevaluated. Logs and restored receipts truthfully say manual export is required and automatic retry is paused for unchanged evidence.
+
+### Known limits — pending review
+
+- Fresh isolated 9c1f7d1 checking, test compilation and production build pass. Six Ladder, 10 BUFFR durable-file, 11 flight-recorder and one optional-date vendor regression pass with all 477 tracked source hashes unchanged. The reporter focus has 57 passes and one failed restart fixture; a corrected actor-lifecycle test and final coherent full suites remain mandatory. Earlier shared-target results describe observed behavior, not final source/dependency provenance.
+- Ladder High Quality oversampling, other Ladder modes and complete audible/native transition equivalence remain unproved. Known control/routing/PCM gates establish only their scoped laws; whole-library sonic parity is not claimed.
+- The Linux strict-MPE CLAP and authored-tone VST3 gates do not establish Mac/Windows DAW behavior, automatic MPE negotiation, or the cause of the user’s uncaptured Mac crash. Complete native Lua UI support is not added.
+- Automatic reports submit bounded, sanitized evidence, not complete raw local journal/native history. Manual original copies are explicitly unredacted. The deployed service stores full submitted reports privately, applies server redaction and 30-day expiry, and publishes metadata summaries; a real production host-crash-to-private-store-to-public-issue roundtrip remains unverified.
+- The already accepted upload-permit-release and zero-rate renderer fixes are not counted again. Queue continuation, receipt refinements and correction fixtures stay within their parent outcomes. Documentation and external service deployment add no plug-in fix count.
+
+
 ### Fixed after 0.3.115
 
 Eight newly accepted logical fixes advance 0.3.115 to0.3.123; closing the already-counted VST3 optional-length outcome adds no duplicate count.
