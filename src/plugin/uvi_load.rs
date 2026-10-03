@@ -70,6 +70,7 @@ fn update(
     }
     part.status = status.into();
     part.loading = loading;
+    if !loading && status != READY { part.uvi_ui = None; }
     if let Some(ui) = ui.filter(|ui| {
         (ui.stamp.epoch, ui.stamp.generation) == (activation.epoch, activation.generation)
     }) {
@@ -230,10 +231,17 @@ pub(super) fn service(params: &SamplerParams) {
                 .map(|activation| (slot, activation))
         })
         .collect();
-    let delay_ready = !activations.is_empty() && uvi_delay_ready(params);
+    let delay_ready = if activations.is_empty() { Ok(false) } else { uvi_delay_ready(params) };
     for (slot, activation) in activations {
         if !activation.current(params, slot) {
             cancel(params, &activation);
+            continue;
+        }
+        if delay_ready.is_err() && !activation.published {
+            // Terminal allocation/layout failure is distinct from callback ack.
+            // Keep the failed identity, and preserve already exported players.
+            cancel(params, &activation);
+            update(params, slot, &activation, UNSUPPORTED, false, None);
             continue;
         }
         let (status, ui, ready) = {
@@ -252,7 +260,7 @@ pub(super) fn service(params: &SamplerParams) {
             } else {
                 let status = registry.status(activation.epoch, activation.generation);
                 let ui = registry.poll_ui(activation.epoch, activation.generation);
-                let ready = if delay_ready && !activation.published && status == Some(Status::Ready)
+                let ready = if delay_ready == Ok(true) && !activation.published && status == Some(Status::Ready)
                 {
                     registry.take_ready(activation.epoch, activation.generation)
                 } else {

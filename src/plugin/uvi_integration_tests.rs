@@ -445,3 +445,45 @@ fn restored_native_rack_adopts_after_delay_ack_and_renders_keyboard_gain_pan_and
     drop(params);
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn unsupported_native_delay_layout_finishes_loading_and_is_memoized() {
+    let directory = tempfile::tempdir().unwrap();
+    let bank = directory.path().join("authored.ufs");
+    crate::library::tests::authored_uvi_bank_with_source(&bank, 9, PROGRAM.as_bytes());
+    let mut params = SamplerParams::new();
+    params.shared.libraries = crate::library::tests::authored_uvi_scanner(directory.path());
+    let source = library::UviSource { bank, bank_uuid: [9; 16], member: "Piano.uvip".into() };
+    params.selection.write().unwrap().parts.push(Part { uvi: Some(source.clone()), ..Default::default() });
+    params.shared.ensure_parts(64);
+    params.shared.grown.store(64, Ordering::Release);
+    params.shared.uvi_max_host_frames.store(65_536, Ordering::Release);
+    uvi_load::service(&params);
+    let first = {
+        let view = params.shared.view.lock().unwrap();
+        let part = &view.parts[0];
+        assert!(!part.loading);
+        assert_eq!(part.status, "The current audio configuration is unsupported by UVI playback.");
+        assert!(part.uvi_ui.is_none());
+        part.uvi_activation.clone().unwrap()
+    };
+    assert_eq!(uvi_delay_ready(&params), Err(uvi_delay::Error::MemoryBudget));
+    assert_eq!(params.shared.uvi_delay_wanted.load(Ordering::Acquire), 0);
+    assert!(params.shared.uvi_delays.is_empty());
+    assert!(params.shared.uvi_controls.lock().unwrap().status(first.epoch, first.generation).is_none());
+    for _ in 0..3 { uvi_load::service(&params); }
+    let next = params.shared.view.lock().unwrap().parts[0].uvi_activation.clone().unwrap();
+    assert_eq!((first.epoch, first.generation), (next.epoch, next.generation));
+    assert_eq!(params.selection.read().unwrap().parts[0].uvi.as_ref(), Some(&source));
+    assert_eq!(params.shared.uvi_delay_prepared.lock().unwrap().as_ref().unwrap().context,
+        (first.epoch, 64, 65_536));
+    // A changed context is independently admitted; pending callback ack is not
+    // memoized as the former terminal failure.
+    params.shared.uvi_max_host_frames.store(BLOCK, Ordering::Release);
+    assert_eq!(uvi_delay_ready(&params), Ok(false));
+    assert_eq!(params.shared.uvi_delay_wanted.load(Ordering::Acquire), 1);
+    assert_eq!(uvi_delay_ready(&params), Ok(false));
+    let prepared = params.shared.uvi_delays.pop().unwrap();
+    params.shared.uvi_delay_installed.store(prepared.ticket, Ordering::Release);
+    assert_eq!(uvi_delay_ready(&params), Ok(true));
+}

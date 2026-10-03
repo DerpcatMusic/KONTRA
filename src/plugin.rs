@@ -533,7 +533,7 @@ pub struct Shared {
     #[cfg(feature = "uvi")]
     uvi_delays: ArrayQueue<UviDelayHandoff>,
     #[cfg(feature = "uvi")]
-    uvi_delay_prepared: Mutex<Option<(u64, usize, u32, u64)>>,
+    uvi_delay_prepared: Mutex<Option<UviDelayPreparation>>,
     #[cfg(feature = "uvi")]
     uvi_delay_wanted: AtomicU64,
     #[cfg(feature = "uvi")]
@@ -2329,27 +2329,46 @@ fn prepare_uvi(params: &SamplerParams, selection: &Selection) {
 #[cfg(feature = "uvi")]
 struct UviDelayHandoff { epoch: u64, ticket: u64, storage: Box<uvi_delay::Prepared> }
 
+#[cfg(feature = "uvi")]
+struct UviDelayPreparation {
+    context: (u64, usize, usize),
+    outcome: Result<(u32, u64), uvi_delay::Error>,
+}
+
 /// Different callback queues are unordered. A native endpoint is published only
 /// after the callback acknowledged storage for this epoch and complete rack.
 #[cfg(feature = "uvi")]
-fn uvi_delay_ready(params: &SamplerParams) -> bool {
+fn uvi_delay_ready(params: &SamplerParams) -> Result<bool, uvi_delay::Error> {
     let epoch = params.shared.uvi_epoch.load(Ordering::Acquire);
     let count = params.shared.with_parts(|parts| parts.len());
-    if count > params.shared.grown.load(Ordering::Acquire) as usize { return false }
+    if count > params.shared.grown.load(Ordering::Acquire) as usize { return Ok(false) }
     let maximum = params.shared.uvi_max_host_frames.load(Ordering::Acquire);
-    let Ok(latency) = crate::uvi::bridge::Bridge::buffering_latency(maximum, UVI_LEAD_PACKETS) else { return false };
+    let context = (epoch, count, maximum);
     let mut prepared = params.shared.uvi_delay_prepared.lock().unwrap();
-    if let Some((e, n, l, ticket)) = *prepared
-        && (e, n, l) == (epoch, count, latency) {
-        return params.shared.uvi_delay_installed.load(Ordering::Acquire) == ticket;
+    if let Some(previous) = prepared.as_ref()
+        && previous.context == context {
+        let (_, ticket) = previous.outcome?;
+        return Ok(params.shared.uvi_delay_installed.load(Ordering::Acquire) == ticket);
     }
-    let Ok(mut storage) = uvi_delay::Prepared::new(count, latency as usize) else { return false };
-    if !storage.set_all(latency) { return false }
+    let allocated = crate::uvi::bridge::Bridge::buffering_latency(maximum, UVI_LEAD_PACKETS)
+        .map_err(|_| uvi_delay::Error::InvalidLayout)
+        .and_then(|latency| {
+            let mut storage = uvi_delay::Prepared::new(count, latency as usize)?;
+            if !storage.set_all(latency) { return Err(uvi_delay::Error::InvalidLayout) }
+            Ok((latency, storage))
+        });
+    let (latency, storage) = match allocated {
+        Ok(allocated) => allocated,
+        Err(error) => {
+            *prepared = Some(UviDelayPreparation { context, outcome: Err(error) });
+            return Err(error);
+        }
+    };
     let ticket = params.shared.uvi_delay_wanted.fetch_add(1, Ordering::AcqRel) + 1;
     let next = UviDelayHandoff { epoch, ticket, storage: Box::new(storage) };
     let _ = params.shared.uvi_delays.force_push(next);
-    *prepared = Some((epoch, count, latency, ticket));
-    false
+    *prepared = Some(UviDelayPreparation { context, outcome: Ok((latency, ticket)) });
+    Ok(false)
 }
 
 /// Commit the requested identity only after native initialization succeeded.
