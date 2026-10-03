@@ -5749,12 +5749,12 @@ end on"#;
                 return @ui.Rectangle{color=ui.Color.red}.frame(width=40,height=20)
                     .on_drop(of={'application/x-authored-binary','text/uri-list'},action=drop)
                     .on_drop(of={'application/x-authored-binary'},action=function()count:set_value(7)end)
-                    .overlay(mode:value()==5 and @ui.Rectangle{color=ui.Color.green}.frame(width=40,height=20)
+                    .overlay(mode:value()==5 and @ui.Rectangle{color=ui.Color(0,255,0)}.frame(width=40,height=20)
                         .on_drop(of={'application/x-authored-binary'},action=function()count:set_value(55)end) or @ui.ZStack{})
                     .hidden(mode:value()==1).disabled(mode:value()==2)
             end
             return function() return @ui.HStack {spacing=10,
-                @ui.Rectangle{color=ui.Color.blue}.frame(width=20,height=20).on_drag_gesture(update=function()end)
+                @ui.Rectangle{color=ui.Color(0,0,255)}.frame(width=20,height=20).on_drag_gesture(update=function()end)
                 mode:value()==3 and @ui.Rectangle{color=ui.Color.red}.frame(width=40,height=20) or @Target{}
             }.frame(width=100,height=40) end
         "#).unwrap();
