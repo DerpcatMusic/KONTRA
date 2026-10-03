@@ -5154,6 +5154,7 @@ end on"#;
                     .on_tap_gesture(start=function(e)log=log..'Cs'end,complete=function(e)log=log..'Cc'end)
                     .on_drag_gesture(threshold=1,update=function(e)
                         assert(e.frame.x==60 and e.frame.y==28 and e.delta.x==5 and e.delta.y==0)
+                        assert(e.start_position.x==2 and e.start_position.y==3)
                         count:set_value(777) log=log..'Cu'
                     end)
             end
@@ -5167,6 +5168,7 @@ end on"#;
                 local function record(phase,e)
                     assert(e.frame.width==40 and e.frame.height==20)
                     assert(e.frame.x==45 and e.frame.y==23)
+                    assert(e.start_position.x==2 and e.start_position.y==3)
                     assert(e.modifiers.alt and e.modifiers.shift and e.modifiers.control)
                     log=log..phase
                 end
