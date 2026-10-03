@@ -39,6 +39,7 @@ pub(crate) struct Node {
     transparent: bool,
     pub padding: Insets,
     pub offset: [f64; 2],
+    pub rotation: Option<f64>,
     pub hidden: bool,
     pub disabled: bool,
     pub opacity: f32,
@@ -86,6 +87,7 @@ pub(crate) struct Edit {
 struct HoverInput {
     position: moose::mui::mui::prelude::Point,
     frame: moose::mui::mui::layout::Frame,
+    pose: moose::mui::mui::scene::LocalPose,
     mods: moose::mui::mui::prelude::Mods,
 }
 struct Hover {
@@ -825,6 +827,20 @@ impl Scene {
         let modifiers: Table = node.get("modifiers")?;
         let background = modifiers.get::<Option<Table>>("background")?.is_some();
         let overlay = modifiers.get::<Option<Table>>("overlay")?.is_some();
+        let rotation = if let Some(modifier) = modifiers.get::<Option<Table>>("rotation")? {
+            let value = match modifier.get::<Value>("value")? {
+                Value::Function(f) => f.call::<Value>(())?, value => value,
+            };
+            let degrees = match value {
+                Value::Integer(value) => value as f64,
+                Value::Number(value) => value,
+                _ => bail!("Native UI rotation requires a number"),
+            };
+            ensure!(degrees.is_finite(), "Invalid native UI rotation");
+            // Legacy .nui uses degrees. MUI rotates the entire wrapper subtree,
+            // retaining its layout box and the authored modifier order.
+            Some((degrees % 360.).to_radians())
+        } else { None };
         let (mut text_size, mut text_color, mut hidden, mut disabled, mut opacity, mut text_bold, mut text_lines) = style;
         if let Some(modifier) = modifiers.get::<Option<Table>>("opacity")? {
             let value = match modifier.get::<Value>("value")? {
@@ -1107,6 +1123,7 @@ impl Scene {
             transparent,
             padding,
             offset,
+            rotation,
             hidden,
             disabled,
             opacity,
@@ -1145,6 +1162,7 @@ impl Scene {
                     .map(|(position, surface)| HoverInput {
                         position,
                         frame: surface.frame,
+                        pose: surface.local_pose(),
                         mods: pointer.mods,
                     });
                 let inside = if hover.present && hover.enabled {
@@ -1240,7 +1258,7 @@ impl Scene {
                 let key = format!("{prefix}-{id}");
                 let response = responses.get(&id).copied().unwrap_or_default();
                 let surface = ui.scene().and_then(|scene|scene.surface(&key));
-                let current = pointer.pos.zip(surface).map(|(position,surface)|HoverInput { position, frame:surface.frame, mods:pointer.mods });
+                let current = pointer.pos.zip(surface).map(|(position,surface)|HoverInput { position, frame:surface.frame, pose:surface.local_pose(), mods:pointer.mods });
                 let mut calls = Vec::new();
                 if !retired && response.pressed && gesture.capture.is_none() {
                     if let Some(input) = current {
@@ -1256,6 +1274,7 @@ impl Scene {
                     let input = HoverInput {
                         position:current.map_or(capture.last.position,|input|input.position),
                         frame:capture.last.frame,
+                        pose:capture.last.pose,
                         mods:pointer.mods,
                     };
                     let finish = retired || response.released || (!response.held && !response.pressed);
@@ -1314,10 +1333,12 @@ impl Scene {
 fn pointer_event(lua: &Lua, input: HoverInput, phase: &str, delta: [f64;2], origin: moose::mui::mui::prelude::Point) -> mlua::Result<Table> {
     let event = hover_event(lua,input,phase)?;
     let start = lua.create_table()?;
-    start.set("x",origin.x-input.frame.x)?; start.set("y",origin.y-input.frame.y)?;
+    let origin = input.pose.local(origin);
+    start.set("x",origin.x)?; start.set("y",origin.y)?;
     event.set("start_position",start)?;
     let movement = lua.create_table()?;
-    movement.set("x",delta[0])?; movement.set("y",delta[1])?;
+    let delta = input.pose.delta(moose::mui::mui::prelude::Vec2::new(delta[0],delta[1]));
+    movement.set("x",delta.x)?; movement.set("y",delta.y)?;
     event.set("delta",movement)?;
     Ok(event)
 }
@@ -1325,8 +1346,9 @@ fn hover_event(lua: &Lua, input: HoverInput, phase: &str) -> mlua::Result<Table>
     let event = lua.create_table()?;
     event.set("kind", phase)?;
     let position = lua.create_table()?;
-    position.set("x", input.position.x - input.frame.x)?;
-    position.set("y", input.position.y - input.frame.y)?;
+    let local = input.pose.local(input.position);
+    position.set("x", local.x)?;
+    position.set("y", local.y)?;
     event.set("position", position)?;
     let frame = lua.create_table()?;
     frame.set("x", input.frame.x)?;
@@ -1429,5 +1451,10 @@ mod library_probe {
             "Native evaluated nodes {} (metadata only; no PCM/render parity claim)",
             count(&root)
         );
+        if let Some(path)=std::env::var_os("KONTRA_NATIVE_UI_PROBE_SHOT") {
+            crate::ui::audit::native_scene_shot(&mut scene,std::path::Path::new(&path),2.)
+                .expect("genuine native scene CPU capture");
+            eprintln!("Native scene capture uses actual evaluated Lua and local assets at 2x; no Kontakt parity claim");
+        }
     }
 }

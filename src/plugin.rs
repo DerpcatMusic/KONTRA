@@ -5721,6 +5721,105 @@ end on"#;
     }
 
     #[test]
+    fn native_ui_rotation_keeps_layout_and_press_time_local_pose_for_real_callbacks() {
+        use crate::native_ui::{Node, Paint, Scene};
+        use moose::mui::mui::prelude::*;
+        let directory = tempfile::tempdir().unwrap();
+        let resources = directory.path().join("Resources/native_ui");
+        std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("main.nui"), r#"
+            local ui=require('native_ui') local k=require('kontakt')
+            local angle=k.connect_parameter('Angle') local count=k.connect_parameter('Count')
+            local function close(a,b) assert(math.abs(a-b)<0.000001) end
+            return @ui.Rectangle {color=ui.Color.red}.frame(width=40,height=20)
+                .on_hover_gesture(enter=function(e) close(e.position.x,2) close(e.position.y,3) end)
+                .on_tap_gesture(start=function(e) close(e.position.x,2) close(e.position.y,3) end)
+                .on_drag_gesture(threshold=1,update=function(e)
+                    close(e.start_position.x,2) close(e.start_position.y,3)
+                    close(e.position.x,7) close(e.position.y,3)
+                    close(e.delta.x,5) close(e.delta.y,0)
+                    count:set_value(math.floor(e.delta.x+0.5))
+                end)
+                .rotation(function() return angle:value() end).offset(x=5,y=3)
+                .frame(width=100,height=80)
+        "#).unwrap();
+        let instrument = Instrument { path:directory.path().join("fixture.nki"), scripts:vec![
+            "on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_value_edit $Angle(-720,720,1)\n$Angle := 90\ndeclare ui_value_edit $Count(0,100,1)\nend on\non ui_control($Count)\n$Count := $Count*2\nend on".into(),
+            "on init\nmake_perfview\ndeclare ui_value_edit $Count(0,100,1)\n$Count := 99\nend on".into(),
+        ], ..Default::default() };
+        let (rt, errors) = crate::engine::load_scripts(&instrument, Vec::new(), 48000.);
+        assert!(errors.is_empty(), "{errors:?}"); let rt = rt.unwrap();
+        let mut scene = Scene::prepare(&instrument.path, &rt).unwrap().unwrap();
+        let mut live = first_script_live(&rt); rt.prepare_native_controls(&mut live);
+        let p = Arc::new(SamplerParams::new());
+        let epoch = next_epoch(&mut p.shared.view.lock().unwrap(), 0, None, Some(live));
+        let mut dsp = Dsp::default(); dsp.script_epoch[0] = epoch; dsp.rack.parts[0].set_script(Some(rt));
+        let mut ui = Ui::default().font(Font::new(&include_bytes!("../assets/NotoSans.ttf")[..]).unwrap());
+        fn frame(scene:&mut Scene, ui:&mut Ui, pointer:PointerInput) -> Vec<crate::native_ui::Edit> {
+            let root=scene.snapshot().unwrap();
+            ui.frame(crate::ui::native_scene::scene_tree(&root,&scene.assets).clip(),None,pointer,0.016).unwrap();
+            assert!(scene.hover(ui,"native-snapshot").unwrap().is_empty());
+            scene.pointer_gestures(ui,"native-snapshot").unwrap()
+        }
+        fn red(node:&Node)->Option<&Node> {
+            if matches!(node.paint,Paint::Rectangle([1.,0.,0.,1.],_)) {Some(node)} else {node.children.iter().find_map(red)}
+        }
+        // This position is inside the rotated rectangle and outside its
+        // unchanged layout bounds, so an unrotated hit path cannot pass.
+        let pointer=PointerInput{pos:Some(Point::new(62.,25.)),..Default::default()};
+        assert!(frame(&mut scene,&mut ui,pointer).is_empty());
+        let root=scene.snapshot().unwrap();
+        assert_eq!(ui.scene().unwrap().layout.size, Size::new(100.,80.));
+        let surface=ui.scene().unwrap().surface(&format!("native-snapshot-{}",red(&root).unwrap().id)).unwrap();
+        assert_eq!((surface.frame.x,surface.frame.y,surface.frame.size),(35.,33.,Size::new(40.,20.)));
+        let local=surface.local(pointer.pos.unwrap());
+        assert!((local.x-2.).abs()<1e-9 && (local.y-3.).abs()<1e-9);
+        let down=PointerInput{buttons:Buttons::PRIMARY,..pointer};
+        assert!(frame(&mut scene,&mut ui,down).is_empty());
+        let (mut left,mut right)=([0.;64],[0.;64]);
+        let mut observed=dsp.rack.parts[0].script().unwrap().live();
+        dsp.rack.parts[0].script().unwrap().prepare_native_controls(&mut observed);
+        assert_eq!(allocations(||{
+            dsp.rack.parts[0].ui_control(0,0,0); dsp.rack.parts[0].render(&mut left,&mut right);
+            dsp.rack.parts[0].script().unwrap().refresh_live(&mut observed);
+        }),0);
+        scene.observe(&observed);
+        let moved=PointerInput{pos:Some(Point::new(62.,30.)),..down};
+        let edits=frame(&mut scene,&mut ui,moved);
+        assert_eq!(edits.iter().map(|e|(e.slot,e.control,e.value)).collect::<Vec<_>>(),[(0,1,5)],"capture retains the press-time inverse pose after reactive rotation changes");
+        for edit in &edits { assert!(p.shared.edit_control_slot(0,epoch,edit.slot,edit.control,edit.value)); }
+        let live=p.shared.view.lock().unwrap().parts[0].live.take().unwrap();
+        p.shared.live_requests.push((0,epoch,live)).ok().unwrap();
+        let mut slices=[left.as_mut_slice(),right.as_mut_slice()];
+        let mut buffer=AudioBuffer::from_slices_checked(&[],&mut slices,64);
+        let transport=TransportInfo::default();let mut output=EventList::with_capacity(4);let events=EventList::with_capacity(1);
+        let mut cx=ProcessContext::new(&transport,48000.,64,&mut output);
+        assert_eq!(allocations(||{for _ in 0..8 {Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx);}}),0);
+        p.shared.publish_live(true);
+        assert_eq!(dsp.rack.parts[0].script().unwrap().interface(0).controls[1].properties["$CONTROL_PAR_VALUE"],crate::ksp::Value::Int(10));
+        assert_eq!(dsp.rack.parts[0].script().unwrap().interface(1).controls[0].properties["$CONTROL_PAR_VALUE"],crate::ksp::Value::Int(99));
+        assert!(frame(&mut scene,&mut ui,PointerInput{buttons:Buttons::default(),..moved}).is_empty());
+        for (modifiers,point) in [
+            (".rotation(450).offset(x=5,y=3)",Point::new(62.,25.)),
+            (".offset(x=5,y=3).rotation(-270)",Point::new(54.,27.)),
+        ] {
+            std::fs::write(resources.join("main.nui"),format!("local ui=require('native_ui') return @ui.Rectangle{{color=ui.Color.red}}.frame(width=40,height=20){modifiers}.frame(width=100,height=80)")).unwrap();
+            let mut ordered=Scene::prepare(&instrument.path,dsp.rack.parts[0].script().unwrap()).unwrap().unwrap();
+            let root=ordered.snapshot().unwrap();
+            let spec=moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::scene_tree(&root,&ordered.assets));
+            let resolved=moose::mui::mui::scene::resolve(&spec).unwrap();
+            let surface=resolved.surface(&format!("native-snapshot-{}",red(&root).unwrap().id)).unwrap();
+            let local=surface.local(point);
+            assert!((local.x-2.).abs()<1e-9 && (local.y-3.).abs()<1e-9,"authored wrapper order determines the actual transformed content; full turns preserve the same pose");
+            assert_eq!(resolved.layout.size,Size::new(100.,80.));
+        }
+        for argument in ["0/0","math.huge","true","angle=90","90,180"] {
+            std::fs::write(resources.join("main.nui"),format!("local ui=require('native_ui') return @ui.Rectangle{{color=ui.Color.red}}.frame(width=40,height=20).rotation({argument})")).unwrap();
+            assert!(format!("{:#}",Scene::prepare(&instrument.path,dsp.rack.parts[0].script().unwrap()).unwrap_err()).to_lowercase().contains("rotation"));
+        }
+    }
+
+    #[test]
     fn native_ui_offsets_move_content_and_tap_geometry_without_reflowing_backgrounds() {
         use crate::native_ui::{Node,Paint,Scene};
         let directory=std::env::temp_dir().join(format!("kontra-native-offset-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));

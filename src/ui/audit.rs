@@ -356,10 +356,6 @@ fn shot(part: &PartView, code: u8, to: &Path) -> anyhow::Result<()> {
 
 #[cfg(any(feature = "shots", test))]
 fn shot_scaled(part: &PartView, code: u8, to: &Path, device_scale: f64) -> anyhow::Result<()> {
-    use moose::mui::mui::vello::{
-        self,
-        vello_cpu::{Pixmap, RenderContext, Resources},
-    };
     let (width, height) = ((1180. * device_scale).round() as u16, (900. * device_scale).round() as u16);
     let p = Arc::new(SamplerParams::new());
     let i = part.instrument.as_ref().expect("a viewed part has its instrument");
@@ -384,6 +380,12 @@ fn shot_scaled(part: &PartView, code: u8, to: &Path, device_scale: f64) -> anyho
             .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     }
     let scene = ui.scene().ok_or_else(|| anyhow::anyhow!("nothing drawn"))?;
+    capture_scene(scene, (width,height), to, device_scale)
+}
+
+#[cfg(any(feature = "shots", test))]
+fn capture_scene(scene: &moose::mui::mui::scene::ResolvedScene, (width,height):(u16,u16), to:&Path, device_scale:f64) -> anyhow::Result<()> {
+    use moose::mui::mui::vello::{self, vello_cpu::{Pixmap, RenderContext, Resources}};
     let mut ctx = RenderContext::new(width, height);
     let mut resources = Resources::default();
     vello::paint(
@@ -398,6 +400,44 @@ fn shot_scaled(part: &PartView, code: u8, to: &Path, device_scale: f64) -> anyho
     let rgba: Vec<u8> = pix.take_unpremultiplied().iter().flat_map(|p| [p.r, p.g, p.b, p.a]).collect();
     moose::core::screenshot::save_png(to, &rgba, u32::from(width), u32::from(height));
     Ok(())
+}
+
+/// An opt-in actual native scene capture, never the exported classic fallback.
+/// Asset preparation remains on this headless worker, including filtered SVGs.
+#[cfg(test)]
+pub(crate) fn native_scene_shot(scene:&mut crate::native_ui::Scene, to:&Path, device_scale:f64) -> anyhow::Result<()> {
+    anyhow::ensure!([1.,2.].contains(&device_scale), "unsupported native capture scale");
+    let root=scene.snapshot()?;
+    for name in root.asset_names() {
+        anyhow::ensure!(scene.assets.entries.contains_key(&name), "Native capture asset is not prepared: {name}");
+    }
+    for (name,asset) in &scene.assets.entries {
+        asset.as_ref().map_err(|error|anyhow::anyhow!("Native capture asset {name}: {error}"))?;
+    }
+    let mut ui=theme::ui();
+    ui.set_scale(Some(device_scale));
+    ui.frame(crate::ui::native_scene::scene_tree(&root,&scene.assets).clip(),None,Input::default(),1./60.)
+        .map_err(|error|anyhow::anyhow!("Native capture layout: {error:?}"))?;
+    let rendered=ui.scene().ok_or_else(||anyhow::anyhow!("native scene not resolved"))?;
+    let size=rendered.layout.size;
+    anyhow::ensure!(size.width>0. && size.height>0. && size.width<=4096. && size.height<=4096., "invalid native capture extent");
+    let dimensions=((size.width*device_scale).ceil() as u16,(size.height*device_scale).ceil() as u16);
+    // The first paint requests exact device-size filtered rasters. Complete
+    // those through the same asset provider before saving a ready repaint.
+    for _ in 0..3 {
+        let mut context=moose::mui::mui::vello::vello_cpu::RenderContext::new(dimensions.0,dimensions.1);
+        moose::mui::mui::vello::paint(&mut moose::mui::mui::vello::Cpu {
+            ctx:&mut context, resources:&mut Default::default(), cache:&mut Default::default()
+        },rendered,moose::mui::mui::vello::kurbo::Affine::scale(device_scale))
+            .map_err(|error|anyhow::anyhow!("Native capture paint: {error:?}"))?;
+        let mut changed=false;
+        for asset in scene.assets.entries.values() {
+            changed |= asset.as_ref().map_err(|error|anyhow::anyhow!("{error}"))?.prepare_pending_rasters()
+                .map_err(|error|anyhow::anyhow!("Native capture raster: {error}"))?;
+        }
+        if !changed { return capture_scene(rendered,dimensions,to,device_scale); }
+    }
+    anyhow::bail!("Native capture assets did not settle within bounded repaint budget")
 }
 
 #[cfg(test)]
