@@ -1,6 +1,8 @@
 # Falcon runtime and UI groundwork
 
-Evidence reviewed 2026-10-02. This is an implementation boundary audit, not a compatibility claim. No Falcon runtime, audio rendering, GUI session, bank extraction or licensed content was executed.
+This document preserves the **2026-10-02 implementation boundary audit**. At that checkpoint, no Falcon runtime, audio rendering, GUI session, bank extraction or licensed content was executed. Statements below that bank scripts, module identities or runtime support were unknown describe that historical scope.
+
+See [current UVI capabilities and evidence](uvi-compatibility.md) for the subsequent native archive/program/sample implementation, offline Lua host, synthetic reference probes and privately decoded corpus validation. Those checks do not establish complete Falcon playback or GUI compatibility; the original requirements and unresolved contracts remain useful evidence below.
 
 ## Evidence and missing evidence
 

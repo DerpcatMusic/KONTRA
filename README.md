@@ -8,6 +8,33 @@ KONTRA supplies no commercial Kontakt instrument libraries. You supply your own 
 
 **Licensing status:** project-authored code is Apache-2.0. Redistribution permission for the required vendored `ni-file` parser remains unresolved, and Native Instruments previously requested removal of its upstream repository. See the [licensing and interoperability review](docs/LEGAL.md) for sources and remaining questions.
 
+## Experimental UVI interoperability
+
+The optional `uvi` feature adds local UFS2/v3 directory and member decoding,
+protected Program XML decoding, a Lua 5.1 host, multichannel sample loading,
+and offline graph rendering. These commands are development tools; UVI banks
+are not yet integrated into the plug-in browser, and full Falcon compatibility
+is not established. See the [current evidence and limits](docs/uvi-compatibility.md)
+and [observed container layout](docs/uvi-format.md).
+
+Build with `cargo build --locked --profile ci --no-default-features --features uvi`.
+Supply your own bank and the official UVI Workstation 4.0.9 x64 executable as
+`--reader`. The executable is read locally to derive format namespaces; it is
+not redistributed. For an encrypted bank with a suitable PNG resource:
+
+```sh
+kontakto uvi-key bank.ufs private-state.json --reader UVIWorkstationx64.exe
+kontakto uvi-check bank.ufs member.uvip --reader UVIWorkstationx64.exe --content-key-file private-state.json
+kontakto uvi-play bank.ufs member.uvip output.wav --reader UVIWorkstationx64.exe --content-key-file private-state.json
+```
+
+Use `--events timeline.json` instead of `--notes` for a complete controller/note/transport timeline; its schema and bounds are described in the [compatibility report](docs/uvi-compatibility.md).
+
+Recovery verifies every PNG chunk CRC before creating a new owner-only,
+bank-bound state file. Treat that file as private. Clear banks do not need it.
+Unknown graph behavior fails explicitly or appears in fidelity diagnostics;
+successful decoding alone does not establish matching playback.
+
 ## Download the latest nightly
 
 [![Windows x64](https://img.shields.io/badge/Windows-x64-0078D4?style=for-the-badge)](https://github.com/DerpcatMusic/KONTRA/releases/latest/download/KONTRA-nightly-windows-x86_64.zip)
@@ -67,9 +94,10 @@ The [compatibility implementation checklist](docs/COMPATIBILITY.md) groups the r
 | Release-event identity and timing | **Partial** | Script-transposed input notes and following-parent children retain physical ownership and live expression. Samples created in release callbacks inherit the parent's frozen expression. Following children freeze before delayed callbacks and retain that snapshot for release samples; freezing has independent command storage. Surviving attack events keep separate release-counter clocks; pedal-deferred samples retain duration at key-up. | Release-only/exhausted-voice clocks and pre-engine script delays remain under review. Libraries with pitch-indexed script state can still mix identical pitches from different articulation channels in one script instance. |
 | REAPER project migration | **Experimental** | Explicit SavedMulti mappings replace selected Kontakt instances in a copied RPP. An isolated REAPER check verified state through save/reopen and retained two tracks, MIDI and a send. | Opaque Kontakt state, parameter automation and nested containers are not translated. Other DAWs, host versions and sonic parity remain unverified. |
 | Kontakt parity | **Untested** | No compatibility guarantee is made. | A successful load or short render is not a reference comparison. |
-| Other sampler formats | **Unsupported for playback** | The development inspector reads bounded UVI UFS headers and clear UVIP XML metadata. | UFS member indexing, sample access, UVIScript, Falcon UI and DSP remain unimplemented. Other sampler formats are not playable. |
+| UVI/Falcon | **Experimental offline playback** | The optional `uvi` feature decodes observed UFS2 members and protected programs, runs Lua 5.1 scripts, and renders supported native graphs. See the [measured coverage](docs/uvi-compatibility.md). | Plugin loading, visual UVI controls, wider Falcon modules and complete sound parity remain incomplete. |
+| Other sampler formats | **Unsupported for playback** | No additional sampler runtime is implemented. | Other sampler formats are not playable. |
 
-Falcon groundwork is documented in the [format findings](docs/FALCON_FORMAT_GROUNDWORK.md) and [runtime/UI compatibility map](docs/FALCON_RUNTIME_UI_GROUNDWORK.md). Run `python3 tools/inspect_uvi.py --self-test` to check the metadata inspector; it does not make a bank playable.
+Earlier Falcon groundwork is retained in the [format findings](docs/FALCON_FORMAT_GROUNDWORK.md) and [runtime/UI compatibility map](docs/FALCON_RUNTIME_UI_GROUNDWORK.md). The [current report](docs/uvi-compatibility.md) distinguishes implemented behavior from remaining gates. Run `python3 tools/inspect_uvi.py --self-test` to check the structural inspector; that check alone does not establish playback.
 
 ### Representative patch checks
 

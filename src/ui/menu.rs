@@ -12,6 +12,7 @@ use std::path::Path;
 pub enum Target {
     /// A preset in the browser, by path.
     Preset(String),
+    Uvi(crate::library::UviSource),
     /// A library in the browser, by name.
     Library(String),
     /// The browser's add button: library folders.
@@ -65,6 +66,8 @@ pub struct Menu {
 pub enum Command {
     Open(String),
     OpenNew(String),
+    OpenUvi(crate::library::UviSource, bool),
+    FavoriteUvi(crate::library::UviSource),
     Reveal(String),
     CopyPath(String),
     Favorite(String),
@@ -297,6 +300,13 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             ]);
             items
         }
+        Target::Uvi(source) => vec![
+            act("Select UVI program", "Enter", Command::OpenUvi(source.clone(), false)),
+            act("Select for new slot", "", Command::OpenUvi(source.clone(), true)),
+            Item::Rule,
+            act(if cx.selection.uvi_favorites.contains(source) { "Remove from favorites" } else { "Add to favorites" }, "", Command::FavoriteUvi(source.clone())),
+            act("Reveal bank in folder", "", Command::Reveal(source.bank.to_string_lossy().into_owned())),
+        ],
         Target::Snapshots(slot) => {
             let Some(part) = cx.selection.parts.get(*slot).filter(|p| p.snapshot_base()) else { return Vec::new(); };
             let mut items = Vec::new();
@@ -753,6 +763,8 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
     match command {
         Command::Open(path) => cx.open(Path::new(&path)),
         Command::OpenNew(path) => cx.add(path),
+        Command::OpenUvi(source, new) => cx.open_preset(crate::library::PresetTarget::Uvi(source), new, if new { None } else { cx.state.chosen() }),
+        Command::FavoriteUvi(source) => cx.toggle_uvi_favorite(&source),
         Command::Reveal(path) => {
             if !cx.state.picker.ask(super::picker::Ask::Reveal(path.into())) {
                 cx.state.notice = "Could not start Reveal: another file operation is still running. Retry when it finishes.".into();

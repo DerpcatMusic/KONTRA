@@ -367,13 +367,19 @@ fn behind(cx: &mut Cx, slot: usize, stage: El) -> El {
 /// Footer and empty canvas share the browser's append operation. Explicit
 /// header targets still own replacement and part reordering.
 fn add_drop(ui: &mut Ui, cx: &mut Cx, id: &str) {
-    if let Some(RackDrag::Instrument(path)) = ui.dropped_on::<RackDrag>(id) {
-        cx.state.notice.clear();
-        if import::is_multi(Path::new(&path)) {
-            cx.p.shared.queue_multi(path);
-        } else {
-            cx.add(path);
+    match ui.dropped_on::<RackDrag>(id) {
+        Some(RackDrag::Uvi(source)) => {
+            cx.open_preset(crate::library::PresetTarget::Uvi(source), true, None);
         }
+        Some(RackDrag::Instrument(path)) => {
+            cx.state.notice.clear();
+            if import::is_multi(Path::new(&path)) {
+                cx.p.shared.queue_multi(path);
+            } else {
+                cx.add(path);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -383,7 +389,7 @@ fn empty(ui: &mut Ui, cx: &mut Cx, height: f64) -> El {
         cx.state.selected_none();
     }
     let over = ui.get("rack-empty").drop_target
-        && matches!(ui.dragging::<RackDrag>(), Some(RackDrag::Instrument(_)));
+        && matches!(ui.dragging::<RackDrag>(), Some(RackDrag::Instrument(_) | RackDrag::Uvi(_)));
     block(Len::Pct(100.), height)
         .when(over, |el| el.stroke(accent()).stroke_width(1))
         .named("Drop an instrument to append to the rack")
@@ -553,10 +559,12 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
         && match ui.dragging::<RackDrag>() {
             Some(RackDrag::Part(from)) => *from != slot,
             Some(RackDrag::Instrument(_)) => true,
+            Some(RackDrag::Uvi(_)) => true,
             None => false,
         };
     match ui.dropped_on::<RackDrag>(id.as_str()) {
         Some(RackDrag::Instrument(path)) => cx.replace(slot, path),
+        Some(RackDrag::Uvi(source)) => cx.open_preset(crate::library::PresetTarget::Uvi(source), false, Some(slot)),
         Some(RackDrag::Part(from)) => move_part(&mut cx.selection, from, slot),
         None => {}
     }

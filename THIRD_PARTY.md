@@ -62,6 +62,36 @@ addressed; attribution alone is insufficient. This is a provenance
 question, not a conclusion that matching format facts require GPL.
 [GPL-3.0 text, sections 5 and 6](https://github.com/maxton/nkxtract/blob/ca40dbf/COPYING).
 
+## UVI format and runtime references
+
+The optional `uvi` implementation was developed from local bank structure,
+UVI's public scripting documentation, analysis of the official UVI Workstation
+4.0.9 Windows x64 reader, and numerical tests of original authored fixtures in
+that reader. This is not a clean-room implementation. The generic state-search
+helper in `tools/uvi_recover_state.c` and Rust modules are project-authored;
+no official reader, proprietary bank, library script, namespace string,
+content key, or native-host SDK source is included in the repository.
+Reader/layout and experimental behavior are recorded in
+[the UVI compatibility report](docs/uvi-compatibility.md). The private reference
+host is a test tool; KONTRA does not build a VST2 product.
+
+Additional optional components in the 2026-10-03 UVI feature graph:
+
+| Component | Version | Declared license |
+|---|---|---|
+| mlua / mlua-sys | 0.12.1 / 0.12.0 | MIT |
+| lua-src | 551.0.2 | MIT; the feature selects vendored Lua 5.1 |
+| luajit-src | 210.7.4+c6ffc14 | MIT; present in the dependency graph, LuaJIT is not selected |
+| roxmltree | 0.21.1 | MIT OR Apache-2.0 |
+| sha2 | 0.10.9 | MIT OR Apache-2.0 |
+| base64 | 0.22.1 | MIT OR Apache-2.0 |
+| crc32fast | 1.5.2 | MIT OR Apache-2.0 |
+| symphonia-bundle-flac | 0.5.5 | MPL-2.0; unmodified registry source |
+
+These are dependency metadata observations, separate from the earlier full
+inventory below. Regenerate the distribution bundle from the current lockfile
+when distributing a build with this feature.
+
 ## Vendored and patched
 
 | Component | Where | License | Notes |

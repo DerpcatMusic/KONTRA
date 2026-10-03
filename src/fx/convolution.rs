@@ -54,6 +54,15 @@ struct Partitioned {
 }
 
 impl Partitioned {
+    #[cfg(any(feature = "uvi", test))]
+    fn buffer_bytes(&self) -> usize {
+        let spectra = self.ir.capacity() + self.segments.capacity() + self.history.capacity()
+            + self.spectrum.capacity() + self.scratch.capacity();
+        let samples = self.time.capacity() + self.input.capacity() + self.overlap.capacity();
+        spectra * std::mem::size_of::<Complex32>() + samples * std::mem::size_of::<f32>()
+            + self.silent.capacity() * std::mem::size_of::<bool>()
+    }
+
     fn new(planner: &mut RealFftPlanner<f32>, ir: &[f32], block: usize) -> Self {
         let size = 2 * block;
         let bins = block + 1;
@@ -261,6 +270,20 @@ struct Tail {
 }
 
 impl Convolver {
+    /// Retained object and buffer allocations, including IR spectra and history.
+    /// Shared FFT plans and allocator bookkeeping are excluded.
+    #[cfg(any(feature = "uvi", test))]
+    pub(crate) fn memory_bytes(&self) -> usize {
+        std::mem::size_of::<Self>() + self.head.buffer_bytes()
+            + self.scratch.capacity() * std::mem::size_of::<f32>()
+            + self.remaining.len() * std::mem::size_of::<f32>()
+            + self.tails.len() * std::mem::size_of::<Tail>()
+            + self.tails.iter().map(|tail| {
+                tail.conv.buffer_bytes()
+                    + (tail.input.capacity() + tail.output.capacity()) * std::mem::size_of::<f32>()
+            }).sum::<usize>()
+    }
+
     pub fn new(ir: &[f32], max_block: usize) -> Self {
         let block = max_block.next_power_of_two().clamp(32, 512);
         let split = (block * TAIL_FACTOR).min(ir.len());
@@ -356,6 +379,18 @@ impl Tail {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retained_memory_counts_tail_buffers_and_stays_fixed_during_processing() {
+        let mut long = Convolver::new(&vec![0.125; 24_000], 127);
+        let small = Convolver::new(&[1.], 32);
+        let bytes = long.memory_bytes();
+        assert!(bytes > 24_000 * 2 * std::mem::size_of::<Complex32>());
+        assert!(bytes > small.memory_bytes());
+        long.process(&mut [0.25; 127]);
+        long.clear();
+        assert_eq!(long.memory_bytes(), bytes);
+    }
 
     fn direct(x: &[f32], h: &[f32]) -> Vec<f32> {
         (0..x.len())

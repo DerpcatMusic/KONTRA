@@ -102,6 +102,12 @@ Eight newly accepted logical fixes advance 0.3.115 to0.3.123; closing the alread
 - Live and restored bypass reaches admitted saved pitch LFO sources, preserving paused source phase/fade and removing only the selected contribution. Wider waves, free-running clocks and live frequency remain unsupported.
 - The native VST3 adapter now accepts negative optional note-length metadata. Real exported processing passes ten authored-tone cases covering anonymous/live note IDs, independent cents-frequency checks, sample offset 16 and explicit note-off. This closes the adapter gap disclosed in 0.3.115; the reported Mac keyboard/arranger payload has not been captured, so its cause remains unconfirmed.
 - Frozen coherent core cfef7b0 passes the locked all-targets/all-features check, optimized production build, 555 library regressions (30 ignored), 89 playback regressions (four ignored), and the real exported VST3 gate. These checks establish the listed behaviors, not full sonic parity or Mac DAW crash resolution.
+### Experimental UVI interoperability
+
+- Add an optional `uvi` feature with bounded UFS2/v3 records and directory links, caller-supplied reader namespaces, verified known-plaintext content-state recovery, protected Program XML decoding, and private local extraction commands.
+- Add a separate Lua 5.1 Program host, timed musical commands, multichannel sample decoding and an offline renderer preserving UVI hierarchy, modulation and effect scope. Native primitive probes guide implementation; full instrument parity, plug-in integration and visual UVI controls remain incomplete. See `docs/uvi-compatibility.md` for measured coverage and limits.
+
+
 
 ### Verified processing and diagnostics follow-ups
 
