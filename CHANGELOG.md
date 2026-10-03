@@ -8,6 +8,20 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ## Unreleased
 
+### Fixed after 0.3.115
+
+Eight newly accepted logical fixes advance 0.3.115 to0.3.123; closing the already-counted VST3 optional-length outcome adds no duplicate count.
+
+- Source-zone group/key edits now prepare on the worker in order. Init edits are installed before the bank becomes playable; runtime completions retain exact source IDs, budgets and restore freshness. Actual Conflux captures now select different physical wavetables rather than all playing the same fallback source.
+- Held-note expression retains its original destination when MIDI channel modes or routing change, through pedals and release ownership.
+- Modern version0x90–0x92 Ladder records preserve leading Gain, cutoff, resonance and raw native flags with byte-exact roundtrip. Ladder DSP is still unsupported in this release.
+- Legacy Delay saved sync units use host tempo across all rack scopes. Independent absolute/synchronized physical caches survive binary and JSON host state and stale paired restoration; unknown saved units retain explicit diagnostics. Native fixed-ring duration limits remain separate.
+- Integer division/remainder by zero returns native zero without generating invented script faults. Bounds, unavailable MIDI context and real nonfinite-result errors remain visible.
+- Automatic crash-report delivery releases its worker permit on completion, allowing later confirmed incidents in the same host. Invalid acknowledgements and offline failures retain pending evidence.
+- Live and restored bypass reaches admitted saved pitch LFO sources, preserving paused source phase/fade and removing only the selected contribution. Wider waves, free-running clocks and live frequency remain unsupported.
+- The native VST3 adapter now accepts negative optional note-length metadata. Real exported processing passes ten authored-tone cases covering anonymous/live note IDs, independent cents-frequency checks, sample offset 16 and explicit note-off. This closes the adapter gap disclosed in 0.3.115; the reported Mac keyboard/arranger payload has not been captured, so its cause remains unconfirmed.
+- Frozen coherent core cfef7b0 passes the locked all-targets/all-features check, optimized production build, 555 library regressions (30 ignored), 89 playback regressions (four ignored), and the real exported VST3 gate. These checks establish the listed behaviors, not full sonic parity or Mac DAW crash resolution.
+
 ### Verified processing and diagnostics follow-ups
 
 - Tube and Transistor Distortion now use their checked native scalar curves without the previous invented drive compensation. Independent signed boundaries, live Drive readback, group/rack routing and zero-heap gates pass. The separately reviewed Damping/DC corrections are recorded below; whole-effect parity and corrected actual preset replay are not established.
@@ -505,9 +519,11 @@ The 14 newly accepted logical defects are source-reviewed and recorded individua
 in `release-fixes.json`; follow-up and safety fixtures do not add counts. The previous
 published 0.3.96 binaries are unchanged. These entries describe the next source cut.
 
-- Optional VST3 note-length metadata no longer rejects ordinary host notes or
-  shortens retained ownership; unused negative hints are ignored too.
-  Sources: `a357e1e`, `401d59e`.
+- The direct Rust VST3 event-admission path accepts unused optional note-length
+  metadata without shortening retained ownership, including negative hints.
+  Sources: `a357e1e`, `401d59e`. The native VST3 adapter in this 0.3.115 cut still
+  drops negative optional lengths before this path; end-to-end native delivery
+  and the reported Mac keyboard/clip silence are not established by these tests.
 - Legacy unsynchronized Delay Time uses the checked conversion across its admitted
   absolute range. Sources: `f191cc2`, fractional fixture follow-up `aaf2959`.
 - Delay writes the current input before advancing its ring clock, preserving the

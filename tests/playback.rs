@@ -1355,7 +1355,8 @@ fn rejected_loops_report_bounds_and_do_not_substitute_a_sample() {
     assert_eq!(bank.zone_skip_counts.summary(), "invalid loops: 1");
     assert_eq!(bank.zones().iter().map(|z| z.low_key).collect::<Vec<_>>(), [60, 62]);
     let issue = bank.issues.iter().find(|s| s.starts_with("invalid loop:")).unwrap();
-    for detail in ["zone ID 2", "group 0", "keys 61..=61", "sample frames 32", "zone start 0", "end offset -1", "loop Some((4, 32))"] {
+    // The rejected zone is source index1, between valid source indices0 and2.
+    for detail in ["zone ID 1", "group 0", "keys 61..=61", "sample frames 32", "zone start 0", "end offset -1", "loop Some((4, 32))"] {
         assert!(issue.contains(detail), "missing {detail}: {issue}");
     }
     let mut e = engine_with(bank);
@@ -1852,10 +1853,10 @@ fn ksp_zone_ids_follow_real_mapping_before_and_after_render_and_survive_missing_
     let (rt, errors) = load_scripts(&i, Vec::new(), 48000.0);
     assert!(errors.is_empty(), "{errors:?}");
     e.set_script(rt);
-    assert_eq!(e.script().unwrap().last_message(), "8:8");
-    for (channel, note, velocity, expected) in [(0, 60, 100, 3), (0, 60, 50, 1),
-        (1, 60, 100, 5), (0, 60, 10, -1), (0, 61, 100, -1),
-        (0, 62, 100, -1), (0, 63, 100, -1), (0, 65, 100, 6)] {
+    assert_eq!(e.script().unwrap().last_message(), "8:7");
+    for (channel, note, velocity, expected) in [(0, 60, 100, 2), (0, 60, 50, 0),
+        (1, 60, 100, 4), (0, 60, 10, -1), (0, 61, 100, -1),
+        (0, 62, 100, -1), (0, 63, 100, -1), (0, 65, 100, 5)] {
         e.panic();
         e.note_on(channel, note, velocity);
         // Before wait the MIDI event has not reached the playback host.
@@ -1863,7 +1864,7 @@ fn ksp_zone_ids_follow_real_mapping_before_and_after_render_and_survive_missing_
         // The callback resumes before queued Start commands are applied.
         let (mut left, mut right) = ([0.0; 64], [0.0; 64]);
         assert_eq!(allocations(|| e.render(&mut left, &mut right)), 0);
-        let message = format!("{expected}:8:3");
+        let message = format!("{expected}:8:2");
         assert_eq!(e.script().unwrap().last_message(), message, "queued channel={channel} note={note} velocity={velocity}");
         e.cc(channel, 1, 1);
         assert_eq!(e.script().unwrap().last_message(), message, "live channel={channel} note={note} velocity={velocity}");
@@ -1874,10 +1875,10 @@ fn ksp_zone_ids_follow_real_mapping_before_and_after_render_and_survive_missing_
     e.note_off(0, 60);
     render(&mut e, 1000);
     e.cc(0, 1, 2);
-    assert_eq!(e.script().unwrap().last_message(), "0:8:3");
+    assert_eq!(e.script().unwrap().last_message(), "0:8:2");
     e.note_on(0, 60, 110);
     render(&mut e, 64);
-    assert_eq!(e.script().unwrap().last_message(), "3:8:3");
+    assert_eq!(e.script().unwrap().last_message(), "2:8:2");
     assert!(e.script().unwrap().diagnostics().iter().any(|d| d.contains("EVENT_PAR_ZONE_ID is read-only")));
     drop(e);
     std::fs::remove_dir_all(dir).unwrap();
@@ -2054,8 +2055,9 @@ fn bypassed_native_release_script_plays_only_selected_groups_for_every_duration(
             // Generated Note work must first assign its engine voice. A child
             // following this already released parent also receives End work,
             // so its KSP event is gone even though its native sample continues.
-            assert_eq!(e.script().unwrap().last_message(), if duration < 0 { "0" } else { "2" },
-                "the selected zone has source ID2; a completed KSP event reports zero");
+            // layered() declares one source zone per group in group order.
+            assert_eq!(e.script().unwrap().last_message(), if duration < 0 { "0" } else { "1" },
+                "selected group1 has source ID1; a completed KSP event reports zero");
             let voices = e.voice_census();
             let tails: Vec<_> = voices.iter().filter(|v| v.release_trigger).collect();
             assert_eq!(tails.len(), 1, "duration={duration}, pedal={pedal}: exactly one selected manual release");
@@ -3550,7 +3552,7 @@ fn shared_filters_match_voices_filtered_alone_within_120_db() {
     };
     let band = |freq_hz, gain_db| params::EqBand { freq_hz, bandwidth_oct: 1.0, gain_db };
     let eq = |bands| Params::Eq(params::Eq { bands });
-    let low = |cutoff| Params::Filter(params::Filter { filter_type: 5, cutoff, resonance: 0.3, extra: [0.0; 3] });
+    let low = |cutoff| Params::Filter(params::Filter { filter_type: 5, cutoff, resonance: 0.3, extra: [0.0; 3], native_flag: None });
     let knob = |source, param: &str, slot| ModAssignment {
         name: String::new(),
         source,
@@ -3823,7 +3825,7 @@ fn instrument_rack_filter_eq_and_stereo_controls_change_playing_audio() {
     let effect = |slot, kind, params| Effect { slot, kind, version: 0, bypass: false, output_gain: 1.0, dry_level: 0.0, params };
     let mut i = instrument(vec![Group::default()], vec![Zone::default()]);
     i.fx.insert = Chain { slots: vec![
-        effect(0, Kind::Filter, Params::Filter(params::Filter { filter_type: 2, cutoff: 1.0, resonance: 0.0, extra: [0.0; 3] })),
+        effect(0, Kind::Filter, Params::Filter(params::Filter { filter_type: 2, cutoff: 1.0, resonance: 0.0, extra: [0.0; 3], native_flag: None })),
         effect(1, Kind::Filter, Params::Eq(params::Eq { bands: vec![params::EqBand { freq_hz: 3000.0, bandwidth_oct: 1.0, gain_db: 0.0 }] })),
         effect(2, Kind::StereoModeller, Params::StereoModeller(params::StereoModeller { spread: 0.0, pan: 0.0, pseudo_stereo: false })),
     ] };

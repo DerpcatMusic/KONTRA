@@ -86,6 +86,8 @@ pub struct Part {
     pub snapshot: String,
     /// Supported engine edits applied by authored callbacks, in last-write order.
     pub engine_state: Vec<crate::ksp::engine::NativeEdit>,
+    /// Coupled Delay Time/unit caches, appended for older positional host states.
+    pub delay_state: Vec<crate::fx::DelayState>,
 }
 impl Part {
     pub(crate) fn source(&self) -> (String, u32, String) {
@@ -102,6 +104,7 @@ impl Part {
         self.script_state.clear();
         self.ir_settings.clear();
         self.engine_state.clear();
+        self.delay_state.clear();
         self.edits = Edits::default();
     }
     /// Where the part's samples play from, given the rack's setting.
@@ -152,6 +155,14 @@ impl StateField for crate::fx::IrSlotSettings {
         serde_json::from_str(&String::read_field(cursor)?).ok()
     }
 }
+impl StateField for crate::fx::DelayState {
+    fn write_field(&self, buf: &mut Vec<u8>) {
+        serde_json::to_string(self).unwrap_or_default().write_field(buf);
+    }
+    fn read_field(cursor: &mut moose::core::custom_state::StateCursor) -> Option<Self> {
+        serde_json::from_str(&String::read_field(cursor)?).ok()
+    }
+}
 impl Default for Part {
     fn default() -> Self {
         Self {
@@ -184,6 +195,7 @@ impl Default for Part {
             view: 0,
             snapshot: String::new(),
             engine_state: Vec::new(),
+            delay_state: Vec::new(),
         }
     }
 }
@@ -462,6 +474,10 @@ pub struct Shared {
     /// IR loads requested by scripts: part, instrument generation, script epoch.
     ir_requests: ArrayQueue<(usize, u64, u64, crate::engine::IrRequest)>,
     ir_ready: ArrayQueue<(usize, u64, IrHandoff)>,
+    zone_requests: ArrayQueue<ZoneRequest>,
+    zone_ready: ArrayQueue<ZoneReady>,
+    zone_pending: Mutex<Option<ZoneRequest>>,
+    zone_chains: Mutex<Vec<ZoneChain>>,
     array_requests: ArrayQueue<(usize, u64, u64, Box<crate::ksp::ArrayJob>)>,
     array_ready: ArrayQueue<(usize, u64, u64, Box<crate::ksp::ArrayJob>)>,
     array_retired: ArrayQueue<(usize, u64, u64, Box<crate::ksp::ArrayJob>)>,
@@ -649,6 +665,7 @@ pub(crate) struct PartView {
     pub(crate) script_state: String,
     pub(crate) ir_settings: Vec<crate::fx::IrSlotSettings>,
     pub(crate) engine_state: Arc<[crate::ksp::engine::NativeEdit]>,
+    pub(crate) delay_state: Arc<[crate::fx::DelayState]>,
     /// Epoch of the runtime last handed to the audio thread.
     pub(crate) script_epoch: u64,
     /// Snapshot buffer for this slot's runtime while the loader holds it.
@@ -744,6 +761,10 @@ impl Default for Shared {
             file_selections: ArrayQueue::new(16),
             ir_requests: ArrayQueue::new(64),
             ir_ready: ArrayQueue::new(64),
+            zone_requests: ArrayQueue::new(crate::engine::zone::QUEUE),
+            zone_ready: ArrayQueue::new(64),
+            zone_pending: Mutex::default(),
+            zone_chains: Mutex::default(),
             array_requests: ArrayQueue::new(64),
             array_ready: ArrayQueue::new(64),
             array_retired: ArrayQueue::new(64),
@@ -1012,9 +1033,10 @@ enum Handoff {
     },
     /// Effects rebuilt for a new host sample rate; the bank stays.
     Fx(FxProcessor),
-    /// Scripts rebuilt from restored host state; the bank stays.
+    /// Restored scripts; synchronous zone init may also prepare new geometry.
     Script {
         script: Option<Box<Runtime>>,
+        bank: Option<Box<Bank>>,
         epoch: u64,
     },
     /// The part's samples loaded whole (RAM only): replaces its streaming
@@ -1037,6 +1059,91 @@ struct Retired {
     routes: Option<Vec<Route>>,
     plan: Option<Plan>,
     diagnostic: Option<AudioDiagnostics>,
+    zone: Option<Box<crate::engine::zone::Prepared>>,
+    zone_preload: Option<(usize,u64,u64,Box<Bank>)>,
+}
+
+type ZoneRequest = (usize,u64,u64,crate::engine::zone::Job);
+type ZoneReady = (usize,u64,u64,Box<crate::engine::zone::Prepared>);
+struct ZoneChain {
+    part: usize, generation: u64, epoch: u64,
+    context: std::sync::Weak<crate::engine::zone::Context>,
+    state: Arc<crate::engine::zone::State>,
+}
+
+/// The serialized service worker batches consecutive edits without discarding
+/// their unique completion IDs. Playback preparation never runs on audio.
+fn load_zone_maps(params: &SamplerParams) {
+    let current = |part: usize,generation: u64,epoch: u64| {
+        let view = params.shared.view.lock().unwrap();
+        view.parts.get(part).is_some_and(|v| v.script_epoch == epoch
+            && params.shared.part(part).is_some_and(|p|p.generation.load(Ordering::Acquire)==generation)
+            && v.instrument.as_ref().is_some_and(|i|crate::cache::current(&i.dependencies)))
+    };
+    let mut chains = params.shared.zone_chains.lock().unwrap();
+    chains.retain(|chain| chain.context.strong_count() != 0 && current(chain.part,chain.generation,chain.epoch));
+    while !params.shared.zone_ready.is_full() {
+        let first = params.shared.zone_pending.lock().unwrap().take().or_else(||params.shared.zone_requests.pop());
+        let Some((part,generation,epoch,job)) = first else { break };
+        if !current(part,generation,epoch) { continue; }
+        let context = Arc::downgrade(&job.context);
+        let mut jobs = vec![job];
+        while jobs.len() < crate::engine::zone::QUEUE {
+            let Some((p,g,e,next)) = params.shared.zone_requests.pop() else { break };
+            if (p,g,e)==(part,generation,epoch) && Arc::ptr_eq(&next.context,&jobs[0].context) { jobs.push(next); }
+            else { *params.shared.zone_pending.lock().unwrap() = Some((p,g,e,next)); break; }
+        }
+        let chain = chains.iter().position(|c| (c.part,c.generation,c.epoch)==(part,generation,epoch) && c.context.ptr_eq(&context));
+        let base = chain.map_or_else(||jobs[0].base.clone(),|i|chains[i].state.clone());
+        let prepared = crate::engine::zone::Prepared::build(jobs,base,&||!current(part,generation,epoch));
+        if !current(part,generation,epoch) { continue; }
+        if let Some(error) = &prepared.error {
+            let source = params.shared.view.lock().unwrap().parts[part].instrument.clone();
+            if let Some(source) = source { crate::diagnostics::resource(&source.path,"zone mapping",error); }
+        }
+        if prepared.success {
+            let state = prepared.resulting_state();
+            match chain {
+                Some(i) => chains[i].state = state,
+                None => chains.push(ZoneChain {part,generation,epoch,context,state}),
+            }
+        }
+        params.shared.zone_ready.push((part,generation,epoch,prepared)).ok().unwrap();
+    }
+}
+
+/// Installation and callback delivery are distinct: every status1 follows the
+/// snapshot swap. Limit delivery to64 IDs per block, retaining the rest.
+fn finish_zone_maps(s: &mut Dsp,p: &SamplerParams) {
+    if s.zone_completion.is_none() && !p.shared.discard.is_full() {
+        s.zone_completion = p.shared.zone_ready.pop();
+    }
+    let Some((part,generation,epoch,prepared)) = &mut s.zone_completion else { return };
+    let current = s.rack.parts.get(*part).is_some() && *epoch == s.script_epoch[*part]
+        && part_atoms(&s.shared_parts,&p.shared,*part).is_some_and(|p|p.generation.load(Ordering::Acquire)==*generation)
+        && s.installed_generation[*part] == *generation;
+    if !current {
+        if !p.shared.discard.is_full() {
+            let (_,_,_,prepared) = s.zone_completion.take().unwrap();
+            p.shared.discard.push(Retired {zone:Some(prepared),..Default::default()}).ok().unwrap();
+        }
+        return;
+    }
+    if !prepared.installed && prepared.completed == 0 {
+        if p.shared.discard.is_full() { return; }
+        prepared.success = s.rack.parts[*part].install_zone_map(prepared);
+        // Mark a failed attempt too, so it never installs after callbacks began.
+        prepared.installed = true;
+    }
+    for _ in 0..64 {
+        let Some(edit) = prepared.edits.get(prepared.completed).copied() else { break };
+        if !s.rack.parts[*part].finish_zone_edit(edit,prepared.success) { break; }
+        prepared.completed += 1;
+    }
+    if prepared.completed == prepared.edits.len() && !p.shared.discard.is_full() {
+        let (_,_,_,prepared) = s.zone_completion.take().unwrap();
+        p.shared.discard.push(Retired {zone:Some(prepared),..Default::default()}).ok().unwrap();
+    }
 }
 
 /// Array reads, writes and disposal share the serialized file-service worker.
@@ -1171,7 +1278,14 @@ fn scripts(
     Option<Box<PersistenceSnapshot>>,
     Vec<String>,
 ) {
-    let (script, errors) = crate::engine::load_scripts_with_state(i, persisted(saved, i), rate, ir_settings, engine_state);
+    scripts_with_delays(i, saved, ir_settings, engine_state, &[], rate)
+}
+
+fn scripts_with_delays(
+    i: &Instrument, saved: &str, ir_settings: &[crate::fx::IrSlotSettings],
+    engine_state: &[crate::ksp::engine::NativeEdit], delay_state: &[crate::fx::DelayState], rate: f64,
+) -> (Option<Box<Runtime>>, Option<Box<PersistenceSnapshot>>, Vec<String>) {
+    let (script, errors) = crate::engine::load_scripts_with_delay_state(i, persisted(saved, i), rate, ir_settings, engine_state, delay_state);
     // Nothing persistent: no snapshots to trade with the audio thread.
     let snapshot = script
         .as_ref()
@@ -1930,8 +2044,32 @@ impl BackgroundTask for Load {
         drain_audio_diagnostics(params);
         params.shared.flush_ready();
         load_arrays(params);
+        load_zone_maps(params);
         let mut freed = false;
-        while params.shared.discard.pop().is_some() {
+        while let Some(mut retired) = params.shared.discard.pop() {
+            if let Some((part,generation,epoch,mut bank)) = retired.zone_preload.take() {
+                let current = || {
+                    let view=params.shared.view.lock().unwrap();
+                    view.parts.get(part).is_some_and(|v|v.script_epoch==epoch
+                        && params.shared.part(part).is_some_and(|p|p.generation.load(Ordering::Acquire)==generation)
+                        && v.instrument.as_ref().is_some_and(|i|crate::cache::current(&i.dependencies)))
+                };
+                if current() {
+                    let chains=params.shared.zone_chains.lock().unwrap();
+                    let latest=chains.iter().rev().find(|c|(c.part,c.generation,c.epoch)==(part,generation,epoch)
+                        && c.context.upgrade().is_some_and(|context|bank.zone_preload_matches(&context)));
+                    let result=latest.map_or(Ok(()),|chain| {
+                        let context=chain.context.upgrade().unwrap();
+                        bank.rebase_zone_preload(&context,chain.state.clone(),&||!current())
+                    });
+                    if result.is_ok() && current() {
+                        params.shared.publish_part((part,generation,Handoff::Bank(bank)));
+                    } else if let Err(error)=result {
+                        let source=params.shared.view.lock().unwrap().parts[part].instrument.clone();
+                        if let Some(source)=source { crate::diagnostics::resource(&source.path,"zone preload",&format!("{error:#}")); }
+                    }
+                }
+            }
             freed = true;
         }
         if freed {
@@ -2046,7 +2184,7 @@ impl BackgroundTask for Load {
                     !selected_snapshot && v.attempted.as_ref() == Some(&target)
                         && v.fx_rate != 0.
                         && !i.scripts.is_empty()
-                        && (part.script_state != v.script_state || part.ir_settings != v.ir_settings || part.engine_state.as_slice() != v.engine_state.as_ref())
+                        && (part.script_state != v.script_state || part.ir_settings != v.ir_settings || part.engine_state.as_slice() != v.engine_state.as_ref() || part.delay_state.as_slice() != v.delay_state.as_ref())
                 }).map(|i| (i, atoms.generation.load(Ordering::Acquire), v.script_epoch))
             };
             if let Some((instrument, generation, previous_epoch)) = restore {
@@ -2055,11 +2193,37 @@ impl BackgroundTask for Load {
                 trace.detail("operation", "script_restore");
                 trace.stage("scripts");
                 let (script, snapshot, errors) =
-                    scripts(&instrument, &part.script_state, &part.ir_settings, &part.engine_state, params.shared.rate());
+                    scripts_with_delays(&instrument, &part.script_state, &part.ir_settings, &part.engine_state, &part.delay_state, params.shared.rate());
                 for e in &errors { trace.script_issue("initialization_failed", e, &instrument.scripts); }
                 if let Some(rt) = script.as_deref() {
                     trace.script_runtime(rt, &instrument.scripts);
                 }
+                let zone_bank=if let Some(rt)=script.as_deref().filter(|rt|rt.init_zone_edits.iter().any(|e|e.id<0)) {
+                    trace.stage("zone_init");
+                    let own=params.shared.view.lock().unwrap().parts[slot].bytes;
+                    let resident=crate::engine::resident_bytes().saturating_sub(own);
+                    let budget=crate::engine::MEMORY_LIMIT.min(crate::engine::memory_budget().saturating_sub(resident));
+                    let canceled=||atoms.generation.load(Ordering::Acquire)!=generation;
+                    trace.detail("memory_budget_bytes",budget);
+                    match Bank::load_cancelable(&instrument,budget,streaming,&rt.init_controllers,&AtomicU32::new(0),&canceled)
+                        .and_then(|mut bank|{bank.prepare_zone_init(rt.service_epoch,&rt.init_zone_edits,&canceled)?;Ok(Box::new(bank))}) {
+                        Ok(bank)=>Some(bank),
+                        Err(error)=>{
+                            trace.fail(format!("{error:#}")); let report=trace.finish("failed");
+                            let mut view=params.shared.view.lock().unwrap();
+                            let current=params.selection.read().unwrap();
+                            let v=&mut view.parts[slot];
+                            let fresh=current.parts.get(slot).is_some_and(|p|p.matches_source(&target)
+                                && p.script_state==part.script_state && p.ir_settings==part.ir_settings
+                                && p.engine_state==part.engine_state && p.delay_state==part.delay_state)
+                                && atoms.generation.load(Ordering::Acquire)==generation
+                                && v.script_epoch==previous_epoch && v.attempted.as_ref()==Some(&target)
+                                && v.instrument.as_ref().is_some_and(|i|Arc::ptr_eq(i,&instrument));
+                            if fresh {v.interface_status=format!("Zone init restore failed: {error:#}");v.load_report=Some(report);}
+                            continue;
+                        }
+                    }
+                } else {None};
                 let live = script.as_deref().map(first_script_live);
                 let pages = script_pages(script.as_deref());
                 let irs = script.as_deref().map_or(Vec::new(), |rt| rt.init_irs.clone());
@@ -2087,7 +2251,7 @@ impl BackgroundTask for Load {
                 let v = &view.parts[slot];
                 let fresh = current.parts.get(slot).is_some_and(|p| p.matches_source(&target)
                     && p.script_state == part.script_state && p.ir_settings == part.ir_settings
-                    && p.engine_state == part.engine_state)
+                    && p.engine_state == part.engine_state && p.delay_state == part.delay_state)
                     && atoms.generation.load(Ordering::Acquire) == generation
                     && v.script_epoch == previous_epoch && v.attempted.as_ref() == Some(&target)
                     && v.instrument.as_ref().is_some_and(|i| Arc::ptr_eq(i, &instrument));
@@ -2102,8 +2266,10 @@ impl BackgroundTask for Load {
                 view.parts[slot].script_state = part.script_state.clone();
                 view.parts[slot].ir_settings = part.ir_settings.clone();
                 view.parts[slot].engine_state = part.engine_state.clone().into();
+                view.parts[slot].delay_state = part.delay_state.clone().into();
                 view.parts[slot].interface_status = interface_status;
                 view.parts[slot].runtime_status.clear();
+                if let Some(bank)=zone_bank.as_deref() {view.parts[slot].bytes=bank.bytes;}
                 if let Some(fx) = fx {
                     view.parts[slot].irs = irs;
                     let _ = params.shared.publish_part((
@@ -2115,7 +2281,7 @@ impl BackgroundTask for Load {
                 let _ = params.shared.publish_part((
                     slot,
                     generation,
-                    Handoff::Script { script, epoch },
+                    Handoff::Script { script, bank:zone_bank, epoch },
                 ));
                 drop(current); drop(view);
                 let report = trace.finish("loaded");
@@ -2230,7 +2396,8 @@ impl BackgroundTask for Load {
                     let (rate, instrument, state) = (params.shared.rate(), &instrument, &part.script_state);
                     let ir_settings = &part.ir_settings;
                     let engine_state = &part.engine_state;
-                    let scripts = scope.spawn(move || scripts(instrument, state, ir_settings, engine_state, rate));
+                    let delay_state = &part.delay_state;
+                    let scripts = scope.spawn(move || scripts_with_delays(instrument, state, ir_settings, engine_state, delay_state, rate));
                     let bare = (!instrument.zones.is_empty()).then(|| Bank::load_bare_cancelable(instrument, &canceled));
                     let scripts = scripts.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
                     (scripts, bare)
@@ -2289,8 +2456,11 @@ impl BackgroundTask for Load {
                     .min(crate::engine::memory_budget().saturating_sub(resident));
                 trace.detail("memory_budget_bytes", budget);
                 let controllers = script.as_deref().map_or(&[][..], |rt| &rt.init_controllers);
-                let bank = bare.transpose()?.map(Box::new);
-                let preload = Some((budget, controllers.to_vec()));
+                let mut bank = bare.transpose()?.map(Box::new);
+                let zone_epoch=script.as_deref().map_or(0,|rt|rt.service_epoch);
+                let zone_init=script.as_deref().map_or(Vec::new(),|rt|rt.init_zone_edits.clone());
+                if let Some(bank)=bank.as_deref_mut() {bank.prepare_zone_init(zone_epoch,&zone_init,&canceled)?;}
+                let preload = Some((budget, controllers.to_vec(),zone_epoch,zone_init));
                 Ok((instrument, bank, script, snapshot, preload, art))
             })();
             if canceled() {
@@ -2361,6 +2531,7 @@ impl BackgroundTask for Load {
                     v.script_state = part.script_state.clone();
                     v.ir_settings = part.ir_settings.clone();
                     v.engine_state = part.engine_state.clone().into();
+                    v.delay_state = part.delay_state.clone().into();
                     v.active = instrument.name.clone();
                     v.bytes = bank.as_ref().map(|b| b.bytes).unwrap_or(0);
                     v.freed = 0;
@@ -2425,7 +2596,7 @@ impl BackgroundTask for Load {
                     }
                     // The preload: the full bank takes over from the bare one,
                     // playing voices carrying on (`Engine::upgrade_bank`).
-                    let Some((budget, controllers)) = preload else { continue };
+                    let Some((budget, controllers,zone_epoch,zone_init)) = preload else { continue };
                     let parent_id = params.shared.view.lock().unwrap().parts[slot].load_report.as_ref().map(|r| r["load_id"].clone());
                     let mut trace = crate::diagnostics::LoadTrace::new(&instrument.path, part.program, Some(slot));
                     trace.detail("instance_id", params.shared.instance_id);
@@ -2439,7 +2610,7 @@ impl BackgroundTask for Load {
                         &controllers,
                         &AtomicU32::new(0),
                         &canceled,
-                    );
+                    ).and_then(|mut bank| {bank.prepare_zone_init(zone_epoch,&zone_init,&canceled)?;Ok(bank)});
                     if canceled() { trace.finish("canceled"); continue; }
                     let status = match &bank {
                         Ok(bank) => {
@@ -2498,7 +2669,7 @@ impl BackgroundTask for Load {
                             &controllers,
                             &AtomicU32::new(0),
                             &canceled,
-                        );
+                        ).and_then(|mut bank| {bank.prepare_zone_init(zone_epoch,&zone_init,&canceled)?;Ok(bank)});
                         // Superseded while filling: the newer load has its own bank.
                         if canceled() {
                             trace.finish("canceled");
@@ -2548,6 +2719,7 @@ impl BackgroundTask for Load {
         }
         load_irs(params);
         load_arrays(params);
+        load_zone_maps(params);
         if params.shared.diagnostic_free.is_empty() {
             let count = params.shared.grown.load(Ordering::Acquire) as usize;
             for _ in 0..2 { let _ = params.shared.diagnostic_free.force_push(AudioDiagnostics::with_parts(count)); }
@@ -2619,6 +2791,7 @@ impl BackgroundTask for Load {
             let json = serde_json::to_string(&snapshot.script).unwrap_or_default();
             let ir_settings = snapshot.ir.clone();
             let engine_state = snapshot.native.saved();
+            let delay_state = snapshot.native.saved_delays();
             if snapshot.native.misses != snapshot.native.reported_misses {
                 crate::diagnostics::event(crate::diagnostics::LogLevel::Error, "engine", "native_state_unprepared",
                     serde_json::json!({"part":slot,"script_epoch":epoch,"count":snapshot.native.misses,"parameter":snapshot.native.last_miss}));
@@ -2628,6 +2801,7 @@ impl BackgroundTask for Load {
             let view_json = json.clone();
             let view_ir = ir_settings.clone();
             let view_native = engine_state.clone().into();
+            let view_delay = delay_state.clone().into();
             let mut view = params.shared.view.lock().unwrap();
             let v = &mut view.parts[slot];
             // A replacement can publish while this worker formats the snapshot.
@@ -2636,7 +2810,7 @@ impl BackgroundTask for Load {
                 continue;
             }
             let retired_snapshot = v.snapshot.replace(snapshot);
-            if json == v.script_state && ir_settings == v.ir_settings && engine_state.as_slice() == v.engine_state.as_ref() {
+            if json == v.script_state && ir_settings == v.ir_settings && engine_state.as_slice() == v.engine_state.as_ref() && delay_state.as_slice() == v.delay_state.as_ref() {
                 drop(view);
                 drop(retired_snapshot);
                 continue;
@@ -2650,6 +2824,7 @@ impl BackgroundTask for Load {
                 std::mem::replace(&mut v.script_state, view_json),
                 std::mem::replace(&mut v.ir_settings, view_ir),
                 std::mem::replace(&mut v.engine_state, view_native),
+                std::mem::replace(&mut v.delay_state, view_delay),
             );
             drop(view);
             drop((retired, retired_snapshot));
@@ -2661,6 +2836,7 @@ impl BackgroundTask for Load {
                     std::mem::replace(&mut p.script_state, json),
                     std::mem::replace(&mut p.ir_settings, ir_settings),
                     std::mem::replace(&mut p.engine_state, engine_state),
+                    std::mem::replace(&mut p.delay_state, delay_state),
                 ))
             } else { None };
             drop(current);
@@ -2823,6 +2999,7 @@ pub struct Dsp {
     /// a block: slot, epoch and [`Runtime::changes`] at the start, buffer, progress.
     live: Option<Lent<Box<Live>>>,
     snapshot: Option<Lent<Box<PersistenceSnapshot>>>,
+    zone_completion: Option<ZoneReady>,
     /// Per slot, epoch and changes the buffers last refreshed whole hold:
     /// while the scripts do not run they are current and need no refresh.
     live_seen: Vec<(u64, u64)>,
@@ -2851,7 +3028,7 @@ impl Default for Dsp {
     fn default() -> Self {
         Self { rack: Box::default(), until_poll: 0, audition_left: vec![0; RACK_SLOTS],
             script_epoch: vec![0; RACK_SLOTS], installed_generation: vec![0; RACK_SLOTS],
-            live: None, snapshot: None, live_seen: vec![(0, 0); RACK_SLOTS],
+            live: None, snapshot: None, zone_completion: None, live_seen: vec![(0, 0); RACK_SLOTS],
             snapshot_seen: vec![(0, 0); RACK_SLOTS], routers: (0..RACK_SLOTS).map(|_| Router::default()).collect(),
             key_channels: KeyChannels::default(), key_slots: KeySlots::default(), load: 0.0,
             align: Align::default(), until_diagnostics: 0, shared_parts: Vec::new(),
@@ -3352,17 +3529,19 @@ impl PluginLogic for Sampler {
                     fx: Some(engine.set_fx(fx)),
                     ..Retired::default()
                 },
-                Handoff::Bank(bank) if current => Retired {
-                    bank: engine.upgrade_bank(bank),
-                    ..Retired::default()
+                Handoff::Bank(bank) if current => {
+                    if engine.zone_upgrade_ready(&bank) {
+                        Retired { bank:engine.upgrade_bank(bank),..Retired::default() }
+                    } else {
+                        Retired { zone_preload:Some((slot,generation,s.script_epoch[slot],bank)),..Retired::default() }
+                    }
                 },
-                Handoff::Script { script, epoch } if current => {
+                Handoff::Script { script, bank, epoch } if current => {
                     engine.reset(rate);
                     s.script_epoch[slot] = epoch;
-                    Retired {
-                        script: engine.set_script(script),
-                        ..Retired::default()
-                    }
+                    let mut retired=Retired {script:engine.set_script(script),..Retired::default()};
+                    if let Some(bank)=bank {retired.bank=engine.set_bank(Some(bank));}
+                    retired
                 }
                 Handoff::Heads(mut heads) if current => {
                     engine.swap_heads(&mut heads);
@@ -3396,8 +3575,8 @@ impl PluginLogic for Sampler {
                     bank: Some(bank),
                     ..Retired::default()
                 },
-                Handoff::Script { script, .. } => Retired {
-                    script,
+                Handoff::Script { script, bank, .. } => Retired {
+                    script,bank,
                     ..Retired::default()
                 },
             };
@@ -3418,6 +3597,7 @@ impl PluginLogic for Sampler {
             };
             let _ = p.shared.discard.push(Retired { ir, ..Retired::default() });
         }
+        finish_zone_maps(s,p);
         while !p.shared.array_retired.is_full() {
             let Some((slot, generation, epoch, request)) = p.shared.array_ready.pop() else { break };
             let current = generation == part_atoms(&s.shared_parts, &p.shared, slot).unwrap().generation.load(Ordering::Acquire)
@@ -3693,6 +3873,11 @@ impl PluginLogic for Sampler {
             while !p.shared.array_retired.is_full() {
                 let Some(request) = engine.pop_retired_array_job() else { break };
                 p.shared.array_retired.push((part, generation, s.script_epoch[part], request)).ok().unwrap();
+                arrays_queued = true;
+            }
+            while !p.shared.zone_requests.is_full() {
+                let Some(request) = engine.pop_zone_job() else { break };
+                p.shared.zone_requests.push((part,generation,s.script_epoch[part],request)).ok().unwrap();
                 arrays_queued = true;
             }
             while !p.shared.ir_requests.is_full() {
@@ -5743,7 +5928,7 @@ end on"#,dir.display());
         dsp.until_poll = usize::MAX;
         dsp.script_epoch[0] = 1;
         dsp.rack.parts[0].set_script(Some(Box::new(old)));
-        p.shared.ready.push((0, 0, Handoff::Script { script: Some(Box::new(new)), epoch: 2 })).ok().unwrap();
+        p.shared.ready.push((0, 0, Handoff::Script { script: Some(Box::new(new)), bank:None, epoch: 2 })).ok().unwrap();
         let transport = TransportInfo::default();
         let mut outgoing = EventList::with_capacity(0);
         let none = EventList::with_capacity(0);
@@ -6071,10 +6256,26 @@ end on"#,dir.display());
     fn delayed_script_restore_rejects_replaced_source_and_newer_saved_state() {
         use crate::ksp::Value;
         use std::sync::Barrier;
+        let path=std::env::temp_dir().join(format!("kontra-zone-restore-{}.wav",std::process::id()));
+        let mut wav=hound::WavWriter::create(&path,hound::WavSpec {channels:2,sample_rate:48000,
+            bits_per_sample:32,sample_format:hound::SampleFormat::Float}).unwrap();
+        for _ in 0..2048 {wav.write_sample(0.125f32).unwrap();wav.write_sample(0.125f32).unwrap();}wav.finalize().unwrap();
+        let cache=crate::fx::DelayState {rack:crate::fx::Rack::Insert,slot:0,
+            values:[3.0,1.0,123.0,2.0],legacy:false};
+        let mut delay_bytes:Vec<u8>=[3.0f32,0.0,0.0,0.5,1.0,123.0,2.0]
+            .into_iter().flat_map(f32::to_le_bytes).collect();delay_bytes.push(0);
+        for with_zone_bank in [false,true] {
+        let init=if with_zone_bank {"set_snapshot_type(3)\nset_zone_par(0,$ZONE_PAR_GROUP,0)\nset_zone_par(0,$ZONE_PAR_LOW_KEY,60)\nset_zone_par(0,$ZONE_PAR_HIGH_KEY,60)\n"}else{""};
         let instrument = Arc::new(Instrument { path: "/virtual/restore-freshness.nki".into(),
-            scripts: vec!["on init\nmake_perfview\ndeclare ui_slider $saved(0,100)\nmake_persistent($saved)\n$saved := 1\nend on".into()],
+            groups:if with_zone_bank {vec![crate::import::Group::default()]}else{Vec::new()},
+            zones:if with_zone_bank {vec![crate::import::Zone {sample:path.clone(),..Default::default()}]}else{Vec::new()},
+            scripts: vec![format!("on init\n{init}make_perfview\ndeclare ui_slider $saved(0,100)\nmake_persistent($saved)\n$saved := 1\ndeclare ui_label $delay(1,1)\nset_text($delay,get_engine_par_disp($ENGINE_PAR_DL_TIME,-1,0,$NI_INSERT_BUS))\nend on")],
+            fx:crate::fx::ProgramFx {insert:crate::fx::Chain {slots:vec![crate::fx::Effect {
+                slot:0,kind:crate::fx::Kind::Delay,version:0,bypass:false,output_gain:1.0,dry_level:0.0,
+                params:crate::fx::params::parse(crate::fx::Kind::Delay,&delay_bytes),
+            }]},..Default::default()},
             ..Default::default() });
-        let (rt, _, errors) = scripts(&instrument, "", &[], &[], 48000.);
+        let (rt, _, errors) = scripts_with_delays(&instrument, "", &[], &[], &[cache],48000.);
         assert!(errors.is_empty(), "{errors:?}");
         let mut rt = rt.unwrap();
         let initial = serde_json::to_string(&rt.persistence()).unwrap();
@@ -6084,10 +6285,10 @@ end on"#,dir.display());
         let newer = serde_json::to_string(&rt.persistence()).unwrap();
         // The last case changes only a rack gain: it must not cancel a valid
         // restore whose source and saved script/IR/native state still match.
-        for change in 0..5 {
+        for change in 0..6 {
             let p = Arc::new(SamplerParams::new());
             let part = Part { path: instrument.path.to_string_lossy().into_owned(),
-                script_state: restoring.clone(), ..Default::default() };
+                script_state: restoring.clone(),delay_state:vec![cache], ..Default::default() };
             let streaming = part.streaming(p.selection.read().unwrap().streaming);
             p.selection.write().unwrap().parts = vec![part.clone()];
             let initial_epoch = {
@@ -6097,6 +6298,7 @@ end on"#,dir.display());
                 let v = &mut view.parts[0];
                 v.attempted = Some(part.source()); v.instrument = Some(instrument.clone());
                 v.fx_rate = 48000.; v.script_state = initial.clone();
+                v.delay_state=part.delay_state.clone().into();
                 epoch
             };
             let generation = p.shared.part(0).unwrap().generation.load(Ordering::Acquire);
@@ -6110,27 +6312,146 @@ end on"#,dir.display());
                 1 => p.selection.write().unwrap().parts[0].script_state = newer.clone(),
                 2 => { p.shared.part(0).unwrap().generation.fetch_add(1, Ordering::AcqRel); }
                 3 => p.selection.write().unwrap().parts.clear(),
+                4 => p.selection.write().unwrap().parts[0].delay_state[0]=crate::fx::DelayState {
+                    rack: crate::fx::Rack::Insert, slot: 0, values: [10.0, 1.0, 1000.0, 3.0], legacy: false,
+                },
                 _ => p.selection.write().unwrap().parts[0].gain = -6.,
             }
             gate.wait(); worker.join().unwrap();
             let mut restored = None;
             while let Some((slot, handoff_generation, handoff)) = p.shared.ready.pop() {
-                if slot == 0 && let Handoff::Script { script, epoch } = handoff { restored = Some((handoff_generation, script, epoch)); }
+                if slot == 0 && let Handoff::Script { script, bank, epoch } = handoff { restored = Some((handoff_generation, script, bank, epoch)); }
             }
             let view = p.shared.view.lock().unwrap();
             let v = &view.parts[0];
-            if change < 4 {
+            if change < 5 {
                 assert!(restored.is_none(), "stale restore cannot enter the callback queue ({change})");
                 assert_eq!(v.script_epoch, initial_epoch, "stale preparation cannot acquire a fresh epoch");
                 assert_eq!(v.script_state, initial, "stale preparation cannot replace published state");
+                assert_eq!(v.bytes,0,"stale paired bank cannot replace the published resident count");
+                assert_eq!(v.delay_state.as_ref(),&[cache],"stale preparation cannot replace published physical caches");
             } else {
-                let (handoff_generation, script, epoch) = restored.expect("unrelated gain preserves the pending restore");
+                let (handoff_generation, script, bank, epoch) = restored.expect("unrelated gain preserves the pending restore");
                 assert_eq!(handoff_generation, generation); assert_ne!(epoch, initial_epoch);
-                assert_eq!(script.unwrap().interface(0).controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(7));
+                let script=script.unwrap();
+                assert_eq!(script.interface(0).controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(7));
+                assert_eq!(script.interface(0).controls[1].properties["$CONTROL_PAR_TEXT"],Value::Text("3".into()),"paired runtime init reads its restored physical Delay state");
+                assert_eq!(script.native_state.snapshot().saved_delays(),vec![cache]);
                 assert_eq!(v.script_state, restoring);
+                assert_eq!(bank.is_some(),with_zone_bank,"prepared bank and restored runtime publish together");
+                if let Some(bank)=bank {
+                    use crate::ksp::engine::ZonePar;
+                    assert_eq!(bank.zone_par(0,ZonePar::Group),Some(0));
+                    assert_eq!(bank.zone_par(0,ZonePar::LowKey),Some(60));
+                    assert_eq!(bank.zone_par(0,ZonePar::HighKey),Some(60));
+                }
             }
             if change == 1 { assert_eq!(p.selection.read().unwrap().parts[0].script_state, newer); }
+            if change == 4 {assert_eq!(p.selection.read().unwrap().parts[0].delay_state[0].values,[10.0,1.0,1000.0,3.0],"newer host cache survives rejection of the paired restore");}
         }
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn delay_physical_caches_survive_host_binary_json_worker_restore_and_unit_switch_without_heap() {
+        use crate::fx::{Chain, Effect, Kind, Params, Rack, FxParam};
+        use crate::ksp::Value;
+        use moose::core::custom_state::State;
+        let mut bytes: Vec<u8> = [3.0f32, 0.0, 0.0, 0.5, 1.0, 123.0, 2.0]
+            .into_iter().flat_map(f32::to_le_bytes).collect(); bytes.push(0);
+        let i = Arc::new(Instrument { path: "/virtual/Delay.nki".into(), scripts: vec![r#"on init
+ declare ui_slider $go(0,2)
+ declare ui_label $read(1,1)
+ set_text($read,get_engine_par_disp($ENGINE_PAR_DL_TIME,-1,0,$NI_INSERT_BUS))
+end on
+on ui_control($go)
+ if ($go = 1)
+  set_engine_par($ENGINE_PAR_DL_TIME_UNIT,$NI_SYNC_UNIT_ABS,-1,0,$NI_INSERT_BUS)
+  set_engine_par($ENGINE_PAR_DL_TIME,823567,-1,0,$NI_INSERT_BUS)
+  set_engine_par($ENGINE_PAR_DL_TIME_UNIT,$NI_SYNC_UNIT_QUARTER,-1,0,$NI_INSERT_BUS)
+  set_engine_par($ENGINE_PAR_DL_TIME,818182,-1,0,$NI_INSERT_BUS)
+ else
+  set_engine_par($ENGINE_PAR_DL_TIME_UNIT,$NI_SYNC_UNIT_ABS,-1,0,$NI_INSERT_BUS)
+  set_text($read,get_engine_par_disp($ENGINE_PAR_DL_TIME,-1,0,$NI_INSERT_BUS))
+ end if
+end on"#.into()], fx: crate::fx::ProgramFx { insert: Chain { slots: vec![Effect {
+            slot: 0, kind: Kind::Delay, version: 0, bypass: false, output_gain: 1.0,
+            dry_level: 0.0, params: crate::fx::params::parse(Kind::Delay, &bytes),
+        }] }, ..Default::default() }, ..Default::default() });
+        let (rt, snapshot, errors) = scripts_with_delays(&i, "", &[], &[], &[], 48000.0);
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut snapshot = snapshot.unwrap();
+        let mut e = Engine::default();
+        e.set_bank(Some(Box::new(Bank::from_samples(Vec::new(), Vec::new(), Vec::new()).unwrap())));
+        e.set_fx(crate::engine::effects(&i, rt.as_deref(), 48000.0)); e.set_script(rt);
+        let mut l=[0.0;128]; let mut r=[0.0;128];
+        assert_eq!(allocations(|| {
+            e.ui_control(0,0,1); e.render(&mut l,&mut r);
+            while !e.script().unwrap().native_state.refresh(&mut snapshot.native,1) {}
+        }),0);
+        assert!(snapshot.native.changed);
+        let delays=snapshot.native.saved_delays();
+        assert_eq!(delays.len(),1,"only the successfully changed real slot is saved");
+        assert!((delays[0].values[2]-1000.0).abs()<0.01);
+        assert_eq!(delays[0].values[0],10.0);
+        let p=SamplerParams::new();
+        let part=Part { path:i.path.to_string_lossy().into_owned(), ..Default::default() };
+        p.selection.write().unwrap().parts=vec![part.clone()];
+        {
+            let mut view=p.shared.view.lock().unwrap(); let v=&mut view.parts[0];
+            v.instrument=Some(i.clone()); v.fx_rate=48000.0; v.script_epoch=1;
+            v.attempted=Some(part.source());
+        }
+        p.shared.snapshots.push((0,1,snapshot,true)).ok().unwrap(); Load.run(&p);
+        let saved=p.selection.read().unwrap().parts[0].clone();
+        assert_eq!(saved.delay_state,delays,"real snapshot worker publishes physical state");
+        let binary=State::serialize(&saved);
+        let read=Part::deserialize(&binary).unwrap();
+        assert!(read==saved,"host binary keeps appended physical state");
+        let count=u32::from_le_bytes(binary[4..8].try_into().unwrap());
+        let mut at=8; let mut older=binary[..8].to_vec();
+        let mut positional=(count-1).to_le_bytes().to_vec();
+        for _ in 0..count-1 {
+            let len=u32::from_le_bytes(binary[at+4..at+8].try_into().unwrap()) as usize;
+            older.extend(&binary[at..at+8+len]); positional.extend(&binary[at+4..at+8+len]); at+=8+len;
+        }
+        older[4..8].copy_from_slice(&(count-1).to_le_bytes());
+        let mut old_expected=saved.clone(); old_expected.delay_state.clear();
+        assert!(Part::deserialize(&older)==Some(old_expected.clone()),"older keyed state defaults new caches");
+        assert!(Part::deserialize(&positional)==Some(old_expected),"older positional state retains prior fields");
+        let saved:Part=serde_json::from_str(&serde_json::to_string(&read).unwrap()).unwrap();
+        let (rt,_,errors)=scripts_with_delays(&i,&saved.script_state,&saved.ir_settings,&saved.engine_state,&saved.delay_state,48000.0);
+        assert!(errors.is_empty(),"{errors:?}");
+        let mut restored=Engine::default();
+        restored.set_bank(Some(Box::new(Bank::from_samples(Vec::new(),Vec::new(),Vec::new()).unwrap())));
+        restored.set_fx(crate::engine::effects(&i,rt.as_deref(),48000.0)); restored.set_script(rt);
+        assert_eq!(restored.script().unwrap().interface(0).controls[1].properties["$CONTROL_PAR_TEXT"],Value::Text("10".into()),"init reads restored synchronized state");
+        assert_eq!(allocations(|| {
+            restored.ui_control(0,0,2); restored.render(&mut l,&mut r);
+        }),0);
+        assert_eq!(restored.script().unwrap().interface(0).controls[1].properties["$CONTROL_PAR_TEXT"],Value::Text("1000.0".into()));
+        let time=FxParam::Field(Kind::Delay,0);
+        assert!((restored.fx().param(Rack::Insert,0,time).unwrap()-823567.0/1e6).abs()<1e-6);
+        // Rate/effect rebuilds use the same retained physical state, preserving
+        // caches more recently changed than the last worker snapshot.
+        let rebuilt=crate::engine::effects(&i,restored.script(),48000.0);
+        let mut retired=None;
+        assert_eq!(allocations(|| { retired=Some(restored.set_fx(rebuilt)); }),0);
+        drop(retired);
+        assert!((restored.fx().param(Rack::Insert,0,time).unwrap()-823567.0/1e6).abs()<1e-6);
+        let legacy=serde_json::from_str::<Part>("{}").unwrap(); assert!(legacy.delay_state.is_empty());
+        let (legacy_rt,_,errors)=scripts(&i,"",&[],&[],48000.0);
+        assert!(errors.is_empty()); assert!(legacy_rt.unwrap().native_state.snapshot().saved_delays().is_empty());
+        let mut selected=saved.clone(); selected.select_snapshot("new.nksn".into());
+        assert!(selected.delay_state.is_empty());
+        let mut wrong=saved.delay_state[0]; wrong.slot=7;
+        let (wrong_rt,_,errors)=scripts_with_delays(&i,"",&[],&[],&[wrong],48000.0);
+        assert_eq!(errors.len(),1); assert!(wrong_rt.unwrap().native_state.snapshot().saved_delays().is_empty());
+        let mut other=Instrument { path:i.path.clone(), scripts:i.scripts.clone(), ..Default::default() };
+        other.fx.insert.slots.push(Effect { slot:0,kind:Kind::Gainer,version:0,bypass:false,output_gain:1.0,dry_level:0.0,params:Params::Gainer(crate::fx::params::Gainer{gain:1.0}) });
+        let (wrong_rt,_,errors)=scripts_with_delays(&other,"",&[],&[],&saved.delay_state,48000.0);
+        assert_eq!(errors.len(),1); assert!(wrong_rt.unwrap().native_state.snapshot().saved_delays().is_empty());
     }
 
     #[test]
@@ -6390,6 +6711,213 @@ end on"#.into()], ..Default::default() };
         assert_eq!((restored.values[2] * 1e6).round() as i32, 1000000);
         assert_eq!((restored.values[0] * 1e6).round() as i32, 783203);
         println!("Size and Distance restored from DAW/multi state at 44100 Hz");
+    }
+
+    #[test]
+    fn zone_remaps_install_real_playback_before_async_resume_and_reject_stale_jobs_without_heap() {
+        use crate::{audio::Sample, import::{Group, Zone, Wavetable}, ksp::engine::ZonePar};
+        let groups = vec![Group { source_mode: Some(9), wavetable: Some(Wavetable::default()), ..Group::default() }, Group::default()];
+        let path=std::env::temp_dir().join(format!("kontra-zone-remap-{}.wav",std::process::id()));
+        let zones = vec![Zone {sample:path.clone(),group:1,low_key:55,high_key:55,..Zone::default()},
+            Zone {sample:path.clone(),group:1,low_key:59,high_key:59,..Zone::default()}];
+        let frames: Vec<_> = (0..4096).map(|i|[(std::f32::consts::TAU*(i%2048) as f32/2048.).sin()*0.125;2]).collect();
+        let mut wav=Vec::new();
+        wav.extend_from_slice(b"RIFF");wav.extend_from_slice(&(36u32+frames.len() as u32*8).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&3u16.to_le_bytes());wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&48000u32.to_le_bytes());wav.extend_from_slice(&384000u32.to_le_bytes());
+        wav.extend_from_slice(&8u16.to_le_bytes());wav.extend_from_slice(&32u16.to_le_bytes());
+        wav.extend_from_slice(b"data");wav.extend_from_slice(&(frames.len() as u32*8).to_le_bytes());
+        for frame in &frames {for value in frame {wav.extend_from_slice(&value.to_le_bytes());}}
+        std::fs::write(&path,wav).unwrap();
+        let proof=std::env::var_os("KONTRA_ZONE_PROOF_DIR").map(std::path::PathBuf::from);
+        if let Some(dir)=&proof {std::fs::create_dir_all(dir).unwrap();std::fs::copy(&path,dir.join("authored-source.wav")).unwrap();}
+        let save=|name:&str,l:&[f32],r:&[f32]| {
+            if let Some(dir)=&proof {
+                let mut out=hound::WavWriter::create(dir.join(name),hound::WavSpec {channels:2,sample_rate:48000,bits_per_sample:32,sample_format:hound::SampleFormat::Float}).unwrap();
+                for (&l,&r) in l.iter().zip(r) {out.write_sample(l).unwrap();out.write_sample(r).unwrap();}out.finalize().unwrap();
+            }
+        };
+        let bank = |zones: Vec<Zone>| Bank::from_samples(groups.clone(),zones,
+            vec![(path.clone(),Sample {rate:48000,frames:frames.clone()})]).unwrap();
+        let script = r#"on init
+set_snapshot_type(3)
+declare ui_switch $select
+declare ui_label $status(1,1)
+declare %jobs[3]
+declare $done
+declare $resumed
+declare $success
+make_persistent($done)
+make_persistent($resumed)
+make_persistent($success)
+end on
+on ui_control($select)
+%jobs[0] := set_zone_par(1,$ZONE_PAR_GROUP,0)
+%jobs[1] := set_zone_par(1,$ZONE_PAR_LOW_KEY,60)
+%jobs[2] := set_zone_par(1,$ZONE_PAR_HIGH_KEY,60)
+set_text($status,"pending")
+wait_async(%jobs[0])
+wait_async(%jobs[1])
+wait_async(%jobs[2])
+inc($resumed)
+set_text($status,get_zone_par(1,$ZONE_PAR_GROUP) & ":" & get_zone_par(1,$ZONE_PAR_LOW_KEY) & ":" & get_zone_par(1,$ZONE_PAR_HIGH_KEY))
+end on
+on async_complete
+inc($done)
+$success := $success+$NI_ASYNC_EXIT_STATUS
+end on"#;
+        let i = Instrument { groups:groups.clone(),zones:zones.clone(),scripts:vec![script.into()],..Instrument::default() };
+        let (rt,errors) = crate::engine::load_scripts(&i,Vec::new(),48000.);
+        assert!(errors.is_empty(),"{errors:?}");
+        let p = SamplerParams::default();
+        let mut s = Dsp::default();
+        s.script_epoch[0]=7;
+        s.installed_generation[0]=0;
+        { let mut v=p.shared.view.lock().unwrap();v.parts[0].instrument=Some(Arc::new(i));v.parts[0].script_epoch=7; }
+        let source=p.shared.view.lock().unwrap().parts[0].instrument.clone().unwrap();
+        s.rack.parts[0].set_bank(Some(Box::new(Bank::load(&source).unwrap())));
+        s.rack.parts[0].set_script(rt);
+        let mut old_reference=Engine::default();old_reference.set_bank(Some(Box::new(bank(zones.clone()))));
+        s.rack.parts[0].note_on(0,59,100);old_reference.note_on(0,59,100);
+        s.rack.parts[0].render(&mut [0.;128],&mut [0.;128]);old_reference.render(&mut [0.;128],&mut [0.;128]);
+        let scalar=|e:&Engine,name:&str|e.script().unwrap().persistence()[0][name].clone();
+        assert_eq!(allocations(||s.rack.parts[0].ui_control(0,0,1)),0);
+        assert_eq!(scalar(&s.rack.parts[0],"$resumed"),crate::ksp::Value::Int(0));
+        assert_eq!(s.rack.parts[0].bank().unwrap().zone_par(1,ZonePar::Group),Some(1));
+        assert_eq!(allocations(|| {
+            while let Some(job)=s.rack.parts[0].pop_zone_job() { p.shared.zone_requests.push((0,0,7,job)).ok().unwrap(); }
+        }),0);
+        assert_eq!(p.shared.zone_requests.len(),3);
+        let mut ram_fill=Box::new(Bank::load(&source).unwrap());
+        assert!(!s.rack.parts[0].zone_upgrade_ready(&ram_fill),"pending writes postpone a baseline RAM fill");
+        load_zone_maps(&p); // real serialized preparation, outside the audio allocation gate
+        assert_eq!(scalar(&s.rack.parts[0],"$done"),crate::ksp::Value::Int(0),"preparation alone cannot complete IDs");
+        assert_eq!(allocations(||finish_zone_maps(&mut s,&p)),0);
+        let e=&s.rack.parts[0];
+        assert_eq!(scalar(e,"$done"),crate::ksp::Value::Int(3));
+        assert_eq!(scalar(e,"$success"),crate::ksp::Value::Int(3));
+        assert_eq!(scalar(e,"$resumed"),crate::ksp::Value::Int(1));
+        assert_eq!(e.script().unwrap().interface(0).controls[1].properties["$CONTROL_PAR_TEXT"],crate::ksp::Value::Text("0:60:60".into()));
+        for (par,value) in [(ZonePar::Group,0),(ZonePar::LowKey,60),(ZonePar::HighKey,60)] {assert_eq!(e.bank().unwrap().zone_par(1,par),Some(value));}
+        assert!(e.script().unwrap().diagnostics().is_empty(),"{:?}",e.script().unwrap().diagnostics());
+        // Independent reference: old sampler keeps playing; a separately
+        // authored WT mapping contributes the new oscillator at MIDI60.
+        let mut mapped=zones.clone();mapped[1].group=0;mapped[1].low_key=60;mapped[1].high_key=60;
+        let mut new_reference=Engine::default();new_reference.set_bank(Some(Box::new(bank(mapped))));
+        let (mut al,mut ar,mut oldl,mut oldr,mut newl,mut newr)=([0.;2048],[0.;2048],[0.;2048],[0.;2048],[0.;2048],[0.;2048]);
+        assert_eq!(allocations(|| {
+            s.rack.parts[0].note_on(0,60,100);new_reference.note_on(0,60,100);
+            s.rack.parts[0].render(&mut al,&mut ar);old_reference.render(&mut oldl,&mut oldr);new_reference.render(&mut newl,&mut newr);
+        }),0);
+        assert!(newl.iter().any(|v|v.abs()>0.01),"remapped WT really produces PCM");
+        assert!(al.iter().zip(oldl.iter().zip(&newl)).chain(ar.iter().zip(oldr.iter().zip(&newr))).all(|(a,(old,new))|(a-old-new).abs()<1e-5),"new WT mapping plus untouched old sampler voice matches independent reference");
+        assert!(s.rack.parts[0].voice_census().iter().any(|v|v.group==0 && v.wavetable.is_some()));
+        save("remapped-actual.wav",&al,&ar);save("old-sampler-reference.wav",&oldl,&oldr);save("new-wavetable-reference.wav",&newl,&newr);
+        let expected_l:Vec<_>=oldl.iter().zip(&newl).map(|(a,b)|a+b).collect();let expected_r:Vec<_>=oldr.iter().zip(&newr).map(|(a,b)|a+b).collect();
+        save("remapped-independent-reference.wav",&expected_l,&expected_r);
+        println!("mapped readback=0:60:60, waits=3, successful IDs=3; old sampler + new WT PCM matches independent sum");
+        // A RAM fill built from original source mappings must be rebased,
+        // retaining both mapped keys and the already playing WT window.
+        { let chains=p.shared.zone_chains.lock().unwrap();let chain=chains.last().unwrap();
+          ram_fill.rebase_zone_preload(&chain.context.upgrade().unwrap(),chain.state.clone(),&||false).unwrap(); }
+        assert!(s.rack.parts[0].zone_upgrade_ready(&ram_fill));
+        let mut old_bank=None;
+        assert_eq!(allocations(|| {
+            old_bank=s.rack.parts[0].upgrade_bank(ram_fill);
+            s.rack.parts[0].render(&mut al,&mut ar);old_reference.render(&mut oldl,&mut oldr);new_reference.render(&mut newl,&mut newr);
+        }),0);
+        assert!(old_bank.is_some());drop(old_bank);
+        assert_eq!(s.rack.parts[0].bank().unwrap().zone_par(1,ZonePar::LowKey),Some(60));
+        assert!(al.iter().zip(oldl.iter().zip(&newl)).chain(ar.iter().zip(oldr.iter().zip(&newr))).all(|(a,(old,new))|(a-old-new).abs()<1e-5),"RAM fill retains remapped playback and active voice phase");
+        save("upgraded-actual.wav",&al,&ar);
+        let expected_l:Vec<_>=oldl.iter().zip(&newl).map(|(a,b)|a+b).collect();let expected_r:Vec<_>=oldr.iter().zip(&newr).map(|(a,b)|a+b).collect();save("upgraded-independent-reference.wav",&expected_l,&expected_r);
+        // Also prepare a real zero-head sampler bank into a complete resident
+        // WT table: the file decoder, not a synthetic silence fallback, runs.
+        let bare=Bank::load_bare(&source).unwrap();
+        let jobs=[(ZonePar::Group,0),(ZonePar::LowKey,60),(ZonePar::HighKey,60)].into_iter().enumerate().map(|(id,(par,value))|
+            bare.zone_job(crate::ksp::engine::ZoneEdit {zone:1,par,value,slot:0,id:id as i32}).unwrap()).collect::<Vec<_>>();
+        let base=jobs[0].base.clone();let mut prepared=crate::engine::zone::Prepared::build(jobs,base,&||false);
+        assert!(prepared.success,"{:?}",prepared.error);
+        let mut bare=bare;assert!(bare.install_zone_map(&mut prepared));
+        let mut bare_play=Engine::default();bare_play.set_bank(Some(Box::new(bare)));
+        let mut fresh_reference=Engine::default();let mut mapped=zones.clone();mapped[1].group=0;mapped[1].low_key=60;mapped[1].high_key=60;
+        fresh_reference.set_bank(Some(Box::new(bank(mapped))));
+        assert_eq!(allocations(|| {bare_play.note_on(0,60,100);fresh_reference.note_on(0,60,100);
+            bare_play.render(&mut al,&mut ar);fresh_reference.render(&mut newl,&mut newr);}),0);
+        assert!(al.iter().zip(&newl).chain(ar.iter().zip(&newr)).all(|(a,b)|(a-b).abs()<1e-5));
+        save("zero-head-wavetable-actual.wav",&al,&ar);save("zero-head-independent-reference.wav",&newl,&newr);
+        // Sustain belongs to the note's channel for both source families.
+        let mut mapped=zones.clone();mapped[1].group=0;mapped[1].low_key=60;mapped[1].high_key=60;
+        let mut channels=Engine::default();channels.set_bank(Some(Box::new(bank(mapped))));
+        assert_eq!(allocations(|| {
+            channels.note_on(1,60,100);channels.note_on(2,55,100);
+            channels.cc(1,64,127);channels.cc(2,64,127);
+            channels.note_off(1,60);channels.note_off(2,55);
+            channels.render(&mut [0.;32],&mut [0.;32]);
+        }),0);
+        let voices=channels.voice_census();assert_eq!(voices.len(),2);assert!(voices.iter().all(|v|!v.released));
+        assert!(voices.iter().any(|v|v.channel==1 && v.group==0 && v.wavetable.is_some()));
+        assert!(voices.iter().any(|v|v.channel==2 && v.group==1 && v.wavetable.is_none()));
+        assert_eq!(allocations(|| {channels.cc(1,64,0);channels.render(&mut [0.;32],&mut [0.;32]);}),0);
+        let voices=channels.voice_census();assert!(voices.iter().any(|v|v.channel==1 && v.released));assert!(voices.iter().any(|v|v.channel==2 && !v.released));
+        assert_eq!(allocations(|| {channels.cc(2,64,0);channels.render(&mut [0.;32],&mut [0.;32]);}),0);
+        assert!(channels.voice_census().iter().all(|v|v.released));
+        println!("normal + WT channel ownership/sustain isolation: PASS; all audio allocation gates=0");
+        // A new source bank may share dimensions, but an old prepared job
+        // must not edit it or claim successful completion.
+        while p.shared.discard.pop().is_some() {}
+        assert_eq!(allocations(||s.rack.parts[0].ui_control(0,0,0)),0);
+        while let Some(job)=s.rack.parts[0].pop_zone_job() {p.shared.zone_requests.push((0,0,7,job)).ok().unwrap();}
+        load_zone_maps(&p);
+        let replacement=Box::new(bank(zones.clone()));
+        let mut retired=None;
+        assert_eq!(allocations(|| {retired=s.rack.parts[0].set_bank(Some(replacement));finish_zone_maps(&mut s,&p);}),0);
+        assert_eq!(s.rack.parts[0].bank().unwrap().zone_par(1,ZonePar::Group),Some(1));
+        assert_eq!(scalar(&s.rack.parts[0],"$done"),crate::ksp::Value::Int(6));
+        assert_eq!(scalar(&s.rack.parts[0],"$success"),crate::ksp::Value::Int(3),"stale source completions fail");
+        drop(retired);
+        // Runtime epoch replacement suppresses delivery entirely.
+        while p.shared.discard.pop().is_some() {}
+        s.rack.parts[0].ui_control(0,0,1);
+        while let Some(job)=s.rack.parts[0].pop_zone_job(){p.shared.zone_requests.push((0,0,7,job)).ok().unwrap();}
+        load_zone_maps(&p);
+        s.script_epoch[0]=8;
+        assert_eq!(allocations(||finish_zone_maps(&mut s,&p)),0);
+        assert_eq!(scalar(&s.rack.parts[0],"$done"),crate::ksp::Value::Int(6));
+        assert_eq!(s.rack.parts[0].bank().unwrap().zone_par(1,ZonePar::Group),Some(1));
+        // Offline hosts and the Part script-before-bank install order use
+        // the same preparation boundary; init is synchronous and returns -1.
+        let init_source=Instrument {groups:groups.clone(),zones:zones.clone(),scripts:vec![r#"on init
+set_snapshot_type(3)
+declare ui_label $status(1,1)
+declare %jobs[3]
+declare $done
+make_persistent($done)
+%jobs[0] := set_zone_par(1,$ZONE_PAR_GROUP,0)
+%jobs[1] := set_zone_par(1,$ZONE_PAR_LOW_KEY,60)
+%jobs[2] := set_zone_par(1,$ZONE_PAR_HIGH_KEY,60)
+set_text($status,"pending")
+wait_async(%jobs[0])
+wait_async(%jobs[1])
+wait_async(%jobs[2])
+set_text($status,get_zone_par(1,$ZONE_PAR_GROUP) & ":" & get_zone_par(1,$ZONE_PAR_LOW_KEY) & ":" & get_zone_par(1,$ZONE_PAR_HIGH_KEY) & ":" & %jobs[0] & ":" & %jobs[1] & ":" & %jobs[2])
+end on
+on async_complete
+inc($done)
+end on"#.into()],..Instrument::default()};
+        let (rt,errors)=crate::engine::load_scripts(&init_source,Vec::new(),48000.);
+        assert!(errors.is_empty(),"{errors:?}");
+        let mut initial=Bank::load(&init_source).unwrap();initial.apply_script_zone_init(rt.as_deref().unwrap()).unwrap();
+        assert_eq!(initial.zone_par(1,ZonePar::Group),Some(0));
+        let mut offline=Engine::default();offline.set_script(rt);
+        let initial=Box::new(initial);
+        assert_eq!(allocations(|| {offline.set_bank(Some(initial));}),0);
+        assert!(!offline.service_zone_edits().unwrap(),"synchronous init did not enqueue live async work");
+        assert_eq!(offline.script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_TEXT"],crate::ksp::Value::Text("0:60:60:-1:-1:-1".into()));
+        assert_eq!(scalar(&offline,"$done"),crate::ksp::Value::Int(0),"init has no async_complete callbacks");
+        assert!(offline.script().unwrap().diagnostics().is_empty(),"{:?}",offline.script().unwrap().diagnostics());
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

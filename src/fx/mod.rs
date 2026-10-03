@@ -61,6 +61,33 @@ pub struct IrSlotSettings {
     pub file: Option<std::path::PathBuf>,
 }
 
+/// Coupled physical Time state of one legacy Delay slot. Final normalized
+/// parameter values cannot represent both caches after several unit switches.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DelayState {
+    pub rack: Rack,
+    pub slot: u8,
+    /// Current Time, beat multiplier, absolute cache and synchronized cache.
+    pub values: [f32; 4],
+    pub legacy: bool,
+}
+
+impl DelayState {
+    pub(crate) fn from_fields(rack: Rack, slot: u8, f: &blocks::Fields) -> Self {
+        Self { rack, slot, values: [f[0], f[4], f[5], f[6]], legacy: f[7] != 0.0 }
+    }
+    pub(crate) fn apply(&self, f: &mut blocks::Fields) -> bool {
+        let [time, unit, absolute, count] = self.values;
+        if self.slot >= 8 || matches!(self.rack, Rack::Bus(b) if b >= 16)
+            || !self.values.iter().all(|v| v.is_finite()) || time < 0.0
+            || !(unit == -1.0 || unit > 0.0) || !(0.0..=2900.0).contains(&absolute) || count < 0.0 {
+            return false;
+        }
+        (f[0], f[4], f[5], f[6], f[7]) = (time, unit, absolute, count, f32::from(self.legacy));
+        true
+    }
+}
+
 impl PartialEq for ScriptIr {
     fn eq(&self, o: &Self) -> bool {
         (self.rack, self.slot) == (o.rack, o.slot)
@@ -147,7 +174,7 @@ impl Effect {
             bypass: state.bypass,
             output_gain: state.output_gain,
             dry_level: state.dry_level,
-            params: params::parse(kind, &object.public_data),
+            params: params::parse_versioned(kind, object.version, &object.public_data),
         })
     }
 
@@ -270,7 +297,7 @@ impl ProgramFx {
                 *levels.sends.get(n as usize)?
             }
             (FxParam::Field(kind, n), params) if kind == fx.kind => {
-                blocks::normalized(kind, n, *blocks::fields(params)?.get(n as usize)?)
+                blocks::normalized_field(kind, n, &blocks::fields(params)?, 120.0)?
             }
             _ => return None,
         })
@@ -345,6 +372,46 @@ impl ProgramFx {
             Rack::Main => &mut self.main,
             Rack::Bus(b) => &mut self.buses.iter_mut().find(|bus| bus.index == b as usize)?.chain,
         })
+    }
+
+    pub(crate) fn delay_fields(&self, rack: Rack, slot: u8) -> Option<blocks::Fields> {
+        let chain = match rack {
+            Rack::Insert => &self.insert, Rack::Send => &self.send, Rack::Main => &self.main,
+            Rack::Bus(b) => &self.buses.iter().find(|bus| bus.index == b as usize)?.chain,
+        };
+        let fx = chain.slots.iter().find(|fx| fx.slot == slot as usize && fx.kind == Kind::Delay)?;
+        blocks::fields(&fx.params)
+    }
+
+    pub(crate) fn restore_delay(&mut self, saved: &DelayState) -> bool {
+        let Some(fx) = self.chain_mut(saved.rack).and_then(|c| c.slots.iter_mut()
+            .find(|fx| fx.slot == saved.slot as usize && fx.kind == Kind::Delay)) else { return false };
+        let Some(mut fields) = blocks::fields(&fx.params) else { return false };
+        if !saved.apply(&mut fields) { return false }
+        let Params::Fields(list) = &mut fx.params else { return false };
+        if list.len() < 8 { return false }
+        for n in [0, 4, 5, 6, 7] {
+            list[n].value = if n == 7 { params::Value::Flag(fields[n] != 0.0) }
+                else { params::Value::Number(fields[n]) };
+        }
+        true
+    }
+
+    /// Init updates saved fields without constructing an audio delay line.
+    pub(crate) fn set_delay_field(&mut self, rack: Rack, slot: u8, field: u8, value: f32) -> bool {
+        let Some(fx) = self.chain_mut(rack).and_then(|c| c.slots.iter_mut()
+            .find(|fx| fx.slot == slot as usize && fx.kind == Kind::Delay)) else { return false };
+        let Some(mut fields) = blocks::fields(&fx.params) else { return false };
+        if !blocks::set_delay_field(&mut fields, field, value, 120.0) { return false }
+        let Params::Fields(list) = &mut fx.params else { return false };
+        if list.len() < 8 { return false }
+        for (field, value) in list.iter_mut().zip(fields) {
+            field.value = match field.value {
+                params::Value::Flag(_) => params::Value::Flag(value != 0.0),
+                _ => params::Value::Number(value),
+            };
+        }
+        true
     }
 
     /// The convolution slot at `rack`/`slot`, if there is one.
@@ -480,6 +547,10 @@ impl ProgramFx {
             }
             if fx.kind == Kind::Distortion {
                 out.push(format!("{at}: Damping parameter smoothing is not applied"));
+            }
+            if fx.kind == Kind::Delay && blocks::fields(&fx.params).is_some_and(|f|
+                f[4] > 0.0 && blocks::normalized_field(Kind::Delay, 4, &f, 120.0).is_none()) {
+                out.push(format!("{at}: saved synchronized beat multiplier is retained, but numeric Time Unit readback is unsupported"));
             }
             if !fx.is_implemented() {
                 out.push(format!(

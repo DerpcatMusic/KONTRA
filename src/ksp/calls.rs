@@ -3,7 +3,7 @@
 
 use super::builtins::{self as b, Builtin, event_par as par};
 use super::compile::{Callback, Ty, VarId};
-use super::engine::{EnginePar, Fade, GroupMask, VoicePar};
+use super::engine::{EnginePar, Fade, GroupMask, VoicePar, ZonePar, ZoneEdit};
 use super::runtime::{read_value, refresh_value, write_value_rt};
 use super::ui::{MenuItem, Prop};
 use super::arrays::{read_path, nka, save_nka};
@@ -942,6 +942,54 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             if id.is_none() { m.env.note("get_zone_id: zone index out of range"); }
             push_int(m, id.unwrap_or(-1))
         }
+        GetZonePar | SetZonePar => {
+            let (zone, parameter, value) = if f == GetZonePar {
+                let [zone, parameter] = ints(m); (zone, parameter, 0)
+            } else {
+                let [zone, parameter, value] = ints(m); (zone, parameter, value)
+            };
+            let par = match m.prog.symbol_name(parameter) {
+                Some("$ZONE_PAR_GROUP") => Some(ZonePar::Group),
+                Some("$ZONE_PAR_LOW_KEY") => Some(ZonePar::LowKey),
+                Some("$ZONE_PAR_HIGH_KEY") => Some(ZonePar::HighKey),
+                _ => None,
+            };
+            let Some(par) = par else {
+                m.env.note("zone parameter is not implemented; mapping unchanged");
+                let result = if f == SetZonePar { async_done(m, 0) } else { 0 };
+                return push_int(m, result);
+            };
+            if f == GetZonePar {
+                let value = m.engine.zone_par(zone, par);
+                if value.is_none() { m.env.note("get_zone_par: invalid source zone ID"); }
+                return push_int(m, value.unwrap_or(0));
+            }
+            if !matches!(m.slot.snapshot_type, 2 | 3) {
+                m.env.note("set_zone_par: normal zones require snapshot mode 2 or 3");
+                let id = async_done(m, 0); return push_int(m, id);
+            }
+            // NI: init edits are synchronous and return -1, so a shared
+            // helper's wait_async(-1) continues without an async callback.
+            if m.t.ctx.kind == Kind::Cb(Callback::Init) {
+                let edit=ZoneEdit {zone,par,value,slot:m.slot.index,id:-1};
+                if let Err(error)=m.engine.request_zone_edit(edit) {m.env.note(error);}
+                return push_int(m,-1);
+            }
+            if m.env.pending_async.len() == m.env.pending_async.capacity() {
+                m.env.note("set_zone_par: pending async capacity exhausted");
+                let id = async_done(m, 0); return push_int(m, id);
+            }
+            let id = m.env.next_async();
+            let edit = ZoneEdit { zone, par, value, slot: m.slot.index, id };
+            match m.engine.request_zone_edit(edit) {
+                Ok(()) => m.env.pending_async.push((edit.slot, id)),
+                Err(error) => {
+                    m.env.note(error);
+                    if m.env.async_done.len() < m.env.async_done.capacity() { m.env.async_done.push((edit.slot, id, 0)); }
+                }
+            }
+            push_int(m, id)
+        }
         GroupName => {
             let [g] = ints(m);
             let name = usize::try_from(g)
@@ -1002,7 +1050,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 return push_int(m, v);
             }
             // Shown by Kontakt's value law, as its own knobs show it.
-            match crate::engine::engine_par_display(p.id, v) {
+            match m.engine.engine_par_display(p, v).or_else(|| crate::engine::engine_par_display(p.id, v)) {
                 Some(shown) => push_fmt(m, format_args!("{shown}")),
                 None => push_fmt(m, format_args!("{v}")),
             }
@@ -1454,7 +1502,13 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             m.slot.ui.background_color = Some(color as u32 & 0xffffff);
             Ok(Step::Next)
         }
-        SetSnapshotType | DisableLogging | FsNavigate => {
+        SetSnapshotType => {
+            let mode = m.stk.int();
+            if !(0..=3).contains(&mode) { return Err(Fault("Invalid snapshot mode")); }
+            m.slot.snapshot_type = mode;
+            Ok(Step::Next)
+        }
+        DisableLogging | FsNavigate => {
             if f == FsNavigate {
                 m.stk.int();
                 m.env.note("fs_navigate: file navigation is unavailable; select a file with the picker");
