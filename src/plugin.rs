@@ -5722,6 +5722,100 @@ end on"#;
     }
 
     #[test]
+    fn native_ui_foreach_expands_parent_siblings_and_preserves_item_context_and_callbacks() {
+        use crate::native_ui::{Node, Paint, Scene};
+        let directory = tempfile::tempdir().unwrap();
+        let resources = directory.path().join("Resources/native_ui");
+        std::fs::create_dir_all(&resources).unwrap();
+        std::fs::create_dir_all(directory.path().join("Resources/info")).unwrap();
+        std::fs::write(directory.path().join("Resources/info/library.json"), "{}").unwrap();
+        std::fs::write(resources.join("main.nui"), r#"
+            local ui=require('native_ui') local k=require('kontakt')
+            local size=k.connect_parameter('Size') local mode=k.connect_parameter('Mode')
+            local output=k.connect_parameter('Output') local key=ui.create_context(-1)
+            local function Item(value)
+                local clicks,set_clicks=ui.create_state(0) local context=ui.use_context(key)
+                return @ui.Text{text=function()return value..':'..clicks()..':'..context()end}
+                    .frame(width=10+value,height=8)
+                    .on_tap_gesture(start=function()
+                        set_clicks(clicks()+1) output:set_value(value*10+clicks())
+                    end)
+            end
+            local function Main()
+                local data={} for i=0,size:value()-1 do data[#data+1]=i end
+                local Container=mode:value()==0 and ui.HStack or ui.VStack
+                return @Container {spacing=3,alignment=mode:value()==0 and 'top' or 'left',
+                    @ui.ForEach{data=data,content=Item}
+                    @ui.ZStack{@ui.ForEach{data={0},content=Item}}.context(key=key,value=99)
+                }.context(key=key,value=42).font_size(8).frame(width=60,height=60,alignment='left top')
+            end
+            return @Main{}
+        "#).unwrap();
+        let instrument = Instrument {path:directory.path().join("fixture.nki"),scripts:vec![
+            "on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_value_edit $Size(0,3,1)\n$Size := 3\ndeclare ui_value_edit $Mode(0,1,1)\ndeclare ui_value_edit $Output(0,1000,1)\nend on\non ui_control($Output)\n$Output := $Output*2\nend on".into(),
+            "on init\nmake_perfview\ndeclare ui_value_edit $Output(0,1000,1)\n$Output := 99\nend on".into(),
+        ],..Default::default()};
+        let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);
+        assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
+        let scene=Arc::new(Mutex::new(Scene::prepare(&instrument.path,&rt).unwrap().unwrap()));
+        let mut live=first_script_live(&rt);rt.prepare_native_controls(&mut live);
+        let p=Arc::new(SamplerParams::new());
+        let epoch={let mut view=p.shared.view.lock().unwrap();let epoch=next_epoch(&mut view,0,None,Some(live));view.parts[0].native_scene=Some(scene.clone());epoch};
+        let mut dsp=Dsp::default();dsp.script_epoch[0]=epoch;dsp.rack.parts[0].set_script(Some(rt));
+        fn text(node:&Node)->Option<&str>{if let Paint::Text(text)=&node.paint{Some(text)}else{node.children.iter().find_map(text)}}
+        fn items<'a>(node:&'a Node,out:&mut Vec<&'a Node>){if node.tap{out.push(node)}for child in &node.children{items(child,out)}}
+        let root=scene.lock().unwrap().snapshot().unwrap();let mut initial=Vec::new();items(&root,&mut initial);
+        assert_eq!(initial.iter().map(|node|text(node).unwrap()).collect::<Vec<_>>(),["0:0:42","1:0:42","2:0:42","0:0:99"]);
+        let spec=moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::scene_tree(&root,&scene.lock().unwrap().assets));
+        let layout=moose::mui::mui::scene::resolve(&spec).unwrap();
+        for (node,x,width) in [(initial[0],0.,10.),(initial[1],13.,11.),(initial[2],27.,12.),(initial[3],42.,10.)] {
+            let surface=layout.surface(&format!("native-snapshot-{}",node.id)).unwrap();
+            assert_eq!((surface.frame.x,surface.frame.y,surface.frame.size.width,surface.frame.size.height),(x,0.,width,8.),"ForEach contributes actual siblings to HStack, not an overlapping ZStack");
+        }
+        let clicked=initial[1].id;let remote=initial[3].id;
+        let edits=scene.lock().unwrap().tap(clicked).unwrap();
+        assert_eq!(edits.iter().map(|e|(e.slot,e.control,e.value)).collect::<Vec<_>>(),[(0,2,11)]);
+        for edit in edits{assert!(p.shared.edit_control_slot(0,epoch,edit.slot,edit.control,edit.value));}
+        let live=p.shared.view.lock().unwrap().parts[0].live.take().unwrap();p.shared.live_requests.push((0,epoch,live)).ok().unwrap();
+        let (mut left,mut right)=([0.;64],[0.;64]);let mut slices=[left.as_mut_slice(),right.as_mut_slice()];let mut buffer=AudioBuffer::from_slices_checked(&[],&mut slices,64);
+        let transport=TransportInfo::default();let mut output=EventList::with_capacity(4);let events=EventList::with_capacity(1);let mut cx=ProcessContext::new(&transport,48000.,64,&mut output);
+        assert_eq!(allocations(||{for _ in 0..8{Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx);}}),0);p.shared.publish_live(true);
+        assert_eq!(dsp.rack.parts[0].script().unwrap().interface(0).controls[2].properties["$CONTROL_PAR_VALUE"],crate::ksp::Value::Int(22));
+        assert_eq!(dsp.rack.parts[0].script().unwrap().interface(1).controls[0].properties["$CONTROL_PAR_VALUE"],crate::ksp::Value::Int(99));
+        for _ in 0..20 {
+            let root=scene.lock().unwrap().snapshot().unwrap();let mut entries=Vec::new();items(&root,&mut entries);
+            assert_eq!(entries.iter().map(|node|text(node).unwrap()).collect::<Vec<_>>(),["0:0:42","1:1:42","2:0:42","0:0:99"]);
+            assert_eq!((entries[1].id,entries[3].id),(clicked,remote),"unchanged items keep distinct bounded component owners");
+            assert!(entries.iter().all(|node|node.text_size==8.),"items retain inherited text style");
+        }
+        for (control,value,expected) in [(1,1,4),(0,1,2),(0,0,1)] {
+            let mut live=dsp.rack.parts[0].script().unwrap().live();dsp.rack.parts[0].script().unwrap().prepare_native_controls(&mut live);
+            assert_eq!(allocations(||{dsp.rack.parts[0].ui_control(0,control,value);dsp.rack.parts[0].render(&mut left,&mut right);dsp.rack.parts[0].script().unwrap().refresh_live(&mut live);}),0);
+            scene.lock().unwrap().observe(&live);let root=scene.lock().unwrap().snapshot().unwrap();let mut entries=Vec::new();items(&root,&mut entries);assert_eq!(entries.len(),expected);
+            let spec=moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::scene_tree(&root,&scene.lock().unwrap().assets));let layout=moose::mui::mui::scene::resolve(&spec).unwrap();
+            for (index,node) in entries.iter().enumerate(){let surface=layout.surface(&format!("native-snapshot-{}",node.id)).unwrap();assert_eq!((surface.frame.x,surface.frame.y),(0.,index as f64*11.),"VStack receives ordered siblings; empty repetition leaves no phantom spacing");}
+            if expected<4{assert!(scene.lock().unwrap().tap(clicked).is_err(),"removed item callbacks are retired");}
+            assert_eq!(entries.last().unwrap().id,remote,"another repetition scope retains its exact owner");
+        }
+        let edits=scene.lock().unwrap().tap(remote).unwrap();assert_eq!((edits[0].slot,edits[0].control,edits[0].value),(0,2,1),"item-local state did not leak between loops sharing the same content function");
+        let newer=next_epoch(&mut p.shared.view.lock().unwrap(),0,None,None);assert_ne!(epoch,newer);
+        assert!(!p.shared.edit_control_slot(0,epoch,edits[0].slot,edits[0].control,edits[0].value));
+        for (data,content,extra,expected) in [
+            ("{[1]=1,[3]=3}","function(v)return @ui.Text{text=tostring(v)}end","","dense ordered list"),
+            ("{}","false","","content function"),
+            ("{0}","function()return nil end","","returned no component"),
+            ("{0}","function()return @ui.ForEach{data={},content=function()return @ui.ZStack{}end}end","","explicit parent stack"),
+            ("{}","function()return @ui.Text{text='ok'}end",",id='invented'","Unsupported primitive property"),
+            ("(function()local d={}for i=1,4097 do d[i]=i end return d end)()","function()return @ui.Text{text='ok'}end","","list budget"),
+        ] {
+            std::fs::write(resources.join("main.nui"),format!("local ui=require('native_ui') return @ui.HStack{{@ui.ForEach{{data={data},content={content}{extra}}}}}")).unwrap();
+            let error=format!("{:#}",Scene::prepare(&instrument.path,dsp.rack.parts[0].script().unwrap()).unwrap_err());assert!(error.contains(expected),"{error}");
+        }
+        std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') local repeated=@ui.ForEach{data={},content=function()return @ui.ZStack{}end} return @ui.HStack{repeated;repeated}").unwrap();
+        assert!(format!("{:#}",Scene::prepare(&instrument.path,dsp.rack.parts[0].script().unwrap()).unwrap_err()).contains("Aliased native UI node identity"));
+    }
+
+    #[test]
     fn native_ui_drop_routes_real_typed_releases_and_files_to_current_exact_slot() {
         use crate::native_ui::{DropPayload, Node, Paint, Scene};
         use moose::mui::mui::prelude::*;

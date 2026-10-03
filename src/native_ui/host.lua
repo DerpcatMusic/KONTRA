@@ -91,7 +91,7 @@ local ui = {
     create_computed=function(compute) assert(type(compute)=="function"); return compute end,
     Color=Color,
 }
-for _,kind in ipairs({"ZStack","HStack","VStack","Text","Rectangle","Ring","Image"}) do ui[kind]={kind=kind} end
+for _,kind in ipairs({"ZStack","HStack","VStack","Text","Rectangle","Ring","Image","ForEach"}) do ui[kind]={kind=kind} end
 native_ui_host = strict("native_ui",ui)
 kontakt_host = strict("kontakt", {
     get_ksp_control_property=function(name,property,index) return native_control_property(name,property,index) end,
@@ -134,13 +134,14 @@ function native_component(target,props,children)
         return {kind="Component",target=target,props=props,children=children,modifiers={}}
     end
     assert(type(target)=="table" and target.kind,"Unsupported component target")
-    local supported={ZStack={children=true,alignment=true},HStack={children=true,spacing=true,alignment=true},VStack={children=true,spacing=true,alignment=true},Text={children=true,text=true},Rectangle={children=true,color=true,corner_radius=true},Ring={children=true,color=true,start_angle=true,angle=true,thickness=true},Image={children=true,file=true,resizable=true}}
+    local supported={ZStack={children=true,alignment=true},HStack={children=true,spacing=true,alignment=true},VStack={children=true,spacing=true,alignment=true},Text={children=true,text=true},Rectangle={children=true,color=true,corner_radius=true},Ring={children=true,color=true,start_angle=true,angle=true,thickness=true},Image={children=true,file=true,resizable=true},ForEach={children=true,data=true,content=true}}
     assert(supported[target.kind],"Unsupported component")
     assert(target.kind=="ZStack" or target.kind=="HStack" or target.kind=="VStack" or #children==0,"Primitive children require a stack")
     for key in pairs(props) do assert(supported[target.kind][key],"Unsupported primitive property: "..target.kind.."."..key) end
     return {kind=target.kind,props=props,children=children,modifiers={}}
 end
 function native_modifier(node,name,props,args)
+    assert(node.kind~="ForEach","Unsupported modifier on transparent ForEach; use an explicit stack")
     local environment=name=="context" or name=="font_size" or name=="foreground_color" or name=="bold" or name=="line_limit"
     assert(name=="frame" or name=="padding" or name=="hidden" or name=="disabled" or name=="opacity" or name=="offset" or name=="rotation" or name=="align" or name=="background" or name=="overlay" or name=="on_tap_gesture" or name=="on_hover_gesture" or name=="on_drag_gesture" or name=="on_drop" or environment,"Unsupported modifier: "..name)
     if name=="on_drop" then
@@ -256,6 +257,43 @@ function native_modifier(node,name,props,args)
     node.modifiers[name]=props; return node
 end
 
+-- Legacy ForEach contributes siblings to its existing parent container. It
+-- adds no measuring/painting box. Positional paths retain the existing bounded
+-- component/context ownership; keyed/reorder identity is not inferred.
+function native_children(children,path)
+    local result,groups={},{}
+    local function dense(list,what)
+        assert(type(list)=="table" and #list<=4096,what.." exceeds its list budget")
+        local count=0
+        for key in next,list do
+            count=count+1
+            assert(type(key)=="number" and key%1==0 and key>=1 and key<=#list,what.." requires a dense ordered list")
+        end
+        assert(count==#list,what.." requires a dense ordered list")
+    end
+    assert(type(children)=="table" and #children<=4096,"Native UI children exceed their list budget")
+    local function append(node,item_path)
+        assert(#result<4096,"Native UI child expansion budget exceeded")
+        result[#result+1]={node=node,path=item_path}
+    end
+    for index,child in ipairs(children) do
+        assert(type(child)=="table" and child.kind,"Native child must be a component")
+        local child_path=path.."/"..(index-1)
+        if child.kind=="ForEach" then
+            groups[#groups+1]=child
+            assert(next(child.modifiers)==nil and #child.children==0,"Transparent ForEach cannot own modifiers or explicit children")
+            local props=child.props
+            dense(props.data,"Native UI ForEach data")
+            assert(type(props.content)=="function","Native UI ForEach requires a content function")
+            for item,value in ipairs(props.data) do
+                append({kind="Component",target=props.content,item=value,foreach=true,
+                    props={},children={},modifiers={}},child_path.."/each/"..(item-1))
+            end
+        else append(child,child_path) end
+    end
+    return result,groups
+end
+
 -- Component functions run within their inherited context during evaluation,
 -- rather than before parent modifiers can establish that context.
 function native_expand(node,path,inherited)
@@ -281,8 +319,10 @@ function native_expand(node,path,inherited)
     end
     instance.context=context;instance.hook=0
     local previous=active;active=instance
-    local child=node.target(node.props)
+    local child
+    if node.foreach then child=node.target(node.item) else child=node.target(node.props) end
     active=previous
     assert(type(child)=="table" and child.kind,"Native component function returned no component")
+    assert(child.kind~="ForEach","Transparent ForEach return requires an explicit parent stack")
     return {kind="ZStack",props={},children={child},modifiers=node.modifiers,owner=instance.id},context
 end

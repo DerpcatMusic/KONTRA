@@ -1106,12 +1106,21 @@ impl Scene {
             self.drops[id]=Some(target);
         }
         let mut nodes = Vec::new();
-        for (index, child) in children.sequence_values::<Table>().enumerate() {
+        let expand_children: Function = self.lua.globals().get("native_children")?;
+        let (children, groups): (Table, Table) = expand_children.call((children, path))?;
+        for group in groups.sequence_values::<Table>() {
+            let group = group?;
+            ensure!(seen.len() < 4096, "Native UI scene budget exceeded");
+            ensure!(seen.insert(group.to_pointer() as usize), "Aliased native UI node identity");
+            retained.push(group);
+        }
+        for child in children.sequence_values::<Table>() {
+            let child = child?;
             nodes.push(self.node(
-                child?,
+                child.get("node")?,
                 context.clone(),
                 (text_size, text_color, hidden, disabled, opacity, text_bold, text_lines),
-                format!("{path}/{index}"),
+                child.get("path")?,
                 depth + 1,
                 seen,
                 retained,
