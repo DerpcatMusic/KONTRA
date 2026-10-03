@@ -2,6 +2,8 @@
 //! Unsupported syntax/APIs/images fail explicitly; exported KSP views remain usable.
 mod frontend;
 mod drops;
+#[cfg(test)]
+mod test_host;
 pub(crate) use drops::Payload as DropPayload;
 use crate::ksp::{Live, Runtime};
 use anyhow::{Context, Result, bail, ensure};
@@ -512,7 +514,13 @@ impl Scene {
                 Ok(())
             })?,
         )?;
-        lua.load(include_str!("host.lua"))
+        #[cfg(not(test))]
+        let host = include_str!("host.lua");
+        #[cfg(test)]
+        let host = test_host::load_from_environment()?;
+        #[cfg(test)]
+        let host = host.text.as_ref();
+        lua.load(host)
             .set_name("@kontra/native-ui-host")
             .exec()?;
         let loaded = lua.create_table()?;
