@@ -2075,9 +2075,15 @@ fn display_of_a_hypothetical_engine_value() {
 
 #[test]
 fn ui_and_debugger_commands_are_accepted() {
-    let ui = initialize("on init\ndeclare ui_waveform $w(6,6)\ndeclare ui_xy ?xy[2]\ndeclare ui_label $l(1,1)\ndeclare ui_level_meter $meter\nattach_level_meter(get_ui_id($meter), -1, -1, 0, -1)\nwatch_var($l)\nwatch_array_idx(?xy, 0)\nset_control_par_real_arr(get_ui_id(?xy), $CONTROL_PAR_VALUE, 0.5, 0)\nset_text($l, get_ui_wf_property($w, $UI_WF_PROP_PLAY_CURSOR, 0) & get_control_par_real_arr(get_ui_id(?xy), $CONTROL_PAR_VALUE, 0))\nend on", 0, 0).unwrap();
+    let source = "on init\ndeclare ui_waveform $w(6,6)\ndeclare ui_xy ?xy[2]\ndeclare ui_label $l(1,1)\ndeclare ui_level_meter $meter\nattach_level_meter(get_ui_id($meter), -1, -1, 0, -1)\nwatch_var($l)\nwatch_array_idx(?xy, 0)\nset_control_par_real_arr(get_ui_id(?xy), $CONTROL_PAR_VALUE, 0.5, 0)\nset_text($l, get_ui_wf_property($w, $UI_WF_PROP_PLAY_CURSOR, 0) & get_control_par_real_arr(get_ui_id(?xy), $CONTROL_PAR_VALUE, 0))\nend on";
+    let rig = Rig::new(&[source]);
+    let ui = rig.rt.interface(0);
     assert_eq!(prop(&ui, 2, "$CONTROL_PAR_TEXT"), "00.5");
-    assert!(ui.diagnostics.iter().any(|d| d.contains("KSP level meter attachments are unavailable")), "{:?}", ui.diagnostics);
+    let mut live = rig.rt.live();
+    rig.rt.prepare_native_controls(&mut live);
+    let meter = live.native_controls.iter().find(|c| c.name == "meter").unwrap();
+    assert_eq!(meter.meter, Some(crate::fx::MeterAttachment { group: -1, slot: -1, channel: 0, generic: -1 }));
+    assert!(ui.diagnostics.is_empty(), "{:?}", ui.diagnostics);
     assert!(!ui.diagnostics.iter().any(|d| d.starts_with("Unsupported")), "{:?}", ui.diagnostics);
 }
 
@@ -2209,8 +2215,11 @@ fn sine_era_framework_in_slot_two() {
     let (rt, errors) = Runtime::with_scripts(&[first, second], &mut engine, 8, Vec::new());
     assert!(errors.iter().all(Option::is_none), "{errors:?}");
     let diagnostics = rt.diagnostics();
-    assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
-    assert!(diagnostics.iter().any(|d| d.contains("KSP level meter attachments are unavailable")), "{diagnostics:?}");
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    let mut live = rt.live();
+    rt.prepare_native_controls(&mut live);
+    let meter = live.native_controls.iter().find(|c| c.name == "meter").unwrap();
+    assert_eq!((meter.slot, meter.meter), (1, Some(crate::fx::MeterAttachment { group: -1, slot: -1, channel: 0, generic: 1 })));
     assert!(diagnostics.iter().any(|d| d.contains("Time Machine Pro is unavailable")), "{diagnostics:?}");
     let mut rig = Rig { rt, engine };
     assert_eq!(prop(&rig.rt.interface(1), 0, "$CONTROL_PAR_TEXT"), "65280 1 0");
