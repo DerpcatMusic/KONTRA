@@ -35,6 +35,8 @@ The new report folder contains `report.json` with build/system/audio settings an
 
 Confirmed host crashes are recovered on the next KONTRA load using BUFFR’s session markers, flight recorder, operating-system evidence and support transport. A complete sanitized report goes to the private support inbox; the linked public KONTRA issue contains platform, host, format, build and failure metadata. Library source excerpts, samples, access data, credentials and personal paths are excluded from automatic reports. Ordinary unclean exits are retained locally without being called crashes. The report remains pending until the service acknowledges the complete evidence hash; failures appear in Logs and `last-report.json` in KONTRA’s local data directory. `KONTRA_DISABLE_NETWORK=1` keeps reporting local, and `KONTRA_REPORT_DIR` isolates report storage. Native evidence depends on the host/OS writing an accessible crash artifact; KONTRA does not install global signal, exception or Rust panic hooks.
 
+Logs shows delivery status and the report ID, plus the public issue URL when the service supplies it. Selecting the event exposes those details for copying; a later launch restores the saved receipt. Unconfirmed sessions show that their evidence remains local. Recorded queue drops and sequence gaps are included in the report; Windows binary dumps remain on the machine.
+
 
 For a native UI stall, launch the host or standalone with `KONTRA_NATIVE_UI_TIMING=1` in its environment, then drag a control. One ten-second capture appears as `native_frame_timing` in Logs and support exports. It measures application callbacks and presentation submission, including lock waits; it does not measure GPU completion or display FPS. Capture is disabled by default.
 

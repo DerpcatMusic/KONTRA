@@ -420,17 +420,17 @@ fn collect_linux_crash_evidence(
     stopping: &AtomicBool,
 ) -> CrashEvidence {
     let mut evidence = CrashEvidence::default();
-    let _ = host_process;
 
     match command_output_with_deadline(
         std::process::Command::new("coredumpctl")
+            .env("LC_ALL", "C")
             .args(linux_coredumpctl_args(pid, started_at, ended_at)),
         std::time::Duration::from_secs(2),
         stopping,
     ) {
         Ok(Some(output)) => {
             let text = String::from_utf8_lossy(&output.stdout);
-            if output.status.success() && !text.is_empty() {
+            if output.status.success() && linux_coredump_matches_host(&text, host_process) {
                 evidence.disposition = EvidenceDisposition::Crash;
                 evidence.signature = selected_signature_lines(
                     &text,
@@ -452,6 +452,24 @@ fn collect_linux_crash_evidence(
         Err(error) => evidence.text = format!("Native crash-report collection failed: {error}"),
     }
     evidence
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_coredump_matches_host(text: &str, host_process: &str) -> bool {
+    let expected = comparable_process_name(host_process);
+    let mut executables = text
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("Executable:"))
+        .map(|path| {
+            comparable_process_name(
+                path.trim()
+                    .strip_suffix(" (deleted)")
+                    .unwrap_or(path.trim()),
+            )
+        });
+    !expected.is_empty()
+        && executables.next().is_some_and(|actual| actual == expected)
+        && executables.all(|actual| actual == expected)
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -1088,5 +1106,27 @@ mod tests {
         .expect("large output should finish before the deadline");
         assert!(output.status.success());
         assert_eq!(output.stdout.len(), 131_072);
+    }
+    #[test]
+    fn linux_native_evidence_requires_the_recorded_host_executable() {
+        let report = "PID: 1234 (reaper)\n    Executable: /opt/REAPER/reaper\nSignal: 11 (SEGV)";
+        assert!(linux_coredump_matches_host(report, "reaper"));
+        assert!(
+            !linux_coredump_matches_host(report, "reason"),
+            "a reused PID is insufficient"
+        );
+        assert!(!linux_coredump_matches_host(
+            "PID: 1234 (reaper)\nSignal: 11",
+            "reaper"
+        ));
+        assert!(!linux_coredump_matches_host(report, ""));
+        assert!(linux_coredump_matches_host(
+            "Executable: /opt/reaper (deleted)",
+            "reaper"
+        ));
+        assert!(!linux_coredump_matches_host(
+            &format!("{report}\nExecutable: /opt/reason"),
+            "reaper"
+        ));
     }
 }
