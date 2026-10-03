@@ -3939,6 +3939,99 @@ mod tests {
         drop(legacy_lock);
     }
 
+    fn assert_registration_recovers_once(expected_id: &str) {
+        let timeout = std::time::Duration::from_secs(30);
+        let (events, observed) = mpsc::channel();
+        *TEST_AUTOMATIC_REPORT_OBSERVER.lock_unpoisoned() = Some(events);
+        let (sender, receiver) = mpsc::channel();
+        let pending = REPORTER.pending.clone();
+        let ready = REPORTER.ready.clone();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let worker_stopping = stopping.clone();
+        let session = sessions_dir().join("restart-registration.json");
+        let worker_session = session.clone();
+        let worker = std::thread::spawn(move || {
+            reporter_worker(
+                receiver,
+                Arc::new(Mutex::new(None)),
+                pending,
+                ready,
+                None,
+                worker_session,
+                bootstrap_journal_path("restart-registration"),
+                "restart-registration".into(),
+                worker_stopping,
+            )
+        });
+        *REPORTER.runtime.lock_unpoisoned() = Some(ReporterRuntime {
+            control_sender: sender,
+            worker,
+            stopping,
+        });
+        let (acknowledge, acknowledged) = mpsc::sync_channel(1);
+        assert!(REPORTER.send(ReporterControl::Register(7, acknowledge)));
+        assert!(acknowledged.recv_timeout(timeout).unwrap());
+        assert!(REPORTER.ready.load(Ordering::Acquire));
+        assert!(read_json::<SessionMarker>(&session).is_some());
+        let mut scans = 0;
+        loop {
+            match observed.recv_timeout(timeout).unwrap() {
+                TestAutomaticEvent::Scanned(_, _) => scans += 1,
+                TestAutomaticEvent::Ready(id, busy) => {
+                    assert_eq!(
+                        id, expected_id,
+                        "only the eligible recorded report may start"
+                    );
+                    assert!(!busy);
+                    break;
+                }
+            }
+        }
+        assert!(
+            (1..=3).contains(&scans),
+            "registration reaches the two-file queue through bounded controls"
+        );
+        let (barrier, reached) = mpsc::sync_channel(1);
+        assert!(REPORTER.send(ReporterControl::Barrier(barrier)));
+        reached.recv_timeout(timeout).unwrap();
+        assert!(
+            matches!(observed.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "registration must kick off the report exactly once"
+        );
+        assert_eq!(
+            REPORTER.pending.lock_unpoisoned().as_ref().unwrap().id,
+            expected_id
+        );
+        REPORTER.shutdown();
+    }
+
+    #[test]
+    fn registration_recovers_confirmed_report_after_exhausted_persisted_cursor() {
+        const CHILD: &str = "KONTRA_EXHAUSTED_REGISTER_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "support::crash::tests::registration_recovers_confirmed_report_after_exhausted_persisted_cursor", "--test-threads=1"])
+                .env(CHILD,"1").env("KONTRA_REPORT_DIR",directory.path()).env("KONTRA_DISABLE_NETWORK","1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let mut incident = test_incident("0.3.115", "authored-exhausted-cursor");
+        incident.id = "0000000000000002".into();
+        incident.kind = IncidentKind::PlatformCrash;
+        assert!(save_pending_incident(&incident));
+        let path = keyed_pending_incident_path(&incident.id).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(persist_json(
+            &reports_dir().join("pending-cursor.json"),
+            &format!("{}.json", incident.id)
+        ));
+        // Invoke the actual restart lifecycle. Register persists readiness, then
+        // enqueues ScanQueue when its single recovery batch is exhausted.
+        assert_registration_recovers_once(&incident.id);
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
     #[test]
     fn actual_oversized_upload_retains_originals_drains_next_and_survives_restart() {
         const CHILD: &str = "KONTRA_OVERSIZED_UPLOAD_CHILD";
@@ -3965,9 +4058,9 @@ mod tests {
             assert!(REPORTER.pending.lock_unpoisoned().is_none());
             assert!(manual_required_for_pending(first_id, &stopped).is_some());
             assert!(first_path.exists() && second_path.exists());
-            let pending = Mutex::new(None);
-            assert!(recover_pending_slot(&pending, &stopped));
-            assert_eq!(pending.lock_unpoisoned().as_ref().unwrap().id, second_id);
+            let second_bytes = std::fs::read(&second_path).unwrap();
+            assert_registration_recovers_once(second_id);
+            assert_eq!(std::fs::read(&second_path).unwrap(), second_bytes);
             assert!(first_path.exists() && manual_upload_path(first_id).unwrap().exists());
             return;
         }
