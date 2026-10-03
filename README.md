@@ -10,6 +10,13 @@
 
 Nightly alpha builds · CLAP, VST3 and standalone · [All downloads & release notes](https://github.com/DerpcatMusic/KONTRA/releases/latest)
 
+<details>
+<summary>Portable macOS downloads</summary>
+
+[Apple Silicon ZIP](https://github.com/DerpcatMusic/KONTRA/releases/latest/download/KONTRA-nightly-macos-arm64.zip) · [Intel ZIP](https://github.com/DerpcatMusic/KONTRA/releases/latest/download/KONTRA-nightly-macos-x86_64.zip)
+
+</details>
+
 **Alpha software, under heavy development.** Features, UI, compatibility and saved-state formats may change substantially between builds. Expect incomplete behavior and regressions; this is not yet a dependable replacement for Kontakt or Falcon.
 
 Rust. Custom UI framework. Windows, macOS, Linux. CLAP, VST3, standalone.
