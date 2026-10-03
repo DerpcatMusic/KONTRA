@@ -35,9 +35,22 @@ class DevelopmentCommands(unittest.TestCase):
         source = {"CARGO_TARGET_DIR": "/frozen/release", "CARGO_INCREMENTAL": "0"}
         env = dev.environment(source)
         self.assertEqual(env["CARGO_TARGET_DIR"], str(dev.ROOT / "artifacts" / "dev-target"))
-        self.assertEqual(env["CARGO_INCREMENTAL"], "1")
+        self.assertEqual(env["CARGO_INCREMENTAL"], "0")
         self.assertEqual(source["CARGO_INCREMENTAL"], "0")
         self.assertEqual(dev.environment({"KONTRA_DEV_TARGET_DIR": "/my/dev-cache"})["CARGO_TARGET_DIR"], "/my/dev-cache")
+
+    def test_incremental_preferences_and_known_or_unknown_wrappers_are_preserved(self):
+        for incremental in [None, "0", "1"]:
+            for wrapper in [None, "sccache", "/custom/wrapper"]:
+                source = {"RUSTC_WORKSPACE_WRAPPER": "/custom/workspace-wrapper"}
+                if incremental is not None:
+                    source["CARGO_INCREMENTAL"] = incremental
+                if wrapper is not None:
+                    source["RUSTC_WRAPPER"] = wrapper
+                env = dev.environment(source)
+                self.assertEqual({k: v for k, v in env.items() if k != "CARGO_TARGET_DIR"}, source)
+                self.assertEqual("CARGO_INCREMENTAL" in env, incremental is not None)
+                self.assertEqual("RUSTC_WRAPPER" in env, wrapper is not None)
 
     def test_binary_selection_requires_current_cargo_test_artifact(self):
         rows = "\n".join(["not json", artifact(test=False), artifact("dependency", "/other"), artifact()])

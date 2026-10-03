@@ -59,7 +59,6 @@ def environment(environ):
     # currently be frozen. This directory persists across local edit cycles.
     target = Path(env.get("KONTRA_DEV_TARGET_DIR", ROOT / "artifacts" / "dev-target"))
     env["CARGO_TARGET_DIR"] = str(target.resolve())
-    env["CARGO_INCREMENTAL"] = "1"
     return env
 
 
