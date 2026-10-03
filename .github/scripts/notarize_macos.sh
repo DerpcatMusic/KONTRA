@@ -13,6 +13,19 @@ case "$KONTRA_TARGET" in
   *) echo 'Unsupported notarization target' >&2; exit 1 ;;
 esac
 source "$(dirname "$0")/macos_signing_keychain.sh"
+# Labels identify failures without echoing command arguments or credentials.
+phase() {
+  local label="$1" status
+  shift
+  echo "Starting $label" >&2
+  if "$@"; then
+    echo "Completed $label" >&2
+  else
+    status=$?
+    echo "$label failed (exit $status)" >&2
+    return "$status"
+  fi
+}
 for product in KONTRA.clap KONTRA.vst3 KONTRA.app; do
   binary="$STAGE/$product/Contents/MacOS/KONTRA"
   lipo "$binary" -verify_arch "$arch"
@@ -21,15 +34,39 @@ for product in KONTRA.clap KONTRA.vst3 KONTRA.app; do
   chmod -R a+rX "$STAGE/$product"
   codesign --verify --deep --strict "$STAGE/$product"
 done
-xcrun swift .github/scripts/check_macos_bundles.swift --register "$STAGE/KONTRA.app" "$STAGE/KONTRA.clap" "$STAGE/KONTRA.vst3"
+phase "Native bundle/factory verification" xcrun swift .github/scripts/check_macos_bundles.swift --register "$STAGE/KONTRA.app" "$STAGE/KONTRA.clap" "$STAGE/KONTRA.vst3"
 # ZIP containers cannot carry stapled tickets. A DMG holds
 # these same signed products plus the legal/build metadata for offline delivery.
-hdiutil create -quiet -format UDZO -volname KONTRA -srcfolder "$STAGE" "$work/KONTRA.dmg"
-codesign --force --sign "$APPLE_DEVELOPER_ID_APPLICATION" --keychain "$keychain" --timestamp "$work/KONTRA.dmg"
-codesign --verify --strict "$work/KONTRA.dmg"
-xcrun notarytool submit "$work/KONTRA.dmg" --apple-id "$APPLE_ID" \
+phase "DMG creation" hdiutil create -format UDZO -volname KONTRA -srcfolder "$STAGE" "$work/KONTRA.dmg"
+phase "DMG signing" codesign --force --sign "$APPLE_DEVELOPER_ID_APPLICATION" --keychain "$keychain" --timestamp "$work/KONTRA.dmg"
+phase "DMG signature verification" codesign --verify --strict "$work/KONTRA.dmg"
+if phase "Apple notarization submission" xcrun notarytool submit "$work/KONTRA.dmg" --apple-id "$APPLE_ID" \
   --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" \
-  --wait --timeout 30m --output-format json > "$work/notary.json"
+  --wait --timeout 30m --output-format json > "$work/notary.json"; then
+  :
+else
+  status=$?
+  # Error JSON is otherwise lost during private-keychain cleanup. Only these
+  # reviewed result fields may be logged; never print arbitrary server messages.
+  python3 - "$work/notary.json" <<'PYERROR'
+import json, sys, uuid
+try:
+    info = json.load(open(sys.argv[1]))
+    safe = {}
+    if info.get("status") in ("Accepted", "Invalid", "Rejected", "In Progress", "Uploaded"):
+        safe["status"] = info["status"]
+    try:
+        safe["id"] = str(uuid.UUID(info["id"]))
+    except (KeyError, ValueError, TypeError, AttributeError):
+        pass
+    if type(info.get("statusCode")) is int:
+        safe["statusCode"] = info["statusCode"]
+    print("Apple submission failure result: " + json.dumps(safe), file=sys.stderr)
+except (OSError, ValueError, TypeError, AttributeError):
+    print("Apple submission failed without a parseable result", file=sys.stderr)
+PYERROR
+  exit "$status"
+fi
 python3 - "$work/notary.json" <<'PY'
 import json, sys, uuid
 info = json.load(open(sys.argv[1]))
