@@ -5910,14 +5910,23 @@ end on"#;
                 .script()
                 .unwrap()
                 .refresh_live(&mut observed);
+            assert_eq!(observed.native_controls.iter().find(|control|control.name=="Mode").unwrap().value, mode, "fixture publishes the actual selected mode");
             scene.lock().unwrap().observe(&observed);
+            let root=scene.lock().unwrap().snapshot().unwrap();
+            let target=colored(&root,[1.,0.,0.,1.]).unwrap();
+            assert_eq!((target.hidden,target.disabled),(mode==1,mode==2),"fixture target state in mode {mode}");
             let (mut ui, _, key) = release(&scene, binary());
+            let from=ui.dropped().map(|(from,_)|from.to_owned());
+            if let Some(from)=from {
+                let payload=ui.dropped_on::<DropPayload>(key.as_str()).unwrap_or_else(||panic!("MUI payload missing before adapter dispatch: mode={mode} key={key}"));
+                ui.start_drag(from,payload);
+            }
             crate::ui::native_scene::typed_drop(&p, &mut ui, 0, epoch, &scene);
             if mode < 4 && mode != 0 {
                 if !key.is_empty() {
                     assert!(
                         ui.dropped_on::<DropPayload>(key.as_str()).is_some(),
-                        "rejected releases retain their payload"
+                        "rejected releases retain their payload: mode={mode}, key={key}, drop={:?}",ui.dropped()
                     );
                 }
                 assert!(
