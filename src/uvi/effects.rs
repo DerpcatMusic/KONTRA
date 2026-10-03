@@ -102,7 +102,9 @@ fn check(kind: &str, name: &str, value: &ParameterValue) -> Result<()> {
             Some("Type") => (0., 6., true),
             Some("Slope") => (0., 7., true),
             Some("Channels") => (0., 2., true),
-            Some("Freq") => (10., 22000., false),
+            // Native setters retain frequencies outside the UI range. The
+            // coefficient builder clamps the base frequency before transpose.
+            Some("Freq") => (f64::NEG_INFINITY, f64::INFINITY, false),
             Some("Q") => (0.018, 28.284, false),
             Some("Gain") => (-30., 30., false),
             Some("Bandwidth") => (0.01, 10., false),
@@ -255,7 +257,7 @@ fn band_coefficients(
     order: usize,
     rate: f64,
 ) -> Vec<[f64; 6]> {
-    let frequency = frequency.min(rate * 0.49);
+    let frequency = frequency.min(rate * 0.499);
     let g = (std::f64::consts::PI * frequency / rate).tan();
     let width = g * ((bandwidth * 0.5).exp2() - (-bandwidth * 0.5).exp2());
     let a = 10f64.powf(gain / (40. * order as f64));
@@ -377,7 +379,7 @@ fn digital_pairs(poles: &[Complex64], g: f64) -> Vec<[f64; 2]> {
 }
 
 fn pass_coefficients(high: bool, frequency: f64, q: f64, order: usize, rate: f64) -> Vec<[f64; 6]> {
-    let g = (std::f64::consts::PI * frequency.min(rate * 0.49) / rate).tan();
+    let g = (std::f64::consts::PI * frequency.min(rate * 0.499) / rate).tan();
     digital_pairs(&prototype_poles(q, order), g)
         .into_iter()
         .enumerate()
@@ -404,7 +406,7 @@ fn digital_shelf_coefficients(
     order: usize,
     rate: f64,
 ) -> Vec<[f64; 6]> {
-    let g = (std::f64::consts::PI * frequency.min(rate * 0.49) / rate).tan();
+    let g = (std::f64::consts::PI * frequency.min(rate * 0.499) / rate).tan();
     let a = 10f64.powf(gain / (40. * order as f64));
     let poles = prototype_poles(q, order);
     let num = digital_pairs(&poles, if high { g / a } else { g * a });
@@ -462,7 +464,7 @@ impl EqProcessor {
                 if shape >= 4 && band_gain == 0. {
                     continue;
                 }
-                let frequency = value("Freq") * n(p, "Transpose").exp2();
+                let frequency = value("Freq").clamp(10., 22000.) * n(p, "Transpose").exp2();
                 let channel = value("Channels") as u8;
                 let order = [1, 2, 3, 4, 6, 8, 12, 16][value("Slope") as usize];
                 if matches!(shape, 2 | 3 | 6) {
@@ -970,6 +972,102 @@ mod tests {
             riff_metadata: Vec::new(),
         })
     }
+    #[test]
+    fn authored_eq_live_frequency_contract() {
+        // Original native impulses: stored frequency is unrestricted; the UI
+        // range applies before transpose, then the DSP uses a 0.499-rate cap.
+        let cases = [
+            (
+                0.,
+                0.,
+                [
+                    0.0000817588079371,
+                    0.000163410673849,
+                    0.000163196906215,
+                    0.000162983415066,
+                ],
+            ),
+            (
+                44000.,
+                -1.,
+                [
+                    0.0584035329521,
+                    0.0622315034270,
+                    0.00407886737958,
+                    0.000267343042651,
+                ],
+            ),
+            (
+                0.,
+                1.,
+                [
+                    0.000163410804817,
+                    0.000326394365402,
+                    0.000325540982885,
+                    0.000324689841364,
+                ],
+            ),
+            (
+                10.,
+                -1.,
+                [
+                    0.0000408927735407,
+                    0.0000817587933852,
+                    0.0000817053005449,
+                    0.0000816518440843,
+                ],
+            ),
+            (
+                22000.,
+                1.,
+                [
+                    0.124608531594,
+                    0.000780478119850,
+                    -0.000775589665864,
+                    0.000770731829107,
+                ],
+            ),
+            (
+                22350.607421875,
+                0.,
+                [
+                    0.110457941890,
+                    0.0257005766034,
+                    -0.0197207462043,
+                    0.0151322614402,
+                ],
+            ),
+        ];
+        for (frequency, transpose, native) in cases {
+            let mut node = effect(r#"<DigitalEq GainScale="1" Type16="0" Slope16="0"/>"#);
+            for i in 1..=16 {
+                node.attributes
+                    .insert(format!("Enabled{i}"), u8::from(i == 16).to_string());
+            }
+            node.attributes
+                .insert("Transpose".into(), transpose.to_string());
+            let mut fx =
+                EffectProcessor::new(&node, 2, 48000., 64, Arc::new(HashMap::new())).unwrap();
+            fx.set_parameter("Freq16", &ParameterValue::Number(frequency))
+                .unwrap();
+            assert!(fx.parameter("Freq16").unwrap() == ParameterValue::Number(frequency));
+            let mut io = vec![[0.; MAX_CHANNELS]; 1024];
+            io[0][0] = 0.125;
+            fx.process(&mut io).unwrap();
+            for (frame, expected) in io.iter().zip(native) {
+                assert!(
+                    (f64::from(frame[0]) - expected).abs() < 2e-8,
+                    "Freq={frequency}, Transpose={transpose}"
+                );
+            }
+            assert!(io.iter().flatten().all(|v| v.is_finite()));
+            assert!(
+                fx.set_parameter("Freq16", &ParameterValue::Number(f64::NAN))
+                    .is_err()
+            );
+        }
+    }
+
     #[test]
     fn authored_effects_impulse_eq_and_fragmentation() {
         let mut resources = HashMap::new();

@@ -10,11 +10,14 @@ use super::{
     filter::{self, XpanderFilter},
     generator::{self, Generator},
     host::{self, ParameterValue},
+    maximizer::{self, Maximizer},
     modulation::{self, Inputs, ModulationGraph, Parameter},
     program::{NodeId, Program},
     sample::{Sample, SampleLoop},
     script,
+    sparkverb::{self, SparkVerb},
     time_effects::{self, TimeEffect},
+    waveshaper::{self, WaveShaper},
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
@@ -67,9 +70,24 @@ pub fn resolve_path(program: &Program, node: NodeId, path: &str) -> Result<NodeI
     ensure!(node < program.nodes.len(), "Invalid UVI path owner");
     let mut at = node;
     let mut path = path;
-    if let Some(rest) = path.strip_prefix("$Program") {
-        at = program.root;
-        path = rest.strip_prefix('/').unwrap_or(rest);
+    if let Some((scope, rest)) = path
+        .split_once('/')
+        .or_else(|| path.starts_with('$').then_some((path, "")))
+    {
+        if scope.starts_with('$') {
+            let kind = match scope {
+                "$Program" => "Program",
+                "$Layer" => "Layer",
+                "$Keygroup" => "Keygroup",
+                _ => bail!("Unknown UVI path scope {scope}"),
+            };
+            let mut ancestor = Some(node);
+            while ancestor.is_some_and(|id| program.nodes[id].kind != kind) {
+                ancestor = ancestor.and_then(|id| program.nodes[id].parent);
+            }
+            at = ancestor.with_context(|| format!("UVI path has no enclosing {kind}"))?;
+            path = rest;
+        }
     }
     for part in path.split('/').filter(|p| !p.is_empty() && *p != ".") {
         if part == ".." {
@@ -108,6 +126,9 @@ pub fn preflight(program: &Program) -> Vec<Unsupported> {
         ) || effects::supports(&node.kind)
             || filter::supports(&node.kind)
             || time_effects::supports(&node.kind)
+            || waveshaper::supports(&node.kind)
+            || maximizer::supports(&node.kind)
+            || sparkverb::supports(&node.kind)
             || generator::supports(&node.kind)
             || wrapper(&node.kind)
             || matches!(
@@ -166,30 +187,39 @@ pub fn preflight(program: &Program) -> Vec<Unsupported> {
                 });
             }
         }
-        if filter::supports(&node.kind) {
-            if let Err(error) = filter::validate(node) {
+        if sparkverb::supports(&node.kind) {
+            if let Err(error) = sparkverb::validate(node) {
                 unsupported.push(Unsupported {
                     node: id,
                     kind: node.kind.clone(),
                     reason: error.to_string(),
                 });
             }
-            let mut at = Some(id);
-            while at.is_some_and(|n| {
-                !matches!(
-                    program.nodes[n].kind.as_str(),
-                    "Keygroup" | "AuxEffect" | "Layer" | "Program"
-                )
-            }) {
-                at = at.and_then(|n| program.nodes[n].parent);
-            }
-            if at.is_none_or(|n| program.nodes[n].kind == "AuxEffect")
-                && node.attributes.get("KeyTracking").is_some_and(|v| v != "0")
-            {
+        }
+        if maximizer::supports(&node.kind) {
+            if let Err(error) = maximizer::validate(node) {
                 unsupported.push(Unsupported {
                     node: id,
                     kind: node.kind.clone(),
-                    reason: "Auxiliary filter key tracking has no measured note context".into(),
+                    reason: error.to_string(),
+                });
+            }
+        }
+        if waveshaper::supports(&node.kind) {
+            if let Err(error) = waveshaper::validate(node) {
+                unsupported.push(Unsupported {
+                    node: id,
+                    kind: node.kind.clone(),
+                    reason: error.to_string(),
+                });
+            }
+        }
+        if filter::supports(&node.kind) {
+            if let Err(error) = filter::validate(node) {
+                unsupported.push(Unsupported {
+                    node: id,
+                    kind: node.kind.clone(),
+                    reason: error.to_string(),
                 });
             }
         }
@@ -291,7 +321,10 @@ pub fn preflight(program: &Program) -> Vec<Unsupported> {
                         | "TrackDelay"
                 ) || effects::supports(&entry.kind)
                     || filter::supports(&entry.kind)
-                    || time_effects::supports(&entry.kind);
+                    || time_effects::supports(&entry.kind)
+                    || waveshaper::supports(&entry.kind)
+                    || maximizer::supports(&entry.kind)
+                    || sparkverb::supports(&entry.kind);
                 if rendered_target
                     && scope.is_none()
                     && graph.has_release_envelopes(&HashSet::from([node]))
@@ -322,8 +355,11 @@ enum Processor {
     Pole(OnePole),
     Delay(TrackDelay),
     Effect(EffectProcessor),
-    Filter(XpanderFilter),
+    Filter(Box<XpanderFilter>),
     Time(TimeEffect),
+    Wave(Box<WaveShaper>),
+    Max(Maximizer),
+    Spark(Box<SparkVerb>),
 }
 impl Processor {
     fn new(
@@ -333,6 +369,23 @@ impl Processor {
         samples: &Arc<HashMap<String, Arc<Sample>>>,
     ) -> Result<Option<Self>> {
         let kind = node.kind.as_str();
+        if sparkverb::supports(kind) {
+            return Ok(Some(Self::Spark(Box::new(SparkVerb::new(
+                node,
+                channel_count,
+                rate,
+            )?))));
+        }
+        if maximizer::supports(kind) {
+            return Ok(Some(Self::Max(Maximizer::new(node, channel_count, rate)?)));
+        }
+        if waveshaper::supports(kind) {
+            return Ok(Some(Self::Wave(Box::new(WaveShaper::new(
+                node,
+                channel_count,
+                rate,
+            )?))));
+        }
         if time_effects::supports(kind) {
             ensure!(
                 channel_count == 2,
@@ -345,11 +398,11 @@ impl Processor {
             )?)));
         }
         if filter::supports(kind) {
-            return Ok(Some(Self::Filter(XpanderFilter::new(
+            return Ok(Some(Self::Filter(Box::new(XpanderFilter::new(
                 node,
                 channel_count,
                 rate,
-            )?)));
+            )?))));
         }
         if effects::supports(kind) {
             return Ok(Some(Self::Effect(EffectProcessor::new(
@@ -369,12 +422,19 @@ impl Processor {
         }))
     }
     fn memory_bytes(&self) -> usize {
-        match self {
-            Self::Effect(p) => p.memory_bytes(),
-            Self::Time(p) => std::mem::size_of::<TimeEffect>() + p.memory_bytes(),
-            Self::Delay(p) => p.memory_bytes(),
-            _ => std::mem::size_of::<Self>(),
-        }
+        // Every entry owns the full enum allocation. Leaf accessors differ in
+        // whether they include inline state; count that state exactly once.
+        std::mem::size_of::<Self>()
+            + match self {
+                Self::Effect(p) => p.memory_bytes() - std::mem::size_of::<EffectProcessor>(),
+                Self::Time(p) => p.memory_bytes(),
+                Self::Wave(p) => p.memory_bytes(),
+                Self::Filter(_) => std::mem::size_of::<XpanderFilter>(),
+                Self::Max(p) => p.memory_bytes() - std::mem::size_of::<Maximizer>(),
+                Self::Delay(p) => p.memory_bytes() - std::mem::size_of::<TrackDelay>(),
+                Self::Spark(p) => std::mem::size_of::<SparkVerb>() + p.memory_bytes(),
+                _ => 0,
+            }
     }
     fn set(&mut self, name: &str, value: f64) -> Result<()> {
         match self {
@@ -383,8 +443,18 @@ impl Processor {
             Self::Pole(p) => p.set_parameter(name, value),
             Self::Delay(p) => p.set_parameter(name, value),
             Self::Effect(p) => p.set_parameter(name, &ParameterValue::Number(value)),
-            Self::Filter(p) => p.set_parameter(name, &ParameterValue::Number(value)),
+            Self::Filter(p) => p.set_parameter(
+                name,
+                &if name == "Bypass" {
+                    ParameterValue::Boolean(value >= 0.5)
+                } else {
+                    ParameterValue::Number(value)
+                },
+            ),
             Self::Time(p) => p.set_parameter(name, &ParameterValue::Number(value)),
+            Self::Wave(p) => p.set_parameter(name, &ParameterValue::Number(value)),
+            Self::Max(p) => p.set_parameter(name, &ParameterValue::Number(value)),
+            Self::Spark(p) => p.set_parameter(name, &ParameterValue::Number(value)),
         }
     }
     fn set_value(&mut self, name: &str, value: &ParameterValue) -> Result<()> {
@@ -392,6 +462,9 @@ impl Processor {
             Self::Effect(p) => return p.set_parameter(name, value),
             Self::Filter(p) => return p.set_parameter(name, value),
             Self::Time(p) => return p.set_parameter(name, value),
+            Self::Wave(p) => return p.set_parameter(name, value),
+            Self::Max(p) => return p.set_parameter(name, value),
+            Self::Spark(p) => return p.set_parameter(name, value),
             _ => {}
         }
         let value = match value {
@@ -431,6 +504,9 @@ impl Processor {
             Self::Effect(p) => p.process(std::slice::from_mut(frame))?,
             Self::Filter(p) => p.process(std::slice::from_mut(frame))?,
             Self::Time(p) => p.process(std::slice::from_mut(frame))?,
+            Self::Wave(p) => p.process(std::slice::from_mut(frame))?,
+            Self::Max(p) => p.process(std::slice::from_mut(frame))?,
+            Self::Spark(p) => p.process(std::slice::from_mut(frame))?,
         }
         Ok(())
     }
@@ -546,6 +622,7 @@ struct Voice {
     note: script::Note,
     started: u64,
     instance: u64,
+    launch: u64,
     key_released: bool,
     note_off: Option<u64>,
     channels: usize,
@@ -563,6 +640,8 @@ pub struct Renderer<'a> {
     rate: f64,
     frame: u64,
     next_instance: u64,
+    next_launch: u64,
+    snapshots: HashMap<u32, script::Note>,
     voices: Vec<Voice>,
     processors: HashMap<NodeId, Processor>,
     children: Vec<Vec<NodeId>>,
@@ -734,6 +813,8 @@ impl<'a> Renderer<'a> {
             rate: f64::from(rate),
             frame: 0,
             next_instance: 0,
+            next_launch: 0,
+            snapshots: HashMap::new(),
             voices: Vec::new(),
             processors: HashMap::new(),
             children,
@@ -793,6 +874,9 @@ impl<'a> Renderer<'a> {
             let processor = effects::supports(&node.kind)
                 || filter::supports(&node.kind)
                 || time_effects::supports(&node.kind)
+                || waveshaper::supports(&node.kind)
+                || maximizer::supports(&node.kind)
+                || sparkverb::supports(&node.kind)
                 || matches!(
                     node.kind.as_str(),
                     "GainMatrix" | "Gain" | "OnePole" | "TrackDelay"
@@ -862,6 +946,9 @@ impl<'a> Renderer<'a> {
             dsp::FIDELITY_DIAGNOSTIC,
             filter::FIDELITY_DIAGNOSTIC,
             time_effects::FIDELITY_DIAGNOSTIC,
+            waveshaper::FIDELITY_DIAGNOSTIC,
+            maximizer::FIDELITY_DIAGNOSTIC,
+            sparkverb::FIDELITY_DIAGNOSTIC,
             effects::FIDELITY_DIAGNOSTIC,
             modulation::FIDELITY_DIAGNOSTIC,
             generator::FIDELITY_DIAGNOSTIC,
@@ -1041,7 +1128,12 @@ impl<'a> Renderer<'a> {
                 {
                     gain.set_effective_volume(*value)?;
                 } else {
-                    processor.set(name, *value)?;
+                    processor.set(name, *value).with_context(|| {
+                        format!(
+                            "Modulated UVI parameter {name}={value} at node {id}, frame {}",
+                            self.frame
+                        )
+                    })?;
                 }
             }
         }
@@ -1103,7 +1195,12 @@ impl<'a> Renderer<'a> {
                 for (name, value) in &self.parameters[id] {
                     if matches!(
                         p,
-                        Processor::Effect(_) | Processor::Filter(_) | Processor::Time(_)
+                        Processor::Effect(_)
+                            | Processor::Filter(_)
+                            | Processor::Time(_)
+                            | Processor::Wave(_)
+                            | Processor::Max(_)
+                            | Processor::Spark(_)
                     ) {
                         continue;
                     }
@@ -1163,6 +1260,7 @@ impl<'a> Renderer<'a> {
                 && (-1. ..=1.).contains(&note.pan),
             "Invalid UVI playback note"
         );
+        let posted_note = note.clone();
         let mut transposed = note.clone();
         let transpose = self.number(self.program.root, "TransposeOctaves", 0.)? * 12.
             + self.number(self.program.root, "TransposeSemiTones", 0.)?;
@@ -1211,6 +1309,12 @@ impl<'a> Renderer<'a> {
                 ))
             })
             .collect::<Result<Vec<_>>>()?;
+        self.next_launch = self
+            .next_launch
+            .checked_add(1)
+            .context("UVI note launch identity overflow")?;
+        let launch = self.next_launch;
+        self.snapshots.insert(note.id, posted_note);
         let mut program_started = false;
         for (group, layer) in groups {
             if note
@@ -1266,7 +1370,12 @@ impl<'a> Renderer<'a> {
                         direction: 1.,
                         loops_completed: 0,
                         done: false,
-                        generator: Some(Generator::new(&live_node, self.rate, table)?),
+                        generator: Some(Generator::new_seeded(
+                            &live_node,
+                            self.rate,
+                            table,
+                            launch ^ (player as u64).rotate_left(32),
+                        )?),
                         gain: None,
                     });
                     continue;
@@ -1346,6 +1455,7 @@ impl<'a> Renderer<'a> {
                     });
                     if !self.voices.iter().any(|v| v.note.id == old) {
                         self.modulation.remove_voice(old);
+                        self.snapshots.remove(&old);
                     }
                 }
             }
@@ -1360,6 +1470,7 @@ impl<'a> Renderer<'a> {
                     if let Some(old) = self.voices.first().map(|v| v.note.id) {
                         self.voices.retain(|v| v.note.id != old);
                         self.modulation.remove_voice(old);
+                        self.snapshots.remove(&old);
                     }
                 }
                 program_started = true;
@@ -1402,6 +1513,7 @@ impl<'a> Renderer<'a> {
                 note: note.clone(),
                 started: self.frame,
                 instance: self.next_instance,
+                launch,
                 key_released: false,
                 note_off: None,
                 channels,
@@ -1426,6 +1538,9 @@ impl<'a> Renderer<'a> {
                 }
             }
             self.voices.push(voice);
+        }
+        if !self.voices.iter().any(|voice| voice.note.id == note.id) {
+            self.snapshots.remove(&note.id);
         }
         Ok(())
     }
@@ -1462,40 +1577,76 @@ impl<'a> Renderer<'a> {
         for id in removed {
             if !self.voices.iter().any(|voice| voice.note.id == id) {
                 self.modulation.remove_voice(id);
+                self.snapshots.remove(&id);
             }
         }
         Ok(())
     }
+    fn release_key(&mut self, id: u32, note: u8, channel: u8, layer: Option<NodeId>) -> Result<()> {
+        ensure!(
+            note < 128 && channel < 16 && layer.is_none_or(|id| self.program.layers.contains(&id)),
+            "Invalid UVI key-release routing"
+        );
+        let key = f64::from(note)
+            + numeric(&self.parameters, self.program.root, "TransposeOctaves", 0.)? * 12.
+            + numeric(
+                &self.parameters,
+                self.program.root,
+                "TransposeSemiTones",
+                0.,
+            )?;
+        let mut targets = HashSet::new();
+        for &owner in &self.program.layers {
+            if layer.is_some_and(|layer| owner != layer) {
+                continue;
+            }
+            if let Some(voice) = self.voices.iter().find(|voice| {
+                voice.note.id == id
+                    && f64::from(voice.note.note) == key
+                    && voice.layer == owner
+                    && !voice.key_released
+            }) {
+                targets.insert((owner, voice.launch));
+            }
+        }
+        // Native terminal NoteOff is FIFO within each Layer. All mic/keygroup
+        // voices of the same terminal launch share that gate. MIDI channel only
+        // routes Parts and does not reject a release within this Program.
+        for voice in &mut self.voices {
+            if targets.contains(&(voice.layer, voice.launch)) {
+                voice.key_released = true;
+            }
+        }
+        self.release_pending()
+    }
     fn apply_note(&mut self, action: &script::Action) -> Result<()> {
         match action {
             script::Action::Start(note) => self.start(note)?,
-            script::Action::ReleaseLayer { id, layer } => {
-                ensure!(
-                    self.program.layers.contains(layer),
-                    "Invalid UVI release layer"
-                );
-                for voice in self
-                    .voices
-                    .iter_mut()
-                    .filter(|voice| voice.note.id == *id && voice.layer == *layer)
-                {
-                    voice.key_released = true;
-                }
-                self.release_pending()?;
+            script::Action::ReleaseNote {
+                id,
+                note,
+                channel,
+                layer,
+            } => {
+                self.release_key(*id, *note, *channel, *layer)?;
             }
             script::Action::Release(id) => {
-                for voice in self.voices.iter_mut().filter(|voice| voice.note.id == *id) {
-                    voice.key_released = true;
+                if let Some(note) = self.snapshots.remove(id) {
+                    self.release_key(*id, note.note, note.channel, None)?;
                 }
-                self.release_pending()?;
             }
             script::Action::Change {
                 id,
                 gain,
                 tune,
                 pan,
+                layer,
             } => {
-                for voice in self.voices.iter_mut().filter(|v| v.note.id == *id) {
+                for voice in self
+                    .voices
+                    .iter_mut()
+                    .filter(|v| v.note.id == *id && layer.is_none_or(|id| v.layer == id))
+                {
                     if let Some(v) = gain {
                         ensure!(v.is_finite() && *v >= 0., "Invalid UVI note gain");
                         voice.note.volume = *v;
@@ -1680,22 +1831,6 @@ impl<'a> Renderer<'a> {
                     ParameterValue::Text(s) => s.clone(),
                 };
                 let kind = self.program.nodes[*node].kind.as_str();
-                if filter::supports(kind) && parameter == "KeyTracking" {
-                    let mut at = Some(*node);
-                    while at.is_some_and(|id| {
-                        !matches!(
-                            self.program.nodes[id].kind.as_str(),
-                            "Keygroup" | "AuxEffect" | "Layer" | "Program"
-                        )
-                    }) {
-                        at = at.and_then(|id| self.program.nodes[id].parent);
-                    }
-                    ensure!(
-                        at.is_some_and(|id| self.program.nodes[id].kind != "AuxEffect")
-                            || text == "0",
-                        "Auxiliary filter key tracking has no measured note context"
-                    );
-                }
                 if (kind == "SignalConnection"
                     && matches!(
                         parameter.as_str(),
@@ -1711,11 +1846,23 @@ impl<'a> Renderer<'a> {
                 }
                 let mut bytes = self.processor_bytes();
                 if let Some(p) = self.processors.get_mut(node) {
-                    p.set_value_bounded(parameter, value, &mut bytes)?;
+                    p.set_value_bounded(parameter, value, &mut bytes)
+                        .with_context(|| {
+                            format!(
+                                "UVI parameter {parameter}={value:?} at node {node}, frame {}",
+                                self.frame
+                            )
+                        })?;
                 }
                 for v in &mut self.voices {
                     if let Some(p) = v.processors.get_mut(node) {
-                        p.set_value_bounded(parameter, value, &mut bytes)?;
+                        p.set_value_bounded(parameter, value, &mut bytes)
+                            .with_context(|| {
+                                format!(
+                                    "UVI parameter {parameter}={value:?} at node {node}, frame {}",
+                                    self.frame
+                                )
+                            })?;
                     }
                 }
                 if self.program.nodes[*node].kind == "BusRouter" && parameter == "Destination" {
@@ -2152,6 +2299,7 @@ impl<'a> Renderer<'a> {
         for id in killed {
             if !voices.iter().any(|voice| voice.note.id == id) {
                 self.modulation.remove_voice(id);
+                self.snapshots.remove(&id);
             }
         }
         let mut processors = std::mem::take(&mut self.processors);
@@ -2271,6 +2419,7 @@ impl<'a> Renderer<'a> {
         for id in retired {
             if !voices.iter().any(|voice| voice.note.id == id) {
                 self.modulation.remove_voice(id);
+                self.snapshots.remove(&id);
             }
         }
         // Keep held voices after source exhaustion so per-note filter/delay state can drain.
@@ -2339,6 +2488,25 @@ impl<'a> Renderer<'a> {
             while host.get(hi).is_some_and(|c| c.frame == self.frame) {
                 self.apply_host(&host[hi].action)?;
                 hi += 1;
+            }
+            let updates = self
+                .modulation
+                .control_updates(&self.inputs(None), &self.live)?;
+            ensure!(
+                updates.len() <= LIMIT,
+                "UVI absolute control update limit exceeded"
+            );
+            for ((node, parameter), value) in updates {
+                let value = if parameter == "Bypass" {
+                    ParameterValue::Boolean(value >= 0.5)
+                } else {
+                    ParameterValue::Number(value)
+                };
+                self.apply_host(&host::Action::Parameter {
+                    node,
+                    parameter,
+                    value,
+                })?;
             }
             while notes.get(ni).is_some_and(|c| c.frame == self.frame) {
                 self.apply_note(&notes[ni].action)?;
@@ -3044,7 +3212,7 @@ mod tests {
         assert_eq!(renderer.voices[0].note.note, 60);
     }
     #[test]
-    fn duplicate_logical_note_ids_sum_instances_and_share_change_release() {
+    fn duplicate_logical_note_ids_share_controls_and_release_fifo_once() {
         let p = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
         let mut source = sample(1);
         source.interleaved = Storage::from_f32(vec![1.; source.interleaved.len()]).unwrap();
@@ -3066,6 +3234,7 @@ mod tests {
                     gain: Some(0.5),
                     tune: None,
                     pan: None,
+                    layer: None,
                 },
             },
             script::Command {
@@ -3079,6 +3248,38 @@ mod tests {
         assert_ne!(renderer.voices[0].instance, renderer.voices[1].instance);
         assert_eq!(
             renderer.render(&commands[3..], &[], 1).unwrap(),
+            vec![[0.25, 0.25]]
+        );
+        assert_eq!(renderer.voices.len(), 1);
+        assert_eq!(
+            renderer
+                .render(
+                    &[script::Command {
+                        frame: 5,
+                        action: script::Action::Release(1)
+                    }],
+                    &[],
+                    1
+                )
+                .unwrap(),
+            vec![[0.25, 0.25]]
+        );
+        assert_eq!(
+            renderer
+                .render(
+                    &[script::Command {
+                        frame: 6,
+                        action: script::Action::ReleaseNote {
+                            id: 1,
+                            note: 60,
+                            channel: 0,
+                            layer: None
+                        }
+                    }],
+                    &[],
+                    1
+                )
+                .unwrap(),
             vec![[0., 0.]]
         );
         assert!(renderer.voices.is_empty());
@@ -3292,7 +3493,21 @@ mod tests {
                     },
                     script::Command {
                         frame: 2,
-                        action: script::Action::Release(1),
+                        action: script::Action::ReleaseNote {
+                            id: 1,
+                            note: 60,
+                            channel: 9,
+                            layer: None,
+                        },
+                    },
+                    script::Command {
+                        frame: 2,
+                        action: script::Action::ReleaseNote {
+                            id: 1,
+                            note: 60,
+                            channel: 9,
+                            layer: None,
+                        },
                     },
                     script::Command {
                         frame: 3,
@@ -3448,9 +3663,11 @@ mod tests {
                     },
                     script::Command {
                         frame: 192,
-                        action: script::Action::ReleaseLayer {
+                        action: script::Action::ReleaseNote {
                             id: 1,
-                            layer: p.layers[0],
+                            note: 60,
+                            channel: 0,
+                            layer: Some(p.layers[0]),
                         },
                     },
                 ],
@@ -3536,5 +3753,443 @@ mod tests {
             )
             .unwrap();
         assert_eq!(renderer.processor_bytes(), global * 2);
+    }
+    #[test]
+    fn forwarded_key_release_matches_identity_key_layer_and_ignores_channel() {
+        let p = parse_program(r#"<Program><Layers><Layer Name="A"><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" NoteTracking="0"/></Oscillators></Keygroup></Keygroups></Layer><Layer Name="B"><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" NoteTracking="0"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let mut source = sample(1);
+        source.interleaved = Storage::from_f32(vec![1.; 8]).unwrap();
+        let mut renderer =
+            Renderer::new(&p, HashMap::from([("a".into(), Arc::new(source))]), 48000).unwrap();
+        let mut alternate = note(1);
+        alternate.note = 72;
+        alternate.channel = 1;
+        let commands = [
+            script::Command {
+                frame: 0,
+                action: script::Action::Start(note(1)),
+            },
+            script::Command {
+                frame: 0,
+                action: script::Action::Start(alternate),
+            },
+            script::Command {
+                frame: 0,
+                action: script::Action::Start(note(2)),
+            },
+            script::Command {
+                frame: 1,
+                action: script::Action::ReleaseNote {
+                    id: 999,
+                    note: 60,
+                    channel: 0,
+                    layer: None,
+                },
+            },
+            script::Command {
+                frame: 2,
+                action: script::Action::ReleaseNote {
+                    id: 1,
+                    note: 61,
+                    channel: 1,
+                    layer: None,
+                },
+            },
+            script::Command {
+                frame: 3,
+                action: script::Action::ReleaseNote {
+                    id: 1,
+                    note: 60,
+                    channel: 0,
+                    layer: Some(p.layers[0]),
+                },
+            },
+            script::Command {
+                frame: 4,
+                action: script::Action::ReleaseNote {
+                    id: 1,
+                    note: 72,
+                    channel: 1,
+                    layer: None,
+                },
+            },
+            script::Command {
+                frame: 5,
+                action: script::Action::ReleaseNote {
+                    id: 1,
+                    note: 60,
+                    channel: 14,
+                    layer: None,
+                },
+            },
+            script::Command {
+                frame: 6,
+                action: script::Action::ReleaseNote {
+                    id: 2,
+                    note: 60,
+                    channel: 0,
+                    layer: None,
+                },
+            },
+        ];
+        assert_eq!(
+            renderer.render(&commands, &[], 7).unwrap(),
+            vec![
+                [3., 3.],
+                [3., 3.],
+                [3., 3.],
+                [2.5, 2.5],
+                [1.5, 1.5],
+                [1., 1.],
+                [0., 0.]
+            ]
+        );
+        assert!(renderer.voices.is_empty());
+    }
+    #[test]
+    fn rack_filter_uses_voice_note_while_shared_aux_filter_stays_neutral() {
+        let fixture = |frequency, tracking| {
+            parse_program(&format!(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" NoteTracking="0"><PlaybackOptions Stop="8"/></SamplePlayer></Oscillators><Inserts><EffectRack><Chains><AuxEffect><Inserts><XpanderFilter Freq="{frequency}" KeyTracking="{tracking}"/></Inserts></AuxEffect></Chains></EffectRack></Inserts></Keygroup></Keygroups></Layer></Layers></Program>"#)).unwrap()
+        };
+        let mut source = sample(1);
+        let mut pcm = vec![0.; 8];
+        pcm[0] = 0.25;
+        source.interleaved = Storage::from_f32(pcm).unwrap();
+        let resources = HashMap::from([("a".into(), Arc::new(source))]);
+        let mut key = note(1);
+        key.note = 72;
+        let commands = [script::Command {
+            frame: 0,
+            action: script::Action::Start(key),
+        }];
+        let a = fixture(1000, 1);
+        let b = fixture(2000, 0);
+        let a = Renderer::new(&a, resources.clone(), 48000)
+            .unwrap()
+            .render(&commands, &[], 32)
+            .unwrap();
+        let b = Renderer::new(&b, resources.clone(), 48000)
+            .unwrap()
+            .render(&commands, &[], 32)
+            .unwrap();
+        assert_eq!(a, b);
+        let fixture = |tracking| {
+            parse_program(&format!(r#"<Program><Auxs><AuxEffect Name="A"><Inserts><XpanderFilter Freq="1000" KeyTracking="{tracking}"/></Inserts></AuxEffect></Auxs><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" NoteTracking="0"><PlaybackOptions Stop="8"/></SamplePlayer></Oscillators><BusRouters><BusRouter Destination="$Program/A" Gain="1"/></BusRouters></Keygroup></Keygroups></Layer></Layers></Program>"#)).unwrap()
+        };
+        let a = fixture(1);
+        let b = fixture(0);
+        assert_eq!(
+            Renderer::new(&a, resources.clone(), 48000)
+                .unwrap()
+                .render(&commands, &[], 32)
+                .unwrap(),
+            Renderer::new(&b, resources, 48000)
+                .unwrap()
+                .render(&commands, &[], 32)
+                .unwrap()
+        );
+    }
+    #[test]
+    fn wave_shaper_executes_native_oversampling_history_before_mono_projection() {
+        let p = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"><PlaybackOptions Stop="8"/></SamplePlayer></Oscillators><Inserts><WaveShaper PreFreq="22000" PostFreq="2" Oversampling="1"/></Inserts></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let mut source = sample(1);
+        let mut pcm = vec![0.; 8];
+        pcm[0] = 0.25;
+        source.interleaved = Storage::from_f32(pcm).unwrap();
+        let mut renderer =
+            Renderer::new(&p, HashMap::from([("a".into(), Arc::new(source))]), 48000).unwrap();
+        let output = renderer
+            .render(
+                &[script::Command {
+                    frame: 0,
+                    action: script::Action::Start(note(1)),
+                }],
+                &[],
+                8,
+            )
+            .unwrap();
+        for (actual, expected) in output.iter().zip([
+            0.00011817346967291087,
+            0.004105924628674984,
+            0.03593229502439499,
+            0.10866370797157288,
+            0.08956358581781387,
+            -0.05086439847946167,
+            -0.008961625397205353,
+            0.03720388561487198,
+        ]) {
+            assert!((f64::from(actual[0]) - expected).abs() < 1e-7);
+            assert_eq!(actual[0], actual[1]);
+        }
+    }
+    #[test]
+    fn fifo_release_gates_one_post_with_every_microphone_keygroup() {
+        let p = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup><Keygroup><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let mut source = sample(1);
+        source.interleaved = Storage::from_f32(vec![0.25; 8]).unwrap();
+        let mut renderer =
+            Renderer::new(&p, HashMap::from([("a".into(), Arc::new(source))]), 48000).unwrap();
+        let mut second = note(1);
+        second.volume = 2.;
+        second.tune = 12.;
+        assert_eq!(
+            renderer
+                .render(
+                    &[
+                        script::Command {
+                            frame: 0,
+                            action: script::Action::Start(note(1))
+                        },
+                        script::Command {
+                            frame: 0,
+                            action: script::Action::Start(second)
+                        }
+                    ],
+                    &[],
+                    1
+                )
+                .unwrap(),
+            vec![[0.75, 0.75]]
+        );
+        assert_eq!(renderer.voices[0].launch, renderer.voices[1].launch);
+        assert_eq!(renderer.voices[2].launch, renderer.voices[3].launch);
+        assert_ne!(renderer.voices[0].launch, renderer.voices[2].launch);
+        assert_eq!(
+            renderer
+                .render(
+                    &[script::Command {
+                        frame: 1,
+                        action: script::Action::ReleaseNote {
+                            id: 1,
+                            note: 60,
+                            channel: 15,
+                            layer: None
+                        }
+                    }],
+                    &[],
+                    1
+                )
+                .unwrap(),
+            vec![[0.5, 0.5]]
+        );
+        assert_eq!(renderer.voices.len(), 2);
+        assert!(renderer.voices.iter().all(|voice| voice.note.tune == 12.));
+        assert_eq!(
+            renderer
+                .render(
+                    &[script::Command {
+                        frame: 2,
+                        action: script::Action::ReleaseNote {
+                            id: 1,
+                            note: 60,
+                            channel: 0,
+                            layer: None
+                        }
+                    }],
+                    &[],
+                    1
+                )
+                .unwrap(),
+            vec![[0., 0.]]
+        );
+    }
+    #[test]
+    fn program_maximizer_has_native_lookahead_and_gain_after_sample_projection() {
+        let p = parse_program(r#"<Program><Inserts><Maximizer/></Inserts><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let mut source = sample(2);
+        source.interleaved =
+            Storage::from_f32((0..8).flat_map(|_| [0.25, 0.125]).collect()).unwrap();
+        let mut renderer =
+            Renderer::new(&p, HashMap::from([("a".into(), Arc::new(source))]), 48000).unwrap();
+        let output = renderer
+            .render(
+                &[script::Command {
+                    frame: 0,
+                    action: script::Action::Start(note(1)),
+                }],
+                &[],
+                97,
+            )
+            .unwrap();
+        assert!(output[..96].iter().all(|frame| *frame == [0., 0.]));
+        assert!((output[96][0] - 0.49310568).abs() < 1e-7);
+        assert_eq!(output[96][0], 2. * output[96][1]);
+    }
+    #[test]
+    fn processor_memory_includes_enum_padding_and_boxed_state() {
+        let scalar = Processor::Gain(Gain::new(2).unwrap());
+        let matrix = Processor::Matrix(GainMatrix::new(2, 2).unwrap());
+        assert_eq!(scalar.memory_bytes(), std::mem::size_of::<Processor>());
+        assert_eq!(matrix.memory_bytes(), std::mem::size_of::<Processor>());
+        let p =
+            parse_program(r#"<Program><Inserts><XpanderFilter/><WaveShaper/></Inserts></Program>"#)
+                .unwrap();
+        for node in p
+            .nodes
+            .iter()
+            .filter(|node| filter::supports(&node.kind) || waveshaper::supports(&node.kind))
+        {
+            let processor = Processor::new(node, 48000., 2, &Arc::new(HashMap::new()))
+                .unwrap()
+                .unwrap();
+            let boxed_bytes = if filter::supports(&node.kind) {
+                std::mem::size_of::<XpanderFilter>()
+            } else {
+                std::mem::size_of::<WaveShaper>()
+            };
+            assert_eq!(
+                processor.memory_bytes(),
+                std::mem::size_of::<Processor>() + boxed_bytes
+            );
+        }
+        assert!(std::mem::size_of::<Processor>() < std::mem::size_of::<XpanderFilter>());
+    }
+    #[test]
+    fn program_sparkverb_keeps_native_stereo_projection_and_static_echo() {
+        let p = parse_program(r#"<Program><Inserts><SparkVerb ModDepth="0" Mix="1"/></Inserts><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let mut source = sample(1);
+        source.interleaved = Storage::from_f32(vec![0.25, 0., 0., 0., 0., 0., 0., 0.]).unwrap();
+        let mut renderer =
+            Renderer::new(&p, HashMap::from([("a".into(), Arc::new(source))]), 48000).unwrap();
+        let output = renderer
+            .render(
+                &[script::Command {
+                    frame: 0,
+                    action: script::Action::Start(note(1)),
+                }],
+                &[],
+                3805,
+            )
+            .unwrap();
+        assert!(output[..1811].iter().all(|frame| *frame == [0., 0.]));
+        assert!((output[1811][0] - 0.033346776).abs() < 1e-7);
+        assert!((output[3804][0] - 0.020425495).abs() < 1e-7);
+        assert!(renderer.processor_bytes() > std::mem::size_of::<Processor>());
+        let unsupported =
+            parse_program(r#"<Program><Inserts><SparkVerb ModDepth="1"/></Inserts></Program>"#)
+                .unwrap();
+        assert!(
+            preflight(&unsupported)
+                .iter()
+                .any(|entry| entry.reason.contains("modulation"))
+        );
+    }
+    #[test]
+    fn typed_source_scopes_choose_nearest_ancestor_without_basename_fallback() {
+        let p = parse_program(r#"<Program><ControlSignalSources><ConstantModulation Name="Env" Value="0.9"/></ControlSignalSources><Layers><Layer><ControlSignalSources><ConstantModulation Name="Env" Value="0.6"/></ControlSignalSources><Keygroups><Keygroup><ControlSignalSources><ConstantModulation Name="Env" Value="0.2"/></ControlSignalSources><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let player = p.sample_zones[0].player;
+        for (path, value) in [
+            ("$Program/Env", "0.9"),
+            ("$Layer/Env", "0.6"),
+            ("$Keygroup/Env", "0.2"),
+        ] {
+            let id = resolve_path(&p, player, path).unwrap();
+            assert_eq!(p.nodes[id].attributes["Value"], value);
+        }
+        assert_eq!(
+            resolve_path(&p, p.sample_zones[0].keygroup, "$Keygroup").unwrap(),
+            p.sample_zones[0].keygroup
+        );
+        assert!(resolve_path(&p, player, "Env").is_err());
+        assert!(resolve_path(&p, p.root, "$Keygroup/Env").is_err());
+        assert!(resolve_path(&p, player, "$ProgramInvalid/Env").is_err());
+    }
+    #[test]
+    fn layer_controls_change_only_started_siblings_in_the_issuing_layer() {
+        let p = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup></Keygroups></Layer><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let mut source = sample(1);
+        source.interleaved = Storage::from_f32(vec![0.25; 8]).unwrap();
+        let mut renderer =
+            Renderer::new(&p, HashMap::from([("a".into(), Arc::new(source))]), 48000).unwrap();
+        let output = renderer
+            .render(
+                &[
+                    script::Command {
+                        frame: 0,
+                        action: script::Action::Change {
+                            id: 1,
+                            gain: Some(0.1),
+                            tune: Some(12.),
+                            pan: None,
+                            layer: Some(p.layers[0]),
+                        },
+                    },
+                    script::Command {
+                        frame: 0,
+                        action: script::Action::Start(note(1)),
+                    },
+                    script::Command {
+                        frame: 1,
+                        action: script::Action::Change {
+                            id: 1,
+                            gain: Some(0.5),
+                            tune: Some(12.),
+                            pan: None,
+                            layer: Some(p.layers[0]),
+                        },
+                    },
+                ],
+                &[],
+                2,
+            )
+            .unwrap();
+        assert_eq!(output, vec![[0.25, 0.25], [0.1875, 0.1875]]);
+        assert_eq!(renderer.voices[0].note.tune, 12.);
+        assert_eq!(renderer.voices[1].note.tune, 0.);
+    }
+    #[test]
+    fn absolute_producer_writes_use_native_block_endpoint_before_audio() {
+        let p = parse_program(r#"<Program><ControlSignalSources><ConstantModulation Name="Src" Value="0"/><ConstantModulation Name="Target" Value="0.8"><Connections><SignalConnection Source="$Program/Src" Destination="Value" Ratio="1" ConnectionMode="1" SignalConnectionVersion="1"/></Connections></ConstantModulation></ControlSignalSources><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let src = p
+            .nodes
+            .iter()
+            .position(|node| node.name.as_deref() == Some("Src"))
+            .unwrap();
+        let target = p
+            .nodes
+            .iter()
+            .position(|node| node.name.as_deref() == Some("Target"))
+            .unwrap();
+        let mut source = sample(1);
+        source.interleaved = Storage::from_f32(vec![0.25; 8]).unwrap();
+        let mut renderer =
+            Renderer::new(&p, HashMap::from([("a".into(), Arc::new(source))]), 48000).unwrap();
+        renderer
+            .render(
+                &[script::Command {
+                    frame: 0,
+                    action: script::Action::Start(note(1)),
+                }],
+                &[],
+                256,
+            )
+            .unwrap();
+        assert_eq!(renderer.parameters[target]["Value"], "0.8");
+        for (block, expected) in [
+            0.10663980990648,
+            0.31733468174934,
+            0.51793825626373,
+            0.67547661066055,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let commands = if block == 0 {
+                vec![host::Command {
+                    frame: 256,
+                    action: host::Action::Parameter {
+                        node: src,
+                        parameter: "Value".into(),
+                        value: ParameterValue::Number(1.),
+                    },
+                }]
+            } else {
+                vec![]
+            };
+            let audio = renderer.render(&[], &commands, 256).unwrap();
+            let value = renderer.parameters[target]["Value"].parse::<f64>().unwrap();
+            assert!((value - expected).abs() < 8e-8, "{value} != {expected}");
+            assert!(audio.iter().all(|frame| *frame == [0.125, 0.125]));
+        }
     }
 }

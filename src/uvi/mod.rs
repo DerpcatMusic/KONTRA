@@ -11,15 +11,18 @@ pub mod filter;
 pub mod generator;
 pub mod host;
 pub mod library;
+pub mod maximizer;
 pub mod modulation;
 pub mod playback;
 pub mod program;
 pub mod resampling;
 pub mod sample;
 pub mod script;
+pub mod sparkverb;
 pub mod storage;
 pub mod time_effects;
 pub mod ufs;
+pub mod waveshaper;
 
 use crate::{
     audio,
@@ -318,7 +321,11 @@ pub fn render(
     );
     let mut engine = Engine::default();
     engine.set_bank(Some(Box::new(mapping.load_bank()?)));
-    let mut voices = HashMap::new();
+    struct PostedVoice {
+        event: Option<crate::engine::EventId>,
+        note: u8,
+    }
+    let mut voices: HashMap<u32, Vec<PostedVoice>> = HashMap::new();
     let mut cycle = vec![0; mapping.layers.len()];
     let (mut at, mut next) = (0, 0);
     let (mut left, mut right) = ([0.; MAX_BLOCK], [0.; MAX_BLOCK]);
@@ -337,19 +344,41 @@ pub fn render(
                         event.pan = note.pan;
                         event.offset_us = note.offset_us;
                         if let Some(id) = engine.start_event(&event) {
-                            voices.entry(note.id).or_insert_with(Vec::new).push(id);
+                            voices.entry(note.id).or_default().push(PostedVoice {
+                                event: Some(id),
+                                note: note.note,
+                            });
                         }
                     }
                 }
                 Action::Release(id) => {
-                    if let Some(ids) = voices.remove(id) {
-                        for id in ids {
-                            engine.release_event(id);
-                        }
+                    if let Some(event) = voices
+                        .get_mut(id)
+                        .and_then(|v| v.last_mut())
+                        .and_then(|v| v.event.take())
+                    {
+                        engine.release_event(event);
                     }
                 }
-                Action::ReleaseLayer { .. } => {
-                    anyhow::bail!("Scoped native layers are not part of a standalone DMAP");
+                Action::ReleaseNote {
+                    id,
+                    note,
+                    channel: _,
+                    layer,
+                } => {
+                    ensure!(
+                        layer.is_none(),
+                        "Scoped native layers are not part of a standalone DMAP"
+                    );
+                    if let Some(events) = voices.get_mut(id) {
+                        if let Some(posted) = events
+                            .iter_mut()
+                            .find(|v| v.note == *note && v.event.is_some())
+                            && let Some(event) = posted.event.take()
+                        {
+                            engine.release_event(event);
+                        }
+                    }
                 }
                 Action::Controller {
                     channel,
@@ -408,7 +437,7 @@ pub fn render(
                         "Nonzero-target fade termination requires native Program playback"
                     );
                     if let Some(events) = voices.get(id) {
-                        for &event in events {
+                        for event in events.iter().filter_map(|v| v.event) {
                             if let Some(start) = start {
                                 engine.fade_event(event, 0., *start, false);
                             }
@@ -426,9 +455,14 @@ pub fn render(
                     gain,
                     tune,
                     pan,
+                    layer,
                 } => {
+                    ensure!(
+                        layer.is_none(),
+                        "Scoped native layers are not part of a standalone DMAP"
+                    );
                     if let Some(ids) = voices.get(id) {
-                        for &id in ids {
+                        for id in ids.iter().filter_map(|v| v.event) {
                             if let Some(value) = gain {
                                 engine.change_event(id, EventChange::Volume(*value));
                             }

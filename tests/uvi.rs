@@ -107,7 +107,15 @@ fn clear_mapping_lua_and_audio() {
         commands.iter().map(|c| c.frame).collect::<Vec<_>>(),
         [0, 480, 4800]
     );
-    assert!(matches!(commands[2].action, Action::Release(1)));
+    assert!(matches!(
+        commands[2].action,
+        Action::ReleaseNote {
+            id: 1,
+            note: 60,
+            channel: 0,
+            layer: None
+        }
+    ));
     let mut audio = Vec::new();
     uvi::render(&mapping, &commands, 14400, |f| {
         audio.push(f);
@@ -133,8 +141,28 @@ fn clear_mapping_lua_and_audio() {
     .unwrap();
     assert!(matches!(children[0].action, Action::Start(ref n) if n.id == 2));
     assert!(matches!(children[1].action, Action::Start(ref n) if n.id == 4));
-    assert!(matches!(children[2].action, Action::Release(2)) && children[2].frame == 4800);
-    assert!(matches!(children[3].action, Action::Release(4)) && children[3].frame == 9600);
+    assert!(
+        matches!(
+            children[2].action,
+            Action::ReleaseNote {
+                id: 2,
+                note: 72,
+                layer: None,
+                ..
+            }
+        ) && children[2].frame == 4800
+    );
+    assert!(
+        matches!(
+            children[3].action,
+            Action::ReleaseNote {
+                id: 4,
+                note: 72,
+                layer: None,
+                ..
+            }
+        ) && children[3].frame == 9600
+    );
     let delayed = script::process(
         "function onNote(e) wait(150);playNote(e.note,e.velocity) end\nfunction onRelease(e) end",
         "late.lua",
@@ -151,9 +179,10 @@ fn clear_mapping_lua_and_audio() {
     )
     .unwrap();
     assert!(
-        matches!(delayed_change[0].action, Action::Start(ref n) if n.volume == 0.25)
+        matches!(delayed_change[0].action, Action::Start(ref n) if n.volume == 1.)
             && delayed_change[0].frame == 960
     );
+    assert!(!delayed_change.iter().any(|c| matches!(c.action, Action::Change { .. })));
     script::process("function onNote(e) local id=playNote(e.note,e.velocity,10);wait(20);assert(not releaseVoice(id)) end", "finite.lua", &inputs, 12000).unwrap();
 
     let cc = [Input {
@@ -212,9 +241,19 @@ fn clear_mapping_lua_and_audio() {
         Ok(())
     })
     .unwrap();
-    for at in [480, 1200, 5500] {
+    for at in [480, 1200] {
         assert!((doubled[at][0] - 2. * baseline[at][0]).abs() < 1e-6);
     }
+    // One terminal NoteOff releases the oldest matching post; its sibling
+    // remains held, as in the native duplicate-ID/key oracle.
+    let mut held = Vec::new();
+    uvi::render(&mapping, &transparent[..1], 12000, |frame| {
+        held.push(frame);
+        Ok(())
+    })
+    .unwrap();
+    assert!(held[5500][0].abs() > baseline[5500][0].abs());
+    assert!((doubled[5500][0] - baseline[5500][0] - held[5500][0]).abs() < 1e-6);
     let offset_mapping = uvi::parse_mapping(
         &dir.join("offset.dmap"),
         "<layers maxSampleStart='20'><layer><zone path='offset.wav'/></layer></layers>",

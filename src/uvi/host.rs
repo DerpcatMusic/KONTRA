@@ -195,6 +195,7 @@ impl Host {
         }
         environment.set("this", self.objects.raw_get::<Table>(processor + 1)?)?;
         environment.set("Program", self.objects.raw_get::<Table>(program.root + 1)?)?;
+        install_class(lua, &environment)?;
         install_modules(lua, self.modules.clone(), &environment)?;
         install_resources(
             lua,
@@ -537,6 +538,7 @@ pub fn install(lua: &Lua, config: HostConfig<'_>) -> mlua::Result<Host> {
         lua.globals()
             .set("Program", objects.raw_get::<Table>(program.root + 1)?)?;
     }
+    install_class(lua, &lua.globals())?;
     install_modules(lua, host.modules.clone(), &lua.globals())?;
     install_modulation(lua, &host, now.clone(), valid_voice)?;
     install_resources(lua, &host, now, resources, &lua.globals())?;
@@ -735,6 +737,105 @@ fn install_context(lua: &Lua, program: &Table, host: &Host) -> mlua::Result<()> 
     Ok(())
 }
 
+struct ScriptClass;
+struct ScriptInstance;
+
+impl UserData for ScriptClass {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        for operator in [MetaMethod::Eq, MetaMethod::ToString] {
+            methods.add_meta_function(operator, |_, _: MultiValue| -> mlua::Result<Value> {
+                Err(mlua::Error::runtime("Unsupported UVI class operator"))
+            });
+        }
+        methods.add_meta_function(
+            MetaMethod::Index,
+            |_, (class, key): (AnyUserData, String)| class.user_value::<Table>()?.get::<Value>(key),
+        );
+        methods.add_meta_function(
+            MetaMethod::NewIndex,
+            |_, (class, key, value): (AnyUserData, String, Value)| {
+                class.user_value::<Table>()?.set(key, value)
+            },
+        );
+        methods.add_meta_function(MetaMethod::Call, |lua, mut args: MultiValue| {
+            let Some(Value::UserData(class)) = args.pop_front() else {
+                return Err(mlua::Error::runtime("Invalid UVI class constructor"));
+            };
+            let members = class.user_value::<Table>()?;
+            let init = members.get::<Function>("__init")?;
+            let instance = lua.create_userdata(ScriptInstance)?;
+            let state = lua.create_table()?;
+            state.set("members", members)?;
+            state.set("fields", lua.create_table()?)?;
+            instance.set_user_value(state)?;
+            args.push_front(Value::UserData(instance.clone()));
+            init.call::<()>(args)?;
+            Ok(instance)
+        });
+    }
+}
+
+impl UserData for ScriptInstance {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        for operator in [MetaMethod::Eq, MetaMethod::ToString] {
+            methods.add_meta_function(operator, |_, _: MultiValue| -> mlua::Result<Value> {
+                Err(mlua::Error::runtime("Unsupported UVI class operator"))
+            });
+        }
+        methods.add_meta_function(
+            MetaMethod::Index,
+            |_, (instance, key): (AnyUserData, String)| {
+                let state = instance.user_value::<Table>()?;
+                let value = state.get::<Table>("fields")?.get::<Value>(key.as_str())?;
+                if matches!(value, Value::Nil) {
+                    state.get::<Table>("members")?.get::<Value>(key)
+                } else {
+                    Ok(value)
+                }
+            },
+        );
+        methods.add_meta_function(
+            MetaMethod::NewIndex,
+            |_, (instance, key, value): (AnyUserData, String, Value)| {
+                instance
+                    .user_value::<Table>()?
+                    .get::<Table>("fields")?
+                    .set(key, value)
+            },
+        );
+    }
+}
+
+// Native class() publishes userdata immediately and returns an optional-base
+// builder. Inheritance copies existing members but requires its own __init.
+fn install_class(lua: &Lua, environment: &Table) -> mlua::Result<()> {
+    let scope = environment.clone();
+    environment.set(
+        "class",
+        lua.create_function(move |lua, name: String| {
+            if name.is_empty() || name.len() > 256 || name.contains('\0') {
+                return Err(mlua::Error::runtime("Invalid UVI class name"));
+            }
+            let class = lua.create_userdata(ScriptClass)?;
+            class.set_user_value(lua.create_table()?)?;
+            scope.set(name, class.clone())?;
+            lua.create_function(move |_, base: AnyUserData| {
+                if !base.is::<ScriptClass>() {
+                    return Err(mlua::Error::runtime("Invalid UVI base class"));
+                }
+                let members = class.user_value::<Table>()?;
+                for pair in base.user_value::<Table>()?.pairs::<String, Value>() {
+                    let (key, value) = pair?;
+                    if key != "__init" {
+                        members.set(key, value)?;
+                    }
+                }
+                Ok(())
+            })
+        })?,
+    )
+}
+
 struct AsyncUpdaterFactory;
 struct AsyncUpdater;
 
@@ -919,11 +1020,7 @@ fn install_modulation(
                 let ramp_ms = number(args.pop_front(), Some(20.))?;
                 let voice = match args.pop_front() {
                     None | Some(Value::Nil) => None,
-                    Some(Value::Integer(n)) if n > 0 && n <= u32::MAX as i64 => Some(n as u32),
-                    Some(Value::Number(n)) if n.fract() == 0. && n > 0. && n <= u32::MAX as f64 => {
-                        Some(n as u32)
-                    }
-                    _ => return Err(mlua::Error::runtime("Invalid UVI modulation voice id")),
+                    Some(value) => Some(super::script::voice_id(value)?),
                 };
                 if !(-1. ..=1.).contains(&target)
                     || start.is_some_and(|s| !(-1. ..=1.).contains(&s))
@@ -1548,6 +1645,11 @@ function methods:setStripImage(image,numImages,orientation) self._state.stripIma
 local function construct(kind,...)
   local args={...}; local p={kind=kind,enabled=true,visible=true,alpha=1,persistent=true,children={},x=0,y=0,width=0,height=0}
   if type(args[1])=='table' then for k,v in pairs(args[1]) do p[k]=v end; args=args[1] end
+  if kind=='XY' then
+    p.paramX=p.paramX or args[1];p.paramY=p.paramY or args[2]
+    if type(p.paramX)~='string' or type(p.paramY)~='string' then error('UVI XY requires two parameter names')end
+    p.name=p.name or ('XY_'..p.paramX..'_'..p.paramY)
+  end
   p.name=p.name or args[1];if p.name==nil and (kind=='Panel' or kind=='Viewport')then p.name=''end
   if type(p.name)~='string' then error('UVI widget requires a name') end
   p.displayName=p.displayName or p.name; p.tooltip=p.tooltip or p.name
@@ -1572,7 +1674,7 @@ local function construct(kind,...)
   table.insert(order,widget)
   return widget
 end
-for _,kind in ipairs{'Panel','Viewport','Label','Image','WaveView','AudioMeter','Menu','Table','Slider','Knob','NumBox','Button','OnOffButton'} do
+for _,kind in ipairs{'Panel','Viewport','Label','Image','WaveView','AudioMeter','XY','Menu','Table','Slider','Knob','NumBox','Button','OnOffButton'} do
   _G[kind]=function(...) return construct(kind,...) end
   methods[kind]=function(parent,...) if parent.kind~='Panel' and parent.kind~='Viewport' then error('Only UVI containers can create child widgets')end;local widget=construct(kind,...);if not widget.parent then widget.parent=parent;table.insert(parent._state.children,widget)end;return widget end
 end
@@ -1641,6 +1743,20 @@ mod tests {
           assert(not pcall(require,''))
           assert(not pcall(require,string.rep('x',257)))
           assert(require('uvi.ChordRec')==true)
+          local extend=class'AuthoredBase';assert(type(extend)=='function' and type(AuthoredBase)=='userdata')
+          AuthoredBase.static=7
+          function AuthoredBase:__init(x)self.x=x end
+          function AuthoredBase:sum()return self.x+AuthoredBase.static end
+          local a=AuthoredBase(4);a.y=9
+          assert(type(a)=='userdata' and a.x==4 and a.y==9 and a:sum()==11 and a.static==7 and a.missing==nil and a==a)
+          assert(not pcall(function()return a==AuthoredBase(4)end))
+          assert(not pcall(function()return tostring(a)end))
+          assert(class'AuthoredChild'(AuthoredBase)==nil)
+          assert(not pcall(function()AuthoredChild(3)end))
+          function AuthoredChild:__init(x)self.x=x*2 end
+          local child=AuthoredChild(5);assert(child.x==10 and child:sum()==17 and child.static==7)
+          AuthoredBase.static=10;function AuthoredBase:sum()return 1000 end
+          assert(child:sum()==20 and child.static==7)
           local rec=ChordRec;assert(require('uvi.ChordRec')==true and rec==ChordRec)
           local root,kind,bass=rec.chordKind{60,64,67};assert(root==0 and kind=='M' and bass==0)
           root,kind,bass=rec.chordKind{64,67,72};assert(root==0 and kind=='M' and bass==4)
@@ -1685,12 +1801,27 @@ mod tests {
             },
         )
         .unwrap();
+        lua.globals()
+            .set(
+                "authoredVoice",
+                super::super::script::voice_handle(&lua, 1).unwrap(),
+            )
+            .unwrap();
         lua.load(r#"
           assert(__API_VERSION__==23)
           assert(Mapper.Linear==0 and Mapper.Exponential==1 and Mapper.Quintic==9)
           local unnamed=Panel{};local view=unnamed:Viewport{}
           assert(unnamed.name=='' and view.name=='' and view.parent==unnamed and unnamed.children[1]==view)
           assert(not pcall(function()Knob{}end))
+          local x=Knob{'axisX',0.25,0,1};local y=Knob{'axisY',0.75,-1,1}
+          local xy=view:XY{'axisX','axisY',bounds={2,3,128,64}}
+          assert(xy.name=='XY_axisX_axisY' and xy.paramX=='axisX' and xy.paramY=='axisY' and xy.parent==view)
+          assert(xy.x==2 and xy.y==3 and xy.width==128 and xy.height==64 and xy.value==nil)
+          local axisCalls=0;local xyCalls=0;x.changed=function()axisCalls=axisCalls+1 end;xy.changed=function()xyCalls=xyCalls+1 end
+          x:setValue(0.5);assert(axisCalls==1 and xyCalls==0 and UVI_UI_STATE.widgets[xy.paramX]==x)
+          xy.paramX='axisY';assert(xy.paramX=='axisY' and xy.name=='XY_axisX_axisY')
+          assert(not pcall(function()xy:setValue(0.2,0.3)end))
+          assert(not pcall(function()XY{'axisX'}end))
           local wave=WaveView{'authored-wave',size={128,64},hiWaveColour='#FF0000'};wave.visible=false
           assert(wave.kind=='WaveView' and wave.sample=='' and wave.visible==false and wave.width==128 and wave.height==64)
           assert(UVI_UI_STATE.widgets['authored-wave']==wave and wave.hiWaveColour=='#FF0000')
@@ -1722,10 +1853,12 @@ mod tests {
           t:setValue(0,1);t:setValue(4,1);assert(t:getValue(0)==0 and t:getValue(4)==0 and called==3)
           local ints=Knob{'ints',0,-5,5,true};ints:setValue(-1.8,false);assert(ints.value==-1);ints:setValue(6,false);assert(ints.value==6)
           local defaults=Table{'defaults',2,0.25,0,1};defaults:setValue(1.8,2,false);assert(defaults:getValue(1)==2 and defaults:getValue(0.8)==0.25)
-          sendScriptModulation(3,0.4,100,1)
+          assert(type(authoredVoice)=='userdata')
+          sendScriptModulation(3,0.4,100,authoredVoice)
+          assert(not pcall(function()sendScriptModulation(3,0.4,100,1)end))
           assert(not pcall(function()sendScriptModulation(3,0.4,100,99999)end))
           assert(not pcall(function()sendScriptModulation2(3,0.1,0.4,100,99999)end))
-          sendScriptModulation2(4,0.1,0.2,0,1)
+          sendScriptModulation2(4,0.1,0.2,0,authoredVoice)
         "#).exec().unwrap();
         let commands = host.commands.borrow();
         assert_eq!(commands.len(), 5);
@@ -2087,6 +2220,7 @@ mod tests {
           assert(sentinel==nil and _G.sentinel==nil);sentinel='A';table.scopeSentinel='A'
           local first=require('scope');assert(first==require('scope') and first.owner=='A' and first.count==1)
           require('uvi.ChordRec');ChordRec.scopeSentinel='A'
+          class'ScopeClass';function ScopeClass:__init()self.owner='A'end
           n=Knob{'n',0.1,0,1};n.changed=function()Program.layers[1]:setParameter('Gain',n.value)end
           function onSave()return{owner='A'}end
           function onLoad(data)assert(data.owner=='A');loaded='A'end
@@ -2095,6 +2229,7 @@ mod tests {
           assert(sentinel==nil and _G.sentinel==nil and table.scopeSentinel==nil);sentinel='B'
           local first=require('scope');assert(first==require('scope') and first.owner=='B' and first.count==1)
           require('uvi.ChordRec');assert(ChordRec.scopeSentinel==nil)
+          assert(ScopeClass==nil);class'ScopeClass';function ScopeClass:__init()self.owner='B'end
           assert(this.parent==Program.layers[1])
           n=Knob{'n',0.2,0,1};n.changed=function()Program.layers[1]:setParameter('Gain',n.value)end
           function onSave()return{owner='B'}end

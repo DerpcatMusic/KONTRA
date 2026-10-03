@@ -22,9 +22,12 @@ The `uvi` Cargo feature enables these modules. Archive, program, script and rend
 | [`dsp`](../src/uvi/dsp.rs) | Gain, 1–12-channel GainMatrix, OnePole and TrackDelay | Original implementations with explicit parameter/rate/channel bounds. |
 | [`effects`](../src/uvi/effects.rs) | DigitalEq, ThreeBandShelves, Convolver and SampledReverb preparation | Reuses the convolution kernel with UVI preparation; matching module names do not imply matching sound. |
 | [`resampling`](../src/uvi/resampling.rs) | Bounded rational FIR impulse reconstruction | Original native-measured 44.1/88.2 to 48 kHz curves cover all 238 audited IR assets; uncommon endpoint ratios remain diagnosed. |
-| [`filter`](../src/uvi/filter.rs) | Xpander ladder solvers, modes and oversampling | Authored native comparisons cover the admitted 48 kHz path; other-rate fidelity remains limited. |
-| [`time_effects`](../src/uvi/time_effects.rs) | Stereo DualDelay, feedback/filter/control state | WhiteChorus remains unavailable; wider source routing is rejected. |
-| [`generator`](../src/uvi/generator.rs) | Per-voice Analog and external-wavetable oscillators | Supports bounded settings and rejects unsupported combinations; factory tables are not supplied. Original anti-aliasing/interpolation laws do not establish numerical parity. |
+| [`filter`](../src/uvi/filter.rs) | Xpander ladder solvers, modes and oversampling | Original elliptic reconstruction and authored native cross-rate comparisons cover admitted static settings; live control fidelity remains limited. |
+| [`time_effects`](../src/uvi/time_effects.rs) | Stereo DualDelay and WhiteChorus, feedback/filter/control state | Native comparisons cover selected settings; chorus startup and phase/read rounding retain explicit diagnostics. Wider source routing is rejected. |
+| [`waveshaper`](../src/uvi/waveshaper.rs) | Per-bus nonlinear transfer and oversampling | Eleven measured modes and OS0/1 are admitted; Mode4, higher oversampling and unverified live controls remain gated or diagnosed. |
+| [`maximizer`](../src/uvi/maximizer.rs) | Linked stereo lookahead and gain reduction | Measured bounded settings are admitted; attack, true-peak and alternate ceiling modes remain gated, with a slew-fidelity diagnostic. |
+| [`sparkverb`](../src/uvi/sparkverb.rs) | Stereo feedback network, diffusion and output filtering | Native full-curve comparisons cover measured static layouts; moving delay modulation and unmeasured layouts remain gated. |
+| [`generator`](../src/uvi/generator.rs) | Per-voice Analog and external-wavetable oscillators | Measured unison, phase and modulation settings are admitted. Ambiguous bank wavetable cycle geometry is rejected; native random sequences and full anti-aliasing parity are unclaimed. |
 | [`playback`](../src/uvi/playback.rs) | Offline native graph routing, voices, multichannel processing and rendering | Preflight rejects unsupported processors and nondefault behaviors, including initially bypassed modules that scripts might enable. |
 | [`cli`](../src/uvi/cli.rs), [`uvi` entry points](../src/uvi/mod.rs) | Local inspection/check/decode/render commands and the separate open-mapping path | Offline commands do not establish plugin integration or real-time safety. |
 
@@ -57,8 +60,10 @@ The paid corpus comprises 25 locally owned UFS banks. Only aggregate format obse
 | Packed-storage regression | Actual current wrapper linked against existing `audio::Pcm` | Exact I16/I24/f32 and negative-zero bits, 1/2/6/10/12-channel scalar order, random/reverse reads, padding and invalid-input checks; separate from a full integration run |
 | RIFF sample loops | 26,529 loops in 26,529 assets | Every inspected loop has kind `0`, fraction `0`, play count `0`; this does not validate other loop modes |
 | Program IR references | All 240 SampledReverb and 376 Convolver references resolve | Includes four-channel Convolver resources; resource resolution does not validate IR channel mapping |
-| Controlled offline render, round 5 | 40/40 programs complete; all 40 outputs nonzero | Original Program XML, source modules, embedded script and approved bank resources execute in the actual CLI; one short note test per program, not reference-host equivalence |
+| Controlled offline render, checkpoint `74326b5` | 40/40 programs complete; all 40 outputs nonzero | Original Program XML, source modules, embedded script and approved bank resources execute in the actual scoped-chain CLI; one short note test per program, not reference-host equivalence |
 | Independent render-output validation | All 40 completed outputs: 72,000 frames, stereo, 48 kHz, float32; zero nonfinite samples | Checks every output scalar independently of the CLI report; zero private log messages or dropped logs |
+| Expressive baseline, checkpoint `74326b5` | 38/40 programs complete; all 38 outputs nonzero; two DigitalEq frequency-range failures | Exercises 24 ordered CC/bend/overlap/retrigger events per program; current release/handle limits prevent a fidelity claim |
+| Expressive output and window validation | All 38 completed outputs: 211,200 frames, stereo, 48 kHz, float32; zero nonfinite samples | Every successful output is silent before the first note and nonzero during both overlap windows; later release/tail energy is an observation, not proof of correct voice ownership |
 
 All 14,208 SamplePlayers resolve after retaining the observed starred sibling-file lists. Of these players, 7,292 refer to a single file, 988 to two mono operands, 2,052 to ten and 3,876 to twelve. Expanding the lists resolves all 76,300 member references, covering 29,086 unique sampled audio resources. Every one of the 6,916 lists has matching frame count, sample rate, complete loop tuples and RIFF unity note across its mono operands. The sole CAF has no program audio references.
 
@@ -72,26 +77,26 @@ The programs contain 14,208 SamplePlayers, 6,318 OnePole filters, 6,180 GainMatr
 
 A separately inspected free Starter corpus contains 50 decoded programs and 75 XML node kinds, including generators and effects beyond the paid corpus's sample-based module set. Its wider module diversity prevents treating successful paid graph parsing as general Falcon coverage. The historical official UVI examples likewise include sample-mapping and synthesized sources.
 
-A second survey used the same retained round-3 CLI snapshot on all 50 free Starter programs. Thirty-two completed original-script initialization and the note/release timeline, each forwarding two event commands with no logged or dropped messages. Eighteen stopped before initialization at the explicit multiple-ScriptProcessor gate. Those programs contain two to seven ScriptProcessors; the entire free corpus has 79, including 56 at Program scope and 23 at Layer scope. Scoped event-chain execution is required rather than combining their sources into one script.
+A second survey used the same retained checkpoint `74326b5` binary on all 50 free Starter programs. Forty-eight completed original-script initialization and the note/release timeline, producing 365 event commands and 167 host commands with no logged or dropped messages. One program failed during initialization and one in a musical callback, each at a missing Lua helper. The callback failure is the actual CLI result with bank resource capabilities; it is not the earlier private harness's missing-resource/fuel failure.
 
-The current CLI executes isolated Program and Layer script chains with measured lifecycle ordering, deferred forwarding and layer-scoped release. The numbers below retain that earlier single-script baseline; they are not an audit of the current chain implementation.
+The CLI executes isolated Program and Layer script chains with measured lifecycle ordering, deferred forwarding and layer-scoped release. This clears the earlier single-script gate that prevented eighteen Starter programs from being checked. The complete free corpus contains 79 ScriptProcessors, including 56 at Program scope and 23 at Layer scope; programs contain one to seven processors. This test does not establish all callbacks or complete scoped voice semantics.
 
-All 32 programs that reached renderer preflight had unsupported behavior, so no complete original Starter program was rendered in this survey. The following counts cover those 32 reached programs, overlap, and include processors that are initially bypassed:
+All 48 programs that reached renderer preflight had unsupported behavior, so no complete original Starter program was rendered in this survey. The following counts cover those 48 reached programs, overlap, and include processors that are initially bypassed:
 
 | Preflight gate | Programs affected |
 | --- | ---: |
-| Control graph | 32 |
-| AnalogADSR | 27 |
-| SparkVerb | 25 |
-| Maximizer | 23 |
-| DualDelay | 20 |
-| WaveTableOscillator settings | 17 |
-| DAHDSR | 16 |
-| XpanderFilter | 13 |
-| WaveShaper | 13 |
-| WhiteChorus | 11 |
+| Control graph | 47 |
+| Maximizer | 34 |
+| SparkVerb | 33 |
+| WaveTableOscillator settings | 24 |
+| WaveShaper | 17 |
+| WhiteChorus | 16 |
+| Layer settings | 15 |
+| ParametricEQ | 12 |
+| Phasor | 11 |
+| PluckOscillator | 10 |
 
-The first reported control-graph gates were unsupported ConnectionMode `1` in 16 programs, unsupported source kinds in twelve, ambiguous graph paths in three and an unsupported control source in one. Wavetable gates include unison, FM, phase distortion and random phase; nine reached programs also require Analog oscillator unison. These observations prioritize actual missing semantics; a supported oscillator alone does not satisfy the envelopes, effects and control graph of a complete program.
+The first reported control-graph gates were unsupported ConnectionMode `1` in 24 programs, ambiguous graph paths in thirteen, unsupported control sources in seven and unsupported source kinds in three. Oscillator gates retain unsupported combinations even when some Analog/wavetable settings are implemented. These observations prioritize actual missing semantics; a supported oscillator alone does not satisfy the effects and control graph of a complete program.
 
 ## Sample residency and streaming
 
@@ -131,11 +136,17 @@ The interpreter validates timeline bounds, MIDI ranges and finite transport/bend
 
 ## Reference comparisons and remaining gates
 
-The round-5 audit used a retained snapshot of the optimized CLI, at most four concurrent processes, and a velocity-100 note from 0 to 500 ms followed by rendering through 1,500 ms. Every program first received note 60; four completed but silent tests produced nonzero output when retried at a note selected from active keygroup ranges. All 40 final outputs passed the independent WAV checks above, with no operation failures or logged/dropped messages. The earlier control-source, impulse-channel mapping, rounded gain-bound and random/smoothed LFO gates cleared in this snapshot. This establishes the tested timeline, not every note or expressive control. The free Starter survey above retains the separate round-3 baseline.
+The checkpoint `74326b5` audit used one retained optimized CLI binary for both paid and free checks, at most four concurrent processes, and a velocity-100 note from 0 to 500 ms followed by rendering through 1,500 ms. Every paid program first received note 60; four completed but silent tests produced nonzero output when retried at a note selected from active keygroup ranges. Two further programs produced very quiet default-note output outside their serialized active sample ranges; supplemental in-range note tests produced substantially stronger output and passed the same independent WAV checks. All 40 final regression outputs passed the checks above, with no operation failures or logged/dropped messages. This establishes the tested timelines, not every note or expressive control.
+
+The same checkpoint also ran forty expressive timelines using metadata-valid notes, CC1/CC2/CC11 changes, normalized pitch bend, same-key and distinct-key overlaps, releases and retriggers. Each contains 24 exactly ordered events through 3,400 ms, with rendering through 4,400 ms. Thirty-eight completed with finite, nonzero outputs and no logged/dropped messages; two stopped at the DigitalEq frequency range check. Independent peak/RMS windows cover held notes, both overlap types, staged releases, retrigger and the final tail. All successful outputs were silent before the first note and nonzero in both overlap windows. Release/tail energy alone cannot distinguish convolution decay from incorrectly retained voices. This is an explicitly limited baseline for comparison after release/typed-handle corrections, not verified expressive fidelity.
 
 Original synthetic probes against official UVI hosts informed the implemented OnePole and TrackDelay laws, EQ filter shapes/slopes and selected typed-parameter/widget behavior. Native lifecycle probes establish the implemented order `onLoad` → widget restoration → `onInit`; this corrects the older inferred ordering in the historical audit. A separate 54-case native pan comparison establishes centered mono gain of 0.5 per stereo output and stereo unity gain. Native keygroup-matrix probes preserve the input bus width; a mono input does not acquire twelve channels merely because all matrix coefficient fields exist. Source comments identify the scoped comparisons and retain fidelity diagnostics. These probes do not constitute commercial-preset reference renders or complete module parity.
 
-Current explicit limitations include forwarded-release key matching and duplicated-handle direct-release semantics; unsupported wider Falcon generators/processors; unresolved volume aliases; protected UFS streaming; full asynchronous load/save/browse behavior; a painted UVI editor and plugin automation integration; and real-time execution of the allocating Lua host. Preflight or operation-specific errors must remain visible when a behavior is unavailable.
+Native probes now distinguish per-processor posting registrations, per-callback held state, and independent DSP launches sharing one opaque voice handle. Forwarded releases match the key and issuing layer and release the oldest matching launch; gain, tune and fades affect all matching live voices within their issuing scope. Delayed posts survive an early release, and controls before DSP start do not alter their future note. These scoped checks do not establish all native key-buffer or coroutine behavior.
+
+Current explicit limitations include unsupported wider Falcon generators/processors; unresolved volume aliases; protected UFS streaming; full asynchronous load/save/browse behavior; a painted UVI editor and plugin automation integration; and real-time execution of the allocating Lua host. Preflight or operation-specific errors must remain visible when a behavior is unavailable.
+
+Native probes have identified remaining mismatches in relative controls on duplicated handles, declaration-order Constant chains and Layer-issued ScriptModulation. The current corpus checks do not establish those behaviors; their corrections remain separate from the recorded audit results.
 
 The native renderer retains diagnostics for its original interpolation, crossfade, voice-stealing and immediate-release choices. Authored native fixtures cover matrix width, mono/stereo pan, selected multichannel output layouts and aligned SamplePlayer gain controls; overlapping keygroup selection and nonaligned control timing remain unverified. DSP bypass transitions, LFO scheduling and modulation timing/rounding, IR routing/normalization/rate conversion and reverb preparation still require scoped reference comparisons. Native random-LFO clock seeds and cross-voice RNG ordering cannot be reconstructed from serialized programs; admitting the measured waveform/smoothing law does not establish matching random output. Initially bypassed unsupported modules are not silently dropped because scripts can enable them later.
 

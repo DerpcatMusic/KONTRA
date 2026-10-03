@@ -8,9 +8,14 @@
 
 use super::{dsp::Frame, program::ProgramNode, sample::Sample};
 use anyhow::{Context, Result, ensure};
-use std::{f64::consts::TAU, sync::Arc};
+use std::{
+    collections::hash_map::DefaultHasher,
+    f64::consts::TAU,
+    hash::{Hash, Hasher},
+    sync::Arc,
+};
 
-pub const FIDELITY_DIAGNOSTIC: &str = "Analog sine/PWM and fixed-phase unison phase/detune/gain/stereo laws, and filename-based wavetable slice morphing were measured against authored native fixtures; polynomial anti-aliasing, hard-sync edge treatment, noise sequence and linear wavetable readout are original laws, with numerical parity unverified";
+pub const FIDELITY_DIAGNOSTIC: &str = "Analog sine/PWM, Analog/Wavetable deterministic unison phase/detune/gain/stereo laws, filename-based wavetable slice morphing, wavetable phase-distortion modes 0/3 and tracked sine-FM ratio modes 0/1/2 were measured against authored native fixtures; polynomial anti-aliasing, hard-sync edge treatment, random phase/noise sequences and linear wavetable readout are original laws, with numerical parity unverified";
 
 pub fn supports(kind: &str) -> bool {
     matches!(kind, "MinBlepGenerator" | "WaveTableOscillator")
@@ -30,7 +35,7 @@ fn number(node: &ProgramNode, name: &str, default: f64) -> Result<f64> {
 
 pub fn validate(node: &ProgramNode) -> Result<()> {
     ensure!(supports(&node.kind), "Unsupported UVI generator");
-    let n = |name, default| number(node, name, default);
+    let n = |name: &str, default: f64| number(node, name, default);
     let voices = if node.kind == "MinBlepGenerator" {
         "NumOscillators"
     } else {
@@ -42,10 +47,6 @@ pub fn validate(node: &ProgramNode) -> Result<()> {
         "Invalid oscillator unison count"
     );
     ensure!(
-        count == 1. || (node.kind == "MinBlepGenerator" && n("PhaseSpread", 1.)? == 0.),
-        "Only fixed-phase Analog unison is implemented"
-    );
-    ensure!(
         (0. ..=1.).contains(&n("StartPhase", 0.)?),
         "Invalid oscillator start phase"
     );
@@ -54,33 +55,40 @@ pub fn validate(node: &ProgramNode) -> Result<()> {
         "Invalid generator Stereo flag"
     );
     ensure!(
-        [0., 1.].contains(&n("PhaseSpread", 1.)?),
-        "Random oscillator phase is not implemented"
+        [0., 1., 2.].contains(&n("PhaseSpread", 1.)?),
+        "Invalid oscillator phase spread"
+    );
+    ensure!(
+        (0. ..=1.).contains(&n(
+            if node.kind == "MinBlepGenerator" {
+                "MultiOscSpread"
+            } else {
+                "Spread"
+            },
+            0.1
+        )?),
+        "Invalid generator detune spread"
+    );
+    ensure!(
+        [0., 1.].contains(&n("DetuneMode", 0.)?),
+        "Invalid generator detune mode"
+    );
+    ensure!(
+        (0. ..=1.).contains(&n("StereoSpread", 0.1)?),
+        "Invalid generator stereo spread"
+    );
+    ensure!(
+        [0., 1.].contains(&n(
+            "StereoSpreadMode",
+            if node.kind == "MinBlepGenerator" {
+                0.
+            } else {
+                1.
+            }
+        )?),
+        "Invalid generator stereo spread mode"
     );
     if node.kind == "MinBlepGenerator" {
-        ensure!(
-            (0. ..=1.).contains(&n("MultiOscSpread", 0.1)?),
-            "Invalid Analog detune spread"
-        );
-        ensure!(
-            [0., 1.].contains(&n("DetuneMode", 0.)?),
-            "Invalid Analog detune mode"
-        );
-        ensure!(
-            (0. ..=1.).contains(&n("StereoSpread", 0.1)?),
-            "Invalid Analog stereo spread"
-        );
-        ensure!(
-            [0., 1.].contains(&n("StereoSpreadMode", 0.)?),
-            "Invalid Analog stereo spread mode"
-        );
-        ensure!(
-            count <= 3.
-                || n("Stereo", 0.)? == 0.
-                || n("StereoSpread", 0.1)? == 0.
-                || n("StereoSpreadMode", 0.)? == 0.,
-            "Alternating stereo unison phase assignment is not implemented"
-        );
         let wave = n("Waveform", 4.)?;
         ensure!(
             wave.fract() == 0. && (1. ..=5.).contains(&wave),
@@ -109,13 +117,16 @@ pub fn validate(node: &ProgramNode) -> Result<()> {
                 .is_some_and(|s| !s.is_empty()),
             "A resolved external wavetable is required; factory tables are not bundled"
         );
-        let mode = n("PhaseDistortionMode", 3.)?;
-        let amount = n("PhaseDistortionAmount", 0.)?;
-        ensure!(
-            (mode == 3. && amount == 0.) || (mode == 0. && amount == 0.5),
-            "Active wavetable phase distortion is not implemented"
-        );
-        ensure!(n("EnableFM", 0.)? == 0., "Wavetable FM is not implemented");
+        table_phase(
+            0.,
+            n("PhaseDistortionMode", 3.)?,
+            n("PhaseDistortionAmount", 0.)?,
+        )?;
+        let fm = n("EnableFM", 0.)?;
+        ensure!([0., 1.].contains(&fm), "Invalid wavetable FM flag");
+        if fm != 0. {
+            table_fm(&n)?;
+        }
         ensure!(
             n("WaveIndexSpread", 0.)? == 0.,
             "Wavetable unison index spread is not implemented"
@@ -137,10 +148,23 @@ pub struct Generator {
     oscillators: usize,
     noise: u32,
     stereo: bool,
+    fm: bool,
+    phase_spread: f64,
 }
 
 impl Generator {
     pub fn new(node: &ProgramNode, rate: f64, table: Option<Arc<Sample>>) -> Result<Self> {
+        Self::new_seeded(node, rate, table, 0)
+    }
+
+    /// The renderer supplies a local launch identity, never a process-wide RNG.
+    /// Native random phase varies per launch; its RNG sequence is unverified.
+    pub fn new_seeded(
+        node: &ProgramNode,
+        rate: f64,
+        table: Option<Arc<Sample>>,
+        seed: u64,
+    ) -> Result<Self> {
         validate(node)?;
         ensure!(
             rate.is_finite() && (8_000. ..=192_000.).contains(&rate),
@@ -158,14 +182,21 @@ impl Generator {
                     && table.interleaved.iter().all(|n| n.is_finite()),
                 "Only bounded mono external wavetables are implemented"
             );
-            let cycle = node
+            let filename_cycle = node
                 .attributes
                 .get("WavetablePath")
                 .and_then(|p| p.rsplit(['/', '\\']).next())
                 .and_then(|p| p.rsplit_once('.').map(|(stem, _)| stem))
                 .and_then(|p| p.rsplit_once('_').map(|(_, size)| size))
-                .and_then(|size| size.parse::<usize>().ok())
-                .unwrap_or(table.frames);
+                .and_then(|size| size.parse::<usize>().ok());
+            ensure!(
+                filename_cycle.is_some()
+                    || table
+                        .wavetable_cycle_frames
+                        .is_none_or(|hint| hint as usize == table.frames),
+                "Ambiguous multi-cycle wavetable hint; native bank cycle geometry is unverified"
+            );
+            let cycle = filename_cycle.unwrap_or(table.frames);
             ensure!(
                 cycle >= 4 && cycle <= table.frames && table.frames % cycle == 0,
                 "Invalid external wavetable cycle geometry"
@@ -188,16 +219,32 @@ impl Generator {
             1.,
         )? as usize;
         let start = number(node, "StartPhase", 0.)?;
+        let phase_spread = number(node, "PhaseSpread", 1.)?;
+        let mut noise = 0x91e1_0da5;
+        if seed != 0 {
+            let mut hash = DefaultHasher::new();
+            seed.hash(&mut hash);
+            noise = (hash.finish() as u32).max(1);
+        }
+        let phase = std::array::from_fn(|i| {
+            (start
+                + match phase_spread {
+                    0. => i as f64 / (2 * oscillators) as f64,
+                    1. => 2f64.powf(i as f64 / oscillators as f64) - 1.,
+                    _ => f64::from(next_random(&mut noise)) / 4294967296.,
+                })
+            .rem_euclid(1.)
+        });
         Ok(Self {
             source,
             rate,
-            phase: std::array::from_fn(|i| {
-                (start + i as f64 / (2 * oscillators) as f64).rem_euclid(1.)
-            }),
+            phase,
             master_phase: [0.; 8],
             oscillators,
-            noise: 0x91e1_0da5,
+            noise,
             stereo: number(node, "Stereo", 0.)? != 0.,
+            fm: node.kind == "WaveTableOscillator" && number(node, "EnableFM", 0.)? != 0.,
+            phase_spread,
         })
     }
 
@@ -230,17 +277,27 @@ impl Generator {
             "Generator Stereo changes bus width; rebuild graph required"
         );
         ensure!(
-            [0., 1.].contains(&numeric("PhaseSpread", 1.)?),
-            "Random oscillator phase is not implemented"
+            numeric("PhaseSpread", 1.)? == self.phase_spread,
+            "Generator phase spread changed; note retrigger required"
         );
-        ensure!(
-            self.oscillators == 1 || numeric("PhaseSpread", 1.)? == 0.,
-            "Only fixed-phase Analog unison is implemented"
-        );
-        let spread = numeric("MultiOscSpread", 0.1)?;
+        let spread = numeric(
+            if matches!(self.source, Source::Analog) {
+                "MultiOscSpread"
+            } else {
+                "Spread"
+            },
+            0.1,
+        )?;
         let detune_mode = numeric("DetuneMode", 0.)?;
         let stereo_spread = numeric("StereoSpread", 0.1)?;
-        let stereo_mode = numeric("StereoSpreadMode", 0.)?;
+        let stereo_mode = numeric(
+            "StereoSpreadMode",
+            if matches!(self.source, Source::Analog) {
+                0.
+            } else {
+                1.
+            },
+        )?;
         ensure!(
             (0. ..=1.).contains(&spread) && [0., 1.].contains(&detune_mode),
             "Invalid generator detune"
@@ -248,10 +305,6 @@ impl Generator {
         ensure!(
             (0. ..=1.).contains(&stereo_spread) && [0., 1.].contains(&stereo_mode),
             "Invalid generator stereo spread"
-        );
-        ensure!(
-            self.oscillators <= 3 || !self.stereo || stereo_spread == 0. || stereo_mode == 0.,
-            "Alternating stereo unison phase assignment is not implemented"
         );
         let mut frame = [0.; super::dsp::MAX_CHANNELS];
         for oscillator in 0..self.oscillators {
@@ -270,13 +323,21 @@ impl Generator {
                     let mode = numeric("PhaseDistortionMode", 3.)?;
                     let amount = numeric("PhaseDistortionAmount", 0.)?;
                     ensure!(
-                        (mode == 3. && amount == 0.) || (mode == 0. && amount == 0.5),
-                        "Active wavetable phase distortion is not implemented"
+                        numeric("EnableFM", 0.)? == f64::from(u8::from(self.fm)),
+                        "Wavetable FM enable changed; note retrigger required"
                     );
-                    ensure!(
-                        numeric("EnableFM", 0.)? == 0.,
-                        "Wavetable FM is not implemented"
-                    );
+                    let phase = if self.fm {
+                        let (depth, ratio) = table_fm(&numeric)?;
+                        let phase = (self.phase[oscillator]
+                            + depth * 0.5 * (TAU * self.master_phase[oscillator]).sin())
+                        .rem_euclid(1.);
+                        self.master_phase[oscillator] =
+                            (self.master_phase[oscillator] + step * ratio).rem_euclid(1.);
+                        phase
+                    } else {
+                        self.phase[oscillator]
+                    };
+                    let phase = table_phase(phase, mode, amount)?;
                     ensure!(
                         numeric("WaveIndexSpread", 0.)? == 0.,
                         "Wavetable unison index spread is not implemented"
@@ -295,7 +356,7 @@ impl Generator {
                     };
                     let high = (low + 1).min(table.frames / cycle - 1);
                     let read = |slice: usize| {
-                        let at = self.phase[oscillator] * *cycle as f64;
+                        let at = phase * *cycle as f64;
                         let lo = at as usize % cycle;
                         let hi = (lo + 1) % cycle;
                         let a = table
@@ -364,12 +425,7 @@ impl Generator {
                             }
                         }
                         4 => -0.5 * (TAU * sine_phase(self.phase[oscillator], pwm)).sin(),
-                        _ => {
-                            self.noise ^= self.noise << 13;
-                            self.noise ^= self.noise >> 17;
-                            self.noise ^= self.noise << 5;
-                            f64::from(self.noise) / f64::from(u32::MAX) - 0.5
-                        }
+                        _ => f64::from(next_random(&mut self.noise)) / f64::from(u32::MAX) - 0.5,
                     };
                     self.phase[oscillator] = (self.phase[oscillator] + increment).rem_euclid(1.);
                     self.master_phase[oscillator] += step;
@@ -391,7 +447,8 @@ impl Generator {
             }
             let value = value / (self.oscillators as f64).sqrt();
             if self.stereo {
-                let angle = (position * stereo_spread + 1.) * TAU / 8.;
+                let pan = unison_pan(oscillator, self.oscillators, stereo_mode);
+                let angle = (pan * stereo_spread + 1.) * TAU / 8.;
                 frame[0] += (value * angle.cos().powi(2)) as f32;
                 frame[1] += (value * angle.sin().powi(2)) as f32;
             } else {
@@ -400,6 +457,13 @@ impl Generator {
         }
         Ok(frame)
     }
+}
+
+fn next_random(state: &mut u32) -> u32 {
+    *state ^= *state << 13;
+    *state ^= *state >> 17;
+    *state ^= *state << 5;
+    *state
 }
 
 fn blep(phase: f64, step: f64) -> f64 {
@@ -436,6 +500,19 @@ fn unison_position(index: usize, count: usize) -> f64 {
     pair as f64 / (count / 2) as f64 * if negative { -1. } else { 1. }
 }
 
+/// Alternate stereo uses the trailing terms of the eight-term Thue-Morse
+/// sequence; odd counts retain a centered first oscillator. Native authored
+/// sine fixtures distinguish this from simply alternating left/right pairs.
+fn unison_pan(index: usize, count: usize, mode: f64) -> f64 {
+    if mode == 0. || count == 1 || (count % 2 != 0 && index == 0) {
+        unison_position(index, count)
+    } else if (8 - count + index).count_ones() % 2 == 0 {
+        -1.
+    } else {
+        1.
+    }
+}
+
 /// Native PWM keeps sine zero crossings fixed while moving its two peaks.
 /// The same three segments give the Analog triangle's asymmetric slopes.
 fn sine_phase(phase: f64, pwm: f64) -> f64 {
@@ -446,6 +523,58 @@ fn sine_phase(phase: f64, pwm: f64) -> f64 {
     } else {
         0.75 + (phase - 1. + pwm * 0.5) / (2. * pwm)
     }
+}
+
+/// Authored native ramp and sine tables distinguish the two segment bend (0)
+/// from the symmetric peak stretch (3). Mode 1 has only been verified at zero.
+fn table_phase(phase: f64, mode: f64, amount: f64) -> Result<f64> {
+    ensure!(
+        (0. ..=1.).contains(&amount),
+        "Invalid wavetable phase distortion amount"
+    );
+    match mode {
+        0. => Ok(if phase < amount {
+            phase / (2. * amount)
+        } else {
+            0.5 + (phase - amount) / (2. * (1. - amount))
+        }),
+        3. => Ok(sine_phase(phase, (1. + amount) * 0.5)),
+        1. if amount == 0. => Ok(phase),
+        _ => anyhow::bail!("Unsupported wavetable phase distortion mode/amount"),
+    }
+}
+
+/// Key-tracked FM: continuous ratios (0), harmonic/reciprocal-harmonic rounding
+/// (1), or chromatic semitone rounding (2), followed by independent fine cents.
+fn table_fm(n: &impl Fn(&str, f64) -> Result<f64>) -> Result<(f64, f64)> {
+    ensure!(
+        n("FMFixedFreq", 0.)? == 0.,
+        "Fixed-frequency wavetable FM is not implemented"
+    );
+    let depth = n("FMDepth", 0.1)?;
+    let coarse = n("FMRatio", 0.)?;
+    let fine = n("FMRatioFine", 0.)?;
+    let mode = n("FMRatioMode", 1.)?;
+    ensure!((0. ..=1.).contains(&depth), "Invalid wavetable FM depth");
+    ensure!(
+        (-48. ..=48.).contains(&coarse) && (-1200. ..=1200.).contains(&fine),
+        "Invalid wavetable FM ratio"
+    );
+    let ratio = match mode {
+        0. => 2f64.powf(coarse / 12.),
+        1. => {
+            let harmonic = 2f64.powf(coarse.abs() / 12.).round();
+            if coarse < 0. {
+                harmonic.recip()
+            } else {
+                harmonic
+            }
+        }
+        // Native half-semitone ties round upward, including negative values.
+        2. => 2f64.powf((coarse + 0.5).floor() / 12.),
+        _ => anyhow::bail!("Unsupported wavetable FM ratio mode"),
+    };
+    Ok((depth, ratio * 2f64.powf(fine / 1200.)))
 }
 
 #[cfg(test)]
@@ -472,8 +601,15 @@ mod tests {
             loops: Vec::new(),
             unity_note: None,
             riff_metadata: Vec::new(),
-            wavetable_cycle_frames: None,
+            wavetable_cycle_frames: Some(128),
         });
+        let plain = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><WaveTableOscillator WavetablePath="authored.wav"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let plain = plain
+            .nodes
+            .iter()
+            .find(|n| n.kind == "WaveTableOscillator")
+            .unwrap();
+        assert!(Generator::new(plain, 48_000., Some(table.clone())).is_err());
         let mut g = Generator::new(node, 48_000., Some(table)).unwrap();
         // Native independently authored two-cycle constant WAVs establish both
         // the linear slice morph and nonsmoothed nearest-slice boundary at .5.
@@ -739,6 +875,321 @@ mod tests {
                     * 0.5,
                 0.0625
             );
+        }
+    }
+    #[test]
+    fn authored_native_wavetable_phase_distortion_and_fm() {
+        let table = Arc::new(Sample {
+            rate: 44_100,
+            channels: 1,
+            frames: 2048,
+            interleaved: super::super::storage::Storage::from_f32(
+                (0..2048)
+                    .map(|i| (16384. * (TAU * i as f64 / 2048.).sin()).round() as f32 / 32768.)
+                    .collect(),
+            )
+            .unwrap(),
+            loops: Vec::new(),
+            unity_note: None,
+            riff_metadata: Vec::new(),
+            wavetable_cycle_frames: None,
+        });
+        // Independently authored PCM16 sine table rendered in Workstation4.0.9.
+        // These cover both phase bends, three ratio quantizers, reciprocal
+        // harmonics, fine cents, independent FM start phase and FM-before-bend.
+        for (attributes, native) in [
+            (
+                r#"NumOscs="1" PhaseDistortionMode="0" PhaseDistortionAmount="0.25" EnableFM="0""#,
+                [0.221286297, -0.079275049, -0.211388722, -0.248151630],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="0" PhaseDistortionAmount="0.75" EnableFM="0""#,
+                [0.158156887, 0.244968951, 0.221286267, 0.097780176],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0.25" EnableFM="0""#,
+                [0.183114290, 0.248151645, 0.019777611, -0.240257353],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0.5" EnableFM="0""#,
+                [0.158156887, 0.244968951, 0.029626202, -0.248151645],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="1" EnableFM="0""#,
+                [0.122851476, 0.213990197, 0.249889717, -0.221286267],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="1" PhaseDistortionAmount="0" EnableFM="0""#,
+                [0.213990197, 0.221286267, 0.014840190, -0.205939636],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth="0" FMRatio="0" FMRatioMode="1" FMFixedFreq="0""#,
+                [0.213990197, 0.221286267, 0.014840190, -0.205939636],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth="0.1" FMRatio="0" FMRatioMode="1" FMFixedFreq="0""#,
+                [0.240642637, 0.180850729, 0.010183915, -0.162811130],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth="0.25" FMRatio="0" FMRatioMode="1" FMFixedFreq="0""#,
+                [0.247928917, 0.095416874, 0.003193203, -0.078886494],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth="0.5" FMRatio="0" FMRatioMode="1" FMFixedFreq="0""#,
+                [0.173972219, -0.074734695, -0.008460922, 0.080051571],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth="0.25" FMRatio="12" FMRatioMode="1" FMFixedFreq="0""#,
+                [0.247125953, 0.246687114, 0.037967816, -0.247865841],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth="0.25" FMRatio="-12" FMRatioMode="1" FMFixedFreq="0""#,
+                [0.246907800, 0.100685626, -0.165908024, -0.248935327],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="3.84" FMRatioMode="1" FMFixedFreq="0""#,
+                [0.247928917, 0.095416874, 0.003193203, -0.078886494],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="3.84" FMRatioMode="1" FMFixedFreq="0" FMRatioFine="25""#,
+                [0.247731641, 0.098005563, 0.011985413, -0.072825484],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="0" FMRatioMode="1" FMFixedFreq="0" StartPhase=".25""#,
+                [-0.032129847, -0.231074795, -0.249979585, -0.237226292],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="0" PhaseDistortionAmount=".25" EnableFM="1" FMDepth=".25" FMRatio="0" FMRatioMode="1" FMFixedFreq="0""#,
+                [-0.021454122, -0.176905826, -0.215435237, -0.238115102],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount=".5" EnableFM="1" FMDepth=".25" FMRatio="0" FMRatioMode="1" FMFixedFreq="0""#,
+                [0.226434514, 0.176389500, 0.006385846, -0.149714127],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="3.84" FMRatioMode="0" FMFixedFreq="0""#,
+                [0.244527623, 0.153016835, 0.134689257, -0.061890118],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="7" FMRatioMode="1" FMFixedFreq="0""#,
+                [0.247928917, 0.095416874, 0.003193203, -0.078886494],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="7.1" FMRatioMode="1" FMFixedFreq="0""#,
+                [0.247125953, 0.246687114, 0.037967816, -0.247865841],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="-7" FMRatioMode="1" FMFixedFreq="0""#,
+                [0.247928917, 0.095416874, 0.003193203, -0.078886494],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="-7.1" FMRatioMode="1" FMFixedFreq="0""#,
+                [0.246907800, 0.100685626, -0.165908024, -0.248935327],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="18" FMRatioMode="1" FMFixedFreq="0""#,
+                [0.219782606, 0.231138200, -0.019930065, -0.176386967],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="3.84" FMRatioMode="2" FMFixedFreq="0""#,
+                [0.244391486, 0.156121314, 0.139085442, -0.065752700],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="0" PhaseDistortionAmount="0" EnableFM="0" FMDepth=".25" FMRatio="0" FMRatioMode="1" FMFixedFreq="0""#,
+                [-0.122851372, -0.213990137, -0.249889717, -0.221286312],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="0" PhaseDistortionAmount="1" EnableFM="0" FMDepth=".25" FMRatio="0" FMRatioMode="1" FMFixedFreq="0""#,
+                [0.122851461, 0.213990197, 0.249889717, 0.221286297],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="-3.5" FMRatioMode="2" FMFixedFreq="0""#,
+                [0.249638259, 0.076517284, -0.085954845, -0.165842399],
+            ),
+            (
+                r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="3.5" FMRatioMode="2" FMFixedFreq="0""#,
+                [0.244391486, 0.156121314, 0.139085442, -0.065752700],
+            ),
+        ] {
+            let xml = format!(
+                r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><WaveTableOscillator WavetablePath="authored_sine_2048.wav" {attributes}/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#
+            );
+            let p = parse_program(&xml).unwrap();
+            let node = p
+                .nodes
+                .iter()
+                .find(|n| n.kind == "WaveTableOscillator")
+                .unwrap();
+            let mut g = Generator::new(node, 48_000., Some(table.clone())).unwrap();
+            for i in 0..=120 {
+                let actual = g
+                    .next(
+                        |name, default| number(node, name, default),
+                        261.6255653005986,
+                    )
+                    .unwrap()[0]
+                    * 0.5;
+                if let Some(at) = [30, 60, 90, 120].iter().position(|&n| n == i) {
+                    assert!(
+                        (actual - native[at]).abs() < 0.000035,
+                        "{attributes} frame{i}: {actual} vs {}",
+                        native[at]
+                    );
+                }
+            }
+        }
+        // Native unison fixtures cover exponential initial phases, Analog and
+        // WT detune, alternate stereo, and independent FM phases per oscillator.
+        for (kind, attributes, offset, native) in [
+            (
+                "MinBlepGenerator",
+                r#"PhaseSpread="1" Stereo="1" StereoSpread="1" StereoSpreadMode="0" DetuneMode="0" Waveform="4" NumOscillators="3" MultiOscSpread="1""#,
+                2,
+                [-0.275590807, -0.014004918, 0.266967982, 0.304236174],
+            ),
+            (
+                "MinBlepGenerator",
+                r#"PhaseSpread="1" Stereo="1" StereoSpread="1" StereoSpreadMode="0" DetuneMode="0" Waveform="4" NumOscillators="4" MultiOscSpread="1""#,
+                2,
+                [-0.107728302, 0.050638020, 0.167280227, 0.129072845],
+            ),
+            (
+                "MinBlepGenerator",
+                r#"PhaseSpread="1" Stereo="1" StereoSpread="1" StereoSpreadMode="0" DetuneMode="0" Waveform="4" NumOscillators="8" MultiOscSpread="1""#,
+                2,
+                [-0.062036742, 0.061183780, 0.130527824, 0.073105335],
+            ),
+            (
+                "WaveTableOscillator",
+                r#"PhaseSpread="1" Stereo="1" StereoSpread="1" StereoSpreadMode="0" DetuneMode="0" NumOscs="3" Spread="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="0""#,
+                0,
+                [0.264549941, -0.007548321, -0.279071480, -0.295308977],
+            ),
+            (
+                "WaveTableOscillator",
+                r#"PhaseSpread="1" Stereo="1" StereoSpread="1" StereoSpreadMode="0" DetuneMode="0" NumOscs="4" Spread="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="0""#,
+                0,
+                [0.099129915, -0.061487794, -0.170098007, -0.120848477],
+            ),
+            (
+                "WaveTableOscillator",
+                r#"PhaseSpread="1" Stereo="1" StereoSpread="1" StereoSpreadMode="0" DetuneMode="0" NumOscs="8" Spread="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="0""#,
+                0,
+                [0.054703251, -0.068812735, -0.130791947, -0.065306954],
+            ),
+            (
+                "MinBlepGenerator",
+                r#"PhaseSpread="1" Stereo="1" StereoSpread="1" StereoSpreadMode="1" DetuneMode="0" Waveform="4" NumOscillators="5" MultiOscSpread="1""#,
+                2,
+                [0.064328887, 0.270805240, 0.221229121, -0.046154205],
+            ),
+            (
+                "MinBlepGenerator",
+                r#"PhaseSpread="1" Stereo="1" StereoSpread="1" StereoSpreadMode="1" DetuneMode="0" Waveform="4" NumOscillators="7" MultiOscSpread="1""#,
+                2,
+                [0.117592521, 0.195809245, 0.081077613, -0.121896811],
+            ),
+            (
+                "WaveTableOscillator",
+                r#"PhaseSpread="1" Stereo="1" StereoSpread="1" StereoSpreadMode="1" DetuneMode="0" NumOscs="5" Spread="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="0""#,
+                0,
+                [-0.082784764, -0.276580662, -0.208153874, 0.066034853],
+            ),
+            (
+                "WaveTableOscillator",
+                r#"PhaseSpread="1" Stereo="1" StereoSpread="1" StereoSpreadMode="1" DetuneMode="0" NumOscs="7" Spread="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="0""#,
+                0,
+                [-0.128001288, -0.194017753, -0.068180121, 0.133526132],
+            ),
+            (
+                "WaveTableOscillator",
+                r#"NumOscs="3" Spread="0.5" PhaseSpread="0" Stereo="1" StereoSpread="1" StereoSpreadMode="0" DetuneMode="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="0""#,
+                0,
+                [0.377380818, 0.143450543, -0.228840873, -0.383089066],
+            ),
+            (
+                "WaveTableOscillator",
+                r#"NumOscs="4" Spread="1" PhaseSpread="0" Stereo="1" StereoSpread="1" StereoSpreadMode="0" DetuneMode="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="0""#,
+                0,
+                [0.363319933, 0.141347200, -0.210431963, -0.393792987],
+            ),
+            (
+                "WaveTableOscillator",
+                r#"NumOscs="3" Spread="1" PhaseSpread="1" Stereo="1" StereoSpread="1" StereoSpreadMode="0" DetuneMode="0" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="0" FMRatioMode="1" FMFixedFreq="0""#,
+                0,
+                [0.100060381, -0.214301318, -0.286698788, -0.319311619],
+            ),
+            (
+                "WaveTableOscillator",
+                r#"NumOscs="4" Spread="1" PhaseSpread="0" Stereo="1" StereoSpread="1" StereoSpreadMode="0" DetuneMode="0" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="12" FMRatioMode="1" FMFixedFreq="0""#,
+                0,
+                [0.197078899, 0.281218469, -0.201622218, -0.219292223],
+            ),
+        ] {
+            let xml = format!(
+                r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><{kind} WavetablePath="authored_sine_2048.wav" {attributes}/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#
+            );
+            let p = parse_program(&xml).unwrap();
+            let node = p.nodes.iter().find(|n| n.kind == kind).unwrap();
+            let mut g = Generator::new(
+                node,
+                48_000.,
+                if kind == "WaveTableOscillator" {
+                    Some(table.clone())
+                } else {
+                    None
+                },
+            )
+            .unwrap();
+            for i in 0..=120 - offset {
+                let actual = g
+                    .next(
+                        |name, default| number(node, name, default),
+                        261.6255653005986,
+                    )
+                    .unwrap()[0];
+                if let Some(at) = [30, 60, 90, 120].iter().position(|&n| n == i + offset) {
+                    // Native table interpolation differs from the original
+                    // linear PCM readout, particularly when summing voices.
+                    let tolerance = if kind == "WaveTableOscillator" {
+                        0.000015
+                    } else {
+                        0.000008
+                    };
+                    assert!(
+                        (actual - native[at]).abs() < tolerance,
+                        "{kind} {attributes} frame{i}: {actual} vs {}",
+                        native[at]
+                    );
+                }
+            }
+        }
+        assert!(table_phase(0.2, 2., 0.).is_err());
+        assert!(table_phase(0.2, 3., 1.1).is_err());
+        assert!(
+            table_fm(&|name, default| Ok(if name == "FMFixedFreq" { 1. } else { default }))
+                .is_err()
+        );
+        assert!(
+            table_fm(&|name, default| Ok(if name == "FMRatioMode" { 3. } else { default }))
+                .is_err()
+        );
+        // Native authored 46-note sequences establish phase changes per launch
+        // without gain changes; original RNG sequence parity is not claimed.
+        // Local launch seeds must reproduce a render and differ between voices.
+        for kind in ["MinBlepGenerator", "WaveTableOscillator"] {
+            let xml = format!(
+                r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><{kind} WavetablePath="authored_sine_2048.wav" PhaseSpread="2" NumOscs="3" NumOscillators="3"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#
+            );
+            let p = parse_program(&xml).unwrap();
+            let node = p.nodes.iter().find(|n| n.kind == kind).unwrap();
+            let a = Generator::new_seeded(node, 48_000., Some(table.clone()), 41).unwrap();
+            let b = Generator::new_seeded(node, 48_000., Some(table.clone()), 41).unwrap();
+            let c = Generator::new_seeded(node, 48_000., Some(table.clone()), 42).unwrap();
+            assert_eq!(a.phase, b.phase);
+            assert_ne!(a.phase, c.phase);
+            assert_ne!(a.phase[0], a.phase[1]);
+            assert!(a.phase.iter().all(|p| (0. ..1.).contains(p)));
         }
     }
 }

@@ -11,7 +11,8 @@ use super::{
 use anyhow::{Context, Result, ensure};
 use mlua::thread::ThreadStatus;
 use mlua::{
-    Function, HookTriggers, Lua, LuaOptions, MultiValue, StdLib, Table, Thread, Value, VmState,
+    Function, HookTriggers, Lua, LuaOptions, MultiValue, StdLib, Table, Thread, UserData, Value,
+    VmState,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -51,9 +52,12 @@ pub struct Note {
 pub enum Action {
     Start(Note),
     Release(u32),
-    ReleaseLayer {
+    /// Forwarded key release; direct releaseVoice uses Release instead.
+    ReleaseNote {
         id: u32,
-        layer: NodeId,
+        note: u8,
+        channel: u8,
+        layer: Option<NodeId>,
     },
     Controller {
         channel: u8,
@@ -101,6 +105,7 @@ pub enum Action {
         gain: Option<f32>,
         tune: Option<f64>,
         pan: Option<f32>,
+        layer: Option<NodeId>,
     },
 }
 
@@ -150,6 +155,63 @@ pub enum InputKind {
 pub struct Input {
     pub frame: u64,
     pub kind: InputKind,
+}
+
+/// Immutable opaque Lua handle; command streams retain the internal integer ID.
+struct VoiceId(u32);
+impl UserData for VoiceId {}
+
+pub(crate) fn voice_id(value: Value) -> mlua::Result<u32> {
+    match value {
+        Value::UserData(handle) if handle.is::<VoiceId>() => Ok(handle.borrow::<VoiceId>()?.0),
+        _ => Err(mlua::Error::runtime(
+            "UVI voiceId must be an issued voice handle",
+        )),
+    }
+}
+
+// Lua owns the cache, rather than a Rust Vec of references that can exhaust
+// mlua's reference stack. Reachable handles preserve equality and table keys.
+pub(crate) fn voice_handle(lua: &Lua, id: u32) -> mlua::Result<Value> {
+    const CACHE: &str = "kontakto.uvi.voice_ids";
+    let cache = match lua.named_registry_value::<Option<Table>>(CACHE)? {
+        Some(cache) => cache,
+        None => {
+            let cache = lua.create_table()?;
+            cache.set_metatable(Some(lua.create_table_from([("__mode", "v")])?))?;
+            lua.set_named_registry_value(CACHE, cache.clone())?;
+            cache
+        }
+    };
+    let handle = cache.raw_get::<Value>(id)?;
+    if !matches!(handle, Value::Nil) {
+        return Ok(handle);
+    }
+    let handle = Value::UserData(lua.create_userdata(VoiceId(id))?);
+    cache.raw_set(id, handle.clone())?;
+    Ok(handle)
+}
+
+// A ScriptProcessor registers its output posts, not its incoming callbacks.
+// Native releaseVoice consumes the last posted event for this scope and ID,
+// then dispatches its key release through the remaining event processors.
+fn posted_events(lua: &Lua, processor: Option<NodeId>) -> mlua::Result<Table> {
+    const CACHE: &str = "kontakto.uvi.posted_events";
+    let scopes = match lua.named_registry_value::<Option<Table>>(CACHE)? {
+        Some(scopes) => scopes,
+        None => {
+            let scopes = lua.create_table()?;
+            lua.set_named_registry_value(CACHE, scopes.clone())?;
+            scopes
+        }
+    };
+    let key = processor.map_or(0, |id| id + 1);
+    if let Some(events) = scopes.raw_get::<Option<Table>>(key)? {
+        return Ok(events);
+    }
+    let events = lua.create_table()?;
+    scopes.raw_set(key, events.clone())?;
+    Ok(events)
 }
 
 fn frames(ms: f64) -> mlua::Result<u64> {
@@ -256,7 +318,7 @@ pub fn parse_notes(list: &str) -> Result<Vec<Input>> {
 struct Task {
     thread: Thread,
     args: MultiValue,
-    parent: Option<u32>,
+    parent: Option<u64>,
     processor: Option<NodeId>,
     layer: Option<NodeId>,
 }
@@ -345,14 +407,20 @@ impl EventChain {
     }
 }
 
+struct HeldTrigger {
+    held: bool,
+}
+
 struct Voice {
     note: Note,
-    parent: Option<u32>,
+    parent: Option<u64>,
     start: u64,
     end: Option<u64>,
     kill_at: Option<u64>,
     released: bool,
     canceled: bool,
+    creator: Option<NodeId>,
+    creator_layer: Option<NodeId>,
 }
 
 #[derive(Default)]
@@ -365,7 +433,7 @@ struct State {
     playing: bool,
     serial: u64,
     next_id: u32,
-    current: Option<u32>,
+    current: Option<u64>,
     current_processor: Option<NodeId>,
     current_layer: Option<NodeId>,
     chain: Option<EventChain>,
@@ -373,7 +441,9 @@ struct State {
     initializing_chain: bool,
     tasks: BTreeMap<(u64, u64), Task>,
     voices: HashMap<u32, Voice>,
-    held: HashSet<u32>,
+    next_trigger: u64,
+    triggers: HashMap<u64, HeldTrigger>,
+    trigger_queues: HashMap<(Option<NodeId>, u32, u8), VecDeque<u64>>,
     input_velocities: HashMap<u32, u8>,
     keys: HashMap<(u8, u8), VecDeque<u32>>,
     ccs: HashMap<u8, u8>,
@@ -384,17 +454,60 @@ struct State {
 }
 
 impl State {
-    fn note_held(&self, id: u32) -> bool {
-        if self.input_velocities.contains_key(&id) {
-            return self.held.contains(&id);
+    fn note_held(&self, trigger: u64) -> bool {
+        self.triggers
+            .get(&trigger)
+            .is_some_and(|trigger| trigger.held)
+    }
+    fn receive(
+        &mut self,
+        lua: &Lua,
+        event: &Table,
+        processor: Option<NodeId>,
+    ) -> mlua::Result<Option<u64>> {
+        let kind = event.get::<u32>("type")?;
+        if kind != 144 && kind != 128 {
+            return Ok(None);
         }
-        self.voices.get(&id).is_some_and(|voice| {
-            !voice.released
-                && !voice.canceled
-                && voice.start <= self.now
-                && voice.end.is_none_or(|end| self.now < end)
-                && voice.kill_at.is_none_or(|end| self.now < end)
-        })
+        let id = voice_id(event.get::<Value>("id")?)?;
+        let note = event.get::<u8>("note")?;
+        if kind == 144 {
+            if self.next_trigger as usize >= LIMIT {
+                return Err(mlua::Error::runtime("UVI trigger limit exceeded"));
+            }
+            self.next_trigger += 1;
+            let trigger = self.next_trigger;
+            self.triggers.insert(trigger, HeldTrigger { held: true });
+            self.trigger_queues
+                .entry((processor, id, note))
+                .or_default()
+                .push_back(trigger);
+            return Ok(Some(trigger));
+        }
+        let trigger = self
+            .trigger_queues
+            .get_mut(&(processor, id, note))
+            .and_then(VecDeque::pop_back);
+        if let Some(trigger) = trigger {
+            self.triggers.get_mut(&trigger).unwrap().held = false;
+            let children = self
+                .voices
+                .iter()
+                .filter(|(_, v)| v.parent == Some(trigger))
+                .map(|(&id, v)| (id, v.creator, v.creator_layer))
+                .collect::<Vec<_>>();
+            let previous_processor = self.current_processor;
+            let previous_layer = self.current_layer;
+            for (child, creator, creator_layer) in children {
+                self.current_processor = creator;
+                self.current_layer = creator_layer;
+                let result = self.release(lua, child);
+                self.current_processor = previous_processor;
+                self.current_layer = previous_layer;
+                result?;
+            }
+        }
+        Ok(trigger)
     }
     fn set_time(&mut self, at: u64) {
         let beats = (at - self.now) as f64 / RATE * self.tempo / 60.;
@@ -450,19 +563,60 @@ impl State {
         Ok(())
     }
 
-    fn release(&mut self, id: u32) -> mlua::Result<bool> {
-        let now = self.now;
-        let Some(voice) = self.voices.get_mut(&id).filter(|v| {
-            !v.released
-                && v.end.is_none_or(|end| now < end)
-                && v.kill_at.is_none_or(|end| now < end)
-        }) else {
+    fn release(&mut self, lua: &Lua, id: u32) -> mlua::Result<bool> {
+        let events = posted_events(lua, self.current_processor)?;
+        let Some(posted) = events.raw_get::<Option<Table>>(id)? else {
             return Ok(false);
         };
-        voice.released = true;
-        voice.canceled = voice.start > self.now;
-        self.emit(self.now, Action::Release(id))?;
+        events.raw_set(id, Value::Nil)?;
+        if posted
+            .raw_get::<Option<u64>>("_expires")?
+            .is_some_and(|end| self.now >= end)
+        {
+            return Ok(false);
+        }
+        let event = event_snapshot(lua, &posted)?;
+        event.set("type", 128)?;
+        event.raw_set("_duration", Value::Nil)?;
+        event.raw_set("_follows", Value::Nil)?;
+        self.post(lua, &event, 0.)?;
         Ok(true)
+    }
+
+    fn release_note(
+        &mut self,
+        at: u64,
+        id: u32,
+        note: u8,
+        channel: u8,
+        layer: Option<NodeId>,
+    ) -> mlua::Result<()> {
+        if let Some(voice) = self.voices.get_mut(&id)
+            && voice.note.note == note
+            && voice.start <= at
+            && layer.is_none_or(|layer| {
+                voice
+                    .note
+                    .layers
+                    .as_ref()
+                    .is_none_or(|layers| layers.contains(&layer))
+            })
+        {
+            if at == self.now {
+                voice.released = true;
+            } else {
+                voice.end = Some(voice.end.map_or(at, |end| end.min(at)));
+            }
+        }
+        self.emit(
+            at,
+            Action::ReleaseNote {
+                id,
+                note,
+                channel,
+                layer,
+            },
+        )
     }
 
     fn layers(&self, selector: Value) -> mlua::Result<Option<Vec<NodeId>>> {
@@ -521,8 +675,8 @@ impl State {
         }
         let duration_frames = frames(duration)?;
         let layer = match selector {
-            Value::Nil | Value::Integer(0) => None,
-            Value::Number(0.) => None,
+            Value::Nil | Value::Integer(0) => self.current_layer,
+            Value::Number(0.) => self.current_layer,
             value => {
                 let layers = self.program_layers.as_ref().ok_or_else(|| {
                     mlua::Error::runtime(
@@ -555,11 +709,14 @@ impl State {
         )
     }
 
-    fn post(&mut self, event: &Table, delta: f64) -> mlua::Result<Option<u32>> {
+    fn post(&mut self, lua: &Lua, event: &Table, delta: f64) -> mlua::Result<Option<u32>> {
         let at = self.now + frames(delta)?;
         match event.get::<u32>("type")? {
             144 => {
-                let raw_id = event.get::<Option<u32>>("id")?.unwrap_or(0);
+                let raw_id = match event.get::<Value>("id")? {
+                    Value::Nil => 0,
+                    value => voice_id(value)?,
+                };
                 let id = if raw_id > 0 && raw_id <= self.next_id {
                     raw_id
                 } else {
@@ -629,12 +786,11 @@ impl State {
                 let previous = self.voices.get(&id);
                 let previous_end = previous.and_then(|v| v.end);
                 let newly_posted = previous.is_none();
-                let parent = previous.and_then(|v| v.parent).or_else(|| {
-                    follows
-                        .then_some(self.current)
-                        .flatten()
-                        .filter(|&parent| parent != id)
-                });
+                let parent = previous
+                    .and_then(|v| v.parent)
+                    .or_else(|| follows.then_some(self.current).flatten());
+                let creator = previous.map_or(self.current_processor, |v| v.creator);
+                let creator_layer = previous.map_or(self.current_layer, |v| v.creator_layer);
                 let canceled = previous.is_some_and(|v| v.canceled)
                     || parent.is_some_and(|p| !self.note_held(p));
                 let end = event
@@ -653,30 +809,52 @@ impl State {
                         kill_at: None,
                         released: canceled,
                         canceled,
+                        creator,
+                        creator_layer,
                     },
                 );
-                event.set("id", id)?;
+                event.set("id", voice_handle(lua, id)?)?;
                 event.set("velocity", note.velocity)?;
                 event.set("pan", note.pan)?;
                 event.set("vol", note.volume)?;
                 event.set("tune", note.tune)?;
+                let release_note = note.note;
+                let release_channel = note.channel;
                 self.emit_event(at, Action::Start(note), event)?;
                 if let Some(end) = end.filter(|_| newly_posted) {
-                    self.emit_event(end, Action::Release(id), event)?;
+                    self.emit_event(
+                        end,
+                        Action::ReleaseNote {
+                            id,
+                            note: release_note,
+                            channel: release_channel,
+                            layer: None,
+                        },
+                        event,
+                    )?;
                 }
                 Ok(Some(id))
             }
             128 => {
-                let id = event.get::<u32>("id")?;
+                let id = voice_id(event.get::<Value>("id")?)?;
+                let note = event.get::<u8>("note")?;
+                let channel = event.get::<Option<u8>>("channel")?.unwrap_or(1);
+                if note > 127 || !(1..=16).contains(&channel) {
+                    return Err(mlua::Error::runtime("Invalid UVI release fields"));
+                }
                 if self.chain.is_some() {
-                    self.emit_event(at, Action::Release(id), event)?;
-                } else if at == self.now {
-                    self.release(id)?;
+                    self.emit_event(
+                        at,
+                        Action::ReleaseNote {
+                            id,
+                            note,
+                            channel: channel - 1,
+                            layer: None,
+                        },
+                        event,
+                    )?;
                 } else {
-                    if let Some(voice) = self.voices.get_mut(&id) {
-                        voice.end = Some(voice.end.map_or(at, |end| end.min(at)));
-                    }
-                    self.emit_event(at, Action::Release(id), event)?;
+                    self.release_note(at, id, note, channel - 1, None)?;
                 }
                 Ok(Some(id))
             }
@@ -1081,7 +1259,7 @@ impl Runtime {
         event: &Table,
         after: Option<NodeId>,
         layer: Option<NodeId>,
-        parent: Option<u32>,
+        parent: Option<u64>,
         selected: Option<&[NodeId]>,
     ) -> Result<()> {
         let targets = self
@@ -1094,6 +1272,10 @@ impl Runtime {
         for (processor, layer) in targets {
             if let Some(processor) = processor {
                 if self.processor_enabled(processor) {
+                    let parent =
+                        self.state
+                            .borrow_mut()
+                            .receive(&self.lua, event, Some(processor))?;
                     let environment = self.environments[&processor].clone();
                     let callback = match event.get::<u32>("type")? {
                         144 => "onNote",
@@ -1131,10 +1313,16 @@ impl Runtime {
                 if event.get::<u32>("type")? == 128
                     && let Some(layer) = layer
                 {
-                    let id = event.get::<u32>("id")?;
+                    let id = voice_id(event.get::<Value>("id")?)?;
+                    let note = event.get::<u8>("note")?;
+                    let channel = event.get::<Option<u8>>("channel")?.unwrap_or(1);
+                    ensure!(
+                        note <= 127 && (1..=16).contains(&channel),
+                        "Invalid UVI release fields"
+                    );
                     let mut state = self.state.borrow_mut();
                     let now = state.now;
-                    state.emit(now, Action::ReleaseLayer { id, layer })?;
+                    state.release_note(now, id, note, channel - 1, Some(layer))?;
                     continue;
                 }
                 if event.get::<u32>("type")? == 144
@@ -1156,7 +1344,7 @@ impl Runtime {
                 let chain = state.chain.take();
                 let previous = state.current;
                 state.current = parent;
-                let result = state.post(&event, 0.);
+                let result = state.post(&self.lua, &event, 0.);
                 state.current = previous;
                 state.chain = chain;
                 result?;
@@ -1265,17 +1453,43 @@ impl Runtime {
             "_post",
             lua.create_function(move |lua, (e, delta): (Table, f64)| {
                 let snapshot = event_snapshot(lua, &e)?;
-                let id = host.borrow_mut().post(&snapshot, delta)?;
+                let mut state = host.borrow_mut();
+                let id = state.post(lua, &snapshot, delta)?;
                 if let Some(id) = id {
-                    e.set("id", id)?;
+                    e.set("id", voice_handle(lua, id)?)?;
+                    let events = posted_events(lua, state.current_processor)?;
+                    if snapshot.get::<u32>("type")? == 144 {
+                        let posted = event_snapshot(lua, &snapshot)?;
+                        if let Some(duration) = snapshot.raw_get::<Option<f64>>("_duration")? {
+                            posted.raw_set(
+                                "_expires",
+                                state.now + frames(delta)? + frames(duration)?,
+                            )?;
+                        }
+                        events.raw_set(id, posted)?;
+                    } else {
+                        events.raw_set(id, Value::Nil)?;
+                    }
                 }
-                Ok(id)
+                id.map(|id| voice_handle(lua, id)).transpose()
+            })?,
+        )?;
+        let mint = state.clone();
+        globals.set(
+            "__nextVoiceId",
+            lua.create_function(move |lua, args: MultiValue| {
+                if !args.is_empty() {
+                    return Err(mlua::Error::runtime("UVI __nextVoiceId takes no arguments"));
+                }
+                voice_handle(lua, mint.borrow_mut().id()?)
             })?,
         )?;
         let host = state.clone();
         globals.set(
             "_release",
-            lua.create_function(move |_, id: u32| host.borrow_mut().release(id))?,
+            lua.create_function(move |lua, id: Value| {
+                host.borrow_mut().release(lua, voice_id(id)?)
+            })?,
         )?;
         let host = state.clone();
         globals.set(
@@ -1364,11 +1578,15 @@ impl Runtime {
                 Ok(state
                     .keys
                     .iter()
-                    .any(|((_, n), ids)| *n == note && !ids.is_empty())
-                    || state
-                        .voices
-                        .iter()
-                        .any(|(&id, voice)| voice.note.note == note && state.note_held(id)))
+                    .any(|((_, key), ids)| *key == note && !ids.is_empty())
+                    || state.voices.values().any(|voice| {
+                        voice.note.note == note
+                            && !voice.released
+                            && !voice.canceled
+                            && voice.start <= state.now
+                            && voice.end.is_none_or(|end| state.now < end)
+                            && voice.kill_at.is_none_or(|end| state.now < end)
+                    }))
             })?,
         )?;
         let host = state.clone();
@@ -1392,7 +1610,8 @@ impl Runtime {
         let host = state.clone();
         globals.set(
             "setSampleOffset",
-            lua.create_function(move |_, (id, ms): (u32, f64)| {
+            lua.create_function(move |_, (id, ms): (Value, f64)| {
+                let id = voice_id(id)?;
                 let offset_us = frames(ms)? * 1_000_000 / RATE as u64;
                 let mut s = host.borrow_mut();
                 let now = s.now;
@@ -1418,11 +1637,17 @@ impl Runtime {
         )?;
         for (name, field) in [("changeVolume", 0), ("changeTune", 1), ("changePan", 2)] {
             let host = state.clone();
-            globals.set(name, lua.create_function(move |_, (id, value, relative, immediate): (u32, f64, Option<bool>, Option<bool>)| {
+            globals.set(name, lua.create_function(move |_, (id, value, relative, immediate): (Value, f64, Option<bool>, Option<bool>)| {
+                let id = voice_id(id)?;
                 if !value.is_finite() || immediate != Some(true) { return Err(mlua::Error::runtime("Nonfinite change or unsupported smoothed UVI voice change (use immediate=true)")); }
                 let mut s = host.borrow_mut();
-                let voice = s.voices.get(&id).ok_or_else(|| mlua::Error::runtime("Unknown UVI voice"))?;
+                let Some(voice) = s.voices.get(&id) else {
+                    if field == 1 && id > 0 && id <= s.next_id { return Ok(()); }
+                    return Err(mlua::Error::runtime("Unknown UVI voice"));
+                };
                 let start = voice.start;
+                let now=s.now;let layer=s.current_layer;
+                if !s.commands.iter().any(|command| command.frame<=now && matches!(&command.action,Action::Start(n) if n.id==id && layer.is_none_or(|layer|n.layers.as_ref().is_none_or(|layers|layers.contains(&layer))))) { return Ok(()); }
                 let mut n = voice.note.clone();
                 let (mut gain, mut tune, mut pan) = (None, None, None);
                 match field {
@@ -1431,12 +1656,8 @@ impl Runtime {
                     _ => { n.pan = if relative.unwrap_or(false) { n.pan + value as f32 } else { value as f32 }; pan = Some(n.pan); },
                 }
                 if !n.volume.is_finite() || n.volume < 0. || !(-1. ..=1.).contains(&n.pan) || n.tune.abs() > 120. { return Err(mlua::Error::runtime("UVI voice change exceeds playback range")); }
-                let now = s.now;
-                s.voices.get_mut(&id).unwrap().note = n.clone();
-                if start > now {
-                    for command in &mut s.commands { if let Action::Start(note) = &mut command.action && note.id == id { *note = n.clone(); } }
-                    Ok(())
-                } else { s.emit(now, Action::Change { id, gain, tune, pan }) }
+                if start<=now { s.voices.get_mut(&id).unwrap().note=n; }
+                s.emit(now, Action::Change { id, gain, tune, pan, layer })
             })?)?;
         }
         let fades = state.clone();
@@ -1445,12 +1666,13 @@ impl Runtime {
             lua.create_function(
                 move |_,
                       (id, ms, kill, reset, layer): (
-                    u32,
+                    Value,
                     f64,
                     Option<bool>,
                     Option<bool>,
                     Option<Value>,
                 )| {
+                    let id = voice_id(id)?;
                     fades.borrow_mut().fade(
                         id,
                         reset.unwrap_or(false).then_some(1.),
@@ -1466,7 +1688,8 @@ impl Runtime {
         globals.set(
             "fadein",
             lua.create_function(
-                move |_, (id, ms, reset, layer): (u32, f64, Option<bool>, Option<Value>)| {
+                move |_, (id, ms, reset, layer): (Value, f64, Option<bool>, Option<Value>)| {
+                    let id = voice_id(id)?;
                     fades.borrow_mut().fade(
                         id,
                         reset.unwrap_or(false).then_some(0.),
@@ -1482,7 +1705,8 @@ impl Runtime {
         globals.set(
             "fade",
             lua.create_function(
-                move |_, (id, target, ms, layer): (u32, f64, f64, Option<Value>)| {
+                move |_, (id, target, ms, layer): (Value, f64, f64, Option<Value>)| {
+                    let id = voice_id(id)?;
                     fades.borrow_mut().fade(
                         id,
                         None,
@@ -1498,7 +1722,8 @@ impl Runtime {
         globals.set(
             "fade2",
             lua.create_function(
-                move |_, (id, start, target, ms, layer): (u32, f64, f64, f64, Option<Value>)| {
+                move |_, (id, start, target, ms, layer): (Value, f64, f64, f64, Option<Value>)| {
+                    let id = voice_id(id)?;
                     fades.borrow_mut().fade(
                         id,
                         Some(start),
@@ -1593,7 +1818,7 @@ impl Runtime {
         Ok(())
     }
 
-    fn spawn(&mut self, f: Function, args: MultiValue, parent: Option<u32>) -> Result<()> {
+    fn spawn(&mut self, f: Function, args: MultiValue, parent: Option<u64>) -> Result<()> {
         let thread = self.lua.create_thread(f)?;
         let mut state = self.state.borrow_mut();
         let now = state.now;
@@ -1644,16 +1869,20 @@ impl Runtime {
                 event.raw_set("_follows", Value::Nil)?;
                 let parent = match &forward.action {
                     Action::Start(note) => {
-                        event.set("id", note.id)?;
+                        event.set("id", voice_handle(&self.lua, note.id)?)?;
                         event.set("pan", note.pan)?;
                         event.set("vol", note.volume)?;
                         event.set("tune", note.tune)?;
-                        Some(note.id)
+                        None
                     }
-                    Action::Release(id) => {
+                    Action::ReleaseNote {
+                        id, note, channel, ..
+                    } => {
                         event.set("type", 128)?;
-                        event.set("id", *id)?;
-                        Some(*id)
+                        event.set("id", voice_handle(&self.lua, *id)?)?;
+                        event.set("note", *note)?;
+                        event.set("channel", *channel + 1)?;
+                        None
                     }
                     Action::Controller {
                         channel,
@@ -1712,7 +1941,7 @@ impl Runtime {
         } = input.kind
         {
             ensure!(
-                beat.is_finite() && tempo.is_finite() && (1. ..=1000.).contains(&tempo),
+                beat.is_finite() && tempo.is_finite() && tempo > 0.,
                 "Invalid UVI transport input"
             );
             let mut s = self.state.borrow_mut();
@@ -1758,18 +1987,17 @@ impl Runtime {
                         "Invalid UVI MIDI input"
                     );
                     let id = s.id()?;
-                    s.held.insert(id);
                     s.input_velocities.insert(id, velocity);
                     s.keys.entry((channel, note)).or_default().push_back(id);
                     event.set("type", 144)?;
-                    event.set("id", id)?;
+                    event.set("id", voice_handle(&self.lua, id)?)?;
                     event.set("note", note)?;
                     event.set("velocity", velocity)?;
                     event.set("channel", channel + 1)?;
                     event.set("vol", 1.)?;
                     event.set("pan", 0.)?;
                     event.set("tune", 0.)?;
-                    ("onNote", Some(id))
+                    ("onNote", None)
                 }
                 InputKind::NoteOff { channel, note } => {
                     ensure!(channel < 16 && note < 128, "Invalid UVI MIDI input");
@@ -1780,25 +2008,15 @@ impl Runtime {
                     else {
                         return Ok(());
                     };
-                    s.held.remove(&id);
-                    let children: Vec<_> = s
-                        .voices
-                        .iter()
-                        .filter(|(_, v)| v.parent == Some(id))
-                        .map(|(&id, _)| id)
-                        .collect();
-                    for child in children {
-                        s.release(child)?;
-                    }
                     event.set("type", 128)?;
-                    event.set("id", id)?;
+                    event.set("id", voice_handle(&self.lua, id)?)?;
                     event.set("note", note)?;
                     event.set("velocity", s.input_velocities[&id])?;
                     event.set("channel", channel + 1)?;
                     event.set("vol", 1.)?;
                     event.set("pan", 0.)?;
                     event.set("tune", 0.)?;
-                    ("onRelease", Some(id))
+                    ("onRelease", None)
                 }
                 InputKind::PitchBend { channel, bend } => {
                     ensure!(
@@ -1855,6 +2073,7 @@ impl Runtime {
             self.deliver(&event, None, None, parent, None)?;
             return self.advance(input.frame);
         }
+        let parent = self.state.borrow_mut().receive(&self.lua, &event, None)?;
         let globals = self.lua.globals();
         let handler = globals
             .get::<Option<Function>>("onEvent")?
@@ -1862,7 +2081,7 @@ impl Runtime {
         if let Some(f) = handler {
             self.spawn(f, MultiValue::from_vec(vec![Value::Table(event)]), parent)?;
         } else {
-            self.state.borrow_mut().post(&event, 0.)?;
+            self.state.borrow_mut().post(&self.lua, &event, 0.)?;
         }
         self.advance(input.frame)
     }
@@ -1966,7 +2185,7 @@ fn validate_inputs(inputs: &[Input], until: u64) -> Result<()> {
                 channel,
                 note,
                 velocity,
-            } => channel < 16 && note <= 127 && velocity <= 127,
+            } => channel < 16 && note <= 127 && (1..=127).contains(&velocity),
             InputKind::NoteOff { channel, note } => channel < 16 && note <= 127,
             InputKind::Controller {
                 channel,
@@ -2041,6 +2260,11 @@ mod tests {
         .unwrap();
         assert!(validate_inputs(&inputs, 2).is_ok());
         let invalid = [
+            InputKind::NoteOn {
+                channel: 0,
+                note: 60,
+                velocity: 0,
+            },
             InputKind::NoteOn {
                 channel: 16,
                 note: 60,
@@ -2123,6 +2347,196 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn authored_duplicate_callbacks_hold_latest_independently_of_audio_fifo() {
+        let program = parse_program(
+            r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
+          function onInit()
+            local e={type=Event.NoteOn,id=__nextVoiceId(),note=60,velocity=100,tune=0}
+            postEvent(e);e.tune=12;postEvent(e);wait(100)
+            e.type=Event.NoteOff;postEvent(e)
+          end
+        ]]></script></ScriptProcessor></EventProcessors><Layers><Layer><EventProcessors>
+          <ScriptProcessor><script><![CDATA[
+            function onNote(e)
+              local tune=e.tune;postEvent(e);wait(80);assert(isNoteHeld())
+              wait(40);assert(isNoteHeld()==(tune==0))
+            end
+          ]]></script></ScriptProcessor>
+        </EventProcessors></Layer></Layers></Program>"#,
+        )
+        .unwrap();
+        let out = process_program_chain(&program, BTreeMap::new(), None, &[], 7200).unwrap();
+        assert_eq!(out.commands.len(), 3);
+        assert!(matches!(&out.commands[0].action,Action::Start(n) if n.tune==0.));
+        assert!(matches!(&out.commands[1].action,Action::Start(n) if n.tune==12.));
+        assert!(matches!(
+            out.commands[2].action,
+            Action::ReleaseNote {
+                id: 1,
+                note: 60,
+                layer: Some(_),
+                ..
+            }
+        ));
+        assert_eq!(out.commands[2].frame, 4800);
+    }
+
+    #[test]
+    fn authored_release_dispatch_respects_script_scope_and_queued_notes() {
+        let program = parse_program(
+            r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
+          function onNote(e)
+            assert(releaseVoice(e.id)==false);postEvent(e);wait(10)
+            assert(releaseVoice(e.id)==true and releaseVoice(e.id)==false)
+            assert(isNoteHeld())
+          end
+          function onRelease(e)end
+        ]]></script></ScriptProcessor></EventProcessors><Layers>
+          <Layer><EventProcessors><ScriptProcessor><script><![CDATA[
+            function onNote(e)assert(isNoteHeld());postEvent(e);wait(30);assert(not isNoteHeld())end
+            function onRelease(e)assert(e.note==60 and not isNoteHeld())end
+          ]]></script></ScriptProcessor></EventProcessors></Layer>
+          <Layer><EventProcessors><ScriptProcessor><script><![CDATA[
+            function onNote(e)assert(isNoteHeld());e.note=72;postEvent(e);wait(30);assert(not isNoteHeld())end
+            function onRelease(e)assert(e.note==60 and not isNoteHeld());e.note=72;postEvent(e)end
+          ]]></script></ScriptProcessor></EventProcessors></Layer>
+        </Layers></Program>"#,
+        )
+        .unwrap();
+        let out = process_program_chain(
+            &program,
+            BTreeMap::new(),
+            None,
+            &parse_notes("60@0-100:100").unwrap(),
+            4800,
+        )
+        .unwrap();
+        assert_eq!(out.commands.len(), 3);
+        assert!(
+            matches!(out.commands[2].action, Action::ReleaseNote { id:1,note:72,layer:Some(layer),.. } if layer==program.layers[1])
+        );
+        assert_eq!(out.commands[2].frame, 480);
+        let source = r#"
+          function onInit()
+            local id=postEvent({type=Event.NoteOn,note=60,velocity=100},100)
+            wait(20);assert(releaseVoice(id)==true and releaseVoice(id)==false)
+          end
+        "#;
+        let out = process(source, "authored-queued-note", &[], 9600).unwrap();
+        assert_eq!(out.len(), 2);
+        assert!(matches!(
+            out[0].action,
+            Action::ReleaseNote { note: 60, .. }
+        ));
+        assert_eq!(out[0].frame, 960);
+        assert!(matches!(out[1].action, Action::Start(_)));
+        assert_eq!(out[1].frame, 4800);
+        let source = r#"
+          local id
+          function onNote(e)id=e.id;e.note=72;postEvent(e)end
+          function onRelease(e)
+            assert(releaseVoice(__nextVoiceId())==false)
+            postEvent(e);wait(20);assert(releaseVoice(id)==false)
+          end
+        "#;
+        let out = process(
+            source,
+            "authored-wrong-key-release",
+            &parse_notes("60@0-100:100").unwrap(),
+            6000,
+        )
+        .unwrap();
+        assert_eq!(out.len(), 2);
+        assert!(matches!(&out[0].action,Action::Start(n) if n.note==72));
+        assert!(matches!(
+            out[1].action,
+            Action::ReleaseNote { note: 60, .. }
+        ));
+        let program = parse_program(
+            r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
+          function onInit()
+            local id=playNote(72,100,100);wait(200);assert(releaseVoice(id)==false)
+          end
+        ]]></script></ScriptProcessor></EventProcessors><Layers><Layer><EventProcessors>
+          <ScriptProcessor><script><![CDATA[
+            function onNote(e)postEvent(e);wait(200);assert(releaseVoice(e.id)==true)end
+            function onRelease(e)assert(e.note==72)end
+          ]]></script></ScriptProcessor>
+        </EventProcessors></Layer></Layers></Program>"#,
+        )
+        .unwrap();
+        let out = process_program_chain(&program, BTreeMap::new(), None, &[], 14400).unwrap();
+        assert_eq!(out.commands.len(), 2);
+        assert!(matches!(
+            out.commands[1].action,
+            Action::ReleaseNote { note: 72, .. }
+        ));
+        assert_eq!(out.commands[1].frame, 9600);
+    }
+
+    #[test]
+    fn authored_voice_handles_preserve_identity_and_key_release() {
+        let program = parse_program("<Program><EventProcessors><ScriptProcessor Name='Authored'/></EventProcessors></Program>").unwrap();
+        let source = r#"
+          local minted,spare=__nextVoiceId(),__nextVoiceId()
+          local keys={[minted]='minted'};local physical
+          function onInit()
+            assert(type(minted)=='userdata' and minted~=spare and keys[minted]=='minted')
+            for i=1,9000 do assert(type(__nextVoiceId())=='userdata')end;collectgarbage('collect');assert(keys[minted]=='minted')
+            assert(not pcall(function()__nextVoiceId(nil)end))
+            assert(not pcall(function()__nextVoiceId(1,2)end))
+            assert(not pcall(function()releaseVoice(1)end))
+            assert(releaseVoice(minted)==false)
+            changeTune(minted,12,false,true)
+            sendScriptModulation(1,0.5,0,minted)
+          end
+          function onNote(e)
+            physical=e.id;assert(type(physical)=='userdata' and physical~=minted)
+            e.id=minted;assert(postEvent(e)==minted and e.id==minted and keys[e.id]=='minted')
+            e.note=72;assert(postEvent(e)==minted);wait(2)
+            assert(releaseVoice(minted)==true and releaseVoice(minted)==false)
+          end
+          function onRelease(e)assert(e.id==physical and e.note==60);postEvent(e)end
+        "#;
+        let out = process_program(
+            source,
+            "authored-handles",
+            &program,
+            BTreeMap::new(),
+            &parse_notes("60@0-100:100").unwrap(),
+            4800,
+        )
+        .unwrap();
+        assert_eq!(out.commands.len(), 4);
+        assert!(
+            matches!(&out.commands[0].action, Action::Start(n) if n.id==1 && n.note==60 && n.tune==0.)
+        );
+        assert!(matches!(&out.commands[1].action, Action::Start(n) if n.id==1 && n.note==72));
+        assert!(matches!(
+            out.commands[2].action,
+            Action::ReleaseNote {
+                id: 1,
+                note: 72,
+                layer: None,
+                ..
+            }
+        ));
+        assert!(matches!(
+            out.commands[3].action,
+            Action::ReleaseNote {
+                id: 9003,
+                note: 60,
+                channel: 0,
+                layer: None
+            }
+        ));
+        assert!(matches!(
+            out.host_commands[0].action,
+            host::Action::ScriptModulation { voice: Some(1), .. }
+        ));
     }
 
     #[test]
@@ -2267,17 +2681,20 @@ mod tests {
             })
             .collect();
         assert_eq!(starts, [(1, 60), (2, 61), (3, 63), (4, 62)]);
+        assert!(result.commands.iter().any(|c| c.frame == 480
+            && matches!(
+                c.action,
+                Action::ReleaseNote {
+                    id: 3,
+                    note: 63,
+                    layer: None,
+                    ..
+                }
+            )));
         assert!(
-            result
-                .commands
-                .iter()
-                .any(|c| c.frame == 480 && matches!(c.action, Action::Release(3)))
-        );
-        assert!(
-            !result
-                .commands
-                .iter()
-                .any(|c| c.frame < 2400 && matches!(c.action, Action::Release(2 | 4)))
+            !result.commands.iter().any(
+                |c| c.frame < 2400 && matches!(c.action, Action::ReleaseNote { id: 2 | 4, .. })
+            )
         );
         assert!(result.commands.iter().any(|c| matches!(
             c.action,

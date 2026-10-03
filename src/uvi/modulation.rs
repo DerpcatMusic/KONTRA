@@ -84,6 +84,7 @@ enum Source {
 }
 #[derive(Debug)]
 struct Connection {
+    mode: u32,
     node: NodeId,
     source: Source,
     mapper: Option<NodeId>,
@@ -143,6 +144,7 @@ impl Ramp {
 
 // Native Constant state belongs to the per-voice control variable. The
 // producer writes one point per 32 frames; audio targets interpolate points.
+#[derive(Clone)]
 struct ConstantClock {
     rate: f64,
     block_frames: u32,
@@ -596,11 +598,18 @@ struct LfoClock {
     frequency: f64,
     phase: f64,
 }
+struct AbsoluteClock {
+    producer: ConstantClock,
+    filtered: HashMap<NodeId, f32>,
+    published: HashMap<NodeId, f32>,
+}
 pub struct ModulationGraph {
     kinds: Vec<String>,
     bases: Vec<BTreeMap<String, String>>,
     connections: HashMap<Parameter, Vec<Connection>>,
     node_targets: HashMap<NodeId, Vec<Parameter>>,
+    absolute_order: Vec<NodeId>,
+    absolute_clocks: HashMap<NodeId, AbsoluteClock>,
     target_sources: HashMap<Parameter, HashSet<NodeId>>,
     mappers: HashMap<NodeId, Mapper>,
     tables: HashMap<NodeId, Vec<f64>>,
@@ -715,6 +724,7 @@ pub fn supports_target(kind: &str, name: &str) -> bool {
             | ("DigitalEq", "GainScale")
             | ("DAHDSR", "AttackTime" | "DecayTime" | "DelayTime")
             | ("DualDelay", "Feedback" | "Mix")
+            | ("WhiteChorus", "Mix" | "Speed" | "Depth" | "Crossover")
             | ("XpanderFilter", "Freq" | "Q" | "Fat" | "Drive" | "Bypass")
             | ("AnalogADSR", "AttackTime" | "DecayTime" | "ReleaseTime")
     ) || (kind == "GainMatrix"
@@ -727,6 +737,69 @@ pub fn supports_target(kind: &str, name: &str) -> bool {
                 .all(|s| s.parse::<usize>().is_ok_and(|n| (1..=12).contains(&n)))
         }))
 }
+/// Mode1 sets a normalized parameter through its own converter. Mode0's
+/// physical-unit arithmetic does not establish this absolute conversion.
+pub fn supports_absolute_target(kind: &str, name: &str) -> bool {
+    matches!(
+        (kind, name),
+        ("ConstantModulation", "Value")
+            | ("Gain", "Volume")
+            | ("OnePole", "Freq")
+            | ("XpanderFilter", "Freq" | "Q" | "Drive")
+            | ("WhiteChorus", "Mix" | "Speed" | "Depth" | "Crossover")
+            | ("DualDelay", "Mix")
+            | ("Layer", "Mute" | "Gain")
+            | ("SamplePlayer", "Gain")
+            | ("SparkVerb", "Mix")
+            | ("WaveShaper", "Mix" | "Knee")
+            | (
+                "Gain"
+                    | "OnePole"
+                    | "XpanderFilter"
+                    | "WhiteChorus"
+                    | "DualDelay"
+                    | "GainMatrix"
+                    | "SparkVerb"
+                    | "WaveShaper",
+                "Bypass"
+            )
+    ) || (kind == "GainMatrix" && supports_target(kind, name))
+}
+fn absolute_value(kind: &str, name: &str, normalized: f32) -> Result<f64> {
+    let normalized = normalized.clamp(0., 1.);
+    let value = match (kind, name) {
+        ("ConstantModulation", "Value")
+        | ("DualDelay" | "WhiteChorus" | "SparkVerb" | "WaveShaper", "Mix")
+        | ("XpanderFilter", "Q") => normalized,
+        ("OnePole" | "XpanderFilter", "Freq") => 20_f32 * 1000_f32.powf(normalized),
+        ("XpanderFilter", "Drive") => 40. * normalized - 20.,
+        ("WaveShaper", "Knee") => 20. * normalized - 10.,
+        ("WhiteChorus", "Speed") => 0.1_f32 * 10_f32.powf(normalized),
+        ("WhiteChorus", "Depth") => 1. + 39. * normalized,
+        ("WhiteChorus", "Crossover") => 20_f32 * 250_f32.powf(normalized),
+        ("Layer", "Mute")
+        | (
+            "Gain" | "OnePole" | "XpanderFilter" | "WhiteChorus" | "DualDelay" | "GainMatrix"
+            | "SparkVerb" | "WaveShaper",
+            "Bypass",
+        ) => f32::from(normalized >= 0.5),
+        ("GainMatrix", name) if supports_target(kind, name) => 2. * normalized - 1.,
+        ("Gain", "Volume") | ("Layer" | "SamplePlayer", "Gain") => {
+            // Native registration anchors physical unity at normalized .8
+            // for insert/oscillator gain and .7 for Layer gain. Amplitude
+            // endpoints are +12/+6 dB respectively. These semantic anchors
+            // determine the power curve, without a fitted exponent.
+            let db = if kind == "Gain" { 12_f32 } else { 6_f32 };
+            let anchor = if kind == "Layer" { 0.7_f32 } else { 0.8_f32 };
+            let maximum = (db * (10_f32.ln() / 20.)).exp();
+            let exponent = (1_f32 / maximum).ln() / anchor.ln();
+            normalized.powf(exponent) * maximum
+        }
+        _ => bail!("Unverified UVI Mode1 target conversion for {kind}.{name}"),
+    };
+    Ok(f64::from(value))
+}
+
 impl ModulationGraph {
     pub fn new(program: &Program) -> Result<Self> {
         ensure!(
@@ -738,6 +811,8 @@ impl ModulationGraph {
             bases: program.nodes.iter().map(|n| n.attributes.clone()).collect(),
             connections: HashMap::new(),
             node_targets: HashMap::new(),
+            absolute_order: Vec::new(),
+            absolute_clocks: HashMap::new(),
             target_sources: HashMap::new(),
             mappers: HashMap::new(),
             tables: HashMap::new(),
@@ -800,7 +875,7 @@ impl ModulationGraph {
         }
         for c in &program.connections {
             ensure!(
-                c.mode == 0,
+                c.mode <= 1,
                 "Unsupported UVI ConnectionMode {} at node {}",
                 c.mode,
                 c.node
@@ -860,11 +935,35 @@ impl ModulationGraph {
                 mapper.is_none_or(|id| graph.mappers.contains_key(&id)),
                 "UVI Mapper reference has wrong node kind"
             );
+            if c.mode == 1 {
+                ensure!(
+                    number(
+                        &program.nodes[c.node].attributes,
+                        "SignalConnectionVersion",
+                        0.
+                    )? == 1.,
+                    "Unverified legacy UVI Mode1 connection at node {}",
+                    c.node
+                );
+                ensure!(
+                    matches!(source, Source::Node(id) if program.nodes[id].kind == "ConstantModulation"),
+                    "Unverified UVI Mode1 producer at node {}",
+                    c.node
+                );
+                if let Some(mapper) = mapper {
+                    ensure!(
+                        graph.mappers[&mapper].min == 0. && graph.mappers[&mapper].max == 1.,
+                        "Unverified UVI Mode1 mapper range at node {}",
+                        c.node
+                    );
+                }
+            }
             graph
                 .connections
                 .entry((c.owner, c.destination.clone()))
                 .or_default()
                 .push(Connection {
+                    mode: c.mode,
                     node: c.node,
                     source,
                     mapper,
@@ -885,7 +984,44 @@ impl ModulationGraph {
             graph.collect_sources(p, &mut HashSet::new(), &mut sources);
             graph.target_sources.insert(p.clone(), sources);
         }
+        let mut absolute_sources = graph
+            .connections
+            .values()
+            .flatten()
+            .filter_map(|connection| match (connection.mode, &connection.source) {
+                (1, Source::Node(node)) => Some(*node),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        absolute_sources.sort_unstable();
+        absolute_sources.dedup();
+        let mut ordered = HashSet::new();
+        for node in absolute_sources {
+            graph.order_absolute(node, &mut ordered);
+        }
         Ok(graph)
+    }
+    pub fn is_absolute_source_parameter(&self, node: NodeId, name: &str) -> bool {
+        name == "Value" && self.absolute_order.contains(&node)
+    }
+    fn order_absolute(&mut self, node: NodeId, visited: &mut HashSet<NodeId>) {
+        if !visited.insert(node) {
+            return;
+        }
+        let upstream = self
+            .connections
+            .get(&(node, "Value".into()))
+            .into_iter()
+            .flatten()
+            .filter_map(|c| match (c.mode, &c.source) {
+                (1, Source::Node(n)) => Some(*n),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for source in upstream {
+            self.order_absolute(source, visited);
+        }
+        self.absolute_order.push(node);
     }
     fn collect_sources(
         &self,
@@ -1069,11 +1205,197 @@ impl ModulationGraph {
         let mut targets = self
             .connections
             .keys()
-            .filter(|p| !supports_target(&self.kinds[p.0], &p.1))
+            .filter(|p| {
+                self.connections[*p].iter().any(|c| {
+                    if c.mode == 1 {
+                        !supports_absolute_target(&self.kinds[p.0], &p.1)
+                    } else {
+                        !supports_target(&self.kinds[p.0], &p.1)
+                    }
+                })
+            })
             .cloned()
             .collect::<Vec<_>>();
         targets.sort();
         targets
+    }
+    /// Publish native absolute routes once per processing block. A source's
+    /// first one-pole feeds a connection one-pole; its final actual 32-frame
+    /// point is committed before destination audio for that same block.
+    /// Serialized source values do not cause an initial parameter write.
+    pub fn control_updates(
+        &mut self,
+        input: &Inputs,
+        live: &HashMap<Parameter, f64>,
+    ) -> Result<Vec<(Parameter, f64)>> {
+        if self.absolute_order.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.validate(input, live)?;
+        ensure!(
+            input.voice.is_none(),
+            "UVI absolute updates require Program context"
+        );
+        let frame = (input.time_seconds * input.sample_rate + 0.000001).floor() as u64;
+        let block = u64::from(input.control_block_frames);
+        let mut current_live = HashMap::new();
+        let mut updates = Vec::new();
+        for node in self.absolute_order.clone() {
+            ensure!(
+                !self
+                    .connections
+                    .get(&(node, "Value".into()))
+                    .is_some_and(|c| c.iter().any(|c| c.mode == 0)),
+                "Unverified UVI Mode1 producer Value modulation at node {node}"
+            );
+            ensure!(
+                !self.boolean(node, "Bypass", false, live)?,
+                "Unverified bypassed UVI Mode1 producer at node {node}"
+            );
+            let style = self.setting(node, "Style", 0., live)?;
+            ensure!(
+                style == 0. || style == 1.,
+                "Unverified UVI Mode1 producer Style"
+            );
+            let parameter = (node, "Value".into());
+            let target = current_live
+                .get(&parameter)
+                .copied()
+                .unwrap_or(self.base(&parameter, live)?)
+                .clamp(0., 1.);
+            let target = if style == 1. {
+                f32::from(target > 0.5)
+            } else {
+                target as f32
+            };
+            if !frame.is_multiple_of(block) {
+                if let Some(clock) = self.absolute_clocks.get(&node) {
+                    ensure!(
+                        clock.producer.target == target,
+                        "Unverified nonaligned UVI Mode1 producer change at node {node}"
+                    );
+                }
+                continue;
+            }
+            let mut edges = self
+                .connections
+                .iter()
+                .flat_map(|(p, connections)| {
+                    connections
+                        .iter()
+                        .filter(move |c| {
+                            c.mode == 1 && matches!(c.source, Source::Node(n) if n == node)
+                        })
+                        .map(move |c| (p.clone(), c))
+                })
+                .collect::<Vec<_>>();
+            edges.sort_by_key(|(_, c)| c.node);
+            for (_, edge) in &edges {
+                for name in ["Ratio", "Offset", "Inverted", "Bypass"] {
+                    if let Some(value) = live.get(&(edge.node, name.into())) {
+                        ensure!(
+                            *value
+                                == number(
+                                    &self.bases[edge.node],
+                                    name,
+                                    f64::from(name == "Ratio")
+                                )?,
+                            "Unverified live UVI Mode1 connection control {name} at node {}",
+                            edge.node
+                        );
+                    }
+                }
+            }
+            let initial = number(&self.bases[node], "Value", 0.)?.clamp(0., 1.);
+            let initial = if style == 1. {
+                f32::from(initial > 0.5)
+            } else {
+                initial as f32
+            };
+            let clock = self
+                .absolute_clocks
+                .entry(node)
+                .or_insert_with(|| AbsoluteClock {
+                    producer: ConstantClock {
+                        rate: input.sample_rate,
+                        block_frames: input.control_block_frames,
+                        frame: 0,
+                        integrated: 0,
+                        point_frame: 0,
+                        current: initial,
+                        point: initial,
+                        target: initial,
+                    },
+                    filtered: edges.iter().map(|(_, edge)| (edge.node, initial)).collect(),
+                    published: edges.iter().map(|(_, edge)| (edge.node, initial)).collect(),
+                });
+            ensure!(
+                clock.producer.rate == input.sample_rate
+                    && clock.producer.block_frames == input.control_block_frames,
+                "UVI Mode1 processing clock changed"
+            );
+            if clock.producer.frame > frame {
+                continue;
+            } // Already previewed this block.
+            let first = if frame == 0 {
+                0
+            } else {
+                clock.producer.point_frame + 32
+            };
+            let end = frame + block - 32;
+            ensure!(
+                end >= first && (end - first) / 32 <= LIMIT as u64,
+                "UVI Mode1 control clock exceeds limit"
+            );
+            let alpha = 1_f32 - 0.33_f32.powf(3200_f32 / input.sample_rate as f32);
+            for at in (first..=end).step_by(32) {
+                let value = clock.producer.advance(
+                    at,
+                    if at < frame {
+                        clock.producer.target
+                    } else {
+                        target
+                    },
+                )? as f32;
+                for (_, edge) in &edges {
+                    let filtered = clock.filtered.get_mut(&edge.node).expect("compiled edge");
+                    *filtered += (value - *filtered) * alpha;
+                    if at.is_multiple_of(block) && ((value - *filtered) * alpha).abs() < 0.0000001 {
+                        *filtered = value;
+                    }
+                }
+            }
+            for (parameter, edge) in edges {
+                if flag(&self.bases[edge.node], "Bypass", false)? {
+                    continue;
+                }
+                let value = clock.filtered[&edge.node];
+                if clock.published[&edge.node] == value {
+                    continue;
+                }
+                clock.published.insert(edge.node, value);
+                let ratio = number(&self.bases[edge.node], "Ratio", 1.)?;
+                let inverted = flag(&self.bases[edge.node], "Inverted", false)?;
+                let mut mapped = if inverted {
+                    1. - f64::from(value)
+                } else {
+                    f64::from(value)
+                };
+                if let Some(mapper) = edge.mapper {
+                    mapped = self.mappers[&mapper].apply(mapped, false);
+                }
+                if ratio < 0. {
+                    mapped = 1. - mapped;
+                }
+                let normalized =
+                    number(&self.bases[edge.node], "Offset", 0.)? + ratio.abs() * mapped;
+                let value =
+                    absolute_value(&self.kinds[parameter.0], &parameter.1, normalized as f32)?;
+                current_live.insert(parameter.clone(), value);
+                updates.push((parameter, value));
+            }
+        }
+        Ok(updates)
     }
     /// Evaluate native parameter values. Unverified audio-target conversions
     /// fail explicitly; use `deltas` to inspect their graph contributions.
@@ -1219,6 +1541,10 @@ impl ModulationGraph {
             ("XpanderFilter", "Fat") => 1.,
             ("DualDelay", "Feedback") => 0.3,
             ("DualDelay", "Mix") => 0.5,
+            ("WhiteChorus", "Mix") => 1.,
+            ("WhiteChorus", "Speed") => 0.2,
+            ("WhiteChorus", "Depth") => 5.,
+            ("WhiteChorus", "Crossover") => 20.,
             ("AnalogADSR", "AttackTime") => 0.001,
             ("AnalogADSR", "DecayTime") => 0.05,
             ("AnalogADSR", "ReleaseTime") => 0.01,
@@ -1248,20 +1574,32 @@ impl ModulationGraph {
             return Ok(*v);
         }
         ensure!(
-            !self.connections.contains_key(p) || supports_target(&self.kinds[p.0], &p.1),
+            !self
+                .connections
+                .get(p)
+                .is_some_and(|edges| edges.iter().any(|c| c.mode == 0))
+                || supports_target(&self.kinds[p.0], &p.1),
             "Unverified UVI modulation target conversion at node {} parameter {}",
             p.0,
             p.1
         );
         let base = self.base(p, live)?;
-        let value = if !self.connections.contains_key(p) {
+        let value = if !self
+            .connections
+            .get(p)
+            .is_some_and(|edges| edges.iter().any(|c| c.mode == 0))
+        {
             base
-        } else if matches!(p.1.as_str(), "Gain" | "Volume" | "Ratio" | "Depth")
+        } else if (matches!(p.1.as_str(), "Gain" | "Volume" | "Ratio" | "Depth")
+            && self.kinds[p.0] != "WhiteChorus")
             || (self.kinds[p.0] == "GainMatrix" && p.1.starts_with("Gain_"))
             || (self.kinds[p.0] == "DAHDSR" && matches!(p.1.as_str(), "AttackTime" | "DecayTime"))
         {
             let mut factor = 1.;
             for c in &self.connections[p] {
+                if c.mode != 0 {
+                    continue;
+                }
                 if self.boolean(c.node, "Bypass", false, live)? {
                     continue;
                 }
@@ -1312,6 +1650,17 @@ impl ModulationGraph {
             f64::from((base + self.delta(p, input, live, memo, depth + 1)?).clamp(0., 1.) >= 0.5)
         } else if self.kinds[p.0] == "DualDelay" && matches!(p.1.as_str(), "Feedback" | "Mix") {
             (base + self.delta(p, input, live, memo, depth + 1)?).clamp(0., 1.)
+        } else if self.kinds[p.0] == "WhiteChorus" {
+            let delta = self.delta(p, input, live, memo, depth + 1)?;
+            // Authored original CC renders verify each physical converter;
+            // the processor owns its target smoothing, not this graph.
+            match p.1.as_str() {
+                "Mix" => (base + delta).clamp(0., 1.),
+                "Speed" => (base * 10_f64.powf(delta)).clamp(0.1, 1.),
+                "Crossover" => (base * 250_f64.powf(delta)).clamp(20., 5000.),
+                "Depth" => (base + 39. * delta).clamp(1., 40.),
+                _ => unreachable!("target support checked above"),
+            }
         } else if self.kinds[p.0] == "DigitalEq" && p.1 == "GainScale" {
             (base + 4. * self.delta(p, input, live, memo, depth + 1)?).clamp(-2., 2.)
         } else {
@@ -1331,6 +1680,9 @@ impl ModulationGraph {
     ) -> Result<f64> {
         let mut sum = 0.;
         for c in self.connections.get(p).into_iter().flatten() {
+            if c.mode != 0 {
+                continue;
+            }
             if self.boolean(c.node, "Bypass", false, live)? {
                 continue;
             }
@@ -1990,6 +2342,126 @@ mod tests {
         }
     }
     #[test]
+    fn native_absolute_producer_block_callbacks_and_target_converters() {
+        let p = parse_program(r#"<Program><ControlSignalSources>
+            <ConstantModulation Name="Src" Value="0" Bipolar="0"/>
+            <ConstantModulation Name="Target" Value="0.8"><Connections>
+              <SignalConnection Source="$Program/Src" Destination="Value" Ratio="1" ConnectionMode="1" SignalConnectionVersion="1"/>
+            </Connections></ConstantModulation></ControlSignalSources></Program>"#).unwrap();
+        let source = p
+            .nodes
+            .iter()
+            .position(|n| n.name.as_deref() == Some("Src"))
+            .unwrap();
+        let target = p
+            .nodes
+            .iter()
+            .position(|n| n.name.as_deref() == Some("Target"))
+            .unwrap();
+        let parameter = (target, "Value".into());
+        let mut graph = ModulationGraph::new(&p).unwrap();
+        let mut input = Inputs::default();
+        let mut live = HashMap::new();
+        // Static source zero does not overwrite the serialized target .8.
+        assert!(graph.control_updates(&input, &live).unwrap().is_empty());
+        assert_eq!(graph.evaluate(&input, &live).unwrap()[&parameter], 0.8);
+        // At block128 an authored native setter changes source0 to1. The
+        // published endpoints were independently read by Lua at next block.
+        input.time_seconds = 32768. / input.sample_rate;
+        live.insert((source, "Value".into()), 1.);
+        for (block, expected) in [
+            0.10663980990648,
+            0.31733468174934,
+            0.51793825626373,
+            0.67547661066055,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            input.time_seconds = (32768. + block as f64 * 256.) / input.sample_rate;
+            let writes = graph.control_updates(&input, &live).unwrap();
+            assert_eq!(writes.len(), 1);
+            assert_eq!(writes[0].0, parameter);
+            assert!((writes[0].1 - expected).abs() < 0.00000008);
+            live.extend(writes);
+        }
+        input.time_seconds += 1. / input.sample_rate;
+        assert!(graph.control_updates(&input, &live).unwrap().is_empty());
+        live.insert((source, "Value".into()), 0.5);
+        assert!(
+            graph
+                .control_updates(&input, &live)
+                .unwrap_err()
+                .to_string()
+                .contains("nonaligned")
+        );
+        assert_eq!(absolute_value("OnePole", "Freq", 0.).unwrap(), 20.);
+        assert_eq!(absolute_value("OnePole", "Freq", 1.).unwrap(), 20000.);
+        assert!((absolute_value("Gain", "Volume", 0.8).unwrap() - 1.).abs() < 0.000001);
+        assert_eq!(absolute_value("Gain", "Volume", 0.).unwrap(), 0.);
+        assert!((absolute_value("Gain", "Volume", 0.5).unwrap() - 0.05447886).abs() < 0.000001);
+        assert!(absolute_value("DigitalEq", "GainScale", 0.5).is_err());
+        for (kind, name, normalized, expected) in [
+            ("WhiteChorus", "Mix", 0.25, 0.25),
+            ("DualDelay", "Mix", 0.25, 0.25),
+            ("XpanderFilter", "Q", 0.25, 0.25),
+            ("XpanderFilter", "Drive", 0.25, -10.),
+            ("WhiteChorus", "Speed", 0.25, 0.1778279394),
+            ("WhiteChorus", "Depth", 0.25, 10.75),
+            ("WhiteChorus", "Crossover", 0.25, 79.52706909),
+            ("GainMatrix", "Gain_1_1", 0.25, -0.5),
+            ("SparkVerb", "Mix", 0.25, 0.25),
+            ("WaveShaper", "Mix", 0.25, 0.25),
+            ("WaveShaper", "Knee", 0.25, -5.),
+            ("Layer", "Gain", 0.5, 0.5211858153),
+            ("SamplePlayer", "Gain", 0.5, 0.2334075719),
+            ("Layer", "Mute", 0.49, 0.),
+            ("Layer", "Mute", 0.5, 1.),
+            ("XpanderFilter", "Bypass", 0.5, 1.),
+        ] {
+            assert!(supports_absolute_target(kind, name));
+            assert!((absolute_value(kind, name, normalized).unwrap() - expected).abs() < 0.00001);
+        }
+
+        // Nonlinear mapper and signed Ratio distinguish three separate
+        // operations: explicit inversion before mapping, then negative-Ratio
+        // inversion after mapping. These are native block callback getters.
+        for (ratio, inverted, expected) in [(1., 0, 0.), (1., 1, 0.340040326), (-0.5, 0, 0.5)] {
+            let fixture = format!(
+                r#"<Program><Mappers><ControlSignalMapper Name="Map" Min="0" Max="1">0 0 1</ControlSignalMapper></Mappers>
+                <ControlSignalSources><ConstantModulation Name="Src" Value="0.25"/>
+                <ConstantModulation Name="Target" Value="0.8"><Connections><SignalConnection Source="$Program/Src" Destination="Value"
+                Mapper="Map" Ratio="{ratio}" Inverted="{inverted}" ConnectionMode="1" SignalConnectionVersion="1"/></Connections></ConstantModulation>
+                </ControlSignalSources></Program>"#
+            );
+            let p = parse_program(&fixture).unwrap();
+            let source = p
+                .nodes
+                .iter()
+                .position(|n| n.name.as_deref() == Some("Src"))
+                .unwrap();
+            let mut graph = ModulationGraph::new(&p).unwrap();
+            let mut input = Inputs::default();
+            assert!(
+                graph
+                    .control_updates(&input, &HashMap::new())
+                    .unwrap()
+                    .is_empty()
+            );
+            input.time_seconds = 256. / input.sample_rate;
+            let writes = graph
+                .control_updates(&input, &HashMap::from([((source, "Value".into()), 1.)]))
+                .unwrap();
+            assert_eq!(writes.len(), 1);
+            assert!((writes[0].1 - expected).abs() < 0.0000001);
+        }
+        let cyclic = r#"<Program><ControlSignalSources>
+            <ConstantModulation Name="A"><Connections><SignalConnection Source="$Program/B" Destination="Value" ConnectionMode="1" SignalConnectionVersion="1"/></Connections></ConstantModulation>
+            <ConstantModulation Name="B"><Connections><SignalConnection Source="$Program/A" Destination="Value" ConnectionMode="1" SignalConnectionVersion="1"/></Connections></ConstantModulation>
+            </ControlSignalSources></Program>"#;
+        assert!(ModulationGraph::new(&parse_program(cyclic).unwrap()).is_err());
+    }
+    #[test]
     fn native_random_lfo_clock_and_smoothing() {
         // State recovered from an authored original-render fixture. The
         // process-clock constructor seed is deliberately not asserted.
@@ -2148,6 +2620,34 @@ mod tests {
             ),
             ("DigitalEq", "GainScale", 0., vec![0.5], 2. * 64. / 127.),
             ("LFO", "Freq", 1., vec![0.25], 1. + 5. * 64. / 127.),
+            (
+                "WhiteChorus",
+                "Mix",
+                0.25,
+                vec![0.5],
+                0.25 + 0.5 * 64. / 127.,
+            ),
+            (
+                "WhiteChorus",
+                "Depth",
+                5.,
+                vec![0.5],
+                5. + 19.5 * 64. / 127.,
+            ),
+            (
+                "WhiteChorus",
+                "Speed",
+                0.2,
+                vec![0.5],
+                0.2 * 10_f64.powf(0.5 * 64. / 127.),
+            ),
+            (
+                "WhiteChorus",
+                "Crossover",
+                20.,
+                vec![0.5],
+                20. * 250_f64.powf(0.5 * 64. / 127.),
+            ),
         ] {
             let connections=ratios.iter().map(|r|format!(r#"<SignalConnection Source="@MIDI CC 1" Destination="{name}" Ratio="{r}"/>"#)).collect::<String>();
             let fixture = format!(

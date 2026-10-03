@@ -6,6 +6,7 @@
 //! Native numerical observations establish the 37 tap combinations, frequency
 //! and resonance polynomials, rational saturation and two-phase allpass path.
 //! Algorithm II uses bilinear TPT stages with a measured zero-delay solve.
+//! AGM and Jacobi identities: https://dlmf.nist.gov/22.20 and 19.8.
 //! No vendor source expression was used.
 
 use super::{
@@ -16,7 +17,7 @@ use super::{
 use anyhow::{Context, Result, bail, ensure};
 use std::collections::BTreeMap;
 
-pub const FIDELITY_DIAGNOSTIC: &str = "UVI Xpander shapes, both solvers and saturation have authored native comparisons at 48 kHz; other rates, live parameter transitions and exact float-rounding parity remain unverified";
+pub const FIDELITY_DIAGNOSTIC: &str = "UVI Xpander shapes, both solvers and saturation have authored native comparisons at 48 kHz; quiet rate paths are compared at 8/32/44.1/48/64/96/192 kHz; live parameter transitions, cross-rate saturation and exact float-rounding parity remain unverified";
 const DEFAULTS: [(&str, f64); 10] = [
     ("Bypass", 0.),
     ("Freq", 1000.),
@@ -30,11 +31,54 @@ const DEFAULTS: [(&str, f64); 10] = [
     ("Oversampling", 1.),
 ];
 
-// Independently fitted from the authored LP1 + HP1 impulse. These mathematical
-// coefficients describe the native path; they are not copied implementation.
-const ALLPASS: [f64; 6] = [
-    0.04418161, 0.16418989, 0.33074303, 0.51508740, 0.70205269, 0.89488971,
-];
+// Original elliptic halfband mathematics, confirmed by native common-path
+// impulses at 8/32/40/44.1/48/64/96/192kHz. Coefficients depend on rate;
+// arbitrary-rate tables or nearest-rate aliases would change the native phase.
+fn elliptic_agm(m: f64) -> (f64, [(f64, f64); 16], usize) {
+    let (mut a, mut b) = (1., (1. - m).sqrt());
+    let mut levels = [(0., 0.); 16];
+    let mut count = 0;
+    for level in &mut levels {
+        let next = (a + b) * 0.5;
+        let c = (a - b) * 0.5;
+        *level = (next, c);
+        count += 1;
+        b = (a * b).sqrt();
+        a = next;
+        if c < 1e-15 {
+            break;
+        }
+    }
+    (std::f64::consts::PI / (2. * a), levels, count)
+}
+
+pub(super) fn allpass_coefficients(rate: f64, attenuation_db: f64) -> ([f64; 8], usize) {
+    let edge = (20_000. / rate).min(0.48);
+    let k = (std::f64::consts::PI * edge * 0.5).tan().powi(2);
+    let m = k * k;
+    let (complete, levels, depth) = elliptic_agm(m);
+    let log_nome = -std::f64::consts::PI * elliptic_agm(1. - m).0 / complete;
+    let mut count = 2;
+    while count < 8
+        && -10. / 10f64.ln() * (4f64.ln() + (2 * count + 1) as f64 * log_nome * 0.5)
+            < attenuation_db
+    {
+        count += 2;
+    }
+    let mut coefficients = [0.; 8];
+    for (i, coefficient) in coefficients[..count].iter_mut().enumerate() {
+        // Descending AGM gives the Jacobi amplitude at u=2*i*K/(2*M+1).
+        let mut phi = (1usize << depth) as f64 * (i + 1) as f64 * std::f64::consts::PI
+            / (2 * count + 1) as f64;
+        for &(a, c) in levels[..depth].iter().rev() {
+            phi = (phi + (c / a * phi.sin()).asin()) * 0.5;
+        }
+        let sn = phi.sin();
+        let x = phi.cos() * (1. - m * sn * sn).sqrt() / (1. + k * sn * sn);
+        *coefficient = (1. - x) / (1. + x);
+    }
+    (coefficients, count)
+}
 
 // Input, LP1, LP2, LP3, LP4. Each row was independently identified from an
 // authored native impulse, including mixed/twin shapes; none is an alias.
@@ -125,16 +169,16 @@ pub fn validate(node: &ProgramNode) -> Result<()> {
 #[derive(Clone, Copy, Default)]
 struct State {
     // First-order allpasses y=a*x+z; z=x-a*y, independently per phase.
-    up: [f64; 6],
-    down: [f64; 6],
+    up: [f64; 8],
+    down: [f64; 8],
     previous_input: [f64; 4],
     previous_output: [f64; 4],
 }
 
-fn allpass(mut x: f64, state: &mut [f64; 6], phase: usize) -> f64 {
-    for i in (phase..6).step_by(2) {
-        let y = ALLPASS[i] * x + state[i];
-        state[i] = x - ALLPASS[i] * y;
+pub(super) fn allpass(mut x: f64, state: &mut [f64; 8], phase: usize, coefficients: &[f64]) -> f64 {
+    for i in (phase..coefficients.len()).step_by(2) {
+        let y = coefficients[i] * x + state[i];
+        state[i] = x - coefficients[i] * y;
         x = y;
     }
     x
@@ -149,6 +193,9 @@ pub struct XpanderFilter {
     rate: f64,
     parameters: BTreeMap<String, f64>,
     note: u8,
+    phases: usize,
+    allpass: [f64; 8],
+    allpass_count: usize,
     stage: f64,
     pole: f64,
     feedback: f64,
@@ -172,11 +219,15 @@ impl XpanderFilter {
             rate.is_finite() && (8_000. ..=192_000.).contains(&rate),
             "Invalid UVI filter rate"
         );
+        let (allpass, allpass_count) = allpass_coefficients(rate, 80.);
         let mut result = Self {
             channels,
             rate,
             parameters: parameters(node)?,
             note: 60,
+            phases: 1,
+            allpass,
+            allpass_count,
             stage: 0.,
             pole: 0.,
             feedback: 0.,
@@ -195,15 +246,21 @@ impl XpanderFilter {
         self.parameters
             .get(name)
             .copied()
-            .map(ParameterValue::Number)
+            .map(|value| {
+                if name == "Bypass" {
+                    ParameterValue::Boolean(value != 0.)
+                } else {
+                    ParameterValue::Number(value)
+                }
+            })
             .context("Unknown UVI filter parameter")
     }
 
     pub fn set_parameter(&mut self, name: &str, value: &ParameterValue) -> Result<()> {
         let value = match value {
-            ParameterValue::Number(n) => *n,
+            ParameterValue::Number(n) if name != "Bypass" => *n,
             ParameterValue::Boolean(b) if name == "Bypass" => f64::from(u8::from(*b)),
-            _ => bail!("Numeric UVI filter parameter required"),
+            _ => bail!("UVI filter Bypass requires Boolean; other parameters require Number"),
         };
         check(name, value)?;
         if self.parameters.get(name).copied() != Some(value) {
@@ -234,11 +291,18 @@ impl XpanderFilter {
 
     fn configure(&mut self) -> Result<()> {
         let p = &self.parameters;
-        let frequency = (p["Freq"]
-            * ((f64::from(self.note) - 60.) * p["KeyTracking"] / 12.).exp2())
-        .clamp(20., 20_000.);
+        // Native tracking extends below/above the stored 20..20000Hz range.
+        // Each solver applies its own internal-rate ceiling after tracking.
+        let frequency = p["Freq"] * ((f64::from(self.note) - 60.) * p["KeyTracking"] / 12.).exp2();
+        self.phases = if p["Oversampling"] != 0. || (p["Algorithm"] == 0. && self.rate <= 48_000.) {
+            2
+        } else {
+            1
+        };
+        let rate = self.rate * self.phases as f64;
         if p["Algorithm"] == 0. {
-            let w = std::f64::consts::PI * frequency / self.rate;
+            // Algorithm I caps at internal Nyquist; Algorithm II at .499.
+            let w = 2. * std::f64::consts::PI * frequency.min(0.5 * rate) / rate;
             let g = w * (0.9892 + w * (-0.4242 + w * (0.1381 - 0.0202 * w)));
             ensure!(
                 g > 0. && g < 2.,
@@ -249,7 +313,6 @@ impl XpanderFilter {
             self.feedback = 4. * p["Q"] * (1.0029 + w * (0.0526 + w * (-0.0926 + 0.0218 * w)));
             self.denominator = 1.;
         } else {
-            let rate = self.rate * if p["Oversampling"] == 0. { 1. } else { 2. };
             // Native positive 8/32kHz probes keep the stored Freq=20000,
             // while the effective cutoff is capped at .499*internalRate.
             let g = (std::f64::consts::PI * frequency.min(0.499 * rate) / rate).tan();
@@ -293,20 +356,17 @@ impl XpanderFilter {
         let mix = MIX[self.parameters["Mode"] as usize];
         let distortion = self.parameters["DistortionType"] as u8;
         let zero_delay = self.parameters["Algorithm"] != 0.;
-        let phases = if !zero_delay || self.parameters["Oversampling"] != 0. {
-            2
-        } else {
-            1
-        };
+        let phases = self.phases;
+        let coefficients = &self.allpass[..self.allpass_count];
         for frame in io {
             for (channel, x) in frame[..self.channels].iter_mut().enumerate() {
                 let state = &mut self.state[channel];
                 let mut output = 0.;
-                // Algorithm I uses the measured 2x path for both toggle values.
-                // Algorithm II honors Oversampling, including its direct path.
+                // Algorithm I forces 2x through 48 kHz, honors the toggle above;
+                // Algorithm II honors the toggle at every measured rate.
                 for phase in 0..phases {
                     let up = if phases == 2 {
-                        allpass(f64::from(*x), &mut state.up, phase)
+                        allpass(f64::from(*x), &mut state.up, phase, coefficients)
                     } else {
                         f64::from(*x)
                     };
@@ -345,7 +405,7 @@ impl XpanderFilter {
                         result += mix[stage + 1] * y;
                     }
                     output += if phases == 2 {
-                        allpass(result, &mut state.down, 1 - phase)
+                        allpass(result, &mut state.down, 1 - phase, coefficients)
                     } else {
                         result
                     };
@@ -646,6 +706,46 @@ mod tests {
                 );
             }
         }
+        // Original large delta/Q=.75 probes verify the input tap belongs to
+        // the feedback-shaped signal in highpass, allpass and mixed shapes.
+        #[rustfmt::skip]
+        const MIXED_FEEDBACK: [(u8, u8, u8, [f32; 4]); 18] = [
+            (0, 0, 4, [3.748537274e-03, 1.182188034e+00, -1.303091496e-01, 6.289122254e-02]),
+            (0, 0, 14, [-3.540632082e-03, -9.857723117e-01, 2.193879187e-01, 1.818162575e-02]),
+            (0, 0, 36, [3.199949628e-03, 7.381969690e-01, -2.821130119e-02, 2.906479500e-02]),
+            (0, 1, 4, [2.955713309e-03, 9.682009816e-01, -7.691083848e-02, 4.689553753e-02]),
+            (0, 1, 14, [-2.791957464e-03, -8.024293184e-01, 1.452713311e-01, 1.917634159e-02]),
+            (0, 1, 36, [2.523570089e-03, 5.945191383e-01, -4.090666771e-04, 2.370541170e-02]),
+            (0, 2, 4, [2.955714474e-03, 2.188153028e+00, -3.495830894e-01, 8.762288094e-02]),
+            (0, 2, 14, [-2.791958395e-03, -1.892167211e+00, 4.818724394e-01, 5.905896425e-02]),
+            (0, 2, 36, [2.523571020e-03, 1.498355269e+00, -8.838701248e-02, 2.690687217e-02]),
+            (1, 0, 4, [3.797834506e-03, 1.201423645e+00, -1.328774393e-01, 6.180604175e-02]),
+            (1, 0, 14, [-3.656357760e-03, -1.025218844e+00, 2.238986194e-01, 1.929570176e-02]),
+            (1, 0, 36, [3.408608260e-03, 7.821110487e-01, -2.934472635e-02, 3.098369017e-02]),
+            (1, 1, 4, [2.994230017e-03, 9.845187664e-01, -7.835574448e-02, 4.598508403e-02]),
+            (1, 1, 14, [-2.882864326e-03, -8.351407051e-01, 1.478171051e-01, 2.011217922e-02]),
+            (1, 1, 36, [2.687812317e-03, 6.297965050e-01, 3.408193588e-04, 2.531714551e-02]),
+            (1, 2, 4, [2.994230948e-03, 2.215538263e+00, -3.545993567e-01, 8.512677252e-02]),
+            (1, 2, 14, [-2.882865258e-03, -1.958007097e+00, 4.919820428e-01, 6.152367592e-02]),
+            (1, 2, 36, [2.687813248e-03, 1.585525870e+00, -9.091910720e-02, 2.851120941e-02]),
+        ];
+        for (algorithm, distortion, mode, expected) in MIXED_FEEDBACK {
+            let mut fx = filter(
+                &format!(
+                    "Algorithm=\"{algorithm}\" Oversampling=\"1\" Q=\"0.75\" DistortionType=\"{distortion}\" Mode=\"{mode}\""
+                ),
+                1,
+            );
+            let mut io = [[0.; MAX_CHANNELS]; 128];
+            io[0][0] = 32767. / 32768.;
+            fx.process(&mut io).unwrap();
+            for (index, expected) in [0, 3, 12, 50].into_iter().zip(expected) {
+                assert!(
+                    (io[index][0] - expected).abs() < 2e-6 * (1. + expected.abs()),
+                    "mixed feedback Algorithm {algorithm}, distortion {distortion}, mode {mode}, frame {index}"
+                );
+            }
+        }
         // The native direct Algorithm II path caps cutoff at .499*rate.
         // The public control remains 20000 at both measured low rates.
         const LOW_RATE_CUTOFF: [f32; 4] = [
@@ -713,6 +813,97 @@ mod tests {
                 );
             }
         }
+        // Original matching-rate PCM16 delta32 measurements; these distinguish
+        // low-rate section count, Algorithm I cutoff cap and high-rate direct path.
+        #[rustfmt::skip]
+        const RATE_IMPULSE: [(f64, u8, u8, f64, [f32; 4]); 18] = [
+            (8000., 0, 0, 1000., [7.445945812e-06, 2.819475718e-02, 1.595221162e-01, -1.066613913e-04]),
+            (8000., 0, 0, 20000., [1.132947742e-03, 5.956187248e-01, 2.204459459e-01, 4.343529791e-02]),
+            (8000., 1, 0, 1000., [7.359317038e-03, 1.635637283e-01, 8.527667820e-02, 6.241804851e-09]),
+            (8000., 1, 0, 20000., [9.875326157e-01, 2.397099324e-02, 2.248827368e-02, 1.502786856e-02]),
+            (8000., 1, 1, 1000., [1.568311177e-06, 1.313836966e-02, 1.751604676e-01, 1.132875113e-04]),
+            (8000., 1, 1, 20000., [1.347887097e-03, 6.209264994e-01, 2.012058944e-01, 5.662286654e-02]),
+            (32000., 0, 0, 1000., [4.941405862e-08, 3.051189706e-04, 1.112581044e-02, 2.060638741e-02]),
+            (32000., 0, 0, 20000., [6.293460028e-04, 4.956775308e-01, 2.058652490e-01, 6.312857848e-03]),
+            (32000., 1, 0, 1000., [6.462593592e-05, 3.986877389e-03, 2.148096263e-02, 1.669347845e-02]),
+            (32000., 1, 0, 20000., [9.875326157e-01, 2.397099324e-02, 2.248827368e-02, 1.502786856e-02]),
+            (32000., 1, 1, 1000., [1.043744824e-08, 1.330382947e-04, 8.930972777e-03, 2.145482600e-02]),
+            (32000., 1, 1, 20000., [2.197859139e-04, 3.813278377e-01, 1.445104033e-01, -3.011485934e-02]),
+            (96000., 0, 0, 1000., [5.503025022e-06, 1.602671255e-04, 9.313444607e-04, 1.220588200e-02]),
+            (96000., 0, 0, 20000., [1.571040899e-01, 1.595209390e-01, 2.424335806e-03, 3.943208496e-19]),
+            (96000., 1, 0, 1000., [1.009663379e-06, 7.875332085e-05, 6.754809292e-04, 1.197878085e-02]),
+            (96000., 1, 0, 20000., [3.553483263e-02, 2.806751728e-01, 3.653521650e-03, 4.168694938e-22]),
+            (96000., 1, 1, 1000., [1.651198622e-10, 3.320537189e-06, 2.414509217e-04, 1.106418855e-02]),
+            (96000., 1, 1, 20000., [9.332592526e-06, 7.965664566e-02, 9.594684839e-02, -9.640034477e-06]),
+        ];
+        for (rate, algorithm, oversampling, frequency, expected) in RATE_IMPULSE {
+            let p = parse_program(&format!(
+                "<Program><Inserts><XpanderFilter Freq=\"{frequency}\" Algorithm=\"{algorithm}\" Oversampling=\"{oversampling}\" DistortionType=\"2\"/></Inserts></Program>"
+            )).unwrap();
+            let mut fx = XpanderFilter::new(&p.nodes[2], 1, rate).unwrap();
+            let mut io = vec![[0.; MAX_CHANNELS]; 128];
+            io[0][0] = 1.;
+            fx.process(&mut io).unwrap();
+            for (i, expected) in [0, 3, 7, 31].into_iter().zip(expected) {
+                assert!(
+                    (io[i][0] - expected).abs() < 2e-6,
+                    "rate {rate}, Algorithm {algorithm}, sampling {oversampling}, Freq {frequency}, frame {i}"
+                );
+            }
+        }
+        // Original quiet native LP1 controls establish tracked frequencies of
+        // 10Hz, 40kHz and the solver ceiling, beyond the stored control range.
+        #[rustfmt::skip]
+        const TRACKED_IMPULSE: [(u8, u8, f64, f64, [f32; 4]); 12] = [
+            (0, 48, 1., 20., [4.206134747e-07, 7.995342021e-04, 1.415344188e-03, 1.251988579e-03]),
+            (0, 60, 0., 20., [8.409569432e-07, 1.597714610e-03, 2.816081513e-03, 2.413784154e-03]),
+            (0, 72, 1., 10000., [5.047720042e-04, 5.301831365e-01, 2.042247206e-01, -9.929586202e-03]),
+            (0, 72, 1., 20000., [7.278415142e-04, 6.075282693e-01, 1.927149743e-01, -2.786644362e-02]),
+            (0, 60, 0., 20000., [5.047720042e-04, 5.301831365e-01, 2.042247206e-01, -9.929586202e-03]),
+            (0, 84, 1., 20000., [7.410088438e-04, 6.106308699e-01, 1.898769885e-01, -2.891639620e-02]),
+            (1, 48, 1., 20., [6.540708127e-04, 1.303868019e-03, 1.297058887e-03, 1.256943797e-03]),
+            (1, 60, 0., 20., [1.307286904e-03, 2.597519662e-03, 2.570460783e-03, 2.413924318e-03]),
+            (1, 72, 1., 10000., [7.886754274e-01, 1.111111492e-01, 1.234568190e-02, 2.323056414e-08]),
+            (1, 72, 1., 20000., [9.968687296e-01, 6.165740546e-03, 6.012714002e-03, 5.171092693e-03]),
+            (1, 60, 0., 20000., [7.886754274e-01, 1.111111492e-01, 1.234568190e-02, 2.323056414e-08]),
+            (1, 84, 1., 20000., [9.968687296e-01, 6.165740546e-03, 6.012714002e-03, 5.171092693e-03]),
+        ];
+        for (algorithm, note, tracking, frequency, expected) in TRACKED_IMPULSE {
+            let mut fx = filter(
+                &format!(
+                    "Mode=\"0\" Freq=\"{frequency}\" Algorithm=\"{algorithm}\" Oversampling=\"0\" KeyTracking=\"{tracking}\" DistortionType=\"2\""
+                ),
+                1,
+            );
+            fx.set_note(note).unwrap();
+            let mut io = vec![[0.; MAX_CHANNELS]; 128];
+            io[0][0] = 1.;
+            fx.process(&mut io).unwrap();
+            for (i, expected) in [0, 3, 7, 31].into_iter().zip(expected) {
+                assert!(
+                    (io[i][0] - expected).abs() < 2e-6,
+                    "tracking Algorithm {algorithm}, note {note}, Freq {frequency}, frame {i}"
+                );
+            }
+        }
+        // Native LP1+HP1 is dry above 48 kHz with Oversampling0.
+        for rate in [48001., 64000., 96000.] {
+            let mut sum = vec![[0.; MAX_CHANNELS]; 32];
+            for mode in [0, 4] {
+                let p = parse_program(&format!(
+                    "<Program><Inserts><XpanderFilter Mode=\"{mode}\" Oversampling=\"0\" DistortionType=\"2\"/></Inserts></Program>"
+                )).unwrap();
+                let mut fx = XpanderFilter::new(&p.nodes[2], 1, rate).unwrap();
+                let mut io = vec![[0.; MAX_CHANNELS]; 32];
+                io[0][0] = 1.;
+                fx.process(&mut io).unwrap();
+                for (out, value) in sum.iter_mut().zip(io) {
+                    out[0] += value[0];
+                }
+            }
+            assert!((sum[0][0] - 1.).abs() < 1e-7);
+            assert!(sum[1..].iter().all(|frame| frame[0].abs() < 1e-7));
+        }
         let mut fx = filter("DistortionType=\"2\"", 1);
         let previous = fx.parameter("Algorithm").unwrap();
         assert!(
@@ -720,8 +911,20 @@ mod tests {
                 .is_err()
         );
         assert_eq!(fx.parameter("Algorithm").unwrap(), previous);
+        assert!(
+            fx.set_parameter("Algorithm", &ParameterValue::Boolean(true))
+                .is_err()
+        );
+        assert!(
+            fx.set_parameter("Bypass", &ParameterValue::Number(1.))
+                .is_err()
+        );
         fx.set_parameter("Bypass", &ParameterValue::Boolean(true))
             .unwrap();
+        assert_eq!(
+            fx.parameter("Bypass").unwrap(),
+            ParameterValue::Boolean(true)
+        );
         let mut io = [[1.; MAX_CHANNELS]];
         fx.process(&mut io).unwrap();
         assert_eq!(io, [[1.; MAX_CHANNELS]]);
@@ -736,14 +939,12 @@ mod tests {
         assert!(fx.stage > reference);
         let p = parse_program("<Program><Inserts><XpanderFilter/></Inserts></Program>").unwrap();
         let mut low_rate = XpanderFilter::new(&p.nodes[2], 1, 8000.).unwrap();
-        assert!(
-            low_rate
-                .set_parameter("Freq", &ParameterValue::Number(20000.))
-                .is_err()
-        );
+        low_rate
+            .set_parameter("Freq", &ParameterValue::Number(20000.))
+            .unwrap();
         assert_eq!(
             low_rate.parameter("Freq").unwrap(),
-            ParameterValue::Number(1000.)
+            ParameterValue::Number(20000.)
         );
     }
 }
