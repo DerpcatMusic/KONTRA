@@ -107,10 +107,24 @@ int main(int argc,char** argv) {
     for(bool anonymous:{false,true}) for(int length:{0,16,12000,-1,INT32_MIN}) {
         const int id=anonymous?-1:100+(length==INT32_MIN?99:std::abs(length));
         const float tuning=length==16?250.f:length==12000?-350.f:0.f;
-        note(true,id,length,16,tuning);double energy=block();
+        note(true,id,length,16,tuning);events.event.flags=anonymous?1:0; // SDK Event::kIsLive
+        double energy=block();
+        std::vector<float> captured(pcm[0][0].begin(),pcm[0][0].end());
         require(std::all_of(pcm[0][0].begin(),pcm[0][0].begin()+16,[](float x){return x==0.f;}),"sample-exact onset");
-        for(int i=0;i<16;++i) energy+=block();
-        std::printf("native anonymous=%d length=%d tuning_cents=%.0f attack_energy=%.9g\n",anonymous,length,tuning,energy);
+        for(int i=0;i<16;++i){energy+=block();captured.insert(captured.end(),pcm[0][0].begin(),pcm[0][0].end());}
+        double frequency=0.;
+        if(energy>1e-4){
+            // Positive-going crossings after the attack: independent of the
+            // adapter, engine phase and gain, including fractional periods.
+            std::vector<double> crossings;
+            for(size_t n=513;n<captured.size();++n)if(captured[n-1]<=0.f && captured[n]>0.f)
+                crossings.push_back(n-1-captured[n-1]/double(captured[n]-captured[n-1]));
+            require(crossings.size()>=4,"stable authored tone crossings");
+            frequency=(crossings.size()-1)*48000./(crossings.back()-crossings.front());
+            const double expected=261.625565*std::exp2(tuning/1200.);
+            require(std::abs(frequency/expected-1.)<0.002,"native cents tuning must match independent tone frequency");
+        }
+        std::printf("native anonymous=%d length=%d tuning_cents=%.0f attack_energy=%.9g frequency_hz=%.6f\n",anonymous,length,tuning,energy,frequency);
         passed &= energy>1e-4;
         note(false,id,0,64,0.f);block();double tail=0.;
         for(int i=0;i<400;++i)tail=block();
