@@ -24,6 +24,30 @@ fn resource_dirs(dir: &Path, name: &str) -> Vec<PathBuf> {
     out
 }
 
+/// Identify an owner before considering containers in its child folders. A
+/// sibling NKR is not evidence that an instrument belongs to that library.
+fn resource_root(instrument: &Path) -> Option<PathBuf> {
+    let mut nearest = None;
+    for folder in instrument.ancestors().skip(1).take(8) {
+        let mut resources = false;
+        let mut registered = false;
+        for entry in std::fs::read_dir(folder).into_iter().flatten().flatten() {
+            let p = entry.path();
+            resources |= (p.file_name().is_some_and(|n| n.eq_ignore_ascii_case("resources")) && p.is_dir())
+                || (p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkr")) && p.is_file());
+            registered |= p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nicnt")) && p.is_file();
+        }
+        if registered {
+            return Some(folder.into());
+        }
+        if folder.file_name().is_some_and(|n| n.eq_ignore_ascii_case("instruments")) {
+            return folder.parent().map(Path::to_owned);
+        }
+        if resources && nearest.is_none() { nearest = Some(folder.into()); }
+    }
+    nearest
+}
+
 /// The text of a script slot linked to `name` (as Kontakt stores it: a bare
 /// file name or any Windows or POSIX path ending in one) from the library's
 /// `Resources/scripts`, loose or in its resource container.
@@ -121,6 +145,9 @@ pub(crate) fn resolve_ui_entry(
         return Err(format!("Invalid native UI entry path {requested:?}"));
     }
     let path = name.replace('.', "/");
+    // Entry and optional metadata share one ownership decision, including if
+    // files change while the source is being read.
+    let root = resource_root(instrument);
     let mut found = None;
     for dialect in [UiDialect::LegacyLua, UiDialect::KompleteScript] {
         if selected.is_some_and(|s| s != dialect) {
@@ -143,7 +170,7 @@ pub(crate) fn resolve_ui_entry(
             UiDialect::KompleteScript => ("komplete_scripts", "kscript"),
         };
         let file = format!("{path}.{ext}");
-        let mut resources = Resources::of(instrument, folder);
+        let mut resources = Resources::within(instrument, folder, root.clone());
         if let Some(source) = resources.read_limited(&file, max_bytes)? {
             if found.is_some() {
                 return Err(format!(
@@ -160,7 +187,7 @@ pub(crate) fn resolve_ui_entry(
     }
     if let Some(entry) = &mut found {
         if let Some(bytes) =
-            Resources::of(instrument, "info").read_limited("library.json", max_bytes)?
+            Resources::within(instrument, "info", root).read_limited("library.json", max_bytes)?
         {
             let metadata: serde_json::Value = serde_json::from_slice(&bytes)
                 .map_err(|e| format!("Resources/info/library.json: {e}"))?;
@@ -199,8 +226,7 @@ pub fn ir_sample(instrument: &Path, name: &str) -> Option<PathBuf> {
     names.iter().find_map(|n| source.path(n))
 }
 
-/// Where a preset's resources come from: `Resources` folders near
-/// it, else a resource container (`.nkr`) in or one folder below them.
+/// Loose and archived resources within the instrument's identified library.
 pub(crate) struct Resources {
     /// Loose files by lowercase name, nearest first.
     files: HashMap<String, PathBuf>,
@@ -211,12 +237,17 @@ pub(crate) struct Resources {
     open: Vec<(File, ni_file::nkr::Archive, PathBuf)>,
     key: Option<Option<std::sync::Arc<dyn ni_file::nis::LibraryKey>>>,
     instrument: PathBuf,
+    root: Option<PathBuf>,
     /// The `Resources` subfolder: `pictures`, `scripts` or `ir_samples`.
     folder: &'static str,
 }
 
 impl Resources {
     pub(crate) fn of(instrument: &Path, folder_name: &'static str) -> Self {
+        Self::within(instrument, folder_name, resource_root(instrument))
+    }
+
+    fn within(instrument: &Path, folder_name: &'static str, root: Option<PathBuf>) -> Self {
         let mut files = HashMap::new();
         let mut loose_dirs = Vec::new();
         let mut containers = Vec::new();
@@ -231,12 +262,10 @@ impl Resources {
             found.sort();
             found
         };
-        // Four folders up, and further for an instrument filed deeper than
-        // that, as far as the first folder with any resources.
-        for (depth, folder) in instrument.ancestors().skip(1).take(8).enumerate() {
-            if depth >= 4 && !(files.is_empty() && containers.is_empty()) {
-                break;
-            }
+        // Preserve nearby overrides and Samples/*.nkr discovery, but never
+        // ascend above the owner into adjacent libraries or shared loose files.
+        for folder in instrument.ancestors().skip(1).take_while(|folder|
+            root.as_deref().is_some_and(|root| folder.starts_with(root))) {
             for dir in resource_dirs(folder, folder_name) {
                 loose_dirs.push(dir.clone());
                 for e in std::fs::read_dir(dir)
@@ -271,6 +300,7 @@ impl Resources {
             failed_archives: Vec::new(),
             key: None,
             instrument: instrument.into(),
+            root,
             folder: folder_name,
         }
     }
@@ -284,6 +314,9 @@ impl Resources {
     /// Requested nested loose paths are resolved component by component, without scanning
     /// the whole resource tree or accepting parent/absolute paths.
     pub(crate) fn read_limited(&mut self, file: &str, limit: usize) -> Result<Option<Vec<u8>>, String> {
+        if self.root.is_none() {
+            return Err(format!("Library resource ownership could not be determined for {}", self.instrument.display()));
+        }
         let bounded = |path: &Path| -> Result<Option<Vec<u8>>, String> {
             let file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
             if file.metadata().map_err(|e| e.to_string())?.len() > limit as u64 {
@@ -363,6 +396,10 @@ impl Resources {
     /// The path of `<folder>/<file>`, or of `file` in any folder below it
     /// in a container, for [`crate::audio::decode`].
     fn path(&mut self, file: &str) -> Option<PathBuf> {
+        if self.root.is_none() {
+            crate::diagnostics::resource(&self.instrument, file, "Library resource ownership could not be determined");
+            return None;
+        }
         let file = file.to_lowercase();
         if let Some(path) = self.files.get(&file) {
             return Some(path.clone());
@@ -391,6 +428,124 @@ pub(crate) fn read_file(path: &Path) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn directory(out: &mut Vec<u8>, offset: usize, entries: &[(&str, u32, u16)]) {
+        out.resize(offset, 0);
+        out.extend(0x5e70ac54u32.to_le_bytes());
+        out.extend(0x111u16.to_le_bytes());
+        out.extend([0; 8]);
+        out.extend((entries.len() as u32).to_le_bytes());
+        out.extend([0; 4]);
+        for &(name, reference, kind) in entries {
+            let name: Vec<_> = name.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect();
+            out.extend(((name.len() + 8) as u16).to_le_bytes());
+            out.extend(reference.to_le_bytes());
+            out.extend(kind.to_le_bytes());
+            out.extend(name);
+        }
+    }
+    fn member(out: &mut Vec<u8>, offset: usize, key: u32, payload: &[u8]) {
+        out.resize(offset, 0);
+        out.extend(0x2ae905fau32.to_le_bytes());
+        out.extend(0x111u16.to_le_bytes());
+        out.extend([0; 4]);
+        out.extend(key.to_le_bytes());
+        out.extend((payload.len() as u32).to_le_bytes());
+        out.extend([0; 4]);
+        out.extend(payload);
+    }
+
+    #[test]
+    fn resources_keep_library_ownership_for_archives_loose_files_and_ui_metadata() {
+        fn archive(path: &Path, folder: &str, name: &str, payload: &[u8]) {
+            let mut bytes = Vec::new();
+            directory(&mut bytes, 0, &[("Resources", 128, 1)]);
+            directory(&mut bytes, 128, &[(folder, 256, 1)]);
+            directory(&mut bytes, 256, &[(name, 512, 4)]);
+            member(&mut bytes, 512, 0xff, payload);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
+        let owner = tempfile::tempdir().unwrap();
+        let root = owner.path();
+        let a = root.join("LibraryA");
+        let b = root.join("LibraryB");
+        let instrument = a.join("iNsTrUmEnTs/Deep/instrument.nki");
+        std::fs::create_dir_all(instrument.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(a.join("rEsOuRcEs/native_ui/components")).unwrap();
+        std::fs::create_dir_all(root.join("Resources/native_ui")).unwrap();
+        std::fs::create_dir_all(b.join("Instruments")).unwrap();
+        std::fs::write(b.join("Library.NICNT"), []).unwrap();
+        std::fs::write(a.join("rEsOuRcEs/native_ui/main.nui"), b"return {owner='A'}").unwrap();
+        std::fs::write(a.join("rEsOuRcEs/native_ui/components/card.nui"), b"return {card='A'}").unwrap();
+        std::fs::write(root.join("Resources/native_ui/common.nui"), b"foreign loose override").unwrap();
+        let own_nkr = a.join("Samples/owned.NKR");
+        archive(&own_nkr, "native_ui", "common.nui", b"A archive");
+        let root_nkr = a.join("library.nkr");
+        archive(&root_nkr, "native_ui", "root.nui", b"A root archive");
+        let foreign_nkr = b.join("foreign.nkr");
+        archive(&foreign_nkr, "native_ui", "common.nui", b"B archive");
+        assert_eq!(resource_root(&instrument), Some(a.clone()));
+        let mut source = Resources::of(&instrument, "native_ui");
+        assert_eq!(source.containers, [root_nkr.clone(), own_nkr.clone()]);
+        assert_eq!(source.read("COMMON.NUI").unwrap().unwrap(), b"A archive");
+        assert_eq!(Resources::of(&b.join("Instruments/other.nki"), "native_ui").read("common.nui").unwrap().unwrap(), b"B archive");
+        drop(source);
+
+        // Optional metadata stays with A even when B has the same member,
+        // then an unreadable archive, then disappears after discovery.
+        archive(&foreign_nkr, "info", "library.json", br#"{"general":{"kontaktTargetVersion":"foreign"}}"#);
+        let entry = resolve_ui_entry(&instrument, "Resources/native_ui/main.NUI", 1024).unwrap().unwrap();
+        assert_eq!(entry.source, b"return {owner='A'}");
+        assert_eq!(entry.target_version, None);
+        assert_eq!(resolve_ui_entry(&instrument, "components.card.nui", 1024).unwrap().unwrap().source, b"return {card='A'}");
+        std::fs::write(&foreign_nkr, b"bad foreign index").unwrap();
+        assert!(resolve_ui_entry(&instrument, "main.nui", 1024).unwrap().is_some());
+        let mut metadata = Resources::of(&instrument, "info");
+        std::fs::remove_file(&foreign_nkr).unwrap();
+        assert!(metadata.read("library.json").unwrap().is_none());
+        drop(metadata);
+        assert_eq!(resource_root(&b.join("Patches/other.nki")), Some(b.clone()), "NICNT anchors a library without an Instruments path");
+        assert_eq!(resource_root(&a.join("standalone.nki")), Some(a.clone()), "the nearest own Resources folder also anchors loose libraries");
+
+        // A closer archive overrides a library archive without hiding other
+        // resources within the explicit Instruments library boundary.
+        let near_nkr = instrument.parent().unwrap().join("near.nkr");
+        archive(&near_nkr, "native_ui", "common.nui", b"nearest archive");
+        assert_eq!(Resources::of(&instrument, "native_ui").read("common.nui").unwrap().unwrap(), b"nearest archive");
+        std::fs::create_dir_all(a.join("rEsOuRcEs/info")).unwrap();
+        std::fs::write(a.join("rEsOuRcEs/info/library.json"), br#"{"general":{"kontaktTargetVersion":"owned"}}"#).unwrap();
+        assert_eq!(resolve_ui_entry(&instrument, "common.nui", 1024).unwrap().unwrap().target_version.as_deref(), Some("owned"));
+        let local_resources = instrument.parent().unwrap().join("Resources");
+        std::fs::create_dir_all(local_resources.join("native_ui")).unwrap();
+        std::fs::write(local_resources.join("native_ui/main.nui"), b"return {local=true}").unwrap();
+        let local_entry = resolve_ui_entry(&instrument, "main.nui", 1024).unwrap().unwrap();
+        assert_eq!(local_entry.source, b"return {local=true}");
+        assert_eq!(local_entry.target_version.as_deref(), Some("owned"));
+        std::fs::remove_file(&near_nkr).unwrap();
+        let mut inherited = Resources::of(&instrument, "native_ui");
+        assert_eq!(inherited.read("common.nui").unwrap().unwrap(), b"A archive");
+        assert_eq!(inherited.read("root.nui").unwrap().unwrap(), b"A root archive");
+        drop(inherited);
+        std::fs::remove_dir_all(local_resources).unwrap();
+        std::fs::remove_dir_all(a.join("rEsOuRcEs/info")).unwrap();
+        // Owned invalid/missing archives and present invalid metadata retain
+        // their errors; ownership never turns these into optional absence.
+        std::fs::write(&own_nkr, b"bad owned index").unwrap();
+        assert!(Resources::of(&instrument, "info").read("library.json").unwrap_err().contains("owned.NKR"));
+        archive(&own_nkr, "info", "library.json", b"not JSON");
+        assert!(resolve_ui_entry(&instrument, "main.nui", 1024).unwrap_err().contains("library.json"));
+        let mut missing = Resources::of(&instrument, "info");
+        std::fs::remove_file(&own_nkr).unwrap();
+        assert!(missing.read("library.json").unwrap_err().contains("owned.NKR"));
+        drop(missing);
+
+        let unknown = tempfile::tempdir().unwrap();
+        let deep = unknown.path().join("a/b/c/d/e/f/g/h");
+        std::fs::create_dir_all(&deep).unwrap();
+        let mut unknown_source = Resources::of(&deep.join("instrument.nki"), "info");
+        assert!(unknown_source.read("library.json").unwrap_err().contains("ownership"));
+    }
 
     #[test]
     fn native_ui_entries_keep_dialects_versions_and_resource_bounds_distinct() {
@@ -477,31 +632,6 @@ mod tests {
 
     #[test]
     fn lazy_resources_validate_only_requested_headers_and_keep_keyed_reads() {
-        fn directory(out: &mut Vec<u8>, offset: usize, entries: &[(&str, u32, u16)]) {
-            out.resize(offset, 0);
-            out.extend(0x5e70ac54u32.to_le_bytes());
-            out.extend(0x111u16.to_le_bytes());
-            out.extend([0; 8]);
-            out.extend((entries.len() as u32).to_le_bytes());
-            out.extend([0; 4]);
-            for &(name, reference, kind) in entries {
-                let name: Vec<_> = name.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect();
-                out.extend(((name.len() + 8) as u16).to_le_bytes());
-                out.extend(reference.to_le_bytes());
-                out.extend(kind.to_le_bytes());
-                out.extend(name);
-            }
-        }
-        fn member(out: &mut Vec<u8>, offset: usize, key: u32, payload: &[u8]) {
-            out.resize(offset, 0);
-            out.extend(0x2ae905fau32.to_le_bytes());
-            out.extend(0x111u16.to_le_bytes());
-            out.extend([0; 4]);
-            out.extend(key.to_le_bytes());
-            out.extend((payload.len() as u32).to_le_bytes());
-            out.extend([0; 4]);
-            out.extend(payload);
-        }
         struct Key;
         impl ni_file::nis::LibraryKey for Key {
             fn apply_at(&self, _: u64, bytes: &mut [u8]) {
