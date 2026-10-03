@@ -5581,10 +5581,17 @@ end on"#;
         for options in ["angle=361","angle=0/0","start_angle=math.huge","thickness=-1","thickness=math.huge","unknown=1"] {
             std::fs::write(resources.join("main.nui"),format!("local ui=require('native_ui') return @ui.Ring{{color=ui.Color.red,{options}}}.frame(width=40,height=40)")).unwrap();assert!(Scene::prepare(&instrument.path,engine.script().unwrap()).is_err(),"unsupported Ring input must stay explicit: {options}");
         }
-        for angle in [0.,-90.,360.] {
-            std::fs::write(resources.join("main.nui"),format!("local ui=require('native_ui') return @ui.Ring{{color=ui.Color.red,angle={angle},thickness=80}}.frame(width=40,height=80)")).unwrap();let mut sample=Scene::prepare(&instrument.path,engine.script().unwrap()).unwrap().unwrap();let root=sample.snapshot().unwrap();let rendered=moose::mui::mui::scene::resolve(&moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::scene_tree(&root,&sample.assets))).unwrap();
+        for (angle,thickness) in [(0.,80.),(-90.,80.),(360.,80.),(360.,3.)] {
+            std::fs::write(resources.join("main.nui"),format!("local ui=require('native_ui') return @ui.Ring{{color=ui.Color.red,angle={angle},thickness={thickness}}}.frame(width=40,height=80)")).unwrap();let mut sample=Scene::prepare(&instrument.path,engine.script().unwrap()).unwrap().unwrap();let root=sample.snapshot().unwrap();let rendered=moose::mui::mui::scene::resolve(&moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::scene_tree(&root,&sample.assets))).unwrap();
             let draws:Vec<_>=rendered.paint.iter().filter(|p|matches!(p.layer,moose::mui::mui::scene::Layer::Draw(_))).collect();assert_eq!(draws.len(),usize::from(angle!=0.));
-            for draw in draws {draw.path.validate(6).unwrap();assert_eq!(draw.path.commands.len(),4,"oversized thickness clips to the available radius");}
+            for draw in draws {
+                draw.path.validate(6).unwrap();
+                assert_eq!(draw.path.commands.len(),if thickness==3. {5}else{4},"thickness clips to the available radius while a complete annulus retains its hole");
+                if thickness==3. {
+                    let (PathCommand::ArcTo(outer),PathCommand::ArcTo(inner))=(draw.path.commands[1],draw.path.commands[3])else{panic!("complete annulus keeps exact opposite-winding circles")};
+                    assert_eq!((outer.radius,inner.radius,outer.sweep,inner.sweep),(20.,17.,std::f64::consts::TAU,-std::f64::consts::TAU));
+                }
+            }
         }
         std::fs::remove_dir_all(directory).unwrap();
     }
