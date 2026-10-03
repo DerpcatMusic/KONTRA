@@ -2215,7 +2215,7 @@ impl BackgroundTask for Load {
                             let v=&mut view.parts[slot];
                             let fresh=current.parts.get(slot).is_some_and(|p|p.matches_source(&target)
                                 && p.script_state==part.script_state && p.ir_settings==part.ir_settings
-                                && p.engine_state==part.engine_state)
+                                && p.engine_state==part.engine_state && p.delay_state==part.delay_state)
                                 && atoms.generation.load(Ordering::Acquire)==generation
                                 && v.script_epoch==previous_epoch && v.attempted.as_ref()==Some(&target)
                                 && v.instrument.as_ref().is_some_and(|i|Arc::ptr_eq(i,&instrument));
@@ -6260,14 +6260,22 @@ end on"#,dir.display());
         let mut wav=hound::WavWriter::create(&path,hound::WavSpec {channels:2,sample_rate:48000,
             bits_per_sample:32,sample_format:hound::SampleFormat::Float}).unwrap();
         for _ in 0..2048 {wav.write_sample(0.125f32).unwrap();wav.write_sample(0.125f32).unwrap();}wav.finalize().unwrap();
+        let cache=crate::fx::DelayState {rack:crate::fx::Rack::Insert,slot:0,
+            values:[3.0,1.0,123.0,2.0],legacy:false};
+        let mut delay_bytes:Vec<u8>=[3.0f32,0.0,0.0,0.5,1.0,123.0,2.0]
+            .into_iter().flat_map(f32::to_le_bytes).collect();delay_bytes.push(0);
         for with_zone_bank in [false,true] {
         let init=if with_zone_bank {"set_snapshot_type(3)\nset_zone_par(0,$ZONE_PAR_GROUP,0)\nset_zone_par(0,$ZONE_PAR_LOW_KEY,60)\nset_zone_par(0,$ZONE_PAR_HIGH_KEY,60)\n"}else{""};
         let instrument = Arc::new(Instrument { path: "/virtual/restore-freshness.nki".into(),
             groups:if with_zone_bank {vec![crate::import::Group::default()]}else{Vec::new()},
             zones:if with_zone_bank {vec![crate::import::Zone {sample:path.clone(),..Default::default()}]}else{Vec::new()},
-            scripts: vec![format!("on init\n{init}make_perfview\ndeclare ui_slider $saved(0,100)\nmake_persistent($saved)\n$saved := 1\nend on")],
+            scripts: vec![format!("on init\n{init}make_perfview\ndeclare ui_slider $saved(0,100)\nmake_persistent($saved)\n$saved := 1\ndeclare ui_label $delay(1,1)\nset_text($delay,get_engine_par_disp($ENGINE_PAR_DL_TIME,-1,0,$NI_INSERT_BUS))\nend on")],
+            fx:crate::fx::ProgramFx {insert:crate::fx::Chain {slots:vec![crate::fx::Effect {
+                slot:0,kind:crate::fx::Kind::Delay,version:0,bypass:false,output_gain:1.0,dry_level:0.0,
+                params:crate::fx::params::parse(crate::fx::Kind::Delay,&delay_bytes),
+            }]},..Default::default()},
             ..Default::default() });
-        let (rt, _, errors) = scripts(&instrument, "", &[], &[], 48000.);
+        let (rt, _, errors) = scripts_with_delays(&instrument, "", &[], &[], &[cache],48000.);
         assert!(errors.is_empty(), "{errors:?}");
         let mut rt = rt.unwrap();
         let initial = serde_json::to_string(&rt.persistence()).unwrap();
@@ -6280,7 +6288,7 @@ end on"#,dir.display());
         for change in 0..6 {
             let p = Arc::new(SamplerParams::new());
             let part = Part { path: instrument.path.to_string_lossy().into_owned(),
-                script_state: restoring.clone(), ..Default::default() };
+                script_state: restoring.clone(),delay_state:vec![cache], ..Default::default() };
             let streaming = part.streaming(p.selection.read().unwrap().streaming);
             p.selection.write().unwrap().parts = vec![part.clone()];
             let initial_epoch = {
@@ -6290,6 +6298,7 @@ end on"#,dir.display());
                 let v = &mut view.parts[0];
                 v.attempted = Some(part.source()); v.instrument = Some(instrument.clone());
                 v.fx_rate = 48000.; v.script_state = initial.clone();
+                v.delay_state=part.delay_state.clone().into();
                 epoch
             };
             let generation = p.shared.part(0).unwrap().generation.load(Ordering::Acquire);
@@ -6303,9 +6312,9 @@ end on"#,dir.display());
                 1 => p.selection.write().unwrap().parts[0].script_state = newer.clone(),
                 2 => { p.shared.part(0).unwrap().generation.fetch_add(1, Ordering::AcqRel); }
                 3 => p.selection.write().unwrap().parts.clear(),
-                4 => p.selection.write().unwrap().parts[0].delay_state.push(crate::fx::DelayState {
+                4 => p.selection.write().unwrap().parts[0].delay_state[0]=crate::fx::DelayState {
                     rack: crate::fx::Rack::Insert, slot: 0, values: [10.0, 1.0, 1000.0, 3.0], legacy: false,
-                }),
+                },
                 _ => p.selection.write().unwrap().parts[0].gain = -6.,
             }
             gate.wait(); worker.join().unwrap();
@@ -6319,10 +6328,15 @@ end on"#,dir.display());
                 assert!(restored.is_none(), "stale restore cannot enter the callback queue ({change})");
                 assert_eq!(v.script_epoch, initial_epoch, "stale preparation cannot acquire a fresh epoch");
                 assert_eq!(v.script_state, initial, "stale preparation cannot replace published state");
+                assert_eq!(v.bytes,0,"stale paired bank cannot replace the published resident count");
+                assert_eq!(v.delay_state.as_ref(),&[cache],"stale preparation cannot replace published physical caches");
             } else {
                 let (handoff_generation, script, bank, epoch) = restored.expect("unrelated gain preserves the pending restore");
                 assert_eq!(handoff_generation, generation); assert_ne!(epoch, initial_epoch);
-                assert_eq!(script.unwrap().interface(0).controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(7));
+                let script=script.unwrap();
+                assert_eq!(script.interface(0).controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(7));
+                assert_eq!(script.interface(0).controls[1].properties["$CONTROL_PAR_TEXT"],Value::Text("3".into()),"paired runtime init reads its restored physical Delay state");
+                assert_eq!(script.native_state.snapshot().saved_delays(),vec![cache]);
                 assert_eq!(v.script_state, restoring);
                 assert_eq!(bank.is_some(),with_zone_bank,"prepared bank and restored runtime publish together");
                 if let Some(bank)=bank {
@@ -6333,6 +6347,7 @@ end on"#,dir.display());
                 }
             }
             if change == 1 { assert_eq!(p.selection.read().unwrap().parts[0].script_state, newer); }
+            if change == 4 {assert_eq!(p.selection.read().unwrap().parts[0].delay_state[0].values,[10.0,1.0,1000.0,3.0],"newer host cache survives rejection of the paired restore");}
         }
         }
         std::fs::remove_file(path).unwrap();
