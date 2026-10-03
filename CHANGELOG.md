@@ -8,6 +8,48 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ## Unreleased
 
+### Accepted 0.3.148 — primary envelope processing and visible crash receipts
+
+Two reviewed logical fixes advance the accepted counter from 0.3.146.
+
+### Fixed after 0.3.146
+
+- Render strictly admitted saved primary AHDSR sources on their native finite 32-frame control clock, preserving native attack/release curves, captured release state, interpolation, pedal ownership, retrigger and sample EOF. Four focused mathematical/resident-engine gates pass, including fragmented blocks and no audio heap allocations. Unsupported transforms retain diagnosed fallback instead of being silently admitted.
+- Keep crash-report delivery status, report ID and an allowed public GitHub issue link above the Logs filters. Default warning/error filters, search changes and replacement histories no longer hide the receipt; Copy issue link accepts only the validated public KONTRA issue URL.
+
+### Known limits for 0.3.148
+
+- Fresh isolated f119048 passes locked all-targets/all-features checking and optimized builds, 600 library regressions (30 ignored), 89 playback regressions (four ignored), 59 reporter checks, manual export, seven saved-volume/phase checks, actual Logs/receipt/native-parent checks, four primary-AHDSR gates, Linux exported CLAP/VST3 processing and strict C++ editor attachment. Final version metadata and hosted release checks are verified separately before publication.
+- Primary AHDSR admission is deliberately bounded to the proved saved format and unity target. Held-voice live envelope changes, transformed targets and other unproved formats remain unsupported or diagnosed. These gates do not establish whole-preset sound equivalence or fix the reported AREIA double attack by themselves.
+- Mac/Windows DAW runtime, the reported uncaptured Mac opening-crash cause, a genuine production crash-to-issue roundtrip and full native Lua UI rendering remain unverified. Performance counters are test instrumentation, not a GPU or display-FPS result.
+
+
+### Accepted 0.3.146 — saved phase, native parent validation and diagnostics
+
+Four reviewed logical fixes advance the accepted counter from 0.3.142. Together
+with saved sine-LFO volume, five outcomes follow the published 0.3.141 release.
+
+### Fixed after 0.3.142
+
+- Apply finite saved cycle phases from 0 through 1 to admitted retriggered sine pitch and volume LFOs on their existing shared clock. Native field identity, independent phase values, positive lag, fragmented playback, bypass, retrigger and zero audio heap are checked. Other waveforms, free-running ownership, live phase edits and complete Analog Strings preset parity remain unsupported or unproved.
+- Validate CLAP parent API/null handles and VST3 platform/null parent/missing callback before interpreting native handles or attaching the editor. Actual adapter and C++ attachment regressions pass; the uncaptured Mac opening crash remains unconfirmed.
+- Show readable script callback, argument, array/listener and source-availability context. Copy-all begins with a sanitized warning/error digest and retains structured events; unavailable-source inspection preserves navigation. Logs filter caches invalidate when journal identity or retained history shape changes, including equal-revision replacement.
+- Include versioned Added headings and Known limits in generated nightly notes. The 18-outcome release fixture reproduces the prior omission, and all publication/signing scenarios pass. The published 0.3.141 body is corrected; its immutable original manifest omission is disclosed.
+
+### Known limits for 0.3.146
+
+- The exact pre-version candidate bdef149 passes locked all-targets/all-features checking and optimized builds, 595 library regressions (30 ignored), 89 playback regressions (four ignored), 59 reporter checks, seven saved-volume/phase checks, manual export, actual Logs and native-parent checks, and Linux exported CLAP/VST3 processing. Final versioned binaries and hosted release gates are verified separately before publication.
+- Mac/Windows DAW playback, production crash-to-issue delivery, full native Lua UI rendering and whole-library DSP parity are unverified. Source-only envelope and drop implementations are excluded until their own acceptance gates pass.
+
+
+### Accepted 0.3.142 — saved sine-LFO volume
+
+One reviewed logical defect advances the accepted patch counter from 0.3.141.
+
+### Fixed after 0.3.141
+
+- Render admitted saved sine-LFO volume targets with their native bipolar depth and positive lag, shared 32-frame source clock, retained bypass state and decoded amplifier placement. Seven focused engine gates, including nonlinear ordering and zero audio heap, pass with 595 library and 89 playback regressions. Additional volume targets, unknown flags, separate invert/shaper/fade, live volume intensity edits and full preset sonic parity remain unsupported or unproved.
+
 ### Accepted 0.3.141 — reporter and native Ladder processing
 
 Eighteen reviewed logical outcomes advance the accepted baseline from 0.3.123 to

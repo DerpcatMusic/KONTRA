@@ -107,6 +107,10 @@ pub struct Modulator {
 /// This is a bounded implemented subset, not a fallback for other LFO states.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PitchLfo {
+    /// Saved normalized cycle position, copied unchanged into the retriggered
+    /// native source phase. Live phase writes and free-running clocks are not admitted.
+    #[serde(default)]
+    pub start_phase: f32,
     pub slot: u8,
     pub count: f32,
     pub note_value: f32,
@@ -129,15 +133,28 @@ impl PitchLfo {
     }
 }
 
+/// One admitted saved sine source driving one native volume target.
+/// Timing is shared with the pitch path at the same native internal slot.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct VolumeLfo {
+    pub source: PitchLfo,
+    pub target: u32,
+    pub intensity: f32,
+    pub negative: bool,
+    pub lag_ms: i16,
+}
+
 /// Modulation read from one group, plus notes about what was left out.
 #[derive(Debug, Default)]
 pub(crate) struct GroupModulation {
     pub volume_env: Option<Ahdsr>,
+    pub native_volume_env: bool,
     pub flex_env: Option<FlexEnvelope>,
     pub mods: Vec<ModAssignment>,
     pub modulators: Vec<Modulator>,
     pub envelopes: Vec<ModEnvelope>,
     pub pitch_lfos: Vec<PitchLfo>,
+    pub volume_lfos: Vec<VolumeLfo>,
     pub warnings: Vec<String>,
 }
 
@@ -178,14 +195,16 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                 }
             };
             match &params.modulator {
-                RawModulator::Ahdsr(env) if env.unknown_flag != 0 => out.warnings.push(
-                    "AHDSR mode switches are not decoded; AHD-only/retrigger behavior may differ".into()),
                 RawModulator::Flex(_) => out.warnings.push(
                     "Flex one-shot/loop switches are not decoded; playback uses sustain and key-release behavior".into()),
                 _ => {}
             }
             // The first volume envelope of each kind; the voice multiplies them.
             let volume = params.targets.iter().any(|t| t.param == "volume");
+            if let RawModulator::Ahdsr(env) = &params.modulator
+                && env.unknown_flag != 0 && (!volume || out.volume_env.is_some()) {
+                out.warnings.push("AHDSR mode switches outside the admitted primary volume source are not applied".into());
+            }
             let flex = matches!(params.modulator, RawModulator::Flex(_));
             let kind = match params.modulator {
                 RawModulator::Ahdsr(_) => "ahdsr".to_owned(),
@@ -197,6 +216,30 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                 .then_some(out.envelopes.len());
             let volume_env = match params.modulator {
                 RawModulator::Ahdsr(env) if volume && out.volume_env.is_none() => {
+                    // Typed 0x3f/v11 scalar law and source clock are proven for
+                    // this exact untransformed primary geometry. Packed note-
+                    // value records remain opaque; only their saved defaults
+                    // are admitted, never inferred as synchronized timing.
+                    let native_wrapper = modulator.0.private_data.ends_with(&2u32.to_le_bytes())
+                        && modulator.0.find_first(7)
+                            .and_then(|c| ni_file::kontakt::StructuredObject::try_from(c).ok())
+                            .is_some_and(|w| w.version == 0x90 && w.private_data.is_empty()
+                                && w.public_data == [0; 4] && w.children.len() == 1
+                                && w.children[0].id == 0x3f);
+                    let default_time = env.unknown_tail.len() == 52
+                        && env.unknown_tail.chunks_exact(13).all(|r|
+                            r == [0, 0, 128, 191, 0, 0, 0, 0, 0, 0, 128, 63, 0]);
+                    out.native_volume_env = native_wrapper && params.targets.len() == 1 && params.targets.iter().all(|t|
+                        t.param == "volume" && t.slot.is_none() && t.intensity == 1.
+                        && t.unknown_i16 == -1 && t.unknown_flags == 0x10 && !t.invert && t.lag_ms == 0
+                        && !t.shaper.as_ref().is_some_and(|s| s.enabled))
+                        && params.unknown_flags[0] <= 1 && params.unknown_flags[1..] == [0, 1, 0]
+                        && env.unknown_flag <= 1 && default_time;
+                    if !out.native_volume_env {
+                        out.warnings.push(format!("Primary AHDSR slot {slot}: native source kernel not applied; requires the admitted v90-kind0 wrapper/category2 and v11 source flag geometry, one unity uninverted volume target, zero lag, known flags, no enabled shaper and default opaque timing records"));
+                    } else {
+                        out.warnings.push(format!("Primary AHDSR slot {slot}: native finite-stage kernel and 32-frame amplitude interpolation admitted; held-voice retargeting and source bypass remain unsupported"));
+                    }
                     out.volume_env = Some(env);
                     volume_env_slot = Some(slot);
                     true
@@ -238,7 +281,7 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                     let supported = lfo.version == 0x71 && lfo.waveform == 5 && params.unknown_flags[2] != 0
                         && lfo.initial_values[0].is_finite() && (0. ..=5000.).contains(&lfo.initial_values[0])
                         && lfo.records[1].values[0].is_finite() && lfo.records[1].values[0] <= 0.
-                        && lfo.initial_values[3] == 0.
+                        && lfo.initial_values[3].is_finite() && (0. ..=1.).contains(&lfo.initial_values[3])
                         && lfo.initial_values[1].is_finite() && lfo.initial_values[1] >= 1.
                         && lfo.records[0].values[0].is_finite() && lfo.records[0].values[0] > 0.
                         && lfo.records[1].flag && weights[0].is_finite() && weights[0].abs() <= 1.
@@ -246,15 +289,45 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                     let pitch: Vec<_> = params.targets.iter().enumerate()
                         .filter(|(_, t)| t.param == "pitch" && t.slot.is_none()).collect();
                     let depth: f32 = pitch.iter().map(|(_, t)| target_depth(t)).sum();
-                    if supported && depth.is_finite() && !pitch.is_empty() && pitch.iter().all(|(_, t)| !t.invert && t.lag_ms == 0
-                        && !t.shaper.as_ref().is_some_and(|s| s.enabled) && target_depth(t).is_finite()) {
-                        out.pitch_lfos.push(PitchLfo { slot: slot as u8,
+                    let pitch_admitted = supported && depth.is_finite() && !pitch.is_empty() && pitch.iter().all(|(_, t)| !t.invert && t.lag_ms == 0
+                        && !t.shaper.as_ref().is_some_and(|s| s.enabled) && target_depth(t).is_finite());
+                    if pitch_admitted {
+                        out.pitch_lfos.push(PitchLfo { start_phase: lfo.initial_values[3], slot: slot as u8,
                             count: lfo.initial_values[1], note_value: lfo.records[0].values[0],
                             sine: weights[0], fade_ms: lfo.initial_values[0], depth,
                             targets: pitch.iter().map(|(i, t)| (*i as u32, target_depth(t))).collect(),
                             bypassed: params.unknown_flags[1] != 0 });
-                        out.warnings.push(format!("Internal LFO slot {slot}: saved retriggered sine-only Multi pitch with legacy unsynchronized fade-in is eligible for ordinary sampler playback; live source bypass is supported for this admitted pitch path; live LFO timing and other targets remain unsupported"));
-                    } else { skipped_lfos += 1; }
+                        out.warnings.push(format!("Internal LFO slot {slot}: saved retriggered sine-only Multi pitch with legacy unsynchronized fade-in is eligible for ordinary sampler playback; live source bypass is supported for this admitted pitch path; live LFO timing and unadmitted target configurations remain unsupported"));
+                    } else if !pitch.is_empty() {
+                        out.warnings.push(format!("Internal LFO slot {slot} pitch not applied: source clock or target depth/inversion/lag/shaper is unsupported"));
+                    }
+                    let volume: Vec<_> = params.targets.iter().enumerate()
+                        .filter(|(_, t)| t.param == "volume" && t.slot.is_none()).collect();
+                    // The native internal array has16 sources. One target per
+                    // source is an explicit consumer subset, not a format cap.
+                    let admitted = supported && lfo.initial_values[0] == 0. && volume.len() == 1
+                        && volume.iter().all(|(_, t)| t.intensity.is_finite() && t.intensity >= 0.
+                            && !t.invert && (t.lag_ms as i16) >= 0
+                            && t.unknown_flags & !0x02 == 0x10
+                            && !t.shaper.as_ref().is_some_and(|s| s.enabled));
+                    if admitted {
+                        let (target, t) = volume[0];
+                        out.volume_lfos.push(VolumeLfo {
+                            source: PitchLfo { start_phase: lfo.initial_values[3], slot: slot as u8, count: lfo.initial_values[1],
+                                note_value: lfo.records[0].values[0], sine: weights[0], fade_ms: 0.,
+                                depth: 0., targets: Vec::new(), bypassed: params.unknown_flags[1] != 0 },
+                            target: target as u32, intensity: t.intensity,
+                            negative: t.unknown_flags & 0x02 != 0, lag_ms: t.lag_ms as i16,
+                        });
+                        out.warnings.push(format!("Internal LFO slot {slot}: saved retriggered sine-only Multi volume with zero/positive lag is eligible for ordinary sampler playback; live source bypass is supported; live intensity/timing, nonzero fade and other targets remain unsupported"));
+                    } else if !volume.is_empty() {
+                        out.warnings.push(format!("Internal LFO slot {slot} volume not applied: requires one saved sine-only target with finite cycle phase in 0..1, zero source fade, nonnegative signed lag, known polarity flags, no separate inversion or enabled shaper"));
+                    }
+                    if !pitch_admitted && !admitted { skipped_lfos += 1; }
+                    if params.targets.iter().any(|t| !matches!((t.param.as_str(), t.slot),
+                        ("pitch" | "volume", None))) {
+                        out.warnings.push(format!("Internal LFO slot {slot}: target assignments other than admitted pitch and volume are not applied"));
+                    }
                     false
                 }
                 _ => {
@@ -350,6 +423,16 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
             _ => false,
         });
         if driven { out.warnings.push(format!("Internal LFO slot {} pitch not applied: external source controls its parameters", lfo.slot)); }
+        !driven
+    });
+    out.volume_lfos.retain(|lfo| {
+        let driven = out.mods.iter().any(|m| match &m.target {
+            ModTarget::Module { param, slot } if *slot == lfo.source.slot =>
+                crate::engine::filter::Knob::parse(param).is_none()
+                    && crate::engine::filter::stage_knob(param).is_none(),
+            _ => false,
+        });
+        if driven { out.warnings.push(format!("Internal LFO slot {} volume not applied: external source controls its parameters", lfo.source.slot)); }
         !driven
     });
     Ok(out)
@@ -462,22 +545,22 @@ mod tests {
             out.extend((s.len() as u32).to_le_bytes());
             out.extend(s.as_bytes());
         }
-        let targets = |params: &[(&str, Option<u8>)], lag: u16| {
+        let targets = |params: &[(&str, Option<u8>)], lag: u16, flags: u8, invert: bool| {
             let mut b = (params.len() as u32).to_le_bytes().to_vec();
             for (param, slot) in params {
                 name(&mut b, param);
                 b.extend(0.5f32.to_le_bytes());
                 b.extend((-1i16).to_le_bytes());
-                b.push(0x10);
+                b.push(flags);
                 b.extend(lag.to_le_bytes());
                 name(&mut b, "<none>");
                 b.extend(slot);
-                b.push(0); // invert
+                b.push(u8::from(invert)); // separate inversion
             }
             b.extend(std::iter::repeat_n(0, params.len())); // no shapers
             b
         };
-        let mut ext = targets(&[("pan", None), ("loopStart", None), ("loopLength", None), ("filterCutoff", Some(0))], 15);
+        let mut ext = targets(&[("pan", None), ("loopStart", None), ("loopLength", None), ("filterCutoff", Some(0))], 15, 0x10, false);
         name(&mut ext, "Loop_Start");
         ext.extend(2u32.to_le_bytes()); // unassigned
         ext.extend([0, 0]);
@@ -486,7 +569,7 @@ mod tests {
         let p = ExternalMod(object(0x100, ext, Vec::new())).params().unwrap();
         assert_eq!(p.targets.iter().map(|t| t.slot).collect::<Vec<_>>(), [None, None, None, Some(0)]);
 
-        let mut int = targets(&[("pan", None)], 15);
+        let mut int = targets(&[("pan", None)], 15, 0x10, false);
         int.extend([0, 1, 1, 0]);
         int.extend(187u32.to_le_bytes());
         name(&mut int, "LFO_P1");
@@ -507,26 +590,67 @@ mod tests {
                 ni_file::kontakt::objects::LfoRecord { flag: true, values: [1. / 24., 0., 0.] },
                 ni_file::kontakt::objects::LfoRecord { flag: true, values: [-1., 0., 0.] }],
             trailing_flag: false, trailing_values: Some([0.03, 0., 0., 0., 0.]), additional_flag: None };
-        let mut private = targets(&[("pan", None), ("pitch", None), ("volume", None), ("pitch", None)], 0);
-        private.extend([0, 0, 1, 0]); private.extend(0u32.to_le_bytes());
-        name(&mut private, "Saved pitch"); private.extend(1u32.to_le_bytes());
-        let mut wrapper = vec![1];
-        let internal = object(0x80, private, vec![source.to_chunk().unwrap()]);
-        let mut data = vec![1]; data.extend(internal.version.to_le_bytes());
-        for part in [&internal.private_data[..], &[][..]] { data.extend((part.len() as u32).to_le_bytes()); data.extend(part); }
-        let mut children = Vec::new(); internal.children[0].write(&mut children).unwrap();
-        data.extend((children.len() as u32).to_le_bytes()); data.extend(children);
-        Chunk { id: 0x0d, data }.write(&mut wrapper).unwrap(); wrapper.extend([0; 15]);
-        let raw = RawGroup(StructuredObject { version: 0x95, public_data: vec![], private_data: vec![],
-            children: vec![Chunk { id: INTERNAL_MODS_ID, data: {
-                let mut data = vec![1]; data.extend(0x10u16.to_le_bytes()); data.extend(0u32.to_le_bytes());
-                data.extend((wrapper.len() as u32).to_le_bytes()); data.extend(wrapper); data.extend(0u32.to_le_bytes()); data
-            }}] });
+        let saved = |rows: &[(&str, Option<u8>)], lag, flags, invert, fade, phase| {
+            let mut source = source.clone(); source.initial_values[0] = fade; source.initial_values[3] = phase;
+            let mut private = targets(rows, lag, flags, invert);
+            private.extend([0, 0, 1, 0]); private.extend(0u32.to_le_bytes());
+            name(&mut private, "Saved sine"); private.extend(1u32.to_le_bytes());
+            let mut wrapper = vec![1];
+            let internal = object(0x80, private, vec![source.to_chunk().unwrap()]);
+            let mut data = vec![1]; data.extend(internal.version.to_le_bytes());
+            for part in [&internal.private_data[..], &[][..]] { data.extend((part.len() as u32).to_le_bytes()); data.extend(part); }
+            let mut children = Vec::new(); internal.children[0].write(&mut children).unwrap();
+            data.extend((children.len() as u32).to_le_bytes()); data.extend(children);
+            Chunk { id: 0x0d, data }.write(&mut wrapper).unwrap(); wrapper.extend([0; 15]);
+            RawGroup(StructuredObject { version: 0x95, public_data: vec![], private_data: vec![],
+                children: vec![Chunk { id: INTERNAL_MODS_ID, data: {
+                    let mut data = vec![1]; data.extend(0x10u16.to_le_bytes()); data.extend(0u32.to_le_bytes());
+                    data.extend((wrapper.len() as u32).to_le_bytes()); data.extend(wrapper); data.extend(0u32.to_le_bytes()); data
+                }}] })
+        };
+        let raw = saved(&[("pan", None), ("pitch", None), ("volume", None), ("pitch", None)], 0, 0x10, false, 0., 0.);
         let decoded = read_group(&raw).unwrap();
         assert_eq!(decoded.pitch_lfos.len(), 1);
         assert_eq!(decoded.pitch_lfos[0].slot, 0);
         assert_eq!(decoded.pitch_lfos[0].targets, [(1, 0.5), (3, 0.5)], "do not compress native target indices");
         assert_eq!(decoded.pitch_lfos[0].depth, 1.);
+        assert_eq!(decoded.volume_lfos.len(), 1);
+        assert_eq!((decoded.volume_lfos[0].source.slot, decoded.volume_lfos[0].target), (0, 2));
+        assert_eq!(decoded.volume_lfos[0].intensity, 0.5);
+        assert!(!decoded.volume_lfos[0].negative);
+        assert_eq!(decoded.volume_lfos[0].lag_ms, 0);
+        assert!(decoded.warnings.iter().any(|w| w.contains("other than admitted pitch and volume")));
+
+        for phase in [0., 0.25, 0.4990234375, 0.5, 0.5009765625, 0.75, 1.] {
+            let decoded = read_group(&saved(&[("pitch", None), ("volume", None)], 0, 0x10, false, 0., phase)).unwrap();
+            assert_eq!(decoded.pitch_lfos[0].start_phase.to_bits(), phase.to_bits());
+            assert_eq!(decoded.volume_lfos[0].source.start_phase.to_bits(), phase.to_bits());
+            assert_eq!((decoded.pitch_lfos[0].targets[0].0, decoded.volume_lfos[0].target), (0, 1));
+        }
+        for phase in [-0.001, 1.001, f32::INFINITY, f32::NAN] {
+            let decoded = read_group(&saved(&[("pitch", None), ("volume", None)], 0, 0x10, false, 0., phase)).unwrap();
+            assert!(decoded.pitch_lfos.is_empty() && decoded.volume_lfos.is_empty());
+            assert!(decoded.warnings.iter().any(|w| w.contains("pitch not applied")));
+            assert!(decoded.warnings.iter().any(|w| w.contains("volume not applied")));
+        }
+        let volume = [("volume", None)];
+        let negative = read_group(&saved(&volume, 15, 0x12, false, 0., 0.)).unwrap();
+        assert_eq!((negative.volume_lfos[0].negative, negative.volume_lfos[0].lag_ms), (true, 15));
+        for (rows, lag, flags, invert, fade) in [
+            (&volume[..], 32768, 0x10, false, 0.),
+            (&volume[..], 15, 0x14, false, 0.),
+            (&volume[..], 15, 0x10, true, 0.),
+            (&volume[..], 15, 0x10, false, 1.),
+            (&[("volume", None), ("volume", None)][..], 15, 0x10, false, 0.),
+        ] {
+            let rejected = read_group(&saved(rows, lag, flags, invert, fade, 0.)).unwrap();
+            assert!(rejected.volume_lfos.is_empty());
+            assert!(rejected.warnings.iter().any(|w| w.contains("volume not applied")));
+        }
+        let rejected_pitch = read_group(&saved(&[("pitch", None)], 15, 0x10, false, 0., 0.)).unwrap();
+        assert!(rejected_pitch.pitch_lfos.is_empty());
+        assert!(rejected_pitch.warnings.iter().any(|w| w.contains("pitch not applied")),
+            "eligible source waveform cannot silence invalid destination warnings");
     }
 
     #[test]
@@ -718,19 +842,35 @@ mod tests {
         let parsed = read_group_partial(&group, 7, "Authored").unwrap();
         assert_eq!(parsed.volume_env, Some(envelope));
         // Native XML/typed-reader proof: router-open is byte 0, bypass byte 1.
+        // This readable fixture has depth0.5/flags0 and zeroed opaque records,
+        // so the native primary kernel must remain unadmitted independently of
+        // router state. Compare against the closed-router diagnostic baseline.
+        let decoded_flags = |flags| read_group(&RawGroup(StructuredObject {
+            version: 0x95, public_data: vec![], private_data: vec![],
+            children: vec![slots(INTERNAL_MODS_ID, 16, &[internal(2, "Env", flags)])],
+        })).unwrap();
+        let baseline = decoded_flags([0, 0, 1, 0]);
+        assert!(!baseline.native_volume_env);
+        assert_eq!(baseline.warnings.len(), 1);
+        assert!(baseline.warnings[0].starts_with("Primary AHDSR slot 0: native source kernel not applied;"));
         for flags in [[1, 0, 1, 0], [0, 1, 1, 0]] {
-            let raw = RawGroup(StructuredObject { version: 0x95, public_data: vec![], private_data: vec![],
-                children: vec![slots(INTERNAL_MODS_ID, 16, &[internal(2, "Env", flags)])] });
-            let decoded = read_group(&raw).unwrap();
+            let decoded = decoded_flags(flags);
             assert_eq!(decoded.modulators[0].bypassed, flags[1] != 0);
-            assert!(decoded.warnings.is_empty(), "router-open is UI state, not an unsupported audio mode");
+            assert!(!decoded.native_volume_env);
+            assert_eq!(decoded.volume_env, baseline.volume_env);
+            assert_eq!(decoded.warnings, baseline.warnings,
+                "router-open is UI state and cannot add an unsupported audio-mode diagnostic");
         }
         assert_eq!(parsed.mods.len(), 3, "all targets of readable siblings survive");
         assert_eq!(parsed.mods[2].target, ModTarget::Attack, "native volume-envelope slot remains 1");
         assert_eq!(parsed.modulators.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["", "GoodEnv", "", "", "GoodVelocity"]);
         assert_eq!(parsed.modulators[4].assignments, Some(0));
         for i in [0, 2, 3] { assert_eq!(parsed.modulators[i].kind, "undecoded"); assert!(parsed.modulators[i].targets.is_empty()); }
-        assert_eq!(parsed.warnings.len(), 3);
+        assert!(!parsed.native_volume_env);
+        assert_eq!(parsed.warnings.len(), 4, "three failed-slot diagnostics plus the explicit primary fallback");
+        assert_eq!(parsed.warnings.iter().filter(|w| w.starts_with("Group 7 \"Authored\": ")).count(), 3);
+        assert_eq!(parsed.warnings.iter().filter(|w|
+            w.starts_with("Primary AHDSR slot 1: native source kernel not applied;")).count(), 1);
         for error in ["category 3", "shaper kind 8", "Invalid boolean byte 2"] {
             assert!(parsed.warnings.iter().any(|w| w.starts_with("Group 7 \"Authored\"") && w.contains(error)));
         }
@@ -759,5 +899,75 @@ mod tests {
         assert_eq!(m.shape(0.25), 0.25);
         m.shaper = Some(ShaperCurve::Table(vec![1.0, 0.0]));
         assert_eq!(m.shape(0.25), 0.75);
+    }
+
+    #[test]
+    fn primary_ahdsr_admission_preserves_raw_metadata_and_rejects_unproven_transforms() {
+        use ni_file::kontakt::{Chunk, StructuredObject};
+        fn name(out: &mut Vec<u8>, text: &str) { out.extend((text.len() as u32).to_le_bytes()); out.extend(text.as_bytes()); }
+        fn object(id: u16, version: u16, private: &[u8], public: &[u8], children: &[u8]) -> Chunk {
+            let mut data = vec![1]; data.extend(version.to_le_bytes());
+            for part in [private, public, children] { data.extend((part.len() as u32).to_le_bytes()); data.extend(part); }
+            Chunk { id, data }
+        }
+        let raw = |depth: f32, flags: u8, lag: u16, invert: u8, source: [u8;4], ahd: u8, opaque: bool, shaper: bool, wrapper: (u16,u32,u32,bool)| {
+            let mut tail = [0, 0, 128, 191, 0, 0, 0, 0, 0, 0, 128, 63, 0].repeat(4);
+            if opaque { tail[0] = 1; }
+            let envelope = Ahdsr { attack_curve: 1., attack_ms: 125.012924, decay_ms: 0., hold_ms: 0.,
+                release_ms: 25000.043, sustain: 1., unknown_flag: ahd, unknown_tail: tail };
+            let mut concrete = Vec::new(); envelope.write(&mut concrete).unwrap();
+            let mut wrapped = Vec::new(); object(7, wrapper.0, if wrapper.3 { &[99] } else { &[] }, &wrapper.1.to_le_bytes(), &concrete).write(&mut wrapped).unwrap();
+            let mut private = 1u32.to_le_bytes().to_vec(); name(&mut private, "volume"); private.extend(depth.to_le_bytes());
+            private.extend((-1i16).to_le_bytes()); private.push(flags); private.extend(lag.to_le_bytes());
+            name(&mut private, "ENV_AHDSR_VOLUME"); private.push(invert);
+            private.push(u8::from(shaper));
+            if shaper { private.push(1); for _ in 0..128 { private.extend(0f32.to_le_bytes()); } }
+            private.extend(source); private.extend(0u32.to_le_bytes()); name(&mut private, "ENV_AHDSR_VOLUME"); private.extend(wrapper.2.to_le_bytes());
+            let internal = object(0x0d, 0x80, &private, &[], if wrapper.2 == 1 { &concrete } else { &wrapped });
+            let mut slots = vec![1]; internal.write(&mut slots).unwrap(); slots.extend([0; 15]);
+            RawGroup(StructuredObject { version: 0x95, public_data: vec![], private_data: vec![],
+                children: vec![object(INTERNAL_MODS_ID, 0x10, &[], &slots, &[])] })
+        };
+        let known_wrapper = (0x90,0,2,false);
+        for ahd in [0, 1] {
+            let decoded = read_group(&raw(1., 0x10, 0, 0, [0,0,1,0], ahd, false, false, known_wrapper)).unwrap();
+            assert!(decoded.native_volume_env);
+            let group = crate::import::Group { native_volume_env: true, volume_env: decoded.volume_env, ..Default::default() };
+            let saved = group.volume_env.as_ref().unwrap();
+            let mut chunk = saved.to_chunk().unwrap();
+            assert_eq!(&Ahdsr::try_from(&chunk).unwrap(), saved, "binary scalar/opaque fields remain lossless");
+            chunk.data[1] = 0x12;
+            assert!(Ahdsr::try_from(&chunk).is_err(), "unproved AHDSR versions cannot reach admission");
+            let json = serde_json::to_value(&group).unwrap();
+            let restored: crate::import::Group = serde_json::from_value(json.clone()).unwrap();
+            assert_eq!(restored.volume_env, group.volume_env, "cache retains raw AHD/timing metadata");
+            assert!(restored.native_volume_env);
+            let mut legacy = json; legacy.as_object_mut().unwrap().remove("native_volume_env");
+            let legacy_env = legacy["volume_env"].as_object_mut().unwrap();
+            legacy_env.remove("unknown_flag"); legacy_env.remove("unknown_tail");
+            let legacy: crate::import::Group = serde_json::from_value(legacy).unwrap();
+            assert!(!legacy.native_volume_env);
+            assert!(legacy.volume_env.unwrap().unknown_tail.is_empty(), "older caches remain readable without inventing raw timing metadata");
+        }
+        assert!(read_group(&raw(1.,0x10,0,0,[1,0,1,0],0,false,false,known_wrapper)).unwrap().native_volume_env,
+            "router-open UI state does not change the source law");
+        for wrapper in [(0x91,0,2,false),(0x90,1,2,false),(0x90,0,1,false),(0x90,0,2,true)] {
+            let decoded = read_group(&raw(1.,0x10,0,0,[0,0,1,0],0,false,false,wrapper)).unwrap();
+            assert!(!decoded.native_volume_env, "unproved wrapper/category geometry stays outside the native source");
+            assert!(decoded.volume_env.is_some());
+            assert!(decoded.warnings.iter().any(|w| w.contains("native source kernel not applied")));
+        }
+        for (depth, flags, lag, invert, source, ahd, opaque, shaper) in [
+            (0.5,0x10,0,0,[0,0,1,0],0,false,false), (1.,0x12,0,0,[0,0,1,0],0,false,false),
+            (1.,0x10,15,0,[0,0,1,0],0,false,false), (1.,0x10,0,1,[0,0,1,0],0,false,false),
+            (1.,0x10,0,0,[0,1,1,0],0,false,false), (1.,0x10,0,0,[0,0,0,0],0,false,false),
+            (1.,0x10,0,0,[0,0,1,1],0,false,false), (1.,0x10,0,0,[2,0,1,0],0,false,false), (1.,0x10,0,0,[0,0,1,0],2,false,false),
+            (1.,0x10,0,0,[0,0,1,0],0,true,false), (1.,0x10,0,0,[0,0,1,0],0,false,true),
+        ] {
+            let decoded = read_group(&raw(depth, flags, lag, invert, source, ahd, opaque, shaper, known_wrapper)).unwrap();
+            assert!(!decoded.native_volume_env);
+            assert!(decoded.warnings.iter().any(|w| w.contains("native source kernel not applied")));
+            assert!(decoded.volume_env.is_some(), "unadmitted metadata is retained for fallback and diagnostics");
+        }
     }
 }
