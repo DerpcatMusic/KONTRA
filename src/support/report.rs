@@ -39,18 +39,34 @@ fn attach_incident_provenance(payload: &mut ReportPayload, incident: &CrashIncid
     payload.incident_build_id = Some(incident.build_id().to_owned());
 }
 
+struct AutomaticReportPermit<'a>(&'a std::sync::atomic::AtomicBool);
+
+impl<'a> AutomaticReportPermit<'a> {
+    fn acquire(active: &'a std::sync::atomic::AtomicBool) -> Option<Self> {
+        (!active.swap(true, Ordering::AcqRel)).then(|| Self(active))
+    }
+}
+
+impl Drop for AutomaticReportPermit<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 pub(super) fn try_auto_report_pending_incident() {
     let Some(incident) = pending_incident() else {
         return;
     };
-    if AUTOMATIC_CRASH_REPORT_STARTED.swap(true, Ordering::AcqRel) {
+    let Some(permit) = AutomaticReportPermit::acquire(&AUTOMATIC_CRASH_REPORT_STARTED) else {
         return;
-    }
+    };
     let started = crash::spawn_detached("kontra-support-report", move || {
+        // The module remains pinned after delivery; release the upload gate when
+        // this worker finishes so a later incident in the same host can report.
+        let _permit = permit;
         // Delayed native artifacts are searched only on this worker, never during host initialization.
         let incident = crash::refresh_pending_incident(&incident.id).unwrap_or(incident);
         if !incident.auto_reportable() {
-            AUTOMATIC_CRASH_REPORT_STARTED.store(false, Ordering::Release);
             return;
         }
         let identity = HOST_IDENTITY.lock_unpoisoned().clone();
@@ -71,13 +87,10 @@ pub(super) fn try_auto_report_pending_incident() {
         let result = send_report(payload);
         let (level, status) = match &result {
             Ok(message) => (crate::diagnostics::LogLevel::Info, message.clone()),
-            Err(error) => {
-                AUTOMATIC_CRASH_REPORT_STARTED.store(false, Ordering::Release);
-                (
-                    crate::diagnostics::LogLevel::Error,
-                    format!("Crash report retained for retry: {error}"),
-                )
-            }
+            Err(error) => (
+                crate::diagnostics::LogLevel::Error,
+                format!("Crash report retained for retry: {error}"),
+            ),
         };
         // Receipt or failure remains visible locally; pending evidence is deleted only after acknowledgement.
         let status_path = support_cache_path().with_file_name("last-report.json");
@@ -89,7 +102,6 @@ pub(super) fn try_auto_report_pending_incident() {
         crate::diagnostics::event(level, "support", "automatic_crash_report", value);
     });
     if let Err(error) = started {
-        AUTOMATIC_CRASH_REPORT_STARTED.store(false, Ordering::Release);
         crate::diagnostics::event(
             crate::diagnostics::LogLevel::Error,
             "support",
@@ -266,6 +278,30 @@ fn validate_receipt(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn completed_workers_allow_the_next_incident_after_ack_or_failure() {
+        let active = std::sync::atomic::AtomicBool::new(false);
+        let first = AutomaticReportPermit::acquire(&active).unwrap();
+        assert!(AutomaticReportPermit::acquire(&active).is_none());
+        let receipt = r#"{"ok":true,"report_id":"first","diagnostics_sha256":"full-evidence"}"#;
+        assert!(validate_receipt(200, receipt, Some("wrong-sha".into())).is_err());
+        assert!(request_agent().is_err(), "test delivery is offline");
+        assert!(AutomaticReportPermit::acquire(&active).is_none());
+        assert_eq!(
+            validate_receipt(200, receipt, Some("full-evidence".into())).unwrap(),
+            "first"
+        );
+        assert!(
+            AutomaticReportPermit::acquire(&active).is_none(),
+            "acknowledgement alone does not end the worker"
+        );
+        drop(first);
+        let second = AutomaticReportPermit::acquire(&active).unwrap();
+        assert!(AutomaticReportPermit::acquire(&active).is_none());
+        drop(second); // Failed/offline completion also releases the same permit.
+        assert!(AutomaticReportPermit::acquire(&active).is_some());
+    }
+
     #[test]
     fn delivery_requires_success_id_and_complete_evidence_hash() {
         let valid = r#"{"ok":true,"report_id":"abc","diagnostics_sha256":"sha"}"#;
