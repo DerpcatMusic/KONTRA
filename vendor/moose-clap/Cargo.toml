@@ -9,6 +9,11 @@ license = "LicenseRef-TruceLicense-1.0"
 rust-version = "1.92"
 description = "CLAP format wrapper for moose"
 
+[features]
+# Opt in only when the consuming plugin implements raw MIDI MPE expression.
+# Advertises input capability; it does not configure or negotiate an MPE zone.
+mpe-input = []
+
 [dependencies]
 moose-core = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497" }
 moose-params = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497" }
