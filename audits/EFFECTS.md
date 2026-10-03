@@ -390,11 +390,18 @@ resonance feedback, its low-frequency correction, and resonance compensation.
 The exponential interpolation entries are generated from a mathematical law;
 no captured tables are included. The response graph shows its small-signal
 transfer, which differs from large-signal saturation. Ordinary control changes
-interpolate linear input gain, normalized cutoff and shaped resonance on a
-32-frame clock, updating coefficients every four frames. The duration is the
-nearest whole 32-frame tick to 2 ms; initial activation snapshots saved controls.
-Repeated modulation-write timing, the conditional cutoff limiter and High
-Quality oversampling remain explicit diagnostics. Bypass and subtype
+interpolate linear input gain and shaped resonance on a 32-frame clock,
+updating coefficients every four frames. The duration is the nearest whole
+32-frame tick to 2 ms; initial activation snapshots saved controls. Record
+versions 144..146 select a separate cutoff clock that is left unprepared by
+native construction and rate setup: cutoff therefore snapshots at the next
+32-frame boundary. This mode is independent of the saved High Quality byte.
+Unknown record versions use ordinary normalized-cutoff interpolation with an
+explicit diagnostic. Nonzero secondary-clock activation, repeated modulation
+write timing and High Quality oversampling remain explicit gaps. A sign-loss
+artifact exists in the native conditional cap branch when that secondary clock
+is nonzero; its activation is not established for these records and it is not
+reproduced or attributed to an actual preset. Bypass and subtype
 changes clear local histories; the native transition lifecycle is unverified
 and reported separately. Other Ladder modes
 retain their named constants and decoded records but remain unsupported.
@@ -412,7 +419,11 @@ rates, full-resonance boundedness, channel isolation, block partition/reset,
 native parameter edits, insert/Amplifier order and zero heap allocations.
 The control-step gate additionally compares a moving four-pole response with
 independent double RC voltages, linear-gain steps, shaped-resonance steps,
-retargeting, tiny-delta settlement and arbitrary block partitions. The clock
+retargeting, tiny-delta settlement and arbitrary block partitions. A separate
+version-mode gate checks the cutoff boundary snapshot while Gain and resonance
+continue their ordinary trajectories, including descending edits and reset.
+The group/rack gate retains version provenance and covers live target edits,
+readback and zero audio heap allocations. The clock
 adds 384 KiB for 1,024 voices; settled processing keeps its straight scalar loop.
 
 ### Native Daft identity and record correction

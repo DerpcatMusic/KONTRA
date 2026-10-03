@@ -252,6 +252,7 @@ pub(crate) struct Unit {
     gain: f32,
     /// Kontakt filter type id (EQs: 22..24).
     kind: i32,
+    native_version: u16,
 }
 
 impl Unit {
@@ -532,6 +533,7 @@ fn units(chain: &Chain) -> impl Iterator<Item = Unit> + '_ {
             bypass: fx.bypass,
             gain: fx.output_gain,
             kind,
+            native_version: fx.version,
         })
     })
 }
@@ -559,7 +561,10 @@ pub fn unsupported_at(chain: &Chain, amp_split: Option<u8>) -> Vec<String> {
             }
             Params::Filter(f) if f.filter_type == 33 => {
                 out.push("Group Ladder LP4: bypass and subtype changes clear filter history; the native transition lifecycle is unverified".into());
-                out.push("Group Ladder LP4: repeated modulation control smoothing timing and the conditional cutoff limiter are not applied".into());
+                out.push("Group Ladder LP4: repeated modulation control smoothing timing and nonzero secondary cutoff-clock activation remain unverified".into());
+                if !ladder::instant_cutoff(fx.version) {
+                    out.push("Group Ladder LP4: unknown record cutoff-control mode uses ordinary smoothing".into());
+                }
                 if f.native_flag.is_some_and(|v| v != 0) {
                     out.push("Group Ladder LP4: High Quality oversampling is not applied; the single-rate kernel is used".into());
                 }
@@ -1147,6 +1152,7 @@ impl RackFilter {
         let unit = &self.unit;
         self.active = 0;
         if unit.shape == Shape::Ladder {
+            self.ladder.record_version(unit.native_version);
             self.ladder.tune(unit.key(&unit.knobs, 0).0, self.rate);
             return;
         }
@@ -1467,6 +1473,7 @@ impl VoiceFilter {
                         let knobs = &rows[index as usize];
                         if unit.shape == Shape::Ladder {
                             let ladder = &mut self.ladders[index as usize];
+                            ladder.record_version(unit.native_version);
                             if unit.bypass {
                                 ladder.clear();
                             } else {
@@ -1894,6 +1901,7 @@ mod tests {
                 }),0);
                 let f=settings[0].filter.as_deref().unwrap();
                 assert_eq!(f.units.len(),1); assert_eq!(f.units[0].shape,Shape::Ladder);
+                assert_eq!(f.units[0].native_version,0x92);
                 assert!(unsupported_at(&groups[0].fx,Some(split)).iter().any(|w|w.contains("control smoothing")));
                 let mut voice=None;
                 assert_eq!(crate::plugin::tests::allocations(|| {
@@ -1902,6 +1910,7 @@ mod tests {
                 let mut voice=voice.unwrap();
                 assert!(voice.hold(f,&table,RATE).is_none(),"nonlinear states cannot share lanes");
                 let mut rack=RackFilter::new(&effect,RATE).unwrap();
+                assert_eq!(rack.unit.native_version,0x92);
                 assert!(rack.set_knob(Knob::FilterGain,gain as f32/1_000_000.0));
                 assert_eq!(rack.knob(Knob::FilterGain),Some(gain as f32/1_000_000.0));
                 assert_eq!(crate::plugin::tests::allocations(|| {
@@ -1966,6 +1975,34 @@ mod tests {
             }),0);
             for sample in expected_l.iter_mut().chain(&mut expected_r) {*sample*=0.8;}
             assert_eq!(l,expected_l); assert_eq!(r,expected_r);
+        }
+        // Version provenance reaches both real processing routes, including
+        // a target edit after audio has started and an awkward control phase.
+        for version in [0x90,0x91,0x92,0] {
+            let mut effect=effect.clone(); effect.version=version;
+            let group=Group {fx:Chain {slots:vec![effect.clone()]},amp_split_slot:Some(0),..Default::default()};
+            let mut f=GroupFilter::new(&group).unwrap();
+            let mut voice=VoiceFilter::new(Some(&f),&table,&input,RATE);
+            let mut rack=RackFilter::new(&effect,RATE).unwrap();
+            assert_eq!(f.units[0].native_version,version);
+            assert_eq!(rack.unit.native_version,version);
+            for (frames,cutoff,gain) in [(17,0.5,-0.25),(71,1.0,0.5),(128,0.1,-0.5)] {
+                assert_eq!(crate::plugin::tests::allocations(|| {
+                    assert!(f.set_knob(0,Knob::Cutoff,cutoff));
+                    assert!(f.set_knob(0,Knob::FilterGain,gain));
+                    assert!(rack.set_knob(Knob::Cutoff,cutoff));
+                    assert!(rack.set_knob(Knob::FilterGain,gain));
+                    assert_eq!(f.knob(0,Knob::Cutoff),Some(cutoff));
+                    assert_eq!(rack.knob(Knob::Cutoff),Some(cutoff));
+                    let (mut l,mut r)=([0.0001;128],[-0.0001;128]);
+                    let (mut expected_l,mut expected_r)=(l,r);
+                    voice.process(&f,&table,&mut [0.0;MAX_BLOCK],&mut l[..frames],&mut r[..frames],RATE);
+                    rack.process(&mut expected_l[..frames],&mut expected_r[..frames]);
+                    for sample in expected_l[..frames].iter_mut().chain(&mut expected_r[..frames]) {*sample*=0.8;}
+                    assert_eq!(l[..frames],expected_l[..frames]);
+                    assert_eq!(r[..frames],expected_r[..frames]);
+                }),0);
+            }
         }
         let ui=crate::ksp::initialize("on init\ndeclare ui_label $label(1,1)\nset_engine_par($ENGINE_PAR_EFFECT_SUBTYPE,33,0,0,-1)\nset_engine_par($ENGINE_PAR_CUTOFF,1000000,0,0,-1)\nset_engine_par($ENGINE_PAR_GAIN,500000,0,0,-1)\nset_text($label,get_engine_par_disp($ENGINE_PAR_CUTOFF,0,0,-1) & \"|\" & get_engine_par_disp($ENGINE_PAR_GAIN,0,0,-1))\nend on",0,1).unwrap();
         assert_eq!(ui.controls[0].properties["$CONTROL_PAR_TEXT"],crate::ksp::Value::Text("19912.3|6.0".into()));
@@ -2856,7 +2893,7 @@ mod tests {
 
     #[test]
     fn mixers_gains_and_bypass_follow_the_rack() {
-        let unit = |slot, shape, bypass, gain| Unit { slot, shape, sections: 1, knobs: [0.5; KNOBS], bypass, gain, kind: 2 };
+        let unit = |slot, shape, bypass, gain| Unit { slot, shape, sections: 1, knobs: [0.5; KNOBS], bypass, gain, kind: 2, native_version: 0 };
         let mut f = GroupFilter {
             units: [
                 Unit { knobs: [0.0; KNOBS], ..unit(0, Shape::Filter(Response::Low), true, 0.5) },
@@ -2899,7 +2936,7 @@ mod tests {
     /// and every modelled type plays finite audio.
     #[test]
     fn filter_types_switch_and_play() {
-        let unit = Unit { slot: 0, shape: Shape::Filter(Response::Low), sections: 1, knobs: [0.6, 0.7, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], bypass: false, gain: 1.0, kind: 2 };
+        let unit = Unit { slot: 0, shape: Shape::Filter(Response::Low), sections: 1, knobs: [0.6, 0.7, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], bypass: false, gain: 1.0, kind: 2, native_version: 0 };
         let mut f = GroupFilter { units: [unit].into(), mixers: [].into(), stages: [].into(), taps: [].into(), inserts: [].into(), amp_split: None, slot_matrices: [IDENTITY; 8], type_revision: 0, pre_active: false, pre_sends: false, matrix_interleaved: false, matrix: IDENTITY, envs: [].into(), ext: [].into() };
         f.compile_inserts();
         let table = ModTable::default();
@@ -2933,7 +2970,7 @@ mod tests {
     #[test]
     fn drive_stages_bend_per_voice_in_slot_order() {
         // A low pass at slot 0, Saturation (shape 1) at slot 2.
-        let unit = Unit { slot: 0, shape: Shape::Filter(Response::Low), sections: 1, knobs: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], bypass: false, gain: 1.0, kind: 2 };
+        let unit = Unit { slot: 0, shape: Shape::Filter(Response::Low), sections: 1, knobs: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], bypass: false, gain: 1.0, kind: 2, native_version: 0 };
         let mut fields = [0.0; blocks::FIELDS];
         fields[0] = 1.0;
         let stage = Stage { slot: 2, kind: Kind::SurroundPanner, fields, bypass: false, gain: 1.0 };
