@@ -36,11 +36,7 @@ for bundle in Library/Audio/Plug-Ins/CLAP/KONTRA.clap Library/Audio/Plug-Ins/VST
   chmod -R a+rX "$stage/payload/$bundle"
   codesign --verify --deep --strict --all-architectures "$stage/payload/$bundle"
 done
-for bundle in Library/Audio/Plug-Ins/CLAP/KONTRA.clap Library/Audio/Plug-Ins/VST3/KONTRA.vst3; do
-  xcrun SetFile -a B "$stage/payload/$bundle"
-  codesign --verify --deep --strict --all-architectures "$stage/payload/$bundle"
-done
-xcrun swift "$(dirname "$0")/check_macos_bundles.swift" \
+xcrun swift "$(dirname "$0")/check_macos_bundles.swift" --register "$stage/payload/Applications/KONTRA.app" \
   "$stage/payload/Library/Audio/Plug-Ins/CLAP/KONTRA.clap" \
   "$stage/payload/Library/Audio/Plug-Ins/VST3/KONTRA.vst3"
 # Disable relocation: an old bundle elsewhere must not redirect installation
