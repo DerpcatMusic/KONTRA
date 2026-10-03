@@ -43,7 +43,7 @@ pub struct State {
     read_error: Option<String>,
     search: String,
     levels: [bool; 4],
-    filtered: Option<(u64, String, [bool; 4])>,
+    filtered: Option<(u64, Option<PathBuf>, usize, String, [bool; 4])>,
     matches: Vec<usize>,
     selected: Option<u64>,
     detail: Option<(u64, Arc<str>)>,
@@ -185,6 +185,8 @@ impl State {
     fn filter(&mut self, snapshot: &DiagnosticSnapshot) -> bool {
         let key = (
             snapshot.revision,
+            snapshot.status.log_path.clone(),
+            snapshot.events.len(),
             self.search.clone(),
             self.levels,
         );
@@ -194,7 +196,7 @@ impl State {
         let needle = self.search.to_lowercase();
         let words: Vec<_> = needle.split_whitespace().collect();
         let criteria_changed = self.filtered.as_ref().is_none_or(|old| {
-            (&old.1, old.2) != (&key.1, key.2)
+            (&old.3, old.4) != (&key.3, key.4)
         });
         self.matches = snapshot
             .events
@@ -1120,9 +1122,7 @@ mod tests {
             })
             .collect();
         let snapshot = DiagnosticSnapshot {
-            // Copy/export workers later install real journal snapshots; do not
-            // give this unrelated synthetic history a live journal revision.
-            revision: u64::MAX,
+            revision: 1,
             events,
             status: diagnostics::LogStatus {
                 total_events: 10_000,
@@ -1133,6 +1133,19 @@ mod tests {
             },
             build: json!({"fixture":true}),
         };
+        let mut cached = State::default();
+        assert!(cached.filter(&snapshot));
+        let mut replacement = snapshot.clone();
+        replacement.status.log_path = Some("/virtual/logs/replacement-session.jsonl".into());
+        replacement.events[0].level = LogLevel::Warning;
+        assert_eq!(replacement.revision, snapshot.revision);
+        assert_eq!(replacement.events.len(), snapshot.events.len());
+        assert!(cached.filter(&replacement), "same revision and row count from another journal invalidates the cache");
+        assert!(cached.matches.contains(&0), "replacement history must supply the rebuilt matching rows");
+        replacement.events.truncate(1);
+        assert!(cached.filter(&replacement), "same revision and journal with a replaced history shape invalidates the cache");
+        assert_eq!(cached.matches, vec![0], "stale retained indices cannot outlive the replacement rows");
+        assert!(!cached.filter(&replacement), "unchanged replacement history still reuses the cache");
         let mut state = State::default();
         state.snapshot = Some(Arc::new(snapshot));
         for _ in 0..3 {
