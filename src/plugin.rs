@@ -4852,6 +4852,49 @@ end on"#;
     }
 
     #[test]
+    fn native_ui_text_limits_and_weight_use_nearest_scopes_and_real_mui_lines() {
+        use crate::native_ui::{Node,Paint,Scene};
+        let directory=std::env::temp_dir().join(format!("kontra-native-text-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let resources=directory.join("Resources/native_ui");std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("main.nui"),r#"
+            local ui=require('native_ui') local mode=require('kontakt').connect_parameter('Mode')
+            return @ui.VStack {
+                @ui.Text {text='limit\nnext\nend'}.line_limit(ui.create_computed(function() return mode:value()+1 end))
+                @ui.VStack { @ui.Text {text='override\nnext\nend'}.line_limit(3).bold(false) }
+                @ui.Text {text='inherit\nnext\nend'}.line_limit(nil)
+            }.line_limit(2).bold(true).frame(width=120)
+        "#).unwrap();
+        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $Mode(0,3)\nend on".into()],..Default::default()};
+        let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
+        let mut scene=Scene::prepare(&instrument.path,&rt).unwrap().unwrap();let mut live=first_script_live(&rt);rt.prepare_native_controls(&mut live);
+        let mut engine=Engine::default();engine.set_script(Some(rt));
+        fn texts<'a>(node:&'a Node,result:&mut Vec<&'a Node>){if matches!(node.paint,Paint::Text(_)){result.push(node)}for child in &node.children{texts(child,result)}}
+        let font=moose::mui::mui::prelude::Font::new(&include_bytes!("../assets/NotoSans.ttf")[..]).unwrap();
+        for mode in [0,1] {
+            let (mut left,mut right)=([0.;64],[0.;64]);
+            assert_eq!(allocations(||{engine.ui_control(0,0,mode);engine.render(&mut left,&mut right);engine.script().unwrap().refresh_live(&mut live);}),0);
+            scene.observe(&live);let root=scene.snapshot().unwrap();let mut labels=Vec::new();texts(&root,&mut labels);assert_eq!(labels.len(),3);
+            let rendered=moose::mui::mui::scene::resolve(&moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::scene_tree(&root,&scene.assets)).font(font.clone())).unwrap();
+            for (node,(lines,bold)) in labels.iter().zip([(mode as usize+1,true),(3,false),(2,true)]) {
+                assert_eq!((node.text_lines,node.text_bold),(Some(lines),bold));
+                let key=format!("native-snapshot-{}",node.id);
+                let paints:Vec<_>=rendered.paint.iter().filter(|p|p.key.as_str()==key && p.text.is_some()).collect();
+                assert_eq!(paints.len(),lines,"the existing MUI shaper renders each bounded text line");
+                assert!(paints.iter().all(|p|p.text.as_ref().unwrap().axes.get("wght")==Some(if bold{700.}else{400.})),"nearest weight reaches the actual text run");
+            }
+        }
+        std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') return @ui.Text {text='one\\ntwo\\nthree'}").unwrap();
+        let mut unlimited=Scene::prepare(&instrument.path,engine.script().unwrap()).unwrap().unwrap();let root=unlimited.snapshot().unwrap();let mut labels=Vec::new();texts(&root,&mut labels);assert_eq!(labels[0].text_lines,None);
+        let rendered=moose::mui::mui::scene::resolve(&moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::scene_tree(&root,&unlimited.assets)).font(font)).unwrap();
+        assert_eq!(rendered.paint.iter().filter(|p|p.text.is_some()).count(),3,"default text is not silently restricted to one line");
+        for modifier in ["line_limit(0)","line_limit(257)","line_limit(function() return 0/0 end)","bold(1)","bold(function() return 1 end)"] {
+            std::fs::write(resources.join("main.nui"),format!("local ui=require('native_ui') return @ui.Text{{text='test'}}.{modifier}")).unwrap();
+            assert!(Scene::prepare(&instrument.path,engine.script().unwrap()).is_err(),"{modifier}");
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn native_ui_child_alignment_and_disabled_scopes_preserve_geometry_and_callbacks() {
         use crate::native_ui::{Node,Paint,Scene};
         let directory=std::env::temp_dir().join(format!("kontra-native-align-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));

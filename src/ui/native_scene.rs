@@ -117,14 +117,17 @@ fn primitive(
     assets: &crate::native_assets::Assets,
 ) -> El {
     let el = match &node.paint {
-        Paint::Text(value) => text(value.clone())
-            .text_size(node.text_size)
-            .lines(1)
-            .fill(Color::srgba(
-                node.text_color[0], node.text_color[1], node.text_color[2], node.text_color[3],
-            ))
-            .w(node.width.map_or(Len::Auto, Len::Px))
-            .h(node.height.map_or(Len::Auto, Len::Px)),
+        Paint::Text(value) => {
+            let el = text(value.clone())
+                .text_size(node.text_size)
+                .text_weight(if node.text_bold { Weight::BOLD } else { Weight::REGULAR })
+                .fill(Color::srgba(
+                    node.text_color[0], node.text_color[1], node.text_color[2], node.text_color[3],
+                ))
+                .w(node.width.map_or(Len::Auto, Len::Px))
+                .h(node.height.map_or(Len::Auto, Len::Px));
+            if let Some(lines) = node.text_lines { el.lines(lines) } else { el }
+        },
         Paint::Rectangle(color, radius) => block(0, 0)
             .w(node.width.map_or(Len::Pct(100.), Len::Px))
             .h(node.height.map_or(Len::Pct(100.), Len::Px))

@@ -29,6 +29,8 @@ pub(crate) struct Node {
     pub height: Option<f64>,
     pub text_size: f64,
     pub text_color: [f32; 4],
+    pub text_bold: bool,
+    pub text_lines: Option<usize>,
     pub alignment: (Align, Align),
     pub anchor: Option<(Align, Align)>,
     pub padding: Insets,
@@ -570,7 +572,7 @@ impl Scene {
         let node = self.node(
             root,
             self.lua.create_table()?,
-            (14., [1.; 4], false, false, 1.),
+            (14., [1.; 4], false, false, 1., false, None),
             "0".into(),
             0,
             &mut seen,
@@ -583,7 +585,7 @@ impl Scene {
         &mut self,
         node: Table,
         context: Table,
-        style: (f64, [f32; 4], bool, bool, f32),
+        style: (f64, [f32; 4], bool, bool, f32, bool, Option<usize>),
         path: String,
         depth: usize,
         seen: &mut BTreeSet<usize>,
@@ -610,7 +612,7 @@ impl Scene {
         let props: Table = node.get("props")?;
         let modifiers: Table = node.get("modifiers")?;
         let background = modifiers.get::<Option<Table>>("background")?.is_some();
-        let (mut text_size, mut text_color, mut hidden, mut disabled, mut opacity) = style;
+        let (mut text_size, mut text_color, mut hidden, mut disabled, mut opacity, mut text_bold, mut text_lines) = style;
         if let Some(modifier) = modifiers.get::<Option<Table>>("opacity")? {
             let value = match modifier.get::<Value>("value")? {
                 Value::Function(f) => f.call::<Value>(())?, value => value,
@@ -636,6 +638,21 @@ impl Scene {
             };
             let Value::Boolean(value) = value else { bail!("Native UI disabled requires a boolean"); };
             disabled |= value;
+        }
+        if let Some(modifier) = modifiers.get::<Option<Table>>("bold")? {
+            let value = match modifier.get::<Value>("value")? {
+                Value::Function(f) => f.call::<Value>(())?, value => value,
+            };
+            match value { Value::Nil => (), Value::Boolean(value) => text_bold=value,
+                _ => bail!("Native UI bold requires a boolean"), }
+        }
+        if let Some(modifier) = modifiers.get::<Option<Table>>("line_limit")? {
+            let value = match modifier.get::<Value>("value")? {
+                Value::Function(f) => f.call::<Value>(())?, value => value,
+            };
+            match value { Value::Nil => (), Value::Integer(value) if (1..=256).contains(&value) => text_lines=Some(value as usize),
+                Value::Number(value) if value.is_finite() && value.fract()==0. && (1. ..=256.).contains(&value) => text_lines=Some(value as usize),
+                _ => bail!("Invalid native UI line_limit bounds"), }
         }
         let mut offset = [0.; 2];
         if let Some(modifier) = modifiers.get::<Option<Table>>("offset")? {
@@ -793,7 +810,7 @@ impl Scene {
             nodes.push(self.node(
                 child?,
                 context.clone(),
-                (text_size, text_color, hidden, disabled, opacity),
+                (text_size, text_color, hidden, disabled, opacity, text_bold, text_lines),
                 format!("{path}/{index}"),
                 depth + 1,
                 seen,
@@ -819,6 +836,8 @@ impl Scene {
             height,
             text_size,
             text_color,
+            text_bold,
+            text_lines,
             alignment,
             anchor,
             padding,
