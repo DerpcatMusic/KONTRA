@@ -19,7 +19,7 @@ pub enum Prop {
     Str(String),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MenuItem {
     pub text: String,
     pub value: i32,

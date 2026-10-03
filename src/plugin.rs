@@ -5608,6 +5608,100 @@ end on"#;
     }
 
     #[test]
+    fn native_ui_control_properties_keep_authored_units_hidden_rows_and_bounded_live_updates() {
+        use crate::native_ui::{Node,Paint,Scene};
+        let directory=std::env::temp_dir().join(format!("kontra-native-properties-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let resources=directory.join("Resources/native_ui");std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("main.nui"),r#"
+            local ui=require('native_ui') local kontakt=require('kontakt')
+            local p=kontakt.connect_parameter('Amount') local menu=kontakt.connect_parameter('Choice')
+            assert(p:ksp_control_property(16)==32 and p:ksp_control_property(21)==2 and p:ksp_control_property(22)==100)
+            assert(p:ksp_control_property(0)=='Heading' and p:ksp_control_property(14)=='Initial')
+            assert(menu:ksp_control_property(17)==2 and menu:ksp_control_property(18,1)=='Hidden')
+            assert(menu:ksp_control_property(19,1)==70 and menu:ksp_control_property(20,1)==false)
+            assert(menu:ksp_control_property(20,0)==true and menu:ksp_control_property(18,-1)=='')
+            assert(not pcall(function() return p:ksp_control_property(999) end))
+            assert(not pcall(function() return p:ksp_control_property(14.5) end))
+            assert(not pcall(function() return p:ksp_control_property(18,0.5) end))
+            assert(kontakt.get_ksp_control_property('Unknown',14)==0)
+            return @ui.Text {text=ui.create_computed(function()
+                if p:value()>=8 then
+                    assert(p:ksp_control_property(16)==64 and p:ksp_control_property(21)==3 and p:ksp_control_property(22)==120)
+                    assert(p:ksp_control_property(0)=='Changed' and menu:ksp_control_property(17)==3)
+                    assert(menu:ksp_control_property(18,0)=='Renamed' and menu:ksp_control_property(19,2)==90)
+                    assert(menu:ksp_control_property(20,0)==false and menu:ksp_control_property(20,1)==true)
+                end
+                return p:ksp_control_property(14)
+            end)}.frame(width=360,height=40).on_tap_gesture(start=function()p:set_value(p:value()+1)end)
+        "#).unwrap();
+        let script=format!(r#"on init
+make_perfview
+load_native_ui("main")
+expose_controls
+declare ui_slider $Amount(2,100)
+declare ui_menu $Choice
+$Amount := 7
+set_control_par_str(get_ui_id($Amount),$CONTROL_PAR_TEXT,"Heading")
+set_control_par_str(get_ui_id($Amount),$CONTROL_PAR_LABEL,"Initial")
+set_control_par(get_ui_id($Amount),$CONTROL_PAR_DEFAULT_VALUE,32)
+add_menu_item($Choice,"Visible",10)
+add_menu_item($Choice,"Hidden",70)
+set_menu_item_visibility($Choice,1,0)
+end on
+on ui_control($Amount)
+if ($Amount = 8)
+set_control_par_str(get_ui_id($Amount),$CONTROL_PAR_LABEL,"{}")
+set_control_par_str(get_ui_id($Amount),$CONTROL_PAR_TEXT,"Changed")
+set_control_par(get_ui_id($Amount),$CONTROL_PAR_DEFAULT_VALUE,64)
+set_control_par(get_ui_id($Amount),$CONTROL_PAR_MIN_VALUE,3)
+set_control_par(get_ui_id($Amount),$CONTROL_PAR_MAX_VALUE,120)
+set_menu_item_str($Choice,0,"Renamed")
+set_menu_item_visibility($Choice,0,0)
+set_menu_item_visibility($Choice,1,1)
+add_menu_item($Choice,"Added",90)
+else
+set_control_par_str(get_ui_id($Amount),$CONTROL_PAR_LABEL,"Latest🦀")
+end if
+end on"#,"🦀".repeat(600));
+        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec![script,"on init\nmake_perfview\ndeclare ui_slider $Amount(0,200)\n$Amount := 99\nend on".into()],..Default::default()};
+        let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
+        let scene=Arc::new(Mutex::new(Scene::prepare(&instrument.path,&rt).unwrap().unwrap()));
+        // The classic selected page is the OTHER owning slot. Native properties
+        // must use all-slot backing, not its visible-menu/property projection.
+        let mut live=rt.live_for_slot(Some(1));rt.prepare_native_controls(&mut live);
+        let mut narrow=live.clone();assert_eq!(narrow.native_controls[0].properties.label.capacity(),live.native_controls[0].properties.label.capacity());
+        let p=Arc::new(SamplerParams::new());let epoch={let mut view=p.shared.view.lock().unwrap();let epoch=next_epoch(&mut view,0,None,Some(live));view.parts[0].native_scene=Some(scene.clone());epoch};
+        let mut dsp=Dsp::default();dsp.script_epoch[0]=epoch;dsp.rack.parts[0].set_script(Some(rt));
+        fn label(node:&Node)->Option<&str>{if let Paint::Text(s)=&node.paint{Some(s)}else{node.children.iter().find_map(label)}}
+        fn tap(node:&Node)->Option<usize>{if node.tap{Some(node.id)}else{node.children.iter().find_map(tap)}}
+        let initial=scene.lock().unwrap().snapshot().unwrap();assert_eq!(label(&initial),Some("Initial"));let owner=tap(&initial).unwrap();
+        let (mut left,mut right)=([0.;64],[0.;64]);let mut slices=[left.as_mut_slice(),right.as_mut_slice()];let mut buffer=AudioBuffer::from_slices_checked(&[],&mut slices,64);
+        let transport=TransportInfo::default();let mut output=EventList::with_capacity(4);let events=EventList::with_capacity(1);let mut cx=ProcessContext::new(&transport,48000.,64,&mut output);
+        let mut cursor=crate::ksp::Refresh::default();
+        for target in [8,9] {
+            let edits=scene.lock().unwrap().tap(owner).unwrap();assert_eq!((edits[0].slot,edits[0].control,edits[0].value),(0,0,target));
+            for edit in edits{assert!(p.shared.edit_control_slot(0,epoch,edit.slot,edit.control,edit.value));}
+            let live=p.shared.view.lock().unwrap().parts[0].live.take().unwrap();p.shared.live_requests.push((0,epoch,live)).ok().unwrap();
+            assert_eq!(allocations(||{for _ in 0..12{Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx);}}),0);p.shared.publish_live(true);
+            let root=scene.lock().unwrap().snapshot().unwrap();let expected=if target==8{"🦀".repeat(600)}else{"Latest🦀".into()};assert_eq!(label(&root),Some(expected.as_str()));
+            if target==8 {
+                let mut done=false;
+                assert_eq!(allocations(||{for _ in 0..12{done=dsp.rack.parts[0].script().unwrap().refresh_live_within(&mut narrow,&mut cursor,1);assert!(!done);}}),0);
+            } else {
+                // Continue the SAME incomplete snapshot after callback9 rewrites
+                // its source. One-budget-unit copies restart and remain bounded.
+                let mut passes=0;
+                assert_eq!(allocations(||{while !dsp.rack.parts[0].script().unwrap().refresh_live_within(&mut narrow,&mut cursor,1){passes+=1;assert!(passes<500);}}),0);
+                assert_eq!(narrow.native_controls[0].properties.label,"Latest🦀");assert_eq!(narrow.native_controls[1].properties.menu_len,3);
+            }
+        }
+        assert!(dsp.rack.parts[0].script().unwrap().diagnostics().is_empty());
+        let newer={let mut view=p.shared.view.lock().unwrap();next_epoch(&mut view,0,None,None)};
+        assert_ne!(epoch,newer);assert!(!p.shared.edit_control_slot(0,epoch,0,0,10),"captured property connection cannot write a replacement epoch");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn native_ui_stacks_use_intrinsic_geometry_cross_alignment_and_bounded_computed_spacing() {
         use crate::native_ui::{Node,Paint,Scene};
         let directory=std::env::temp_dir().join(format!("kontra-native-stacks-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
