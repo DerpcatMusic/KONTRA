@@ -28,6 +28,7 @@ pub(crate) mod native_state;
 mod stream;
 mod voice;
 mod wavetable;
+pub(crate) mod zone;
 
 pub(crate) use bank::parallel;
 pub use audit::audit_dsp;
@@ -37,7 +38,7 @@ pub use residency::{Heads, Residency};
 pub use rack::{
     BUSES, Block, BusControls, Mix, NO_AUX, PartControls, Peaks, RACK_SLOTS, Rack, TUNE_RANGE,
 };
-pub use script::{IrRequest, MAX_COMMANDS, ScriptSetup, effects, load_scripts, load_scripts_with_ir, load_scripts_with_state};
+pub use script::{IrRequest, MAX_COMMANDS, ScriptSetup, effects, load_scripts, load_scripts_with_ir, load_scripts_with_state, load_scripts_with_delay_state};
 pub use voice::{Ahdsr, Flex, FlexPoint, Phase};
 
 use crate::fx::FxProcessor;
@@ -216,6 +217,10 @@ pub struct Engine {
     /// Current-sample parameter positions, allocated before audio processing.
     write_index: (u32, std::collections::HashMap<Address, usize>),
     ir_requests: Vec<IrRequest>,
+    offline_zone: Option<(u64,Box<zone::Prepared>)>,
+    zone_queued_epoch: u64,
+    zone_inflight: usize,
+    zone_requests: std::collections::VecDeque<crate::ksp::engine::ZoneEdit>,
     /// Configured part channel for callbacks without a MIDI input owner.
     home_channel: u8,
     /// Envelope attack (s) for groups without their own envelope.
@@ -247,6 +252,10 @@ impl Default for Engine {
             writes: Vec::with_capacity(MAX_WRITES),
             write_index: (0, std::collections::HashMap::with_capacity(MAX_WRITES)),
             ir_requests: Vec::with_capacity(32),
+            zone_requests: Default::default(),
+            zone_inflight: 0,
+            zone_queued_epoch: 0,
+            offline_zone: None,
             home_channel: 0,
             attack: 0.002,
             release: 0.15,
@@ -271,7 +280,15 @@ impl Engine {
         self.writes.clear();
         self.write_index.1.clear();
         self.ir_requests.clear();
+        self.zone_requests.clear();
+        self.zone_inflight = 0;
+        self.zone_queued_epoch = 0;
+        let mut bank = bank;
+        if let Some(bank) = bank.as_deref_mut() {
+            std::mem::swap(&mut self.zone_requests, &mut bank.zone_spares);
+        }
         let old = std::mem::replace(&mut self.bank, bank);
+        self.queue_init_zone_edits();
         self.player.free.clear();
         let slots = self.bank.as_deref().map_or(0, |b| b.slots().len());
         self.player.free.extend((0..slots as u16).rev());
@@ -287,6 +304,9 @@ impl Engine {
     /// [`Engine::set_bank`] does. Returns the old bank for disposal off the
     /// audio thread.
     pub fn upgrade_bank(&mut self, mut bank: Box<Bank>) -> Option<Box<Bank>> {
+        if !self.zone_upgrade_ready(&bank) {
+            return Some(bank);
+        }
         let Some(old) = self.bank.as_deref_mut().filter(|old| {
             old.zones().len() == bank.zones().len() && old.samples.len() == bank.samples.len()
         }) else {
@@ -296,6 +316,8 @@ impl Engine {
         // write it, and overrides recompute what plays from it.
         std::mem::swap(&mut old.settings, &mut bank.settings);
         std::mem::swap(&mut old.base, &mut bank.base);
+        // Parent proof is retired with the old bank, never released on audio.
+        std::mem::swap(&mut old.zone_parent, &mut bank.zone_parent);
         self.player.touch();
         self.player.rebind(old, &bank);
         self.bank.replace(bank)
@@ -328,7 +350,8 @@ impl Engine {
     /// Install the program effects, built for [`rate`](Self::rate) with
     /// blocks of [`MAX_BLOCK`]; returns the previous processor for disposal
     /// off the audio thread.
-    pub fn set_fx(&mut self, fx: FxProcessor) -> FxProcessor {
+    pub fn set_fx(&mut self, mut fx: FxProcessor) -> FxProcessor {
+        fx.set_tempo(self.player.tempo);
         let old = std::mem::replace(&mut self.fx, fx);
         self.replay(|a| matches!(a, Address::Fx(..)));
         if let Some(rt) = self.script.as_deref() { rt.native_state.replay_fx(&mut self.fx); }
@@ -347,6 +370,9 @@ impl Engine {
         self.writes.clear();
         self.write_index.1.clear();
         self.ir_requests.clear();
+        self.zone_requests.clear();
+        self.zone_inflight = 0;
+        self.zone_queued_epoch = 0;
         let channel = self.service_channel();
         if let Some(rt) = script.as_deref_mut() {
             rt.set_sample_rate(self.player.rate);
@@ -373,7 +399,9 @@ impl Engine {
             }
         }
         self.replay(|_| true);
+        if let Some(rt) = self.script.as_deref() { rt.native_state.replay_delays(&mut self.fx); }
         self.apply_init_controllers();
+        self.queue_init_zone_edits();
         old
     }
 
@@ -441,7 +469,10 @@ impl Engine {
 
     /// Apply the host's transport before processing this block's callbacks.
     pub fn set_transport(&mut self, playing: bool, tempo: f64, beats: f64, signature: (u8, u8)) {
-        self.player.tempo = tempo as f32;
+        if tempo.is_finite() && tempo > 0.0 && (tempo as f32).is_finite() && tempo as f32 > 0.0 {
+            self.player.tempo = tempo as f32;
+            self.fx.set_tempo(self.player.tempo);
+        }
         if let Some((rt, mut host)) = self.scripted(self.service_channel()) {
             rt.set_host_transport(&mut host, playing, tempo, beats, signature);
         }
@@ -618,6 +649,8 @@ impl Engine {
             writes: &mut self.writes,
             write_index: &mut self.write_index,
             ir_requests: &mut self.ir_requests,
+            zone_requests: &mut self.zone_requests,
+            zone_inflight: &mut self.zone_inflight,
         };
         Some((rt, host))
     }
@@ -1045,6 +1078,75 @@ impl Engine {
         self.script.as_deref_mut()?.pop_retired_array_job()
     }
 
+    fn queue_init_zone_edits(&mut self) {
+        let Some(bank)=self.bank.as_deref() else { return };
+        let Some(rt) = self.script.as_deref_mut() else { return };
+        if !bank.zone_init_source_matches(rt.init_zone_source) || self.zone_queued_epoch==rt.service_epoch { return; }
+        self.zone_queued_epoch=rt.service_epoch;
+        for &edit in &rt.init_zone_edits {
+            if edit.id<0 && bank.zone_init_epoch==rt.service_epoch {continue;}
+            if self.zone_requests.len() < self.zone_requests.capacity() { self.zone_requests.push_back(edit); self.zone_inflight += 1; }
+            else { rt.env.note("set_zone_par: init request queue exhausted"); }
+        }
+    }
+
+    /// Prepare/install/acknowledge one zone batch for offline/headless hosts.
+    /// Performs file I/O and allocates: never call this from an audio callback.
+    /// Repeat while true after installing a script/bank or running an action.
+    pub fn service_zone_edits(&mut self) -> anyhow::Result<bool> {
+        let source=self.script.as_deref().map_or(0,|rt|rt.service_epoch);
+        let (owner,mut prepared)=if let Some(p)=self.offline_zone.take() { p } else {
+            let mut jobs=Vec::with_capacity(zone::QUEUE);
+            while jobs.len()<zone::QUEUE {
+                let Some(job)=self.pop_zone_job() else {break}; jobs.push(job);
+            }
+            if jobs.is_empty() {return Ok(false);}
+            let base=jobs[0].base.clone();
+            (source,zone::Prepared::build(jobs,base,&||false))
+        };
+        if owner!=source { return Ok(true); }
+        if !prepared.installed {
+            prepared.success=self.install_zone_map(&mut prepared);
+            prepared.installed=true;
+        }
+        while let Some(edit)=prepared.edits.get(prepared.completed).copied() {
+            if !self.finish_zone_edit(edit,prepared.success) {
+                self.offline_zone=Some((owner,prepared));
+                anyhow::bail!("Zone async completion queue is full; process the script before retrying");
+            }
+            prepared.completed+=1;
+        }
+        if let Some(error)=prepared.error.take() {anyhow::bail!("Zone mapping: {error}");}
+        Ok(true)
+    }
+
+    pub(crate) fn pop_zone_job(&mut self) -> Option<zone::Job> {
+        self.bank.as_deref()?.zone_job(self.zone_requests.pop_front()?)
+    }
+
+    pub(crate) fn install_zone_map(&mut self, prepared: &mut zone::Prepared) -> bool {
+        let installed = self.bank.as_deref_mut().is_some_and(|bank|bank.install_zone_map(prepared));
+        if !installed && prepared.success && let Some(rt) = self.script.as_deref_mut() {
+            rt.env.note("set_zone_par: prepared mapping rejected after bank replacement or out-of-order installation");
+        }
+        installed
+    }
+
+    pub(crate) fn finish_zone_edit(&mut self, edit: crate::ksp::engine::ZoneEdit, success: bool) -> bool {
+        if edit.id>=0 && let Some((rt,mut host)) = self.scripted(self.service_channel()) {
+            if !rt.service_complete(&mut host,edit.slot,edit.id,success) { return false; }
+            if !success { rt.env.note("set_zone_par: mapping was not installed"); }
+        }
+        self.zone_inflight = self.zone_inflight.saturating_sub(1);
+        true
+    }
+
+    pub(crate) fn zone_upgrade_ready(&self, bank: &Bank) -> bool {
+        if self.zone_inflight != 0 { return false; }
+        self.bank.as_deref().is_none_or(|old|old.zone_state.as_ref().is_none_or(|state|
+            state.revision == 0 || bank.zone_parent.as_ref().is_some_and(|parent|std::sync::Arc::ptr_eq(parent,state))))
+    }
+
     pub fn pop_ir_request(&mut self) -> Option<IrRequest> {
         if !self.ir_requests.is_empty() {
             let mut request = self.ir_requests.remove(0);
@@ -1271,6 +1373,10 @@ impl Engine {
                 {
                     if self.write(w.address, w.value) && let Some(rt) = self.script.as_deref_mut() {
                         rt.native_state.capture(w.address, w.par, w.native, w.value);
+                        if let Address::Fx(rack, slot, crate::fx::FxParam::Field(crate::fx::Kind::Delay, 0 | 4)) = w.address
+                            && let Some((fields, _)) = self.fx.delay_fields(rack, slot) {
+                            rt.native_state.capture_delay(crate::fx::DelayState::from_fields(rack, slot, &fields), w.par);
+                        }
                     }
                     written += 1;
                 }
@@ -1579,7 +1685,7 @@ impl Player {
             }
             let sample = &new.samples[v.sample as usize];
             if let Some(table) = v.wavetable {
-                v.span = sample.span_at(table.first as u64).expect("resident wavetable after bank upgrade");
+                v.span = sample.wavetable_span(table).expect("resident wavetable after bank upgrade");
                 continue;
             }
             let first = (v.pos as u64).saturating_sub(1);
@@ -1762,7 +1868,7 @@ impl Player {
         // before the start, for the cubic's left tap), if any does.
         let first = offset.saturating_sub(1);
         let span_index = if let Some(table) = play.wavetable {
-            sample.span_at(table.first as u64).expect("prepared complete wavetable")
+            sample.wavetable_span(table).expect("prepared complete wavetable")
         } else {
             map.run(first, wraps)
                 .and_then(|run| sample.span_at(run.frame)).unwrap_or(0)

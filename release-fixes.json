@@ -955,12 +955,15 @@
     },
     {
       "id": "vst3-optional-note-length-admission",
-      "summary": "Admit VST3 notes with optional unused length metadata without shortening routed ownership",
+      "summary": "Admit optional unused VST3 length metadata through direct Rust and exported native processing without shortening routed ownership",
       "source_commits": [
         "a357e1eaa1ef3c909d73e49d99b5babf191c95a0",
-        "401d59e835d9ce5eae8435fd4632a033dce80649"
+        "401d59e835d9ce5eae8435fd4632a033dce80649",
+        "ed34e048ccec4e2e93a0c1f57ea0c26f7cfee74e",
+        "a821ff6587b69a1d814847ac04654e3fde5392e7",
+        "8a0e73c1d8f845586f79b6198520eb2cb43599d8"
       ],
-      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release.",
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release. Scope clarification: these admission gates exercise the direct Rust path. The 0.3.115 native VST3 adapter still rejects negative optional lengths before Rust admission; this does not establish native host delivery or causality for the reported Mac keyboard/clip silence. Follow-up coherent cfef7b0 actual exported VST3 processing passes all10 authored-tone cases, including anonymous/live note IDs, negative signed optional lengths, independently measured cents tuning, exact sample offset16 and explicit note-off. Frozen115 actual bridge rejects four negative-length attacks; new CDLL45802d001a477db4 fixes those attacks. Native adapter closes this already-counted outcome; no extra fix count. Actual Mac user event payload and Mac causality remain unverified.",
       "accepted": true
     },
     {
@@ -1083,6 +1086,90 @@
         "4529cbf592b0b4809129db180fbdaeb523f62de4"
       ],
       "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release. Shared zero-rate renderer correction is a distinct defect from atomic initial cents; negative length hints and safety fixture follow-ups add no counts.",
+      "accepted": true
+    },
+    {
+      "id": "ordered-source-zone-mapping-service",
+      "summary": "Apply ordered source-zone edits on the worker and publish init mappings before playback",
+      "source_commits": [
+        "85779ab3f20147cb017e5b05698bd0f94052b84f",
+        "e7912ebf6540be21dbb6138a49813321b2361b5b",
+        "328608dc7ee7f4c99f9f0d60ba12ca46b935d4f5",
+        "1efc4f1d307af8a25a5184f33e81c270d36a7df7",
+        "4cd449427b6796978ad020eeb123bc0ce81641ae",
+        "dc7420bfbff67d4478764619b18185f286dc1e03"
+      ],
+      "validation": "Frozen coherent source cfef7b04f9243988e71828171c04d0e8519f0704 passes locked all-targets/all-features check, optimized production build, all 555 library regressions (30 ignored) and all 89 playback regressions (4 ignored). Frozen lib-test SHA256 fe33b9577cf2e49d808d685901ad6ec166e39bdab7da9bc0b8b395ddf1b5dfa5; production CDLL 45802d001a477db4f223038d660bed8f4daf160d05182c9ae767fa54bbc83bae. These scoped semantic and PCM checks do not establish whole-library sonic parity. Authored source IDs, skipped-zone ordering, callback completion, zero audio heap, resident-budget and stale paired-restore gates pass. Actual Conflux zone-ed34 captures service both queued edits and select physically different wavetable geometries; no full-preset correctness claim.",
+      "accepted": true
+    },
+    {
+      "id": "held-note-expression-route-ownership",
+      "summary": "Retain held-note expression destinations across MIDI channel mode and routing changes",
+      "source_commits": [
+        "70fd201b89b2d234028d4213b90fcbcfeb2303e3",
+        "f7c8191d8601533831f58897325e804d66a42282"
+      ],
+      "validation": "Frozen coherent source cfef7b04f9243988e71828171c04d0e8519f0704 passes locked all-targets/all-features check, optimized production build, all 555 library regressions (30 ignored) and all 89 playback regressions (4 ignored). Frozen lib-test SHA256 fe33b9577cf2e49d808d685901ad6ec166e39bdab7da9bc0b8b395ddf1b5dfa5; production CDLL 45802d001a477db4f223038d660bed8f4daf160d05182c9ae767fa54bbc83bae. These scoped semantic and PCM checks do not establish whole-library sonic parity. Exact home/member routes, delayed expression, sustain/release ownership and zero-heap checks pass; changing routing cannot retarget an existing note.",
+      "accepted": true
+    },
+    {
+      "id": "versioned-modern-ladder-records",
+      "summary": "Decode and preserve versioned modern Ladder filter Gain, cutoff, resonance and raw native flag",
+      "source_commits": [
+        "6a41291a6aa6c6ba85b77b48fcb5de3c81a4ae19",
+        "c810865cd14abf7c650abfc1e507adb6924b2bb1"
+      ],
+      "validation": "Frozen coherent source cfef7b04f9243988e71828171c04d0e8519f0704 passes locked all-targets/all-features check, optimized production build, all 555 library regressions (30 ignored) and all 89 playback regressions (4 ignored). Frozen lib-test SHA256 fe33b9577cf2e49d808d685901ad6ec166e39bdab7da9bc0b8b395ddf1b5dfa5; production CDLL 45802d001a477db4f223038d660bed8f4daf160d05182c9ae767fa54bbc83bae. These scoped semantic and PCM checks do not establish whole-library sonic parity. Authored version0x90/0x91/0x92 exact-size and malformed-record gates plus actual Conflux two-record/full-container byte roundtrip pass. This decoder does not implement Ladder DSP; the filter remains explicitly unsupported in this release.",
+      "accepted": true
+    },
+    {
+      "id": "legacy-delay-saved-sync-time",
+      "summary": "Apply saved legacy Delay sync units and host tempo across group, instrument, bus and send racks",
+      "source_commits": [
+        "be74ad7a3662709a030167359e4fa4f210703787",
+        "cb3235e798c51e6240cb7d6789343f65055a6044"
+      ],
+      "validation": "Frozen coherent source cfef7b04f9243988e71828171c04d0e8519f0704 passes locked all-targets/all-features check, optimized production build, all 555 library regressions (30 ignored) and all 89 playback regressions (4 ignored). Frozen lib-test SHA256 fe33b9577cf2e49d808d685901ad6ec166e39bdab7da9bc0b8b395ddf1b5dfa5; production CDLL 45802d001a477db4f223038d660bed8f4daf160d05182c9ae767fa54bbc83bae. These scoped semantic and PCM checks do not establish whole-library sonic parity. Independent quarter-note count and coupled absolute/synchronized readback checks pass, with unknown positive saved units explicitly diagnosed. The native fixed-ring duration limit remains separate.",
+      "accepted": true
+    },
+    {
+      "id": "physical-delay-cache-state-restore",
+      "summary": "Persist independent physical Delay caches through host-state restoration and reject stale paired publications",
+      "source_commits": [
+        "f195853834f4144b742ab387e87715f2a9fa4ad0",
+        "dd888e1d7d6562ead4b02cc22115a26d2dd3c8c9",
+        "46cd94d35adfb09132b29c222b09361d570e13a2"
+      ],
+      "validation": "Frozen coherent source cfef7b04f9243988e71828171c04d0e8519f0704 passes locked all-targets/all-features check, optimized production build, all 555 library regressions (30 ignored) and all 89 playback regressions (4 ignored). Frozen lib-test SHA256 fe33b9577cf2e49d808d685901ad6ec166e39bdab7da9bc0b8b395ddf1b5dfa5; production CDLL 45802d001a477db4f223038d660bed8f4daf160d05182c9ae767fa54bbc83bae. These scoped semantic and PCM checks do not establish whole-library sonic parity. JSON and binary host state, unit toggles, worker rebuild, source/generation/physical-cache races and paired Zone Bank freshness gates pass; bounded cache state incurs zero processing heap.",
+      "accepted": true
+    },
+    {
+      "id": "native-silent-integer-zero-divisor",
+      "summary": "Return native zero for integer division and remainder by zero without inventing script faults",
+      "source_commits": [
+        "37612dade2b3248d0d8a4494ef9b673c953624dd",
+        "e52c7123341361f209ad2c0274fe2efa5ebb7435"
+      ],
+      "validation": "Frozen coherent source cfef7b04f9243988e71828171c04d0e8519f0704 passes locked all-targets/all-features check, optimized production build, all 555 library regressions (30 ignored) and all 89 playback regressions (4 ignored). Frozen lib-test SHA256 fe33b9577cf2e49d808d685901ad6ec166e39bdab7da9bc0b8b395ddf1b5dfa5; production CDLL 45802d001a477db4f223038d660bed8f4daf160d05182c9ae767fa54bbc83bae. These scoped semantic and PCM checks do not establish whole-library sonic parity. Both normal and reference VM executors preserve event/channel/wait/release semantics and zero audio heap. Genuine bounds, context and real nonfinite-result faults remain visible.",
+      "accepted": true
+    },
+    {
+      "id": "automatic-report-worker-permit-release",
+      "summary": "Allow later confirmed crash reports after a detached delivery worker completes",
+      "source_commits": [
+        "6ebf4debb9d825b65eafb178c82648f6a1c3089b",
+        "e6d95e871275ea54e2faae17e4bfaea94e929491"
+      ],
+      "validation": "Frozen coherent source cfef7b04f9243988e71828171c04d0e8519f0704 passes locked all-targets/all-features check, optimized production build, all 555 library regressions (30 ignored) and all 89 playback regressions (4 ignored). Frozen lib-test SHA256 fe33b9577cf2e49d808d685901ad6ec166e39bdab7da9bc0b8b395ddf1b5dfa5; production CDLL 45802d001a477db4f223038d660bed8f4daf160d05182c9ae767fa54bbc83bae. These scoped semantic and PCM checks do not establish whole-library sonic parity. All31 support tests pass, including actual detached workers for successful acknowledgement, wrong digest, offline failure and unconfirmed return; the permit stays held until completion and pending evidence remains until valid acknowledgement.",
+      "accepted": true
+    },
+    {
+      "id": "live-prepared-pitch-lfo-bypass",
+      "summary": "Apply live and restored bypass to admitted saved pitch LFO sources by original source slot",
+      "source_commits": [
+        "ec6e543302f5aa17d74791a34829af437db7f716"
+      ],
+      "validation": "Frozen coherent source cfef7b04f9243988e71828171c04d0e8519f0704 passes locked all-targets/all-features check, optimized production build, all 555 library regressions (30 ignored) and all 89 playback regressions (4 ignored). Frozen lib-test SHA256 fe33b9577cf2e49d808d685901ad6ec166e39bdab7da9bc0b8b395ddf1b5dfa5; production CDLL 45802d001a477db4f223038d660bed8f4daf160d05182c9ae767fa54bbc83bae. These scoped semantic and PCM checks do not establish whole-library sonic parity. Independent physical cursor/fade/PCM, mixed-source removal, mid-tick commands,13/19 versus128 fragmentation, seeded restoration, release lifetime and zero-heap gate pass. Wider waves, free-running clocks and live frequency remain unsupported.",
       "accepted": true
     }
   ]

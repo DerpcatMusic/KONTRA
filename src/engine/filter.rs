@@ -1950,7 +1950,7 @@ mod tests {
         };
         let chain = Chain { slots: vec![
             Effect { slot: 0, kind: Kind::Filter, version: 0, bypass: false, output_gain: 1.5,
-                dry_level: 0.0, params: Params::Filter(Filter { filter_type: 2, cutoff: 1.0, resonance: 0.0, extra: [0.0; 3] }) },
+                dry_level: 0.0, params: Params::Filter(Filter { filter_type: 2, cutoff: 1.0, resonance: 0.0, extra: [0.0; 3], native_flag: None }) },
             effect(2, Kind::Compressor, &[0.0, -12.0, 0.5, 1.0, 50.0, 1.0], 0.8),
             effect(7, Kind::SurroundPanner, &[1.0, 0.0], 0.7),
         ] };
@@ -2166,7 +2166,7 @@ mod tests {
         for slot in [0, 1] {
             group.fx.slots.push(crate::fx::Effect {
                 slot, kind: Kind::Filter, version: 0, bypass: false, output_gain: 1.0, dry_level: 0.0,
-                params: Params::Filter(crate::fx::params::Filter { filter_type: 2, cutoff: 0.5, resonance: 0.0, extra: [0.0; 3] }),
+                params: Params::Filter(crate::fx::params::Filter { filter_type: 2, cutoff: 0.5, resonance: 0.0, extra: [0.0; 3], native_flag: None }),
             });
         }
         let mut f = GroupFilter::new(&group).unwrap();
@@ -2200,7 +2200,7 @@ mod tests {
     fn live_filter_type_change_retunes_identical_knobs_without_heap() {
         let group = Group { amp_split_slot: Some(8), fx: Chain { slots: vec![crate::fx::Effect {
             slot: 0, kind: Kind::Filter, version: 0, bypass: false, output_gain: 1.0, dry_level: 0.0,
-            params: Params::Filter(crate::fx::params::Filter { filter_type: 2, cutoff: 0.3, resonance: 0.0, extra: [0.0; 3] }),
+            params: Params::Filter(crate::fx::params::Filter { filter_type: 2, cutoff: 0.3, resonance: 0.0, extra: [0.0; 3], native_flag: None }),
         }] }, ..Group::default() };
         let mut f = GroupFilter::new(&group).unwrap();
         let table = ModTable::default();
@@ -2248,7 +2248,7 @@ mod tests {
                     assignments: Some(0), volume_env: false, bypassed: false, flex: false, envelope: None, kind: "external".into() }],
             fx: Chain { slots: vec![crate::fx::Effect { slot: 0, kind: Kind::Filter, version: 0,
                 bypass: false, output_gain: 1., dry_level: 1., params: Params::Filter(crate::fx::params::Filter {
-                    filter_type: 2, cutoff: 0.3, resonance: 0., extra: [0.; 3] }) }] },
+                    filter_type: 2, cutoff: 0.3, resonance: 0., extra: [0.; 3], native_flag: None }) }] },
             ..Group::default()
         };
         let groups = [group];
@@ -2526,7 +2526,7 @@ mod tests {
             params: Params::Filter(crate::fx::params::Filter {
                 filter_type: 58,
                 cutoff: (1000.0 / CUTOFF_MIN_HZ).log2() / CUTOFF_OCTAVES,
-                resonance: 0.0, extra: [0.0; 3],
+                resonance: 0.0, extra: [0.0; 3], native_flag: None,
             }),
         };
         assert!(unsupported_at(&Chain { slots: vec![fx.clone()] }, Some(8)).is_empty());

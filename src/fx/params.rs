@@ -56,11 +56,14 @@ pub struct Filter {
     pub cutoff: f32,
     /// 0..=1, `$ENGINE_PAR_RESONANCE` / 1e6.
     pub resonance: f32,
-    /// Further stored parameters (up to three are kept). Daft stores its
-    /// leading parameter here, before cutoff/resonance on disk. Its gain
+    /// Further stored parameters (up to three are kept). Ladder and Daft store
+    /// their leading parameter here, before cutoff/resonance on disk. Its gain
     /// law is unverified; see `audits/EFFECTS.md`.
     #[serde(default)]
     pub extra: [f32; 3],
+    /// Native v0x92 Ladder byte between the subtype IDs; semantics unverified.
+    #[serde(default)]
+    pub native_flag: Option<u8>,
 }
 
 /// `BParFXFilter` with an EQ type (22/23/24 = 1/2/3 bands), stored in
@@ -378,6 +381,22 @@ pub(super) fn defaults(kind: Kind) -> Params {
     }
 }
 
+/// Versioned records cannot be recognized safely from their byte count alone.
+pub(crate) fn parse_versioned(kind: Kind, version: u16, data: &[u8]) -> Params {
+    if kind == Kind::Filter && data.get(..4).is_some_and(|b| {
+        (30..=41).contains(&i32::from_le_bytes(b.try_into().unwrap()))
+    }) {
+        return match ni_file::kontakt::objects::BParFXFilterRecord::read(version, data) {
+            Ok(record) => Params::Filter(Filter {
+                filter_type: record.filter_type, cutoff: record.cutoff, resonance: record.resonance,
+                extra: [record.leading_value, 0., 0.], native_flag: record.unknown_flag,
+            }),
+            Err(_) => Params::Opaque { bytes: data.len() },
+        };
+    }
+    parse(kind, data)
+}
+
 pub(crate) fn parse(kind: Kind, data: &[u8]) -> Params {
     let mut r = Reader(data);
     let typed = match kind {
@@ -445,7 +464,7 @@ fn filter(r: &mut Reader) -> Option<Params> {
     for x in extra.iter_mut().skip(leading).take(r.0.len() / 4) {
         *x = r.f32()?;
     }
-    Some(Params::Filter(Filter { filter_type, cutoff, resonance, extra }))
+    Some(Params::Filter(Filter { filter_type, cutoff, resonance, extra, native_flag: None }))
 }
 
 fn convolution(r: &mut Reader) -> Option<Params> {
@@ -690,6 +709,25 @@ mod tests {
 
     fn floats(values: &[f32]) -> Vec<u8> {
         values.iter().flat_map(|v| v.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn versioned_ladder_filter_inserts_byte_before_subtype_without_shifting_knobs() {
+        let mut raw = 33i32.to_le_bytes().to_vec(); raw.push(0);
+        raw.extend(33i32.to_le_bytes()); raw.extend(floats(&[0.25, 0.75, 0.5]));
+        assert!(matches!(parse(Kind::Filter, &raw), Params::Opaque { .. }));
+        let Params::Filter(parsed) = parse_versioned(Kind::Filter, 0x92, &raw) else { panic!("modern Ladder filter") };
+        assert_eq!((parsed.filter_type, parsed.extra[0], parsed.cutoff, parsed.resonance, parsed.native_flag), (33, 0.25, 0.75, 0.5, Some(0)));
+        for end in 0..raw.len() { assert!(matches!(parse_versioned(Kind::Filter, 0x92, &raw[..end]), Params::Opaque { .. })); }
+        let mut extra = raw.clone(); extra.push(0); assert!(matches!(parse_versioned(Kind::Filter, 0x92, &extra), Params::Opaque { .. }));
+        let mut legacy = raw.clone(); legacy.remove(4);
+        for version in [0x90, 0x91] {
+            let Params::Filter(old) = parse_versioned(Kind::Filter, version, &legacy) else { panic!("legacy Ladder filter") };
+            assert_eq!((old.extra[0], old.cutoff, old.resonance, old.native_flag), (0.25, 0.75, 0.5, None));
+            assert!(matches!(parse_versioned(Kind::Filter, version, &raw), Params::Opaque { .. }));
+        }
+        assert!(matches!(parse_versioned(Kind::Filter, 0x92, &legacy), Params::Opaque { .. }));
+        assert!(matches!(parse_versioned(Kind::Filter, 0x93, &legacy), Params::Opaque { .. }));
     }
 
     #[test]

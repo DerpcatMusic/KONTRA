@@ -253,7 +253,7 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                             sine: weights[0], fade_ms: lfo.initial_values[0], depth,
                             targets: pitch.iter().map(|(i, t)| (*i as u32, target_depth(t))).collect(),
                             bypassed: params.unknown_flags[1] != 0 });
-                        out.warnings.push(format!("Internal LFO slot {slot}: saved retriggered sine-only Multi pitch with legacy unsynchronized fade-in is eligible for ordinary sampler playback; live LFO timing, bypass and other targets remain unsupported"));
+                        out.warnings.push(format!("Internal LFO slot {slot}: saved retriggered sine-only Multi pitch with legacy unsynchronized fade-in is eligible for ordinary sampler playback; live source bypass is supported for this admitted pitch path; live LFO timing and other targets remain unsupported"));
                     } else { skipped_lfos += 1; }
                     false
                 }
