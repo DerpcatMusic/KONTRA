@@ -50,6 +50,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, part: usize) -> Option<El> {
         scene: &std::sync::Arc<std::sync::Mutex<crate::native_ui::Scene>>,
         node: &Node,
         assets: &crate::native_assets::Assets,
+        flow: Option<Flow>,
     ) -> El {
         let children = node
             .children
@@ -59,12 +60,12 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, part: usize) -> Option<El> {
                 // A placement guide also governs the transparent scope when it is
                 // offered a box smaller than its intrinsic child (e.g. overlay).
                 let anchor = node.anchor.or(child.anchor).unwrap_or(node.alignment);
-                let el = draw(ui, cx, part, epoch, scene, child, assets)
+                let el = draw(ui, cx, part, epoch, scene, child, assets, child_flow(node, flow))
                     .anchor(anchor.0, anchor.1);
                 if node.background && index==0 { el.underlay() } else if node.overlay && index==1 { el.overlay() } else { el }
             })
             .collect();
-        let el = primitive(node, children, assets);
+        let el = primitive(node, children, assets, flow);
         let el = if node.hover || node.drop { el.tracks_pointer() } else { el };
         let id = format!("native-ui-{part}-{}", node.id);
         if node.tap {
@@ -82,7 +83,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, part: usize) -> Option<El> {
         }
     }
     Some(
-        draw(ui, cx, part, epoch, &scene, &root, &assets)
+        draw(ui, cx, part, epoch, &scene, &root, &assets, None)
             .clip()
             .shrink(0)
             .named("Native UI subset scene"),
@@ -337,12 +338,42 @@ fn ring_path(size: Size, start: f64, angle: f64, thickness: f64) -> Option<Path>
 }
 
 // Both native editor rendering and the authored headless gate use this mapping.
+#[derive(Clone, Copy)]
+enum Flow { Horizontal, Vertical }
+
+fn child_flow(node: &Node, inherited: Option<Flow>) -> Option<Flow> {
+    match node.paint {
+        Paint::HStack(_) => Some(Flow::Horizontal),
+        Paint::VStack(_) => Some(Flow::Vertical),
+        Paint::Stack if node.spacer_scope => inherited,
+        _ => None,
+    }
+}
+
+// Let MUI distribute surplus; a transparent wrapper must carry the growing
+// child's weight and floor to its containing row/column. A fixed main-axis
+// frame is an explicit boundary and keeps its authored dimension.
+fn spacer_minimum(node: &Node, flow: Flow) -> Option<f64> {
+    let axis = match flow { Flow::Horizontal => 0, Flow::Vertical => 1 };
+    if [node.width, node.height][axis].is_some() { return None; }
+    let minimum = match node.paint {
+        Paint::Spacer(minimum) => minimum,
+        Paint::Stack if node.spacer_scope => spacer_minimum(&node.children[0], flow)?,
+        _ => return None,
+    };
+    Some(minimum.max(node.minimum[axis].unwrap_or(0.)))
+}
+
 fn primitive(
     node: &Node,
     children: Vec<El>,
     assets: &crate::native_assets::Assets,
+    flow: Option<Flow>,
 ) -> El {
     let el = match &node.paint {
+        Paint::Spacer(_) => {
+            if flow.is_some() { spacer() } else { block(pct(100.),pct(100.)) }
+        },
         Paint::Text(value) => {
             let el = text(value.clone())
                 .text_size(node.text_size)
@@ -372,8 +403,15 @@ fn primitive(
                 Paint::VStack(spacing) => col(children).gap(*spacing).align(node.alignment.0),
                 _ => stack(children),
             };
-            el.w(node.width.map_or(Len::Auto, Len::Px))
-                .h(node.height.map_or(Len::Auto, Len::Px)).pad(node.padding)
+            let flexible = match node.paint {
+                Paint::HStack(_) => node.children.iter().any(|child|spacer_minimum(child,Flow::Horizontal).is_some()),
+                Paint::VStack(_) => node.children.iter().any(|child|spacer_minimum(child,Flow::Vertical).is_some()),
+                _ => false,
+            };
+            let width = if flexible && matches!(node.paint,Paint::HStack(_)) { Len::Pct(100.) } else { Len::Auto };
+            let height = if flexible && matches!(node.paint,Paint::VStack(_)) { Len::Pct(100.) } else { Len::Auto };
+            el.w(node.width.map_or(width, Len::Px))
+                .h(node.height.map_or(height, Len::Px)).pad(node.padding)
                 // Native layout scopes have rectangular bounds. Their empty
                 // frame area must not acquire MUI's themed rounded hit contour.
                 .radius(0.)
@@ -397,7 +435,19 @@ fn primitive(
             }
         },
     };
-    let el = el.min_size(Size::new(node.minimum[0].unwrap_or(0.),node.minimum[1].unwrap_or(0.)));
+    let mut minimum = [node.minimum[0].unwrap_or(0.),node.minimum[1].unwrap_or(0.)];
+    if let Paint::Spacer(length) = node.paint {
+        match flow {
+            Some(Flow::Horizontal) => minimum[0]=minimum[0].max(length),
+            Some(Flow::Vertical) => minimum[1]=minimum[1].max(length),
+            None => { minimum[0]=minimum[0].max(length); minimum[1]=minimum[1].max(length); },
+        }
+    }
+    let el = if let Some((flow,length)) = flow.and_then(|flow|spacer_minimum(node,flow).map(|length|(flow,length))) {
+        match flow { Flow::Horizontal => minimum[0]=minimum[0].max(length), Flow::Vertical => minimum[1]=minimum[1].max(length) }
+        el.grow(1)
+    } else { el };
+    let el = el.min_size(Size::new(minimum[0],minimum[1]));
     let el = if node.maximum.iter().any(Option::is_some) {
         //4096 is the existing admitted scene bound, not a made-up infinite
         // pixel extent. The unspecified axis retains every admitted size.
@@ -422,17 +472,20 @@ pub(crate) fn scene_tree(node: &Node, assets: &crate::native_assets::Assets) -> 
 }
 
 pub(crate) fn scene_tree_at(node: &Node, assets: &crate::native_assets::Assets, prefix: &str) -> El {
+    tree_with_flow(node, assets, prefix, None)
+}
+fn tree_with_flow(node: &Node, assets: &crate::native_assets::Assets, prefix: &str, flow: Option<Flow>) -> El {
     let children = node
         .children
         .iter()
         .enumerate()
         .map(|(index, child)| {
             let anchor = node.anchor.or(child.anchor).unwrap_or(node.alignment);
-            let el = scene_tree_at(child, assets, prefix).anchor(anchor.0, anchor.1);
+            let el = tree_with_flow(child, assets, prefix, child_flow(node, flow)).anchor(anchor.0, anchor.1);
             if node.background && index==0 { el.underlay() } else if node.overlay && index==1 { el.overlay() } else { el }
         })
         .collect();
-    let el = primitive(node, children, assets);
+    let el = primitive(node, children, assets, flow);
     let el = if node.hover || node.drop { el.tracks_pointer() } else { el };
     let el = if node.tap { el.cursor(Cursor::Hand).focusable().a11y(A11y::Button).named("Native UI pointer target") } else { el };
     el.id(format!("{prefix}-{}", node.id))

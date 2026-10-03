@@ -21,6 +21,7 @@ pub(crate) enum Paint {
     Stack,
     HStack(f64),
     VStack(f64),
+    Spacer(f64),
     Text(String),
     Rectangle([f32; 4], f64),
     Ring { color: [f32; 4], start: f64, angle: f64, thickness: f64 },
@@ -41,6 +42,7 @@ pub(crate) struct Node {
     pub alignment: (Align, Align),
     pub anchor: Option<(Align, Align)>,
     transparent: bool,
+    pub(crate) spacer_scope: bool,
     pub padding: Insets,
     pub offset: [f64; 2],
     pub rotation: Option<f64>,
@@ -947,6 +949,18 @@ impl Scene {
         }
         let paint = match node.get::<String>("kind")?.as_str() {
             "ZStack" => Paint::Stack,
+            "Spacer" => {
+                let value = match props.get::<Value>("min_length")? {
+                    Value::Function(f) => f.call::<Value>(())?, value => value,
+                };
+                let minimum = match value {
+                    Value::Nil => 4., Value::Integer(value) => value as f64,
+                    Value::Number(value) => value,
+                    _ => bail!("Native UI spacer min_length requires a number"),
+                };
+                ensure!(minimum.is_finite() && (0. ..=4096.).contains(&minimum), "Invalid native UI spacer min_length");
+                Paint::Spacer(minimum)
+            },
             kind @ ("HStack" | "VStack") => {
                 let spacing = match props.get::<Value>("spacing")? {
                     Value::Function(f) => f.call::<Value>(())?, value => value,
@@ -1165,6 +1179,10 @@ impl Scene {
             alignment,
             anchor,
             transparent,
+            // A frame/component modifier wraps a Spacer but does not change the
+            // stack whose remaining main-axis space it consumes. Explicit
+            // frame dimensions still bound expansion in the render adapter.
+            spacer_scope: transparent || (frame.is_some() && nodes.len()==1 && !background && !overlay),
             padding,
             offset,
             rotation,

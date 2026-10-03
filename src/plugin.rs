@@ -6466,6 +6466,57 @@ end on"#,"🦀".repeat(600));
     }
 
     #[test]
+    fn native_ui_spacer_uses_shared_surplus_layout_minimums_and_explicit_frames() {
+        use crate::native_ui::{Node,Paint,Scene};
+        let directory=tempfile::tempdir().unwrap();
+        let resources=directory.path().join("Resources/native_ui");std::fs::create_dir_all(&resources).unwrap();
+        let instrument=Instrument {path:directory.path().join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_value_edit $Length(0,20,1)\n$Length := 10\nend on".into()],..Default::default()};
+        let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let mut engine=Engine::default();engine.set_script(rt);
+        fn rectangles<'a>(node:&'a Node,out:&mut Vec<&'a Node>){if matches!(node.paint,Paint::Rectangle(..)){out.push(node);}for child in &node.children{rectangles(child,out);}}
+        for (container,size,last) in [("HStack",(100.,20.),(90.,0.)),("VStack",(20.,100.),(0.,90.))] {
+            let dim=if container=="HStack" {"width"} else {"height"};
+            std::fs::write(resources.join("main.nui"),format!(r#"
+                local ui=require('native_ui') local length=require('kontakt').connect_parameter('Length')
+                local function Flexible()return @ui.Spacer{{min_length=function()return length:value()end}} end
+                return @ui.{container}{{alignment='center'
+                    @ui.Rectangle{{color=ui.Color.red}}.frame(width=10,height=10)
+                    @Flexible{{}}.frame({dim}=nil)
+                    @ui.Rectangle{{color=ui.Color.white}}.frame(width=10,height=10)
+                }}.frame(width={},height={},alignment='left top')
+            "#,size.0,size.1)).unwrap();
+            let mut scene=Scene::prepare(&instrument.path,engine.script().unwrap()).unwrap().unwrap();let root=scene.snapshot().unwrap();
+            let spec=moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::scene_tree(&root,&scene.assets));
+            let layout=moose::mui::mui::scene::resolve(&spec).unwrap();assert_eq!((layout.layout.size.width,layout.layout.size.height),size);
+            let mut nodes=Vec::new();rectangles(&root,&mut nodes);assert_eq!(nodes.len(),2);
+            let surface=layout.surface(&format!("native-snapshot-{}",nodes[1].id)).unwrap();
+            let coordinate=if container=="HStack"{surface.frame.x}else{surface.frame.y};
+            assert_eq!(coordinate,if container=="HStack"{last.0}else{last.1},"Spacer takes only remaining main-axis room through real component/frame scopes");
+        }
+        for (spacer,expected) in [("Spacer{}",24.),("Spacer{min_length=10}",30.),("Spacer{}.frame(width=9)",29.)] {
+            std::fs::write(resources.join("main.nui"),format!("local ui=require('native_ui') return @ui.HStack{{@ui.Rectangle{{color=ui.Color.red}}.frame(width=10,height=10) @ui.{spacer} @ui.Rectangle{{color=ui.Color.white}}.frame(width=10,height=10)}}")).unwrap();
+            let mut scene=Scene::prepare(&instrument.path,engine.script().unwrap()).unwrap().unwrap();let root=scene.snapshot().unwrap();
+            let spec=moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::scene_tree(&root,&scene.assets));
+            let layout=moose::mui::mui::scene::resolve(&spec).unwrap();assert_eq!(layout.layout.size.width,expected,"intrinsic minimum and explicit width stay distinct");
+        }
+        std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') local length=require('kontakt').connect_parameter('Length') return @ui.HStack{@ui.Rectangle{color=ui.Color.red}.frame(width=10,height=10) @ui.Spacer{min_length=function()return length:value()end} @ui.Rectangle{color=ui.Color.white}.frame(width=10,height=10)}").unwrap();
+        let mut scene=Scene::prepare(&instrument.path,engine.script().unwrap()).unwrap().unwrap();
+        let mut live=first_script_live(engine.script().unwrap());engine.script().unwrap().prepare_native_controls(&mut live);
+        let (mut left,mut right)=([0.;64],[0.;64]);
+        assert_eq!(allocations(||{engine.ui_control(0,0,15);engine.render(&mut left,&mut right);engine.script().unwrap().refresh_live(&mut live);}),0);
+        scene.observe(&live);let root=scene.snapshot().unwrap();
+        let spec=moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::scene_tree(&root,&scene.assets));
+        assert_eq!(moose::mui::mui::scene::resolve(&spec).unwrap().layout.size.width,35.,"computed minimum reads the real published raw value-edit units");
+        std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') return @ui.ZStack{@ui.Spacer{min_length=10}}.frame(width=60,height=40)").unwrap();
+        let mut scene=Scene::prepare(&instrument.path,engine.script().unwrap()).unwrap().unwrap();let root=scene.snapshot().unwrap();
+        fn spacer(node:&Node)->Option<&Node>{if matches!(node.paint,Paint::Spacer(_)){Some(node)}else{node.children.iter().find_map(spacer)}}
+        let spec=moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::scene_tree(&root,&scene.assets));let layout=moose::mui::mui::scene::resolve(&spec).unwrap();
+        let surface=layout.surface(&format!("native-snapshot-{}",spacer(&root).unwrap().id)).unwrap();assert_eq!((surface.frame.size.width,surface.frame.size.height),(60.,40.),"outside a flow stack Spacer expands on both axes");
+        for input in ["min_length=-1","min_length=4097","min_length=0/0","min_length='10'","gap=10"] {
+            std::fs::write(resources.join("main.nui"),format!("local ui=require('native_ui') return @ui.Spacer{{{input}}}")).unwrap();assert!(Scene::prepare(&instrument.path,engine.script().unwrap()).is_err());
+        }
+    }
+
+    #[test]
     fn native_ui_legacy_zstack_spacing_keeps_overlay_geometry_context_and_callbacks() {
         use crate::native_ui::{Node, Paint, Scene};
         let directory = tempfile::tempdir().unwrap();
