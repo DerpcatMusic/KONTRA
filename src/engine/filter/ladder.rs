@@ -12,7 +12,7 @@ pub(crate) fn prepare() {
     });
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Ladder {
     state: [[f32; 5]; 2],
     g: f32,
