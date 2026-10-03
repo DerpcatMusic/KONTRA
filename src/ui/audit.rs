@@ -754,6 +754,9 @@ mod tests {
             let initial_fitted = fitted::audit_counts(0);
             let mut previous_fitted = initial_fitted;
             let partition = std::env::var_os("KONTRA_UI_BENCH_PARTITION").is_some();
+            let cold_cpu_cache = std::env::var_os("KONTRA_UI_BENCH_COLD_CPU_CACHE").is_some();
+            assert!(!cold_cpu_cache || (gpu.is_none() && std::env::var_os("KONTRA_UI_BENCH_BUILD_ONLY").is_none()),
+                "cold CPUCache comparison requires the software reference painter");
             let mut last_published = None;
             let mut published_arc_owners = Vec::new();
             let mut publication_rows = Vec::new();
@@ -772,6 +775,9 @@ mod tests {
                     view.parts[0].wallpaper = part.wallpaper.clone();
                     drop(view);
                     observer_draw = Some((Bridge::new(published.clone()), build(published, Arc::default(), Arc::default(), Arc::default(), art.clone())));
+                    // The direct-stage benchmark otherwise warmed this cache.
+                    // Opt in to one real cold observer frame, then retain it.
+                    if cold_cpu_cache { cache = vello::Cache::default(); }
                 }
                 fitted::ready();
                 // Native MuiEditor publishes before its changed fingerprint;
@@ -858,6 +864,9 @@ mod tests {
                     let at = Instant::now();
                     ctx.render(&mut pixmap, &mut resources);
                     cpu_stages[2].push(at.elapsed().as_secs_f64()*1000.);
+                    frame_work.last_mut().unwrap()["cpu_stage_ms"] = serde_json::json!({
+                        "encode_and_reset":cpu_stages[0].last(),"flush":cpu_stages[1].last(),"raster":cpu_stages[2].last(),
+                    });
                 }
                 frame_stages[2].push(stage.elapsed().as_secs_f64()*1000.);
                 rendered.push(start.elapsed().as_secs_f64()*1000.);
@@ -879,10 +888,18 @@ mod tests {
             };
             let stages: serde_json::Map<String, serde_json::Value> = ["build", "layout", "render"]
                 .into_iter().zip(frame_stages).map(|(name,samples)| (name.into(),summarize(samples))).collect();
+            let cpu_cache_groups: serde_json::Map<String, serde_json::Value> = ["encode_and_reset", "flush", "raster"]
+                .into_iter().zip(&cpu_stages).map(|(name,samples)| (name.into(),serde_json::json!({
+                    "first_observer":summarize(samples.first().copied().into_iter().collect()),
+                    "later_observers":summarize(samples.iter().skip(1).copied().collect()),
+                }))).collect();
             let cpu_stage_ms: serde_json::Map<String, serde_json::Value> = ["encode_and_reset", "flush", "raster"]
                 .into_iter().zip(cpu_stages).map(|(name,samples)| (name.into(),summarize(samples))).collect();
             println!("UI_BENCH_CALLBACK {}", serde_json::json!({"worker":report,
-                "stage_ms":stages,"cpu_stage_ms":cpu_stage_ms,"frame_work":frame_work,
+                "stage_ms":stages,"cpu_stage_ms":cpu_stage_ms,
+                "cpu_cache":{"reset_before_first_observer":cold_cpu_cache,
+                    "scope":"MUI CPUCache only; existing CPUResources/context remain; new scene identities are not cache misses",
+                    "groups":cpu_cache_groups},"frame_work":frame_work,
                 "fitted_jobs":{"queued":previous_fitted.0-initial_fitted.0,"completed":previous_fitted.1-initial_fitted.1},"observer_frames":rendered.len(),"changed_gpu_frames":rendered_changes,
                 "live_publication_ms":{"mean":publication_ms.iter().sum::<f64>()/publication_ms.len() as f64,"p99":publication_ms[((publication_ms.len()-1) as f64*0.99).ceil() as usize]},
                 "callback_published_render_ms":{"mean":rendered.iter().sum::<f64>()/rendered.len() as f64,"p99":rendered[((rendered.len()-1) as f64*0.99).ceil() as usize]}}));
