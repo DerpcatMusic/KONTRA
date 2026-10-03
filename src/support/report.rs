@@ -54,7 +54,11 @@ fn public_issue_url(url: &str) -> Option<String> {
     .then(|| url.to_owned())
 }
 
-fn report_status(incident_id: &str, result: &Result<DeliveredReport, String>) -> serde_json::Value {
+fn report_status(
+    incident_id: &str,
+    result: &Result<DeliveredReport, String>,
+    manual_required: bool,
+) -> serde_json::Value {
     let (status, report_id, issue_url) = match result {
         Ok(delivery) => {
             let mut status = format!("Report {} sent. Thank you.", delivery.report_id);
@@ -68,13 +72,19 @@ fn report_status(incident_id: &str, result: &Result<DeliveredReport, String>) ->
             )
         }
         Err(error) => (
-            format!("Crash report retained for retry: {error}"),
+            if manual_required {
+                format!(
+                    "Crash report requires manual export. Automatic retry is paused for unchanged evidence: {error}"
+                )
+            } else {
+                format!("Crash report retained for retry: {error}")
+            },
             None,
             None,
         ),
     };
     serde_json::json!({"incident_id":incident_id,"status":status,"reason":status,
-        "sent":result.is_ok(),"report_id":report_id,"issue_url":issue_url})
+        "sent":result.is_ok(),"manual_export_required":manual_required && result.is_err(),"report_id":report_id,"issue_url":issue_url})
 }
 
 fn read_last_report_status(path: &std::path::Path) -> Option<serde_json::Value> {
@@ -101,7 +111,7 @@ fn read_last_report_status(path: &std::path::Path) -> Option<serde_json::Value> 
     let issue = saved["issue_url"].as_str().and_then(public_issue_url);
     Some(
         serde_json::json!({"sent":sent,"status":status,"reason":status,
-        "incident_id":incident,"report_id":report,"issue_url":issue,"restored":true}),
+        "incident_id":incident,"report_id":report,"issue_url":issue,"manual_export_required":!sent && saved["manual_export_required"] == true,"restored":true}),
     )
 }
 
@@ -115,6 +125,8 @@ pub(super) fn restore_last_report_status() {
     {
         let level = if value["sent"] == true {
             crate::diagnostics::LogLevel::Info
+        } else if value["manual_export_required"] == true {
+            crate::diagnostics::LogLevel::Warning
         } else {
             crate::diagnostics::LogLevel::Error
         };
@@ -352,7 +364,14 @@ pub(super) fn try_auto_report_pending_incident() {
         };
         // Receipt or failure remains visible locally; pending evidence is deleted only after acknowledgement.
         let status_path = support_cache_path().with_file_name("last-report.json");
-        let value = report_status(&incident.id, &result);
+        let value = report_status(
+            &incident.id,
+            &result,
+            matches!(
+                &completion.0,
+                Some(AutomaticReportContinuation::ManualRequired(_, _))
+            ),
+        );
         if let Ok(bytes) = serde_json::to_vec(&value) {
             if let Err(error) = buffr_durable_file::publish_private_streaming(
                 &status_path,
@@ -1032,7 +1051,7 @@ mod tests {
             report_id: "report-123".into(),
             issue_url: Some(url.into()),
         });
-        let mut status = report_status("0123456789abcdef", &delivered);
+        let mut status = report_status("0123456789abcdef", &delivered, false);
         assert!(
             status["reason"]
                 .as_str()
@@ -1048,7 +1067,7 @@ mod tests {
         assert_eq!(restored["reason"], restored["status"]);
         assert_eq!(restored["restored"], true);
         assert!(restored.get("license_key").is_none());
-        let failed = report_status("0123456789abcdef", &Err("offline".into()));
+        let failed = report_status("0123456789abcdef", &Err("offline".into()), false);
         assert_eq!(failed["sent"], false);
         assert!(
             failed["reason"]
@@ -1058,6 +1077,66 @@ mod tests {
         );
         std::fs::write(&path, serde_json::to_vec(&failed).unwrap()).unwrap();
         assert_eq!(read_last_report_status(&path).unwrap()["sent"], false);
+        let terminal = Some(AutomaticReportContinuation::ManualRequired(
+            "0123456789abcdef".into(),
+            "authored-evidence-sha".into(),
+        ));
+        let manual = report_status(
+            "0123456789abcdef",
+            &Err(ReportBodyError::TooLarge.to_string()),
+            matches!(
+                terminal,
+                Some(AutomaticReportContinuation::ManualRequired(_, _))
+            ),
+        );
+        assert_eq!(manual["sent"], false);
+        assert_eq!(manual["manual_export_required"], true);
+        assert!(
+            manual["reason"]
+                .as_str()
+                .unwrap()
+                .contains("requires manual export")
+        );
+        assert!(
+            manual["reason"]
+                .as_str()
+                .unwrap()
+                .contains("Automatic retry is paused for unchanged evidence")
+        );
+        assert!(
+            !manual["reason"]
+                .as_str()
+                .unwrap()
+                .contains("retained for retry")
+        );
+        let bytes = serde_json::to_vec(&manual).unwrap();
+        buffr_durable_file::publish_private_streaming(
+            &path,
+            std::time::Duration::from_millis(500),
+            |file| std::io::Write::write_all(file, &bytes),
+        )
+        .unwrap();
+        let restored = read_last_report_status(&path).unwrap();
+        assert_eq!(restored["manual_export_required"], true);
+        assert_eq!(restored["reason"], manual["reason"]);
+        let ordinary_failure = report_status(
+            "0123456789abcdef",
+            &Err(ReportBodyError::TooLarge.to_string()),
+            false,
+        );
+        assert_eq!(ordinary_failure["manual_export_required"], false);
+        std::fs::write(&path, serde_json::to_vec(&ordinary_failure).unwrap()).unwrap();
+        assert_eq!(
+            read_last_report_status(&path).unwrap()["manual_export_required"],
+            false
+        );
+        let mut contradictory_success = serde_json::to_value(&status).unwrap();
+        contradictory_success["manual_export_required"] = serde_json::json!(true);
+        std::fs::write(&path, serde_json::to_vec(&contradictory_success).unwrap()).unwrap();
+        assert_eq!(
+            read_last_report_status(&path).unwrap()["manual_export_required"],
+            false
+        );
         std::fs::write(&path, b"{}").unwrap();
         assert!(read_last_report_status(&path).is_none());
         std::fs::write(&path, vec![b' '; 16 * 1024 + 1]).unwrap();
