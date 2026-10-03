@@ -284,6 +284,17 @@ pub(crate) struct NativeControl {
     pub properties: NativeProperties,
 }
 
+impl NativeControl {
+    fn refresh_scalar(&mut self, control: &super::ui::ControlState, mem: &vm::Memory) -> bool {
+        let value=mem.ints[self.storage];
+        let range=match (control.get(b::CONTROL_PAR_MIN_VALUE), control.get(b::CONTROL_PAR_MAX_VALUE)) {
+            (Some(super::ui::Prop::Int(a)),Some(super::ui::Prop::Int(z)))=>Some((*a,*z)), _=>None,
+        };
+        let changed=self.value!=value || self.range!=range || self.meter!=control.meter;
+        self.value=value; self.range=range; self.meter=control.meter; changed
+    }
+}
+
 /// What the host shows of running scripts, refreshed in place.
 #[derive(Clone, Debug)]
 pub struct Live {
@@ -1710,12 +1721,7 @@ impl Runtime {
             let state = &self.states[c.slot];
             let control = &state.ui.controls[c.control];
             if at.native_property == 0 {
-                let value = state.mem.ints[c.storage];
-                let range = match (control.get(b::CONTROL_PAR_MIN_VALUE), control.get(b::CONTROL_PAR_MAX_VALUE)) {
-                    (Some(super::ui::Prop::Int(a)), Some(super::ui::Prop::Int(z))) => Some((*a, *z)), _ => None,
-                };
-                if c.value != value || c.range != range || c.meter != control.meter {
-                    c.value=value; c.range=range; c.meter=control.meter;
+                if c.refresh_scalar(control,&state.mem) {
                     live.native_revision=live.native_revision.wrapping_add(1); at.changed=true;
                 }
                 remaining-=1;
@@ -1724,7 +1730,7 @@ impl Runtime {
             }
             if at.native_revision != control.revision {
                 // Restart a partially copied control if another callback changed it.
-                at.native_property=1; at.native_text_at=0; at.native_revision=control.revision;
+                at.native_property=0; at.native_text_at=0; continue;
             }
             let props=&mut c.properties;
             if at.native_property == 1 {
@@ -1749,7 +1755,9 @@ impl Runtime {
                 if !refresh_native_text(&mut dst.text,&source.text,&mut at.native_text_at,&mut remaining,&mut at.native_changed) { return false; }
                 at.native_property+=1;
             }
-            props.revision=at.native_revision;
+            if remaining == 0 { return false; }
+            remaining-=1; props.revision=at.native_revision;
+            at.native_changed |= c.refresh_scalar(control,&state.mem);
             if std::mem::take(&mut at.native_changed) { live.native_revision=live.native_revision.wrapping_add(1); at.changed=true; }
             at.native_property=0; at.native_at+=1;
         }
