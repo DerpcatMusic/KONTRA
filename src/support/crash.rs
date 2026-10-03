@@ -13,6 +13,19 @@ const EVENT_CHANNEL_CAPACITY: usize = 512;
 const RT_CHANNEL_CAPACITY: usize = 128;
 // Preserve the complete session on the existing journal worker.
 const JOURNAL_BYTES: usize = 0;
+const RECOVERED_HEAD_RECORDS: usize = 128;
+const RECOVERED_TAIL_RECORDS: usize = 2048;
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+struct LocalJournalEvidence {
+    bytes: u64,
+    blake3: String,
+    valid_slots: u64,
+    omitted_slots: u64,
+    local_file: String,
+    #[serde(default)]
+    capture_error: Option<String>,
+}
 #[cfg(test)]
 const MAX_DIAGNOSTIC_EVENTS: usize = 256;
 const MAX_EVIDENCE_CHARS: usize = 32_000;
@@ -118,14 +131,14 @@ pub struct CrashIncident {
     pub(crate) detected_at: u64,
     pub(crate) host_process: String,
     pid: u32,
-    os: String,
-    architecture: String,
+    pub(super) os: String,
+    pub(super) architecture: String,
     #[serde(default)]
-    host_name: String,
+    pub(super) host_name: String,
     #[serde(default)]
-    plugin_api: String,
+    pub(super) plugin_api: String,
     #[serde(default)]
-    platform: super::platform::PlatformSnapshot,
+    pub(super) platform: super::platform::PlatformSnapshot,
     #[serde(default, alias = "breadcrumbs")]
     events: VecDeque<DiagnosticRecord>,
     #[serde(default)]
@@ -142,6 +155,8 @@ pub struct CrashIncident {
     source_schema: u8,
     #[serde(default)]
     host_finished_unload: bool,
+    #[serde(default)]
+    local_journal: Option<LocalJournalEvidence>,
 }
 
 /// A recovered incident with the given provenance, for tests in this module's
@@ -169,6 +184,7 @@ pub(super) fn test_incident(version: &str, build_id: &str) -> CrashIncident {
         platform_evidence: String::new(),
         source_schema: 5,
         host_finished_unload: false,
+        local_journal: None,
     }
 }
 
@@ -272,7 +288,7 @@ impl CrashIncident {
         self.render_diagnostics(false)
     }
 
-    fn render_diagnostics(&self, complete: bool) -> String {
+    pub(super) fn render_diagnostics(&self, complete: bool) -> String {
         let panic = self.panic.as_ref().map_or_else(String::new, |panic| {
             let mut rendered = format!(
                 "\nRust panic observed: {} [{}] at {} · {}",
@@ -317,12 +333,14 @@ impl CrashIncident {
         // A stale marker from an older install is recovered by whatever build
         // starts next, so the recorded version alone reads as if the running
         // build crashed with the old one's binaries.
-        let recorded_version =
-            if self.build_id.is_empty() || self.build_id == crate::build_info::BUILD.build_hash {
-                self.version.clone()
-            } else {
-                format!("{} (recorded by a previous install)", self.version)
-            };
+        let recorded_version = if complete
+            || self.build_id.is_empty()
+            || self.build_id == crate::build_info::BUILD.build_hash
+        {
+            self.version.clone()
+        } else {
+            format!("{} (recorded by a previous install)", self.version)
+        };
         let mut output = format!(
             "{}\nIncident ID: {}\nClassification: {}\nVersion that recorded this incident: {}\nBuild ID that recorded this incident: {}\nHost: {}\nPlugin format: {}\nHost process: {}\nOS: {}\nArchitecture: {}\nProcess ID: {}\nStarted: {}\nDetected: {}\nDropped diagnostic events: {}{}",
             self.session_status(),
@@ -367,6 +385,23 @@ impl CrashIncident {
                 "\nPersisted records: {}\nSequence coverage: {first}..{last}\nMissing sequences within coverage: {gaps}",
                 self.events.len()
             );
+            if let Some(source) = &self.local_journal {
+                let _ = write!(
+                    output,
+                    "\nOriginal local journal: {}\nOriginal journal bytes: {}\nOriginal journal BLAKE3: {}\nValidated journal slots: {}\nJournal slots omitted from this report: {}",
+                    source.local_file,
+                    source.bytes,
+                    source.blake3,
+                    source.valid_slots,
+                    source.omitted_slots
+                );
+                if source.omitted_slots != 0 || source.capture_error.is_some() {
+                    output.push_str("\nPARTIAL JOURNAL REPORT: startup/recent records are included; the complete original remains local.");
+                }
+                if let Some(error) = &source.capture_error {
+                    let _ = write!(output, "\nJournal capture error: {error}");
+                }
+            }
         }
         let platform = self.platform.render();
         if !platform.is_empty() {
@@ -412,6 +447,11 @@ enum ReporterControl {
     Register(u64, mpsc::SyncSender<bool>),
     Shutdown,
     Submitted(String),
+    Resume(String),
+    ManualRequired(String, String),
+    ScanQueue(bool, Option<String>),
+    #[cfg(test)]
+    Barrier(mpsc::SyncSender<()>),
 }
 
 struct ReporterRuntime {
@@ -654,7 +694,8 @@ impl CrashReporter {
         Self {
             runtime: Mutex::new(None),
             recorder: Mutex::new(None),
-            pending: Arc::new(Mutex::new(load_pending_incident())),
+            // Disk discovery and legacy migration run on the reporter worker.
+            pending: Arc::new(Mutex::new(None)),
             support_workers: Mutex::new(SupportWorkers::default()),
             ready: Arc::new(AtomicBool::new(false)),
             marker: Arc::new(Mutex::new(None)),
@@ -880,6 +921,23 @@ fn pin_module_containing(_address: *const std::ffi::c_void) -> Result<(), String
 /// Starts the automatic report on its own thread: it asks this worker for a journal snapshot, so
 /// it cannot run here. Tracked with the support workers so it is joined before unload.
 fn spawn_auto_report() {
+    #[cfg(test)]
+    if let Some(observer) = TEST_AUTOMATIC_REPORT_OBSERVER.lock_unpoisoned().as_ref() {
+        // Use the actual acquisition path, exactly as the production kickoff.
+        // The observer replaces delivery only; a busy gate still rejects it.
+        let Some(permit) = super::report::test_acquire_automatic_report_permit() else {
+            return;
+        };
+        let incident = pending_incident();
+        drop(permit);
+        if let Some(incident) = incident {
+            let _ = observer.send(TestAutomaticEvent::Ready(
+                incident.id,
+                super::report::test_automatic_report_is_busy(),
+            ));
+        }
+        return;
+    }
     let _ = REPORTER.support_workers.lock_unpoisoned().spawn(
         "kontra-crash-autoreport",
         super::try_auto_report_pending_incident,
@@ -893,8 +951,20 @@ fn join_support_workers(workers: Vec<std::thread::JoinHandle<()>>) {
 }
 
 pub(crate) fn refresh_pending_incident(incident_id: &str) -> Option<CrashIncident> {
-    let incident = pending_incident().filter(|incident| incident.id == incident_id)?;
+    let (incident, observed_hash) = pending_snapshot(incident_id).or_else(|| {
+        pending_incident()
+            .filter(|i| i.id == incident_id)
+            .map(|i| (i, String::new()))
+    })?;
     if incident.kind != IncidentKind::UncleanExit || incident.panic.is_some() {
+        if let Some(current) = REPORTER
+            .pending
+            .lock_unpoisoned()
+            .as_mut()
+            .filter(|i| i.id == incident_id)
+        {
+            *current = incident.clone();
+        }
         return Some(incident);
     }
 
@@ -909,10 +979,13 @@ pub(crate) fn refresh_pending_incident(incident_id: &str) -> Option<CrashInciden
     let current = pending
         .as_mut()
         .filter(|current| current.id == incident_id)?;
-    let mut refreshed = current.clone();
-    if apply_delayed_crash_evidence(&mut refreshed, &evidence) && save_pending_incident(&refreshed)
+    let mut refreshed = incident;
+    if apply_delayed_crash_evidence(&mut refreshed, &evidence)
+        && save_pending_if_unchanged(&refreshed, &observed_hash)
     {
         *current = refreshed;
+    } else if let Some(latest) = load_pending_by_id(incident_id) {
+        *current = latest;
     }
     Some(current.clone())
 }
@@ -966,6 +1039,27 @@ pub(crate) fn mark_submitted(incident_id: &str) {
     let _ = REPORTER.send(ReporterControl::Submitted(incident_id.to_string()));
 }
 
+pub(super) fn continue_automatic_reports(incident_id: String) {
+    let _ = REPORTER.send(ReporterControl::Resume(incident_id));
+}
+
+pub(super) fn continue_after_manual_report(incident_id: String, evidence_sha256: String) {
+    let _ = REPORTER.send(ReporterControl::ManualRequired(
+        incident_id,
+        evidence_sha256,
+    ));
+}
+
+#[cfg(test)]
+static TEST_AUTOMATIC_REPORT_OBSERVER: Mutex<Option<mpsc::Sender<TestAutomaticEvent>>> =
+    Mutex::new(None);
+
+#[cfg(test)]
+enum TestAutomaticEvent {
+    Ready(String, bool),
+    Scanned(bool, bool),
+}
+
 #[cfg(test)]
 pub(crate) fn enrich_diagnostics(incident_id: &str, base: &str) -> String {
     incident_diagnostics(incident_id, base, false)
@@ -981,9 +1075,8 @@ fn incident_diagnostics(incident_id: &str, base: &str, complete: bool) -> String
     // this -- and reading only from disk then silently dropped every frame,
     // every correlated evidence block and the whole platform section while the
     // payload still went out classified `platform_crash`.
-    let Some(incident) = pending_incident()
-        .or_else(load_pending_incident)
-        .filter(|incident| incident.id == incident_id)
+    let Some(incident) = load_pending_by_id(incident_id)
+        .or_else(|| pending_incident().filter(|incident| incident.id == incident_id))
     else {
         return base.to_string();
     };
@@ -993,8 +1086,12 @@ fn incident_diagnostics(incident_id: &str, base: &str, complete: bool) -> String
     if !complete {
         return assemble_enriched_diagnostics(&preview, &incident.platform_evidence, &current);
     }
+    render_complete_diagnostics(&incident)
+}
+
+pub(super) fn render_complete_diagnostics(incident: &CrashIncident) -> String {
     format!(
-        "Crash evidence collected with permission:\n{}\n\nCorrelated operating-system or host evidence:\n{}\n\nCurrent KONTRA diagnostics:\n{current}",
+        "Crash evidence collected with permission:\n{}\n\nCorrelated operating-system or host evidence:\n{}",
         incident.render_diagnostics(true),
         if incident.platform_evidence.is_empty() {
             "No correlated native crash report was collected."
@@ -1093,8 +1190,13 @@ fn reporter_worker(
     run_token: String,
     stopping: Arc<AtomicBool>,
 ) {
+    let mut resumable_id: Option<String> = None;
     while let Ok(control) = control_receiver.recv() {
         match control {
+            #[cfg(test)]
+            ReporterControl::Barrier(reply) => {
+                let _ = reply.send(());
+            }
             ReporterControl::Register(instance_id, acknowledge) => {
                 let mut current = new_session_marker(instance_id, &run_token);
                 if let (Some(recorder), Some(journal_file)) =
@@ -1116,6 +1218,7 @@ fn reporter_worker(
                 *marker.lock_unpoisoned() = Some(current);
                 ready.store(persisted, Ordering::Release);
                 let _ = acknowledge.send(persisted);
+                super::report::restore_last_report_status();
                 // Persist the initialization marker before invoking any platform subprocess.
                 // The plugin may open/crash while system metadata is still being collected.
                 let platform = super::platform::snapshot(&stopping).clone();
@@ -1127,18 +1230,17 @@ fn reporter_worker(
                 // holding `SESSION_OWNERSHIP`, and evidence collection can take seconds per stale
                 // session. An incident found here reports itself, since the reply has gone.
                 // The scan runs without the `pending` lock so the GUI never waits on it.
-                let mut recovered = false;
-                let unclaimed = pending.lock_unpoisoned().is_none();
-                if unclaimed && let Some(incident) = detect_stale_sessions(&stopping) {
-                    let mut pending_incident = pending.lock_unpoisoned();
-                    if !stopping.load(Ordering::Acquire) && pending_incident.is_none() {
-                        save_pending_incident(&incident);
-                        *pending_incident = Some(incident);
-                        recovered = true;
-                    }
-                }
+                let recovered = recover_pending_slot(&pending, &stopping);
                 if recovered && persisted {
                     spawn_auto_report();
+                }
+                if persisted
+                    && !pending
+                        .lock_unpoisoned()
+                        .as_ref()
+                        .is_some_and(CrashIncident::auto_reportable)
+                {
+                    let _ = REPORTER.send(ReporterControl::ScanQueue(false, None));
                 }
             }
             ReporterControl::Shutdown => {
@@ -1158,15 +1260,180 @@ fn reporter_worker(
                 break;
             }
             ReporterControl::Submitted(incident_id) => {
-                if load_pending_incident().is_some_and(|incident| incident.id == incident_id) {
-                    let _ = std::fs::remove_file(pending_incident_path());
+                resumable_id = None;
+                if incident_id.len() != 16 || !incident_id.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    continue;
+                }
+                // Failed/cancelled replacement can leave a same-ID deferred
+                // copy. Retire only exact queue copies; full originals stay.
+                let mut retired = true;
+                for copy in [
+                    keyed_pending_incident_path(&incident_id).unwrap(),
+                    pending_incident_path(),
+                    reports_dir()
+                        .join("deferred")
+                        .join(format!("{incident_id}.json")),
+                ] {
+                    if let Err(error) = retire_acknowledged_copy(&copy, &incident_id, &stopping) {
+                        if error.kind() != std::io::ErrorKind::NotFound {
+                            retired = false;
+                            crate::diagnostics::event(
+                                crate::diagnostics::LogLevel::Error,
+                                "support",
+                                "acknowledged_report_cleanup_failed",
+                                serde_json::json!({"incident_id":incident_id,
+                                "reason":format!("Delivery was acknowledged, but a local queue copy could not be retired ({error}). Evidence remains local and may be retried; complete originals are retained.")}),
+                            );
+                        }
+                    }
+                }
+                if retired {
+                    let mut active = pending.lock_unpoisoned();
+                    if active.as_ref().is_some_and(|i| i.id == incident_id) {
+                        *active = None;
+                    }
+                }
+                resumable_id = retired.then_some(incident_id);
+            }
+            ReporterControl::Resume(incident_id) => {
+                // Submitted precedes this control in the FIFO. A failed local
+                // retirement must never trigger an immediate resend loop.
+                if resumable_id.as_deref() == Some(incident_id.as_str())
+                    && !stopping.load(Ordering::Acquire)
+                {
+                    resumable_id = None;
+                    let adopted = pending
+                        .lock_unpoisoned()
+                        .as_ref()
+                        .is_some_and(CrashIncident::auto_reportable);
+                    if adopted {
+                        // A registration/scan may have adopted the next report
+                        // while the previous upload still owned the permit. Its
+                        // busy kickoff is retried only after this verified success.
+                        spawn_auto_report();
+                    } else {
+                        let _ = REPORTER.send(ReporterControl::ScanQueue(false, None));
+                    }
+                }
+            }
+            ReporterControl::ManualRequired(incident_id, evidence_sha256) => {
+                // Sent only after the size-failed worker releases its permit.
+                // Revalidate durable source identity: a newer same-ID report
+                // must never be skipped because an older packet was too large.
+                if !stopping.load(Ordering::Acquire)
+                    && let Some((status, source_lock)) =
+                        locked_manual_required_for_pending(&incident_id, &stopping)
+                    && status.diagnostics_sha256 == evidence_sha256
+                {
+                    let mut active = pending.lock_unpoisoned();
+                    if !active.as_ref().is_some_and(|i| i.id == incident_id) {
+                        // A terminal size failure continues exactly once, when
+                        // it clears A. A replay cannot restart unrelated B after
+                        // B's transient failure stopped the upload burst.
+                        continue;
+                    }
+                    *active = None;
+                    drop(active);
+                    drop(source_lock);
+                    let _ = REPORTER.send(ReporterControl::ScanQueue(false, None));
+                }
+            }
+            ReporterControl::ScanQueue(wrapped, scan_cursor) => {
+                if stopping.load(Ordering::Acquire)
+                    || pending
+                        .lock_unpoisoned()
+                        .as_ref()
+                        .is_some_and(CrashIncident::auto_reportable)
+                {
+                    continue;
+                }
+                let (confirmed, _, progress) =
+                    find_pending_candidates(&stopping, None, scan_cursor.as_deref());
+                #[cfg(test)]
+                if let Some(observer) = TEST_AUTOMATIC_REPORT_OBSERVER.lock_unpoisoned().as_ref() {
+                    let _ = observer.send(TestAutomaticEvent::Scanned(
+                        wrapped,
+                        matches!(&progress, QueueScanProgress::Exhausted),
+                    ));
+                }
+                let mut candidate = confirmed.map(|incident| RecoveredCandidate {
+                    marker_path: keyed_pending_incident_path(&incident.id).unwrap(),
+                    journal_path: None,
+                    panic_path: panic_marker_path(incident.pid),
+                    incident,
+                });
+                if matches!(&progress, QueueScanProgress::Exhausted) && wrapped {
+                    candidate = candidate
+                        .or_else(|| find_deferred_candidate(&stopping))
+                        .or_else(|| find_stale_candidate(&stopping, true));
+                }
+                if let Some(incident) = candidate
+                    .and_then(|candidate| candidate.consume(&stopping))
+                    .filter(CrashIncident::auto_reportable)
+                {
+                    *pending.lock_unpoisoned() = Some(incident);
+                    spawn_auto_report();
+                    continue; // Resume only after this delivery's ACK + permit drop.
+                }
+                if let QueueScanProgress::Halted(reason) = &progress {
+                    crate::diagnostics::event(
+                        crate::diagnostics::LogLevel::Error,
+                        "support",
+                        "pending_report_scan_halted",
+                        serde_json::json!({"reason":reason}),
+                    );
+                }
+                let next = match progress {
+                    QueueScanProgress::Advanced(cursor) => Some((wrapped, cursor)),
+                    QueueScanProgress::Exhausted if !wrapped => Some((true, String::new())),
+                    _ => None,
+                };
+                if let Some((wrapped, cursor)) = next {
+                    // A queued control allows shutdown/registration/ACK to run
+                    // between batches. No recursion, timer or delivery retry.
+                    let _ = REPORTER.send(ReporterControl::ScanQueue(wrapped, Some(cursor)));
                 }
             }
         }
     }
 }
 
+fn retire_acknowledged_copy(
+    path: &Path,
+    incident_id: &str,
+    stopping: &AtomicBool,
+) -> std::io::Result<()> {
+    if stopping.load(Ordering::Acquire) {
+        return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+    }
+    let _publisher_lock =
+        buffr_durable_file::acquire_publisher_lock(path, std::time::Duration::from_millis(500))?;
+    if stopping.load(Ordering::Acquire) {
+        return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+    }
+    let Some(bytes) = super::read_bounded_file(path, super::LOCAL_REPORT_BYTES)? else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "queue copy exceeds the validation budget; retained without retirement",
+        ));
+    };
+    let incident: CrashIncident = serde_json::from_slice(&bytes).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "queue copy cannot be validated; retained without retirement",
+        )
+    })?;
+    if incident.id == incident_id {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
 fn detect_stale_sessions(stopping: &AtomicBool) -> Option<CrashIncident> {
+    find_stale_candidate(stopping, false)?.consume(stopping)
+}
+
+fn find_stale_candidate(stopping: &AtomicBool, confirmed_only: bool) -> Option<RecoveredCandidate> {
     if stopping.load(Ordering::Acquire) {
         return None;
     }
@@ -1179,10 +1446,24 @@ fn detect_stale_sessions(stopping: &AtomicBool) -> Option<CrashIncident> {
             return None;
         }
         let path = entry.path();
+        if path
+            .file_name()
+            .is_some_and(|name| buffr_durable_file::is_internal_file_name(&name.to_string_lossy()))
+        {
+            continue; // Live publishers own lock/in-flight files; they are not session JSON.
+        }
         if path.extension().is_some_and(|extension| extension == "dfr") {
             continue;
         }
         let Some(mut marker) = read_json_or_discard::<SessionMarker>(&path) else {
+            if std::fs::metadata(&path).is_ok_and(|m| m.len() > super::LOCAL_REPORT_BYTES as u64) {
+                let _ = preserve_original_file(
+                    &path,
+                    "oversized-session-json-unparsed",
+                    stopping,
+                    None,
+                );
+            }
             continue;
         };
         if marker.pid == std::process::id()
@@ -1200,17 +1481,73 @@ fn detect_stale_sessions(stopping: &AtomicBool) -> Option<CrashIncident> {
             cleanup_session_files(&path, journal_path.as_deref(), &panic_path);
             continue;
         }
+        let mut local_journal = None;
         if let Some(journal_path) = journal_path.as_ref() {
-            let records = derpcat_flight_recorder::read_journal(journal_path, usize::MAX);
+            let capture = derpcat_flight_recorder::capture_journal(
+                journal_path,
+                RECOVERED_HEAD_RECORDS,
+                RECOVERED_TAIL_RECORDS,
+                stopping,
+            );
+            let records = match capture {
+                Ok(capture) => {
+                    marker.dropped_events = marker.dropped_events.max(capture.dropped_events);
+                    local_journal = Some(LocalJournalEvidence {
+                        bytes: capture.bytes,
+                        blake3: capture.blake3,
+                        valid_slots: capture.valid_slots,
+                        omitted_slots: capture.omitted_slots,
+                        local_file: format!(
+                            "sessions/{}",
+                            journal_path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                        ),
+                        capture_error: None,
+                    });
+                    capture.records
+                }
+                Err(error) => {
+                    if stopping.load(Ordering::Acquire) {
+                        return None;
+                    }
+                    local_journal = Some(LocalJournalEvidence {
+                        bytes: std::fs::metadata(journal_path).map_or(0, |m| m.len()),
+                        local_file: format!(
+                            "sessions/{}",
+                            journal_path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                        ),
+                        capture_error: Some(error.to_string()),
+                        ..Default::default()
+                    });
+                    Vec::new()
+                }
+            };
             marker.dropped_events = records
                 .iter()
                 .filter(|record| record.action == "diagnostic_overflow")
                 .filter_map(|record| u64::try_from(record.value_a).ok())
                 .max()
-                .unwrap_or(marker.dropped_events);
+                .unwrap_or(0)
+                .max(marker.dropped_events);
             marker.events = records.into();
         }
         let panic = read_json(&panic_path);
+        if panic.is_none()
+            && std::fs::metadata(&panic_path)
+                .is_ok_and(|m| m.len() > super::LOCAL_REPORT_BYTES as u64)
+        {
+            let _ = preserve_original_file(
+                &panic_path,
+                "oversized-panic-json-unparsed",
+                stopping,
+                None,
+            );
+        }
 
         let detected_at = now_unix();
         let started_at = marker.started_at.min(detected_at);
@@ -1271,6 +1608,7 @@ fn detect_stale_sessions(stopping: &AtomicBool) -> Option<CrashIncident> {
                 platform_evidence: evidence.text,
                 source_schema: marker.schema,
                 host_finished_unload,
+                local_journal,
                 events: marker.events,
             },
         };
@@ -1286,25 +1624,154 @@ fn detect_stale_sessions(stopping: &AtomicBool) -> Option<CrashIncident> {
             .as_ref()
             .is_none_or(|current| candidate.incident.started_at > current.incident.started_at)
         {
-            if let Some(previous) = unknown.replace(candidate) {
-                previous.cleanup();
-            }
-        } else {
-            candidate.cleanup();
+            unknown = Some(candidate);
         }
+        // Unselected candidates retain their original marker and journal: native
+        // evidence can arrive later and an unclean exit alone is not a crash.
     }
-
     if stopping.load(Ordering::Acquire) {
         return None;
     }
-    if let Some(candidate) = confirmed {
-        if let Some(unknown) = unknown {
-            unknown.cleanup();
-        }
-        Some(candidate.consume())
-    } else {
-        unknown.map(RecoveredCandidate::consume)
+    confirmed.or_else(|| if confirmed_only { None } else { unknown })
+}
+
+fn recover_pending_slot(pending: &Mutex<Option<CrashIncident>>, stopping: &AtomicBool) -> bool {
+    let previous = pending.lock_unpoisoned().clone();
+    if previous
+        .as_ref()
+        .is_some_and(CrashIncident::auto_reportable)
+    {
+        return false;
     }
+    // Migration failure retains the legacy source, but cannot block independent
+    // keyed reports: no recovered incident writes that shared legacy path.
+    let _ = migrate_legacy_pending(stopping);
+    let (queued, unknown, _) =
+        find_pending_candidates(stopping, previous.as_ref().map(|i| i.id.as_str()), None);
+    let queued_candidate = |incident: CrashIncident| RecoveredCandidate {
+        marker_path: keyed_pending_incident_path(&incident.id).unwrap(),
+        journal_path: None,
+        panic_path: panic_marker_path(incident.pid),
+        incident,
+    };
+    let candidate = queued
+        .map(queued_candidate)
+        .or_else(|| find_deferred_candidate(stopping))
+        .or_else(|| find_stale_candidate(stopping, previous.is_some()))
+        .or_else(|| {
+            if previous.is_none() {
+                unknown.map(queued_candidate)
+            } else {
+                None
+            }
+        });
+    let Some(candidate) = candidate else {
+        return false;
+    };
+    // Reserve the slot after the expensive scan. A delayed-evidence worker may
+    // have confirmed the previous incident meanwhile; never replace that report.
+    {
+        let mut slot = pending.lock_unpoisoned();
+        if slot.as_ref().map(|i| &i.id) != previous.as_ref().map(|i| &i.id)
+            || slot.as_ref().is_some_and(CrashIncident::auto_reportable)
+        {
+            return false;
+        }
+        *slot = None;
+    }
+    if let Some(previous) = previous.as_ref() {
+        if previous.id.len() != 16 || !previous.id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            *pending.lock_unpoisoned() = Some(previous.clone());
+            return false;
+        }
+        if !persist_json(
+            &reports_dir()
+                .join("deferred")
+                .join(format!("{}.json", previous.id)),
+            previous,
+        ) {
+            *pending.lock_unpoisoned() = Some(previous.clone());
+            return false;
+        }
+        crate::diagnostics::event(
+            crate::diagnostics::LogLevel::Warning,
+            "support",
+            "unconfirmed_evidence_deferred",
+            serde_json::json!({"incident_id":previous.id,
+            "reason":"Earlier unconfirmed session evidence remains private in local deferred storage; a confirmed crash can now report. Deferred records are checked again for late native confirmation."}),
+        );
+    }
+    let recovered = candidate.consume(stopping);
+    let mut slot = pending.lock_unpoisoned();
+    match recovered {
+        Some(incident) => {
+            *slot = Some(incident);
+            true
+        }
+        None => {
+            *slot = previous;
+            false
+        }
+    }
+}
+
+// Recheck at most 32 deferred records per registration, rotating the durable
+// cursor across launches. Originals survive every unsuccessful native lookup.
+fn find_deferred_candidate(stopping: &AtomicBool) -> Option<RecoveredCandidate> {
+    let directory = reports_dir().join("deferred");
+    let entries = std::fs::read_dir(&directory).ok()?;
+    let cursor_path = reports_dir().join("deferred-cursor.json");
+    let cursor = read_json::<usize>(&cursor_path).unwrap_or(0);
+    let mut seen = 0;
+    let mut checked = 0;
+    for entry in entries.flatten() {
+        if stopping.load(Ordering::Acquire) {
+            return None;
+        }
+        let path = entry.path();
+        if path.extension().is_none_or(|e| e != "json") {
+            continue;
+        }
+        seen += 1;
+        if seen <= cursor {
+            continue;
+        }
+        checked += 1;
+        let incident: Option<CrashIncident> = read_json(&path);
+        if incident.is_none()
+            && std::fs::metadata(&path).is_ok_and(|m| m.len() > super::LOCAL_REPORT_BYTES as u64)
+        {
+            let _ =
+                preserve_original_file(&path, "oversized-deferred-json-unparsed", stopping, None);
+        }
+        if let Some(mut incident) = incident {
+            if !incident.auto_reportable() {
+                let evidence = super::platform::collect_crash_evidence(
+                    &incident.host_process,
+                    incident.pid,
+                    incident.started_at,
+                    incident.detected_at,
+                    stopping,
+                );
+                apply_delayed_crash_evidence(&mut incident, &evidence);
+            }
+            if incident.auto_reportable() && !stopping.load(Ordering::Acquire) {
+                persist_json(&cursor_path, &seen);
+                return Some(RecoveredCandidate {
+                    marker_path: path,
+                    journal_path: None,
+                    panic_path: panic_marker_path(incident.pid),
+                    incident,
+                });
+            }
+        }
+        if checked == 32 {
+            persist_json(&cursor_path, &seen);
+            return None;
+        }
+    }
+    persist_json(&cursor_path, &0_usize);
+    None
 }
 
 struct RecoveredCandidate {
@@ -1315,26 +1782,243 @@ struct RecoveredCandidate {
 }
 
 impl RecoveredCandidate {
-    fn cleanup(self) {
-        cleanup_session_files(
-            &self.marker_path,
-            self.journal_path.as_deref(),
-            &self.panic_path,
-        );
-    }
-
-    fn consume(self) -> CrashIncident {
+    fn consume(self, stopping: &AtomicBool) -> Option<CrashIncident> {
         let Self {
             marker_path,
             journal_path,
             panic_path,
-            incident,
+            mut incident,
         } = self;
-        // Keep the original files if the recovered incident cannot be saved.
-        if save_pending_incident(&incident) {
-            cleanup_session_files(&marker_path, journal_path.as_deref(), &panic_path);
+        if keyed_pending_incident_path(&incident.id).as_ref() == Some(&marker_path) {
+            let _publisher_lock = buffr_durable_file::acquire_publisher_lock(
+                &marker_path,
+                std::time::Duration::from_millis(500),
+            )
+            .ok()?;
+            if stopping.load(Ordering::Acquire) {
+                return None;
+            }
+            // Another host may have refreshed this ID since discovery. Adopt
+            // its latest durable bytes; never write the observed snapshot back.
+            return read_json::<CrashIncident>(&marker_path)
+                .and_then(normalize_pending)
+                .filter(|current| current.id == incident.id);
         }
-        incident
+        let mut archived = journal_path.is_none();
+        if let Some(journal) = journal_path.as_ref() {
+            let name = format!("{}.dfr", incident.id);
+            let archive = reports_dir().join("originals").join(&name);
+            if let Err(error) =
+                archive_original(journal, &archive, incident.local_journal.as_ref(), stopping)
+            {
+                if let Some(source) = incident.local_journal.as_mut() {
+                    source.capture_error = Some(format!(
+                        "Original archival failed: {error}. The session source remains local; it may differ from the captured digest."
+                    ));
+                }
+                crate::diagnostics::event(
+                    crate::diagnostics::LogLevel::Warning,
+                    "support",
+                    "original_journal_archive_failed",
+                    serde_json::json!({"reason":format!("Original journal remains in local session storage; archival failed: {error}")}),
+                );
+            } else {
+                archived = true;
+                if let Some(source) = incident.local_journal.as_mut() {
+                    source.local_file = format!("originals/{name}");
+                }
+            }
+        }
+        if stopping.load(Ordering::Acquire) {
+            return None;
+        }
+        // Keep the original files if the recovered incident cannot be saved.
+        if !save_pending_incident(&incident) {
+            return None;
+        }
+        if keyed_pending_incident_path(&incident.id).as_ref() != Some(&marker_path) {
+            cleanup_session_files(
+                &marker_path,
+                if archived {
+                    journal_path.as_deref()
+                } else {
+                    None
+                },
+                &panic_path,
+            );
+        }
+        load_pending_by_id(&incident.id).or(Some(incident))
+    }
+}
+
+fn archive_original(
+    source: &Path,
+    archive: &Path,
+    expected: Option<&LocalJournalEvidence>,
+    stopping: &AtomicBool,
+) -> std::io::Result<()> {
+    use std::io::{Read as _, Write as _};
+    let mut original = std::fs::File::open(source)?;
+    buffr_durable_file::publish_private_streaming(
+        archive,
+        std::time::Duration::from_millis(500),
+        |destination| {
+            let mut buffer = [0_u8; 64 * 1024];
+            let mut hasher = blake3::Hasher::new();
+            let mut total = 0_u64;
+            loop {
+                if stopping.load(Ordering::Acquire) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "original archival stopped",
+                    ));
+                }
+                let bytes = original.read(&mut buffer)?;
+                if bytes == 0 {
+                    if let Some(expected) = expected.filter(|e| !e.blake3.is_empty()) {
+                        if total != expected.bytes
+                            || hasher.finalize().to_hex().as_str() != expected.blake3.as_str()
+                        {
+                            return Err(std::io::Error::other(
+                                "original journal changed after capture; session source retained",
+                            ));
+                        }
+                    }
+                    return Ok(());
+                }
+                hasher.update(&buffer[..bytes]);
+                total += bytes as u64;
+                destination.write_all(&buffer[..bytes])?;
+            }
+        },
+    )
+}
+
+/// Preserve complete source bytes privately without buffering the full file.
+/// A second streamed pass validates the captured digest before atomic publication.
+pub(super) fn preserve_original_file(
+    source: &Path,
+    status: &str,
+    stopping: &AtomicBool,
+    parsed_original: Option<(u64, &str)>,
+) -> std::io::Result<String> {
+    let result = (|| {
+        let (bytes, hash) = source_digest(source, stopping)?;
+        if parsed_original
+            .is_some_and(|(parsed_bytes, parsed_hash)| parsed_bytes != bytes || parsed_hash != hash)
+        {
+            return Err(std::io::Error::other(
+                "Native source changed after parsing; a different file was not archived as the parsed report",
+            ));
+        }
+        let relative = format!("originals/{hash}.raw");
+        let archive = reports_dir().join(&relative);
+        let expected = LocalJournalEvidence {
+            bytes,
+            blake3: hash.clone(),
+            ..Default::default()
+        };
+        archive_original(source, &archive, Some(&expected), stopping)?;
+        let manifest = serde_json::json!({"status":status, "bytes":bytes, "blake3":hash,
+        "local_file":relative, "buffered_read_limit":super::LOCAL_REPORT_BYTES,
+        "automatically_uploaded":false});
+        if !persist_json(&archive.with_extension("json"), &manifest) {
+            return Err(std::io::Error::other(
+                "Complete original was archived, but its private manifest could not be published; source retained",
+            ));
+        }
+        Ok(format!(
+            "Complete original retained privately: {relative}; bytes={bytes}; BLAKE3={hash}; status={status}; raw original is retained locally and not uploaded as a file."
+        ))
+    })();
+    let (level, reason) = match &result {
+        Ok(status) => (crate::diagnostics::LogLevel::Info, status.clone()),
+        Err(error) => (
+            crate::diagnostics::LogLevel::Error,
+            format!("Private original archival failed: {error}. KONTRA did not remove the source."),
+        ),
+    };
+    crate::diagnostics::event(
+        level,
+        "support",
+        "complete_original_retention",
+        serde_json::json!({"reason":reason,"status":status}),
+    );
+    result
+}
+
+fn preserve_oversized_pending(stopping: &AtomicBool) -> bool {
+    let path = pending_incident_path();
+    if stopping.load(Ordering::Acquire) {
+        return false;
+    }
+    let _publisher_lock = match buffr_durable_file::acquire_publisher_lock(
+        &path,
+        std::time::Duration::from_millis(500),
+    ) {
+        Ok(lock) => lock,
+        Err(error) => {
+            crate::diagnostics::event(
+                crate::diagnostics::LogLevel::Error,
+                "support",
+                "pending_report_lock_failed",
+                serde_json::json!({"reason":format!(
+                    "Pending evidence could not be locked for safe recovery ({error}); replacement remains blocked.")}),
+            );
+            return false;
+        }
+    };
+    if stopping.load(Ordering::Acquire) {
+        return false;
+    }
+    match super::read_bounded_file(&path, super::LOCAL_REPORT_BYTES) {
+        Ok(Some(_)) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Ok(None) => {
+            match preserve_original_file(&path, "oversized-pending-json-unparsed", stopping, None) {
+                Ok(status) => {
+                    crate::diagnostics::event(
+                        crate::diagnostics::LogLevel::Warning,
+                        "support",
+                        "oversized_pending_report_archived",
+                        serde_json::json!({"reason":format!("{status} It could not be parsed or automatically submitted; export the private original for support.")}),
+                    );
+                    if stopping.load(Ordering::Acquire) {
+                        return false;
+                    }
+                    match std::fs::remove_file(path) {
+                        Ok(()) => true,
+                        Err(error) => {
+                            crate::diagnostics::event(
+                                crate::diagnostics::LogLevel::Error,
+                                "support",
+                                "oversized_pending_slot_retirement_failed",
+                                serde_json::json!({"reason":format!("The complete oversized original is privately archived, but its pending slot could not be retired ({error}); replacement remains blocked.")}),
+                            );
+                            false
+                        }
+                    }
+                }
+                Err(error) => {
+                    crate::diagnostics::event(
+                        crate::diagnostics::LogLevel::Error,
+                        "support",
+                        "oversized_pending_report_archive_failed",
+                        serde_json::json!({"reason":format!("Oversized pending evidence remains in place and blocks replacement because private archival failed: {error}")}),
+                    );
+                    false
+                }
+            }
+        }
+        Err(error) => {
+            crate::diagnostics::event(
+                crate::diagnostics::LogLevel::Error,
+                "support",
+                "pending_report_read_failed",
+                serde_json::json!({"reason":format!("Pending evidence could not be read and remains in place; replacement is blocked: {error}")}),
+            );
+            false
+        }
     }
 }
 
@@ -1534,11 +2218,16 @@ fn pending_incident_path() -> PathBuf {
     reports_dir().join("pending.json")
 }
 
-fn load_pending_incident() -> Option<CrashIncident> {
-    let path = pending_incident_path();
-    let mut incident: CrashIncident = read_json_or_discard(&path)?;
-    if incident.source_schema < 5 {
-        let _ = std::fs::remove_file(path);
+fn keyed_pending_incident_path(incident_id: &str) -> Option<PathBuf> {
+    (incident_id.len() == 16 && incident_id.bytes().all(|b| b.is_ascii_hexdigit())).then(|| {
+        reports_dir()
+            .join("pending")
+            .join(format!("{incident_id}.json"))
+    })
+}
+
+fn normalize_pending(mut incident: CrashIncident) -> Option<CrashIncident> {
+    if incident.source_schema < 5 || keyed_pending_incident_path(&incident.id).is_none() {
         return None;
     }
     incident.detected_at = incident.detected_at.max(incident.started_at);
@@ -1546,25 +2235,585 @@ fn load_pending_incident() -> Option<CrashIncident> {
         incident.kind = IncidentKind::Panic;
     } else if incident.kind == IncidentKind::UncleanExit && journal_ended_cleanly(&incident.events)
     {
-        let _ = std::fs::remove_file(path);
         return None;
     }
     Some(incident)
 }
 
+pub(super) fn pending_snapshot(incident_id: &str) -> Option<(CrashIncident, String)> {
+    let path = keyed_pending_incident_path(incident_id)?;
+    let bytes = super::read_bounded_file(&path, super::LOCAL_REPORT_BYTES).ok()??;
+    let incident = normalize_pending(serde_json::from_slice::<CrashIncident>(&bytes).ok()?)?;
+    (incident.id == incident_id).then(|| (incident, blake3::hash(&bytes).to_hex().to_string()))
+}
+
+#[derive(Deserialize, Serialize)]
+struct ManualUploadDisposition {
+    schema: u8,
+    incident_id: String,
+    disposition: String,
+    recipe: u32,
+    wire_limit_bytes: usize,
+    source_blake3: String,
+    diagnostics_sha256: String,
+}
+
+fn manual_upload_path(incident_id: &str) -> Option<PathBuf> {
+    keyed_pending_incident_path(incident_id)?;
+    Some(
+        reports_dir()
+            .join("manual-export-required")
+            .join(format!("{incident_id}.json")),
+    )
+}
+
+fn source_digest(path: &Path, stopping: &AtomicBool) -> std::io::Result<(u64, String)> {
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(path)?;
+    let mut scratch = [0; 64 * 1024];
+    let mut size = 0_u64;
+    let mut digest = blake3::Hasher::new();
+    loop {
+        if stopping.load(Ordering::Acquire) {
+            return Err(std::io::ErrorKind::Interrupted.into());
+        }
+        let count = file.read(&mut scratch)?;
+        if count == 0 {
+            break;
+        }
+        size += count as u64;
+        digest.update(&scratch[..count]);
+    }
+    Ok((size, digest.finalize().to_hex().to_string()))
+}
+
+pub(super) fn serialized_incident_hash(incident: &CrashIncident) -> Option<String> {
+    struct Digest(blake3::Hasher);
+    impl std::io::Write for Digest {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.update(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut digest = Digest(blake3::Hasher::new());
+    serde_json::to_writer(&mut digest, incident).ok()?;
+    Some(digest.0.finalize().to_hex().to_string())
+}
+
+fn manual_required_for_pending(
+    incident_id: &str,
+    stopping: &AtomicBool,
+) -> Option<ManualUploadDisposition> {
+    locked_manual_required_for_pending(incident_id, stopping).map(|(status, _lock)| status)
+}
+
+fn locked_manual_required_for_pending(
+    incident_id: &str,
+    stopping: &AtomicBool,
+) -> Option<(ManualUploadDisposition, std::fs::File)> {
+    let status_path = manual_upload_path(incident_id)?;
+    let bytes = super::read_bounded_file(&status_path, 16 * 1024).ok()??;
+    let status: ManualUploadDisposition = serde_json::from_slice(&bytes).ok()?;
+    let hex = |value: &str| value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit());
+    if status.schema != 1
+        || status.incident_id != incident_id
+        || status.disposition != "manual_export_required"
+        || status.recipe != super::report::AUTOMATIC_EVIDENCE_RECIPE
+        || status.wire_limit_bytes != super::report::REPORT_BODY_LIMIT
+        || !hex(&status.source_blake3)
+        || !hex(&status.diagnostics_sha256)
+    {
+        return None;
+    }
+    let source = keyed_pending_incident_path(incident_id)?;
+    let lock =
+        buffr_durable_file::acquire_publisher_lock(&source, std::time::Duration::from_millis(500))
+            .ok()?;
+    (source_digest(&source, stopping).ok()?.1 == status.source_blake3).then_some((status, lock))
+}
+
+fn show_manual_upload_status(incident_id: &str) {
+    crate::diagnostics::event(
+        crate::diagnostics::LogLevel::Warning,
+        "support",
+        "crash_report_manual_export_required",
+        serde_json::json!({"incident_id":incident_id,"sent":false,
+        "reason":format!("Crash report {incident_id} requires manual export: its complete JSON exceeds the 16 MiB automatic upload limit. No report was sent. Its incident and complete originals remain local. Open Logs and Export diagnostics for support.")}),
+    );
+}
+
+pub(super) fn manual_required_evidence_sha(incident_id: &str) -> Option<String> {
+    let status = manual_required_for_pending(incident_id, &AtomicBool::new(false))?;
+    show_manual_upload_status(incident_id);
+    Some(status.diagnostics_sha256)
+}
+
+pub(super) fn mark_manual_upload_required(
+    incident: &CrashIncident,
+    expected_source: &str,
+    diagnostics_sha256: &str,
+    stopping: &AtomicBool,
+) -> bool {
+    if !incident.auto_reportable()
+        || diagnostics_sha256.len() != 64
+        || !diagnostics_sha256.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return false;
+    }
+    let result = (|| -> std::io::Result<()> {
+        let source =
+            keyed_pending_incident_path(&incident.id).ok_or(std::io::ErrorKind::InvalidInput)?;
+        let status_path =
+            manual_upload_path(&incident.id).ok_or(std::io::ErrorKind::InvalidInput)?;
+        let _lock = buffr_durable_file::acquire_publisher_lock(
+            &source,
+            std::time::Duration::from_millis(500),
+        )?;
+        let (size, digest) = source_digest(&source, stopping)?;
+        if digest != expected_source {
+            return Err(std::io::ErrorKind::WouldBlock.into());
+        }
+        // Preserve the exact pre-disposition source as an immutable private
+        // original too. A later same-ID refresh cannot destroy manual evidence.
+        preserve_original_file(
+            &source,
+            "manual-export-required-upload-too-large",
+            stopping,
+            Some((size, &digest)),
+        )?;
+        if stopping.load(Ordering::Acquire) {
+            return Err(std::io::ErrorKind::Interrupted.into());
+        }
+        let status = ManualUploadDisposition {
+            schema: 1,
+            incident_id: incident.id.clone(),
+            disposition: "manual_export_required".into(),
+            recipe: super::report::AUTOMATIC_EVIDENCE_RECIPE,
+            wire_limit_bytes: super::report::REPORT_BODY_LIMIT,
+            source_blake3: digest,
+            diagnostics_sha256: diagnostics_sha256.into(),
+        };
+        let bytes = serde_json::to_vec(&status).map_err(std::io::Error::other)?;
+        buffr_durable_file::publish_private_streaming(
+            &status_path,
+            std::time::Duration::from_millis(500),
+            |file| std::io::Write::write_all(file, &bytes),
+        )
+    })();
+    match result {
+        Ok(()) => {
+            show_manual_upload_status(&incident.id);
+            true
+        }
+        Err(error) => {
+            crate::diagnostics::event(
+                crate::diagnostics::LogLevel::Error,
+                "support",
+                "manual_report_disposition_failed",
+                serde_json::json!({"incident_id":incident.id,"reason":format!("The oversized report remains local, but its manual-export disposition could not be saved ({error}). Automatic queue continuation stopped; no incident was removed or marked sent.")}),
+            );
+            false
+        }
+    }
+}
+
+fn load_pending_by_id(incident_id: &str) -> Option<CrashIncident> {
+    pending_snapshot(incident_id).map(|(incident, _)| incident)
+}
+
+fn save_pending_if_unchanged(incident: &CrashIncident, expected_hash: &str) -> bool {
+    let Some(path) = keyed_pending_incident_path(&incident.id) else {
+        return false;
+    };
+    let Ok(bytes) = serde_json::to_vec(incident) else {
+        return false;
+    };
+    buffr_durable_file::publish_private_streaming(
+        &path,
+        std::time::Duration::from_millis(500),
+        |file| {
+            let Some(current) = super::read_bounded_file(&path, super::LOCAL_REPORT_BYTES)? else {
+                return Err(std::io::Error::from(std::io::ErrorKind::InvalidData));
+            };
+            if blake3::hash(&current).to_hex().as_str() != expected_hash {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "incident changed during evidence collection",
+                ));
+            }
+            let previous: CrashIncident =
+                serde_json::from_slice(&current).map_err(std::io::Error::other)?;
+            if !same_pending_identity(&previous, incident)
+                || (previous.auto_reportable() && !incident.auto_reportable())
+            {
+                return Err(std::io::Error::from(std::io::ErrorKind::InvalidData));
+            }
+            preserve_original_file(
+                &path,
+                "keyed-pending-before-proof-refresh",
+                &AtomicBool::new(false),
+                Some((current.len() as u64, expected_hash)),
+            )?;
+            std::io::Write::write_all(file, &bytes)
+        },
+    )
+    .is_ok()
+}
+
+/// Add stronger proof without replacing the current host/build/journal fields.
+/// A matching ID alone cannot authorize joining evidence from another identity.
+fn same_pending_identity(current: &CrashIncident, incoming: &CrashIncident) -> bool {
+    current.id == incoming.id
+        && current.pid == incoming.pid
+        && current.started_at == incoming.started_at
+        && comparable_process_name(&current.host_process)
+            == comparable_process_name(&incoming.host_process)
+        && current.version == incoming.version
+        && current.build_id == incoming.build_id
+        && current.plugin_api == incoming.plugin_api
+        && current.os == incoming.os
+        && current.architecture == incoming.architecture
+}
+
+fn stronger_pending_proof(
+    current: &CrashIncident,
+    incoming: &CrashIncident,
+) -> Option<CrashIncident> {
+    if current.auto_reportable()
+        || !incoming.auto_reportable()
+        || !same_pending_identity(current, incoming)
+    {
+        return None;
+    }
+    let mut merged = current.clone();
+    merged.kind = incoming.kind;
+    merged.panic = incoming.panic.clone();
+    merged.evidence_signature = incoming.evidence_signature.clone();
+    merged.platform_evidence = incoming.platform_evidence.clone();
+    merged.detected_at = merged.detected_at.max(incoming.detected_at);
+    merged.dropped_events = merged.dropped_events.max(incoming.dropped_events);
+    Some(merged)
+}
+
 fn save_pending_incident(incident: &CrashIncident) -> bool {
-    persist_json(&pending_incident_path(), incident)
+    let Some(path) = keyed_pending_incident_path(&incident.id) else {
+        return false;
+    };
+    let Ok(bytes) = serde_json::to_vec(incident) else {
+        return false;
+    };
+    // Each incident owns its filename. Different hosts cannot replace each
+    // other's queue slots; only same-ID evidence refreshes use this lock.
+    match buffr_durable_file::publish_private_streaming(
+        &path,
+        std::time::Duration::from_millis(500),
+        |file| match super::read_bounded_file(&path, super::LOCAL_REPORT_BYTES) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::io::Write::write_all(file, &bytes)
+            }
+            Ok(Some(existing)) => {
+                let current: CrashIncident =
+                    serde_json::from_slice(&existing).map_err(std::io::Error::other)?;
+                if current.source_schema < 5 || !same_pending_identity(&current, incident) {
+                    return Err(std::io::Error::from(std::io::ErrorKind::InvalidData));
+                }
+                if let Some(merged) = stronger_pending_proof(&current, incident) {
+                    let digest = blake3::hash(&existing).to_hex().to_string();
+                    preserve_original_file(
+                        &path,
+                        "keyed-pending-before-stronger-proof",
+                        &AtomicBool::new(false),
+                        Some((existing.len() as u64, &digest)),
+                    )?;
+                    let merged = serde_json::to_vec(&merged).map_err(std::io::Error::other)?;
+                    std::io::Write::write_all(file, &merged)
+                } else {
+                    Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists))
+                }
+            }
+            _ => Err(std::io::Error::from(std::io::ErrorKind::InvalidData)),
+        },
+    ) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => true,
+        Err(error) => {
+            crate::diagnostics::event(
+                crate::diagnostics::LogLevel::Error,
+                "support",
+                "pending_report_write_failed",
+                serde_json::json!({"incident_id":incident.id,
+                "reason":format!("Incident could not be durably queued; existing/source evidence was not retired: {error}")}),
+            );
+            false
+        }
+    }
+}
+
+enum QueueScanProgress {
+    Advanced(String),
+    Exhausted,
+    Halted(String),
+    Cancelled,
+}
+
+/// Inspect at most 32 safe queue files per registration. A lexical cursor
+/// advances through large queues without keeping all filenames in memory.
+/// Select the oldest confirmed incident in this batch before any unknown one.
+fn find_pending_candidates(
+    stopping: &AtomicBool,
+    excluded_id: Option<&str>,
+    scan_cursor: Option<&str>,
+) -> (
+    Option<CrashIncident>,
+    Option<CrashIncident>,
+    QueueScanProgress,
+) {
+    let directory = reports_dir().join("pending");
+    let cursor_path = reports_dir().join("pending-cursor.json");
+    // A draining pass carries its own monotonic cursor: other hosts may update
+    // the persisted registration cursor, but cannot make this pass revisit a batch.
+    let cursor = scan_cursor
+        .map(str::to_owned)
+        .unwrap_or_else(|| read_json::<String>(&cursor_path).unwrap_or_default());
+    let mut paths = BTreeMap::new();
+    let entries = match std::fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (None, None, QueueScanProgress::Exhausted);
+        }
+        Err(error) => {
+            return (
+                None,
+                None,
+                QueueScanProgress::Halted(format!(
+                    "Could not enumerate pending reports; their evidence remains local: {error}"
+                )),
+            );
+        }
+    };
+    for entry in entries.flatten() {
+        if stopping.load(Ordering::Acquire) {
+            return (None, None, QueueScanProgress::Cancelled);
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(id) = name.strip_suffix(".json") else {
+            continue;
+        };
+        if name <= cursor
+            || keyed_pending_incident_path(id).is_none()
+            || !entry.file_type().is_ok_and(|t| t.is_file())
+        {
+            continue;
+        }
+        paths.insert(name, entry.path());
+        if paths.len() > 32 {
+            paths.pop_last();
+        }
+    }
+    let mut confirmed: Option<CrashIncident> = None;
+    let mut unknown: Option<CrashIncident> = None;
+    for (name, path) in &paths {
+        if stopping.load(Ordering::Acquire) {
+            return (None, None, QueueScanProgress::Cancelled);
+        }
+        let id = name.strip_suffix(".json").unwrap();
+        if manual_required_for_pending(id, stopping).is_some() {
+            show_manual_upload_status(id);
+            continue;
+        }
+        let Some((mut incident, observed_hash)) =
+            name.strip_suffix(".json").and_then(pending_snapshot)
+        else {
+            if std::fs::metadata(path).is_ok_and(|m| m.len() > super::LOCAL_REPORT_BYTES as u64) {
+                let _ = preserve_original_file(
+                    path,
+                    "oversized-keyed-pending-json-unparsed",
+                    stopping,
+                    None,
+                );
+            }
+            continue;
+        };
+        if Some(incident.id.as_str()) == excluded_id || format!("{}.json", incident.id) != *name {
+            continue;
+        }
+        if !incident.auto_reportable() {
+            let evidence = super::platform::collect_crash_evidence(
+                &incident.host_process,
+                incident.pid,
+                incident.started_at,
+                incident.detected_at,
+                stopping,
+            );
+            if apply_delayed_crash_evidence(&mut incident, &evidence)
+                && !save_pending_if_unchanged(&incident, &observed_hash)
+            {
+                let Some(latest) = load_pending_by_id(&incident.id) else {
+                    continue;
+                };
+                incident = latest; // Never overwrite another host's fresher evidence.
+            }
+        }
+        let selection = if incident.auto_reportable() {
+            &mut confirmed
+        } else {
+            &mut unknown
+        };
+        if selection.as_ref().is_none_or(|old| {
+            (incident.started_at, incident.detected_at, &incident.id)
+                < (old.started_at, old.detected_at, &old.id)
+        }) {
+            *selection = Some(incident);
+        }
+    }
+    let next = paths
+        .last_key_value()
+        .map(|(name, _)| name.as_str())
+        .unwrap_or("");
+    let progress = if stopping.load(Ordering::Acquire) {
+        QueueScanProgress::Cancelled
+    } else if !persist_json(&cursor_path, &next) {
+        QueueScanProgress::Halted("Could not persist the queue scan cursor; remaining evidence is retained locally and scanning stopped.".into())
+    } else if paths.is_empty() {
+        QueueScanProgress::Exhausted
+    } else {
+        QueueScanProgress::Advanced(next.to_owned())
+    };
+    (confirmed, unknown, progress)
+}
+
+/// Migrate only on a worker. Hold the legacy publisher lock from exact read
+/// through complete private raw+manifest retention, keyed publication and
+/// retirement. Any failure/cancellation leaves legacy evidence in place.
+fn migrate_legacy_pending(stopping: &AtomicBool) -> bool {
+    if stopping.load(Ordering::Acquire) {
+        return false;
+    }
+    let path = pending_incident_path();
+    let lock = match buffr_durable_file::acquire_publisher_lock(
+        &path,
+        std::time::Duration::from_millis(500),
+    ) {
+        Ok(lock) => lock,
+        Err(error) => {
+            crate::diagnostics::event(
+                crate::diagnostics::LogLevel::Error,
+                "support",
+                "pending_migration_failed",
+                serde_json::json!({"reason":format!("Legacy pending evidence remains local; migration could not lock it: {error}")}),
+            );
+            return false;
+        }
+    };
+    let bytes = match super::read_bounded_file(&path, super::LOCAL_REPORT_BYTES) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return true,
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => {
+            drop(lock);
+            return preserve_oversized_pending(stopping);
+        }
+        Err(error) => {
+            crate::diagnostics::event(
+                crate::diagnostics::LogLevel::Error,
+                "support",
+                "pending_migration_failed",
+                serde_json::json!({"reason":format!("Legacy pending evidence could not be read; it remains local and migration is blocked: {error}")}),
+            );
+            return false;
+        }
+    };
+    let incident = serde_json::from_slice::<CrashIncident>(&bytes)
+        .ok()
+        .and_then(normalize_pending);
+    let hash = blake3::hash(&bytes).to_hex().to_string();
+    let result = (|| -> std::io::Result<()> {
+        preserve_original_file(
+            &path,
+            "legacy-pending-json-migration",
+            stopping,
+            Some((bytes.len() as u64, &hash)),
+        )?;
+        if let Some(incident) = incident {
+            let destination = keyed_pending_incident_path(&incident.id).unwrap();
+            let serialized = serde_json::to_vec(&incident).map_err(std::io::Error::other)?;
+            let publication = buffr_durable_file::publish_private_streaming(
+                &destination,
+                std::time::Duration::from_millis(500),
+                |file| match super::read_bounded_file(&destination, super::LOCAL_REPORT_BYTES) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        std::io::Write::write_all(file, &serialized)
+                    }
+                    Ok(Some(existing)) => {
+                        let current: CrashIncident =
+                            serde_json::from_slice(&existing).map_err(std::io::Error::other)?;
+                        if current.source_schema < 5 || !same_pending_identity(&current, &incident)
+                        {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "legacy/keyed incident identity differs; legacy original retained",
+                            ));
+                        }
+                        if let Some(merged) = stronger_pending_proof(&current, &incident) {
+                            let digest = blake3::hash(&existing).to_hex().to_string();
+                            preserve_original_file(
+                                &destination,
+                                "keyed-pending-before-legacy-proof",
+                                stopping,
+                                Some((existing.len() as u64, &digest)),
+                            )?;
+                            let merged =
+                                serde_json::to_vec(&merged).map_err(std::io::Error::other)?;
+                            std::io::Write::write_all(file, &merged)
+                        } else {
+                            Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists))
+                        }
+                    }
+                    _ => Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "keyed destination cannot be validated; legacy original retained",
+                    )),
+                },
+            );
+            if let Err(error) = publication {
+                if error.kind() != std::io::ErrorKind::AlreadyExists {
+                    return Err(error);
+                }
+            }
+        }
+        if stopping.load(Ordering::Acquire) {
+            return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+        }
+        std::fs::remove_file(&path)
+    })();
+    match result {
+        Ok(()) => true,
+        Err(error) => {
+            crate::diagnostics::event(
+                crate::diagnostics::LogLevel::Error,
+                "support",
+                "pending_migration_failed",
+                serde_json::json!({"reason":format!("Legacy pending evidence was not retired because complete private retention/keyed migration failed: {error}")}),
+            );
+            false
+        }
+    }
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = super::read_bounded_file(path, super::LOCAL_REPORT_BYTES).ok()??;
     serde_json::from_slice(&bytes).ok()
 }
 
-/// As [`read_json`], but deletes a file that exists and does not parse, which would otherwise be
-/// skipped on every launch forever.
+/// Discards malformed bounded session JSON only while holding its publisher lock.
+/// Oversized originals remain for the recovery worker's private archival.
 fn read_json_or_discard<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
-    let bytes = std::fs::read(path).ok()?;
+    let _publisher_lock =
+        buffr_durable_file::acquire_publisher_lock(path, std::time::Duration::from_millis(500))
+            .ok()?;
+    let bytes = super::read_bounded_file(path, super::LOCAL_REPORT_BYTES).ok()??;
     let value = serde_json::from_slice(&bytes).ok();
     if value.is_none() {
         let _ = std::fs::remove_file(path);
@@ -1595,7 +2844,11 @@ fn persist_json(path: &Path, value: &impl Serialize) -> bool {
     let Ok(bytes) = serde_json::to_vec(value) else {
         return false;
     };
-    match buffr_durable_file::publish_private(path, &bytes) {
+    match buffr_durable_file::publish_private_streaming(
+        path,
+        std::time::Duration::from_millis(500),
+        |file| std::io::Write::write_all(file, &bytes),
+    ) {
         Ok(()) => true,
         Err(error) => {
             eprintln!(
@@ -1742,7 +2995,51 @@ mod tests {
             "authored startup",
         );
         assert!(recorder.flush(std::time::Duration::from_secs(2)));
+        // Exceed the recovered window through the actual recorder/consumer, without
+        // queue overflow. Complete originals must survive the bounded report view.
+        for sequence in 0..(RECOVERED_HEAD_RECORDS + RECOVERED_TAIL_RECORDS + 17) {
+            recorder.sink().record(
+                Subsystem::Host,
+                "fixture_event",
+                Phase::Started,
+                Default::default(),
+                format!("authored event {sequence}"),
+            );
+            if sequence % 16 == 0 {
+                assert!(recorder.flush(std::time::Duration::from_secs(2)));
+            }
+        }
+        assert!(recorder.flush(std::time::Duration::from_secs(2)));
         assert!(recorder.shutdown(std::time::Duration::from_secs(2)));
+        // Put the sole persisted overflow count in the omitted middle. Rewrite
+        // an authored slot with the real recorder schema/checksum so the root
+        // consumer (not only the vendor reader test) must retain the aggregate.
+        let middle = derpcat_flight_recorder::Record {
+            sequence: 140,
+            action: "diagnostic_overflow".into(),
+            value_a: 87,
+            ..Default::default()
+        };
+        let payload = serde_json::to_vec(&middle).unwrap();
+        assert!(payload.len() <= 1024 - 52);
+        let mut slot = [0_u8; 1024];
+        slot[..8].copy_from_slice(b"DFRSLT01");
+        slot[8..10].copy_from_slice(&1_u16.to_le_bytes());
+        slot[10..12].copy_from_slice(&(payload.len() as u16).to_le_bytes());
+        slot[12..20].copy_from_slice(&middle.sequence.to_le_bytes());
+        slot[20..52].copy_from_slice(blake3::hash(&payload).as_bytes());
+        slot[52..52 + payload.len()].copy_from_slice(&payload);
+        {
+            use std::io::{Seek as _, Write as _};
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&journal)
+                .unwrap();
+            file.seek(std::io::SeekFrom::Start(140 * 1024)).unwrap();
+            file.write_all(&slot).unwrap();
+            file.sync_all().unwrap();
+        }
+        let original_journal = std::fs::read(&journal).unwrap();
         assert!(persist_json(&marker_path, &marker));
         let panic = PanicMarker {
             at: now_unix(),
@@ -1752,7 +3049,21 @@ mod tests {
             images: vec![],
         };
         assert!(persist_json(&panic_marker_path(marker.pid), &panic));
+        let live_path = sessions_dir().join("live-protected.json");
+        let live_marker = new_session_marker(99, "live-protected");
+        assert!(persist_json(&live_path, &live_marker));
+        let live_lock = buffr_durable_file::lock_path(&live_path).unwrap();
+        let in_flight = sessions_dir().join(format!(
+            ".live-protected.json.tmp-{}-42",
+            std::process::id()
+        ));
+        std::fs::write(&in_flight, b"in-flight authored fixture").unwrap();
+        assert!(live_lock.exists());
         let recovered = detect_stale_sessions(&AtomicBool::new(false)).unwrap();
+        assert!(
+            live_path.exists() && live_lock.exists() && in_flight.exists(),
+            "recovery must not discard a live publisher's lock or temporary"
+        );
         assert!(recovered.auto_reportable());
         assert!(
             recovered
@@ -1765,15 +3076,54 @@ mod tests {
                 .contains("src/fixture.rs:9:2")
         );
         assert!(!marker_path.exists() && !journal.exists());
-        assert_eq!(load_pending_incident().unwrap().id, recovered.id);
+        let source = recovered.local_journal.as_ref().unwrap();
+        assert!(source.omitted_slots > 0);
+        assert_eq!(recovered.dropped_events, 87);
+        assert!(
+            !recovered
+                .events
+                .iter()
+                .any(|r| r.action == "diagnostic_overflow")
+        );
+        assert_eq!(
+            recovered.events.len(),
+            RECOVERED_HEAD_RECORDS + RECOVERED_TAIL_RECORDS
+        );
+        assert_eq!(source.bytes, original_journal.len() as u64);
+        assert_eq!(
+            source.blake3,
+            blake3::hash(&original_journal).to_hex().to_string()
+        );
+        let archive = reports_dir().join(&source.local_file);
+        assert_eq!(std::fs::read(&archive).unwrap(), original_journal);
+        assert!(
+            recovered
+                .render_diagnostics(true)
+                .contains("PARTIAL JOURNAL REPORT")
+        );
+        assert!(
+            recovered
+                .render_diagnostics(true)
+                .contains("authored event 2192")
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&archive).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        assert_eq!(load_pending_by_id(&recovered.id).unwrap().id, recovered.id);
         assert!(
             detect_stale_sessions(&AtomicBool::new(false)).is_none(),
             "consumed marker must not create duplicate reports"
         );
-        let pending_before = std::fs::read(pending_incident_path()).unwrap();
+        let pending_before =
+            std::fs::read(keyed_pending_incident_path(&recovered.id).unwrap()).unwrap();
         assert!(super::super::request_agent().is_err());
         assert_eq!(
-            std::fs::read(pending_incident_path()).unwrap(),
+            std::fs::read(keyed_pending_incident_path(&recovered.id).unwrap()).unwrap(),
             pending_before,
             "failed delivery must retain complete evidence"
         );
@@ -1800,7 +3150,7 @@ mod tests {
 
         let (sender, receiver) = mpsc::channel();
         let session = sessions_dir().join("live-retry-session.json");
-        let pending = Arc::new(Mutex::new(load_pending_incident()));
+        let pending = Arc::new(Mutex::new(load_pending_by_id(&recovered.id)));
         let worker = std::thread::spawn(move || {
             reporter_worker(
                 receiver,
@@ -1829,7 +3179,7 @@ mod tests {
         sender.send(ReporterControl::Shutdown).unwrap();
         worker.join().unwrap();
         assert_eq!(
-            std::fs::read(pending_incident_path()).unwrap(),
+            std::fs::read(keyed_pending_incident_path(&recovered.id).unwrap()).unwrap(),
             pending_before
         );
         assert_eq!(std::fs::read(&second_marker).unwrap(), second_marker_before);
@@ -1856,7 +3206,7 @@ mod tests {
             "unused".into(),
             Arc::new(AtomicBool::new(false)),
         );
-        assert!(!pending_incident_path().exists());
+        assert!(!keyed_pending_incident_path(&recovered.id).unwrap().exists());
         let second_recovered = detect_stale_sessions(&AtomicBool::new(false)).unwrap();
         assert_ne!(second_recovered.id, recovered.id);
         assert!(
@@ -1864,16 +3214,1364 @@ mod tests {
                 .render_diagnostics(true)
                 .contains("distinct second crash startup")
         );
-        assert_eq!(load_pending_incident().unwrap().id, second_recovered.id);
+        assert_eq!(
+            load_pending_by_id(&second_recovered.id).unwrap().id,
+            second_recovered.id
+        );
         assert!(!second_marker.exists() && !second_journal.exists());
-        let second_pending = std::fs::read(pending_incident_path()).unwrap();
+        let second_pending =
+            std::fs::read(keyed_pending_incident_path(&second_recovered.id).unwrap()).unwrap();
         assert!(super::super::request_agent().is_err());
         assert_eq!(
-            std::fs::read(pending_incident_path()).unwrap(),
+            std::fs::read(keyed_pending_incident_path(&second_recovered.id).unwrap()).unwrap(),
             second_pending
         );
         assert!(detect_stale_sessions(&AtomicBool::new(false)).is_none());
     }
+    #[test]
+    fn unconfirmed_pending_does_not_block_confirmed_recovery_or_lose_deferred_evidence() {
+        const CHILD: &str = "KONTRA_DEFERRED_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "support::crash::tests::unconfirmed_pending_does_not_block_confirmed_recovery_or_lose_deferred_evidence", "--test-threads=1"])
+                .env(CHILD,"1").env("KONTRA_REPORT_DIR", directory.path())
+                .env("KONTRA_DISABLE_NETWORK","1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let mut previous = test_incident("0.3.115", "authored-old");
+        previous.id = "0123456789abcdef".into();
+        previous.kind = IncidentKind::UncleanExit;
+        previous.panic = None;
+        previous.host_process = "authored-unknown-host".into();
+        previous.pid = u32::MAX - 100;
+        assert!(save_pending_incident(&previous));
+        let previous_bytes =
+            std::fs::read(keyed_pending_incident_path(&previous.id).unwrap()).unwrap();
+        let mut marker = new_session_marker(12, "later-proven-crash");
+        marker.pid = u32::MAX - 101;
+        marker.host_process = "authored-proven-host".into();
+        marker.journal_file = None;
+        let marker_path = sessions_dir().join("later-confirmed.json");
+        assert!(persist_json(&marker_path, &marker));
+        let panic = PanicMarker {
+            at: now_unix(),
+            thread: "authored".into(),
+            message: "authored failure".into(),
+            location: "src/authored.rs:9".into(),
+            images: vec![],
+        };
+        assert!(persist_json(&panic_marker_path(marker.pid), &panic));
+        let mut unknown = marker.clone();
+        unknown.pid = u32::MAX - 102;
+        unknown.session_id = "other-retained-unknown".into();
+        let unknown_path = sessions_dir().join("other-unknown.json");
+        assert!(persist_json(&unknown_path, &unknown));
+        let unknown_bytes = std::fs::read(&unknown_path).unwrap();
+        let pending = Arc::new(Mutex::new(Some(previous.clone())));
+        let (sender, receiver) = mpsc::channel();
+        let (reply, acknowledged) = mpsc::sync_channel(1);
+        sender.send(ReporterControl::Register(99, reply)).unwrap();
+        sender.send(ReporterControl::Shutdown).unwrap();
+        reporter_worker(
+            receiver,
+            Arc::new(Mutex::new(None)),
+            pending.clone(),
+            Arc::new(AtomicBool::new(false)),
+            None,
+            sessions_dir().join("current.json"),
+            bootstrap_journal_path("deferred-test"),
+            "deferred-test".into(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        assert!(
+            acknowledged
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap()
+        );
+        let recovered = pending.lock_unpoisoned().clone().unwrap();
+        assert_eq!(recovered.id, incident_id(&marker));
+        assert!(recovered.auto_reportable());
+        assert!(!marker_path.exists());
+        let deferred = reports_dir()
+            .join("deferred")
+            .join(format!("{}.json", previous.id));
+        assert_eq!(std::fs::read(&deferred).unwrap(), previous_bytes);
+        assert_eq!(std::fs::read(&unknown_path).unwrap(), unknown_bytes);
+        // Confirmed offline reports still own the slot, even with other candidates.
+        let confirmed_bytes =
+            std::fs::read(keyed_pending_incident_path(&recovered.id).unwrap()).unwrap();
+        assert!(!recover_pending_slot(&pending, &AtomicBool::new(false)));
+        assert_eq!(
+            std::fs::read(keyed_pending_incident_path(&recovered.id).unwrap()).unwrap(),
+            confirmed_bytes
+        );
+        assert_eq!(std::fs::read(&deferred).unwrap(), previous_bytes);
+        // A saved, subsequently confirmed deferred fixture uses the same queue
+        // consumer. No OS crash, network request or synthetic public issue is made.
+        let evidence = CrashEvidence {
+            disposition: EvidenceDisposition::Crash,
+            signature: "authored-late-native-proof".into(),
+            text: "authored exception and frames".into(),
+        };
+        assert!(apply_delayed_crash_evidence(&mut previous, &evidence));
+        assert!(persist_json(&deferred, &previous));
+        retire_acknowledged_copy(
+            &keyed_pending_incident_path(&recovered.id).unwrap(),
+            &recovered.id,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        *pending.lock_unpoisoned() = None;
+        assert!(recover_pending_slot(&pending, &AtomicBool::new(false)));
+        assert_eq!(pending.lock_unpoisoned().as_ref().unwrap().id, previous.id);
+        assert!(!deferred.exists());
+        assert!(
+            unknown_path.exists(),
+            "unselected unknown evidence remains available for later native matching"
+        );
+    }
+
+    #[test]
+    fn failed_pending_replacement_then_acknowledgement_does_not_requeue_deferred_duplicate() {
+        const CHILD: &str = "KONTRA_FAILED_REPLACEMENT_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "support::crash::tests::failed_pending_replacement_then_acknowledgement_does_not_requeue_deferred_duplicate", "--test-threads=1"])
+                .env(CHILD,"1").env("KONTRA_REPORT_DIR", directory.path())
+                .env("KONTRA_DISABLE_NETWORK","1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let mut previous = test_incident("0.3.115", "authored-failed-replacement");
+        previous.id = "0123456789abcdef".into();
+        previous.panic = None;
+        previous.kind = IncidentKind::UncleanExit;
+        assert!(save_pending_incident(&previous));
+        let prior = reports_dir().join("prior-held.json");
+        std::fs::rename(keyed_pending_incident_path(&previous.id).unwrap(), &prior).unwrap();
+        // A directory at the publication destination makes the real durable
+        // replace fail after the previous incident has been deferred.
+        let mut marker = new_session_marker(12, "next-confirmed");
+        marker.pid = u32::MAX - 111;
+        marker.host_process = "authored-host".into();
+        marker.journal_file = None;
+        let next_path = keyed_pending_incident_path(&incident_id(&marker)).unwrap();
+        std::fs::create_dir(&next_path).unwrap();
+        let marker_path = sessions_dir().join("next-confirmed.json");
+        assert!(persist_json(&marker_path, &marker));
+        assert!(persist_json(
+            &panic_marker_path(marker.pid),
+            &PanicMarker {
+                at: now_unix(),
+                thread: "test".into(),
+                message: "authored failure".into(),
+                location: "src/authored.rs:1".into(),
+                images: vec![]
+            }
+        ));
+        let pending = Arc::new(Mutex::new(Some(previous.clone())));
+        assert!(!recover_pending_slot(&pending, &AtomicBool::new(false)));
+        let deferred = reports_dir()
+            .join("deferred")
+            .join(format!("{}.json", previous.id));
+        assert_eq!(
+            read_json::<CrashIncident>(&deferred).unwrap().id,
+            previous.id
+        );
+        assert_eq!(pending.lock_unpoisoned().as_ref().unwrap().id, previous.id);
+        assert!(
+            marker_path.exists(),
+            "failed consume retains next incident source"
+        );
+        std::fs::remove_dir(&next_path).unwrap();
+        std::fs::rename(&prior, keyed_pending_incident_path(&previous.id).unwrap()).unwrap();
+        let unrelated = reports_dir().join("deferred").join("fedcba9876543210.json");
+        let unrelated_bytes = b"authored unrelated local evidence";
+        std::fs::write(&unrelated, unrelated_bytes).unwrap();
+        let original = reports_dir().join("originals").join("complete-private.dfr");
+        std::fs::create_dir_all(original.parent().unwrap()).unwrap();
+        std::fs::write(&original, b"full original remains local").unwrap();
+        assert!(apply_delayed_crash_evidence(
+            &mut previous,
+            &CrashEvidence {
+                disposition: EvidenceDisposition::Crash,
+                signature: "authored-late-proof".into(),
+                text: "authored native exception and stack".into()
+            }
+        ));
+        assert!(save_pending_incident(&previous));
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(ReporterControl::Submitted(previous.id.clone()))
+            .unwrap();
+        drop(sender);
+        reporter_worker(
+            receiver,
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
+            Arc::new(AtomicBool::new(false)),
+            None,
+            sessions_dir().join("unused.json"),
+            bootstrap_journal_path("unused"),
+            "unused".into(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        assert!(!keyed_pending_incident_path(&previous.id).unwrap().exists() && !deferred.exists());
+        assert_eq!(std::fs::read(&unrelated).unwrap(), unrelated_bytes);
+        assert_eq!(
+            std::fs::read(&original).unwrap(),
+            b"full original remains local"
+        );
+        *pending.lock_unpoisoned() = None;
+        assert!(recover_pending_slot(&pending, &AtomicBool::new(false)));
+        assert_eq!(
+            pending.lock_unpoisoned().as_ref().unwrap().id,
+            incident_id(&marker)
+        );
+        assert!(
+            !deferred.exists(),
+            "acknowledged incident never returns to the queue"
+        );
+    }
+
+    #[test]
+    fn oversized_pending_is_not_discarded_or_replaced_before_complete_private_retention() {
+        const CHILD: &str = "KONTRA_OVERSIZED_PENDING_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact","support::crash::tests::oversized_pending_is_not_discarded_or_replaced_before_complete_private_retention","--test-threads=1"])
+                .env(CHILD,"1").env("KONTRA_REPORT_DIR",directory.path()).env("KONTRA_DISABLE_NETWORK","1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let mut incident = test_incident("0.3.115", "authored-large-prior");
+        incident.platform_evidence =
+            "authored private original\n".repeat(super::super::LOCAL_REPORT_BYTES / 20);
+        assert!(persist_json(&pending_incident_path(), &incident));
+        let original = std::fs::read(pending_incident_path()).unwrap();
+        assert!(original.len() > super::super::LOCAL_REPORT_BYTES);
+        assert!(read_json::<CrashIncident>(&pending_incident_path()).is_none());
+        assert_eq!(
+            std::fs::read(pending_incident_path()).unwrap(),
+            original,
+            "oversize is not malformed JSON and must never be discarded"
+        );
+        let blocker = reports_dir().join("originals");
+        std::fs::write(&blocker, b"authored archive failure blocker").unwrap();
+        let pending = Mutex::new(None);
+        assert!(!recover_pending_slot(&pending, &AtomicBool::new(false)));
+        assert_eq!(std::fs::read(pending_incident_path()).unwrap(), original);
+        assert!(pending.lock_unpoisoned().is_none());
+        std::fs::remove_file(&blocker).unwrap();
+        assert!(!preserve_oversized_pending(&AtomicBool::new(true)));
+        assert!(pending_incident_path().exists());
+        assert!(preserve_oversized_pending(&AtomicBool::new(false)));
+        assert!(!pending_incident_path().exists());
+        let hash = blake3::hash(&original).to_hex().to_string();
+        let archive = blocker.join(format!("{hash}.raw"));
+        assert_eq!(std::fs::read(&archive).unwrap(), original);
+        let manifest: serde_json::Value = read_json(&archive.with_extension("json")).unwrap();
+        assert_eq!(manifest["bytes"], original.len());
+        assert_eq!(manifest["blake3"], hash);
+        assert_eq!(manifest["status"], "oversized-pending-json-unparsed");
+        assert_eq!(manifest["automatically_uploaded"], false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&archive).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                std::fs::metadata(archive.with_extension("json"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn pending_retirement_serializes_with_an_actual_competing_publisher() {
+        const CHILD: &str = "KONTRA_PENDING_RETIREMENT_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "support::crash::tests::pending_retirement_serializes_with_an_actual_competing_publisher", "--test-threads=1"])
+                .env(CHILD, "1").env("KONTRA_REPORT_DIR", directory.path())
+                .env("KONTRA_DISABLE_NETWORK", "1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let path = pending_incident_path();
+        let original = vec![b' '; super::super::LOCAL_REPORT_BYTES + 1];
+        buffr_durable_file::publish_private(&path, &original).unwrap();
+        let hash = blake3::hash(&original).to_hex().to_string();
+        let archive = reports_dir().join("originals").join(format!("{hash}.raw"));
+        // Hold the archive publisher so the real recovery worker pauses after
+        // acquiring the pending publisher lock, before it can retire anything.
+        let archive_lock =
+            buffr_durable_file::acquire_publisher_lock(&archive, std::time::Duration::ZERO)
+                .unwrap();
+        let recovery = std::thread::spawn(|| preserve_oversized_pending(&AtomicBool::new(false)));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            match buffr_durable_file::acquire_publisher_lock(&path, std::time::Duration::ZERO) {
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Ok(lock) => drop(lock),
+                Err(error) => panic!("unexpected pending lock error: {error}"),
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "recovery did not acquire its lock"
+            );
+            std::thread::yield_now();
+        }
+        let mut next = test_incident("0.3.115", "authored-competing-publisher");
+        next.id = "fedcba9876543210".into();
+        let next_bytes = serde_json::to_vec(&next).unwrap();
+        let publisher_path = path.clone();
+        let published_bytes = next_bytes.clone();
+        let (entered, receiver) = mpsc::channel();
+        let publisher = std::thread::spawn(move || {
+            buffr_durable_file::publish_private_streaming(
+                &publisher_path,
+                std::time::Duration::from_secs(2),
+                |file| {
+                    entered.send(()).unwrap();
+                    std::io::Write::write_all(file, &published_bytes)
+                },
+            )
+        });
+        assert!(
+            matches!(
+                receiver.recv_timeout(std::time::Duration::from_millis(25)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "publisher entered while recovery held its lock"
+        );
+        drop(archive_lock);
+        assert!(recovery.join().unwrap());
+        publisher.join().unwrap().unwrap();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            next_bytes,
+            "retirement must not delete the other host's new publication"
+        );
+        assert_eq!(std::fs::read(&archive).unwrap(), original);
+        let stopped = AtomicBool::new(false);
+        retire_acknowledged_copy(&path, "0123456789abcdef", &stopped).unwrap();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            next_bytes,
+            "another ID cannot be retired"
+        );
+        // Busy ACK retirement gives up without deleting, using the same lock as
+        // the real publisher. Cancellation also retains the queue copy.
+        let lock =
+            buffr_durable_file::acquire_publisher_lock(&path, std::time::Duration::ZERO).unwrap();
+        assert!(retire_acknowledged_copy(&path, &next.id, &stopped).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), next_bytes);
+        drop(lock);
+        assert!(retire_acknowledged_copy(&path, &next.id, &AtomicBool::new(true)).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), next_bytes);
+        retire_acknowledged_copy(&path, &next.id, &stopped).unwrap();
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::read(&archive).unwrap(),
+            original,
+            "ACK preserves full original evidence"
+        );
+    }
+
+    #[test]
+    fn two_host_publishers_keep_both_keyed_reports_and_exact_ack_recovers_the_other() {
+        const CHILD: &str = "KONTRA_KEYED_QUEUE_CHILD";
+        const PUBLISH: &str = "KONTRA_KEYED_QUEUE_PUBLISH_ID";
+        fn fixture(id: &str, start: u64) -> CrashIncident {
+            let mut incident = test_incident("0.3.115", "authored-keyed-host");
+            incident.id = id.into();
+            incident.started_at = start;
+            incident.detected_at = start + 1;
+            incident.pid = u32::MAX - start as u32;
+            incident.host_process = format!("authored-host-{start}");
+            incident.kind = IncidentKind::PlatformCrash;
+            incident.platform_evidence = format!("authored confirmed exception and stack for {id}");
+            incident
+        }
+        if std::env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "support::crash::tests::two_host_publishers_keep_both_keyed_reports_and_exact_ack_recovers_the_other", "--test-threads=1"])
+                .env(CHILD, "1").env("KONTRA_REPORT_DIR", directory.path())
+                .env("KONTRA_DISABLE_NETWORK", "1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        if let Ok(id) = std::env::var(PUBLISH) {
+            let start = if id == "0000000000000001" { 100 } else { 200 };
+            assert!(save_pending_incident(&fixture(&id, start)));
+            return;
+        }
+        let first = fixture("0000000000000001", 100);
+        let second = fixture("0000000000000002", 200);
+        let first_bytes = serde_json::to_vec(&first).unwrap();
+        let second_bytes = serde_json::to_vec(&second).unwrap();
+        let mut publishers = Vec::new();
+        for id in [&first.id, &second.id] {
+            publishers.push(std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "support::crash::tests::two_host_publishers_keep_both_keyed_reports_and_exact_ack_recovers_the_other", "--test-threads=1"])
+                .env(CHILD, "1").env(PUBLISH, id).env("KONTRA_DISABLE_NETWORK", "1")
+                .spawn().unwrap());
+        }
+        for mut publisher in publishers {
+            assert!(publisher.wait().unwrap().success());
+        }
+        let first_path = keyed_pending_incident_path(&first.id).unwrap();
+        let second_path = keyed_pending_incident_path(&second.id).unwrap();
+        assert_eq!(std::fs::read(&first_path).unwrap(), first_bytes);
+        assert_eq!(std::fs::read(&second_path).unwrap(), second_bytes);
+        assert!(
+            !pending_incident_path().exists(),
+            "new hosts never publish the shared legacy slot"
+        );
+        let mut older_unknown = fixture("0000000000000003", 50);
+        older_unknown.kind = IncidentKind::UncleanExit;
+        older_unknown.evidence_signature.clear();
+        older_unknown.platform_evidence.clear();
+        assert!(save_pending_incident(&older_unknown));
+        let unknown_path = keyed_pending_incident_path(&older_unknown.id).unwrap();
+        let unknown_bytes = std::fs::read(&unknown_path).unwrap();
+        let pending = Arc::new(Mutex::new(None));
+        let stopping = AtomicBool::new(false);
+        assert!(recover_pending_slot(&pending, &stopping));
+        assert_eq!(
+            pending.lock_unpoisoned().as_ref().unwrap().id,
+            first.id,
+            "oldest confirmed in the bounded batch precedes older unknown evidence"
+        );
+        assert_eq!(std::fs::read(&second_path).unwrap(), second_bytes);
+        assert!(keyed_pending_incident_path("../unsafe").is_none());
+        let mut invalid = first.clone();
+        invalid.id = "../unsafe".into();
+        assert!(!save_pending_incident(&invalid));
+        // The real Submitted control retires exactly one acknowledged ID.
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(ReporterControl::Submitted(first.id.clone()))
+            .unwrap();
+        drop(sender);
+        reporter_worker(
+            receiver,
+            Arc::new(Mutex::new(None)),
+            pending.clone(),
+            Arc::new(AtomicBool::new(false)),
+            None,
+            sessions_dir().join("unused.json"),
+            bootstrap_journal_path("unused"),
+            "unused".into(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        assert!(!first_path.exists());
+        assert_eq!(std::fs::read(&second_path).unwrap(), second_bytes);
+        assert_eq!(std::fs::read(&unknown_path).unwrap(), unknown_bytes);
+        *pending.lock_unpoisoned() = None; // Same RAM clear performed by verified mark_submitted.
+        // The previous cursor reached this batch's last key; the next pass resets
+        // it, and the subsequent registration revisits the remaining queue.
+        if !recover_pending_slot(&pending, &stopping) {
+            assert!(recover_pending_slot(&pending, &stopping));
+        }
+        assert_eq!(pending.lock_unpoisoned().as_ref().unwrap().id, second.id);
+        assert_eq!(std::fs::read(&second_path).unwrap(), second_bytes);
+        assert_eq!(std::fs::read(&unknown_path).unwrap(), unknown_bytes);
+    }
+
+    #[test]
+    fn legacy_migration_retains_exact_original_until_copy_and_manifest_are_durable() {
+        const CHILD: &str = "KONTRA_LEGACY_MIGRATION_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "support::crash::tests::legacy_migration_retains_exact_original_until_copy_and_manifest_are_durable", "--test-threads=1"])
+                .env(CHILD, "1").env("KONTRA_REPORT_DIR", directory.path())
+                .env("KONTRA_DISABLE_NETWORK", "1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let mut incident = test_incident("0.3.115", "authored-legacy-migration");
+        incident.id = "0123456789abcdef".into();
+        incident.kind = IncidentKind::PlatformCrash;
+        incident.platform_evidence = "authored legacy exception and all source frames".into();
+        let bytes = serde_json::to_vec_pretty(&incident).unwrap();
+        buffr_durable_file::publish_private(&pending_incident_path(), &bytes).unwrap();
+        let destination = keyed_pending_incident_path(&incident.id).unwrap();
+        let originals = reports_dir().join("originals");
+        std::fs::write(&originals, b"authored archive failure").unwrap();
+        assert!(!migrate_legacy_pending(&AtomicBool::new(false)));
+        assert_eq!(std::fs::read(pending_incident_path()).unwrap(), bytes);
+        assert!(!destination.exists());
+        std::fs::remove_file(&originals).unwrap();
+        assert!(!migrate_legacy_pending(&AtomicBool::new(true)));
+        assert_eq!(std::fs::read(pending_incident_path()).unwrap(), bytes);
+        std::fs::create_dir_all(&destination).unwrap();
+        assert!(
+            !migrate_legacy_pending(&AtomicBool::new(false)),
+            "failed keyed publication must retain legacy"
+        );
+        assert_eq!(std::fs::read(pending_incident_path()).unwrap(), bytes);
+        let hash = blake3::hash(&bytes).to_hex().to_string();
+        let archive = originals.join(format!("{hash}.raw"));
+        assert_eq!(std::fs::read(&archive).unwrap(), bytes);
+        let manifest: serde_json::Value = read_json(&archive.with_extension("json")).unwrap();
+        assert_eq!(manifest["bytes"], bytes.len());
+        assert_eq!(manifest["blake3"], hash);
+        assert_eq!(manifest["status"], "legacy-pending-json-migration");
+        assert_eq!(manifest["automatically_uploaded"], false);
+        std::fs::remove_dir(&destination).unwrap();
+        assert!(migrate_legacy_pending(&AtomicBool::new(false)));
+        assert!(!pending_incident_path().exists());
+        assert_eq!(
+            load_pending_by_id(&incident.id).unwrap().platform_evidence,
+            incident.platform_evidence
+        );
+        // An already refreshed keyed copy must never be replaced by older legacy
+        // evidence; its complete older original still survives privately.
+        let mut updated = incident.clone();
+        updated.platform_evidence.push_str(" + later proof");
+        let observed = pending_snapshot(&incident.id).unwrap().1;
+        assert!(save_pending_if_unchanged(&updated, &observed));
+        let updated_bytes = std::fs::read(&destination).unwrap();
+        buffr_durable_file::publish_private(&pending_incident_path(), &bytes).unwrap();
+        assert!(migrate_legacy_pending(&AtomicBool::new(false)));
+        assert_eq!(std::fs::read(&destination).unwrap(), updated_bytes);
+        assert_eq!(std::fs::read(&archive).unwrap(), bytes);
+        retire_acknowledged_copy(&destination, &incident.id, &AtomicBool::new(false)).unwrap();
+        assert!(!destination.exists());
+        assert_eq!(
+            std::fs::read(&archive).unwrap(),
+            bytes,
+            "ACK does not delete the private migration original"
+        );
+    }
+
+    #[test]
+    fn bounded_keyed_discovery_advances_past_unknown_and_mismatched_records() {
+        const CHILD: &str = "KONTRA_KEYED_DISCOVERY_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "support::crash::tests::bounded_keyed_discovery_advances_past_unknown_and_mismatched_records", "--test-threads=1"])
+                .env(CHILD, "1").env("KONTRA_REPORT_DIR", directory.path())
+                .env("KONTRA_DISABLE_NETWORK", "1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        for sequence in 1..=40 {
+            let mut incident = test_incident("0.3.115", "authored-unknown-batch");
+            incident.id = format!("{sequence:016x}");
+            incident.pid = u32::MAX - sequence;
+            incident.host_process = "authored-unknown-host".into();
+            assert!(save_pending_incident(&incident));
+        }
+        let mut proven = test_incident("0.3.115", "authored-late-batch-proof");
+        proven.id = "0000000000000041".into();
+        proven.kind = IncidentKind::PlatformCrash;
+        assert!(save_pending_incident(&proven));
+        let wrong_path = reports_dir().join("pending").join("0000000000000040.json");
+        assert!(persist_json(&wrong_path, &proven)); // Valid body in another ID's filename.
+        let (confirmed, unknown, _) = find_pending_candidates(&AtomicBool::new(false), None, None);
+        assert!(confirmed.is_none());
+        assert!(unknown.is_some());
+        let (confirmed, _, _) = find_pending_candidates(&AtomicBool::new(false), None, None);
+        assert_eq!(confirmed.unwrap().id, proven.id);
+        assert!(
+            wrong_path.exists(),
+            "mismatched ownership is neither submitted nor deleted"
+        );
+        assert!(
+            keyed_pending_incident_path("0000000000000001")
+                .unwrap()
+                .exists()
+        );
+        assert!(
+            find_pending_candidates(&AtomicBool::new(true), None, None)
+                .0
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn observed_queue_snapshots_cannot_overwrite_newer_same_id_proof() {
+        const CHILD: &str = "KONTRA_PENDING_FRESHNESS_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "support::crash::tests::observed_queue_snapshots_cannot_overwrite_newer_same_id_proof", "--test-threads=1"])
+                .env(CHILD, "1").env("KONTRA_REPORT_DIR", directory.path())
+                .env("KONTRA_DISABLE_NETWORK", "1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let mut observed = test_incident("0.3.115", "authored-freshness");
+        observed.id = "0123456789abcdef".into();
+        observed.host_name = "current host metadata".into();
+        observed.pid = u32::MAX - 170;
+        assert!(save_pending_incident(&observed));
+        let path = keyed_pending_incident_path(&observed.id).unwrap();
+        let observed_hash = pending_snapshot(&observed.id).unwrap().1;
+        let candidate = RecoveredCandidate {
+            marker_path: path.clone(),
+            journal_path: None,
+            panic_path: panic_marker_path(observed.pid),
+            incident: observed.clone(),
+        };
+        let mut confirmed = observed.clone();
+        confirmed.kind = IncidentKind::PlatformCrash;
+        confirmed.platform_evidence = "authored first confirmed exception and frame".into();
+        let confirmed_bytes = serde_json::to_vec(&confirmed).unwrap();
+        let publisher_path = path.clone();
+        let published = confirmed_bytes.clone();
+        std::thread::spawn(move || {
+            buffr_durable_file::publish_private_streaming(
+                &publisher_path,
+                std::time::Duration::from_secs(2),
+                |file| std::io::Write::write_all(file, &published),
+            )
+        })
+        .join()
+        .unwrap()
+        .unwrap();
+        let adopted = candidate.consume(&AtomicBool::new(false)).unwrap();
+        assert!(adopted.auto_reportable());
+        assert_eq!(adopted.platform_evidence, confirmed.platform_evidence);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            confirmed_bytes,
+            "adoption must not republish stale bytes"
+        );
+        assert!(!save_pending_if_unchanged(&observed, &observed_hash));
+        assert_eq!(std::fs::read(&path).unwrap(), confirmed_bytes);
+        let prior_hash = pending_snapshot(&confirmed.id).unwrap().1;
+        let mut latest = confirmed.clone();
+        latest.platform_evidence =
+            "authored later complete exception and additional native frame".into();
+        let latest_bytes = serde_json::to_vec(&latest).unwrap();
+        let publisher_path = path.clone();
+        let published = latest_bytes.clone();
+        std::thread::spawn(move || {
+            buffr_durable_file::publish_private_streaming(
+                &publisher_path,
+                std::time::Duration::from_secs(2),
+                |file| std::io::Write::write_all(file, &published),
+            )
+        })
+        .join()
+        .unwrap()
+        .unwrap();
+        assert!(!save_pending_if_unchanged(&confirmed, &prior_hash));
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            latest_bytes,
+            "stale confirmed proof cannot overwrite fresher frames"
+        );
+        assert!(save_pending_incident(&observed)); // Initial re-recovery adopts rather than replaces.
+        assert_eq!(std::fs::read(&path).unwrap(), latest_bytes);
+
+        // Confirmed legacy proof safely upgrades an unknown keyed record while
+        // preserving its current metadata and both complete private originals.
+        let mut keyed_unknown = observed.clone();
+        keyed_unknown.id = "fedcba9876543210".into();
+        assert!(save_pending_incident(&keyed_unknown));
+        let unknown_path = keyed_pending_incident_path(&keyed_unknown.id).unwrap();
+        let unknown_bytes = std::fs::read(&unknown_path).unwrap();
+        let mut legacy = keyed_unknown.clone();
+        legacy.kind = IncidentKind::PlatformCrash;
+        legacy.host_name = "older legacy host label".into();
+        legacy.platform_evidence = "authored confirmed legacy exception and stack".into();
+        let legacy_bytes = serde_json::to_vec_pretty(&legacy).unwrap();
+        buffr_durable_file::publish_private(&pending_incident_path(), &legacy_bytes).unwrap();
+        assert!(migrate_legacy_pending(&AtomicBool::new(false)));
+        let merged = load_pending_by_id(&legacy.id).unwrap();
+        assert!(merged.auto_reportable());
+        assert_eq!(merged.host_name, keyed_unknown.host_name);
+        assert_eq!(merged.platform_evidence, legacy.platform_evidence);
+        assert!(!pending_incident_path().exists());
+        for original in [&unknown_bytes, &legacy_bytes] {
+            let hash = blake3::hash(original).to_hex().to_string();
+            assert_eq!(
+                std::fs::read(reports_dir().join("originals").join(format!("{hash}.raw"))).unwrap(),
+                *original
+            );
+            assert!(
+                reports_dir()
+                    .join("originals")
+                    .join(format!("{hash}.json"))
+                    .exists()
+            );
+        }
+        // A busy unrelated legacy publisher cannot inhibit independent keyed
+        // recovery. The legacy bytes themselves stay untouched.
+        buffr_durable_file::publish_private(&pending_incident_path(), &legacy_bytes).unwrap();
+        let legacy_lock = buffr_durable_file::acquire_publisher_lock(
+            &pending_incident_path(),
+            std::time::Duration::ZERO,
+        )
+        .unwrap();
+        let pending = Mutex::new(None);
+        assert!(recover_pending_slot(&pending, &AtomicBool::new(false)));
+        assert!(
+            pending
+                .lock_unpoisoned()
+                .as_ref()
+                .unwrap()
+                .auto_reportable()
+        );
+        assert_eq!(
+            std::fs::read(pending_incident_path()).unwrap(),
+            legacy_bytes
+        );
+        drop(legacy_lock);
+    }
+
+    fn assert_registration_recovers_once(expected_id: &str) {
+        let timeout = std::time::Duration::from_secs(30);
+        let (events, observed) = mpsc::channel();
+        *TEST_AUTOMATIC_REPORT_OBSERVER.lock_unpoisoned() = Some(events);
+        let (sender, receiver) = mpsc::channel();
+        let pending = REPORTER.pending.clone();
+        let ready = REPORTER.ready.clone();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let worker_stopping = stopping.clone();
+        let session = sessions_dir().join("restart-registration.json");
+        let worker_session = session.clone();
+        let worker = std::thread::spawn(move || {
+            reporter_worker(
+                receiver,
+                Arc::new(Mutex::new(None)),
+                pending,
+                ready,
+                None,
+                worker_session,
+                bootstrap_journal_path("restart-registration"),
+                "restart-registration".into(),
+                worker_stopping,
+            )
+        });
+        *REPORTER.runtime.lock_unpoisoned() = Some(ReporterRuntime {
+            control_sender: sender,
+            worker,
+            stopping,
+        });
+        let (acknowledge, acknowledged) = mpsc::sync_channel(1);
+        assert!(REPORTER.send(ReporterControl::Register(7, acknowledge)));
+        assert!(acknowledged.recv_timeout(timeout).unwrap());
+        assert!(REPORTER.ready.load(Ordering::Acquire));
+        assert!(read_json::<SessionMarker>(&session).is_some());
+        let mut scans = 0;
+        loop {
+            match observed.recv_timeout(timeout).unwrap() {
+                TestAutomaticEvent::Scanned(_, _) => scans += 1,
+                TestAutomaticEvent::Ready(id, busy) => {
+                    assert_eq!(
+                        id, expected_id,
+                        "only the eligible recorded report may start"
+                    );
+                    assert!(!busy);
+                    break;
+                }
+            }
+        }
+        assert!(
+            (1..=3).contains(&scans),
+            "registration reaches the two-file queue through bounded controls"
+        );
+        let (barrier, reached) = mpsc::sync_channel(1);
+        assert!(REPORTER.send(ReporterControl::Barrier(barrier)));
+        reached.recv_timeout(timeout).unwrap();
+        assert!(
+            matches!(observed.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "registration must kick off the report exactly once"
+        );
+        assert_eq!(
+            REPORTER.pending.lock_unpoisoned().as_ref().unwrap().id,
+            expected_id
+        );
+        REPORTER.shutdown();
+    }
+
+    #[test]
+    fn registration_recovers_confirmed_report_after_exhausted_persisted_cursor() {
+        const CHILD: &str = "KONTRA_EXHAUSTED_REGISTER_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "support::crash::tests::registration_recovers_confirmed_report_after_exhausted_persisted_cursor", "--test-threads=1"])
+                .env(CHILD,"1").env("KONTRA_REPORT_DIR",directory.path()).env("KONTRA_DISABLE_NETWORK","1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let mut incident = test_incident("0.3.115", "authored-exhausted-cursor");
+        incident.id = "0000000000000002".into();
+        incident.kind = IncidentKind::PlatformCrash;
+        assert!(save_pending_incident(&incident));
+        let path = keyed_pending_incident_path(&incident.id).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(persist_json(
+            &reports_dir().join("pending-cursor.json"),
+            &format!("{}.json", incident.id)
+        ));
+        // Invoke the actual restart lifecycle. Register persists readiness, then
+        // enqueues ScanQueue when its single recovery batch is exhausted.
+        assert_registration_recovers_once(&incident.id);
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn actual_oversized_upload_retains_originals_drains_next_and_survives_restart() {
+        const CHILD: &str = "KONTRA_OVERSIZED_UPLOAD_CHILD";
+        const TEST: &str = "support::crash::tests::actual_oversized_upload_retains_originals_drains_next_and_survives_restart";
+        let phase = std::env::var(CHILD).unwrap_or_default();
+        if phase.is_empty() {
+            let directory = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--test-threads=1"])
+                .env(CHILD, "initial")
+                .env("KONTRA_REPORT_DIR", directory.path())
+                .env("KONTRA_DISABLE_NETWORK", "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        let first_id = "0000000000000001";
+        let second_id = "0000000000000002";
+        let first_path = keyed_pending_incident_path(first_id).unwrap();
+        let second_path = keyed_pending_incident_path(second_id).unwrap();
+        let stopped = AtomicBool::new(false);
+        if phase == "restart" {
+            assert!(REPORTER.pending.lock_unpoisoned().is_none());
+            assert!(manual_required_for_pending(first_id, &stopped).is_some());
+            assert!(first_path.exists() && second_path.exists());
+            let second_bytes = std::fs::read(&second_path).unwrap();
+            assert_registration_recovers_once(second_id);
+            assert_eq!(std::fs::read(&second_path).unwrap(), second_bytes);
+            assert!(first_path.exists() && manual_upload_path(first_id).unwrap().exists());
+            return;
+        }
+        let timeout = std::time::Duration::from_secs(30);
+        let mut first = test_incident("0.3.115", "authored-oversized-recorded-build");
+        first.id = first_id.into();
+        first.kind = IncidentKind::PlatformCrash;
+        first.platform.cpu = "authored CPU metadata ".to_string()
+            + &"x".repeat(super::super::report::REPORT_BODY_LIMIT + 1024);
+        let mut second = test_incident("0.3.115", "authored-small-recorded-build");
+        second.id = second_id.into();
+        second.kind = IncidentKind::PlatformCrash;
+        assert!(save_pending_incident(&first));
+        assert!(save_pending_incident(&second));
+        let first_source = source_digest(&first_path, &stopped).unwrap();
+        assert!(first_source.0 > super::super::report::REPORT_BODY_LIMIT as u64);
+        let original = reports_dir()
+            .join("originals")
+            .join(format!("{}.raw", first_source.1));
+        *REPORTER.pending.lock_unpoisoned() = Some(first);
+        let (events, event_receiver) = mpsc::channel();
+        *TEST_AUTOMATIC_REPORT_OBSERVER.lock_unpoisoned() = Some(events);
+        let (sender, receiver) = mpsc::channel();
+        let pending = REPORTER.pending.clone();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let worker_stopping = stopping.clone();
+        let worker = std::thread::spawn(move || {
+            reporter_worker(
+                receiver,
+                Arc::new(Mutex::new(None)),
+                pending,
+                Arc::new(AtomicBool::new(false)),
+                None,
+                sessions_dir().join("unused.json"),
+                bootstrap_journal_path("unused"),
+                "unused".into(),
+                worker_stopping,
+            )
+        });
+        *REPORTER.runtime.lock_unpoisoned() = Some(ReporterRuntime {
+            control_sender: sender,
+            worker,
+            stopping,
+        });
+        let (entered, began) = mpsc::channel();
+        let (outcome, outcome_receiver) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        super::super::report::test_detached_oversized_delivery(entered, outcome, released).unwrap();
+        began.recv_timeout(timeout).unwrap();
+        assert!(outcome_receiver.recv_timeout(timeout).unwrap());
+        assert!(super::super::report::test_automatic_report_is_busy());
+        let status = manual_required_for_pending(first_id, &stopped).unwrap();
+        assert_eq!(status.source_blake3, first_source.1);
+        assert_eq!(source_digest(&original, &stopped).unwrap(), first_source);
+        assert!(matches!(
+            event_receiver.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        release.send(()).unwrap();
+        loop {
+            if let TestAutomaticEvent::Ready(id, busy) =
+                event_receiver.recv_timeout(timeout).unwrap()
+            {
+                assert_eq!(id, second_id);
+                assert!(!busy);
+                break;
+            }
+        }
+        assert_eq!(
+            REPORTER.pending.lock_unpoisoned().as_ref().unwrap().id,
+            second_id
+        );
+        assert_eq!(source_digest(&first_path, &stopped).unwrap(), first_source);
+        assert!(manual_upload_path(first_id).unwrap().exists() && second_path.exists());
+        // The Logs reason survives replacement of the single active RAM slot.
+        let logs = crate::diagnostics::snapshot();
+        assert!(logs.events.iter().any(|event| event.event
+            == "crash_report_manual_export_required"
+            && event.reason.as_deref().is_some_and(
+                |reason| reason.contains(first_id) && reason.contains("manual export")
+            )));
+        // A repeated terminal control must not restart B after an offline
+        // delivery. Unlike ACK completion, manual failure never clears A early.
+        let (entered, began) = mpsc::channel();
+        let (outcome, outcome_receiver) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        super::super::report::test_detached_automatic_delivery(
+            second_id.into(),
+            Err("authored offline delivery".into()),
+            entered,
+            outcome,
+            released,
+        )
+        .unwrap();
+        began.recv_timeout(timeout).unwrap();
+        assert!(!outcome_receiver.recv_timeout(timeout).unwrap());
+        release.send(()).unwrap();
+        let deadline = std::time::Instant::now() + timeout;
+        while super::super::report::test_automatic_report_is_busy() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(REPORTER.send(ReporterControl::ManualRequired(
+            first_id.into(),
+            status.diagnostics_sha256
+        )));
+        let (barrier, reached) = mpsc::sync_channel(1);
+        assert!(REPORTER.send(ReporterControl::Barrier(barrier)));
+        reached.recv_timeout(timeout).unwrap();
+        assert!(matches!(
+            event_receiver.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        assert_eq!(
+            REPORTER.pending.lock_unpoisoned().as_ref().unwrap().id,
+            second_id
+        );
+        assert!(manual_upload_path(second_id).is_some_and(|path| !path.exists()));
+        REPORTER.shutdown();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--test-threads=1"])
+            .env(CHILD, "restart")
+            .env("KONTRA_DISABLE_NETWORK", "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let destination = tempfile::tempdir().unwrap();
+        super::super::export_crash_evidence(destination.path(), &stopped).unwrap();
+        let exported_status = destination
+            .path()
+            .join("crash-evidence/crash-reports/manual-export-required")
+            .join(format!("{first_id}.json"));
+        assert_eq!(
+            std::fs::read(exported_status).unwrap(),
+            std::fs::read(manual_upload_path(first_id).unwrap()).unwrap()
+        );
+        let exported_original = destination
+            .path()
+            .join("crash-evidence/crash-reports/originals")
+            .join(format!("{}.raw", first_source.1));
+        assert_eq!(
+            source_digest(&exported_original, &stopped).unwrap(),
+            first_source
+        );
+    }
+
+    #[test]
+    fn manual_disposition_requires_exact_source_and_current_recipe_and_keeps_new_proof() {
+        let directory = tempfile::tempdir().unwrap();
+        // Run in its own process because the reporter cache path is a shared API.
+        const CHILD: &str = "KONTRA_MANUAL_DISPOSITION_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "support::crash::tests::manual_disposition_requires_exact_source_and_current_recipe_and_keeps_new_proof", "--test-threads=1"])
+                .env(CHILD,"1").env("KONTRA_REPORT_DIR",directory.path()).env("KONTRA_DISABLE_NETWORK","1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let mut incident = test_incident("0.3.115", "authored-same-ID-stronger-proof");
+        incident.id = "0123456789abcdef".into();
+        incident.kind = IncidentKind::PlatformCrash;
+        assert!(save_pending_incident(&incident));
+        let (observed, source_hash) = pending_snapshot(&incident.id).unwrap();
+        let digest = "ab".repeat(32);
+        assert!(!mark_manual_upload_required(
+            &observed,
+            &source_hash,
+            &digest,
+            &AtomicBool::new(true)
+        ));
+        assert!(!manual_upload_path(&incident.id).unwrap().exists());
+        // A real conditional publisher changes the evidence after it was read.
+        let mut fresher = observed.clone();
+        fresher.platform_evidence = "EXC_BAD_ACCESS newer complete frames".into();
+        assert!(save_pending_if_unchanged(&fresher, &source_hash));
+        assert!(!mark_manual_upload_required(
+            &observed,
+            &source_hash,
+            &digest,
+            &AtomicBool::new(false)
+        ));
+        assert_eq!(
+            load_pending_by_id(&incident.id).unwrap().platform_evidence,
+            fresher.platform_evidence
+        );
+        let (current, latest_hash) = pending_snapshot(&incident.id).unwrap();
+        assert!(mark_manual_upload_required(
+            &current,
+            &latest_hash,
+            &digest,
+            &AtomicBool::new(false)
+        ));
+        assert!(manual_required_for_pending(&incident.id, &AtomicBool::new(false)).is_some());
+        let path = manual_upload_path(&incident.id).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let mut status: ManualUploadDisposition = serde_json::from_slice(&bytes).unwrap();
+        status.recipe += 1;
+        persist_json(&path, &status);
+        assert!(manual_required_for_pending(&incident.id, &AtomicBool::new(false)).is_none());
+        status.recipe -= 1;
+        status.wire_limit_bytes -= 1;
+        persist_json(&path, &status);
+        assert!(manual_required_for_pending(&incident.id, &AtomicBool::new(false)).is_none());
+        std::fs::write(&path, bytes).unwrap();
+        let mut renewed = current;
+        renewed
+            .platform_evidence
+            .push_str("; additional independently captured native frames");
+        assert!(save_pending_if_unchanged(&renewed, &latest_hash));
+        assert!(manual_required_for_pending(&incident.id, &AtomicBool::new(false)).is_none());
+        let (selected, _, _) = find_pending_candidates(&AtomicBool::new(false), None, Some(""));
+        assert_eq!(
+            selected.unwrap().platform_evidence,
+            renewed.platform_evidence
+        );
+        // The actual FIFO terminal handler must not clear the renewed A slot
+        // on receipt of an old size-failure completion, even when IDs match.
+        let active = Arc::new(Mutex::new(Some(renewed.clone())));
+        let worker_active = active.clone();
+        let (sender, receiver) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            reporter_worker(
+                receiver,
+                Arc::new(Mutex::new(None)),
+                worker_active,
+                Arc::new(AtomicBool::new(false)),
+                None,
+                sessions_dir().join("unused.json"),
+                bootstrap_journal_path("unused"),
+                "unused".into(),
+                Arc::new(AtomicBool::new(false)),
+            )
+        });
+        sender
+            .send(ReporterControl::ManualRequired(incident.id.clone(), digest))
+            .unwrap();
+        let (barrier, reached) = mpsc::sync_channel(1);
+        sender.send(ReporterControl::Barrier(barrier)).unwrap();
+        reached
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(
+            active.lock_unpoisoned().as_ref().unwrap().platform_evidence,
+            renewed.platform_evidence
+        );
+        sender.send(ReporterControl::Shutdown).unwrap();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn acknowledged_workers_drain_confirmed_queue_after_permit_drop_without_retry_loops() {
+        const CHILD: &str = "KONTRA_COMPLETION_DRAIN_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "support::crash::tests::acknowledged_workers_drain_confirmed_queue_after_permit_drop_without_retry_loops", "--test-threads=1"])
+                .env(CHILD, "1").env("KONTRA_REPORT_DIR", directory.path())
+                .env("KONTRA_DISABLE_NETWORK", "1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let timeout = std::time::Duration::from_secs(30);
+        for sequence in 1..=40 {
+            let mut unknown = test_incident("0.3.115", "authored-retained-unknown");
+            unknown.id = format!("{sequence:016x}");
+            unknown.pid = u32::MAX - sequence;
+            unknown.host_process = "authored-unknown-host".into();
+            assert!(save_pending_incident(&unknown));
+        }
+        let mut first = test_incident("0.3.115", "authored-first-confirmed");
+        first.id = "0000000000000030".into();
+        first.kind = IncidentKind::PlatformCrash;
+        let mut second = first.clone();
+        second.id = "0000000000000031".into();
+        assert!(save_pending_incident(&first));
+        assert!(save_pending_incident(&second));
+        let first_path = keyed_pending_incident_path(&first.id).unwrap();
+        let second_path = keyed_pending_incident_path(&second.id).unwrap();
+        let second_bytes = std::fs::read(&second_path).unwrap();
+        assert!(persist_json(
+            &reports_dir().join("pending-cursor.json"),
+            &"0000000000000031.json"
+        ));
+        let (events, event_receiver) = mpsc::channel();
+        *TEST_AUTOMATIC_REPORT_OBSERVER.lock_unpoisoned() = Some(events);
+        *REPORTER.pending.lock_unpoisoned() = Some(first.clone());
+        let (sender, receiver) = mpsc::channel();
+        let pending = REPORTER.pending.clone();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let worker_stopping = stopping.clone();
+        let worker = std::thread::spawn(move || {
+            reporter_worker(
+                receiver,
+                Arc::new(Mutex::new(None)),
+                pending,
+                Arc::new(AtomicBool::new(false)),
+                None,
+                sessions_dir().join("unused.json"),
+                bootstrap_journal_path("unused"),
+                "unused".into(),
+                worker_stopping,
+            )
+        });
+        *REPORTER.runtime.lock_unpoisoned() = Some(ReporterRuntime {
+            control_sender: sender,
+            worker,
+            stopping,
+        });
+        let successful = || {
+            Ok((200, r#"{"ok":true,"report_id":"authored","diagnostics_sha256":"authored-full-evidence"}"#.into()))
+        };
+        let (entered, began) = mpsc::channel();
+        let (outcome, outcome_receiver) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        super::super::report::test_detached_automatic_delivery(
+            first.id.clone(),
+            successful(),
+            entered,
+            outcome,
+            released,
+        )
+        .unwrap();
+        began.recv_timeout(timeout).unwrap();
+        assert!(outcome_receiver.recv_timeout(timeout).unwrap());
+        assert!(super::super::report::test_automatic_report_is_busy());
+        assert!(
+            matches!(
+                event_receiver.recv_timeout(std::time::Duration::from_millis(25)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "acknowledgement cannot advance while its worker still owns the permit"
+        );
+        // Interleave a real queued scan before A finishes its receipt/status
+        // work. B can be adopted, but the production gate prevents its upload.
+        assert!(REPORTER.send(ReporterControl::ScanQueue(false, None)));
+        let deadline = std::time::Instant::now() + timeout;
+        while REPORTER
+            .pending
+            .lock_unpoisoned()
+            .as_ref()
+            .is_none_or(|i| i.id != second.id)
+        {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(super::super::report::test_automatic_report_is_busy());
+        let mut scans = 0;
+        while let Ok(event) = event_receiver.try_recv() {
+            match event {
+                TestAutomaticEvent::Scanned(_, _) => scans += 1,
+                TestAutomaticEvent::Ready(id, _) => {
+                    panic!("upload started before permit release for {id}")
+                }
+            }
+        }
+        release.send(()).unwrap();
+        loop {
+            match event_receiver.recv_timeout(timeout).unwrap() {
+                TestAutomaticEvent::Scanned(_, _) => scans += 1,
+                TestAutomaticEvent::Ready(id, busy) => {
+                    assert_eq!(id, second.id);
+                    assert!(!busy, "continuation runs only after permit release");
+                    break;
+                }
+            }
+        }
+        assert!(
+            scans <= 4,
+            "one wrap and bounded batches reach proof past 40 unknown records"
+        );
+        assert!(!first_path.exists());
+        assert_eq!(std::fs::read(&second_path).unwrap(), second_bytes);
+        assert_eq!(
+            REPORTER.pending.lock_unpoisoned().as_ref().unwrap().id,
+            second.id
+        );
+        assert!(REPORTER.send(ReporterControl::Resume(first.id.clone())));
+        assert!(
+            matches!(
+                event_receiver.recv_timeout(std::time::Duration::from_millis(25)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "a repeated completion must not kick off B twice"
+        );
+        // Wrong digest and offline completion never acknowledge or enqueue a retry.
+        for failure in [
+            Ok((
+                200,
+                r#"{"ok":true,"report_id":"authored","diagnostics_sha256":"wrong"}"#.into(),
+            )),
+            Err("authored offline delivery".into()),
+        ] {
+            let (entered, began) = mpsc::channel();
+            let (outcome, outcome_receiver) = mpsc::channel();
+            let (release, released) = mpsc::channel();
+            super::super::report::test_detached_automatic_delivery(
+                second.id.clone(),
+                failure,
+                entered,
+                outcome,
+                released,
+            )
+            .unwrap();
+            began.recv_timeout(timeout).unwrap();
+            assert!(!outcome_receiver.recv_timeout(timeout).unwrap());
+            release.send(()).unwrap();
+            let deadline = std::time::Instant::now() + timeout;
+            while super::super::report::test_automatic_report_is_busy() {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+            assert!(matches!(
+                event_receiver.recv_timeout(std::time::Duration::from_millis(25)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ));
+            assert_eq!(std::fs::read(&second_path).unwrap(), second_bytes);
+        }
+        // A valid ACK whose local retirement is busy also stops continuation.
+        let lock =
+            buffr_durable_file::acquire_publisher_lock(&second_path, std::time::Duration::ZERO)
+                .unwrap();
+        let (entered, began) = mpsc::channel();
+        let (outcome, outcome_receiver) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        super::super::report::test_detached_automatic_delivery(
+            second.id.clone(),
+            successful(),
+            entered,
+            outcome,
+            released,
+        )
+        .unwrap();
+        began.recv_timeout(timeout).unwrap();
+        assert!(outcome_receiver.recv_timeout(timeout).unwrap());
+        release.send(()).unwrap();
+        // FIFO acknowledgement keeps this publisher lock held until the real
+        // Submitted handler has completed its bounded failed retirement.
+        let (barrier, reached) = mpsc::sync_channel(1);
+        assert!(REPORTER.send(ReporterControl::Barrier(barrier)));
+        reached.recv_timeout(timeout).unwrap();
+        assert!(matches!(
+            event_receiver.recv_timeout(std::time::Duration::from_millis(25)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert_eq!(std::fs::read(&second_path).unwrap(), second_bytes);
+        drop(lock);
+        // An explicitly initiated later attempt succeeds; the finite scan stops
+        // after one wrap with only unknown originals left, without uploading them.
+        let (entered, began) = mpsc::channel();
+        let (outcome, outcome_receiver) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        super::super::report::test_detached_automatic_delivery(
+            second.id.clone(),
+            successful(),
+            entered,
+            outcome,
+            released,
+        )
+        .unwrap();
+        began.recv_timeout(timeout).unwrap();
+        assert!(outcome_receiver.recv_timeout(timeout).unwrap());
+        release.send(()).unwrap();
+        let mut scans = 0;
+        loop {
+            match event_receiver.recv_timeout(timeout).unwrap() {
+                TestAutomaticEvent::Scanned(wrapped, exhausted) => {
+                    scans += 1;
+                    if wrapped && exhausted {
+                        break;
+                    }
+                }
+                TestAutomaticEvent::Ready(id, _) => {
+                    panic!("unexpected immediate report retry for {id}")
+                }
+            }
+        }
+        assert!(scans <= 4);
+        assert!(!second_path.exists());
+        assert!(
+            keyed_pending_incident_path("0000000000000001")
+                .unwrap()
+                .exists()
+        );
+        assert!(matches!(
+            event_receiver.recv_timeout(std::time::Duration::from_millis(25)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        REPORTER.shutdown();
+        *TEST_AUTOMATIC_REPORT_OBSERVER.lock_unpoisoned() = None;
+    }
+
+    #[test]
+    fn original_archive_failure_and_cancellation_preserve_source_and_prior_archive() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("session.dfr");
+        let archive = directory.path().join("original.dfr");
+        std::fs::write(&source, b"authored original").unwrap();
+        std::fs::write(&archive, b"prior private archive").unwrap();
+        let expected = LocalJournalEvidence {
+            bytes: 16,
+            blake3: blake3::hash(b"different source").to_hex().to_string(),
+            ..Default::default()
+        };
+        assert!(
+            archive_original(&source, &archive, Some(&expected), &AtomicBool::new(false)).is_err()
+        );
+        assert!(archive_original(&source, &archive, None, &AtomicBool::new(true)).is_err());
+        assert_eq!(std::fs::read(&source).unwrap(), b"authored original");
+        assert_eq!(std::fs::read(&archive).unwrap(), b"prior private archive");
+    }
+
     #[test]
     fn delayed_evidence_only_upgrades_unclean_exit() {
         let late_dump = CrashEvidence {

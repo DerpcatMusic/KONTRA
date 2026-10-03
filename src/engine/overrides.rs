@@ -273,7 +273,7 @@ impl Param {
         for (u, unit) in units.iter().enumerate().take(PROBE_UNITS) {
             let at = 6 + u * KNOBS;
             match unit.shape {
-                Shape::Filter(_) | Shape::Model(_) => {
+                Shape::Filter(_) | Shape::Model(_) | Shape::Ladder => {
                     out.extend([(at, Self::Cutoff(unit.slot)), (at + 1, Self::Resonance(unit.slot))]);
                 }
                 Shape::Geq => {}
