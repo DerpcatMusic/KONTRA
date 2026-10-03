@@ -2452,17 +2452,22 @@ mod tests {
                 for (n, paused) in [(13, true), (39, false), (128, true), (77, false)] {
                     for engine in [&mut full, &mut split] {
                         engine.ui_control(0, 0, i32::from(paused));
-                        assert_eq!(read(&engine.bank().unwrap().settings, bypass), Some(f32::from(paused)));
-                        if mixed { assert_eq!(engine.bank().unwrap().settings[0].pitch_lfos[0].bypassed, paused); }
-                        assert_eq!(engine.bank().unwrap().settings[0].volume_lfos[0].source.bypassed, paused);
                     }
                     full.render(&mut a[..n], &mut ar[..n]);
                     let first = 17.min(n);
                     split.render(&mut b[..first], &mut br[..first]);
                     if n > first { split.render(&mut b[first..n], &mut br[first..n]); }
                     assert!(a[..n].iter().zip(&b[..n]).all(|(a, b)| (a - b).abs() < 1e-7));
+                    // Script writes are accepted into the fixed command queue;
+                    // the audio render applies them at their exact sample.
+                    for engine in [&full, &split] {
+                        assert_eq!(read(&engine.bank().unwrap().settings, bypass), Some(f32::from(paused)));
+                        if mixed { assert_eq!(engine.bank().unwrap().settings[0].pitch_lfos[0].bypassed, paused); }
+                        assert_eq!(engine.bank().unwrap().settings[0].volume_lfos[0].source.bypassed, paused);
+                    }
                 }
                 full.ui_control(0, 0, 1);
+                full.render(&mut a, &mut ar);
                 while !full.script().unwrap().native_state.refresh(&mut snapshot, 1) {}
                 for engine in [&mut full, &mut split, &mut plain] { engine.note_off(0, 60); }
                 for _ in 0..40 {
@@ -2481,6 +2486,47 @@ mod tests {
                 "restored native source bypass is visible to the authored init getter");
             assert_eq!(full.dropped_commands(), 0); assert_eq!(split.dropped_commands(), 0);
         }
+    }
+
+    #[test]
+    fn saved_sine_volume_uses_decoded_nonlinear_amplifier_split_without_heap() {
+        use crate::{audio::Sample, engine::{Bank, Engine}, import::{PitchLfo, VolumeLfo, Zone},
+            fx::{Chain, Effect, Kind, Params, params::{Field, Value}}};
+        let source = PitchLfo { slot: 7, count: 16., note_value: 1. / 24., sine: 0.,
+            fade_ms: 0., depth: 0., targets: vec![], bypassed: false };
+        let effect = Effect { slot: 0, kind: Kind::SurroundPanner, version: 0, bypass: false,
+            output_gain: 1., dry_level: 0., params: Params::Fields(
+                crate::fx::params::layout_names(Kind::SurroundPanner).unwrap().iter().zip([1., 0.])
+                    .map(|(&name, value)| Field { name, value: Value::Number(value) }).collect()) };
+        let create = |group| {
+            let mut engine = Engine::default(); engine.attack = 0.0001;
+            engine.set_transport(false, 120., 0., (4, 4));
+            engine.set_bank(Some(Box::new(Bank::from_samples(vec![group], vec![Zone::default()],
+                vec![(std::path::PathBuf::new(), Sample { rate: 48_000, frames: vec![[0.25; 2]; 4096] })]).unwrap())));
+            engine
+        };
+        let mut endpoints = [0.; 2];
+        for split in [0, 1] {
+            let group = Group { amp_split_slot: Some(split), fx: Chain { slots: vec![effect.clone()] },
+                volume_lfos: vec![VolumeLfo { source: source.clone(), target: 0, intensity: 1.,
+                    negative: false, lag_ms: 0 }], ..Group::default() };
+            let mut reference = group.clone(); reference.volume_lfos.clear(); reference.gain = 0.5;
+            let mut actual = create(group); let mut expected = create(reference);
+            let (mut a, mut ar, mut b, mut br) = ([0.; 128], [0.; 128], [0.; 128], [0.; 128]);
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                actual.note_on(0, 60, 127); expected.note_on(0, 60, 127);
+                // Bipolar source0 at depth1 is exactly .5, so the independent
+                // reference places group gain.5 at the decoded Amplifier slot.
+                for _ in 0..4 {
+                    actual.render(&mut a, &mut ar); expected.render(&mut b, &mut br);
+                    assert!(a.iter().chain(&ar).zip(b.iter().chain(&br)).all(|(a,b)| (a-b).abs() < 1e-7));
+                    assert!(a.iter().chain(&ar).all(|x| x.is_finite()));
+                }
+            }), 0);
+            endpoints[usize::from(split)] = a[127];
+        }
+        assert!((endpoints[0] - endpoints[1]).abs() > 0.02,
+            "nonlinear pre/post-Amp paths must not accidentally collapse: {endpoints:?}");
     }
 
     #[test]
