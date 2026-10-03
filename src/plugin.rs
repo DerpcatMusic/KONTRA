@@ -4910,9 +4910,10 @@ end on"#;
             assert!(order[0]<order[1]&&order[1]<order[2],"background precedes foreground; overlay paints last locally");
             let overlay=rendered.surface(&format!("native-snapshot-{}",colored[2].id)).unwrap();assert_eq!((overlay.frame.x,overlay.frame.y,overlay.frame.size.width,overlay.frame.size.height),(-30.,0.,50.,30.));
             let targets:Vec<_>=all.iter().filter(|node|node.tap).collect();assert_eq!(targets.len(),2);
-            let edits:Vec<_>=targets.iter().flat_map(|node|scene.tap(node.id).unwrap()).collect();assert_eq!(edits.iter().map(|edit|(edit.slot,edit.control,edit.value)).collect::<Vec<_>>(),vec![(0,0,mode+1),(0,0,mode+2)]);
+            // The second callback reads the first setter immediately, before the audio handoff.
+            let edits:Vec<_>=targets.iter().flat_map(|node|scene.tap(node.id).unwrap()).collect();assert_eq!(edits.iter().map(|edit|(edit.slot,edit.control,edit.value)).collect::<Vec<_>>(),vec![(0,0,mode+1),(0,0,mode+3)]);
             for edit in edits {assert_eq!(allocations(||{engine.ui_control(edit.slot,edit.control,edit.value);engine.render(&mut left,&mut right);engine.script().unwrap().refresh_live(&mut live);}),0);}
-            scene.observe(&live);let edits=scene.tap(targets[1].id).unwrap();assert_eq!(edits[0].value,mode+4,"real KSP publication is read by the retained overlay callback");
+            scene.observe(&live);let edits=scene.tap(targets[1].id).unwrap();assert_eq!(edits[0].value,mode+5,"real KSP publication is read by the retained overlay callback");
         }
         std::fs::remove_dir_all(directory).unwrap();
     }
