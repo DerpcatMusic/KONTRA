@@ -22,8 +22,8 @@ python3 tools/dev.py --print check --target all
 ```
 
 The default toolchain is `1.98.1`. Global options precede the command:
-`--toolchain`, `--jobs` (default4), `--profile dev|dsp-dev`, and `--print`.
-`dsp-dev` is the existing opt-level1 profile when a scoped DSP test needs it;
+`--toolchain`, `--jobs` (default 4), `--profile dev|dsp-dev`, and `--print`.
+`dsp-dev` is the existing opt-level 1 profile when a scoped DSP test needs it;
 it is still development validation, not a release performance measurement.
 
 `artifacts/dev-target` is persistent and separate from production/probe targets.
@@ -43,10 +43,10 @@ one test thread. No complete-suite or screenshot test is removed: request
 full release/native gate batch before shipping.
 
 Recent local checkpoint logs explain why these steps are separate: warm
-all-target/all-feature `cargo check` completed in3.35–4.96s, release test linking
-in105–125s, and production linking in58–134s. Full library runs took98–107s and
-reported `ui::tests::screenshot` running over60s; the complete playback suite
-took0.74s. These are historical wall times, not measurements of this helper or
+all-target/all-feature `cargo check` completed in 3.35–4.96s, release test linking
+in 105–125s, and production linking in 58–134s. Full library runs took 98–107s and
+reported `ui::tests::screenshot` running over 60s; the complete playback suite
+took 0.74s. These are historical wall times, not measurements of this helper or
 a promised speedup on another machine.
 
 ## Reload boundary
