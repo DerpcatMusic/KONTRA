@@ -206,7 +206,20 @@ impl Ladder {
         if n == 0 {
             return;
         }
-        self.controls.started = true;
+        if !self.controls.started {
+            // Local reset policy snapshots even when a cached unchanged key
+            // suppresses tune(). Pending clocks cannot survive that reset.
+            let target = self.controls.target;
+            let rate = self.controls.rate;
+            self.controls = Controls {
+                current: target,
+                target,
+                rate,
+                started: true,
+                ..Controls::default()
+            };
+            self.coefficients(target, rate);
+        }
         if !self.controls.pending && self.controls.remaining == 0 {
             self.process_held(left, right);
             self.controls.phase = ((usize::from(self.controls.phase) + n) % 32) as u8;
@@ -369,6 +382,36 @@ mod tests {
             tiny.process(&mut one_l, &mut one_r);
             assert_eq!(tiny.controls.current, tiny.controls.target);
             assert_eq!(tiny.controls.remaining, 0, "sub-threshold deltas snap");
+
+            for retuned in [false, true] {
+                let mut reset = Ladder::default();
+                reset.tune([0.2, 0.0, 0.0], rate);
+                reset.process(&mut l, &mut r);
+                reset.tune([0.75, 0.5, 0.5], rate);
+                reset.process(&mut l17, &mut r17);
+                assert_ne!(reset.controls.remaining, 0);
+                reset.clear();
+                let target = if retuned {
+                    [0.3, 0.25, -0.5]
+                } else {
+                    [0.75, 0.5, 0.5]
+                };
+                if retuned {
+                    reset.tune(target, rate);
+                }
+                let mut fresh = Ladder::default();
+                fresh.tune(target, rate);
+                let mut reset_l = [0.0001; 71];
+                let mut reset_r = [-0.0001; 71];
+                let (mut fresh_l, mut fresh_r) = (reset_l, reset_r);
+                reset.process(&mut reset_l, &mut reset_r);
+                fresh.process(&mut fresh_l, &mut fresh_r);
+                assert_eq!(reset_l, fresh_l, "reset snapshots with retune={retuned}");
+                assert_eq!(reset_r, fresh_r);
+                assert_eq!(reset.controls.current, reset.controls.target);
+                assert_eq!(reset.controls.remaining, 0);
+                assert!(!reset.controls.pending);
+            }
 
             resonance.process(&mut l, &mut r);
             assert_eq!(resonance.controls.current, resonance.controls.target);
