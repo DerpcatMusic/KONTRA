@@ -5073,6 +5073,63 @@ end on"#;
     }
 
     #[test]
+    fn native_ui_boolean_connections_preserve_truth_units_and_raw_discrete_values() {
+        use crate::native_ui::{Node,Paint,Scene};
+        let directory=std::env::temp_dir().join(format!("kontra-native-boolean-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let resources=directory.join("Resources/native_ui");std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("main.nui"),r#"
+            local ui=require('native_ui') local k=require('kontakt')
+            local power=k.connect_parameter('Power') local switch=k.connect_parameter('Switch')
+            local raw=k.connect_parameter('Raw') local menu=k.connect_parameter('Choice')
+            assert(type(power:value())=='boolean' and not power:value())
+            assert(type(switch:value())=='boolean' and switch:value())
+            assert(raw:value()==-23 and menu:value()==30)
+            local function Main()
+                return @ui.ZStack {
+                    @ui.Rectangle {color=ui.Color.red}.frame(width=20,height=10)
+                        .disabled(function()return not power:value()end)
+                    @ui.Text {text=function()return tostring(power:value())..':'..tostring(switch:value())..':'..raw:value()..':'..menu:value()end}
+                        .on_tap_gesture(start=function()
+                            assert(not pcall(function()power:set_value(1)end))
+                            assert(not pcall(function()switch:set_value(0)end))
+                            assert(not pcall(function()raw:set_value(true)end))
+                            assert(not pcall(function()raw:set_value(0/0)end))
+                            power:set_value(not power:value())
+                            switch:set_value(not switch:value())
+                            raw:set_value(-17)
+                            menu:set_value(10)
+                        end)
+                }.frame(width=200,height=40)
+            end
+            return @Main{}
+        "#).unwrap();
+        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec![
+            "on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_button $Power\ndeclare ui_switch $Switch\n$Switch := 1\ndeclare ui_value_edit $Raw(-100,100,1)\n$Raw := -23\ndeclare ui_menu $Choice\nadd_menu_item($Choice,\"low\",10)\nadd_menu_item($Choice,\"high\",30)\n$Choice := 30\ndeclare ui_label $Ack(1,1)\nend on\non ui_control($Power)\nset_text($Ack,\"Power changed\")\nend on".into(),
+            "on init\nmake_perfview\ndeclare ui_button $Power\n$Power := 1\nend on".into()],..Default::default()};
+        let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
+        let scene=Arc::new(Mutex::new(Scene::prepare(&instrument.path,&rt).unwrap().unwrap()));let mut live=first_script_live(&rt);rt.prepare_native_controls(&mut live);
+        fn label(node:&Node)->Option<&str>{if let Paint::Text(text)=&node.paint{Some(text)}else{node.children.iter().find_map(label)}}
+        fn rectangle(node:&Node)->Option<&Node>{if matches!(node.paint,Paint::Rectangle(..)){Some(node)}else{node.children.iter().find_map(rectangle)}}
+        fn tap(node:&Node)->Option<usize>{if node.tap{Some(node.id)}else{node.children.iter().find_map(tap)}}
+        let initial=scene.lock().unwrap().snapshot().unwrap();assert_eq!(label(&initial),Some("false:true:-23:30"));assert!(rectangle(&initial).unwrap().disabled,"integer0 cannot be interpreted as a truthy Lua Boolean");
+        let edits=scene.lock().unwrap().tap(tap(&initial).unwrap()).unwrap();assert_eq!(edits.iter().map(|e|(e.slot,e.control,e.value)).collect::<Vec<_>>(),[(0,0,1),(0,1,0),(0,2,-17),(0,3,10)]);
+        let p=Arc::new(SamplerParams::new());let epoch={let mut view=p.shared.view.lock().unwrap();let epoch=next_epoch(&mut view,0,None,Some(live));view.parts[0].native_scene=Some(scene.clone());epoch};
+        let mut dsp=Dsp::default();dsp.script_epoch[0]=epoch;dsp.rack.parts[0].set_script(Some(rt));
+        for edit in edits{assert!(p.shared.edit_control_slot(0,epoch,edit.slot,edit.control,edit.value));}
+        let live=p.shared.view.lock().unwrap().parts[0].live.take().unwrap();p.shared.live_requests.push((0,epoch,live)).ok().unwrap();
+        let (mut left,mut right)=([0.;64],[0.;64]);let mut slices=[left.as_mut_slice(),right.as_mut_slice()];let mut buffer=AudioBuffer::from_slices_checked(&[],&mut slices,64);
+        let transport=TransportInfo::default();let mut output=EventList::with_capacity(4);let events=EventList::with_capacity(1);let mut cx=ProcessContext::new(&transport,48000.,64,&mut output);
+        assert_eq!(allocations(||{for _ in 0..8{Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx);}}),0);p.shared.publish_live(true);
+        let after=scene.lock().unwrap().snapshot().unwrap();assert_eq!(label(&after),Some("true:false:-17:10"));assert!(!rectangle(&after).unwrap().disabled);
+        assert_eq!(dsp.rack.parts[0].script().unwrap().interface(0).controls[4].properties["$CONTROL_PAR_TEXT"],crate::ksp::Value::Text("Power changed".into()),"Boolean setter runs the real owning callback");
+        assert_eq!(dsp.rack.parts[0].script().unwrap().interface(1).controls[0].properties["$CONTROL_PAR_VALUE"],crate::ksp::Value::Int(1),"later duplicate identifiers cannot become the owner");
+        assert!(dsp.rack.parts[0].script().unwrap().diagnostics().is_empty());
+        let newer=next_epoch(&mut p.shared.view.lock().unwrap(),0,None,None);assert_ne!(newer,epoch);
+        let stale=scene.lock().unwrap().tap(tap(&after).unwrap()).unwrap();assert!(!p.shared.edit_control_slot(0,epoch,stale[0].slot,stale[0].control,stale[0].value));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn native_ui_hover_uses_real_pointer_frames_and_retires_exact_component_owners() {
         use crate::native_ui::{Node,Paint,Scene};
         use moose::mui::mui::prelude::*;
@@ -5342,7 +5399,7 @@ end on"#;
             end
             return @Body{}
         "#).unwrap();
-        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_switch $Mode\nend on".into()],..Default::default()};
+        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_value_edit $Mode(0,1,1)\nend on".into()],..Default::default()};
         let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
         let mut scene=Scene::prepare(&instrument.path,&rt).unwrap().unwrap();let mut live=first_script_live(&rt);rt.prepare_native_controls(&mut live);
         assert_eq!(scene.resources.iter().map(|(name,_)|name.as_str()).collect::<Vec<_>>(),["main.nui","data/body.nui"],"lazy imports retain their exact resource provenance");

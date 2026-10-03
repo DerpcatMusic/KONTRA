@@ -116,7 +116,6 @@ kontakt_host = strict("kontakt", {
             end,
             set_value=function(_,value,index)
                 assert(index==nil or index==0,"Native UI array connections are unavailable")
-                assert(type(value)=="number" and value%1==0,"Integer parameter required")
                 local slot,control=resolve()
                 native_set(slot,control,value)
             end,
