@@ -125,6 +125,73 @@ struct Binding {
     properties: crate::ksp::NativeProperties,
 }
 struct MeterBinding { slot: usize, control: usize, reader: Arc<crate::fx::MeterReader> }
+impl Binding {
+    fn normalized_range(&self) -> mlua::Result<(i32, i32)> {
+        let (minimum, maximum) = self
+            .range
+            .ok_or_else(|| invalid("Native normalized parameter has no declared range"))?;
+        let span = maximum
+            .checked_sub(minimum)
+            .filter(|span| *span > 0)
+            .ok_or_else(|| {
+                invalid("Unsupported degenerate, reversed or overflowing native normalized range")
+            })?;
+        Ok((minimum, span))
+    }
+    fn lua_value(&self) -> mlua::Result<Value> {
+        Ok(match self.kind.as_ref() {
+            "ui_button" | "ui_switch" => Value::Boolean(self.value != 0),
+            "ui_knob" | "ui_slider" => {
+                let (minimum, span) = self.normalized_range()?;
+                let value = self.value.checked_sub(minimum).ok_or_else(|| {
+                    invalid("Native normalized value overflows its declared range")
+                })?;
+                // The native legacy provider preserves its float32 variant.
+                // Reads do not clamp; raw properties and discrete controls stay integers.
+                Value::Number(f64::from(value as f32 / span as f32))
+            }
+            _ => Value::Integer(i64::from(self.value)),
+        })
+    }
+    fn assigned_value(&self, value: Value) -> mlua::Result<i32> {
+        match self.kind.as_ref() {
+            "ui_button" | "ui_switch" => match value {
+                Value::Boolean(value) => Ok(i32::from(value)),
+                _ => Err(invalid("Boolean native parameter requires a Boolean value")),
+            },
+            "ui_knob" | "ui_slider" => {
+                let value = match value {
+                    Value::Integer(value) => value as f64,
+                    Value::Number(value) if value.is_finite() => value,
+                    _ => {
+                        return Err(invalid(
+                            "Normalized native parameter requires a finite number",
+                        ));
+                    }
+                };
+                let (minimum, span) = self.normalized_range()?;
+                let normalized = (value as f32).clamp(0., 1.);
+                // Native scalar writes narrow and clamp before mapping, then
+                // round half away from zero. No display-step lattice is applied.
+                Ok((f64::from(minimum) + f64::from(span) * f64::from(normalized)).round() as i32)
+            }
+            _ => match value {
+                Value::Integer(value) => i32::try_from(value)
+                    .map_err(|_| invalid("Native integer parameter exceeds i32")),
+                Value::Number(value)
+                    if value.is_finite()
+                        && value.fract() == 0.
+                        && (i32::MIN as f64..=i32::MAX as f64).contains(&value) =>
+                {
+                    Ok(value as i32)
+                }
+                _ => Err(invalid(
+                    "Native integer parameter requires a finite whole value",
+                )),
+            },
+        }
+    }
+}
 #[derive(Default)]
 struct Parameters {
     bindings: BTreeMap<String, Binding>,
@@ -293,9 +360,7 @@ impl Scene {
         lua.globals().set("native_read", lua.create_function(move |_, name: String| {
             let mut p = p.lock().unwrap();
             if let Some(b) = p.bindings.get(&name) {
-                let value = if matches!(b.kind.as_ref(), "ui_button" | "ui_switch") {
-                    Value::Boolean(b.value != 0)
-                } else { Value::Integer(i64::from(b.value)) };
+                let value = b.lua_value()?;
                 return Ok((value, Some(b.slot), Some(b.control)));
             }
             if p.unsupported.contains(&name) {
@@ -391,10 +456,8 @@ impl Scene {
                 p.bindings
                     .values()
                     .find(|b| b.slot == slot && b.control == control)
-                    .map(|b| if matches!(b.kind.as_ref(), "ui_button" | "ui_switch") {
-                        Value::Boolean(b.value != 0)
-                    } else { Value::Integer(i64::from(b.value)) })
-                    .ok_or_else(|| invalid("Native UI control identity changed"))
+                    .ok_or_else(|| invalid("Native UI control identity changed"))?
+                    .lua_value()
             })?,
         )?;
         let p = parameters.clone();
@@ -416,20 +479,7 @@ impl Scene {
                     .values_mut()
                     .find(|b| b.slot == slot && b.control == control)
                     .ok_or_else(|| invalid("Native UI control identity changed"))?;
-                let value = if matches!(b.kind.as_ref(), "ui_button" | "ui_switch") {
-                    match value {
-                        Value::Boolean(value) => i32::from(value),
-                        _ => return Err(invalid("Boolean native parameter requires a Boolean value")),
-                    }
-                } else {
-                    match value {
-                        Value::Integer(value) => i32::try_from(value)
-                            .map_err(|_| invalid("Native integer parameter exceeds i32"))?,
-                        Value::Number(value) if value.is_finite() && value.fract() == 0.
-                            && (i32::MIN as f64 ..= i32::MAX as f64).contains(&value) => value as i32,
-                        _ => return Err(invalid("Native integer parameter requires a finite whole value")),
-                    }
-                };
+                let value = b.assigned_value(value)?;
                 b.value = value;
                 p.edits.push(Edit {
                     slot,

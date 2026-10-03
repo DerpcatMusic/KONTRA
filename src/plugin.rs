@@ -5076,6 +5076,97 @@ end on"#;
     }
 
     #[test]
+    fn native_ui_scalar_connections_normalize_declared_ranges_and_preserve_discrete_units() {
+        use crate::native_ui::{Node,Paint,Scene};
+        let directory=std::env::temp_dir().join(format!("kontra-native-scalar-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let resources=directory.join("Resources/native_ui");std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("main.nui"),r#"
+            local ui=require('native_ui') local k=require('kontakt')
+            local names={'Knob','Shift','Signed','Quant','Negative','Endpoint','Choice','Raw','Remote'}
+            local p={} for i,name in ipairs(names)do p[i]=k.connect_parameter(name)end
+            local expected={64/127,0.25,0.5,0,0,0,70,-23,64/127}
+            for i,v in ipairs(expected)do
+                assert(math.abs(p[i]:value()-v)<0.0000001)
+                assert(math.type(p[i]:value())==((i==7 or i==8) and 'integer' or 'float'))
+            end
+            assert(p[4]:ksp_control_property(16)==32,'defaults remain raw integers')
+            assert(p[2]:ksp_control_property(21)==20 and p[2]:ksp_control_property(22)==120)
+            assert(p[7]:ksp_control_property(19,1)==70 and not p[7]:ksp_control_property(20,1))
+            return @ui.Text {text=function()
+                local out={} for i,parameter in ipairs(p)do out[i]=string.format('%.6f',parameter:value())end
+                return table.concat(out,':')
+            end}.frame(width=700,height=40).on_tap_gesture(start=function()
+                assert(not pcall(function()p[1]:set_value(true)end))
+                assert(not pcall(function()p[1]:set_value(0/0)end))
+                assert(not pcall(function()p[1]:set_value(math.huge)end))
+                assert(not pcall(function()p[7]:set_value(0.5)end))
+                assert(not pcall(function()p[8]:set_value(false)end))
+                p[1]:set_value(64/127) p[2]:set_value(0.625) p[3]:set_value(0.5)
+                p[4]:set_value(0.375) p[5]:set_value(0.625) p[6]:set_value(p[6]:value()>=1 and -1 or 2)
+                p[7]:set_value(70) p[8]:set_value(12) p[9]:set_value(0.25)
+            end)
+        "#).unwrap();
+        let script=r#"on init
+make_perfview
+load_native_ui("main")
+expose_controls
+declare ui_knob $Knob(0,127,1)
+$Knob := 64
+declare ui_slider $Shift(20,120)
+$Shift := 45
+declare ui_slider $Signed(-100,100)
+declare ui_knob $Quant(0,100,10)
+set_control_par(get_ui_id($Quant),$CONTROL_PAR_DEFAULT_VALUE,32)
+declare ui_slider $Negative(-100,0)
+$Negative := -100
+declare ui_slider $Endpoint(0,100)
+declare ui_menu $Choice
+add_menu_item($Choice,"visible",7)
+add_menu_item($Choice,"hidden",70)
+set_menu_item_visibility(get_ui_id($Choice),1,0)
+$Choice := 70
+declare ui_value_edit $Raw(-100,100,1)
+$Raw := -23
+end on
+on ui_control($Signed)
+$Signed := $Signed+1
+end on"#;
+        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec![script.into(),"on init\nmake_perfview\ndeclare ui_slider $Remote(0,127)\n$Remote := 64\ndeclare ui_slider $Signed(-100,100)\n$Signed := 90\nend on\non ui_control($Remote)\n$Remote := $Remote+1\nend on".into()],..Default::default()};
+        let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
+        let scene=Arc::new(Mutex::new(Scene::prepare(&instrument.path,&rt).unwrap().unwrap()));
+        let mut live=Box::new(rt.live_for_slot(Some(1)));rt.prepare_native_controls(&mut live);
+        fn label(node:&Node)->Option<&str>{if let Paint::Text(text)=&node.paint{Some(text)}else{node.children.iter().find_map(label)}}
+        fn tap(node:&Node)->Option<usize>{if node.tap{Some(node.id)}else{node.children.iter().find_map(tap)}}
+        let initial=scene.lock().unwrap().snapshot().unwrap();
+        assert_eq!(label(&initial),Some("0.503937:0.250000:0.500000:0.000000:0.000000:0.000000:70.000000:-23.000000:0.503937"));
+        let edits=scene.lock().unwrap().tap(tap(&initial).unwrap()).unwrap();
+        assert_eq!(edits.iter().map(|e|(e.slot,e.control,e.value)).collect::<Vec<_>>(),[(0,0,64),(0,1,83),(0,2,0),(0,3,38),(0,4,-38),(0,5,100),(0,6,70),(0,7,12),(1,0,32)],"float32 range mapping rounds signed halves and ignores display-step lattices");
+        let p=Arc::new(SamplerParams::new());let epoch={let mut view=p.shared.view.lock().unwrap();let epoch=next_epoch(&mut view,0,None,Some(live));view.parts[0].native_scene=Some(scene.clone());epoch};
+        let mut dsp=Dsp::default();dsp.script_epoch[0]=epoch;dsp.rack.parts[0].set_script(Some(rt));
+        for edit in &edits{assert!(p.shared.edit_control_slot(0,epoch,edit.slot,edit.control,edit.value));}
+        let live=p.shared.view.lock().unwrap().parts[0].live.take().unwrap();p.shared.live_requests.push((0,epoch,live)).ok().unwrap();
+        let (mut left,mut right)=([0.;64],[0.;64]);let mut slices=[left.as_mut_slice(),right.as_mut_slice()];let mut buffer=AudioBuffer::from_slices_checked(&[],&mut slices,64);
+        let transport=TransportInfo::default();let mut output=EventList::with_capacity(4);let events=EventList::with_capacity(1);let mut cx=ProcessContext::new(&transport,48000.,64,&mut output);
+        assert_eq!(allocations(||{for _ in 0..16{Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx);}}),0);p.shared.publish_live(true);
+        let after=scene.lock().unwrap().snapshot().unwrap();
+        assert_eq!(label(&after),Some("0.503937:0.630000:0.505000:0.380000:0.620000:1.000000:70.000000:12.000000:0.259843"));
+        let rt=dsp.rack.parts[0].script().unwrap();
+        assert_eq!(rt.interface(1).controls[1].properties["$CONTROL_PAR_VALUE"],crate::ksp::Value::Int(90),"duplicate names retain the first exact owning slot");
+        assert!(rt.diagnostics().is_empty(),"{:?}",rt.diagnostics());
+        let newer=next_epoch(&mut p.shared.view.lock().unwrap(),0,None,None);assert_ne!(epoch,newer);
+        let stale=scene.lock().unwrap().tap(tap(&after).unwrap()).unwrap();
+        assert_eq!(stale[5].value,0,"normalized endpoint clamps before mapping even on a captured old scene");
+        for edit in stale{assert!(!p.shared.edit_control_slot(0,epoch,edit.slot,edit.control,edit.value));}
+        for (min,max) in [(10,10),(20,10),(i32::MIN,i32::MAX)] {
+            std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') local p=require('kontakt').connect_parameter('Range') return @ui.Text{text=tostring(p:value())}").unwrap();
+            let i=Instrument{path:instrument.path.clone(),scripts:vec![format!("on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $Range(0,100)\nset_control_par(get_ui_id($Range),$CONTROL_PAR_MIN_VALUE,{min})\nset_control_par(get_ui_id($Range),$CONTROL_PAR_MAX_VALUE,{max})\nend on")],..Default::default()};
+            let (rt,errors)=crate::engine::load_scripts(&i,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");
+            assert!(format!("{:#}",Scene::prepare(&i.path,&rt.unwrap()).unwrap_err()).contains("Unsupported degenerate, reversed or overflowing native normalized range"));
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn native_ui_boolean_connections_preserve_truth_units_and_raw_discrete_values() {
         use crate::native_ui::{Node,Paint,Scene};
         let directory=std::env::temp_dir().join(format!("kontra-native-boolean-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
@@ -5378,7 +5469,7 @@ end on"#;
                     .on_tap_gesture(start=function() mode:set_value(mode:value()+2) end).align('top right'))
                 .background(@ui.Rectangle {color=ui.Color(0,255,0)})
         "#).unwrap();
-        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $Mode(0,10)\nend on".into()],..Default::default()};
+        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_value_edit $Mode(0,10,1)\nend on".into()],..Default::default()};
         let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
         let mut scene=Scene::prepare(&instrument.path,&rt).unwrap().unwrap();let mut live=first_script_live(&rt);rt.prepare_native_controls(&mut live);
         let mut engine=Engine::default();engine.set_script(Some(rt));
@@ -5420,7 +5511,7 @@ end on"#;
             end
             return @Main{}
         "#).unwrap();
-        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $Mode(0,10)\nend on".into()],..Default::default()};
+        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_value_edit $Mode(0,10,1)\nend on".into()],..Default::default()};
         let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
         let mut scene=Scene::prepare(&instrument.path,&rt).unwrap().unwrap();let mut live=first_script_live(&rt);rt.prepare_native_controls(&mut live);
         let mut engine=Engine::default();engine.set_script(Some(rt));
@@ -5553,7 +5644,7 @@ end on"#;
                 @ui.Text {text='inherit\nnext\nend'}.line_limit(nil)
             }.line_limit(2).bold(true).frame(width=120)
         "#).unwrap();
-        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $Mode(0,3)\nend on".into()],..Default::default()};
+        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_value_edit $Mode(0,3,1)\nend on".into()],..Default::default()};
         let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
         let mut scene=Scene::prepare(&instrument.path,&rt).unwrap().unwrap();let mut live=first_script_live(&rt);rt.prepare_native_controls(&mut live);
         let mut engine=Engine::default();engine.set_script(Some(rt));
@@ -5597,7 +5688,7 @@ end on"#;
                 .disabled(ui.create_computed(function() return mode:value()==1 end))
                 .frame(width=80,height=40)
         "#).unwrap();
-        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $Mode(0,3)\nend on".into()],..Default::default()};
+        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_value_edit $Mode(0,3,1)\nend on".into()],..Default::default()};
         let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
         let mut scene=Scene::prepare(&instrument.path,&rt).unwrap().unwrap();let mut live=first_script_live(&rt);rt.prepare_native_controls(&mut live);
         let mut engine=Engine::default();engine.set_script(Some(rt));
@@ -5635,7 +5726,7 @@ end on"#;
                 .background(@ui.Rectangle {color=ui.Color(0,0,255)})
                 .frame(width=80,height=40)
         "#).unwrap();
-        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $X(-20,20)\n$X := -5\nend on".into()],..Default::default()};
+        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_value_edit $X(-20,20,1)\n$X := -5\nend on".into()],..Default::default()};
         let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
         let mut scene=Scene::prepare(&instrument.path,&rt).unwrap().unwrap();let mut live=first_script_live(&rt);rt.prepare_native_controls(&mut live);
         let mut engine=Engine::default();engine.set_script(Some(rt));
@@ -5714,8 +5805,8 @@ end on"#;
                 .on_tap_gesture(start=function() known:set_value(known:value()+1) end)
                 .frame(width=40,height=20)
         "#).unwrap();
-        let script="on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $Known(0,100)\ndeclare ui_text_edit @Name\n$Known := 7\nend on\non ui_control($Known)\n$Known := $Known*2\nend on";
-        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec![script.into(),"on init\nmake_perfview\ndeclare ui_slider $Known(0,100)\n$Known := 90\nend on".into()],..Default::default()};
+        let script="on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_value_edit $Known(0,100,1)\ndeclare ui_text_edit @Name\n$Known := 7\nend on\non ui_control($Known)\n$Known := $Known*2\nend on";
+        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec![script.into(),"on init\nmake_perfview\ndeclare ui_value_edit $Known(0,100,1)\n$Known := 90\nend on".into()],..Default::default()};
         let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
         let scene=Arc::new(Mutex::new(Scene::prepare(&instrument.path,&rt).unwrap().unwrap()));let mut live=first_script_live(&rt);rt.prepare_native_controls(&mut live);
         fn label(node:&Node)->Option<&str>{if let Paint::Text(text)=&node.paint{Some(text)}else{node.children.iter().find_map(label)}}
@@ -5776,7 +5867,7 @@ end on"#;
 make_perfview
 load_native_ui("main")
 expose_controls
-declare ui_slider $Amount(2,100)
+declare ui_value_edit $Amount(2,100,1)
 declare ui_menu $Choice
 $Amount := 7
 set_control_par_str(get_ui_id($Amount),$CONTROL_PAR_TEXT,"Heading")
@@ -5801,7 +5892,7 @@ else
 set_control_par_str(get_ui_id($Amount),$CONTROL_PAR_LABEL,"Latest🦀")
 end if
 end on"#,"🦀".repeat(600));
-        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec![script,"on init\nmake_perfview\ndeclare ui_slider $Amount(0,200)\n$Amount := 99\nend on".into()],..Default::default()};
+        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec![script,"on init\nmake_perfview\ndeclare ui_value_edit $Amount(0,200,1)\n$Amount := 99\nend on".into()],..Default::default()};
         let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
         let scene=Arc::new(Mutex::new(Scene::prepare(&instrument.path,&rt).unwrap().unwrap()));
         // The classic selected page is the OTHER owning slot. Native properties
@@ -5855,7 +5946,7 @@ end on"#,"🦀".repeat(600));
                 @ui.Rectangle {color=ui.Color.black}.frame(width=10,height=5)
             }
         "#).unwrap();
-        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $Spacing(0,100)\n$Spacing := 5\nend on".into()],..Default::default()};
+        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_value_edit $Spacing(0,100,1)\n$Spacing := 5\nend on".into()],..Default::default()};
         let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
         let mut scene=Scene::prepare(&instrument.path,&rt).unwrap().unwrap();let mut live=first_script_live(&rt);rt.prepare_native_controls(&mut live);
         let mut engine=Engine::default();engine.set_script(Some(rt));
@@ -5897,7 +5988,7 @@ end on"#,"🦀".repeat(600));
                 @ui.Rectangle {color=ui.Color.red}.frame(width=20,height=10)
                 @ui.Rectangle {color=ui.Color(0,0,255)}.frame(width=40,height=20).opacity(0.5)
                 @ui.Rectangle {color=ui.Color.white}.frame(width=20,height=10).on_tap_gesture(start=function() end).opacity(0)
-            }.opacity(ui.create_computed(function() return p:value()/100 end)).frame(width=40,height=20)
+            }.opacity(ui.create_computed(function() return p:value() end)).frame(width=40,height=20)
         "#).unwrap();
         let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $Amount(0,100)\n$Amount := 100\nend on".into()],..Default::default()};
         let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
@@ -5979,7 +6070,7 @@ end on"#,"🦀".repeat(600));
         dsp.script_epoch[0]=epoch;dsp.rack.parts[0].set_script(Some(rt));
         fn texts(node:&Node, out:&mut Vec<String>) {if let Paint::Text(text)=&node.paint {out.push(text.clone())}for c in &node.children {texts(c,out)}}
         let initial=scene.lock().unwrap().snapshot().unwrap();let mut labels=Vec::new();texts(&initial,&mut labels);
-        assert_eq!(labels,["Amount:17:0","Remote:9:0"]);
+        assert_eq!(labels,["Amount:0.170000:0","Remote:0.090000:0"]);
         fn text_styles(node:&Node,out:&mut Vec<(f64,[f32;4])>) {
             if matches!(node.paint,Paint::Text(_)) {out.push((node.text_size,node.text_color));}
             for child in &node.children {text_styles(child,out)}
@@ -6073,7 +6164,7 @@ end on"#,"🦀".repeat(600));
         completion.recv_timeout(std::time::Duration::from_secs(5)).expect("full artwork queue wakes its existing loader");
         completion.recv_timeout(std::time::Duration::from_secs(5)).expect("loader retry tail schedules itself without UI polling");
         assert!(source.prepared_image(80,40).unwrap().is_some(),"queue-full misses recover without editor raster work or another thread");
-        assert_eq!(labels,["Amount:44:1","Remote:24:1"],"same scene observes callback results and retains local state");
+        assert_eq!(labels,["Amount:0.485714:1","Remote:0.240000:1"],"same scene observes callback results and retains local state");
         let rt=dsp.rack.parts[0].script().unwrap();
         assert_eq!(rt.interface(1).controls[1].properties["$CONTROL_PAR_VALUE"],crate::ksp::Value::Int(90));
         assert!(rt.diagnostics().is_empty(),"{:?}",rt.diagnostics());
@@ -6086,9 +6177,9 @@ end on"#,"🦀".repeat(600));
         assert!(!scene.lock().unwrap().assets.entries.contains_key("assets/pics/stale.svg"),"stale image jobs are discarded before reading or publication");
         assert!(source.prepared_image(120,60).unwrap().is_none(),"a replaced scene's raster job does not prepare or publish after its source changes");
         drop(tasks);
-        std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') return function() return @ui.Ring {} end").unwrap();
+        std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') return function() return @ui.__UnsupportedPrimitive {} end").unwrap();
         let error=Scene::prepare(&i.path,rt).unwrap_err().to_string();
-        assert!(error.contains("Unsupported native UI API")&&error.contains("Ring"),"{error}");
+        assert!(error.contains("Unsupported native UI API")&&error.contains("__UnsupportedPrimitive"),"{error}");
         assert!(crate::native_ui::frontend_test_invalid_sources());
         let mut reader=crate::resources::Resources::of(&i.path,"native_ui");
         assert!(reader.read_limited("components/init.nui",4).unwrap_err().contains("exceeds"),"payload bound precedes VM allocation");
