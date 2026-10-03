@@ -1116,6 +1116,7 @@ fn reporter_worker(
                 *marker.lock_unpoisoned() = Some(current);
                 ready.store(persisted, Ordering::Release);
                 let _ = acknowledge.send(persisted);
+                super::report::restore_last_report_status();
                 // Persist the initialization marker before invoking any platform subprocess.
                 // The plugin may open/crash while system metadata is still being collected.
                 let platform = super::platform::snapshot(&stopping).clone();

@@ -29,7 +29,90 @@ struct ReportResponse {
     diagnostics_sha256: Option<String>,
     ok: Option<bool>,
     report_id: Option<String>,
+    issue_url: Option<String>,
     error: Option<String>,
+}
+
+struct DeliveredReport {
+    report_id: String,
+    issue_url: Option<String>,
+}
+
+fn public_issue_url(url: &str) -> Option<String> {
+    let number = url.strip_prefix("https://github.com/DerpcatMusic/KONTRA/issues/")?;
+    (number.len() <= 20
+        && !number.is_empty()
+        && number.bytes().all(|b| b.is_ascii_digit())
+        && number.bytes().any(|b| b != b'0'))
+    .then(|| url.to_owned())
+}
+
+fn report_status(incident_id: &str, result: &Result<DeliveredReport, String>) -> serde_json::Value {
+    let (status, report_id, issue_url) = match result {
+        Ok(delivery) => {
+            let mut status = format!("Report {} sent. Thank you.", delivery.report_id);
+            if let Some(url) = &delivery.issue_url {
+                status.push_str(&format!(" Issue: {url}"));
+            }
+            (
+                status,
+                Some(delivery.report_id.clone()),
+                delivery.issue_url.clone(),
+            )
+        }
+        Err(error) => (
+            format!("Crash report retained for retry: {error}"),
+            None,
+            None,
+        ),
+    };
+    serde_json::json!({"incident_id":incident_id,"status":status,"reason":status,
+        "sent":result.is_ok(),"report_id":report_id,"issue_url":issue_url})
+}
+
+fn read_last_report_status(path: &std::path::Path) -> Option<serde_json::Value> {
+    use std::io::Read as _;
+    const MAX_STATUS_BYTES: usize = 16 * 1024;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(MAX_STATUS_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > MAX_STATUS_BYTES {
+        return None;
+    }
+    let saved: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let sent = saved["sent"].as_bool()?;
+    let status = redact_log(saved["status"].as_str()?);
+    let incident = saved["incident_id"]
+        .as_str()
+        .filter(|s| s.len() == 16 && s.bytes().all(|b| b.is_ascii_hexdigit()));
+    let report = saved["report_id"].as_str().filter(|s| {
+        !s.is_empty() && s.len() <= 128 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    });
+    let issue = saved["issue_url"].as_str().and_then(public_issue_url);
+    Some(
+        serde_json::json!({"sent":sent,"status":status,"reason":status,
+        "incident_id":incident,"report_id":report,"issue_url":issue,"restored":true}),
+    )
+}
+
+pub(super) fn restore_last_report_status() {
+    static RESTORED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if RESTORED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    if let Some(value) =
+        read_last_report_status(&support_cache_path().with_file_name("last-report.json"))
+    {
+        let level = if value["sent"] == true {
+            crate::diagnostics::LogLevel::Info
+        } else {
+            crate::diagnostics::LogLevel::Error
+        };
+        crate::diagnostics::event(level, "support", "previous_crash_report", value);
+    }
 }
 
 fn attach_incident_provenance(payload: &mut ReportPayload, incident: &CrashIncident) {
@@ -67,6 +150,13 @@ pub(super) fn try_auto_report_pending_incident() {
         // Delayed native artifacts are searched only on this worker, never during host initialization.
         let incident = crash::refresh_pending_incident(&incident.id).unwrap_or(incident);
         if !incident.auto_reportable() {
+            crate::diagnostics::event(
+                crate::diagnostics::LogLevel::Warning,
+                "support",
+                "previous_session_unconfirmed",
+                serde_json::json!({"incident_id":incident.id,
+                    "reason":"A previous session ended without native crash confirmation. Its evidence remains local and has not been sent."}),
+            );
             return;
         }
         let identity = HOST_IDENTITY.lock_unpoisoned().clone();
@@ -85,19 +175,23 @@ pub(super) fn try_auto_report_pending_incident() {
         };
         attach_incident_provenance(&mut payload, &incident);
         let result = send_report(payload);
-        let (level, status) = match &result {
-            Ok(message) => (crate::diagnostics::LogLevel::Info, message.clone()),
-            Err(error) => (
-                crate::diagnostics::LogLevel::Error,
-                format!("Crash report retained for retry: {error}"),
-            ),
+        let level = if result.is_ok() {
+            crate::diagnostics::LogLevel::Info
+        } else {
+            crate::diagnostics::LogLevel::Error
         };
         // Receipt or failure remains visible locally; pending evidence is deleted only after acknowledgement.
         let status_path = support_cache_path().with_file_name("last-report.json");
-        let value =
-            serde_json::json!({"incident_id":incident.id,"status":status,"sent":result.is_ok()});
+        let value = report_status(&incident.id, &result);
         if let Ok(bytes) = serde_json::to_vec(&value) {
-            let _ = buffr_durable_file::publish_private(&status_path, &bytes);
+            if let Err(error) = buffr_durable_file::publish_private(&status_path, &bytes) {
+                crate::diagnostics::event(
+                    crate::diagnostics::LogLevel::Error,
+                    "support",
+                    "report_receipt_write_failed",
+                    serde_json::json!({"reason":format!("Could not persist the crash-report delivery status: {error}")}),
+                );
+            }
         }
         crate::diagnostics::event(level, "support", "automatic_crash_report", value);
     });
@@ -106,7 +200,7 @@ pub(super) fn try_auto_report_pending_incident() {
             crate::diagnostics::LogLevel::Error,
             "support",
             "report_worker_failed",
-            serde_json::json!({"error":error.to_string()}),
+            serde_json::json!({"reason":format!("Crash report retained; could not start delivery worker: {error}")}),
         );
     }
 }
@@ -194,7 +288,20 @@ fn redact_token(token: &str) -> String {
     if token.contains('@') {
         return "[redacted]".to_string();
     }
-    let looks_absolute = token.starts_with('/')
+    let unquoted = token.trim_start_matches(['\'', '"', '(', '[', '{']);
+    let windows_drive = token.as_bytes().windows(3).enumerate().any(|(at, bytes)| {
+        bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'/' | b'\\')
+            && (at == 0 || matches!(token.as_bytes()[at - 1], b'=' | b'\'' | b'"' | b'(' | b'['))
+    });
+    let looks_absolute = unquoted.starts_with('/')
+        || unquoted.starts_with("\\\\")
+        || token.contains("=/")
+        || token.contains("=\\\\")
+        || token.contains("=\"/")
+        || token.contains("\":\"/")
+        || windows_drive
         || lower.contains("/users/")
         || lower.contains("\\users\\")
         || lower.contains(":\\");
@@ -204,7 +311,7 @@ fn redact_token(token: &str) -> String {
     dependency_suffix(token).unwrap_or_else(|| "[redacted]".to_string())
 }
 
-fn send_report(payload: ReportPayload) -> Result<String, String> {
+fn send_report(payload: ReportPayload) -> Result<DeliveredReport, String> {
     let mut payload = payload;
     if let Some(incident_id) = payload.incident_id.as_deref()
         && let Some(incident) = crash::refresh_pending_incident(incident_id)
@@ -241,10 +348,18 @@ fn send_report(payload: ReportPayload) -> Result<String, String> {
         .map_err(|_| "Could not reach support. Check your connection and try again.".to_string())
         .and_then(read_response)?;
     let report_id = validate_receipt(status, &text, evidence_hash)?;
+    let issue_url = serde_json::from_str::<ReportResponse>(&text)
+        .ok()
+        .and_then(|response| response.issue_url)
+        .as_deref()
+        .and_then(public_issue_url);
     if let Some(incident_id) = payload.incident_id.as_deref() {
         crash::mark_submitted(incident_id);
     }
-    Ok(format!("Report {report_id} sent. Thank you."))
+    Ok(DeliveredReport {
+        report_id,
+        issue_url,
+    })
 }
 
 fn validate_receipt(
@@ -256,6 +371,7 @@ fn validate_receipt(
         diagnostics_sha256: None,
         ok: None,
         report_id: None,
+        issue_url: None,
         error: None,
     });
     if !(200..300).contains(&status) {
@@ -278,6 +394,78 @@ fn validate_receipt(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn delivery_status_restores_a_readable_receipt_without_untrusted_fields() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("last-report.json");
+        let url = "https://github.com/DerpcatMusic/KONTRA/issues/123";
+        let delivered = Ok(DeliveredReport {
+            report_id: "report-123".into(),
+            issue_url: Some(url.into()),
+        });
+        let mut status = report_status("0123456789abcdef", &delivered);
+        assert!(
+            status["reason"]
+                .as_str()
+                .unwrap()
+                .contains("Report report-123 sent")
+        );
+        assert!(status["reason"].as_str().unwrap().contains(url));
+        status["license_key"] = serde_json::json!("must not restore");
+        buffr_durable_file::publish_private(&path, &serde_json::to_vec(&status).unwrap()).unwrap();
+        let restored = read_last_report_status(&path).unwrap();
+        assert_eq!(restored["report_id"], "report-123");
+        assert_eq!(restored["issue_url"], url);
+        assert_eq!(restored["reason"], restored["status"]);
+        assert_eq!(restored["restored"], true);
+        assert!(restored.get("license_key").is_none());
+        let failed = report_status("0123456789abcdef", &Err("offline".into()));
+        assert_eq!(failed["sent"], false);
+        assert!(
+            failed["reason"]
+                .as_str()
+                .unwrap()
+                .contains("retained for retry")
+        );
+        std::fs::write(&path, serde_json::to_vec(&failed).unwrap()).unwrap();
+        assert_eq!(read_last_report_status(&path).unwrap()["sent"], false);
+        std::fs::write(&path, b"{}").unwrap();
+        assert!(read_last_report_status(&path).is_none());
+        std::fs::write(&path, vec![b' '; 16 * 1024 + 1]).unwrap();
+        assert!(read_last_report_status(&path).is_none());
+    }
+
+    #[test]
+    fn public_issue_links_reject_private_or_foreign_urls() {
+        assert!(public_issue_url("https://github.com/DerpcatMusic/KONTRA/issues/42").is_some());
+        for url in [
+            "https://github.com/DerpcatMusic/buffr-support/issues/42",
+            "https://github.com/DerpcatMusic/KONTRA/issues/0",
+            "https://github.com/DerpcatMusic/KONTRA/issues/42?token=secret",
+            "https://github.com/DerpcatMusic/KONTRA/issues/42#private",
+            "https://github.com/DerpcatMusic/KONTRA/issues/42/evil",
+            "https://github.com/Other/KONTRA/issues/42",
+            "http://github.com/DerpcatMusic/KONTRA/issues/42",
+            "https://github.com.evil/DerpcatMusic/KONTRA/issues/42",
+        ] {
+            assert!(public_issue_url(url).is_none(), "{url}");
+        }
+    }
+
+    #[test]
+    fn native_report_redaction_covers_quoted_paths_and_forward_slash_windows_drives() {
+        let evidence = "Binary: \"/Volumes/private/library/KONTRA\"\nAppPath=D:/Projects/alice/KONTRA.exe\nImage=\\\\server\\private\\KONTRA.dll\nException: EXC_BAD_ACCESS\nFrame: kontra_render + 12";
+        let clean = redact_log(evidence);
+        for private in ["/Volumes/private", "D:/Projects", "server\\private"] {
+            assert!(!clean.contains(private), "{clean}");
+        }
+        assert!(clean.contains("EXC_BAD_ACCESS") && clean.contains("kontra_render + 12"));
+        assert_eq!(
+            redact_log("https://github.com/DerpcatMusic/KONTRA/issues/42"),
+            "https://github.com/DerpcatMusic/KONTRA/issues/42"
+        );
+    }
+
     #[test]
     fn completed_workers_allow_the_next_incident_after_ack_or_failure() {
         use std::sync::mpsc;
