@@ -5133,6 +5133,93 @@ end on"#;
     }
 
     #[test]
+    fn native_ui_pointer_gestures_keep_real_capture_payloads_closures_and_callback_ownership() {
+        use crate::native_ui::{Node,Paint,Scene};
+        use moose::mui::mui::prelude::*;
+        let directory=std::env::temp_dir().join(format!("kontra-native-drag-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let resources=directory.join("Resources/native_ui");std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("main.nui"),r#"
+            local ui=require('native_ui') local k=require('kontakt')
+            local mode=k.connect_parameter('Mode') local count=k.connect_parameter('Count')
+            local log=''
+            local function Target()
+                local accumulator=0
+                local function record(phase,e)
+                    assert(e.frame.width==40 and e.frame.height==20)
+                    assert(e.frame.x==45 and e.frame.y==23)
+                    assert(e.modifiers.alt and e.modifiers.shift and e.modifiers.control)
+                    log=log..phase
+                end
+                return @ui.Rectangle {color=ui.Color.red}.frame(width=40,height=20)
+                    .on_tap_gesture(start=function(e)
+                        assert(e.position.x==2 and e.position.y==3)
+                        record('Ts',e)
+                    end,double=function(e)record('Td',e)end,complete=function(e)record('Tc',e)end)
+                    .on_drag_gesture(threshold=4,start=function(e)record('Ds',e)end,
+                        update=function(e)
+                            assert(e.delta.y==0)
+                            accumulator=accumulator+e.delta.x
+                            count:set_value(math.floor(accumulator))
+                            record('Du',e)
+                        end,complete=function(e)record('Dc',e)end)
+                    .offset(x=5,y=3).hidden(mode:value()==1).disabled(mode:value()==2)
+            end
+            local function Main()
+                return @ui.ZStack {
+                    mode:value()==3 and @ui.Rectangle {color=ui.Color.black}.frame(width=40,height=20) or @Target{}
+                    @ui.Text {text=ui.create_computed(function()return log end)}.disabled(true)
+                }.frame(width=120,height=60)
+            end
+            return @Main{}
+        "#).unwrap();
+        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec![
+            "on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_value_edit $Mode(0,3,1)\ndeclare ui_value_edit $Count(0,9999,1)\nend on\non ui_control($Count)\n$Count := $Count*2\nend on".into(),
+            "on init\nmake_perfview\ndeclare ui_value_edit $Count(0,9999,1)\n$Count := 90\nend on".into()],..Default::default()};
+        let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
+        let mut scene=Scene::prepare(&instrument.path,&rt).unwrap().unwrap();let mut live=first_script_live(&rt);rt.prepare_native_controls(&mut live);
+        let mut ui=Ui::default().font(Font::new(&include_bytes!("../assets/NotoSans.ttf")[..]).unwrap());
+        let pointer=PointerInput{pos:Some(Point::new(47.,26.)),mods:Mods{shift:true,alt:true,ctrl:true,cmd:true},..Default::default()};
+        fn frame(scene:&mut Scene,ui:&mut Ui,pointer:PointerInput)->Vec<crate::native_ui::Edit>{
+            let root=scene.snapshot().unwrap();ui.frame(crate::ui::native_scene::scene_tree(&root,&scene.assets).clip(),None,pointer,0.016).unwrap();scene.pointer_gestures(ui,"native-snapshot").unwrap()
+        }
+        fn label(node:&Node)->Option<&str>{if let Paint::Text(text)=&node.paint{Some(text)}else{node.children.iter().find_map(label)}}
+        assert!(frame(&mut scene,&mut ui,pointer).is_empty());
+        let down=PointerInput{buttons:Buttons::PRIMARY,..pointer};assert!(frame(&mut scene,&mut ui,down).is_empty());
+        assert!(frame(&mut scene,&mut ui,PointerInput{pos:Some(Point::new(48.,26.)),..down}).is_empty(),"real 1px movement is below the authored 4px threshold");
+        let mut edits=frame(&mut scene,&mut ui,PointerInput{pos:Some(Point::new(52.,26.)),..down});assert_eq!(edits[0].value,5,"first drag includes movement accumulated before crossing threshold");
+        let next=frame(&mut scene,&mut ui,PointerInput{pos:Some(Point::new(55.,26.)),..down});assert_eq!(next[0].value,8,"press-time closure survives intervening reactive snapshots");edits.extend(next);
+        let release=frame(&mut scene,&mut ui,PointerInput{pos:Some(Point::new(200.,26.)),..pointer});assert_eq!(release[0].value,153,"captured pointer movement and release outside the authored frame are retained");edits.extend(release);
+        assert_eq!(label(&scene.snapshot().unwrap()),Some("TsDsDuDuDuDcTc"));
+        assert!(frame(&mut scene,&mut ui,pointer).is_empty(),"idle frames do not replay completed gestures");
+        ui=Ui::default().font(Font::new(&include_bytes!("../assets/NotoSans.ttf")[..]).unwrap());
+        frame(&mut scene,&mut ui,pointer);frame(&mut scene,&mut ui,down);frame(&mut scene,&mut ui,pointer);
+        frame(&mut scene,&mut ui,down);frame(&mut scene,&mut ui,pointer);
+        assert!(label(&scene.snapshot().unwrap()).unwrap().ends_with("TsTcTsTdTc"),"double phase comes from the maintained MUI double-click response");
+        let p=Arc::new(SamplerParams::new());let epoch=next_epoch(&mut p.shared.view.lock().unwrap(),0,None,Some(live));
+        let mut dsp=Dsp::default();dsp.script_epoch[0]=epoch;dsp.rack.parts[0].set_script(Some(rt));
+        for edit in edits{assert_eq!((edit.slot,edit.control),(0,1));assert!(p.shared.edit_control_slot(0,epoch,edit.slot,edit.control,edit.value));}
+        let live=p.shared.view.lock().unwrap().parts[0].live.take().unwrap();p.shared.live_requests.push((0,epoch,live)).ok().unwrap();
+        let (mut left,mut right)=([0.;64],[0.;64]);let mut slices=[left.as_mut_slice(),right.as_mut_slice()];let mut buffer=AudioBuffer::from_slices_checked(&[],&mut slices,64);
+        let transport=TransportInfo::default();let mut output=EventList::with_capacity(4);let events=EventList::with_capacity(1);let mut cx=ProcessContext::new(&transport,48000.,64,&mut output);
+        assert_eq!(allocations(||{for _ in 0..8{Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx);}}),0);p.shared.publish_live(true);
+        assert_eq!(dsp.rack.parts[0].script().unwrap().interface(0).controls[1].properties["$CONTROL_PAR_VALUE"],crate::ksp::Value::Int(306));
+        assert_eq!(dsp.rack.parts[0].script().unwrap().interface(1).controls[0].properties["$CONTROL_PAR_VALUE"],crate::ksp::Value::Int(90));
+        for mode in [1,2,3] {
+            // Release/press establishes a new real capture. Removing, hiding or
+            // disabling the owner completes that capture once with its old callbacks.
+            let mut snapshot=dsp.rack.parts[0].script().unwrap().live();dsp.rack.parts[0].script().unwrap().prepare_native_controls(&mut snapshot);
+            dsp.rack.parts[0].ui_control(0,0,0);dsp.rack.parts[0].render(&mut left,&mut right);dsp.rack.parts[0].script().unwrap().refresh_live(&mut snapshot);scene.observe(&snapshot);
+            frame(&mut scene,&mut ui,pointer);frame(&mut scene,&mut ui,down);
+            dsp.rack.parts[0].ui_control(0,0,mode);dsp.rack.parts[0].render(&mut left,&mut right);dsp.rack.parts[0].script().unwrap().refresh_live(&mut snapshot);scene.observe(&snapshot);
+            let before=label(&scene.snapshot().unwrap()).unwrap().to_owned();assert!(frame(&mut scene,&mut ui,down).is_empty());
+            let after=label(&scene.snapshot().unwrap()).unwrap().to_owned();assert_eq!(after,format!("{before}Tc"));
+            assert!(frame(&mut scene,&mut ui,down).is_empty());assert_eq!(label(&scene.snapshot().unwrap()),Some(after.as_str()));
+        }
+        assert!(dsp.rack.parts[0].script().unwrap().diagnostics().is_empty());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn native_ui_hover_uses_real_pointer_frames_and_retires_exact_component_owners() {
         use crate::native_ui::{Node,Paint,Scene};
         use moose::mui::mui::prelude::*;

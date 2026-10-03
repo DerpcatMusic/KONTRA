@@ -35,6 +35,9 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, part: usize) -> Option<El> {
     gesture(cx, part, epoch, &scene, |scene| {
         scene.hover(ui, &format!("native-ui-{part}"))
     });
+    gesture(cx, part, epoch, &scene, |scene| {
+        scene.pointer_gestures(ui, &format!("native-ui-{part}"))
+    });
     let assets = scene.lock().unwrap().assets.clone();
     fn draw(
         ui: &mut Ui,
@@ -63,7 +66,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, part: usize) -> Option<El> {
         let id = format!("native-ui-{part}-{}", node.id);
         if node.tap {
             let response = ui.get(id.as_str());
-            if response.clicked || response.key_activated {
+            if response.key_activated {
                 gesture(cx, part, epoch, scene, |scene| scene.tap(node.id));
             }
             el.cursor(Cursor::Hand)
@@ -193,6 +196,7 @@ pub(crate) fn scene_tree(node: &Node, assets: &crate::native_assets::Assets) -> 
         .collect();
     let el = primitive(node, children, assets);
     let el = if node.hover { el.tracks_pointer() } else { el };
+    let el = if node.tap { el.cursor(Cursor::Hand).focusable().a11y(A11y::Button).named("Native UI pointer target") } else { el };
     el.id(format!("native-snapshot-{}", node.id))
 }
 
