@@ -237,22 +237,74 @@ mod tests {
 
     #[test]
     fn native_primary_ahdsr_curves_finite_counts_and_arbitrary_release() {
-        for curve in [-1., -0.5, 0., 0.5, 1.] {
+        // Independent scalar transcription of the native setter/render SSE
+        // sequence: f32 base, ratio, pow result and every state multiply. These
+        // checkpoints include cancellation in the two target additions at
+        // curve zero; an ideal unrounded exp curve is not that recurrence.
+        for (curve, start, coefficient_bits, checkpoints) in [
+            (
+                -1.,
+                0x3851b717,
+                0x3f86f62c,
+                [0, 0x36368000, 0x3cc8ae68, 0x3f72cb62],
+            ),
+            (
+                -0.5,
+                0x3d10d0c3,
+                0x3f825523,
+                [0, 0x3a28e540, 0x3e83a4af, 0x3f7b41e2],
+            ),
+            (
+                0.,
+                0x41c80000,
+                0x3f8006e0,
+                [0, 0x3babe000, 0x3f1f0840, 0x3f7eaa80],
+            ),
+            (
+                0.5,
+                0x3f848686,
+                0x3f7b6b1a,
+                [0, 0x3c97cbc0, 0x3f69029f, 0x3f7fd5c7],
+            ),
+            (
+                1.,
+                0x3f8001a3,
+                0x3f72cb83,
+                [0, 0x3d534a80, 0x3f7f7dc7, 0x3f7fffd2],
+            ),
+        ] {
             let p = params(curve);
             let mut source = Source::new(&p, 48_000.);
             assert_eq!(source.counts, [187, 0, 0, 375]);
+            assert_eq!(source.attack_start.to_bits(), start);
+            assert_eq!(source.coefficients[0].to_bits(), coefficient_bits);
+            let initial = f64::from(f32::from_bits(start));
+            let coefficient = f64::from(f32::from_bits(coefficient_bits));
+            let sign = if curve > 0. { -1. } else { 1. };
+            let offset = f64::from(if curve > 0. {
+                f32::from_bits(start) - BASE
+            } else {
+                BASE - f32::from_bits(start)
+            });
             for n in 0..187 {
-                let base = (((1. - curve.abs()) as f64 * 500_000f64.ln()) - 20_000f64.ln()).exp();
-                let f = n as f64 / 187.;
-                let reference = if curve <= 0. {
-                    base * ((base + 1.) / base).powf(f) - base
-                } else {
-                    (1. + base) * (1. - (base / (1. + base)).powf(f))
-                };
+                // Closed form using the independently known rounded native
+                // coefficient. Gamma_n bounds n f32 recurrence roundings;
+                // two target operations add their own unit-roundoff bound.
+                let state = initial * coefficient.powi(n);
+                let reference = (state - f64::from(BASE)) * sign + offset;
+                let u = f64::from(f32::EPSILON) * 0.5;
+                let gamma = (n as f64 * u) / (1. - n as f64 * u);
+                let bound =
+                    gamma * state.abs() + u * (2. * state.abs() + f64::from(BASE) + offset.abs());
+                let actual = source.point();
                 assert!(
-                    (source.point() as f64 - reference).abs() < 0.00015,
-                    "curve {curve} point {n}"
+                    (f64::from(actual) - reference).abs() <= bound,
+                    "curve {curve} point {n}: {actual} vs {reference}, rounding bound {bound}"
                 );
+                if let Some(i) = [0, 1, 117, 186].iter().position(|&point| point == n) {
+                    assert_eq!(actual.to_bits(), checkpoints[i], "curve {curve} point {n}");
+                }
+                assert!((0. ..=1.).contains(&actual));
             }
             assert_eq!(source.phase, Phase::Sustain);
             assert_eq!(source.point(), 1.);
@@ -454,11 +506,10 @@ mod tests {
                 // Each constant sample/channel has one fixed voice gain;
                 // independently generated amplitude must be the audible ratio.
                 if let Some(v) = whole.player.voices.first() {
-                    assert!(
-                        a.iter()
-                            .zip(envelope)
-                            .all(|(a, env)| (*a - env * 0.25 * v.gains[0]).abs() < 1e-7)
-                    );
+                    assert!(a
+                        .iter()
+                        .zip(envelope)
+                        .all(|(a, env)| (*a - env * 0.25 * v.gains[0]).abs() < 1e-7));
                 }
             }
             assert!(whole.player.voices.is_empty() && split.player.voices.is_empty());
