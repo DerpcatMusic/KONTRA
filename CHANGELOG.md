@@ -505,9 +505,11 @@ The 14 newly accepted logical defects are source-reviewed and recorded individua
 in `release-fixes.json`; follow-up and safety fixtures do not add counts. The previous
 published 0.3.96 binaries are unchanged. These entries describe the next source cut.
 
-- Optional VST3 note-length metadata no longer rejects ordinary host notes or
-  shortens retained ownership; unused negative hints are ignored too.
-  Sources: `a357e1e`, `401d59e`.
+- The direct Rust VST3 event-admission path accepts unused optional note-length
+  metadata without shortening retained ownership, including negative hints.
+  Sources: `a357e1e`, `401d59e`. The native VST3 adapter in this 0.3.115 cut still
+  drops negative optional lengths before this path; end-to-end native delivery
+  and the reported Mac keyboard/clip silence are not established by these tests.
 - Legacy unsynchronized Delay Time uses the checked conversion across its admitted
   absolute range. Sources: `f191cc2`, fractional fixture follow-up `aaf2959`.
 - Delay writes the current input before advancing its ring clock, preserving the

@@ -955,12 +955,12 @@
     },
     {
       "id": "vst3-optional-note-length-admission",
-      "summary": "Admit VST3 notes with optional unused length metadata without shortening routed ownership",
+      "summary": "Admit optional unused VST3 length metadata on the direct Rust event path without shortening routed ownership",
       "source_commits": [
         "a357e1eaa1ef3c909d73e49d99b5babf191c95a0",
         "401d59e835d9ce5eae8435fd4632a033dce80649"
       ],
-      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release.",
+      "validation": "Frozen optimized source d7b9e11ad096283aab06c79c15732d9bd5a48a03 passes all 547 library regressions (30 ignored) and 89 playback regressions (4 ignored), including 30 support tests. Dedicated extreme onset, zero-stride PCM and scalar/SIMD exact gates pass in executable prefix eebeb2eb1efd. Clean compiler-produced CDLL prefix d504c6786bb0 embeds exact d7b9e11 revision; actual Linux VST3 factory exposes one KONTRA class, unchanged CID FC092AF5096DE321B960F4D245F8D72A and zero remaining refs after release. Scope clarification: these admission gates exercise the direct Rust path. The 0.3.115 native VST3 adapter still rejects negative optional lengths before Rust admission; this does not establish native host delivery or causality for the reported Mac keyboard/clip silence.",
       "accepted": true
     },
     {
