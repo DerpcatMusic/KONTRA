@@ -119,6 +119,28 @@ fn gesture(
     }
 }
 
+// An annular sector uses exact circular path segments, not sampled polygons.
+// A positive degree sweep follows screen coordinates clockwise from 3 o'clock.
+fn ring_path(size: Size, start: f64, angle: f64, thickness: f64) -> Option<Path> {
+    use moose::mui::mui::geometry::{Arc as CircularArc, PathCommand as Cmd};
+    let radius = size.width.min(size.height) / 2.;
+    if radius <= 0. || angle == 0. || thickness == 0. { return None; }
+    let center = Point::new(size.width / 2., size.height / 2.);
+    let start = start.to_radians();
+    let sweep = angle.to_radians();
+    let point = |radius: f64, angle: f64| center + Vec2::new(angle.cos() * radius, angle.sin() * radius);
+    let outer_start = point(radius, start);
+    let outer_end = point(radius, start + sweep);
+    let mut commands = vec![Cmd::MoveTo(outer_start), Cmd::ArcTo(CircularArc { center, radius, start_angle: start, sweep, to: outer_end })];
+    let inner = (radius - thickness).max(0.);
+    if inner > 0. {
+        commands.push(Cmd::LineTo(point(inner, start + sweep)));
+        commands.push(Cmd::ArcTo(CircularArc { center, radius: inner, start_angle: start + sweep, sweep: -sweep, to: point(inner, start) }));
+    } else { commands.push(Cmd::LineTo(center)); }
+    commands.push(Cmd::Close);
+    Some(Path { commands })
+}
+
 // Both native editor rendering and the authored headless gate use this mapping.
 fn primitive(
     node: &Node,
@@ -142,6 +164,13 @@ fn primitive(
             .h(node.height.map_or(Len::Pct(100.), Len::Px))
             .radius(*radius)
             .fill(Color::srgba(color[0], color[1], color[2], color[3])),
+        Paint::Ring { color, start, angle, thickness } => {
+            let (color, start, angle, thickness) = (*color, *start, *angle, *thickness);
+            // Ring was renamed Arc in NI's current API. Preserve authored
+            // degree units and clockwise sweep; MUI owns aspect-fit layout.
+            canvas(move |size| ring_path(size, start, angle, thickness).map_or_else(Vec::new, |path| vec![Draw::fill(path, Color::srgba(color[0], color[1], color[2], color[3]))]))
+                .full().aspect_fit(1.)
+        },
         Paint::Stack | Paint::HStack(_) | Paint::VStack(_) => {
             let el = match &node.paint {
                 Paint::HStack(spacing) => row(children).gap(*spacing).align(node.alignment.1),

@@ -5456,6 +5456,49 @@ end on"#;
     }
 
     #[test]
+    fn native_ui_rings_use_exact_arc_geometry_and_published_callback_values() {
+        use crate::native_ui::{Node, Paint, Scene};
+        use moose::mui::mui::{geometry::PathCommand, prelude::*};
+        let directory = std::env::temp_dir().join(format!("kontra-native-ring-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let resources = directory.join("Resources/native_ui");std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("main.nui"), r#"
+            local ui=require('native_ui') local angle=require('kontakt').connect_parameter('Angle')
+            local function Main()
+                return @ui.Ring {color=ui.Color.red,start_angle=-90,angle=angle:value(),thickness=3}
+                    .frame(width=80,height=40).on_tap_gesture(start=function()angle:set_value(45)end)
+            end
+            return @Main{}
+        "#).unwrap();
+        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_value_edit $Angle(-360,360,1)\n$Angle := 90\nend on\non ui_control($Angle)\n$Angle := -$Angle\nend on".into()],..Default::default()};
+        let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
+        let mut scene=Scene::prepare(&instrument.path,&rt).unwrap().unwrap();let mut live=first_script_live(&rt);rt.prepare_native_controls(&mut live);
+        let mut engine=Engine::default();engine.set_script(Some(rt));
+        fn find(node:&Node,predicate:fn(&Node)->bool)->Option<&Node>{if predicate(node){Some(node)}else{node.children.iter().find_map(|child|find(child,predicate))}}
+        let root=scene.snapshot().unwrap();let rendered=moose::mui::mui::scene::resolve(&moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::scene_tree(&root,&scene.assets).clip())).unwrap();
+        assert_eq!((rendered.layout.size.width,rendered.layout.size.height),(80.,40.));
+        let ring=find(&root,|n|matches!(n.paint,Paint::Ring {..})).unwrap();
+        let frame=rendered.surface(&format!("native-snapshot-{}",ring.id)).unwrap().frame;assert_eq!((frame.x,frame.y,frame.size.width,frame.size.height),(20.,0.,40.,40.),"arc fills the smaller offered dimension through maintained MUI layout");
+        let draw=rendered.paint.iter().find(|p|p.key.as_str()==format!("native-snapshot-{}",ring.id) && matches!(p.layer,moose::mui::mui::scene::Layer::Draw(0))).unwrap();
+        draw.path.validate(6).unwrap();
+        let PathCommand::ArcTo(outer)=draw.path.commands[1] else {panic!("exact outer circular arc")};
+        assert_eq!(outer.radius,20.);assert!((outer.sweep-std::f64::consts::FRAC_PI_2).abs()<1e-12);
+        assert!(outer.to.distance(Point::new(40.,20.))<1e-10,"positive degree sweeps clockwise from the authored start");
+        let PathCommand::ArcTo(inner)=draw.path.commands[3] else {panic!("exact inner circular arc")};assert_eq!(inner.radius,17.);assert_eq!(inner.sweep,-outer.sweep);
+        let target=find(&root,|n|n.tap).unwrap();let edits=scene.tap(target.id).unwrap();assert_eq!(edits.iter().map(|e|(e.slot,e.control,e.value)).collect::<Vec<_>>(),vec![(0,0,45)]);
+        let (mut left,mut right)=([0.;64],[0.;64]);assert_eq!(allocations(||{for edit in &edits{engine.ui_control(edit.slot,edit.control,edit.value);}engine.render(&mut left,&mut right);engine.script().unwrap().refresh_live(&mut live);}),0);
+        scene.observe(&live);let root=scene.snapshot().unwrap();assert!(matches!(find(&root,|n|matches!(n.paint,Paint::Ring {..})).unwrap().paint,Paint::Ring {angle:-45.,..}),"real callback publication updates retained geometry");
+        for options in ["angle=361","angle=0/0","start_angle=math.huge","thickness=-1","thickness=math.huge","unknown=1"] {
+            std::fs::write(resources.join("main.nui"),format!("local ui=require('native_ui') return @ui.Ring{{color=ui.Color.red,{options}}}.frame(width=40,height=40)")).unwrap();assert!(Scene::prepare(&instrument.path,engine.script().unwrap()).is_err(),"unsupported Ring input must stay explicit: {options}");
+        }
+        for angle in [0.,-90.,360.] {
+            std::fs::write(resources.join("main.nui"),format!("local ui=require('native_ui') return @ui.Ring{{color=ui.Color.red,angle={angle},thickness=80}}.frame(width=40,height=80)")).unwrap();let mut sample=Scene::prepare(&instrument.path,engine.script().unwrap()).unwrap().unwrap();let root=sample.snapshot().unwrap();let rendered=moose::mui::mui::scene::resolve(&moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::scene_tree(&root,&sample.assets))).unwrap();
+            let draws:Vec<_>=rendered.paint.iter().filter(|p|matches!(p.layer,moose::mui::mui::scene::Layer::Draw(_))).collect();assert_eq!(draws.len(),usize::from(angle!=0.));
+            for draw in draws {draw.path.validate(6).unwrap();assert_eq!(draw.path.commands.len(),4,"oversized thickness clips to the available radius");}
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn native_ui_frame_ranges_use_real_mui_constraints_and_parent_capture() {
         use crate::native_ui::{Node,Paint,Scene};
         use moose::mui::mui::prelude::*;
