@@ -134,7 +134,7 @@ function native_component(target,props,children)
     return {kind=target.kind,props=props,children=children,modifiers={}}
 end
 function native_modifier(node,name,props,args)
-    local environment=name=="context" or name=="font_size" or name=="foreground_color"
+    local environment=name=="context" or name=="font_size" or name=="foreground_color" or name=="bold" or name=="line_limit"
     assert(name=="frame" or name=="padding" or name=="hidden" or name=="disabled" or name=="opacity" or name=="offset" or name=="align" or name=="background" or name=="on_tap_gesture" or environment,"Unsupported modifier: "..name)
     if name=="background" then
         assert(next(props)==nil and #args==1 and type(args[1])=="table" and args[1].kind,"Background requires a component")
@@ -174,6 +174,14 @@ function native_modifier(node,name,props,args)
         local value=args[1]
         if value==nil then value=true end
         assert(type(value)=="boolean" or type(value)=="function","Boolean modifier requires a boolean: "..name)
+        return {kind="ZStack",props={},children={node},modifiers={[name]={value=value}}}
+    end
+    if name=="bold" or name=="line_limit" then
+        assert(next(props)==nil and #args<=1,"Invalid text style modifier: "..name)
+        local value=args[1]
+        assert(value==nil or type(value)=="function"
+            or (name=="bold" and type(value)=="boolean")
+            or (name=="line_limit" and type(value)=="number" and value%1==0 and value>=1 and value<=256),"Invalid text style value: "..name)
         return {kind="ZStack",props={},children={node},modifiers={[name]={value=value}}}
     end
     if name=="font_size" or name=="foreground_color" then
