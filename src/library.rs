@@ -553,6 +553,7 @@ impl UviCatalog {
         }
     }
 
+    #[cfg(feature = "uvi")]
     fn scan(&mut self, roots: &[Root], shelf: &mut Shelf, progress: &Progress) {
         let mut seen = BTreeSet::new();
         'roots: for root in roots {
@@ -1247,6 +1248,7 @@ impl Scanner {
         progress.running.store(true, Ordering::Relaxed);
         *lock(&self.progress) = progress.clone();
         let settings = self.settings();
+        #[cfg(feature = "uvi")]
         let uvi = self.uvi.clone();
         let mut roots = settings.roots.clone();
         // A first run, with nothing set up yet, starts from what Kontakt knows.
@@ -1265,10 +1267,12 @@ impl Scanner {
                     roots.push(Root { path: multis.to_string_lossy().into_owned(), single: true });
                 }
                 let scanned = scan(&roots, &progress).map(|(mut shelf, files)| {
-                    let mut catalog = lock(&uvi);
-                    catalog.reader_path = settings.uvi_reader.clone();
-                    catalog.scan(&roots, &mut shelf, &progress);
-                    drop(catalog);
+                    #[cfg(feature = "uvi")]
+                    {
+                        let mut catalog = lock(&uvi);
+                        catalog.reader_path = settings.uvi_reader.clone();
+                        catalog.scan(&roots, &mut shelf, &progress);
+                    }
                     let kontakt: Vec<_> = shelf.libraries.iter().filter(|library| !shelf.uvi.contains_key(&library.dir)).cloned().collect();
                     let artwork = crate::artwork::scan(&kontakt);
                     for library in &mut shelf.libraries {
@@ -1333,6 +1337,29 @@ impl Scanner {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(not(feature = "uvi"))]
+    fn disabled_uvi_is_not_scanned_or_advertised() {
+        let root = tree("uvi-disabled", &[("Bank.ufs", "opaque bank"), ("Instrument.nki", "")]);
+        let scanner = Scanner { preferences: Preferences::new(None), ..Scanner::default() };
+        scanner.edit(|settings| {
+            settings.imported = true;
+            settings.roots = vec![Root { path: root.to_string_lossy().into_owned(), single: true }];
+        });
+        let started = std::time::Instant::now();
+        let scanned = loop {
+            if let Some((_, Some(scanned))) = scanner.poll(0) { break scanned; }
+            assert!(started.elapsed().as_secs() < 10, "library scan did not finish");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        assert!(scanned.shelf.uvi.is_empty());
+        assert_eq!(scanned.shelf.libraries.len(), 1);
+        assert_eq!(scanned.shelf.libraries[0].instruments, 1);
+        assert!(scanned.files.iter().any(|file| file == &root.join("Instrument.nki")));
+        assert!(scanned.shelf.libraries.iter().all(|library| library.dir != root.join("Bank.ufs")));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn uvi_identity_preserves_bank_uuid_member_and_native_path_bytes() {

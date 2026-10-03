@@ -66,7 +66,7 @@ The concurrent plan's `src/midi.rs:8-16` owns reset policy; `20-145` owns Parame
 
 Read-only `cargo tree --offline --locked --no-default-features --features plugin -e normal` on 191 confirms mlua, mlua-sys, roxmltree and symphonia-codec-flac are absent. ni-file, ncw and fastlz remain unconditional: Kontakt cannot currently be completely disabled. sha2/crc32fast/base64 remain for other enabled shared dependencies and must not be removed merely because UVI is off.
 
-`src/library.rs:556-587` still walks .ufs files and adds unavailable catalog rows when UVI is disabled. Guard actual backend scanning/registration as well as its parser/worker dependencies. A generic persisted unavailable-backend reference may remain for project round trips; executing, advertising or scanning that disabled backend must not.
+Snapshot `191e481` walked .ufs files and added unavailable rows even when UVI was disabled. The subsequent owned catalog correction gates that scanner and its central invocation with the UVI feature; an actual UVI-disabled Scanner test finds only the Kontakt instrument in a mixed authored root, while the UVI-enabled inventory/cache replacement test still passes. Generic persisted unavailable-backend references remain available for project round trips; native parser/worker dependencies are absent when disabled.
 
 Validate disabled-backend dependency trees and isolated library/plugin configurations after the agreed feature split; validate UVI-only and Kontakt-only behavior, not merely --no-default-features (which currently still includes Kontakt code). Keep backend-specific tests behind matching features and leave shared facilities enabled when another backend uses them.
 
