@@ -1161,16 +1161,7 @@ fn reporter_worker(
                 // holding `SESSION_OWNERSHIP`, and evidence collection can take seconds per stale
                 // session. An incident found here reports itself, since the reply has gone.
                 // The scan runs without the `pending` lock so the GUI never waits on it.
-                let mut recovered = false;
-                let unclaimed = pending.lock_unpoisoned().is_none();
-                if unclaimed && let Some(incident) = detect_stale_sessions(&stopping) {
-                    let mut pending_incident = pending.lock_unpoisoned();
-                    if !stopping.load(Ordering::Acquire) && pending_incident.is_none() {
-                        save_pending_incident(&incident);
-                        *pending_incident = Some(incident);
-                        recovered = true;
-                    }
-                }
+                let recovered = recover_pending_slot(&pending, &stopping);
                 if recovered && persisted {
                     spawn_auto_report();
                 }
@@ -1201,6 +1192,10 @@ fn reporter_worker(
 }
 
 fn detect_stale_sessions(stopping: &AtomicBool) -> Option<CrashIncident> {
+    find_stale_candidate(stopping, false)?.consume(stopping)
+}
+
+fn find_stale_candidate(stopping: &AtomicBool, confirmed_only: bool) -> Option<RecoveredCandidate> {
     if stopping.load(Ordering::Acquire) {
         return None;
     }
@@ -1370,25 +1365,128 @@ fn detect_stale_sessions(stopping: &AtomicBool) -> Option<CrashIncident> {
             .as_ref()
             .is_none_or(|current| candidate.incident.started_at > current.incident.started_at)
         {
-            if let Some(previous) = unknown.replace(candidate) {
-                previous.cleanup();
-            }
-        } else {
-            candidate.cleanup();
+            unknown = Some(candidate);
         }
+        // Unselected candidates retain their original marker and journal: native
+        // evidence can arrive later and an unclean exit alone is not a crash.
     }
-
     if stopping.load(Ordering::Acquire) {
         return None;
     }
-    if let Some(candidate) = confirmed {
-        if let Some(unknown) = unknown {
-            unknown.cleanup();
-        }
-        Some(candidate.consume(stopping))
-    } else {
-        unknown.map(|candidate| candidate.consume(stopping))
+    confirmed.or_else(|| if confirmed_only { None } else { unknown })
+}
+
+fn recover_pending_slot(pending: &Mutex<Option<CrashIncident>>, stopping: &AtomicBool) -> bool {
+    let previous = pending.lock_unpoisoned().clone();
+    if previous
+        .as_ref()
+        .is_some_and(CrashIncident::auto_reportable)
+    {
+        return false;
     }
+    let candidate = find_deferred_candidate(stopping)
+        .or_else(|| find_stale_candidate(stopping, previous.is_some()));
+    let Some(candidate) = candidate else {
+        return false;
+    };
+    // Reserve the slot after the expensive scan. A delayed-evidence worker may
+    // have confirmed the previous incident meanwhile; never replace that report.
+    {
+        let mut slot = pending.lock_unpoisoned();
+        if slot.as_ref().map(|i| &i.id) != previous.as_ref().map(|i| &i.id)
+            || slot.as_ref().is_some_and(CrashIncident::auto_reportable)
+        {
+            return false;
+        }
+        *slot = None;
+    }
+    if let Some(previous) = previous.as_ref() {
+        if previous.id.len() != 16 || !previous.id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            *pending.lock_unpoisoned() = Some(previous.clone());
+            return false;
+        }
+        if !persist_json(
+            &reports_dir()
+                .join("deferred")
+                .join(format!("{}.json", previous.id)),
+            previous,
+        ) {
+            *pending.lock_unpoisoned() = Some(previous.clone());
+            return false;
+        }
+        crate::diagnostics::event(
+            crate::diagnostics::LogLevel::Warning,
+            "support",
+            "unconfirmed_evidence_deferred",
+            serde_json::json!({"incident_id":previous.id,
+            "reason":"Earlier unconfirmed session evidence remains private in local deferred storage; a confirmed crash can now report. Deferred records are checked again for late native confirmation."}),
+        );
+    }
+    let recovered = candidate.consume(stopping);
+    let mut slot = pending.lock_unpoisoned();
+    match recovered {
+        Some(incident) => {
+            *slot = Some(incident);
+            true
+        }
+        None => {
+            *slot = previous;
+            false
+        }
+    }
+}
+
+// Recheck at most 32 deferred records per registration, rotating the durable
+// cursor across launches. Originals survive every unsuccessful native lookup.
+fn find_deferred_candidate(stopping: &AtomicBool) -> Option<RecoveredCandidate> {
+    let directory = reports_dir().join("deferred");
+    let entries = std::fs::read_dir(&directory).ok()?;
+    let cursor_path = reports_dir().join("deferred-cursor.json");
+    let cursor = read_json::<usize>(&cursor_path).unwrap_or(0);
+    let mut seen = 0;
+    let mut checked = 0;
+    for entry in entries.flatten() {
+        if stopping.load(Ordering::Acquire) {
+            return None;
+        }
+        let path = entry.path();
+        if path.extension().is_none_or(|e| e != "json") {
+            continue;
+        }
+        seen += 1;
+        if seen <= cursor {
+            continue;
+        }
+        checked += 1;
+        let incident: Option<CrashIncident> = read_json(&path);
+        if let Some(mut incident) = incident {
+            if !incident.auto_reportable() {
+                let evidence = super::platform::collect_crash_evidence(
+                    &incident.host_process,
+                    incident.pid,
+                    incident.started_at,
+                    incident.detected_at,
+                    stopping,
+                );
+                apply_delayed_crash_evidence(&mut incident, &evidence);
+            }
+            if incident.auto_reportable() && !stopping.load(Ordering::Acquire) {
+                persist_json(&cursor_path, &seen);
+                return Some(RecoveredCandidate {
+                    marker_path: path,
+                    journal_path: None,
+                    panic_path: panic_marker_path(incident.pid),
+                    incident,
+                });
+            }
+        }
+        if checked == 32 {
+            persist_json(&cursor_path, &seen);
+            return None;
+        }
+    }
+    persist_json(&cursor_path, &0_usize);
+    None
 }
 
 struct RecoveredCandidate {
@@ -1399,15 +1497,7 @@ struct RecoveredCandidate {
 }
 
 impl RecoveredCandidate {
-    fn cleanup(self) {
-        cleanup_session_files(
-            &self.marker_path,
-            self.journal_path.as_deref(),
-            &self.panic_path,
-        );
-    }
-
-    fn consume(self, stopping: &AtomicBool) -> CrashIncident {
+    fn consume(self, stopping: &AtomicBool) -> Option<CrashIncident> {
         let Self {
             marker_path,
             journal_path,
@@ -1440,10 +1530,13 @@ impl RecoveredCandidate {
             }
         }
         if stopping.load(Ordering::Acquire) {
-            return incident;
+            return None;
         }
         // Keep the original files if the recovered incident cannot be saved.
-        if save_pending_incident(&incident) {
+        if !save_pending_incident(&incident) {
+            return None;
+        }
+        {
             cleanup_session_files(
                 &marker_path,
                 if archived {
@@ -1454,7 +1547,7 @@ impl RecoveredCandidate {
                 &panic_path,
             );
         }
-        incident
+        Some(incident)
     }
 }
 
@@ -2098,6 +2191,103 @@ mod tests {
         );
         assert!(detect_stale_sessions(&AtomicBool::new(false)).is_none());
     }
+    #[test]
+    fn unconfirmed_pending_does_not_block_confirmed_recovery_or_lose_deferred_evidence() {
+        const CHILD: &str = "KONTRA_DEFERRED_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "support::crash::tests::unconfirmed_pending_does_not_block_confirmed_recovery_or_lose_deferred_evidence", "--test-threads=1"])
+                .env(CHILD,"1").env("KONTRA_REPORT_DIR", directory.path())
+                .env("KONTRA_DISABLE_NETWORK","1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let mut previous = test_incident("0.3.115", "authored-old");
+        previous.id = "0123456789abcdef".into();
+        previous.kind = IncidentKind::UncleanExit;
+        previous.panic = None;
+        previous.host_process = "authored-unknown-host".into();
+        previous.pid = u32::MAX - 100;
+        assert!(save_pending_incident(&previous));
+        let previous_bytes = std::fs::read(pending_incident_path()).unwrap();
+        let mut marker = new_session_marker(12, "later-proven-crash");
+        marker.pid = u32::MAX - 101;
+        marker.host_process = "authored-proven-host".into();
+        marker.journal_file = None;
+        let marker_path = sessions_dir().join("later-confirmed.json");
+        assert!(persist_json(&marker_path, &marker));
+        let panic = PanicMarker {
+            at: now_unix(),
+            thread: "authored".into(),
+            message: "authored failure".into(),
+            location: "src/authored.rs:9".into(),
+            images: vec![],
+        };
+        assert!(persist_json(&panic_marker_path(marker.pid), &panic));
+        let mut unknown = marker.clone();
+        unknown.pid = u32::MAX - 102;
+        unknown.session_id = "other-retained-unknown".into();
+        let unknown_path = sessions_dir().join("other-unknown.json");
+        assert!(persist_json(&unknown_path, &unknown));
+        let unknown_bytes = std::fs::read(&unknown_path).unwrap();
+        let pending = Arc::new(Mutex::new(Some(previous.clone())));
+        let (sender, receiver) = mpsc::channel();
+        let (reply, acknowledged) = mpsc::sync_channel(1);
+        sender.send(ReporterControl::Register(99, reply)).unwrap();
+        sender.send(ReporterControl::Shutdown).unwrap();
+        reporter_worker(
+            receiver,
+            Arc::new(Mutex::new(None)),
+            pending.clone(),
+            Arc::new(AtomicBool::new(false)),
+            None,
+            sessions_dir().join("current.json"),
+            bootstrap_journal_path("deferred-test"),
+            "deferred-test".into(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        assert!(
+            acknowledged
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap()
+        );
+        let recovered = pending.lock_unpoisoned().clone().unwrap();
+        assert_eq!(recovered.id, incident_id(&marker));
+        assert!(recovered.auto_reportable());
+        assert!(!marker_path.exists());
+        let deferred = reports_dir()
+            .join("deferred")
+            .join(format!("{}.json", previous.id));
+        assert_eq!(std::fs::read(&deferred).unwrap(), previous_bytes);
+        assert_eq!(std::fs::read(&unknown_path).unwrap(), unknown_bytes);
+        // Confirmed offline reports still own the slot, even with other candidates.
+        let confirmed_bytes = std::fs::read(pending_incident_path()).unwrap();
+        assert!(!recover_pending_slot(&pending, &AtomicBool::new(false)));
+        assert_eq!(
+            std::fs::read(pending_incident_path()).unwrap(),
+            confirmed_bytes
+        );
+        assert_eq!(std::fs::read(&deferred).unwrap(), previous_bytes);
+        // A saved, subsequently confirmed deferred fixture uses the same queue
+        // consumer. No OS crash, network request or synthetic public issue is made.
+        let evidence = CrashEvidence {
+            disposition: EvidenceDisposition::Crash,
+            signature: "authored-late-native-proof".into(),
+            text: "authored exception and frames".into(),
+        };
+        assert!(apply_delayed_crash_evidence(&mut previous, &evidence));
+        assert!(persist_json(&deferred, &previous));
+        *pending.lock_unpoisoned() = None;
+        assert!(recover_pending_slot(&pending, &AtomicBool::new(false)));
+        assert_eq!(pending.lock_unpoisoned().as_ref().unwrap().id, previous.id);
+        assert!(!deferred.exists());
+        assert!(
+            unknown_path.exists(),
+            "unselected unknown evidence remains available for later native matching"
+        );
+    }
+
     #[test]
     fn original_archive_failure_and_cancellation_preserve_source_and_prior_archive() {
         let directory = tempfile::tempdir().unwrap();
