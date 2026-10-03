@@ -3980,7 +3980,7 @@ fn growing_the_rack_keeps_voices_held_notes_and_recorded_targets_without_audio_h
 fn saved_sine_multi_pitch_uses_native_clock_and_audio_interpolation() {
     use kontakto::import::PitchLfo;
     let make = |fade_ms| {
-        let group = Group { pitch_lfos: vec![PitchLfo { slot: 7, count: 1.,
+        let group = Group { pitch_lfos: vec![PitchLfo { start_phase: 0., slot: 7, count: 1.,
             note_value: 1. / 24., sine: 0.5, fade_ms, depth: 0.5, targets: vec![], bypassed: false }], ..Group::default() };
         let sample = Sample { rate: 48000,
             frames: (0..4096).map(|i| [i as f32 / 8192.; 2]).collect() };

@@ -4474,8 +4474,12 @@ unsafe extern "C" fn gui_is_api_supported<P: PluginExport>(
     api: *const c_char,
     is_floating: bool,
 ) -> bool {
+    unsafe { gui_api_supported(api, is_floating) }
+}
+
+unsafe fn gui_api_supported(api: *const c_char, is_floating: bool) -> bool {
     unsafe {
-        if is_floating {
+        if is_floating || api.is_null() {
             return false;
         }
         let api = CStr::from_ptr(api);
@@ -4698,22 +4702,14 @@ unsafe fn gui_set_parent_inner<P: PluginExport>(
     window: *const clap_window,
 ) -> bool {
     unsafe {
+        let Some(parent_ptr) = gui_parent_pointer(window) else {
+            return false;
+        };
         let data = data_from_plugin::<P>(plugin);
         let mut gui = data.gui.enter();
         let Some(editor) = gui.editor.as_mut() else {
             return false;
         };
-
-        #[cfg(target_os = "macos")]
-        let parent_ptr = (*window).specific.cocoa;
-        #[cfg(target_os = "windows")]
-        let parent_ptr = (*window).specific.win32;
-        #[cfg(target_os = "linux")]
-        let parent_ptr = (*window).specific.ptr;
-
-        if parent_ptr.is_null() {
-            return false;
-        }
 
         let params = Arc::clone(&data.params_arc);
         let meter_store = Arc::clone(&data.meter_store);
@@ -4866,6 +4862,23 @@ unsafe fn gui_set_parent_inner<P: PluginExport>(
         #[cfg(target_os = "macos")]
         anchor_child_to_top(parent_ptr);
         true
+    }
+}
+
+/// Validate the declared native representation before reading its union member
+/// or entering the editor. The pointer is still host-owned, never dereferenced here.
+unsafe fn gui_parent_pointer(window: *const clap_window) -> Option<*mut c_void> {
+    unsafe {
+        if window.is_null() || !gui_api_supported((*window).api, false) {
+            return None;
+        }
+        #[cfg(target_os = "macos")]
+        let parent = (*window).specific.cocoa;
+        #[cfg(target_os = "windows")]
+        let parent = (*window).specific.win32;
+        #[cfg(target_os = "linux")]
+        let parent = (*window).specific.ptr;
+        (!parent.is_null()).then_some(parent)
     }
 }
 
@@ -5602,6 +5615,52 @@ macro_rules! export_clap {
             };
         }
     };
+}
+
+#[cfg(test)]
+mod gui_parent_tests {
+    use super::*;
+    use clap_sys::ext::gui::clap_window_handle;
+
+    #[test]
+    fn parent_api_is_validated_before_native_union_interpretation() {
+        #[cfg(target_os = "macos")]
+        let native = CLAP_WINDOW_API_COCOA;
+        #[cfg(target_os = "windows")]
+        let native = CLAP_WINDOW_API_WIN32;
+        #[cfg(target_os = "linux")]
+        let native = CLAP_WINDOW_API_X11;
+        let mut token = 0u8;
+        let parent = (&mut token as *mut u8).cast::<c_void>();
+        let mut window = clap_window {
+            api: native.as_ptr(),
+            specific: clap_window_handle { ptr: parent },
+        };
+        // No native window or renderer is created: the exact parser used by
+        // set_parent must return the unchanged host-owned pointer only for
+        // the current platform's declared representation.
+        unsafe {
+            assert!(gui_api_supported(native.as_ptr(), false));
+            assert!(!gui_api_supported(native.as_ptr(), true));
+            assert_eq!(gui_parent_pointer(&window), Some(parent));
+            for api in [c"cocoa", c"win32", c"x11", c"wayland", c"unknown", c"COCOA"] {
+                window.api = api.as_ptr();
+                assert_eq!(
+                    gui_parent_pointer(&window),
+                    (api == native).then_some(parent)
+                );
+            }
+            window.api = ptr::null();
+            assert_eq!(gui_parent_pointer(&window), None);
+            assert!(!gui_api_supported(ptr::null(), false));
+            window.api = native.as_ptr();
+            window.specific = clap_window_handle {
+                ptr: ptr::null_mut(),
+            };
+            assert_eq!(gui_parent_pointer(&window), None);
+            assert_eq!(gui_parent_pointer(ptr::null()), None);
+        }
+    }
 }
 
 #[cfg(test)]

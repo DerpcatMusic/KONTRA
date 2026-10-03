@@ -10,6 +10,7 @@ mod platform;
 mod report;
 pub(crate) use crash::flush_journal;
 pub use crash::{CrashIncident, CrashSessionGuard, pending_incident};
+pub(crate) use report::public_issue_url;
 use report::try_auto_report_pending_incident;
 const REPORT_URL: &str = "https://matari-audio.com/api/support/report";
 static AUTOMATIC_CRASH_REPORT_STARTED: AtomicBool = AtomicBool::new(false);

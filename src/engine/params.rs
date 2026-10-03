@@ -724,7 +724,9 @@ impl Address {
                 if m.kind == "lfo" {
                     let slot = u8::try_from(par.slot).ok()?;
                     groups[g as usize].wavetable.is_none().then_some(())?;
-                    groups[g as usize].pitch_lfos.iter().find(|l| l.slot == slot)?;
+                    let group = &groups[g as usize];
+                    (group.pitch_lfos.iter().any(|l| l.slot == slot)
+                        || group.volume_lfos.iter().any(|l| l.source.slot == slot)).then_some(())?;
                     return Some(Self::PitchLfoBypass(g, slot));
                 }
                 let e = m.envelope?;
@@ -1205,9 +1207,15 @@ pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32
             lfo.depth = depth;
         }
         Address::PitchLfoBypass(g, slot) => {
-            let Some(lfo) = settings.get_mut(g as usize)
-                .and_then(|g| g.pitch_lfos.iter_mut().find(|l| l.slot == slot)) else { return false; };
-            lfo.bypassed = value != 0.;
+            let Some(group) = settings.get_mut(g as usize) else { return false; };
+            let mut applied = false;
+            for lfo in group.pitch_lfos.iter_mut().filter(|l| l.slot == slot) {
+                lfo.bypassed = value != 0.; applied = true;
+            }
+            for lfo in group.volume_lfos.iter_mut().filter(|l| l.source.slot == slot) {
+                lfo.source.bypassed = value != 0.; applied = true;
+            }
+            return applied;
         }
         Address::InternalBypass(g, index) => {
             let Some(settings) = settings.get_mut(g as usize) else { return false; };
@@ -1306,8 +1314,11 @@ pub(crate) fn read(settings: &[GroupSettings], address: Address) -> Option<f32> 
         },
         Address::PitchLfoIntensity { group, slot, target, .. } => settings.get(group as usize)?
             .pitch_lfos.iter().find(|l| l.slot == slot)?.targets.iter().find(|t| t.0 == target).map(|t| t.1),
-        Address::PitchLfoBypass(g, slot) => settings.get(g as usize)?
-            .pitch_lfos.iter().find(|l| l.slot == slot).map(|l| f32::from(l.bypassed)),
+        Address::PitchLfoBypass(g, slot) => {
+            let group = settings.get(g as usize)?;
+            group.pitch_lfos.iter().find(|l| l.slot == slot).map(|l| f32::from(l.bypassed))
+                .or_else(|| group.volume_lfos.iter().find(|l| l.source.slot == slot).map(|l| f32::from(l.source.bypassed)))
+        },
         Address::InternalBypass(g, index) => {
             let settings = settings.get(g as usize)?;
             settings.pitch_envelopes.iter().find(|e| e.index == index).map(|e| f32::from(e.bypass))
@@ -2179,7 +2190,7 @@ mod tests {
     #[test]
     fn saved_pitch_lfo_and_constant_loop_are_partition_invariant_in_ram_and_stream() {
         use crate::{audio::Sample, engine::{Bank, Engine}, import::{Instrument, Loop, PitchLfo, Zone}};
-        let mut group = Group { pitch_lfos: vec![PitchLfo { slot: 7, count: 1.,
+        let mut group = Group { pitch_lfos: vec![PitchLfo { start_phase: 0., slot: 7, count: 1.,
             note_value: 1. / 24., sine: 0.5, fade_ms: 0., depth: 0.5, targets: vec![], bypassed: false }],
             mods: ["loopStart", "loopLength"].into_iter().map(|param| ModAssignment {
                 name: "Constant".into(), source: ModSource::Constant,
@@ -2285,9 +2296,9 @@ mod tests {
         use crate::{audio::Sample, engine::{Bank, Engine, load_scripts, load_scripts_with_state},
             import::{Instrument, PitchLfo, Zone}, ksp::Value};
         let mut group = Group { pitch_lfos: vec![
-            PitchLfo { slot: 7, count: 1., note_value: 1. / 24., sine: 0.5, fade_ms: 0.,
+            PitchLfo { start_phase: 0., slot: 7, count: 1., note_value: 1. / 24., sine: 0.5, fade_ms: 0.,
                 depth: 0.2, targets: vec![(1, 0.25), (3, -0.05)], bypassed: false },
-            PitchLfo { slot: 3, count: 2., note_value: 1. / 24., sine: 0.1, fade_ms: 0.,
+            PitchLfo { start_phase: 0., slot: 3, count: 2., note_value: 1. / 24., sine: 0.1, fade_ms: 0.,
                 depth: 0.1, targets: vec![(1, 0.1)], bypassed: false }], ..Group::default() };
         group.modulators.resize_with(8, || Modulator { name: String::new(), targets: vec![],
             assignments: None, volume_env: false, bypassed: false, flex: false,
@@ -2382,14 +2393,169 @@ mod tests {
     }
 
     #[test]
+    fn saved_sine_volume_reaches_amplifier_and_retains_shared_bypass_without_heap() {
+        for start_phase in [0., 0.25, 0.4990234375, 0.5, 0.75, 1.] {
+            saved_sine_volume_reaches_amplifier_and_retains_shared_bypass_without_heap_at_phase(start_phase);
+        }
+    }
+
+    fn saved_sine_volume_reaches_amplifier_and_retains_shared_bypass_without_heap_at_phase(start_phase: f32) {
+        use crate::{audio::Sample, engine::{Bank, Engine, load_scripts, load_scripts_with_state},
+            import::{Instrument, PitchLfo, VolumeLfo, Zone}};
+        for mixed in [false, true] {
+            let source = PitchLfo { start_phase, slot: 7, count: 16., note_value: 1. / 24., sine: 1.,
+                fade_ms: 0., depth: 0.25, targets: vec![(2, 0.25)], bypassed: false };
+            let mut group = Group { volume_lfos: vec![VolumeLfo { source: source.clone(), target: 4,
+                intensity: 1., negative: false, lag_ms: 15 }], ..Group::default() };
+            if mixed { group.pitch_lfos.push(source); }
+            group.modulators.resize_with(8, || Modulator { name: String::new(), targets: vec![],
+                assignments: None, volume_env: false, bypassed: false, flex: false,
+                envelope: None, kind: "lfo".into() });
+            group.modulators[7].targets = vec!["Other0".into(), "Other1".into(), "Pitch".into(),
+                "Other3".into(), "Volume".into()];
+            let par = EnginePar { id: id::INTMOD_BYPASS, group: 0, slot: 7, generic: -1 };
+            let bypass = Address::resolve(par, std::slice::from_ref(&group)).unwrap();
+            for id in [id::INTMOD_INTENSITY, id::MOD_TARGET_MP_INTENSITY, id::MOD_TARGET_INTENSITY] {
+                assert!(Address::resolve(EnginePar { id, generic: 4, ..par }, std::slice::from_ref(&group)).is_none(),
+                    "destination formula cannot invent normalized live volume intensity aliases");
+            }
+            if mixed {
+                assert!(Address::resolve(EnginePar { id: id::MOD_TARGET_MP_INTENSITY, generic: 2, ..par },
+                    std::slice::from_ref(&group)).is_some(), "the existing pitch sibling remains writable");
+            }
+            let script = "on init\ndeclare ui_button $pause\ndeclare $seed := get_engine_par($ENGINE_PAR_INTMOD_BYPASS,0,7,-1)\nmake_persistent($seed)\nend on\non ui_control($pause)\nset_engine_par($ENGINE_PAR_INTMOD_BYPASS,$pause,0,7,-1)\nend on";
+            let instrument = Instrument { groups: vec![group.clone()], scripts: vec![script.into()], ..Default::default() };
+            let create = |group: Group| {
+                let mut e = Engine::default(); e.attack = 0.0001; e.release = 0.001;
+                e.set_transport(false, 120., 0., (4, 4));
+                e.set_bank(Some(Box::new(Bank::from_samples(vec![group], vec![Zone::default()],
+                    vec![(std::path::PathBuf::new(), Sample { rate: 48_000, frames: vec![[0.25; 2]; 4096] })]).unwrap())));
+                e
+            };
+            let mut full = create(group.clone());
+            let mut split = create(group.clone());
+            for engine in [&mut full, &mut split] {
+                let (rt, errors) = load_scripts(&instrument, vec![], 48_000.);
+                assert!(errors.is_empty(), "{errors:?}"); engine.set_script(rt);
+            }
+            assert_eq!(full.bank().unwrap().settings[0].volume_lfos[0].source.start_phase.to_bits(), start_phase.to_bits(),
+                "the public imported source phase survives Bank preparation exactly");
+            let mut plain_group = group.clone(); plain_group.volume_lfos.clear();
+            let mut plain = create(plain_group);
+            let mut snapshot = full.script().unwrap().native_state.snapshot();
+            let (mut a, mut ar, mut b, mut br, mut c, mut cr) =
+                ([0.; 128], [0.; 128], [0.; 128], [0.; 128], [0.; 128], [0.; 128]);
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                for engine in [&mut full, &mut split, &mut plain] { engine.note_on(0, 60, 127); }
+                full.render(&mut a, &mut ar); plain.render(&mut c, &mut cr);
+                split.render(&mut b[..17], &mut br[..17]); split.render(&mut b[17..], &mut br[17..]);
+                assert!(a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-7));
+                let initial = (1. - (std::f64::consts::TAU * f64::from(start_phase)).sin() as f32) * 0.5;
+                let signal = -(std::f64::consts::TAU * (f64::from(start_phase) + 3. * 32. / 48_000.)).sin() as f32;
+                let expected = initial + ((signal + 1.) * 0.5 - initial) * 0.18508725;
+                assert!(c[64] > 0.01);
+                assert!((a[64] / c[64] - expected).abs() < 1e-6,
+                    "native control-point gain reaches actual resident sample output");
+                let note_start = a;
+                // Mid-interval bypass and resume, including all-source bypass
+                // for the shared pitch+volume source. No clock reset on either.
+                for (n, paused) in [(13, true), (39, false), (128, true), (77, false)] {
+                    for engine in [&mut full, &mut split] {
+                        engine.ui_control(0, 0, i32::from(paused));
+                    }
+                    full.render(&mut a[..n], &mut ar[..n]);
+                    let first = 17.min(n);
+                    split.render(&mut b[..first], &mut br[..first]);
+                    if n > first { split.render(&mut b[first..n], &mut br[first..n]); }
+                    assert!(a[..n].iter().zip(&b[..n]).all(|(a, b)| (a - b).abs() < 1e-7));
+                    // Script writes are accepted into the fixed command queue;
+                    // the audio render applies them at their exact sample.
+                    for engine in [&full, &split] {
+                        assert_eq!(read(&engine.bank().unwrap().settings, bypass), Some(f32::from(paused)));
+                        if mixed { assert_eq!(engine.bank().unwrap().settings[0].pitch_lfos[0].bypassed, paused); }
+                        assert_eq!(engine.bank().unwrap().settings[0].volume_lfos[0].source.bypassed, paused);
+                    }
+                }
+                full.ui_control(0, 0, 1);
+                full.render(&mut a, &mut ar);
+                while !full.script().unwrap().native_state.refresh(&mut snapshot, 1) {}
+                for engine in [&mut full, &mut split, &mut plain] { engine.note_off(0, 60); }
+                for _ in 0..40 {
+                    full.render(&mut a, &mut ar); split.render(&mut b, &mut br); plain.render(&mut c, &mut cr);
+                }
+                assert_eq!((full.active_voices(), split.active_voices(), plain.active_voices()), (0, 0, 0));
+                for engine in [&mut full, &mut split] {
+                    engine.ui_control(0, 0, 0); engine.note_on(0, 60, 127);
+                }
+                full.render(&mut a, &mut ar);
+                split.render(&mut b[..17], &mut br[..17]); split.render(&mut b[17..], &mut br[17..]);
+                assert!(a.iter().zip(note_start).all(|(a, initial)| (a - initial).abs() < 1e-7),
+                    "a new note retriggers the saved phase and target lag");
+                assert!(a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-7));
+            }), 0);
+            let edits = snapshot.saved();
+            assert!(edits.iter().any(|edit| edit.par == par && edit.value == 1));
+            let (rt, errors) = load_scripts_with_state(&instrument, vec![], 48_000., &[], &edits);
+            assert!(errors.is_empty(), "{errors:?}");
+            let mut restored = create(group); restored.set_script(rt);
+            assert_eq!(read(&restored.bank().unwrap().settings, bypass), Some(1.));
+            assert!(restored.bank().unwrap().settings[0].volume_lfos[0].source.bypassed);
+            assert_eq!(restored.script().unwrap().persistence()[0]["$seed"], crate::ksp::Value::Int(1),
+                "restored native source bypass is visible to the authored init getter");
+            assert_eq!(full.dropped_commands(), 0); assert_eq!(split.dropped_commands(), 0);
+        }
+    }
+
+    #[test]
+    fn saved_sine_volume_uses_decoded_nonlinear_amplifier_split_without_heap() {
+        use crate::{audio::Sample, engine::{Bank, Engine}, import::{PitchLfo, VolumeLfo, Zone},
+            fx::{Chain, Effect, Kind, Params, params::{Field, Value}}};
+        let source = PitchLfo { start_phase: 0., slot: 7, count: 16., note_value: 1. / 24., sine: 0.,
+            fade_ms: 0., depth: 0., targets: vec![], bypassed: false };
+        let effect = Effect { slot: 0, kind: Kind::SurroundPanner, version: 0, bypass: false,
+            output_gain: 1., dry_level: 0., params: Params::Fields(
+                crate::fx::params::layout_names(Kind::SurroundPanner).unwrap().iter().zip([1., 0.])
+                    .map(|(&name, value)| Field { name, value: Value::Number(value) }).collect()) };
+        let create = |group| {
+            let mut engine = Engine::default(); engine.attack = 0.0001;
+            engine.set_transport(false, 120., 0., (4, 4));
+            engine.set_bank(Some(Box::new(Bank::from_samples(vec![group], vec![Zone::default()],
+                vec![(std::path::PathBuf::new(), Sample { rate: 48_000, frames: vec![[0.25; 2]; 4096] })]).unwrap())));
+            engine
+        };
+        let mut endpoints = [0.; 2];
+        for split in [0, 1] {
+            let group = Group { amp_split_slot: Some(split), fx: Chain { slots: vec![effect.clone()] },
+                volume_lfos: vec![VolumeLfo { source: source.clone(), target: 0, intensity: 1.,
+                    negative: false, lag_ms: 0 }], ..Group::default() };
+            let mut reference = group.clone(); reference.volume_lfos.clear(); reference.gain = 0.5;
+            let mut actual = create(group); let mut expected = create(reference);
+            let (mut a, mut ar, mut b, mut br) = ([0.; 128], [0.; 128], [0.; 128], [0.; 128]);
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                actual.note_on(0, 60, 127); expected.note_on(0, 60, 127);
+                // Bipolar source0 at depth1 is exactly .5, so the independent
+                // reference places group gain.5 at the decoded Amplifier slot.
+                for _ in 0..4 {
+                    actual.render(&mut a, &mut ar); expected.render(&mut b, &mut br);
+                    assert!(a.iter().chain(&ar).zip(b.iter().chain(&br)).all(|(a,b)| (a-b).abs() < 1e-7));
+                    assert!(a.iter().chain(&ar).all(|x| x.is_finite()));
+                }
+            }), 0);
+            endpoints[usize::from(split)] = a[127];
+        }
+        assert!((endpoints[0] - endpoints[1]).abs() > 0.02,
+            "nonlinear pre/post-Amp paths must not accidentally collapse: {endpoints:?}");
+    }
+
+    #[test]
     fn live_saved_pitch_lfo_bypass_preserves_clock_fade_pcm_and_restore_without_heap() {
         use crate::{audio::Sample, engine::{Bank, Engine, load_scripts, load_scripts_with_state},
             import::{Instrument, PitchLfo, Zone}, ksp::Value};
         for mixed in [false, true] {
-            let mut group = Group { pitch_lfos: vec![PitchLfo { slot: 7, count: 1.,
+            let mut group = Group { pitch_lfos: vec![PitchLfo { start_phase: 0., slot: 7, count: 1.,
                 note_value: 1. / 24., sine: 0.5, fade_ms: 6., depth: 0.4,
                 targets: vec![(0, 0.4)], bypassed: false }], ..Group::default() };
-            if mixed { group.pitch_lfos.push(PitchLfo { slot: 3, count: 2.,
+            if mixed { group.pitch_lfos.push(PitchLfo { start_phase: 0., slot: 3, count: 2.,
                 note_value: 1. / 24., sine: 0.3, fade_ms: 0., depth: 0.13,
                 targets: vec![(0, 0.13)], bypassed: false }); }
             group.modulators.resize_with(8, || Modulator { name: String::new(), targets: vec![],
