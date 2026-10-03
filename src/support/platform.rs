@@ -1022,7 +1022,7 @@ fn decode_report_text(bytes: &[u8]) -> String {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn selected_signature_lines(text: &str, markers: &[&str]) -> String {
     let selected = text
         .lines()
@@ -1041,7 +1041,7 @@ fn selected_signature_lines(text: &str, markers: &[&str]) -> String {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn normalize_signature(value: &str) -> String {
     let mut normalized = String::with_capacity(value.len().min(512));
     let mut number = false;
@@ -1419,15 +1419,18 @@ mod tests {
 
     #[test]
     fn windows_error_reports_are_decoded_from_utf16() {
+        let text = "Version=131072\nEventType=APPCRASH\nExceptionCode=c0000005\nExceptionOffset=00012345\n";
         let mut report = vec![0xff, 0xfe];
-        for unit in "Version=131072\nEventType=APPCRASH\n".encode_utf16() {
+        for unit in text.encode_utf16() {
             report.extend_from_slice(&unit.to_le_bytes());
         }
         // A truncated trailing code unit must not derail the rest.
         report.push(0x41);
+        let decoded = decode_report_text(&report);
+        assert_eq!(decoded, text);
         assert_eq!(
-            decode_report_text(&report),
-            "Version=131072\nEventType=APPCRASH\n"
+            selected_signature_lines(&decoded, &["exception"]),
+            "exceptioncode=c#|exceptionoffset=#"
         );
         assert_eq!(decode_report_text(b"\xef\xbb\xbfplain"), "plain");
         assert_eq!(decode_report_text(b"plain"), "plain");
