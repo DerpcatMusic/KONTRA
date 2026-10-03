@@ -5220,7 +5220,8 @@ end on"#;
         frame(&mut scene,&mut ui,pointer);frame(&mut scene,&mut ui,down);frame(&mut scene,&mut ui,pointer);
         frame(&mut scene,&mut ui,down);frame(&mut scene,&mut ui,pointer);
         assert!(label(&scene.snapshot().unwrap()).unwrap().ends_with("TsTcTsTdTc"),"double phase comes from the maintained MUI double-click response");
-        let p=Arc::new(SamplerParams::new());let epoch=next_epoch(&mut p.shared.view.lock().unwrap(),0,None,Some(live));
+        let scene=Arc::new(Mutex::new(scene));
+        let p=Arc::new(SamplerParams::new());let epoch={let mut view=p.shared.view.lock().unwrap();let epoch=next_epoch(&mut view,0,None,Some(live));view.parts[0].native_scene=Some(scene.clone());epoch};
         let mut dsp=Dsp::default();dsp.script_epoch[0]=epoch;dsp.rack.parts[0].set_script(Some(rt));
         for edit in edits{assert_eq!((edit.slot,edit.control),(0,1));assert!(p.shared.edit_control_slot(0,epoch,edit.slot,edit.control,edit.value));}
         let live=p.shared.view.lock().unwrap().parts[0].live.take().unwrap();p.shared.live_requests.push((0,epoch,live)).ok().unwrap();
@@ -5229,6 +5230,7 @@ end on"#;
         assert_eq!(allocations(||{for _ in 0..8{Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx);}}),0);p.shared.publish_live(true);
         assert_eq!(dsp.rack.parts[0].script().unwrap().interface(0).controls[1].properties["$CONTROL_PAR_VALUE"],crate::ksp::Value::Int(306));
         assert_eq!(dsp.rack.parts[0].script().unwrap().interface(1).controls[0].properties["$CONTROL_PAR_VALUE"],crate::ksp::Value::Int(90));
+        let mut scene=scene.lock().unwrap();
         for mode in [1,2,3] {
             // Release/press establishes a new real capture. Removing, hiding or
             // disabling the owner completes that capture once with its old callbacks.
