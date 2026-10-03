@@ -11,6 +11,52 @@ use crate::Bridge;
 use crate::platform::{HostScale, ParentWindow};
 use crate::window::{self, Requests, Shared, View, lock};
 
+// Non-audio only. Keep the payload for MOOSE's existing FFI firewall; a
+// recovered Rust unwind is not evidence of fatal host/process termination.
+fn editor_unwind<R>(
+    log: Option<&window::LogHook>,
+    action: &'static str,
+    body: impl FnOnce() -> R,
+) -> R {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+        Ok(value) => value,
+        Err(payload) => {
+            let reason = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("non-string panic payload");
+            let mut excerpt: String = reason.chars().take(512).collect();
+            if excerpt.len() < reason.len() {
+                excerpt.push_str(" [payload truncated]");
+            }
+            let line = format!(
+                "moose-mui: caught nonfatal Rust panic during editor {action}: {excerpt}; resumed to the existing caller firewall"
+            );
+            // A failing/reentrant logger must never replace the original panic
+            // or cause a second panic while it is still being propagated.
+            if let Err(secondary) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Some(log) = log {
+                    let mut sink = match log.try_lock() {
+                        Ok(sink) => sink,
+                        Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+                        Err(std::sync::TryLockError::WouldBlock) => return,
+                    };
+                    sink(&line);
+                } else {
+                    eprintln!("{line}");
+                }
+            })) {
+                // A logger can panic_any a value whose destructor also panics.
+                // Leak only that exceptional secondary payload rather than run
+                // its destructor and replace the original failure.
+                std::mem::forget(secondary);
+            }
+            std::panic::resume_unwind(payload)
+        }
+    }
+}
+
 type Build<P> = Box<dyn FnMut(&mut Ui, &mut Bridge<P>) -> El + Send>;
 type FileDrop = Box<dyn FnMut(&Ui, mui::prelude::Point, &[std::path::PathBuf], bool) -> bool + Send>;
 type Changed = Box<dyn FnMut() -> bool + Send>;
@@ -257,6 +303,46 @@ impl<P: Params> MuiEditor<P> {
         self
     }
 
+    fn open_with_parent(
+        &mut self,
+        parent: &impl raw_window_handle::HasWindowHandle,
+        context: PluginContext,
+    ) {
+        let log = lock(&self.shared).view.log.clone();
+        editor_unwind(log.as_ref(), "open", || {
+            if self.window.is_some() {
+                self.close();
+            }
+            lock(&self.shared)
+                .view
+                .bridge
+                .attach(context.with_params(Arc::clone(&self.params)));
+            // A request made while closed was for the last window.
+            self.requests = Arc::default();
+            if let Some(log) = &lock(&self.shared).view.log {
+                self.requests.on_log(Arc::clone(log));
+            }
+            if let Some(keys) = &self.keys {
+                self.requests.on_key(Arc::clone(keys));
+            }
+            if let Some(pointer) = &self.pointer {
+                self.requests.on_pointer(Arc::clone(pointer));
+            }
+            if let Some(timing) = &self.timing {
+                self.requests.on_native_timing(Arc::clone(timing));
+            }
+            self.window = window::open(
+                parent,
+                "MUI",
+                self.size,
+                self.scale.policy(),
+                Arc::clone(&self.shared),
+                Arc::clone(&self.requests),
+            )
+            .map(Handle);
+        });
+    }
+
     fn close_window(&mut self) {
         if let Some(Handle(window)) = self.window.take() {
             #[cfg(target_os = "linux")]
@@ -283,36 +369,7 @@ impl<P: Params> Editor for MuiEditor<P> {
     }
 
     fn open(&mut self, parent: RawWindowHandle, context: PluginContext) {
-        if self.window.is_some() {
-            self.close();
-        }
-        lock(&self.shared)
-            .view
-            .bridge
-            .attach(context.with_params(Arc::clone(&self.params)));
-        // A request made while closed was for the last window.
-        self.requests = Arc::default();
-        if let Some(log) = &lock(&self.shared).view.log {
-            self.requests.on_log(Arc::clone(log));
-        }
-        if let Some(keys) = &self.keys {
-            self.requests.on_key(Arc::clone(keys));
-        }
-        if let Some(pointer) = &self.pointer {
-            self.requests.on_pointer(Arc::clone(pointer));
-        }
-        if let Some(timing) = &self.timing {
-            self.requests.on_native_timing(Arc::clone(timing));
-        }
-        self.window = window::open(
-            &ParentWindow(parent),
-            "MUI",
-            self.size,
-            self.scale.policy(),
-            Arc::clone(&self.shared),
-            Arc::clone(&self.requests),
-        )
-        .map(Handle);
+        self.open_with_parent(&ParentWindow(parent), context);
     }
 
     fn close(&mut self) {

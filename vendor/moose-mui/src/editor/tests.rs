@@ -567,3 +567,91 @@ fn user_zoom_is_independent_of_host_dpi_and_resize() {
         assert_eq!(zoom_at(&e, (1400, 1000), 2.0), 1.0);
     }
 }
+
+#[test]
+fn caught_parent_extraction_panic_reaches_the_editor_sink_and_existing_firewall() {
+    struct Parent;
+    impl raw_window_handle::HasWindowHandle for Parent {
+        fn window_handle(
+            &self,
+        ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+            // Fails before any native window/renderer API or fake pointer use.
+            std::panic::panic_any(format!(
+                "authored parent extraction probe {}",
+                "界".repeat(600)
+            ))
+        }
+    }
+    let params = Arc::new(Synth::new());
+    let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen = Arc::clone(&lines);
+    let mut editor = editor(&params).on_log(move |line| seen.lock().unwrap().push(line.into()));
+    let (host_context, _) = context(&params);
+    let opened = moose_core::wrapper::run_extern_callback_with::<(), bool>(
+        "test",
+        "gui_open",
+        false,
+        || {
+            editor.open_with_parent(&Parent, host_context);
+            true
+        },
+    );
+    assert!(
+        !opened,
+        "the original unwind still reaches MOOSE's fallback"
+    );
+    assert!(
+        editor.window.is_none(),
+        "a rejected opening never creates a window"
+    );
+    let lines = lines.lock().unwrap();
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains("caught nonfatal Rust panic during editor open"));
+    assert!(lines[0].contains("authored parent extraction probe"));
+    assert!(lines[0].contains("[payload truncated]"));
+    assert!(
+        lines[0].chars().count() < 700,
+        "Unicode payload is explicitly bounded"
+    );
+}
+
+#[test]
+fn editor_logger_failure_cannot_replace_the_original_unwind_payload() {
+    #[derive(Debug)]
+    struct Original(u64);
+    struct LoggerFailure;
+    impl Drop for LoggerFailure {
+        fn drop(&mut self) {
+            panic!("secondary logger payload must never be dropped");
+        }
+    }
+    struct Parent;
+    impl raw_window_handle::HasWindowHandle for Parent {
+        fn window_handle(
+            &self,
+        ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+            std::panic::panic_any(Original(42))
+        }
+    }
+    let params = Arc::new(Synth::new());
+    let mut editor = editor(&params).on_log(|_| std::panic::panic_any(LoggerFailure));
+    let (host_context, _) = context(&params);
+    let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        editor.open_with_parent(&Parent, host_context);
+    }))
+    .unwrap_err();
+    assert_eq!(payload.downcast::<Original>().unwrap().0, 42);
+    assert!(editor.window.is_none());
+    // A poisoned sink remains safe, and a busy/reentrant sink is skipped.
+    let log = lock(&editor.shared).view.log.clone().unwrap();
+    let busy = log
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (host_context, _) = context(&params);
+    let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        editor.open_with_parent(&Parent, host_context);
+    }))
+    .unwrap_err();
+    assert_eq!(payload.downcast::<Original>().unwrap().0, 42);
+    drop(busy);
+}
