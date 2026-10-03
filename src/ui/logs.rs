@@ -301,17 +301,75 @@ fn time(ms: u64) -> String {
         ms % 1000
     )
 }
+fn filename(path: &str) -> &str {
+    path.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(path)
+}
+
+fn script_context(data: &serde_json::Value, source_expected: bool) -> String {
+    use std::fmt::Write;
+    let mut text = String::new();
+    if let Some(excerpt) = diagnostics::excerpt_text(data) {
+        let _ = writeln!(text, "Script source context (numbered lines; > marks the fault)\n{excerpt}\nColumns refer to the original source; path redaction may alter displayed text.");
+    } else if let Some(reason) = data["source_excerpt_unavailable"].as_str() {
+        let _ = writeln!(text, "Script source context unavailable: {reason}.");
+    } else if source_expected {
+        text.push_str("Script source context unavailable: no excerpt was retained for this event.\n");
+    }
+    let action = &data["last_action"];
+    if let Some(callback) = action["callback"].as_str() {
+        let _ = write!(text, "Callback: {callback}");
+        for (key, label) in [
+            ("callback_id", "callback ID"), ("event_id", "event ID"),
+            ("note", "note"), ("velocity", "velocity"), ("controller", "controller"),
+            ("value", "value"), ("ui_control", "UI control"),
+            ("listener_signal", "listener signal"), ("rpn_address", "RPN address"),
+            ("async_id", "async ID"), ("async_status", "async status"),
+        ] {
+            if let Some(value) = action[key].as_i64() {
+                let _ = write!(text, " · {label} {value}");
+            }
+        }
+        if let Some(channel) = action["midi_channel"].as_u64() {
+            let _ = write!(text, " · MIDI channel {}", channel.saturating_add(1));
+        }
+        text.push('\n');
+    }
+    let note = &data["context"]["MidiNote"];
+    if let (Some(builtin), Some(argument), Some(value)) =
+        (note["builtin"].as_str(), note["argument"].as_u64(), note["value"].as_i64())
+    {
+        let _ = writeln!(text, "Argument: {builtin} · argument {argument} · value {value}");
+    }
+    let array = &data["array"];
+    if let (Some(name), Some(index), Some(length)) =
+        (array["name"].as_str(), array["index"].as_i64(), array["length"].as_u64())
+    {
+        let _ = writeln!(text, "Array: {name} · index {index} · length {length}");
+    }
+    let listener = &data["context"]["Listener"];
+    if let (Some(signal), Some(parameter)) = (listener["signal"].as_i64(), listener["parameter"].as_i64()) {
+        let _ = writeln!(text, "Listener: signal {signal} · parameter {parameter} · change {}", listener["change"]);
+    }
+    text
+}
+
 fn details(event: &LogEvent) -> String {
     let record = serde_json::to_string_pretty(event).unwrap_or_else(|_| "Could not format this event.".into());
-    match diagnostics::excerpt_text(&event.details) {
-        Some(excerpt) => format!("{}\n\nScript source context (numbered lines; > marks the fault)\n{excerpt}\nColumns refer to the original source; path redaction may alter displayed text.\n\n{record}", event.reason.as_deref().unwrap_or("Script diagnostic")),
-        None => record,
-    }
+    let context = script_context(&event.details, event.script_slot.is_some() || event.stage.as_deref() == Some("scripts"));
+    format!("{}\n\n{context}\nComplete event record\n{record}", event.reason.as_deref().unwrap_or(&event.event))
+}
+
+fn event_heading(event: &serde_json::Value) -> String {
+    format!("[{}] {} · {} · {} / {}\n{}\n",
+        event["level"].as_str().unwrap_or("unknown"), time(event["timestamp_ms"].as_u64().unwrap_or(0)),
+        event["path"].as_str().map(filename).or_else(|| event["library"].as_str()).unwrap_or("Application"),
+        event["stage"].as_str().or_else(|| event["module"].as_str()).unwrap_or("application"),
+        event["code"].as_str().or_else(|| event["event"].as_str()).unwrap_or("event"),
+        event["reason"].as_str().unwrap_or(""))
 }
 
 /// Runs on the support worker; includes every retained row, never the UI filter.
 fn support_text(snapshot: DiagnosticSnapshot, context: serde_json::Value) -> Result<String, String> {
-    use std::fmt::Write;
     let status = &snapshot.status;
     let mut text = format!("KONTRA diagnostics — retained session report\n{}\n\nCoverage: current session retained view and available load summaries; all levels, independent of search.\nRetained {} / {} session events. Session levels: Debug {}, Info {}, Warning {}, Error {}.\nOlder events evicted from view: {}; recorder drops: {}; abbreviated events: {}; write errors: {}; retention errors: {}.\nRuntime/load-summary omission counts and cap notices are separate from recorder loss; a notice without a count has unknown omitted cardinality.\nPrevious sessions and rotated disk history are NOT included in this clipboard report. Export support report includes available retained journal history across sessions.\nPaths are redacted; filenames and diagnostic messages remain. Bounded script excerpts around faults are included. No full scripts, samples or credentials.\n\n",
         crate::build_info::SUMMARY, snapshot.events.len(), status.total_events,
@@ -320,15 +378,24 @@ fn support_text(snapshot: DiagnosticSnapshot, context: serde_json::Value) -> Res
     let mut safe = json!({"build":snapshot.build,"status":snapshot.status,"context":context,"events":snapshot.events});
     diagnostics::clean(&mut safe, true);
     let events = safe.as_object_mut().unwrap().remove("events").unwrap();
-    text.push_str("CONFIGURATION, STATUS AND LOAD SUMMARIES\n");
+    let mut warnings = events.as_array().unwrap().iter().filter(|event| {
+        matches!(event["level"].as_str(), Some("warning" | "error"))
+    }).peekable();
+    text.push_str("WARNING AND ERROR DIGEST (retained events; chronological)\n");
+    if warnings.peek().is_none() {
+        text.push_str("No warnings or errors in the retained session view.\n");
+    }
+    for event in warnings {
+        text.push('\n');
+        text.push_str(&event_heading(event));
+        text.push_str(&script_context(&event["data"], event["script_slot"].is_number() || event["stage"].as_str() == Some("scripts")));
+    }
+    text.push_str("\nCONFIGURATION, STATUS AND LOAD SUMMARIES\n");
     text.push_str(&serde_json::to_string_pretty(&safe).map_err(|e| e.to_string())?);
     text.push_str("\n\nALL RETAINED EVENTS (chronological; full warning/error records included)\n");
     for event in events.as_array().unwrap() {
-        let _ = writeln!(text, "\n[{}] {} · {} / {}\n{}",
-            event["level"].as_str().unwrap_or("unknown"), time(event["timestamp_ms"].as_u64().unwrap_or(0)),
-            event["stage"].as_str().or_else(|| event["module"].as_str()).unwrap_or("application"),
-            event["code"].as_str().or_else(|| event["event"].as_str()).unwrap_or("event"),
-            event["reason"].as_str().unwrap_or(""));
+        text.push('\n');
+        text.push_str(&event_heading(event));
         text.push_str(&serde_json::to_string_pretty(event).map_err(|e| e.to_string())?);
         if let Some(excerpt) = diagnostics::excerpt_text(event) {
             text.push_str("\nScript source context (numbered lines; > marks the fault)\n");
@@ -756,8 +823,8 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
         let selected = state.selected == Some(event.sequence);
         let stage = event.stage.as_deref().unwrap_or(&event.module);
         let code = event.code.as_deref().unwrap_or(&event.event);
-        let patch = event.path.as_deref().and_then(|p| Path::new(p).file_name())
-            .map(|p| p.to_string_lossy().into_owned()).or_else(|| event.library.clone()).unwrap_or_else(|| "Application".into());
+        let patch = event.path.as_deref().map(filename)
+            .or(event.library.as_deref()).unwrap_or("Application");
         let title = format!("{} · {patch} · {stage} / {code}", level_name(event.level));
         items.push(interactive(
             col![
@@ -878,7 +945,7 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
                     .shrink(0)
             ]
             .pad(INSET)
-            .h(if diagnostics::excerpt_text(&event.details).is_some() { 200. } else { 120. })
+            .h(if event.script_slot.is_some() || event.stage.as_deref() == Some("scripts") || diagnostics::excerpt_text(&event.details).is_some() { 200. } else { 120. })
             .shrink(0)
             .scroll()
             .id("logs-details"),
@@ -1012,7 +1079,9 @@ mod tests {
                 stage: Some("samples".into()),
                 code: Some("resolved_reference".into()),
                 load_id: Some((n / 64).to_string()),
-                path: Some(format!(
+                path: Some(if n == 1001 {
+                    r"C:\virtual\Fixture Strings\Instruments\Violin.nki".into()
+                } else { format!(
                     "/virtual/{}/Instruments/{}.nki",
                     if n % 2 == 0 {
                         "Fixture Keys"
@@ -1020,7 +1089,7 @@ mod tests {
                         "Fixture Strings"
                     },
                     if n % 2 == 0 { "Cello" } else { "Violin" }
-                )),
+                ) }),
                 // Real loader events can carry a path before catalog identification.
                 library: if n == 1001 {
                     None
@@ -1037,8 +1106,16 @@ mod tests {
                 line: Some(42),
                 reason: Some(format!("Marker {n}: sample reference resolved.")),
                 details: if n == 1001 {
-                    json!({"reason":"synthetic test event","line":42,"source_excerpt":diagnostics::script_excerpt(
+                    json!({"reason":"synthetic test event","line":42,
+                        "array":{"name":"%bad","index":3,"length":2},
+                        "last_action":{"callback":"note","callback_id":7,"event_id":11,"note":62,"velocity":90,"midi_channel":2},
+                        "source_excerpt":diagnostics::script_excerpt(
                         &format!("{}malformed(\"context)\nend on", "\n".repeat(41)),1,42,Some(11))})
+                } else if n == 1003 {
+                    json!({"context":{"MidiNote":{"builtin":"set_key_color","argument":1,"value":128}},
+                        "source_excerpt_unavailable":"Cached script source or reported line is unavailable",
+                        "last_action":{"callback":"ui_control","callback_id":8,"ui_control":1},
+                        "access_key":"private-token"})
                 } else { json!({"reason":"synthetic test event","line":42}) },
             })
             .collect();
@@ -1140,6 +1217,17 @@ mod tests {
         assert!(ui.scene().unwrap().surface("logs-copy").is_some());
         assert!(state.detail.as_ref().unwrap().1.contains("Marker 1001"));
         assert!(state.detail.as_ref().unwrap().1.contains("\n>     42 | malformed(\"context)\n"), "selected details display actual numbered code, not only JSON escapes");
+        let detail = &state.detail.as_ref().unwrap().1;
+        assert!(detail.contains("Callback: note · callback ID 7 · event ID 11 · note 62 · velocity 90 · MIDI channel 3"));
+        assert!(detail.contains("Array: %bad · index 3 · length 2"));
+        assert!(detail.find("Script source context").unwrap() < detail.find("Complete event record").unwrap());
+        assert_eq!(filename(r"C:\private-user\Instruments\Violin.nki"), "Violin.nki");
+        let unavailable = details(&state.snapshot.as_ref().unwrap().events[1003]);
+        assert!(unavailable.contains("Argument: set_key_color · argument 1 · value 128"));
+        assert!(unavailable.contains("Callback: ui_control · callback ID 8 · UI control 1"));
+        assert!(unavailable.contains("Script source context unavailable: Cached script source or reported line is unavailable."));
+        assert!(!unavailable.contains("numbered lines"), "missing code is never reconstructed from a diagnostic message");
+        assert!(details(&state.snapshot.as_ref().unwrap().events[1000]).contains("no excerpt was retained"));
         let scene = ui.scene().unwrap();
         let row = scene.surface("log-event-1002").unwrap().frame;
         let title = scene.surface("log-event-1002-title").unwrap().frame;
@@ -1163,6 +1251,14 @@ mod tests {
         assert!(copied.contains("7952") && copied.contains("10000") && copied.contains("issues_omitted") && copied.contains("omitted locations unknown"), "recorder coverage and load/runtime omissions remain distinct");
         assert!(copied.contains("Diagnostic Test.nki") && !copied.contains("/virtual/private-user") && !copied.contains("private script payload"), "default redaction keeps filenames and removes private payloads");
         assert!(copied.contains("Previous sessions and rotated disk history are NOT included"));
+        let digest = copied.find("WARNING AND ERROR DIGEST").unwrap();
+        let configuration = copied.find("CONFIGURATION, STATUS AND LOAD SUMMARIES").unwrap();
+        assert!(digest < configuration);
+        let digest = &copied[digest..configuration];
+        assert!(digest.contains("Marker 1003:") && digest.contains("Argument: set_key_color · argument 1 · value 128"));
+        assert!(digest.contains("Script source context unavailable") && !digest.contains("Marker 0:"), "digest shows actionable severities and honest source coverage");
+        assert!(!copied.contains("private-token") && !copied.contains(r"C:\virtual"), "digest uses the same sanitized records as the complete report");
+        assert!(copied.contains("\"last_action\"") && copied.contains("\"MidiNote\""), "readable context supplements the original structured records");
         assert!(copied.contains("\n>     42 | malformed(\"context)\n"), "Copy all includes readable source context alongside its structured record");
         let shot = Path::new("artifacts/diagnostics/log-panel-fixture.png");
         std::fs::create_dir_all(shot.parent().unwrap()).unwrap();
