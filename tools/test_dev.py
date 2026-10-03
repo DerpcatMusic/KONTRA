@@ -25,9 +25,17 @@ class DevelopmentCommands(unittest.TestCase):
         self.assertNotIn("--all-features", dev.command(dev.arguments(["check"])))
         self.assertIn("--no-default-features", dev.command(dev.arguments(["check", "--core"])))
 
+    def test_core_library_check_and_test_share_feature_selection(self):
+        for args in [["check", "--core"], ["test", "--core", "example::test"]]:
+            cmd = dev.command(dev.arguments(args))
+            self.assertIn("--lib", cmd)
+            self.assertEqual(cmd[-3:], ["--no-default-features", "--features", "library-access"])
+            self.assertNotIn("--all-features", cmd)
+
     def test_core_scope_and_jobs_reject_invalid_arguments(self):
         with contextlib.redirect_stderr(io.StringIO()):
-            for args in [["--jobs", "0", "check"], ["check", "--core", "--target", "standalone"], ["test"]]:
+            for args in [["--jobs", "0", "check"], ["check", "--core", "--target", "standalone"],
+                         ["test", "--core", "--target", "playback", "example::test"], ["test"]]:
                 with self.assertRaises(SystemExit):
                     dev.arguments(args)
 

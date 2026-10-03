@@ -25,12 +25,13 @@ def arguments(argv=None):
     check.add_argument("--core", action="store_true", help="lib only: omit plugin/UI features")
     test = sub.add_parser("test", help="build once, verify names, run only those exact tests")
     test.add_argument("--target", choices=["lib", "playback"], default="lib")
+    test.add_argument("--core", action="store_true", help="lib only: omit plugin/UI features")
     test.add_argument("--ignored", action="store_true", help="explicitly run named ignored tests")
     test.add_argument("names", nargs="+")
     args = parser.parse_args(argv)
     if args.jobs < 1:
         parser.error("--jobs must be positive")
-    if args.action == "check" and args.core and args.target != "lib":
+    if args.core and args.target != "lib":
         parser.error("--core is limited to --target lib")
     if args.action == "test" and any(not name or name.startswith("-") for name in args.names):
         parser.error("test names must be nonempty exact names")
@@ -45,11 +46,11 @@ def command(args):
                    "standalone": ["--bin", "kontakto-standalone", "--features", "standalone"],
                    "all": ["--all-targets", "--all-features"]}
         cmd += targets[args.target]
-        if args.core:
-            cmd += ["--no-default-features", "--features", "library-access"]
     else:
         cmd += ["--lib"] if args.target == "lib" else ["--test", "playback"]
         cmd += ["--no-run", "--message-format=json"]
+    if args.core:
+        cmd += ["--no-default-features", "--features", "library-access"]
     return cmd
 
 
