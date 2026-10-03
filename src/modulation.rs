@@ -842,19 +842,35 @@ mod tests {
         let parsed = read_group_partial(&group, 7, "Authored").unwrap();
         assert_eq!(parsed.volume_env, Some(envelope));
         // Native XML/typed-reader proof: router-open is byte 0, bypass byte 1.
+        // This readable fixture has depth0.5/flags0 and zeroed opaque records,
+        // so the native primary kernel must remain unadmitted independently of
+        // router state. Compare against the closed-router diagnostic baseline.
+        let decoded_flags = |flags| read_group(&RawGroup(StructuredObject {
+            version: 0x95, public_data: vec![], private_data: vec![],
+            children: vec![slots(INTERNAL_MODS_ID, 16, &[internal(2, "Env", flags)])],
+        })).unwrap();
+        let baseline = decoded_flags([0, 0, 1, 0]);
+        assert!(!baseline.native_volume_env);
+        assert_eq!(baseline.warnings.len(), 1);
+        assert!(baseline.warnings[0].starts_with("Primary AHDSR slot 0: native source kernel not applied;"));
         for flags in [[1, 0, 1, 0], [0, 1, 1, 0]] {
-            let raw = RawGroup(StructuredObject { version: 0x95, public_data: vec![], private_data: vec![],
-                children: vec![slots(INTERNAL_MODS_ID, 16, &[internal(2, "Env", flags)])] });
-            let decoded = read_group(&raw).unwrap();
+            let decoded = decoded_flags(flags);
             assert_eq!(decoded.modulators[0].bypassed, flags[1] != 0);
-            assert!(decoded.warnings.is_empty(), "router-open is UI state, not an unsupported audio mode");
+            assert!(!decoded.native_volume_env);
+            assert_eq!(decoded.volume_env, baseline.volume_env);
+            assert_eq!(decoded.warnings, baseline.warnings,
+                "router-open is UI state and cannot add an unsupported audio-mode diagnostic");
         }
         assert_eq!(parsed.mods.len(), 3, "all targets of readable siblings survive");
         assert_eq!(parsed.mods[2].target, ModTarget::Attack, "native volume-envelope slot remains 1");
         assert_eq!(parsed.modulators.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["", "GoodEnv", "", "", "GoodVelocity"]);
         assert_eq!(parsed.modulators[4].assignments, Some(0));
         for i in [0, 2, 3] { assert_eq!(parsed.modulators[i].kind, "undecoded"); assert!(parsed.modulators[i].targets.is_empty()); }
-        assert_eq!(parsed.warnings.len(), 3);
+        assert!(!parsed.native_volume_env);
+        assert_eq!(parsed.warnings.len(), 4, "three failed-slot diagnostics plus the explicit primary fallback");
+        assert_eq!(parsed.warnings.iter().filter(|w| w.starts_with("Group 7 \"Authored\": ")).count(), 3);
+        assert_eq!(parsed.warnings.iter().filter(|w|
+            w.starts_with("Primary AHDSR slot 1: native source kernel not applied;")).count(), 1);
         for error in ["category 3", "shaper kind 8", "Invalid boolean byte 2"] {
             assert!(parsed.warnings.iter().any(|w| w.starts_with("Group 7 \"Authored\"") && w.contains(error)));
         }
