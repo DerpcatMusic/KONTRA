@@ -9,6 +9,9 @@ use std::{
 
 const FILE_LIMIT: usize = 4096;
 const METADATA_LIMIT: u64 = 8 << 20;
+// Markers store a process identifier (normally an executable basename), not
+// arbitrary report text. Keep even unusually long UTF-8 names within one page.
+const HOST_PROCESS_LIMIT: usize = 4096;
 
 pub(crate) struct CrashExport {
     pub manifest: Value,
@@ -135,7 +138,11 @@ fn export_from(
     let mut add = |relative: PathBuf| {
         sources.insert(relative);
     };
-    for name in ["pending.json", "deferred-cursor.json"] {
+    for name in [
+        "pending.json",
+        "pending-cursor.json",
+        "deferred-cursor.json",
+    ] {
         if std::fs::symlink_metadata(root.join(name)).is_ok() {
             add(PathBuf::from("crash-reports").join(name));
         }
@@ -234,12 +241,14 @@ fn export_from(
                             .as_u64()
                             .and_then(|n| u32::try_from(n).ok())
                             .filter(|pid| *pid != 0);
-                        let host = marker["host_process"].as_str();
+                        let host = marker["host_process"]
+                            .as_str()
+                            .filter(|host| !host.is_empty() && host.len() <= HOST_PROCESS_LIMIT);
                         if pid.zip(host).is_none_or(|(pid, host)| {
                             pid == std::process::id()
                                 || super::platform::process_is_alive(pid, host)
                         }) {
-                            entries.push(json!({"source":relative,"status":"active_or_unverified_owner_omitted"}));
+                            entries.push(json!({"source":relative,"status":"active_or_unverified_owner_omitted","reason":if marker["host_process"].as_str().is_some_and(|host|host.len()>HOST_PROCESS_LIMIT){"owner_process_identifier_exceeds_4096_byte_limit"}else{"owner_active_or_unverified"}}));
                             continue;
                         }
                         if let Some((pid, host)) = pid.zip(host) {
@@ -336,12 +345,14 @@ fn export_from(
                             .as_u64()
                             .and_then(|n| u32::try_from(n).ok())
                             .filter(|pid| *pid != 0)
-                            .zip(value["host_process"].as_str());
+                            .zip(value["host_process"].as_str().filter(|host| {
+                                !host.is_empty() && host.len() <= HOST_PROCESS_LIMIT
+                            }));
                         if owner.is_none_or(|(pid, host)| {
                             pid == std::process::id()
                                 || super::platform::process_is_alive(pid, host)
                         }) {
-                            entries.push(json!({"source":relative,"status":"active_or_unverified_owner_omitted"}));
+                            entries.push(json!({"source":relative,"status":"active_or_unverified_owner_omitted","reason":if value["host_process"].as_str().is_some_and(|host|host.len()>HOST_PROCESS_LIMIT){"owner_process_identifier_exceeds_4096_byte_limit"}else{"owner_active_or_unverified"}}));
                             continue;
                         }
                         if let Some((pid, host)) = owner {
@@ -355,6 +366,7 @@ fn export_from(
                         sources.insert(relative);
                     } else {
                         warnings.push("Crash evidence reference limit reached".into());
+                        entries.push(json!({"source":relative,"status":"selection_limit_omitted"}));
                     }
                 } else {
                     warnings.push("Unsafe saved evidence reference omitted".into());
@@ -375,7 +387,11 @@ fn export_from(
             entries.push(json!({"source":relative,"status":"active_or_unverified_owner_omitted"}));
         }
     }
-    for relative in sources.into_iter().take(FILE_LIMIT) {
+    for (index, relative) in sources.into_iter().enumerate() {
+        if index >= FILE_LIMIT {
+            entries.push(json!({"source":relative,"status":"selection_limit_omitted"}));
+            continue;
+        }
         stopped(stopping)?;
         if owners.get(&relative).is_some_and(|(pid, host, _, _)| {
             *pid == std::process::id() || super::platform::process_is_alive(*pid, host)
@@ -420,11 +436,25 @@ fn export_from(
             .as_str()
             .and_then(|path| references.get(Path::new(path)))
         {
+            if entry["status"] == "complete"
+                && entry["source"]
+                    .as_str()
+                    .is_some_and(|path| path.ends_with(".dfr"))
+                && (recorded["bytes"]
+                    .as_u64()
+                    .is_some_and(|bytes| entry["bytes"].as_u64() != Some(bytes))
+                    || recorded["blake3"]
+                        .as_str()
+                        .is_some_and(|hash| entry["blake3"].as_str() != Some(hash)))
+            {
+                entry["status"] = json!("content_identity_mismatch");
+                warnings.push(format!("Copied crash journal differs from its recorded original length or content hash: {}",entry["source"].as_str().unwrap_or("unknown")));
+            }
             entry["recorded_original"] = recorded.clone();
         }
     }
     let partial = !warnings.is_empty() || entries.iter().any(|e| e["status"] != "complete");
-    let manifest = json!({"schema":1,"scope":"user_requested_local_export_only","automatically_uploaded":false,"paths_redacted":false,"privacy":"Exact private originals may contain personal paths or sensitive native fields. Review before sharing; the structured log redaction setting does not alter these copies.","coverage":if partial{"partial"}else{"complete_at_capture"},"file_limit":FILE_LIMIT,"selection":"Known artifacts already archived in the private crash cache; live session owners and publisher jobs are excluded", "os_report_directories_searched":false,"binary_process_dumps_included":false,"metadata_read_limit_bytes":METADATA_LIMIT,"entries":entries,"warnings":warnings});
+    let manifest = json!({"schema":1,"scope":"user_requested_local_export_only","automatically_uploaded":false,"paths_redacted":false,"privacy":"Exact private originals may contain personal paths or sensitive native fields. Review before sharing; the structured log redaction setting does not alter these copies.","coverage":if partial{"partial"}else{"complete_at_capture"},"file_limit":FILE_LIMIT,"selection":"Known artifacts already archived in the private crash cache; live session owners and publisher jobs are excluded", "os_report_directories_searched":false,"binary_process_dumps_included":false,"metadata_read_limit_bytes":METADATA_LIMIT,"owner_process_identifier_limit_bytes":HOST_PROCESS_LIMIT,"entries":entries,"warnings":warnings});
     let mut file = private_new(&target.join("manifest.json"))?;
     serde_json::to_writer_pretty(&mut file, &manifest)?;
     file.sync_all()?;

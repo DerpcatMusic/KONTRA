@@ -1818,6 +1818,13 @@ mod tests {
         std::fs::write(root.join("pending.json"),&pending_bytes).unwrap();
         std::fs::write(root.join("pending").join(format!("{id}.json")),&pending_bytes).unwrap();
         std::fs::write(root.join("deferred-cursor.json"),b"7").unwrap();
+        let pending_cursor=br#""0000000000000002.json""#;
+        std::fs::write(root.join("pending-cursor.json"),pending_cursor).unwrap();
+        let changed_journal=b"complete archived bytes retained despite recorded identity mismatch";
+        for (changed_id, expected_bytes, expected_hash) in [("2222222222222222",changed_journal.len()+1,blake3::hash(changed_journal).to_hex().to_string()),("3333333333333333",changed_journal.len(),"a".repeat(64))] {
+            std::fs::write(root.join("originals").join(format!("{changed_id}.dfr")),changed_journal).unwrap();
+            std::fs::write(root.join("deferred").join(format!("{changed_id}.json")),serde_json::to_vec(&json!({"id":changed_id,"local_journal":{"local_file":format!("originals/{changed_id}.dfr"),"bytes":expected_bytes,"blake3":expected_hash}})).unwrap()).unwrap();
+        }
         let deferred=root.join("deferred").join(format!("{id}.json"));
         let deferred_bytes=serde_json::to_vec(&json!({"id":id,"local_journal":{"local_file":format!("originals/{id}.dfr")}})).unwrap();
         std::fs::write(&deferred,&deferred_bytes).unwrap();
@@ -1830,6 +1837,8 @@ mod tests {
         std::fs::write(root.join("sessions/live.json"),serde_json::to_vec(&json!({"pid":std::process::id(),"host_process":"current-host","journal_file":"live.dfr"})).unwrap()).unwrap();
         std::fs::write(root.join("sessions/live.dfr"),b"live source must not be copied").unwrap();
         std::fs::write(root.join("sessions/orphan.dfr"),b"unverified owner must not be copied").unwrap();
+        std::fs::write(root.join("sessions/oversized-owner.json"),serde_json::to_vec(&json!({"pid":u32::MAX,"host_process":"x".repeat(4097),"journal_file":"oversized-owner.dfr"})).unwrap()).unwrap();
+        std::fs::write(root.join("sessions/oversized-owner.dfr"),b"unverified oversized process identifier").unwrap();
         std::fs::write(root.join("sessions/dead.json"),serde_json::to_vec(&json!({"pid":u32::MAX,"host_process":"authored-dead-host","journal_file":"dead.dfr"})).unwrap()).unwrap();
         std::fs::write(root.join("sessions/dead.dfr"),&original).unwrap();
         std::fs::write(root.join("panics/4294967295.json"),b"{\"authored\":true}").unwrap();
@@ -1850,6 +1859,7 @@ mod tests {
         assert_eq!(std::fs::read(bundle.join("crash-evidence/crash-reports/pending.json")).unwrap(),pending_bytes);
         assert_eq!(std::fs::read(bundle.join(format!("crash-evidence/crash-reports/pending/{id}.json"))).unwrap(),pending_bytes);
         assert_eq!(std::fs::read(bundle.join("crash-evidence/crash-reports/deferred-cursor.json")).unwrap(),b"7");
+        assert_eq!(std::fs::read(bundle.join("crash-evidence/crash-reports/pending-cursor.json")).unwrap(),pending_cursor);
         assert_eq!(std::fs::read(bundle.join("crash-evidence/crash-reports/sessions/dead.dfr")).unwrap(),original);
         assert_eq!(std::fs::read(bundle.join("crash-evidence/crash-reports/panics/4294967295.json")).unwrap(),b"{\"authored\":true}");
         let manifest:Value=serde_json::from_slice(&std::fs::read(bundle.join("crash-evidence/manifest.json")).unwrap()).unwrap();
@@ -1867,6 +1877,13 @@ mod tests {
         assert_eq!(status(&format!("crash-reports/deferred/{id}.json")),"publisher_active_omitted");
         assert_eq!(status("crash-reports/sessions/live.json"),"active_or_unverified_owner_omitted");
         assert_eq!(status("crash-reports/sessions/orphan.dfr"),"active_or_unverified_owner_omitted");
+        for changed_id in ["2222222222222222","3333333333333333"] {
+            assert_eq!(status(&format!("crash-reports/originals/{changed_id}.dfr")),"content_identity_mismatch");
+            assert_eq!(std::fs::read(copied.join(format!("{changed_id}.dfr"))).unwrap(),changed_journal,"mismatched archived bytes remain available for manual diagnosis");
+        }
+        let oversized=manifest["entries"].as_array().unwrap().iter().find(|e|e["source"]=="crash-reports/sessions/oversized-owner.json").unwrap();
+        assert_eq!(oversized["reason"],"owner_process_identifier_exceeds_4096_byte_limit");
+        assert!(!bundle.join("crash-evidence/crash-reports/sessions/oversized-owner.dfr").exists());
         assert!(!bundle.join("crash-evidence/crash-reports/sessions/live.dfr").exists());
         assert!(!bundle.join("outside-private.txt").exists());
         assert_eq!(std::fs::read(&outside).unwrap(),b"outside ownership boundary");
