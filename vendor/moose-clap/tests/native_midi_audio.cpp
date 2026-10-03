@@ -1,6 +1,6 @@
 // Real exported CLAP plugin: official SDK headers, original tone, no editor.
 // g++ -std=c++17 -Wall -Wextra -Werror -pedantic -O2 -I SDK/include THIS -ldl -pthread -o HOST
-// HOST /absolute/libkontakto.so omni.state home7.state lower-zone-home7.state
+// HOST /absolute/libkontakto.so omni.state home7.state lower-zone-home7.state [--require-mpe]
 #include <clap/clap.h>
 #include <dlfcn.h>
 #include <algorithm>
@@ -90,7 +90,7 @@ struct Session {
     std::vector<std::vector<float*>> pointers;
     std::vector<clap_audio_buffer_t> outputs;
     clap_process_t process{};
-    Session(const clap_plugin_factory_t* factory, const char* id, const char* state_path) {
+    Session(const clap_plugin_factory_t* factory, const char* id, const char* state_path, bool require_mpe) {
         plugin=factory->create_plugin(factory,&host.api,id);
         require(plugin && plugin->init(plugin),"actual exported CLAP create/init");
         auto* state=static_cast<const clap_plugin_state_t*>(plugin->get_extension(plugin,CLAP_EXT_STATE));
@@ -101,6 +101,17 @@ struct Session {
         clap_note_port_info_t note{};
         require(notes && notes->count(plugin,true)>0 && notes->get(plugin,0,true,&note),"declared note input");
         dialects=note.supported_dialects;
+        for(uint32_t port=0;port<notes->count(plugin,true);++port) {
+            require(notes->get(plugin,port,true,&note),"declared input port capability");
+            std::printf("input_port=%u dialects=%u preferred=%u\n",port,note.supported_dialects,note.preferred_dialect);
+            require(!require_mpe || (note.supported_dialects&CLAP_NOTE_DIALECT_MIDI_MPE),"configured MPE capability must be advertised on every input");
+            require(note.preferred_dialect==CLAP_NOTE_DIALECT_CLAP,"MPE opt-in must preserve preferred native note dialect");
+        }
+        for(uint32_t port=0;port<notes->count(plugin,false);++port) {
+            require(notes->get(plugin,port,false,&note),"declared output port capability");
+            std::printf("output_port=%u dialects=%u\n",port,note.supported_dialects);
+            require(!(note.supported_dialects&CLAP_NOTE_DIALECT_MIDI_MPE),"input MPE capability must not falsely advertise MPE output");
+        }
         require((dialects & (CLAP_NOTE_DIALECT_CLAP|CLAP_NOTE_DIALECT_MIDI))==3,"advertised CLAP and MIDI dialects");
         auto* ports=static_cast<const clap_plugin_audio_ports_t*>(plugin->get_extension(plugin,CLAP_EXT_AUDIO_PORTS));
         require(ports && ports->count(plugin,false)>0 && ports->count(plugin,false)<=16,"bounded declared output ports");
@@ -155,7 +166,8 @@ struct Session {
     }
 };
 int main(int argc,char** argv) {
-    require(argc==5,"plugin, Omni, home7 and lower-zone state paths required");
+    require(argc==5 || (argc==6 && std::strcmp(argv[5],"--require-mpe")==0),"plugin, Omni, home7 and lower-zone state paths required; optional --require-mpe");
+    const bool require_mpe=argc==6;
     void* module=dlopen(argv[1],RTLD_NOW|RTLD_LOCAL);
     if(!module) { std::fprintf(stderr,"%s\n",dlerror()); return 1; }
     auto* entry=static_cast<const clap_plugin_entry_t*>(dlsym(module,"clap_entry"));
@@ -164,7 +176,7 @@ int main(int argc,char** argv) {
     require(factory && factory->get_plugin_count(factory)>0,"actual CLAP factory");
     const auto* descriptor=factory->get_plugin_descriptor(factory,0); require(descriptor,"plugin descriptor");
     {
-        Session s(factory,descriptor->id,argv[2]);
+        Session s(factory,descriptor->id,argv[2],require_mpe);
         std::printf("advertised_input_dialects=%u\n",s.dialects);
         for(int id:{10,-1}) for(double cents:{0.,250.,-350.}) {
             s.events.note(true,0,id); s.events.tuning(0,id,cents/100.);
@@ -209,7 +221,7 @@ int main(int argc,char** argv) {
         std::puts("sostenuto_before_note_not_captured=true");
     }
     {
-        Session s(factory,descriptor->id,argv[3]);
+        Session s(factory,descriptor->id,argv[3],require_mpe);
         s.events.note(true,0,300); double wrong=0.; for(int b=0;b<17;++b) wrong+=s.block();
         require(wrong==0.,"home7 must reject unrelated native channel0");
         s.events.note(false,0,300); s.block(); s.events.note(true,7,301);
@@ -219,7 +231,7 @@ int main(int argc,char** argv) {
         s.events.midi(0x97,60,102,16); std::printf("home7_midi"); s.tone(0.); s.events.midi(0x87,60,0,64); s.quiet();
     }
     {
-        Session s(factory,descriptor->id,argv[4]);
+        Session s(factory,descriptor->id,argv[4],require_mpe);
         if(!(s.dialects&CLAP_NOTE_DIALECT_MIDI_MPE)) std::puts("SKIP advertised_MPE: MIDI_MPE dialect not advertised; following checks are configured raw-MIDI zone routing only");
         // Lower zone member1: manual member range48, independent master range2.
         // 1/48 full-scale member bend =>1 semitone; half master bend =>1.
