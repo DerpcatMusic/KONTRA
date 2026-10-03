@@ -68,6 +68,7 @@ question, not a conclusion that matching format facts require GPL.
 |---|---|---|---|
 | MOOSE (fork of truce) | git dependency `Matari-Audio/moose` rev `bffa467`; `vendor/moose-*` | Truce License 1.0 (`LicenseRef-TruceLicense-1.0`): MIT or Apache-2.0 plus a framework rider | See below. Patches: `vendor/MOOSE-PATCHES.md`. |
 | mui-baseview | `vendor/mui-baseview` | MIT | Copyright Matari Audio. |
+| moose-baseview 0.3.4-moose.1 | `vendor/moose-baseview` | MIT OR Apache-2.0 | Exact MOOSE `bffa4677` crate source plus the X11 fix recorded in its `PATCHES.md`; original authors and both license texts retained. |
 | MUI | git dependency `Matari-Audio/MUI` | MIT | |
 | vello 0.10.0 | `vendor/vello` | Apache-2.0 OR MIT | linebender/vello; patches in `vendor/vello/PATCHES.md`. |
 | ncw 0.4.0 | `vendor/ncw` | MIT OR Apache-2.0 | monomadic/ncw `75af0c0`. Test data in `vendor/ncw/tests/data` is part of that crate. |

@@ -128,6 +128,8 @@ moose-params = { path = "vendor/moose-params" }
 moose-derive = { path = "vendor/moose-derive" }
 moose-clap = { path = "vendor/moose-clap" }
 moose-vst3 = { path = "vendor/moose-vst3" }
+# Locked baseview source with an X11 root-reparent visibility fix.
+moose-baseview = { path = "vendor/moose-baseview" }
 
 # MUI's vello with a fix for images vanishing after a partial redraw; see vendor/vello/PATCHES.md.
 [patch."https://github.com/Matari-Audio/MUI"]
@@ -140,7 +142,7 @@ symphonia-format-riff = { path = "vendor/symphonia-format-riff" }
 
 [workspace]
 members = [".", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3"]
-exclude = ["vendor/ni-file", "vendor/ncw", "vendor/vello", "vendor/mui-baseview", "vendor/symphonia-format-riff", "vendor/derpcat-flight-recorder", "vendor/buffr-durable-file"]
+exclude = ["vendor/ni-file", "vendor/ncw", "vendor/vello", "vendor/mui-baseview", "vendor/moose-baseview", "vendor/symphonia-format-riff", "vendor/derpcat-flight-recorder", "vendor/buffr-durable-file"]
 resolver = "3"
 
 # Optimized CI keeps release semantics while avoiding cross-crate ThinLTO.

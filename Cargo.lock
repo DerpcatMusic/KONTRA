@@ -1829,34 +1829,6 @@ dependencies = [
 [[package]]
 name = "moose-baseview"
 version = "0.3.4-moose.1"
-source = "git+https://github.com/Matari-Audio/moose?rev=bffa4677d0b82119d38566ce7e932dc5c463d497#bffa4677d0b82119d38566ce7e932dc5c463d497"
-dependencies = [
- "block2",
- "bytemuck",
- "calloop",
- "dispatch2",
- "dpi",
- "keyboard-types",
- "libc",
- "objc2",
- "objc2-app-kit",
- "objc2-core-foundation",
- "objc2-foundation",
- "objc2-quartz-core",
- "percent-encoding",
- "raw-window-handle",
- "windows 0.62.2",
- "windows-core 0.62.2",
- "windows-sys 0.61.2",
- "x11-dl",
- "x11rb",
- "xkbcommon-dl",
-]
-
-[[package]]
-name = "moose-baseview"
-version = "0.3.4-moose.1"
-source = "git+https://github.com/Matari-Audio/moose#bffa4677d0b82119d38566ce7e932dc5c463d497"
 dependencies = [
  "block2",
  "bytemuck",
@@ -1965,7 +1937,7 @@ version = "7.0.0"
 source = "git+https://github.com/Matari-Audio/moose?rev=bffa4677d0b82119d38566ce7e932dc5c463d497#bffa4677d0b82119d38566ce7e932dc5c463d497"
 dependencies = [
  "log",
- "moose-baseview 0.3.4-moose.1 (git+https://github.com/Matari-Audio/moose?rev=bffa4677d0b82119d38566ce7e932dc5c463d497)",
+ "moose-baseview",
  "moose-core",
  "moose-cpu",
  "moose-gui-types",
@@ -2057,7 +2029,7 @@ dependencies = [
  "hound",
  "keyboard-types",
  "midir",
- "moose-baseview 0.3.4-moose.1 (git+https://github.com/Matari-Audio/moose?rev=bffa4677d0b82119d38566ce7e932dc5c463d497)",
+ "moose-baseview",
  "moose-core",
  "moose-driver",
  "moose-gui",
@@ -2134,7 +2106,7 @@ dependencies = [
  "accesskit_unix",
  "arboard",
  "keyboard-types",
- "moose-baseview 0.3.4-moose.1 (git+https://github.com/Matari-Audio/moose)",
+ "moose-baseview",
  "mui",
  "mui-access",
  "objc",

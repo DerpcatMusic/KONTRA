@@ -45,3 +45,12 @@ surface/adapter pair, so a GPU model alone does not establish the offered modes.
 See [wgpu alpha modes](https://docs.rs/wgpu/30.0.1/wgpu/enum.CompositeAlphaMode.html)
 and [surface capabilities](https://docs.rs/wgpu/30.0.1/wgpu/struct.SurfaceCapabilities.html).
 An alpha-mode change cannot explain a stop before the first GPU-init marker.
+
+The separately patched `moose-baseview` fixes a reproduced visibility-cache
+defect when a shown child moves from an unmapped parent to the root window.
+Before the fix, Xvfb reported the child as viewable but its native frame counter
+stayed at zero. After refreshing ancestry and mapping state, the root-reparent
+test and late-parent-map control both received frames. These original tests use
+no GPU renderer. See [the exact source and patch record](../vendor/moose-baseview/PATCHES.md).
+This establishes that transition's fix, not the cause of an untraced Bitwig or
+standalone incident on another machine.
