@@ -315,6 +315,19 @@ fn redact_token(token: &str) -> String {
 // and the preview. Stop accumulating serialized bytes at that limit before a
 // request; pending evidence is retained without an acknowledgement.
 fn bounded_report_body(value: &impl serde::Serialize, limit: usize) -> Result<Vec<u8>, String> {
+    bounded_json(value, limit, false)
+}
+
+#[cfg(any(target_os = "macos", test))]
+pub(super) fn bounded_pretty_json(value: &impl serde::Serialize, limit: usize) -> Option<String> {
+    String::from_utf8(bounded_json(value, limit, true).ok()?).ok()
+}
+
+fn bounded_json(
+    value: &impl serde::Serialize,
+    limit: usize,
+    pretty: bool,
+) -> Result<Vec<u8>, String> {
     struct Body {
         bytes: Vec<u8>,
         limit: usize,
@@ -337,7 +350,11 @@ fn bounded_report_body(value: &impl serde::Serialize, limit: usize) -> Result<Ve
         bytes: Vec::new(),
         limit,
     };
-    serde_json::to_writer(&mut body, value).map_err(|error| error.to_string())?;
+    if pretty {
+        serde_json::to_writer_pretty(&mut body, value).map_err(|error| error.to_string())?;
+    } else {
+        serde_json::to_writer(&mut body, value).map_err(|error| error.to_string())?;
+    }
     Ok(body.bytes)
 }
 

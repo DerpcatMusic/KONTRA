@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 use std::path::PathBuf;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -514,53 +514,117 @@ fn collect_macos_crash_evidence(
         })
         .collect::<Vec<_>>();
     reports.sort_by_key(|(modified, _)| *modified);
-    let Some(summary) = macos_summary_for_pid(
+    macos_evidence_from_paths(
         pid,
-        reports
-            .into_iter()
-            .rev()
-            .take_while(|_| !stopping.load(Ordering::Acquire))
-            .filter_map(|(_, path)| read_report_file(&path)),
-    ) else {
-        return CrashEvidence::default();
-    };
-    CrashEvidence {
-        disposition: EvidenceDisposition::Crash,
-        signature: selected_signature_lines(
-            &summary,
-            &["exception", "termination", "faultingthread", "signal"],
-        ),
-        text: format!("Correlated macOS diagnostic report:\n{summary}"),
+        host_process,
+        reports.into_iter().rev().map(|(_, path)| path),
+        stopping,
+    )
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_evidence_from_paths(
+    pid: u32,
+    host_process: &str,
+    reports: impl IntoIterator<Item = PathBuf>,
+    stopping: &AtomicBool,
+) -> CrashEvidence {
+    let mut omitted = false;
+    for path in reports {
+        if stopping.load(Ordering::Acquire) {
+            return CrashEvidence::default();
+        }
+        let (report, original_bytes, original_hash) = match read_report_file(&path, stopping) {
+            Ok(report) => report,
+            Err(_) => {
+                omitted = true;
+                continue;
+            }
+        };
+        if !macos_report_matches_host(&report, host_process) {
+            continue;
+        }
+        let Some(mut summary) = macos_summary_for_pid(pid, [report]) else {
+            continue;
+        };
+        match super::crash::preserve_original_file(
+            &path,
+            "macos-native-report-exact-pid",
+            stopping,
+            Some((original_bytes, original_hash.as_str())),
+        ) {
+            Ok(status) => {
+                let _ = write!(summary, "\n{status}");
+            }
+            Err(error) => {
+                let _ = write!(
+                    summary,
+                    "\nComplete native original could not be privately archived ({error}); the OS source remains in place."
+                );
+            }
+        }
+        if omitted {
+            summary.push_str("\nAdditional unreadable/oversized matching-name candidates were omitted without PID validation; no content or stack from those candidates is included.");
+        }
+        return CrashEvidence {
+            disposition: EvidenceDisposition::Crash,
+            signature: selected_signature_lines(
+                &summary,
+                &["exception", "termination", "faultingthread", "signal"],
+            ),
+            text: format!("Correlated macOS diagnostic report:\n{summary}"),
+        };
     }
+    CrashEvidence {
+        text: if omitted {
+            "Native candidate evidence was unreadable or exceeded the 8 MiB buffered-read limit. No complete report could be parsed and PID-confirmed; no stack was fabricated or candidate contents uploaded. Complete oversized candidates remain in private local archival storage when archival succeeds.".into()
+        } else {
+            String::new()
+        },
+        ..Default::default()
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_report_matches_host(text: &str, host: &str) -> bool {
+    let actual = if text.trim_start().starts_with('{') {
+        let Some((_, body)) = text.split_once('\n') else {
+            return false;
+        };
+        let Ok(body) = serde_json::from_str::<serde_json::Value>(body) else {
+            return false;
+        };
+        body.get("procName")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    } else {
+        text.lines()
+            .find_map(|line| line.strip_prefix("Process:"))
+            .and_then(|value| value.rsplit_once('['))
+            .map(|(name, _)| name.trim().to_owned())
+            .unwrap_or_default()
+    };
+    let expected = comparable_process_name(host);
+    !expected.is_empty() && comparable_process_name(&actual) == expected
 }
 
 #[cfg(any(target_os = "macos", test))]
 fn macos_summary_for_pid(pid: u32, reports: impl IntoIterator<Item = String>) -> Option<String> {
     reports.into_iter().find_map(|report| {
         let (report_pid, summary) = macos_crash_summary(&report)?;
-        (report_pid == u64::from(pid)).then(|| {
-            let full = if report.trim_start().starts_with('{') {
-                // .ips stores the body on one compact JSON line. Pretty-print before
-                // token redaction so a personal path cannot hide every stack frame.
-                report
-                    .split_once('\n')
-                    .and_then(|(header, body)| {
-                        let mut header: serde_json::Value = serde_json::from_str(header).ok()?;
-                        let mut body: serde_json::Value = serde_json::from_str(body).ok()?;
-                        super::sanitize_automatic(&mut header);
-                        super::sanitize_automatic(&mut body);
-                        Some(format!(
-                            "{}\n{}",
-                            serde_json::to_string_pretty(&header).ok()?,
-                            serde_json::to_string_pretty(&body).ok()?
-                        ))
-                    })
-                    .unwrap_or_else(|| report.clone())
-            } else {
-                report.clone()
-            };
-            format!("{summary}\n\nComplete macOS report:\n{full}")
-        })
+        if report_pid != u64::from(pid) { return None; }
+        if !report.trim_start().starts_with('{') { return Some(bounded_native_text(&summary)); }
+        // Sanitize the parsed .ips before bounded pretty rendering so a personal
+        // path cannot cause token redaction to hide the actual stack frames.
+        let full = report.split_once('\n').and_then(|(header, body)| {
+            let mut header:serde_json::Value = serde_json::from_str(header).ok()?;
+            let mut body:serde_json::Value = serde_json::from_str(body).ok()?;
+            super::sanitize_automatic(&mut header);
+            super::sanitize_automatic(&mut body);
+            Some(format!("{}\n{}",super::report::bounded_pretty_json(&header,1024*1024)?,super::report::bounded_pretty_json(&body,1024*1024)?))
+        }).unwrap_or_else(|| "PARTIAL NATIVE REPORT: complete JSON could not be rendered within the bounded display budget. Validated summary is included; complete raw original remains local.".into());
+        Some(format!("{summary}\n\nCaptured macOS report:\n{full}"))
     })
 }
 
@@ -577,8 +641,15 @@ fn macos_crash_summary(text: &str) -> Option<(u64, String)> {
             .trim()
             .parse::<u64>()
             .ok()?;
+        if text.lines().any(|line| {
+            line.starts_with("Exception Note:")
+                && (line.contains("NON-FATAL") || line.contains("SIMULATED"))
+        }) {
+            return None;
+        }
         if !text.lines().any(|line| {
-            line.starts_with("Exception Type:") || line.starts_with("Termination Reason:")
+            line.strip_prefix("Exception Type:")
+                .is_some_and(|value| !value.trim().is_empty())
         }) {
             return None;
         }
@@ -588,6 +659,38 @@ fn macos_crash_summary(text: &str) -> Option<(u64, String)> {
     let header = serde_json::from_str::<serde_json::Value>(header).ok()?;
     let report = serde_json::from_str::<serde_json::Value>(report).ok()?;
     let pid = report.get("pid")?.as_u64()?;
+    // Apple documents type309 as this crash schema and explicitly marks
+    // nonfatal/simulated conditions. PID or termination namespace alone cannot
+    // establish a fatal crash. See the primary reference in README.
+    if header.get("bug_type").and_then(serde_json::Value::as_str) != Some("309")
+        && header.get("bug_type").and_then(serde_json::Value::as_u64) != Some(309)
+    {
+        return None;
+    }
+    for value in [&header, &report] {
+        for key in ["isNonFatal", "isSimulated", "is_non_fatal", "is_simulated"] {
+            if let Some(flag) = value.get(key) {
+                let explicitly_false = flag.as_bool() == Some(false)
+                    || flag.as_i64() == Some(0)
+                    || flag
+                        .as_str()
+                        .is_some_and(|v| v.eq_ignore_ascii_case("false") || v == "0");
+                if !explicitly_false {
+                    return None;
+                }
+            }
+        }
+    }
+    if !report.get("exception").is_some_and(|exception| {
+        ["type", "signal"].into_iter().any(|key| {
+            exception
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|v| !v.trim().is_empty())
+        })
+    }) {
+        return None;
+    }
     let mut summary = serde_json::Map::new();
     for key in [
         "app_name",
@@ -604,6 +707,8 @@ fn macos_crash_summary(text: &str) -> Option<(u64, String)> {
     for key in [
         "procName",
         "pid",
+        "captureTime",
+        "procLaunch",
         "cpuType",
         "translated",
         "uptime",
@@ -662,9 +767,24 @@ fn macos_crash_summary(text: &str) -> Option<(u64, String)> {
             serde_json::Value::Array(frames),
         );
     }
-    serde_json::to_string_pretty(&summary)
-        .ok()
-        .map(|summary| (pid, summary))
+    let mut summary = serde_json::Value::Object(summary);
+    super::sanitize_automatic(&mut summary);
+    if let Some(rendered) = super::report::bounded_pretty_json(&summary, 1024 * 1024) {
+        return Some((pid, rendered));
+    }
+    // Keep the actual exception and faulting-frame context when large optional
+    // diagnostic sections exceed the display budget. Never reconstruct frames.
+    for key in ["asi", "vmSummary", "ktriageinfo", "lastExceptionBacktrace"] {
+        summary.as_object_mut().unwrap().remove(key);
+    }
+    let rendered = super::report::bounded_pretty_json(&summary,1024*1024)
+        .unwrap_or_else(|| format!("Validated native crash PID: {pid}. Exception/frame display also exceeded its budget; no reconstructed stack is included."));
+    Some((
+        pid,
+        format!(
+            "PARTIAL NATIVE SUMMARY: oversized optional diagnostic sections were omitted; complete raw original remains local.\n{rendered}"
+        ),
+    ))
 }
 
 #[cfg(target_os = "windows")]
@@ -733,14 +853,36 @@ fn collect_windows_crash_evidence(
         })
         .collect::<Vec<_>>();
     reports.sort_by_key(|(modified, _)| *modified);
-    if let Some((_, path)) = reports.pop()
-        && let Some(text) = read_report_file(&path)
-    {
-        append_evidence(
-            &mut evidence.text,
-            "Windows Error Reporting record matched to the PID-specific dump time",
-            &text,
-        );
+    if let Some((_, path)) = reports.pop() {
+        match read_report_file(&path, stopping) {
+            Ok((text, original_bytes, original_hash))
+                if windows_wer_matches_host(&text, host_process) =>
+            {
+                append_evidence(
+                    &mut evidence.text,
+                    "Windows Error Reporting record matched to the PID-specific dump time and application",
+                    &bounded_native_text(&text),
+                );
+                if let Ok(status) = super::crash::preserve_original_file(
+                    &path,
+                    "windows-wer-matched-application-and-dump",
+                    stopping,
+                    Some((original_bytes, original_hash.as_str())),
+                ) {
+                    append_evidence(&mut evidence.text, "Private original", &status);
+                }
+            }
+            Ok(_) => append_evidence(
+                &mut evidence.text,
+                "WER omitted",
+                "The candidate did not identify the recorded application; its contents were not included.",
+            ),
+            Err(_) => append_evidence(
+                &mut evidence.text,
+                "PARTIAL NATIVE REPORT",
+                "WER text could not be completely read within the 8 MiB limit. No WER exception or stack was inferred; the PID-specific binary dump still confirms the crash. Oversized WER candidates remain private when archival succeeds.",
+            ),
+        }
     }
     evidence
 }
@@ -791,11 +933,75 @@ fn within_incident_window(modified: u64, started_at: u64, ended_at: u64) -> bool
         .contains(&modified)
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-fn read_report_file(path: &Path) -> Option<String> {
-    std::fs::read(path)
-        .ok()
-        .map(|bytes| decode_report_text(&bytes))
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+fn read_report_file(path: &Path, stopping: &AtomicBool) -> Result<(String, u64, String), String> {
+    if stopping.load(Ordering::Acquire) {
+        return Err("Native collection stopped".into());
+    }
+    match super::read_bounded_file(path, super::LOCAL_REPORT_BYTES) {
+        Ok(Some(bytes)) => Ok((
+            decode_report_text(&bytes),
+            bytes.len() as u64,
+            blake3::hash(&bytes).to_hex().to_string(),
+        )),
+        Ok(None) => {
+            let status = super::crash::preserve_original_file(path, "oversized-native-candidate-unparsed-unverified", stopping, None)
+                .unwrap_or_else(|error| format!("Oversized native candidate remains in OS storage; private archival failed: {error}"));
+            crate::diagnostics::event(
+                crate::diagnostics::LogLevel::Warning,
+                "support",
+                "oversized_native_candidate_unparsed",
+                serde_json::json!({"reason":format!("{status} Candidate contents were not parsed or used to confirm a crash, and were not uploaded.")}),
+            );
+            Err(status)
+        }
+        Err(error) => Err(format!("Native candidate read failed: {error}")),
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+fn bounded_native_text(text: &str) -> String {
+    const LIMIT: usize = 1024 * 1024;
+    if text.len() <= LIMIT {
+        return text.into();
+    }
+    let mut head = LIMIT / 2;
+    while !text.is_char_boundary(head) {
+        head -= 1;
+    }
+    let mut tail = text.len() - LIMIT / 2;
+    while !text.is_char_boundary(tail) {
+        tail += 1;
+    }
+    format!(
+        "{}\n[PARTIAL NATIVE REPORT: {} decoded UTF-8 bytes omitted from the middle; these are actual prefix/suffix bytes, not reconstructed frames. Complete original remains local.]\n{}",
+        &text[..head],
+        tail - head,
+        &text[tail..]
+    )
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_wer_matches_host(text: &str, host: &str) -> bool {
+    let expected = comparable_process_name(host);
+    let mut found = false;
+    for line in text.lines() {
+        if let Some((key, value)) = line.split_once('=') {
+            if matches!(key.trim(), "AppPath" | "AppName") {
+                let basename = value
+                    .trim()
+                    .trim_matches('"')
+                    .rsplit(['\\', '/'])
+                    .next()
+                    .unwrap_or_default();
+                if expected.is_empty() || comparable_process_name(basename) != expected {
+                    return false;
+                }
+                found = true;
+            }
+        }
+    }
+    found
 }
 
 /// Windows Error Reporting writes `Report.wer` as UTF-16LE with a byte-order
@@ -954,8 +1160,196 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_capture_keeps_full_private_originals_without_confirming_oversized_or_wrong_pid_candidates()
+     {
+        const CHILD: &str = "KONTRA_NATIVE_CAPTURE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact","support::platform::tests::native_capture_keeps_full_private_originals_without_confirming_oversized_or_wrong_pid_candidates","--test-threads=1"])
+                .env(CHILD,"1").env("KONTRA_REPORT_DIR",directory.path()).env("KONTRA_DISABLE_NETWORK","1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let oversized = directory.path().join("Host-oversized.crash");
+        let raw = format!(
+            "Process: Host [42]\nException Type: EXC_BAD_ACCESS\n{}",
+            "unverified-private-candidate ".repeat(super::super::LOCAL_REPORT_BYTES / 20)
+        );
+        assert!(raw.len() > super::super::LOCAL_REPORT_BYTES);
+        std::fs::write(&oversized, &raw).unwrap();
+        let wrong_pid = directory.path().join("Host-wrong.crash");
+        std::fs::write(
+            &wrong_pid,
+            "Process: Host [43]\nException Type: EXC_BAD_ACCESS\nwrong-pid-private-frames",
+        )
+        .unwrap();
+        let matching = directory.path().join("Host-matching.crash");
+        let matching_raw = "Process: Host [42]\nException Type: EXC_BAD_ACCESS\n0 KONTRA authored_native_frame + 12";
+        std::fs::write(&matching, matching_raw).unwrap();
+        let stopping = AtomicBool::new(false);
+        let unconfirmed = macos_evidence_from_paths(
+            42,
+            "Host",
+            [oversized.clone(), wrong_pid.clone()],
+            &stopping,
+        );
+        assert_eq!(unconfirmed.disposition, EvidenceDisposition::None);
+        assert!(
+            unconfirmed
+                .text
+                .contains("No complete report could be parsed and PID-confirmed")
+        );
+        assert!(
+            !unconfirmed.text.contains("unverified-private-candidate")
+                && !unconfirmed.text.contains("wrong-pid-private-frames")
+        );
+        let confirmed = macos_evidence_from_paths(
+            42,
+            "Host",
+            [oversized.clone(), wrong_pid, matching.clone()],
+            &stopping,
+        );
+        assert_eq!(confirmed.disposition, EvidenceDisposition::Crash);
+        assert!(
+            confirmed.text.contains("authored_native_frame + 12")
+                && confirmed.text.contains("omitted without PID validation")
+        );
+        assert!(
+            !confirmed.text.contains("unverified-private-candidate")
+                && !confirmed.text.contains("wrong-pid-private-frames")
+        );
+        let originals = super::super::support_cache_path()
+            .parent()
+            .unwrap()
+            .join("crash-reports/originals");
+        for bytes in [raw.as_bytes(), matching_raw.as_bytes()] {
+            let hash = blake3::hash(bytes).to_hex().to_string();
+            let archive = originals.join(format!("{hash}.raw"));
+            assert_eq!(std::fs::read(&archive).unwrap(), bytes);
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(archive.with_extension("json")).unwrap())
+                    .unwrap();
+            assert_eq!(manifest["automatically_uploaded"], false);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    std::fs::metadata(&archive).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            }
+        }
+        assert_eq!(std::fs::read(&oversized).unwrap(), raw.as_bytes());
+        let (_, bytes, hash) = read_report_file(&matching, &stopping).unwrap();
+        std::fs::write(&matching, b"different private source after parsing").unwrap();
+        assert!(
+            super::super::crash::preserve_original_file(
+                &matching,
+                "macos-native-report-exact-pid",
+                &stopping,
+                Some((bytes, &hash))
+            )
+            .is_err()
+        );
+        assert_eq!(
+            macos_evidence_from_paths(42, "Host", [matching], &AtomicBool::new(true)).disposition,
+            EvidenceDisposition::None
+        );
+    }
+
+    #[test]
+    fn bounded_native_rendering_is_explicit_and_windows_wer_requires_the_actual_application() {
+        let text = format!(
+            "Exception Type: EXC_BAD_ACCESS\n{}\nactual last frame",
+            "😀".repeat(300_000)
+        );
+        let bounded = bounded_native_text(&text);
+        assert!(
+            bounded.contains("PARTIAL NATIVE REPORT")
+                && bounded.contains("Exception Type: EXC_BAD_ACCESS")
+                && bounded.contains("actual last frame")
+        );
+        assert!(bounded.len() < 1024 * 1024 + 512);
+        assert!(
+            super::super::report::bounded_pretty_json(&serde_json::json!({"payload":text}), 128)
+                .is_none()
+        );
+        assert!(windows_wer_matches_host(
+            "AppPath=C:\\Program Files\\REAPER.exe\nAppName=reaper.exe",
+            "reaper"
+        ));
+        assert!(!windows_wer_matches_host(
+            "AppPath=C:/Host/StudioOne.exe",
+            "reaper"
+        ));
+        assert!(!windows_wer_matches_host(
+            "AppName=reaper.exe\nAppPath=C:/Host/Other.exe",
+            "reaper"
+        ));
+        assert!(!windows_wer_matches_host("EventType=APPCRASH", "reaper"));
+        let header = serde_json::json!({"bug_type":"309"});
+        let body = serde_json::json!({"pid":42,"procName":"Host","exception":{"type":"EXC_BAD_ACCESS","signal":"SIGSEGV"},"vmSummary":"x".repeat(1024*1024+1),"faultingThread":0,"threads":[{"frames":[{"symbol":"actual_authored_frame"}]}]});
+        let (_, summary) = macos_crash_summary(&format!("{header}\n{body}")).unwrap();
+        assert!(
+            summary.contains("PARTIAL NATIVE SUMMARY")
+                && summary.contains("actual_authored_frame")
+                && summary.contains("EXC_BAD_ACCESS")
+        );
+    }
+
+    #[test]
+    fn apple_crash_schema_excludes_normal_stackshot_nonfatal_and_simulated_reports() {
+        let header = serde_json::json!({"app_name":"REAPER","bug_type":"309"});
+        let body = serde_json::json!({"pid":42,"procName":"REAPER","exception":{"type":"EXC_BAD_ACCESS","signal":"SIGSEGV"},"termination":{"namespace":"SIGNAL","code":11},"faultingThread":0,"threads":[{"frames":[{"symbol":"authored_native_crash"}]}]});
+        let report =
+            |header: &serde_json::Value, body: &serde_json::Value| format!("{header}\n{body}");
+        assert!(
+            macos_crash_summary(&report(&header, &body))
+                .unwrap()
+                .1
+                .contains("authored_native_crash")
+        );
+        assert!(macos_report_matches_host(&report(&header, &body), "reaper"));
+        assert!(!macos_report_matches_host(
+            &report(&header, &body),
+            "StudioOne"
+        ));
+        for flag in ["isNonFatal", "isSimulated"] {
+            for value in [
+                serde_json::json!(true),
+                serde_json::json!("true"),
+                serde_json::json!(1),
+            ] {
+                let mut diagnostic = body.clone();
+                diagnostic[flag] = value;
+                assert!(macos_crash_summary(&report(&header, &diagnostic)).is_none());
+            }
+        }
+        let mut noncrash = body.clone();
+        noncrash.as_object_mut().unwrap().remove("exception");
+        noncrash["termination"] = serde_json::json!({"namespace":"EXIT","code":0});
+        assert!(macos_crash_summary(&report(&header, &noncrash)).is_none());
+        let mut stackshot = header.clone();
+        stackshot["bug_type"] = serde_json::json!("288");
+        assert!(macos_crash_summary(&report(&stackshot, &body)).is_none());
+        for note in [
+            "NON-FATAL CONDITION (this is NOT a crash)",
+            "SIMULATED (this is NOT a crash)",
+        ] {
+            assert!(
+                macos_crash_summary(&format!(
+                    "Process: REAPER [42]\nException Type: EXC_RESOURCE\nException Note: {note}\n"
+                ))
+                .is_none()
+            );
+        }
+    }
+
+    #[test]
     fn compact_macos_artifact_keeps_frames_while_removing_personal_fields() {
-        let report = r#"{"app_name":"REAPER"}
+        let report = r#"{"app_name":"REAPER","bug_type":"309"}
 {"pid":7,"crashReporterKey":"personal-device-id","userID":501,"faultingThread":0,"threads":[{"frames":[{"symbol":"kontra_render","imageIndex":0}]}],"usedImages":[{"name":"KONTRA","path":"/Users/private/plugins/KONTRA.vst3"}],"exception":{"type":"EXC_BAD_ACCESS"}}"#;
         let full = macos_summary_for_pid(7, [report.to_owned()]).unwrap();
         assert!(full.contains("kontra_render") && full.contains("EXC_BAD_ACCESS"));
@@ -1011,12 +1405,16 @@ mod tests {
     #[test]
     fn macos_newer_wrong_pid_does_not_shadow_exact_pid() {
         let wrong = "{\"app_name\":\"KONTRA\"}\n{\"pid\":999,\"procName\":\"KONTRA\"}";
-        let exact = "{\"app_name\":\"KONTRA\"}\n{\"pid\":873,\"procName\":\"KONTRA\"}";
+        let exact = "{\"app_name\":\"KONTRA\",\"bug_type\":\"309\"}\n{\"pid\":873,\"procName\":\"KONTRA\",\"exception\":{\"type\":\"EXC_BAD_ACCESS\",\"signal\":\"SIGSEGV\"}}";
 
         let summary = macos_summary_for_pid(873, [wrong.to_string(), exact.to_string()])
             .expect("older exact-PID report should be selected");
 
         assert!(summary.contains("\"pid\": 873"));
+        assert!(
+            macos_crash_summary("{\"app_name\":\"KONTRA\"}\n{\"pid\":873,\"procName\":\"KONTRA\"}")
+                .is_none()
+        );
     }
 
     #[test]
