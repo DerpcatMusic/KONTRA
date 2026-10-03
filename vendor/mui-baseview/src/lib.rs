@@ -304,6 +304,7 @@ pub struct Handler<V> {
     timing: Option<timing::Capture>,
     // KONTAKTO patch: one startup decision, with no subsequent log allocation.
     first_tick: bool,
+    first_present: bool,
 }
 
 impl<V: View> Handler<V> {
@@ -334,6 +335,7 @@ impl<V: View> Handler<V> {
             driver: Driver::new(size, scale, Box::new(Clipboard::default())),
             timing,
             first_tick: false,
+            first_present: false,
         }
     }
 
@@ -486,7 +488,21 @@ impl<V: View> Handler<V> {
             }
             if let Some(sample) = sample { sample.resize_ns = timing::elapsed(resize_at); }
             let present_at = sample.as_ref().map(|_| Instant::now());
+            let first_present = !std::mem::replace(&mut self.first_present, true);
+            if first_present {
+                self.requests.startup_log("mui-baseview: first present entering; acquiring, rendering and submitting");
+            }
             let presented = gpu.present(&scene, Affine::scale(self.driver.ui_scale()));
+            if first_present {
+                let outcome = match &presented {
+                    Ok(Frame::Presented(_)) => "presented",
+                    Ok(Frame::Current) => "current",
+                    Ok(Frame::Skipped) => "skipped",
+                    Ok(Frame::SurfaceLost) => "surface_lost",
+                    Err(_) => "error",
+                };
+                self.requests.startup_log(&format!("mui-baseview: first present returned outcome={outcome}"));
+            }
             // Host rebuilds a lost device inside present. Its new callback
             // must reach the same sink before the next frame is submitted.
             hook_gpu_errors(gpu, &self.requests, &mut self.gpu_log_generation);

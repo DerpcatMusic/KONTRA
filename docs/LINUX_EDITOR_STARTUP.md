@@ -13,11 +13,21 @@ surface configuration. Ordinary frames do not repeat these markers.
 | `first on_frame entered; borrowing handler` | Baseview called the adapter, before borrowing its handler or locking the model. | Look for `handler already borrowed` or the first-tick marker. |
 | `first tick entering` | The handler reached its frame function, with the recorded physical size and scale. | The next marker identifies an unavailable handle, hidden window, zero size, pending retry, or GPU initialization. |
 | `GPU init requested` | The renderer entered GPU initialization. | Subsequent markers distinguish instance/surface creation from adapter/device/renderer creation. |
+| `GPU ready` | Adapter/device selection, surface configuration and renderer creation returned successfully. | Look for entry to the first presentation call. An absent entry can still mean scene preparation or resizing has not completed. |
+| `first present entering` | A scene reached MUI's presentation call, before acquiring a texture, rendering or submitting it. | Look for its return marker or the existing panic/GPU error diagnostics. |
+| `first present returned outcome=…` | The first call returned: `presented`, `current`, `skipped`, `surface_lost`, or `error`. Only `presented` completed this call's rendering and queue presentation path. | A successful path does not establish visible pixels or a working compositor. `skipped` includes occlusion, timeout, outdated surface and device recovery; it does not identify which one occurred. |
 
 Callbacks and show completion run on different threads, so nearby markers can
 interleave. A successful show request does not establish that every ancestor is
 mapped. A journal excerpt ending immediately after startup does not establish a
 long-running stall.
+
+GPU failures retain MUI's typed reason: `GPU adapter`, `GPU device`, or `GPU
+surface` (including `no non-sRGB UNORM surface format`). A stall inside the
+combined adapter/device/renderer constructor is not separated into its internal
+steps by these markers; inspect that thread only if the completed startup trace
+actually reaches this boundary. The offered formats and alpha modes are not
+logged, so these diagnostics do not establish this machine's capability list.
 
 For a diagnostic artifact, include these changes in one normal Linux build and
 retain its `build-info.json` and artifact digest. Do not rebuild once for each
