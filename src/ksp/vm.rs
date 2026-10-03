@@ -463,7 +463,6 @@ fn element(m: &mut Machine, pc: usize, v: VarId, index: i32) -> Option<usize> {
 /// callback goes on. Dolce and Areia divide 0.0 by 0.0 in
 /// `on persistence_changed` on every load; aborting there skipped 1,400 lines.
 pub const NONFINITE: &str = "Nonfinite real result (kept)";
-pub const DIV_ZERO: &str = "Integer division by zero (0)";
 
 /// Run until the callback finishes, suspends, faults or exhausts `fuel`.
 pub fn exec(m: &mut Machine, fuel: &mut u64) -> Exec<Yield> {
@@ -682,23 +681,15 @@ fn step(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> 
             Op::IAdd => int2!(|a, b| a.wrapping_add(b)),
             Op::ISub => int2!(|a, b| a.wrapping_sub(b)),
             Op::IMul => int2!(|a, b| a.wrapping_mul(b)),
-            // Integer division or modulo by zero yields 0 and the callback goes
-            // on, as in Kontakt: Audio Imperia's legato divides the velocity by
-            // an off-by-default split switch on every note, meaning voice 0.
+            // Kontakt's integer evaluator returns 0 silently for a zero divisor.
             Op::IDiv => {
                 let b = s.int();
                 let a = s.int();
-                if b == 0 {
-                    m.env.fault(m.slot.index, *pc as u32, DIV_ZERO);
-                }
                 s.ints.push(if b == 0 { 0 } else { a.wrapping_div(b) });
             }
             Op::IMod => {
                 let b = s.int();
                 let a = s.int();
-                if b == 0 {
-                    m.env.fault(m.slot.index, *pc as u32, DIV_ZERO);
-                }
                 s.ints.push(if b == 0 { 0 } else { a.wrapping_rem(b) });
             }
             Op::INeg => {
@@ -1047,17 +1038,11 @@ fn hot(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> {
             Op::IDiv => {
                 let b = pop!();
                 let a = pop!();
-                if b == 0 {
-                    env.fault(slot, p as u32, DIV_ZERO);
-                }
                 s.push(if b == 0 { 0 } else { a.wrapping_div(b) });
             }
             Op::IMod => {
                 let b = pop!();
                 let a = pop!();
-                if b == 0 {
-                    env.fault(slot, p as u32, DIV_ZERO);
-                }
                 s.push(if b == 0 { 0 } else { a.wrapping_rem(b) });
             }
             Op::INeg => {

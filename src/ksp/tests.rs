@@ -811,9 +811,10 @@ fn computed_ui_and_execution_limits() {
     let unknown = initialize("on init\ndeclare ui_label $l(1,1)\nunknown_function(1)\nset_text($l, unknown_value($l) & get_unknown_name() & \"!\")\nend on", 0, 0).unwrap();
     assert_eq!(prop(&unknown, 0, "$CONTROL_PAR_TEXT"), "0!");
     assert!(unknown.diagnostics.iter().any(|d| d.starts_with("Unsupported KSP function: unknown_function (line 3)")), "{:?}", unknown.diagnostics);
-    // Integer division by zero is 0, reported, and init goes on.
-    let div = initialize("on init\ndeclare $z\ndeclare $a := 1/$z\nend on", 0, 0).unwrap();
-    assert!(div.diagnostics.iter().any(|d| d.contains("division by zero")));
+    // Integer zero division returns 0 silently, and init goes on.
+    let div = initialize("on init\ndeclare $z\ndeclare $a := 1/$z\ndeclare ui_label $result(1,1)\nset_text($result,$a)\nend on", 0, 0).unwrap();
+    assert_eq!(prop(&div,0,"$CONTROL_PAR_TEXT"),"0");
+    assert!(div.diagnostics.is_empty(),"{:?}",div.diagnostics);
     // Stored strings saturate at the documented bound; growth itself is
     // valid. The separate runaway above verifies the instruction guard.
     let bounded = initialize(
@@ -1242,13 +1243,90 @@ fn legato_retriggers_on_overlapping_notes() {
 /// A voice index divided by an off switch: integer division and modulo by zero
 /// give 0 and the callback goes on to play, as in Kontakt.
 #[test]
+fn integer_division_and_modulo_normalize_booleans_without_faulting_or_losing_waited_events() {
+    // Native signed integer arithmetic: truncate toward zero, remainder keeps
+    // the numerator's sign, and zero divisors return zero without warnings.
+    for reference in [false,true] {
+        super::vm::REFERENCE.set(reference);
+        for (value,boolean,quotient,remainder) in [(0,0,0,0),(2,1,0,2),(-2,1,0,-2),(7,1,2,1),(-7,1,-2,-1)] {
+            let source=format!(r#"on init
+ declare $value := {value}
+ declare $zero
+ declare $child
+ declare $before_callback
+ declare $after_callback
+ declare $before_event
+ declare $after_event
+ declare $after_channel
+ declare $resumed
+ declare ui_label $result(1,1)
+ make_persistent($before_callback)
+ make_persistent($after_callback)
+ make_persistent($before_event)
+ make_persistent($after_event)
+ make_persistent($after_channel)
+ make_persistent($resumed)
+end on
+on note
+ ignore_event($EVENT_ID)
+ set_text($result,($value/$value) & ":" & (1-($value/$value)) & ":" & ($value/3) & ":" & ($value mod 3) & ":" & ($value/$zero) & ":" & ($value mod $zero))
+ $before_callback := $NI_CALLBACK_ID
+ $before_event := $EVENT_ID
+ $child := play_note(72,100,0,10000)
+ wait(1000)
+ $after_callback := $NI_CALLBACK_ID
+ $after_event := $EVENT_ID
+ $after_channel := $MIDI_CHANNEL
+ inc($resumed)
+ note_off($child)
+end on
+on release
+ ignore_event($EVENT_ID)
+end on"#);
+            let downstream="on init\ndeclare $released\ndeclare $channel\nmake_persistent($released)\nmake_persistent($channel)\nend on\non release\ninc($released)\n$channel := $MIDI_CHANNEL\nend on";
+            let mut rig=Rig::new(&[&source,downstream]);
+            rig.engine.calls.reserve(64);
+            let mut start=|| {
+                rig.rt.set_midi_channel(7);
+                rig.on(0,60).off(0,60);
+                rig.rt.set_midi_channel(12);
+                rig.block(47);
+            };
+            #[cfg(feature="plugin")]
+            assert_eq!(crate::plugin::tests::allocations(||start()),0);
+            #[cfg(not(feature="plugin"))]
+            start();
+            let saved=rig.rt.persistence();
+            assert_eq!(saved[0]["$resumed"],Value::Int(0));
+            assert_eq!(saved[1]["$released"],Value::Int(0));
+            assert_eq!(prop(&rig.rt.interface(0),0,"$CONTROL_PAR_TEXT"),format!("{boolean}:{}:{quotient}:{remainder}:0:0",1-boolean));
+            // Explicit child release must cancel its later fixed-duration end.
+            let mut resume=|| {rig.block(2).block(512);};
+            #[cfg(feature="plugin")]
+            assert_eq!(crate::plugin::tests::allocations(||resume()),0);
+            #[cfg(not(feature="plugin"))]
+            resume();
+            let saved=rig.rt.persistence();
+            assert_eq!(saved[0]["$before_callback"],saved[0]["$after_callback"]);
+            assert_eq!(saved[0]["$before_event"],saved[0]["$after_event"]);
+            assert_eq!(saved[0]["$after_channel"],Value::Int(7));
+            assert_eq!(saved[0]["$resumed"],Value::Int(1));
+            assert_eq!(saved[1]["$released"],Value::Int(1));
+            assert_eq!(saved[1]["$channel"],Value::Int(7));
+            assert_eq!(rig.log(),["play 72@0 v1 [0, 1, 2]","off v1@48"]);
+            assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+        }
+    }
+    super::vm::REFERENCE.set(false);
+}
+
+#[test]
 fn integer_division_by_zero_yields_zero_and_continues() {
     let script = "on init\ndeclare $split := 0\ndeclare %prev[4] := (-1)\ndeclare $voice\nend on\non note\nignore_event($EVENT_ID)\n$voice := $EVENT_VELOCITY / (128 / 2 * $split) + $EVENT_NOTE mod $split\nif (%prev[$voice] = -1)\n%prev[$voice] := $EVENT_NOTE\nplay_note($EVENT_NOTE, $EVENT_VELOCITY, 0, -1)\nend if\nend on";
     let mut rig = Rig::new(&[script]);
     rig.on(0, 60).block(16);
     assert_eq!(rig.log(), ["play 60@0 v1 [0, 1, 2]"]);
-    let d = rig.rt.diagnostics();
-    assert!(d.iter().all(|l| l.contains("division by zero")), "{d:?}");
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
 }
 
 #[test]
