@@ -858,7 +858,7 @@ mod tests {
             assert_eq!(persisted[0]["$signed"], Value::Int(500000));
             let mut reference = create(group(raw(None, bypass, false)));
             let (mut a, mut ar, mut b, mut br) = ([0.; 128], [0.; 128], [0.; 128], [0.; 128]);
-            assert_eq!(crate::plugin::tests::allocations(|| {
+            assert_eq!(crate::test_support::allocations(|| {
                 live.ui_control(0, 0, 850000);
                 live.note_on(0, 60, 127); reference.note_on(0, 60, 127);
                 for _ in 0..8 {

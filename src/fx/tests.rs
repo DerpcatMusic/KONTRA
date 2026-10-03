@@ -1178,7 +1178,7 @@ fn legacy_reverb_saved_engine_rack_tail_bypass_and_resume_without_heap() {
     };
     let(mut wet,mut dry)=(make(false),make(true));
     let(mut actual_l,mut actual_r,mut dry_l,mut dry_r)=(vec![0.0;4096],vec![0.0;4096],vec![0.0;4096],vec![0.0;4096]);
-    assert_eq!(crate::plugin::tests::allocations(|| {
+    assert_eq!(crate::test_support::allocations(|| {
         wet.note_on(0,60,127);dry.note_on(0,60,127);
         for i in (0..4096).step_by(128) {
             wet.render(&mut actual_l[i..i+128],&mut actual_r[i..i+128]);
@@ -1197,12 +1197,12 @@ fn legacy_reverb_saved_engine_rack_tail_bypass_and_resume_without_heap() {
     assert!(actual_l.iter().any(|v|v.abs()>1e-5));
     assert_eq!(dry.fx().param(Rack::Insert,0,FxParam::Bypass),Some(1.0));
     let mut l=[0.0;128];let mut r=[0.0;128];
-    assert_eq!(crate::plugin::tests::allocations(|| {
+    assert_eq!(crate::test_support::allocations(|| {
         wet.ui_control(0,0,1);wet.render(&mut l,&mut r);
     }),0);
     assert_eq!(wet.fx().param(Rack::Insert,0,FxParam::Bypass),Some(1.0));
     assert!(l.iter().chain(&r).all(|v|*v==0.0));
-    assert_eq!(crate::plugin::tests::allocations(|| {
+    assert_eq!(crate::test_support::allocations(|| {
         wet.ui_control(0,0,0);wet.render(&mut l,&mut r);
     }),0);
     assert_eq!(wet.fx().param(Rack::Insert,0,FxParam::Bypass),Some(0.0));
@@ -1230,14 +1230,14 @@ fn legacy_reverb_saved_engine_rack_tail_bypass_and_resume_without_heap() {
         for block in 0..40 {
             al.fill(0.0);ar.fill(0.0);rl.fill(0.0);rr.fill(0.0);
             if block==0 {al[0]=1.0;rl[0]=1.0;}
-            assert_eq!(crate::plugin::tests::allocations(|| {drive(&mut actual,&mut al,&mut ar);drive(&mut reference,&mut rl,&mut rr);}),0);
+            assert_eq!(crate::test_support::allocations(|| {drive(&mut actual,&mut al,&mut ar);drive(&mut reference,&mut rl,&mut rr);}),0);
             assert_eq!((al,ar),(rl,rr));
         }
         assert!(actual.set_param(rack,0,FxParam::Bypass,1.0));
         for _ in 0..3 {al.fill(0.0);ar.fill(0.0);drive(&mut actual,&mut al,&mut ar);assert!(al.iter().chain(&ar).all(|v|*v==0.0));}
         assert!(actual.set_param(rack,0,FxParam::Bypass,0.0));
         al.fill(0.0);ar.fill(0.0);rl.fill(0.0);rr.fill(0.0);
-        assert_eq!(crate::plugin::tests::allocations(|| {drive(&mut actual,&mut al,&mut ar);drive(&mut reference,&mut rl,&mut rr);}),0);
+        assert_eq!(crate::test_support::allocations(|| {drive(&mut actual,&mut al,&mut ar);drive(&mut reference,&mut rl,&mut rr);}),0);
         assert_eq!((al,ar),(rl,rr),"{rack:?}: bypass retains physical delay/filter state");
     }
 }
