@@ -1,0 +1,83 @@
+# Player backend boundary — proposed contract
+
+Reviewed immutable snapshot `191e48118c95dc38da80a56f23a6152356cac229` and the separately owned, uncommitted core-refactor documents. This is coordination guidance, not a new source API or an ABI promise. No support is claimed for SFZ, Sine, Koda or another unimplemented backend.
+
+## Implemented boundaries and current coupling
+
+- `src/plugin.rs:486-525`: bounded ready/discard queues and control-side state; `1085-1123`: Kontakt-specific Handoff and Retired payloads. `2193-2236`: serialized Load drains retirement, performs I/O and preparation. `3679-3758`: audio adopts only current generations and queues displaced/stale payloads for off-thread destruction. Do not replace this with callback-owned destructors.
+- `src/plugin.rs:3165-3248`: Dsp and prepared rack growth retain engine-specific routers, snapshots and script epochs. `src/engine/rack.rs:125-179` owns `Vec<Engine>`; `284-359` combines rendering with native FX direct-output access. This is the main dispatch/mixing coupling, not a neutral player API yet.
+- `src/plugin.rs:33-93`: Part persists Kontakt paths, program/snapshot identities, KSP state, native engine edits and FX caches. Preserve existing positional serialization. Backend persistence should be separately tagged/versioned rather than interpreting these fields as universal instrument state.
+- `src/plugin.rs:3051-3094`: host adapters preserve exact note addressing, distinguish CLAP physical and VST3 normalized expressions, and currently project onset velocity to the Kontakt interface. `3139` owns aggregate host note-end delivery. Do not reproduce this identity/protocol policy in a UVI adapter.
+- `src/plugin.rs:2102-2190`: UVI staging checks request, activation epoch, sample rate, catalog generation and destination identity. It remains a single prepared Worker, not an installed rack player. `361` exposes the controller only under its control mutex; `415` explicitly reports live_installed=false.
+- `src/uvi/worker.rs:333-458,539-660`: Worker owns loading/Lua/renderer/thread join; one-time AudioPort extraction moves exclusive cursors to the audio side. Realtime methods use fixed bounded packets. Stop/drop joins only on the control side. Existing output is 256 stereo frames, queue capacity eight; this is a UVI transport constraint, not a universal backend requirement.
+- `src/uvi/script.rs:123-163`: UVI packet inputs lack host owner ID, port/group, release velocity and full onset precision. Native Lua VoiceId is a separate identity and must not replace core host identity. This gap blocks a truthful exact-note live adapter.
+- `src/engine/bank.rs:422-425`: Bank still contains mutable group `settings` and `base` layers. Prepared sample geometry and resource data can be immutable; the entire current Bank is not. Move these layers only with their Context/Host/override callers, as the concurrent plan requires.
+
+## Proposed ownership and dispatch
+
+This table assigns responsibilities, not wholesale folder moves. Shared DSP remains shared. The other core run has priority over its dirty MIDI/engine files; this document does not accept or merge them.
+
+| Responsibility | Authoritative owner | Existing evidence / coordination boundary |
+| --- | --- | --- |
+| Host ingress, precision, protocol selection/reset, physical/delivered addressing | Core MIDI/protocol | Concurrent `src/midi.rs`, core MIDI contract; do not duplicate decoders in native adapters |
+| Exact host roots, generations, routing and final host note-end | Core lifecycle/routing | `host_notes.rs`, `articulate.rs`, plugin event/end aggregation; backend reports child/voice completion |
+| Generic rack controls, bus mixing, transport/activation and reported latency | Core player/host | `plugin.rs`, `routing.rs`, current Rack; decouple native FX output access at the agreed boundary |
+| Catalog source identity, preparation admission, installation and retirement | Core format registry/loader | Current typed PresetTarget and ready/discard queues; each backend supplies native inventory/preparation |
+| Archive/decryption, program decoding, native scripting and parameter semantics | Native backend | Kontakt import/KSP; UVI UFS/program/script/host; private authority stays off audio |
+| Native voice/graph DSP and instrument UI state | Backend using shared facilities | Backend clocks/order/units remain explicit; native state is not generic host state |
+| PCM packing, convolution and other proved equivalent sampler kernels | Shared DSP/resource owner | `audio::Pcm`, `fx::convolution::Convolver`; streaming/resampling/envelopes only when contracts agree |
+| Generic browser/rack/editor infrastructure | Core UI | Existing UI infrastructure is reusable; native control snapshots/views remain backend-owned |
+
+A single optional-format dispatch/registry boundary should select the two actual backends and their preparation/audio/control owners. Feature-disabled formats are absent from that registry. Use an exhaustive concrete enum or a small Rust dispatch trait backed by both real implementations; do not add registrations, plugin factories or empty implementations for future formats. No full folder rename is prescribed.
+
+## Proposed minimum internal Rust contract
+
+Use a concrete, feature-gated dispatch over the two real implementations. A small trait is also reasonable once both actual implementations are wired; no registration factory, DSP graph framework or invented adapters are needed. The following are required operations/ownership, not names to impose on the other run.
+
+1. **Prepare on control/loader:** take a typed native source, immutable preparation context (sample rate, admitted maximum block/output layout, activation epoch/generation) and cancellation/currentness check. Return an owned completion containing the audio-side player/port, its actual prepared timing/output limits and a control-side owner. Decoding, resource reads, native script init, convolution plans and buffer allocation finish here. Failure leaves the currently installed source intact.
+2. **Publish/install on audio:** check slot, generation and activation context, then swap prepared endpoints at the host-defined boundary without allocating or joining. Return displaced and rejected endpoints through the existing bounded retirement path. If retirement is full, leave the old endpoint installed and defer the swap. The loader must retain the old worker/controller until its audio endpoint is retired; the current staging function's immediate Worker replacement is safe only while no live endpoint is installed.
+3. **Render into caller-owned buffers:** accept the core's borrowed precision-preserving event stream and timeline/transport context; overwrite the declared valid output spans; report fixed, bounded status/counters. Never resize output storage, format errors, perform I/O, lock a model, run an allocating renderer, or destroy a heavy payload on the callback. Core retains fader/pan/solo/bus/aux routing and host output mixing. Backend retains instrument signal order and native outputs. Kontakt can render immediately; UVI can feed/read its existing worker port through a preallocated bridge. Do not make every backend threaded or impose 256-frame latency on Kontakt.
+4. **Events and lifetimes:** reuse the other run's MIDI event and protocol owners. Preserve original precision, physical provenance, delivered channel, exact generation-backed host identity and timestamps until a native projection is required. Backend translation supplies KSP/Lua/native semantics and retains generated-child links; core decides routing and final host note-end after all relevant backend voices/jobs complete. Unsupported event types reject/diagnose; they never silently become channel-wide controls. Core reset/activation changes invalidate old work without synchronously stopping a worker on audio.
+5. **Control preparation/persistence/UI off audio:** backend owns native control addresses, scripts, mutable native parameter state and instrument UI state. Core owns generic rack/browser/host parameter identity. Use the existing bounded UI command/snapshot pattern; serialize versioned native state off-thread. Persistence, resource references and private decoder authority never enter real-time packets. Shared UI widgets/rendering infrastructure need not be duplicated. This does not require all scripting/control application to run on a worker: Kontakt's bounded KSP execution may remain immediate, while allocating UVI Lua/render work remains on its worker. Apply audible native writes at their backend's defined clock.
+
+The minimal API outline is:
+
+| Operation | Thread and inputs | Result / required invariant |
+| --- | --- | --- |
+| `prepare(source, context, cancellation)` | Loader/control; typed native source plus actual rate, admitted block/output limits and activation identity | Fallible owned completion with audio endpoint, controller, immutable prepared resources and actual capabilities/timing |
+| `control(native_command)` / `snapshot()` | Control/backend execution owner; validated native address/value and revision | Bounded command/status exchange; owned versioned UI/persistence state stays off audio |
+| `process(clock, events, output_buses, completion_sink)` | Audio; borrowed core events and caller-owned prepared buffers/sinks | Fixed-capacity report; exact valid frames, bounded overflow/underrun policy, no allocation/locks/I/O/heavy drop |
+| `install(completion)` / `retire(displaced)` | Audio swaps admitted current generations; loader acknowledges and destroys retired owners | Durable bounded handoff; full retirement storage defers adoption instead of dropping or losing ownership |
+
+These operation names are an outline, not an implemented API or code scaffold. The core's precision-preserving event type remains authoritative, including exact host owner/generation, original physical provenance, delivered target, retained numeric precision and sample-frame timestamp. Native projections happen at the backend adaptation boundary. Core clock context includes rate, activation/frame origin, frame count and transport/tempo/meter with validity; it does not replace native control clocks.
+
+Capabilities must describe actually implemented input/output/state operations, maximum admitted capacities and immediate versus buffered scheduling. Latency includes the chosen buffering policy and native algorithmic delay; queue capacity or 256-frame packet size alone is not measured end-to-end latency. Core exposes the resulting host latency and routes the declared output spans. Output buffers and completion storage are supplied/preallocated by the core; every ownership transfer and full-queue case has one named owner. A controller may outlive its detached audio port until retirement is acknowledged. Native state has a version and source identity, and unsupported state/event/control restores fail explicitly without replacing the playing source.
+
+The concurrent plan's `src/midi.rs:8-16` owns reset policy; `20-145` owns ParameterEvent/ParameterData and the bounded per-physical-channel RPN/NRPN decoder. Its docs assign voice admission/render scratch to a future engine/player.rs, applied MIDI state to engine/midi_state.rs, and exact host identities to host_notes.rs. Reuse that vocabulary and implementation, subject to coordination: the dirty checkout is not an accepted interface snapshot.
+
+## Shared sampler facilities with evidence
+
+- Already shared: `src/audio.rs:56-92` packed PCM; `src/uvi/storage.rs:5-88` adapts it without losing multichannel scalar order or signed zero. `src/uvi/effects.rs:23,643-799` uses `fx::convolution::Convolver`; native IR reconstruction, channel routing and normalization stay in the UVI adapter.
+- Reuse common mixing/routing mathematics and caller-owned scratch, with core-owned controls. Rack currently accesses Engine FX direct outputs, so expose admitted native output spans rather than handing the shared mixer an entire native FX object.
+- Reuse storage/stream-ring machinery where source access, seek/loop extent, channel geometry and lifetime contracts agree. Current `engine/stream.rs` is coupled to Kontakt Bank/voice mappings; UVI currently uses resident packed assets. It is not an existing UFS streaming implementation. Do not claim otherwise or extract a speculative stream trait.
+- Resampling, envelopes, filters and modulation can share proven numerical kernels, but not conflicting native laws. UVI's impulse reconstruction uses its measured 1600-tap FIR and endpoint policy (`uvi/resampling.rs:1-59`); Kontakt traversal/interpolation is a different operation. Native OnePole/delay units, AHDSR clocks/lookahead, bypass/reset behavior, control smoothing, nonlinear order and script-written gain laws remain native adaptations until equality is established by tests. Similar names do not establish substitutability.
+
+## Compile-time isolation and collisions
+
+Read-only `cargo tree --offline --locked --no-default-features --features plugin -e normal` on 191 confirms mlua, mlua-sys, roxmltree and symphonia-codec-flac are absent. ni-file, ncw and fastlz remain unconditional: Kontakt cannot currently be completely disabled. sha2/crc32fast/base64 remain for other enabled shared dependencies and must not be removed merely because UVI is off.
+
+`src/library.rs:556-587` still walks .ufs files and adds unavailable catalog rows when UVI is disabled. Guard actual backend scanning/registration as well as its parser/worker dependencies. A generic persisted unavailable-backend reference may remain for project round trips; executing, advertising or scanning that disabled backend must not.
+
+Validate disabled-backend dependency trees and isolated library/plugin configurations after the agreed feature split; validate UVI-only and Kontakt-only behavior, not merely --no-default-features (which currently still includes Kontakt code). Keep backend-specific tests behind matching features and leave shared facilities enabled when another backend uses them.
+
+Corrections belong at the manifest and central format-registry/catalog dispatch boundary: make Kontakt-only dependencies optional together with its actual entry points, omit disabled format scanners and registrations there, and retain common facilities used by enabled formats. Do not scatter format tests across shared DSP loops. This is planned work, not completed isolation.
+
+High-collision files: Cargo.toml/Cargo.lock, src/lib.rs, src/plugin.rs, src/library.rs, src/articulate.rs, src/routing.rs, src/engine/{mod,rack,host_notes,script,bank,zone}. The other run owns MIDI/core extraction and precision/lifetimes. The UVI owner can safely continue native parser/script/DSP/resource work under src/uvi; a future Falcon directory should own native adaptation, not copies of shared PCM, convolution, MIDI policy or host mixing. GUI startup vendor ownership remains separate. One authoritative owner per shared policy/state is the goal, not duplication behind directory walls.
+
+## ABI distinction
+
+This is an internal Rust API: enums, borrows, slices, error types, crates and feature flags can evolve together. CLAP/VST3 are already external host ABIs; they do not make a native backend Rust interface binary-stable. Moose hot-reload also requires matching shell/logic features and state layouts.
+
+If separately distributed backend libraries become an actual requirement, design a versioned C-facing function table then: version/struct_size fields, explicit capabilities and admitted limits, fixed-width scalars, pointer/length spans, opaque handles, numeric error/status codes, and explicit allocator/free/thread ownership. Never pass Vec, String, Arc, Rust trait objects, Result, Lua values or unwinding across that boundary. No external backend ABI is promised or implemented by this review.
+
+The official [Rust ABI reference](https://doc.rust-lang.org/reference/items/external-blocks.html#abi) gives the Rust ABI no stability guarantee. [Representation rules](https://doc.rust-lang.org/reference/type-layout.html#representations) define `repr(C)` layout but do not turn nested Rust-representation fields into C fields. [Unwinding rules](https://doc.rust-lang.org/reference/items/functions.html#unwinding) govern panic behavior at ABI boundaries. Version/size checks, capabilities, allocator ownership, numeric errors and real-time rules above are explicit proposed design requirements, not guarantees supplied by `repr(C)`.
