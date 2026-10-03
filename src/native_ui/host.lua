@@ -135,7 +135,7 @@ function native_component(target,props,children)
 end
 function native_modifier(node,name,props,args)
     local environment=name=="context" or name=="font_size" or name=="foreground_color"
-    assert(name=="frame" or name=="padding" or name=="hidden" or name=="opacity" or name=="offset" or name=="background" or name=="on_tap_gesture" or environment,"Unsupported modifier: "..name)
+    assert(name=="frame" or name=="padding" or name=="hidden" or name=="disabled" or name=="opacity" or name=="offset" or name=="align" or name=="background" or name=="on_tap_gesture" or environment,"Unsupported modifier: "..name)
     if name=="background" then
         assert(next(props)==nil and #args==1 and type(args[1])=="table" and args[1].kind,"Background requires a component")
         return {kind="ZStack",props={},children={args[1],node},modifiers={background={}}}
@@ -151,6 +151,11 @@ function native_modifier(node,name,props,args)
         props={left=props.left or props.horizontal or 0,right=props.right or props.horizontal or 0,top=props.top or props.vertical or 0,bottom=props.bottom or props.vertical or 0}
         return {kind="ZStack",props={},children={node},modifiers={padding=props}}
     end
+    if name=="align" then
+        assert(next(props)==nil and #args==1,"Align requires one alignment")
+        assert(type(args[1])=="string" or type(args[1])=="function","Align requires an alignment string")
+        return {kind="ZStack",props={},children={node},modifiers={align={value=args[1]}}}
+    end
     if name=="offset" then
         assert(#args==0,"Offset requires named x/y coordinates")
         for key,value in pairs(props) do
@@ -164,12 +169,12 @@ function native_modifier(node,name,props,args)
         assert(type(value)=="number" or type(value)=="function","Opacity requires a number")
         return {kind="ZStack",props={},children={node},modifiers={opacity={value=value}}}
     end
-    if name=="hidden" then
-        assert(next(props)==nil and #args<=1,"Invalid hidden arguments")
+    if name=="hidden" or name=="disabled" then
+        assert(next(props)==nil and #args<=1,"Invalid boolean modifier arguments: "..name)
         local value=args[1]
         if value==nil then value=true end
-        assert(type(value)=="boolean" or type(value)=="function","Hidden requires a boolean")
-        return {kind="ZStack",props={},children={node},modifiers={hidden={value=value}}}
+        assert(type(value)=="boolean" or type(value)=="function","Boolean modifier requires a boolean: "..name)
+        return {kind="ZStack",props={},children={node},modifiers={[name]={value=value}}}
     end
     if name=="font_size" or name=="foreground_color" then
         assert(next(props)==nil and #args<=1,"Invalid text style modifier: "..name)

@@ -4852,6 +4852,45 @@ end on"#;
     }
 
     #[test]
+    fn native_ui_child_alignment_and_disabled_scopes_preserve_geometry_and_callbacks() {
+        use crate::native_ui::{Node,Paint,Scene};
+        let directory=std::env::temp_dir().join(format!("kontra-native-align-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let resources=directory.join("Resources/native_ui");std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("main.nui"),r#"
+            local ui=require('native_ui') local mode=require('kontakt').connect_parameter('Mode')
+            return @ui.Rectangle {color=ui.Color.red}.frame(width=20,height=10)
+                .on_tap_gesture(start=function() mode:set_value(mode:value()+1) end)
+                .align(ui.create_computed(function() return mode:value()==0 and 'top right' or 'bottom left' end))
+                .offset(x=-5,y=0.5)
+                .disabled(ui.create_computed(function() return mode:value()==1 end))
+                .frame(width=80,height=40)
+        "#).unwrap();
+        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $Mode(0,3)\nend on".into()],..Default::default()};
+        let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
+        let mut scene=Scene::prepare(&instrument.path,&rt).unwrap().unwrap();let mut live=first_script_live(&rt);rt.prepare_native_controls(&mut live);
+        let mut engine=Engine::default();engine.set_script(Some(rt));
+        fn foreground(node:&Node)->Option<&Node>{if matches!(node.paint,Paint::Rectangle([1.,0.,0.,1.],_)){Some(node)}else{node.children.iter().find_map(foreground)}}
+        fn tap(node:&Node)->Option<&Node>{if node.tap{Some(node)}else{node.children.iter().find_map(tap)}}
+        for mode in [0,1,2] {
+            let (mut left,mut right)=([0.;64],[0.;64]);
+            assert_eq!(allocations(||{engine.ui_control(0,0,mode);engine.render(&mut left,&mut right);engine.script().unwrap().refresh_live(&mut live);}),0);
+            scene.observe(&live);let root=scene.snapshot().unwrap();
+            let rendered=moose::mui::mui::scene::resolve(&moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::scene_tree(&root,&scene.assets))).unwrap();
+            assert_eq!((rendered.layout.size.width,rendered.layout.size.height),(80.,40.));
+            let node=foreground(&root).unwrap();let surface=rendered.surface(&format!("native-snapshot-{}",node.id)).unwrap();
+            assert_eq!((surface.frame.x,surface.frame.y,surface.frame.size.width,surface.frame.size.height),if mode==0{(55.,0.5,20.,10.)}else{(-5.,30.5,20.,10.)});
+            assert_eq!(surface.disabled,mode==1);assert_eq!(node.opacity,1.,"disabled controls remain visible");
+            if mode==1 {assert!(tap(&root).is_none(),"disabled subtree has no registered gesture");}
+            else {let edits=scene.tap(tap(&root).unwrap().id).unwrap();assert_eq!((edits[0].slot,edits[0].control,edits[0].value),(0,0,mode+1));}
+        }
+        for modifier in ["align('left right')","align('diagonal')","align(1)","disabled(1)","disabled(function() return 1 end)"] {
+            std::fs::write(resources.join("main.nui"),format!("local ui=require('native_ui') return @ui.Rectangle{{color=ui.Color.red}}.frame(width=20,height=10).{modifier}")).unwrap();
+            assert!(Scene::prepare(&instrument.path,engine.script().unwrap()).is_err(),"{modifier}");
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn native_ui_offsets_move_content_and_tap_geometry_without_reflowing_backgrounds() {
         use crate::native_ui::{Node,Paint,Scene};
         let directory=std::env::temp_dir().join(format!("kontra-native-offset-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));

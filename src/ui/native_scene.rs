@@ -47,8 +47,9 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, part: usize) -> Option<El> {
             .iter()
             .enumerate()
             .map(|(index, child)| {
+                let anchor = child.anchor.unwrap_or(node.alignment);
                 let el = draw(ui, cx, part, epoch, scene, child, assets)
-                    .anchor(node.alignment.0, node.alignment.1);
+                    .anchor(anchor.0, anchor.1);
                 if node.background && index==0 { el.underlay() } else { el }
             })
             .collect();
@@ -163,6 +164,7 @@ fn primitive(
         el.opacity(node.opacity)
     } else { el };
     let el = el.offset(node.offset[0], node.offset[1]);
+    let el = if node.disabled { el.disabled() } else { el };
     if node.hidden { el.opacity(0.).disabled() } else { el }
 }
 #[cfg(test)]
@@ -175,7 +177,8 @@ pub(crate) fn scene_tree(node: &Node, assets: &crate::native_assets::Assets) -> 
         .iter()
         .enumerate()
         .map(|(index, child)| {
-            let el = scene_tree(child, assets).anchor(node.alignment.0, node.alignment.1);
+            let anchor = child.anchor.unwrap_or(node.alignment);
+            let el = scene_tree(child, assets).anchor(anchor.0, anchor.1);
             if node.background && index==0 { el.underlay() } else { el }
         })
         .collect();
