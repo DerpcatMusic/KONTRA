@@ -1180,6 +1180,12 @@ fn detect_stale_sessions(stopping: &AtomicBool) -> Option<CrashIncident> {
             return None;
         }
         let path = entry.path();
+        if path
+            .file_name()
+            .is_some_and(|name| buffr_durable_file::is_internal_file_name(&name.to_string_lossy()))
+        {
+            continue; // Live publishers own lock/in-flight files; they are not session JSON.
+        }
         if path.extension().is_some_and(|extension| extension == "dfr") {
             continue;
         }
@@ -1753,7 +1759,21 @@ mod tests {
             images: vec![],
         };
         assert!(persist_json(&panic_marker_path(marker.pid), &panic));
+        let live_path = sessions_dir().join("live-protected.json");
+        let live_marker = new_session_marker(99, "live-protected");
+        assert!(persist_json(&live_path, &live_marker));
+        let live_lock = buffr_durable_file::lock_path(&live_path).unwrap();
+        let in_flight = sessions_dir().join(format!(
+            ".live-protected.json.tmp-{}-42",
+            std::process::id()
+        ));
+        std::fs::write(&in_flight, b"in-flight authored fixture").unwrap();
+        assert!(live_lock.exists());
         let recovered = detect_stale_sessions(&AtomicBool::new(false)).unwrap();
+        assert!(
+            live_path.exists() && live_lock.exists() && in_flight.exists(),
+            "recovery must not discard a live publisher's lock or temporary"
+        );
         assert!(recovered.auto_reportable());
         assert!(
             recovered
