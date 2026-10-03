@@ -134,7 +134,10 @@ function native_component(target,props,children)
         return {kind="Component",target=target,props=props,children=children,modifiers={}}
     end
     assert(type(target)=="table" and target.kind,"Unsupported component target")
-    local supported={ZStack={children=true,alignment=true},HStack={children=true,spacing=true,alignment=true},VStack={children=true,spacing=true,alignment=true},Text={children=true,text=true},Rectangle={children=true,color=true,corner_radius=true},Ring={children=true,color=true,start_angle=true,angle=true,thickness=true},Image={children=true,file=true,resizable=true},ForEach={children=true,data=true,content=true}}
+    -- The legacy ZStack constructor reads alignment and children only. Its
+    -- authored spacing field is unused data, not an HStack/VStack axis gap;
+    -- do not evaluate a computed spacing value or move overlapping children.
+    local supported={ZStack={children=true,alignment=true,spacing=true},HStack={children=true,spacing=true,alignment=true},VStack={children=true,spacing=true,alignment=true},Text={children=true,text=true},Rectangle={children=true,color=true,corner_radius=true},Ring={children=true,color=true,start_angle=true,angle=true,thickness=true},Image={children=true,file=true,resizable=true},ForEach={children=true,data=true,content=true}}
     assert(supported[target.kind],"Unsupported component")
     assert(target.kind=="ZStack" or target.kind=="HStack" or target.kind=="VStack" or #children==0,"Primitive children require a stack")
     for key in pairs(props) do assert(supported[target.kind][key],"Unsupported primitive property: "..target.kind.."."..key) end

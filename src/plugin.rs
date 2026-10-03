@@ -6466,6 +6466,68 @@ end on"#,"🦀".repeat(600));
     }
 
     #[test]
+    fn native_ui_legacy_zstack_spacing_keeps_overlay_geometry_context_and_callbacks() {
+        use crate::native_ui::{Node, Paint, Scene};
+        let directory = tempfile::tempdir().unwrap();
+        let resources = directory.path().join("Resources/native_ui");
+        std::fs::create_dir_all(&resources).unwrap();
+        let instrument = Instrument {
+            path: directory.path().join("fixture.nki"),
+            scripts: vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_value_edit $Output(0,100,1)\nend on\non ui_control($Output)\n$Output := $Output+1\nend on".into()],
+            ..Default::default()
+        };
+        let (rt, errors) = crate::engine::load_scripts(&instrument, Vec::new(), 48000.);
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut engine = Engine::default();
+        engine.set_script(rt);
+        fn rectangles<'a>(node: &'a Node, output: &mut Vec<&'a Node>) {
+            if matches!(node.paint, Paint::Rectangle(..)) { output.push(node); }
+            for child in &node.children { rectangles(child, output); }
+        }
+        for spacing in ["0", "12", "49", "function() error('unused spacing was read') end"] {
+            std::fs::write(resources.join("main.nui"), format!(r#"
+                local ui=require('native_ui') local output=require('kontakt').connect_parameter('Output')
+                local key=ui.create_context(-1)
+                local function Child()
+                    local context=ui.use_context(key)
+                    return @ui.Rectangle{{color=ui.Color.red}}.frame(width=10,height=4)
+                        .on_tap_gesture(start=function()output:set_value(context())end)
+                end
+                return @ui.ZStack{{alignment='bottom right',spacing={spacing}
+                    @ui.Rectangle{{color=ui.Color.white}}.frame(width=20,height=10)
+                    @Child{{}}
+                }}.context(key=key,value=42)
+            "#)).unwrap();
+            let mut scene = Scene::prepare(&instrument.path, engine.script().unwrap()).unwrap().unwrap();
+            let root = scene.snapshot().unwrap();
+            let spec = moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::scene_tree(&root, &scene.assets));
+            let resolved = moose::mui::mui::scene::resolve(&spec).unwrap();
+            assert_eq!((resolved.layout.size.width, resolved.layout.size.height), (20., 10.));
+            let mut nodes = Vec::new(); rectangles(&root, &mut nodes);
+            assert_eq!(nodes.len(), 2);
+            for (node, geometry) in nodes.iter().zip([(0.,0.,20.,10.),(10.,6.,10.,4.)]) {
+                let surface = resolved.surface(&format!("native-snapshot-{}", node.id)).unwrap();
+                assert_eq!((surface.frame.x, surface.frame.y, surface.frame.size.width, surface.frame.size.height), geometry,
+                    "legacy spacing never separates overlaid children");
+            }
+            fn tap(node: &Node) -> Option<usize> {
+                if node.tap { Some(node.id) } else { node.children.iter().find_map(tap) }
+            }
+            let edits = scene.tap(tap(&root).unwrap()).unwrap();
+            assert_eq!(edits.iter().map(|edit|(edit.slot,edit.control,edit.value)).collect::<Vec<_>>(), [(0,0,42)]);
+            let (mut left, mut right) = ([0.;64],[0.;64]);
+            assert_eq!(allocations(|| {
+                for edit in &edits { engine.ui_control(edit.slot, edit.control, edit.value); }
+                engine.render(&mut left, &mut right);
+            }), 0);
+            assert_eq!(engine.script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_VALUE"], crate::ksp::Value::Int(43));
+            assert!(engine.script().unwrap().diagnostics().is_empty());
+        }
+        std::fs::write(resources.join("main.nui"), "local ui=require('native_ui') return @ui.ZStack{gap=49}").unwrap();
+        assert!(format!("{:#}", Scene::prepare(&instrument.path, engine.script().unwrap()).unwrap_err()).contains("ZStack.gap"));
+    }
+
+    #[test]
     fn native_ui_stacks_use_intrinsic_geometry_cross_alignment_and_bounded_computed_spacing() {
         use crate::native_ui::{Node,Paint,Scene};
         let directory=std::env::temp_dir().join(format!("kontra-native-stacks-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
