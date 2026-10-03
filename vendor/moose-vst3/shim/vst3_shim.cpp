@@ -2209,6 +2209,7 @@ static tresult pvcs_setContentScaleFactor(void* s, float factor) {
     return kResultOk;
 }
 static tresult pv_isPlatformTypeSupported(void*, FIDString type) {
+    if (!type) return kResultFalse;
     #ifdef __APPLE__
     if (strcmp(type, kPlatformTypeNSView) == 0) return kResultOk;
     #elif defined(_WIN32)
@@ -2218,9 +2219,12 @@ static tresult pv_isPlatformTypeSupported(void*, FIDString type) {
     #endif
     return kResultFalse;
 }
-static tresult pv_attached(void* s, void* parent, FIDString /*type*/) {
+static tresult pv_attached(void* s, void* parent, FIDString type) {
     auto* pv = (MoosePlugView*)s;
-    if (!g_cb || !pv->ctx) return kResultOk;
+    // The type identifies the native pointer representation. Reject it
+    // before Rust interprets a parent as NSView/HWND/X11 or we change ownership.
+    if (!parent || pv_isPlatformTypeSupported(s, type) != kResultOk
+        || !g_cb || !g_cb->gui_open || !pv->ctx) return kResultFalse;
     // KONTAKTO patch: IPlugView attachment creates the view independently
     // of processor activation or state restoration. An inactive fresh
     // instance may receive neither; deferring here leaves only a host frame.
