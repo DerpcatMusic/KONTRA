@@ -1245,6 +1245,7 @@ fn find_stale_candidate(stopping: &AtomicBool, confirmed_only: bool) -> Option<R
             );
             let records = match capture {
                 Ok(capture) => {
+                    marker.dropped_events = marker.dropped_events.max(capture.dropped_events);
                     local_journal = Some(LocalJournalEvidence {
                         bytes: capture.bytes,
                         blake3: capture.blake3,
@@ -1285,7 +1286,8 @@ fn find_stale_candidate(stopping: &AtomicBool, confirmed_only: bool) -> Option<R
                 .filter(|record| record.action == "diagnostic_overflow")
                 .filter_map(|record| u64::try_from(record.value_a).ok())
                 .max()
-                .unwrap_or(marker.dropped_events);
+                .unwrap_or(0)
+                .max(marker.dropped_events);
             marker.events = records.into();
         }
         let panic = read_json(&panic_path);
@@ -2014,6 +2016,34 @@ mod tests {
         }
         assert!(recorder.flush(std::time::Duration::from_secs(2)));
         assert!(recorder.shutdown(std::time::Duration::from_secs(2)));
+        // Put the sole persisted overflow count in the omitted middle. Rewrite
+        // an authored slot with the real recorder schema/checksum so the root
+        // consumer (not only the vendor reader test) must retain the aggregate.
+        let middle = derpcat_flight_recorder::Record {
+            sequence: 200,
+            action: "diagnostic_overflow".into(),
+            value_a: 87,
+            ..Default::default()
+        };
+        let payload = serde_json::to_vec(&middle).unwrap();
+        assert!(payload.len() <= 1024 - 52);
+        let mut slot = [0_u8; 1024];
+        slot[..8].copy_from_slice(b"DFRSLT01");
+        slot[8..10].copy_from_slice(&1_u16.to_le_bytes());
+        slot[10..12].copy_from_slice(&(payload.len() as u16).to_le_bytes());
+        slot[12..20].copy_from_slice(&middle.sequence.to_le_bytes());
+        slot[20..52].copy_from_slice(blake3::hash(&payload).as_bytes());
+        slot[52..52 + payload.len()].copy_from_slice(&payload);
+        {
+            use std::io::{Seek as _, Write as _};
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&journal)
+                .unwrap();
+            file.seek(std::io::SeekFrom::Start(200 * 1024)).unwrap();
+            file.write_all(&slot).unwrap();
+            file.sync_all().unwrap();
+        }
         let original_journal = std::fs::read(&journal).unwrap();
         assert!(persist_json(&marker_path, &marker));
         let panic = PanicMarker {
@@ -2053,6 +2083,13 @@ mod tests {
         assert!(!marker_path.exists() && !journal.exists());
         let source = recovered.local_journal.as_ref().unwrap();
         assert!(source.omitted_slots > 0);
+        assert_eq!(recovered.dropped_events, 87);
+        assert!(
+            !recovered
+                .events
+                .iter()
+                .any(|r| r.action == "diagnostic_overflow")
+        );
         assert_eq!(
             recovered.events.len(),
             RECOVERED_HEAD_RECORDS + RECOVERED_TAIL_RECORDS
