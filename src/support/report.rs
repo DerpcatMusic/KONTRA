@@ -136,6 +136,16 @@ impl Drop for AutomaticReportPermit<'_> {
     }
 }
 
+struct AutomaticReportCompletion(Option<String>);
+
+impl Drop for AutomaticReportCompletion {
+    fn drop(&mut self) {
+        if let Some(incident_id) = self.0.take() {
+            crash::continue_automatic_reports(incident_id);
+        }
+    }
+}
+
 pub(super) fn try_auto_report_pending_incident() {
     let Some(incident) = pending_incident() else {
         return;
@@ -146,6 +156,7 @@ pub(super) fn try_auto_report_pending_incident() {
     let started = crash::spawn_detached("kontra-support-report", move || {
         // The module remains pinned after delivery; release the upload gate when
         // this worker finishes so a later incident in the same host can report.
+        let mut completion = AutomaticReportCompletion(None);
         let _permit = permit;
         // Delayed native artifacts are searched only on this worker, never during host initialization.
         let incident = crash::refresh_pending_incident(&incident.id).unwrap_or(incident);
@@ -184,7 +195,11 @@ pub(super) fn try_auto_report_pending_incident() {
         let status_path = support_cache_path().with_file_name("last-report.json");
         let value = report_status(&incident.id, &result);
         if let Ok(bytes) = serde_json::to_vec(&value) {
-            if let Err(error) = buffr_durable_file::publish_private(&status_path, &bytes) {
+            if let Err(error) = buffr_durable_file::publish_private_streaming(
+                &status_path,
+                std::time::Duration::from_millis(500),
+                |file| std::io::Write::write_all(file, &bytes),
+            ) {
                 crate::diagnostics::event(
                     crate::diagnostics::LogLevel::Error,
                     "support",
@@ -194,6 +209,11 @@ pub(super) fn try_auto_report_pending_incident() {
             }
         }
         crate::diagnostics::event(level, "support", "automatic_crash_report", value);
+        if result.is_ok() {
+            completion.0 = Some(incident.id);
+        }
+        // All delivery/receipt work finishes before the permit drops; only then
+        // does the completion guard enqueue continuation on the reporter worker.
     });
     if let Err(error) = started {
         crate::diagnostics::event(
@@ -203,6 +223,42 @@ pub(super) fn try_auto_report_pending_incident() {
             serde_json::json!({"reason":format!("Crash report retained; could not start delivery worker: {error}")}),
         );
     }
+}
+
+#[cfg(test)]
+pub(super) fn test_detached_automatic_delivery(
+    incident_id: String,
+    response: Result<(u16, String), String>,
+    entered: std::sync::mpsc::Sender<()>,
+    outcome: std::sync::mpsc::Sender<bool>,
+    release: std::sync::mpsc::Receiver<()>,
+) -> Result<(), String> {
+    let permit = AutomaticReportPermit::acquire(&AUTOMATIC_CRASH_REPORT_STARTED)
+        .ok_or_else(|| "automatic report worker is busy".to_string())?;
+    crash::spawn_detached("kontra-mocked-automatic-delivery", move || {
+        let mut completion = AutomaticReportCompletion(None);
+        let _permit = permit;
+        entered.send(()).unwrap();
+        let acknowledged = response
+            .and_then(|(status, text)| {
+                validate_receipt(status, &text, Some("authored-full-evidence".into()))
+            })
+            .is_ok();
+        if acknowledged {
+            crash::mark_submitted(&incident_id);
+            completion.0 = Some(incident_id);
+        }
+        outcome.send(acknowledged).unwrap();
+        release
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+    })
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+pub(super) fn test_automatic_report_is_busy() -> bool {
+    AUTOMATIC_CRASH_REPORT_STARTED.load(Ordering::Acquire)
 }
 
 pub fn redact_log(log: &str) -> String {

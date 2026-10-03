@@ -445,6 +445,8 @@ enum ReporterControl {
     Register(u64, mpsc::SyncSender<bool>),
     Shutdown,
     Submitted(String),
+    Resume(String),
+    ScanQueue(bool, Option<String>),
 }
 
 struct ReporterRuntime {
@@ -914,6 +916,16 @@ fn pin_module_containing(_address: *const std::ffi::c_void) -> Result<(), String
 /// Starts the automatic report on its own thread: it asks this worker for a journal snapshot, so
 /// it cannot run here. Tracked with the support workers so it is joined before unload.
 fn spawn_auto_report() {
+    #[cfg(test)]
+    if let Some(observer) = TEST_AUTOMATIC_REPORT_OBSERVER.lock_unpoisoned().as_ref() {
+        if let Some(incident) = pending_incident() {
+            let _ = observer.send(TestAutomaticEvent::Ready(
+                incident.id,
+                super::report::test_automatic_report_is_busy(),
+            ));
+        }
+        return;
+    }
     let _ = REPORTER.support_workers.lock_unpoisoned().spawn(
         "kontra-crash-autoreport",
         super::try_auto_report_pending_incident,
@@ -1013,6 +1025,20 @@ pub(crate) fn mark_submitted(incident_id: &str) {
         }
     }
     let _ = REPORTER.send(ReporterControl::Submitted(incident_id.to_string()));
+}
+
+pub(super) fn continue_automatic_reports(incident_id: String) {
+    let _ = REPORTER.send(ReporterControl::Resume(incident_id));
+}
+
+#[cfg(test)]
+static TEST_AUTOMATIC_REPORT_OBSERVER: Mutex<Option<mpsc::Sender<TestAutomaticEvent>>> =
+    Mutex::new(None);
+
+#[cfg(test)]
+enum TestAutomaticEvent {
+    Ready(String, bool),
+    Scanned(bool, bool),
 }
 
 #[cfg(test)]
@@ -1141,6 +1167,7 @@ fn reporter_worker(
     run_token: String,
     stopping: Arc<AtomicBool>,
 ) {
+    let mut resumable_id: Option<String> = None;
     while let Ok(control) = control_receiver.recv() {
         match control {
             ReporterControl::Register(instance_id, acknowledge) => {
@@ -1180,6 +1207,14 @@ fn reporter_worker(
                 if recovered && persisted {
                     spawn_auto_report();
                 }
+                if persisted
+                    && !pending
+                        .lock_unpoisoned()
+                        .as_ref()
+                        .is_some_and(CrashIncident::auto_reportable)
+                {
+                    let _ = REPORTER.send(ReporterControl::ScanQueue(false, None));
+                }
             }
             ReporterControl::Shutdown => {
                 if let Some(recorder) = recorder.as_ref() {
@@ -1198,11 +1233,13 @@ fn reporter_worker(
                 break;
             }
             ReporterControl::Submitted(incident_id) => {
+                resumable_id = None;
                 if incident_id.len() != 16 || !incident_id.bytes().all(|b| b.is_ascii_hexdigit()) {
                     continue;
                 }
                 // Failed/cancelled replacement can leave a same-ID deferred
                 // copy. Retire only exact queue copies; full originals stay.
+                let mut retired = true;
                 for copy in [
                     keyed_pending_incident_path(&incident_id).unwrap(),
                     pending_incident_path(),
@@ -1212,6 +1249,7 @@ fn reporter_worker(
                 ] {
                     if let Err(error) = retire_acknowledged_copy(&copy, &incident_id, &stopping) {
                         if error.kind() != std::io::ErrorKind::NotFound {
+                            retired = false;
                             crate::diagnostics::event(
                                 crate::diagnostics::LogLevel::Error,
                                 "support",
@@ -1221,6 +1259,65 @@ fn reporter_worker(
                             );
                         }
                     }
+                }
+                resumable_id = retired.then_some(incident_id);
+            }
+            ReporterControl::Resume(incident_id) => {
+                // Submitted precedes this control in the FIFO. A failed local
+                // retirement must never trigger an immediate resend loop.
+                if resumable_id.as_deref() == Some(incident_id.as_str())
+                    && !stopping.load(Ordering::Acquire)
+                {
+                    resumable_id = None;
+                    let _ = REPORTER.send(ReporterControl::ScanQueue(false, None));
+                }
+            }
+            ReporterControl::ScanQueue(wrapped, scan_cursor) => {
+                if stopping.load(Ordering::Acquire)
+                    || pending
+                        .lock_unpoisoned()
+                        .as_ref()
+                        .is_some_and(CrashIncident::auto_reportable)
+                {
+                    continue;
+                }
+                let (confirmed, _, progress) =
+                    find_pending_candidates(&stopping, None, scan_cursor.as_deref());
+                #[cfg(test)]
+                if let Some(observer) = TEST_AUTOMATIC_REPORT_OBSERVER.lock_unpoisoned().as_ref() {
+                    let _ = observer.send(TestAutomaticEvent::Scanned(
+                        wrapped,
+                        matches!(&progress, QueueScanProgress::Exhausted),
+                    ));
+                }
+                let mut candidate = confirmed.map(|incident| RecoveredCandidate {
+                    marker_path: keyed_pending_incident_path(&incident.id).unwrap(),
+                    journal_path: None,
+                    panic_path: panic_marker_path(incident.pid),
+                    incident,
+                });
+                if matches!(&progress, QueueScanProgress::Exhausted) && wrapped {
+                    candidate = candidate
+                        .or_else(|| find_deferred_candidate(&stopping))
+                        .or_else(|| find_stale_candidate(&stopping, true));
+                }
+                if let Some(incident) = candidate
+                    .and_then(|candidate| candidate.consume(&stopping))
+                    .filter(CrashIncident::auto_reportable)
+                {
+                    *pending.lock_unpoisoned() = Some(incident);
+                    spawn_auto_report();
+                    continue; // Resume only after this delivery's ACK + permit drop.
+                }
+                let next = match progress {
+                    QueueScanProgress::Advanced(cursor) => Some((wrapped, cursor)),
+                    QueueScanProgress::Exhausted if !wrapped => Some((true, String::new())),
+                    _ => None,
+                };
+                if let Some((wrapped, cursor)) = next {
+                    // A queued control allows shutdown/registration/ACK to run
+                    // between batches. No recursion, timer or delivery retry.
+                    let _ = REPORTER.send(ReporterControl::ScanQueue(wrapped, Some(cursor)));
                 }
             }
         }
@@ -1475,8 +1572,8 @@ fn recover_pending_slot(pending: &Mutex<Option<CrashIncident>>, stopping: &Atomi
     // Migration failure retains the legacy source, but cannot block independent
     // keyed reports: no recovered incident writes that shared legacy path.
     let _ = migrate_legacy_pending(stopping);
-    let (queued, unknown) =
-        find_pending_candidates(stopping, previous.as_ref().map(|i| i.id.as_str()));
+    let (queued, unknown, _) =
+        find_pending_candidates(stopping, previous.as_ref().map(|i| i.id.as_str()), None);
     let queued_candidate = |incident: CrashIncident| RecoveredCandidate {
         marker_path: keyed_pending_incident_path(&incident.id).unwrap(),
         journal_path: None,
@@ -2224,23 +2321,42 @@ fn save_pending_incident(incident: &CrashIncident) -> bool {
     }
 }
 
+enum QueueScanProgress {
+    Advanced(String),
+    Exhausted,
+    Halted,
+}
+
 /// Inspect at most 32 safe queue files per registration. A lexical cursor
 /// advances through large queues without keeping all filenames in memory.
 /// Select the oldest confirmed incident in this batch before any unknown one.
 fn find_pending_candidates(
     stopping: &AtomicBool,
     excluded_id: Option<&str>,
-) -> (Option<CrashIncident>, Option<CrashIncident>) {
+    scan_cursor: Option<&str>,
+) -> (
+    Option<CrashIncident>,
+    Option<CrashIncident>,
+    QueueScanProgress,
+) {
     let directory = reports_dir().join("pending");
     let cursor_path = reports_dir().join("pending-cursor.json");
-    let cursor = read_json::<String>(&cursor_path).unwrap_or_default();
+    // A draining pass carries its own monotonic cursor: other hosts may update
+    // the persisted registration cursor, but cannot make this pass revisit a batch.
+    let cursor = scan_cursor
+        .map(str::to_owned)
+        .unwrap_or_else(|| read_json::<String>(&cursor_path).unwrap_or_default());
     let mut paths = BTreeMap::new();
-    let Ok(entries) = std::fs::read_dir(&directory) else {
-        return (None, None);
+    let entries = match std::fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (None, None, QueueScanProgress::Exhausted);
+        }
+        Err(_) => return (None, None, QueueScanProgress::Halted),
     };
     for entry in entries.flatten() {
         if stopping.load(Ordering::Acquire) {
-            return (None, None);
+            return (None, None, QueueScanProgress::Halted);
         }
         let name = entry.file_name().to_string_lossy().into_owned();
         let Some(id) = name.strip_suffix(".json") else {
@@ -2261,7 +2377,7 @@ fn find_pending_candidates(
     let mut unknown: Option<CrashIncident> = None;
     for (name, path) in &paths {
         if stopping.load(Ordering::Acquire) {
-            return (None, None);
+            return (None, None, QueueScanProgress::Halted);
         }
         let Some((mut incident, observed_hash)) =
             name.strip_suffix(".json").and_then(pending_snapshot)
@@ -2308,14 +2424,18 @@ fn find_pending_candidates(
             *selection = Some(incident);
         }
     }
-    if !stopping.load(Ordering::Acquire) {
-        let next = paths
-            .last_key_value()
-            .map(|(name, _)| name.as_str())
-            .unwrap_or("");
-        persist_json(&cursor_path, &next);
-    }
-    (confirmed, unknown)
+    let next = paths
+        .last_key_value()
+        .map(|(name, _)| name.as_str())
+        .unwrap_or("");
+    let progress = if stopping.load(Ordering::Acquire) || !persist_json(&cursor_path, &next) {
+        QueueScanProgress::Halted
+    } else if paths.is_empty() {
+        QueueScanProgress::Exhausted
+    } else {
+        QueueScanProgress::Advanced(next.to_owned())
+    };
+    (confirmed, unknown, progress)
 }
 
 /// Migrate only on a worker. Hold the legacy publisher lock from exact read
@@ -3418,10 +3538,10 @@ mod tests {
         assert!(save_pending_incident(&proven));
         let wrong_path = reports_dir().join("pending").join("0000000000000040.json");
         assert!(persist_json(&wrong_path, &proven)); // Valid body in another ID's filename.
-        let (confirmed, unknown) = find_pending_candidates(&AtomicBool::new(false), None);
+        let (confirmed, unknown, _) = find_pending_candidates(&AtomicBool::new(false), None, None);
         assert!(confirmed.is_none());
         assert!(unknown.is_some());
-        let (confirmed, _) = find_pending_candidates(&AtomicBool::new(false), None);
+        let (confirmed, _, _) = find_pending_candidates(&AtomicBool::new(false), None, None);
         assert_eq!(confirmed.unwrap().id, proven.id);
         assert!(
             wrong_path.exists(),
@@ -3433,7 +3553,7 @@ mod tests {
                 .exists()
         );
         assert!(
-            find_pending_candidates(&AtomicBool::new(true), None)
+            find_pending_candidates(&AtomicBool::new(true), None, None)
                 .0
                 .is_none()
         );
@@ -3570,6 +3690,213 @@ mod tests {
             legacy_bytes
         );
         drop(legacy_lock);
+    }
+
+    #[test]
+    fn acknowledged_workers_drain_confirmed_queue_after_permit_drop_without_retry_loops() {
+        const CHILD: &str = "KONTRA_COMPLETION_DRAIN_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "support::crash::tests::acknowledged_workers_drain_confirmed_queue_after_permit_drop_without_retry_loops", "--test-threads=1"])
+                .env(CHILD, "1").env("KONTRA_REPORT_DIR", directory.path())
+                .env("KONTRA_DISABLE_NETWORK", "1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let timeout = std::time::Duration::from_secs(30);
+        for sequence in 1..=40 {
+            let mut unknown = test_incident("0.3.115", "authored-retained-unknown");
+            unknown.id = format!("{sequence:016x}");
+            unknown.pid = u32::MAX - sequence;
+            unknown.host_process = "authored-unknown-host".into();
+            assert!(save_pending_incident(&unknown));
+        }
+        let mut first = test_incident("0.3.115", "authored-first-confirmed");
+        first.id = "0000000000000030".into();
+        first.kind = IncidentKind::PlatformCrash;
+        let mut second = first.clone();
+        second.id = "0000000000000031".into();
+        assert!(save_pending_incident(&first));
+        assert!(save_pending_incident(&second));
+        let first_path = keyed_pending_incident_path(&first.id).unwrap();
+        let second_path = keyed_pending_incident_path(&second.id).unwrap();
+        let second_bytes = std::fs::read(&second_path).unwrap();
+        assert!(persist_json(
+            &reports_dir().join("pending-cursor.json"),
+            &"0000000000000031.json"
+        ));
+        let (events, event_receiver) = mpsc::channel();
+        *TEST_AUTOMATIC_REPORT_OBSERVER.lock_unpoisoned() = Some(events);
+        *REPORTER.pending.lock_unpoisoned() = Some(first.clone());
+        let (sender, receiver) = mpsc::channel();
+        let pending = REPORTER.pending.clone();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let worker_stopping = stopping.clone();
+        let worker = std::thread::spawn(move || {
+            reporter_worker(
+                receiver,
+                Arc::new(Mutex::new(None)),
+                pending,
+                Arc::new(AtomicBool::new(false)),
+                None,
+                sessions_dir().join("unused.json"),
+                bootstrap_journal_path("unused"),
+                "unused".into(),
+                worker_stopping,
+            )
+        });
+        *REPORTER.runtime.lock_unpoisoned() = Some(ReporterRuntime {
+            control_sender: sender,
+            worker,
+            stopping,
+        });
+        let successful = || {
+            Ok((200, r#"{"ok":true,"report_id":"authored","diagnostics_sha256":"authored-full-evidence"}"#.into()))
+        };
+        let (entered, began) = mpsc::channel();
+        let (outcome, outcome_receiver) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        super::super::report::test_detached_automatic_delivery(
+            first.id.clone(),
+            successful(),
+            entered,
+            outcome,
+            released,
+        )
+        .unwrap();
+        began.recv_timeout(timeout).unwrap();
+        assert!(outcome_receiver.recv_timeout(timeout).unwrap());
+        assert!(super::super::report::test_automatic_report_is_busy());
+        assert!(
+            matches!(
+                event_receiver.recv_timeout(std::time::Duration::from_millis(25)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "acknowledgement cannot advance while its worker still owns the permit"
+        );
+        release.send(()).unwrap();
+        let mut scans = 0;
+        loop {
+            match event_receiver.recv_timeout(timeout).unwrap() {
+                TestAutomaticEvent::Scanned(_, _) => scans += 1,
+                TestAutomaticEvent::Ready(id, busy) => {
+                    assert_eq!(id, second.id);
+                    assert!(!busy, "continuation runs only after permit release");
+                    break;
+                }
+            }
+        }
+        assert!(
+            scans <= 4,
+            "one wrap and bounded batches reach proof past 40 unknown records"
+        );
+        assert!(!first_path.exists());
+        assert_eq!(std::fs::read(&second_path).unwrap(), second_bytes);
+        assert_eq!(
+            REPORTER.pending.lock_unpoisoned().as_ref().unwrap().id,
+            second.id
+        );
+        // Wrong digest and offline completion never acknowledge or enqueue a retry.
+        for failure in [
+            Ok((
+                200,
+                r#"{"ok":true,"report_id":"authored","diagnostics_sha256":"wrong"}"#.into(),
+            )),
+            Err("authored offline delivery".into()),
+        ] {
+            let (entered, began) = mpsc::channel();
+            let (outcome, outcome_receiver) = mpsc::channel();
+            let (release, released) = mpsc::channel();
+            super::super::report::test_detached_automatic_delivery(
+                second.id.clone(),
+                failure,
+                entered,
+                outcome,
+                released,
+            )
+            .unwrap();
+            began.recv_timeout(timeout).unwrap();
+            assert!(!outcome_receiver.recv_timeout(timeout).unwrap());
+            release.send(()).unwrap();
+            let deadline = std::time::Instant::now() + timeout;
+            while super::super::report::test_automatic_report_is_busy() {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+            assert!(matches!(
+                event_receiver.recv_timeout(std::time::Duration::from_millis(25)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ));
+            assert_eq!(std::fs::read(&second_path).unwrap(), second_bytes);
+        }
+        // A valid ACK whose local retirement is busy also stops continuation.
+        let lock =
+            buffr_durable_file::acquire_publisher_lock(&second_path, std::time::Duration::ZERO)
+                .unwrap();
+        let (entered, began) = mpsc::channel();
+        let (outcome, outcome_receiver) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        super::super::report::test_detached_automatic_delivery(
+            second.id.clone(),
+            successful(),
+            entered,
+            outcome,
+            released,
+        )
+        .unwrap();
+        began.recv_timeout(timeout).unwrap();
+        assert!(outcome_receiver.recv_timeout(timeout).unwrap());
+        release.send(()).unwrap();
+        assert!(matches!(
+            event_receiver.recv_timeout(std::time::Duration::from_secs(1)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert_eq!(std::fs::read(&second_path).unwrap(), second_bytes);
+        drop(lock);
+        // An explicitly initiated later attempt succeeds; the finite scan stops
+        // after one wrap with only unknown originals left, without uploading them.
+        let (entered, began) = mpsc::channel();
+        let (outcome, outcome_receiver) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        super::super::report::test_detached_automatic_delivery(
+            second.id.clone(),
+            successful(),
+            entered,
+            outcome,
+            released,
+        )
+        .unwrap();
+        began.recv_timeout(timeout).unwrap();
+        assert!(outcome_receiver.recv_timeout(timeout).unwrap());
+        release.send(()).unwrap();
+        let mut scans = 0;
+        loop {
+            match event_receiver.recv_timeout(timeout).unwrap() {
+                TestAutomaticEvent::Scanned(wrapped, exhausted) => {
+                    scans += 1;
+                    if wrapped && exhausted {
+                        break;
+                    }
+                }
+                TestAutomaticEvent::Ready(id, _) => {
+                    panic!("unexpected immediate report retry for {id}")
+                }
+            }
+        }
+        assert!(scans <= 4);
+        assert!(!second_path.exists());
+        assert!(
+            keyed_pending_incident_path("0000000000000001")
+                .unwrap()
+                .exists()
+        );
+        assert!(matches!(
+            event_receiver.recv_timeout(std::time::Duration::from_millis(25)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        REPORTER.shutdown();
+        *TEST_AUTOMATIC_REPORT_OBSERVER.lock_unpoisoned() = None;
     }
 
     #[test]
