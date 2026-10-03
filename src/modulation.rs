@@ -107,6 +107,10 @@ pub struct Modulator {
 /// This is a bounded implemented subset, not a fallback for other LFO states.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PitchLfo {
+    /// Saved normalized cycle position, copied unchanged into the retriggered
+    /// native source phase. Live phase writes and free-running clocks are not admitted.
+    #[serde(default)]
+    pub start_phase: f32,
     pub slot: u8,
     pub count: f32,
     pub note_value: f32,
@@ -250,7 +254,7 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                     let supported = lfo.version == 0x71 && lfo.waveform == 5 && params.unknown_flags[2] != 0
                         && lfo.initial_values[0].is_finite() && (0. ..=5000.).contains(&lfo.initial_values[0])
                         && lfo.records[1].values[0].is_finite() && lfo.records[1].values[0] <= 0.
-                        && lfo.initial_values[3] == 0.
+                        && lfo.initial_values[3].is_finite() && (0. ..=1.).contains(&lfo.initial_values[3])
                         && lfo.initial_values[1].is_finite() && lfo.initial_values[1] >= 1.
                         && lfo.records[0].values[0].is_finite() && lfo.records[0].values[0] > 0.
                         && lfo.records[1].flag && weights[0].is_finite() && weights[0].abs() <= 1.
@@ -261,7 +265,7 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                     let pitch_admitted = supported && depth.is_finite() && !pitch.is_empty() && pitch.iter().all(|(_, t)| !t.invert && t.lag_ms == 0
                         && !t.shaper.as_ref().is_some_and(|s| s.enabled) && target_depth(t).is_finite());
                     if pitch_admitted {
-                        out.pitch_lfos.push(PitchLfo { slot: slot as u8,
+                        out.pitch_lfos.push(PitchLfo { start_phase: lfo.initial_values[3], slot: slot as u8,
                             count: lfo.initial_values[1], note_value: lfo.records[0].values[0],
                             sine: weights[0], fade_ms: lfo.initial_values[0], depth,
                             targets: pitch.iter().map(|(i, t)| (*i as u32, target_depth(t))).collect(),
@@ -282,7 +286,7 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                     if admitted {
                         let (target, t) = volume[0];
                         out.volume_lfos.push(VolumeLfo {
-                            source: PitchLfo { slot: slot as u8, count: lfo.initial_values[1],
+                            source: PitchLfo { start_phase: lfo.initial_values[3], slot: slot as u8, count: lfo.initial_values[1],
                                 note_value: lfo.records[0].values[0], sine: weights[0], fade_ms: 0.,
                                 depth: 0., targets: Vec::new(), bypassed: params.unknown_flags[1] != 0 },
                             target: target as u32, intensity: t.intensity,
@@ -290,7 +294,7 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                         });
                         out.warnings.push(format!("Internal LFO slot {slot}: saved retriggered sine-only Multi volume with zero/positive lag is eligible for ordinary sampler playback; live source bypass is supported; live intensity/timing, nonzero fade and other targets remain unsupported"));
                     } else if !volume.is_empty() {
-                        out.warnings.push(format!("Internal LFO slot {slot} volume not applied: requires one saved phase-zero sine-only target, zero source fade, nonnegative signed lag, known polarity flags, no separate inversion or enabled shaper"));
+                        out.warnings.push(format!("Internal LFO slot {slot} volume not applied: requires one saved sine-only target with finite cycle phase in 0..1, zero source fade, nonnegative signed lag, known polarity flags, no separate inversion or enabled shaper"));
                     }
                     if !pitch_admitted && !admitted { skipped_lfos += 1; }
                     if params.targets.iter().any(|t| !matches!((t.param.as_str(), t.slot),
@@ -559,8 +563,8 @@ mod tests {
                 ni_file::kontakt::objects::LfoRecord { flag: true, values: [1. / 24., 0., 0.] },
                 ni_file::kontakt::objects::LfoRecord { flag: true, values: [-1., 0., 0.] }],
             trailing_flag: false, trailing_values: Some([0.03, 0., 0., 0., 0.]), additional_flag: None };
-        let saved = |rows: &[(&str, Option<u8>)], lag, flags, invert, fade| {
-            let mut source = source.clone(); source.initial_values[0] = fade;
+        let saved = |rows: &[(&str, Option<u8>)], lag, flags, invert, fade, phase| {
+            let mut source = source.clone(); source.initial_values[0] = fade; source.initial_values[3] = phase;
             let mut private = targets(rows, lag, flags, invert);
             private.extend([0, 0, 1, 0]); private.extend(0u32.to_le_bytes());
             name(&mut private, "Saved sine"); private.extend(1u32.to_le_bytes());
@@ -577,7 +581,7 @@ mod tests {
                     data.extend((wrapper.len() as u32).to_le_bytes()); data.extend(wrapper); data.extend(0u32.to_le_bytes()); data
                 }}] })
         };
-        let raw = saved(&[("pan", None), ("pitch", None), ("volume", None), ("pitch", None)], 0, 0x10, false, 0.);
+        let raw = saved(&[("pan", None), ("pitch", None), ("volume", None), ("pitch", None)], 0, 0x10, false, 0., 0.);
         let decoded = read_group(&raw).unwrap();
         assert_eq!(decoded.pitch_lfos.len(), 1);
         assert_eq!(decoded.pitch_lfos[0].slot, 0);
@@ -590,8 +594,20 @@ mod tests {
         assert_eq!(decoded.volume_lfos[0].lag_ms, 0);
         assert!(decoded.warnings.iter().any(|w| w.contains("other than admitted pitch and volume")));
 
+        for phase in [0., 0.25, 0.4990234375, 0.5, 0.5009765625, 0.75, 1.] {
+            let decoded = read_group(&saved(&[("pitch", None), ("volume", None)], 0, 0x10, false, 0., phase)).unwrap();
+            assert_eq!(decoded.pitch_lfos[0].start_phase.to_bits(), phase.to_bits());
+            assert_eq!(decoded.volume_lfos[0].source.start_phase.to_bits(), phase.to_bits());
+            assert_eq!((decoded.pitch_lfos[0].targets[0].0, decoded.volume_lfos[0].target), (0, 1));
+        }
+        for phase in [-0.001, 1.001, f32::INFINITY, f32::NAN] {
+            let decoded = read_group(&saved(&[("pitch", None), ("volume", None)], 0, 0x10, false, 0., phase)).unwrap();
+            assert!(decoded.pitch_lfos.is_empty() && decoded.volume_lfos.is_empty());
+            assert!(decoded.warnings.iter().any(|w| w.contains("pitch not applied")));
+            assert!(decoded.warnings.iter().any(|w| w.contains("volume not applied")));
+        }
         let volume = [("volume", None)];
-        let negative = read_group(&saved(&volume, 15, 0x12, false, 0.)).unwrap();
+        let negative = read_group(&saved(&volume, 15, 0x12, false, 0., 0.)).unwrap();
         assert_eq!((negative.volume_lfos[0].negative, negative.volume_lfos[0].lag_ms), (true, 15));
         for (rows, lag, flags, invert, fade) in [
             (&volume[..], 32768, 0x10, false, 0.),
@@ -600,11 +616,11 @@ mod tests {
             (&volume[..], 15, 0x10, false, 1.),
             (&[("volume", None), ("volume", None)][..], 15, 0x10, false, 0.),
         ] {
-            let rejected = read_group(&saved(rows, lag, flags, invert, fade)).unwrap();
+            let rejected = read_group(&saved(rows, lag, flags, invert, fade, 0.)).unwrap();
             assert!(rejected.volume_lfos.is_empty());
             assert!(rejected.warnings.iter().any(|w| w.contains("volume not applied")));
         }
-        let rejected_pitch = read_group(&saved(&[("pitch", None)], 15, 0x10, false, 0.)).unwrap();
+        let rejected_pitch = read_group(&saved(&[("pitch", None)], 15, 0x10, false, 0., 0.)).unwrap();
         assert!(rejected_pitch.pitch_lfos.is_empty());
         assert!(rejected_pitch.warnings.iter().any(|w| w.contains("pitch not applied")),
             "eligible source waveform cannot silence invalid destination warnings");

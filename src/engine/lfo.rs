@@ -100,7 +100,7 @@ impl Clock {
                     let mut point = 0.;
                     for lfo in lfos.iter().filter(|l| !l.bypassed) {
                         let hz = f64::from(lfo.frequency(tempo));
-                        let phase = (self.phase[lfo.slot as usize]
+                        let phase = (f64::from(lfo.start_phase) + self.phase[lfo.slot as usize]
                             + i as f64 * hz / f64::from(rate))
                         .rem_euclid(1.);
                         let mut gain = 12. * lfo.depth * lfo.sine / lfo.sine.abs().max(1.);
@@ -133,7 +133,7 @@ impl Clock {
                     for lfo in volume_lfos.iter().filter(|l| !l.source.bypassed) {
                         let source = &lfo.source;
                         let slot = usize::from(source.slot);
-                        let phase = (self.phase[slot]
+                        let phase = (f64::from(source.start_phase) + self.phase[slot]
                             + i as f64 * f64::from(source.frequency(tempo)) / f64::from(rate))
                         .rem_euclid(1.);
                         // The admitted volume source has no fade. Its bipolar
@@ -193,7 +193,13 @@ mod tests {
 
     #[test]
     fn saved_sine_volume_shares_clock_lag_and_fragmented_interpolation() {
-        let source = PitchLfo {
+        for start_phase in [0., 0.25, 0.4990234375, 0.5, 0.5009765625, 0.75, 1.] {
+            saved_sine_volume_shares_clock_lag_and_fragmented_interpolation_at_phase(start_phase);
+        }
+    }
+
+    fn saved_sine_volume_shares_clock_lag_and_fragmented_interpolation_at_phase(start_phase: f32) {
+        let source = PitchLfo { start_phase,
             slot: 7,
             count: 16.,
             note_value: 1. / 24.,
@@ -245,6 +251,11 @@ mod tests {
                 &mut pitch_positions,
                 None,
             );
+            if at == 0 {
+                let semitones = -(std::f64::consts::TAU * f64::from(start_phase)).sin() as f32 * 3.;
+                assert_eq!(pitch_positions[1], (2f64.powf(f64::from(semitones) / 12.) * FIXED_ONE) as u64,
+                    "the saved cycle position reaches the physical pitch step");
+            }
             assert_eq!(
                 shared_positions, pitch_positions,
                 "volume cannot advance pitch a second time"
@@ -267,14 +278,15 @@ mod tests {
         );
         assert!(a.iter().zip(c).all(|(a, c)| (a - c).abs() < 1e-7));
         assert!((shared.phase[7] - 3. * 512. / 48_000.).abs() < 1e-8);
-        // Independent native control-point reference: first bipolar zero maps
-        // to .5; the next 32-frame point applies the positive15ms coefficient.
-        let signal = -(std::f64::consts::TAU * 3. * 32. / 48_000.).sin() as f32;
-        let next = 0.5 + ((signal + 1.) * 0.5 - 0.5) * 0.18508725;
-        assert_eq!(a[0], 0.5);
-        assert_eq!(a[32], 0.5);
+        // Independent native control-point reference, including the saved cycle
+        // position and the positive15ms coefficient at the next32-frame point.
+        let initial = (1. - (std::f64::consts::TAU * f64::from(start_phase)).sin() as f32) * 0.5;
+        let signal = -(std::f64::consts::TAU * (f64::from(start_phase) + 3. * 32. / 48_000.)).sin() as f32;
+        let next = initial + ((signal + 1.) * 0.5 - initial) * 0.18508725;
+        assert!((a[0] - initial).abs() < 1e-7);
+        assert!((a[32] - initial).abs() < 1e-7);
         assert!((a[64] - next).abs() < 1e-7);
-        assert!((a[48] - (0.5 + (next - 0.5) * 0.5)).abs() < 1e-7);
+        assert!((a[48] - (initial + (next - initial) * 0.5)).abs() < 1e-7);
 
         let mut paused = only;
         let mut reference = only;
