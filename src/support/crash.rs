@@ -1183,19 +1183,31 @@ fn reporter_worker(
                 break;
             }
             ReporterControl::Submitted(incident_id) => {
-                if load_pending_incident().is_some_and(|incident| incident.id == incident_id) {
-                    let _ = std::fs::remove_file(pending_incident_path());
-                }
-                // A failed/cancelled replacement may have left this same
-                // incident deferred while the pending original was retained.
-                // The verified acknowledgement retires both queue copies;
-                // complete private journal/native originals stay untouched.
-                if incident_id.len() == 16 && incident_id.bytes().all(|b| b.is_ascii_hexdigit()) {
-                    let _ = std::fs::remove_file(
-                        reports_dir()
-                            .join("deferred")
-                            .join(format!("{incident_id}.json")),
-                    );
+                let copies = [
+                    load_pending_incident()
+                        .is_some_and(|incident| incident.id == incident_id)
+                        .then(pending_incident_path),
+                    // Failed/cancelled replacement can leave a same-ID deferred
+                    // copy. Retire only queue copies; full private originals stay.
+                    (incident_id.len() == 16 && incident_id.bytes().all(|b| b.is_ascii_hexdigit()))
+                        .then(|| {
+                            reports_dir()
+                                .join("deferred")
+                                .join(format!("{incident_id}.json"))
+                        }),
+                ];
+                for copy in copies.into_iter().flatten() {
+                    if let Err(error) = std::fs::remove_file(copy) {
+                        if error.kind() != std::io::ErrorKind::NotFound {
+                            crate::diagnostics::event(
+                                crate::diagnostics::LogLevel::Error,
+                                "support",
+                                "acknowledged_report_cleanup_failed",
+                                serde_json::json!({"incident_id":incident_id,
+                                "reason":format!("Delivery was acknowledged, but a local queue copy could not be retired ({error}). Evidence remains local and may be retried; complete originals are retained.")}),
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -2031,7 +2043,7 @@ mod tests {
         // an authored slot with the real recorder schema/checksum so the root
         // consumer (not only the vendor reader test) must retain the aggregate.
         let middle = derpcat_flight_recorder::Record {
-            sequence: 200,
+            sequence: 140,
             action: "diagnostic_overflow".into(),
             value_a: 87,
             ..Default::default()
@@ -2051,7 +2063,7 @@ mod tests {
                 .write(true)
                 .open(&journal)
                 .unwrap();
-            file.seek(std::io::SeekFrom::Start(200 * 1024)).unwrap();
+            file.seek(std::io::SeekFrom::Start(140 * 1024)).unwrap();
             file.write_all(&slot).unwrap();
             file.sync_all().unwrap();
         }
