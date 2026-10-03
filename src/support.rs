@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 mod crash;
+mod export;
+pub(crate) use export::export_crash_evidence;
 mod platform;
 mod report;
 pub(crate) use crash::flush_journal;
@@ -38,6 +40,18 @@ fn support_cache_path() -> PathBuf {
         });
     root.join("support-cache.json")
 }
+// Buffer only a bounded input, including one byte to distinguish exact-limit
+// files from oversized files whose complete originals must remain private.
+const LOCAL_REPORT_BYTES: usize = 8 * 1024 * 1024;
+fn read_bounded_file(path: &std::path::Path, limit: usize) -> std::io::Result<Option<Vec<u8>>> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take((limit as u64).saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    Ok((bytes.len() <= limit).then_some(bytes))
+}
+
 fn record_host_identity(format: &str, host: Option<&str>) {
     let mut identity = HOST_IDENTITY.lock_unpoisoned();
     identity.1 = format.to_owned();
@@ -234,6 +248,18 @@ fn read_response(mut response: ureq::http::Response<ureq::Body>) -> Result<(u16,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_local_reads_distinguish_exact_limit_and_preserve_oversized_original() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("authored-local.json");
+        std::fs::write(&path, b"exactly8").unwrap();
+        assert_eq!(read_bounded_file(&path, 8).unwrap().unwrap(), b"exactly8");
+        std::fs::write(&path, b"exactly8+").unwrap();
+        assert!(read_bounded_file(&path, 8).unwrap().is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), b"exactly8+");
+        assert!(read_bounded_file(&path, 0).unwrap().is_none());
+    }
 
     #[test]
     fn full_unicode_events_survive_record_detail_limits_and_are_reconstructable() {

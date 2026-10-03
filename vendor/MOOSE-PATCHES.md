@@ -4,7 +4,7 @@
 from moose `bffa467` (the rev in `Cargo.toml`) and patched in through
 `[patch."https://github.com/Matari-Audio/moose"]`. Their `Cargo.toml`s
 spell out what the moose workspace used to inherit; the sources differ only
-by the patch below. `moose-mui` is vendored for its own reasons (see its
+by the patches below. `moose-mui` is vendored for its own reasons (see its
 README).
 
 ## Output port names that follow the plugin
@@ -43,3 +43,19 @@ A host that ignores the notification keeps the names it read when it last
 enumerated the ports; they are current whenever it asks again.
 
 Upstream: this is additive and default-off; worth offering to MOOSE as is.
+
+## Explicit CLAP MPE input capability
+
+The vendored `moose-clap` has a default-off `mpe-input` feature. KONTRA
+opts in because its configured MPE zones process member and manager MIDI
+expression. `clap.note-ports` then includes `CLAP_NOTE_DIALECT_MIDI_MPE`
+for input ports only, alongside CLAP, MIDI and the existing MIDI2 opt-in.
+The preferred dialect stays CLAP; output ports do not gain an MPE claim.
+This advertises supported processing, not a default zone or automatic zone
+negotiation. It does not infer MPE capability from MIDI2.
+
+The [CLAP 1.2.2 note-port contract](https://github.com/free-audio/clap/blob/1.2.2/include/clap/ext/note-ports.h)
+defines MIDI_MPE as raw MIDI with polyphonic expression. The real exported
+factory/state/process gate is `tools/test_native_clap.py ... --require-mpe`;
+it checks every input and output port and plays an original tone through
+configured lower-zone member/manager bend and pedal routing.

@@ -58,7 +58,7 @@ use clap_sys::ext::audio_ports_config::{
 use clap_sys::ext::latency::{CLAP_EXT_LATENCY, clap_host_latency, clap_plugin_latency};
 use clap_sys::ext::note_ports::{
     CLAP_EXT_NOTE_PORTS, CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI, CLAP_NOTE_DIALECT_MIDI2,
-    clap_note_port_info, clap_plugin_note_ports,
+    CLAP_NOTE_DIALECT_MIDI_MPE, clap_note_port_info, clap_plugin_note_ports,
 };
 use clap_sys::ext::params::{
     CLAP_EXT_PARAMS, CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_IS_BYPASS, CLAP_PARAM_IS_ENUM,
@@ -4411,6 +4411,11 @@ unsafe extern "C" fn note_ports_get<P: PluginExport>(
         // raw-MIDI path.
         out.supported_dialects = CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI;
         out.preferred_dialect = CLAP_NOTE_DIALECT_CLAP;
+        // Explicit consumer capability, independent of MIDI2 or current zone.
+        // Output remains ordinary MIDI unless it has its own MPE contract.
+        if is_input && cfg!(feature = "mpe-input") {
+            out.supported_dialects |= CLAP_NOTE_DIALECT_MIDI_MPE;
+        }
         // A port that opted into MIDI 2.0 also carries UMP: advertise
         // the MIDI2 dialect so the host routes `CLAP_EVENT_MIDI2` to us
         // (in) and reads it back (out). Still CLAP-preferred - MIDI2 is

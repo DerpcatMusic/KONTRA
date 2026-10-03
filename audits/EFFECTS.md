@@ -358,6 +358,7 @@ Filter type ids (`engine::filter::filter_type`, `KSP_FILTER_TYPES`):
 | 52..57 | SVF 1 and 2 section LP/BP/HP (not AR) | stored SVF knobs | medium |
 | 19 | Versatile | authored script names paired with stored groups | medium |
 | 58 | SV Notch 4 | authored menu name paired with selected-group native records | high |
+| 30..41 | Ladder LP1..4, HP1..4, BP2/4, Peak, Notch | native named constants paired with their initialized values and the versioned record conversion | high |
 
 The modern identity correction uses a census of 701 local factory snapshots,
 reading saved native records before running their scripts. Dominant menu/native
@@ -371,6 +372,65 @@ AR models use pass-band-compensated ladder sections, with their established pole
 counts; the exact amplitude-adaptive resonance algorithm remains an approximation.
 The existing formant proxy uses three vowel peaks; the phaser uses four all-passes
 summed with the input, without native feedback modelling.
+
+### Native Ladder LP4
+
+Subtype 33 uses a shared nonlinear four-pole kernel in group inserts and program
+racks. Versioned records preserve the leading Gain value, cutoff, resonance and
+raw flag. Direct Gain is 12 times the stored value in dB: zero is 0 dB,
+0.5 is +6 dB, and 1 is +12 dB. Negative stored values retain their attenuation.
+The public KSP value divides by 1,000,000 without a bipolar offset; enabled
+Gain modulation clamps its summed value to 0..1 before the same gain law.
+Slot output gain remains a separate operation. The cutoff law spans approximately
+25.957..19,912.266 Hz. KSP readback uses normalized values, while cutoff and Gain
+captions use those effective units.
+
+The single-rate kernel includes input soft saturation, four trapezoidal poles,
+resonance feedback, its low-frequency correction, and resonance compensation.
+The exponential interpolation entries are generated from a mathematical law;
+no captured tables are included. The response graph shows its small-signal
+transfer, which differs from large-signal saturation. Ordinary control changes
+interpolate linear input gain and shaped resonance on a 32-frame clock,
+updating coefficients every four frames. The duration is the nearest whole
+32-frame tick to 2 ms; initial activation snapshots saved controls. Record
+versions 144..146 select a separate cutoff clock that is left unprepared by
+native construction and rate setup: cutoff therefore snapshots at the next
+32-frame boundary. This mode is independent of the saved High Quality byte.
+Unknown record versions use ordinary normalized-cutoff interpolation with an
+explicit diagnostic. Enabled group target routes re-arm this shared control
+quartet every 32 frames, including unchanged targets and zero-depth routes.
+Route switches retain its phase. Modulation-source lag and segment sampling,
+rack modulation routes, nonzero secondary-clock activation and High Quality
+oversampling remain explicit gaps. A sign-loss
+artifact exists in the native conditional cap branch when that secondary clock
+is nonzero; its activation is not established for these records and it is not
+reproduced or attributed to an actual preset. Bypass and subtype
+changes clear local histories; the native transition lifecycle is unverified
+and reported separately. Other Ladder modes
+retain their named constants and decoded records but remain unsupported.
+These limits matter: enabling processing does not establish whole-effect
+audible equivalence. NI documents the LP4 topology, Gain and High Quality
+controls in its [filter reference](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/filter-reference).
+
+Each voice reserves eight fixed 124-byte Ladder states (992 bytes, or 992 KiB for
+1,024 voices), plus a single generated 9.38 KiB coefficient table warmed by
+filter and script construction. Audio lookup cannot initialize or lock it.
+Processing visits active native slots; nonlinear states never
+enter shared linear lanes. The focused checks cover independent double
+direct-form pole/soft-clip references, DC and frequency response across sample
+rates, full-resonance boundedness, channel isolation, block partition/reset,
+native parameter edits, insert/Amplifier order and zero heap allocations.
+The control-step gate additionally compares a moving four-pole response with
+independent double RC voltages, linear-gain steps, shaped-resonance steps,
+retargeting, tiny-delta settlement and arbitrary block partitions. A separate
+version-mode gate checks the cutoff boundary snapshot while Gain and resonance
+continue their ordinary trajectories, including descending edits and reset.
+The group/rack gate retains version provenance and covers live target edits,
+readback and zero audio heap allocations. An independent geometric gain and
+four-pole voltage reference checks repeated target writes, mid-tick route
+switches and partition invariance at four rates; a zero-depth group route
+checks the actual routing bridge and zero heap. The clock
+adds 384 KiB for 1,024 voices; settled processing keeps its straight scalar loop.
 
 ### Native Daft identity and record correction
 

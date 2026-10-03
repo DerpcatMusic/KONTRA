@@ -1031,6 +1031,7 @@ impl Runtime {
     }
 
     pub fn new(host: HostState, outputs: usize, persisted: Vec<Persisted>) -> Self {
+        crate::engine::filter::prepare_ladder();
         Self {
             programs: Vec::new(),
             states: Vec::new(),
