@@ -28,6 +28,11 @@ struct Reader {
     answer: Mutex<Option<Result<DiagnosticSnapshot, String>>>,
 }
 
+struct ReportReceipt {
+    status: String,
+    issue_url: Option<String>,
+}
+
 pub struct State {
     reader: Arc<Reader>,
     reader_thread: Option<std::thread::JoinHandle<()>>,
@@ -39,6 +44,8 @@ pub struct State {
     copy_message: Option<String>,
     copy_error: Option<String>,
     snapshot: Option<Arc<DiagnosticSnapshot>>,
+    receipt_snapshot: Option<Arc<DiagnosticSnapshot>>,
+    receipt: Option<ReportReceipt>,
     requested: Option<u64>,
     read_error: Option<String>,
     search: String,
@@ -72,6 +79,8 @@ impl Default for State {
             copy_message: None,
             copy_error: None,
             snapshot: None,
+            receipt_snapshot: None,
+            receipt: None,
             requested: None,
             read_error: None,
             search: String::new(),
@@ -106,6 +115,41 @@ impl Drop for State {
     }
 }
 impl State {
+    fn cache_receipt(&mut self, snapshot: &Arc<DiagnosticSnapshot>) {
+        if self
+            .receipt_snapshot
+            .as_ref()
+            .is_some_and(|old| Arc::ptr_eq(old, snapshot))
+        {
+            return;
+        }
+        // Receipt visibility is independent of log filters. Scan only when the
+        // background reader replaces its immutable snapshot, never every frame.
+        self.receipt = snapshot.events.iter().rev().find_map(|event| {
+            if event.module != "support"
+                || !matches!(event.event.as_str(), "automatic_crash_report" | "previous_crash_report")
+            {
+                return None;
+            }
+            let sent = event.details["sent"].as_bool()?;
+            let report = event.details["report_id"].as_str().filter(|id| {
+                !id.is_empty() && id.len() <= 128
+                    && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            });
+            let status = if sent {
+                report.map_or_else(|| "Crash report sent.".into(), |id| format!("Crash report sent. Report ID: {id}"))
+            } else if event.details["manual_export_required"] == true {
+                "Crash report requires manual export. Automatic retry is paused for unchanged evidence.".into()
+            } else {
+                "Crash report retained for retry. See the support log for details.".into()
+            };
+            let issue_url = sent.then(|| event.details["issue_url"].as_str()
+                .and_then(crate::support::public_issue_url)).flatten();
+            Some(ReportReceipt { status, issue_url })
+        });
+        self.receipt_snapshot = Some(snapshot.clone());
+    }
+
     pub(super) fn for_load(&mut self, load: &str) {
         self.search = if load.is_empty() { String::new() } else { format!("load:{load}") };
         self.levels = [true; 4];
@@ -414,6 +458,9 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
         state.copy_message = Some("Copied retained session diagnostics. Export includes older journal history.".into());
     }
     let snapshot = state.snapshot.clone();
+    if let Some(snapshot) = &snapshot {
+        state.cache_receipt(snapshot);
+    }
     let status = snapshot.as_ref().map(|s| &s.status);
     let (refresh, refresh_el) = action(ui, "logs-refresh", "Refresh", false);
     if refresh {
@@ -478,6 +525,38 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
         }
     }
     let mut content = vec![section_bar("Logs", vec![copy_el.when(state.copy_thread.is_some(), El::disabled), export_el, open_el, refresh_el])];
+    if let Some(receipt) = &state.receipt {
+        let mut summary = vec![
+            caption(receipt.status.clone())
+                .fill(secondary())
+                .lines(2)
+                .id("logs-report-status"),
+        ];
+        if let Some(url) = &receipt.issue_url {
+            summary.push(
+                caption(url.clone())
+                    .fill(secondary())
+                    .lines(2)
+                    .id("logs-report-issue"),
+            );
+        }
+        let mut receipt_row = vec![col(summary).gap(0).flex(1).min_w(0)];
+        if let Some(url) = &receipt.issue_url {
+            let (copy, button) = action(ui, "logs-copy-issue", "Copy issue link", false);
+            if copy {
+                ui.set_clipboard(url.clone());
+            }
+            receipt_row.push(button);
+        }
+        content.push(
+            row(receipt_row)
+                .gap(INSET)
+                .align(Align::Center)
+                .pad((INSET, TIGHT))
+                .shrink(0)
+                .id("logs-report-receipt"),
+        );
+    }
     if let Some(message) = &state.copy_message {
         content.push(row![caption(message.clone()).fill(secondary()).lines(2)].justify(Justify::Start).pad((INSET, TIGHT)).shrink(0));
     }
@@ -1052,6 +1131,102 @@ mod tests {
                 "support export did not finish"
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn crash_receipts_remain_visible_with_default_filters_and_copy_only_public_issues() {
+        let params = Arc::new(SamplerParams::new());
+        let clipboard = Arc::new(Mutex::new(String::new()));
+        let mut ui = super::super::theme::ui().clipboard(Board(clipboard.clone()));
+        let mut state = State::default();
+        let snapshot = |sent: bool, manual: bool, url: &str, event: &str| {
+            Arc::new(DiagnosticSnapshot {
+                revision: 1,
+                events: vec![
+                    serde_json::from_value(json!({
+                        "schema_version":1,"sequence":1,"timestamp_ms":1759392000000u64,
+                        "monotonic_ms":0,"session_id":"synthetic-receipt-ui-fixture",
+                        "level":"info","module":"support","event":event,
+                        "data":{"sent":sent,"manual_export_required":manual,
+                            "report_id":"report-fixture-42","issue_url":url}
+                    }))
+                    .unwrap(),
+                ],
+                status: Default::default(),
+                build: json!({"fixture":true}),
+            })
+        };
+        let url = "https://github.com/DerpcatMusic/KONTRA/issues/42";
+        for event in ["automatic_crash_report", "previous_crash_report"] {
+            state.snapshot = Some(snapshot(true, false, url, event));
+            for _ in 0..3 {
+                tick(&mut ui, &mut state, &params, Input::default());
+            }
+            assert_eq!(state.levels, [false, false, true, true]);
+            assert!(
+                state.matches.is_empty(),
+                "Info receipt stays filtered out of the history"
+            );
+            let scene = ui.scene().unwrap();
+            for id in ["logs-report-status", "logs-report-issue", "logs-copy-issue"] {
+                assert!(
+                    scene.surface(id).is_some_and(|s| s.frame.size.height > 0.),
+                    "live/restored receipt is visible above the default filters: {id}"
+                );
+            }
+            assert!(
+                state
+                    .receipt
+                    .as_ref()
+                    .unwrap()
+                    .status
+                    .contains("report-fixture-42")
+            );
+            press(&mut ui, &mut state, &params, "logs-copy-issue");
+            assert_eq!(*super::super::lock(&clipboard), url);
+            state.search = "no matching log event".into();
+            tick(&mut ui, &mut state, &params, Input::default());
+            assert!(ui.scene().unwrap().surface("logs-report-receipt").is_some());
+            assert!(
+                Arc::ptr_eq(
+                    state.receipt_snapshot.as_ref().unwrap(),
+                    state.snapshot.as_ref().unwrap()
+                ),
+                "unchanged snapshots reuse their receipt independently of search/filter changes"
+            );
+        }
+        for rejected in [
+            "https://github.com/DerpcatMusic/buffr-support/issues/42",
+            "https://example.com/DerpcatMusic/KONTRA/issues/42",
+            "https://github.com/DerpcatMusic/KONTRA/issues/42?token=private",
+            "https://github.com/DerpcatMusic/KONTRA/issues/0",
+        ] {
+            // Same revision and shape, but a new immutable snapshot must replace
+            // the old safe-link cache instead of leaving its button active.
+            state.snapshot = Some(snapshot(true, false, rejected, "previous_crash_report"));
+            for _ in 0..3 {
+                tick(&mut ui, &mut state, &params, Input::default());
+            }
+            assert!(ui.scene().unwrap().surface("logs-report-status").is_some());
+            assert!(ui.scene().unwrap().surface("logs-copy-issue").is_none());
+            assert!(ui.scene().unwrap().surface("logs-report-issue").is_none());
+        }
+        for manual in [false, true] {
+            state.snapshot = Some(snapshot(false, manual, url, "automatic_crash_report"));
+            for _ in 0..3 {
+                tick(&mut ui, &mut state, &params, Input::default());
+            }
+            assert!(
+                ui.scene().unwrap().surface("logs-copy-issue").is_none(),
+                "a failed receipt cannot offer even an otherwise valid issue URL"
+            );
+            let status = &state.receipt.as_ref().unwrap().status;
+            assert!(status.contains(if manual {
+                "manual export"
+            } else {
+                "retained for retry"
+            }));
         }
     }
 
