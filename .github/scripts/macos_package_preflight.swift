@@ -18,7 +18,6 @@ let c = root.appendingPathComponent("owned.c")
 try "int main(void) { return 0; }\n".write(to: c, atomically: true, encoding: .utf8)
 let executable = root.appendingPathComponent("owned")
 try run("/usr/bin/xcrun", ["clang", c.path, "-o", executable.path])
-let ids = ["clap": "org.cleveraudio.clap", "vst3": "com.steinberg.vst3"]
 var plugins: [URL] = []
 func bundle(_ name: String, _ type: String, _ extra: [String: Any] = [:]) throws -> URL {
     let url = root.appendingPathComponent(name)
@@ -42,10 +41,13 @@ func inspect(_ url: URL, _ phase: String) throws -> Bool {
     return values.isPackage == true && workspace && packageType
 }
 for url in plugins { _ = try inspect(url, "before-registration") }
-let registrar = try bundle("KONTRA.app", "APPL", [
-    "UTImportedTypeDeclarations": ids.map { ext, id in ["UTTypeIdentifier": id, "UTTypeConformsTo": ["com.apple.package", "com.apple.bundle"], "UTTypeDescription": ext.uppercased() + " plug-in", "UTTypeTagSpecification": ["public.filename-extension": [ext]]] as [String: Any] },
-    "CFBundleDocumentTypes": ids.map { _, id in ["CFBundleTypeRole": "None", "LSHandlerRank": "Alternate", "LSItemContentTypes": [id], "LSTypeIsPackage": true] as [String: Any] }
-])
+let infoProcess = Process(); infoProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+infoProcess.arguments = ["python3", "-c", "import json,sys; sys.path.insert(0,'.github/scripts'); from package_macos import app_info; print(json.dumps(app_info('0.3.115-nightly.preflight')))"]
+let infoPipe = Pipe(); infoProcess.standardOutput = infoPipe
+try infoProcess.run(); infoProcess.waitUntilExit(); require(infoProcess.terminationStatus == 0, "Production package declaration generation failed")
+let appInfo = try JSONSerialization.jsonObject(with: infoPipe.fileHandleForReading.readDataToEndOfFile()) as! [String: Any]
+let registrar = try bundle("KONTRA.app", "APPL", ["UTImportedTypeDeclarations": appInfo["UTImportedTypeDeclarations"]!, "CFBundleDocumentTypes": appInfo["CFBundleDocumentTypes"]!])
+
 require(LSRegisterURL(registrar as CFURL, true) == noErr, "Owned application registration failed")
 for url in plugins {
     require(try inspect(url, "after-registration"), "Native package recognition failed: " + url.path)
