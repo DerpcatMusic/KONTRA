@@ -5456,6 +5456,48 @@ end on"#;
     }
 
     #[test]
+    fn native_ui_frame_ranges_use_real_mui_constraints_and_parent_capture() {
+        use crate::native_ui::{Node,Paint,Scene};
+        use moose::mui::mui::prelude::*;
+        let directory=std::env::temp_dir().join(format!("kontra-native-frame-range-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let resources=directory.join("Resources/native_ui");std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("main.nui"),r#"
+            local ui=require('native_ui') local mode=require('kontakt').connect_parameter('Mode')
+            local function Main()
+                if mode:value()==0 then
+                    return @ui.Rectangle {color=ui.Color.red}.frame(width=10,height=6)
+                        .frame(min_width=80,min_height=40,alignment="top right")
+                        .on_tap_gesture(start=function()mode:set_value(1)end)
+                end
+                return @ui.Rectangle {color=ui.Color.red}.frame(width=100,height=90)
+                    .frame(max_width=25,max_height=45)
+            end
+            return @Main{}
+        "#).unwrap();
+        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_value_edit $Mode(0,1,1)\nend on".into()],..Default::default()};
+        let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
+        let mut scene=Scene::prepare(&instrument.path,&rt).unwrap().unwrap();let mut live=first_script_live(&rt);rt.prepare_native_controls(&mut live);
+        let mut engine=Engine::default();engine.set_script(Some(rt));
+        fn red(node:&Node)->Option<&Node>{if matches!(node.paint,Paint::Rectangle([1.,0.,0.,1.],_)){Some(node)}else{node.children.iter().find_map(red)}}
+        let root=scene.snapshot().unwrap();let rendered=moose::mui::mui::scene::resolve(&moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::scene_tree(&root,&scene.assets).clip())).unwrap();
+        assert_eq!((rendered.layout.size.width,rendered.layout.size.height),(80.,40.));
+        let child=rendered.surface(&format!("native-snapshot-{}",red(&root).unwrap().id)).unwrap();assert_eq!((child.frame.x,child.frame.y,child.frame.size.width,child.frame.size.height),(70.,0.,10.,6.));
+        let mut ui=Ui::default();
+        let pointer=PointerInput{pos:Some(Point::new(79.,39.)),..Default::default()};
+        ui.frame(crate::ui::native_scene::scene_tree(&root,&scene.assets).clip(),None,pointer,0.016).unwrap();assert!(scene.pointer_gestures(&ui,"native-snapshot").unwrap().is_empty());
+        ui.frame(crate::ui::native_scene::scene_tree(&root,&scene.assets).clip(),None,PointerInput{buttons:Buttons::PRIMARY,..pointer},0.016).unwrap();
+        let edits=scene.pointer_gestures(&ui,"native-snapshot").unwrap();assert_eq!(edits.iter().map(|e|(e.slot,e.control,e.value)).collect::<Vec<_>>(),vec![(0,0,1)],"minimum frame creates the actual parent hit area outside its child");
+        let (mut left,mut right)=([0.;64],[0.;64]);assert_eq!(allocations(||{for edit in edits{engine.ui_control(edit.slot,edit.control,edit.value);}engine.render(&mut left,&mut right);engine.script().unwrap().refresh_live(&mut live);}),0);
+        scene.observe(&live);let root=scene.snapshot().unwrap();let rendered=moose::mui::mui::scene::resolve(&moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::scene_tree(&root,&scene.assets).clip())).unwrap();assert_eq!((rendered.layout.size.width,rendered.layout.size.height),(25.,45.));
+        for options in ["min_width=-1","min_width=20,max_width=10","min_width=math.huge","max_height=0/0","width=10,min_width=2","unknown=1"] {
+            std::fs::write(resources.join("main.nui"),format!("local ui=require('native_ui') return @ui.Rectangle{{color=ui.Color.red}}.frame(width=10,height=6).frame({options})")).unwrap();assert!(Scene::prepare(&instrument.path,engine.script().unwrap()).is_err(),"invalid dimensions must not be accepted: {options}");
+        }
+        std::fs::write(resources.join("main.nui"),"local ui=require('native_ui') return @ui.Rectangle{color=ui.Color.red}.frame(width=10,height=6).frame(max_width=math.huge)").unwrap();
+        let mut unbounded=Scene::prepare(&instrument.path,engine.script().unwrap()).unwrap().unwrap();let root=unbounded.snapshot().unwrap();let rendered=moose::mui::mui::scene::resolve(&moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::scene_tree(&root,&unbounded.assets))).unwrap();assert_eq!((rendered.layout.size.width,rendered.layout.size.height),(10.,6.),"legacy positive-infinity maximum is absence, not an infinite viewport");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn native_ui_text_limits_and_weight_use_nearest_scopes_and_real_mui_lines() {
         use crate::native_ui::{Node,Paint,Scene};
         let directory=std::env::temp_dir().join(format!("kontra-native-text-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
