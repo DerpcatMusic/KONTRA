@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 struct ReportPayload {
     schema: u8,
     product: &'static str,
-    version: &'static str,
-    build_id: &'static str,
+    version: String,
+    build_id: String,
     incident_id: Option<String>,
     incident_kind: Option<String>,
     incident_version: Option<String>,
@@ -23,6 +23,10 @@ struct ReportPayload {
     diagnostics: Option<String>,
     diagnostics_full: Option<String>,
     machine_hashes: Vec<[u8; 32]>,
+    #[serde(skip)]
+    incident_metadata: String,
+    #[serde(skip)]
+    reporter_context: String,
 }
 #[derive(Deserialize)]
 struct ReportResponse {
@@ -118,8 +122,130 @@ pub(super) fn restore_last_report_status() {
 fn attach_incident_provenance(payload: &mut ReportPayload, incident: &CrashIncident) {
     payload.incident_kind = Some(incident.kind_label().to_owned());
     payload.crash_fingerprint = incident.crash_fingerprint();
-    payload.incident_version = Some(incident.version.clone());
-    payload.incident_build_id = Some(incident.build_id().to_owned());
+    payload.incident_version = Some(if valid_recorded_version(&incident.version) {
+        incident.version.clone()
+    } else {
+        "unknown".into()
+    });
+    payload.incident_build_id = Some(recorded_field(incident.build_id()));
+    payload.version = if valid_recorded_version(&incident.version) {
+        incident.version.clone()
+    } else {
+        // The schema3 endpoint requires a semantic version. This sentinel is
+        // explicit about missing/invalid provenance, never the reopening build.
+        "0.0.0-unknown".into()
+    };
+    payload.build_id = recorded_field(incident.build_id());
+    payload.host_name = recorded_field(&incident.host_name);
+    payload.plugin_format = recorded_field(&incident.plugin_api);
+    payload.os_name = recorded_field(if incident.platform.os_name.trim().is_empty() {
+        &incident.os
+    } else {
+        &incident.platform.os_name
+    });
+    payload.os_version = recorded_field(&incident.platform.os_version);
+    payload.arch = recorded_field(if incident.architecture.trim().is_empty() {
+        &incident.platform.process_architecture
+    } else {
+        &incident.architecture
+    });
+    // The existing backend parses the FIRST matching metadata label from the
+    // preview, without section scope. Emit every canonical label, even when
+    // unknown, before any captured logs or separately labeled reporter context.
+    payload.incident_metadata = format!(
+        "Recorded crash metadata (incident time):\nKONTRA version: {}\nRecorded version: {}\nRecorded build ID: {}\nOperating system: {}\nOS version: {}\nProcess architecture: {}\nHost: {}\nHost process: {}\nPlugin format: {}\n",
+        if payload.version == "0.0.0-unknown" {
+            "Unknown (missing/invalid recorded version; transport sentinel 0.0.0-unknown)"
+        } else {
+            &payload.version
+        },
+        payload.incident_version.as_deref().unwrap_or_default(),
+        payload.build_id,
+        payload.os_name,
+        payload.os_version,
+        payload.arch,
+        payload.host_name,
+        recorded_field(&incident.host_process),
+        payload.plugin_format,
+    );
+}
+
+fn recorded_field(value: &str) -> String {
+    // Flatten before labeling: captured host strings must not inject a second
+    // metadata line. Bound/redact values without removing their canonical label.
+    let truncated = value.chars().nth(256).is_some();
+    let value: String = value.chars().take(256).collect();
+    let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if value.is_empty() {
+        "Unknown (not recorded at incident time)".into()
+    } else {
+        let mut value = redact_log(&value);
+        if truncated {
+            value.push_str(" [metadata summary truncated]");
+        }
+        value
+    }
+}
+
+fn valid_recorded_version(value: &str) -> bool {
+    // Accept bounded versions matching the deployed schema3 PLUGIN_VERSION contract.
+    if value.len() > 128 {
+        return false;
+    }
+    let (core, suffix) = value
+        .split_once('-')
+        .map_or((value, None), |(core, suffix)| (core, Some(suffix)));
+    let parts: Vec<_> = core.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+        && suffix.is_none_or(|suffix| {
+            !suffix.is_empty()
+                && suffix
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'))
+        })
+}
+
+fn set_report_diagnostics(payload: &mut ReportPayload, complete: &str) {
+    let diagnostics = format!(
+        "{}\n{}\n\n{}",
+        payload.incident_metadata,
+        redact_log(complete),
+        payload.reporter_context
+    );
+    payload.diagnostics = Some(bounded_diagnostics(diagnostics.clone()));
+    payload.diagnostics_full = Some(diagnostics);
+}
+
+fn automatic_report_payload(
+    incident: &CrashIncident,
+    current_identity: &(String, String),
+    current_platform: &platform::PlatformSnapshot,
+    complete: &str,
+) -> ReportPayload {
+    let mut payload = ReportPayload {
+        schema: 3, product: "kontra", version: String::new(), build_id: String::new(),
+        incident_id: Some(incident.id.clone()), incident_kind: None, incident_version: None,
+        incident_build_id: None, crash_fingerprint: None,
+        os_name: String::new(), os_version: String::new(), arch: String::new(),
+        host_name: String::new(), plugin_format: String::new(),
+        description: "The previous host session ended with a confirmed crash while KONTRA was loaded. Fault attribution is unknown unless the attached exception and stack establish it. This report was sent automatically after KONTRA reloaded.".into(),
+        diagnostics_attached: true, diagnostics: None, diagnostics_full: None, machine_hashes: Vec::new(),
+        incident_metadata: String::new(),
+        reporter_context: format!(
+            "Reporter context (reopening session; not crash attribution):\nReporter KONTRA version: {}\nReporter build ID: {}\nReporter host: {}\nReporter plugin format: {}\n{}",
+            crate::build_info::BUILD.version, crate::build_info::BUILD.build_hash,
+            recorded_field(&current_identity.0).replace("not recorded at incident time", "not available in reopening session"),
+            recorded_field(&current_identity.1).replace("not recorded at incident time", "not available in reopening session"),
+            current_platform.render().lines().map(|line| format!("Reporter {line}")).collect::<Vec<_>>().join("\n"),
+        ),
+    };
+    payload.reporter_context = redact_log(&payload.reporter_context);
+    attach_incident_provenance(&mut payload, incident);
+    set_report_diagnostics(&mut payload, complete);
+    payload
 }
 
 pub(super) struct AutomaticReportPermit<'a>(&'a std::sync::atomic::AtomicBool);
@@ -172,19 +298,12 @@ pub(super) fn try_auto_report_pending_incident() {
         }
         let identity = HOST_IDENTITY.lock_unpoisoned().clone();
         let platform = platform::snapshot(&std::sync::atomic::AtomicBool::new(false));
-        let diagnostics = redact_log(&crash::complete_diagnostics(&incident.id));
-        let mut payload = ReportPayload {
-            schema: 3, product: "kontra", version: crate::build_info::BUILD.version,
-            build_id: crate::build_info::BUILD.build_hash,
-            incident_id: Some(incident.id.clone()), incident_kind: None, incident_version: None,
-            incident_build_id: None, crash_fingerprint: None,
-            os_name: platform.os_name.clone(), os_version: platform.os_version.clone(),
-            arch: platform.process_architecture.clone(), host_name: identity.0, plugin_format: identity.1,
-            description: "The previous host session ended with a confirmed crash while KONTRA was loaded. Fault attribution is unknown unless the attached exception and stack establish it. This report was sent automatically after KONTRA reloaded.".into(),
-            diagnostics_attached: true, diagnostics: Some(bounded_diagnostics(diagnostics.clone())),
-            diagnostics_full: Some(diagnostics), machine_hashes: Vec::new(),
-        };
-        attach_incident_provenance(&mut payload, &incident);
+        let payload = automatic_report_payload(
+            &incident,
+            &identity,
+            platform,
+            &crash::complete_diagnostics(&incident.id),
+        );
         let result = send_report(payload);
         let level = if result.is_ok() {
             crate::diagnostics::LogLevel::Info
@@ -436,7 +555,7 @@ fn send_report(payload: ReportPayload) -> Result<DeliveredReport, String> {
                 "The incident evidence is unavailable; it has not been marked sent.".to_string(),
             );
         }
-        payload.diagnostics_full = Some(redact_log(&complete));
+        set_report_diagnostics(&mut payload, &complete);
     }
     payload.machine_hashes = Vec::new();
     use sha2::Digest as _;
@@ -502,6 +621,205 @@ fn validate_receipt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovered_crash_payload_uses_incident_host_instead_of_reopening_host() {
+        let mut incident = crash::test_incident("0.3.64", "recorded-build");
+        incident.host_name = "Studio One 7.2".into();
+        incident.host_process = "Studio One".into();
+        incident.plugin_api = "VST3".into();
+        incident.os = "macos".into();
+        incident.architecture = "aarch64".into();
+        incident.platform = platform::PlatformSnapshot {
+            os_name: "macOS".into(),
+            os_version: "15.6".into(),
+            process_architecture: "aarch64".into(),
+            ..Default::default()
+        };
+        let mut saved = serde_json::to_value(&incident).unwrap();
+        saved["kind"] = serde_json::json!("platform_crash");
+        incident = serde_json::from_value(saved).unwrap();
+        assert!(incident.auto_reportable());
+        let reopening = platform::PlatformSnapshot {
+            os_name: "Windows".into(),
+            os_version: "11".into(),
+            process_architecture: "x86_64".into(),
+            ..Default::default()
+        };
+        // These unscoped labels occur in real captured/current diagnostics. They
+        // must never win the backend's first-label public-summary parser.
+        let logs = format!(
+            "Host: REAPER 7.5\nOperating system: Windows\nOS version: 11\nProcess architecture: x86_64\nPlugin format: CLAP\n{}",
+            "diagnostic line\n".repeat(4_000)
+        );
+        let payload = automatic_report_payload(
+            &incident,
+            &("REAPER 7.5".into(), "CLAP".into()),
+            &reopening,
+            &logs,
+        );
+        let wire = serde_json::to_value(&payload).unwrap();
+        assert_eq!(wire["version"], "0.3.64");
+        assert_eq!(wire["incident_version"], "0.3.64");
+        assert_eq!(wire["build_id"], "recorded-build");
+        assert_eq!(wire["host_name"], "Studio One 7.2");
+        assert_eq!(wire["plugin_format"], "VST3");
+        assert_eq!(wire["os_name"], "macOS");
+        assert_eq!(wire["os_version"], "15.6");
+        assert_eq!(wire["arch"], "aarch64");
+        for field in ["diagnostics", "diagnostics_full"] {
+            let diagnostics = wire[field].as_str().unwrap();
+            assert!(diagnostics.starts_with("Recorded crash metadata (incident time):\n"));
+            for (label, expected) in [
+                ("Host: ", "Studio One 7.2"),
+                ("Host process: ", "Studio One"),
+                ("Plugin format: ", "VST3"),
+                ("Operating system: ", "macOS"),
+                ("OS version: ", "15.6"),
+                ("Process architecture: ", "aarch64"),
+            ] {
+                assert_eq!(
+                    diagnostics
+                        .lines()
+                        .find_map(|line| line.strip_prefix(label)),
+                    Some(expected)
+                );
+            }
+        }
+        let full = wire["diagnostics_full"].as_str().unwrap();
+        assert!(full.contains("Reporter host: REAPER 7.5\nReporter plugin format: CLAP"));
+        assert!(full.contains("Reporter Operating system: Windows"));
+        assert!(full.contains(&format!(
+            "Reporter KONTRA version: {}",
+            crate::build_info::BUILD.version
+        )));
+        assert!(full.contains(&format!(
+            "Reporter build ID: {}",
+            crate::build_info::BUILD.build_hash
+        )));
+        assert!(wire.get("incident_metadata").is_none() && wire.get("reporter_context").is_none());
+        assert!(wire["diagnostics"].as_str().unwrap().chars().count() <= 32_000);
+    }
+
+    #[test]
+    fn missing_recorded_metadata_stays_unknown_and_never_borrows_current_context() {
+        let mut incident = crash::test_incident("", "");
+        incident.host_name.clear();
+        incident.host_process.clear();
+        incident.plugin_api.clear();
+        incident.os.clear();
+        incident.architecture.clear();
+        let reopening = platform::PlatformSnapshot {
+            os_name: "Windows".into(),
+            os_version: "11".into(),
+            process_architecture: "x86_64".into(),
+            ..Default::default()
+        };
+        for version in [
+            "",
+            "nightly",
+            "1.2",
+            "1.2.3+private",
+            "1.2.3-",
+            "1.2.3\nHost: REAPER",
+        ] {
+            incident.version = version.into();
+            let payload = automatic_report_payload(
+                &incident,
+                &("REAPER".into(), "CLAP".into()),
+                &reopening,
+                "Host: REAPER\nPlugin format: CLAP\nOperating system: Windows",
+            );
+            assert_eq!(payload.version, "0.0.0-unknown");
+            assert_eq!(payload.incident_version.as_deref(), Some("unknown"));
+            for field in [
+                &payload.host_name,
+                &payload.plugin_format,
+                &payload.os_name,
+                &payload.os_version,
+                &payload.arch,
+            ] {
+                assert_eq!(field, "Unknown (not recorded at incident time)");
+            }
+            let preview = payload.diagnostics.as_ref().unwrap();
+            assert!(preview.contains("KONTRA version: Unknown (missing/invalid recorded version; transport sentinel 0.0.0-unknown)"));
+            for label in [
+                "Host: ",
+                "Host process: ",
+                "Plugin format: ",
+                "Operating system: ",
+                "OS version: ",
+                "Process architecture: ",
+            ] {
+                assert_eq!(
+                    preview.lines().find_map(|line| line.strip_prefix(label)),
+                    Some("Unknown (not recorded at incident time)")
+                );
+            }
+        }
+        for version in ["0.3.64", "1.2.3-rc.1", "0.0.0-unknown"] {
+            assert!(valid_recorded_version(version));
+        }
+        // A missing display name does not borrow even a known *recorded* process
+        // name; that name remains separately available to interpret the evidence.
+        incident.host_process = "Studio One".into();
+        let payload =
+            automatic_report_payload(&incident, &("REAPER".into(), "CLAP".into()), &reopening, "");
+        assert!(payload.host_name.starts_with("Unknown"));
+        assert!(
+            payload
+                .diagnostics
+                .unwrap()
+                .contains("Host process: Studio One")
+        );
+    }
+
+    #[test]
+    fn refreshed_delivery_rebuilds_both_metadata_previews_and_redacts_values() {
+        let mut incident = crash::test_incident("0.3.64", "recorded-build");
+        let mut payload = automatic_report_payload(
+            &incident,
+            &("REAPER".into(), "CLAP".into()),
+            &Default::default(),
+            "initial evidence",
+        );
+        incident.host_name = "Reason 13\nHost: REAPER".into();
+        incident.plugin_api = "VST3".into();
+        incident.os = "macos".into();
+        incident.architecture = "aarch64".into();
+        incident.host_process = "/Users/private/Reason".into();
+        // These are the exact shared functions used after send_report refreshes
+        // durable incident evidence, before hashing/serializing the final packet.
+        attach_incident_provenance(&mut payload, &incident);
+        set_report_diagnostics(
+            &mut payload,
+            "fresh exception and stack\nOperating system: Windows",
+        );
+        for diagnostics in [
+            payload.diagnostics.as_ref().unwrap(),
+            payload.diagnostics_full.as_ref().unwrap(),
+        ] {
+            assert!(diagnostics.contains("Host: Reason 13 Host: REAPER\n"));
+            assert!(diagnostics.contains("Plugin format: VST3\n"));
+            assert!(diagnostics.contains("Operating system: macos\n"));
+            assert!(diagnostics.contains("Process architecture: aarch64\n"));
+            assert!(diagnostics.contains("Host process: [redacted]\n"));
+            assert!(diagnostics.contains("fresh exception and stack"));
+            assert!(
+                !diagnostics.contains("initial evidence")
+                    && !diagnostics.contains("/Users/private")
+            );
+        }
+        assert_eq!(payload.os_name, "macos");
+        assert_eq!(payload.arch, "aarch64");
+        assert_eq!(
+            recorded_field("bearer secret"),
+            "[redacted sensitive diagnostic]"
+        );
+        let bounded = recorded_field(&"😀".repeat(1_000));
+        assert!(bounded.ends_with(" [metadata summary truncated]"));
+        assert_eq!(bounded.chars().filter(|&c| c == '😀').count(), 256);
+    }
     #[test]
     fn delivery_status_restores_a_readable_receipt_without_untrusted_fields() {
         let directory = tempfile::tempdir().unwrap();
