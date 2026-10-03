@@ -560,7 +560,7 @@ impl ProgramFx {
             match &fx.params {
                 Params::Filter(f) if f.filter_type == 33 => {
                     out.push(format!("{at}: Ladder LP4 bypass and subtype changes clear filter history; the native transition lifecycle is unverified"));
-                    out.push(format!("{at}: Ladder LP4 native control smoothing and the conditional cutoff limiter are not applied"));
+                    out.push(format!("{at}: Ladder LP4 repeated modulation control smoothing timing and the conditional cutoff limiter are not applied"));
                     if f.native_flag.is_some_and(|v| v != 0) {
                         out.push(format!("{at}: Ladder LP4 High Quality oversampling is not applied; the single-rate kernel is used"));
                     }

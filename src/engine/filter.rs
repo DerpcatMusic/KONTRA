@@ -559,7 +559,7 @@ pub fn unsupported_at(chain: &Chain, amp_split: Option<u8>) -> Vec<String> {
             }
             Params::Filter(f) if f.filter_type == 33 => {
                 out.push("Group Ladder LP4: bypass and subtype changes clear filter history; the native transition lifecycle is unverified".into());
-                out.push("Group Ladder LP4: native control smoothing and the conditional cutoff limiter are not applied".into());
+                out.push("Group Ladder LP4: repeated modulation control smoothing timing and the conditional cutoff limiter are not applied".into());
                 if f.native_flag.is_some_and(|v| v != 0) {
                     out.push("Group Ladder LP4: High Quality oversampling is not applied; the single-rate kernel is used".into());
                 }
@@ -1969,7 +1969,7 @@ mod tests {
         }
         let ui=crate::ksp::initialize("on init\ndeclare ui_label $label(1,1)\nset_engine_par($ENGINE_PAR_EFFECT_SUBTYPE,33,0,0,-1)\nset_engine_par($ENGINE_PAR_CUTOFF,1000000,0,0,-1)\nset_engine_par($ENGINE_PAR_GAIN,500000,0,0,-1)\nset_text($label,get_engine_par_disp($ENGINE_PAR_CUTOFF,0,0,-1) & \"|\" & get_engine_par_disp($ENGINE_PAR_GAIN,0,0,-1))\nend on",0,1).unwrap();
         assert_eq!(ui.controls[0].properties["$CONTROL_PAR_TEXT"],crate::ksp::Value::Text("19912.3|6.0".into()));
-        eprintln!("Ladder={} VoiceFilter={} bytes; bounded8×76-byte native state",std::mem::size_of::<ladder::Ladder>(),std::mem::size_of::<VoiceFilter>());
+        eprintln!("Ladder={} VoiceFilter={} bytes; bounded8×124-byte native state",std::mem::size_of::<ladder::Ladder>(),std::mem::size_of::<VoiceFilter>());
     }
 
     #[test]

@@ -389,8 +389,12 @@ The single-rate kernel includes input soft saturation, four trapezoidal poles,
 resonance feedback, its low-frequency correction, and resonance compensation.
 The exponential interpolation entries are generated from a mathematical law;
 no captured tables are included. The response graph shows its small-signal
-transfer, which differs from large-signal saturation. Native control smoothing, its conditional cutoff limiter
-and High Quality oversampling remain explicit diagnostics. Bypass and subtype
+transfer, which differs from large-signal saturation. Ordinary control changes
+interpolate linear input gain, normalized cutoff and shaped resonance on a
+32-frame clock, updating coefficients every four frames. The duration is the
+nearest whole 32-frame tick to 2 ms; initial activation snapshots saved controls.
+Repeated modulation-write timing, the conditional cutoff limiter and High
+Quality oversampling remain explicit diagnostics. Bypass and subtype
 changes clear local histories; the native transition lifecycle is unverified
 and reported separately. Other Ladder modes
 retain their named constants and decoded records but remain unsupported.
@@ -398,7 +402,7 @@ These limits matter: enabling processing does not establish whole-effect
 audible equivalence. NI documents the LP4 topology, Gain and High Quality
 controls in its [filter reference](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/filter-reference).
 
-Each voice reserves eight fixed 76-byte Ladder states (608 bytes, or 608 KiB for
+Each voice reserves eight fixed 124-byte Ladder states (992 bytes, or 992 KiB for
 1,024 voices), plus a single generated 9.38 KiB coefficient table warmed by
 filter and script construction. Audio lookup cannot initialize or lock it.
 Processing visits active native slots; nonlinear states never
@@ -406,6 +410,10 @@ enter shared linear lanes. The focused checks cover independent double
 direct-form pole/soft-clip references, DC and frequency response across sample
 rates, full-resonance boundedness, channel isolation, block partition/reset,
 native parameter edits, insert/Amplifier order and zero heap allocations.
+The control-step gate additionally compares a moving four-pole response with
+independent double RC voltages, linear-gain steps, shaped-resonance steps,
+retargeting, tiny-delta settlement and arbitrary block partitions. The clock
+adds 384 KiB for 1,024 voices; settled processing keeps its straight scalar loop.
 
 ### Native Daft identity and record correction
 
