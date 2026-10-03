@@ -1899,7 +1899,7 @@ mod tests {
             let mut settings=[GroupSettings::from(&groups[0])];
             assert_eq!(params::read(&settings,address),Some(-0.25),"signed saved Gain survives preparation");
             for (phase,gain) in [-250_000,0,500_000,1_000_000].into_iter().enumerate() {
-                assert_eq!(crate::plugin::tests::allocations(|| {
+                assert_eq!(crate::test_support::allocations(|| {
                     assert!(params::write(&mut settings,address,address.decode(gain)));
                     assert_eq!(address.encode(params::read(&settings,address).unwrap()),gain);
                 }),0);
@@ -1908,7 +1908,7 @@ mod tests {
                 assert_eq!(f.units[0].native_version,0x92);
                 assert!(unsupported_at(&groups[0].fx,Some(split)).iter().any(|w|w.contains("modulation source")));
                 let mut voice=None;
-                assert_eq!(crate::plugin::tests::allocations(|| {
+                assert_eq!(crate::test_support::allocations(|| {
                     voice=Some(VoiceFilter::new(Some(f),&table,&input,RATE));
                 }),0);
                 let mut voice=voice.unwrap();
@@ -1917,7 +1917,7 @@ mod tests {
                 assert_eq!(rack.unit.native_version,0x92);
                 assert!(rack.set_knob(Knob::FilterGain,gain as f32/1_000_000.0));
                 assert_eq!(rack.knob(Knob::FilterGain),Some(gain as f32/1_000_000.0));
-                assert_eq!(crate::plugin::tests::allocations(|| {
+                assert_eq!(crate::test_support::allocations(|| {
                     for block in 0..32 {
                         let mut l=std::array::from_fn::<_,128,_>(|i| ((block*128+i) as f32*0.04).sin()*0.9);
                         let mut r=l.map(|x| -0.6*x);
@@ -1951,7 +1951,7 @@ mod tests {
             let mut fresh=VoiceFilter::new(Some(f),&table,&input,RATE);
             let (mut l,mut r,mut expected_l,mut expected_r)=([0.0;64],[0.0;64],[0.0;64],[0.0;64]);
             l[0]=1.0; expected_l[0]=1.0;
-            assert_eq!(crate::plugin::tests::allocations(|| {
+            assert_eq!(crate::test_support::allocations(|| {
                 voice.process(f,&table,&mut [0.0;MAX_BLOCK],&mut l,&mut r,RATE);
                 fresh.process(f,&table,&mut [0.0;MAX_BLOCK],&mut expected_l,&mut expected_r,RATE);
                 assert_eq!(l,expected_l); assert_eq!(r,expected_r);
@@ -1973,7 +1973,7 @@ mod tests {
             assert!(rack.set_knob(Knob::FilterGain,clamped));
             let (mut l,mut r)=([0.0001;128],[-0.0001;128]);
             let (mut expected_l,mut expected_r)=(l,r);
-            assert_eq!(crate::plugin::tests::allocations(|| {
+            assert_eq!(crate::test_support::allocations(|| {
                 voice.process(&f,&table,&mut [0.0;MAX_BLOCK],&mut l,&mut r,RATE);
                 rack.process(&mut expected_l,&mut expected_r);
             }),0);
@@ -1991,7 +1991,7 @@ mod tests {
             assert_eq!(f.units[0].native_version,version);
             assert_eq!(rack.unit.native_version,version);
             for (frames,cutoff,gain) in [(17,0.5,-0.25),(71,1.0,0.5),(128,0.1,-0.5)] {
-                assert_eq!(crate::plugin::tests::allocations(|| {
+                assert_eq!(crate::test_support::allocations(|| {
                     assert!(f.set_knob(0,Knob::Cutoff,cutoff));
                     assert!(f.set_knob(0,Knob::FilterGain,gain));
                     assert!(rack.set_knob(Knob::Cutoff,cutoff));
@@ -2039,7 +2039,7 @@ mod tests {
             let mut ordinary=reference;
             ordinary.enabled_modulation(false);
             let mut difference=0_f64;
-            assert_eq!(crate::plugin::tests::allocations(|| {
+            assert_eq!(crate::test_support::allocations(|| {
                 assert!(f.set_knob(0,Knob::FilterGain,0.5));
                 assert_eq!(f.knob(0,Knob::FilterGain),Some(0.5));
                 reference.tune([1.0,0.0,0.5],rate);
@@ -2106,7 +2106,7 @@ mod tests {
                     let mut processor = fx.processor_for_groups(RATE, 64, &[], &groups);
                     assert!(!processor.is_empty(), "group-only taps retain their return DSP");
                     let resolve = |id, group, slot| Address::resolve(EnginePar { id, group, slot, generic: -1 }, &groups).unwrap();
-                    assert_eq!(crate::plugin::tests::allocations(|| {
+                    assert_eq!(crate::test_support::allocations(|| {
                         if phase == 1 {
                             for (address, native) in [
                                 (resolve(params::id::SENDLEVEL_0, 0, 1), 800_000),
@@ -2128,7 +2128,7 @@ mod tests {
                     let mut actual = [[0.0f32; 256]; 2];
                     let mut expected = [[0.0f32; 256]; 2];
                     let sources = [[(3, 0.8), (40, 0.3)], [(9, 0.25), (46, 0.1)]];
-                    assert_eq!(crate::plugin::tests::allocations(|| {
+                    assert_eq!(crate::test_support::allocations(|| {
                         for block in 0..4 {
                             let (mut out_l, mut out_r) = ([0.0; 64], [0.0; 64]);
                             processor.begin_group_sends(64);
@@ -2206,7 +2206,7 @@ mod tests {
         // voice feeds as well as its program effects at that bound.
         engine.set_fx(instrument.fx.processor_for_groups(RATE, 32, &[], &instrument.groups));
         let (mut left, mut right) = ([0.0; 64], [0.0; 64]);
-        assert_eq!(crate::plugin::tests::allocations(|| {
+        assert_eq!(crate::test_support::allocations(|| {
             engine.start_event(&crate::engine::NoteEvent::new(0, 60, 127));
             engine.render(&mut left, &mut right);
             assert!(left[8..].iter().chain(&right[8..]).all(|v| (v - 0.5).abs() < 2e-6));
@@ -2240,7 +2240,7 @@ mod tests {
                 .find(|&id| crate::ksp::engine_par_name(id) == Some("$ENGINE_PAR_THRESHOLD")).unwrap();
             let threshold = Address::resolve(EnginePar { id: threshold_id,
                 group: 0, slot: 2, generic: -1 }, &groups).unwrap();
-            assert_eq!(crate::plugin::tests::allocations(|| {
+            assert_eq!(crate::test_support::allocations(|| {
                 assert!(params::write(&mut settings, threshold, threshold.decode(500_000)));
                 assert_eq!(threshold.encode(params::read(&settings, threshold).unwrap()), 500_000);
             }), 0);
@@ -2250,7 +2250,7 @@ mod tests {
             assert_eq!(voice.hold(f, &table, RATE), None, "compressors remain per voice");
             let mut reference: Vec<_> = chain.slots.iter().map(|fx| blocks::Block::new(fx, RATE).unwrap()).collect();
             assert!(reference[1].set(Kind::Compressor, 1, 0.5));
-            assert_eq!(crate::plugin::tests::allocations(|| {
+            assert_eq!(crate::test_support::allocations(|| {
                 for block in 0..32 {
                     let source: [f32; 128] = std::array::from_fn(|i| 0.8 * (TAU * 1000.0 * (block * 128 + i) as f32 / RATE).sin());
                     let (mut l, mut r, mut expected_l, mut expected_r) = (source, source, source, source);
@@ -2316,7 +2316,7 @@ mod tests {
                 let mut settings = [GroupSettings::from(&groups[0])];
                 let mut reference: Vec<_> = chain.slots.iter().map(|fx| blocks::Block::new(fx, RATE).unwrap()).collect();
                 if phase == 1 {
-                    assert_eq!(crate::plugin::tests::allocations(|| {
+                    assert_eq!(crate::test_support::allocations(|| {
                         assert!(params::write(&mut settings, address, address.decode(900_000)));
                         assert_eq!(address.encode(params::read(&settings, address).unwrap()), 900_000);
                         assert!(reference[7].set(Kind::SolidGeq, field, 0.9));
@@ -2328,7 +2328,7 @@ mod tests {
                 assert!(unsupported_at(&groups[0].fx, Some(split)).is_empty());
                 let mut voice = VoiceFilter::new(Some(f), &table, &input, RATE);
                 assert!(voice.hold(f, &table, RATE).is_none(), "32 active sections use the per-voice path");
-                assert_eq!(crate::plugin::tests::allocations(|| {
+                assert_eq!(crate::test_support::allocations(|| {
                     for block in 0..32 {
                         let mut l: [f32; 128] = std::array::from_fn(|i| {
                             let t = (block * 128 + i) as f32 / RATE;
@@ -2395,7 +2395,7 @@ mod tests {
                     let mut settings = [GroupSettings::from(&group)];
                     let mut reference = blocks::Block::new(&fx, RATE).unwrap();
                     if phase == 1 {
-                        assert_eq!(crate::plugin::tests::allocations(|| {
+                        assert_eq!(crate::test_support::allocations(|| {
                             assert!(params::write(&mut settings, address, address.decode(native)));
                             assert_eq!(address.encode(params::read(&settings, address).unwrap()), native);
                             assert!(reference.set(kind, field, native as f32 / 1_000_000.0));
@@ -2405,7 +2405,7 @@ mod tests {
                     assert!(unsupported_at(&group.fx, Some(split)).is_empty());
                     let mut voice = VoiceFilter::new(Some(f), &table, &input, RATE);
                     assert!(voice.hold(f, &table, RATE).is_none());
-                    assert_eq!(crate::plugin::tests::allocations(|| {
+                    assert_eq!(crate::test_support::allocations(|| {
                         for block in 0..64 {
                             let level = if kind == Kind::TransientMaster {
                                 match block % 16 { 0..=3 => 0.3, 4..=7 => 0.075, _ => 0.0 }
@@ -2450,7 +2450,7 @@ mod tests {
         let input = Inputs { cc: &cc, cc74: None, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
         let mut voice = VoiceFilter::new(Some(&f), &table, &input, RATE);
         assert!(voice.hold(&f, &table, RATE).is_some());
-        assert_eq!(crate::plugin::tests::allocations(|| {
+        assert_eq!(crate::test_support::allocations(|| {
             assert!(f.set_knob(0, Knob::Output, 2.0));
             assert!(f.set_knob(1, Knob::Output, 0.5));
             assert_eq!(f.matrix, IDENTITY, "the collapsed final gain hides the interleaving");
@@ -2483,7 +2483,7 @@ mod tests {
         let input = Inputs { cc: &cc, cc74: None, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
         let mut voice = VoiceFilter::new(Some(&f), &table, &input, RATE);
         let mut energy = [0.0f64; 2];
-        assert_eq!(crate::plugin::tests::allocations(|| {
+        assert_eq!(crate::test_support::allocations(|| {
             for (case, kind) in [2, 3].into_iter().enumerate() {
                 assert!(f.set_knob(0, Knob::Type, kind as f32));
                 for block in 0..32 {
@@ -2569,7 +2569,7 @@ mod tests {
         let mut ctl = [0.; MAX_BLOCK];
         let mut difference = 0f32;
         let mut legacy_energy = [0f64; 2];
-        assert_eq!(crate::plugin::tests::allocations(|| {
+        assert_eq!(crate::test_support::allocations(|| {
             for (raw, expected) in [(0, -1.), (250_000, -0.125), (500_000, 0.), (750_000, 0.125), (1_000_000, 1.)] {
                 assert_eq!(legacy.decode(raw), expected);
                 assert!(params::write(&mut settings, legacy, legacy.decode(raw)));
@@ -2769,7 +2769,7 @@ mod tests {
             else { assert!(proto.gain(hz * 8.0, RATE) < 0.02); }
             let mut rack = RackFilter::new(&fx, RATE).unwrap();
             let mut energies = [0.0f64; 2];
-            assert_eq!(crate::plugin::tests::allocations(|| {
+            assert_eq!(crate::test_support::allocations(|| {
                 for (phase, cutoff) in [0.25, 0.75].into_iter().enumerate() {
                     assert!(rack.set_knob(Knob::Cutoff, cutoff));
                     assert_eq!(rack.knob(Knob::Cutoff), Some(cutoff));
@@ -3036,7 +3036,7 @@ mod tests {
             for i in 0..20 {
                 let mut l: [f32; 128] = std::array::from_fn(|j| 0.1 * (TAU * 100.0 * (i * 128 + j) as f32 / RATE).sin());
                 let mut r = l;
-                assert_eq!(crate::plugin::tests::allocations(|| voice.process(f, &table, &mut ctl, &mut l, &mut r, RATE)), 0);
+                assert_eq!(crate::test_support::allocations(|| voice.process(f, &table, &mut ctl, &mut l, &mut r, RATE)), 0);
                 out = out.max(l.iter().fold(0f32, |m, x| m.max(x.abs())));
             }
             out
@@ -3092,7 +3092,7 @@ mod tests {
                 let pattern = [-4.0, -0.25, -0.01, 0.0, 0.01, 0.25, 4.0];
                 let source: [f32; 128] = std::array::from_fn(|i| pattern[i % pattern.len()]);
                 let (mut l, mut r, mut expected_l, mut expected_r) = (source, source.map(|x| -x), source, source.map(|x| -x));
-                assert_eq!(crate::plugin::tests::allocations(|| {
+                assert_eq!(crate::test_support::allocations(|| {
                     assert!(params::write(&mut settings, address, address.decode(value)));
                     assert_eq!(address.encode(params::read(&settings, address).unwrap()), value);
                     assert!(rack.set(Kind::Distortion, 1, value as f32 / 1_000_000.0));

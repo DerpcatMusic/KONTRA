@@ -86,7 +86,7 @@ fn convolution_ir_filter_boundaries_follow_native_rate_and_biquad_law_without_he
         if lp { reference(&mut expected, high, rate, false); }
         if hp { reference(&mut expected, low, rate, true); }
         let mut actual = [[0.0; 2]; 128];
-        assert_eq!(crate::plugin::tests::allocations(|| {
+        assert_eq!(crate::test_support::allocations(|| {
             for block in 0..8 {
                 let (mut l, mut r) = ([0.0; 16], [0.0; 16]);
                 if block == 0 { l[0] = 1.0; r[0] = 1.0; }
@@ -151,7 +151,7 @@ end on"#.into()],
     assert!(c.predelay_ms > 0.99 && c.predelay_ms < 1.01);
     let mut processor = instrument.fx.processor_with(SR, 64, &loads);
     let mut changed = None;
-    assert_eq!(crate::plugin::tests::allocations(|| {
+    assert_eq!(crate::test_support::allocations(|| {
         assert!(processor.set_param(Rack::Insert, 0, FxParam::Convolution(3), 0.0));
         assert!(processor.set_param(Rack::Insert, 0, FxParam::Convolution(4), 0.0));
         assert!(processor.set_param(Rack::Insert, 0, FxParam::Convolution(0), 0.0));
@@ -162,7 +162,7 @@ end on"#.into()],
     let loads = [ScriptIr { rack, slot, load: Load::Convolution(changed) }];
     let prepared = instrument.fx.prepare_ir(rack, slot, SR, 64, &loads).unwrap();
     let mut retired = None;
-    assert_eq!(crate::plugin::tests::allocations(|| {
+    assert_eq!(crate::test_support::allocations(|| {
         retired = Some(processor.replace_ir(prepared).ok().expect("convolution slot"));
     }), 0);
     drop(retired);
@@ -172,7 +172,7 @@ end on"#.into()],
         (Some(1),0.5,[1.0,1.25],5), (Some(2),0.5,[1.0,1.0],4)] {
         if let Some(field) = field {
             let mut change = None;
-            assert_eq!(crate::plugin::tests::allocations(|| {
+            assert_eq!(crate::test_support::allocations(|| {
                 assert!(processor.set_param(rack, slot, FxParam::Convolution(field), value));
                 change = processor.take_ir_change();
             }), 0);
@@ -192,7 +192,7 @@ end on"#.into()],
         assert_eq!(processor.param(rack, slot, FxParam::Convolution(1)), Some(pair[0]-0.5));
         assert_eq!(processor.param(rack, slot, FxParam::Convolution(2)), Some(pair[1]-0.5));
         left[0] = 1.0; right[0] = 1.0;
-        assert_eq!(crate::plugin::tests::allocations(|| processor.process(&mut left, &mut right)), 0);
+        assert_eq!(crate::test_support::allocations(|| processor.process(&mut left, &mut right)), 0);
         assert!((left[0]-0.25).abs() < 1e-6 && (right[0]-0.25).abs() < 1e-6, "dry gain");
         assert!((left[peak]-0.25).abs() < 1e-6 && (right[peak]-0.25).abs() < 1e-6, "late ratio controls the existing proxy");
     }
@@ -282,7 +282,7 @@ fn convolution_explicit_crossover_matches_scalar_filters_overlap_and_dry_without
         let mut processor = fx.processor(SR, 64);
         let blocks = (frames + 3 + 128).div_ceil(64);
         let mut output = vec![[0.0; 2]; blocks*64];
-        assert_eq!(crate::plugin::tests::allocations(|| {
+        assert_eq!(crate::test_support::allocations(|| {
             for block in 0..blocks {
                 let (mut left, mut right) = ([0.0;64], [0.0;64]);
                 if block == 0 { left[0] = 1.0; right[0] = 1.0; }
@@ -311,7 +311,7 @@ fn convolution_explicit_crossover_matches_scalar_filters_overlap_and_dry_without
     assert!(c.explicit_split_supported());
     let mut processor = ProgramFx { insert: Chain { slots: vec![fx] }, ..Default::default() }.processor(SR/2.0, 4);
     let (mut left, mut right) = ([1.0,0.0,0.0,0.0], [1.0,0.0,0.0,0.0]);
-    assert_eq!(crate::plugin::tests::allocations(|| processor.process(&mut left, &mut right)), 0);
+    assert_eq!(crate::test_support::allocations(|| processor.process(&mut left, &mut right)), 0);
     for channel in [left, right] {
         for (value, expected) in channel.into_iter().zip([0.75,0.0,0.0,0.0]) {
             assert!((value-expected).abs() < 1e-6);
@@ -336,7 +336,7 @@ fn convolution_reverse_preserves_asymmetric_ir_gain_predelay_and_rate_without_he
             assert!(fx.warnings().is_empty());
             let mut p = fx.processor(rate, 4);
             let mut output = [[0.0; 2]; 24];
-            assert_eq!(crate::plugin::tests::allocations(|| {
+            assert_eq!(crate::test_support::allocations(|| {
                 for block in 0..6 {
                     let (mut left, mut right) = ([0.0; 4], [0.0; 4]);
                     if block == 0 { left[0] = 1.0; right[0] = 1.0; }
@@ -387,7 +387,7 @@ fn convolution_auto_gain_uses_prepared_stereo_energy_and_preserves_dry_without_h
             assert!(fx.warnings().is_empty());
             let mut p = fx.processor(SR, 4);
             let (mut left, mut right) = ([1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]);
-            assert_eq!(crate::plugin::tests::allocations(|| p.process(&mut left, &mut right)), 0);
+            assert_eq!(crate::test_support::allocations(|| p.process(&mut left, &mut right)), 0);
             let gain = if automatic { reference_gain } else { 1.0 };
             for n in 0..4 {
                 for (ch, out) in [left[n], right[n]].into_iter().enumerate() {
@@ -415,7 +415,7 @@ fn convolution_auto_gain_uses_prepared_stereo_energy_and_preserves_dry_without_h
     assert!(fx.warnings().iter().any(|w| w.contains("Auto Gain uses the approximated IR")));
     let mut p = fx.processor(SR / 2.0, 8);
     let (mut left, mut right) = ([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
-    assert_eq!(crate::plugin::tests::allocations(|| p.process(&mut left, &mut right)), 0);
+    assert_eq!(crate::test_support::allocations(|| p.process(&mut left, &mut right)), 0);
     for n in 0usize..8 {
         let expected = n.checked_sub(2).and_then(|i| prepared.get(i)).copied().unwrap_or([0.0; 2]);
         for ch in 0..2 {
@@ -461,7 +461,7 @@ fn convolution_envelope_interpolates_amplitudes_before_auto_gain_and_predelay_wi
                 let mut p = fx.processor(rate, 16);
                 let (mut left, mut right) = ([0.0;16], [0.0;16]);
                 left[0] = 1.0; right[0] = 1.0;
-                assert_eq!(crate::plugin::tests::allocations(|| p.process(&mut left, &mut right)), 0);
+                assert_eq!(crate::test_support::allocations(|| p.process(&mut left, &mut right)), 0);
                 let energy = if active { energy } else { 4.0 * expected.len() as f32 };
                 let gain = if automatic { (0.5 / energy).sqrt() } else { 1.0 };
                 for n in 0usize..16 {
@@ -486,7 +486,7 @@ fn convolution_envelope_interpolates_amplitudes_before_auto_gain_and_predelay_wi
     let fx = ProgramFx { insert: Chain { slots: vec![fx] }, ..Default::default() };
     let mut p = fx.processor(SR, 8);
     let (mut left, mut right) = ([1.,0.,0.,0.,0.,0.,0.,0.], [1.,0.,0.,0.,0.,0.,0.,0.]);
-    assert_eq!(crate::plugin::tests::allocations(|| p.process(&mut left, &mut right)), 0);
+    assert_eq!(crate::test_support::allocations(|| p.process(&mut left, &mut right)), 0);
     for (actual, expected) in left.into_iter().zip([1.,1.,0.5,0.5,0.5,0.5,1.,1.]) {
         assert!((actual - expected).abs() < 1e-6);
     }
@@ -1084,7 +1084,7 @@ end on"#);
         engine.set_fx(effects(&instrument, rt.as_deref(), SR)); engine.set_script(rt);
         assert_eq!(engine.script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_TEXT"], KspValue::Text("3".into()));
         let mut left = [0.0; 128]; let mut right = [0.0; 128];
-        assert_eq!(crate::plugin::tests::allocations(|| {
+        assert_eq!(crate::test_support::allocations(|| {
             engine.ui_control(0, 1, 1); engine.render(&mut left, &mut right);
         }), 0);
         assert_eq!(engine.script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_TEXT"], KspValue::Text("3".into()));
@@ -1107,7 +1107,7 @@ end on"#);
                 // it into the closure also disposes its buffers on return.
                 let mut active = Some(engine.set_fx(FxProcessor::default()));
                 let mut l = vec![0.0; n]; let mut r = vec![0.0; n]; l[0]=1.0; r[0]=1.0;
-                assert_eq!(crate::plugin::tests::allocations(|| {
+                assert_eq!(crate::test_support::allocations(|| {
                     let mut at = 0;
                     while at < n {
                         if change && at == 8192 {

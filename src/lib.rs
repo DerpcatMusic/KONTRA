@@ -16,6 +16,8 @@ pub mod articulate;
 pub mod timing;
 pub mod fx;
 pub mod creator;
+#[cfg(test)]
+mod test_support;
 #[cfg(feature="plugin")]
 mod artwork;
 #[cfg(feature="plugin")]
