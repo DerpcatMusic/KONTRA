@@ -1244,6 +1244,36 @@ fn legato_retriggers_on_overlapping_notes() {
 /// give 0 and the callback goes on to play, as in Kontakt.
 #[test]
 fn integer_division_and_modulo_normalize_booleans_without_faulting_or_losing_waited_events() {
+    // LogEngine allocates a Vec for each note's group trace, independently of
+    // its reserved outer log. This fixed recorder measures the entire callback.
+    #[derive(Default)]
+    struct Notes {
+        now: u64,
+        played: Option<(u64, EventId, u8, u8)>,
+        released: Option<(u64, EventId)>,
+    }
+    impl KspEngine for Notes {
+        fn play_note(&mut self, at: u32, note: &NoteSpec<'_>) -> Option<EventId> {
+            assert!(self.played.is_none(), "the child must play exactly once");
+            assert!(note.groups.iter(3).eq([0,1,2]));
+            assert_eq!((note.velocity,note.sample_offset_us,note.length),(100,0,NoteLength::UntilNoteOff));
+            let voice=EventId(1);
+            self.played=Some((self.now+at as u64,voice,note.channel,note.note));
+            Some(voice)
+        }
+        fn note_off(&mut self, at: u32, voice: EventId, _: &NoteSpec<'_>) {
+            assert!(self.released.is_none(), "explicit release must cancel the duration timer");
+            self.released=Some((self.now+at as u64,voice));
+        }
+        fn fade(&mut self, _: u32, _: EventId, _: Fade) { panic!("unexpected fade"); }
+        fn set_par(&mut self, _: u32, _: EventId, _: VoicePar, _: i32) { panic!("unexpected voice edit"); }
+        fn controller(&mut self, _: u32, _: u8, _: i32) { panic!("unexpected controller"); }
+        fn group_count(&self) -> usize { 3 }
+        fn group_name(&self, group: usize) -> &str { ["a","b","c"][group] }
+        fn sample_rate(&self) -> f64 { 48_000.0 }
+        fn set_engine_par(&mut self, _: u32, _: EnginePar, _: i32) -> bool { false }
+        fn engine_par(&self, _: EnginePar) -> Option<i32> { None }
+    }
     // Native signed integer arithmetic: truncate toward zero, remainder keeps
     // the numerator's sign, and zero divisors return zero without warnings.
     for reference in [false,true] {
@@ -1284,37 +1314,47 @@ on release
  ignore_event($EVENT_ID)
 end on"#);
             let downstream="on init\ndeclare $released\ndeclare $channel\nmake_persistent($released)\nmake_persistent($channel)\nend on\non release\ninc($released)\n$channel := $MIDI_CHANNEL\nend on";
-            let mut rig=Rig::new(&[&source,downstream]);
-            rig.engine.calls.reserve(64);
+            let mut engine=Notes::default();
+            let (mut rt,errors)=Runtime::with_scripts(&[&source,downstream],&mut engine,8,Vec::new());
+            assert!(errors.iter().all(Option::is_none),"{errors:?}");
+            assert!(rt.diagnostics().is_empty(),"{:?}",rt.diagnostics());
             let mut start=|| {
-                rig.rt.set_midi_channel(7);
-                rig.on(0,60).off(0,60);
-                rig.rt.set_midi_channel(12);
-                rig.block(47);
+                rt.set_midi_channel(7);
+                rt.note_on(&mut engine,0,60,100);
+                rt.note_off(&mut engine,0,60);
+                rt.set_midi_channel(12);
+                rt.process(&mut engine,47);
+                engine.now=rt.now();
             };
             #[cfg(feature="plugin")]
             assert_eq!(crate::plugin::tests::allocations(||start()),0);
             #[cfg(not(feature="plugin"))]
             start();
-            let saved=rig.rt.persistence();
+            let saved=rt.persistence();
             assert_eq!(saved[0]["$resumed"],Value::Int(0));
             assert_eq!(saved[1]["$released"],Value::Int(0));
-            assert_eq!(prop(&rig.rt.interface(0),0,"$CONTROL_PAR_TEXT"),format!("{boolean}:{}:{quotient}:{remainder}:0:0",1-boolean));
+            assert_eq!(prop(&rt.interface(0),0,"$CONTROL_PAR_TEXT"),format!("{boolean}:{}:{quotient}:{remainder}:0:0",1-boolean));
             // Explicit child release must cancel its later fixed-duration end.
-            let mut resume=|| {rig.block(2).block(512);};
+            let mut resume=|| {
+                rt.process(&mut engine,2);
+                engine.now=rt.now();
+                rt.process(&mut engine,512);
+                engine.now=rt.now();
+            };
             #[cfg(feature="plugin")]
             assert_eq!(crate::plugin::tests::allocations(||resume()),0);
             #[cfg(not(feature="plugin"))]
             resume();
-            let saved=rig.rt.persistence();
+            let saved=rt.persistence();
             assert_eq!(saved[0]["$before_callback"],saved[0]["$after_callback"]);
             assert_eq!(saved[0]["$before_event"],saved[0]["$after_event"]);
             assert_eq!(saved[0]["$after_channel"],Value::Int(7));
             assert_eq!(saved[0]["$resumed"],Value::Int(1));
             assert_eq!(saved[1]["$released"],Value::Int(1));
             assert_eq!(saved[1]["$channel"],Value::Int(7));
-            assert_eq!(rig.log(),["play 72@0 v1 [0, 1, 2]","off v1@48"]);
-            assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+            assert_eq!(engine.played,Some((0,EventId(1),7,72)));
+            assert_eq!(engine.released,Some((48,EventId(1))));
+            assert!(rt.diagnostics().is_empty(),"{:?}",rt.diagnostics());
         }
     }
     super::vm::REFERENCE.set(false);
@@ -1889,7 +1929,8 @@ fn headless_fault_context_preserves_array_action_and_source_without_audio_alloca
 #[test]
 fn note_fault_context_is_bounded_distinct_and_does_not_leak_to_another_callback() {
     use super::runtime::FaultContext;
-    let script = "on init\ndeclare ui_knob $bad(0,256,1)\ndeclare ui_button $other\nend on\non ui_control($bad)\nset_key_color($bad,$KEY_COLOR_RED)\nend on\non ui_control($other)\n$other := 1 / $other\nend on";
+    // Integer zero divisors are silent; real nonfinite results still fault.
+    let script = "on init\ndeclare ui_knob $bad(0,256,1)\ndeclare ui_button $other\ndeclare ~real_result\nend on\non ui_control($bad)\nset_key_color($bad,$KEY_COLOR_RED)\nend on\non ui_control($other)\n~real_result := 1.0 / int_to_real($other)\nend on";
     let mut rig = Rig::new(&[script]);
     let mut live = rig.rt.live();
     let mut exercise = || {
@@ -1902,12 +1943,14 @@ fn note_fault_context_is_bounded_distinct_and_does_not_leak_to_another_callback(
     #[cfg(not(feature = "plugin"))]
     exercise();
     assert_eq!(live.faults.len(),3);
-    assert_eq!(live.faults[0].line,6);
+    assert_eq!(live.faults[0].line,7);
     assert_eq!(live.faults[0].count,2);
     assert_eq!(live.faults[0].context,Some(FaultContext::MidiNote { builtin:"set_key_color",argument:1,value:128 }));
     assert_eq!(live.faults[1].context,Some(FaultContext::MidiNote { builtin:"set_key_color",argument:1,value:129 }));
     assert_eq!(live.faults[2].context,None);
-    assert_eq!(live.faults[2].line,9);
+    assert_eq!(live.faults[2].message,super::vm::NONFINITE);
+    assert_eq!(live.faults[2].line,10);
+    assert_eq!(live.faults[2].count,1);
     assert!(live.faults[0].to_string().contains("set_key_color argument 1 = 128"));
     let encoded = serde_json::to_value(live.faults[0]).unwrap();
     assert_eq!(encoded["context"]["MidiNote"]["value"],128);
