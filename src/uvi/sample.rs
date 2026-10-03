@@ -1,0 +1,671 @@
+//! Bounded offline audio decoding; retain every channel in source order.
+
+use super::storage::Storage;
+use anyhow::{Context, Result, bail, ensure};
+use serde::Serialize;
+use std::io::{self, Cursor};
+use symphonia::core::{
+    audio::SampleBuffer,
+    codecs::DecoderOptions,
+    errors::Error as AudioError,
+    formats::FormatOptions,
+    io::MediaSourceStream,
+    meta::{Limit, MetadataOptions},
+    probe::Hint,
+};
+
+const MEMORY_LIMIT: usize = 256 << 20;
+const METADATA_LIMIT: usize = 2 << 20;
+const CHUNK_LIMIT: usize = 4096;
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SampleLoop {
+    pub id: u32,
+    pub kind: u32,
+    pub start: u32,
+    /// RIFF's inclusive last frame, preserved without rounding or conversion.
+    pub end: u32,
+    pub fraction: u32,
+    pub play_count: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Sample {
+    pub rate: u32,
+    pub channels: usize,
+    pub frames: usize,
+    #[serde(skip)]
+    pub interleaved: Storage,
+    /// Original sampler markers, which may be stale. Validate bounds before playback.
+    pub loops: Vec<SampleLoop>,
+    /// RIFF unity note is metadata, not evidence of a preset zone's root note.
+    pub unity_note: Option<u32>,
+    /// RIFF `clm ` cycle-size hint; wavetable consumers validate its geometry.
+    pub wavetable_cycle_frames: Option<u32>,
+    /// Original FLAC APPLICATION `riff` payloads, including their application ID.
+    #[serde(skip)]
+    pub riff_metadata: Vec<Vec<u8>>,
+}
+
+/// Assemble an ordered mono bundle. All operands must have identical timing
+/// and sampler metadata. Ownership is consumed: cache the result, not a second
+/// copy of the operands. Larger bundles require a streaming source.
+pub fn assemble_mono(mut samples: Vec<Sample>) -> Result<Sample> {
+    let first = samples.first().context("Empty mono sample bundle")?;
+    let (rate, frames, channels) = (first.rate, first.frames, samples.len());
+    ensure!(rate > 0 && frames > 0, "Invalid mono bundle dimensions");
+    let count = frames
+        .checked_mul(channels)
+        .context("Mono bundle sample count overflow")?;
+    ensure!(
+        count <= MEMORY_LIMIT / size_of::<f32>(),
+        "Mono bundle exceeds memory limit"
+    );
+    let mut metadata_bytes = 0usize;
+    let mut metadata_chunks = 0usize;
+    for sample in &samples {
+        ensure!(sample.channels == 1, "Sample bundle operands must be mono");
+        ensure!(
+            sample.rate == rate && sample.frames == frames,
+            "Mono bundle timing mismatch"
+        );
+        ensure!(
+            sample.loops == first.loops && sample.unity_note == first.unity_note,
+            "Mono bundle sampler metadata mismatch"
+        );
+        ensure!(
+            sample.wavetable_cycle_frames == first.wavetable_cycle_frames,
+            "Mono bundle wavetable metadata mismatch"
+        );
+        ensure!(
+            sample.interleaved.len() == frames,
+            "Mono bundle PCM length mismatch"
+        );
+        for block in &sample.riff_metadata {
+            metadata_bytes = metadata_bytes
+                .checked_add(block.len())
+                .context("Mono bundle metadata size overflow")?;
+            metadata_chunks += 1;
+            ensure!(
+                metadata_bytes <= METADATA_LIMIT && metadata_chunks <= CHUNK_LIMIT,
+                "Mono bundle metadata exceeds limit"
+            );
+        }
+    }
+    ensure!(
+        first.loops.len() <= CHUNK_LIMIT,
+        "Too many mono bundle loops"
+    );
+    if channels == 1 {
+        return Ok(samples.pop().unwrap());
+    }
+    let loops = first.loops.clone();
+    let unity_note = first.unity_note;
+    let wavetable_cycle_frames = first.wavetable_cycle_frames;
+    let mut interleaved = Vec::new();
+    interleaved.try_reserve_exact(count)?;
+    interleaved.resize(count, 0.);
+    let mut riff_metadata = Vec::new();
+    // ponytail: resident assembly uses temporary operand buffers; stream bundles
+    // when their combined resident allocation exceeds the caller's RAM budget.
+    for (channel, sample) in samples.into_iter().enumerate() {
+        for (frame, value) in sample.interleaved.iter().enumerate() {
+            interleaved[frame * channels + channel] = value;
+        }
+        riff_metadata.extend(sample.riff_metadata);
+    }
+    Ok(Sample {
+        rate,
+        channels,
+        frames,
+        interleaved: Storage::from_f32(interleaved)?,
+        loops,
+        unity_note,
+        wavetable_cycle_frames,
+        riff_metadata,
+    })
+}
+
+#[derive(Default)]
+struct Metadata {
+    loops: Vec<SampleLoop>,
+    unity_note: Option<u32>,
+    wavetable_cycle_frames: Option<u32>,
+    riff: Vec<Vec<u8>>,
+}
+
+fn u32le(bytes: &[u8]) -> u32 {
+    u32::from_le_bytes(bytes[..4].try_into().unwrap())
+}
+
+fn clm_cycle_frames(bytes: &[u8]) -> Option<u32> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let (digits, _) = text.strip_prefix("<!>")?.split_once(' ')?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+fn sampler(bytes: &[u8], metadata: &mut Metadata) -> Result<()> {
+    ensure!(bytes.len() >= 36, "Truncated RIFF sampler metadata");
+    let loops = u32le(&bytes[28..]) as usize;
+    let extra = u32le(&bytes[32..]) as usize;
+    ensure!(loops <= CHUNK_LIMIT, "Too many RIFF sample loops");
+    ensure!(
+        36usize
+            .checked_add(loops * 24)
+            .and_then(|n| n.checked_add(extra))
+            == Some(bytes.len()),
+        "Invalid RIFF sampler metadata length"
+    );
+    ensure!(
+        metadata.unity_note.is_none(),
+        "Duplicate RIFF sampler metadata"
+    );
+    metadata.unity_note = Some(u32le(&bytes[12..]));
+    for entry in bytes[36..36 + loops * 24].chunks_exact(24) {
+        metadata.loops.push(SampleLoop {
+            id: u32le(entry),
+            kind: u32le(&entry[4..]),
+            start: u32le(&entry[8..]),
+            end: u32le(&entry[12..]),
+            fraction: u32le(&entry[16..]),
+            play_count: u32le(&entry[20..]),
+        });
+    }
+    Ok(())
+}
+
+// Validate lengths before the demuxer can allocate from untrusted chunk headers.
+fn metadata(bytes: &[u8]) -> Result<Metadata> {
+    let mut result = Metadata::default();
+    let mut total = 0usize;
+    let mut chunks = 0usize;
+    if bytes.starts_with(b"fLaC") {
+        let mut at = 4usize;
+        loop {
+            let header = bytes
+                .get(at..at + 4)
+                .context("Truncated FLAC metadata header")?;
+            let length =
+                ((header[1] as usize) << 16) | ((header[2] as usize) << 8) | header[3] as usize;
+            total += length;
+            chunks += 1;
+            ensure!(
+                total <= METADATA_LIMIT && chunks <= CHUNK_LIMIT,
+                "FLAC metadata exceeds limit"
+            );
+            let body = bytes
+                .get(at + 4..at + 4 + length)
+                .context("Truncated FLAC metadata")?;
+            if chunks == 1 {
+                ensure!(
+                    header[0] & 127 == 0 && length == 34,
+                    "Missing FLAC STREAMINFO"
+                );
+            }
+            if header[0] & 127 == 2 {
+                ensure!(length >= 4, "Truncated FLAC application ID");
+                if body.starts_with(b"riff") {
+                    result.riff.push(body.to_vec());
+                    let chunk = &body[4..];
+                    ensure!(
+                        chunk.len() >= 8 || chunk.starts_with(b"clm "),
+                        "Truncated FLAC RIFF application"
+                    );
+                    if chunk.starts_with(b"smpl") {
+                        let length = u32le(&chunk[4..]) as usize;
+                        ensure!(length == chunk.len() - 8, "Truncated FLAC RIFF sampler");
+                        sampler(&chunk[8..], &mut result)?;
+                    } else if chunk.starts_with(b"clm ") {
+                        let hint = chunk.get(4..8).and_then(|header| {
+                            let end = 8usize.checked_add(u32le(header) as usize)?;
+                            clm_cycle_frames(chunk.get(8..end)?)
+                        });
+                        result.wavetable_cycle_frames = result.wavetable_cycle_frames.or(hint);
+                    }
+                }
+            }
+            at += 4 + length;
+            if header[0] & 128 != 0 {
+                ensure!(at < bytes.len(), "FLAC has no audio frames");
+                break;
+            }
+        }
+    } else {
+        ensure!(bytes.len() >= 12, "Truncated audio container header");
+        let wave = bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WAVE";
+        let aiff = bytes.starts_with(b"FORM") && matches!(&bytes[8..12], b"AIFF" | b"AIFC");
+        ensure!(wave || aiff, "Expected WAV, AIFF or FLAC audio");
+        let length = |b: &[u8]| if wave { u32le(b) } else { u32::from_be_bytes(b[..4].try_into().unwrap()) } as usize;
+        // Native WAV loading accepts inaccurate outer RIFF extents. Every
+        // inner chunk is still bounded to physical bytes before probing.
+        if aiff {
+            ensure!(
+                length(&bytes[4..]) == bytes.len() - 8,
+                "Audio container length mismatch"
+            );
+        }
+        let mut at = 12usize;
+        while at < bytes.len() {
+            let header = bytes
+                .get(at..at + 8)
+                .context("Truncated audio chunk header")?;
+            let size = length(&header[4..]);
+            let end = (at + 8)
+                .checked_add(size)
+                .context("Audio chunk size overflow")?;
+            let body = bytes.get(at + 8..end).context("Truncated audio chunk")?;
+            chunks += 1;
+            if &header[..4] != b"data" && &header[..4] != b"SSND" {
+                total = total
+                    .checked_add(size)
+                    .context("Audio metadata size overflow")?;
+            }
+            ensure!(
+                total <= METADATA_LIMIT && chunks <= CHUNK_LIMIT,
+                "Audio metadata exceeds limit"
+            );
+            if wave && &header[..4] == b"smpl" {
+                sampler(body, &mut result)?;
+            } else if wave && &header[..4] == b"clm " {
+                result.wavetable_cycle_frames =
+                    result.wavetable_cycle_frames.or(clm_cycle_frames(body));
+            }
+            at = end
+                .checked_add(size & 1)
+                .context("Audio chunk padding overflow")?;
+            ensure!(at <= bytes.len(), "Missing audio chunk padding");
+        }
+    }
+    Ok(result)
+}
+
+/// Decode an entire asset without downmixing. Encoded + decoded data must fit
+/// 256 MiB; metadata is limited to 2 MiB and 4096 chunks. Callers must also bound
+/// the total across assets. Undeclared lengths and partial decodes are rejected.
+pub fn decode(bytes: &[u8]) -> Result<Sample> {
+    ensure!(
+        !bytes.is_empty() && bytes.len() <= MEMORY_LIMIT,
+        "Audio input exceeds memory limit or is empty"
+    );
+    let metadata = metadata(bytes)?;
+    let mut encoded = bytes.to_vec();
+    if bytes.starts_with(b"RIFF") {
+        // Symphonia requires a consistent parent extent even though the native
+        // reader ignores it. Only the already validated private copy is changed.
+        encoded[4..8].copy_from_slice(&((bytes.len() - 8) as u32).to_le_bytes());
+    }
+    let stream = MediaSourceStream::new(Box::new(Cursor::new(encoded)), Default::default());
+    let mut format = symphonia::default::get_probe()
+        .format(
+            &Hint::new(),
+            stream,
+            &FormatOptions::default(),
+            &MetadataOptions {
+                limit_metadata_bytes: Limit::Maximum(METADATA_LIMIT),
+                limit_visual_bytes: Limit::Maximum(METADATA_LIMIT),
+            },
+        )?
+        .format;
+    let track = format.default_track().context("No audio track")?;
+    let rate = track
+        .codec_params
+        .sample_rate
+        .context("Undeclared sample rate")?;
+    let channels = track
+        .codec_params
+        .channels
+        .context("Undeclared channel count")?
+        .count();
+    let frames = usize::try_from(
+        track
+            .codec_params
+            .n_frames
+            .context("Undeclared frame count")?,
+    )?;
+    ensure!(
+        rate > 0 && channels > 0 && frames > 0,
+        "Invalid audio dimensions"
+    );
+    let count = frames
+        .checked_mul(channels)
+        .context("Audio sample count overflow")?;
+    ensure!(
+        count <= (MEMORY_LIMIT - bytes.len()) / size_of::<f32>(),
+        "Decoded audio exceeds memory limit"
+    );
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&track.codec_params, &DecoderOptions { verify: true })?;
+    let track_id = track.id;
+    let mut interleaved = Vec::new();
+    interleaved.try_reserve_exact(count)?;
+    loop {
+        let packet = match format.next_packet() {
+            Ok(packet) => packet,
+            Err(AudioError::IoError(error)) if error.kind() == io::ErrorKind::UnexpectedEof => {
+                break;
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if packet.track_id() != track_id {
+            bail!("Unexpected additional audio track");
+        }
+        let decoded = decoder.decode(&packet)?;
+        let spec = *decoded.spec();
+        ensure!(
+            spec.rate == rate && spec.channels.count() == channels,
+            "Audio dimensions changed during decode"
+        );
+        ensure!(
+            decoded.capacity() <= MEMORY_LIMIT / channels / size_of::<f32>(),
+            "Audio packet exceeds memory limit"
+        );
+        let mut buffer = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
+        buffer.copy_interleaved_ref(decoded);
+        let samples = buffer.samples();
+        ensure!(
+            samples.len() <= count - interleaved.len(),
+            "Decoded more frames than declared"
+        );
+        ensure!(
+            samples.iter().all(|sample| sample.is_finite()),
+            "Nonfinite audio sample"
+        );
+        interleaved.extend_from_slice(samples);
+    }
+    ensure!(
+        interleaved.len() == count,
+        "Truncated audio: decoded {} of {frames} frames",
+        interleaved.len() / channels
+    );
+    ensure!(
+        decoder.finalize().verify_ok != Some(false),
+        "Audio checksum verification failed"
+    );
+    Ok(Sample {
+        rate,
+        channels,
+        frames,
+        interleaved: Storage::from_f32(interleaved)?,
+        loops: metadata.loops,
+        unity_note: metadata.unity_note,
+        wavetable_cycle_frames: metadata.wavetable_cycle_frames,
+        riff_metadata: metadata.riff,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ordered_mono_bundle_preserves_identity_and_rejects_mismatches() {
+        let mono = |value: f32| Sample {
+            rate: 44100,
+            channels: 1,
+            frames: 3,
+            interleaved: Storage::from_f32(vec![value, value + 0.01, value + 0.02]).unwrap(),
+            loops: vec![SampleLoop {
+                id: 7,
+                kind: 0,
+                start: 1,
+                end: 2,
+                fraction: 0,
+                play_count: 0,
+            }],
+            unity_note: Some(64),
+            wavetable_cycle_frames: None,
+            riff_metadata: vec![vec![value as u8]],
+        };
+        for channels in [2, 10, 12] {
+            let bundle = assemble_mono((0..channels).map(|i| mono(i as f32)).collect()).unwrap();
+            assert_eq!(
+                (bundle.rate, bundle.channels, bundle.frames),
+                (44100, channels, 3)
+            );
+            for frame in 0..3 {
+                for channel in 0..channels {
+                    assert_eq!(
+                        bundle
+                            .interleaved
+                            .value(frame * channels + channel)
+                            .unwrap(),
+                        channel as f32 + frame as f32 * 0.01
+                    );
+                }
+            }
+            assert_eq!(bundle.loops, mono(0.).loops);
+            assert_eq!(bundle.unity_note, Some(64));
+            assert_eq!(
+                bundle.riff_metadata,
+                (0..channels).map(|i| vec![i as u8]).collect::<Vec<_>>()
+            );
+        }
+        let mut stale_left = mono(0.);
+        stale_left.loops[0].end = 5;
+        let mut stale_right = mono(1.);
+        stale_right.loops[0].end = 5;
+        let stale = assemble_mono(vec![stale_left, stale_right]).unwrap();
+        assert_eq!(stale.loops[0].end, 5);
+        assert_eq!(stale.interleaved.len(), 6);
+        assert!(assemble_mono(Vec::new()).is_err());
+        let mut mismatches = vec![
+            mono(1.),
+            mono(1.),
+            mono(1.),
+            mono(1.),
+            mono(1.),
+            mono(1.),
+            mono(1.),
+        ];
+        mismatches[0].rate = 48000;
+        mismatches[1].frames = 2;
+        mismatches[2].channels = 2;
+        mismatches[3].loops[0].fraction = 1;
+        mismatches[4].unity_note = Some(60);
+        mismatches[5].interleaved = Storage::from_f32(vec![0.; 2]).unwrap();
+        mismatches[6].wavetable_cycle_frames = Some(2048);
+        for invalid in mismatches {
+            assert!(assemble_mono(vec![mono(0.), invalid]).is_err());
+        }
+        let mut overflow = mono(0.);
+        overflow.frames = usize::MAX;
+        let mut other = mono(1.);
+        other.frames = usize::MAX;
+        assert!(
+            assemble_mono(vec![overflow, other])
+                .unwrap_err()
+                .to_string()
+                .contains("overflow")
+        );
+        let mut capped = mono(0.);
+        capped.frames = MEMORY_LIMIT;
+        assert!(
+            assemble_mono(vec![capped])
+                .unwrap_err()
+                .to_string()
+                .contains("memory limit")
+        );
+    }
+
+    #[test]
+    fn preserves_six_channels_and_rejects_invalid_audio() {
+        let mut wav = Cursor::new(Vec::new());
+        {
+            let mut writer = hound::WavWriter::new(
+                &mut wav,
+                hound::WavSpec {
+                    channels: 6,
+                    sample_rate: 44100,
+                    bits_per_sample: 16,
+                    sample_format: hound::SampleFormat::Int,
+                },
+            )
+            .unwrap();
+            for frame in 0..16 {
+                for channel in 0..6 {
+                    writer
+                        .write_sample((frame * 60 + channel * 10) as i16)
+                        .unwrap();
+                }
+            }
+            writer.finalize().unwrap();
+        }
+        let bytes = wav.into_inner();
+        let sample = decode(&bytes).unwrap();
+        assert_eq!(
+            (sample.rate, sample.channels, sample.frames),
+            (44100, 6, 16)
+        );
+        for frame in 0..16 {
+            for channel in 0..6 {
+                assert_eq!(
+                    sample.interleaved.value(frame * 6 + channel).unwrap(),
+                    (frame * 60 + channel * 10) as f32 / 32768.
+                );
+            }
+        }
+        let clm_fixture = |hint: &[u8]| {
+            let mut body = hint.to_vec();
+            body.resize(48, b' ');
+            let mut with_hint = bytes.clone();
+            with_hint.extend_from_slice(b"clm ");
+            with_hint.extend_from_slice(&48u32.to_le_bytes());
+            with_hint.extend_from_slice(&body);
+            let size = (with_hint.len() - 8) as u32;
+            with_hint[4..8].copy_from_slice(&size.to_le_bytes());
+            (with_hint, body)
+        };
+        let (with_hint, clm) = clm_fixture(b"<!>2048 00000000");
+        let hinted = decode(&with_hint).unwrap();
+        assert_eq!(hinted.wavetable_cycle_frames, Some(2048));
+        assert_eq!(
+            hinted.interleaved.to_vec().unwrap(),
+            sample.interleaved.to_vec().unwrap()
+        );
+        for malformed in [
+            b"<!>word 0".as_slice(),
+            b"<!>+2048 0",
+            b"<!>4294967296 0",
+            b"2048 0",
+            b"<!>2048 \xff",
+        ] {
+            let invalid = decode(&clm_fixture(malformed).0).unwrap();
+            assert_eq!(invalid.wavetable_cycle_frames, None);
+        }
+        assert_eq!(clm_cycle_frames(b"<!>2048"), None);
+        // Geometry is a wavetable-use decision, not a reason to reject ordinary PCM.
+        assert_eq!(
+            decode(&clm_fixture(b"<!>0 0").0)
+                .unwrap()
+                .wavetable_cycle_frames,
+            Some(0)
+        );
+        // Original synthetic metadata-only FLAC exercises foreign RIFF preservation.
+        let mut flac_metadata = b"fLaC\0\0\0\x22".to_vec();
+        flac_metadata.extend_from_slice(&[0; 34]);
+        flac_metadata.extend_from_slice(&[0x82, 0, 0, 60]);
+        flac_metadata.extend_from_slice(b"riffclm ");
+        flac_metadata.extend_from_slice(&48u32.to_le_bytes());
+        flac_metadata.extend_from_slice(&clm);
+        flac_metadata.push(0);
+        let foreign = metadata(&flac_metadata).unwrap();
+        assert_eq!(foreign.wavetable_cycle_frames, Some(2048));
+        assert_eq!(foreign.riff.len(), 1);
+        flac_metadata[54..58].copy_from_slice(&100u32.to_le_bytes());
+        assert_eq!(
+            metadata(&flac_metadata).unwrap().wavetable_cycle_frames,
+            None
+        );
+        // Original AIFF fixture with the same six independently identifiable channels.
+        let mut aiff = b"FORM\0\0\0\0AIFFCOMM\0\0\0\x12".to_vec();
+        aiff.extend_from_slice(&6u16.to_be_bytes());
+        aiff.extend_from_slice(&16u32.to_be_bytes());
+        aiff.extend_from_slice(&16u16.to_be_bytes());
+        aiff.extend_from_slice(&[0x40, 0x0e, 0xac, 0x44, 0, 0, 0, 0, 0, 0]);
+        aiff.extend_from_slice(b"SSND");
+        aiff.extend_from_slice(&200u32.to_be_bytes());
+        aiff.extend_from_slice(&[0; 8]);
+        for i in 0..96 {
+            aiff.extend_from_slice(&((i / 6 * 60 + i % 6 * 10) as i16).to_be_bytes());
+        }
+        let size = (aiff.len() - 8) as u32;
+        aiff[4..8].copy_from_slice(&size.to_be_bytes());
+        let decoded = decode(&aiff).unwrap();
+        assert_eq!(
+            (decoded.rate, decoded.channels, decoded.frames),
+            (44100, 6, 16)
+        );
+        assert_eq!(
+            decoded.interleaved.to_vec().unwrap(),
+            sample.interleaved.to_vec().unwrap()
+        );
+        assert!(decode(&aiff[..aiff.len() - 1]).is_err());
+        let mut looped = bytes.clone();
+        looped.extend_from_slice(b"smpl");
+        looped.extend_from_slice(&60u32.to_le_bytes());
+        for word in [0u32, 0, 0, 64, 0, 0, 0, 1, 0, 7, 1, 3, 9, 123, 2] {
+            looped.extend_from_slice(&word.to_le_bytes());
+        }
+        let size = (looped.len() - 8) as u32;
+        looped[4..8].copy_from_slice(&size.to_le_bytes());
+        let metadata = decode(&looped).unwrap();
+        assert_eq!(metadata.unity_note, Some(64));
+        assert_eq!(
+            metadata.loops,
+            [SampleLoop {
+                id: 7,
+                kind: 1,
+                start: 3,
+                end: 9,
+                fraction: 123,
+                play_count: 2,
+            }]
+        );
+        let end = looped.len() - 12;
+        looped[end..end + 4].copy_from_slice(&16u32.to_le_bytes());
+        let stale = decode(&looped).unwrap();
+        assert_eq!(stale.loops[0].end, 16);
+        assert_eq!(
+            stale.interleaved.to_vec().unwrap(),
+            sample.interleaved.to_vec().unwrap()
+        );
+
+        let mut float = Cursor::new(Vec::new());
+        {
+            let mut writer = hound::WavWriter::new(
+                &mut float,
+                hound::WavSpec {
+                    channels: 1,
+                    sample_rate: 48000,
+                    bits_per_sample: 32,
+                    sample_format: hound::SampleFormat::Float,
+                },
+            )
+            .unwrap();
+            writer.write_sample(f32::NAN).unwrap();
+            writer.finalize().unwrap();
+        }
+        assert!(decode(&float.into_inner()).is_err());
+        assert!(decode(b"fLaC\x80\x20\x00\x01").is_err());
+        assert!(decode(&bytes[..bytes.len() - 1]).is_err());
+        for delta in [4, 8, 12, 128, -4, -128] {
+            let mut extent = bytes.clone();
+            let size = u32le(&bytes[4..]) as i64 + delta;
+            extent[4..8].copy_from_slice(&(size as u32).to_le_bytes());
+            assert_eq!(
+                decode(&extent).unwrap().interleaved.to_vec().unwrap(),
+                sample.interleaved.to_vec().unwrap()
+            );
+        }
+        let mut malformed = bytes.clone();
+        malformed[..4].copy_from_slice(b"bad!");
+        assert!(decode(&malformed).is_err());
+        let mut chunk = bytes;
+        chunk[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(decode(&chunk).is_err());
+        assert!(decode(&[]).is_err());
+    }
+}

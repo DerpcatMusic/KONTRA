@@ -13,6 +13,8 @@ pub mod audio;
 pub mod engine;
 pub mod articulate;
 pub mod timing;
+#[cfg(feature = "uvi")]
+pub mod uvi;
 pub mod fx;
 pub mod creator;
 #[cfg(feature="plugin")]

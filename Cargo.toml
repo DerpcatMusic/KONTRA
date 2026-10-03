@@ -20,6 +20,8 @@ standalone = ["plugin", "dep:moose-standalone"]
 library-access = ["dep:aes"]
 # `audit-ui --shots`: draws views with the CPU renderer (kept out of the plugin).
 shots = ["plugin", "dep:mui"]
+# Experimental UVI containers, programs and offline Lua 5.1 processing.
+uvi = ["dep:roxmltree", "dep:mlua", "dep:sha2", "dep:base64", "dep:crc32fast", "symphonia/flac"]
 
 [dependencies]
 rustc-hash = "=2.1.3"
@@ -38,6 +40,11 @@ walkdir = "2"
 # Kontakt NKI export compresses the preset the way Kontakt does.
 fastlz = "0.1"
 dirs = "5"
+roxmltree = { version = "=0.21.1", optional = true }
+mlua = { version = "=0.12.1", features = ["lua51", "vendored", "error-send"], optional = true }
+sha2 = { version = "0.10", optional = true }
+base64 = { version = "0.22", optional = true }
+crc32fast = { version = "1.5", optional = true }
 moose = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", default-features = false, features = ["mui"], optional = true }
 moose-clap = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", optional = true }
 moose-vst3 = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", optional = true }

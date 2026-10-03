@@ -8,6 +8,12 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ## Unreleased
 
+### Experimental UVI interoperability
+
+- Add an optional `uvi` feature with bounded UFS2/v3 records and directory links, caller-supplied reader namespaces, verified known-plaintext content-state recovery, protected Program XML decoding, and private local extraction commands.
+- Add a separate Lua 5.1 Program host, timed musical commands, multichannel sample decoding and an offline renderer preserving UVI hierarchy, modulation and effect scope. Native primitive probes guide implementation; full instrument parity, plug-in integration and visual UVI controls remain incomplete. See `docs/uvi-compatibility.md` for measured coverage and limits.
+
+
 ### Verified processing and diagnostics follow-ups
 
 - Tube and Transistor Distortion now use their checked native scalar curves without the previous invented drive compensation. Independent signed boundaries, live Drive readback, group/rack routing and zero-heap gates pass. Damping/DC filtering remains explicitly approximate; whole-effect parity and corrected actual preset replay are not established.
