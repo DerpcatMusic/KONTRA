@@ -27,8 +27,8 @@ def sections(text):
             name = "Known limits"
         elif name == "Verified processing and diagnostics follow-ups":
             name = "Changed"
-        elif name.startswith("Fixed after "):
-            name = "Fixed"
+        name = re.sub(r"^(Added|Changed|Fixed) after .+$", r"\1", name)
+        name = re.sub(r"^Known limits for .+$", "Known limits", name)
         if name in result:
             result[name].extend(b.strip() for b in re.split(r"\n\s*\n|(?=^- )", body, flags=re.M) if b.strip())
     return result

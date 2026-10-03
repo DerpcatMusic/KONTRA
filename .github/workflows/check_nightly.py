@@ -3,6 +3,7 @@
 import json
 import hashlib
 import os
+import re
 import plistlib
 from pathlib import Path
 import subprocess
@@ -50,6 +51,20 @@ assert all(fix['summary'] in structured.split('### Fixed', 1)[1] for fix in revi
 assert all(fix['summary'] in structured.split('### Changed', 1)[1].split('### Fixed', 1)[0]
            for fix in reviewed[3:])
 assert 'No reviewed changes in this category' not in structured.split('### Changed', 1)[1]
+# The actual 123 -> 141 chapter has versioned Added/Fixed/Known limits
+# headings. Every reviewed outcome and limitation must survive in its category.
+changelog = Path(__file__).resolve().parents[2].joinpath('CHANGELOG.md').read_text()
+batch = changelog.split('## Accepted 0.3.141', 1)[1].split('### Fixed after 0.3.115', 1)[0]
+versioned = render('example/KONTRA', 'a'*40, '0.3.141-nightly.test', 'a'*40,
+                   '## Unreleased\n' + batch + '\n### Changed after 0.3.123\n- Authored metadata change.\n',
+                   previous_notes, previous, [commit], [])
+for category, count in (('Added', 3), ('Fixed', 15), ('Known limits', 5)):
+    block = re.search(r'(?ms)^### ' + category + r' (?:after|for) [^\n]+\n(.*?)(?=^### |\Z)', batch).group(1)
+    bullets = re.findall(r'^- .+$', block, re.M)
+    assert len(bullets) == count
+    rendered = versioned.split('### ' + category + '\n', 1)[1].split('\n### ', 1)[0]
+    assert all(bullet in rendered for bullet in bullets), category
+assert 'Authored metadata change.' in versioned.split('### Changed\n', 1)[1].split('\n### ', 1)[0]
 bootstrap = generate(notes_api, 'example/KONTRA', 'a'*40, '0.3.1-nightly.test', None, current_notes)
 assert 'First published snapshot' in bootstrap and 'Existing wrapped feature.' in bootstrap
 def missing_old_notes(path, *args):
