@@ -973,6 +973,7 @@ impl Scene {
                 // Leaving the editor has no pointer position. Preserve the last
                 // real position/frame, while using current keyboard modifiers.
                 let event_input = input.or(hover.last.map(|mut last| {
+                    if let Some(position) = pointer.pos { last.position = position; }
                     last.mods = pointer.mods;
                     last
                 }));
