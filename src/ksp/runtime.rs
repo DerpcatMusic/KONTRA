@@ -1480,7 +1480,7 @@ impl Runtime {
     /// All declared UI identifiers, including connection kinds not yet supported.
     pub(crate) fn native_control_identifiers(&self) -> impl Iterator<Item = &str> {
         self.states.iter().enumerate().filter(|(_, s)| s.error.is_none())
-            .flat_map(|(slot, state)| state.ui.controls.iter().map(move |control|
+            .flat_map(move |(slot, state)| state.ui.controls.iter().map(move |control|
                 self.programs[slot].vars[control.var as usize].name.trim_start_matches(['$', '%', '~', '?', '@', '!'])))
     }
 
