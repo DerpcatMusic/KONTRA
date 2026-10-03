@@ -26,6 +26,7 @@ pub fn name(cx: &Cx, slot: usize) -> String {
     if !part.name.is_empty() {
         return part.name.clone();
     }
+    if let Some(name) = instrument::native_name(cx, slot) { return name; }
     // Snapshot imports carry the snapshot's name. Keep the base title above
     // it; the second row names the selected snapshot independently.
     let full = if part.snapshot.is_empty() {
@@ -434,6 +435,7 @@ fn foot(ui: &mut Ui, cx: &mut Cx) -> El {
 
 /// Previous or next preset in the part's library folder, if there is one.
 fn step_preset(cx: &Cx, slot: usize, by: isize) -> Option<String> {
+    if cx.selection.parts[slot].uvi.is_some() { return None; }
     let path = &cx.selection.parts[slot].path;
     let library = cx.library_of(Path::new(path));
     let multi = import::is_multi(Path::new(path));
@@ -637,7 +639,7 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
 
     let title = title(ui, cx, slot);
     let progress = loading(cx, slot);
-    let failed = cx.view.parts[slot].status.starts_with("Load failed");
+    let failed = instrument::failed(cx, slot);
     let selected = cx.state.chosen() == Some(slot);
     let library = cx.library_of(Path::new(&cx.selection.parts[slot].path));
     let banner = cx.looks(&library).and_then(|l| l.banner[usize::from(cx.blurred())].clone());
@@ -649,10 +651,17 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     let mut pan = f64::from(part.pan);
     let pan_el = pan_wedge(ui, &format!("pan-{slot}"), &mut pan);
     part.pan = pan as f32;
-    let mut tune = f64::from(part.tune);
-    let range = f64::from(crate::engine::TUNE_RANGE);
-    let tune_el = tune_field(ui, &format!("tune-{slot}"), &mut tune, -range..=range);
-    part.tune = tune as f32;
+    let tune_el = if part.uvi.is_some() {
+        row![glyph(Icon::Fork, TEXT, secondary()), caption("—").text_size(SMALL).reserve("+36.00")]
+            .gap(2).align(Align::Center).h(STRIP).pad((2, 0))
+            .tip("Rack tuning is unavailable for UVI instruments. Use the instrument’s own controls.")
+    } else {
+        let mut tune = f64::from(part.tune);
+        let range = f64::from(crate::engine::TUNE_RANGE);
+        let el = tune_field(ui, &format!("tune-{slot}"), &mut tune, -range..=range);
+        part.tune = tune as f32;
+        el
+    };
     let (mut solo, mut mute) = (part.solo, part.mute);
     let switches = solo_mute(ui, &slot.to_string(), &mut solo, &mut mute);
     (part.solo, part.mute) = (solo, mute);
@@ -739,6 +748,10 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
 /// What the part is: its library, groups and zones, size, or that it failed to load.
 fn facts(cx: &Cx, slot: usize) -> String {
     let v = &cx.view.parts[slot];
+    if let Some(source) = &cx.selection.parts[slot].uvi {
+        return format!("{} · {} · {}", source.bank.file_stem().map_or_else(|| "UVI".into(), |s| s.to_string_lossy()),
+            source.member, v.status);
+    }
     let library = cx.library_of(Path::new(&cx.selection.parts[slot].path));
     // "Areia 1.2.0 [Audio Imperia]": the vendor in brackets goes.
     let library = library_label(&library);
@@ -786,8 +799,8 @@ fn title(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
             let text = cx.state.renaming.take().map(|(_, t)| t).unwrap_or_default();
             let text = text.trim();
             let part = &cx.selection.parts[slot];
-            let default = instrument::instrument_of(cx, slot)
-                .map_or_else(|| super::header::stem(&part.path), |i| i.name.clone());
+            let default = instrument::native_name(cx, slot).unwrap_or_else(|| instrument::instrument_of(cx, slot)
+                .map_or_else(|| super::header::stem(&part.path), |i| i.name.clone()));
             let shown = without_library(&default, &cx.library_of(Path::new(&part.path)));
             cx.selection.parts[slot].name = if text == default || text == shown || text.is_empty() {
                 String::new()

@@ -339,11 +339,30 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
         }
         Target::Part(slot) => {
             let slot = *slot;
-            let Some(part) = cx.selection.parts.get(slot).filter(|p| !p.path.is_empty()) else {
+            let Some(part) = cx.selection.parts.get(slot).filter(|p| !p.is_empty()) else {
                 return Vec::new();
             };
             let position = cx.selection.order.iter().position(|n| *n as usize == slot);
             let last = cx.selection.order.len().saturating_sub(1);
+            if let Some(source) = &part.uvi {
+                let mut items = vec![
+                    act("Rename…", "", Command::Rename(slot)),
+                    act("Duplicate", "Ctrl+D", Command::Duplicate(slot)),
+                    Item::Rule,
+                    check("Mute", part.mute, Command::Mute(slot)),
+                    check("Solo", part.solo, Command::Solo(slot)),
+                ];
+                if position.is_some_and(|p| p > 0) { items.push(act("Move up", "", Command::Move(slot, -1))); }
+                if position.is_some_and(|p| p < last) { items.push(act("Move down", "", Command::Move(slot, 1))); }
+                items.extend([
+                    Item::Rule,
+                    act("Reveal bank in folder", "", Command::Reveal(source.bank.to_string_lossy().into_owned())),
+                    act("Copy bank path", "", Command::CopyPath(source.bank.to_string_lossy().into_owned())),
+                    Item::Rule,
+                    act("Remove", "Del", Command::Remove(slot)),
+                ]);
+                return items;
+            }
             let mut items = vec![
                 act("Edit sound", "", Command::EditSound(slot)),
                 act("Rename…", "", Command::Rename(slot)),
@@ -483,7 +502,7 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
         Target::Strip(strip) => {
             let strip = *strip;
             if let Strip::Part(slot) = strip
-                && cx.selection.parts.get(slot).is_none_or(|p| p.path.is_empty())
+                && cx.selection.parts.get(slot).is_none_or(|p| p.is_empty())
             {
                 return Vec::new();
             }

@@ -5,6 +5,7 @@ pub(crate) mod cli;
 pub use cli::run as cli;
 
 pub mod crypto;
+pub mod bridge;
 pub mod dsp;
 pub mod effects;
 pub mod filter;
@@ -24,6 +25,8 @@ pub mod sparkverb;
 pub mod storage;
 pub mod time_effects;
 pub mod ufs;
+#[cfg(feature = "plugin")]
+pub(crate) mod ui_assets;
 pub mod waveshaper;
 pub mod worker;
 

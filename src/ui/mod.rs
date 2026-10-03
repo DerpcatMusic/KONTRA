@@ -28,6 +28,8 @@ mod editor;
 mod fitted;
 mod header;
 mod instrument;
+#[cfg(feature = "uvi")]
+mod uvi_instrument;
 mod keyboard;
 mod logs;
 mod menu;
@@ -224,6 +226,13 @@ impl Watch {
             logs::wake().hash(&mut h);
         }
         p.shared.focus_request.load(Ordering::Relaxed).hash(&mut h);
+        #[cfg(feature = "uvi")]
+        {
+            p.shared.uvi_activation_epoch().hash(&mut h);
+            p.shared.with_parts(|parts| for part in parts {
+                part.uvi_generation.load(Ordering::Acquire).hash(&mut h);
+            });
+        }
         // The wheels follow incoming MIDI as it moves them.
         p.shared.bend.load(Ordering::Relaxed).hash(&mut h);
         p.shared.modulation.load(Ordering::Relaxed).hash(&mut h);
@@ -338,6 +347,8 @@ fn fingerprint(view: &View, h: &mut DefaultHasher) {
             }
         }
         (at(&v.instrument), at(&v.interface), at(&v.wallpaper)).hash(h);
+        #[cfg(feature = "uvi")]
+        at(&v.uvi_ui).hash(h);
         v.live_revisions.hash(h);
         for edit in v.edited_values() { edit.hash(h); }
         (Arc::as_ptr(&v.keys) as usize, Arc::as_ptr(&v.pictures) as usize).hash(h);
@@ -376,6 +387,8 @@ enum Tab {
 
 /// Editor-only state that outlives a frame but not the window.
 struct EditorState {
+    #[cfg(feature = "uvi")]
+    uvi: HashMap<usize, uvi_instrument::State>,
     search: String,
     /// What the browser's lower pane lists; `None` searches every library.
     source: Option<browser::Source>,
@@ -532,7 +545,7 @@ impl Cx<'_> {
                 self.selection.uvi_recent.insert(0, source.clone());
                 self.selection.uvi_recent.truncate(6);
                 self.selection.uvi_requested = Some(crate::library::UviRequest { source, slot: slot.and_then(|s| u32::try_from(s).ok()), new });
-                self.state.notice = "UVI playback is not available yet. Checking this program…".into();
+                self.state.notice = if cfg!(feature = "uvi") { "Loading UVI instrument…" } else { "UVI playback support is disabled in this build." }.into();
             }
         }
     }
@@ -587,7 +600,7 @@ impl Cx<'_> {
         self.selection
             .parts
             .get(self.state.selected)
-            .filter(|p| !p.path.is_empty())
+            .filter(|p| !p.is_empty())
     }
 
     /// Select `slot`, unfold it and scroll the rack to it.
@@ -737,6 +750,7 @@ fn library_of(shelf: &crate::library::Shelf, path: &Path) -> String {
 
 /// Instrument state belongs to its preset; rack routing and player settings stay.
 fn replace_part(part: &mut Part, path: String) {
+    part.uvi = None;
     part.snapshot.clear();
     part.path = path;
     part.program = 0;
@@ -767,7 +781,7 @@ fn add_part(selection: &mut Selection, part: Part) -> usize {
     let slot = selection
         .parts
         .iter()
-        .position(|p| p.path.is_empty())
+        .position(Part::is_empty)
         .unwrap_or(selection.parts.len());
     if slot == selection.parts.len() {
         selection.parts.push(part);
@@ -820,14 +834,14 @@ fn sanitize(selection: &mut Selection) {
     let parts = &selection.parts;
     selection.order.retain(|n| {
         let n = *n as usize;
-        let keep = n < parts.len() && !parts[n].path.is_empty() && !seen[n];
+        let keep = n < parts.len() && !parts[n].is_empty() && !seen[n];
         if keep {
             seen[n] = true;
         }
         keep
     });
     for (n, part) in selection.parts.iter().enumerate() {
-        if !part.path.is_empty() && !seen[n] {
+        if !part.is_empty() && !seen[n] {
             selection.order.push(n as u32);
         }
     }
@@ -913,6 +927,8 @@ fn build(
     art: Arc<art::Art>,
 ) -> impl FnMut(&mut Ui, &mut Bridge<SamplerParams>) -> El + Send + 'static + use<> {
     let mut state = EditorState {
+        #[cfg(feature = "uvi")]
+        uvi: HashMap::new(),
         search: String::new(),
         source: None,
         pane: None,
@@ -1032,6 +1048,14 @@ fn build(
         let main = main_view(ui, &mut cx, bridge);
         let keys = keyboard::dock(ui, &mut cx);
         let menu = menu::view(ui, &mut cx, window);
+        #[cfg(feature = "uvi")]
+        let native_menus: Vec<El> = (0..cx.selection.parts.len()).filter_map(|slot| {
+            let (published, current) = instrument::native_panel(&cx, slot)?;
+            let snapshot = published.snapshots.iter().rev().find(|s| s.root.performance_view)?;
+            let state = cx.state.uvi.get_mut(&slot)?;
+            uvi_instrument::popup(ui, state, slot, current, published.stamp, snapshot, window,
+                |stamp, input| cx.p.shared.edit_uvi(slot, stamp, input.edit))
+        }).collect();
         let ghost = ghost(ui, &cx);
         cx.state.meters.logs_visible.store(cx.state.tab == Tab::Logs, Ordering::Relaxed);
 
@@ -1063,6 +1087,8 @@ fn build(
         shell.push(keys);
         let mut layers = vec![col(shell).gap(0).full(), resize_corner(ui, &mut state.corner, window, ui_zoom, bridge)];
         layers.extend(menu);
+        #[cfg(feature = "uvi")]
+        layers.extend(native_menus);
         layers.extend(ghost);
         stack(layers)
             .full()
@@ -1285,6 +1311,8 @@ fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El
         content.extend(instrument::notices(cx, slot));
         content.push(match cx.state.tab {
             Tab::Mapping => instrument::mapping(ui, cx),
+            Tab::Sound if cx.part().is_some_and(|p| p.uvi.is_some()) => instrument::native_unavailable(
+                "Sound editing", "Use this instrument’s Rack controls to change its sound."),
             Tab::Sound => editor::view(ui, cx),
             _ => instrument::info(ui, cx),
         });

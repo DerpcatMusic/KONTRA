@@ -14,6 +14,14 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
     let disk = f32::from_bits(cx.state.meters.disk.load(Ordering::Relaxed));
     let voices = p.shared.voices.load(Ordering::Relaxed);
     let audible = p.shared.audible.load(Ordering::Relaxed);
+    #[cfg(feature = "uvi")]
+    let native_voices = p.shared.uvi_voices.load(Ordering::Relaxed);
+    #[cfg(not(feature = "uvi"))]
+    let native_voices = 0;
+    let voice_count = if native_voices != 0 { voices } else { audible };
+    let voice_tip = if native_voices != 0 {
+        format!("{voices} running, including {native_voices} UVI voices. UVI includes silent and releasing layers.")
+    } else { format!("{voices} running, {} muted by the script", voices.saturating_sub(audible)) };
     // Samples in RAM for the whole process: parts and instances sharing them count once.
     let memory = crate::engine::resident_bytes();
     let freed: u64 = cx.view.parts.iter().map(|v| v.freed).sum();
@@ -23,8 +31,8 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
         .parts
         .iter()
         .zip(&cx.selection.parts)
-        .filter(|(v, part)| v.loading && !part.path.is_empty())
-        .map(|(_, part)| stem(&part.path))
+        .filter(|(v, part)| v.loading && !part.is_empty())
+        .map(|(_, part)| part.uvi.as_ref().map_or_else(|| stem(&part.path), |source| stem(&source.member)))
         .collect();
     let activity = match loading.as_slice() {
         [] if cx.view.multi_status.starts_with("Loading") => cx.view.multi_status.clone(),
@@ -128,10 +136,7 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
         stat("CPU", format!("{:.0}%", cpu * 100.), "100%"),
         // Heard voices; scripts start and mute crossfade layers and mic
         // positions too, which cost next to nothing.
-        stat("Voices", audible.to_string(), "000").tip(format!(
-            "{voices} running, {} muted by the script",
-            voices.saturating_sub(audible)
-        )),
+        stat("Voices", voice_count.to_string(), "000").tip(voice_tip),
         // Sample heads sized by use and idle stream rings handed back.
         stat("RAM", megabytes(memory), "00000 MB").tip(format!(
             "Smart memory: {} of samples resident, shared ones once · {} freed",

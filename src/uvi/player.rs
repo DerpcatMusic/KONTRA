@@ -148,6 +148,9 @@ impl<'a> Player<'a> {
     pub fn sample_rate(&self) -> u32 {
         self.session.sample_rate()
     }
+    pub fn active_voices(&self) -> usize {
+        self.renderer.active_voices()
+    }
     pub fn current_frame(&self) -> u64 {
         self.frame
     }
@@ -185,6 +188,8 @@ impl<'a> Player<'a> {
     ) -> Result<Rendered> {
         self.render_with_controls(inputs, ui_inputs, &[], frames)
     }
+    /// Keep note/control wire order in `hosted` using Event for non-notes.
+    /// Separate legacy inputs keep the existing hosted-first same-frame ties.
     pub fn render_hosted(
         &mut self,
         inputs: &[script::Input],
@@ -258,6 +263,13 @@ impl<'a> Player<'a> {
                     .all(|event| event.frame() >= self.frame && event.frame() < end),
             "Invalid hosted input sequence"
         );
+        ensure!(
+            hosted.iter().all(|event| match event {
+                HostedInput::Event(input) => input_is_valid(input),
+                _ => true,
+            }),
+            "Invalid hosted non-note input or audio transport tempo"
+        );
         // Token admission uses the backend ledger before any UI, callback or
         // clock mutation. Execution failures remain fatal once processing starts.
         if !hosted.is_empty() {
@@ -295,6 +307,7 @@ impl<'a> Player<'a> {
                             HostedInput::Off { root, frame } => {
                                 self.session.host_note_off(root, frame)?
                             }
+                            HostedInput::Event(input) => self.session.input(input)?,
                         }
                         hosted_index += 1;
                     } else {

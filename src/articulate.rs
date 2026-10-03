@@ -499,6 +499,15 @@ fn pressure_gain(pressure: u8) -> f32 {
 }
 
 impl Router {
+    pub(crate) fn mpe_enabled(&self) -> bool {
+        self.route.mpe.zone != Zone::Off
+    }
+    /// Raw external input cannot silently inherit Kontakt articulation,
+    /// key remapping or channel/velocity transforms. MPE is checked separately.
+    pub(crate) fn external_input_supported(&self) -> bool {
+        self.route.mode == Mode::Keyswitch && self.route.count == 0
+            && self.route.keys.iter().enumerate().all(|(key, &to)| usize::from(to) == key)
+    }
     /// Take a new route; held notes keep where they went.
     pub fn set_route(&mut self, route: Route) {
         if route != self.route {
@@ -985,9 +994,18 @@ pub fn reaches(c: &PartControls, r: &Router, port: u8, ev: In) -> bool {
 
 /// Send host input through every part's router that accepts it.
 pub fn dispatch(rack: &mut Rack, routers: &mut [Router], port: u8, ev: In) {
+    dispatch_with(rack, routers, port, ev, &mut |_, _, _, _, _| false);
+}
+
+/// Deliver accepted raw input to an external backend before Kontakt routing.
+/// Returning true owns this slot's delivery and skips Kontakt processing.
+pub fn dispatch_with(rack: &mut Rack, routers: &mut [Router], port: u8, ev: In,
+    external: &mut impl FnMut(usize, u8, In, &Router, bool) -> bool) {
     let Rack { parts, controls, .. } = rack;
-    for ((e, c), r) in parts.iter_mut().zip(controls.iter()).zip(routers.iter_mut()) {
-        if reaches(c, r, port, ev) {
+    for (slot, ((e, c), r)) in parts.iter_mut().zip(controls.iter()).zip(routers.iter_mut()).enumerate() {
+        let reached = reaches(c, r, port, ev);
+        let handled = external(slot, port, ev, r, reached);
+        if reached && !handled {
             feed(r, e, ev, u8::try_from(c.channel).unwrap_or(0));
         }
     }
@@ -996,11 +1014,17 @@ pub fn dispatch(rack: &mut Rack, routers: &mut [Router], port: u8, ev: In) {
 /// Dispatch and record its targets in caller-prepared storage for later key-up.
 /// Every flag is overwritten; there is no fixed-width part mask.
 pub fn dispatch_record(rack: &mut Rack, routers: &mut [Router], port: u8, ev: In, reached: &mut [bool]) {
+    dispatch_record_with(rack, routers, port, ev, reached, &mut |_, _, _, _, _| false);
+}
+
+pub fn dispatch_record_with(rack: &mut Rack, routers: &mut [Router], port: u8, ev: In, reached: &mut [bool],
+    external: &mut impl FnMut(usize, u8, In, &Router, bool) -> bool) {
     reached.fill(false);
     let Rack { parts, controls, .. } = rack;
-    for (((e, c), r), target) in parts.iter_mut().zip(controls.iter()).zip(routers.iter_mut()).zip(reached) {
+    for (slot, (((e, c), r), target)) in parts.iter_mut().zip(controls.iter()).zip(routers.iter_mut()).zip(reached).enumerate() {
         *target = reaches(c, r, port, ev);
-        if *target {
+        let handled = external(slot, port, ev, r, *target);
+        if *target && !handled {
             feed(r, e, ev, u8::try_from(c.channel).unwrap_or(0));
         }
     }
@@ -1008,17 +1032,27 @@ pub fn dispatch_record(rack: &mut Rack, routers: &mut [Router], port: u8, ev: In
 
 /// Send input to previously recorded targets, even if routing has changed.
 pub fn dispatch_to(rack: &mut Rack, routers: &mut [Router], slots: impl IntoIterator<Item = usize>, ev: In) {
+    dispatch_to_with(rack, routers, slots, 0, ev, &mut |_, _, _, _, _| false);
+}
+
+pub fn dispatch_to_with(rack: &mut Rack, routers: &mut [Router], slots: impl IntoIterator<Item = usize>, port: u8, ev: In,
+    external: &mut impl FnMut(usize, u8, In, &Router, bool) -> bool) {
     for slot in slots {
         if let (Some(e), Some(c), Some(r)) = (rack.parts.get_mut(slot), rack.controls.get(slot), routers.get_mut(slot)) {
-            feed(r, e, ev, u8::try_from(c.channel).unwrap_or(0));
+            if !external(slot, port, ev, r, true) { feed(r, e, ev, u8::try_from(c.channel).unwrap_or(0)); }
         }
     }
 }
 
 /// Send input to one rack part (the on-screen keyboard).
 pub fn play(rack: &mut Rack, routers: &mut [Router], slot: usize, ev: In) {
+    play_with(rack, routers, slot, 0, ev, &mut |_, _, _, _, _| false);
+}
+
+pub fn play_with(rack: &mut Rack, routers: &mut [Router], slot: usize, port: u8, ev: In,
+    external: &mut impl FnMut(usize, u8, In, &Router, bool) -> bool) {
     if let (Some(e), Some(r)) = (rack.parts.get_mut(slot), routers.get_mut(slot)) {
-        feed(r, e, ev, ev.channel());
+        if !external(slot, port, ev, r, true) { feed(r, e, ev, ev.channel()); }
     }
 }
 
@@ -1049,6 +1083,40 @@ pub fn parse_note(text: &str) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn external_keyboard_targets_keep_original_port_and_skip_kontakt() {
+        let mut rack = Rack::with_slots(2);
+        rack.controls[0].port = 3;
+        rack.controls[1].port = 4;
+        let mut routers = [Router::default(), Router::default()];
+        let mut reached = [false; 2];
+        let seen = std::cell::RefCell::new(Vec::with_capacity(4));
+        let mut external = |slot, port, ev, _: &Router, targeted| {
+            seen.borrow_mut().push((slot, port, ev, targeted)); true
+        };
+        dispatch_record_with(&mut rack, &mut routers, 3, In::NoteOn(0, 60, 100), &mut reached, &mut external);
+        assert_eq!(reached, [true, false]);
+        assert!(!rack.parts[0].key_down(0, 60));
+        rack.controls[0].port = 4;
+        dispatch_to_with(&mut rack, &mut routers,
+            reached.iter_mut().enumerate().filter_map(|(slot, reached)| std::mem::take(reached).then_some(slot)),
+            3, In::NoteOff(0, 60), &mut external);
+        assert_eq!(seen.borrow()[2], (0, 3, In::NoteOff(0, 60), true));
+        play_with(&mut rack, &mut routers, 1, 7, In::NoteOn(4, 61, 100), &mut external);
+        assert_eq!(seen.borrow()[3], (1, 7, In::NoteOn(4, 61, 100), true));
+        assert!(!rack.parts[1].key_down(4, 61));
+    }
+    #[test]
+    fn external_support_flags_transforms_without_changing_mpe_query() {
+        let mut router = Router::default();
+        assert!(router.external_input_supported());
+        let mut settings = Articulate { source: "fixture".into(), ..Default::default() };
+        settings.articulations.push(Articulation { key: Some(40), remap: Some(41), ..Default::default() });
+        router.set_route(Route::new("fixture", &settings, &Mpe::default()));
+        assert!(!router.external_input_supported());
+        router.set_route(Route::new("", &Articulate::default(), &Mpe { zone: Zone::Lower, ..Default::default() }));
+        assert!(router.external_input_supported() && router.mpe_enabled());
+    }
 
     fn areia() -> Articulate {
         let names = ["Sustained", "Spiccato", "Pizzicato", "Tremolo"];

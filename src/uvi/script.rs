@@ -188,13 +188,22 @@ pub struct Input {
 
 #[derive(Debug, Clone, Copy)]
 pub enum HostedInput {
-    On { root: HostRoot, input: Input },
-    Off { root: HostRoot, frame: u64 },
+    On {
+        root: HostRoot,
+        input: Input,
+    },
+    Off {
+        root: HostRoot,
+        frame: u64,
+    },
+    /// Non-note input in the same wire order as owned On/Off messages.
+    /// Notes must use On/Off so they cannot bypass the activation ledger.
+    Event(Input),
 }
 impl HostedInput {
     pub fn frame(&self) -> u64 {
         match self {
-            Self::On { input, .. } => input.frame,
+            Self::On { input, .. } | Self::Event(input) => input.frame,
             Self::Off { frame, .. } => *frame,
         }
     }
@@ -2606,6 +2615,17 @@ impl Session {
             last_frame = event.frame();
             let root = match event {
                 HostedInput::On { root, .. } | HostedInput::Off { root, .. } => *root,
+                HostedInput::Event(input) => {
+                    validate_input(input)?;
+                    ensure!(
+                        !matches!(
+                            input.kind,
+                            InputKind::NoteOn { .. } | InputKind::NoteOff { .. }
+                        ),
+                        "Hosted notes require an owned On/Off message"
+                    );
+                    continue;
+                }
             };
             ensure!(
                 state.root_activation == Some((root.epoch, root.generation)) && root.token > 0,
@@ -2634,6 +2654,7 @@ impl Session {
                         "Unknown or complete hosted root"
                     );
                 }
+                HostedInput::Event(_) => unreachable!("non-note input was validated above"),
             }
         }
         Ok(())
@@ -4681,6 +4702,29 @@ mod hosted_tests {
                 root: root(3),
                 input: on(11, 255),
             },
+            HostedInput::Event(on(11, 100)),
+            HostedInput::Event(Input {
+                frame: 11,
+                kind: InputKind::NoteOff {
+                    channel: 0,
+                    note: 60,
+                },
+            }),
+            HostedInput::Event(Input {
+                frame: 11,
+                kind: InputKind::PitchBend {
+                    channel: 0,
+                    bend: f64::NAN,
+                },
+            }),
+            HostedInput::Event(Input {
+                frame: 11,
+                kind: InputKind::Controller {
+                    channel: 0,
+                    controller: 64,
+                    value: 255,
+                },
+            }),
         ] {
             assert!(s.validate_hosted_inputs(&[prefix, suffix]).is_err());
             let state = s.runtime.state.borrow();
@@ -4714,6 +4758,7 @@ mod hosted_tests {
             match event {
                 HostedInput::On { root, input } => s.host_note_on(root, input).unwrap(),
                 HostedInput::Off { root, frame } => s.host_note_off(root, frame).unwrap(),
+                HostedInput::Event(input) => s.input(input).unwrap(),
             }
         }
         s.drain().unwrap();
@@ -4730,6 +4775,107 @@ mod hosted_tests {
                 }
             ]
         );
+    }
+    #[test]
+    fn hosted_ordered_controls_keep_same_frame_note_gate_order() {
+        for pedal_first in [false, true] {
+            let expected = if pedal_first { 127 } else { 0 };
+            let mut s = session(&format!(
+                "function onNote(e)postEvent(e)end function onController(e)postEvent(e)end function onRelease(e)assert(getCC(64)=={expected});postEvent(e)end"
+            ));
+            let pedal = HostedInput::Event(Input {
+                frame: 1,
+                kind: InputKind::Controller {
+                    channel: 0,
+                    controller: 64,
+                    value: 127,
+                },
+            });
+            let off = HostedInput::Off {
+                root: root(1),
+                frame: 1,
+            };
+            let packet = [
+                HostedInput::On {
+                    root: root(1),
+                    input: on(0, 100),
+                },
+                if pedal_first { pedal } else { off },
+                if pedal_first { off } else { pedal },
+            ];
+            s.validate_hosted_inputs(&packet).unwrap();
+            for event in packet {
+                match event {
+                    HostedInput::On { root, input } => s.host_note_on(root, input).unwrap(),
+                    HostedInput::Off { root, frame } => s.host_note_off(root, frame).unwrap(),
+                    HostedInput::Event(input) => s.input(input).unwrap(),
+                }
+            }
+            let commands = s.drain().unwrap().commands;
+            assert_eq!(commands.len(), 3);
+            assert!(matches!(commands[0].action, Action::Start(_)));
+            let gate = if pedal_first { 2 } else { 1 };
+            let control = if pedal_first { 1 } else { 2 };
+            assert!(matches!(commands[gate].action, Action::ReleaseNote { .. }));
+            assert!(matches!(
+                commands[control].action,
+                Action::Controller {
+                    controller: 64,
+                    value: 127,
+                    ..
+                }
+            ));
+        }
+    }
+    #[test]
+    fn hosted_ordered_bend_and_cc_callbacks_precede_same_frame_on() {
+        let mut s = session(
+            "local cc,bend=0,0 function onController(e)cc=e.value;postEvent(e)end function onPitchBend(e)bend=e.bend;postEvent(e)end function onNote(e)assert(cc==64 and bend==.5);postEvent(e)end",
+        );
+        let packet = [
+            HostedInput::Event(Input {
+                frame: 0,
+                kind: InputKind::Controller {
+                    channel: 0,
+                    controller: 1,
+                    value: 64,
+                },
+            }),
+            HostedInput::Event(Input {
+                frame: 0,
+                kind: InputKind::PitchBend {
+                    channel: 0,
+                    bend: 0.5,
+                },
+            }),
+            HostedInput::On {
+                root: root(1),
+                input: on(0, 100),
+            },
+        ];
+        s.validate_hosted_inputs(&packet).unwrap();
+        for event in packet {
+            match event {
+                HostedInput::On { root, input } => s.host_note_on(root, input).unwrap(),
+                HostedInput::Off { root, frame } => s.host_note_off(root, frame).unwrap(),
+                HostedInput::Event(input) => s.input(input).unwrap(),
+            }
+        }
+        let output = s.drain().unwrap();
+        assert!(matches!(
+            output.commands[0].action,
+            Action::Controller {
+                controller: 1,
+                value: 64,
+                ..
+            }
+        ));
+        assert!(matches!(
+            output.commands[1].action,
+            Action::PitchBend { bend: 0.5, .. }
+        ));
+        assert!(matches!(output.commands[2].action, Action::Start(_)));
+        assert_eq!(output.command_roots, [None, None, Some(root(1))]);
     }
     #[test]
     fn hosted_packet_admission_counts_pending_completions_and_same_batch_off() {

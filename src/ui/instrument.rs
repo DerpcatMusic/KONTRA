@@ -10,11 +10,56 @@ use std::sync::Arc;
 
 /// The instrument loaded in `slot`, once it matches the part.
 pub(super) fn instrument_of<'a>(cx: &'a Cx, slot: usize) -> Option<&'a Arc<Instrument>> {
-    let part = cx.selection.parts.get(slot).filter(|p| !p.path.is_empty())?;
+    let part = cx.selection.parts.get(slot).filter(|p| p.uvi.is_none() && !p.path.is_empty())?;
     let v = &cx.view.parts[slot];
     v.instrument
         .as_ref()
         .filter(|i| i.path == Path::new(&part.path) && v.program == part.program)
+}
+
+/// The native program's catalog name, falling back to its actual member name.
+/// It never treats a bank member as a filesystem import path.
+pub(super) fn native_name(cx: &Cx, slot: usize) -> Option<String> {
+    let source = cx.selection.parts.get(slot)?.uvi.as_ref()?;
+    Some(cx.view.shelf.uvi.get(&source.bank)
+        .and_then(|bank| bank.presets.iter().find(|preset| &preset.source == source && !preset.name.is_empty()))
+        .map_or_else(|| super::header::stem(&source.member.replace('\\', "/")), |preset| preset.name.clone()))
+}
+
+fn native_problem(status: &str) -> bool {
+    matches!(status, "The UVI instrument could not be loaded."
+        | "The current audio configuration is unsupported by UVI playback.")
+}
+
+/// Includes the native loader's terminal states, rather than only Kontakt imports.
+pub(super) fn failed(cx: &Cx, slot: usize) -> bool {
+    cx.view.parts.get(slot).is_some_and(|v| {
+        if cx.selection.parts.get(slot).is_some_and(|p| p.uvi.is_some()) {
+            !v.loading && native_problem(&v.status)
+        } else { v.status.starts_with("Load failed") }
+    })
+}
+
+fn native_wait(loading: bool, status: &str) -> String {
+    if !cfg!(feature = "uvi") {
+        "UVI support is disabled in this version.".into()
+    } else if native_problem(status) {
+        "Instrument could not be loaded. See the error above or Logs for details.".into()
+    } else if loading {
+        if status.contains("UVI") { status.into() } else { "Loading UVI instrument…".into() }
+    } else if status == "UVI instrument" {
+        "This instrument is ready. Performance controls have not been published.".into()
+    } else {
+        "Waiting for the UVI instrument to start…".into()
+    }
+}
+
+/// A native source remains playable through its authored Rack controls while
+/// the app's Kontakt-only editing surfaces are unavailable.
+pub(super) fn native_unavailable(what: &str, help: &str) -> El {
+    col![body(format!("{what} is unavailable for UVI instruments.")),
+        caption(help.to_owned()).fill(secondary()).lines(3)]
+        .gap(SPACE).align(Align::Start).pad(INSET).flex(1).min_h(0)
 }
 
 /// The instrument loaded for the selected part.
@@ -49,6 +94,12 @@ pub fn welcome(cx: &Cx) -> El {
 pub fn notices(cx: &Cx, slot: usize) -> Option<El> {
     let v = &cx.view.parts[slot];
     let mut out = Vec::new();
+    if cx.selection.parts.get(slot).is_some_and(|p| p.uvi.is_some()) {
+        if !v.loading && native_problem(&v.status) {
+            out.push(banner(Role::Danger, v.status.clone()));
+        }
+        return (!out.is_empty()).then(|| col(out).gap(TIGHT).pad((INSET, SPACE)).shrink(0));
+    }
     if v.status == "Loading snapshot…" {
         out.push(banner(Role::Ink, v.status.clone()));
     } else if let Some(reason) = v.status.strip_prefix("Snapshot was not loaded: ") {
@@ -106,6 +157,17 @@ pub fn stage_deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
     let at = |a: Option<*const ()>| a.map_or(0, |p| p as usize);
     let mut h = DefaultHasher::new();
     slot.hash(&mut h);
+    if let Some(source) = cx.selection.parts.get(slot).and_then(|p| p.uvi.as_ref()) {
+        source.hash(&mut h);
+        #[cfg(feature = "uvi")]
+        {
+            at(v.uvi_ui.as_ref().map(|s| Arc::as_ptr(s).cast())).hash(&mut h);
+            cx.p.shared.part(slot).map(|p| p.uvi_generation.load(std::sync::atomic::Ordering::Acquire)).hash(&mut h);
+            cx.p.shared.uvi_activation_epoch().hash(&mut h);
+            ui.scene().and_then(|s| s.surface(&format!("part-{slot}")))
+                .map(|s| s.frame.size.width.to_bits()).hash(&mut h);
+        }
+    }
     (v.loading, &v.status).hash(&mut h);
     v.live_revisions.hash(&mut h);
     for edit in v.edited_values() { edit.hash(&mut h); }
@@ -125,6 +187,26 @@ pub fn stage_deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
 }
 
 pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
+    if cx.selection.parts.get(slot).is_some_and(|p| p.uvi.is_some()) {
+        let v = &cx.view.parts[slot];
+        let status = native_wait(v.loading, &v.status);
+        if native_problem(&v.status) {
+            return caption(status.clone()).named(status).fill(secondary()).lines(3).pad(INSET)
+                .id(format!("stage-{slot}"));
+        }
+        #[cfg(feature = "uvi")]
+        if let Some((published, current)) = native_panel(cx, slot) {
+            if let Some(snapshot) = published.snapshots.iter().rev().find(|s| s.root.performance_view) {
+                let shared = &cx.p.shared;
+                return super::uvi_instrument::view(ui, cx.state.uvi.entry(slot).or_default(), slot,
+                    current, published.stamp, snapshot, &published.pictures,
+                    |stamp, input| shared.edit_uvi(slot, stamp, input.edit));
+            }
+            return caption("This instrument has no performance controls.").fill(secondary()).pad(INSET);
+        }
+        return caption(status.clone()).named(status).fill(secondary()).lines(3).pad(INSET)
+            .id(format!("stage-{slot}"));
+    }
     let page = stage_page(ui, cx, slot);
     let pages = cx.view.parts[slot].script_pages.clone();
     if pages.views.len() < 2 { return page; }
@@ -141,6 +223,18 @@ pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     }
     col![page, row(tabs).gap(0).w(Len::Pct(100.)).min_w(0).id(format!("script-pages-{slot}"))]
         .gap(0).align(Align::Stretch).w(Len::Pct(100.))
+}
+
+#[cfg(feature = "uvi")]
+pub(super) fn native_panel(cx: &Cx, slot: usize) -> Option<(Arc<crate::plugin::uvi_ui::Published>, crate::uvi::worker::Stamp)> {
+    let source = cx.selection.parts.get(slot)?.uvi.as_ref()?;
+    let view = cx.view.parts.get(slot)?;
+    if native_problem(&view.status) { return None; }
+    let published = view.uvi_ui.clone()?;
+    if !view.uvi_matches(source, published.stamp) { return None; }
+    let generation = cx.p.shared.part(slot)?.uvi_generation.load(std::sync::atomic::Ordering::Acquire);
+    Some((published.clone(), crate::uvi::worker::Stamp { epoch: cx.p.shared.uvi_activation_epoch(), generation,
+        frame: published.stamp.frame }))
 }
 
 fn stage_page(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
@@ -198,6 +292,10 @@ fn stage_page(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
 
 /// Groups on the left; the selected group's zones on a key × velocity grid.
 pub fn mapping(ui: &mut Ui, cx: &mut Cx) -> El {
+    if cx.part().is_some_and(|part| part.uvi.is_some()) {
+        return native_unavailable("Key and velocity mapping",
+            "Use this instrument’s Rack controls for its supported settings.");
+    }
     let instrument = current(cx).cloned();
     let slot = cx.state.selected;
     let group = cx.part().map_or(0, |p| p.group);
@@ -301,14 +399,37 @@ pub fn mapping(ui: &mut Ui, cx: &mut Cx) -> El {
 pub fn info(ui: &mut Ui, cx: &mut Cx) -> El {
     let (logs, logs_el) = action(ui, "info-open-logs", "Open Logs for this load", false);
     if logs {
-        let load = cx.part_view().load_report.as_ref().map(|report| {
+        let load = if cx.part().is_some_and(|part| part.uvi.is_some()) { String::new() } else {
+            cx.part_view().load_report.as_ref().map(|report| {
             report["load_id"].as_str().map(str::to_owned)
                 .or_else(|| report["load_id"].as_u64().map(|id| id.to_string())).unwrap_or_default()
-        }).unwrap_or_default();
+            }).unwrap_or_default()
+        };
         cx.state.logs.for_load(&load);
         cx.state.tab = super::Tab::Logs;
     }
     let v = cx.part_view();
+    if let Some(source) = cx.part().and_then(|part| part.uvi.as_ref()) {
+        let status = if cfg!(feature = "uvi") && (native_problem(&v.status)
+            || v.status == "UVI instrument" || v.loading && v.status.contains("UVI")) {
+            v.status.clone()
+        } else { native_wait(v.loading, &v.status) };
+        let mut rows = vec![section("UVI instrument"),
+            body(native_name(cx, cx.state.selected).unwrap_or_default()).lines(2),
+            caption(format!("Bank: {}", source.bank.display())).fill(secondary()).lines(4),
+            caption(format!("Program: {}", source.member)).fill(secondary()).lines(4),
+            body(status).lines(3).id("native-instrument-status"),
+            caption("Playback and controls follow this UVI program. Key mapping and the Sound editor are unavailable; use the instrument’s Rack controls.")
+                .fill(secondary()).lines(4), logs_el];
+        if let Some(path) = crate::diagnostics::log_path() {
+            rows.push(caption(format!("Log file: {}", path.display())).fill(Role::Dim).lines(4));
+        }
+        let mut text = col(rows).align(Align::Start).gap(SPACE);
+        if let Some(surface) = ui.scene().and_then(|scene| scene.surface("details-scroll")) {
+            text = text.w((surface.frame.size.width - 2. * INSET).max(0.));
+        }
+        return col![text].pad(INSET).flex(1).min_h(0).scroll().id("details-scroll");
+    }
     let mut rows = Vec::new();
     if v.loading {
         rows.push(body(v.status.clone()).lines(2));

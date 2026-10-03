@@ -150,7 +150,7 @@ fn sources(cx: &Cx, n: usize) -> usize {
     cx.selection
         .parts
         .iter()
-        .filter(|p| !p.path.is_empty())
+        .filter(|p| !p.is_empty())
         .map(|p| usize::from(usize::from(p.output) == n || p.aux == n16) + p.mic_buses.iter().filter(|&&b| b == n16).count())
         .sum()
 }
@@ -314,7 +314,7 @@ fn group(title: &str, subtitle: String, strips: Vec<El>) -> El {
 /// The spectrum beside or below the strips: the selected part's output, or
 /// the master's. Only while it shows does the audio thread copy a signal.
 fn analyser(cx: &mut Cx) -> Option<El> {
-    let chosen = cx.state.chosen().filter(|&s| cx.selection.parts.get(s).is_some_and(|p| !p.path.is_empty()));
+    let chosen = cx.state.chosen().filter(|&s| cx.selection.parts.get(s).is_some_and(|p| !p.is_empty()));
     let source = match (cx.state.mixer.spectrum, chosen) {
         (Spectrum::Off, _) => return None,
         (Spectrum::Part, Some(slot)) => slot + 1,
@@ -685,8 +685,8 @@ fn rename(cx: &mut Cx, strip: Strip, text: String) {
     match strip {
         Strip::Part(slot) => {
             let part = &cx.selection.parts[slot];
-            let default = instrument::instrument_of(cx, slot)
-                .map_or_else(|| super::header::stem(&part.path), |i| i.name.clone());
+            let default = instrument::native_name(cx, slot).unwrap_or_else(|| instrument::instrument_of(cx, slot)
+                .map_or_else(|| super::header::stem(&part.path), |i| i.name.clone()));
             cx.selection.parts[slot].name = if text == default { String::new() } else { text };
         }
         Strip::Bus(n) => {

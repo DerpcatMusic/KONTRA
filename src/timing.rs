@@ -244,6 +244,8 @@ const NO_ART: u8 = u8::MAX;
 #[derive(Clone, Copy)]
 struct Queued {
     due: u64,
+    /// Physical ingress port, independent of later part routing changes.
+    port: u8,
     ev: In,
     /// Articulation to switch to before this note plays, or [`NO_ART`].
     art: u8,
@@ -263,6 +265,8 @@ pub struct Scheduler {
     /// Per channel and key: frames its note-on was held back (with
     /// [`MONO`]), [`UP`] when not held, [`SWITCH`] for a keyswitch taken over.
     held: [[u32; 128]; 16],
+    /// Original physical port for the existing held-key timing row.
+    ports: [[u8; 128]; 16],
     /// Per lane (channel mode: each channel plays its own articulation,
     /// else one): notes down, and its latest note-on's and release's due
     /// frames. A legato on one channel neither waits for nor counts another's.
@@ -281,7 +285,7 @@ pub struct Scheduler {
 
 impl Default for Scheduler {
     fn default() -> Self {
-        let empty = Queued { due: 0, ev: In::Pressure(0, 0), art: NO_ART };
+        let empty = Queued { due: 0, port: 0, ev: In::Pressure(0, 0), art: NO_ART };
         Self {
             host: Vec::with_capacity(crate::ksp::EVENT_CAPACITY),
             queue: vec![empty; CAPACITY].into_boxed_slice(),
@@ -289,6 +293,7 @@ impl Default for Scheduler {
             len: 0,
             art: LOADED,
             held: [[UP; 128]; 16],
+            ports: [[0; 128]; 16],
             down: [0; 16],
             last_on: [0; 16],
             last_off: [0; 16],
@@ -329,10 +334,20 @@ impl Scheduler {
     pub fn next_due(&self) -> Option<u64> {
         (self.len > 0).then(|| self.at(0).due)
     }
+    fn holds_input(&self, port: u8, ev: In) -> bool {
+        if let In::NoteOff(channel, key) = ev {
+            let (channel, key) = (usize::from(channel & 15), usize::from(key & 127));
+            self.held[channel][key] != UP && self.ports[channel][key] == port
+        } else { false }
+    }
 
     /// Hold `ev`, arriving at frame `now`, back by its articulation's hold.
     /// Returns it when it must play at once (the queue is full).
     pub fn arrive(&mut self, ev: In, now: u64, holds: &Holds, rate: f64, router: &Router) -> Option<In> {
+        self.arrive_from(0, ev, now, holds, rate, router, false)
+    }
+
+    fn arrive_from(&mut self, port: u8, ev: In, now: u64, holds: &Holds, rate: f64, router: &Router, external: bool) -> Option<In> {
         if let In::HostOff(pattern) | In::HostChoke(pattern) | In::HostExpression(pattern, _) = ev {
             for i in 0..self.host.len() {
                 let owner = self.host[i];
@@ -344,7 +359,7 @@ impl Scheduler {
                     In::HostExpression(_, x) => In::HostExpression(pattern, x),
                     _ => unreachable!(),
                 };
-                let lane = if router.by_channel() { owner.note.channel as usize } else { 0 };
+                let lane = if !external && router.by_channel() { owner.note.channel as usize } else { 0 };
                 let due = (now + owner.hold).max(if owner.mono { self.last_on[lane] } else { 0 });
                 if matches!(ev, In::HostOff(_) | In::HostChoke(_)) {
                     self.host[i].held = false;
@@ -354,7 +369,7 @@ impl Scheduler {
                         self.held[owner.note.channel as usize][owner.note.key as usize] = UP;
                     }
                 }
-                if !self.push(Queued { due, ev:to, art:NO_ART }) { return Some(ev); }
+                if !self.push(Queued { due, port:owner.note.port, ev:to, art:NO_ART }) { return Some(ev); }
             }
             return None;
         }
@@ -364,11 +379,11 @@ impl Scheduler {
             }
         }
         let frames = |row, legato, velocity| holds.frames(row, legato, velocity, rate);
-        let lane = |channel: u8| if router.by_channel() { usize::from(channel & 15) } else { 0 };
+        let lane = |channel: u8| if !external && router.by_channel() { usize::from(channel & 15) } else { 0 };
         let (due, art) = match ev {
             In::NoteOn(channel, note, velocity) | In::HostOn(crate::engine::HostNote { channel, key: note, .. }, velocity, _) => {
                 let key = &mut self.held[usize::from(channel & 15)][usize::from(note & 127)];
-                let (row, switch) = router.articulation_of(channel, note, velocity);
+                let (row, switch) = if external { (None, false) } else { router.articulation_of(channel, note, velocity) };
                 if switch {
                     // Played before the note it picks for, by the router.
                     if let Some(row) = row {
@@ -392,8 +407,9 @@ impl Scheduler {
                 }
                 let mono = if holds.1[row.min(LOADED)] { MONO } else { 0 };
                 *key = ((due - now) as u32).min(MONO - 1) | mono;
+                self.ports[usize::from(channel & 15)][usize::from(note & 127)] = port;
                 if let In::HostOn(note, ..) = ev { self.host.push(HostHold { note, hold:due - now, mono:mono != 0, held:true }); }
-                let art = if picked || row == LOADED { NO_ART } else { row as u8 };
+                let art = if external || picked || row == LOADED { NO_ART } else { row as u8 };
                 (due, art)
             }
             In::NoteOff(channel, note) => {
@@ -456,33 +472,45 @@ impl Scheduler {
                 (due, NO_ART)
             }
         };
-        (!self.push(Queued { due, ev, art })).then_some(ev)
+        (!self.push(Queued { due, port, ev, art })).then_some(ev)
     }
 
     /// Play what is due by frame `now` on `slot` of `rack`.
     pub fn release(&mut self, now: u64, rack: &mut Rack, routers: &mut [Router], slot: usize) {
+        self.release_with(now, rack, routers, slot, &mut |_, _, _, _, _| false);
+    }
+
+    fn release_with(&mut self, now: u64, rack: &mut Rack, routers: &mut [Router], slot: usize,
+        external: &mut impl FnMut(usize, u8, In, &Router, bool) -> bool) {
         while self.len > 0 && self.at(0).due <= now {
             let q = *self.at(0);
             self.head = (self.head + 1) % CAPACITY;
             self.len -= 1;
-            play(rack, routers, slot, q);
+            play_with(rack, routers, slot, q, external);
         }
     }
 
     /// Forget everything held: the host stopped processing.
     pub fn clear(&mut self) {
         self.host.clear();
+        self.discard_pending();
+    }
+
+    fn discard_pending(&mut self) {
         self.len = 0;
         self.head = 0;
         self.held = [[UP; 128]; 16];
+        self.ports = [[0; 128]; 16];
         (self.down, self.last_on, self.last_off) = ([0; 16], [0; 16], [0; 16]);
         self.stop_due.fill(0);
         (self.last_ctl, self.ctl_hold) = (0, 0);
     }
 }
 
-fn play(rack: &mut Rack, routers: &mut [Router], slot: usize, q: Queued) {
+fn play_with(rack: &mut Rack, routers: &mut [Router], slot: usize, q: Queued,
+    external: &mut impl FnMut(usize, u8, In, &Router, bool) -> bool) {
     let (e, c, r) = (&mut rack.parts[slot], &rack.controls[slot], &mut routers[slot]);
+    if external(slot, q.port, q.ev, r, true) { return; }
     if let (In::NoteOn(channel, ..), true) = (q.ev, q.art != NO_ART) {
         r.select(usize::from(q.art), channel, e);
     }
@@ -548,6 +576,16 @@ impl Align {
         for scheduler in &mut self.parts { scheduler.host.retain(|o| o.note != note); }
     }
 
+    /// Source replacement cancels old queued input without forgetting exact
+    /// identities whose End still needs acceptance from the host.
+    pub(crate) fn abort_slot(&mut self, slot: usize) {
+        if let Some(scheduler) = self.parts.get_mut(slot) {
+            scheduler.discard_pending();
+            scheduler.art = LOADED;
+            for owner in &mut scheduler.host { owner.held = false; }
+        }
+    }
+
     pub fn holding(&self, playing: bool) -> bool {
         self.plan.on && (playing || !self.plan.transport_only)
     }
@@ -555,22 +593,36 @@ impl Align {
     /// Take host input `ev` from `port`, arriving at frame `now`: hold it
     /// back for each part it reaches.
     pub fn arrive(&mut self, rack: &mut Rack, routers: &mut [Router], port: u8, ev: In, now: u64, rate: f64) {
+        self.arrive_with(rack, routers, port, ev, now, rate, &[], &mut |_, _, _, _, _| false);
+    }
+
+    /// External slots retain raw input through the hold, without consuming
+    /// Kontakt keyswitches. The callback runs only when the event is delivered.
+    pub fn arrive_with(&mut self, rack: &mut Rack, routers: &mut [Router], port: u8, ev: In, now: u64, rate: f64,
+        external_slots: &[bool], external: &mut impl FnMut(usize, u8, In, &Router, bool) -> bool) {
         let empty = Holds::default();
         for slot in 0..self.parts.len().min(rack.parts.len()).min(routers.len()) {
-            if !articulate::reaches(&rack.controls[slot], &routers[slot], port, ev) {
+            let native = external_slots.get(slot).copied().unwrap_or(false);
+            if !articulate::reaches(&rack.controls[slot], &routers[slot], port, ev)
+                && !(native && self.parts[slot].holds_input(port, ev)) {
                 continue;
             }
             let holds = self.plan.parts.get(slot).unwrap_or(&empty);
-            if let Some(ev) = self.parts[slot].arrive(ev, now, holds, rate, &routers[slot]) {
-                articulate::dispatch_to(rack, routers, [slot], ev);
+            if let Some(ev) = self.parts[slot].arrive_from(port, ev, now, holds, rate, &routers[slot], native) {
+                articulate::dispatch_to_with(rack, routers, [slot], port, ev, external);
             }
         }
     }
 
     /// Play everything due by frame `now`.
     pub fn release(&mut self, now: u64, rack: &mut Rack, routers: &mut [Router]) {
+        self.release_with(now, rack, routers, &mut |_, _, _, _, _| false);
+    }
+
+    pub fn release_with(&mut self, now: u64, rack: &mut Rack, routers: &mut [Router],
+        external: &mut impl FnMut(usize, u8, In, &Router, bool) -> bool) {
         for (slot, s) in self.parts.iter_mut().enumerate() {
-            s.release(now, rack, routers, slot);
+            s.release_with(now, rack, routers, slot, external);
         }
     }
 
@@ -583,7 +635,12 @@ impl Align {
 
     /// Play everything held, now.
     pub fn flush(&mut self, rack: &mut Rack, routers: &mut [Router]) {
-        self.release(u64::MAX, rack, routers);
+        self.flush_with(rack, routers, &mut |_, _, _, _, _| false);
+    }
+
+    pub fn flush_with(&mut self, rack: &mut Rack, routers: &mut [Router],
+        external: &mut impl FnMut(usize, u8, In, &Router, bool) -> bool) {
+        self.release_with(u64::MAX, rack, routers, external);
         for s in self.parts.iter_mut() {
             s.clear();
         }
@@ -903,6 +960,7 @@ pub fn engine_for(i: &crate::import::Instrument, rate: f64, budget: usize) -> an
 pub fn audit(path: &std::path::Path) -> anyhow::Result<serde_json::Value> {
     use serde_json::json;
     const RATE: f64 = 48_000.0;
+
     let i = crate::import::read(path)?;
     let started = std::time::Instant::now();
     let mut e = engine_for(&i, RATE, crate::engine::MEMORY_LIMIT)?;
@@ -992,6 +1050,75 @@ mod tests {
     use super::*;
 
     const RATE: f64 = 48_000.0;
+
+    #[test]
+    fn external_alignment_delivers_exact_owners_at_due_time_with_original_ports() {
+        let mut rack = Rack::with_slots(1);
+        rack.controls[0].port = 3;
+        let mut routers = [Router::default()];
+        let mut align = Align::with_slots(1);
+        align.plan.parts[0] = holds(0., 0., 10.);
+        let note = crate::engine::HostNote { port: 3, channel: 0, key: 60, id: 10, clap: true };
+        let pattern = crate::engine::HostPattern { port: 3, channel: 0, key: 60, id: 10, clap: true };
+        let seen = std::cell::RefCell::new(Vec::with_capacity(2));
+        let mut external = |slot, port, ev, _: &Router, targeted| {
+            seen.borrow_mut().push((slot, port, ev, targeted)); true
+        };
+        align.arrive_with(&mut rack, &mut routers, 3, In::HostOn(note, 100, 0.), 0, RATE, &[true], &mut external);
+        align.arrive_with(&mut rack, &mut routers, 0, In::HostOff(pattern), 96, RATE, &[true], &mut external);
+        assert!(seen.borrow().is_empty() && align.host_note_waiting(note));
+        rack.controls[0].port = 4;
+        align.release_with(479, &mut rack, &mut routers, &mut external);
+        assert!(seen.borrow().is_empty());
+        align.release_with(480, &mut rack, &mut routers, &mut external);
+        assert_eq!(seen.borrow()[0], (0, 3, In::HostOn(note, 100, 0.), true));
+        align.release_with(576, &mut rack, &mut routers, &mut external);
+        assert_eq!(seen.borrow()[1], (0, 3, In::HostOff(pattern), true));
+        assert!(!align.host_note_waiting(note) && !rack.parts[0].key_down(0, 60));
+    }
+    #[test]
+    fn external_alignment_does_not_consume_native_switches_and_follows_rerouted_key_up() {
+        let settings = articulate::Articulate { source: "fixture".into(),
+            articulations: vec![articulate::Articulation { key: Some(40), ..Default::default() }], ..Default::default() };
+        let mut router = Router::default();
+        router.set_route(articulate::Route::new("fixture", &settings, &articulate::Mpe::default()));
+        let mut routers = [router];
+        let mut rack = Rack::with_slots(1);
+        rack.controls[0].port = 3;
+        let mut align = Align::with_slots(1);
+        align.plan.parts[0] = holds(0., 0., 10.);
+        let seen = std::cell::RefCell::new(Vec::with_capacity(2));
+        let mut external = |slot, port, ev, router: &Router, targeted| {
+            assert!(!router.external_input_supported());
+            seen.borrow_mut().push((slot, port, ev, targeted)); true
+        };
+        align.arrive_with(&mut rack, &mut routers, 3, In::NoteOn(0, 40, 100), 0, RATE, &[true], &mut external);
+        rack.controls[0].port = 4;
+        align.arrive_with(&mut rack, &mut routers, 3, In::NoteOff(0, 40), 96, RATE, &[true], &mut external);
+        assert!(seen.borrow().is_empty());
+        align.release_with(576, &mut rack, &mut routers, &mut external);
+        assert_eq!(&*seen.borrow(), &[(0, 3, In::NoteOn(0, 40, 100), true), (0, 3, In::NoteOff(0, 40), true)]);
+        assert!(!rack.parts[0].key_down(0, 40));
+    }
+    #[test]
+    fn replacing_external_source_cancels_queued_input_but_keeps_end_backpressure_owner() {
+        let mut rack = Rack::with_slots(1);
+        let mut routers = [Router::default()];
+        let mut align = Align::with_slots(1);
+        align.plan.parts[0] = holds(0., 0., 10.);
+        let note = crate::engine::HostNote { port: 0, channel: 0, key: 60, id: 10, clap: true };
+        align.arrive_with(&mut rack, &mut routers, 0, In::HostOn(note, 100, 0.), 0, RATE, &[true],
+            &mut |_, _, _, _, _| panic!("queued input delivered early"));
+        align.abort_slot(0);
+        assert_eq!(align.next_due(), None);
+        assert_eq!(align.host_note_at(0), Some((note, false)));
+        assert!(!align.host_note_waiting(note));
+        align.release_with(1000, &mut rack, &mut routers,
+            &mut |_, _, _, _, _| panic!("old source input reached new activation"));
+        assert_eq!(align.host_note_at(0), Some((note, false)), "rejected End retains its identity");
+        align.retire_host_note(note);
+        assert_eq!(align.host_note_at(0), None);
+    }
 
     #[test]
     fn exact_stacked_owners_keep_their_own_delays_after_key_reuse() {

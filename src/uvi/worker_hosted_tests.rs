@@ -781,6 +781,7 @@ fn completion_real_start_hosted_merges_ui_rooted_and_ordinary_inputs_once() {
     let mut worker = Worker::start_hosted(config, 7, 9).unwrap();
     worker.wait_ready(Duration::from_secs(5)).unwrap();
     assert!(worker.shared.hosted.is_some());
+    assert_eq!(worker.ui_processors(), vec![processor]);
     let mut port = worker.take_audio_port().unwrap();
     let request = Request::new_with_ui(
         stamp(0),
@@ -904,6 +905,502 @@ fn completion_queued_stale_root_aborts_activation_instead_of_advancing_rejected_
     );
     assert!(worker.shared.outputs.is_empty());
     worker.stop();
+    drop(port);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn completion_hosted_control_validation_rejects_malformed_packet_before_submission() {
+    fn event(frame: u64, kind: InputKind) -> HostedInput {
+        HostedInput::Event(Input { frame, kind })
+    }
+    let valid = [
+        event(
+            0,
+            InputKind::Controller {
+                channel: 0,
+                controller: 64,
+                value: 127,
+            },
+        ),
+        event(
+            0,
+            InputKind::PitchBend {
+                channel: 15,
+                bend: -1.,
+            },
+        ),
+        event(
+            1,
+            InputKind::AfterTouch {
+                channel: 0,
+                value: 127,
+            },
+        ),
+        event(
+            1,
+            InputKind::PolyAfterTouch {
+                channel: 0,
+                note: 127,
+                value: 127,
+            },
+        ),
+        event(
+            255,
+            InputKind::Transport {
+                playing: true,
+                beat: 4.,
+                tempo: 1000.,
+            },
+        ),
+    ];
+    let packet = HostedRequest::new(Request::new(stamp(0), &[]).unwrap(), &valid).unwrap();
+    let bad = [
+        event(
+            0,
+            InputKind::NoteOn {
+                channel: 0,
+                note: 60,
+                velocity: 100,
+            },
+        ),
+        event(
+            0,
+            InputKind::NoteOff {
+                channel: 0,
+                note: 60,
+            },
+        ),
+        event(
+            0,
+            InputKind::Controller {
+                channel: 16,
+                controller: 64,
+                value: 127,
+            },
+        ),
+        event(
+            0,
+            InputKind::Controller {
+                channel: 0,
+                controller: 128,
+                value: 127,
+            },
+        ),
+        event(
+            0,
+            InputKind::Controller {
+                channel: 0,
+                controller: 64,
+                value: 128,
+            },
+        ),
+        event(
+            0,
+            InputKind::PitchBend {
+                channel: 0,
+                bend: f64::NAN,
+            },
+        ),
+        event(
+            0,
+            InputKind::AfterTouch {
+                channel: 0,
+                value: 128,
+            },
+        ),
+        event(
+            0,
+            InputKind::PolyAfterTouch {
+                channel: 0,
+                note: 128,
+                value: 0,
+            },
+        ),
+        event(
+            0,
+            InputKind::Transport {
+                playing: false,
+                beat: 0.,
+                tempo: 0.5,
+            },
+        ),
+        event(
+            0,
+            InputKind::Transport {
+                playing: false,
+                beat: 0.,
+                tempo: 1001.,
+            },
+        ),
+        event(
+            0,
+            InputKind::Transport {
+                playing: false,
+                beat: f64::NAN,
+                tempo: 120.,
+            },
+        ),
+        event(
+            256,
+            InputKind::Controller {
+                channel: 0,
+                controller: 64,
+                value: 0,
+            },
+        ),
+    ];
+    let shared = Shared::new_mode(7, 9, true);
+    let mut cursor = PacketCursor::default();
+    let mut rt = Realtime {
+        shared: &shared,
+        cursor: Some(&mut cursor),
+    };
+    check_callback(|| {
+        for invalid in &bad {
+            // Mutate public fields after constructor validation: submission
+            // revalidates the whole array before changing cursor/queue state.
+            let mut changed = packet;
+            changed.roots[0] = *invalid;
+            let rejected = rt.try_submit_hosted(changed).unwrap_err();
+            assert_eq!(rejected.reason, PacketError::InvalidInput);
+            assert_eq!(rejected.request.root_count, packet.root_count);
+            assert_eq!(rt.cursor.as_ref().unwrap().next_request, 0);
+            assert!(shared.hosted.as_ref().unwrap().requests.is_empty());
+        }
+        rt.try_submit_hosted(packet).unwrap();
+        assert_eq!(rt.cursor.as_ref().unwrap().next_request, 256);
+    });
+    let control = valid[0];
+    assert!(
+        HostedRequest::new(
+            Request::new(stamp(0), &[note(0)]).unwrap(),
+            &[control; MAX_HOSTED_INPUTS]
+        )
+        .is_err()
+    );
+    assert!(
+        HostedRequest::new(Request::new(stamp(0), &[]).unwrap(), &[valid[4], valid[0]]).is_err()
+    );
+    assert!(
+        HostedRequest::new(
+            Request::new(stamp(0), &[]).unwrap(),
+            &[control; MAX_HOSTED_INPUTS]
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn completion_hosted_controls_keep_same_frame_wire_order_around_release() {
+    fn receive(port: &mut AudioPort, worker: &Worker, frame: u64) -> Output {
+        let started = Instant::now();
+        loop {
+            match port.realtime().try_receive(stamp(frame)) {
+                Ok(pcm) => return pcm,
+                Err(PacketError::Underrun) => {
+                    assert!(started.elapsed() < Duration::from_secs(5));
+                    thread::yield_now()
+                }
+                Err(error) => panic!("{error:?}: {:?}", worker.private_failure()),
+            }
+        }
+    }
+    for control_before_release in [true, false] {
+        let expected = if control_before_release { 127 } else { 0 };
+        let script = format!(
+            r#"
+            local pedal=0
+            function onNote(e)postEvent(e)end
+            function onController(e)
+                if e.controller==64 then pedal=e.value end
+                postEvent(e)
+            end
+            function onRelease(e)assert(pedal=={expected});postEvent(e)end
+        "#
+        );
+        let (config, _) = super::tests::authored_bank_with_script(&script);
+        let path = config.bank.clone();
+        let mut worker = Worker::start_hosted(config, 7, 9).unwrap();
+        worker.wait_ready(Duration::from_secs(5)).unwrap();
+        let mut port = worker.take_audio_port().unwrap();
+        let down = HostedInput::Event(Input {
+            frame: 4,
+            kind: InputKind::Controller {
+                channel: 0,
+                controller: 64,
+                value: 127,
+            },
+        });
+        let off = HostedInput::Off {
+            root: root(1),
+            frame: 4,
+        };
+        let entries = if control_before_release {
+            [down, off]
+        } else {
+            [off, down]
+        };
+        let events = [
+            HostedInput::On {
+                root: root(1),
+                input: note(0),
+            },
+            entries[0],
+            entries[1],
+        ];
+        let packet = HostedRequest::new(Request::new(stamp(0), &[]).unwrap(), &events).unwrap();
+        port.realtime().try_submit_hosted(packet).unwrap();
+        let pcm = receive(&mut port, &worker, 0);
+        assert!(pcm.audio[..4].iter().any(|sample| sample[0] != 0.0));
+        assert_eq!(
+            pcm.audio[64..].iter().any(|sample| sample[0] != 0.0),
+            control_before_release
+        );
+        let received = port.realtime().try_receive_completion(stamp(256)).unwrap();
+        assert_eq!(
+            received,
+            (!control_before_release).then_some(completion(256, 1))
+        );
+        let up = HostedInput::Event(Input {
+            frame: 256,
+            kind: InputKind::Controller {
+                channel: 0,
+                controller: 64,
+                value: 0,
+            },
+        });
+        port.realtime()
+            .try_submit_hosted(
+                HostedRequest::new(Request::new(stamp(256), &[]).unwrap(), &[up]).unwrap(),
+            )
+            .unwrap();
+        let pcm = receive(&mut port, &worker, 256);
+        assert!(pcm.audio.iter().all(|sample| sample[0] == 0.0));
+        assert_eq!(
+            port.realtime().try_receive_completion(stamp(512)).unwrap(),
+            control_before_release.then_some(completion(512, 1))
+        );
+        assert_eq!(worker.stats().rendered_blocks, 2);
+        worker.stop();
+        drop(port);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[test]
+fn completion_hosted_controller_and_bend_precede_same_frame_note_callback() {
+    let (config, _) = super::tests::authored_bank_with_script(
+        r#"
+        local stage=0
+        function onController(e)assert(stage==0);stage=1;postEvent(e)end
+        function onPitchBend(e)assert(stage==1 and e.bend==.5);stage=2;postEvent(e)end
+        function onNote(e)assert(stage==2);stage=3;postEvent(e)end
+        function onRelease(e)assert(stage==3);postEvent(e)end
+    "#,
+    );
+    let path = config.bank.clone();
+    let mut worker = Worker::start_hosted(config, 7, 9).unwrap();
+    worker.wait_ready(Duration::from_secs(5)).unwrap();
+    let mut port = worker.take_audio_port().unwrap();
+    let events = [
+        HostedInput::Event(Input {
+            frame: 0,
+            kind: InputKind::Controller {
+                channel: 0,
+                controller: 1,
+                value: 64,
+            },
+        }),
+        HostedInput::Event(Input {
+            frame: 0,
+            kind: InputKind::PitchBend {
+                channel: 0,
+                bend: 0.5,
+            },
+        }),
+        HostedInput::On {
+            root: root(1),
+            input: note(0),
+        },
+        HostedInput::Off {
+            root: root(1),
+            frame: 4,
+        },
+    ];
+    port.realtime()
+        .try_submit_hosted(
+            HostedRequest::new(Request::new(stamp(0), &[]).unwrap(), &events).unwrap(),
+        )
+        .unwrap();
+    let started = Instant::now();
+    loop {
+        match port.realtime().try_receive(stamp(0)) {
+            Ok(pcm) => {
+                assert!(pcm.audio.iter().any(|sample| sample[0] != 0.0));
+                break;
+            }
+            Err(PacketError::Underrun) => {
+                assert!(started.elapsed() < Duration::from_secs(5));
+                thread::yield_now()
+            }
+            Err(error) => panic!("{error:?}: {:?}", worker.private_failure()),
+        }
+    }
+    assert_eq!(
+        port.realtime().try_receive_completion(stamp(256)).unwrap(),
+        Some(completion(256, 1))
+    );
+    worker.stop();
+    drop(port);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn ui_processor_discovery_is_owned_and_unavailable_outside_ready() {
+    let shared = Arc::new(Shared::new(7, 9));
+    shared.details.lock().unwrap().ui_processors = vec![2, 7];
+    let worker = Worker {
+        shared: shared.clone(),
+        thread: None,
+        cursor: Some(PacketCursor::default()),
+    };
+    for status in [Status::Starting, Status::Failed, Status::Stopped] {
+        shared.status.store(status as u8, Ordering::Release);
+        assert!(worker.ui_processors().is_empty());
+    }
+    shared.status.store(Status::Ready as u8, Ordering::Release);
+    let mut copy = worker.ui_processors();
+    assert_eq!(copy, vec![2, 7]);
+    copy.clear();
+    assert_eq!(worker.ui_processors(), vec![2, 7]);
+}
+
+#[test]
+fn pcm_prefetch_empty_future_and_stale_packets_share_cursor_without_underrun_counts() {
+    let shared = Arc::new(Shared::new(7, 9));
+    let mut worker = Worker {
+        shared: shared.clone(),
+        thread: None,
+        cursor: Some(PacketCursor::default()),
+    };
+    let mut port = worker.take_audio_port().unwrap();
+    assert_eq!(
+        worker
+            .realtime()
+            .try_receive_available(stamp(0))
+            .unwrap_err(),
+        PacketError::PortTaken
+    );
+    check_callback(|| {
+        let mut rt = port.realtime();
+        assert!(rt.try_receive_available(stamp(0)).unwrap().is_none());
+        shared.outputs.push(output(512)).unwrap();
+        assert!(rt.try_receive_available(stamp(0)).unwrap().is_none());
+        assert!(rt.try_receive_available(stamp(256)).unwrap().is_none());
+        assert_eq!(
+            rt.try_receive_available(stamp(512)).unwrap().unwrap().stamp,
+            stamp(512)
+        );
+        assert_eq!(
+            rt.try_receive_available(stamp(512)).unwrap_err(),
+            PacketError::WrongFrame
+        );
+        shared.outputs.push(output(256)).unwrap();
+        let mut stale = output(768);
+        stale.stamp.epoch = 6;
+        shared.outputs.push(stale).unwrap();
+        shared.outputs.push(output(1024)).unwrap();
+        assert!(rt.try_receive_available(stamp(768)).unwrap().is_none());
+        assert_eq!(rt.stats().stale_packets, 2);
+        assert_eq!(rt.stats().underruns, 0);
+        assert_eq!(
+            rt.try_receive(stamp(768)).unwrap_err(),
+            PacketError::Underrun
+        );
+        assert_eq!(rt.stats().underruns, 1);
+        assert_eq!(
+            rt.try_receive_available(stamp(1024))
+                .unwrap()
+                .unwrap()
+                .stamp,
+            stamp(1024)
+        );
+        assert_eq!(rt.stats().underruns, 1);
+    });
+}
+
+#[test]
+fn actual_worker_active_voice_count_tracks_on_off_and_clears_on_shutdown() {
+    fn receive(port: &mut AudioPort, worker: &Worker, frame: u64) {
+        let started = Instant::now();
+        loop {
+            match port.realtime().try_receive(stamp(frame)) {
+                Ok(_) => return,
+                Err(PacketError::Underrun) => {
+                    assert!(started.elapsed() < Duration::from_secs(5));
+                    thread::yield_now()
+                }
+                Err(error) => panic!("{error:?}: {:?}", worker.private_failure()),
+            }
+        }
+    }
+    let (config, _) = super::tests::authored_bank_with_script(
+        r#"
+        function onNote(e)postEvent(e)end
+        function onRelease(e)postEvent(e)end
+    "#,
+    );
+    let path = config.bank.clone();
+    let mut worker = Worker::start_hosted(config, 7, 9).unwrap();
+    worker.wait_ready(Duration::from_secs(5)).unwrap();
+    assert_eq!(worker.stats().active_voices, 0);
+    let mut port = worker.take_audio_port().unwrap();
+    let on = HostedInput::On {
+        root: root(1),
+        input: note(0),
+    };
+    port.realtime()
+        .try_submit_hosted(HostedRequest::new(Request::new(stamp(0), &[]).unwrap(), &[on]).unwrap())
+        .unwrap();
+    receive(&mut port, &worker, 0);
+    assert_eq!(worker.stats().active_voices, 1);
+    assert_eq!(port.realtime().stats().active_voices, 1);
+    assert!(
+        port.realtime()
+            .try_receive_completion(stamp(256))
+            .unwrap()
+            .is_none()
+    );
+    let off = HostedInput::Off {
+        root: root(1),
+        frame: 256,
+    };
+    port.realtime()
+        .try_submit_hosted(
+            HostedRequest::new(Request::new(stamp(256), &[]).unwrap(), &[off]).unwrap(),
+        )
+        .unwrap();
+    receive(&mut port, &worker, 256);
+    assert_eq!(worker.stats().active_voices, 0);
+    assert_eq!(
+        port.realtime().try_receive_completion(stamp(512)).unwrap(),
+        Some(completion(512, 1))
+    );
+    // A fresh active instance is also cleared by control-thread shutdown.
+    let on = HostedInput::On {
+        root: root(2),
+        input: note(512),
+    };
+    port.realtime()
+        .try_submit_hosted(
+            HostedRequest::new(Request::new(stamp(512), &[]).unwrap(), &[on]).unwrap(),
+        )
+        .unwrap();
+    receive(&mut port, &worker, 512);
+    assert_eq!(worker.stats().active_voices, 1);
+    worker.stop();
+    assert_eq!(worker.stats().active_voices, 0);
     drop(port);
     std::fs::remove_file(path).unwrap();
 }

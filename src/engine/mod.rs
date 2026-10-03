@@ -24,6 +24,8 @@ pub use host_notes::{HostNote, HostPattern, HostExpression, HostRef};
 pub mod overrides;
 pub(crate) mod params;
 mod rack;
+mod source_delay;
+pub use source_delay::SourceDelay;
 mod residency;
 mod script;
 pub(crate) mod native_state;

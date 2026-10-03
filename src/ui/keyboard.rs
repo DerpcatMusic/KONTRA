@@ -122,7 +122,7 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
 
     let slot = cx.state.played();
     let keys = match parts[..] {
-        [slot] => cx.view.parts[slot].keys.clone(),
+        [slot] if cx.selection.parts[slot].uvi.is_none() => cx.view.parts[slot].keys.clone(),
         _ => Default::default(),
     };
     let mut octaves = Vec::new();
@@ -329,7 +329,7 @@ fn key_x(note: usize, octave: i16, width: f64) -> (f64, f64) {
 /// The parts the keys show: the selected one or, with none selected, every
 /// loaded part on any port or channel, in rack order.
 fn shown_parts(cx: &Cx) -> Vec<usize> {
-    let loaded = |slot: usize| cx.selection.parts.get(slot).is_some_and(|p| !p.path.is_empty());
+    let loaded = |slot: usize| cx.selection.parts.get(slot).is_some_and(|p| !p.is_empty());
     match cx.state.chosen() {
         Some(slot) => loaded(slot).then_some(slot).into_iter().collect(),
         None => (cx.selection.order.iter().map(|&s| s as usize)).filter(|&slot| loaded(slot)).collect(),
@@ -339,13 +339,13 @@ fn shown_parts(cx: &Cx) -> Vec<usize> {
 /// The keys part `slot`'s instrument maps, walked once per instrument: tens
 /// of thousands of zones are too many to walk every frame.
 fn mapped(cx: &mut Cx, slot: usize) -> [bool; 128] {
-    let Some(i) = cx.view.parts.get(slot).and_then(|v| v.instrument.as_ref()) else {
+    let Some(i) = super::instrument::instrument_of(cx, slot).cloned() else {
         return [false; 128];
     };
     let (seen, mapped) = cx.state.ranges.entry(slot).or_insert_with(|| (std::sync::Weak::new(), [false; 128]));
-    if !seen.upgrade().is_some_and(|s| Arc::ptr_eq(&s, i)) {
-        *mapped = mapped_keys(i);
-        *seen = Arc::downgrade(i);
+    if !seen.upgrade().is_some_and(|s| Arc::ptr_eq(&s, &i)) {
+        *mapped = mapped_keys(&i);
+        *seen = Arc::downgrade(&i);
     }
     *mapped
 }
@@ -452,14 +452,14 @@ fn part_looks(cx: &mut Cx, slot: usize) -> [Look; 128] {
     let mapped = mapped(cx, slot);
     let hue = part_color(slot).hue();
     let mut looks = mapped.map(|m| if m { Look::Mapped(hue) } else { Look::Unmapped });
-    if let Some(v) = cx.view.parts.get(slot) {
+    if let Some(v) = cx.view.parts.get(slot).filter(|_| cx.selection.parts[slot].uvi.is_none()) {
         for (&note, state) in v.keys.iter() {
             if let Some(look) = state.color.as_ref().and_then(key_color) {
                 looks[note.min(127) as usize] = if look == Look::Mapped(0.) { Look::Mapped(hue) } else { look };
             }
         }
     }
-    let Some(a) = cx.selection.parts.get(slot).filter(|p| !p.path.is_empty() && p.articulate.source == p.path).map(|p| &p.articulate) else {
+    let Some(a) = cx.selection.parts.get(slot).filter(|p| p.uvi.is_none() && !p.path.is_empty() && p.articulate.source == p.path).map(|p| &p.articulate) else {
         return looks;
     };
     for key in a.articulations.iter().filter_map(|r| r.key.filter(|&k| k < 128)) {

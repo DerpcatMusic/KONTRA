@@ -3183,3 +3183,194 @@ fn authored_script_pages_show_footer_tabs_and_switch_the_visible_controls() {
     assert_eq!(view.parts[0].script_slot,0);
     assert_eq!(view.parts[0].interface.as_ref().unwrap().controls[0].kind,"ui_knob");
 }
+
+// Authored data only. No UFS/audio/image file is opened and no loader task runs.
+#[cfg(feature = "uvi")]
+#[test]
+fn authored_native_full_editor_capture_and_terminal_failure() {
+    use crate::uvi::{program::parse_program, script::Session, worker::Stamp};
+    use std::collections::BTreeMap;
+    use std::sync::atomic::Ordering;
+
+    let program = parse_program(
+        r#"<Program Name="Authored controls"><EventProcessors><ScriptProcessor><script><![CDATA[
+      function onInit()
+        setSize(640,288); setBackgroundColour('#252525'); makePerformanceView()
+        Label{name='Authored instrument controls',bounds={16,10,600,28},fontSize=13}
+        tone=Knob{name='Tone',value=0.375,min=0,max=1,bounds={20,52,88,100}}
+        Slider{name='Level',value=0.375,min=0,max=1,bounds={132,58,230,70}}
+        NumBox{name='Voices',value=4,min=1,max=16,integer=true,bounds={388,58,100,28}}
+        Menu{name='Mode',items={'Warm','Bright','Soft'},selected=1,bounds={388,108,210,28}}
+        OnOffButton{name='Enabled',value=true,bounds={20,170,100,28}}
+        reset=Button{name='Reset',bounds={132,170,100,28}}
+        Label{name='Steps',bounds={20,217,90,20}}
+        steps=Table{name='Steps',length=8,default=0,min=0,max=1,bounds={132,211,330,56}}
+        for i,value in ipairs{0.1,0.3,0.5,0.8,0.6,0.4,0.2,0.7} do steps:setValue(i,value,false) end
+        reset.changed=function() tone:setValue(0.375) end
+      end
+    ]]></script></ScriptProcessor></EventProcessors></Program>"#,
+    )
+    .unwrap();
+    let processor = program
+        .nodes
+        .iter()
+        .position(|node| node.kind == "ScriptProcessor")
+        .unwrap();
+    let session = Session::new_program_chain(&program, BTreeMap::new(), None, 48_000).unwrap();
+    let snapshot = session.ui_snapshot(processor).unwrap();
+    assert!(snapshot.root.performance_view && snapshot.widgets.len() == 9);
+
+    let source = crate::library::UviSource {
+        bank: "/authored/ui-only.ufs".into(),
+        bank_uuid: [0x34; 16],
+        member: "Root/Keys/Authored controls.uvip".into(),
+    };
+    let p = Arc::new(SamplerParams::new());
+    {
+        let mut selection = p.selection.write().unwrap();
+        selection.parts.push(Part {
+            uvi: Some(source.clone()),
+            gain: -6.,
+            pan: 0.25,
+            tune: 7.25,
+            ..Default::default()
+        });
+        selection.order = vec![0];
+    }
+    p.shared.ensure_parts(1);
+    p.shared
+        .part(0)
+        .unwrap()
+        .uvi_generation
+        .store(77, Ordering::Release);
+    let stamp = Stamp {
+        epoch: p.shared.uvi_activation_epoch(),
+        generation: 77,
+        frame: 0,
+    };
+    {
+        let mut bank = crate::library::UviBank::default();
+        bank.presets.push(Arc::new(crate::library::UviPreset {
+            source: source.clone(),
+            name: "Authored UVI Controls".into(),
+            folder: "Keys".into(),
+            search: "authored".into(),
+        }));
+        let mut shelf = crate::library::Shelf::default();
+        shelf.uvi.insert(source.bank.clone(), Arc::new(bank));
+        let mut view = p.shared.view.lock().unwrap();
+        view.shelf = Arc::new(shelf);
+        let count = view.parts.len().max(1);
+        view.parts.resize_with(count, PartView::default);
+        let published = Arc::new(crate::plugin::uvi_ui::Published {
+            stamp, snapshots: Arc::new(vec![snapshot]), pictures: Arc::default(),
+        });
+        view.parts[0] = PartView::authored_uvi(source.clone(), published);
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    let shows = |h: &Harness, id: &str| h.ui.scene().unwrap().surface(id).is_some();
+    let label = |h: &Harness, id: &str| {
+        h.ui.scene()
+            .unwrap()
+            .surface(id)
+            .unwrap()
+            .semantics
+            .as_ref()
+            .and_then(|a| a.label.as_deref())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let native_id = |widget| format!("uvi-0-{}-77-{processor}-{widget}", stamp.epoch);
+    for id in [
+        "header-0",
+        "name-0",
+        "uvi-stage-0",
+        "volume-0",
+        "pan-0",
+        "key-60",
+    ] {
+        assert!(
+            shows(&h, id),
+            "native empty-path source remains present: {id}"
+        );
+    }
+    assert_eq!(label(&h, "name-0"), "Authored UVI Controls");
+    assert!(shows(&h, &native_id(2)) && shows(&h, &native_id(5)) && shows(&h, &native_id(9)));
+    assert!(
+        !shows(&h, "tune-0"),
+        "unsupported rack tuning has no editable target"
+    );
+    assert_eq!(p.selection.read().unwrap().parts[0].tune, 7.25);
+
+    let output = std::path::Path::new("/tmp/kontakto-uvi-ui-leaf/authored-full-editor.png");
+    std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+    moose::core::screenshot::save_png(output, &pixels(&h.ui, 1180, 760), 1180, 760);
+
+    // Native menu lives at editor-root level and remains reachable outside the stage.
+    h.press(&native_id(5));
+    let native_choice = format!("{}-menu-2", native_id(5));
+    assert!(shows(&h, &native_choice));
+    h.press(&native_choice);
+    assert!(!shows(&h, &native_choice));
+
+    let step = |h: &mut Harness, id: &str, key: Key| {
+        h.ui.focus(id);
+        h.tick(Input {
+            keys: vec![KeyPress {
+                key,
+                mods: Mods::default(),
+            }],
+            ..Input::default()
+        });
+        h.idle(3);
+    };
+    step(&mut h, "volume-0", Key::Up);
+    step(&mut h, "pan-0", Key::Right);
+    {
+        let part = &p.selection.read().unwrap().parts[0];
+        assert!(
+            part.gain > -6. && part.pan > 0.25,
+            "native header retains live mixer edits"
+        );
+        assert_eq!(part.tune, 7.25);
+    }
+    let at = center(&h.ui, "key-60");
+    h.tick(pointer(at, true));
+    h.idle(1);
+    h.tick(pointer(at, false));
+    h.idle(2);
+    let notes: Vec<_> = std::iter::from_fn(|| p.shared.keyboard.pop()).collect();
+    assert!(
+        notes
+            .iter()
+            .any(|(_, play)| matches!(play, Play::Note(60,v) if *v > 0))
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|(_, play)| matches!(play, Play::Note(60, 0)))
+    );
+
+    h.press("tab-mixer");
+    assert!(shows(&h, "strip-0") && shows(&h, "master-strip"));
+    h.press("mix-out-0");
+    h.press("menu-item-4");
+    assert_eq!(p.selection.read().unwrap().parts[0].output, 2);
+    h.press("mix-in-0");
+    h.press("menu-item-3");
+    assert_eq!(p.selection.read().unwrap().parts[0].channel, 2);
+    h.press("tab-rack");
+
+    // A terminal native error clears the performance panel even if its old
+    // snapshot remains published, and cannot keep showing a loading placeholder.
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.parts[0].status = "The UVI instrument could not be loaded.".into();
+        view.parts[0].loading = false;
+    }
+    h.idle(3);
+    assert!(!shows(&h, "uvi-stage-0") && !shows(&h, &native_id(2)));
+    let failure = label(&h, "stage-0");
+    assert!(failure.contains("could not be loaded") && !failure.contains("Loading"));
+    assert_eq!(label(&h, "name-0"), "Authored UVI Controls");
+}

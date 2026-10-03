@@ -2838,6 +2838,11 @@ impl<'a> Renderer<'a> {
         self.frame += 1;
         Ok([output[0], output[1]])
     }
+    /// Retained DSP voice instances, including held/releasing silent voices.
+    /// This is not an audibility estimate or a count of shared effect tails.
+    pub fn active_voices(&self) -> usize {
+        self.voices.len()
+    }
     /// Active per-launch instances, including sustain and owned DSP lifetime.
     /// Shared Layer/Program/Aux processors do not belong to one backend token.
     pub fn sounding_roots(&self) -> Vec<script::HostRoot> {

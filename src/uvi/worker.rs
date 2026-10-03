@@ -164,9 +164,10 @@ impl Request {
     }
 }
 
-/// Opt-in hosted packet. Ordinary MIDI plus rooted entries share MAX_INPUTS;
-/// UI has its separate MAX_UI_EDITS bound. At equal frames Player orders UI,
-/// rooted entries, then ordinary MIDI, preserving each stream's order.
+/// Opt-in hosted packet. Ordinary MIDI plus hosted entries share MAX_INPUTS;
+/// UI has its separate MAX_UI_EDITS bound. Keep controls and rooted notes in one
+/// hosted array to preserve their order, including at equal frames. Separate
+/// ordinary MIDI remains compatible: UI, hosted, then ordinary at equal frames.
 #[derive(Clone, Copy, Debug)]
 pub struct HostedRequest {
     pub request: Request,
@@ -214,14 +215,24 @@ impl HostedRequest {
                         return Err(PacketError::InvalidInput);
                     }
                     last_on = root.token;
-                    (root, input.frame)
+                    (Some(root), input.frame)
                 }
-                HostedInput::Off { root, frame } => (root, frame),
+                HostedInput::Off { root, frame } => (Some(root), frame),
+                HostedInput::Event(input) => {
+                    if !player::input_is_valid(&input)
+                        || matches!(
+                            input.kind,
+                            InputKind::NoteOn { .. } | InputKind::NoteOff { .. }
+                        )
+                    {
+                        return Err(PacketError::InvalidInput);
+                    }
+                    (None, input.frame)
+                }
             };
-            if root.epoch != stamp.epoch
-                || root.generation != stamp.generation
-                || root.token == 0
-                || frame < last_frame
+            if root.is_some_and(|root| {
+                root.epoch != stamp.epoch || root.generation != stamp.generation || root.token == 0
+            }) || frame < last_frame
                 || frame >= end
             {
                 return Err(PacketError::InvalidInput);
@@ -305,6 +316,9 @@ pub struct Stats {
     pub backpressure: u64,
     pub stale_packets: u64,
     pub rendered_blocks: u64,
+    /// Retained renderer voice instances after its latest completed packet;
+    /// includes held/releasing silent voices, not an audibility estimate.
+    pub active_voices: u64,
     pub initialization_ns: u64,
     /// Player.render only: excludes initialization and queue waiting.
     pub render_ns: u64,
@@ -326,6 +340,7 @@ struct Counters {
     backpressure: AtomicU64,
     stale_packets: AtomicU64,
     rendered_blocks: AtomicU64,
+    active_voices: AtomicU64,
     initialization_ns: AtomicU64,
     render_ns: AtomicU64,
     max_render_ns: AtomicU64,
@@ -339,6 +354,7 @@ struct Counters {
 struct Details {
     failure: Option<String>,
     diagnostics: Vec<&'static str>,
+    ui_processors: Vec<NodeId>,
     ui_latest: u64,
     ui_request: Option<UiSnapshotRequest>,
     ui_reply: Option<UiSnapshotReply>,
@@ -405,6 +421,7 @@ impl Shared {
             backpressure: c.backpressure.load(Ordering::Relaxed),
             stale_packets: c.stale_packets.load(Ordering::Relaxed),
             rendered_blocks: c.rendered_blocks.load(Ordering::Relaxed),
+            active_voices: c.active_voices.load(Ordering::Relaxed),
             initialization_ns: c.initialization_ns.load(Ordering::Relaxed),
             render_ns: c.render_ns.load(Ordering::Relaxed),
             max_render_ns: c.max_render_ns.load(Ordering::Relaxed),
@@ -469,6 +486,11 @@ impl AudioPort {
 }
 
 impl Worker {
+    /// Configured activation identity; frame remains zero, not a playback clock.
+    pub(crate) fn activation_stamp(&self) -> Stamp {
+        self.shared.stamp
+    }
+
     pub fn start(config: StartConfig, epoch: u64, generation: u64) -> Result<Self> {
         Self::start_inner(config, epoch, generation, false)
     }
@@ -568,6 +590,20 @@ impl Worker {
             .clone()
     }
 
+    /// Control thread only. Ordered processor identities for panel snapshots;
+    /// contains no script source or names. Unavailable outside Ready.
+    pub fn ui_processors(&self) -> Vec<NodeId> {
+        if self.status() != Status::Ready {
+            return Vec::new();
+        }
+        self.shared
+            .details
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .ui_processors
+            .clone()
+    }
+
     /// Control thread only. Coalesces to the latest requested panel: at most one
     /// pending request and one bounded owned reply are retained. Superseded
     /// replies are discarded on this thread or the allocating playback worker.
@@ -635,6 +671,10 @@ impl Worker {
                     .store(Status::Failed as u8, Ordering::Release);
             }
         }
+        self.shared
+            .counters
+            .active_voices
+            .store(0, Ordering::Relaxed);
         if self
             .cursor
             .as_mut()
@@ -758,6 +798,22 @@ impl Realtime<'_> {
     /// in at most capacity+1 steps; an early packet stays inline for a later call.
     /// Underrun never substitutes old audio or silently changes the input cursor.
     pub fn try_receive(&mut self, expected: Stamp) -> std::result::Result<Output, PacketError> {
+        if let Some(output) = self.try_receive_available(expected)? {
+            return Ok(output);
+        }
+        self.shared
+            .counters
+            .underruns
+            .fetch_add(1, Ordering::Relaxed);
+        Err(PacketError::Underrun)
+    }
+
+    /// Prefetch using the same exclusive receive cursor. Empty/future packets
+    /// are not audible underruns; completion delivery still uses consumed time.
+    pub fn try_receive_available(
+        &mut self,
+        expected: Stamp,
+    ) -> std::result::Result<Option<Output>, PacketError> {
         let cursor = self.cursor.as_mut().ok_or(PacketError::PortTaken)?;
         self.shared.activation(expected)?;
         if expected.frame < cursor.minimum_output
@@ -790,13 +846,9 @@ impl Realtime<'_> {
                 break;
             }
             cursor.minimum_output += BLOCK_FRAMES as u64;
-            return Ok(output);
+            return Ok(Some(output));
         }
-        self.shared
-            .counters
-            .underruns
-            .fetch_add(1, Ordering::Relaxed);
-        Err(PacketError::Underrun)
+        Ok(None)
     }
 
     /// The caller supplies the currently consumed boundary on this worker's
@@ -896,6 +948,7 @@ fn capture_ui(player: &Player<'_>, shared: &Shared) {
 /// Controller observes an activation abort, not successful ends for discarded
 /// roots. A future adapter must retire canonical owners through its lifecycle.
 fn finish(shared: &Shared, failure: Option<String>) {
+    shared.counters.active_voices.store(0, Ordering::Relaxed);
     if let Some(failure) = failure {
         shared.counters.errors.fetch_add(1, Ordering::Relaxed);
         shared
@@ -1085,11 +1138,20 @@ fn run(config: StartConfig, shared: &Shared, initialized: Instant) -> Result<()>
             config.sample_rate,
         )?
     };
-    shared
-        .details
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .diagnostics = player.diagnostics();
+    {
+        let mut details = shared
+            .details
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        details.diagnostics = player.diagnostics();
+        details.ui_processors = loaded
+            .program
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(id, node)| (node.kind == "ScriptProcessor").then_some(id))
+            .collect();
+    }
     shared
         .counters
         .initialization_ns
@@ -1191,6 +1253,10 @@ fn serve(player: &mut Player<'_>, shared: &Shared, sample_rate: u32) -> Result<(
         output.audio.copy_from_slice(&rendered.audio);
         shared
             .counters
+            .active_voices
+            .store(player.active_voices() as u64, Ordering::Relaxed);
+        shared
+            .counters
             .rendered_blocks
             .fetch_add(1, Ordering::Relaxed);
         loop {
@@ -1217,7 +1283,7 @@ fn serve(player: &mut Player<'_>, shared: &Shared, sample_rate: u32) -> Result<(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::super::{crypto, program::parse_program};
     use super::*;
     use std::collections::BTreeMap;
@@ -1399,7 +1465,7 @@ mod tests {
         )
     }
 
-    pub(super) fn authored_bank_with_script(script: &str) -> (StartConfig, String) {
+    pub(crate) fn authored_bank_with_script(script: &str) -> (StartConfig, String) {
         fn append(bytes: &mut Vec<u8>, payload: &[u8]) -> u64 {
             let pointer = bytes.len() as u64 + 8;
             bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());

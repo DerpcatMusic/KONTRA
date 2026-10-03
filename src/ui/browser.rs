@@ -767,7 +767,7 @@ fn load(cx: &mut Cx, path: &Path, new: bool) {
     let text = path.to_string_lossy().into_owned();
     cx.state.cursor = Some(text.clone());
     keep_place(cx);
-    let selected = (cx.state.chosen()).filter(|&s| cx.selection.parts.get(s).is_some_and(|p| !p.path.is_empty()));
+    let selected = (cx.state.chosen()).filter(|&s| cx.selection.parts.get(s).is_some_and(|p| !p.is_empty()));
     match selected {
         _ if import::is_multi(path) => cx.open_preset(crate::library::PresetTarget::File(path.to_owned()), false, None),
         _ if new => cx.open_preset(crate::library::PresetTarget::File(path.to_owned()), true, None),
@@ -1368,7 +1368,7 @@ fn uvi_preset(ui: &mut Ui, cx: &mut Cx, n: usize, preset: &crate::library::UviPr
         .gap(INSET - 1.).align(Align::Center).pad(edges(0., SPACE, 0., SPACE))
         .h(if under.is_empty() { ROW } else { ROW2 }).when(cursor, |e| e.fill(Role::Raised))
         .focusable().a11y(A11y::Button).named(format!("{}, UVI program", preset.name))
-        .tip(format!("{}\n{}\nLive UVI playback is not available yet", preset.source.bank.display(), preset.source.member))
+        .tip(format!("{}\n{}\nUVI bank program", preset.source.bank.display(), preset.source.member))
         .id(id).shrink(0), cursor)
 }
 

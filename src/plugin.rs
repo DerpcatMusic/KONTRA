@@ -28,6 +28,21 @@ use std::{
     time::Instant,
 };
 
+#[cfg(feature = "uvi")]
+pub(crate) mod uvi_ui;
+#[cfg(feature = "uvi")]
+mod uvi;
+#[cfg(feature = "uvi")]
+mod uvi_control;
+#[cfg(feature = "uvi")]
+pub(crate) mod uvi_load;
+#[cfg(feature = "uvi")]
+mod uvi_delay;
+#[cfg(all(test, feature = "uvi"))]
+mod uvi_integration_tests;
+#[cfg(feature = "uvi")]
+const UVI_LEAD_PACKETS: usize = 16;
+
 #[derive(State, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Part {
@@ -88,8 +103,14 @@ pub struct Part {
     pub engine_state: Vec<crate::ksp::engine::NativeEdit>,
     /// Coupled Delay Time/unit caches, appended for older positional host states.
     pub delay_state: Vec<crate::fx::DelayState>,
+    /// Native bank/member identity; appended to retain positional host states.
+    /// An absent backend remains identifiable when its feature is disabled.
+    pub uvi: Option<library::UviSource>,
 }
 impl Part {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.path.is_empty() && self.uvi.is_none()
+    }
     pub(crate) fn source(&self) -> (String, u32, String) {
         (self.path.clone(), self.program, self.snapshot.clone())
     }
@@ -209,6 +230,7 @@ impl Default for Part {
             snapshot: String::new(),
             engine_state: Vec::new(),
             delay_state: Vec::new(),
+            uvi: None,
         }
     }
 }
@@ -319,7 +341,7 @@ impl Selection {
     /// explicitly; omni on port A when all are taken.
     pub fn next_input(&self) -> (u8, i16) {
         let taken = |port: u8, channel: i16| {
-            (self.parts.iter()).any(|p| !p.path.is_empty() && p.port == port && p.channel == channel)
+            (self.parts.iter()).any(|p| !p.is_empty() && p.port == port && p.channel == channel)
         };
         (0..4u8)
             .flat_map(|port| (0..16i16).map(move |channel| (port, channel)))
@@ -412,7 +434,8 @@ impl SamplerParams {
         {
             let prepared = self.shared.uvi_prepared.lock().unwrap();
             context["uvi"] = serde_json::json!({
-                "requested":selection.uvi_requested, "live_installed":false,
+                "requested":selection.uvi_requested, "live_installed":self.shared.with_parts(|parts|
+                    parts.iter().any(|p| p.uvi_generation.load(Ordering::Acquire) != 0 && !p.uvi_failed.load(Ordering::Acquire))),
                 "prepared":prepared.as_ref().map(|p| serde_json::json!({
                     "source":p.key.request.source, "slot":p.key.request.slot, "new":p.key.request.new,
                     "epoch":p.key.epoch, "generation":p.generation, "sample_rate":f64::from_bits(p.key.rate),
@@ -473,6 +496,12 @@ impl AudioDiagnostics {
 /// prepared Arc vector and never locks the growable registry.
 #[derive(Default)]
 pub(crate) struct PartShared {
+    #[cfg(feature = "uvi")]
+    pub(crate) uvi_generation: AtomicU64,
+    #[cfg(feature = "uvi")]
+    uvi_part_generation: AtomicU64,
+    #[cfg(feature = "uvi")]
+    uvi_failed: AtomicBool,
     pub(crate) generation: AtomicU64,
     /// Out of [`crate::engine::LOAD_DONE`], rising within each load.
     pub(crate) load_progress: AtomicU32,
@@ -499,6 +528,20 @@ pub struct Shared {
     uvi_epoch: AtomicU64,
     #[cfg(feature = "uvi")]
     uvi_generation: AtomicU64,
+    #[cfg(feature = "uvi")]
+    uvi_max_host_frames: AtomicUsize,
+    #[cfg(feature = "uvi")]
+    uvi_delays: ArrayQueue<UviDelayHandoff>,
+    #[cfg(feature = "uvi")]
+    uvi_delay_prepared: Mutex<Option<(u64, usize, u32, u64)>>,
+    #[cfg(feature = "uvi")]
+    uvi_delay_wanted: AtomicU64,
+    #[cfg(feature = "uvi")]
+    uvi_delay_installed: AtomicU64,
+    #[cfg(feature = "uvi")]
+    uvi_controls: Arc<Mutex<uvi_control::Registry>>,
+    #[cfg(feature = "uvi")]
+    uvi_edits: ArrayQueue<(usize, crate::uvi::worker::Stamp, crate::uvi::host::UiEdit)>,
     /// Persistence snapshots: the loader lends one per scripted slot, the audio thread fills it in place and returns it.
     snapshot_requests: ArrayQueue<(usize, u64, Box<PersistenceSnapshot>)>,
     /// Refreshed snapshots, and whether any value in them changed.
@@ -582,6 +625,8 @@ pub struct Shared {
     pub(crate) view: Mutex<View>,
     /// Voices sounding across the rack, reported by the audio thread.
     pub(crate) voices: AtomicU64,
+    #[cfg(feature = "uvi")]
+    pub(crate) uvi_voices: AtomicU64,
     /// Of those, the ones not muted by their scripts: the ones rendered.
     pub(crate) audible: AtomicU64,
     /// Set by every editor display tick: an editor is open to show the
@@ -684,6 +729,10 @@ fn first_script_live(rt: &Runtime) -> Box<Live> {
 
 #[derive(Default, Clone)]
 pub(crate) struct PartView {
+    #[cfg(feature = "uvi")]
+    pub(crate) uvi_ui: Option<Arc<uvi_ui::Published>>,
+    #[cfg(feature = "uvi")]
+    pub(crate) uvi_activation: Option<uvi_load::Activation>,
     pub(crate) program: u32,
     pub(crate) interface: Option<Arc<crate::ksp::Interface>>,
     pub(crate) interface_status: String,
@@ -743,6 +792,20 @@ pub(crate) struct PartView {
     pub(crate) edited: Vec<(usize, i32, Instant)>,
 }
 impl PartView {
+    #[cfg(all(test, feature = "uvi"))]
+    pub(crate) fn authored_uvi(source: library::UviSource, published: Arc<uvi_ui::Published>) -> Self {
+        let stamp = published.stamp;
+        Self {
+            uvi_activation: Some(uvi_load::Activation { source, epoch: stamp.epoch, generation: stamp.generation,
+                part_generation: 0, rate: 48000, max_host_frames: MAX_BLOCK, published: true }),
+            uvi_ui: Some(published), status: "UVI instrument".into(), ..Default::default()
+        }
+    }
+    #[cfg(feature = "uvi")]
+    pub(crate) fn uvi_matches(&self, source: &library::UviSource, stamp: crate::uvi::worker::Stamp) -> bool {
+        self.uvi_activation.as_ref().is_some_and(|a| a.source == *source
+            && (a.epoch, a.generation) == (stamp.epoch, stamp.generation))
+    }
     /// Pending scalar values affect drawing without copying or mutating the
     /// callback-derived interface retained by readers.
     pub(crate) fn control_value(&self, control: usize) -> Option<f64> {
@@ -776,6 +839,8 @@ pub(crate) struct View {
     pub(crate) status: String,
     pub(crate) uvi_attempted: Option<library::UviRequest>,
     pub(crate) uvi_status: String,
+    #[cfg(feature = "uvi")]
+    pub(crate) uvi_ui: Option<Arc<uvi_ui::Published>>,
     /// When an editor last showed the rack (see [`Shared::watched`]).
     pub(crate) watched_at: Option<Instant>,
 }
@@ -801,6 +866,20 @@ impl Default for Shared {
             uvi_epoch: AtomicU64::new(1),
             #[cfg(feature = "uvi")]
             uvi_generation: AtomicU64::new(0),
+            #[cfg(feature = "uvi")]
+            uvi_max_host_frames: AtomicUsize::new(MAX_BLOCK),
+            #[cfg(feature = "uvi")]
+            uvi_delays: ArrayQueue::new(2),
+            #[cfg(feature = "uvi")]
+            uvi_delay_prepared: Mutex::default(),
+            #[cfg(feature = "uvi")]
+            uvi_delay_wanted: AtomicU64::new(0),
+            #[cfg(feature = "uvi")]
+            uvi_delay_installed: AtomicU64::new(0),
+            #[cfg(feature = "uvi")]
+            uvi_controls: Arc::default(),
+            #[cfg(feature = "uvi")]
+            uvi_edits: ArrayQueue::new(256),
             snapshot_requests: ArrayQueue::new(2 * RACK_SLOTS),
             snapshots: ArrayQueue::new(2 * RACK_SLOTS),
             live_requests: ArrayQueue::new(2 * RACK_SLOTS),
@@ -859,6 +938,8 @@ impl Default for Shared {
             snapshot_request: Mutex::new(None),
             libraries: library::Scanner::default(),
             voices: AtomicU64::new(0),
+            #[cfg(feature = "uvi")]
+            uvi_voices: AtomicU64::new(0),
             audible: AtomicU64::new(0),
             watched: AtomicBool::new(false),
             cpu: AtomicU64::new(0),
@@ -885,6 +966,8 @@ impl Default for Shared {
                 status: "Choose a library and select a preset".into(),
                 uvi_attempted: None,
                 uvi_status: String::new(),
+                #[cfg(feature = "uvi")]
+                uvi_ui: None,
                 watched_at: None,
             }),
         };
@@ -1083,6 +1166,8 @@ struct IrHandoff {
 }
 
 enum Handoff {
+    #[cfg(feature = "uvi")]
+    Uvi(uvi_control::Audio),
     /// A new instrument, or an empty slot, with its effects and initialized scripts.
     Part {
         bank: Option<Box<Bank>>,
@@ -1104,10 +1189,24 @@ enum Handoff {
     /// Sample heads the smart memory resized.
     Heads(Heads),
 }
+impl Handoff {
+    fn replaces_player(&self) -> bool {
+        match self {
+            Self::Part { .. } => true,
+            #[cfg(feature = "uvi")]
+            Self::Uvi(_) => true,
+            _ => false,
+        }
+    }
+}
 /// What the audio thread replaced, freed on the loader thread.
 #[expect(dead_code, reason = "held only to be dropped off the audio thread")]
 #[derive(Default)]
 struct Retired {
+    #[cfg(feature = "uvi")]
+    uvi: Option<uvi_control::Audio>,
+    #[cfg(feature = "uvi")]
+    uvi_delays: Option<Box<uvi_delay::Prepared>>,
     bank: Option<Box<Bank>>,
     fx: Option<FxProcessor>,
     script: Option<Box<Runtime>>,
@@ -1407,6 +1506,20 @@ fn prepare_interface(live: &Live, previous: Option<&Interface>, versions: &[(u64
 }
 
 impl Shared {
+    #[cfg(feature = "uvi")]
+    pub(crate) fn uvi_activation_epoch(&self) -> u64 {
+        self.uvi_epoch.load(Ordering::Acquire)
+    }
+    #[cfg(feature = "uvi")]
+    pub(crate) fn edit_uvi(&self, slot: usize, stamp: crate::uvi::worker::Stamp, edit: crate::uvi::host::UiEdit) -> bool {
+        if stamp.epoch != self.uvi_epoch.load(Ordering::Acquire)
+            || self.part(slot).is_none_or(|p| p.uvi_generation.load(Ordering::Acquire) != stamp.generation
+                || p.uvi_failed.load(Ordering::Acquire)
+                || p.uvi_part_generation.load(Ordering::Acquire) != p.generation.load(Ordering::Acquire)) {
+            return false;
+        }
+        self.uvi_edits.push((slot, stamp, edit)).is_ok()
+    }
     /// Publish visible script state on the editor thread, with a worker fallback
     /// after the editor closes. Neither caller may keep this guard while loading.
     pub(crate) fn publish_live(&self, editor: bool) {
@@ -1829,7 +1942,7 @@ impl SavedMulti {
                 .order
                 .iter()
                 .filter_map(|n| selection.parts.get(*n as usize))
-                .filter(|p| !p.path.is_empty())
+                .filter(|p| !p.is_empty())
                 .cloned()
                 .collect(),
         }
@@ -1987,7 +2100,12 @@ fn capture_audio_diagnostics(s: &mut Dsp, p: &SamplerParams, frames: usize, chan
     for (part, current) in audio.parts.iter_mut().enumerate() {
         let e = &s.rack.parts[part]; let [pending_commands, pending_writes, pending_releases] = e.pending_work();
         *current = PartDiagnostics { generation:s.installed_generation[part], script_epoch:s.script_epoch[part],
-            voices:e.active_voices(), audible:e.audible_voices(), underruns:e.underruns(), dropped_commands:e.dropped_commands(), host_note_drops:e.host_note_drops(),
+            voices:e.active_voices(), audible:e.audible_voices(), underruns:e.underruns().saturating_add({
+                #[cfg(feature = "uvi")]
+                { s.uvi.get(part).and_then(Option::as_ref).map_or(0, |a| a.slot().underruns()) }
+                #[cfg(not(feature = "uvi"))]
+                { 0 }
+            }), dropped_commands:e.dropped_commands(), host_note_drops:e.host_note_drops(),
             held_keys:std::array::from_fn(|channel| std::array::from_fn(|half| (0..64).fold(0, |keys, note|
                 keys | (u64::from(e.key_down(channel as u8, (half * 64 + note) as u8)) << note)))),
             sustain_cc:std::array::from_fn(|channel| e.cc_state()[channel][64]),
@@ -2103,9 +2221,11 @@ struct UviLoadKey {
     request: library::UviRequest,
     epoch: u64,
     rate: u64,
+    max_host_frames: usize,
     catalog: u64,
     /// Exact active Kontakt identity/generation, without changing that engine.
     target: Option<((String, u32, String), u64)>,
+    target_uvi: Option<library::UviSource>,
 }
 
 #[cfg(feature = "uvi")]
@@ -2114,6 +2234,7 @@ struct UviPrepared {
     generation: u64,
     worker: Option<crate::uvi::worker::Worker>,
     status: &'static str,
+    ui: Option<uvi_ui::Mailbox>,
 }
 
 #[cfg(feature = "uvi")]
@@ -2123,15 +2244,19 @@ fn uvi_load_key(params: &SamplerParams, selection: &Selection) -> Option<UviLoad
         let slot = slot as usize;
         Some((selection.parts.get(slot)?.source(), params.shared.part(slot)?.generation.load(Ordering::Acquire)))
     });
+    let target_uvi = request.slot.and_then(|slot| selection.parts.get(slot as usize)).and_then(|p| p.uvi.clone());
     Some(UviLoadKey { request, epoch: params.shared.uvi_epoch.load(Ordering::Acquire),
-        rate: params.shared.rate.load(Ordering::Acquire), catalog: params.shared.libraries.wanted(), target })
+        rate: params.shared.rate.load(Ordering::Acquire),
+        max_host_frames: params.shared.uvi_max_host_frames.load(Ordering::Acquire),
+        catalog: params.shared.libraries.wanted(),
+        target_uvi, target })
 }
 
 #[cfg(feature = "uvi")]
 fn prepare_uvi(params: &SamplerParams, selection: &Selection) {
     use crate::uvi::worker::{Status, Worker};
     const STARTING: &str = "Loading the UVI instrument; the current instrument is still playing.";
-    const READY: &str = "The UVI instrument is prepared; live playback is not available yet.";
+    const READY: &str = "Preparing the UVI player for the rack…";
     const FAILED: &str = "The UVI instrument could not be loaded; the current instrument is still playing.";
     let key = uvi_load_key(params, selection);
     let retired = {
@@ -2143,7 +2268,7 @@ fn prepare_uvi(params: &SamplerParams, selection: &Selection) {
     let Some(key) = key else {
         let mut view = params.shared.view.lock().unwrap();
         if params.selection.read().unwrap().uvi_requested.is_none() {
-            view.uvi_attempted = None; view.uvi_status.clear();
+            view.uvi_attempted = None; view.uvi_status.clear(); view.uvi_ui = None;
         }
         return;
     };
@@ -2160,17 +2285,22 @@ fn prepare_uvi(params: &SamplerParams, selection: &Selection) {
         };
         if uvi_load_key(params, &params.selection.read().unwrap()) != Some(key.clone()) { return; }
         let generation = params.shared.uvi_generation.fetch_add(1, Ordering::AcqRel) + 1;
-        let (worker, status) = match configured {
-            Ok(config) => match Worker::start(config, key.epoch, generation) {
-                Ok(worker) => (Some(worker), STARTING), Err(_) => (None, FAILED),
+        let (worker, status, ui) = match configured {
+            Ok(config) => {
+                let assets = crate::uvi::ui_assets::UiAssets::open(&config).ok();
+                match Worker::start_hosted(config, key.epoch, generation) {
+                    Ok(worker) => (Some(worker), STARTING, Some(uvi_ui::Mailbox::new(
+                        crate::uvi::worker::Stamp { epoch: key.epoch, generation, frame: 0 }, assets))),
+                    Err(_) => (None, FAILED, None),
+                }
             },
-            Err(reason) => (None, reason),
+            Err(reason) => (None, reason, None),
         };
-        let prepared = UviPrepared { key: key.clone(), generation, worker, status };
+        let prepared = UviPrepared { key: key.clone(), generation, worker, status, ui };
         if uvi_load_key(params, &params.selection.read().unwrap()) != Some(key.clone()) { drop(prepared); return; }
         *params.shared.uvi_prepared.lock().unwrap() = Some(prepared);
     }
-    let (status, failed) = {
+    let (status, failed, ui) = {
         let mut prepared = params.shared.uvi_prepared.lock().unwrap();
         let p = prepared.as_mut().unwrap();
         let failed = match p.worker.as_ref().map(Worker::status) {
@@ -2178,16 +2308,125 @@ fn prepare_uvi(params: &SamplerParams, selection: &Selection) {
             Some(Status::Failed | Status::Stopped) => { p.status = FAILED; p.worker.take() },
             _ => None,
         };
-        (p.status, failed)
+        let ui = match (&p.worker, &mut p.ui) {
+            (Some(worker), Some(ui)) => ui.poll(worker),
+            _ => None,
+        };
+        (p.status, failed, ui)
     };
     drop(failed);
     if uvi_load_key(params, &params.selection.read().unwrap()) != Some(key.clone()) { return; }
     let mut view = params.shared.view.lock().unwrap();
     if params.selection.read().unwrap().uvi_requested.as_ref() == Some(&key.request)
         && params.shared.uvi_epoch.load(Ordering::Acquire) == key.epoch {
+        if view.uvi_attempted.as_ref() != Some(&key.request) { view.uvi_ui = None; }
         view.uvi_attempted = Some(key.request);
+        if let Some(ui) = ui { view.uvi_ui = Some(ui); }
         if view.uvi_status != status { view.uvi_status = status.into(); }
     }
+}
+
+#[cfg(feature = "uvi")]
+struct UviDelayHandoff { epoch: u64, ticket: u64, storage: Box<uvi_delay::Prepared> }
+
+/// Different callback queues are unordered. A native endpoint is published only
+/// after the callback acknowledged storage for this epoch and complete rack.
+#[cfg(feature = "uvi")]
+fn uvi_delay_ready(params: &SamplerParams) -> bool {
+    let epoch = params.shared.uvi_epoch.load(Ordering::Acquire);
+    let count = params.shared.with_parts(|parts| parts.len());
+    if count > params.shared.grown.load(Ordering::Acquire) as usize { return false }
+    let maximum = params.shared.uvi_max_host_frames.load(Ordering::Acquire);
+    let Ok(latency) = crate::uvi::bridge::Bridge::buffering_latency(maximum, UVI_LEAD_PACKETS) else { return false };
+    let mut prepared = params.shared.uvi_delay_prepared.lock().unwrap();
+    if let Some((e, n, l, ticket)) = *prepared
+        && (e, n, l) == (epoch, count, latency) {
+        return params.shared.uvi_delay_installed.load(Ordering::Acquire) == ticket;
+    }
+    let Ok(mut storage) = uvi_delay::Prepared::new(count, latency as usize) else { return false };
+    if !storage.set_all(latency) { return false }
+    let ticket = params.shared.uvi_delay_wanted.fetch_add(1, Ordering::AcqRel) + 1;
+    let next = UviDelayHandoff { epoch, ticket, storage: Box::new(storage) };
+    let _ = params.shared.uvi_delays.force_push(next);
+    *prepared = Some((epoch, count, latency, ticket));
+    false
+}
+
+/// Commit the requested identity only after native initialization succeeded.
+/// The controller remains on Load; its endpoint is published separately after
+/// common mixer delay storage has been acknowledged by the audio thread.
+#[cfg(feature = "uvi")]
+fn install_prepared_uvi(params: &SamplerParams) {
+    use crate::uvi::worker::Status;
+    let ready = {
+        let prepared = params.shared.uvi_prepared.lock().unwrap();
+        prepared.as_ref().filter(|p| p.worker.as_ref().is_some_and(|w| w.status() == Status::Ready))
+            .map(|p| p.key.clone())
+    };
+    let Some(key) = ready else { return };
+    let before = params.selection.read().unwrap().clone();
+    if uvi_load_key(params, &before) != Some(key.clone()) { return }
+    if !key.request.new && key.request.slot.is_none()
+        && let Some(slot) = before.parts.iter().enumerate().find_map(|(slot, p)| {
+            (p.uvi.as_ref() == Some(&key.request.source)
+                && params.shared.part(slot).is_some_and(|a| !a.uvi_failed.load(Ordering::Acquire)
+                    && a.uvi_generation.load(Ordering::Acquire) != 0)).then_some(slot)
+        }) {
+        let mut current = params.selection.write().unwrap();
+        if uvi_load_key(params, &current) != Some(key) { return }
+        current.uvi_requested = None;
+        params.shared.focus_request.store(slot as u64, Ordering::Release);
+        drop(current);
+        params.shared.uvi_prepared.lock().unwrap().take();
+        return;
+    }
+    let retry = (!key.request.new).then(|| before.parts.iter().position(|p|
+        p.uvi.as_ref() == Some(&key.request.source))).flatten();
+    let slot = key.request.slot.map(|s| s as usize).or(retry).unwrap_or_else(||
+        before.parts.iter().position(Part::is_empty).unwrap_or(before.parts.len()));
+    params.shared.ensure_parts(slot + 1);
+    let atoms = params.shared.part(slot).unwrap();
+    let mut current = params.selection.write().unwrap();
+    if uvi_load_key(params, &current) != Some(key.clone()) { return }
+    let mut prepared = params.shared.uvi_prepared.lock().unwrap().take().unwrap();
+    let generation = prepared.generation;
+    let part_generation = atoms.generation.load(Ordering::Acquire).wrapping_add(1);
+    let rate = f64::from_bits(key.rate) as u32;
+    let result = params.shared.uvi_controls.lock().unwrap().adopt_prepared(
+        prepared.worker.take().unwrap(), prepared.ui.take().unwrap(), key.request.source.clone(),
+        key.epoch, generation, part_generation, slot, rate, key.max_host_frames, UVI_LEAD_PACKETS);
+    if result.is_err() {
+        drop(current);
+        params.shared.view.lock().unwrap().uvi_status = "The UVI player could not be prepared.".into();
+        return;
+    }
+    let mut part = if key.request.slot.is_some() || retry.is_some() { current.parts[slot].clone() }
+        else {
+            let settings = params.shared.libraries.settings();
+            let (port, channel) = settings.new_input.unwrap_or_else(|| current.next_input());
+            Part { port, channel, output: settings.new_output.unwrap_or(0),
+                output_manual: settings.new_output.is_some(), ..Default::default() }
+        };
+    part.path.clear(); part.snapshot.clear(); part.program = 0;
+    part.uvi = Some(key.request.source.clone());
+    part.name.clear();
+    part.group = u32::MAX; part.articulate = Default::default(); part.mpe = Default::default();
+    part.tune = 0.;
+    part.edits = Default::default(); part.script_state.clear(); part.ir_settings.clear();
+    part.engine_state.clear(); part.delay_state.clear();
+    if slot == current.parts.len() { current.parts.push(part); } else { current.parts[slot] = part; }
+    if !current.order.contains(&(slot as u32)) { current.order.push(slot as u32); }
+    current.uvi_requested = None;
+    atoms.generation.store(part_generation, Ordering::Release);
+    params.shared.focus_request.store(slot as u64, Ordering::Release);
+    drop(current);
+    let mut view = params.shared.view.lock().unwrap();
+    view.parts[slot] = PartView {
+        uvi_activation: Some(uvi_load::Activation { source: key.request.source, epoch: key.epoch,
+            generation, part_generation, rate, max_host_frames: key.max_host_frames, published: false }),
+        status: "Preparing UVI playback…".into(), loading: true, ..Default::default()
+    };
+    view.uvi_attempted = None; view.uvi_status.clear(); view.uvi_ui = None;
 }
 
 impl BackgroundTask for Load {
@@ -2283,10 +2522,17 @@ impl BackgroundTask for Load {
             }
         }
         let prepared_snapshot = prepare_snapshot(params);
-        let selection = params.selection.read().unwrap().clone();
+        let mut selection = params.selection.read().unwrap().clone();
         params.shared.ensure_parts(selection.parts.len());
         #[cfg(feature = "uvi")]
-        prepare_uvi(params, &selection);
+        {
+            prepare_uvi(params, &selection);
+            install_prepared_uvi(params);
+            selection = params.selection.read().unwrap().clone();
+            params.shared.ensure_parts(selection.parts.len());
+            params.shared.prepare_growth();
+            uvi_load::service(params);
+        }
         #[cfg(not(feature = "uvi"))]
         {
         let uvi_changed = params.shared.view.lock().unwrap().uvi_attempted != selection.uvi_requested;
@@ -2348,6 +2594,8 @@ impl BackgroundTask for Load {
         for slot in 0..params.shared.grown.load(Ordering::Acquire) as usize {
             let atoms = params.shared.part(slot).unwrap();
             let part = selection.parts.get(slot).cloned().unwrap_or_default();
+            #[cfg(feature = "uvi")]
+            if part.uvi.is_some() { continue; }
             let target = part.source();
             let streaming = part.streaming(selection.streaming);
             let selected_snapshot = prepared_snapshot.as_ref().is_some_and(|(at, source, _)| *at == slot && *source == target);
@@ -3097,6 +3345,26 @@ fn input_offset(event: &LosslessEventRef<'_>) -> u32 {
     match event { LosslessEventRef::Typed(e) => e.sample_offset, LosslessEventRef::Exact(e) => e.sample_offset() }
 }
 
+#[cfg(feature = "uvi")]
+fn native_delivery<'a>(native: &'a mut [Option<uvi_control::Audio>], parts: &'a [Arc<PartShared>], shared: &'a Shared)
+    -> impl FnMut(usize, u8, In, &Router, bool) -> bool + 'a {
+    move |slot, port, ev, router, reached| {
+        let Some(audio) = native.get_mut(slot).and_then(Option::as_mut) else { return false };
+        let failed = audio.slot_mut().feed(ev, port, reached, router.mpe_enabled()).is_err();
+        if reached && !router.external_input_supported() { audio.slot_mut().abort_activation(); }
+        if failed || reached && !router.external_input_supported() {
+            part_atoms(parts, shared, slot).unwrap().uvi_failed.store(true, Ordering::Release);
+        }
+        true
+    }
+}
+fn native_key_held(s: &Dsp, channel: u8, key: u8) -> bool {
+    #[cfg(feature = "uvi")]
+    return s.uvi.iter().flatten().any(|a| a.slot().host_key_held(channel, key));
+    #[cfg(not(feature = "uvi"))]
+    { let _ = (s, channel, key); false }
+}
+
 fn feed_host_input(s: &mut Dsp, p: &SamplerParams, ev: In, port: u8, offset: u32, holding: bool, rate: f64) {
     let lit = |note:u8, velocity| { if let Some(lit) = p.shared.heard.get(note as usize) { lit.store(velocity,Ordering::Relaxed); } };
     match ev {
@@ -3108,11 +3376,21 @@ fn feed_host_input(s: &mut Dsp, p: &SamplerParams, ev: In, port: u8, offset: u32
         In::Cc(_,1,value) => p.shared.modulation.store(u32::from(value),Ordering::Relaxed),
         _ => {},
     }
+    #[cfg(feature = "uvi")]
+    {
+        let mut external = native_delivery(&mut s.uvi, &s.shared_parts, &p.shared);
+        if holding {
+            s.align.arrive_with(&mut s.rack, &mut s.routers, port, ev,
+                s.align.clock + u64::from(offset), rate, &s.native_slots, &mut external);
+        } else { articulate::dispatch_with(&mut s.rack, &mut s.routers, port, ev, &mut external); }
+    }
+    #[cfg(not(feature = "uvi"))]
     if holding { s.align.arrive(&mut s.rack,&mut s.routers,port,ev,s.align.clock + u64::from(offset),rate); }
     else { articulate::dispatch(&mut s.rack,&mut s.routers,port,ev); }
     if let In::HostOff(pattern) | In::HostChoke(pattern) = ev {
         for key in (0..128).filter(|key| pattern.key == -1 || pattern.key == *key) {
             let held = (0..16).any(|channel| s.rack.parts.iter().any(|e| e.host_key_held(channel,key as u8))
+                || native_key_held(s, channel, key as u8)
                 || holding && s.align.host_key_held(channel,key as u8));
             p.shared.heard[key as usize].store(u8::from(held),Ordering::Relaxed);
         }
@@ -3141,30 +3419,107 @@ fn finish_host_notes(s: &mut Dsp, cx: &mut ProcessContext, offset: u32) {
     for part in 0..s.rack.parts.len() {
         let mut index = 0;
         while let Some((note,pinned)) = s.rack.parts[part].host_note_at(index) {
-            if pinned || s.rack.parts.iter().any(|e| e.host_note_pending(note)) || s.align.host_note_waiting(note) { index += 1; continue; }
+            if pinned || s.rack.parts.iter().any(|e| e.host_note_pending(note)) || s.align.host_note_waiting(note)
+                || native_note_pending(s, note) {
+                #[cfg(feature = "uvi")]
+                s.uvi_end_fence.mark_pending(note);
+                index += 1; continue;
+            }
+            #[cfg(feature = "uvi")]
+            if !s.uvi_end_fence.permits(note, s.align.clock.saturating_add(u64::from(offset)), s.uvi_latency) {
+                index += 1; continue;
+            }
             let accepted = !note.clap || cx.output_events.try_push_exact(ExactEvent::new(offset,ExactEventBody::Note {
                 kind:ExactNoteKind::End, address:ExactNoteAddress::from_raw_signed(i16::from(note.port),i16::from(note.channel),i16::from(note.key),note.id), velocity:0.,
             })).is_ok();
             if !accepted { s.host_note_end_rejections=s.host_note_end_rejections.saturating_add(1); return; }
             for e in &mut s.rack.parts { e.retire_host_note(note); }
             s.align.retire_host_note(note);
+            retire_native_note(s, note);
         }
     }
     // A disabled/remapped-away input can have a held alignment record but
     // no engine root. Close it after key-up without leaking adapter owners.
     let mut index=0;
     while let Some((note,held))=s.align.host_note_at(index) {
-        if held || s.align.host_note_waiting(note) || s.rack.parts.iter().any(|e| e.host_note_present(note)) { index+=1; continue; }
+        if held || s.align.host_note_waiting(note) || s.rack.parts.iter().any(|e| e.host_note_present(note))
+            || native_note_present(s, note) { index+=1; continue; }
         let accepted=!note.clap || cx.output_events.try_push_exact(ExactEvent::new(offset,ExactEventBody::Note {
             kind:ExactNoteKind::End,address:ExactNoteAddress::from_raw_signed(i16::from(note.port),i16::from(note.channel),i16::from(note.key),note.id),velocity:0.,
         })).is_ok();
         if accepted { s.align.retire_host_note(note); } else { s.host_note_end_rejections=s.host_note_end_rejections.saturating_add(1); return; }
     }
+    #[cfg(feature = "uvi")]
+    for player in 0..s.uvi.len() + s.retiring_uvi.len() {
+        let mut index = 0;
+        loop {
+            let audio = if player < s.uvi.len() { &s.uvi[player] } else { &s.retiring_uvi[player - s.uvi.len()] };
+            let Some((note, pinned)) = audio.as_ref().and_then(|a| a.slot().host_note_at(index)) else { break; };
+            if pinned || native_note_pending(s, note) || s.rack.parts.iter().any(|e| e.host_note_pending(note))
+                || s.align.host_note_waiting(note) { s.uvi_end_fence.mark_pending(note); index += 1; continue; }
+            if s.rack.parts.iter().any(|e| e.host_note_present(note))
+                && !s.uvi_end_fence.permits(note, s.align.clock.saturating_add(u64::from(offset)), s.uvi_latency) {
+                index += 1; continue;
+            }
+            let accepted = !note.clap || cx.output_events.try_push_exact(ExactEvent::new(offset, ExactEventBody::Note {
+                kind: ExactNoteKind::End, address: ExactNoteAddress::from_raw_signed(i16::from(note.port),
+                    i16::from(note.channel), i16::from(note.key), note.id), velocity: 0.,
+            })).is_ok();
+            if !accepted { s.host_note_end_rejections = s.host_note_end_rejections.saturating_add(1); return; }
+            for engine in &mut s.rack.parts { engine.retire_host_note(note); }
+            s.align.retire_host_note(note);
+            retire_native_note(s, note);
+        }
+    }
+}
+
+fn native_underruns(s: &Dsp, slot: usize) -> u64 {
+    #[cfg(feature = "uvi")]
+    return s.uvi.get(slot).and_then(Option::as_ref).map_or(0, |a| a.slot().underruns());
+    #[cfg(not(feature = "uvi"))]
+    { let _ = (s, slot); 0 }
+}
+
+fn native_note_present(s: &Dsp, note: crate::engine::HostNote) -> bool {
+    #[cfg(feature = "uvi")]
+    return s.uvi.iter().chain(&s.retiring_uvi).flatten().any(|a| a.slot().has_host_note(note));
+    #[cfg(not(feature = "uvi"))]
+    { let _ = (s, note); false }
+}
+fn native_note_pending(s: &Dsp, note: crate::engine::HostNote) -> bool {
+    #[cfg(feature = "uvi")]
+    return s.uvi.iter().chain(&s.retiring_uvi).flatten().any(|a| a.slot().host_note_pending(note));
+    #[cfg(not(feature = "uvi"))]
+    { let _ = (s, note); false }
+}
+fn retire_native_note(s: &mut Dsp, note: crate::engine::HostNote) {
+    #[cfg(feature = "uvi")]
+    {
+        for audio in s.uvi.iter_mut().chain(&mut s.retiring_uvi).flatten() { audio.slot_mut().retire_host_note(note); }
+        s.uvi_end_fence.retire(note);
+    }
+    #[cfg(not(feature = "uvi"))]
+    let _ = (s, note);
 }
 
 pub struct Dsp {
     /// Boxed: the rack is ~300 KB, too big for a host thread's stack.
     rack: Box<Rack>,
+    #[cfg(feature = "uvi")]
+    uvi: Vec<Option<uvi_control::Audio>>,
+    /// Displaced endpoints retain canonical note tuples until End is accepted.
+    #[cfg(feature = "uvi")]
+    retiring_uvi: Vec<Option<uvi_control::Audio>>,
+    #[cfg(feature = "uvi")]
+    uvi_latency: u32,
+    #[cfg(feature = "uvi")]
+    uvi_underruns_retired: u64,
+    #[cfg(feature = "uvi")]
+    uvi_delays: Option<Box<uvi_delay::Prepared>>,
+    #[cfg(feature = "uvi")]
+    uvi_end_fence: uvi_delay::Ends,
+    #[cfg(feature = "uvi")]
+    native_slots: Vec<bool>,
     until_poll: usize,
     audition_left: Vec<usize>,
     /// Epoch of each slot's installed runtime, returned with its persistence snapshots.
@@ -3198,16 +3553,38 @@ pub struct Dsp {
     host_note_end_rejections: u64,
     // Created off-thread with the rack, never acquired or replaced by reset/process.
     _diagnostics: crate::diagnostics::DiagnosticLease,
+    /// Declared after endpoints: host teardown drops every port before its
+    /// last control lease can stop/join the playback threads.
+    #[cfg(feature = "uvi")]
+    _uvi_controllers: Option<Arc<Mutex<uvi_control::Registry>>>,
 }
 impl Default for Dsp {
     fn default() -> Self {
-        Self { rack: Box::default(), until_poll: 0, audition_left: vec![0; RACK_SLOTS],
+        Self { rack: Box::default(),
+            #[cfg(feature = "uvi")]
+            uvi: (0..RACK_SLOTS).map(|_| None).collect(),
+            #[cfg(feature = "uvi")]
+            retiring_uvi: (0..64).map(|_| None).collect(),
+            #[cfg(feature = "uvi")]
+            uvi_latency: 0,
+            #[cfg(feature = "uvi")]
+            uvi_underruns_retired: 0,
+            #[cfg(feature = "uvi")]
+            uvi_delays: None,
+            #[cfg(feature = "uvi")]
+            uvi_end_fence: uvi_delay::Ends::default(),
+            #[cfg(feature = "uvi")]
+            native_slots: vec![false; RACK_SLOTS],
+            until_poll: 0, audition_left: vec![0; RACK_SLOTS],
             script_epoch: vec![0; RACK_SLOTS], installed_generation: vec![0; RACK_SLOTS],
             live: None, snapshot: None, zone_completion: None, live_seen: vec![(0, 0); RACK_SLOTS],
             snapshot_seen: vec![(0, 0); RACK_SLOTS], routers: (0..RACK_SLOTS).map(|_| Router::default()).collect(),
             key_channels: KeyChannels::default(), key_slots: KeySlots::default(), load: 0.0,
             align: Align::default(), until_diagnostics: 0, shared_parts: Vec::new(),
-            diagnostic: AudioDiagnostics::with_parts(RACK_SLOTS), unsupported_note_brightness: 0, unsupported_host_expression: 0, host_note_end_rejections: 0, _diagnostics: crate::diagnostics::acquire() }
+            diagnostic: AudioDiagnostics::with_parts(RACK_SLOTS), unsupported_note_brightness: 0, unsupported_host_expression: 0, host_note_end_rejections: 0, _diagnostics: crate::diagnostics::acquire(),
+            #[cfg(feature = "uvi")]
+            _uvi_controllers: None,
+        }
     }
 }
 
@@ -3215,6 +3592,12 @@ impl Default for Dsp {
 /// Adoption swaps existing voices, routers and held notes into these buffers;
 /// the emptied containers return to that worker for destruction.
 struct PreparedGrowth {
+    #[cfg(feature = "uvi")]
+    native_slots: Vec<bool>,
+    #[cfg(feature = "uvi")]
+    uvi: Vec<Option<uvi_control::Audio>>,
+    #[cfg(feature = "uvi")]
+    retiring_uvi: Vec<Option<uvi_control::Audio>>,
     rack: Box<Rack>, align: Align, routers: Vec<Router>,
     audition_left: Vec<usize>, script_epoch: Vec<u64>, installed_generation: Vec<u64>,
     live_seen: Vec<(u64, u64)>, snapshot_seen: Vec<(u64, u64)>,
@@ -3224,7 +3607,14 @@ impl PreparedGrowth {
     fn new(parts: Vec<Arc<PartShared>>, rate: f64) -> Self {
         let count = parts.len();
         let mut rack = Box::new(Rack::with_slots(count)); rack.reset(rate);
-        Self { rack, align: Align::with_slots(count), routers: (0..count).map(|_| Router::default()).collect(),
+        Self {
+            #[cfg(feature = "uvi")]
+            uvi: (0..count).map(|_| None).collect(),
+            #[cfg(feature = "uvi")]
+            native_slots: vec![false; count],
+            #[cfg(feature = "uvi")]
+            retiring_uvi: (0..count.max(64)).map(|_| None).collect(),
+            rack, align: Align::with_slots(count), routers: (0..count).map(|_| Router::default()).collect(),
             audition_left: vec![0; count], script_epoch: vec![0; count], installed_generation: vec![0; count],
             live_seen: vec![(0, 0); count], snapshot_seen: vec![(0, 0); count],
             key_slots: KeySlots(std::array::from_fn(|_| vec![false; count])), shared_parts: parts,
@@ -3239,6 +3629,8 @@ impl PreparedGrowth {
             std::mem::swap(&mut dsp.$field, &mut self.$field);
         })*}; }
         preserve!(routers, audition_left, script_epoch, installed_generation, live_seen, snapshot_seen);
+        #[cfg(feature = "uvi")]
+        preserve!(uvi, retiring_uvi, native_slots);
         for (old, new) in dsp.key_slots.0.iter_mut().zip(&mut self.key_slots.0) {
             new[..old.len()].copy_from_slice(old); std::mem::swap(old, new);
         }
@@ -3379,7 +3771,7 @@ impl Shared {
         let mut pending = self.pending_ready.lock().unwrap();
         let (slot, generation, next) = &item;
         pending.retain(|(old_slot, old_generation, old)| old_slot != slot
-            || (old_generation == generation && !matches!(next, Handoff::Part { .. })
+            || (old_generation == generation && !next.replaces_player()
                 && std::mem::discriminant(old) != std::mem::discriminant(next)));
         pending.push_back(item);
         self.flush_ready_inner(&mut pending);
@@ -3555,14 +3947,14 @@ fn timing_for(p: &Part) -> std::borrow::Cow<'_, Timing> {
 
 /// What the audio thread aligns by, from the persisted rack.
 pub(crate) fn plan(selection: &Selection) -> Plan {
-    let parts = || selection.parts.iter().filter(|p| !p.path.is_empty());
+    let parts = || selection.parts.iter().filter(|p| !p.is_empty());
     let latency_ms = timing::reported_ms(parts().map(|p| timing_for(p).latest()));
     Plan {
         on: selection.auto_align,
         transport_only: selection.align_transport_only,
         latency_ms,
         parts: (0..selection.parts.len().max(RACK_SLOTS)).map(|n| {
-            selection.parts.get(n).filter(|p| !p.path.is_empty()).map_or_else(Holds::default, |p| {
+            selection.parts.get(n).filter(|p| !p.is_empty()).map_or_else(Holds::default, |p| {
                 let a = &p.articulate;
                 let names: Vec<&str> =
                     if a.source == p.path { a.articulations.iter().map(|a| a.name.as_str()).collect() } else { Vec::new() };
@@ -3609,7 +4001,23 @@ impl PluginLogic for Sampler {
             .rate
             .store(c.sample_rate.to_bits(), Ordering::Release);
         #[cfg(feature = "uvi")]
-        p.shared.uvi_epoch.fetch_add(1, Ordering::AcqRel);
+        {
+            if s._uvi_controllers.is_none() {
+                s._uvi_controllers = Some(p.shared.uvi_controls.clone());
+            }
+            p.shared.uvi_max_host_frames.store(c.max_block_size, Ordering::Release);
+            p.shared.uvi_epoch.fetch_add(1, Ordering::AcqRel);
+            p.shared.uvi_delay_installed.store(0, Ordering::Release);
+            s.uvi_latency = 0;
+            s.uvi_end_fence.clear();
+            if let Some(delays) = &mut s.uvi_delays { delays.clear(); }
+            for (slot, audio) in s.uvi.iter_mut().enumerate() {
+                if let Some(audio) = audio { audio.slot_mut().abort_activation(); }
+                if let Some(atoms) = part_atoms(&s.shared_parts, &p.shared, slot) {
+                    atoms.uvi_generation.store(0, Ordering::Release);
+                }
+            }
+        }
         s.until_poll = 0;
         s.until_diagnostics = 0;
         s.audition_left.fill(0);
@@ -3638,6 +4046,24 @@ impl PluginLogic for Sampler {
             // Separate queues have no cross-queue ordering: only this
             // acknowledgment permits the loader to publish new-slot work.
             if let Some(tasks) = cx.tasks::<Load>() { tasks.spawn_coalescing(Load); }
+        }
+        #[cfg(feature = "uvi")]
+        if !p.shared.discard.is_full() && let Some(next) = p.shared.uvi_delays.pop() {
+            let current = next.epoch == p.shared.uvi_epoch.load(Ordering::Acquire)
+                && next.ticket == p.shared.uvi_delay_wanted.load(Ordering::Acquire)
+                && next.storage.slots() == s.rack.parts.len();
+            let retired = if current {
+                let mut storage = next.storage;
+                if let Some(previous) = &mut s.uvi_delays {
+                    if previous.adopt_growth(&mut storage) { Some(storage) }
+                    else { Some(std::mem::replace(previous, storage)) }
+                } else { s.uvi_delays = Some(storage); None }
+            } else { Some(next.storage) };
+            p.shared.discard.push(Retired { uvi_delays: retired, ..Default::default() }).ok().unwrap();
+            if current {
+                p.shared.uvi_delay_installed.store(next.ticket, Ordering::Release);
+                if let Some(tasks) = cx.tasks::<Load>() { tasks.spawn_coalescing(Load); }
+            }
         }
         let rate = s.rack.parts[0].rate();
         let frames = b.num_samples();
@@ -3678,12 +4104,54 @@ impl PluginLogic for Sampler {
         // Retired banks, effects and scripts go back to the loader thread to be
         // freed; stop while it cannot take more.
         while !p.shared.discard.is_full() {
+            #[cfg(feature = "uvi")]
+            if s.retiring_uvi.iter().all(Option::is_some) { break; }
             let Some((slot, generation, handoff)) = p.shared.ready.pop() else {
                 break;
             };
             let engine = &mut s.rack.parts[slot];
             let current = generation == part_atoms(&s.shared_parts, &p.shared, slot).unwrap().generation.load(Ordering::Acquire);
+            #[cfg(feature = "uvi")]
+            let current = current && match &handoff {
+                Handoff::Uvi(audio) => audio.epoch() == p.shared.uvi_epoch.load(Ordering::Acquire)
+                    && audio.destination() == slot && audio.part_generation() == generation
+                    && s.uvi_delays.as_ref().is_some_and(|d| d.slots() == s.uvi.len()
+                        && d.latency_frames() == audio.latency_frames()),
+                _ => true,
+            };
+            if current && handoff.replaces_player() {
+                s.align.abort_slot(slot);
+                #[cfg(feature = "uvi")]
+                if let Some(delays) = &mut s.uvi_delays { delays.clear_slot(slot); }
+            }
+            #[cfg(feature = "uvi")]
+            if current && handoff.replaces_player() {
+                if let Some(mut previous) = s.uvi[slot].take() {
+                    previous.slot_mut().abort_activation();
+                    *s.retiring_uvi.iter_mut().find(|p| p.is_none()).unwrap() = Some(previous);
+                }
+                s.native_slots[slot] = false;
+                part_atoms(&s.shared_parts, &p.shared, slot).unwrap().uvi_generation.store(0, Ordering::Release);
+            }
             let retired = match handoff {
+                #[cfg(feature = "uvi")]
+                Handoff::Uvi(audio) if current => {
+                    engine.reset(rate);
+                    s.script_epoch[slot] = 0;
+                    s.installed_generation[slot] = generation;
+                    s.uvi_latency = audio.latency_frames();
+                    let native_generation = audio.generation();
+                    s.uvi[slot] = Some(audio);
+                    s.native_slots[slot] = true;
+                    let atoms = part_atoms(&s.shared_parts, &p.shared, slot).unwrap();
+                    atoms.uvi_failed.store(false, Ordering::Release);
+                    atoms.uvi_part_generation.store(generation, Ordering::Release);
+                    atoms.uvi_generation.store(native_generation, Ordering::Release);
+                    Retired { bank: engine.set_bank(None), script: engine.set_script(None),
+                        fx: Some(engine.set_fx(FxProcessor::default())), ..Default::default() }
+                }
+                #[cfg(feature = "uvi")]
+                Handoff::Uvi(audio) => Retired { uvi: Some(audio), ..Default::default() },
                 Handoff::Part {
                     bank,
                     fx,
@@ -3759,6 +4227,16 @@ impl PluginLogic for Sampler {
             };
             let _ = p.shared.discard.push(retired);
         }
+        #[cfg(feature = "uvi")]
+        {
+            let latency = s.uvi.iter().flatten().filter(|a| a.epoch() == p.shared.uvi_epoch.load(Ordering::Acquire))
+                .map(uvi_control::Audio::latency_frames).max().unwrap_or(0);
+            if latency != s.uvi_latency {
+                s.uvi_latency = latency;
+                if let Some(delays) = &mut s.uvi_delays { delays.clear(); }
+                s.uvi_end_fence.clear();
+            }
+        }
         while !p.shared.discard.is_full() {
             let Some((slot, generation, IrHandoff { ir, epoch, rate: ir_rate, request })) = p.shared.ir_ready.pop() else { break };
             let engine = &mut s.rack.parts[slot];
@@ -3793,7 +4271,34 @@ impl PluginLogic for Sampler {
         }
         s.rack.set_transport(cx.transport.playing, cx.transport.tempo, cx.transport.position_beats,
             (cx.transport.time_sig_num, cx.transport.time_sig_den));
+        #[cfg(feature = "uvi")]
+        {
+            for (slot, audio) in s.uvi.iter_mut().enumerate() {
+                if let Some(audio) = audio {
+                    let player = audio.slot_mut();
+                    let consumed_start = player.frame();
+                    if player.collect_completions(consumed_start).is_err()
+                        || player.set_host_transport(cx.transport.playing, cx.transport.position_beats,
+                            cx.transport.tempo).is_err() {
+                        part_atoms(&s.shared_parts, &p.shared, slot).unwrap().uvi_failed.store(true, Ordering::Release);
+                    }
+                }
+            }
+            while let Some((slot, stamp, edit)) = p.shared.uvi_edits.pop() {
+                if let Some(audio) = s.uvi.get_mut(slot).and_then(Option::as_mut)
+                    && (audio.epoch(), audio.generation()) == (stamp.epoch, stamp.generation)
+                    && stamp.epoch == p.shared.uvi_epoch.load(Ordering::Acquire)
+                    && audio.part_generation() == part_atoms(&s.shared_parts, &p.shared, slot).unwrap().generation.load(Ordering::Acquire)
+                    && audio.slot_mut().push_ui(edit).is_err() {
+                    part_atoms(&s.shared_parts, &p.shared, slot).unwrap().uvi_failed.store(true, Ordering::Release);
+                }
+            }
+        }
         if !holding && s.align.next_due().is_some() {
+            #[cfg(feature = "uvi")]
+            s.align.flush_with(&mut s.rack, &mut s.routers,
+                &mut native_delivery(&mut s.uvi, &s.shared_parts, &p.shared));
+            #[cfg(not(feature = "uvi"))]
             s.align.flush(&mut s.rack, &mut s.routers);
         }
         while let Some((slot, o)) = p.shared.overrides.pop() {
@@ -3855,22 +4360,38 @@ impl PluginLogic for Sampler {
             s.align.clear();
             for router in &mut s.routers { router.reset_midi(); }
             s.rack.panic();
+            #[cfg(feature = "uvi")]
+            {
+                for audio in s.uvi.iter_mut().chain(&mut s.retiring_uvi).flatten() { audio.slot_mut().panic(); }
+                p.shared.uvi_epoch.fetch_add(1, Ordering::AcqRel);
+                p.shared.uvi_delay_installed.store(0, Ordering::Release);
+                for slot in 0..s.uvi.len() {
+                    part_atoms(&s.shared_parts, &p.shared, slot).unwrap().uvi_generation.store(0, Ordering::Release);
+                }
+                if let Some(tasks) = cx.tasks::<Load>() { tasks.spawn_coalescing(Load); }
+                if let Some(delays) = &mut s.uvi_delays { delays.clear(); }
+                s.uvi_end_fence.clear();
+            }
             s.audition_left.fill(0);
         }
         while let Some((slot, play)) = p.shared.keyboard.pop() {
             if slot == EVERY_PART {
                 // As host MIDI on port A, channel 1 plays it.
                 let (rack, routers) = (&mut s.rack, &mut s.routers);
+                #[cfg(feature = "uvi")]
+                let mut external = native_delivery(&mut s.uvi, &s.shared_parts, &p.shared);
+                #[cfg(not(feature = "uvi"))]
+                let mut external = |_:usize, _:u8, _:In, _:&Router, _:bool| false;
                 match play {
                     Play::Note(note, 0) => {
                         let targets = &mut s.key_slots.0[note as usize & 127];
-                        articulate::dispatch_to(rack, routers, targets.iter_mut().enumerate().filter_map(|(slot, reached)| std::mem::take(reached).then_some(slot)), In::NoteOff(0, note));
+                        articulate::dispatch_to_with(rack, routers, targets.iter_mut().enumerate().filter_map(|(slot, reached)| std::mem::take(reached).then_some(slot)), 0, In::NoteOff(0, note), &mut external);
                     }
                     Play::Note(note, velocity) => {
-                        articulate::dispatch_record(rack, routers, 0, In::NoteOn(0, note, velocity), &mut s.key_slots.0[note as usize & 127]);
+                        articulate::dispatch_record_with(rack, routers, 0, In::NoteOn(0, note, velocity), &mut s.key_slots.0[note as usize & 127], &mut external);
                     }
-                    Play::Bend(value) => drop(articulate::dispatch(rack, routers, 0, In::Bend(0, value))),
-                    Play::Mod(value) => drop(articulate::dispatch(rack, routers, 0, In::Cc(0, 1, value))),
+                    Play::Bend(value) => drop(articulate::dispatch_with(rack, routers, 0, In::Bend(0, value), &mut external)),
+                    Play::Mod(value) => drop(articulate::dispatch_with(rack, routers, 0, In::Cc(0, 1, value), &mut external)),
                 }
                 continue;
             }
@@ -3885,6 +4406,10 @@ impl PluginLogic for Sampler {
                 Play::Bend(value) => In::Bend(channel, value),
                 Play::Mod(value) => In::Cc(channel, 1, value),
             };
+            #[cfg(feature = "uvi")]
+            articulate::play_with(&mut s.rack, &mut s.routers, slot, 0, ev,
+                &mut native_delivery(&mut s.uvi, &s.shared_parts, &p.shared));
+            #[cfg(not(feature = "uvi"))]
             articulate::play(&mut s.rack, &mut s.routers, slot, ev);
         }
         // With no part selected there is none to audition.
@@ -3904,6 +4429,15 @@ impl PluginLogic for Sampler {
                     .map_or(60, |z| z.root)
             };
             let (channel, velocity) = (preview_channel(e), preview_velocity(e, note));
+            #[cfg(feature = "uvi")]
+            if let Some(audio) = &mut s.uvi[slot] {
+                let player = audio.slot_mut();
+                let _ = player.feed(In::Cc(channel, 123, 0), 0, true, false);
+                if player.feed(In::NoteOn(channel, note, velocity), 0, true, false).is_err() {
+                    part_atoms(&s.shared_parts, &p.shared, slot).unwrap().uvi_failed.store(true, Ordering::Release);
+                }
+            } else { e.note_on(channel, note, velocity); }
+            #[cfg(not(feature = "uvi"))]
             e.note_on(channel, note, velocity);
             s.audition_left[slot] = (rate * 1.5) as usize;
         }
@@ -3930,7 +4464,7 @@ impl PluginLogic for Sampler {
                             // owner. Return that exact identity immediately.
                             if let In::HostOn(note, ..) = ev
                                 && note.clap && !s.align.host_note_waiting(note)
-                                && !s.rack.parts.iter().any(|e| e.host_note_present(note)) {
+                                && !s.rack.parts.iter().any(|e| e.host_note_present(note)) && !native_note_present(s, note) {
                                 if cx.output_events.try_push_exact(ExactEvent::new(exact.sample_offset(),ExactEventBody::Note {
                                     kind:ExactNoteKind::End,address:ExactNoteAddress::from_raw_signed(i16::from(note.port),i16::from(note.channel),i16::from(note.key),note.id),velocity:0.,
                                 })).is_err() { s.host_note_end_rejections=s.host_note_end_rejections.saturating_add(1); }
@@ -3951,19 +4485,29 @@ impl PluginLogic for Sampler {
             let now = s.align.clock + at as u64;
             let mut due = incoming.peek().map_or(frames,|e| (input_offset(e) as usize).min(frames));
             if holding {
+                #[cfg(feature = "uvi")]
+                s.align.release_with(now, &mut s.rack, &mut s.routers,
+                    &mut native_delivery(&mut s.uvi, &s.shared_parts, &p.shared));
+                #[cfg(not(feature = "uvi"))]
                 s.align.release(now, &mut s.rack, &mut s.routers);
                 if let Some(held) = s.align.next_due() {
                     due = due.min(at + (held - now).min(frames as u64) as usize);
                 }
             }
             let len = (due - at).min(MAX_BLOCK);
-            for (e, left) in s.rack.parts.iter_mut().zip(&mut s.audition_left) {
+            for (slot, (e, left)) in s.rack.parts.iter_mut().zip(&mut s.audition_left).enumerate() {
                 if *left > 0 {
                     *left = left.saturating_sub(len);
                     if *left == 0 {
                         for channel in 0..16 {
                             e.cc(channel, 123, 0);
                         }
+                        #[cfg(feature = "uvi")]
+                        if let Some(audio) = &mut s.uvi[slot] {
+                            for channel in 0..16 { let _ = audio.slot_mut().feed(In::Cc(channel, 123, 0), 0, true, false); }
+                        }
+                        #[cfg(not(feature = "uvi"))]
+                        let _ = slot;
                     }
                 }
             }
@@ -3972,6 +4516,22 @@ impl PluginLogic for Sampler {
             }
             let ports = s.rack.bus_controls.map(|c| usize::from(c.port));
             s.rack.tap = scope.checked_sub(1).filter(|&slot| slot < s.rack.parts.len());
+            #[cfg(feature = "uvi")]
+            let (buses, live) = {
+                let native = &mut s.uvi;
+                let shared_parts = &s.shared_parts;
+                let mut source = |slot: usize, left: &mut [f32], right: &mut [f32]| {
+                    let Some(audio) = &mut native[slot] else { return false };
+                    if audio.slot_mut().process_mode(left, right, offline).is_err() {
+                        part_atoms(shared_parts, &p.shared, slot).unwrap().uvi_failed.store(true, Ordering::Release);
+                    }
+                    true
+                };
+                if s.uvi_latency != 0 && let Some(delays) = &mut s.uvi_delays {
+                    s.rack.render_live_with_delay(len, &mut source, delays.as_mut_slice())
+                } else { s.rack.render_live_with(len, &mut source) }
+            };
+            #[cfg(not(feature = "uvi"))]
             let (buses, live) = s.rack.render_live(len);
             if scope == SCOPE_MASTER {
                 let mut mono = [0f32; MAX_BLOCK];
@@ -4015,6 +4575,14 @@ impl PluginLogic for Sampler {
             at += len;
         }
         finish_host_notes(s,cx,frames.saturating_sub(1) as u32);
+        #[cfg(feature = "uvi")]
+        for retired in &mut s.retiring_uvi {
+            if p.shared.discard.is_full() { break }
+            if retired.as_ref().is_some_and(|audio| !audio.slot().has_host_owners()) {
+                s.uvi_underruns_retired = s.uvi_underruns_retired.saturating_add(retired.as_ref().unwrap().slot().underruns());
+                p.shared.discard.push(Retired { uvi: retired.take(), ..Default::default() }).ok().unwrap();
+            }
+        }
         if s.snapshot.is_none() && !p.shared.snapshots.is_full() {
             s.snapshot = (p.shared.snapshot_requests.pop())
                 .map(|(slot, epoch, saved)| (slot, (epoch, version(s, slot).1), saved, Refresh::default()));
@@ -4087,15 +4655,24 @@ impl PluginLogic for Sampler {
             p.shared.probe.published.store(published, Ordering::Relaxed);
         }
         let voices: usize = s.rack.parts.iter().map(Engine::active_voices).sum();
+        #[cfg(feature = "uvi")]
+        let voices = {
+            let native: usize = s.uvi.iter().flatten().map(|a| a.slot().active_voices() as usize).sum();
+            p.shared.uvi_voices.store(native as u64, Ordering::Relaxed);
+            voices.saturating_add(native)
+        };
         p.shared.voices.store(voices as u64, Ordering::Relaxed);
         let audible: usize = s.rack.parts.iter().map(Engine::audible_voices).sum();
         p.shared.audible.store(audible as u64, Ordering::Relaxed);
         let dropouts: u64 = (s.rack.parts.iter())
             .map(|e| e.underruns() + e.dropped_commands())
             .sum();
+        #[cfg(feature = "uvi")]
+        let dropouts = dropouts.saturating_add(s.uvi_underruns_retired)
+            .saturating_add(s.uvi.iter().chain(&s.retiring_uvi).flatten().map(|a| a.slot().underruns()).sum());
         p.shared.dropouts.store(dropouts, Ordering::Relaxed);
         for (slot, e) in s.rack.parts.iter().enumerate() {
-            part_atoms(&s.shared_parts, &p.shared, slot).unwrap().underruns.store(e.underruns(), Ordering::Relaxed);
+            part_atoms(&s.shared_parts, &p.shared, slot).unwrap().underruns.store(e.underruns().saturating_add(native_underruns(s, slot)), Ordering::Relaxed);
         }
         if frames > 0 && rate > 0. {
             // Positive `f32` bits order like the values: the UI swaps out the peak since it last looked.
@@ -4119,7 +4696,11 @@ impl PluginLogic for Sampler {
     }
     /// Auto-align's latency: the latest part's attack (see `timing.rs`).
     fn latency(s: &Dsp) -> u32 {
-        s.align.plan.latency(s.rack.parts[0].rate())
+        let latency = s.align.plan.latency(s.rack.parts[0].rate());
+        #[cfg(feature = "uvi")]
+        return latency.saturating_add(s.uvi_latency);
+        #[cfg(not(feature = "uvi"))]
+        latency
     }
 }
 /// What the UI shows of initialized scripts: the performance view (the last slot with one),
@@ -6702,13 +7283,13 @@ end on"#.into()], fx: crate::fx::ProgramFx { insert: Chain { slots: vec![Effect 
         assert!(read==saved,"host binary keeps appended physical state");
         let count=u32::from_le_bytes(binary[4..8].try_into().unwrap());
         let mut at=8; let mut older=binary[..8].to_vec();
-        let mut positional=(count-1).to_le_bytes().to_vec();
-        for _ in 0..count-1 {
+        let mut positional=(count-2).to_le_bytes().to_vec();
+        for _ in 0..count-2 {
             let len=u32::from_le_bytes(binary[at+4..at+8].try_into().unwrap()) as usize;
             older.extend(&binary[at..at+8+len]); positional.extend(&binary[at+4..at+8+len]); at+=8+len;
         }
-        older[4..8].copy_from_slice(&(count-1).to_le_bytes());
-        let mut old_expected=saved.clone(); old_expected.delay_state.clear();
+        older[4..8].copy_from_slice(&(count-2).to_le_bytes());
+        let mut old_expected=saved.clone(); old_expected.delay_state.clear(); old_expected.uvi=None;
         assert!(Part::deserialize(&older)==Some(old_expected.clone()),"older keyed state defaults new caches");
         assert!(Part::deserialize(&positional)==Some(old_expected),"older positional state retains prior fields");
         let saved:Part=serde_json::from_str(&serde_json::to_string(&read).unwrap()).unwrap();
