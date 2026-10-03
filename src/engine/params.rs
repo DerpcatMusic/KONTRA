@@ -835,6 +835,7 @@ impl Address {
                 "$ENGINE_PAR_IRC_LENGTH_RATIO_LR" => fx(FxParam::Convolution(2))?,
                 "$ENGINE_PAR_IRC_REVERSE" => fx(FxParam::Convolution(3))?,
                 "$ENGINE_PAR_IRC_AUTO_GAIN" => fx(FxParam::Convolution(4))?,
+                "$ENGINE_PAR_GAIN" => filter(Knob::FilterGain)?,
                 // The formant filter's knobs: talk, sharp, size.
                 "$ENGINE_PAR_FORMANT_TALK" => filter(Knob::Cutoff)?,
                 "$ENGINE_PAR_FORMANT_SHARP" => filter(Knob::Resonance)?,
@@ -1085,6 +1086,7 @@ pub fn display(id: i32, value: i32) -> Option<Disp> {
         // in milliseconds, so scripted labels match the effective DSP.
         id::RV2_TIME => Disp::Num(crate::fx::params::Reverb::time_seconds(x) * 1000., 1),
         _ => match crate::ksp::engine_par_name(id)? {
+            "$ENGINE_PAR_GAIN" => Disp::Num(12.0 * x, 1),
             "$ENGINE_PAR_SEQ_LF_GAIN" | "$ENGINE_PAR_SEQ_LMF_GAIN"
                 | "$ENGINE_PAR_SEQ_HMF_GAIN" | "$ENGINE_PAR_SEQ_HF_GAIN" => {
                 Disp::Num(super::filter::geq_gain_db(x), 1)
