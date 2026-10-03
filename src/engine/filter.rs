@@ -522,6 +522,12 @@ pub fn unsupported(chain: &Chain) -> Vec<String> { unsupported_at(chain, None) }
 pub fn unsupported_at(chain: &Chain, amp_split: Option<u8>) -> Vec<String> {
     let mut out = Vec::new();
     for fx in chain.slots.iter().filter(|fx| !fx.bypass) {
+        if fx.kind == Kind::SurroundPanner && blocks::fields(&fx.params).is_some_and(|f| f[1] != 0.0) {
+            out.push("Group Saturation: Enhanced/Drums modes use an unverified transfer-curve proxy".into());
+        }
+        if fx.kind == Kind::Distortion {
+            out.push("Group Distortion: Damping parameter smoothing is not applied".into());
+        }
         match &fx.params {
             Params::Filter(f) if filter_type(f.filter_type).is_none() => {
                 out.push(format!("Group filter type {} is not implemented; audio passes through", f.filter_type));
@@ -1944,7 +1950,7 @@ mod tests {
         };
         let chain = Chain { slots: vec![
             Effect { slot: 0, kind: Kind::Filter, version: 0, bypass: false, output_gain: 1.5,
-                dry_level: 0.0, params: Params::Filter(Filter { filter_type: 2, cutoff: 1.0, resonance: 0.0, extra: [0.0; 3] }) },
+                dry_level: 0.0, params: Params::Filter(Filter { filter_type: 2, cutoff: 1.0, resonance: 0.0, extra: [0.0; 3], native_flag: None }) },
             effect(2, Kind::Compressor, &[0.0, -12.0, 0.5, 1.0, 50.0, 1.0], 0.8),
             effect(7, Kind::SurroundPanner, &[1.0, 0.0], 0.7),
         ] };
@@ -2160,7 +2166,7 @@ mod tests {
         for slot in [0, 1] {
             group.fx.slots.push(crate::fx::Effect {
                 slot, kind: Kind::Filter, version: 0, bypass: false, output_gain: 1.0, dry_level: 0.0,
-                params: Params::Filter(crate::fx::params::Filter { filter_type: 2, cutoff: 0.5, resonance: 0.0, extra: [0.0; 3] }),
+                params: Params::Filter(crate::fx::params::Filter { filter_type: 2, cutoff: 0.5, resonance: 0.0, extra: [0.0; 3], native_flag: None }),
             });
         }
         let mut f = GroupFilter::new(&group).unwrap();
@@ -2194,7 +2200,7 @@ mod tests {
     fn live_filter_type_change_retunes_identical_knobs_without_heap() {
         let group = Group { amp_split_slot: Some(8), fx: Chain { slots: vec![crate::fx::Effect {
             slot: 0, kind: Kind::Filter, version: 0, bypass: false, output_gain: 1.0, dry_level: 0.0,
-            params: Params::Filter(crate::fx::params::Filter { filter_type: 2, cutoff: 0.3, resonance: 0.0, extra: [0.0; 3] }),
+            params: Params::Filter(crate::fx::params::Filter { filter_type: 2, cutoff: 0.3, resonance: 0.0, extra: [0.0; 3], native_flag: None }),
         }] }, ..Group::default() };
         let mut f = GroupFilter::new(&group).unwrap();
         let table = ModTable::default();
@@ -2242,7 +2248,7 @@ mod tests {
                     assignments: Some(0), volume_env: false, bypassed: false, flex: false, envelope: None, kind: "external".into() }],
             fx: Chain { slots: vec![crate::fx::Effect { slot: 0, kind: Kind::Filter, version: 0,
                 bypass: false, output_gain: 1., dry_level: 1., params: Params::Filter(crate::fx::params::Filter {
-                    filter_type: 2, cutoff: 0.3, resonance: 0., extra: [0.; 3] }) }] },
+                    filter_type: 2, cutoff: 0.3, resonance: 0., extra: [0.; 3], native_flag: None }) }] },
             ..Group::default()
         };
         let groups = [group];
@@ -2520,7 +2526,7 @@ mod tests {
             params: Params::Filter(crate::fx::params::Filter {
                 filter_type: 58,
                 cutoff: (1000.0 / CUTOFF_MIN_HZ).log2() / CUTOFF_OCTAVES,
-                resonance: 0.0, extra: [0.0; 3],
+                resonance: 0.0, extra: [0.0; 3], native_flag: None,
             }),
         };
         assert!(unsupported_at(&Chain { slots: vec![fx.clone()] }, Some(8)).is_empty());
@@ -2753,19 +2759,21 @@ mod tests {
         let mut peak = |voice: &mut VoiceFilter, f: &GroupFilter| {
             let mut out = 0f32;
             for i in 0..20 {
-                let mut l: [f32; 128] = std::array::from_fn(|j| (TAU * 100.0 * (i * 128 + j) as f32 / RATE).sin());
+                let mut l: [f32; 128] = std::array::from_fn(|j| 0.1 * (TAU * 100.0 * (i * 128 + j) as f32 / RATE).sin());
                 let mut r = l;
-                voice.process(f, &table, &mut ctl, &mut l, &mut r, RATE);
+                assert_eq!(crate::plugin::tests::allocations(|| voice.process(f, &table, &mut ctl, &mut l, &mut r, RATE)), 0);
                 out = out.max(l.iter().fold(0f32, |m, x| m.max(x.abs())));
             }
             out
         };
         let bent = peak(&mut voice, &f);
-        assert!(bent < 0.6, "{bent}");
+        // Classic Shape 1 maps quiet peaks 0.1 to 2*0.4-0.4² = 0.64.
+        // The preceding near-open low pass only changes phase/level slightly.
+        assert!((bent - 0.64).abs() < 0.02, "{bent}");
         // Scripts set the shape (normalized: 0.5 is 0) and bypass.
         assert!(f.set_knob(2, Knob::Field(Kind::SurroundPanner, 0), 0.5));
         assert_eq!(f.knob(2, Knob::Field(Kind::SurroundPanner, 0)), Some(0.5));
-        assert!((peak(&mut voice, &f) - 1.0).abs() < 0.05);
+        assert!((peak(&mut voice, &f) - 0.1).abs() < 0.005);
         assert!(f.set_knob(2, Knob::Field(Kind::SurroundPanner, 0), 1.0));
         assert!(f.set_knob(2, Knob::Bypass, 1.0));
         assert!(voice.hold(&f, &table, RATE).is_some());
@@ -2781,6 +2789,69 @@ mod tests {
         let dry = l;
         voice.drive(&f, 0, &m, &mut l, &mut r, RATE);
         assert!(l.iter().zip(&dry).all(|(a, b)| (a - b).abs() < 0.05));
+    }
+
+    #[test]
+    fn tube_distortion_native_drive_edits_and_routing_match_rack_without_heap() {
+        use crate::{fx::{Effect, params::Field}, engine::{GroupSettings, params::{Address, self}}, ksp::EnginePar};
+        let drive_id = (crate::ksp::ENGINE_PAR_BASE..crate::ksp::ENGINE_PAR_BASE + 512)
+            .find(|&id| crate::ksp::engine_par_name(id) == Some("$ENGINE_PAR_DRIVE")).unwrap();
+        let table = ModTable::default();
+        let cc = [0; 128];
+        let input = Inputs { cc: &cc, cc74: None, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
+        for (mode, split) in [(0.0, 0), (0.0, 8), (1.0, 0), (1.0, 8)] {
+            let effect = Effect {
+                slot: 6, kind: Kind::Distortion, version: 0, bypass: false,
+                output_gain: 0.75, dry_level: 0.0,
+                params: Params::Fields(crate::fx::params::layout_names(Kind::Distortion).unwrap().iter()
+                    .enumerate().map(|(i, &name)| Field { name, value: Value::Number(if i == 0 { mode } else { 0.0 }) }).collect()),
+            };
+            let groups = [Group { fx: Chain { slots: vec![effect.clone()] }, amp_split_slot: Some(split), ..Group::default() }];
+            let mut settings = [GroupSettings::from(&groups[0])];
+            let address = Address::resolve(EnginePar { id: drive_id, group: 0, slot: 6, generic: -1 }, &groups).unwrap();
+            let mut voice = VoiceFilter::new(settings[0].filter.as_deref(), &table, &input, RATE);
+            let mut rack = blocks::Block::new(&effect, RATE).unwrap();
+            let amp = [0.5; 128];
+            let amplifier = Amplifier { amp: &amp, gains: [0.4, 0.8], delta: [0.0; 2] };
+            for value in [0, 1_000_000, 250_000] {
+                let pattern = [-4.0, -0.25, -0.01, 0.0, 0.01, 0.25, 4.0];
+                let source: [f32; 128] = std::array::from_fn(|i| pattern[i % pattern.len()]);
+                let (mut l, mut r, mut expected_l, mut expected_r) = (source, source.map(|x| -x), source, source.map(|x| -x));
+                assert_eq!(crate::plugin::tests::allocations(|| {
+                    assert!(params::write(&mut settings, address, address.decode(value)));
+                    assert_eq!(address.encode(params::read(&settings, address).unwrap()), value);
+                    assert!(rack.set(Kind::Distortion, 1, value as f32 / 1_000_000.0));
+                    if split == 0 { amplifier.apply(0, &mut expected_l, &mut expected_r); }
+                    rack.process(&mut expected_l, &mut expected_r);
+                    expected_l.iter_mut().chain(&mut expected_r).for_each(|x| *x *= effect.output_gain);
+                    if split == 8 { amplifier.apply(0, &mut expected_l, &mut expected_r); }
+                    let filter = settings[0].filter.as_ref().unwrap();
+                    voice.process_amplified(filter, &table, &mut [0.0; MAX_BLOCK], &mut l, &mut r,
+                        RATE, &amp, amplifier.gains, amplifier.delta, None);
+                    assert!(l.iter().zip(&expected_l).chain(r.iter().zip(&expected_r)).all(|(a,b)| (a-b).abs() < 2e-6));
+                }), 0);
+                if value == 0 {
+                    // Independent prepared float LP/HP coefficients and
+                    // native clock. Apply the known amplifier split explicitly.
+                    let a = -0.7484753727912903f32;
+                    let b = 0.5 * (1.0 - a);
+                    let (mut previous, mut state) = (0.0f32, 0.0f32);
+                    let mut history = [0.0f32; 4];
+                    let [b0, b1, b2, a1, a2] = [0.9986164569854736f32, -1.9972329139709473,
+                        0.9986164569854736, 1.9972310066223145, -0.9972348213195801];
+                    for (x, actual) in source.into_iter().zip(l) {
+                        let input = if split == 0 { x * 0.2 } else { x };
+                        state = (b * input + b * previous) + a * state + 1e-20;
+                        previous = input;
+                        let [x1, x2, y1, y2] = history;
+                        let filtered = (((state * b0 + x1 * b1) + x2 * b2) + y1 * a1) + y2 * a2;
+                        history = [state, x1, filtered, y1];
+                        let reference = if split == 0 { filtered * 0.75 } else { (filtered * 0.75) * 0.2 };
+                        assert!((actual - reference).abs() < 2e-6);
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -2810,7 +2881,11 @@ mod tests {
         let dry: [f32; 128] = std::array::from_fn(|i| (TAU * 1000.0 * i as f32 / RATE).sin());
         let (mut left, mut right) = (dry, dry);
         voice.process(&filter, &table, &mut [0.0; MAX_BLOCK], &mut left, &mut right, RATE);
-        assert!(left.iter().chain(&right).all(|x| x.is_finite() && x.abs() < 0.6));
+        assert!(left.iter().chain(&right).all(|x| x.is_finite() && x.abs() <= 1.0));
+        for (x, y) in dry.iter().zip(&left) {
+            let u = (4.0 * x).abs().min(1.0);
+            assert!((*y - (2.0 * u - u * u).copysign(*x)).abs() < 1e-6);
+        }
         assert!(left.iter().zip(dry).any(|(a, b)| (a - b).abs() > 0.4));
         assert!(filter.set_knob(7, Knob::Bypass, 1.0));
         let (mut left, mut right) = (dry, dry);

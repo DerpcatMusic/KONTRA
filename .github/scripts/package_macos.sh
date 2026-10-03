@@ -31,8 +31,14 @@ for bundle in Library/Audio/Plug-Ins/CLAP/KONTRA.clap Library/Audio/Plug-Ins/VST
     --options runtime --timestamp "$binary"
   codesign --force --sign "$APPLE_DEVELOPER_ID_APPLICATION" --keychain "$APPLE_SIGNING_KEYCHAIN" \
     --options runtime --timestamp "$stage/payload/$bundle"
+  # codesign inherits the credential helper's private umask. Its new
+  # signature resources must be readable by ordinary installed users.
+  chmod -R a+rX "$stage/payload/$bundle"
   codesign --verify --deep --strict --all-architectures "$stage/payload/$bundle"
 done
+xcrun swift "$(dirname "$0")/check_macos_bundles.swift" --register "$stage/payload/Applications/KONTRA.app" \
+  "$stage/payload/Library/Audio/Plug-Ins/CLAP/KONTRA.clap" \
+  "$stage/payload/Library/Audio/Plug-Ins/VST3/KONTRA.vst3"
 # Disable relocation: an old bundle elsewhere must not redirect installation
 # away from the explicit /Library plugin folders and /Applications.
 pkgbuild --analyze --root "$stage/payload" "$work/components.plist"
@@ -42,11 +48,15 @@ path = sys.argv[1]
 components = plistlib.load(open(path, 'rb'))
 for component in components:
     component['BundleIsRelocatable'] = False
+    # Nightlies share a numeric bundle version; an explicit previous-release
+    # installer must also replace a newer bundle when the user rolls back.
+    component['BundleIsVersionChecked'] = False
     component['BundleOverwriteAction'] = 'upgrade'
 with open(path, 'wb') as output:
     plistlib.dump(components, output)
 PY
 pkgbuild --root "$stage/payload" --component-plist "$work/components.plist" \
+  --scripts "$(dirname "$0")/macos_installer" \
   --identifier audio.matari.kontra.installer --version "$version" --install-location / \
   --ownership recommended "$work/unsigned.pkg"
 productsign --sign "$APPLE_DEVELOPER_ID_INSTALLER" --keychain "$APPLE_SIGNING_KEYCHAIN" \

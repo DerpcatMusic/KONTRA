@@ -8,6 +8,19 @@
 //! macOS/Windows.
 use raw_window_handle::RawWindowHandle;
 
+/// AppKit requires the process main thread, not merely a named UI thread.
+#[cfg(target_os = "macos")]
+#[expect(unsafe_code, reason = "pure libSystem query of the current thread")]
+pub fn main_thread_status() -> Option<bool> {
+    unsafe extern "C" { fn pthread_main_np() -> std::ffi::c_int; }
+    // SAFETY: pthread_main_np takes no arguments and only reads thread state.
+    Some(unsafe { pthread_main_np() } != 0)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn main_thread_status() -> Option<bool> { None }
+
+
 #[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Clone, Copy)]

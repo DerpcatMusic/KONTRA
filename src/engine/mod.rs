@@ -16,10 +16,11 @@ mod audit;
 mod bank;
 pub(crate) mod filter;
 mod map;
+mod lfo;
 mod host_notes;
 pub use host_notes::{HostNote, HostPattern, HostExpression, HostRef};
 pub mod overrides;
-mod params;
+pub(crate) mod params;
 mod rack;
 mod residency;
 mod script;
@@ -27,6 +28,7 @@ pub(crate) mod native_state;
 mod stream;
 mod voice;
 mod wavetable;
+pub(crate) mod zone;
 
 pub(crate) use bank::parallel;
 pub use audit::audit_dsp;
@@ -36,7 +38,7 @@ pub use residency::{Heads, Residency};
 pub use rack::{
     BUSES, Block, BusControls, Mix, NO_AUX, PartControls, Peaks, RACK_SLOTS, Rack, TUNE_RANGE,
 };
-pub use script::{IrRequest, MAX_COMMANDS, ScriptSetup, effects, load_scripts, load_scripts_with_ir, load_scripts_with_state};
+pub use script::{IrRequest, MAX_COMMANDS, ScriptSetup, effects, load_scripts, load_scripts_with_ir, load_scripts_with_state, load_scripts_with_delay_state};
 pub use voice::{Ahdsr, Flex, FlexPoint, Phase};
 
 use crate::fx::FxProcessor;
@@ -215,6 +217,10 @@ pub struct Engine {
     /// Current-sample parameter positions, allocated before audio processing.
     write_index: (u32, std::collections::HashMap<Address, usize>),
     ir_requests: Vec<IrRequest>,
+    offline_zone: Option<(u64,Box<zone::Prepared>)>,
+    zone_queued_epoch: u64,
+    zone_inflight: usize,
+    zone_requests: std::collections::VecDeque<crate::ksp::engine::ZoneEdit>,
     /// Configured part channel for callbacks without a MIDI input owner.
     home_channel: u8,
     /// Envelope attack (s) for groups without their own envelope.
@@ -246,6 +252,10 @@ impl Default for Engine {
             writes: Vec::with_capacity(MAX_WRITES),
             write_index: (0, std::collections::HashMap::with_capacity(MAX_WRITES)),
             ir_requests: Vec::with_capacity(32),
+            zone_requests: Default::default(),
+            zone_inflight: 0,
+            zone_queued_epoch: 0,
+            offline_zone: None,
             home_channel: 0,
             attack: 0.002,
             release: 0.15,
@@ -270,7 +280,15 @@ impl Engine {
         self.writes.clear();
         self.write_index.1.clear();
         self.ir_requests.clear();
+        self.zone_requests.clear();
+        self.zone_inflight = 0;
+        self.zone_queued_epoch = 0;
+        let mut bank = bank;
+        if let Some(bank) = bank.as_deref_mut() {
+            std::mem::swap(&mut self.zone_requests, &mut bank.zone_spares);
+        }
         let old = std::mem::replace(&mut self.bank, bank);
+        self.queue_init_zone_edits();
         self.player.free.clear();
         let slots = self.bank.as_deref().map_or(0, |b| b.slots().len());
         self.player.free.extend((0..slots as u16).rev());
@@ -286,6 +304,9 @@ impl Engine {
     /// [`Engine::set_bank`] does. Returns the old bank for disposal off the
     /// audio thread.
     pub fn upgrade_bank(&mut self, mut bank: Box<Bank>) -> Option<Box<Bank>> {
+        if !self.zone_upgrade_ready(&bank) {
+            return Some(bank);
+        }
         let Some(old) = self.bank.as_deref_mut().filter(|old| {
             old.zones().len() == bank.zones().len() && old.samples.len() == bank.samples.len()
         }) else {
@@ -295,6 +316,8 @@ impl Engine {
         // write it, and overrides recompute what plays from it.
         std::mem::swap(&mut old.settings, &mut bank.settings);
         std::mem::swap(&mut old.base, &mut bank.base);
+        // Parent proof is retired with the old bank, never released on audio.
+        std::mem::swap(&mut old.zone_parent, &mut bank.zone_parent);
         self.player.touch();
         self.player.rebind(old, &bank);
         self.bank.replace(bank)
@@ -329,6 +352,7 @@ impl Engine {
     /// off the audio thread.
     pub fn set_fx(&mut self, mut fx: FxProcessor) -> FxProcessor {
         fx.set_output_meters(self.script.as_ref().map(|rt| rt.output_meters.clone()));
+        fx.set_tempo(self.player.tempo);
         let old = std::mem::replace(&mut self.fx, fx);
         self.replay(|a| matches!(a, Address::Fx(..)));
         if let Some(rt) = self.script.as_deref() { rt.native_state.replay_fx(&mut self.fx); }
@@ -347,6 +371,9 @@ impl Engine {
         self.writes.clear();
         self.write_index.1.clear();
         self.ir_requests.clear();
+        self.zone_requests.clear();
+        self.zone_inflight = 0;
+        self.zone_queued_epoch = 0;
         let channel = self.service_channel();
         if let Some(rt) = script.as_deref_mut() {
             rt.set_sample_rate(self.player.rate);
@@ -374,7 +401,9 @@ impl Engine {
             }
         }
         self.replay(|_| true);
+        if let Some(rt) = self.script.as_deref() { rt.native_state.replay_delays(&mut self.fx); }
         self.apply_init_controllers();
+        self.queue_init_zone_edits();
         old
     }
 
@@ -442,6 +471,10 @@ impl Engine {
 
     /// Apply the host's transport before processing this block's callbacks.
     pub fn set_transport(&mut self, playing: bool, tempo: f64, beats: f64, signature: (u8, u8)) {
+        if tempo.is_finite() && tempo > 0.0 && (tempo as f32).is_finite() && tempo as f32 > 0.0 {
+            self.player.tempo = tempo as f32;
+            self.fx.set_tempo(self.player.tempo);
+        }
         if let Some((rt, mut host)) = self.scripted(self.service_channel()) {
             rt.set_host_transport(&mut host, playing, tempo, beats, signature);
         }
@@ -577,7 +610,12 @@ impl Engine {
                 sample: v.sample,
                 wavetable: v.wavetable.map(|table| (table.first, table.cycles)),
                 pos: v.pos,
+                physical_pos: v.wavetable.is_none().then(|| v.map.run(v.pos as u64, v.wraps)).flatten()
+                    .map(|r| r.frame as f64 + if r.reverse { -v.pos.fract() } else { v.pos.fract() }),
+                loop_control_window: v.base_loop.and(v.map.looped).map(|l| (l.start, l.end, l.xfade)),
                 step: v.step * v.tune * v.pitch.1,
+                loop_control_deferred: v.loop_deferred.is_some(),
+                loop_deferred_edits: v.loop_deferred_edits,
                 filtered: self.bank.as_ref().is_some_and(|b| b.settings[v.group as usize].filter.is_some()),
                 phase: v.env.phase(),
             })
@@ -613,6 +651,8 @@ impl Engine {
             writes: &mut self.writes,
             write_index: &mut self.write_index,
             ir_requests: &mut self.ir_requests,
+            zone_requests: &mut self.zone_requests,
+            zone_inflight: &mut self.zone_inflight,
         };
         Some((rt, host))
     }
@@ -624,10 +664,12 @@ impl Engine {
     }
 
     /// Exact host ingress. The route is captured once, before KSP can transpose.
-    pub(crate) fn host_note_on(&mut self, note: HostNote, channel: u8, key: u8, velocity: u8) -> bool {
+    pub(crate) fn host_note_on(&mut self, note: HostNote, channel: u8, key: u8, velocity: u8, tune: f32) -> bool {
+        if !tune.is_finite() { return false; }
         if note.channel >= 16 || note.key >= 128 || channel >= 16 || key >= 128 || velocity > 127 { return false; }
         let event = self.player.next_id();
         let Some(host_note) = self.player.host_notes.allocate(note, channel, key, velocity, event, self.player.now) else { return false };
+        self.player.host_notes.change(host_note, HostExpression::Tune(tune));
         self.player.keys[channel as usize][key as usize] = velocity.max(1);
         self.player.key_on[channel as usize][key as usize] = self.player.now;
         if let Some((rt, mut host)) = self.scripted_from(channel, note.channel) {
@@ -1038,6 +1080,75 @@ impl Engine {
         self.script.as_deref_mut()?.pop_retired_array_job()
     }
 
+    fn queue_init_zone_edits(&mut self) {
+        let Some(bank)=self.bank.as_deref() else { return };
+        let Some(rt) = self.script.as_deref_mut() else { return };
+        if !bank.zone_init_source_matches(rt.init_zone_source) || self.zone_queued_epoch==rt.service_epoch { return; }
+        self.zone_queued_epoch=rt.service_epoch;
+        for &edit in &rt.init_zone_edits {
+            if edit.id<0 && bank.zone_init_epoch==rt.service_epoch {continue;}
+            if self.zone_requests.len() < self.zone_requests.capacity() { self.zone_requests.push_back(edit); self.zone_inflight += 1; }
+            else { rt.env.note("set_zone_par: init request queue exhausted"); }
+        }
+    }
+
+    /// Prepare/install/acknowledge one zone batch for offline/headless hosts.
+    /// Performs file I/O and allocates: never call this from an audio callback.
+    /// Repeat while true after installing a script/bank or running an action.
+    pub fn service_zone_edits(&mut self) -> anyhow::Result<bool> {
+        let source=self.script.as_deref().map_or(0,|rt|rt.service_epoch);
+        let (owner,mut prepared)=if let Some(p)=self.offline_zone.take() { p } else {
+            let mut jobs=Vec::with_capacity(zone::QUEUE);
+            while jobs.len()<zone::QUEUE {
+                let Some(job)=self.pop_zone_job() else {break}; jobs.push(job);
+            }
+            if jobs.is_empty() {return Ok(false);}
+            let base=jobs[0].base.clone();
+            (source,zone::Prepared::build(jobs,base,&||false))
+        };
+        if owner!=source { return Ok(true); }
+        if !prepared.installed {
+            prepared.success=self.install_zone_map(&mut prepared);
+            prepared.installed=true;
+        }
+        while let Some(edit)=prepared.edits.get(prepared.completed).copied() {
+            if !self.finish_zone_edit(edit,prepared.success) {
+                self.offline_zone=Some((owner,prepared));
+                anyhow::bail!("Zone async completion queue is full; process the script before retrying");
+            }
+            prepared.completed+=1;
+        }
+        if let Some(error)=prepared.error.take() {anyhow::bail!("Zone mapping: {error}");}
+        Ok(true)
+    }
+
+    pub(crate) fn pop_zone_job(&mut self) -> Option<zone::Job> {
+        self.bank.as_deref()?.zone_job(self.zone_requests.pop_front()?)
+    }
+
+    pub(crate) fn install_zone_map(&mut self, prepared: &mut zone::Prepared) -> bool {
+        let installed = self.bank.as_deref_mut().is_some_and(|bank|bank.install_zone_map(prepared));
+        if !installed && prepared.success && let Some(rt) = self.script.as_deref_mut() {
+            rt.env.note("set_zone_par: prepared mapping rejected after bank replacement or out-of-order installation");
+        }
+        installed
+    }
+
+    pub(crate) fn finish_zone_edit(&mut self, edit: crate::ksp::engine::ZoneEdit, success: bool) -> bool {
+        if edit.id>=0 && let Some((rt,mut host)) = self.scripted(self.service_channel()) {
+            if !rt.service_complete(&mut host,edit.slot,edit.id,success) { return false; }
+            if !success { rt.env.note("set_zone_par: mapping was not installed"); }
+        }
+        self.zone_inflight = self.zone_inflight.saturating_sub(1);
+        true
+    }
+
+    pub(crate) fn zone_upgrade_ready(&self, bank: &Bank) -> bool {
+        if self.zone_inflight != 0 { return false; }
+        self.bank.as_deref().is_none_or(|old|old.zone_state.as_ref().is_none_or(|state|
+            state.revision == 0 || bank.zone_parent.as_ref().is_some_and(|parent|std::sync::Arc::ptr_eq(parent,state))))
+    }
+
     pub fn pop_ir_request(&mut self) -> Option<IrRequest> {
         if !self.ir_requests.is_empty() {
             let mut request = self.ir_requests.remove(0);
@@ -1265,6 +1376,10 @@ impl Engine {
                 {
                     if self.write(w.address, w.value) && let Some(rt) = self.script.as_deref_mut() {
                         rt.native_state.capture(w.address, w.par, w.native, w.value);
+                        if let Address::Fx(rack, slot, crate::fx::FxParam::Field(crate::fx::Kind::Delay, 0 | 4)) = w.address
+                            && let Some((fields, _)) = self.fx.delay_fields(rack, slot) {
+                            rt.native_state.capture_delay(crate::fx::DelayState::from_fields(rack, slot, &fields), w.par);
+                        }
                     }
                     written += 1;
                 }
@@ -1373,10 +1488,19 @@ pub struct VoiceInfo {
     /// Resident wavetable source start and complete 2048-frame cycle count.
     pub wavetable: Option<(usize, usize)>,
     pub pos: f64,
+    /// Main sample tap in physical frames, including the fractional cursor;
+    /// crossfades also read a partner tap. None for wavetable or an ended path.
+    pub physical_pos: Option<f64>,
+    /// Actual (start, exclusive end, crossfade frames) for the eligible Constant
+    /// loop-control path. None means this path does not process loop controls.
+    pub loop_control_window: Option<(u64, u64, u64)>,
     pub step: f64,
     /// The group runs a per-voice filter or EQ.
     pub filtered: bool,
     pub phase: voice::Phase,
+    /// Deferred live loop edits are counted once each and retried at control ticks.
+    pub loop_control_deferred: bool,
+    pub loop_deferred_edits: u32,
 }
 
 /// One released event, retaining the script's release-sample selection until
@@ -1419,6 +1543,7 @@ struct Player {
     /// Voices may share lanes.
     shared: bool,
     rate: f64,
+    tempo: f32,
     /// KSP preprocessor flags bypass only these native system-script actions.
     native_sustain: bool,
     native_release_triggers: bool,
@@ -1483,6 +1608,7 @@ impl Player {
             dead: Vec::with_capacity(MAX_VOICES),
             shared: true,
             rate,
+            tempo: 120.,
             native_sustain: true,
             native_release_triggers: true,
             sustain: [false; 16],
@@ -1564,7 +1690,7 @@ impl Player {
             }
             let sample = &new.samples[v.sample as usize];
             if let Some(table) = v.wavetable {
-                v.span = sample.span_at(table.first as u64).expect("resident wavetable after bank upgrade");
+                v.span = sample.wavetable_span(table).expect("resident wavetable after bank upgrade");
                 continue;
             }
             let first = (v.pos as u64).saturating_sub(1);
@@ -1726,21 +1852,34 @@ impl Player {
             ((ev.offset_us as f64 * f64::from(sample.rate) / 1e6) as u64 + modulated)
                 .min(play.start_mod)
         };
+        let loop_offsets = settings.mods.loop_offsets();
+        // Keep the saved width before play_map's static-start clamp: modulation
+        // can move a zero-start loop far enough to admit its saved crossfade.
+        let base_map = map::PlayMap { looped: play.map.looped.map(|mut l| {
+            l.xfade = zone.loop_range.as_ref().map_or(l.xfade, |l| l.crossfade as u64);
+            l
+        }), ..play.map };
+        let base_loop = (settings.mods.has_loop_controls()
+            && zone.loop_range.as_ref().is_some_and(|l| !l.alternating)
+            && base_map.controlled_loop([0.; 2], sample.frames).is_some())
+            .then_some(base_map.looped).flatten();
+        let controlled = base_loop.and_then(|_| base_map.controlled_loop(loop_offsets, sample.frames));
+        let loop_deferred = (base_loop.is_some() && controlled.is_none()).then_some(loop_offsets);
+        let map = controlled.unwrap_or(play.map);
         // A release-triggered voice starts with its key already up.
-        let wraps = play
-            .map
+        let wraps = map
             .wraps(if release_trigger { offset } else { FOREVER });
         // The resident span holding the voice's first window frame (one
         // before the start, for the cubic's left tap), if any does.
         let first = offset.saturating_sub(1);
         let span_index = if let Some(table) = play.wavetable {
-            sample.span_at(table.first as u64).expect("prepared complete wavetable")
+            sample.wavetable_span(table).expect("prepared complete wavetable")
         } else {
-            play.map.run(first, wraps)
+            map.run(first, wraps)
                 .and_then(|run| sample.span_at(run.frame)).unwrap_or(0)
         };
         let span = &sample.spans[span_index as usize];
-        let limit = play.map.resident_limit(first, wraps, span.start, span.end());
+        let limit = map.resident_limit(first, wraps, span.start, span.end());
         let stream = if sample.streamed && play.wavetable.is_none() {
             self.free.pop()
         } else {
@@ -1760,7 +1899,7 @@ impl Player {
                 // the resident range streams from there, not from the zone start.
                 let tag = bank.slots()[slot as usize].configure(
                     play.sample,
-                    &play.map,
+                    &map,
                     wraps,
                     limit,
                     first,
@@ -1802,15 +1941,20 @@ impl Player {
             sample: play.sample,
             wavetable: play.wavetable,
             span: span_index,
-            map: play.map,
+            map,
+            base_loop,
+            loop_offsets: if loop_deferred.is_some() { [f32::NAN; 2] } else { loop_offsets },
+            loop_deferred,
+            loop_deferred_edits: u32::from(loop_deferred.is_some()),
             wraps,
-            length: if play.wavetable.is_some() { FOREVER } else { play.map.len(wraps) },
+            length: if play.wavetable.is_some() { FOREVER } else { map.len(wraps) },
             limit,
             pos: if play.wavetable.is_some() { f64::from(settings.wavetable.unwrap().phase).rem_euclid(1.) * wavetable::CYCLE as f64 } else { offset as f64 },
             step,
             tune: 2f64.powf(ev.tune / 12.0),
             pitch: (f32::NAN, 1.0),
             mods,
+            pitch_lfo: lfo::Clock::default(),
             pitch_envs: {
                 let mut states = [Envelope::new(&Ahdsr::UNITY, self.rate as f32); params::PITCH_ENVS];
                 for (state, envelope) in states.iter_mut().zip(&settings.pitch_envelopes) {
@@ -2229,6 +2373,32 @@ impl Player {
         tune: f32,
         steady: bool,
     ) {
+        if !bank.has_native_controls() {
+            self.render_block(bank, (left, right), fx, offset, blocking, tune, steady);
+            return;
+        }
+        // Native loop-control buffers address audio_frame / 32. Split source
+        // planning only; the instrument's effects keep their original block.
+        let mut at = 0;
+        while at < left.len() {
+            let n = (32 - (self.now as usize & 31)).min(left.len() - at);
+            self.render_block(bank, (&mut left[at..at + n], &mut right[at..at + n]),
+                fx, offset + at, blocking, tune, steady);
+            at += n;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_block(
+        &mut self,
+        bank: &Bank,
+        (left, right): (&mut [f32], &mut [f32]),
+        fx: &mut FxProcessor,
+        offset: usize,
+        blocking: bool,
+        tune: f32,
+        steady: bool,
+    ) {
         let cx = Context {
             bank,
             slots: bank.slots(),
@@ -2241,7 +2411,9 @@ impl Player {
             host_notes: &self.host_notes,
             tune: self.instrument.2 + tune,
             rate: self.rate as f32,
+            tempo: self.tempo,
             blocking,
+            native_control_tick: self.now & 31 == 0,
             inputs: self.inputs,
         };
         let n = left.len();

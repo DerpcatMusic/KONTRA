@@ -72,6 +72,8 @@ question, not a conclusion that matching format facts require GPL.
 | vello 0.10.0 | `vendor/vello` | Apache-2.0 OR MIT | linebender/vello; patches in `vendor/vello/PATCHES.md`. |
 | ncw 0.4.0 | `vendor/ncw` | MIT OR Apache-2.0 | monomadic/ncw `75af0c0`. Test data in `vendor/ncw/tests/data` is part of that crate. |
 | Noto Sans | `assets/NotoSans.ttf` | SIL Open Font License 1.1 | Full text in `assets/OFL.txt`. |
+| BUFFR support integration | `src/support.rs`, `src/support/` | ISC | Adapted from owner-maintained BUFFR commit `fd2fdba92f3f71cee24c0c72a39aa190fc9ee414`; notice and integration scope in `src/support/LICENSE-BUFFR` and `src/support/SOURCE.md`. |
+| buffr-durable-file, derpcat-flight-recorder | `vendor/buffr-durable-file`, `vendor/derpcat-flight-recorder` | ISC | Same BUFFR source checkpoint; each crate retains its own license. |
 
 ### The Truce License rider
 
@@ -114,7 +116,8 @@ separate entries. Source-specific components are described above.
 | BSD-3-Clause | tiny-skia, tiny-skia-path |
 | BSL-1.0 | clipboard-win, error-code |
 | BSD-2-Clause | arrayref |
-| ISC | libloading |
+| ISC | libloading, buffr-durable-file, derpcat-flight-recorder, rustls-webpki, untrusted |
+| CDLA-Permissive-2.0 | webpki-roots 1.0.9 trust-anchor data; complete agreement is included in generated dependency notices |
 | CC0-1.0 | hexf-parse |
 
 The discovery table groups license IDs and overlaps; it does **not**
@@ -126,6 +129,7 @@ obligations, not additional alternatives:
 | dpi 0.1.2 | Apache-2.0 AND MIT |
 | encoding_rs 0.8.42 | (Apache-2.0 OR MIT) AND BSD-3-Clause |
 | unicode-ident 1.0.26 | (MIT OR Apache-2.0) AND Unicode-3.0 |
+| ring 0.17.14 | Apache-2.0 AND ISC |
 
 Use the generated package inventory and texts, not this grouped table,
 for distribution. The separate cargo-about scan at that snapshot includes 482 package
@@ -150,6 +154,7 @@ and license texts with redistributed material. Nightlies include
 `assets/OFL.txt`, `docs/LEGAL.md`, and a generated `licenses/` bundle.
 That bundle contains selected dependency license texts and copyright
 notices, the unchanged MOOSE rider and upstream NOTICE, MUI's license,
+the adapted BUFFR support notice and provenance under `licenses/BUFFR/`,
 and source archives for the MPL dependencies. The patched
 `symphonia-format-riff` archive contains the current vendored source;
 other MPL archives are copied unchanged from the Cargo registry.

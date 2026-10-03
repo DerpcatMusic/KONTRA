@@ -938,9 +938,8 @@ fn push_vst3_input_event<P: PluginExport>(
                 return VST3_EVENT_INVALID;
             }
             let (kind, length) = if event.kind == VST3_EVENT_NOTE_ON {
-                if event.length < 0 {
-                    return VST3_EVENT_INVALID;
-                }
+                // SDK length is optional metadata without a signed range;
+                // it cannot reject an otherwise valid attack or replace Off.
                 (ExactNoteKind::On, Some(event.length))
             } else {
                 (ExactNoteKind::Off, None)
@@ -2549,7 +2548,7 @@ fn encode_detailed_note<P: PluginExport>(
     }
     let (kind, length, note_id, mutation) = match kind {
         ExactNoteKind::On => {
-            let Some(length) = length.filter(|length| *length >= 0) else {
+            let Some(length) = length else {
                 return Vst3EncodeResult::Invalid;
             };
             let Some((note_id, mutation)) = note_ids.propose_note_on(source, bus, channel, pitch)
