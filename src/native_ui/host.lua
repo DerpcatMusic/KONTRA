@@ -135,7 +135,7 @@ function native_component(target,props,children)
 end
 function native_modifier(node,name,props,args)
     local environment=name=="context" or name=="font_size" or name=="foreground_color"
-    assert(name=="frame" or name=="padding" or name=="hidden" or name=="opacity" or name=="background" or name=="on_tap_gesture" or environment,"Unsupported modifier: "..name)
+    assert(name=="frame" or name=="padding" or name=="hidden" or name=="opacity" or name=="offset" or name=="background" or name=="on_tap_gesture" or environment,"Unsupported modifier: "..name)
     if name=="background" then
         assert(next(props)==nil and #args==1 and type(args[1])=="table" and args[1].kind,"Background requires a component")
         return {kind="ZStack",props={},children={args[1],node},modifiers={background={}}}
@@ -150,6 +150,13 @@ function native_modifier(node,name,props,args)
         assert(not ((props.horizontal~=nil or props.vertical~=nil) and (props.left~=nil or props.right~=nil or props.top~=nil or props.bottom~=nil)),"Mixed padding constructors")
         props={left=props.left or props.horizontal or 0,right=props.right or props.horizontal or 0,top=props.top or props.vertical or 0,bottom=props.bottom or props.vertical or 0}
         return {kind="ZStack",props={},children={node},modifiers={padding=props}}
+    end
+    if name=="offset" then
+        assert(#args==0,"Offset requires named x/y coordinates")
+        for key,value in pairs(props) do
+            assert((key=="x" or key=="y") and (type(value)=="number" or type(value)=="function"),"Invalid native UI offset property")
+        end
+        return {kind="ZStack",props={},children={node},modifiers={offset=props}}
     end
     if name=="opacity" then
         assert(next(props)==nil and #args==1,"Invalid opacity arguments")
