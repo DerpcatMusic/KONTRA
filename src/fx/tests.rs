@@ -979,3 +979,167 @@ fn loaded_kinds_replace_fill_and_empty_slots() {
     // The stored description is untouched.
     assert_eq!(fx.insert.slots.len(), 1);
 }
+
+#[test]
+fn legacy_delay_sync_cache_transport_and_authored_readback_all_racks_without_heap() {
+    use crate::engine::{Engine, load_scripts, effects};
+    use crate::import::Instrument;
+    use crate::ksp::Value as KspValue;
+    let names = ["ABS", "WHOLE", "WHOLE_TRIPLET", "HALF", "HALF_TRIPLET", "QUARTER",
+        "QUARTER_TRIPLET", "8TH", "8TH_TRIPLET", "16TH", "16TH_TRIPLET", "32ND",
+        "32ND_TRIPLET", "64TH", "64TH_TRIPLET", "256TH"];
+    let mut script = String::from("on init\n");
+    for (i, name) in names.iter().enumerate() {
+        script.push_str(&format!("declare ui_slider $u{i}(0,20)\n$u{i} := $NI_SYNC_UNIT_{name}\n"));
+    }
+    script.push_str("end on");
+    let ui = crate::ksp::initialize(&script, 0, 0).unwrap();
+    let unit = |n: usize| match ui.controls[n].properties["$CONTROL_PAR_VALUE"] {
+        KspValue::Int(v) => v as f32 / 1e6, _ => panic!("named unit"),
+    };
+    let time = FxParam::Field(Kind::Delay, 0);
+    let sync = FxParam::Field(Kind::Delay, 4);
+    let make = |rack, legacy: bool| {
+        // Native current count, damping/pan/feedback, quarter-note multiplier,
+        // separately saved absolute/sync caches, compatibility flag.
+        let mut bytes: Vec<u8> = [3.0f32, 0.0, 0.0, 0.5, 1.0, 123.0, 2.0]
+            .into_iter().flat_map(f32::to_le_bytes).collect();
+        bytes.push(u8::from(legacy));
+        let delay = effect(Kind::Delay, params::parse(Kind::Delay, &bytes));
+        let chain = Chain { slots: vec![delay] };
+        match rack {
+            Rack::Insert => ProgramFx { insert: chain, ..Default::default() },
+            Rack::Main => ProgramFx { main: chain, ..Default::default() },
+            Rack::Send => {
+                let mut tap = effect(Kind::SendLevels, Params::SendLevels(params::SendLevels {
+                    sends: vec![1.0], outputs: Vec::new(),
+                }));
+                tap.slot = 7;
+                let mut mute = gainer(0.0); mute.slot = 6;
+                ProgramFx { insert: Chain { slots: vec![tap, mute] }, send: chain, ..Default::default() }
+            }
+            Rack::Bus(b) => ProgramFx { buses: vec![super::Bus { index: b as usize,
+                name: String::new(), volume: 1.0, pan: 0.0, output: -1, chain }], ..Default::default() },
+        }
+    };
+    for rack in [Rack::Insert, Rack::Send, Rack::Main, Rack::Bus(3)] {
+        let saved = make(rack, false);
+        let json = serde_json::to_string(&saved).unwrap();
+        let mut unknown=saved.clone();
+        let Params::Fields(fields)=&mut unknown.chain_mut(rack).unwrap().slots[0].params else { panic!("Delay fields") };
+        fields[4].value=params::Value::Number(16.0);
+        assert_eq!(unknown.param(rack,0,sync),None,"unclassified native units have no invented numeric alias");
+        assert!(unknown.warnings().iter().any(|w|w.contains("numeric Time Unit readback is unsupported")));
+        let mut unknown=unknown.processor(SR,128);
+        assert!(unknown.set_param(rack,0,sync,unit(5)),"known named unit can replace an unclassified saved multiplier");
+        assert_eq!(unknown.param(rack,0,sync),Some(unit(5)));
+        assert_eq!(saved.param(rack, 0, sync), Some(unit(5)));
+        assert!((saved.param(rack, 0, time).unwrap() - 2.0/11.0).abs() < 1e-6);
+        let mut fx = saved.processor(SR, 128);
+        assert!(fx.set_param(rack, 0, sync, unit(0)));
+        let (kind, field) = blocks::engine_par("$ENGINE_PAR_DL_TIME").unwrap();
+        assert!((blocks::stored(kind, field, fx.param(rack, 0, time).unwrap()) - 123.0).abs() < 0.001);
+        assert!(fx.set_param(rack, 0, time, 708896.0/1e6));
+        assert!(fx.set_param(rack, 0, sync, unit(5)));
+        assert!((fx.param(rack, 0, time).unwrap() - 2.0/11.0).abs() < 1e-6);
+        assert!(fx.set_param(rack, 0, time, 0.0));
+        assert!(fx.set_param(rack, 0, sync, unit(1)));
+        assert_eq!(fx.param(rack, 0, time), Some(0.0));
+        assert!(fx.set_param(rack, 0, time, 1.0/11.0));
+        assert!(fx.set_param(rack, 0, sync, unit(0)));
+        assert!((fx.param(rack, 0, time).unwrap() - 708896.0/1e6).abs() < 1e-6);
+        assert!(fx.set_param(rack, 0, sync, unit(5)));
+        assert!((fx.param(rack, 0, time).unwrap() - 1.0/11.0).abs() < 1e-6);
+        assert!(!fx.set_param(rack, 0, sync, 16.0/1e6), "foreign/private enum is not a named unit");
+        assert_eq!(fx.param(rack, 0, sync), Some(unit(5)));
+        assert_eq!(serde_json::to_string(&saved).unwrap(), json, "DSP does not overwrite saved units/caches");
+        let mut legacy = make(rack, true).processor(SR, 128);
+        let expected = blocks::normalized(Kind::Delay, 0, 1500.0); // 3 quarters at 120 BPM.
+        assert!((legacy.param(rack, 0, time).unwrap() - expected).abs() < 1e-6);
+        assert!(legacy.set_param(rack, 0, sync, unit(1)));
+        assert_eq!(legacy.param(rack, 0, time), Some(2.0/11.0), "unit switch preserves the current synchronized count");
+
+        // Init and live callbacks must observe restored caches, not the last
+        // independent write to Time. Repeated Unit writes must stay ordered.
+        let generic = match rack { Rack::Insert => 1, Rack::Send => 0, Rack::Main => 2, Rack::Bus(b) => 1000+i32::from(b) };
+        let source = format!(r#"on init
+ declare ui_label $l(1,1)
+ declare ui_slider $go(0,1)
+ set_engine_par($ENGINE_PAR_DL_TIME_UNIT,$NI_SYNC_UNIT_ABS,-1,0,{generic})
+ set_engine_par($ENGINE_PAR_DL_TIME,708896,-1,0,{generic})
+ set_engine_par($ENGINE_PAR_DL_TIME_UNIT,$NI_SYNC_UNIT_QUARTER,-1,0,{generic})
+ set_text($l,get_engine_par_disp($ENGINE_PAR_DL_TIME,-1,0,{generic}))
+end on
+on ui_control($go)
+ set_engine_par($ENGINE_PAR_DL_TIME_UNIT,$NI_SYNC_UNIT_ABS,-1,0,{generic})
+ set_engine_par($ENGINE_PAR_DL_TIME,708896,-1,0,{generic})
+ set_engine_par($ENGINE_PAR_DL_TIME_UNIT,$NI_SYNC_UNIT_QUARTER,-1,0,{generic})
+ set_text($l,get_engine_par_disp($ENGINE_PAR_DL_TIME,-1,0,{generic}))
+end on"#);
+        let instrument = Instrument { scripts: vec![source], fx: saved, ..Default::default() };
+        let (rt, errors) = load_scripts(&instrument, Vec::new(), SR as f64);
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut engine = Engine::default();
+        engine.set_bank(Some(Box::new(crate::engine::Bank::from_samples(Vec::new(), Vec::new(), Vec::new()).unwrap())));
+        engine.set_fx(effects(&instrument, rt.as_deref(), SR)); engine.set_script(rt);
+        assert_eq!(engine.script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_TEXT"], KspValue::Text("3".into()));
+        let mut left = [0.0; 128]; let mut right = [0.0; 128];
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            engine.ui_control(0, 1, 1); engine.render(&mut left, &mut right);
+        }), 0);
+        assert_eq!(engine.script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_TEXT"], KspValue::Text("3".into()));
+        assert!( (engine.fx().param(rack, 0, time).unwrap() - 2.0/11.0).abs() < 1e-6);
+        // The live write must update the hidden absolute cache as well.
+        let mut live = engine.set_fx(FxProcessor::default());
+        assert!(live.set_param(rack, 0, sync, unit(0)));
+        assert!((live.param(rack, 0, time).unwrap() - 708896.0/1e6).abs() < 1e-6);
+
+        for (bpm, change) in [(60.0, false), (120.0, false), (240.0, false), (60.0, true)] {
+            let onset = if change { 12000 } else { (SR * 60.0 / bpm) as usize };
+            let n = onset*2+64;
+            let mut outputs = Vec::new();
+            for chunk in [128, 31] {
+                let mut engine = Engine::default();
+                let mut fx = make(rack, false).processor(SR, 128);
+                assert!(fx.set_param(rack, 0, time, 0.0)); // exactly one saved quarter.
+                engine.set_fx(fx); engine.set_transport(false, bpm as f64, 0.0, (4,4));
+                // Retain the processor outside the counted closure: moving
+                // it into the closure also disposes its buffers on return.
+                let mut active = Some(engine.set_fx(FxProcessor::default()));
+                let mut l = vec![0.0; n]; let mut r = vec![0.0; n]; l[0]=1.0; r[0]=1.0;
+                assert_eq!(crate::plugin::tests::allocations(|| {
+                    let mut at = 0;
+                    while at < n {
+                        if change && at == 8192 {
+                            engine.set_fx(active.take().unwrap()); engine.set_transport(false, 240.0, 0.0, (4,4));
+                            active = Some(engine.set_fx(FxProcessor::default()));
+                        }
+                        let fx = active.as_mut().unwrap();
+                        let boundary = if change && at < 8192 { 8192 } else { n };
+                        let end = (at+chunk).min(boundary).min(n);
+                        let (l,r)=(&mut l[at..end],&mut r[at..end]);
+                        if let Rack::Bus(b) = rack {
+                            let (il,ir)=fx.bus_input(b,0..l.len()).unwrap();
+                            il.copy_from_slice(l); ir.copy_from_slice(r); l.fill(0.0); r.fill(0.0);
+                            fx.mix_buses(l,r);
+                        }
+                        fx.process(l,r); at=end;
+                    }
+                }),0,"{rack:?}/{bpm}/{change}/{chunk}: processing and tempo updates retain their buffers");
+                assert!(l[..onset-1].iter().all(|v| v.abs()<1e-6));
+                for (center, area) in [(onset,1.0),(onset*2,0.5)] {
+                    let taps=&l[center-1..center+24];
+                    let sum:f32=taps.iter().sum();
+                    let centroid=taps.iter().enumerate().map(|(i,v)|(i as f32-1.0)*v).sum::<f32>()/sum;
+                    assert!((sum-area).abs()<1e-6, "{rack:?}/{bpm}/{change}: {sum}");
+                    // First tap is an exact musical frame count. The repeated
+                    // tap includes the independently bounded one-pole mean.
+                    assert!(centroid.abs()<0.15, "{rack:?}/{bpm}/{change}: {centroid}");
+                }
+                assert!(l.iter().chain(&r).all(|v|v.is_finite()));
+                assert_eq!(l,r); outputs.push(l);
+            }
+            assert_eq!(outputs[0],outputs[1],"tempo/ring clock cannot depend on host block partition");
+        }
+    }
+}

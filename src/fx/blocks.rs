@@ -49,6 +49,8 @@ enum Law {
     Log(f32, f32),
     /// Legacy Delay's native shifted exponential, stored in milliseconds.
     DelayTime,
+    /// This implementation's documented NI_SYNC_UNIT names → stored beats.
+    DelayUnit,
     /// The script's raw value (`$NI_SYNC_UNIT_*`), not scaled by 1e6.
     Raw,
 }
@@ -62,6 +64,7 @@ impl Law {
             Law::Cube(max) => max * x * x * x,
             Law::Log(lo, hi) => lo * (hi / lo).powf(x),
             Law::DelayTime => (6.0272455 * x + 1.9459101).exp() - 2.0,
+            Law::DelayUnit => DELAY_UNITS.get((x * 1e6).round() as usize).copied().unwrap_or(f32::NAN),
             Law::Raw => (x * 1e6).round(),
         }
     }
@@ -73,6 +76,7 @@ impl Law {
             Law::Cube(max) => (v / max).max(0.0).cbrt(),
             Law::Log(lo, hi) => (v.max(lo) / lo).ln() / (hi / lo).ln(),
             Law::DelayTime => ((v.max(5.0) + 2.0).ln() - 1.9459101) * 0.16591327,
+            Law::DelayUnit => if v <= 0.0 { 0.0 } else { DELAY_UNITS.iter().position(|b| (*b - v).abs() < 1e-6).map_or(f32::NAN, |n| n as f32 / 1e6) },
             Law::Raw => v.max(0.0) / 1e6,
         };
         x.clamp(0.0, 1.0)
@@ -89,6 +93,9 @@ const RELEASE: Law = Law::Cube(5000.0);
 const DELAY_TIME: Law = Law::DelayTime;
 /// Delay line length (seconds), past the longest time.
 const MAX_DELAY_S: f32 = 2.91;
+// These IDs are our named KSP constants, not aliases of a private native enum.
+const DELAY_UNITS: [f32; 16] = [-1.0, 4.0, 8.0/3.0, 2.0, 4.0/3.0, 1.0, 2.0/3.0,
+    0.5, 1.0/3.0, 0.25, 1.0/6.0, 0.125, 1.0/12.0, 0.0625, 1.0/24.0, 0.015625];
 
 /// `$ENGINE_PAR_*` effect parameters: effect, field (layout position), law.
 const PARS: &[(&str, Kind, u8, Law)] = &[
@@ -106,7 +113,7 @@ const PARS: &[(&str, Kind, u8, Law)] = &[
     ("$ENGINE_PAR_DL_DAMPING", Kind::Delay, 1, Law::Norm),
     ("$ENGINE_PAR_DL_PAN", Kind::Delay, 2, Law::Norm),
     ("$ENGINE_PAR_DL_FEEDBACK", Kind::Delay, 3, Law::Norm),
-    ("$ENGINE_PAR_DL_TIME_UNIT", Kind::Delay, 4, Law::Raw),
+    ("$ENGINE_PAR_DL_TIME_UNIT", Kind::Delay, 4, Law::DelayUnit),
     ("$ENGINE_PAR_CH_SPEED_UNIT", Kind::Chorus, 3, Law::Raw),
     ("$ENGINE_PAR_FL_SPEED_UNIT", Kind::Flanger, 5, Law::Raw),
     ("$ENGINE_PAR_PH_SPEED_UNIT", Kind::Phaser, 4, Law::Raw),
@@ -185,6 +192,55 @@ pub(crate) fn stored(kind: Kind, field: u8, x: f32) -> f32 {
 pub(crate) fn normalized(kind: Kind, field: u8, v: f32) -> f32 {
     law(kind, field).norm(v)
 }
+
+/// Saved Delay Time can be milliseconds, or a count of the saved beat unit.
+/// Legacy records retain an absolute-control law until the unit is changed.
+pub(crate) fn normalized_field(kind: Kind, field: u8, f: &Fields, tempo: f32) -> Option<f32> {
+    let v = *f.get(field as usize)?;
+    let x = if kind == Kind::Delay && field == 0 && f[4] > 0.0 {
+        if f[7] == 0.0 { ((v - 1.0) / 11.0).clamp(0.0, 1.0) }
+        else { DELAY_TIME.norm(delay_ms(f, tempo)) }
+    } else { normalized(kind, field, v) };
+    x.is_finite().then_some(x)
+}
+
+/// Update the existing native caches before changing Time mode; also used by
+/// queued getters and off-thread init so they read the same state as the DSP.
+pub(crate) fn set_delay_field(f: &mut Fields, field: u8, x: f32, tempo: f32) -> bool {
+    if field > 4 || !x.is_finite() { return false }
+    if field == 4 {
+        if x < 0.0 { return false }
+        let unit = stored(Kind::Delay, field, x);
+        if !unit.is_finite() { return false }
+        if unit != f[4] {
+            let old_sync = f[4] > 0.0;
+            if f[7] != 0.0 {
+                if old_sync { f[0] = f[0].clamp(1.0, 12.0); }
+                f[7] = 0.0;
+            }
+            f[5 + usize::from(old_sync)] = f[0];
+            f[4] = unit;
+            f[0] = f[5 + usize::from(unit > 0.0)];
+        }
+    } else {
+        f[field as usize] = if field == 0 && f[4] > 0.0 {
+            if f[7] == 0.0 { (1.0 + 11.0 * x.clamp(0.0, 1.0)).round() }
+            else { (DELAY_TIME.stored(x) * tempo / (60_000.0 * f[4])).round().max(1.0) }
+        } else { stored(Kind::Delay, field, x) };
+    }
+    true
+}
+
+pub(crate) fn delay_display(f: &Fields, value: i32) -> Option<crate::engine::Disp> {
+    (f[4] > 0.0 && f[7] == 0.0).then(||
+        crate::engine::Disp::Num((1.0 + 11.0 * (value as f32 / 1e6).clamp(0.0, 1.0)).round(), 0))
+}
+
+fn delay_ms(f: &Fields, tempo: f32) -> f32 {
+    if f[4] <= 0.0 { f[0] }
+    else { (f[0].max(1.0) * f[4] * (60_000.0 / tempo)).clamp(0.0, 5800.0) }
+}
+
 
 /// Values a freshly loaded effect starts with: the ones local presets keep
 /// most (Kontakt's own defaults are not stored anywhere).
@@ -787,8 +843,8 @@ impl Lines {
     }
 }
 
-/// Legacy Delay: time (ms while the unit is -1, as stored, or
-/// `$NI_SYNC_UNIT_ABS`; other units read as sixteenths at 120 BPM), damping (a low-pass in the loop, 20 kHz..=1 kHz), pan (how much
+/// Legacy Delay: Time is milliseconds while unsynced, otherwise a count of
+/// the saved quarter-beat multiplier. Damping (a low-pass in the loop, 20 kHz..=1 kHz), pan (how much
 /// of the feedback crosses channels: ping-pong at 1) and feedback 0..=1.
 /// Wet only; the slot mixes the dry signal.
 struct Delay {
@@ -801,10 +857,9 @@ struct Delay {
 }
 
 impl Delay {
-    fn tune(&mut self, f: &Fields, rate: f32) {
-        // ponytail: no host tempo here; synced delays assume 120 BPM.
-        let ms = if f[4] <= 0.0 { f[0] } else { f[0] * 125.0 };
-        self.frames = (ms.clamp(1.0, MAX_DELAY_S * 1000.0 - 10.0) * 0.001 * rate).max(1.0);
+    fn tune(&mut self, f: &Fields, rate: f32, tempo: f32) {
+        let max = if f[4] > 0.0 { 5800.0 } else { MAX_DELAY_S * 1000.0 - 10.0 };
+        self.frames = (delay_ms(f, tempo).clamp(1.0, max) * 0.001 * rate).max(1.0);
         self.damp = one_pole(20_000.0 * 0.05f32.powf(f[1].clamp(0.0, 1.0)), rate);
         self.cross = 0.5 * f[2].clamp(0.0, 1.0);
         self.feedback = f[3].clamp(0.0, 0.99);
@@ -952,6 +1007,7 @@ pub(crate) struct Block {
     kind: Kind,
     fields: Fields,
     rate: f32,
+    tempo: f32,
     dsp: Dsp,
 }
 
@@ -962,7 +1018,7 @@ impl Block {
         // Filters, EQs and the Solid G-EQ: the group filter's sections.
         if matches!(fx.params, Params::Filter(_) | Params::Eq(_)) || kind == Kind::SolidGeq {
             let dsp = Dsp::Filter(RackFilter::new(fx, rate)?);
-            return Some(Box::new(Self { kind, fields: [0.0; FIELDS], rate, dsp }));
+            return Some(Box::new(Self { kind, fields: [0.0; FIELDS], rate, tempo: 120.0, dsp }));
         }
         let fields = fields(&fx.params)?;
         let dsp = match kind {
@@ -970,7 +1026,8 @@ impl Block {
             Kind::Compressor | Kind::Limiter | Kind::SolidBusComp | Kind::FeedbackCompressor => Dsp::Comp(Comp::new()),
             Kind::TransientMaster => Dsp::Transient(Transient::new()),
             Kind::Delay => Dsp::Delay(Delay {
-                lines: Lines::new((MAX_DELAY_S * rate) as usize),
+                // At least the native 262144-frame line, including slow synced clocks.
+                lines: Lines::new(((MAX_DELAY_S * rate) as usize).max(262_140)),
                 frames: 1.0,
                 feedback: 0.0,
                 cross: 0.0,
@@ -999,7 +1056,7 @@ impl Block {
             }),
             _ => return None,
         };
-        let mut out = Box::new(Self { kind, fields, rate, dsp });
+        let mut out = Box::new(Self { kind, fields, rate, tempo: 120.0, dsp });
         out.tune();
         Some(out)
     }
@@ -1012,10 +1069,17 @@ impl Block {
             }
             Dsp::Comp(c) => c.tune(kind, f, rate),
             Dsp::Transient(t) => t.tune(f, rate),
-            Dsp::Delay(d) => d.tune(f, rate),
+            Dsp::Delay(d) => d.tune(f, rate, self.tempo),
             Dsp::Sweep(s) => s.tune(kind, f, rate),
             Dsp::Phaser(p) => p.tune(f, rate),
             Dsp::Filter(_) => {}
+        }
+    }
+
+    pub(crate) fn set_tempo(&mut self, tempo: f32) {
+        if tempo.is_finite() && tempo > 0.0 && tempo != self.tempo {
+            self.tempo = tempo;
+            if let Dsp::Delay(d) = &mut self.dsp { d.tune(&self.fields, self.rate, tempo); }
         }
     }
 
@@ -1025,12 +1089,22 @@ impl Block {
         if let Dsp::Filter(f) = &mut self.dsp {
             return f.set(kind, field, stored(kind, field, x));
         }
-        let Some(v) = (kind == self.kind).then_some(()).and(self.fields.get_mut(field as usize)) else {
-            return false;
-        };
-        *v = stored(kind, field, x);
+        if kind != self.kind || field as usize >= FIELDS || !x.is_finite() { return false }
+        if kind == Kind::Delay {
+            if !set_delay_field(&mut self.fields, field, x, self.tempo) { return false }
+        } else { self.fields[field as usize] = stored(kind, field, x); }
         self.tune();
         true
+    }
+
+    pub(crate) fn restore_delay(&mut self, saved: &super::DelayState) -> bool {
+        if self.kind != Kind::Delay || !saved.apply(&mut self.fields) { return false }
+        self.tune();
+        true
+    }
+
+    pub(crate) fn delay_fields(&self) -> Option<Fields> {
+        (self.kind == Kind::Delay).then_some(self.fields)
     }
 
     pub(crate) fn set_filter(&mut self, knob: crate::engine::filter::Knob, value: f32) -> bool {
@@ -1053,7 +1127,7 @@ impl Block {
             return f.get(kind, field);
         }
         (kind == self.kind).then_some(())?;
-        Some(normalized(kind, field, *self.fields.get(field as usize)?))
+        normalized_field(kind, field, &self.fields, self.tempo)
     }
 
     pub(crate) fn clear(&mut self) {
