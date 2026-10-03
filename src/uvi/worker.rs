@@ -8,7 +8,7 @@ use super::{
     library::{BankResources, Library},
     player::{self, Player},
     program::NodeId,
-    script::{Input, InputKind},
+    script::{HostCompletion, HostRoot, HostedInput, Input, InputKind},
 };
 use anyhow::{Context, Result, ensure};
 use crossbeam_queue::ArrayQueue;
@@ -27,6 +27,8 @@ use std::{
 pub const BLOCK_FRAMES: usize = 256;
 pub const MAX_INPUTS: usize = 256;
 pub const QUEUE_CAPACITY: usize = 8;
+pub const COMPLETION_CAPACITY: usize = 4096;
+pub const MAX_HOSTED_INPUTS: usize = MAX_INPUTS;
 pub use player::{MAX_UI_EDITS, UiInput};
 const POLL: Duration = Duration::from_millis(1);
 
@@ -162,6 +164,81 @@ impl Request {
     }
 }
 
+/// Opt-in hosted packet. Ordinary MIDI plus rooted entries share MAX_INPUTS;
+/// UI has its separate MAX_UI_EDITS bound. At equal frames Player orders UI,
+/// rooted entries, then ordinary MIDI, preserving each stream's order.
+#[derive(Clone, Copy, Debug)]
+pub struct HostedRequest {
+    pub request: Request,
+    pub root_count: u16,
+    pub roots: [HostedInput; MAX_HOSTED_INPUTS],
+}
+impl HostedRequest {
+    pub fn new(request: Request, roots: &[HostedInput]) -> std::result::Result<Self, PacketError> {
+        if roots.len() > MAX_HOSTED_INPUTS {
+            return Err(PacketError::TooManyInputs);
+        }
+        let mut packet = Self {
+            request,
+            root_count: roots.len() as u16,
+            roots: [HostedInput::Off {
+                root: HostRoot {
+                    epoch: 0,
+                    generation: 0,
+                    token: 0,
+                },
+                frame: 0,
+            }; MAX_HOSTED_INPUTS],
+        };
+        packet.roots[..roots.len()].copy_from_slice(roots);
+        packet.validate()?;
+        Ok(packet)
+    }
+    fn validate(&self) -> std::result::Result<(), PacketError> {
+        self.request.validate()?;
+        let count = usize::from(self.root_count);
+        if count > MAX_HOSTED_INPUTS || count + usize::from(self.request.input_count) > MAX_INPUTS {
+            return Err(PacketError::TooManyInputs);
+        }
+        let stamp = self.request.stamp;
+        let end = stamp.frame + BLOCK_FRAMES as u64; // Request checked overflow.
+        let mut last_frame = stamp.frame;
+        let mut last_on = 0;
+        for entry in &self.roots[..count] {
+            let (root, frame) = match *entry {
+                HostedInput::On { root, input } => {
+                    if !player::input_is_valid(&input)
+                        || !matches!(input.kind, InputKind::NoteOn { .. })
+                        || root.token <= last_on
+                    {
+                        return Err(PacketError::InvalidInput);
+                    }
+                    last_on = root.token;
+                    (root, input.frame)
+                }
+                HostedInput::Off { root, frame } => (root, frame),
+            };
+            if root.epoch != stamp.epoch
+                || root.generation != stamp.generation
+                || root.token == 0
+                || frame < last_frame
+                || frame >= end
+            {
+                return Err(PacketError::InvalidInput);
+            }
+            last_frame = frame;
+        }
+        // Session validates authoritative lifetime only after dequeuing. No
+        // callback-side root ledger is created, or mutated by a full submission.
+        Ok(())
+    }
+}
+#[derive(Clone, Copy, Debug)]
+pub struct HostedRejected {
+    pub reason: PacketError,
+    pub request: HostedRequest,
+}
+
 /// A rejected request is returned intact. Full queues do not advance the input
 /// cursor: retry this packet, or explicitly abort/replace the activation.
 #[derive(Debug, Clone, Copy)]
@@ -180,6 +257,13 @@ pub struct Output {
     pub dropped_logs: u32,
     /// Matches the UI input indices in the corresponding fixed request packet.
     pub rejected_ui: u64,
+}
+
+/// Durable root completion, independent of droppable/late PCM packets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StampedCompletion {
+    pub stamp: Stamp,
+    pub root: HostRoot,
 }
 
 /// Control/UI-thread response. The owned snapshot can contain private captions
@@ -229,6 +313,10 @@ pub struct Stats {
     pub render_deadline_misses: u64,
     pub cancelled_requests: u64,
     pub cancelled_outputs: u64,
+    /// Durable shared-queue and controller-held inline records discarded on
+    /// cancellation. Detached AudioPort inline records and untransferred
+    /// Session EndReady roots are excluded.
+    pub cancelled_completions: u64,
 }
 
 #[derive(Default)]
@@ -244,6 +332,7 @@ struct Counters {
     render_deadline_misses: AtomicU64,
     cancelled_requests: AtomicU64,
     cancelled_outputs: AtomicU64,
+    cancelled_completions: AtomicU64,
 }
 
 #[derive(Default)]
@@ -259,6 +348,7 @@ struct Shared {
     stamp: Stamp,
     requests: ArrayQueue<Request>,
     outputs: ArrayQueue<Output>,
+    hosted: Option<Box<HostedTransport>>,
     stop: AtomicBool,
     status: AtomicU8,
     counters: Counters,
@@ -266,8 +356,16 @@ struct Shared {
     ui_pending: AtomicBool,
 }
 
+struct HostedTransport {
+    requests: ArrayQueue<HostedRequest>,
+    completions: ArrayQueue<StampedCompletion>,
+}
+
 impl Shared {
     fn new(epoch: u64, generation: u64) -> Self {
+        Self::new_mode(epoch, generation, false)
+    }
+    fn new_mode(epoch: u64, generation: u64, hosted: bool) -> Self {
         Self {
             stamp: Stamp {
                 epoch,
@@ -276,6 +374,12 @@ impl Shared {
             },
             requests: ArrayQueue::new(QUEUE_CAPACITY),
             outputs: ArrayQueue::new(QUEUE_CAPACITY),
+            hosted: hosted.then(|| {
+                Box::new(HostedTransport {
+                    requests: ArrayQueue::new(QUEUE_CAPACITY),
+                    completions: ArrayQueue::new(COMPLETION_CAPACITY),
+                })
+            }),
             stop: AtomicBool::new(false),
             status: AtomicU8::new(Status::Starting as u8),
             counters: Counters::default(),
@@ -307,6 +411,7 @@ impl Shared {
             render_deadline_misses: c.render_deadline_misses.load(Ordering::Relaxed),
             cancelled_requests: c.cancelled_requests.load(Ordering::Relaxed),
             cancelled_outputs: c.cancelled_outputs.load(Ordering::Relaxed),
+            cancelled_completions: c.cancelled_completions.load(Ordering::Relaxed),
         }
     }
 
@@ -341,6 +446,8 @@ struct PacketCursor {
     next_request: u64,
     minimum_output: u64,
     pending_output: Option<Output>,
+    completion_boundary: u64,
+    pending_completion: Option<StampedCompletion>,
 }
 
 /// Exclusive packet endpoint created on the control thread. Its packet methods
@@ -363,6 +470,12 @@ impl AudioPort {
 
 impl Worker {
     pub fn start(config: StartConfig, epoch: u64, generation: u64) -> Result<Self> {
+        Self::start_inner(config, epoch, generation, false)
+    }
+    pub fn start_hosted(config: StartConfig, epoch: u64, generation: u64) -> Result<Self> {
+        Self::start_inner(config, epoch, generation, true)
+    }
+    fn start_inner(config: StartConfig, epoch: u64, generation: u64, hosted: bool) -> Result<Self> {
         ensure!(
             (8000..=192000).contains(&config.sample_rate),
             "Invalid UVI worker sample rate"
@@ -371,7 +484,11 @@ impl Worker {
             !config.metadata_namespace.is_empty(),
             "UVI worker requires a metadata namespace"
         );
-        let shared = Arc::new(Shared::new(epoch, generation));
+        let shared = Arc::new(if hosted {
+            Shared::new_mode(epoch, generation, true)
+        } else {
+            Shared::new(epoch, generation)
+        });
         let worker_shared = shared.clone();
         let handle = thread::Builder::new()
             .name("kontra-uvi-playback".into())
@@ -396,36 +513,7 @@ impl Worker {
                         .initialization_ns
                         .store(nanos(initialized.elapsed()), Ordering::Relaxed);
                 }
-                if let Some(failure) = failure {
-                    worker_shared
-                        .counters
-                        .errors
-                        .fetch_add(1, Ordering::Relaxed);
-                    worker_shared
-                        .details
-                        .lock()
-                        .unwrap_or_else(|poison| poison.into_inner())
-                        .failure = Some(failure);
-                    worker_shared
-                        .status
-                        .store(Status::Failed as u8, Ordering::Release);
-                } else {
-                    worker_shared
-                        .status
-                        .store(Status::Stopped as u8, Ordering::Release);
-                }
-                while worker_shared.requests.pop().is_some() {
-                    worker_shared
-                        .counters
-                        .cancelled_requests
-                        .fetch_add(1, Ordering::Relaxed);
-                }
-                while worker_shared.outputs.pop().is_some() {
-                    worker_shared
-                        .counters
-                        .cancelled_outputs
-                        .fetch_add(1, Ordering::Relaxed);
-                }
+                finish(&worker_shared, failure);
             })
             .context("Starting UVI playback worker")?;
         Ok(Self {
@@ -557,6 +645,16 @@ impl Worker {
                 .cancelled_outputs
                 .fetch_add(1, Ordering::Relaxed);
         }
+        if self
+            .cursor
+            .as_mut()
+            .is_some_and(|cursor| cursor.pending_completion.take().is_some())
+        {
+            self.shared
+                .counters
+                .cancelled_completions
+                .fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -582,6 +680,9 @@ impl Realtime<'_> {
             });
         };
         let validation = self.shared.activation(request.stamp).and_then(|()| {
+            if self.shared.hosted.is_some() {
+                return Err(PacketError::InvalidInput);
+            }
             if request.stamp.frame != cursor.next_request {
                 return Err(PacketError::WrongFrame);
             }
@@ -602,6 +703,50 @@ impl Realtime<'_> {
                     .backpressure
                     .fetch_add(1, Ordering::Relaxed);
                 Err(Rejected {
+                    reason: PacketError::Full,
+                    request,
+                })
+            }
+        }
+    }
+
+    pub fn try_submit_hosted(
+        &mut self,
+        request: HostedRequest,
+    ) -> std::result::Result<(), HostedRejected> {
+        let Some(cursor) = self.cursor.as_mut() else {
+            return Err(HostedRejected {
+                reason: PacketError::PortTaken,
+                request,
+            });
+        };
+        let validation = self
+            .shared
+            .activation(request.request.stamp)
+            .and_then(|()| {
+                if self.shared.hosted.is_none() {
+                    return Err(PacketError::InvalidInput);
+                }
+                if request.request.stamp.frame != cursor.next_request {
+                    return Err(PacketError::WrongFrame);
+                }
+                request.validate()
+            });
+        if let Err(reason) = validation {
+            self.shared.counters.errors.fetch_add(1, Ordering::Relaxed);
+            return Err(HostedRejected { reason, request });
+        }
+        match self.shared.hosted.as_ref().unwrap().requests.push(request) {
+            Ok(()) => {
+                cursor.next_request += BLOCK_FRAMES as u64;
+                Ok(())
+            }
+            Err(request) => {
+                self.shared
+                    .counters
+                    .backpressure
+                    .fetch_add(1, Ordering::Relaxed);
+                Err(HostedRejected {
                     reason: PacketError::Full,
                     request,
                 })
@@ -654,6 +799,55 @@ impl Realtime<'_> {
         Err(PacketError::Underrun)
     }
 
+    /// The caller supplies the currently consumed boundary on this worker's
+    /// activation timeline, mapping host time through the admitted buffering
+    /// latency. An exclusive renderer end becomes eligible at that boundary.
+    /// Late completions survive associated PCM discard.
+    /// Empty/future queues are normal; stale removal is bounded by capacity+1.
+    pub fn try_receive_completion(
+        &mut self,
+        expected: Stamp,
+    ) -> std::result::Result<Option<StampedCompletion>, PacketError> {
+        let cursor = self.cursor.as_mut().ok_or(PacketError::PortTaken)?;
+        self.shared.activation(expected)?;
+        let hosted = self
+            .shared
+            .hosted
+            .as_ref()
+            .ok_or(PacketError::InvalidInput)?;
+        if expected.frame < cursor.completion_boundary {
+            return Err(PacketError::WrongFrame);
+        }
+        cursor.completion_boundary = expected.frame;
+        for _ in 0..=COMPLETION_CAPACITY {
+            let Some(completion) = cursor
+                .pending_completion
+                .take()
+                .or_else(|| hosted.completions.pop())
+            else {
+                return Ok(None);
+            };
+            if completion.root.token == 0
+                || completion.stamp.epoch != expected.epoch
+                || completion.stamp.generation != expected.generation
+                || completion.root.epoch != completion.stamp.epoch
+                || completion.root.generation != completion.stamp.generation
+            {
+                self.shared
+                    .counters
+                    .stale_packets
+                    .fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            if completion.stamp.frame > expected.frame {
+                cursor.pending_completion = Some(completion);
+                return Ok(None);
+            }
+            return Ok(Some(completion));
+        }
+        Ok(None)
+    }
+
     pub fn status(&self) -> Status {
         self.shared.status()
     }
@@ -699,6 +893,145 @@ fn capture_ui(player: &Player<'_>, shared: &Shared) {
     }
 }
 
+/// Controller observes an activation abort, not successful ends for discarded
+/// roots. A future adapter must retire canonical owners through its lifecycle.
+fn finish(shared: &Shared, failure: Option<String>) {
+    if let Some(failure) = failure {
+        shared.counters.errors.fetch_add(1, Ordering::Relaxed);
+        shared
+            .details
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .failure = Some(failure);
+        shared.status.store(Status::Failed as u8, Ordering::Release);
+    } else {
+        shared
+            .status
+            .store(Status::Stopped as u8, Ordering::Release);
+    }
+    while shared.requests.pop().is_some() {
+        shared
+            .counters
+            .cancelled_requests
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    while shared.outputs.pop().is_some() {
+        shared
+            .counters
+            .cancelled_outputs
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    if let Some(hosted) = &shared.hosted {
+        while hosted.requests.pop().is_some() {
+            shared
+                .counters
+                .cancelled_requests
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        while hosted.completions.pop().is_some() {
+            shared
+                .counters
+                .cancelled_completions
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// EndReady is an authoritative retained census until acknowledgement. Verify
+/// every old untransferred suffix record survives unchanged before replacement.
+fn refresh_completions(pending: &mut Vec<HostCompletion>, next: Vec<HostCompletion>) -> Result<()> {
+    use std::collections::HashMap;
+    ensure!(
+        next.len() <= COMPLETION_CAPACITY,
+        "Hosted completion census exceeds capacity"
+    );
+    let mut census = HashMap::with_capacity(next.len());
+    for completion in &next {
+        ensure!(
+            census.insert(completion.root, completion.frame).is_none(),
+            "Duplicate hosted completion"
+        );
+    }
+    ensure!(
+        pending
+            .iter()
+            .all(|old| census.get(&old.root) == Some(&old.frame)),
+        "Untransferred hosted completion missing or changed"
+    );
+    *pending = next;
+    Ok(())
+}
+
+/// Only called on the allocating playback worker. Durable queue transfer
+/// precedes each ledger acknowledgement; a full queue retains the untouched
+/// suffix for retries, including when no new audio request arrives.
+fn transfer_completions(
+    player: &mut Player<'_>,
+    shared: &Shared,
+    pending: &mut Vec<HostCompletion>,
+) -> Result<usize> {
+    let hosted = shared
+        .hosted
+        .as_ref()
+        .context("Worker has no hosted transport")?;
+    ensure!(
+        shared.status() != Status::Failed,
+        "Hosted activation already aborted"
+    );
+    ensure!(
+        pending.len() <= COMPLETION_CAPACITY,
+        "Hosted completion batch exceeds capacity"
+    );
+    ensure!(
+        pending
+            .iter()
+            .all(|completion| completion.root.epoch == shared.stamp.epoch
+                && completion.root.generation == shared.stamp.generation
+                && completion.root.token > 0
+                && completion.frame <= player.current_frame()),
+        "Invalid hosted completion stamp"
+    );
+    ensure!(
+        pending
+            .windows(2)
+            .all(|pair| pair[0].frame <= pair[1].frame),
+        "Hosted completions are not ordered"
+    );
+    let mut roots = std::collections::HashSet::with_capacity(pending.len());
+    ensure!(
+        pending
+            .iter()
+            .all(|completion| roots.insert(completion.root)),
+        "Duplicate hosted completion"
+    );
+    let mut transferred = 0;
+    while transferred < pending.len() && !shared.stop.load(Ordering::Acquire) {
+        let completion = pending[transferred];
+        let packet = StampedCompletion {
+            stamp: Stamp {
+                frame: completion.frame,
+                ..shared.stamp
+            },
+            root: completion.root,
+        };
+        if hosted.completions.push(packet).is_err() {
+            break;
+        }
+        // Once durably pushed, never retry this record, even if the ledger
+        // acknowledgement fails. Abort this activation instead of duplicating.
+        transferred += 1;
+        if let Err(error) = player.acknowledge_host_completions(&[completion.root]) {
+            pending.drain(..transferred);
+            shared.status.store(Status::Failed as u8, Ordering::Release);
+            return Err(
+                error.context("Hosted completion acknowledgement failed; activation aborted")
+            );
+        }
+    }
+    pending.drain(..transferred);
+    Ok(transferred)
+}
+
 fn run(config: StartConfig, shared: &Shared, initialized: Instant) -> Result<()> {
     // Everything containing Rc, borrowed graph nodes, Lua or file authority is
     // created, used and destroyed in this stack frame on this dedicated thread.
@@ -735,12 +1068,23 @@ fn run(config: StartConfig, shared: &Shared, initialized: Instant) -> Result<()>
         serde_json::to_string(&unsupported)?
     );
     let resources = BankResources::new(library.clone(), &loaded.path, library.samples(&loaded)?)?;
-    let mut player = Player::new(
-        &loaded.program,
-        library.modules()?,
-        resources,
-        config.sample_rate,
-    )?;
+    let mut player = if shared.hosted.is_some() {
+        Player::new_hosted(
+            &loaded.program,
+            library.modules()?,
+            resources,
+            config.sample_rate,
+            shared.stamp.epoch,
+            shared.stamp.generation,
+        )?
+    } else {
+        Player::new(
+            &loaded.program,
+            library.modules()?,
+            resources,
+            config.sample_rate,
+        )?
+    };
     shared
         .details
         .lock()
@@ -754,13 +1098,32 @@ fn run(config: StartConfig, shared: &Shared, initialized: Instant) -> Result<()>
         return Ok(());
     }
     shared.status.store(Status::Ready as u8, Ordering::Release);
-    let deadline = Duration::from_secs_f64(BLOCK_FRAMES as f64 / f64::from(config.sample_rate));
+    serve(&mut player, shared, config.sample_rate)
+}
+
+fn serve(player: &mut Player<'_>, shared: &Shared, sample_rate: u32) -> Result<()> {
+    let deadline = Duration::from_secs_f64(BLOCK_FRAMES as f64 / f64::from(sample_rate));
+    let mut pending_completions = shared
+        .hosted
+        .as_ref()
+        .map(|_| Vec::with_capacity(COMPLETION_CAPACITY));
     loop {
         if shared.stop.load(Ordering::Acquire) {
             return Ok(());
         }
+        if let Some(pending) = &mut pending_completions {
+            transfer_completions(player, shared, pending)?;
+        }
         capture_ui(&player, shared);
-        let Some(request) = shared.requests.pop() else {
+        let packet = if let Some(hosted) = &shared.hosted {
+            hosted
+                .requests
+                .pop()
+                .map(|packet| (packet.request, Some(packet)))
+        } else {
+            shared.requests.pop().map(|request| (request, None))
+        };
+        let Some((request, hosted)) = packet else {
             // ponytail: 1 ms bounded polling avoids audio-thread wake/lock calls;
             // replace it only after a measured transport deadline requires it.
             thread::park_timeout(POLL);
@@ -773,11 +1136,24 @@ fn run(config: StartConfig, shared: &Shared, initialized: Instant) -> Result<()>
             "UVI worker request stamp is out of order"
         );
         let started = Instant::now();
-        let rendered = player.render_with_ui(
-            &request.inputs[..usize::from(request.input_count)],
-            &request.ui_inputs[..usize::from(request.ui_count)],
-            BLOCK_FRAMES,
-        );
+        // A queued authoritative-lifetime rejection is fatal: return before
+        // rendering or advancing this block; finish() aborts the activation.
+        request.validate()?;
+        let rendered = if let Some(packet) = hosted {
+            packet.validate()?;
+            player.render_hosted_with_ui(
+                &request.inputs[..usize::from(request.input_count)],
+                &request.ui_inputs[..usize::from(request.ui_count)],
+                &packet.roots[..usize::from(packet.root_count)],
+                BLOCK_FRAMES,
+            )
+        } else {
+            player.render_with_ui(
+                &request.inputs[..usize::from(request.input_count)],
+                &request.ui_inputs[..usize::from(request.ui_count)],
+                BLOCK_FRAMES,
+            )
+        };
         let elapsed = started.elapsed();
         let duration = nanos(elapsed);
         shared
@@ -795,6 +1171,10 @@ fn run(config: StartConfig, shared: &Shared, initialized: Instant) -> Result<()>
                 .fetch_add(1, Ordering::Relaxed);
         }
         let rendered = rendered?;
+        if let Some(pending) = &mut pending_completions {
+            refresh_completions(pending, rendered.host_completions)?;
+            transfer_completions(player, shared, pending)?;
+        }
         ensure!(
             rendered.audio.len() == BLOCK_FRAMES,
             "UVI worker renderer returned a short packet"
@@ -820,6 +1200,9 @@ fn run(config: StartConfig, shared: &Shared, initialized: Instant) -> Result<()>
                     .cancelled_outputs
                     .fetch_add(1, Ordering::Relaxed);
                 return Ok(());
+            }
+            if let Some(pending) = &mut pending_completions {
+                transfer_completions(player, shared, pending)?;
             }
             capture_ui(&player, shared);
             match shared.outputs.push(output) {
@@ -1016,7 +1399,7 @@ mod tests {
         )
     }
 
-    fn authored_bank_with_script(script: &str) -> (StartConfig, String) {
+    pub(super) fn authored_bank_with_script(script: &str) -> (StartConfig, String) {
         fn append(bytes: &mut Vec<u8>, payload: &[u8]) -> u64 {
             let pointer = bytes.len() as u64 + 8;
             bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
@@ -1644,3 +2027,6 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 }
+#[cfg(test)]
+#[path = "worker_hosted_tests.rs"]
+mod worker_hosted_tests;

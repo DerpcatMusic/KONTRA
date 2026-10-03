@@ -194,6 +194,16 @@ impl<'a> Player<'a> {
         ensure!(self.hosted, "Player has no hosted activation");
         self.render_with_controls(inputs, &[], hosted, frames)
     }
+    pub fn render_hosted_with_ui(
+        &mut self,
+        inputs: &[script::Input],
+        ui_inputs: &[UiInput],
+        hosted: &[HostedInput],
+        frames: usize,
+    ) -> Result<Rendered> {
+        ensure!(self.hosted, "Player has no hosted activation");
+        self.render_with_controls(inputs, ui_inputs, hosted, frames)
+    }
     fn render_with_controls(
         &mut self,
         inputs: &[script::Input],
