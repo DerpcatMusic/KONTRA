@@ -2,6 +2,11 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 
+pub(super) const REPORT_BODY_LIMIT: usize = 16 * 1024 * 1024;
+// Bump when deterministic incident rendering/header/JSON serialization changes:
+// unchanged sources must be reevaluated under a new evidence recipe or limit.
+pub(super) const AUTOMATIC_EVIDENCE_RECIPE: u32 = 1;
+
 #[derive(Serialize)]
 struct ReportPayload {
     schema: u8,
@@ -273,12 +278,23 @@ impl Drop for AutomaticReportPermit<'_> {
     }
 }
 
-struct AutomaticReportCompletion(Option<String>);
+enum AutomaticReportContinuation {
+    Acknowledged(String),
+    ManualRequired(String, String),
+}
+
+struct AutomaticReportCompletion(Option<AutomaticReportContinuation>);
 
 impl Drop for AutomaticReportCompletion {
     fn drop(&mut self) {
-        if let Some(incident_id) = self.0.take() {
-            crash::continue_automatic_reports(incident_id);
+        match self.0.take() {
+            Some(AutomaticReportContinuation::Acknowledged(id)) => {
+                crash::continue_automatic_reports(id)
+            }
+            Some(AutomaticReportContinuation::ManualRequired(id, digest)) => {
+                crash::continue_after_manual_report(id, digest)
+            }
+            None => {}
         }
     }
 }
@@ -307,6 +323,13 @@ pub(super) fn try_auto_report_pending_incident() {
             );
             return;
         }
+        if let Some(digest) = crash::manual_required_evidence_sha(&incident.id) {
+            completion.0 = Some(AutomaticReportContinuation::ManualRequired(
+                incident.id,
+                digest,
+            ));
+            return;
+        }
         let identity = HOST_IDENTITY.lock_unpoisoned().clone();
         let platform = platform::snapshot(&std::sync::atomic::AtomicBool::new(false));
         let (payload, reporter_context) = automatic_report_payload(
@@ -321,7 +344,7 @@ pub(super) fn try_auto_report_pending_incident() {
             "crash_report_reopening_context",
             serde_json::json!({"incident_id":incident.id,"reason":reporter_context}),
         );
-        let result = send_report(payload);
+        let result = send_report(payload, &mut completion);
         let level = if result.is_ok() {
             crate::diagnostics::LogLevel::Info
         } else {
@@ -346,7 +369,7 @@ pub(super) fn try_auto_report_pending_incident() {
         }
         crate::diagnostics::event(level, "support", "automatic_crash_report", value);
         if result.is_ok() {
-            completion.0 = Some(incident.id);
+            completion.0 = Some(AutomaticReportContinuation::Acknowledged(incident.id));
         }
         // All delivery/receipt work finishes before the permit drops; only then
         // does the completion guard enqueue continuation on the reporter worker.
@@ -382,7 +405,7 @@ pub(super) fn test_detached_automatic_delivery(
             .is_ok();
         if acknowledged {
             crash::mark_submitted(&incident_id);
-            completion.0 = Some(incident_id);
+            completion.0 = Some(AutomaticReportContinuation::Acknowledged(incident_id));
         }
         outcome.send(acknowledged).unwrap();
         release
@@ -395,6 +418,42 @@ pub(super) fn test_detached_automatic_delivery(
 #[cfg(test)]
 pub(super) fn test_acquire_automatic_report_permit() -> Option<AutomaticReportPermit<'static>> {
     AutomaticReportPermit::acquire(&AUTOMATIC_CRASH_REPORT_STARTED)
+}
+
+#[cfg(test)]
+pub(super) fn test_detached_oversized_delivery(
+    entered: std::sync::mpsc::Sender<()>,
+    outcome: std::sync::mpsc::Sender<bool>,
+    release: std::sync::mpsc::Receiver<()>,
+) -> Result<(), String> {
+    let permit = AutomaticReportPermit::acquire(&AUTOMATIC_CRASH_REPORT_STARTED)
+        .ok_or_else(|| "automatic report worker is busy".to_string())?;
+    crash::spawn_detached("kontra-authored-oversized-delivery", move || {
+        let mut completion = AutomaticReportCompletion(None);
+        let _permit = permit;
+        entered.send(()).unwrap();
+        let incident = pending_incident().unwrap();
+        let (payload, _) = automatic_report_payload(
+            &incident,
+            &Default::default(),
+            &Default::default(),
+            &crash::render_complete_diagnostics(&incident),
+        );
+        let result = send_report(payload, &mut completion);
+        outcome
+            .send(
+                result.is_err()
+                    && matches!(
+                        completion.0,
+                        Some(AutomaticReportContinuation::ManualRequired(_, _))
+                    ),
+            )
+            .unwrap();
+        release
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .unwrap();
+    })
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -511,7 +570,25 @@ fn redact_token(token: &str) -> String {
 // The service limit applies to serialized UTF-8 JSON, including escape expansion
 // and the preview. Stop accumulating serialized bytes at that limit before a
 // request; pending evidence is retained without an acknowledgement.
-fn bounded_report_body(value: &impl serde::Serialize, limit: usize) -> Result<Vec<u8>, String> {
+#[derive(Debug)]
+enum ReportBodyError {
+    TooLarge,
+    Serialization(String),
+}
+
+impl std::fmt::Display for ReportBodyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooLarge => f.write_str("The complete report exceeds the 16 MiB JSON upload limit. It remains local; export it for support."),
+            Self::Serialization(error) => f.write_str(error),
+        }
+    }
+}
+
+fn bounded_report_body(
+    value: &impl serde::Serialize,
+    limit: usize,
+) -> Result<Vec<u8>, ReportBodyError> {
     bounded_json(value, limit, false)
 }
 
@@ -524,14 +601,16 @@ fn bounded_json(
     value: &impl serde::Serialize,
     limit: usize,
     pretty: bool,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, ReportBodyError> {
     struct Body {
         bytes: Vec<u8>,
         limit: usize,
+        exceeded: bool,
     }
     impl std::io::Write for Body {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
             if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
+                self.exceeded = true;
                 return Err(std::io::Error::other(
                     "The complete report exceeds the 16 MiB JSON upload limit. It remains local; export it for support.",
                 ));
@@ -546,27 +625,47 @@ fn bounded_json(
     let mut body = Body {
         bytes: Vec::new(),
         limit,
+        exceeded: false,
     };
-    if pretty {
-        serde_json::to_writer_pretty(&mut body, value).map_err(|error| error.to_string())?;
+    let result = if pretty {
+        serde_json::to_writer_pretty(&mut body, value)
     } else {
-        serde_json::to_writer(&mut body, value).map_err(|error| error.to_string())?;
+        serde_json::to_writer(&mut body, value)
+    };
+    if let Err(error) = result {
+        return Err(if body.exceeded {
+            ReportBodyError::TooLarge
+        } else {
+            ReportBodyError::Serialization(error.to_string())
+        });
     }
     Ok(body.bytes)
 }
 
-fn send_report(payload: ReportPayload) -> Result<DeliveredReport, String> {
+fn send_report(
+    payload: ReportPayload,
+    completion: &mut AutomaticReportCompletion,
+) -> Result<DeliveredReport, String> {
     let mut payload = payload;
+    let mut source = None;
     if let Some(incident_id) = payload.incident_id.as_deref()
         && let Some(incident) = crash::refresh_pending_incident(incident_id)
     {
+        let (incident, source_hash) = crash::pending_snapshot(incident_id).unwrap_or_else(|| {
+            let digest = crash::serialized_incident_hash(&incident).unwrap_or_default();
+            (incident, digest)
+        });
         attach_incident_provenance(&mut payload, &incident);
+        source = Some((incident, source_hash));
     }
     if payload.diagnostics_full.is_some()
         && let Some(incident_id) = payload.incident_id.as_deref()
     {
         // Keep retries independent of whichever new session recovers the incident.
-        let complete = crash::complete_diagnostics(incident_id);
+        let complete = source.as_ref().map_or_else(
+            || crash::complete_diagnostics(incident_id),
+            |(incident, _)| crash::render_complete_diagnostics(incident),
+        );
         if complete.trim().is_empty() {
             return Err(
                 "The incident evidence is unavailable; it has not been marked sent.".to_string(),
@@ -580,7 +679,27 @@ fn send_report(payload: ReportPayload) -> Result<DeliveredReport, String> {
         .diagnostics_full
         .as_ref()
         .map(|text| format!("{:x}", sha2::Sha256::digest(text.as_bytes())));
-    let body = bounded_report_body(&payload, 16 * 1024 * 1024)?;
+    let body = match bounded_report_body(&payload, REPORT_BODY_LIMIT) {
+        Ok(body) => body,
+        Err(ReportBodyError::TooLarge) => {
+            if let (Some((incident, source_hash)), Some(digest)) =
+                (source.as_ref(), evidence_hash.as_ref())
+                && crash::mark_manual_upload_required(
+                    incident,
+                    source_hash,
+                    digest,
+                    &std::sync::atomic::AtomicBool::new(false),
+                )
+            {
+                completion.0 = Some(AutomaticReportContinuation::ManualRequired(
+                    incident.id.clone(),
+                    digest.clone(),
+                ));
+            }
+            return Err(ReportBodyError::TooLarge.to_string());
+        }
+        Err(error) => return Err(error.to_string()),
+    };
     let (status, text) = request_agent()?
         .post(REPORT_URL)
         .config()
@@ -970,9 +1089,31 @@ mod tests {
             bounded_report_body(&value, complete.len()).unwrap(),
             complete
         );
-        let error = bounded_report_body(&value, complete.len() - 1).unwrap_err();
+        let error = bounded_report_body(&value, complete.len() - 1)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("JSON upload limit") && error.contains("remains local"));
         assert!(bounded_report_body(&value, 0).is_err());
+    }
+
+    #[test]
+    fn serializer_error_text_cannot_impersonate_typed_upload_limit_failure() {
+        struct Invalid;
+        impl Serialize for Invalid {
+            fn serialize<S: serde::Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom(
+                    "The complete report exceeds the 16 MiB JSON upload limit",
+                ))
+            }
+        }
+        assert!(matches!(
+            bounded_report_body(&Invalid, REPORT_BODY_LIMIT),
+            Err(ReportBodyError::Serialization(_))
+        ));
+        assert!(matches!(
+            bounded_report_body(&serde_json::json!({"body":"actual bytes"}), 1),
+            Err(ReportBodyError::TooLarge)
+        ));
     }
 
     #[test]

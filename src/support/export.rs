@@ -152,7 +152,14 @@ fn export_from(
     }
     // Fixed directories and filename formats prevent a metadata record from
     // turning manual export into an arbitrary filesystem traversal.
-    for directory in ["originals", "pending", "deferred", "sessions", "panics"] {
+    for directory in [
+        "originals",
+        "pending",
+        "deferred",
+        "sessions",
+        "panics",
+        "manual-export-required",
+    ] {
         let path = root.join(directory);
         if std::fs::symlink_metadata(&path).is_err() {
             continue;
@@ -207,7 +214,9 @@ fn export_from(
                     (extension == "dfr" && hex(stem, 16))
                         || (matches!(extension, "raw" | "json") && hex(stem, 64))
                 }
-                "pending" | "deferred" => extension == "json" && hex(stem, 16),
+                "pending" | "deferred" | "manual-export-required" => {
+                    extension == "json" && hex(stem, 16)
+                }
                 "panics" => {
                     extension == "json"
                         && !stem.is_empty()
