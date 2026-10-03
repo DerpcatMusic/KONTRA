@@ -17,7 +17,7 @@ use super::{
 use anyhow::{Context, Result, bail, ensure};
 use std::collections::BTreeMap;
 
-pub const FIDELITY_DIAGNOSTIC: &str = "UVI Xpander shapes, both solvers and saturation have authored native comparisons at 48 kHz; quiet rate paths are compared at 8/32/44.1/48/64/96/192 kHz; scalar cutoff transitions are compared at 32/48/96 kHz; Q/Fat transitions, scalar KeyTracking with the AlgorithmII direct path, scalar soft/hardDrive with both solvers, and dynamic softDrive with AlgorithmII direct/oversampled paths are compared at 48 kHz, with native rounding residuals up to 3e-5; matrix-connected Freq/Q/Fat/Drive/KeyTracking and Bypass-only cold starts are compared with AlgorithmII direct at 48 kHz; plain scalar cold starts are compared at 32/48/96 kHz with both solvers and at 32/256-frame blocks at 48 kHz; other cold configurations, other live transitions, partial control-block timing, cross-rate saturation and exact float-rounding parity remain unverified";
+pub const FIDELITY_DIAGNOSTIC: &str = "UVI Xpander shapes, both solvers and saturation have authored native comparisons at 48 kHz; quiet rate paths are compared at 8/32/44.1/48/64/96/192 kHz; scalar cutoff transitions are compared at 32/48/96 kHz; Q/Fat transitions, scalar KeyTracking with the AlgorithmII direct path, scalar soft/hardDrive with both solvers, and dynamic softDrive with AlgorithmII direct/oversampled paths are compared at 48 kHz, with native rounding residuals up to 3e-5; matrix-connected Freq/Q/Fat/Drive/KeyTracking and Bypass-only cold starts are compared with AlgorithmII direct at 48 kHz; plain scalar cold starts are compared at 32/48/96 kHz with both solvers and at 32/256-frame blocks at 48 kHz; scalar pending-control Bypass resumes are compared at 48 kHz with AlgorithmII direct and AlgorithmI forced2x; other cold configurations, matrix Bypass resumes, other live transitions, partial control-block timing, cross-rate saturation and exact float-rounding parity remain unverified";
 const DEFAULTS: [(&str, f64); 10] = [
     ("Bypass", 0.),
     ("Freq", 1000.),
@@ -254,6 +254,7 @@ pub struct XpanderFilter {
     block_frames: usize,
     processed: bool,
     matrix_initialization: bool,
+    scalar_resume: Option<(usize, [f64; 3], f64)>,
     controls: [Control; 5],
     cutoff_point: f64,
     tracking: f64,
@@ -301,6 +302,7 @@ impl XpanderFilter {
             block_frames: 256,
             processed: false,
             matrix_initialization: false,
+            scalar_resume: None,
             controls: [Control::default(); 5],
             cutoff_point: 1000.,
             tracking: 0.,
@@ -380,11 +382,26 @@ impl XpanderFilter {
             return Ok(());
         }
         *current = value;
+        if name == "Bypass" && value == 0. && self.processed && !self.matrix_initialization {
+            self.scalar_resume = Some((
+                self.frame,
+                self.frequency_ramp.map(f64::from),
+                f64::from(self.q_ramp),
+            ));
+            for index in 0..5 {
+                self.controls[index].future = self.position(index);
+                self.controls[index].settle_begin = None;
+            }
+            self.fat = self.parameters["Fat"];
+            self.tracking = self.parameters["KeyTracking"];
+            self.cutoff_point = self.parameters["Freq"];
+            self.pending_drive = Some(self.parameters["Drive"]);
+        }
         if control.is_some() && (self.processed || matrix) {
             self.controls[control.unwrap()].settle_begin = None;
             return Ok(());
         }
-        // Bypass freezes all filter and control state together.
+        // Bypass freezes audio state; scalar re-enable synchronizes pending values.
         if name == "Bypass" || name == "Mode" {
             return Ok(());
         }
@@ -463,12 +480,9 @@ impl XpanderFilter {
     // block, converting endpoints in chunks of at most64 internal frames.
     fn scalar_startup_tick(&mut self) -> Result<()> {
         let span = (64 / self.phases).min(self.block_frames);
-        if self.frame % span != 0 {
-            return Ok(());
-        }
-        self.configure_frequency(self.parameters["Freq"])?;
-        if self.frame == 0 {
-            self.frequency_end = [
+        let (begin, initial, initial_q) = self.scalar_resume.unwrap_or((
+            0,
+            [
                 0.,
                 if self.parameters["Algorithm"] == 0. {
                     1.
@@ -476,16 +490,29 @@ impl XpanderFilter {
                     0.
                 },
                 self.feedback_factor,
-            ];
-            self.q_end = 0.;
+            ],
+            0.,
+        ));
+        let elapsed = self.frame - begin;
+        if elapsed % span != 0 {
+            return Ok(());
+        }
+        self.configure_frequency(self.parameters["Freq"])?;
+        if elapsed == 0 {
+            self.frequency_end = initial;
+            self.q_end = initial_q;
         }
         let start = self.frequency_end;
         let start_q = self.q_end;
-        let proportion = ((self.frame + span) as f64 / self.block_frames as f64).min(1.);
+        let proportion = ((elapsed + span) as f64 / self.block_frames as f64).min(1.);
         let (stage, pole) = if self.parameters["Algorithm"] == 0. {
-            (self.stage * proportion, 1. + (self.pole - 1.) * proportion)
+            (
+                initial[0] + (self.stage - initial[0]) * proportion,
+                initial[1] + (self.pole - initial[1]) * proportion,
+            )
         } else {
-            let raw = self.stage / (1. - self.stage) * proportion;
+            let raw_begin = initial[0] / (1. - initial[0]);
+            let raw = raw_begin + (self.stage / (1. - self.stage) - raw_begin) * proportion;
             (raw / (1. + raw), 0.)
         };
         self.frequency_end = [stage, pole, self.feedback_factor];
@@ -496,7 +523,10 @@ impl XpanderFilter {
                 / self.frequency_remaining as f32
         });
         self.q_ramp = start_q as f32;
-        self.q_end = self.parameters["Q"] * proportion;
+        let feedback_begin = 4. * initial_q * initial[2];
+        let feedback_end = 4. * self.parameters["Q"] * self.feedback_factor;
+        self.q_end = (feedback_begin + (feedback_end - feedback_begin) * proportion)
+            / (4. * self.feedback_factor);
         self.q_increment = (self.q_end as f32 - self.q_ramp) / self.frequency_remaining as f32;
         let coefficients = |frequency: [f64; 3], q: f64| {
             let feedback = 4. * q * frequency[2];
@@ -519,6 +549,12 @@ impl XpanderFilter {
     }
 
     fn control_tick(&mut self) -> Result<()> {
+        if let Some((begin, _, _)) = self.scalar_resume {
+            if self.frame - begin < self.block_frames {
+                return self.scalar_startup_tick();
+            }
+            self.scalar_resume = None;
+        }
         if !self.matrix_initialization && self.frame < self.block_frames {
             return self.scalar_startup_tick();
         }
@@ -2294,6 +2330,67 @@ mod tests {
                 assert!(
                     (output[n] - native).abs() < bound,
                     "native scalar startup rate{rate} {attrs} frame{n}: {} vs {native}",
+                    output[n]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn authored_native_scalar_bypass_resume_synchronizes_pending_controls() {
+        // Original 48k PCM16 sine. Bypass8192..16384 freezes audio memories;
+        // pending scalar solver values use a host-block raw parameter ramp
+        // on resume, Fat applies immediately, Drive one output frame later.
+        // Initially bypassed filters retain their zero-coefficient cold start.
+        #[rustfmt::skip]
+        const POINTS:[usize;28]=[16384,16385,16386,16391,16415,16416,16447,16448,16511,16512,16546,16548,16575,16576,16604,16622,16637,16639,16640,16699,16701,16896,17000,18000,19442,21845,22212,23495];
+        #[rustfmt::skip]
+        let cases:[(u8,&str,&str,&[(&str,f64)],f32,[f32;28]);14]=[
+            (1,"Freq",r#"Freq="1000" DistortionType="2""#,&[("Freq",5000.0)],1.1e-06,[1.121365875e-01,6.831220537e-02,2.853494883e-02,-8.992231637e-02,3.455404565e-02,1.406271476e-03,1.067777276e-01,7.327542454e-02,2.236816436e-01,2.125954777e-01,2.244772017e-01,1.870541275e-01,1.768679768e-01,2.025690377e-01,-4.163762182e-02,1.205226313e-02,-1.095725596e-01,-2.608799748e-02,1.766579039e-02,-2.327559292e-01,-2.405845225e-01,1.796502620e-01,1.914607286e-01,1.210507005e-01,-1.667598076e-02,-7.056327164e-02,1.304412484e-01,-7.420493662e-02]),
+            (1,"Q",r#"Freq="18000" DistortionType="2""#,&[("Q",0.75)],3e-07,[-1.030676439e-01,-3.007454872e-01,-2.272285521e-01,-1.533425748e-01,-1.346374899e-01,-1.708671749e-01,-2.011485770e-02,-6.479670852e-02,1.977234185e-01,1.666947305e-01,1.912009120e-01,1.211230755e-01,2.368467450e-01,2.478765696e-01,4.757767543e-02,-7.437728345e-02,-3.299279884e-02,5.706975982e-02,9.998288006e-02,-2.504088879e-01,-2.284341305e-01,1.209805459e-01,1.373548061e-01,1.901455671e-01,-9.875155240e-02,-1.481934041e-01,1.974265873e-01,5.810761824e-03]),
+            (1,"FreqQ",r#"Freq="1000" DistortionType="2""#,&[("Freq",18000.0),("Q",0.5)],8e-07,[1.121365875e-01,6.713136286e-02,2.333703823e-02,-1.181148440e-01,-1.083109304e-01,-1.575148702e-01,-2.607643977e-02,-7.234842330e-02,1.957907379e-01,1.639453173e-01,1.887194663e-01,1.182149500e-01,2.374200523e-01,2.483308613e-01,4.663196579e-02,-7.231761515e-02,-3.582008556e-02,5.404400453e-02,9.706103057e-02,-2.506087124e-01,-2.297626138e-01,1.237331480e-01,1.400196999e-01,1.881493777e-01,-9.587935358e-02,-1.456548721e-01,1.955040246e-01,2.686424181e-03]),
+            (1,"Drive",r#"Freq="1000" DistortionType="0""#,&[("Drive",12.0)],6e-07,[1.419448107e-01,3.484204412e-02,-6.404666603e-02,-3.600611389e-01,1.801161617e-01,9.169935435e-02,3.842727542e-01,3.197788596e-01,4.435324073e-01,4.682403803e-01,4.492391050e-01,4.799623787e-01,1.159243584e-01,1.935682595e-01,-3.623424172e-01,3.224934638e-01,-4.493166208e-01,-3.500237167e-01,-2.782478929e-01,-2.752836347e-01,-3.873559833e-01,4.798422754e-01,4.775533974e-01,-6.568346918e-02,2.805953324e-01,1.769320220e-01,-4.337545484e-02,-4.149131477e-01]),
+            (1,"Fat",r#"Freq="1000" Q=".75" DistortionType="2""#,&[("Fat",0.2)],4e-06,[5.741933584e-01,5.130950809e-01,4.595958889e-01,2.775690258e-01,-2.410010397e-01,-2.971554101e-01,5.957621336e-01,5.458559394e-01,1.805496365e-01,1.893843859e-01,4.017819762e-01,4.410296679e-01,-1.199517548e-01,-5.705242231e-02,-2.220256478e-01,1.973612309e-01,-3.091032207e-01,-2.598536313e-01,-2.218737006e-01,-6.836829334e-02,-1.667070389e-01,3.074546456e-01,3.004288077e-01,-1.357562393e-01,2.471158504e-01,1.966388375e-01,-1.226580366e-01,-3.021934927e-01]),
+            (1,"QFat",r#"Freq="1000" DistortionType="2""#,&[("Q",0.75),("Fat",0.2)],1e-06,[1.121365875e-01,6.851673871e-02,2.945060655e-02,-8.490754664e-02,6.007921323e-02,3.171107545e-02,1.425426900e-01,1.215769202e-01,1.999621242e-01,2.137971222e-01,2.222011536e-01,2.454235107e-01,1.516239718e-02,6.254112720e-02,-2.478256673e-01,2.465939522e-01,-3.128018081e-01,-2.753942013e-01,-2.428910881e-01,-9.604588896e-02,-1.944203675e-01,3.063288629e-01,2.998043597e-01,-1.357563138e-01,2.471158504e-01,1.966388375e-01,-1.226580366e-01,-3.021934927e-01]),
+            (1,"Tracking",r#"Freq="1000" DistortionType="2""#,&[("KeyTracking",1.0)],2e-06,[1.121365875e-01,6.847592443e-02,2.926306427e-02,-8.580119908e-02,5.201588944e-02,2.419563197e-02,1.169945523e-01,9.387052804e-02,1.811909974e-01,1.828426421e-01,1.898790449e-01,1.816429645e-01,9.365101159e-02,1.232279465e-01,-9.930411726e-02,7.780120522e-02,-1.489488333e-01,-8.934593946e-02,-5.456067249e-02,-1.685580760e-01,-1.995358318e-01,1.905079782e-01,1.959394217e-01,3.752666339e-02,5.546918139e-02,9.320300072e-03,4.671197385e-02,-1.253248453e-01]),
+            (1,"InitiallyTrue",r#"Freq="1000" Bypass="1" DistortionType="2""#,&[],1.1e-06,[0.000000000e+00,-6.234503235e-05,-2.505171869e-04,-2.530384809e-03,1.736443304e-02,1.469383761e-02,4.204907641e-02,3.956321627e-02,6.891290843e-02,7.659401000e-02,9.054146707e-02,1.023624465e-01,1.221700851e-02,3.322675079e-02,-1.007672101e-01,9.332577884e-02,-1.311686635e-01,-1.022630483e-01,-8.231353015e-02,-8.477911353e-02,-1.215782091e-01,1.464656293e-01,1.465821862e-01,-2.315851301e-02,8.452907950e-02,5.534631386e-02,-1.654135622e-02,-1.230509430e-01]),
+            (0,"Q",r#"Freq="18000" DistortionType="2""#,&[("Q",0.75)],2e-06,[2.481931746e-01,2.325310260e-01,1.464293152e-01,-2.753750086e-01,-2.292520925e-02,-7.126594335e-02,8.961431682e-02,4.572840780e-02,2.457771897e-01,2.306887656e-01,2.422515005e-01,2.005091161e-01,1.867147386e-01,2.144013196e-01,-5.303851143e-02,2.502196468e-02,-1.278102249e-01,-4.227214679e-02,3.243065672e-03,-2.392651439e-01,-2.529708147e-01,1.983250231e-01,2.097446173e-01,1.130849496e-01,-1.942372648e-03,-5.885343999e-02,1.233401299e-01,-9.246233851e-02]),
+            (0,"FreqQ",r#"Freq="1000" DistortionType="2""#,&[("Freq",18000.0),("Q",0.5)],6e-06,[1.034182683e-01,1.195819229e-01,1.248280406e-01,-6.899111718e-02,9.180913121e-02,4.296831042e-02,1.301970333e-01,7.362484932e-02,2.567329705e-01,2.374916822e-01,2.460500002e-01,1.992294043e-01,1.936629266e-01,2.207589149e-01,-5.273549259e-02,2.766094916e-02,-1.321573406e-01,-4.766985402e-02,-2.454596572e-03,-2.373332977e-01,-2.532472908e-01,2.021710426e-01,2.132657021e-01,1.076249033e-01,4.237789195e-03,-5.291526765e-02,1.179738045e-01,-9.818929434e-02]),
+            (0,"Drive",r#"Freq="1000" DistortionType="0""#,&[("Drive",12.0)],4e-07,[1.309297532e-01,1.169870570e-01,1.210346892e-01,-2.494238466e-01,3.764063716e-01,3.078838289e-01,4.734180272e-01,4.519719183e-01,3.272516429e-01,3.796915114e-01,3.380439878e-01,4.292059541e-01,-1.050245315e-01,-1.700138487e-02,-4.675071836e-01,4.530415833e-01,-4.749206901e-01,-4.635199308e-01,-4.323352575e-01,-8.300581574e-02,-2.358662933e-01,4.264221489e-01,4.101831317e-01,-2.832070887e-01,4.335518181e-01,3.704189360e-01,-2.635841370e-01,-4.779381454e-01]),
+            (0,"Fat",r#"Freq="1000" Q=".75" DistortionType="2""#,&[("Fat",0.2)],5e-07,[3.764719665e-01,4.740654826e-01,5.031592250e-01,3.017545044e-01,-6.039920449e-02,-1.171960384e-01,6.471096277e-01,6.385281086e-01,1.552947760e-01,1.798436046e-01,2.769587934e-01,3.729752600e-01,-2.621857226e-01,-2.109334171e-01,-2.339044660e-01,2.591118515e-01,-3.240748942e-01,-3.265694380e-01,-3.124436140e-01,6.564452499e-02,-4.196362942e-02,2.369671464e-01,2.225810289e-01,-2.469274998e-01,3.066584468e-01,2.842006385e-01,-2.378845513e-01,-3.086685240e-01]),
+            (0,"QFat",r#"Freq="1000" DistortionType="2""#,&[("Q",0.75),("Fat",0.2)],2e-06,[1.034171060e-01,1.195404902e-01,1.247849315e-01,-4.678093642e-02,1.217699796e-01,1.004945189e-01,1.736064553e-01,1.659190506e-01,1.368281096e-01,1.655504405e-01,1.520388126e-01,2.100613564e-01,-1.043035164e-01,-5.947012454e-02,-2.861685157e-01,2.978202701e-01,-3.016641736e-01,-3.157418370e-01,-3.076559603e-01,4.547365755e-02,-6.589417160e-02,2.390565574e-01,2.233195156e-01,-2.469277680e-01,3.066584468e-01,2.842006385e-01,-2.378845513e-01,-3.086685240e-01]),
+            (0,"Tracking",r#"Freq="1000" DistortionType="2""#,&[("KeyTracking",1.0)],1.6e-05,[1.034170911e-01,1.195387468e-01,1.247547492e-01,-4.801463708e-02,1.132793501e-01,9.171886742e-02,1.564510167e-01,1.447231323e-01,1.497130990e-01,1.660519540e-01,1.638147533e-01,1.871316284e-01,6.277649198e-03,4.135422409e-02,-1.662679613e-01,1.531932801e-01,-1.957905143e-01,-1.623382419e-01,-1.372468174e-01,-9.745680541e-02,-1.551408768e-01,2.050794512e-01,2.033149898e-01,-5.708803609e-02,1.382164955e-01,1.003382504e-01,-4.803426936e-02,-1.849562377e-01]),
+        ];
+        for (algorithm, tag, attrs, changes, bound, expected) in cases {
+            let mut fx = filter(
+                &format!(r#"Mode="0" Algorithm="{algorithm}" Oversampling="0" {attrs}"#),
+                1,
+            );
+            fx.set_note(72).unwrap();
+            let mut output = Vec::new();
+            for n in 0..24576 {
+                if n == 8192 || n == 16384 {
+                    fx.set_parameter("Bypass", &ParameterValue::Boolean(n == 8192))
+                        .unwrap();
+                    if n == 8192 {
+                        for (name, value) in changes {
+                            fx.set_parameter(name, &ParameterValue::Number(*value))
+                                .unwrap();
+                        }
+                    }
+                }
+                let mut io = [[0.; MAX_CHANNELS]];
+                io[0][0] = authored_sine(n, 48000.);
+                fx.process(&mut io).unwrap();
+                if (8192..16384).contains(&n) {
+                    assert_eq!(io[0][0], authored_sine(n, 48000.));
+                }
+                output.push(io[0][0]);
+            }
+            for (n, native) in POINTS.into_iter().zip(expected) {
+                assert!(
+                    (output[n] - native).abs() < bound,
+                    "native scalar bypass resume algorithm{algorithm} {tag} frame{n}: {} vs {native}",
                     output[n]
                 );
             }

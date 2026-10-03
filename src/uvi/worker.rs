@@ -65,6 +65,7 @@ pub enum PacketError {
     Underrun,
     Failed,
     Stopped,
+    PortTaken,
 }
 
 impl std::fmt::Display for PacketError {
@@ -332,9 +333,32 @@ impl Shared {
 pub struct Worker {
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
+    cursor: Option<PacketCursor>,
+}
+
+#[derive(Default)]
+struct PacketCursor {
     next_request: u64,
     minimum_output: u64,
     pending_output: Option<Output>,
+}
+
+/// Exclusive packet endpoint created on the control thread. Its packet methods
+/// are fixed and nonblocking; its owned storage must be retired and destroyed on
+/// the control thread. Keep the Worker there until this endpoint is detached.
+/// It deliberately has neither Clone nor a worker-thread handle.
+pub struct AudioPort {
+    shared: Arc<Shared>,
+    cursor: PacketCursor,
+}
+
+impl AudioPort {
+    pub fn realtime(&mut self) -> Realtime<'_> {
+        Realtime {
+            shared: &self.shared,
+            cursor: Some(&mut self.cursor),
+        }
+    }
 }
 
 impl Worker {
@@ -407,9 +431,17 @@ impl Worker {
         Ok(Self {
             shared,
             thread: Some(handle),
-            next_request: 0,
-            minimum_output: 0,
-            pending_output: None,
+            cursor: Some(PacketCursor::default()),
+        })
+    }
+
+    /// Control thread only. Extraction is one-time: subsequent controller packet
+    /// access returns PortTaken, while status and UI mailboxes remain available.
+    pub fn take_audio_port(&mut self) -> Option<AudioPort> {
+        let cursor = self.cursor.take()?;
+        Some(AudioPort {
+            shared: Arc::clone(&self.shared),
+            cursor,
         })
     }
 
@@ -418,9 +450,7 @@ impl Worker {
     pub fn realtime(&mut self) -> Realtime<'_> {
         Realtime {
             shared: &self.shared,
-            next_request: &mut self.next_request,
-            minimum_output: &mut self.minimum_output,
-            pending_output: &mut self.pending_output,
+            cursor: self.cursor.as_mut(),
         }
     }
 
@@ -517,7 +547,11 @@ impl Worker {
                     .store(Status::Failed as u8, Ordering::Release);
             }
         }
-        if self.pending_output.take().is_some() {
+        if self
+            .cursor
+            .as_mut()
+            .is_some_and(|cursor| cursor.pending_output.take().is_some())
+        {
             self.shared
                 .counters
                 .cancelled_outputs
@@ -536,15 +570,19 @@ impl Drop for Worker {
 /// file access, heavyweight drop or join. Queue progress is polled by the worker.
 pub struct Realtime<'a> {
     shared: &'a Shared,
-    next_request: &'a mut u64,
-    minimum_output: &'a mut u64,
-    pending_output: &'a mut Option<Output>,
+    cursor: Option<&'a mut PacketCursor>,
 }
 
 impl Realtime<'_> {
     pub fn try_submit(&mut self, request: Request) -> std::result::Result<(), Rejected> {
+        let Some(cursor) = self.cursor.as_mut() else {
+            return Err(Rejected {
+                reason: PacketError::PortTaken,
+                request,
+            });
+        };
         let validation = self.shared.activation(request.stamp).and_then(|()| {
-            if request.stamp.frame != *self.next_request {
+            if request.stamp.frame != cursor.next_request {
                 return Err(PacketError::WrongFrame);
             }
             request.validate()
@@ -555,7 +593,7 @@ impl Realtime<'_> {
         }
         match self.shared.requests.push(request) {
             Ok(()) => {
-                *self.next_request += BLOCK_FRAMES as u64;
+                cursor.next_request += BLOCK_FRAMES as u64;
                 Ok(())
             }
             Err(request) => {
@@ -575,16 +613,17 @@ impl Realtime<'_> {
     /// in at most capacity+1 steps; an early packet stays inline for a later call.
     /// Underrun never substitutes old audio or silently changes the input cursor.
     pub fn try_receive(&mut self, expected: Stamp) -> std::result::Result<Output, PacketError> {
+        let cursor = self.cursor.as_mut().ok_or(PacketError::PortTaken)?;
         self.shared.activation(expected)?;
-        if expected.frame < *self.minimum_output
+        if expected.frame < cursor.minimum_output
             || !expected.frame.is_multiple_of(BLOCK_FRAMES as u64)
             || expected.frame.checked_add(BLOCK_FRAMES as u64).is_none()
         {
             return Err(PacketError::WrongFrame);
         }
-        *self.minimum_output = expected.frame;
+        cursor.minimum_output = expected.frame;
         for _ in 0..=QUEUE_CAPACITY {
-            let Some(output) = self
+            let Some(output) = cursor
                 .pending_output
                 .take()
                 .or_else(|| self.shared.outputs.pop())
@@ -602,10 +641,10 @@ impl Realtime<'_> {
                 continue;
             }
             if output.stamp.frame > expected.frame {
-                *self.pending_output = Some(output);
+                cursor.pending_output = Some(output);
                 break;
             }
-            *self.minimum_output += BLOCK_FRAMES as u64;
+            cursor.minimum_output += BLOCK_FRAMES as u64;
             return Ok(output);
         }
         self.shared
@@ -835,12 +874,10 @@ mod tests {
         assert!(!std::mem::needs_drop::<Output>());
         assert!(!std::mem::needs_drop::<Realtime<'_>>());
         let shared = Shared::new(7, 11);
-        let (mut next_request, mut minimum_output, mut pending_output) = (0, 0, None);
+        let mut cursor = PacketCursor::default();
         let mut realtime = Realtime {
             shared: &shared,
-            next_request: &mut next_request,
-            minimum_output: &mut minimum_output,
-            pending_output: &mut pending_output,
+            cursor: Some(&mut cursor),
         };
         let check = || {
             let mut packet = Request::new(stamp(0), &[note(0)]).unwrap();
@@ -1076,6 +1113,130 @@ mod tests {
     }
 
     #[test]
+    fn extracted_audio_port_is_exclusive_and_preserves_queued_packet_cursors() {
+        fn assert_send<T: Send>() {}
+        assert_send::<AudioPort>();
+        let shared = Arc::new(Shared::new(7, 11));
+        let mut worker = Worker {
+            shared: Arc::clone(&shared),
+            thread: None,
+            cursor: Some(PacketCursor::default()),
+        };
+        worker
+            .realtime()
+            .try_submit(Request::new(stamp(0), &[]).unwrap())
+            .unwrap();
+        shared.outputs.push(output(stamp(512))).unwrap();
+        assert_eq!(
+            worker.realtime().try_receive(stamp(0)).unwrap_err(),
+            PacketError::Underrun
+        );
+        let mut port = worker.take_audio_port().unwrap();
+        assert!(worker.take_audio_port().is_none());
+        let check = || {
+            let packet = Request::new(stamp(256), &[]).unwrap();
+            assert_eq!(
+                worker.realtime().try_submit(packet).unwrap_err().reason,
+                PacketError::PortTaken
+            );
+            assert_eq!(
+                worker.realtime().try_receive(stamp(512)).unwrap_err(),
+                PacketError::PortTaken
+            );
+            port.realtime().try_submit(packet).unwrap();
+            assert_eq!(shared.requests.pop().unwrap().stamp, stamp(0));
+            assert_eq!(shared.requests.pop().unwrap().stamp, stamp(256));
+            assert_eq!(
+                port.realtime().try_receive(stamp(256)).unwrap_err(),
+                PacketError::Underrun
+            );
+            assert_eq!(
+                port.realtime().try_receive(stamp(512)).unwrap().stamp,
+                stamp(512)
+            );
+            shared.status.store(Status::Failed as u8, Ordering::Release);
+            assert_eq!(
+                port.realtime().try_receive(stamp(768)).unwrap_err(),
+                PacketError::Failed
+            );
+            assert_eq!(
+                port.realtime()
+                    .try_submit(Request::new(stamp(512), &[]).unwrap())
+                    .unwrap_err()
+                    .reason,
+                PacketError::Failed
+            );
+            shared.stop.store(true, Ordering::Release);
+            assert_eq!(
+                port.realtime().try_receive(stamp(768)).unwrap_err(),
+                PacketError::Stopped
+            );
+        };
+        #[cfg(feature = "plugin")]
+        assert_eq!(crate::plugin::tests::allocations(check), 0);
+        #[cfg(not(feature = "plugin"))]
+        {
+            let mut check = check;
+            check();
+        }
+        drop(port);
+        worker.stop();
+    }
+
+    #[test]
+    fn extracted_audio_port_runs_while_controller_services_owned_ui_snapshots() {
+        let (config, source) = authored_bank();
+        let path = config.bank.clone();
+        let program = parse_program(&source).unwrap();
+        let processor = program
+            .nodes
+            .iter()
+            .position(|node| node.kind == "ScriptProcessor")
+            .unwrap();
+        let mut worker = Worker::start(config, 7, 11).unwrap();
+        worker.wait_ready(Duration::from_secs(5)).unwrap();
+        let mut port = worker.take_audio_port().unwrap();
+        port.realtime()
+            .try_submit(Request::new(stamp(0), &[note(0)]).unwrap())
+            .unwrap();
+        let start = Instant::now();
+        let output = loop {
+            match port.realtime().try_receive(stamp(0)) {
+                Ok(output) => break output,
+                Err(PacketError::Underrun) => {
+                    assert!(start.elapsed() < Duration::from_secs(5));
+                    thread::sleep(POLL);
+                }
+                Err(error) => panic!("{error:?}"),
+            }
+        };
+        assert_eq!(output.stamp, stamp(0));
+        assert!(
+            output.commands > 0
+                && output
+                    .audio
+                    .iter()
+                    .flatten()
+                    .all(|sample| sample.is_finite())
+        );
+        assert!(
+            output
+                .audio
+                .iter()
+                .flatten()
+                .any(|sample| sample.abs() > 1e-5)
+        );
+        let request = worker.request_ui_snapshot(processor).unwrap();
+        let snapshot = receive_ui(&worker, request);
+        assert_eq!(snapshot.stamp, stamp(256));
+        assert!(snapshot.snapshot.is_ok());
+        drop(port); // Serialized retirement precedes controller stop/join.
+        worker.stop();
+        assert_eq!(worker.status(), Status::Stopped);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn worker_ui_snapshots_coalesce_are_owned_and_do_not_advance_idle_playback() {
         let (config, source) = authored_bank();
         let path = config.bank.clone();
@@ -1292,12 +1453,10 @@ mod tests {
     fn fixed_ui_packets_revalidate_public_fields_without_callback_allocations() {
         use super::super::host::UiEditValue;
         let shared = Shared::new(7, 11);
-        let (mut next_request, mut minimum_output, mut pending_output) = (0, 0, None);
+        let mut cursor = PacketCursor::default();
         let mut realtime = Realtime {
             shared: &shared,
-            next_request: &mut next_request,
-            minimum_output: &mut minimum_output,
-            pending_output: &mut pending_output,
+            cursor: Some(&mut cursor),
         };
         let check = || {
             let edit = ui_input(0, 2, UiEditValue::Number(0.75));

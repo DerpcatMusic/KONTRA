@@ -26,8 +26,8 @@ pub(crate) fn image_signature(bytes: &[u8]) -> bool {
 
 fn image_dimensions(width: usize, height: usize) -> Result<()> {
     ensure!(
-        (1..=IMAGE_FRAMES).contains(&width) && (1..=256).contains(&height),
-        "Image wavetables require 1..2048 columns and 1..256 rows; larger-image resampling/cropping is unverified"
+        (1..=IMAGE_FRAMES).contains(&width) && (1..=128).contains(&height),
+        "Image wavetables require 1..2048 columns and 1..128 rows; larger-image resampling/cropping is unverified"
     );
     Ok(())
 }
@@ -132,18 +132,25 @@ fn image_pixels(width: usize, height: usize, components: usize, pixels: &[u8]) -
             brightness[x * height + height - row - 1] = value;
         }
     }
-    let mean = brightness.iter().map(|&v| v as f64).sum::<f64>() / brightness.len() as f64;
-    let peak = *brightness.iter().max().unwrap() as f64 - mean;
-    let values = brightness
+    let flat = brightness.iter().all(|&value| value == brightness[0]);
+    let mut values: Vec<f32> = brightness
         .into_iter()
-        .map(|v| {
-            if peak == 0. {
-                0.
-            } else {
-                ((v as f64 - mean) / peak) as f32
-            }
-        })
+        .map(|value| value as f32 * (1f32 / 255f32) * 255f32)
         .collect();
+    // Fresh authored 96/128-row native PNGs establish this reciprocal
+    // roundtrip and sequential f32 sum in reversed row/planar order.
+    // Changing precision or traversal changes normalization at large totals.
+    let mut mean = 0f32;
+    for row in 0..height {
+        for frame in 0..IMAGE_FRAMES {
+            mean += values[frame * height + row];
+        }
+    }
+    mean /= values.len() as f32;
+    let peak = values.iter().copied().fold(f32::NEG_INFINITY, f32::max) - mean;
+    for value in &mut values {
+        *value = if flat { 0. } else { (*value - mean) / peak };
+    }
     Ok(Sample {
         rate: 48_000,
         channels: height,
@@ -999,6 +1006,9 @@ mod tests {
         );
         assert!(image_pixels(0, 1, 3, &[]).is_err());
         assert!(image_pixels(2049, 1, 3, &[]).is_err());
+        // Native authored 190-row PNGs are reduced to 128 slices; their
+        // normalization is still unverified, so preserve smaller images only.
+        assert!(image_pixels(1, 129, 3, &vec![0; 129 * 3]).is_err());
         assert!(image_pixels(1, 257, 3, &[]).is_err());
         assert!(image_pixels(1, 1, 4, &[0, 0, 0, 128]).is_err());
         assert!(image_pixels(1, 1, 3, &[0, 0]).is_err());
@@ -1021,6 +1031,22 @@ mod tests {
                 true,
             ),
             (1, 4, png::BitDepth::Eight, png::ColorType::Rgba, rgba, true),
+            (
+                1,
+                128,
+                png::BitDepth::Eight,
+                png::ColorType::Grayscale,
+                vec![0; 128],
+                true,
+            ),
+            (
+                1,
+                129,
+                png::BitDepth::Eight,
+                png::ColorType::Grayscale,
+                vec![0; 129],
+                false,
+            ),
             (
                 1,
                 1,
@@ -1080,6 +1106,65 @@ mod tests {
             } else {
                 assert!(decoded.is_err());
             }
+        }
+    }
+
+    #[test]
+    fn authored_native_image_normalization_order() {
+        // Individually authored grayscale row barcodes, captured in official
+        // Workstation 4.0.9 with one oscillator and FadeWaveIndex=0. The mono
+        // keygroup center contributes a factor of 0.5 to these native samples.
+        let indices = [0f64, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99, 1.];
+        for (height, stride, offset, native) in [
+            (
+                128usize,
+                17usize,
+                11usize,
+                [
+                    -0.0024106507f32,
+                    0.20330076,
+                    -0.12900233,
+                    -0.25559399,
+                    -0.38218564,
+                    0.36549637,
+                    -0.37427366,
+                    -0.44152549,
+                ],
+            ),
+            (
+                96,
+                47,
+                23,
+                [
+                    0.04353172,
+                    0.39375308,
+                    -0.36571562,
+                    0.23241511,
+                    -0.17683224,
+                    0.25602555,
+                    -0.40113127,
+                    -0.40113127,
+                ],
+            ),
+        ] {
+            let pixels: Vec<u8> = (0..height)
+                .map(|row| ((row * stride + offset) % 256) as u8)
+                .collect();
+            let table = image_pixels(1, height, 1, &pixels).unwrap();
+            for (index, expected) in indices.into_iter().zip(native) {
+                let row = ((index * height as f64) as usize).min(height - 1);
+                let actual = table.interleaved.value(row).unwrap() * 0.5;
+                assert!(
+                    (actual - expected).abs() < 1e-7,
+                    "{height} rows, index {index}"
+                );
+                assert_eq!(
+                    table.interleaved.value(row),
+                    table.interleaved.value(2047 * height + row)
+                );
+            }
+            let flat = image_pixels(1, height, 1, &vec![13; height]).unwrap();
+            assert!(flat.interleaved.iter().all(|value| value == 0.));
         }
     }
 

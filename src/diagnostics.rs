@@ -2157,21 +2157,25 @@ mod tests {
         sender.send(Command::Stop).unwrap();
         drop(sender);
         lock(&session.worker).take().unwrap().join().unwrap();
-        std::fs::remove_dir_all(directory).unwrap();
+        std::fs::remove_dir_all(&directory).unwrap();
 
-        // Preserve existing load outcomes/stage semantics without requiring a
-        // successful instrument. Filter by this load ID when tests run in parallel.
+        // Parallel producers can legitimately evict this load's oldest rows
+        // from the bounded global history. Reuse the isolated journal contract.
+        let load_session = Session::start(directory.join("load-contract"));
+        let load_snapshot = || {
+            lock(&load_session.history).events.iter().map(|(row, _)| row.clone()).collect::<Vec<_>>()
+        };
         let mut trace = LoadTrace::new(Path::new("Missing Harp.nki"), 2, Some(3));
+        trace.test_session = Some(load_session.clone());
         trace.stage("import");
         trace.detail("zones", 17);
         trace.issue("artwork", "missing", "knob.png not found");
         let report = trace.finish("loaded");
         assert_eq!(report["status"], "partial");
         assert_eq!(report["details"]["zones"], 17);
-        let recent = snapshot();
+        let recent = load_snapshot();
         assert!(
             recent
-                .events
                 .iter()
                 .any(|row| row.load_id.as_deref() == report["load_id"].as_str()
                     && row.stage.as_deref() == Some("artwork")
@@ -2180,6 +2184,7 @@ mod tests {
         // Initialization's two existing text formatters retain their original
         // reasons while promoting the same zero-based slot and source line.
         let mut trace = LoadTrace::new(Path::new("Partial Harp.nki"), 0, Some(1));
+        trace.test_session = Some(load_session.clone());
         trace.stage("scripts");
         trace.detail("zones_total", 95_624);
         trace.detail("library", "Example Library");
@@ -2223,9 +2228,8 @@ mod tests {
         );
         assert_eq!(report["failure"], "Cannot finish sample headers");
         assert!(serde_json::to_vec(report.as_ref()).unwrap().len() > EVENT_BYTES);
-        let recent = snapshot();
+        let recent = load_snapshot();
         let events: Vec<_> = recent
-            .events
             .iter()
             .filter(|row| row.load_id.as_deref() == report["load_id"].as_str())
             .collect();
@@ -2281,20 +2285,24 @@ mod tests {
         assert_eq!(summary.library.as_deref(), Some("Example Library"));
 
         for status in ["canceled", "stale"] {
-            let trace = LoadTrace::new(Path::new("Harp.nki"), 0, None);
+            let mut trace = LoadTrace::new(Path::new("Harp.nki"), 0, None);
+            trace.test_session = Some(load_session.clone());
             assert_eq!(trace.finish(status)["status"], status);
         }
         let mut trace = LoadTrace::new(Path::new("unfinished.nki"), 0, None);
+        trace.test_session = Some(load_session.clone());
         trace.stage("samples");
         let id = trace.report["load_id"].as_str().unwrap().to_owned();
         drop(trace);
         assert!(
-            snapshot()
-                .events
+            load_snapshot()
                 .iter()
                 .any(|row| row.load_id.as_deref() == Some(&id)
                     && row.event == "load_incomplete"
                     && row.outcome.as_deref() == Some("incomplete"))
         );
+        let mut owner = Some(load_session.clone());
+        stop(&mut owner).unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

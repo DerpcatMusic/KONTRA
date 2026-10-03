@@ -2590,13 +2590,24 @@ impl ModulationGraph {
         Ok(value == 1.)
     }
     fn base(&self, p: &Parameter, live: &HashMap<Parameter, f64>) -> Result<f64> {
+        self.base_cached(
+            p,
+            self.cached_parameters
+                .get(p.0)
+                .and_then(|node| node.get(&p.1)),
+            live,
+        )
+    }
+    fn base_cached(
+        &self,
+        p: &Parameter,
+        cached: Option<&CachedParameter>,
+        live: &HashMap<Parameter, f64>,
+    ) -> Result<f64> {
         if let Some(v) = live.get(p) {
             return Ok(*v);
         }
-        if let Some(value) = self.cached_parameters[p.0]
-            .get(&p.1)
-            .and_then(|cached| cached.number)
-        {
+        if let Some(value) = cached.and_then(|cached| cached.number) {
             return Ok(value);
         }
         let default = match (self.kinds[p.0].as_str(), p.1.as_str()) {
@@ -2654,7 +2665,7 @@ impl ModulationGraph {
         depth: usize,
     ) -> Result<f64> {
         if let Some(cached) = self.cached_parameters[node].get(name) {
-            self.value(&cached.key, input, live, memo, depth)
+            self.value_cached(&cached.key, Some(cached), input, live, memo, depth)
         } else {
             self.value(&(node, name.into()), input, live, memo, depth)
         }
@@ -2671,7 +2682,28 @@ impl ModulationGraph {
             depth < DEPTH,
             "UVI modulation evaluation depth exceeds limit"
         );
-        let cached = self.cached_parameters[p.0].get(&p.1);
+        self.value_cached(
+            p,
+            self.cached_parameters[p.0].get(&p.1),
+            input,
+            live,
+            memo,
+            depth,
+        )
+    }
+    fn value_cached(
+        &self,
+        p: &Parameter,
+        cached: Option<&CachedParameter>,
+        input: &Inputs,
+        live: &HashMap<Parameter, f64>,
+        memo: &mut MemoScratch,
+        depth: usize,
+    ) -> Result<f64> {
+        ensure!(
+            depth < DEPTH,
+            "UVI modulation evaluation depth exceeds limit"
+        );
         if let Some(value) = cached.and_then(|cached| memo.get(cached.slot)) {
             return Ok(value);
         }
@@ -2686,7 +2718,7 @@ impl ModulationGraph {
             .absolute_audio_bases
             .get(p)
             .copied()
-            .unwrap_or(self.base(p, live)?);
+            .unwrap_or(self.base_cached(p, cached, live)?);
         let value = if !edges.iter().any(|c| c.mode == 0) {
             base
         } else if (matches!(p.1.as_str(), "Gain" | "Volume" | "Ratio" | "Depth")
@@ -2724,7 +2756,7 @@ impl ModulationGraph {
         {
             // Native logarithmic time converter has an offset; its physical
             // range alone does not determine the modulation span.
-            let delta = self.delta(p, input, live, memo, depth + 1)?;
+            let delta = self.delta_edges(edges, input, live, memo, depth + 1)?;
             let offset = f64::from(0.001_f32);
             let min = f64::from(0.0001_f32);
             let max = 10.;
@@ -2734,27 +2766,30 @@ impl ModulationGraph {
         } else if p.1 == "Freq" && self.kinds[p.0] == "LFO" {
             // Workstation original renders: base1 + ratio.1*source1 =>3Hz,
             // ratio.25 =>6Hz; base2 + ratio.25*source.5 =>4.5Hz.
-            (base + 20. * self.delta(p, input, live, memo, depth + 1)?).clamp(0., 20.)
+            (base + 20. * self.delta_edges(edges, input, live, memo, depth + 1)?).clamp(0., 20.)
         } else if p.1 == "Freq" && matches!(self.kinds[p.0].as_str(), "OnePole" | "XpanderFilter") {
             ensure!(base > 0., "Invalid UVI filter frequency base");
-            let delta = self.delta(p, input, live, memo, depth + 1)?;
+            let delta = self.delta_edges(edges, input, live, memo, depth + 1)?;
             (base * 1000_f64.powf(delta)).clamp(20., 20000.)
         } else if self.kinds[p.0] == "XpanderFilter" && matches!(p.1.as_str(), "Q" | "Fat") {
-            (base + self.delta(p, input, live, memo, depth + 1)?).clamp(0., 1.)
+            (base + self.delta_edges(edges, input, live, memo, depth + 1)?).clamp(0., 1.)
         } else if self.kinds[p.0] == "XpanderFilter" && p.1 == "Drive" {
-            (base + 40. * self.delta(p, input, live, memo, depth + 1)?).clamp(-20., 20.)
+            (base + 40. * self.delta_edges(edges, input, live, memo, depth + 1)?).clamp(-20., 20.)
         } else if self.kinds[p.0] == "DAHDSR" && p.1 == "DelayTime" {
-            (base + 10. * self.delta(p, input, live, memo, depth + 1)?).clamp(0., 10.)
+            (base + 10. * self.delta_edges(edges, input, live, memo, depth + 1)?).clamp(0., 10.)
         } else if self.kinds[p.0] == "XpanderFilter" && p.1 == "Bypass" {
-            f64::from((base + self.delta(p, input, live, memo, depth + 1)?).clamp(0., 1.) >= 0.5)
+            f64::from(
+                (base + self.delta_edges(edges, input, live, memo, depth + 1)?).clamp(0., 1.)
+                    >= 0.5,
+            )
         } else if matches!(self.kinds[p.0].as_str(), "DualDelay" | "DualDelayX") && p.1 == "Mix" {
             // Native negative-ratio steps smooth the raw goal first. The
             // consumer clamps its current Mix, rather than this target.
-            base + self.delta(p, input, live, memo, depth + 1)?
+            base + self.delta_edges(edges, input, live, memo, depth + 1)?
         } else if self.kinds[p.0] == "DualDelay" && p.1 == "Feedback" {
-            (base + self.delta(p, input, live, memo, depth + 1)?).clamp(0., 1.)
+            (base + self.delta_edges(edges, input, live, memo, depth + 1)?).clamp(0., 1.)
         } else if self.kinds[p.0] == "WhiteChorus" {
-            let delta = self.delta(p, input, live, memo, depth + 1)?;
+            let delta = self.delta_edges(edges, input, live, memo, depth + 1)?;
             // Authored original CC renders verify each physical converter;
             // the processor owns its target smoothing, not this graph.
             match p.1.as_str() {
@@ -2765,9 +2800,9 @@ impl ModulationGraph {
                 _ => unreachable!("target support checked above"),
             }
         } else if self.kinds[p.0] == "DigitalEq" && p.1 == "GainScale" {
-            (base + 4. * self.delta(p, input, live, memo, depth + 1)?).clamp(-2., 2.)
+            (base + 4. * self.delta_edges(edges, input, live, memo, depth + 1)?).clamp(-2., 2.)
         } else {
-            base + self.delta(p, input, live, memo, depth + 1)?
+            base + self.delta_edges(edges, input, live, memo, depth + 1)?
         };
         ensure!(value.is_finite(), "Nonfinite UVI modulation result");
         if let Some(cached) = cached {
@@ -2783,12 +2818,21 @@ impl ModulationGraph {
         memo: &mut MemoScratch,
         depth: usize,
     ) -> Result<f64> {
-        let mut sum = 0.;
-        for c in self.cached_parameters[p.0]
+        let edges = self.cached_parameters[p.0]
             .get(&p.1)
-            .into_iter()
-            .flat_map(|cached| &cached.edges)
-        {
+            .map_or(&[][..], |cached| cached.edges.as_slice());
+        self.delta_edges(edges, input, live, memo, depth)
+    }
+    fn delta_edges(
+        &self,
+        edges: &[Connection],
+        input: &Inputs,
+        live: &HashMap<Parameter, f64>,
+        memo: &mut MemoScratch,
+        depth: usize,
+    ) -> Result<f64> {
+        let mut sum = 0.;
+        for c in edges {
             if c.mode != 0 {
                 continue;
             }
@@ -3881,6 +3925,68 @@ impl ModulationGraph {
 mod tests {
     use super::*;
     use crate::uvi::program::parse_program;
+    #[test]
+    fn cached_helpers_preserve_eager_base_errors_depth_and_zero_emission() {
+        let program = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"/></Oscillators><Inserts><OnePole Freq="NaN"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Freq" Ratio="1"/></Connections></OnePole></Inserts></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let mut graph = ModulationGraph::new(&program).unwrap();
+        let target = (
+            program
+                .nodes
+                .iter()
+                .position(|node| node.kind == "OnePole")
+                .unwrap(),
+            "Freq".into(),
+        );
+        let nodes = HashSet::from([target.0]);
+        let input = Inputs::default();
+        let mut live = HashMap::new();
+        graph.absolute_audio_bases.insert(target.clone(), 1000.);
+        let mut count = 0;
+        assert!(
+            graph
+                .evaluate_nodes_into(&input, &live, &nodes, |_, _| count += 1)
+                .is_err()
+        );
+        assert_eq!(count, 0);
+        live.insert(target.clone(), 3.);
+        graph
+            .evaluate_nodes_into(&input, &live, &nodes, |_, value| {
+                assert_eq!(value, 1000.);
+                count += 1;
+            })
+            .unwrap();
+        assert_eq!(count, 1);
+        // Even a populated memo cannot bypass the recursive depth boundary.
+        let mut memo = graph.memo.borrow_mut();
+        assert!(
+            graph
+                .value_named(target.0, "Freq", &input, &live, &mut memo, DEPTH)
+                .is_err()
+        );
+        drop(memo);
+        live.clear();
+        assert!(
+            graph
+                .evaluate_nodes_into(&input, &live, &nodes, |_, _| count += 1)
+                .is_err()
+        );
+        assert_eq!(count, 1);
+    }
+    #[test]
+    fn cached_delta_edges_preserve_serialized_floating_sum_order() {
+        let program = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" Pitch="3"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Pitch" Ratio="10000000000000000"/><SignalConnection Source="@MIDI CC 1" Destination="Pitch" Ratio="1"/><SignalConnection Source="@MIDI CC 1" Destination="Pitch" Ratio="-10000000000000000"/></Connections></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let graph = ModulationGraph::new(&program).unwrap();
+        let target = (program.sample_zones[0].player, "Pitch".into());
+        let mut input = Inputs::default();
+        input.controllers[1] = 127;
+        // This is an authored arithmetic-order regression, not a claim that
+        // vendor targets accept such extreme physical modulation ratios.
+        assert_eq!(graph.deltas(&input, &HashMap::new()).unwrap()[&target], 0.);
+        assert_eq!(
+            graph.evaluate(&input, &HashMap::new()).unwrap()[&target],
+            3.
+        );
+    }
     #[test]
     fn indexed_evaluation_reuses_storage_and_emits_only_complete_results() {
         let program = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" Pitch="3" Gain="1"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Pitch" Ratio="2"><Connections><SignalConnection Source="@MIDI CC 2" Destination="Ratio" Ratio="1"/></Connections></SignalConnection><SignalConnection Source="@MIDI CC 1" Destination="Gain" Ratio=".5"/></Connections></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();

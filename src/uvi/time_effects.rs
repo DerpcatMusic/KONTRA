@@ -4,9 +4,10 @@
 //! Parameter facts: https://lua.uvi.net/_elements.html and UVI Falcon manual
 //! https://uvi.s3.us-east-1.amazonaws.com/UVIFC/falcon_2026_manual.pdf.
 //! No vendor source or sample-bank content is included. DualDelay and DualDelayX
-//! uses measured RC filters, feedback rotation, fractional time and sqrt mixing.
+//! use measured RC filters, feedback rotation, fractional time and sqrt mixing.
 //! X tape uses measured transposed shelves, normalized tanh and post-delay gain;
-//! its unproved diffusion, dispersion, grit and ducking sections are rejected.
+//! X diffusion uses a measured nested lattice and 500-frame coefficient clock
+//! only at 48 kHz/Spread 20/readers 0/1; dispersion, grit and ducking are rejected.
 //! WhiteChorus uses measured uint32 phase, a 256-entry sine table, RC crossover,
 //! and a common Tone feedback line feeding parallel voices. Its Speed/Depth
 //! startup clock and DualDelay modulation amplitude remain calibrated models.
@@ -15,7 +16,7 @@ use super::{dsp::Frame, host::ParameterValue, program::ProgramNode};
 use anyhow::{Context, Result, bail, ensure};
 use std::collections::BTreeMap;
 
-pub const FIDELITY_DIAGNOSTIC: &str = "UVI DualDelay/DualDelayX peak EQ uses an RBJ approximation and modulation amplitude is empirically calibrated; DualDelayX tape has measured finite-precision sine residuals up to 2.3e-7, live tape/switch, reflection, filtering and modulation enable transitions are rejected, and scalar clocks outside Mix/Feedback/Rotation/TapeDrive/TapeWarmth remain native-unverified; WhiteChorus Speed/Depth startup is calibrated and phase-offset/read rounding remains approximate, with live NumVoices/Mode/Bypass changes and rates outside 48 kHz native-unverified; legacy DualDelay control smoothing outside Mix/Feedback/Rotation, rates outside 44.1/48/96 kHz and bypass transitions remain native-unverified";
+pub const FIDELITY_DIAGNOSTIC: &str = "UVI DualDelay/DualDelayX peak EQ uses an RBJ approximation and modulation amplitude is empirically calibrated; DualDelayX tape has measured finite-precision sine residuals up to 2.3e-7, live tape/switch, reflection, filtering and modulation enable transitions are rejected, and diffusion supports only 48 kHz/Spread20/readers0/1, with live enable transitions rejected and modulated read residuals up to 4.0e-5; scalar clocks outside Mix/Feedback/Rotation/TapeDrive/TapeWarmth/DiffusionAmount remain native-unverified; WhiteChorus Speed/Depth startup is calibrated and phase-offset/read rounding remains approximate, with live NumVoices/Mode/Bypass changes and rates outside 48 kHz native-unverified; legacy DualDelay control smoothing outside Mix/Feedback/Rotation, rates outside 44.1/48/96 kHz and bypass transitions remain native-unverified";
 const MAX_SECONDS: f64 = 5.;
 const MODULATION_DETUNE: f64 = 0.00057425;
 const MEMORY_LIMIT: usize = 64 << 20;
@@ -98,9 +99,17 @@ fn controls(kind: &str) -> impl Iterator<Item = &'static (&'static str, f64, f64
 }
 
 fn validate_delay_x(p: &BTreeMap<String, f64>) -> Result<()> {
-    for name in ["Dispersion", "Diffusion", "Crusher"] {
+    for name in ["Dispersion", "Crusher"] {
         ensure!(p[name] == 0., "Unsupported active DualDelayX {name}");
     }
+    ensure!(
+        p["Diffusion"] == 0. || p["DiffusionSpread"] == 20.,
+        "DualDelayX diffusion Spread outside 20 is native-unverified"
+    );
+    ensure!(
+        p["Diffusion"] == 0. || p["Interpolation"] != 2.,
+        "DualDelayX diffusion cubic reader is native-unverified"
+    );
     ensure!(
         p["DuckerBypass"] == 1.,
         "Unsupported active DualDelayX ducking"
@@ -385,9 +394,136 @@ impl Tape {
     }
 }
 
+// Original native-measured 48 kHz / Spread20 nested allpass. The startup
+// blend uses the forward lattice's allpole signal, not the dry input.
+const DIFFUSION_NOMINALS: [[usize; 15]; 2] = [
+    [
+        100, 194, 208, 309, 333, 373, 413, 481, 575, 660, 692, 745, 790, 814, 868,
+    ],
+    [
+        21, 125, 231, 286, 322, 340, 418, 432, 487, 558, 650, 727, 783, 849, 930,
+    ],
+];
+struct Diffusion {
+    lines: [Vec<f32>; 2],
+    positions: [[usize; 16]; 2],
+    current: f32,
+    target: f32,
+    previous_target: f32,
+    changed_at: u64,
+    endpoints: [f32; 2],
+    phase: usize,
+    interpolating: bool,
+    startup: usize,
+}
+impl Diffusion {
+    fn new(amount: f32) -> Self {
+        Self {
+            lines: std::array::from_fn(|_| vec![0.; 959]),
+            positions: [[0; 16]; 2],
+            current: amount,
+            target: amount,
+            previous_target: amount,
+            changed_at: 0,
+            endpoints: [0., amount],
+            phase: 0,
+            interpolating: true,
+            startup: 0,
+        }
+    }
+    fn clear(&mut self, amount: f32) {
+        for line in &mut self.lines {
+            line.fill(0.);
+        }
+        self.positions = [[0; 16]; 2];
+        self.current = amount;
+        self.target = amount;
+        self.previous_target = amount;
+        self.changed_at = 0;
+        self.endpoints = [0., amount];
+        self.phase = 0;
+        self.interpolating = true;
+        self.startup = 0;
+    }
+    fn set_target(&mut self, value: f32, elapsed: u64) {
+        if value == self.target {
+            return;
+        }
+        if self.changed_at != elapsed {
+            self.previous_target = self.target;
+        }
+        self.changed_at = elapsed;
+        self.target = value;
+        if !self.interpolating {
+            self.interpolating = true;
+            self.phase = 0;
+            self.endpoints = [self.current; 2];
+        }
+    }
+    fn advance(&mut self, elapsed: u64, alpha: f32) {
+        let target = if self.changed_at == elapsed {
+            self.previous_target
+        } else {
+            self.target
+        };
+        self.current += alpha * (target - self.current);
+        if elapsed.is_multiple_of(256) && (alpha * (target - self.current)).abs() < 1e-6 {
+            self.current = target;
+        }
+    }
+    fn process(&mut self, input: f32, ch: usize) -> f32 {
+        let nominal = DIFFUSION_NOMINALS[ch];
+        let fraction = self.phase as f32 / 500.;
+        let amount = self.endpoints[0] + fraction * (self.endpoints[1] - self.endpoints[0]);
+        let coefficients = nominal.map(|n| amount * 0.618 * n as f32 / 960.);
+        let mut forward = [0.; 15];
+        let mut read = [0.; 15];
+        let mut x = input;
+        for (i, &n) in nominal.iter().enumerate() {
+            read[i] = self.lines[ch][n - 1 + self.positions[ch][i + 1]];
+            forward[i] = x - coefficients[i] * read[i];
+            x = forward[i];
+        }
+        let allpole = x;
+        let mut child = x;
+        for (i, &n) in nominal.iter().enumerate().rev() {
+            let offset = n - 1 + self.positions[ch][i + 1];
+            self.lines[ch][offset] = child;
+            child = coefficients[i] * forward[i] + read[i];
+            let gap = nominal.get(i + 1).copied().unwrap_or(960) - n;
+            self.positions[ch][i + 1] = (self.positions[ch][i + 1] + 1) % gap;
+        }
+        let prefix = self.positions[ch][0];
+        let delayed = self.lines[ch][prefix];
+        self.lines[ch][prefix] = child;
+        self.positions[ch][0] = (prefix + 1) % (nominal[0] - 1);
+        let blend = (self.startup + 1).min(500) as f32 / 500.;
+        blend * delayed + (1. - blend) * allpole
+    }
+    fn finish_frame(&mut self) {
+        self.startup = (self.startup + 1).min(500);
+        if self.interpolating {
+            self.phase += 1;
+            if self.phase == 500 {
+                self.endpoints = [self.endpoints[1], self.current];
+                self.phase = 0;
+                self.interpolating =
+                    self.endpoints[0] != self.endpoints[1] || self.current != self.target;
+            }
+        }
+    }
+    fn memory_bytes(&self) -> usize {
+        self.lines
+            .iter()
+            .map(|line| line.capacity() * std::mem::size_of::<f32>())
+            .sum()
+    }
+}
+
 struct DualDelay {
     is_x: bool,
     tape: Option<Tape>,
+    diffusion: Option<Diffusion>,
     rate: f64,
     tempo: f64,
     parameters: BTreeMap<String, f64>,
@@ -436,6 +572,12 @@ impl DualDelay {
                 rate,
             )
         });
+        ensure!(
+            !is_x || parameters["Diffusion"] == 0. || rate == 48000.,
+            "DualDelayX diffusion rate outside 48 kHz is native-unverified"
+        );
+        let diffusion = (is_x && parameters["Diffusion"] != 0.)
+            .then(|| Diffusion::new(parameters["DiffusionAmount"] as f32));
         let mix = parameters["Mix"] as f32;
         // Native maximum-time modulation can read beyond five seconds. Retain
         // the full published Depth20/Rate.1 detune envelope to avoid overwrite
@@ -446,6 +588,7 @@ impl DualDelay {
         let mut result = Self {
             is_x,
             tape,
+            diffusion,
             rate,
             tempo: 120.,
             parameters,
@@ -523,6 +666,7 @@ impl DualDelay {
     /// Retained delay-line bytes for the renderer's aggregate preparation bound.
     pub fn memory_bytes(&self) -> usize {
         self.lines.capacity() * std::mem::size_of::<[f32; 2]>()
+            + self.diffusion.as_ref().map_or(0, Diffusion::memory_bytes)
     }
     pub fn parameter(&self, name: &str) -> Result<ParameterValue> {
         self.parameters
@@ -537,7 +681,7 @@ impl DualDelay {
         if self.is_x
             && matches!(
                 name,
-                "TapeSaturation" | "Reflection" | "Filtering" | "Modulation"
+                "TapeSaturation" | "Reflection" | "Filtering" | "Modulation" | "Diffusion"
             )
         {
             ensure!(
@@ -557,6 +701,10 @@ impl DualDelay {
         }
         if name == "Mix" {
             self.set_mix_target(value as f32);
+        } else if name == "DiffusionAmount"
+            && let Some(diffusion) = &mut self.diffusion
+        {
+            diffusion.set_target(value as f32, self.elapsed);
         } else if let Some(tape) = &mut self.tape
             && matches!(name, "TapeDrive" | "TapeWarmth")
         {
@@ -624,6 +772,9 @@ impl DualDelay {
                 self.rate,
             );
         }
+        if let Some(diffusion) = &mut self.diffusion {
+            diffusion.clear(self.parameters["DiffusionAmount"] as f32);
+        }
         self.feedback = self.feedback_target;
         self.rotation = self.parameters["Rotation"] as f32;
         self.previous_targets = [self.mix, self.feedback[0], self.feedback[1], self.rotation];
@@ -687,6 +838,9 @@ impl DualDelay {
                 if let Some(tape) = &mut self.tape {
                     tape.advance(self.elapsed, self.mix_smoothing, self.rate);
                 }
+                if let Some(diffusion) = &mut self.diffusion {
+                    diffusion.advance(self.elapsed, self.mix_smoothing);
+                }
             }
             let [dry, wet] = self.mix_gains;
             let input = [f[0], f[1]];
@@ -696,7 +850,12 @@ impl DualDelay {
                     std::f64::consts::TAU * self.parameters["ModRate"] * self.elapsed as f64
                         / self.rate
                         + ch as f64 * std::f64::consts::PI * self.parameters["ModChannelOffset"];
-                let delay = (self.frames[ch] + self.modulation[ch] * phase.sin() as f32).max(1.);
+                let nominal = self.frames[ch] + self.modulation[ch] * phase.sin() as f32;
+                let delay = if self.diffusion.is_some() {
+                    (nominal - 959.).max(24.)
+                } else {
+                    nominal.max(1.)
+                };
                 let whole = if self.parameters["Interpolation"] == 0. {
                     delay.ceil()
                 } else {
@@ -758,10 +917,16 @@ impl DualDelay {
                         y = self.peak.step(y, ch);
                     }
                 }
+                if let Some(diffusion) = &mut self.diffusion {
+                    y = diffusion.process(y, ch);
+                }
                 if let Some(tape) = &mut self.tape {
                     y = tape.encode(y, ch);
                 }
                 next[ch] = y * if self.is_x { self.feedback[ch] } else { 1. };
+            }
+            if let Some(diffusion) = &mut self.diffusion {
+                diffusion.finish_frame();
             }
             self.lines[self.position] = next;
             self.position = (self.position + 1) % self.lines.len();
@@ -1077,11 +1242,11 @@ impl WhiteChorus {
             }
             let mut wet = self.tone.map(|x| self.gain * x);
             for i in 0..self.voices {
-                for ch in 0..2 {
+                for (ch, value) in wet.iter_mut().enumerate() {
                     let [start, end] = self.oscillator_endpoints[i][ch];
                     let oscillator = start + (end - start) * (self.elapsed % 64) as f32 / 64.;
                     let delay = base + amplitude * oscillator;
-                    wet[ch] += voice_gain * self.read(delay.max(1.))[ch];
+                    *value += voice_gain * self.read(delay.max(1.))[ch];
                 }
             }
             self.lines[self.position] = self.tone;
@@ -1134,7 +1299,7 @@ mod tests {
         assert!(fx.parameter("DualDelayVersion").is_err());
         assert!(validate(&delay_x("DualDelayVersion='1'")).is_err());
         for attrs in [
-            "Diffusion='1'",
+            "Diffusion='1' DiffusionSpread='10'",
             "Dispersion='1'",
             "Crusher='1'",
             "DuckerBypass='0'",
@@ -2214,6 +2379,216 @@ mod tests {
             fx.process(&mut f).unwrap();
             let peak = if rate == 44100. { 443 } else { 963 };
             assert!((f[8192 + peak][0] - r).abs() < 4e-5);
+        }
+    }
+    #[test]
+    fn uvi_dual_delay_x_diffusion_proven_scope_and_clear() {
+        let attrs = "Diffusion='1' DiffusionSpread='20' Filtering='0'";
+        let mut fx = TimeEffect::new(&delay_x(attrs), 2, 48000.).unwrap();
+        for rate in [44100., 96000.] {
+            assert!(TimeEffect::new(&delay_x(attrs), 2, rate).is_err());
+        }
+        assert!(TimeEffect::new(&delay_x("Diffusion='1' Interpolation='2'"), 2, 48000.).is_err());
+        for (name, value) in [
+            ("DiffusionSpread", 10.),
+            ("Interpolation", 2.),
+            ("Diffusion", 0.),
+        ] {
+            let old = fx.parameter(name).unwrap();
+            assert!(
+                fx.set_parameter(name, &ParameterValue::Number(value))
+                    .is_err()
+            );
+            assert_eq!(fx.parameter(name).unwrap(), old);
+        }
+        let bytes = fx.memory_bytes();
+        assert!(
+            bytes
+                > TimeEffect::new(&delay_x(""), 2, 48000.)
+                    .unwrap()
+                    .memory_bytes()
+        );
+        let mut first = vec![[0.; 12]; 6000];
+        first[0][0] = 0.25;
+        fx.process(&mut first).unwrap();
+        fx.clear();
+        let mut replay = vec![[0.; 12]; 6000];
+        replay[0][0] = 0.25;
+        for chunk in replay.chunks_mut(173) {
+            fx.process(chunk).unwrap();
+        }
+        assert_eq!(first, replay);
+        assert_eq!(fx.memory_bytes(), bytes);
+    }
+    #[test]
+    fn uvi_dual_delay_x_diffusion_native_stereo_and_minimum() {
+        let mut fx = TimeEffect::new(&delay_x("DelayTime='.1' Feedback='.5' Mix='1' Filtering='0' Diffusion='1' DiffusionAmount='.3'"), 2, 48000.).unwrap();
+        let mut frames = vec![[0.; 12]; 20000];
+        frames[8192][0] = 0.25 * 0.99999988;
+        frames[8192][1] = 0.125 * 0.99999988;
+        fx.process(&mut frames).unwrap();
+        for (offset, l, r) in [
+            (3861, 0., 0.00025347652),
+            (3940, 0.00241406215, 0.),
+            (3965, 0., 0.00150876411),
+            (4034, 0.00468153367, 0.),
+            (4048, 0.00501233106, 0.),
+            (4800, 0.10438806564, 0.05285626277),
+            (9600, 0.03045247681, 0.01596807316),
+        ] {
+            for (ch, expected) in [l, r].into_iter().enumerate() {
+                assert!(
+                    (frames[8192 + offset][ch] - expected).abs() < 3e-8,
+                    "{offset}/{ch}"
+                );
+            }
+        }
+        for reader in [0, 1] {
+            let mut fx = TimeEffect::new(&delay_x(&format!("DelayTime='.001' Feedback='.2' Mix='1' Filtering='0' Diffusion='1' DiffusionAmount='.3' Interpolation='{reader}'")), 2, 48000.).unwrap();
+            let mut frames = vec![[0.; 12]; 10000];
+            frames[8192][0] = 0.25 * 0.99999988;
+            fx.process(&mut frames).unwrap();
+            assert!(frames[8192..8192 + 123].iter().all(|f| f[0] == 0.));
+            for (offset, expected) in [
+                (123, 0.00096562493),
+                (217, 0.00187261356),
+                (231, 0.00200493238),
+            ] {
+                assert!(
+                    (frames[8192 + offset][0] - expected).abs() < 3e-8,
+                    "{reader}/{offset}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn uvi_dual_delay_x_diffusion_native_startup() {
+        // Original stereo PCM pulse at host frame0. The early negative terms
+        // distinguish allpole/allpass startup from an ordinary dry/wet fade.
+        for (amount, at116, at194, at983_l, at983_r) in [
+            (
+                0.2,
+                -0.00209375331,
+                -0.00520340679,
+                0.12174869329,
+                0.06092528254,
+            ),
+            (
+                0.31,
+                -0.00324657653,
+                -0.00806408469,
+                0.11732219905,
+                0.05877804756,
+            ),
+            (
+                0.9,
+                -0.00944513921,
+                -0.02310438640,
+                0.07256086171,
+                0.03679709509,
+            ),
+        ] {
+            let mut fx = TimeEffect::new(&delay_x(&format!("DelayTime='.01' Feedback='.5' Mix='1' Filtering='0' Diffusion='1' DiffusionAmount='{amount}'")), 2, 48000.).unwrap();
+            let mut frames = vec![[0.; 12]; 5000];
+            frames[0][0] = 0.25 * 0.99999988;
+            frames[0][1] = 0.125 * 0.99999988;
+            for chunk in frames.chunks_mut(73) {
+                fx.process(chunk).unwrap();
+            }
+            for (at, ch, expected) in [
+                (24, 0, 0.12474998832),
+                (48, 0, 0.05925624445),
+                (116, 0, at116),
+                (194, 0, at194),
+                (983, 0, at983_l),
+                (983, 1, at983_r),
+            ] {
+                assert!(
+                    (frames[at][ch] - expected).abs() < 3e-8,
+                    "{amount}/{at}/{ch}: {} vs{expected}",
+                    frames[at][ch]
+                );
+            }
+        }
+    }
+    #[test]
+    fn uvi_dual_delay_x_diffusion_native_repeated_amount() {
+        let mut fx = TimeEffect::new(&delay_x("DelayTime='.01' Feedback='.01' Mix='1' Filtering='0' Diffusion='1' DiffusionAmount='.2'"), 2, 48000.).unwrap();
+        let mut frames = vec![[0.; 12]; 45000];
+        for offset in [61, 137, 293, 619, 1259, 2539, 5087, 10193, 20399] {
+            frames[16384 + offset][0] = 0.25 * 0.99999988;
+        }
+        fx.process(&mut frames[..16384]).unwrap();
+        fx.set_parameter("DiffusionAmount", &ParameterValue::Number(0.4))
+            .unwrap();
+        fx.process(&mut frames[16384..16640]).unwrap();
+        fx.set_parameter("DiffusionAmount", &ParameterValue::Number(0.1))
+            .unwrap();
+        for chunk in frames[16640..].chunks_mut(127) {
+            fx.process(chunk).unwrap();
+        }
+        // Two setters 256 frames apart preserve the running 500-frame lattice
+        // interpolator. An immediate coefficient assignment fails these terms.
+        for (offset, expected) in [
+            (184, 0.00003218749407),
+            (416, 0.00003218749407),
+            (742, 0.00003223320891),
+            (1382, 0.00008928190073),
+            (2662, 0.00001446115311),
+            (5210, 0.00001604164572),
+            (10316, 0.00001609386709),
+        ] {
+            assert!(
+                (frames[16384 + offset][0] - expected).abs() < 3e-8,
+                "{offset}: {}",
+                frames[16384 + offset][0]
+            );
+        }
+    }
+    #[test]
+    fn uvi_dual_delay_x_diffusion_native_tape_and_sine() {
+        let mut fx = TimeEffect::new(&delay_x("DelayTime='.01' Feedback='.5' Mix='1' Filtering='0' Diffusion='1' DiffusionAmount='.31' TapeSaturation='1' TapeDrive='.2' TapeWarmth='.5'"), 2, 48000.).unwrap();
+        let mut pulse = vec![[0.; 12]; 5000];
+        pulse[0][0] = 0.25 * 0.99999988;
+        pulse[0][1] = 0.125 * 0.99999988;
+        fx.process(&mut pulse).unwrap();
+        for (at, l, r) in [
+            (24, 0.09902951866, 0.06626696885),
+            (48, 0.04434230551, 0.03066388890),
+            (194, -0.00877160858, -0.00001034039),
+            (503, -0.00053471187, 0.00010968557),
+            (983, 0.09667626768, 0.06330838054),
+            (1966, 0.03312264755, 0.02390207537),
+        ] {
+            for (ch, expected) in [l, r].into_iter().enumerate() {
+                assert!((pulse[at][ch] - expected).abs() < 3e-8, "tape/{at}/{ch}");
+            }
+        }
+        let mut fx = TimeEffect::new(&delay_x("DelayTime='.08' Feedback='.45' Mix='.63' LowCut='210' HighCut='8500' Rotation='47' InputWidth='.3' OutputWidth='.8' InputRotation='-.3' OutputRotation='.6' DelayRatio='.25' FeedbackRatio='-.1' TapeSaturation='1' TapeDrive='.22' TapeWarmth='.6' Diffusion='1' DiffusionAmount='.31'"), 2, 48000.).unwrap();
+        let mut frames = vec![[0.; 12]; 24001];
+        for (i, frame) in frames.iter_mut().enumerate() {
+            let pcm =
+                (8192. * (std::f64::consts::TAU * 1000. * i as f64 / 48000.).sin()).round() as f32;
+            frame[0] = pcm / 32768. * 0.99999988;
+        }
+        fx.process(&mut frames).unwrap();
+        // Complete native-vs-Rust sine max is 8.2e-8. Keep this independently
+        // measured precision bound separate from strict impulse/control tests.
+        for (at, l, r) in [
+            (2916, -0.20039893687, -0.04798637703),
+            (2980, 0.09340262413, 0.02232237160),
+            (3840, 0.00590788620, 0.00469035748),
+            (6000, 0.01118826028, 0.00800738018),
+            (11270, -0.18082171679, -0.06680996716),
+            (24000, 0.00905928388, 0.01708688587),
+        ] {
+            for (ch, expected) in [l, r].into_iter().enumerate() {
+                assert!(
+                    (frames[at][ch] - expected).abs() <= 1e-7,
+                    "sine/{at}/{ch}: {} vs{expected}",
+                    frames[at][ch]
+                );
+            }
         }
     }
 }
