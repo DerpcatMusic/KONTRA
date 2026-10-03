@@ -1,5 +1,5 @@
 //! Native Ladder LP4's single-rate kernel and ordinary 32/4-frame control clock.
-//! HQ, conditional cutoff limiting, and repeated modulation-write timing remain gaps.
+//! HQ, modulation source sampling, and nonzero secondary cutoff clocks remain gaps.
 
 use std::sync::OnceLock;
 
@@ -39,7 +39,7 @@ struct Controls {
     phase: u8,
     pending: bool,
     started: bool,
-    instant_cutoff: bool,
+    modes: u8, // bit0: version-derived instant cutoff; bit1: enabled target route
 }
 
 impl Controls {
@@ -50,7 +50,7 @@ impl Controls {
             let inverse = 1.0 / (ticks as f32 * 32.0);
             for lane in 0..3 {
                 let increment = (self.target[lane] - self.current[lane]) * inverse;
-                if (lane == 1 && self.instant_cutoff) || f64::from(increment * increment) < 1e-15 {
+                if (lane == 1 && self.modes & 1 != 0) || f64::from(increment * increment) < 1e-15 {
                     self.current[lane] = self.target[lane];
                     self.increment[lane] = 0.0;
                 } else {
@@ -126,7 +126,14 @@ pub(super) fn instant_cutoff(version: u16) -> bool {
 
 impl Ladder {
     pub(super) fn record_version(&mut self, version: u16) {
-        self.controls.instant_cutoff = instant_cutoff(version);
+        self.controls.modes = (self.controls.modes & !1) | u8::from(instant_cutoff(version));
+    }
+
+    /// Enabled native target routes write at every control tick, including
+    /// unchanged or zero-depth targets. Route switches preserve audio history
+    /// and phase; their next write occurs on the existing 32-frame clock.
+    pub(super) fn enabled_modulation(&mut self, enabled: bool) {
+        self.controls.modes = (self.controls.modes & !2) | (u8::from(enabled) << 1);
     }
 
     /// Small-signal response, including the correction in the feedback path.
@@ -182,7 +189,7 @@ impl Ladder {
                 current: target,
                 target,
                 rate,
-                instant_cutoff: self.controls.instant_cutoff,
+                modes: self.controls.modes,
                 ..Controls::default()
             };
             self.coefficients(target, rate);
@@ -229,12 +236,12 @@ impl Ladder {
                 target,
                 rate,
                 started: true,
-                instant_cutoff: self.controls.instant_cutoff,
+                modes: self.controls.modes,
                 ..Controls::default()
             };
             self.coefficients(target, rate);
         }
-        if !self.controls.pending && self.controls.remaining == 0 {
+        if !self.controls.pending && self.controls.remaining == 0 && self.controls.modes & 2 == 0 {
             self.process_held(left, right);
             self.controls.phase = ((usize::from(self.controls.phase) + n) % 32) as u8;
             return;
@@ -242,13 +249,21 @@ impl Ladder {
         let mut start = 0;
         while start < n {
             if self.controls.phase == 0 {
+                self.controls.pending |= self.controls.modes & 2 != 0;
                 self.controls.clock();
+                if self.controls.remaining == 0 {
+                    self.coefficients(self.controls.current, self.controls.rate);
+                }
             }
-            if self.controls.phase % 4 == 0 {
-                self.controls.advance();
-                self.coefficients(self.controls.current, self.controls.rate);
-            }
-            let end = (start + 4 - usize::from(self.controls.phase % 4)).min(n);
+            let end = if self.controls.remaining == 0 && !self.controls.pending {
+                (start + 32 - usize::from(self.controls.phase)).min(n)
+            } else {
+                if self.controls.phase % 4 == 0 {
+                    self.controls.advance();
+                    self.coefficients(self.controls.current, self.controls.rate);
+                }
+                (start + 4 - usize::from(self.controls.phase % 4)).min(n)
+            };
             self.process_held(&mut left[start..end], &mut right[start..end]);
             self.controls.phase = ((usize::from(self.controls.phase) + end - start) % 32) as u8;
             start = end;
@@ -290,6 +305,91 @@ impl Ladder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_ladder_enabled_routes_rearm_on_persistent_control_ticks() {
+        prepare();
+        for rate in [32_000.0_f32, 44_100.0, 48_000.0, 96_000.0] {
+            let ticks = (rate * 0.002 / 32.0 + 0.5).floor().max(1.0) as usize;
+            let target = 10_f64.powf(6.0 / 20.0);
+            for disable in [false, true] {
+                let mut filter = Ladder::default();
+                filter.record_version(0x92);
+                filter.tune([1.0, 0.0, 0.0], rate);
+                filter.process(&mut [0.0; 17], &mut [0.0; 17]);
+                filter.tune([1.0, 0.0, 0.5], rate);
+                filter.enabled_modulation(true);
+                let mut split = filter;
+                let (mut l, mut r) = ([0.0001; 512], [-0.0001; 512]);
+                let (mut sl, mut sr) = (l, r);
+                // Route enable/disable is mid-tick; neither switch changes phase.
+                let cut = if disable { 128 } else { 512 }; // global frame145
+                filter.process(&mut l[..cut], &mut r[..cut]);
+                if disable {
+                    filter.enabled_modulation(false);
+                }
+                filter.process(&mut l[cut..], &mut r[cut..]);
+                for range in [
+                    0..1,
+                    1..15,
+                    15..47,
+                    47..83,
+                    83..128,
+                    128..129,
+                    129..303,
+                    303..512,
+                ] {
+                    if disable && range.start == 128 {
+                        split.enabled_modulation(false);
+                    }
+                    split.process(&mut sl[range.clone()], &mut sr[range]);
+                }
+                assert_eq!(l, sl);
+                assert_eq!(r, sr);
+                // Independent geometric approach for repeated setter writes,
+                // followed by a finite linear remainder when the route disconnects.
+                // This differs from a single finite 2ms ramp even at zero depth.
+                let hz = 2_f64.powf((1481.881591796875 + 575.0) / 60.0 - 20.0);
+                let w = hz / f64::from(rate);
+                let g = (w
+                    * (std::f64::consts::PI
+                        + w * w * (10.335426330566406 + 40.80263137817383 * w * w)))
+                    .min(8.0);
+                let mut voltage = [0_f64; 4];
+                for (i, &actual) in l.iter().enumerate() {
+                    let frame = i + 17;
+                    let gain = if frame < 32 {
+                        1.0
+                    } else {
+                        let block = ((frame - 32) / 32).min(if disable { 3 } else { usize::MAX });
+                        let begin =
+                            target - (target - 1.0) * (1.0 - 1.0 / ticks as f64).powi(block as i32);
+                        let elapsed = ((frame - (32 + block * 32)) / 4 + 1) * 4;
+                        begin + (target - begin) * (elapsed as f64 / (32 * ticks) as f64).min(1.0)
+                    };
+                    let input = 0.0001 * gain;
+                    let mut value = input * (1.0 - input / 48.0);
+                    for memory in &mut voltage {
+                        let out = (*memory + g * value) / (1.0 + g);
+                        *memory = 2.0 * out - *memory;
+                        value = out;
+                    }
+                    assert!(
+                        (f64::from(actual) - 1.02 * value).abs() < 2e-8,
+                        "repeated physical reference rate={rate} frame={frame} disable={disable}"
+                    );
+                    assert_eq!(actual, -r[i]);
+                }
+                if disable {
+                    assert_eq!(filter.controls.current, filter.controls.target);
+                }
+                filter.clear();
+                filter.process(&mut [0.0; 1], &mut [0.0; 1]);
+                assert_eq!(filter.controls.current, filter.controls.target);
+                assert_eq!(filter.controls.modes & 2 != 0, !disable);
+            }
+        }
+    }
 
     #[test]
     fn native_ladder_legacy_cutoff_snap_retains_gain_resonance_clock() {
@@ -355,7 +455,7 @@ mod tests {
                 assert_eq!(clock.controls.current, clock.controls.target);
                 assert_eq!(clock.controls.remaining, 0);
                 assert_eq!(
-                    clock.controls.instant_cutoff,
+                    clock.controls.modes & 1 != 0,
                     matches!(version, 0x90..=0x92)
                 );
             }
