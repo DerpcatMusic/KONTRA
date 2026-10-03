@@ -143,13 +143,15 @@ end
 function native_modifier(node,name,props,args)
     local environment=name=="context" or name=="font_size" or name=="foreground_color" or name=="bold" or name=="line_limit"
     assert(name=="frame" or name=="padding" or name=="hidden" or name=="disabled" or name=="opacity" or name=="offset" or name=="align" or name=="background" or name=="overlay" or name=="on_tap_gesture" or name=="on_hover_gesture" or name=="on_drag_gesture" or environment,"Unsupported modifier: "..name)
-    if name=="overlay" then
-        assert(next(props)==nil and #args==1 and type(args[1])=="table" and args[1].kind,"Overlay requires a component")
-        return {kind="ZStack",props={},children={node,args[1]},modifiers={overlay={}}}
-    end
-    if name=="background" then
-        assert(next(props)==nil and #args==1 and type(args[1])=="table" and args[1].kind,"Background requires a component")
-        return {kind="ZStack",props={},children={args[1],node},modifiers={background={}}}
+    if name=="overlay" or name=="background" then
+        assert(#args==1 and type(args[1])=="table" and args[1].kind,"Decoration requires a component")
+        for key,value in pairs(props) do
+            assert(key=="alignment" and type(value)=="string","Unsupported decoration option: "..key)
+        end
+        -- Authentic legacy modules supply a named alignment. The existing
+        -- snapshot parser validates the string and MUI owns the local layout.
+        local children=name=="overlay" and {node,args[1]} or {args[1],node}
+        return {kind="ZStack",props=props,children=children,modifiers={[name]={}}}
     end
     if name=="padding" then
         assert(#args<=1 and (#args==0 or next(props)==nil),"Invalid padding arguments")

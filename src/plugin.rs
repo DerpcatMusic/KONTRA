@@ -5403,6 +5403,56 @@ end on"#;
     }
 
     #[test]
+    fn native_ui_decoration_alignment_keeps_foreground_geometry_and_exact_callbacks() {
+        use crate::native_ui::{Node,Paint,Scene};
+        use moose::mui::mui::prelude::*;
+        let directory=std::env::temp_dir().join(format!("kontra-native-decoration-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let resources=directory.join("Resources/native_ui");std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("main.nui"),r#"
+            local ui=require('native_ui') local mode=require('kontakt').connect_parameter('Mode')
+            return @ui.Rectangle {color=ui.Color.red}.frame(width=20,height=10)
+                .overlay(@{mode:value()>=3 and
+                    @ui.Rectangle {color=ui.Color(0,0,255)}.frame(width=50,height=30)
+                        .on_tap_gesture(start=function() mode:set_value(mode:value()+2) end)
+                    or @ui.ZStack{}},alignment="bottom right")
+                .background(@ui.Rectangle {color=ui.Color(0,255,0)}.frame(width=8,height=6),alignment="top left")
+        "#).unwrap();
+        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $Mode(0,10)\nend on".into()],..Default::default()};
+        let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
+        let mut scene=Scene::prepare(&instrument.path,&rt).unwrap().unwrap();let mut live=first_script_live(&rt);rt.prepare_native_controls(&mut live);
+        let mut engine=Engine::default();engine.set_script(Some(rt));
+        fn nodes<'a>(node:&'a Node,out:&mut Vec<&'a Node>){out.push(node);for child in &node.children{nodes(child,out)}}
+        for value in [0,3] {
+            let (mut left,mut right)=([0.;64],[0.;64]);
+            assert_eq!(allocations(||{engine.ui_control(0,0,value);engine.render(&mut left,&mut right);engine.script().unwrap().refresh_live(&mut live);}),0);
+            scene.observe(&live);let root=scene.snapshot().unwrap();let mut all=Vec::new();nodes(&root,&mut all);
+            let rendered=moose::mui::mui::scene::resolve(&moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::scene_tree(&root,&scene.assets).clip())).unwrap();
+            assert_eq!((rendered.layout.size.width,rendered.layout.size.height),(20.,10.));
+            let green=all.iter().find(|n|matches!(n.paint,Paint::Rectangle([0.,1.,0.,1.],_))).unwrap();
+            let surface=rendered.surface(&format!("native-snapshot-{}",green.id)).unwrap();assert_eq!((surface.frame.x,surface.frame.y,surface.frame.size.width,surface.frame.size.height),(0.,0.,8.,6.));
+            if value==0 {assert!(!all.iter().any(|n|n.tap));} else {
+                let blue=all.iter().find(|n|matches!(n.paint,Paint::Rectangle([0.,0.,1.,1.],_))).unwrap();
+                let surface=rendered.surface(&format!("native-snapshot-{}",blue.id)).unwrap();assert_eq!((surface.frame.x,surface.frame.y,surface.frame.size.width,surface.frame.size.height),(-30.,-20.,50.,30.));
+                let mut ui=Ui::default();
+                fn input(scene:&mut Scene,ui:&mut Ui,pointer:PointerInput)->Vec<crate::native_ui::Edit>{
+                    let root=scene.snapshot().unwrap();ui.frame(crate::ui::native_scene::scene_tree(&root,&scene.assets).clip(),None,pointer,0.016).unwrap();scene.pointer_gestures(ui,"native-snapshot").unwrap()
+                }
+                let outside=PointerInput{pos:Some(Point::new(-1.,5.)),..Default::default()};
+                assert!(input(&mut scene,&mut ui,outside).is_empty());assert!(input(&mut scene,&mut ui,PointerInput{buttons:Buttons::PRIMARY,..outside}).is_empty(),"oversized decoration remains clipped to its parent");assert!(input(&mut scene,&mut ui,outside).is_empty());
+                let inside=PointerInput{pos:Some(Point::new(5.,5.)),..Default::default()};assert!(input(&mut scene,&mut ui,inside).is_empty());
+                let edits=input(&mut scene,&mut ui,PointerInput{buttons:Buttons::PRIMARY,..inside});assert_eq!(edits.iter().map(|e|(e.slot,e.control,e.value)).collect::<Vec<_>>(),vec![(0,0,5)],"real child capture routes once to its decoration callback");
+                assert!(input(&mut scene,&mut ui,inside).is_empty());
+                assert_eq!(allocations(||{for edit in &edits{engine.ui_control(edit.slot,edit.control,edit.value);}engine.render(&mut left,&mut right);engine.script().unwrap().refresh_live(&mut live);}),0);assert_eq!(live.native_controls[0].value,5);
+            }
+        }
+        for (option,message) in [("unexpected=1","Unsupported decoration option"),("alignment='sideways'","Unsupported native UI alignment")] {
+            std::fs::write(resources.join("main.nui"),format!("local ui=require('native_ui') return @ui.Rectangle{{color=ui.Color.red}}.frame(width=20,height=10).overlay(@ui.ZStack{{}},{option})")).unwrap();
+            let error=Scene::prepare(&instrument.path,engine.script().unwrap()).err().unwrap();assert!(format!("{error:#}").contains(message),"{error:#}");
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn native_ui_text_limits_and_weight_use_nearest_scopes_and_real_mui_lines() {
         use crate::native_ui::{Node,Paint,Scene};
         let directory=std::env::temp_dir().join(format!("kontra-native-text-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
