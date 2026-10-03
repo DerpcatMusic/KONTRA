@@ -27,8 +27,11 @@ The default toolchain is `1.98.1`. Global options precede the command:
 it is still development validation, not a release performance measurement.
 
 `artifacts/dev-target` is persistent and separate from production/probe targets.
-The helper deliberately ignores inherited `CARGO_TARGET_DIR` and enables
-incremental compilation. To keep a development cache elsewhere, set
+The helper deliberately ignores inherited `CARGO_TARGET_DIR`. The existing
+development profiles default to incremental compilation; user environment,
+Cargo configuration, and compiler wrappers remain respected. The helper does
+not force `CARGO_INCREMENTAL`, since configured wrappers such as sccache may
+require a different setting. To keep a development cache elsewhere, set
 `KONTRA_DEV_TARGET_DIR`; assign separate directories to concurrent worktrees.
 The first build of a target/profile still compiles its missing dependencies.
 
