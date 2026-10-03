@@ -131,14 +131,14 @@ pub struct CrashIncident {
     pub(crate) detected_at: u64,
     pub(crate) host_process: String,
     pid: u32,
-    os: String,
-    architecture: String,
+    pub(super) os: String,
+    pub(super) architecture: String,
     #[serde(default)]
-    host_name: String,
+    pub(super) host_name: String,
     #[serde(default)]
-    plugin_api: String,
+    pub(super) plugin_api: String,
     #[serde(default)]
-    platform: super::platform::PlatformSnapshot,
+    pub(super) platform: super::platform::PlatformSnapshot,
     #[serde(default, alias = "breadcrumbs")]
     events: VecDeque<DiagnosticRecord>,
     #[serde(default)]
