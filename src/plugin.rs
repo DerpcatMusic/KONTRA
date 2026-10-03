@@ -5787,6 +5787,8 @@ end on"#;
         let moved=PointerInput{pos:Some(Point::new(62.,30.)),..down};
         let edits=frame(&mut scene,&mut ui,moved);
         assert_eq!(edits.iter().map(|e|(e.slot,e.control,e.value)).collect::<Vec<_>>(),[(0,1,5)],"capture retains the press-time inverse pose after reactive rotation changes");
+        let scene=Arc::new(Mutex::new(scene));
+        p.shared.view.lock().unwrap().parts[0].native_scene=Some(scene.clone());
         for edit in &edits { assert!(p.shared.edit_control_slot(0,epoch,edit.slot,edit.control,edit.value)); }
         let live=p.shared.view.lock().unwrap().parts[0].live.take().unwrap();
         p.shared.live_requests.push((0,epoch,live)).ok().unwrap();
@@ -5798,6 +5800,7 @@ end on"#;
         p.shared.publish_live(true);
         assert_eq!(dsp.rack.parts[0].script().unwrap().interface(0).controls[1].properties["$CONTROL_PAR_VALUE"],crate::ksp::Value::Int(10));
         assert_eq!(dsp.rack.parts[0].script().unwrap().interface(1).controls[0].properties["$CONTROL_PAR_VALUE"],crate::ksp::Value::Int(99));
+        let mut scene=scene.lock().unwrap();
         assert!(frame(&mut scene,&mut ui,PointerInput{buttons:Buttons::default(),..moved}).is_empty());
         for (modifiers,point) in [
             (".rotation(450).offset(x=5,y=3)",Point::new(62.,25.)),
