@@ -122,7 +122,7 @@ fn attach_incident_provenance(payload: &mut ReportPayload, incident: &CrashIncid
     payload.incident_build_id = Some(incident.build_id().to_owned());
 }
 
-struct AutomaticReportPermit<'a>(&'a std::sync::atomic::AtomicBool);
+pub(super) struct AutomaticReportPermit<'a>(&'a std::sync::atomic::AtomicBool);
 
 impl<'a> AutomaticReportPermit<'a> {
     fn acquire(active: &'a std::sync::atomic::AtomicBool) -> Option<Self> {
@@ -250,10 +250,15 @@ pub(super) fn test_detached_automatic_delivery(
         }
         outcome.send(acknowledged).unwrap();
         release
-            .recv_timeout(std::time::Duration::from_secs(5))
+            .recv_timeout(std::time::Duration::from_secs(30))
             .unwrap();
     })
     .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+pub(super) fn test_acquire_automatic_report_permit() -> Option<AutomaticReportPermit<'static>> {
+    AutomaticReportPermit::acquire(&AUTOMATIC_CRASH_REPORT_STARTED)
 }
 
 #[cfg(test)]
