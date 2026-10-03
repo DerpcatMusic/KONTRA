@@ -162,6 +162,7 @@ fn primitive(
     let el = if !matches!(node.paint, Paint::Stack | Paint::HStack(_) | Paint::VStack(_)) && node.opacity != 1. {
         el.opacity(node.opacity)
     } else { el };
+    let el = el.offset(node.offset[0], node.offset[1]);
     if node.hidden { el.opacity(0.).disabled() } else { el }
 }
 #[cfg(test)]

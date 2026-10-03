@@ -4852,6 +4852,43 @@ end on"#;
     }
 
     #[test]
+    fn native_ui_offsets_move_content_and_tap_geometry_without_reflowing_backgrounds() {
+        use crate::native_ui::{Node,Paint,Scene};
+        let directory=std::env::temp_dir().join(format!("kontra-native-offset-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let resources=directory.join("Resources/native_ui");std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("main.nui"),r#"
+            local ui=require('native_ui') local x=require('kontakt').connect_parameter('X')
+            return @ui.Rectangle {color=ui.Color.red}.frame(width=20,height=10)
+                .on_tap_gesture(start=function() x:set_value(x:value()+1) end)
+                .offset(x=ui.create_computed(function() return x:value()/2 end),y=0.5)
+                .background(@ui.Rectangle {color=ui.Color(0,0,255)})
+                .frame(width=80,height=40)
+        "#).unwrap();
+        let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $X(-20,20)\n$X := -5\nend on".into()],..Default::default()};
+        let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
+        let mut scene=Scene::prepare(&instrument.path,&rt).unwrap().unwrap();let mut live=first_script_live(&rt);rt.prepare_native_controls(&mut live);
+        let mut engine=Engine::default();engine.set_script(Some(rt));
+        fn find(node:&Node,predicate:fn(&Node)->bool)->Option<&Node>{if predicate(node){Some(node)}else{node.children.iter().find_map(|child|find(child,predicate))}}
+        for x in [-5,7] {
+            let (mut left,mut right)=([0.;64],[0.;64]);
+            assert_eq!(allocations(||{engine.ui_control(0,0,x);engine.render(&mut left,&mut right);engine.script().unwrap().refresh_live(&mut live);}),0);
+            scene.observe(&live);let root=scene.snapshot().unwrap();
+            let spec=moose::mui::mui::scene::SceneSpec::new(crate::ui::native_scene::scene_tree(&root,&scene.assets));let rendered=moose::mui::mui::scene::resolve(&spec).unwrap();
+            assert_eq!((rendered.layout.size.width,rendered.layout.size.height),(80.,40.));
+            let tap=find(&root,|node|node.tap).unwrap();let foreground=find(&root,|node|matches!(node.paint,Paint::Rectangle([1.,0.,0.,1.],_))).unwrap();
+            for node in [tap,foreground] {let surface=rendered.surface(&format!("native-snapshot-{}",node.id)).unwrap();assert_eq!((surface.frame.x,surface.frame.y,surface.frame.size.width,surface.frame.size.height),(30.+x as f64/2.,15.5,20.,10.));assert!(!surface.disabled);}
+            let background=find(&root,|node|matches!(node.paint,Paint::Rectangle([0.,0.,1.,1.],_))).unwrap();let surface=rendered.surface(&format!("native-snapshot-{}",background.id)).unwrap();
+            assert_eq!((surface.frame.x,surface.frame.y,surface.frame.size.width,surface.frame.size.height),(30.,15.,20.,10.),"background applied after offset remains at the original occupied position");
+            let edits=scene.tap(tap.id).unwrap();assert_eq!((edits[0].slot,edits[0].control,edits[0].value),(0,0,x+1));
+        }
+        for offset in ["x=function() return 0/0 end","x=4097","y=-4097","z=1"] {
+            std::fs::write(resources.join("main.nui"),format!("local ui=require('native_ui') return @ui.Rectangle{{color=ui.Color.red}}.frame(width=20,height=10).offset({offset})")).unwrap();
+            assert!(format!("{:#}",Scene::prepare(&instrument.path,engine.script().unwrap()).unwrap_err()).contains("native UI offset"));
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn native_ui_prepares_lazy_body_modules_and_seals_uncached_editor_imports() {
         use crate::native_ui::{Node,Paint,Scene};
         let directory=std::env::temp_dir().join(format!("kontra-native-late-module-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));

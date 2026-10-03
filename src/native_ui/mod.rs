@@ -31,6 +31,7 @@ pub(crate) struct Node {
     pub text_color: [f32; 4],
     pub alignment: (Align, Align),
     pub padding: Insets,
+    pub offset: [f64; 2],
     pub hidden: bool,
     pub opacity: f32,
     pub background: bool,
@@ -627,6 +628,20 @@ impl Scene {
             let Value::Boolean(value) = value else { bail!("Native UI hidden requires a boolean"); };
             hidden |= value;
         }
+        let mut offset = [0.; 2];
+        if let Some(modifier) = modifiers.get::<Option<Table>>("offset")? {
+            for (index, name) in ["x", "y"].into_iter().enumerate() {
+                let value = match modifier.get::<Value>(name)? {
+                    Value::Function(f) => f.call::<Value>(())?, value => value,
+                };
+                offset[index] = match value {
+                    Value::Nil => 0., Value::Integer(value) => value as f64,
+                    Value::Number(value) => value,
+                    _ => bail!("Native UI offset requires numeric coordinates"),
+                };
+            }
+        }
+        ensure!(offset.iter().all(|v|v.is_finite() && (-4096. ..=4096.).contains(v)), "Invalid native UI offset bounds");
         let padding = if let Some(p) = modifiers.get::<Option<Table>>("padding")? {
             Insets { left: p.get("left")?, right: p.get("right")?, top: p.get("top")?, bottom: p.get("bottom")? }
         } else { Insets::ZERO };
@@ -810,6 +825,7 @@ impl Scene {
             text_color,
             alignment,
             padding,
+            offset,
             hidden,
             opacity,
             background,
