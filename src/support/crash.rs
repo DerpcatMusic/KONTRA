@@ -1186,6 +1186,17 @@ fn reporter_worker(
                 if load_pending_incident().is_some_and(|incident| incident.id == incident_id) {
                     let _ = std::fs::remove_file(pending_incident_path());
                 }
+                // A failed/cancelled replacement may have left this same
+                // incident deferred while the pending original was retained.
+                // The verified acknowledgement retires both queue copies;
+                // complete private journal/native originals stay untouched.
+                if incident_id.len() == 16 && incident_id.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    let _ = std::fs::remove_file(
+                        reports_dir()
+                            .join("deferred")
+                            .join(format!("{incident_id}.json")),
+                    );
+                }
             }
         }
     }
@@ -2322,6 +2333,109 @@ mod tests {
         assert!(
             unknown_path.exists(),
             "unselected unknown evidence remains available for later native matching"
+        );
+    }
+
+    #[test]
+    fn failed_pending_replacement_then_acknowledgement_does_not_requeue_deferred_duplicate() {
+        const CHILD: &str = "KONTRA_FAILED_REPLACEMENT_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "support::crash::tests::failed_pending_replacement_then_acknowledgement_does_not_requeue_deferred_duplicate", "--test-threads=1"])
+                .env(CHILD,"1").env("KONTRA_REPORT_DIR", directory.path())
+                .env("KONTRA_DISABLE_NETWORK","1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let mut previous = test_incident("0.3.115", "authored-failed-replacement");
+        previous.id = "0123456789abcdef".into();
+        previous.panic = None;
+        previous.kind = IncidentKind::UncleanExit;
+        assert!(save_pending_incident(&previous));
+        let prior = reports_dir().join("prior-held.json");
+        std::fs::rename(pending_incident_path(), &prior).unwrap();
+        // A directory at the publication destination makes the real durable
+        // replace fail after the previous incident has been deferred.
+        std::fs::create_dir(pending_incident_path()).unwrap();
+        let mut marker = new_session_marker(12, "next-confirmed");
+        marker.pid = u32::MAX - 111;
+        marker.host_process = "authored-host".into();
+        marker.journal_file = None;
+        let marker_path = sessions_dir().join("next-confirmed.json");
+        assert!(persist_json(&marker_path, &marker));
+        assert!(persist_json(
+            &panic_marker_path(marker.pid),
+            &PanicMarker {
+                at: now_unix(),
+                thread: "test".into(),
+                message: "authored failure".into(),
+                location: "src/authored.rs:1".into(),
+                images: vec![]
+            }
+        ));
+        let pending = Arc::new(Mutex::new(Some(previous.clone())));
+        assert!(!recover_pending_slot(&pending, &AtomicBool::new(false)));
+        let deferred = reports_dir()
+            .join("deferred")
+            .join(format!("{}.json", previous.id));
+        assert_eq!(
+            read_json::<CrashIncident>(&deferred).unwrap().id,
+            previous.id
+        );
+        assert_eq!(pending.lock_unpoisoned().as_ref().unwrap().id, previous.id);
+        assert!(
+            marker_path.exists(),
+            "failed consume retains next incident source"
+        );
+        std::fs::remove_dir(pending_incident_path()).unwrap();
+        std::fs::rename(&prior, pending_incident_path()).unwrap();
+        let unrelated = reports_dir().join("deferred").join("fedcba9876543210.json");
+        let unrelated_bytes = b"authored unrelated local evidence";
+        std::fs::write(&unrelated, unrelated_bytes).unwrap();
+        let original = reports_dir().join("originals").join("complete-private.dfr");
+        std::fs::create_dir_all(original.parent().unwrap()).unwrap();
+        std::fs::write(&original, b"full original remains local").unwrap();
+        assert!(apply_delayed_crash_evidence(
+            &mut previous,
+            &CrashEvidence {
+                disposition: EvidenceDisposition::Crash,
+                signature: "authored-late-proof".into(),
+                text: "authored native exception and stack".into()
+            }
+        ));
+        assert!(save_pending_incident(&previous));
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(ReporterControl::Submitted(previous.id.clone()))
+            .unwrap();
+        drop(sender);
+        reporter_worker(
+            receiver,
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
+            Arc::new(AtomicBool::new(false)),
+            None,
+            sessions_dir().join("unused.json"),
+            bootstrap_journal_path("unused"),
+            "unused".into(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        assert!(!pending_incident_path().exists() && !deferred.exists());
+        assert_eq!(std::fs::read(&unrelated).unwrap(), unrelated_bytes);
+        assert_eq!(
+            std::fs::read(&original).unwrap(),
+            b"full original remains local"
+        );
+        *pending.lock_unpoisoned() = None;
+        assert!(recover_pending_slot(&pending, &AtomicBool::new(false)));
+        assert_eq!(
+            pending.lock_unpoisoned().as_ref().unwrap().id,
+            incident_id(&marker)
+        );
+        assert!(
+            !deferred.exists(),
+            "acknowledged incident never returns to the queue"
         );
     }
 
