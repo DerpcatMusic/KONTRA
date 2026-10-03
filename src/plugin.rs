@@ -5410,12 +5410,15 @@ end on"#;
         let resources=directory.join("Resources/native_ui");std::fs::create_dir_all(&resources).unwrap();
         std::fs::write(resources.join("main.nui"),r#"
             local ui=require('native_ui') local mode=require('kontakt').connect_parameter('Mode')
+            local function Main()
             return @ui.Rectangle {color=ui.Color.red}.frame(width=20,height=10)
                 .overlay(@{mode:value()>=3 and
                     @ui.Rectangle {color=ui.Color(0,0,255)}.frame(width=50,height=30)
                         .on_tap_gesture(start=function() mode:set_value(mode:value()+2) end)
                     or @ui.ZStack{}},alignment="bottom right")
                 .background(@ui.Rectangle {color=ui.Color(0,255,0)}.frame(width=8,height=6),alignment="top left")
+            end
+            return @Main{}
         "#).unwrap();
         let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec!["on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $Mode(0,10)\nend on".into()],..Default::default()};
         let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
@@ -5728,10 +5731,11 @@ end on"#,"🦀".repeat(600));
         let (mut left,mut right)=([0.;64],[0.;64]);let mut slices=[left.as_mut_slice(),right.as_mut_slice()];let mut buffer=AudioBuffer::from_slices_checked(&[],&mut slices,64);
         let transport=TransportInfo::default();let mut output=EventList::with_capacity(4);let events=EventList::with_capacity(1);let mut cx=ProcessContext::new(&transport,48000.,64,&mut output);
         let mut cursor=crate::ksp::Refresh::default();
+        let live=p.shared.view.lock().unwrap().parts[0].live.take().unwrap();p.shared.live_requests.push((0,epoch,live)).ok().unwrap();
+        // publish_live re-lends this one prepared buffer between callbacks.
         for target in [8,9] {
             let edits=scene.lock().unwrap().tap(owner).unwrap();assert_eq!((edits[0].slot,edits[0].control,edits[0].value),(0,0,target));
             for edit in edits{assert!(p.shared.edit_control_slot(0,epoch,edit.slot,edit.control,edit.value));}
-            let live=p.shared.view.lock().unwrap().parts[0].live.take().unwrap();p.shared.live_requests.push((0,epoch,live)).ok().unwrap();
             assert_eq!(allocations(||{for _ in 0..12{Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx);}}),0);p.shared.publish_live(true);
             let root=scene.lock().unwrap().snapshot().unwrap();let expected=if target==8{"🦀".repeat(600)}else{"Latest🦀".into()};assert_eq!(label(&root),Some(expected.as_str()));
             if target==8 {
