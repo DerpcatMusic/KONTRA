@@ -216,6 +216,7 @@ struct DahSettings {
     sustain: f64,
     release: f32,
     note_off_retrigger: bool,
+    one_shot: bool,
     amplitude: f64,
 }
 #[derive(Clone)]
@@ -225,7 +226,7 @@ struct DahClock {
     block_frames: u32,
     frame: u64,
     stage: i8,
-    remaining: f32,
+    remaining: f64,
     elapsed: u64,
     denominator: u64,
     released: bool,
@@ -246,27 +247,30 @@ fn envelope_curve(curve: f64, position: f64) -> f64 {
     }
 }
 impl DahClock {
-    fn next_stage(&mut self, mut actual: u64, mut budget: u64, settings: DahSettings) {
+    fn next_stage(&mut self, mut carry: f64, settings: DahSettings) {
         loop {
             self.stage += 1;
             if self.stage >= 4 {
-                if self.pending_release {
-                    self.release_with_budget(settings.sustain, actual, budget, settings);
+                if settings.one_shot {
+                    self.stage = 6;
+                } else if self.pending_release {
+                    self.release_with_budget(settings.sustain, carry, settings);
                 }
                 return;
             }
-            let duration = settings.durations[self.stage as usize];
+            let duration = f64::from(settings.durations[self.stage as usize]);
             if duration.floor() == 0. {
                 continue;
             }
-            if duration <= budget as f32 {
-                actual = actual.saturating_sub(duration.ceil() as u64);
-                budget = budget.saturating_sub(duration.floor() as u64);
+            if duration <= carry {
+                carry = (carry - duration).max(0.);
                 continue;
             }
-            self.remaining = duration - budget as f32;
+            // Native stage durations are f32, but fractional overflow is
+            // carried in double precision before flooring the next ramp.
+            self.remaining = duration - carry;
             self.denominator = self.remaining.floor() as u64;
-            self.elapsed = actual;
+            self.elapsed = carry.floor() as u64;
             return;
         }
     }
@@ -287,33 +291,29 @@ impl DahClock {
         }
     }
     fn release(&mut self, level: f64, settings: DahSettings) {
-        self.release_with_budget(level, 0, 0, settings);
+        self.release_with_budget(level, 0., settings);
     }
-    fn release_with_budget(&mut self, level: f64, actual: u64, budget: u64, settings: DahSettings) {
+    fn release_with_budget(&mut self, level: f64, carry: f64, settings: DahSettings) {
         self.pending_release = false;
         self.release_level = level;
-        if settings.release <= budget as f32 || settings.release.floor() == 0. {
+        if f64::from(settings.release) <= carry || settings.release.floor() == 0. {
             self.stage = 6;
             return;
         }
-        self.remaining = settings.release - budget as f32;
+        self.remaining = f64::from(settings.release) - carry;
         self.denominator = self.remaining.floor() as u64;
-        self.elapsed = actual;
+        self.elapsed = carry.floor() as u64;
         self.stage = 5;
     }
     fn step(&mut self, frames: u64, settings: DahSettings) {
         if self.stage < 4 || self.stage == 5 {
-            if self.remaining > frames as f32 {
-                self.remaining -= frames as f32;
+            if self.remaining > frames as f64 {
+                self.remaining -= frames as f64;
                 self.elapsed += frames;
             } else if self.stage == 5 {
                 self.stage = 6;
             } else {
-                self.next_stage(
-                    frames.saturating_sub(self.remaining.ceil() as u64),
-                    frames.saturating_sub(self.remaining.floor() as u64),
-                    settings,
-                );
+                self.next_stage((frames as f64 - self.remaining).max(0.), settings);
             }
         }
         self.frame += frames;
@@ -325,7 +325,10 @@ impl DahClock {
             let gate = off.filter(|off| !self.released && *off <= frame);
             if gate.is_some_and(|off| off <= self.frame) {
                 self.released = true;
-                if settings.note_off_retrigger && self.stage < 4 {
+                if settings.one_shot {
+                    // AHD has no release stage. The event still splits the
+                    // native control segment and recomputes its exact level.
+                } else if settings.note_off_retrigger && self.stage < 4 {
                     self.pending_release = true;
                 } else {
                     self.release(self.value(settings), settings);
@@ -350,6 +353,302 @@ impl DahClock {
             (self.value(settings) * (1. - fraction) + endpoint.value(settings) * fraction)
                 * settings.amplitude,
         )
+    }
+}
+
+#[derive(Clone, Copy)]
+struct MultiStep {
+    duration: f32,
+    level: f32,
+    curve: f64,
+}
+struct MultiSettings<'a> {
+    steps: &'a [MultiStep],
+    loop_points: Option<(usize, usize)>,
+    release: Option<usize>,
+}
+#[derive(Clone)]
+struct MultiClock {
+    rate: f64,
+    origin: u64,
+    block_frames: u32,
+    frame: u64,
+    index: usize,
+    remaining: f64,
+    elapsed: u64,
+    denominator: u64,
+    start: f64,
+    target: f64,
+    held: bool,
+    released: bool,
+    kill_frame: Option<u64>,
+}
+impl MultiClock {
+    fn enter(
+        &mut self,
+        mut index: usize,
+        mut carry: f64,
+        settings: &MultiSettings<'_>,
+    ) -> Result<()> {
+        let mut transitions = 0;
+        loop {
+            transitions += 1;
+            ensure!(
+                transitions <= LIMIT,
+                "UVI MultiEnvelope zero-duration loop exceeds limit"
+            );
+            if !self.released
+                && let Some((begin, end)) = settings.loop_points
+                && index > end
+            {
+                if begin == end {
+                    self.held = true;
+                    return Ok(());
+                }
+                index = begin + 1;
+            }
+            if index >= settings.steps.len() {
+                self.held = true;
+                let end = self.origin + self.frame;
+                self.kill_frame = Some(
+                    end.div_ceil(u64::from(self.block_frames)) * u64::from(self.block_frames)
+                        - self.origin,
+                );
+                return Ok(());
+            }
+            let step = settings.steps[index];
+            self.index = index;
+            self.start = self.target;
+            self.target = f64::from(step.level);
+            self.remaining = f64::from(step.duration) - carry;
+            self.elapsed = carry.floor() as u64;
+            self.denominator = self.remaining.max(0.).floor() as u64;
+            if self.remaining >= 1. {
+                self.held = false;
+                return Ok(());
+            }
+            carry = (-self.remaining).max(0.);
+            index += 1;
+        }
+    }
+    fn value(&self, settings: &MultiSettings<'_>) -> f64 {
+        if self.held {
+            self.target
+        } else {
+            let position = if self.denominator == 0 {
+                1.
+            } else {
+                self.elapsed as f64 / self.denominator as f64
+            };
+            self.start
+                + (self.target - self.start)
+                    * envelope_curve(settings.steps[self.index].curve, position)
+        }
+    }
+    fn step(&mut self, frames: u64, settings: &MultiSettings<'_>) -> Result<()> {
+        self.frame += frames;
+        if !self.held {
+            self.remaining -= frames as f64;
+            self.elapsed += frames;
+            if self.remaining <= 0. {
+                self.enter(self.index + 1, -self.remaining, settings)?;
+            }
+        }
+        Ok(())
+    }
+    fn advance(
+        &mut self,
+        frame: u64,
+        off: Option<u64>,
+        settings: &MultiSettings<'_>,
+    ) -> Result<f64> {
+        ensure!(
+            frame >= self.frame,
+            "UVI MultiEnvelope clock moved backwards"
+        );
+        let mut ticks = 0;
+        loop {
+            let gate = off.filter(|off| !self.released && *off <= frame);
+            if gate.is_some_and(|off| off <= self.frame) {
+                self.released = true;
+                if let Some(release) = settings.release {
+                    self.target = self.value(settings);
+                    self.held = false;
+                    self.kill_frame = None;
+                    self.enter(release, 0., settings)?;
+                }
+                continue;
+            }
+            let next = (self.frame + control_span(self.frame, self.origin, self.block_frames))
+                .min(gate.unwrap_or(u64::MAX));
+            if next > frame {
+                break;
+            }
+            self.step(next - self.frame, settings)?;
+            ticks += 1;
+            ensure!(
+                ticks <= LIMIT,
+                "UVI MultiEnvelope control-step limit exceeded"
+            );
+        }
+        if self.kill_frame.is_some_and(|kill| frame >= kill) {
+            return Ok(0.);
+        }
+        let mut endpoint = self.clone();
+        endpoint.step(32, settings)?;
+        let fraction = (frame - self.frame) as f64 / 32.;
+        Ok(self.value(settings) * (1. - fraction) + endpoint.value(settings) * fraction)
+    }
+}
+
+struct ControlSegment {
+    start: u64,
+    end: u64,
+    points: Vec<f32>,
+}
+impl ControlSegment {
+    fn value(&self, frame: u64) -> f64 {
+        let offset = frame - self.start;
+        let index = (offset / 32) as usize;
+        let slope = (self.points[index + 1] - self.points[index]) * (1_f32 / 32.);
+        f64::from(self.points[index] + (offset % 32) as f32 * slope)
+    }
+}
+struct AttackDecayClock {
+    rate: f64,
+    origin: u64,
+    block_frames: u32,
+    attack: f32,
+    decay: f32,
+    a: f32,
+    d: f32,
+    qa: f32,
+    qd: f32,
+    norm: f32,
+    done: bool,
+    completion: Option<u64>,
+    cursor: u64,
+    segment: Option<ControlSegment>,
+}
+impl AttackDecayClock {
+    fn new(rate: f64, origin: u64, block_frames: u32, attack: f32, decay: f32) -> Result<Self> {
+        let attack_time = decay * attack.clamp(0.01, 0.99);
+        let qa = (-3. / (f64::from(attack_time) * rate)).exp() as f32;
+        let qd = (-3. / (f64::from(decay) * rate)).exp() as f32;
+        let peak = (qa.ln() / qd.ln()).ln() / (qd / qa).ln();
+        let norm = 1. / (qd.powf(peak) - qa.powf(peak));
+        ensure!(
+            norm.is_finite() && norm > 0.,
+            "Unrepresentable UVI AttackDecayEnv coefficients"
+        );
+        let power32 = |mut value: f32| {
+            for _ in 0..5 {
+                value *= value;
+            }
+            value
+        };
+        Ok(Self {
+            rate,
+            origin,
+            block_frames,
+            attack,
+            decay,
+            a: 1.,
+            d: 1.,
+            qa: power32(qa),
+            qd: power32(qd),
+            norm,
+            done: false,
+            completion: None,
+            cursor: origin,
+            segment: None,
+        })
+    }
+    fn controls(&mut self, frames: u32) -> Vec<f32> {
+        let mut points = Vec::with_capacity(frames.div_ceil(32) as usize + 1);
+        let mut remaining = frames;
+        let mut count = 32;
+        while remaining > 0 {
+            count = remaining.min(32);
+            points.push(if self.done {
+                0.
+            } else {
+                (self.d - self.a) * self.norm
+            });
+            let (qa, qd) = if count == 32 {
+                (self.qa, self.qd)
+            } else {
+                let fraction = count as f32 / 32.;
+                (self.qa.powf(fraction), self.qd.powf(fraction))
+            };
+            self.a *= qa;
+            self.d *= qd;
+            remaining -= count;
+        }
+        let endpoint = if self.done {
+            0.
+        } else {
+            (self.d - self.a) * self.norm
+        };
+        let last = *points.last().unwrap();
+        points.push(last + (32_f32 / count as f32) * (endpoint - last));
+        if endpoint < 0.00001 {
+            self.done = true;
+        }
+        points
+    }
+    fn advance(&mut self, frame: u64, hint: Option<u64>, off: Option<u64>) -> Result<f64> {
+        let block_frames = u64::from(self.block_frames);
+        let boundary = |at: u64| (at / block_frames + 1) * block_frames;
+        let planned = hint.unwrap_or_else(|| boundary(frame)).min(boundary(frame));
+        ensure!(planned > frame, "Invalid UVI planned control segment end");
+        if let Some(segment) = &self.segment
+            && frame < segment.end
+        {
+            ensure!(
+                frame >= segment.start,
+                "UVI AttackDecayEnv clock moved backwards"
+            );
+            ensure!(
+                planned == segment.end,
+                "UVI AttackDecayEnv segment changed after processing began"
+            );
+            return Ok(segment.value(frame));
+        }
+        let mut segments = 0;
+        loop {
+            let mut end = boundary(self.cursor);
+            if self.cursor <= frame {
+                end = end.min(planned);
+            }
+            if let Some(off) = off
+                && self.cursor < off
+            {
+                end = end.min(off);
+            }
+            ensure!(
+                end > self.cursor && end - self.cursor <= 65536,
+                "Invalid UVI AttackDecayEnv processing span"
+            );
+            let points = self.controls((end - self.cursor) as u32);
+            if self.done && self.completion.is_none() {
+                self.completion = Some(end);
+            }
+            self.segment = Some(ControlSegment {
+                start: self.cursor,
+                end,
+                points,
+            });
+            self.cursor = end;
+            segments += 1;
+            ensure!(
+                segments <= LIMIT,
+                "UVI AttackDecayEnv control-step limit exceeded"
+            );
+            if frame < end {
+                return Ok(self.segment.as_ref().unwrap().value(frame));
+            }
+        }
     }
 }
 
@@ -604,20 +903,29 @@ struct AbsoluteClock {
     published: HashMap<NodeId, f32>,
 }
 pub struct ModulationGraph {
+    parents: Vec<Option<NodeId>>,
     kinds: Vec<String>,
     bases: Vec<BTreeMap<String, String>>,
     connections: HashMap<Parameter, Vec<Connection>>,
     node_targets: HashMap<NodeId, Vec<Parameter>>,
     absolute_order: Vec<NodeId>,
     absolute_clocks: HashMap<NodeId, AbsoluteClock>,
+    absolute_audio_bases: HashMap<Parameter, f64>,
+    absolute_seen_values: HashMap<NodeId, f32>,
+    absolute_block: Option<u64>,
     target_sources: HashMap<Parameter, HashSet<NodeId>>,
     mappers: HashMap<NodeId, Mapper>,
     tables: HashMap<NodeId, Vec<f64>>,
-    ramps: HashMap<(u8, Option<u32>), Ramp>,
+    ramps: HashMap<(u8, Option<NodeId>, Option<u32>), Ramp>,
     script_ranges: HashMap<u8, bool>,
     event_order: u64,
+    scoped_ramps: bool,
     analog_clocks: RefCell<HashMap<SourceStateKey, AnalogClock>>,
     dah_clocks: RefCell<HashMap<SourceStateKey, DahClock>>,
+    multi_clocks: RefCell<HashMap<SourceStateKey, MultiClock>>,
+    multi_steps: HashMap<NodeId, Vec<NodeId>>,
+    attack_decay_clocks: RefCell<HashMap<SourceStateKey, AttackDecayClock>>,
+    control_segment_end: Option<u64>,
     random_seeds: RefCell<HashMap<NodeId, u32>>,
     random_lfo_clocks: RefCell<HashMap<SourceStateKey, RandomLfoClock>>,
     lfo_clocks: RefCell<HashMap<SourceStateKey, LfoClock>>,
@@ -752,6 +1060,14 @@ pub fn supports_absolute_target(kind: &str, name: &str) -> bool {
             | ("SamplePlayer", "Gain")
             | ("SparkVerb", "Mix")
             | ("WaveShaper", "Mix" | "Knee")
+            | ("AnalogADSR", "DecayTime")
+            | ("CrossOverFilter", "LowFrequency" | "HighFrequency")
+            | ("ThreeBandShelves", "GainLow" | "GainHigh")
+            | (
+                "Phasor" | "CrossPhaser" | "PhasorFilter" | "Tremolo",
+                "Depth"
+            )
+            | ("SignalConnection", "Ratio")
             | (
                 "Gain"
                     | "OnePole"
@@ -760,7 +1076,17 @@ pub fn supports_absolute_target(kind: &str, name: &str) -> bool {
                     | "DualDelay"
                     | "GainMatrix"
                     | "SparkVerb"
-                    | "WaveShaper",
+                    | "WaveShaper"
+                    | "CrossOverFilter"
+                    | "ThreeBandShelves"
+                    | "Phasor"
+                    | "CrossPhaser"
+                    | "PhasorFilter"
+                    | "Tremolo"
+                    | "Redux"
+                    | "Redux2"
+                    | "AuxEffect"
+                    | "ScriptProcessor",
                 "Bypass"
             )
     ) || (kind == "GainMatrix" && supports_target(kind, name))
@@ -770,8 +1096,18 @@ fn absolute_value(kind: &str, name: &str, normalized: f32) -> Result<f64> {
     let value = match (kind, name) {
         ("ConstantModulation", "Value")
         | ("DualDelay" | "WhiteChorus" | "SparkVerb" | "WaveShaper", "Mix")
-        | ("XpanderFilter", "Q") => normalized,
-        ("OnePole" | "XpanderFilter", "Freq") => 20_f32 * 1000_f32.powf(normalized),
+        | ("XpanderFilter", "Q")
+        | ("SignalConnection", "Ratio")
+        | ("Phasor" | "CrossPhaser" | "PhasorFilter" | "Tremolo", "Depth") => normalized,
+        ("OnePole" | "XpanderFilter", "Freq")
+        | ("CrossOverFilter", "LowFrequency" | "HighFrequency") => {
+            20_f32 * 1000_f32.powf(normalized)
+        }
+        ("ThreeBandShelves", "GainLow" | "GainHigh") => 48. * normalized - 24.,
+        ("AnalogADSR", "DecayTime") => {
+            // Native offset-log registration spans .0001..10 seconds.
+            (0.0011_f64 * (10.001_f64 / 0.0011).powf(f64::from(normalized))) as f32 - 0.001
+        }
         ("XpanderFilter", "Drive") => 40. * normalized - 20.,
         ("WaveShaper", "Knee") => 20. * normalized - 10.,
         ("WhiteChorus", "Speed") => 0.1_f32 * 10_f32.powf(normalized),
@@ -780,7 +1116,9 @@ fn absolute_value(kind: &str, name: &str, normalized: f32) -> Result<f64> {
         ("Layer", "Mute")
         | (
             "Gain" | "OnePole" | "XpanderFilter" | "WhiteChorus" | "DualDelay" | "GainMatrix"
-            | "SparkVerb" | "WaveShaper",
+            | "SparkVerb" | "WaveShaper" | "CrossOverFilter" | "ThreeBandShelves" | "Phasor"
+            | "CrossPhaser" | "PhasorFilter" | "Tremolo" | "Redux" | "Redux2" | "AuxEffect"
+            | "ScriptProcessor",
             "Bypass",
         ) => f32::from(normalized >= 0.5),
         ("GainMatrix", name) if supports_target(kind, name) => 2. * normalized - 1.,
@@ -801,26 +1139,44 @@ fn absolute_value(kind: &str, name: &str, normalized: f32) -> Result<f64> {
 }
 
 impl ModulationGraph {
+    /// Absolute end of the native processing segment, known before its first
+    /// sample. A requested output length is not a host processing boundary.
+    pub fn set_control_segment_end_frame(&mut self, end: Option<u64>) {
+        self.control_segment_end = end;
+    }
+    pub fn requires_planned_segments(&self) -> bool {
+        self.connections.values().flatten().any(|connection|
+            matches!(connection.source,Source::Node(node) if matches!(self.kinds[node].as_str(),"AttackDecayEnv"|"StdRandom"|"Drunk")))
+    }
     pub fn new(program: &Program) -> Result<Self> {
         ensure!(
             program.nodes.len() <= LIMIT && program.connections.len() <= LIMIT,
             "UVI modulation graph exceeds limit"
         );
         let mut graph = Self {
+            parents: program.nodes.iter().map(|node| node.parent).collect(),
             kinds: program.nodes.iter().map(|n| n.kind.clone()).collect(),
             bases: program.nodes.iter().map(|n| n.attributes.clone()).collect(),
             connections: HashMap::new(),
             node_targets: HashMap::new(),
             absolute_order: Vec::new(),
             absolute_clocks: HashMap::new(),
+            absolute_audio_bases: HashMap::new(),
+            absolute_seen_values: HashMap::new(),
+            absolute_block: None,
             target_sources: HashMap::new(),
             mappers: HashMap::new(),
             tables: HashMap::new(),
             ramps: HashMap::new(),
             script_ranges: HashMap::new(),
             event_order: 0,
+            scoped_ramps: false,
             analog_clocks: RefCell::new(HashMap::new()),
             dah_clocks: RefCell::new(HashMap::new()),
+            multi_clocks: RefCell::new(HashMap::new()),
+            multi_steps: HashMap::new(),
+            attack_decay_clocks: RefCell::new(HashMap::new()),
+            control_segment_end: None,
             random_seeds: RefCell::new(HashMap::new()),
             random_lfo_clocks: RefCell::new(HashMap::new()),
             lfo_clocks: RefCell::new(HashMap::new()),
@@ -828,6 +1184,27 @@ impl ModulationGraph {
         };
         for (id, n) in program.nodes.iter().enumerate() {
             match n.kind.as_str() {
+                "MultiEnvelope" => {
+                    let container = program
+                        .nodes
+                        .iter()
+                        .position(|child| child.parent == Some(id) && child.kind == "Steps")
+                        .context("UVI MultiEnvelope has no Steps")?;
+                    let steps: Vec<_> = program
+                        .nodes
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(node, child)| {
+                            (child.parent == Some(container) && child.kind == "Step")
+                                .then_some(node)
+                        })
+                        .collect();
+                    ensure!(
+                        !steps.is_empty() && steps.len() <= 65536,
+                        "Invalid UVI MultiEnvelope step count"
+                    );
+                    graph.multi_steps.insert(id, steps);
+                }
                 "ControlSignalMapper" => {
                     let min = number(&n.attributes, "Min", 0.)?;
                     let max = number(&n.attributes, "Max", 1.)?;
@@ -900,7 +1277,7 @@ impl ModulationGraph {
                 "@VoiceParam LinearKeyFollow" => Source::LinearKeyFollow,
                 "@VoiceParam Velocity" => Source::Velocity,
                 "@PitchBend" => Source::Bend,
-                "@ChannelPressure" | "@Aftertouch" => Source::Pressure,
+                "@ChanAfterTouch" => Source::Pressure,
                 "@PolyPressure" | "@PolyAftertouch" => Source::PolyPressure,
                 s if s.starts_with("@MIDI CC ") => {
                     let cc = s[9..].parse::<u8>().context("Invalid UVI MIDI CC source")?;
@@ -920,6 +1297,9 @@ impl ModulationGraph {
                                 | "LFO"
                                 | "AnalogADSR"
                                 | "DAHDSR"
+                                | "AHD"
+                                | "MultiEnvelope"
+                                | "AttackDecayEnv"
                         ),
                         "Unsupported UVI source kind at node {id}"
                     );
@@ -993,35 +1373,21 @@ impl ModulationGraph {
                 _ => None,
             })
             .collect::<Vec<_>>();
+        absolute_sources.extend(graph.connections.iter().filter_map(|(parameter, edges)| {
+            (graph.kinds[parameter.0] == "ConstantModulation"
+                && parameter.1 == "Value"
+                && edges.iter().any(|edge| edge.mode == 1))
+            .then_some(parameter.0)
+        }));
+        // Native processes declared global sources in collection order. A
+        // receiver earlier than its sender has already produced this block.
         absolute_sources.sort_unstable();
         absolute_sources.dedup();
-        let mut ordered = HashSet::new();
-        for node in absolute_sources {
-            graph.order_absolute(node, &mut ordered);
-        }
+        graph.absolute_order = absolute_sources;
         Ok(graph)
     }
     pub fn is_absolute_source_parameter(&self, node: NodeId, name: &str) -> bool {
         name == "Value" && self.absolute_order.contains(&node)
-    }
-    fn order_absolute(&mut self, node: NodeId, visited: &mut HashSet<NodeId>) {
-        if !visited.insert(node) {
-            return;
-        }
-        let upstream = self
-            .connections
-            .get(&(node, "Value".into()))
-            .into_iter()
-            .flatten()
-            .filter_map(|c| match (c.mode, &c.source) {
-                (1, Source::Node(n)) => Some(*n),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        for source in upstream {
-            self.order_absolute(source, visited);
-        }
-        self.absolute_order.push(node);
     }
     fn collect_sources(
         &self,
@@ -1044,9 +1410,12 @@ impl ModulationGraph {
     /// Array-producing native sources, including those reached through Ratio routes.
     pub fn target_has_dynamic_source(&self, target: &Parameter) -> bool {
         self.target_sources.get(target).is_some_and(|sources| {
-            sources
-                .iter()
-                .any(|node| matches!(self.kinds[*node].as_str(), "LFO" | "DAHDSR" | "AnalogADSR"))
+            sources.iter().any(|node| {
+                matches!(
+                    self.kinds[*node].as_str(),
+                    "LFO" | "DAHDSR" | "AHD" | "AnalogADSR" | "MultiEnvelope" | "AttackDecayEnv"
+                )
+            })
         })
     }
     fn dependencies(&self, p: &Parameter) -> Vec<Parameter> {
@@ -1059,6 +1428,9 @@ impl ModulationGraph {
                     "ConstantModulation" => &["Value", "Bypass"][..],
                     "ScriptEventModulation" => &["EventId", "Bypass"][..],
                     "LFO" => &["Freq", "Depth", "Phase", "DelayTime", "RiseTime", "Bypass"][..],
+                    "AttackDecayEnv" => &["Attack", "DecayTime", "Bypass"][..],
+                    "MultiEnvelope" => &["Speed", "Bypass"][..],
+                    "AHD" => &["AttackTime", "HoldTime", "DecayTime", "Bypass"][..],
                     "DAHDSR" => &[
                         "DelayTime",
                         "AttackTime",
@@ -1119,6 +1491,25 @@ impl ModulationGraph {
         voice: Option<u32>,
         time_seconds: f64,
     ) -> Result<()> {
+        self.set_script_modulation_scoped(None, id, start, target, ramp_ms, voice, time_seconds)
+    }
+    /// Layer emissions address descendant receiver sources. A Program-owned
+    /// source remains global even when a Layer voice references it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_script_modulation_scoped(
+        &mut self,
+        layer: Option<NodeId>,
+        id: u8,
+        start: Option<f64>,
+        target: f64,
+        ramp_ms: f64,
+        voice: Option<u32>,
+        time_seconds: f64,
+    ) -> Result<()> {
+        ensure!(
+            layer.is_none_or(|node| self.kinds.get(node).is_some_and(|kind| kind == "Layer")),
+            "Invalid UVI script modulation issuing Layer"
+        );
         ensure!(id < 128, "Invalid UVI script modulation EventId");
         // Native accepts every API EventId, including signals with no current
         // ScriptEventModulation listener. Keep their explicit voice identity.
@@ -1134,7 +1525,7 @@ impl ModulationGraph {
             "Invalid UVI script modulation event"
         );
         let previous = self
-            .ramp(id, voice)
+            .ramp(id, voice, layer)
             .map(|r| r.value(time_seconds))
             .unwrap_or(0.);
         let start = start.unwrap_or(previous);
@@ -1143,15 +1534,16 @@ impl ModulationGraph {
             "Invalid UVI script modulation start"
         );
         ensure!(
-            self.ramps.len() < LIMIT || self.ramps.contains_key(&(id, voice)),
+            self.ramps.len() < LIMIT || self.ramps.contains_key(&(id, layer, voice)),
             "UVI script modulation state exceeds limit"
         );
         self.event_order = self
             .event_order
             .checked_add(1)
             .context("UVI modulation event sequence exhausted")?;
+        self.scoped_ramps |= layer.is_some();
         self.ramps.insert(
-            (id, voice),
+            (id, layer, voice),
             Ramp {
                 start,
                 target,
@@ -1162,17 +1554,44 @@ impl ModulationGraph {
         );
         Ok(())
     }
-    fn ramp(&self, id: u8, voice: Option<u32>) -> Option<&Ramp> {
-        [self.ramps.get(&(id, voice)), self.ramps.get(&(id, None))]
-            .into_iter()
-            .flatten()
-            .max_by_key(|r| r.order)
+    fn ramp(&self, id: u8, voice: Option<u32>, mut receiver: Option<NodeId>) -> Option<&Ramp> {
+        let mut selected = [
+            self.ramps.get(&(id, None, voice)),
+            self.ramps.get(&(id, None, None)),
+        ]
+        .into_iter()
+        .flatten()
+        .max_by_key(|ramp| ramp.order);
+        if !self.scoped_ramps {
+            return selected;
+        }
+        while let Some(node) = receiver {
+            if self.kinds[node] == "Layer" {
+                for candidate in [
+                    self.ramps.get(&(id, Some(node), voice)),
+                    self.ramps.get(&(id, Some(node), None)),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    if selected.is_none_or(|ramp| candidate.order > ramp.order) {
+                        selected = Some(candidate);
+                    }
+                }
+            }
+            receiver = self.parents[node];
+        }
+        selected
     }
     /// Retire one renderer instance without removing shared script ramps.
     pub fn remove_instance(&mut self, voice: u32, instance: u64) {
         let retained = |key: &SourceStateKey| key.1 != Some(voice) || key.2 != Some(instance);
         self.analog_clocks.get_mut().retain(|key, _| retained(key));
         self.dah_clocks.get_mut().retain(|key, _| retained(key));
+        self.multi_clocks.get_mut().retain(|key, _| retained(key));
+        self.attack_decay_clocks
+            .get_mut()
+            .retain(|key, _| retained(key));
         self.constant_clocks
             .get_mut()
             .retain(|key, _| retained(key));
@@ -1182,11 +1601,17 @@ impl ModulationGraph {
             .retain(|key, _| retained(key));
     }
     pub fn remove_voice(&mut self, voice: u32) {
-        self.ramps.retain(|(_, v), _| *v != Some(voice));
+        self.ramps.retain(|(_, _, v), _| *v != Some(voice));
         self.analog_clocks
             .get_mut()
             .retain(|(_, v, _), _| *v != Some(voice));
         self.dah_clocks
+            .get_mut()
+            .retain(|(_, v, _), _| *v != Some(voice));
+        self.multi_clocks
+            .get_mut()
+            .retain(|(_, v, _), _| *v != Some(voice));
+        self.attack_decay_clocks
             .get_mut()
             .retain(|(_, v, _), _| *v != Some(voice));
         self.constant_clocks
@@ -1238,6 +1663,9 @@ impl ModulationGraph {
         );
         let frame = (input.time_seconds * input.sample_rate + 0.000001).floor() as u64;
         let block = u64::from(input.control_block_frames);
+        if frame.is_multiple_of(block) && self.absolute_block == Some(frame) {
+            return Ok(Vec::new());
+        }
         let mut current_live = HashMap::new();
         let mut updates = Vec::new();
         for node in self.absolute_order.clone() {
@@ -1269,13 +1697,25 @@ impl ModulationGraph {
                 target as f32
             };
             if !frame.is_multiple_of(block) {
-                if let Some(clock) = self.absolute_clocks.get(&node) {
-                    ensure!(
-                        clock.producer.target == target,
-                        "Unverified nonaligned UVI Mode1 producer change at node {node}"
-                    );
-                }
+                let initial = number(&self.bases[node], "Value", 0.)?.clamp(0., 1.) as f32;
+                ensure!(
+                    self.absolute_seen_values
+                        .get(&node)
+                        .copied()
+                        .unwrap_or(initial)
+                        == target,
+                    "Unverified nonaligned UVI Mode1 producer change at node {node}"
+                );
                 continue;
+            }
+            let parameter = (node, "Value".into());
+            if self
+                .connections
+                .get(&parameter)
+                .is_some_and(|edges| edges.iter().any(|edge| edge.mode == 1))
+            {
+                self.absolute_audio_bases
+                    .insert(parameter, f64::from(target));
             }
             let mut edges = self
                 .connections
@@ -1290,6 +1730,9 @@ impl ModulationGraph {
                 })
                 .collect::<Vec<_>>();
             edges.sort_by_key(|(_, c)| c.node);
+            if edges.is_empty() {
+                continue;
+            }
             for (_, edge) in &edges {
                 for name in ["Ratio", "Offset", "Inverted", "Bypass"] {
                     if let Some(value) = live.get(&(edge.node, name.into())) {
@@ -1394,6 +1837,26 @@ impl ModulationGraph {
                 current_live.insert(parameter.clone(), value);
                 updates.push((parameter, value));
             }
+        }
+        if frame.is_multiple_of(block) {
+            for node in &self.absolute_order {
+                let parameter = (*node, "Value".into());
+                let value = current_live
+                    .get(&parameter)
+                    .copied()
+                    .unwrap_or(self.base(&parameter, live)?)
+                    .clamp(0., 1.);
+                let style = self.setting(*node, "Style", 0., live)?;
+                self.absolute_seen_values.insert(
+                    *node,
+                    if style == 1. {
+                        f32::from(value > 0.5)
+                    } else {
+                        value as f32
+                    },
+                );
+            }
+            self.absolute_block = Some(frame);
         }
         Ok(updates)
     }
@@ -1537,6 +2000,7 @@ impl ModulationGraph {
             | ("SignalConnection", "Ratio")
             | ("LFO", "Depth") => 1.,
             ("LFO", "Freq") => 0.5,
+            ("MultiEnvelope", "Speed") => 1.,
             ("OnePole" | "XpanderFilter", "Freq") => 1000.,
             ("XpanderFilter", "Fat") => 1.,
             ("DualDelay", "Feedback") => 0.3,
@@ -1550,6 +2014,10 @@ impl ModulationGraph {
             ("AnalogADSR", "ReleaseTime") => 0.01,
             ("AnalogADSR" | "DAHDSR", "SustainLevel") => 1.,
             ("DAHDSR", "ReleaseTime") => 0.05,
+            ("AHD", "HoldTime") => 1.,
+            ("AHD", "DecayTime") => 0.1,
+            ("AttackDecayEnv", "Attack") => 0.1,
+            ("AttackDecayEnv", "DecayTime") => 0.3,
             ("GainMatrix", name) if name.starts_with("Gain_") => {
                 let parts = name[5..].split('_').collect::<Vec<_>>();
                 f64::from(parts.len() == 2 && parts[0] == parts[1])
@@ -1583,7 +2051,11 @@ impl ModulationGraph {
             p.0,
             p.1
         );
-        let base = self.base(p, live)?;
+        let base = self
+            .absolute_audio_bases
+            .get(p)
+            .copied()
+            .unwrap_or(self.base(p, live)?);
         let value = if !self
             .connections
             .get(p)
@@ -1802,7 +2274,7 @@ impl ModulationGraph {
                         );
                         let id = id as u8;
                         let v = input.script_values.get(&id).copied().unwrap_or_else(|| {
-                            self.ramp(id, input.voice)
+                            self.ramp(id, input.voice, Some(n))
                                 .map(|r| r.value(input.time_seconds))
                                 .unwrap_or(0.)
                         });
@@ -1813,8 +2285,16 @@ impl ModulationGraph {
                         v
                     }
                     "LFO" => self.lfo(n, bipolar, input, live, memo, depth + 1)?,
-                    "DAHDSR" => {
+                    "DAHDSR" | "AHD" => {
                         let value = self.dah(n, input, live, memo, depth + 1)?;
+                        if bipolar { 2. * value - 1. } else { value }
+                    }
+                    "AttackDecayEnv" => {
+                        let value = self.attack_decay(n, input, live, memo, depth + 1)?;
+                        if bipolar { 2. * value - 1. } else { value }
+                    }
+                    "MultiEnvelope" => {
+                        let value = self.multi(n, input, live, memo, depth + 1)?;
                         if bipolar { 2. * value - 1. } else { value }
                     }
                     "AnalogADSR" => {
@@ -1841,11 +2321,15 @@ impl ModulationGraph {
             self.setting(n, "Retrigger", 1., live)? == 1.,
             "Unverified shared UVI DAHDSR trigger mode at node {n}"
         );
+        let one_shot = self.kinds[n] == "AHD";
         let mut durations = [0.; 4];
         for (index, name) in ["DelayTime", "AttackTime", "HoldTime", "DecayTime"]
             .into_iter()
             .enumerate()
         {
+            if one_shot && index == 0 {
+                continue;
+            }
             let max = if index == 3 { 30. } else { 10. };
             durations[index] = self
                 .value(&(n, name.into()), input, live, memo, depth + 1)?
@@ -1867,14 +2351,21 @@ impl ModulationGraph {
                 self.setting(n, "DecayCurve", 0., live)?,
                 self.setting(n, "ReleaseCurve", 0., live)?,
             ],
-            sustain: self
-                .value(&(n, "SustainLevel".into()), input, live, memo, depth + 1)?
-                .clamp(0., 1.),
-            release: self
-                .value(&(n, "ReleaseTime".into()), input, live, memo, depth + 1)?
-                .clamp(0., 20.) as f32
-                * input.sample_rate as f32,
+            sustain: if one_shot {
+                0.
+            } else {
+                self.value(&(n, "SustainLevel".into()), input, live, memo, depth + 1)?
+                    .clamp(0., 1.)
+            },
+            release: if one_shot {
+                0.
+            } else {
+                self.value(&(n, "ReleaseTime".into()), input, live, memo, depth + 1)?
+                    .clamp(0., 20.) as f32
+                    * input.sample_rate as f32
+            },
             note_off_retrigger: self.boolean(n, "NoteOffRetrigger", false, live)?,
+            one_shot,
             amplitude: 1. - amount + amount * velocity_factor,
         };
         let position = input.voice_time_seconds * input.sample_rate;
@@ -1907,7 +2398,7 @@ impl ModulationGraph {
                 pending_release: false,
                 release_level: 0.,
             };
-            clock.next_stage(0, 0, settings);
+            clock.next_stage(0., settings);
             clock
         });
         ensure!(
@@ -1916,6 +2407,184 @@ impl ModulationGraph {
         );
         clock.advance(frame, off, settings)
     }
+    fn attack_decay(
+        &self,
+        n: NodeId,
+        input: &Inputs,
+        live: &HashMap<Parameter, f64>,
+        memo: &mut HashMap<Parameter, f64>,
+        depth: usize,
+    ) -> Result<f64> {
+        let attack = self.value(&(n, "Attack".into()), input, live, memo, depth + 1)? as f32;
+        let decay = self.value(&(n, "DecayTime".into()), input, live, memo, depth + 1)? as f32;
+        ensure!(
+            decay > 0. && decay.is_finite(),
+            "Invalid UVI AttackDecayEnv decay time"
+        );
+        let frame = (input.time_seconds * input.sample_rate + 0.000001).floor() as u64;
+        let age = (input.voice_time_seconds * input.sample_rate + 0.000001).floor() as u64;
+        let origin = frame.saturating_sub(age);
+        let off = input
+            .note_off_time_seconds
+            .map(|off| origin + (off * input.sample_rate + 0.000001).floor() as u64);
+        let key = (n, input.voice, input.instance);
+        let mut clocks = self.attack_decay_clocks.borrow_mut();
+        ensure!(
+            clocks.len() < LIMIT || clocks.contains_key(&key),
+            "UVI AttackDecayEnv state exceeds limit"
+        );
+        if let std::collections::hash_map::Entry::Vacant(entry) = clocks.entry(key) {
+            entry.insert(AttackDecayClock::new(
+                input.sample_rate,
+                origin,
+                input.control_block_frames,
+                attack,
+                decay,
+            )?);
+        }
+        let clock = clocks.get_mut(&key).unwrap();
+        ensure!(
+            clock.rate == input.sample_rate
+                && clock.origin == origin
+                && clock.block_frames == input.control_block_frames,
+            "UVI AttackDecayEnv clock configuration changed"
+        );
+        ensure!(
+            clock.attack == attack && clock.decay == decay,
+            "Unverified live UVI AttackDecayEnv coefficient changes"
+        );
+        clock.advance(frame, self.control_segment_end, off)
+    }
+
+    fn multi(
+        &self,
+        n: NodeId,
+        input: &Inputs,
+        live: &HashMap<Parameter, f64>,
+        memo: &mut HashMap<Parameter, f64>,
+        depth: usize,
+    ) -> Result<f64> {
+        ensure!(
+            self.setting(n, "Smooth", 0., live)? == 0.
+                && self.setting(n, "VelocityAmount", 0., live)? == 0.
+                && !self.boolean(n, "NoteOffRetrigger", false, live)?,
+            "Unverified UVI MultiEnvelope smoothing/velocity/off-retrigger at node {n}"
+        );
+        let mode = self.setting(n, "Retrigger", 1., live)?;
+        ensure!(
+            (0. ..=2.).contains(&mode) && mode.fract() == 0.,
+            "Invalid UVI MultiEnvelope trigger mode"
+        );
+        let mut owner = self.parents[n];
+        while owner.is_some_and(|node| {
+            !matches!(self.kinds[node].as_str(), "Program" | "Layer" | "Keygroup")
+        }) {
+            owner = owner.and_then(|node| self.parents[node]);
+        }
+        let per_group = owner.is_some_and(|node| self.kinds[node] == "Keygroup");
+        ensure!(
+            mode != 2. || per_group,
+            "Unverified shared UVI MultiEnvelope legato mode at node {n}"
+        );
+        let global = mode == 0. && !per_group;
+        let speed = self.value(&(n, "Speed".into()), input, live, memo, depth + 1)? as f32;
+        ensure!(
+            speed.is_finite() && speed > 0.,
+            "Invalid UVI MultiEnvelope speed"
+        );
+        let sync = self.boolean(n, "SyncToHost", false, live)?;
+        let step_nodes = &self.multi_steps[&n];
+        let mut steps = Vec::with_capacity(step_nodes.len());
+        for &node in step_nodes {
+            let time = self.setting(node, "Time", 0., live)? as f32;
+            let mut duration = time / speed;
+            if sync {
+                duration *= 59.999996_f32 / input.host_tempo as f32;
+            }
+            duration *= input.sample_rate as f32;
+            let level = self.setting(node, "DestLevel", 0., live)? as f32;
+            ensure!(
+                duration.is_finite() && duration >= 0. && level.is_finite(),
+                "Invalid UVI MultiEnvelope step"
+            );
+            steps.push(MultiStep {
+                duration,
+                level,
+                curve: self.setting(node, "Curve", 0., live)?,
+            });
+        }
+        let index = |name| -> Result<Option<usize>> {
+            let value = self.setting(n, name, -1., live)?;
+            ensure!(value.fract() == 0., "Invalid UVI MultiEnvelope point index");
+            Ok((value >= 0.).then(|| (value as usize).min(steps.len() - 1)))
+        };
+        let loop_points = index("LoopStart")?.zip(index("LoopEnd")?);
+        ensure!(
+            loop_points.is_none_or(|(begin, end)| begin <= end),
+            "Invalid UVI MultiEnvelope loop points"
+        );
+        let settings = MultiSettings {
+            steps: &steps,
+            loop_points,
+            release: index("ReleaseStep")?,
+        };
+        let position = if global {
+            input.time_seconds
+        } else {
+            input.voice_time_seconds
+        } * input.sample_rate;
+        ensure!(
+            position < (u64::MAX - 32) as f64,
+            "UVI MultiEnvelope clock overflow"
+        );
+        let frame = (position + 0.000001).floor() as u64;
+        let key = if global {
+            (n, None, None)
+        } else {
+            (n, input.voice, input.instance)
+        };
+        let off = if mode == 1. {
+            input
+                .note_off_time_seconds
+                .map(|time| (time * input.sample_rate + 0.000001).floor() as u64)
+        } else {
+            None
+        };
+        let mut clocks = self.multi_clocks.borrow_mut();
+        ensure!(
+            clocks.len() < LIMIT || clocks.contains_key(&key),
+            "UVI MultiEnvelope state exceeds limit"
+        );
+        let clock = clocks.entry(key).or_insert(MultiClock {
+            rate: input.sample_rate,
+            origin: if global {
+                0
+            } else {
+                ((input.time_seconds * input.sample_rate + 0.000001).floor() as u64)
+                    .saturating_sub(frame)
+            },
+            block_frames: input.control_block_frames,
+            frame: 0,
+            index: usize::MAX,
+            remaining: 0.,
+            elapsed: 0,
+            denominator: 0,
+            start: 0.,
+            target: 0.,
+            held: false,
+            released: false,
+            kill_frame: None,
+        });
+        if clock.index == usize::MAX {
+            clock.enter(0, 0., &settings)?;
+        }
+        ensure!(
+            clock.rate == input.sample_rate && clock.block_frames == input.control_block_frames,
+            "UVI MultiEnvelope clock configuration changed"
+        );
+        clock.advance(frame, off, &settings)
+    }
+
     fn analog(
         &self,
         n: NodeId,
@@ -2006,7 +2675,12 @@ impl ModulationGraph {
             .iter()
             .flat_map(|node| self.node_targets.get(node).into_iter().flatten())
             .flat_map(|target| self.target_sources.get(target).into_iter().flatten())
-            .any(|node| matches!(self.kinds[*node].as_str(), "AnalogADSR" | "DAHDSR"))
+            .any(|node| {
+                matches!(
+                    self.kinds[*node].as_str(),
+                    "AnalogADSR" | "DAHDSR" | "AHD" | "MultiEnvelope" | "AttackDecayEnv"
+                )
+            })
     }
     /// Release completion belongs to the render instance, not logical script ID.
     pub fn release_finished(
@@ -2023,7 +2697,10 @@ impl ModulationGraph {
             .flat_map(|node| self.node_targets.get(node).into_iter().flatten())
         {
             for node in self.target_sources.get(target).into_iter().flatten() {
-                if matches!(self.kinds[*node].as_str(), "AnalogADSR" | "DAHDSR") {
+                if matches!(
+                    self.kinds[*node].as_str(),
+                    "AnalogADSR" | "DAHDSR" | "AHD" | "MultiEnvelope" | "AttackDecayEnv"
+                ) {
                     envelopes.insert(*node);
                 }
             }
@@ -2044,7 +2721,7 @@ impl ModulationGraph {
                         return Ok(false);
                     }
                 }
-                "DAHDSR" => {
+                "DAHDSR" | "AHD" => {
                     self.dah(node, input, live, &mut memo, 0)?;
                     if self
                         .dah_clocks
@@ -2052,6 +2729,35 @@ impl ModulationGraph {
                         .get(&(node, input.voice, input.instance))
                         .is_some_and(|clock| clock.stage != 6)
                     {
+                        return Ok(false);
+                    }
+                }
+                "AttackDecayEnv" => {
+                    self.attack_decay(node, input, live, &mut memo, 0)?;
+                    if self
+                        .attack_decay_clocks
+                        .borrow()
+                        .get(&(node, input.voice, input.instance))
+                        .is_some_and(|clock| {
+                            clock.completion.is_none_or(|end| {
+                                input.time_seconds * input.sample_rate < end as f64
+                            })
+                        })
+                    {
+                        return Ok(false);
+                    }
+                }
+                "MultiEnvelope" => {
+                    self.multi(node, input, live, &mut memo, 0)?;
+                    let clocks = self.multi_clocks.borrow();
+                    let clock = clocks
+                        .get(&(node, input.voice, input.instance))
+                        .or_else(|| clocks.get(&(node, None, None)));
+                    if clock.is_some_and(|clock| {
+                        clock.kill_frame.is_none_or(|kill| {
+                            input.time_seconds * input.sample_rate < (clock.origin + kill) as f64
+                        })
+                    }) {
                         return Ok(false);
                     }
                 }
@@ -2261,6 +2967,284 @@ mod tests {
     use super::*;
     use crate::uvi::program::parse_program;
     #[test]
+    fn native_attack_decay_endpoints_and_planned_partial_segment() {
+        let p=parse_program(r#"<Program><Layers><Layer Name="Layer"><Keygroups><Keygroup Name="Group" Gain="1"><ControlSignalSources><AttackDecayEnv Name="Env" Attack="0" DecayTime=".2"/></ControlSignalSources><Connections><SignalConnection Source="$Keygroup/Env" Destination="Gain" Ratio="1"/></Connections></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let group = p.nodes.iter().position(|n| n.kind == "Keygroup").unwrap();
+        let env = p
+            .nodes
+            .iter()
+            .position(|n| n.kind == "AttackDecayEnv")
+            .unwrap();
+        let mut graph = ModulationGraph::new(&p).unwrap();
+        assert!(graph.requires_planned_segments());
+        let nodes = HashSet::from([group]);
+        let target = (group, "Gain".into());
+        assert!(graph.target_has_dynamic_source(&target));
+        let mut live = HashMap::new();
+        let mut input = Inputs {
+            voice: Some(1),
+            instance: Some(1),
+            ..Inputs::default()
+        };
+        for (instance, attack, finish, points) in [
+            (
+                1,
+                0.,
+                37120,
+                [
+                    (32, 0.6583798528),
+                    (160, 0.9994615316),
+                    (9600, 0.05269504711),
+                ],
+            ),
+            (
+                2,
+                0.25,
+                39424,
+                [
+                    (32, 0.06193083525),
+                    (160, 0.2804397345),
+                    (9600, 0.1053846106),
+                ],
+            ),
+            (
+                3,
+                0.75,
+                44032,
+                [
+                    (32, 0.03123934940),
+                    (160, 0.1490772218),
+                    (9600, 0.2984586358),
+                ],
+            ),
+        ] {
+            input.instance = Some(instance);
+            input.note_off_time_seconds = None;
+            live.insert((env, "Attack".into()), attack);
+            for (frame, expected) in points {
+                input.time_seconds = f64::from(frame) / input.sample_rate;
+                input.voice_time_seconds = input.time_seconds;
+                let value = graph.evaluate_nodes(&input, &live, &nodes).unwrap()[&target];
+                assert!(
+                    (value - expected).abs() < 0.0000002,
+                    "attack={attack} frame={frame} value={value}"
+                );
+            }
+            input.time_seconds = f64::from(finish - 1) / input.sample_rate;
+            input.voice_time_seconds = input.time_seconds;
+            assert!(!graph.release_finished(&input, &live, &nodes).unwrap());
+            input.time_seconds = f64::from(finish) / input.sample_rate;
+            input.voice_time_seconds = input.time_seconds;
+            assert!(graph.release_finished(&input, &live, &nodes).unwrap());
+            assert_eq!(
+                graph.evaluate_nodes(&input, &live, &nodes).unwrap()[&target],
+                0.
+            );
+        }
+        input.instance = Some(4);
+        live.insert((env, "Attack".into()), 0.);
+        for (frame, expected) in [
+            (0, 0.),
+            (96, 0.9742403030),
+            (112, 0.9895552397),
+            (113, 0.9905124307),
+            (114, 0.9908066392),
+            (128, 0.9949254990),
+            (145, 0.9999269843),
+            (256, 0.9764893055),
+        ] {
+            let end = if frame < 113 {
+                113
+            } else if frame < 256 {
+                256
+            } else {
+                512
+            };
+            graph.set_control_segment_end_frame(Some(end));
+            input.time_seconds = f64::from(frame) / input.sample_rate;
+            input.voice_time_seconds = input.time_seconds;
+            input.note_off_time_seconds = (frame >= 113).then_some(113. / input.sample_rate);
+            let value = graph.evaluate_nodes(&input, &live, &nodes).unwrap()[&target];
+            assert!(
+                (value - expected).abs() < 0.0000002,
+                "partial frame={frame} value={value}"
+            );
+        }
+        graph.set_control_segment_end_frame(Some(300));
+        assert!(
+            graph
+                .evaluate_nodes(&input, &live, &nodes)
+                .unwrap_err()
+                .to_string()
+                .contains("segment changed")
+        );
+        graph.remove_instance(1, 4);
+        assert!(
+            !graph
+                .attack_decay_clocks
+                .borrow()
+                .contains_key(&(env, Some(1), Some(4)))
+        );
+    }
+    #[test]
+    fn native_multi_envelope_loops_release_and_block_completion() {
+        let p=parse_program(r#"<Program><Layers><Layer Name="Layer"><Keygroups><Keygroup Name="Group" Gain="1"><ControlSignalSources><MultiEnvelope Name="Env" Retrigger="1" LoopStart="0" LoopEnd="2" ReleaseStep="3"><Steps><Step Time=".1" DestLevel="1"/><Step Time=".1" DestLevel=".25"/><Step Time=".1" DestLevel=".75"/><Step Time=".1" DestLevel="0"/></Steps></MultiEnvelope></ControlSignalSources><Connections><SignalConnection Source="$Keygroup/Env" Destination="Gain" Ratio="1"/></Connections></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let group = p.nodes.iter().position(|n| n.kind == "Keygroup").unwrap();
+        let env = p
+            .nodes
+            .iter()
+            .position(|n| n.kind == "MultiEnvelope")
+            .unwrap();
+        let first = p.nodes.iter().position(|n| n.kind == "Step").unwrap();
+        let graph = ModulationGraph::new(&p).unwrap();
+        let nodes = HashSet::from([group]);
+        let target = (group, "Gain".into());
+        let mut input = Inputs {
+            voice: Some(1),
+            instance: Some(1),
+            ..Inputs::default()
+        };
+        let mut live = HashMap::new();
+        // Original authored two-segment loop excludes the LoopStart point.
+        for (frame, expected) in [
+            (4800, 1.),
+            (9600, 0.25),
+            (14400, 0.75),
+            (16800, 0.5),
+            (19200, 0.25),
+            (21600, 0.5),
+            (24000, 0.75),
+        ] {
+            input.voice_time_seconds = f64::from(frame) / input.sample_rate;
+            input.time_seconds = input.voice_time_seconds;
+            let value = graph.evaluate_nodes(&input, &live, &nodes).unwrap()[&target];
+            assert!(
+                (value - expected).abs() < 0.000001,
+                "loop frame={frame} value={value}"
+            );
+        }
+        live.insert((first, "Curve".into()), 0.5);
+        live.insert((env, "LoopEnd".into()), 0.);
+        input.instance = Some(2);
+        input.voice_time_seconds = 0.;
+        input.time_seconds = 0.;
+        graph.evaluate_nodes(&input, &live, &nodes).unwrap();
+        input.note_off_time_seconds = Some(113. / input.sample_rate);
+        for (frame, expected) in [
+            (112, 0.006579224020),
+            (113, 0.006635937839),
+            (114, 0.006634555291),
+            (2513, 0.003317968221),
+            (4913, 0.000011016692),
+        ] {
+            input.note_off_time_seconds = (frame >= 113).then_some(113. / input.sample_rate);
+            input.voice_time_seconds = f64::from(frame) / input.sample_rate;
+            input.time_seconds = input.voice_time_seconds;
+            let value = graph.evaluate_nodes(&input, &live, &nodes).unwrap()[&target];
+            assert!(
+                (value - expected).abs() < 0.0000001,
+                "release frame={frame} value={value}"
+            );
+        }
+        input.voice_time_seconds = 5120. / input.sample_rate;
+        input.time_seconds = input.voice_time_seconds;
+        assert!(graph.release_finished(&input, &live, &nodes).unwrap());
+        assert_eq!(
+            graph.evaluate_nodes(&input, &live, &nodes).unwrap()[&target],
+            0.
+        );
+        // Original KG modes0/2 continue looping after noteoff, for both
+        // SamplePlayer PlayRelease settings. They have no fabricated gate tail.
+        for (instance, mode) in [(3, 0.), (4, 2.)] {
+            input.instance = Some(instance);
+            input.voice_time_seconds = 256. / input.sample_rate;
+            input.time_seconds = input.voice_time_seconds;
+            live.insert((env, "Retrigger".into()), mode);
+            assert!(!graph.release_finished(&input, &live, &nodes).unwrap());
+        }
+        live.insert((env, "Smooth".into()), 1.);
+        assert!(
+            graph
+                .evaluate_nodes(&input, &live, &nodes)
+                .unwrap_err()
+                .to_string()
+                .contains("smoothing")
+        );
+    }
+    #[test]
+    fn native_ahd_one_shot_fractional_stages_and_velocity() {
+        let p = parse_program(r#"<Program><ControlSignalSources><AHD Name="Env" AttackTime=".0011" HoldTime=".0013" DecayTime=".0017" AttackCurve="-.5" DecayCurve=".5"/></ControlSignalSources><Layers><Layer Name="Layer"><Keygroups><Keygroup Name="Group" Gain="1"><Connections><SignalConnection Source="$Program/Env" Destination="Gain" Ratio="1"/></Connections></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let group = p.nodes.iter().position(|n| n.kind == "Keygroup").unwrap();
+        let env = p.nodes.iter().position(|n| n.kind == "AHD").unwrap();
+        let graph = ModulationGraph::new(&p).unwrap();
+        let target = (group, "Gain".into());
+        let nodes = HashSet::from([group]);
+        assert!(graph.has_release_envelopes(&nodes));
+        assert!(graph.target_has_dynamic_source(&target));
+        let mut input = Inputs {
+            voice: Some(1),
+            instance: Some(1),
+            ..Inputs::default()
+        };
+        let mut live = HashMap::new();
+        // Original authored PCM observations, including carried fractional
+        // stage budgets. These are source levels before scalar gain smoothing.
+        for (frame, expected) in [
+            (0, 0.),
+            (32, 0.8339776397),
+            (64, 1.),
+            (96, 1.),
+            (128, 0.9407931566),
+            (160, 0.6069626808),
+            (192, 0.),
+        ] {
+            input.voice_time_seconds = f64::from(frame) / input.sample_rate;
+            let value = graph.evaluate_nodes(&input, &live, &nodes).unwrap()[&target];
+            assert!(
+                (value - expected).abs() < 0.000001,
+                "frame={frame} value={value}"
+            );
+        }
+        input.voice_time_seconds = 256. / input.sample_rate;
+        assert!(graph.release_finished(&input, &live, &nodes).unwrap());
+        live.insert((env, "AttackTime".into()), 0.002);
+        live.insert((env, "AttackCurve".into()), 0.5);
+        live.insert((env, "HoldTime".into()), 0.005);
+        live.insert((env, "DecayTime".into()), 0.04);
+        input.instance = Some(5);
+        input.voice_time_seconds = 0.;
+        graph.evaluate_nodes(&input, &live, &nodes).unwrap();
+        for (frame, expected) in [
+            (12, 0.0506289303),
+            (13, 0.0433179177),
+            (45, 0.2251153737),
+            (96, 0.8388281465),
+        ] {
+            input.note_off_time_seconds = (frame >= 13).then_some(13. / input.sample_rate);
+            input.voice_time_seconds = f64::from(frame) / input.sample_rate;
+            let value = graph.evaluate_nodes(&input, &live, &nodes).unwrap()[&target];
+            assert!((value - expected).abs() < 0.000001);
+        }
+        live.insert((env, "AttackTime".into()), 0.);
+        live.insert((env, "HoldTime".into()), 0.1);
+        live.insert((env, "DecayTime".into()), 0.2);
+        live.insert((env, "VelocityAmount".into()), 1.);
+        input.velocity = 64;
+        input.note_off_time_seconds = Some(113. / input.sample_rate);
+        for (instance, sensitivity, expected) in [
+            (2, 0.5, 0.2539525032),
+            (3, -0.5, 0.7524453998),
+            (4, 0., 0.503937006),
+        ] {
+            input.instance = Some(instance);
+            input.voice_time_seconds = 256. / input.sample_rate;
+            live.insert((env, "VelocitySens".into()), sensitivity);
+            let value = graph.evaluate_nodes(&input, &live, &nodes).unwrap()[&target];
+            assert!((value - expected).abs() < 0.000001);
+            assert!(!graph.release_finished(&input, &live, &nodes).unwrap());
+        }
+    }
+    #[test]
     fn native_dahdsr_fractional_stages_and_release_capture() {
         let p = parse_program(r#"<Program><ControlSignalSources><DAHDSR Name="Env" DelayTime="0.001" AttackTime="0.001" HoldTime="0.001" DecayTime="0.001" SustainLevel="0.25" ReleaseTime="0.002"/></ControlSignalSources><Layers><Layer Name="Layer"><Keygroups><Keygroup Name="Group" Gain="1"><Connections><SignalConnection Source="$Program/Env" Destination="Gain" Ratio="1"/></Connections><Oscillators><SamplePlayer Name="Osc" SamplePath="authored.wav"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
         let group = p.nodes.iter().position(|n| n.kind == "Keygroup").unwrap();
@@ -2342,6 +3326,119 @@ mod tests {
         }
     }
     #[test]
+    fn native_absolute_reversed_declaration_delays_audio_one_block() {
+        fn authored(reverse: bool) -> Vec<f32> {
+            let source = r#"<ConstantModulation Name="Src" Value="0"/>"#;
+            let target = r#"<ConstantModulation Name="Target" Value="0"><Connections><SignalConnection Source="$Program/Src" Destination="Value" Ratio="1" ConnectionMode="1" SignalConnectionVersion="1"/></Connections></ConstantModulation>"#;
+            let controls = if reverse {
+                format!("{target}{source}")
+            } else {
+                format!("{source}{target}")
+            };
+            let xml = format!(
+                r#"<Program><ControlSignalSources>{controls}</ControlSignalSources><Layers><Layer><Keygroups><Keygroup><Oscillators>
+                <SamplePlayer SamplePath="authored.wav" Gain="1"><Connections><SignalConnection Source="$Program/Target" Destination="Gain" Ratio="1"/></Connections></SamplePlayer>
+                </Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#
+            );
+            let p = parse_program(&xml).unwrap();
+            let source = p
+                .nodes
+                .iter()
+                .position(|node| node.name.as_deref() == Some("Src"))
+                .unwrap();
+            let player = p.sample_zones[0].player;
+            let mut graph = ModulationGraph::new(&p).unwrap();
+            let mut live = HashMap::new();
+            let mut input = Inputs::default();
+            let mut audio = Vec::new();
+            let (mut point, mut endpoint) = (0_f32, 0_f32);
+            let alpha = 1_f32 - 0.33_f32.powf(3200_f32 / input.sample_rate as f32);
+            for frame in 0..65536 {
+                input.time_seconds = f64::from(frame) / input.sample_rate;
+                input.voice_time_seconds = input.time_seconds;
+                input.voice = None;
+                if frame == 32768 {
+                    live.insert((source, "Value".into()), 1.);
+                }
+                live.extend(graph.control_updates(&input, &live).unwrap());
+                input.voice = Some(12);
+                let values = graph
+                    .evaluate_nodes(&input, &live, &HashSet::from([player]))
+                    .unwrap();
+                if frame % 32 == 0 {
+                    point = endpoint;
+                    endpoint = point + (values[&(player, "Gain".into())] as f32 - point) * alpha;
+                }
+                audio.push(point + (endpoint - point) * ((frame % 32) as f32 / 32.));
+            }
+            audio
+        }
+        let forward = authored(false);
+        let reverse = authored(true);
+        // Independently authored native renders prove this exact shift over
+        // 61,232 held-note samples. The synthetic graph need retain the same
+        // source clock state and delayed producer input, not just getters.
+        assert_eq!(&reverse[33024..], &forward[32768..65280]);
+        assert_eq!(reverse[33024], 0.);
+        for (frame, expected) in [
+            (33024, 0.011_372_049_f32),
+            (33280, 0.05630897),
+            (33792, 0.26161796),
+        ] {
+            assert!(
+                (forward[frame] - expected).abs() < 0.00000015,
+                "frame={frame}"
+            );
+        }
+    }
+    #[test]
+    fn native_script_modulation_sender_scope_follows_source_ancestry() {
+        let p = parse_program(r#"<Program><ControlSignalSources><ScriptEventModulation Name="Global" EventId="1" Bipolar="1"/></ControlSignalSources>
+            <Layers><Layer Name="A"><ControlSignalSources><ScriptEventModulation Name="LocalA" EventId="1" Bipolar="1"/></ControlSignalSources></Layer>
+            <Layer Name="B"><ControlSignalSources><ScriptEventModulation Name="LocalB" EventId="1" Bipolar="1"/></ControlSignalSources></Layer></Layers></Program>"#).unwrap();
+        let id = |name| {
+            p.nodes
+                .iter()
+                .position(|node| node.name.as_deref() == Some(name))
+                .unwrap()
+        };
+        let (layer, global, a, b) = (id("A"), id("Global"), id("LocalA"), id("LocalB"));
+        for voice in [None, Some(12)] {
+            let mut graph = ModulationGraph::new(&p).unwrap();
+            graph
+                .set_script_modulation_scoped(Some(layer), 1, None, 0.5, 0., voice, 0.)
+                .unwrap();
+            assert_eq!(graph.ramp(1, Some(12), Some(a)).unwrap().value(0.), 0.5);
+            assert!(graph.ramp(1, Some(12), Some(global)).is_none());
+            assert!(graph.ramp(1, Some(12), Some(b)).is_none());
+            graph
+                .set_script_modulation(1, None, 0.75, 0., None, 0.)
+                .unwrap();
+            for source in [global, a, b] {
+                assert_eq!(
+                    graph.ramp(1, Some(12), Some(source)).unwrap().value(0.),
+                    0.75
+                );
+            }
+            graph
+                .set_script_modulation_scoped(Some(layer), 1, None, 1., 100., Some(12), 0.)
+                .unwrap();
+            assert_eq!(graph.ramp(1, Some(12), Some(a)).unwrap().value(0.05), 0.875);
+            assert_eq!(
+                graph.ramp(1, Some(12), Some(global)).unwrap().value(0.05),
+                0.75
+            );
+            assert_eq!(graph.ramp(1, Some(12), Some(b)).unwrap().value(0.05), 0.75);
+            graph.remove_voice(12);
+            assert_eq!(graph.ramp(1, Some(12), Some(a)).unwrap().value(0.05), 0.75);
+            assert!(
+                graph
+                    .set_script_modulation_scoped(Some(global), 1, None, 1., 0., None, 0.)
+                    .is_err()
+            );
+        }
+    }
+    #[test]
     fn native_absolute_producer_block_callbacks_and_target_converters() {
         let p = parse_program(r#"<Program><ControlSignalSources>
             <ConstantModulation Name="Src" Value="0" Bipolar="0"/>
@@ -2364,7 +3461,10 @@ mod tests {
         let mut live = HashMap::new();
         // Static source zero does not overwrite the serialized target .8.
         assert!(graph.control_updates(&input, &live).unwrap().is_empty());
-        assert_eq!(graph.evaluate(&input, &live).unwrap()[&parameter], 0.8);
+        assert_eq!(
+            graph.evaluate(&input, &live).unwrap()[&parameter],
+            f64::from(0.8_f32)
+        );
         // At block128 an authored native setter changes source0 to1. The
         // published endpoints were independently read by Lua at next block.
         input.time_seconds = 32768. / input.sample_rate;
@@ -2418,11 +3518,43 @@ mod tests {
             ("Layer", "Mute", 0.49, 0.),
             ("Layer", "Mute", 0.5, 1.),
             ("XpanderFilter", "Bypass", 0.5, 1.),
+            ("CrossOverFilter", "LowFrequency", 0.25, 112.4682693),
+            ("CrossOverFilter", "HighFrequency", 0.5, 632.4555054),
+            ("ThreeBandShelves", "GainLow", 0.25, -12.),
+            ("ThreeBandShelves", "GainHigh", 0.75, 12.),
+            ("AnalogADSR", "DecayTime", 0.25, 0.00974126346),
+            ("AnalogADSR", "DecayTime", 0.5, 0.10388612747),
+            ("AnalogADSR", "DecayTime", 0.75, 1.02319049835),
+            ("SignalConnection", "Ratio", 0.25, 0.25),
+            ("Phasor", "Depth", 0.25, 0.25),
+            ("CrossPhaser", "Depth", 0.75, 0.75),
+            ("PhasorFilter", "Depth", 0.5, 0.5),
+            ("Tremolo", "Depth", 0.25, 0.25),
         ] {
             assert!(supports_absolute_target(kind, name));
             assert!((absolute_value(kind, name, normalized).unwrap() - expected).abs() < 0.00001);
         }
 
+        for kind in [
+            "CrossOverFilter",
+            "ThreeBandShelves",
+            "Phasor",
+            "CrossPhaser",
+            "PhasorFilter",
+            "Tremolo",
+            "Redux",
+            "Redux2",
+            "AuxEffect",
+            "ScriptProcessor",
+        ] {
+            assert!(supports_absolute_target(kind, "Bypass"));
+            for (normalized, expected) in [(0.49, 0.), (0.5, 1.), (1., 1.)] {
+                assert_eq!(
+                    absolute_value(kind, "Bypass", normalized).unwrap(),
+                    expected
+                );
+            }
+        }
         // Nonlinear mapper and signed Ratio distinguish three separate
         // operations: explicit inversion before mapping, then negative-Ratio
         // inversion after mapping. These are native block callback getters.
@@ -2809,6 +3941,23 @@ mod tests {
             }
         }
 
+        let pressure_program=parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="authored.wav"><Connections><SignalConnection Source="@ChanAfterTouch" Destination="Gain" Ratio="1"/></Connections></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let pressure = ModulationGraph::new(&pressure_program).unwrap();
+        let pressure_target = (pressure_program.sample_zones[0].player, "Gain".into());
+        for (raw, expected) in [(0, 0.), (64, 0.503937006), (127, 1.)] {
+            let pressure_input = Inputs {
+                channel_pressure: f64::from(raw) / 127.,
+                ..Default::default()
+            };
+            assert!(
+                (pressure.evaluate(&pressure_input, &HashMap::new()).unwrap()[&pressure_target]
+                    - expected)
+                    .abs()
+                    < 0.0000001
+            );
+        }
+        let invalid_pressure=parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="authored.wav"><Connections><SignalConnection Source="@ChannelPressure" Destination="Gain" Ratio="1"/></Connections></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        assert!(ModulationGraph::new(&invalid_pressure).is_err());
         // Independent original-reference note-source oracle, including event
         // tuning and upper/lower clipping. Values are audible gain factors.
         for (source, note, tune, expected) in [

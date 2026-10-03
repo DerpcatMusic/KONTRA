@@ -1,4 +1,4 @@
-//! Lua 5.1 musical callbacks compiled to an offline engine-command stream.
+//! Lua 5.1 musical callbacks compiled to an engine-command stream.
 //! This VM allocates and must never run in a plugin audio callback.
 //! Callback ranges and cooperative scheduling follow UVI's public API:
 //! https://lua.uvi.net/group___event_callbacks.html
@@ -52,7 +52,7 @@ pub struct Note {
 pub enum Action {
     Start(Note),
     Release(u32),
-    /// Forwarded key release; direct releaseVoice uses Release instead.
+    /// Key release forwarded through the issuing processor's downstream chain.
     ReleaseNote {
         id: u32,
         note: u8,
@@ -105,6 +105,8 @@ pub enum Action {
         gain: Option<f32>,
         tune: Option<f64>,
         pan: Option<f32>,
+        /// Apply raw values independently to each live voice (gain multiplies).
+        relative: bool,
         layer: Option<NodeId>,
     },
 }
@@ -214,13 +216,21 @@ fn posted_events(lua: &Lua, processor: Option<NodeId>) -> mlua::Result<Table> {
     Ok(events)
 }
 
-fn frames(ms: f64) -> mlua::Result<u64> {
+fn frames_at_rate(ms: f64, sample_rate: u32) -> mlua::Result<u64> {
     if !ms.is_finite() || !(0. ..=60_000.).contains(&ms) {
         return Err(mlua::Error::runtime(
             "UVI time must be finite and between 0 and 60000 ms",
         ));
     }
-    Ok((ms * RATE / 1000.).round() as u64)
+    Ok((ms * sample_rate as f64 / 1000.).round() as u64)
+}
+
+fn validate_sample_rate(sample_rate: u32) -> Result<()> {
+    ensure!(
+        (8000..=192000).contains(&sample_rate),
+        "UVI sample rate must be between 8000 and 192000 Hz"
+    );
+    Ok(())
 }
 
 // Native postEvent truncates and clamps virtual CC fields, unlike MIDI input.
@@ -280,6 +290,11 @@ fn event_snapshot(lua: &Lua, event: &Table) -> mlua::Result<Table> {
 }
 
 pub fn parse_notes(list: &str) -> Result<Vec<Input>> {
+    parse_notes_at_rate(list, RATE as u32)
+}
+
+pub fn parse_notes_at_rate(list: &str, sample_rate: u32) -> Result<Vec<Input>> {
+    validate_sample_rate(sample_rate)?;
     let mut inputs = Vec::new();
     for text in list.split(',') {
         ensure!(inputs.len() < LIMIT, "Too many UVI input notes");
@@ -295,7 +310,10 @@ pub fn parse_notes(list: &str) -> Result<Vec<Input>> {
             note < 128 && (1..=127).contains(&velocity),
             "Invalid MIDI note/velocity"
         );
-        let (on, off) = (frames(on.parse()?)?, frames(off.parse()?)?);
+        let (on, off) = (
+            frames_at_rate(on.parse()?, sample_rate)?,
+            frames_at_rate(off.parse()?, sample_rate)?,
+        );
         ensure!(off > on, "Note-off must follow note-on");
         inputs.push(Input {
             frame: on,
@@ -421,11 +439,14 @@ struct Voice {
     canceled: bool,
     creator: Option<NodeId>,
     creator_layer: Option<NodeId>,
+    // Earliest emitted start per scope, retained when command chunks are drained.
+    starts: HashMap<Option<NodeId>, u64>,
 }
 
 #[derive(Default)]
 struct State {
     now: u64,
+    sample_rate: u32,
     program_layers: Option<Vec<NodeId>>,
     tempo: f64,
     beat: f64,
@@ -472,10 +493,13 @@ impl State {
         let id = voice_id(event.get::<Value>("id")?)?;
         let note = event.get::<u8>("note")?;
         if kind == 144 {
-            if self.next_trigger as usize >= LIMIT {
+            if self.triggers.len() >= LIMIT {
                 return Err(mlua::Error::runtime("UVI trigger limit exceeded"));
             }
-            self.next_trigger += 1;
+            self.next_trigger = self
+                .next_trigger
+                .checked_add(1)
+                .ok_or_else(|| mlua::Error::runtime("UVI trigger ID space exhausted"))?;
             let trigger = self.next_trigger;
             self.triggers.insert(trigger, HeldTrigger { held: true });
             self.trigger_queues
@@ -510,7 +534,7 @@ impl State {
         Ok(trigger)
     }
     fn set_time(&mut self, at: u64) {
-        let beats = (at - self.now) as f64 / RATE * self.tempo / 60.;
+        let beats = (at - self.now) as f64 / self.sample_rate as f64 * self.tempo / 60.;
         self.running_beat += beats;
         if self.playing {
             self.beat += beats;
@@ -519,16 +543,38 @@ impl State {
     }
 
     fn id(&mut self) -> mlua::Result<u32> {
-        if self.next_id as usize >= LIMIT {
-            return Err(mlua::Error::runtime("UVI event limit exceeded"));
-        }
-        self.next_id += 1;
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .ok_or_else(|| mlua::Error::runtime("UVI voice ID space exhausted"))?;
         Ok(self.next_id)
     }
 
     fn emit(&mut self, frame: u64, action: Action) -> mlua::Result<()> {
         if self.commands.len() >= LIMIT {
             return Err(mlua::Error::runtime("UVI output command limit exceeded"));
+        }
+        if let Action::Start(note) = &action
+            && let Some(voice) = self.voices.get_mut(&note.id)
+        {
+            let mut scopes = vec![None];
+            scopes.extend(
+                note.layers
+                    .as_ref()
+                    .map_or_else(
+                        || self.program_layers.clone().unwrap_or_default(),
+                        Clone::clone,
+                    )
+                    .into_iter()
+                    .map(Some),
+            );
+            for scope in scopes {
+                voice
+                    .starts
+                    .entry(scope)
+                    .and_modify(|at| *at = (*at).min(frame))
+                    .or_insert(frame);
+            }
         }
         self.commands.push(Command { frame, action });
         Ok(())
@@ -541,7 +587,10 @@ impl State {
         if self.tasks.len() + self.forwards.len() >= 1024 {
             return Err(mlua::Error::runtime("UVI pending callback limit exceeded"));
         }
-        self.serial += 1;
+        self.serial = self
+            .serial
+            .checked_add(1)
+            .ok_or_else(|| mlua::Error::runtime("UVI scheduler ID space exhausted"))?;
         self.forwards.insert(
             (frame, self.serial),
             Forward {
@@ -558,7 +607,10 @@ impl State {
         if self.tasks.len() + self.forwards.len() >= 1024 {
             return Err(mlua::Error::runtime("UVI pending callback limit exceeded"));
         }
-        self.serial += 1;
+        self.serial = self
+            .serial
+            .checked_add(1)
+            .ok_or_else(|| mlua::Error::runtime("UVI scheduler ID space exhausted"))?;
         self.tasks.insert((frame, self.serial), task);
         Ok(())
     }
@@ -576,6 +628,7 @@ impl State {
             return Ok(false);
         }
         let event = event_snapshot(lua, &posted)?;
+        event.set("id", voice_handle(lua, id)?)?;
         event.set("type", 128)?;
         event.raw_set("_duration", Value::Nil)?;
         event.raw_set("_follows", Value::Nil)?;
@@ -673,7 +726,7 @@ impl State {
         if !target.is_finite() || start.is_some_and(|v| !v.is_finite()) {
             return Err(mlua::Error::runtime("Nonfinite UVI fade gain"));
         }
-        let duration_frames = frames(duration)?;
+        let duration_frames = frames_at_rate(duration, self.sample_rate)?;
         let layer = match selector {
             Value::Nil | Value::Integer(0) => self.current_layer,
             Value::Number(0.) => self.current_layer,
@@ -694,7 +747,15 @@ impl State {
             return Ok(());
         }
         if layer.is_none() {
-            voice.kill_at = kill.then_some(self.now + duration_frames);
+            voice.kill_at = if kill {
+                Some(
+                    self.now
+                        .checked_add(duration_frames)
+                        .ok_or_else(|| mlua::Error::runtime("UVI timeline overflow"))?,
+                )
+            } else {
+                None
+            };
         }
         self.emit(
             self.now,
@@ -710,7 +771,10 @@ impl State {
     }
 
     fn post(&mut self, lua: &Lua, event: &Table, delta: f64) -> mlua::Result<Option<u32>> {
-        let at = self.now + frames(delta)?;
+        let at = self
+            .now
+            .checked_add(frames_at_rate(delta, self.sample_rate)?)
+            .ok_or_else(|| mlua::Error::runtime("UVI timeline overflow"))?;
         match event.get::<u32>("type")? {
             144 => {
                 let raw_id = match event.get::<Value>("id")? {
@@ -780,7 +844,7 @@ impl State {
                     volume,
                     pan,
                     tune,
-                    offset_us: 0,
+                    offset_us: event.raw_get::<Option<u64>>("_offset_us")?.unwrap_or(0),
                 };
                 let follows = event.get::<Option<bool>>("_follows")?.unwrap_or(false);
                 let previous = self.voices.get(&id);
@@ -795,10 +859,18 @@ impl State {
                     || parent.is_some_and(|p| !self.note_held(p));
                 let end = event
                     .get::<Option<f64>>("_duration")?
-                    .map(frames)
+                    .map(|ms| {
+                        frames_at_rate(ms, self.sample_rate).and_then(|duration| {
+                            at.checked_add(duration)
+                                .ok_or_else(|| mlua::Error::runtime("UVI timeline overflow"))
+                        })
+                    })
                     .transpose()?
-                    .map(|duration| at + duration)
                     .or(previous_end);
+                let starts = previous.map(|v| v.starts.clone()).unwrap_or_default();
+                if newly_posted && self.voices.len() >= LIMIT {
+                    return Err(mlua::Error::runtime("UVI retained voice limit exceeded"));
+                }
                 self.voices.insert(
                     id,
                     Voice {
@@ -811,6 +883,7 @@ impl State {
                         canceled,
                         creator,
                         creator_layer,
+                        starts,
                     },
                 );
                 event.set("id", voice_handle(lua, id)?)?;
@@ -1055,12 +1128,15 @@ fn resume_task(
     let yielded = result?;
     if task.thread.status() == ThreadStatus::Resumable {
         let delay = match yielded.front() {
-            Some(Value::Number(ms)) => frames(*ms)?,
-            Some(Value::Integer(ms)) => frames(*ms as f64)?,
+            Some(Value::Number(ms)) => frames_at_rate(*ms, state.borrow().sample_rate)?,
+            Some(Value::Integer(ms)) => frames_at_rate(*ms as f64, state.borrow().sample_rate)?,
             _ => return Err(mlua::Error::runtime("UVI wait requires milliseconds")),
         };
         let mut s = state.borrow_mut();
-        let wake = s.now + delay.max(1);
+        let wake = s
+            .now
+            .checked_add(delay.max(1))
+            .ok_or_else(|| mlua::Error::runtime("UVI timeline overflow"))?;
         s.schedule(
             wake,
             Task {
@@ -1133,8 +1209,9 @@ impl Runtime {
         program: &Program,
         modules: BTreeMap<String, Vec<u8>>,
         resources: Option<host::Resources>,
+        sample_rate: u32,
     ) -> Result<Self> {
-        let mut rt = Self::vm(Some(program), modules, resources)?;
+        let mut rt = Self::vm(Some(program), modules, resources, sample_rate)?;
         rt.state.borrow_mut().chain = Some(EventChain::new(program)?);
         let processors = program
             .nodes
@@ -1309,7 +1386,13 @@ impl Runtime {
                 }
                 self.deliver(event, Some(processor), layer, parent, selected)?;
             } else {
+                // Automatic Layer dispatch retains offsets. An authored postEvent
+                // callback snapshots only documented event fields, resetting it.
+                let offset = event.raw_get::<Option<u64>>("_offset_us")?;
                 let event = event_snapshot(&self.lua, event)?;
+                if let Some(offset) = offset {
+                    event.raw_set("_offset_us", offset)?;
+                }
                 if event.get::<u32>("type")? == 128
                     && let Some(layer) = layer
                 {
@@ -1360,7 +1443,7 @@ impl Runtime {
         modules: BTreeMap<String, Vec<u8>>,
         resources: Option<host::Resources>,
     ) -> Result<Self> {
-        let mut rt = Self::vm(program, modules, resources)?;
+        let mut rt = Self::vm(program, modules, resources, RATE as u32)?;
         rt.initialize(source, name, program)?;
         Ok(rt)
     }
@@ -1369,7 +1452,9 @@ impl Runtime {
         program: Option<&Program>,
         modules: BTreeMap<String, Vec<u8>>,
         resources: Option<host::Resources>,
+        sample_rate: u32,
     ) -> Result<Self> {
+        validate_sample_rate(sample_rate)?;
         let lua = Lua::new_with(
             StdLib::TABLE | StdLib::STRING | StdLib::MATH,
             LuaOptions::default(),
@@ -1399,6 +1484,7 @@ impl Runtime {
         )?;
         let state = Rc::new(RefCell::new(State {
             tempo: TEMPO,
+            sample_rate,
             program_layers: program.map(|p| p.layers.clone()),
             ..State::default()
         }));
@@ -1460,11 +1546,19 @@ impl Runtime {
                     let events = posted_events(lua, state.current_processor)?;
                     if snapshot.get::<u32>("type")? == 144 {
                         let posted = event_snapshot(lua, &snapshot)?;
+                        // Internal registrations must not pin their own opaque handle.
+                        // A reachable handle, physical key or parent dependency keeps
+                        // this registration alive; release reconstructs event.id.
+                        posted.raw_set("id", Value::Nil)?;
                         if let Some(duration) = snapshot.raw_get::<Option<f64>>("_duration")? {
-                            posted.raw_set(
-                                "_expires",
-                                state.now + frames(delta)? + frames(duration)?,
-                            )?;
+                            let delay = frames_at_rate(delta, state.sample_rate)?;
+                            let duration = frames_at_rate(duration, state.sample_rate)?;
+                            let expires = state
+                                .now
+                                .checked_add(delay)
+                                .and_then(|at| at.checked_add(duration))
+                                .ok_or_else(|| mlua::Error::runtime("UVI timeline overflow"))?;
+                            posted.raw_set("_expires", expires)?;
                         }
                         events.raw_set(id, posted)?;
                     } else {
@@ -1544,14 +1638,20 @@ impl Runtime {
         let host = state.clone();
         globals.set(
             "getTime",
-            lua.create_function(move |_, ()| Ok(host.borrow().now as f64 * 1000. / RATE))?,
+            lua.create_function(move |_, ()| {
+                let state = host.borrow();
+                Ok(state.now as f64 * 1000. / state.sample_rate as f64)
+            })?,
         )?;
         let clock = state.clone();
         globals.set(
             "getTempo",
             lua.create_function(move |_, ()| Ok(clock.borrow().tempo))?,
         )?;
-        globals.set("getSamplingRate", lua.create_function(|_, ()| Ok(RATE))?)?;
+        globals.set(
+            "getSamplingRate",
+            lua.create_function(move |_, ()| Ok(sample_rate))?,
+        )?;
         let clock = state.clone();
         globals.set(
             "getBeatTime",
@@ -1612,21 +1712,30 @@ impl Runtime {
             "setSampleOffset",
             lua.create_function(move |_, (id, ms): (Value, f64)| {
                 let id = voice_id(id)?;
-                let offset_us = frames(ms)? * 1_000_000 / RATE as u64;
                 let mut s = host.borrow_mut();
+                frames_at_rate(ms, s.sample_rate)?;
+                // Offsets are source time, independent of output rate and pitch.
+                let offset_us = (ms * 1000.).round() as u64;
                 let now = s.now;
-                let voice = s
-                    .voices
-                    .get_mut(&id)
-                    .ok_or_else(|| mlua::Error::runtime("Unknown UVI voice"))?;
-                if voice.start < now {
-                    return Err(mlua::Error::runtime(
-                        "Sample offset must be set before the voice starts",
-                    ));
+                if id == 0 || id > s.next_id {
+                    return Err(mlua::Error::runtime("Unknown UVI voice"));
                 }
-                voice.note.offset_us = offset_us;
+                // Only same-frame pending launches below receive this change.
+                // A later delayed post sharing the ID does not mask an earlier
+                // immediate post; active and future-only setters remain no-ops.
                 for command in &mut s.commands {
                     if let Action::Start(note) = &mut command.action
+                        && note.id == id
+                        && command.frame == now
+                    {
+                        note.offset_us = offset_us;
+                    }
+                }
+                let processor = s.current_processor;
+                for ((frame, _), forward) in &mut s.forwards {
+                    if *frame == now
+                        && forward.after == processor
+                        && let Action::Start(note) = &mut forward.action
                         && note.id == id
                     {
                         note.offset_us = offset_us;
@@ -1641,23 +1750,20 @@ impl Runtime {
                 let id = voice_id(id)?;
                 if !value.is_finite() || immediate != Some(true) { return Err(mlua::Error::runtime("Nonfinite change or unsupported smoothed UVI voice change (use immediate=true)")); }
                 let mut s = host.borrow_mut();
-                let Some(voice) = s.voices.get(&id) else {
+                let Some(_) = s.voices.get(&id) else {
                     if field == 1 && id > 0 && id <= s.next_id { return Ok(()); }
                     return Err(mlua::Error::runtime("Unknown UVI voice"));
                 };
-                let start = voice.start;
                 let now=s.now;let layer=s.current_layer;
-                if !s.commands.iter().any(|command| command.frame<=now && matches!(&command.action,Action::Start(n) if n.id==id && layer.is_none_or(|layer|n.layers.as_ref().is_none_or(|layers|layers.contains(&layer))))) { return Ok(()); }
-                let mut n = voice.note.clone();
+                if !s.voices[&id].starts.get(&layer).is_some_and(|at| *at<=now) { return Ok(()); }
                 let (mut gain, mut tune, mut pan) = (None, None, None);
                 match field {
-                    0 => { n.volume = if relative.unwrap_or(false) { n.volume * value as f32 } else { value as f32 }; gain = Some(n.volume); },
-                    1 => { n.tune = if relative.unwrap_or(false) { n.tune + value } else { value }; tune = Some(n.tune); },
-                    _ => { n.pan = if relative.unwrap_or(false) { n.pan + value as f32 } else { value as f32 }; pan = Some(n.pan); },
+                    0 => { gain = Some(value as f32); },
+                    1 => { tune = Some(value); },
+                    _ => { pan = Some(value as f32); },
                 }
-                if !n.volume.is_finite() || n.volume < 0. || !(-1. ..=1.).contains(&n.pan) || n.tune.abs() > 120. { return Err(mlua::Error::runtime("UVI voice change exceeds playback range")); }
-                if start<=now { s.voices.get_mut(&id).unwrap().note=n; }
-                s.emit(now, Action::Change { id, gain, tune, pan, layer })
+                if gain.is_some_and(|n|!n.is_finite()||n<0.) || pan.is_some_and(|n|!(-1. ..=1.).contains(&n)) || tune.is_some_and(|n|n.abs()>120.) { return Err(mlua::Error::runtime("UVI voice change exceeds playback range")); }
+                s.emit(now, Action::Change { id, gain, tune, pan, relative:relative.unwrap_or(false), layer })
             })?)?;
         }
         let fades = state.clone();
@@ -1739,6 +1845,7 @@ impl Runtime {
         let object_host = if program.is_some() {
             let clock = state.clone();
             let voices = state.clone();
+            let scope = state.clone();
             Some(host::install(
                 &lua,
                 host::HostConfig {
@@ -1747,6 +1854,7 @@ impl Runtime {
                     resources,
                     now: Rc::new(move || clock.borrow().now),
                     valid_voice: Some(Rc::new(move |id| id > 0 && id <= voices.borrow().next_id)),
+                    layer_scope: Some(Rc::new(move || scope.borrow().current_layer)),
                 },
             )?)
         } else {
@@ -1838,6 +1946,10 @@ impl Runtime {
     }
 
     fn advance(&mut self, until: u64) -> Result<()> {
+        ensure!(
+            until >= self.state.borrow().now,
+            "UVI timeline must advance monotonically"
+        );
         loop {
             let (task, forward) = {
                 let mut state = self.state.borrow_mut();
@@ -1873,6 +1985,7 @@ impl Runtime {
                         event.set("pan", note.pan)?;
                         event.set("vol", note.volume)?;
                         event.set("tune", note.tune)?;
+                        event.raw_set("_offset_us", note.offset_us)?;
                         None
                     }
                     Action::ReleaseNote {
@@ -1932,7 +2045,125 @@ impl Runtime {
         Ok(())
     }
 
+    // Only unreachable handles may retire voice metadata. A released audio tail can
+    // still receive changes while a script retains its opaque handle.
+    fn prune(&mut self) -> Result<()> {
+        let now = self.state.borrow().now;
+        if let Some(scopes) = self
+            .lua
+            .named_registry_value::<Option<Table>>("kontakto.uvi.posted_events")?
+        {
+            for scope in scopes.pairs::<u64, Table>() {
+                let (_, events) = scope?;
+                let expired = events
+                    .clone()
+                    .pairs::<u32, Table>()
+                    .filter_map(|entry| {
+                        let (id, event) = match entry {
+                            Ok(entry) => entry,
+                            Err(error) => return Some(Err(error)),
+                        };
+                        match event.raw_get::<Option<u64>>("_expires") {
+                            Ok(Some(end)) if end <= now => Some(Ok(id)),
+                            Ok(_) => None,
+                            Err(error) => Some(Err(error)),
+                        }
+                    })
+                    .collect::<mlua::Result<Vec<_>>>()?;
+                for id in expired {
+                    events.raw_set(id, Value::Nil)?;
+                }
+            }
+        }
+        // ponytail: full GC per drain bounds weak-handle metadata; use incremental
+        // collection if measured worker throughput needs it.
+        self.lua.gc_collect()?;
+        let mut retained = HashSet::new();
+        if let Some(cache) = self
+            .lua
+            .named_registry_value::<Option<Table>>("kontakto.uvi.voice_ids")?
+        {
+            for entry in cache.pairs::<u32, Value>() {
+                let (id, handle) = entry?;
+                if !matches!(handle, Value::Nil) {
+                    retained.insert(id);
+                }
+            }
+        }
+        let mut state = self.state.borrow_mut();
+        state.keys.retain(|_, ids| !ids.is_empty());
+        retained.extend(state.keys.values().flatten().copied());
+        for command in &state.commands {
+            match &command.action {
+                Action::Start(note) => {
+                    retained.insert(note.id);
+                }
+                Action::Release(id)
+                | Action::ReleaseNote { id, .. }
+                | Action::Fade { id, .. }
+                | Action::Change { id, .. } => {
+                    retained.insert(*id);
+                }
+                _ => {}
+            }
+        }
+        if let Some(host) = &self.host {
+            for command in host.commands.borrow().iter() {
+                if let host::Action::ScriptModulation {
+                    voice: Some(id), ..
+                } = command.action
+                {
+                    retained.insert(id);
+                }
+            }
+        }
+        let held = state
+            .triggers
+            .iter()
+            .filter_map(|(&id, trigger)| trigger.held.then_some(id))
+            .collect::<HashSet<_>>();
+        state.voices.retain(|id, voice| {
+            retained.contains(id) || voice.parent.is_some_and(|parent| held.contains(&parent))
+        });
+        retained.extend(state.voices.keys().copied());
+        if let Some(scopes) = self
+            .lua
+            .named_registry_value::<Option<Table>>("kontakto.uvi.posted_events")?
+        {
+            for scope in scopes.pairs::<u64, Table>() {
+                let (_, events) = scope?;
+                let retired = events
+                    .clone()
+                    .pairs::<u32, Table>()
+                    .map(|entry| entry.map(|(id, _)| id))
+                    .collect::<mlua::Result<Vec<_>>>()?;
+                for id in retired.into_iter().filter(|id| !retained.contains(id)) {
+                    events.raw_set(id, Value::Nil)?;
+                }
+            }
+        }
+        let mut parents = state
+            .voices
+            .values()
+            .filter_map(|v| v.parent)
+            .collect::<HashSet<_>>();
+        parents.extend(state.tasks.values().filter_map(|task| task.parent));
+        if let Some(parent) = state.current {
+            parents.insert(parent);
+        }
+        // A finished newer callback still shadows an older held callback. Keep
+        // the whole registration stack while its ID or any parent is reachable.
+        state.trigger_queues.retain(|(_, id, _), queue| {
+            !queue.is_empty()
+                && (retained.contains(id) || queue.iter().any(|id| parents.contains(id)))
+        });
+        parents.extend(state.trigger_queues.values().flatten().copied());
+        state.triggers.retain(|id, _| parents.contains(id));
+        Ok(())
+    }
+
     fn input(&mut self, input: Input) -> Result<()> {
+        validate_input(&input)?;
         self.advance(input.frame)?;
         if let InputKind::Transport {
             playing,
@@ -1986,6 +2217,10 @@ impl Runtime {
                         channel < 16 && note < 128 && (1..=127).contains(&velocity),
                         "Invalid UVI MIDI input"
                     );
+                    ensure!(
+                        s.input_velocities.len() < LIMIT,
+                        "UVI held input limit exceeded"
+                    );
                     let id = s.id()?;
                     s.input_velocities.insert(id, velocity);
                     s.keys.entry((channel, note)).or_default().push_back(id);
@@ -2011,7 +2246,12 @@ impl Runtime {
                     event.set("type", 128)?;
                     event.set("id", voice_handle(&self.lua, id)?)?;
                     event.set("note", note)?;
-                    event.set("velocity", s.input_velocities[&id])?;
+                    event.set(
+                        "velocity",
+                        s.input_velocities
+                            .remove(&id)
+                            .context("Missing UVI input velocity")?,
+                    )?;
                     event.set("channel", channel + 1)?;
                     event.set("vol", 1.)?;
                     event.set("pan", 0.)?;
@@ -2097,6 +2337,92 @@ pub struct Processed {
     pub dropped_logs: usize,
 }
 
+/// Persistent allocating Lua session, owned by a control/worker thread.
+/// Inputs and advances use absolute frames at the declared sample rate. Drain
+/// after each chunk to reset output/log/resume budgets and retire unreachable IDs.
+/// Never call this VM from a plugin audio callback.
+pub struct Session {
+    runtime: Runtime,
+}
+
+impl Session {
+    pub fn new_program_chain(
+        program: &Program,
+        modules: BTreeMap<String, Vec<u8>>,
+        resources: Option<host::Resources>,
+        sample_rate: u32,
+    ) -> Result<Self> {
+        Ok(Self {
+            runtime: Runtime::new_chain(program, modules, resources, sample_rate)?,
+        })
+    }
+
+    pub fn sample_rate(&self) -> u32 {
+        self.runtime.state.borrow().sample_rate
+    }
+    pub fn current_frame(&self) -> u64 {
+        self.runtime.state.borrow().now
+    }
+
+    pub fn input(&mut self, input: Input) -> Result<()> {
+        self.runtime.input(input)
+    }
+
+    pub fn advance(&mut self, until: u64) -> Result<()> {
+        self.runtime.advance(until)
+    }
+
+    /// Validate the complete chunk before running any callbacks.
+    pub fn process(&mut self, inputs: &[Input], until: u64) -> Result<Processed> {
+        validate_sequence(inputs, until)?;
+        ensure!(
+            until >= self.current_frame()
+                && inputs
+                    .first()
+                    .is_none_or(|input| input.frame >= self.current_frame()),
+            "UVI timeline must advance monotonically"
+        );
+        for &input in inputs {
+            self.input(input)?;
+        }
+        self.advance(until)?;
+        self.drain()
+    }
+
+    /// Return commands through the current frame, preserving all future work.
+    pub fn drain(&mut self) -> Result<Processed> {
+        self.runtime.prune()?;
+        let mut state = self.runtime.state.borrow_mut();
+        let until = state.now;
+        let (mut commands, future): (Vec<_>, Vec<_>) = std::mem::take(&mut state.commands)
+            .into_iter()
+            .partition(|command| command.frame <= until);
+        state.commands = future;
+        commands.retain(|command| !matches!(&command.action, Action::Start(note) if state.voices.get(&note.id).is_some_and(|v| v.canceled)));
+        commands.sort_by_key(|command| command.frame);
+        let mut host_commands = Vec::new();
+        if let Some(host) = &self.runtime.host {
+            let mut pending = host.commands.borrow_mut();
+            let (ready, future): (Vec<_>, Vec<_>) = std::mem::take(&mut *pending)
+                .into_iter()
+                .partition(|command| command.frame <= until);
+            *pending = future;
+            host_commands = ready;
+            host_commands.sort_by_key(|command| command.frame);
+        }
+        let logs = std::mem::take(&mut state.logs);
+        state.log_bytes = 0;
+        let dropped_logs = std::mem::take(&mut state.dropped_logs);
+        self.runtime.resumes.set(0);
+        Ok(Processed {
+            commands,
+            host_commands,
+            logs,
+            dropped_logs,
+        })
+    }
+}
+
 pub fn process(source: &str, name: &str, inputs: &[Input], until: u64) -> Result<Vec<Command>> {
     Ok(process_inner(source, name, None, BTreeMap::new(), None, inputs, until)?.commands)
 }
@@ -2141,12 +2467,19 @@ pub fn process_program_chain(
     inputs: &[Input],
     until: u64,
 ) -> Result<Processed> {
-    validate_inputs(inputs, until)?;
-    collect(
-        Runtime::new_chain(program, modules, resources)?,
-        inputs,
-        until,
-    )
+    process_program_chain_at_rate(program, modules, resources, inputs, until, RATE as u32)
+}
+
+pub fn process_program_chain_at_rate(
+    program: &Program,
+    modules: BTreeMap<String, Vec<u8>>,
+    resources: Option<host::Resources>,
+    inputs: &[Input],
+    until: u64,
+    sample_rate: u32,
+) -> Result<Processed> {
+    validate_inputs_at_rate(inputs, until, sample_rate)?;
+    Session::new_program_chain(program, modules, resources, sample_rate)?.process(inputs, until)
 }
 
 fn process_inner(
@@ -2167,10 +2500,19 @@ fn process_inner(
 }
 
 fn validate_inputs(inputs: &[Input], until: u64) -> Result<()> {
+    validate_inputs_at_rate(inputs, until, RATE as u32)
+}
+
+pub fn validate_inputs_at_rate(inputs: &[Input], until: u64, sample_rate: u32) -> Result<()> {
+    validate_sample_rate(sample_rate)?;
     ensure!(
-        until <= 48000 * 60,
+        until <= sample_rate as u64 * 60,
         "UVI offline timeline exceeds 60 seconds"
     );
+    validate_sequence(inputs, until)
+}
+
+fn validate_sequence(inputs: &[Input], until: u64) -> Result<()> {
     ensure!(
         inputs.len() <= LIMIT && inputs.windows(2).all(|w| w[0].frame <= w[1].frame),
         "UVI inputs must be bounded and sorted"
@@ -2180,37 +2522,42 @@ fn validate_inputs(inputs: &[Input], until: u64) -> Result<()> {
         "UVI input exceeds render end"
     );
     for input in inputs {
-        let valid = match input.kind {
-            InputKind::NoteOn {
-                channel,
-                note,
-                velocity,
-            } => channel < 16 && note <= 127 && (1..=127).contains(&velocity),
-            InputKind::NoteOff { channel, note } => channel < 16 && note <= 127,
-            InputKind::Controller {
-                channel,
-                controller,
-                value,
-            } => channel < 16 && controller <= 127 && value <= 127,
-            InputKind::PitchBend { channel, bend } => {
-                channel < 16 && bend.is_finite() && (-1. ..=1.).contains(&bend)
-            }
-            InputKind::AfterTouch { channel, value } => channel < 16 && value <= 127,
-            InputKind::PolyAfterTouch {
-                channel,
-                note,
-                value,
-            } => channel < 16 && note <= 127 && value <= 127,
-            InputKind::Transport { beat, tempo, .. } => {
-                beat.is_finite() && tempo.is_finite() && tempo > 0.
-            }
-        };
-        ensure!(
-            valid,
-            "Invalid UVI MIDI/transport input at frame {}",
-            input.frame
-        );
+        validate_input(input)?;
     }
+    Ok(())
+}
+
+fn validate_input(input: &Input) -> Result<()> {
+    let valid = match input.kind {
+        InputKind::NoteOn {
+            channel,
+            note,
+            velocity,
+        } => channel < 16 && note <= 127 && (1..=127).contains(&velocity),
+        InputKind::NoteOff { channel, note } => channel < 16 && note <= 127,
+        InputKind::Controller {
+            channel,
+            controller,
+            value,
+        } => channel < 16 && controller <= 127 && value <= 127,
+        InputKind::PitchBend { channel, bend } => {
+            channel < 16 && bend.is_finite() && (-1. ..=1.).contains(&bend)
+        }
+        InputKind::AfterTouch { channel, value } => channel < 16 && value <= 127,
+        InputKind::PolyAfterTouch {
+            channel,
+            note,
+            value,
+        } => channel < 16 && note <= 127 && value <= 127,
+        InputKind::Transport { beat, tempo, .. } => {
+            beat.is_finite() && tempo.is_finite() && tempo > 0.
+        }
+    };
+    ensure!(
+        valid,
+        "Invalid UVI MIDI/transport input at frame {}",
+        input.frame
+    );
     Ok(())
 }
 
@@ -2247,6 +2594,393 @@ fn collect(mut rt: Runtime, inputs: &[Input], until: u64) -> Result<Processed> {
 mod tests {
     use super::super::program::parse_program;
     use super::*;
+
+    fn session_program(source: &str) -> Program {
+        parse_program(&format!("<Program Gain='0.5'><EventProcessors><ScriptProcessor><script><![CDATA[{source}]]></script></ScriptProcessor></EventProcessors><Layers><Layer/></Layers></Program>")).unwrap()
+    }
+
+    #[test]
+    fn session_uses_actual_rate_and_resumes_across_chunks() {
+        for rate in [44100, 96000] {
+            let program = session_program(&format!(
+                r#"
+                function onInit()
+                    assert(getSamplingRate()=={rate})
+                    local id=postEvent({{type=Event.NoteOn,note=60,velocity=100,_duration=200}},100)
+                    setSampleOffset(id,10)
+                    changeVolume(id,0.1,false,true)
+                    wait(100)
+                    assert(math.abs(getTime()-100)<1e-8)
+                    assert(math.abs(getRunningBeatTime()-0.2)<1e-8)
+                    assert(math.abs(getBeatTime()-4.2)<1e-8)
+                    changeVolume(id,0.5,false,true)
+                    wait(100)
+                    assert(math.abs(getTime()-200)<1e-8)
+                    Program:setParameter('Gain',0.75)
+                end
+            "#
+            ));
+            let mut session =
+                Session::new_program_chain(&program, BTreeMap::new(), None, rate).unwrap();
+            session
+                .input(Input {
+                    frame: 0,
+                    kind: InputKind::Transport {
+                        playing: true,
+                        beat: 4.,
+                        tempo: 120.,
+                    },
+                })
+                .unwrap();
+            let first = session.drain().unwrap();
+            assert_eq!(first.commands.len(), 1);
+            assert!(matches!(first.commands[0].action, Action::Transport { .. }));
+            let at100 = session.process(&[], rate as u64 / 10).unwrap();
+            assert_eq!(at100.commands.len(), 2);
+            assert!(matches!(&at100.commands[0].action, Action::Start(note) if note.offset_us==0));
+            assert!(matches!(
+                at100.commands[1].action,
+                Action::Change {
+                    gain: Some(0.5),
+                    ..
+                }
+            ));
+            assert!(
+                at100
+                    .commands
+                    .iter()
+                    .all(|command| command.frame == rate as u64 / 10)
+            );
+            let at200 = session.process(&[], rate as u64 / 5).unwrap();
+            assert!(at200.commands.is_empty());
+            assert_eq!(at200.host_commands.len(), 1);
+            assert_eq!(at200.host_commands[0].frame, rate as u64 / 5);
+            let at300 = session.process(&[], rate as u64 * 3 / 10).unwrap();
+            assert_eq!(at300.commands.len(), 1);
+            assert!(matches!(
+                at300.commands[0].action,
+                Action::ReleaseNote { .. }
+            ));
+            assert_eq!(at300.commands[0].frame, rate as u64 * 3 / 10);
+            let notes = parse_notes_at_rate("60@100-200:100", rate).unwrap();
+            assert_eq!(notes[0].frame, rate as u64 / 10);
+            assert_eq!(notes[1].frame, rate as u64 / 5);
+        }
+    }
+
+    #[test]
+    fn session_immediate_offset_survives_leaf_dispatch_and_resets_on_authored_post() {
+        for rate in [44100, 96000] {
+            let source = "function onInit()local minted=__nextVoiceId();setSampleOffset(minted,20);local id=postEvent{type=Event.NoteOn,note=60,velocity=100};setSampleOffset(id,10.5)end";
+            let program = session_program(source);
+            let mut session =
+                Session::new_program_chain(&program, BTreeMap::new(), None, rate).unwrap();
+            let out = session.drain().unwrap();
+            assert_eq!(out.commands.len(), 1);
+            assert!(
+                matches!(&out.commands[0].action, Action::Start(note) if note.offset_us==10500)
+            );
+            let program = parse_program(&format!("<Program><EventProcessors><ScriptProcessor><script><![CDATA[{source}]]></script></ScriptProcessor><ScriptProcessor><script><![CDATA[function onNote(e)postEvent(e);postEvent(table.copy(e))end]]></script></ScriptProcessor></EventProcessors><Layers><Layer/></Layers></Program>")).unwrap();
+            let mut session =
+                Session::new_program_chain(&program, BTreeMap::new(), None, rate).unwrap();
+            let out = session.drain().unwrap();
+            assert_eq!(out.commands.len(), 2);
+            assert!(out.commands.iter().all(
+                |command| matches!(&command.action, Action::Start(note) if note.offset_us==0)
+            ));
+        }
+    }
+
+    #[test]
+    fn session_offset_targets_already_pending_same_id_posts_without_inheritance() {
+        for (body, expected) in [
+            (
+                "local id=postEvent(e);setSampleOffset(id,10);postEvent(table.copy(e))",
+                [10000, 0],
+            ),
+            (
+                "local id=postEvent(e);postEvent(table.copy(e));setSampleOffset(id,20)",
+                [20000, 20000],
+            ),
+        ] {
+            let program = session_program(&format!(
+                "function onInit()local e={{type=Event.NoteOn,note=60,velocity=100}};{body};wait(10);setSampleOffset(e.id,30)end"
+            ));
+            let mut session =
+                Session::new_program_chain(&program, BTreeMap::new(), None, 48000).unwrap();
+            let out = session.drain().unwrap();
+            assert_eq!(out.commands.len(), 2);
+            for (command, expected) in out.commands.iter().zip(expected) {
+                assert!(matches!(&command.action, Action::Start(note) if note.offset_us==expected));
+            }
+            assert!(session.process(&[], 480).unwrap().commands.is_empty());
+        }
+    }
+
+    #[test]
+    fn session_resets_offset_on_delayed_copied_duplicate_posts() {
+        let program = parse_program(r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
+            function onInit()
+                local e={type=Event.NoteOn,note=60,velocity=100}
+                local id=postEvent(e,100);setSampleOffset(id,10)
+                local copy=table.copy(e);copy.note=61;postEvent(copy,100)
+            end
+        ]]></script></ScriptProcessor></EventProcessors><Layers><Layer><EventProcessors><ScriptProcessor><script><![CDATA[
+            function onNote(e)postEvent(e);postEvent(table.copy(e))end
+        ]]></script></ScriptProcessor></EventProcessors></Layer></Layers></Program>"#).unwrap();
+        let mut session =
+            Session::new_program_chain(&program, BTreeMap::new(), None, 44100).unwrap();
+        assert!(session.drain().unwrap().commands.is_empty());
+        let out = session.process(&[], 4410).unwrap();
+        assert_eq!(out.commands.len(), 4);
+        assert!(out.commands.iter().all(|command| matches!(&command.action, Action::Start(note) if note.id==1 && note.offset_us==0)));
+    }
+
+    #[test]
+    fn session_retains_tail_handles_and_runs_beyond_offline_limit() {
+        let program = session_program(
+            r#"
+            local id
+            function onInit() id=playNote(60,100,1) end
+            function onController(e)
+                assert(getTime()>60000)
+                changeTune(id,7,false,true)
+                changeVolume(id,0.3,false,true)
+                fadeout(id,10,false)
+            end
+        "#,
+        );
+        let mut session =
+            Session::new_program_chain(&program, BTreeMap::new(), None, 96000).unwrap();
+        let initial = session.process(&[], 192).unwrap();
+        assert_eq!(initial.commands.len(), 2);
+        assert!(matches!(initial.commands[0].action, Action::Start(_)));
+        assert!(matches!(
+            initial.commands[1].action,
+            Action::ReleaseNote { .. }
+        ));
+        let later = session
+            .process(
+                &[Input {
+                    frame: 96000 * 61,
+                    kind: InputKind::Controller {
+                        channel: 0,
+                        controller: 1,
+                        value: 2,
+                    },
+                }],
+                96000 * 61,
+            )
+            .unwrap();
+        assert_eq!(later.commands.len(), 3);
+        assert!(matches!(
+            later.commands[0].action,
+            Action::Change { tune: Some(7.), .. }
+        ));
+        assert!(matches!(
+            later.commands[1].action,
+            Action::Change {
+                gain: Some(0.3),
+                ..
+            }
+        ));
+        assert!(matches!(
+            later.commands[2].action,
+            Action::Fade {
+                duration_frames: 960,
+                ..
+            }
+        ));
+        assert_eq!(session.runtime.state.borrow().voices.len(), 1);
+    }
+
+    #[test]
+    fn session_drain_preserves_future_commands_and_resets_logs() {
+        let program = session_program(
+            r#"
+            function onInit()
+                print(string.rep('x',40000))
+                print('first')
+                wait(10)
+                print('second')
+                print(string.rep('x',40000))
+            end
+        "#,
+        );
+        let mut session =
+            Session::new_program_chain(&program, BTreeMap::new(), None, 48000).unwrap();
+        session
+            .runtime
+            .state
+            .borrow_mut()
+            .emit(
+                480,
+                Action::Controller {
+                    channel: 0,
+                    controller: 1,
+                    value: 2,
+                },
+            )
+            .unwrap();
+        session
+            .runtime
+            .host
+            .as_ref()
+            .unwrap()
+            .commands
+            .borrow_mut()
+            .push(host::Command {
+                frame: 480,
+                action: host::Action::Parameter {
+                    node: program.root,
+                    parameter: "Gain".into(),
+                    value: host::ParameterValue::Number(0.5),
+                },
+            });
+        let first = session.drain().unwrap();
+        assert!(first.commands.is_empty() && first.host_commands.is_empty());
+        assert_eq!(first.logs, ["first"]);
+        assert_eq!(first.dropped_logs, 1);
+        let second = session.process(&[], 480).unwrap();
+        assert_eq!(second.commands.len(), 1);
+        assert_eq!(second.host_commands.len(), 1);
+        assert_eq!(second.logs, ["second"]);
+        assert_eq!(second.dropped_logs, 1);
+        let third = session.drain().unwrap();
+        assert!(
+            third.commands.is_empty() && third.host_commands.is_empty() && third.logs.is_empty()
+        );
+        assert_eq!(third.dropped_logs, 0);
+    }
+
+    #[test]
+    fn session_rejects_invalid_chunks_before_mutation() {
+        let program = session_program("function onController(e) print('called');postEvent(e) end");
+        assert!(Session::new_program_chain(&program, BTreeMap::new(), None, 7999).is_err());
+        assert!(Session::new_program_chain(&program, BTreeMap::new(), None, 192001).is_err());
+        assert!(parse_notes_at_rate("60@0-100:100", 0).is_err());
+        let mut session =
+            Session::new_program_chain(&program, BTreeMap::new(), None, 48000).unwrap();
+        let cc = |frame, value| Input {
+            frame,
+            kind: InputKind::Controller {
+                channel: 0,
+                controller: 1,
+                value,
+            },
+        };
+        assert!(session.process(&[cc(20, 1), cc(10, 2)], 30).is_err());
+        assert!(session.process(&[cc(10, 1), cc(20, 255)], 30).is_err());
+        assert_eq!(session.current_frame(), 0);
+        assert!(session.runtime.state.borrow().ccs.is_empty());
+        session.advance(100).unwrap();
+        assert!(session.input(cc(99, 2)).is_err());
+        assert!(session.input(cc(200, 255)).is_err());
+        assert!(session.advance(99).is_err());
+        assert_eq!(session.current_frame(), 100);
+        assert!(session.drain().unwrap().logs.is_empty());
+        session.runtime.state.borrow_mut().input_velocities =
+            (1..=LIMIT as u32).map(|id| (id, 100)).collect();
+        let before_id = session.runtime.state.borrow().next_id;
+        assert!(
+            session
+                .input(Input {
+                    frame: 100,
+                    kind: InputKind::NoteOn {
+                        channel: 0,
+                        note: 60,
+                        velocity: 100
+                    }
+                })
+                .is_err()
+        );
+        assert_eq!(session.runtime.state.borrow().next_id, before_id);
+        assert!(session.runtime.state.borrow().keys.is_empty());
+    }
+
+    #[test]
+    fn session_preserves_finished_lifo_shadow_registrations() {
+        let program = parse_program(r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
+            function onInit()
+                local e={type=Event.NoteOn,id=__nextVoiceId(),note=60,velocity=100,tune=0}
+                postEvent(e);e.tune=12;postEvent(e)
+                wait(10);e.type=Event.NoteOff;postEvent(e)
+                wait(140);postEvent(e)
+            end
+        ]]></script></ScriptProcessor></EventProcessors><Layers><Layer><EventProcessors><ScriptProcessor><script><![CDATA[
+            function onNote(e)
+                postEvent(e)
+                if e.tune==0 then
+                    wait(100);assert(isNoteHeld())
+                    wait(100);assert(not isNoteHeld());print('released old callback')
+                end
+            end
+        ]]></script></ScriptProcessor></EventProcessors></Layer></Layers></Program>"#).unwrap();
+        let mut session =
+            Session::new_program_chain(&program, BTreeMap::new(), None, 48000).unwrap();
+        assert_eq!(session.drain().unwrap().commands.len(), 2);
+        assert_eq!(session.process(&[], 960).unwrap().commands.len(), 1);
+        assert!(session.process(&[], 4800).unwrap().commands.is_empty());
+        assert_eq!(session.process(&[], 7200).unwrap().commands.len(), 1);
+        assert_eq!(
+            session.process(&[], 9600).unwrap().logs,
+            ["released old callback"]
+        );
+    }
+
+    #[test]
+    fn session_long_event_stream_keeps_pending_metadata_bounded() {
+        let program = parse_program(r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
+            function onNote(e)postEvent(e)end function onRelease(e)postEvent(e)end
+        ]]></script></ScriptProcessor></EventProcessors><Layers><Layer><EventProcessors><ScriptProcessor><script><![CDATA[
+            function onNote(e)postEvent(e)end
+        ]]></script></ScriptProcessor></EventProcessors></Layer></Layers></Program>"#).unwrap();
+        let mut session =
+            Session::new_program_chain(&program, BTreeMap::new(), None, 48000).unwrap();
+        let mut frame = 0;
+        for chunk in 0..550 {
+            let mut inputs = Vec::new();
+            for _ in 0..128 {
+                inputs.push(Input {
+                    frame,
+                    kind: InputKind::NoteOn {
+                        channel: 0,
+                        note: 60,
+                        velocity: 100,
+                    },
+                });
+                inputs.push(Input {
+                    frame: frame + 1,
+                    kind: InputKind::NoteOff {
+                        channel: 0,
+                        note: 60,
+                    },
+                });
+                frame += 2;
+            }
+            let out = session
+                .process(&inputs, frame)
+                .unwrap_or_else(|error| panic!("chunk {chunk}: {error:#}"));
+            assert_eq!(out.commands.len(), 256);
+            let state = session.runtime.state.borrow();
+            assert!(state.voices.len() <= 256 && state.triggers.len() <= 256);
+            assert!(state.trigger_queues.len() <= 128);
+            assert!(state.keys.is_empty() && state.input_velocities.is_empty());
+        }
+        assert!(session.runtime.state.borrow().next_id as usize > LIMIT);
+        assert!(session.runtime.state.borrow().next_trigger as usize > LIMIT);
+        session.drain().unwrap();
+        assert!(session.runtime.state.borrow().voices.is_empty());
+        assert!(session.runtime.state.borrow().triggers.is_empty());
+        let scopes = session
+            .runtime
+            .lua
+            .named_registry_value::<Table>("kontakto.uvi.posted_events")
+            .unwrap();
+        for scope in scopes.pairs::<u64, Table>() {
+            assert_eq!(scope.unwrap().1.pairs::<u32, Table>().count(), 0);
+        }
+    }
 
     #[test]
     fn authored_json_inputs_validate_before_loading_scripts() {
@@ -2475,6 +3209,89 @@ mod tests {
             Action::ReleaseNote { note: 72, .. }
         ));
         assert_eq!(out.commands[1].frame, 9600);
+    }
+
+    #[test]
+    fn authored_duplicate_controls_preserve_raw_values_and_issuing_scope() {
+        let inputs = vec![Input {
+            frame: 0,
+            kind: InputKind::NoteOn {
+                channel: 0,
+                note: 60,
+                velocity: 100,
+            },
+        }];
+        let source = r#"
+          function onNote(e)
+            e.tune=0;e.vol=0.25;e.pan=-0.5;postEvent(e)
+            e.tune=12;e.vol=1;e.pan=0.5;postEvent(e);wait(2)
+            changeVolume(e.id,0.5,true,true)
+            changeTune(e.id,12,true,true)
+            changePan(e.id,0.25,true,true)
+            changeVolume(e.id,0.5,false,true)
+            changeTune(e.id,12,false,true)
+            changePan(e.id,0.25,false,true)
+          end
+        "#;
+        let out = process(source, "authored-relative-controls", &inputs, 96).unwrap();
+        assert_eq!(out.len(), 8);
+        assert!(
+            matches!(&out[0].action,Action::Start(n) if n.volume==0.25 && n.tune==0. && n.pan==-0.5)
+        );
+        assert!(
+            matches!(&out[1].action,Action::Start(n) if n.volume==1. && n.tune==12. && n.pan==0.5)
+        );
+        for (index, command) in out[2..].iter().enumerate() {
+            let Action::Change {
+                gain,
+                tune,
+                pan,
+                relative,
+                layer,
+                ..
+            } = &command.action
+            else {
+                panic!("Expected a voice control");
+            };
+            assert_eq!(*relative, index < 3);
+            assert_eq!(*layer, None);
+            assert_eq!(command.frame, 96);
+            assert_eq!(
+                (*gain, *tune, *pan),
+                match index % 3 {
+                    0 => (Some(0.5), None, None),
+                    1 => (None, Some(12.), None),
+                    _ => (None, None, Some(0.25)),
+                }
+            );
+        }
+        let program=parse_program(r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
+          function onInit()sendScriptModulation(1,0.1,0)end
+        ]]></script></ScriptProcessor></EventProcessors><Layers>
+          <Layer><EventProcessors><ScriptProcessor><script><![CDATA[
+            function onNote(e)sendScriptModulation(1,0.2,0,e.id);sendScriptModulation2(1,0.1,0.3,0);postEvent(e);wait(1);changeVolume(e.id,0.5,true,true)end
+          ]]></script></ScriptProcessor></EventProcessors></Layer>
+          <Layer><EventProcessors><ScriptProcessor><script><![CDATA[
+            function onNote(e)sendScriptModulation(1,0.4,0,e.id);sendScriptModulation2(1,0.1,0.5,0);postEvent(e)end
+          ]]></script></ScriptProcessor></EventProcessors></Layer>
+        </Layers></Program>"#).unwrap();
+        let out = process_program_chain(&program, BTreeMap::new(), None, &inputs, 96).unwrap();
+        assert_eq!(out.host_commands.len(), 5);
+        for (index, command) in out.host_commands.iter().enumerate() {
+            let host::Action::ScriptModulation { layer, voice, .. } = &command.action else {
+                panic!("Expected script modulation");
+            };
+            assert_eq!(
+                *layer,
+                if index == 0 {
+                    None
+                } else {
+                    Some(program.layers[(index - 1) / 2])
+                }
+            );
+            assert_eq!(*voice, if index % 2 == 1 { Some(1) } else { None });
+        }
+        assert!(out.commands.iter().any(|c|matches!(c.action,Action::Change{relative:true,layer:Some(layer),..} if layer==program.layers[0])));
     }
 
     #[test]

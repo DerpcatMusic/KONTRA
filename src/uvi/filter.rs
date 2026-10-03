@@ -17,7 +17,7 @@ use super::{
 use anyhow::{Context, Result, bail, ensure};
 use std::collections::BTreeMap;
 
-pub const FIDELITY_DIAGNOSTIC: &str = "UVI Xpander shapes, both solvers and saturation have authored native comparisons at 48 kHz; quiet rate paths are compared at 8/32/44.1/48/64/96/192 kHz; live parameter transitions, cross-rate saturation and exact float-rounding parity remain unverified";
+pub const FIDELITY_DIAGNOSTIC: &str = "UVI Xpander shapes, both solvers and saturation have authored native comparisons at 48 kHz; quiet rate paths are compared at 8/32/44.1/48/64/96/192 kHz; scalar cutoff transitions are compared at 32/48/96 kHz and dynamic cutoff points at 48 kHz, with native rounding residuals up to 3e-5; other live transitions, partial control-block timing, cross-rate saturation and exact float-rounding parity remain unverified";
 const DEFAULTS: [(&str, f64); 10] = [
     ("Bypass", 0.),
     ("Freq", 1000.),
@@ -171,8 +171,9 @@ struct State {
     // First-order allpasses y=a*x+z; z=x-a*y, independently per phase.
     up: [f64; 8],
     down: [f64; 8],
-    previous_input: [f64; 4],
-    previous_output: [f64; 4],
+    // Scaled DFII memories, measured from three independent cutoff jumps.
+    offsets: [f64; 4],
+    feedback_output: f64,
 }
 
 pub(super) fn allpass(mut x: f64, state: &mut [f64; 8], phase: usize, coefficients: &[f64]) -> f64 {
@@ -205,6 +206,18 @@ pub struct XpanderFilter {
     normalization: f64,
     feedback_gain: f64,
     state: [State; MAX_CHANNELS],
+    control_phase: usize,
+    frame: usize,
+    block_frames: usize,
+    settle_begin: Option<usize>,
+    ramp: [f32; 5],
+    increment: [f32; 5],
+    processed: bool,
+    dynamic_frequency: bool,
+    future_log: f32,
+    control_start: [f64; 5],
+    control_end: [f64; 5],
+    control_queue: [f64; 5],
 }
 
 impl XpanderFilter {
@@ -237,8 +250,21 @@ impl XpanderFilter {
             normalization: 1.,
             feedback_gain: 1.,
             state: [State::default(); MAX_CHANNELS],
+            control_phase: 0,
+            frame: 0,
+            block_frames: 256,
+            settle_begin: None,
+            ramp: [0.; 5],
+            increment: [0.; 5],
+            processed: false,
+            dynamic_frequency: false,
+            future_log: 0.,
+            control_start: [0.; 5],
+            control_end: [0.; 5],
+            control_queue: [0.; 5],
         };
         result.configure()?;
+        result.reset_control();
         Ok(result)
     }
 
@@ -257,43 +283,171 @@ impl XpanderFilter {
     }
 
     pub fn set_parameter(&mut self, name: &str, value: &ParameterValue) -> Result<()> {
+        self.set_effective_parameter(name, value, false)
+    }
+
+    /// Dynamic sources supply raw cutoff points at the 32-frame control clock.
+    /// Scalar controls (including CC and Constant) retain the cutoff's own RC.
+    /// The renderer may call this every output frame; coefficient points are
+    /// sampled here, so repeated values must not restart an in-flight ramp.
+    pub fn set_effective_parameter(
+        &mut self,
+        name: &str,
+        value: &ParameterValue,
+        dynamic: bool,
+    ) -> Result<()> {
         let value = match value {
             ParameterValue::Number(n) if name != "Bypass" => *n,
             ParameterValue::Boolean(b) if name == "Bypass" => f64::from(u8::from(*b)),
             _ => bail!("UVI filter Bypass requires Boolean; other parameters require Number"),
         };
         check(name, value)?;
-        if self.parameters.get(name).copied() != Some(value) {
-            let previous = self
-                .parameters
-                .insert(name.into(), value)
-                .expect("validated key");
-            if let Err(error) = self.configure() {
-                self.parameters.insert(name.into(), previous);
-                return Err(error);
-            }
+        if name == "Freq" {
+            self.dynamic_frequency = dynamic;
+        }
+        if self.parameters.get(name).copied() == Some(value) {
+            return Ok(());
+        }
+        let previous = self
+            .parameters
+            .insert(name.into(), value)
+            .expect("validated key");
+        if self.processed && name == "Freq" {
+            self.settle_begin = None;
+            return Ok(());
+        }
+        // Bypass freezes the filter, resampler and cutoff clock together.
+        if name == "Bypass" || name == "Mode" {
+            return Ok(());
+        }
+        let frequency = if self.processed {
+            f64::from(20. * 1000f32.powf(self.future_log))
+        } else {
+            self.parameters["Freq"]
+        };
+        if let Err(error) = self.configure_frequency(frequency) {
+            self.parameters.insert(name.into(), previous);
+            return Err(error);
+        }
+        self.reset_coefficients();
+        if !self.processed {
+            self.future_log = Self::frequency_position(self.parameters["Freq"]);
         }
         Ok(())
     }
 
     pub fn set_note(&mut self, note: u8) -> Result<()> {
         ensure!(note <= 127, "Invalid UVI filter MIDI note");
-        if self.note != note {
-            let previous = self.note;
-            self.note = note;
-            if let Err(error) = self.configure() {
-                self.note = previous;
-                return Err(error);
-            }
+        if self.note == note {
+            return Ok(());
         }
+        let previous = self.note;
+        self.note = note;
+        if let Err(error) = self.configure() {
+            self.note = previous;
+            return Err(error);
+        }
+        self.reset_control();
         Ok(())
     }
 
+    /// The host's processing block controls the final near-target ramp.
+    /// Native authored probes cover 32 and 256 frames; playback uses 256.
+    pub fn set_control_block_frames(&mut self, frames: usize) -> Result<()> {
+        ensure!(
+            matches!(frames, 32 | 256),
+            "Unmeasured Xpander host block size"
+        );
+        ensure!(!self.processed, "Set Xpander host block before processing");
+        self.block_frames = frames;
+        Ok(())
+    }
+
+    fn frequency_position(frequency: f64) -> f32 {
+        (frequency as f32 / 20.).ln() / 1000f32.ln()
+    }
+
+    fn coefficients(&self) -> [f64; 5] {
+        [
+            self.stage,
+            self.pole,
+            self.feedback,
+            self.compensation,
+            self.denominator,
+        ]
+    }
+
+    fn reset_coefficients(&mut self) {
+        self.control_start = self.coefficients();
+        self.control_end = self.control_start;
+        self.control_queue = self.control_start;
+        self.ramp = self.control_start.map(|v| v as f32);
+        self.increment = [0.; 5];
+        self.settle_begin = None;
+    }
+
+    fn reset_control(&mut self) {
+        self.future_log = Self::frequency_position(self.parameters["Freq"]);
+        self.reset_coefficients();
+    }
+
+    fn control_tick(&mut self) -> Result<()> {
+        if self.control_phase != 0 {
+            return Ok(());
+        }
+        if let Some(begin) = self.settle_begin {
+            if self.frame < begin + self.block_frames {
+                return Ok(());
+            }
+            self.settle_begin = None;
+            self.control_start = self.control_end;
+            self.control_queue = self.control_end;
+        }
+        let target = Self::frequency_position(self.parameters["Freq"]);
+        if self.dynamic_frequency {
+            self.control_start = self.control_end;
+            self.future_log = target;
+            self.configure_frequency(self.parameters["Freq"])?;
+            self.control_end = self.coefficients();
+            self.control_queue = self.control_end;
+            return Ok(());
+        }
+        let alpha = 1f32 - 0.33f32.powf(3200. / self.rate as f32);
+        // Independently bracketed with native 5331/5332Hz transitions: the
+        // threshold is the normalized increment, not an absolute Hz epsilon.
+        if self.frame % self.block_frames == 0
+            && target != self.future_log
+            && ((target - self.future_log) * alpha).abs() < 1e-6
+        {
+            self.future_log = target;
+            self.control_start = self.control_end;
+            self.configure_frequency(self.parameters["Freq"])?;
+            self.control_end = self.coefficients();
+            self.control_queue = self.control_end;
+            self.settle_begin = Some(self.frame);
+            return Ok(());
+        }
+        self.control_start = self.control_end;
+        self.control_end = self.control_queue;
+        self.future_log += (target - self.future_log) * alpha;
+        let frequency = if self.future_log == target {
+            self.parameters["Freq"]
+        } else {
+            f64::from(20. * 1000f32.powf(self.future_log))
+        };
+        self.configure_frequency(frequency)?;
+        self.control_queue = self.coefficients();
+        Ok(())
+    }
     fn configure(&mut self) -> Result<()> {
+        self.configure_frequency(self.parameters["Freq"])
+    }
+    fn configure_frequency(&mut self, base_frequency: f64) -> Result<()> {
         let p = &self.parameters;
         // Native tracking extends below/above the stored 20..20000Hz range.
         // Each solver applies its own internal-rate ceiling after tracking.
-        let frequency = p["Freq"] * ((f64::from(self.note) - 60.) * p["KeyTracking"] / 12.).exp2();
+        let frequency =
+            base_frequency * ((f64::from(self.note) - 60.) * p["KeyTracking"] / 12.).exp2();
         self.phases = if p["Oversampling"] != 0. || (p["Algorithm"] == 0. && self.rate <= 48_000.) {
             2
         } else {
@@ -357,53 +511,74 @@ impl XpanderFilter {
         let distortion = self.parameters["DistortionType"] as u8;
         let zero_delay = self.parameters["Algorithm"] != 0.;
         let phases = self.phases;
-        let coefficients = &self.allpass[..self.allpass_count];
+        let allpass_coeffs = self.allpass;
+        let coefficients = &allpass_coeffs[..self.allpass_count];
         for frame in io {
+            self.control_tick()?;
+            self.processed = true;
+            if self.control_phase == 0 && self.settle_begin.is_none_or(|begin| begin == self.frame)
+            {
+                self.ramp = self.control_start.map(|v| v as f32);
+                let frames = if self.settle_begin.is_some() {
+                    self.block_frames
+                } else {
+                    32
+                };
+                self.increment = std::array::from_fn(|i| {
+                    (self.control_end[i] as f32 - self.ramp[i]) / (frames * phases) as f32
+                });
+            }
+            // Native coefficient slopes accumulate in f32 at each internal
+            // phase. Compute once per frame and reuse for every channel.
+            let mut phase_coeffs = [[0.; 5]; 2];
+            for c in &mut phase_coeffs[..phases] {
+                *c = self.ramp.map(f64::from);
+                for i in 0..5 {
+                    self.ramp[i] += self.increment[i];
+                }
+            }
             for (channel, x) in frame[..self.channels].iter_mut().enumerate() {
                 let state = &mut self.state[channel];
                 let mut output = 0.;
                 // Algorithm I forces 2x through 48 kHz, honors the toggle above;
                 // Algorithm II honors the toggle at every measured rate.
                 for phase in 0..phases {
+                    let coeff = phase_coeffs[phase];
+                    let [stage_gain, pole, feedback, compensation, denominator] = coeff;
                     let up = if phases == 2 {
                         allpass(f64::from(*x), &mut state.up, phase, coefficients)
                     } else {
                         f64::from(*x)
                     };
-                    let offsets = state.previous_output.map(|y| (1. - self.stage) * y);
+                    let offsets = state.offsets;
                     let feedback_offset = if zero_delay {
                         offsets
                             .iter()
-                            .fold(0., |sum, offset| self.stage * sum + offset)
+                            .fold(0., |sum, offset| stage_gain * sum + offset)
                     } else {
-                        state.previous_output[3]
+                        state.feedback_output
                     };
-                    let input = (up * self.compensation
-                        - self.feedback * feedback_offset / self.feedback_gain)
+                    let input = (up * compensation
+                        - feedback * feedback_offset / self.feedback_gain)
                         * self.drive;
                     let mut tap = match distortion {
                         0 => rational(input) / self.normalization,
                         1 => input.clamp(-1., 1.) / self.normalization,
                         2 => input,
                         _ => unreachable!(),
-                    } / self.denominator;
+                    } / denominator;
                     let mut result = mix[0] * tap;
                     for (stage, offset) in offsets.into_iter().enumerate() {
-                        let y = if zero_delay {
-                            self.stage * tap + offset
+                        let y = stage_gain * tap + offset;
+                        state.offsets[stage] = if zero_delay {
+                            stage_gain * tap + (1. - 2. * stage_gain) * y
                         } else {
-                            self.stage * (tap + 0.3 * state.previous_input[stage])
-                                + self.pole * state.previous_output[stage]
-                        };
-                        state.previous_input[stage] = tap;
-                        state.previous_output[stage] = if zero_delay {
-                            2. * y - state.previous_output[stage]
-                        } else {
-                            y
+                            0.3 * stage_gain * tap + pole * y
                         };
                         tap = y;
                         result += mix[stage + 1] * y;
                     }
+                    state.feedback_output = tap;
                     output += if phases == 2 {
                         allpass(result, &mut state.down, 1 - phase, coefficients)
                     } else {
@@ -413,6 +588,8 @@ impl XpanderFilter {
                 *x = (output / phases as f64) as f32;
                 ensure!(x.is_finite(), "Nonfinite UVI filter output");
             }
+            self.control_phase = (self.control_phase + 1) % 32;
+            self.frame += 1;
         }
         Ok(())
     }
@@ -946,5 +1123,242 @@ mod tests {
             low_rate.parameter("Freq").unwrap(),
             ParameterValue::Number(20000.)
         );
+    }
+    fn authored_sine(frame: usize, rate: f64) -> f32 {
+        ((0.25 * (std::f64::consts::TAU * 1379. * frame as f64 / rate).sin() * 32768.).round()
+            / 32768.) as f32
+    }
+
+    #[test]
+    fn authored_native_cutoff_scalar_clock_and_settling() {
+        // Original PCM16 1379Hz sine, direct API cutoff 1000->5000 at
+        // frame8192 and back at16384. Native observations include both solvers,
+        // both AlgorithmII rate paths, three rates and resonant soft shaping.
+        // Static gain startup is excluded. Remaining native f32 rounding is
+        // bounded, including the independently observed final host-block ramp.
+        const POINTS: [usize; 17] = [
+            1024, 8192, 8223, 8224, 8256, 8320, 8960, 10000, 11264, 12544, 12672, 16128, 16384,
+            16416, 16512, 17408, 21000,
+        ];
+        #[rustfmt::skip]
+        const CASES: [(f64, u8, u8, bool, [f32; 17]); 8] = [
+            (48000., 0, 0, false, [-2.914619818e-02, -2.673291601e-02, -1.328595262e-02, -1.772941090e-02, -1.376130339e-02, 1.330240909e-02, 1.372344047e-01, 7.283777744e-02, 1.550025940e-01, 1.723558754e-01, -1.936173588e-01, 1.399706453e-01, 4.520146176e-02, 1.423129439e-01, 1.005557925e-01, -8.294066065e-04, -2.335441485e-02]),
+            (48000., 1, 0, false, [-2.695612982e-02, -2.958914638e-02, -2.267988957e-02, -2.572439052e-02, -2.562059276e-02, -9.522412904e-03, 1.812171340e-01, 1.491718292e-01, 8.118621260e-02, 2.119849175e-01, -1.387775838e-01, 1.960761845e-01, -4.459050298e-02, 6.455665082e-02, 1.581518054e-01, -1.822778024e-02, -2.873082086e-02]),
+            (48000., 1, 1, false, [-2.961795777e-02, -2.611744963e-02, -1.126209367e-02, -1.600690931e-02, -1.108972263e-02, 1.818878762e-02, 1.236543655e-01, 5.327572301e-02, 1.685453206e-01, 1.590399146e-01, -2.018356174e-01, 1.235791296e-01, 6.506456435e-02, 1.570720375e-01, 8.476133645e-02, 2.936375095e-03, -2.219420299e-02]),
+            (32000., 1, 0, false, [-4.891168326e-03, 1.377853751e-02, -2.942547016e-02, -2.793532610e-02, 4.051455855e-02, 3.711301088e-02, -8.123973012e-02, -2.168188095e-01, 2.204321772e-01, 1.191123277e-01, -9.990086406e-02, -1.723491997e-01, -1.414272040e-01, 2.190142125e-01, 1.681780666e-01, -1.818583533e-02, 2.182248794e-02]),
+            (96000., 1, 0, false, [1.871669851e-02, 1.330250967e-02, -3.587396117e-03, -6.227198523e-03, 1.563376398e-03, -8.261200972e-03, 9.566827863e-02, 7.610698044e-02, -1.503905207e-01, 2.371023409e-02, -1.693166494e-01, -2.720024902e-03, 1.954396516e-01, -1.659001410e-01, -1.212815475e-02, -6.201712042e-02, 1.080587134e-02]),
+            (48000., 0, 0, true, [-1.387927830e-01, -1.206795350e-01, -4.833376035e-02, -7.135377824e-02, -4.815973714e-02, 7.477380335e-02, 5.567879081e-01, 4.692532718e-01, -3.227325156e-03, 5.364906788e-01, -1.674908996e-01, 5.270934701e-01, -2.824700475e-01, -4.568889737e-02, 5.612660646e-01, 1.968392171e-02, -1.014690921e-01]),
+            (48000., 1, 0, true, [-1.351801157e-01, -1.402986199e-01, -9.722124040e-02, -1.141466349e-01, -1.083790287e-01, -3.460383043e-02, 4.770365357e-01, 5.290631056e-01, -2.028498352e-01, 4.807024896e-01, 5.103003606e-02, 5.215846300e-01, -4.209110141e-01, -2.379729450e-01, 5.357634425e-01, -6.819412112e-02, -1.325182319e-01]),
+            (48000., 1, 1, true, [-1.396245211e-01, -1.163613945e-01, -3.751552105e-02, -6.186177954e-02, -3.436037898e-02, 9.723789990e-02, 5.633789897e-01, 4.460301101e-01, 4.787544534e-02, 5.350935459e-01, -2.199341655e-01, 5.151938796e-01, -2.446179241e-01, 3.943162505e-03, 5.566776395e-01, 3.823124990e-02, -9.457526356e-02]),
+        ];
+        for (rate, algorithm, oversampling, coupled, expected) in CASES {
+            let attributes = if coupled {
+                "Q=\"0.75\" Fat=\"1\" Drive=\"6\" DistortionType=\"0\""
+            } else {
+                "DistortionType=\"2\""
+            };
+            let p = parse_program(&format!(
+                "<Program><XpanderFilter Freq=\"1000\" Mode=\"3\" Algorithm=\"{algorithm}\" Oversampling=\"{oversampling}\" {attributes}/></Program>"
+            )).unwrap();
+            let mut fx = XpanderFilter::new(&p.nodes[1], 1, rate).unwrap();
+            let mut io: Vec<Frame> = (0..24576)
+                .map(|n| {
+                    let mut frame = [0.; MAX_CHANNELS];
+                    frame[0] = authored_sine(n, rate);
+                    frame
+                })
+                .collect();
+            let mut settled = None;
+            for n in (0..io.len()).step_by(32) {
+                if n == 8192 {
+                    fx.set_parameter("Freq", &ParameterValue::Number(5000.))
+                        .unwrap();
+                }
+                if n == 16384 {
+                    fx.set_parameter("Freq", &ParameterValue::Number(1000.))
+                        .unwrap();
+                }
+                fx.process(&mut io[n..n + 32]).unwrap();
+                if settled.is_none() {
+                    settled = fx.settle_begin;
+                }
+            }
+            assert_eq!(
+                settled,
+                Some(match rate as u32 {
+                    32000 => 11264,
+                    96000 => 16128,
+                    _ => 12544,
+                })
+            );
+            let bound = if coupled { 3e-5 } else { 1e-5 };
+            for (n, native) in POINTS.into_iter().zip(expected) {
+                assert!(
+                    (io[n][0] - native).abs() < bound,
+                    "cutoff rate{rate}, Algorithm{algorithm}, OS{oversampling}, resonant{coupled}, frame{n}: {} vs {native}",
+                    io[n][0]
+                );
+            }
+        }
+        // Native 1Hz bracket establishes normalized increment epsilon1e-6.
+        // A target-Hz epsilon or the Constant producer's epsilon1e-7 gives
+        // different native final-ramp boundaries for these adjacent targets.
+        #[rustfmt::skip]
+        let brackets = [
+            (5331., 12416, [-6.331995875e-02, -2.187654227e-01, 4.775892198e-02, -1.005152985e-01, 1.468517780e-01, 2.090162188e-01, 8.434538543e-02]),
+            (5332., 12448, [-6.336339563e-02, -2.187682092e-01, 4.773806036e-02, -1.004932970e-01, 1.468297541e-01, 2.090121657e-01, 8.438850939e-02]),
+        ];
+        for (target, native_begin, expected) in brackets {
+            let mut fx = filter("Algorithm=\"1\" Oversampling=\"0\" DistortionType=\"2\"", 1);
+            fx.set_control_block_frames(32).unwrap();
+            let mut io: Vec<Frame> = (0..12800)
+                .map(|n| {
+                    let mut frame = [0.; MAX_CHANNELS];
+                    frame[0] = authored_sine(n, 48000.);
+                    frame
+                })
+                .collect();
+            let mut begin = None;
+            for n in (0..io.len()).step_by(32) {
+                if n == 8192 {
+                    fx.set_parameter("Freq", &ParameterValue::Number(target))
+                        .unwrap();
+                }
+                fx.process(&mut io[n..n + 32]).unwrap();
+                if begin.is_none() {
+                    begin = fx.settle_begin;
+                }
+            }
+            assert_eq!(begin, Some(native_begin));
+            for (n, native) in [12416, 12424, 12448, 12464, 12480, 12512, 12608]
+                .into_iter()
+                .zip(expected)
+            {
+                assert!(
+                    (io[n][0] - native).abs() < 3e-6,
+                    "native normalized cutoff bracket {target}, frame{n}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn authored_native_cutoff_dynamic_and_scalar_source_routes() {
+        // Authored native sine LFO2Hz->Freq, ratio0.1; original dynamic source
+        // points bypass the scalar cutoff RC but retain 32-frame interpolation.
+        // Bound also includes the native LFO's observed float phase drift.
+        let mut fx = filter("Algorithm=\"1\" Oversampling=\"0\" DistortionType=\"2\"", 1);
+        let mut dynamic = Vec::new();
+        for n in 0..24576 {
+            let source = (1. + (std::f64::consts::TAU * 2. * n as f64 / 48000.).sin()) * 0.5;
+            let frequency = 1000. * 1000f64.powf(0.1 * source);
+            fx.set_effective_parameter("Freq", &ParameterValue::Number(frequency), true)
+                .unwrap();
+            let mut io = [[0.; MAX_CHANNELS]];
+            io[0][0] = authored_sine(n, 48000.);
+            fx.process(&mut io).unwrap();
+            dynamic.push(io[0][0]);
+        }
+        #[rustfmt::skip]
+        let observed_dynamic = [
+            (1024, -2.172172815e-02),
+            (2048, 5.239425600e-02),
+            (4096, 1.067570969e-01),
+            (6144, 8.269789815e-02),
+            (8192, -3.372157365e-02),
+            (10000, -7.092898339e-02),
+            (12288, -9.548679926e-03),
+            (14336, 4.036397859e-02),
+            (16384, 2.008865029e-02),
+            (19000, 3.041182272e-02),
+            (21000, -3.794048727e-02),
+            (23040, 3.222490475e-02),
+        ];
+        for (n, native) in observed_dynamic {
+            assert!(
+                (dynamic[n] - native).abs() < 8e-6,
+                "dynamic native cutoff frame{n}"
+            );
+        }
+        // Constant modulation has a producer RC as well as this cutoff's RC.
+        // CC is raw and has just the cutoff RC. Both used the same original
+        // controller events and graph ratio ln(5)/ln(1000) in the native host.
+        for constant in [false, true] {
+            let mut fx = filter("Algorithm=\"1\" Oversampling=\"0\" DistortionType=\"2\"", 1);
+            let mut source = 0f32;
+            let mut target = 0f32;
+            let alpha = 1f32 - 0.33f32.powf(3200. / 48000.);
+            let mut io: Vec<Frame> = (0..24576)
+                .map(|n| {
+                    let mut frame = [0.; MAX_CHANNELS];
+                    frame[0] = authored_sine(n, 48000.);
+                    frame
+                })
+                .collect();
+            for n in (0..io.len()).step_by(32) {
+                if n > 0 {
+                    source += (target - source) * alpha;
+                }
+                if n == 8192 {
+                    target = 1.;
+                }
+                if n == 16384 {
+                    target = 0.;
+                }
+                if n % 256 == 0 && ((target - source) * alpha).abs() < 1e-7 {
+                    source = target;
+                }
+                let value = if constant { source } else { target };
+                let frequency = 1000. * 5f64.powf(f64::from(value));
+                fx.set_effective_parameter("Freq", &ParameterValue::Number(frequency), false)
+                    .unwrap();
+                fx.process(&mut io[n..n + 32]).unwrap();
+            }
+            #[rustfmt::skip]
+            let observed = if constant { [
+                (8192, -2.958914638e-02),
+                (8224, -2.572439052e-02),
+                (8256, -1.538763754e-02),
+                (8320, 1.250610966e-02),
+                (8448, 3.183722496e-02),
+                (8960, 4.665406793e-02),
+                (10000, 1.227641553e-01),
+                (12544, 2.118970156e-01),
+                (16384, -4.459050298e-02),
+                (16416, 6.455665082e-02),
+                (16512, 2.084397227e-01),
+                (17408, -8.913652599e-02),
+                (19000, 3.193709999e-02),
+                (21000, -2.877480350e-02),
+            ] } else { [
+                (8192, -2.958914638e-02),
+                (8224, -2.572439052e-02),
+                (8256, -2.562059276e-02),
+                (8320, -9.522412904e-03),
+                (8448, 9.845993668e-02),
+                (8960, 1.812169850e-01),
+                (10000, 1.491719633e-01),
+                (12544, 2.119850367e-01),
+                (16384, -4.459050298e-02),
+                (16416, 6.455665082e-02),
+                (16512, 1.581519246e-01),
+                (17408, -1.822773367e-02),
+                (19000, 2.991260774e-02),
+                (21000, -2.873411961e-02),
+            ] };
+            for (n, native) in observed {
+                let bound = if constant {
+                    2e-5
+                } else if n <= 10000 {
+                    3e-6
+                } else {
+                    1e-5
+                };
+                assert!(
+                    (io[n][0] - native).abs() < bound,
+                    "native scalar cutoff source Constant{constant}, frame{n}"
+                );
+            }
+        }
     }
 }

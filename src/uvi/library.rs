@@ -1,19 +1,40 @@
 //! Local UFS resources: exact virtual paths, private keyed reads and shared PCM.
 use super::{
-    crypto,
+    crypto, host,
     program::{self, Program},
     sample::{self, Sample},
     ufs::{Directory, Member, Ufs},
 };
 use anyhow::{Context, Result, ensure};
 use std::{
-    collections::{BTreeMap, HashMap},
+    cell::{Cell, RefCell},
+    collections::{BTreeMap, HashMap, HashSet},
     path::Path,
+    rc::Rc,
     sync::Arc,
 };
 
 pub(crate) const PCM_LIMIT: usize = 512 << 20;
 const MODULE_LIMIT: usize = 16 << 20;
+const ALIAS_LIMIT: usize = 16 << 20;
+
+fn alias_bytes(current: usize, path: &str) -> Result<usize> {
+    ensure!(
+        !path.is_empty() && path.len() <= 4096 && !path.contains('\0'),
+        "Invalid UVI resource alias"
+    );
+    let total = current
+        .checked_add(path.len())
+        .and_then(|bytes| {
+            bytes.checked_add(std::mem::size_of::<String>() + std::mem::size_of::<Arc<Sample>>())
+        })
+        .context("UVI resource alias memory overflow")?;
+    ensure!(
+        total <= ALIAS_LIMIT,
+        "UVI resource aliases exceed 16 MiB limit"
+    );
+    Ok(total)
+}
 
 fn normalize(path: &str) -> Result<String> {
     ensure!(
@@ -274,9 +295,237 @@ impl Library {
     }
 }
 
+/// Decoded bank resources owned by a single Lua/playback worker.
+/// The callback performs disk I/O and decoding; it must run off the audio thread.
+pub struct BankResources {
+    samples: Rc<RefCell<HashMap<String, Arc<Sample>>>>,
+    capability: host::Resources,
+    revision: Rc<Cell<u64>>,
+}
+
+impl BankResources {
+    pub fn new(
+        library: Rc<Library>,
+        program_path: &str,
+        initial: HashMap<String, Arc<Sample>>,
+    ) -> Result<Self> {
+        let samples = Rc::new(RefCell::new(initial));
+        let aliases = Cell::new(
+            samples
+                .borrow()
+                .keys()
+                .try_fold(0, |bytes, path| alias_bytes(bytes, path))?,
+        );
+        let revision = Rc::new(Cell::new(0u64));
+        let mut identities = HashSet::new();
+        let resident = Rc::new(Cell::new(
+            samples
+                .borrow()
+                .values()
+                .filter(|sample| identities.insert(Arc::as_ptr(sample)))
+                .map(|sample| sample.interleaved.bytes())
+                .sum::<usize>(),
+        ));
+        ensure!(
+            resident.get() <= PCM_LIMIT,
+            "UVI loaded audio exceeds resident PCM limit"
+        );
+        let mut audio_cache = HashMap::new();
+        for (path, sample) in samples.borrow().iter() {
+            audio_cache.insert(library.audio_identity(program_path, path)?, sample.clone());
+        }
+        let capability: host::Resources = {
+            let library = library.clone();
+            let cache = samples.clone();
+            let program_path = program_path.to_owned();
+            let audio_cache = RefCell::new(audio_cache);
+            let revision = revision.clone();
+            Rc::new(move |request| {
+                let resolve = || -> Result<host::ResourceResponse> {
+                    match request {
+                        host::ResourceRequest::ReadAudio { path, .. } => {
+                            let existing = cache.borrow().get(path).cloned();
+                            let sample = if let Some(sample) = existing {
+                                sample
+                            } else {
+                                let alias_total = alias_bytes(aliases.get(), path)?;
+                                let next_revision = revision
+                                    .get()
+                                    .checked_add(1)
+                                    .context("UVI resource revision exhausted")?;
+                                let identity = library.audio_identity(&program_path, path)?;
+                                let existing = audio_cache.borrow().get(&identity).cloned();
+                                let sample = if let Some(sample) = existing {
+                                    sample
+                                } else {
+                                    let decoded = library.audio(&program_path, path)?;
+                                    let total = resident
+                                        .get()
+                                        .checked_add(decoded.interleaved.bytes())
+                                        .context("UVI resource memory overflow")?;
+                                    ensure!(
+                                        total <= PCM_LIMIT,
+                                        "UVI loaded audio exceeds resident PCM limit"
+                                    );
+                                    let sample = Arc::new(decoded);
+                                    audio_cache.borrow_mut().insert(identity, sample.clone());
+                                    resident.set(total);
+                                    sample
+                                };
+                                cache.borrow_mut().insert(path.clone(), sample.clone());
+                                aliases.set(alias_total);
+                                revision.set(next_revision);
+                                sample
+                            };
+                            Ok(host::ResourceResponse::Audio(host::ResourceInfo {
+                                name: path
+                                    .replace('\\', "/")
+                                    .rsplit('/')
+                                    .next()
+                                    .unwrap_or(path)
+                                    .to_owned(),
+                                rate: sample.rate,
+                                channels: sample.channels,
+                                frames: sample.frames,
+                            }))
+                        }
+                        host::ResourceRequest::ReadData { path }
+                        | host::ResourceRequest::ReadState { path } => {
+                            Ok(host::ResourceResponse::Bytes(library.data(
+                                &program_path,
+                                path,
+                                16 << 20,
+                            )?))
+                        }
+                        host::ResourceRequest::WriteState { .. } => anyhow::bail!(
+                            "The offline UFS command has no private writable state directory"
+                        ),
+                        host::ResourceRequest::Browse { .. } => {
+                            anyhow::bail!("The offline UFS command has no file browser")
+                        }
+                    }
+                };
+                resolve().map_err(mlua::Error::external)
+            })
+        };
+        Ok(Self {
+            samples,
+            capability,
+            revision,
+        })
+    }
+
+    pub fn capability(&self) -> host::Resources {
+        self.capability.clone()
+    }
+
+    /// Changes only when a newly resolved alias becomes available.
+    pub fn revision(&self) -> u64 {
+        self.revision.get()
+    }
+
+    /// Snapshot aliases while sharing the decoded PCM allocations.
+    pub fn samples(&self) -> HashMap<String, Arc<Sample>> {
+        self.samples.borrow().clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bank_resource_callback_shares_pcm_and_publishes_only_successful_aliases() {
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let mut wav = hound::WavWriter::new(
+                &mut cursor,
+                hound::WavSpec {
+                    channels: 1,
+                    sample_rate: 48000,
+                    bits_per_sample: 16,
+                    sample_format: hound::SampleFormat::Int,
+                },
+            )
+            .unwrap();
+            for value in [4096i16, -4096, 8192, 0] {
+                wav.write_sample(value).unwrap();
+            }
+            wav.finalize().unwrap();
+        }
+        let wav = cursor.into_inner();
+        let mut bytes = vec![0u8; 320];
+        bytes[..4].copy_from_slice(b"UFS2");
+        bytes[4..8].copy_from_slice(&3u32.to_le_bytes());
+        bytes[48..56].copy_from_slice(b"Authored");
+        bytes.extend_from_slice(&wav);
+        let path =
+            std::env::temp_dir().join(format!("kontra-bank-resource-{}.ufs", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+        let library = Rc::new(Library {
+            bank: Ufs::open(&path).unwrap(),
+            content_key: None,
+            directory: Directory {
+                files: vec![Member {
+                    record_offset: 320,
+                    name: "authored.wav".into(),
+                    path: Some("Samples/authored.wav".into()),
+                    parent: None,
+                    size: wav.len() as u64,
+                    offset: 320,
+                    mode: 0,
+                    footer: Vec::new(),
+                }],
+                directories: Vec::new(),
+                records: Vec::new(),
+                warnings: Vec::new(),
+                metadata_key: 0,
+            },
+        });
+        let resources =
+            BankResources::new(library, "Programs/authored.uvip", HashMap::new()).unwrap();
+        let read = resources.capability();
+        let relative = "../Samples/authored.wav";
+        let absolute = "/Samples/authored.wav";
+        let request = |path: &str| host::ResourceRequest::ReadAudio {
+            kind: host::ResourceKind::Sample,
+            path: path.into(),
+        };
+        assert_eq!(resources.revision(), 0);
+        let host::ResourceResponse::Audio(info) = read(&request(relative)).unwrap() else {
+            panic!()
+        };
+        assert_eq!((info.rate, info.channels, info.frames), (48000, 1, 4));
+        assert_eq!(resources.revision(), 1);
+        read(&request(relative)).unwrap();
+        assert_eq!(resources.revision(), 1);
+        read(&request(absolute)).unwrap();
+        let samples = resources.samples();
+        assert!(Arc::ptr_eq(&samples[relative], &samples[absolute]));
+        assert_eq!(samples[relative].interleaved.value(0).unwrap(), 0.125);
+        assert_eq!(resources.revision(), 2);
+        assert!(read(&request("../../outside.wav")).is_err());
+        assert_eq!(resources.revision(), 2);
+        assert_eq!(resources.samples().len(), 2);
+        assert!(
+            read(&host::ResourceRequest::WriteState {
+                path: "state".into(),
+                bytes: vec![1]
+            })
+            .is_err()
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn resource_alias_budget_accounts_before_cache_growth() {
+        let path = "Samples/authored.wav";
+        let cost = alias_bytes(0, path).unwrap();
+        assert_eq!(alias_bytes(ALIAS_LIMIT - cost, path).unwrap(), ALIAS_LIMIT);
+        assert!(alias_bytes(ALIAS_LIMIT - cost + 1, path).is_err());
+        assert!(alias_bytes(usize::MAX, path).is_err());
+        assert!(alias_bytes(0, "").is_err());
+        assert!(alias_bytes(0, &"x".repeat(4097)).is_err());
+        assert!(alias_bytes(0, "bad\0name").is_err());
+    }
     #[test]
     fn exact_resource_paths_and_ambiguous_names() {
         let member = |path: &str| Member {

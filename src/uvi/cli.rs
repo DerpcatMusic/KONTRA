@@ -3,12 +3,7 @@ use super::*;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::io::{Seek, SeekFrom, Write};
-use std::{
-    cell::{Cell, RefCell},
-    collections::{HashMap, HashSet},
-    rc::Rc,
-    sync::Arc,
-};
+use std::{collections::HashMap, rc::Rc};
 
 struct ReaderNamespaces {
     metadata: Vec<u8>,
@@ -234,13 +229,27 @@ pub fn run(args: &[String]) -> Result<()> {
             let rendering = args[0] == "uvi-play";
             ensure!(
                 args.len() >= if rendering { 6 } else { 5 },
-                "Usage: uvi-check <bank.ufs> <member.uvip> --reader <exe> [--content-key-file <private-file>]\n       uvi-play <bank.ufs> <member.uvip> <output.wav> --reader <exe> [--content-key-file <private-file>] [--notes 60@0-500:100 | --events timeline.json]"
+                "Usage: uvi-check <bank.ufs> <member.uvip> --reader <exe> [--content-key-file <private-file>]\n       uvi-play <bank.ufs> <member.uvip> <output.wav> --reader <exe> [--content-key-file <private-file>] [--notes 60@0-500:100 | --events timeline.json] [--sample-rate 48000]"
             );
             let start = if rendering { 4 } else { 3 };
             let mut args = args.to_vec();
             let mut notes = "60@0-500:100".to_owned();
             let mut explicit_notes = false;
             let mut event_file = None;
+            let mut rate = 48000u32;
+            if let Some(index) = args.iter().position(|s| s == "--sample-rate") {
+                ensure!(index >= start, "Misplaced --sample-rate option");
+                rate = args
+                    .get(index + 1)
+                    .context("Missing --sample-rate value")?
+                    .parse()?;
+                ensure!((8000..=192000).contains(&rate), "Invalid UVI sample rate");
+                args.drain(index..=index + 1);
+                ensure!(
+                    !args.iter().any(|s| s == "--sample-rate"),
+                    "Repeated --sample-rate"
+                );
+            }
             if let Some(index) = args.iter().position(|s| s == "--notes") {
                 ensure!(index >= start, "Misplaced --notes option");
                 explicit_notes = true;
@@ -269,114 +278,74 @@ pub fn run(args: &[String]) -> Result<()> {
                 serde_json::from_str(&read_text(Path::new(&file))?)
                     .context("Invalid UVI event timeline JSON")?
             } else {
-                script::parse_notes(&notes)?
+                script::parse_notes_at_rate(&notes, rate)?
             };
             let end = inputs
                 .iter()
                 .map(|i| i.frame)
                 .max()
                 .unwrap_or(0)
-                .checked_add(48000)
+                .checked_add(u64::from(rate))
                 .context("UVI event timeline overflow")?;
-            let samples = Rc::new(RefCell::new(if rendering {
-                library.samples(&loaded)?
-            } else {
-                std::collections::HashMap::new()
-            }));
-            let mut identities = HashSet::new();
-            let resident = Rc::new(Cell::new(
-                samples
-                    .borrow()
-                    .values()
-                    .filter(|sample| identities.insert(Arc::as_ptr(sample)))
-                    .map(|sample| sample.interleaved.bytes())
-                    .sum::<usize>(),
-            ));
-            let mut audio_cache = HashMap::new();
-            for (path, sample) in samples.borrow().iter() {
-                audio_cache.insert(library.audio_identity(&loaded.path, path)?, sample.clone());
-            }
-            let resources: host::Resources = {
-                let library = library.clone();
-                let cache = samples.clone();
-                let program_path = loaded.path.clone();
-                let audio_cache = RefCell::new(audio_cache);
-                Rc::new(move |request| {
-                    let resolve = || -> Result<host::ResourceResponse> {
-                        match request {
-                            host::ResourceRequest::ReadAudio { path, .. } => {
-                                let existing = cache.borrow().get(path).cloned();
-                                let sample = if let Some(sample) = existing {
-                                    sample
-                                } else {
-                                    let identity = library.audio_identity(&program_path, path)?;
-                                    let existing = audio_cache.borrow().get(&identity).cloned();
-                                    let sample = if let Some(sample) = existing {
-                                        sample
-                                    } else {
-                                        let decoded = library.audio(&program_path, path)?;
-                                        let total = resident
-                                            .get()
-                                            .checked_add(decoded.interleaved.bytes())
-                                            .context("UVI resource memory overflow")?;
-                                        ensure!(
-                                            total <= library::PCM_LIMIT,
-                                            "UVI loaded audio exceeds resident PCM limit"
-                                        );
-                                        let sample = Arc::new(decoded);
-                                        audio_cache.borrow_mut().insert(identity, sample.clone());
-                                        resident.set(total);
-                                        sample
-                                    };
-                                    cache.borrow_mut().insert(path.clone(), sample.clone());
-                                    sample
-                                };
-                                Ok(host::ResourceResponse::Audio(host::ResourceInfo {
-                                    name: path
-                                        .replace('\\', "/")
-                                        .rsplit('/')
-                                        .next()
-                                        .unwrap_or(path)
-                                        .to_owned(),
-                                    rate: sample.rate,
-                                    channels: sample.channels,
-                                    frames: sample.frames,
-                                }))
-                            }
-                            host::ResourceRequest::ReadData { path }
-                            | host::ResourceRequest::ReadState { path } => {
-                                Ok(host::ResourceResponse::Bytes(library.data(
-                                    &program_path,
-                                    path,
-                                    16 << 20,
-                                )?))
-                            }
-                            host::ResourceRequest::WriteState { .. } => anyhow::bail!(
-                                "The offline UFS command has no private writable state directory"
-                            ),
-                            host::ResourceRequest::Browse { .. } => {
-                                anyhow::bail!("The offline UFS command has no file browser")
-                            }
-                        }
-                    };
-                    resolve().map_err(mlua::Error::external)
-                })
-            };
-            let processed = script::process_program_chain(
+            let resources = library::BankResources::new(
+                library.clone(),
+                &loaded.path,
+                if rendering {
+                    library.samples(&loaded)?
+                } else {
+                    HashMap::new()
+                },
+            )?;
+            let mut processed = script::process_program_chain_at_rate(
                 &loaded.program,
                 library.modules()?,
-                Some(resources),
+                Some(resources.capability()),
                 &inputs,
                 end,
+                rate,
             )?;
             let unsupported = playback::preflight(&loaded.program);
             if rendering {
-                let samples = std::mem::take(&mut *samples.borrow_mut());
-                let mut renderer = playback::Renderer::new(&loaded.program, samples, 48000)?;
+                // A file's end is exclusive; commands at that boundary have no audio frame.
+                processed.commands.retain(|command| command.frame < end);
+                processed
+                    .host_commands
+                    .retain(|command| command.frame < end);
+                let samples = resources.samples();
+                let mut renderer = playback::Renderer::new(&loaded.program, samples, rate)?;
                 let diagnostics = renderer.diagnostics();
-                let frames =
-                    renderer.render(&processed.commands, &processed.host_commands, end as usize)?;
-                let peak = write_wav(Path::new(&args[3]), 48000, |write| {
+                let frames = if renderer.requires_planned_segments() {
+                    // Native source arrays are planned over complete 256-frame blocks.
+                    // Render their final block, retaining only the requested file extent.
+                    let padded_end = end
+                        .checked_add(255)
+                        .context("UVI padded timeline overflow")?
+                        / 256
+                        * 256;
+                    let chunk_limit = u64::from(rate) * 60 / 256 * 256;
+                    let mut output = Vec::with_capacity(end as usize);
+                    let (mut frame, mut note_index, mut host_index) = (0, 0, 0);
+                    while frame < padded_end {
+                        let chunk_end = padded_end.min(frame + chunk_limit);
+                        let next_note = processed
+                            .commands
+                            .partition_point(|command| command.frame < chunk_end);
+                        let next_host = processed
+                            .host_commands
+                            .partition_point(|command| command.frame < chunk_end);
+                        let chunk = renderer.render(
+                            &processed.commands[note_index..next_note],
+                            &processed.host_commands[host_index..next_host],
+                            (chunk_end - frame) as usize,
+                        )?;
+                        output.extend(chunk.into_iter().take(end.saturating_sub(frame) as usize));
+                        (frame, note_index, host_index) = (chunk_end, next_note, next_host);
+                    }
+                    output
+                } else {
+                    renderer.render(&processed.commands, &processed.host_commands, end as usize)?
+                };
+                let peak = write_wav(Path::new(&args[3]), rate, |write| {
                     for frame in frames {
                         write(frame)?;
                     }
@@ -385,7 +354,7 @@ pub fn run(args: &[String]) -> Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(
-                        &serde_json::json!({"frames":end,"peak":peak,"event_commands":processed.commands.len(),"host_commands":processed.host_commands.len(),"diagnostics":diagnostics,"private_log_messages":processed.logs.len(),"dropped_logs":processed.dropped_logs})
+                        &serde_json::json!({"frames":end,"sample_rate":rate,"peak":peak,"event_commands":processed.commands.len(),"host_commands":processed.host_commands.len(),"diagnostics":diagnostics,"private_log_messages":processed.logs.len(),"dropped_logs":processed.dropped_logs})
                     )?
                 );
             } else {

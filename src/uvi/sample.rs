@@ -131,6 +131,8 @@ struct Metadata {
     loops: Vec<SampleLoop>,
     unity_note: Option<u32>,
     wavetable_cycle_frames: Option<u32>,
+    wave_channels: Option<u16>,
+    wave_container_bits: Option<u16>,
     riff: Vec<Vec<u8>>,
 }
 
@@ -272,6 +274,21 @@ fn metadata(bytes: &[u8]) -> Result<Metadata> {
             } else if wave && &header[..4] == b"clm " {
                 result.wavetable_cycle_frames =
                     result.wavetable_cycle_frames.or(clm_cycle_frames(body));
+            } else if wave && &header[..4] == b"fmt " {
+                let channels = body.get(2..4).context("Truncated WAV channel count")?;
+                let channels = u16::from_le_bytes(channels.try_into().unwrap());
+                if channels > 32 {
+                    ensure!(body.len() >= 16, "Truncated many-channel WAV format");
+                    let alignment = u16::from_le_bytes(body[12..14].try_into().unwrap());
+                    ensure!(
+                        alignment > 0 && alignment % channels == 0,
+                        "Invalid many-channel WAV block alignment"
+                    );
+                    result
+                        .wave_container_bits
+                        .get_or_insert(u16::from_le_bytes(body[14..16].try_into().unwrap()));
+                }
+                result.wave_channels.get_or_insert(channels);
             }
             at = end
                 .checked_add(size & 1)
@@ -296,6 +313,64 @@ pub fn decode(bytes: &[u8]) -> Result<Sample> {
         // Symphonia requires a consistent parent extent even though the native
         // reader ignores it. Only the already validated private copy is changed.
         encoded[4..8].copy_from_slice(&((bytes.len() - 8) as u32).to_le_bytes());
+    }
+    if metadata.wave_channels.is_some_and(|channels| channels > 32) {
+        // Symphonia represents layouts with a 32-bit channel mask. Wavetable
+        // resources can have more literal channels; hound preserves their order.
+        let mut reader = hound::WavReader::new(Cursor::new(encoded))?;
+        let spec = reader.spec();
+        // ponytail: hound interprets padded integer PCM as right-aligned; reject
+        // that variant until a caller needs a separate left-aligned decoder.
+        ensure!(
+            spec.sample_format != hound::SampleFormat::Int
+                || Some(spec.bits_per_sample) == metadata.wave_container_bits,
+            "Padded many-channel WAV integer containers are unsupported"
+        );
+        let channels = usize::from(spec.channels);
+        let frames = reader.duration() as usize;
+        let count = reader.len() as usize;
+        ensure!(
+            spec.sample_rate > 0 && frames > 0 && Some(spec.channels) == metadata.wave_channels,
+            "Invalid many-channel WAV dimensions"
+        );
+        ensure!(
+            frames.checked_mul(channels) == Some(count),
+            "Many-channel WAV frame count mismatch"
+        );
+        ensure!(
+            count <= (MEMORY_LIMIT - bytes.len()) / size_of::<f32>(),
+            "Decoded audio exceeds memory limit"
+        );
+        let mut interleaved = Vec::new();
+        interleaved.try_reserve_exact(count)?;
+        match spec.sample_format {
+            hound::SampleFormat::Float => {
+                for value in reader.samples::<f32>() {
+                    interleaved.push(value?);
+                }
+            }
+            hound::SampleFormat::Int => {
+                ensure!(
+                    (1..=32).contains(&spec.bits_per_sample),
+                    "Unsupported many-channel WAV integer depth"
+                );
+                let scale = 2f32.powi(i32::from(spec.bits_per_sample) - 1);
+                for value in reader.samples::<i32>() {
+                    interleaved.push(value? as f32 / scale);
+                }
+            }
+        }
+        ensure!(interleaved.len() == count, "Truncated many-channel WAV PCM");
+        return Ok(Sample {
+            rate: spec.sample_rate,
+            channels,
+            frames,
+            interleaved: Storage::from_f32(interleaved)?,
+            loops: metadata.loops,
+            unity_note: metadata.unity_note,
+            wavetable_cycle_frames: metadata.wavetable_cycle_frames,
+            riff_metadata: metadata.riff,
+        });
     }
     let stream = MediaSourceStream::new(Box::new(Cursor::new(encoded)), Default::default());
     let mut format = symphonia::default::get_probe()
@@ -399,6 +474,124 @@ pub fn decode(bytes: &[u8]) -> Result<Sample> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn literal_many_channel_pcm_retains_every_table_slice() {
+        for channels in [65, 87] {
+            for (bits, format) in [
+                (16, hound::SampleFormat::Int),
+                (24, hound::SampleFormat::Int),
+                (32, hound::SampleFormat::Float),
+            ] {
+                let mut output = Cursor::new(Vec::new());
+                let mut expected = Vec::new();
+                {
+                    let mut writer = hound::WavWriter::new(
+                        &mut output,
+                        hound::WavSpec {
+                            channels,
+                            sample_rate: 8000,
+                            bits_per_sample: bits,
+                            sample_format: format,
+                        },
+                    )
+                    .unwrap();
+                    for frame in 0..3 {
+                        for channel in 0..channels {
+                            let integer = frame * 1000 + i32::from(channel) - 128;
+                            let value = if format == hound::SampleFormat::Int {
+                                writer.write_sample(integer).unwrap();
+                                integer as f32 / 2f32.powi(i32::from(bits) - 1)
+                            } else {
+                                let value = if frame == 0 && channel == 0 {
+                                    -0.
+                                } else {
+                                    integer as f32 / 4096.
+                                };
+                                writer.write_sample(value).unwrap();
+                                value
+                            };
+                            expected.push(value);
+                        }
+                    }
+                    writer.finalize().unwrap();
+                }
+                let mut bytes = output.into_inner();
+                if bytes.len() % 2 != 0 {
+                    bytes.push(0);
+                    let size = (bytes.len() - 8) as u32;
+                    bytes[4..8].copy_from_slice(&size.to_le_bytes());
+                }
+                let decoded = decode(&bytes).unwrap();
+                assert_eq!(
+                    (decoded.rate, decoded.channels, decoded.frames),
+                    (8000, channels as usize, 3)
+                );
+                assert!(
+                    decoded
+                        .interleaved
+                        .iter()
+                        .zip(&expected)
+                        .all(|(a, b)| a.to_bits() == b.to_bits())
+                );
+                assert!(decode(&bytes[..bytes.len() - 1]).is_err());
+                assert!(decode(&bytes[..bytes.len() - 2]).is_err());
+                // The same original PCM with plain fmt16 rather than WAVEFORMATEXTENSIBLE.
+                assert_eq!(&bytes[12..16], b"fmt ");
+                assert_eq!(u32le(&bytes[16..]), 40);
+                let mut plain = bytes[..36].to_vec();
+                plain[16..20].copy_from_slice(&16u32.to_le_bytes());
+                plain[20..22].copy_from_slice(
+                    &(if format == hound::SampleFormat::Int {
+                        1u16
+                    } else {
+                        3
+                    })
+                    .to_le_bytes(),
+                );
+                plain.extend_from_slice(&bytes[60..]);
+                let size = (plain.len() - 8) as u32;
+                plain[4..8].copy_from_slice(&size.to_le_bytes());
+                let decoded = decode(&plain).unwrap();
+                assert!(
+                    decoded
+                        .interleaved
+                        .iter()
+                        .zip(&expected)
+                        .all(|(a, b)| a.to_bits() == b.to_bits())
+                );
+                let mut alignment = bytes.clone();
+                alignment[32..34].copy_from_slice(&1u16.to_le_bytes());
+                assert!(decode(&alignment).is_err());
+                let mut descriptor = bytes.clone();
+                descriptor[36..38].copy_from_slice(&21u16.to_le_bytes());
+                assert!(decode(&descriptor).is_err());
+                if bits == 24 {
+                    let mut padded = bytes[..68].to_vec();
+                    padded[28..32]
+                        .copy_from_slice(&(8000u32 * u32::from(channels) * 4).to_le_bytes());
+                    padded[32..34].copy_from_slice(&(channels * 4).to_le_bytes());
+                    padded[34..36].copy_from_slice(&32u16.to_le_bytes());
+                    padded[64..68].copy_from_slice(&((expected.len() * 4) as u32).to_le_bytes());
+                    let end = 68 + u32le(&bytes[64..]) as usize;
+                    for word in bytes[68..end].chunks_exact(3) {
+                        let value = (u32::from(word[0]) << 8)
+                            | (u32::from(word[1]) << 16)
+                            | (u32::from(word[2]) << 24);
+                        padded.extend_from_slice(&value.to_le_bytes());
+                    }
+                    let size = (padded.len() - 8) as u32;
+                    padded[4..8].copy_from_slice(&size.to_le_bytes());
+                    assert!(decode(&padded).unwrap_err().to_string().contains("Padded"));
+                }
+                if format == hound::SampleFormat::Float {
+                    let mut nonfinite = plain;
+                    nonfinite[44..48].copy_from_slice(&f32::NAN.to_le_bytes());
+                    assert!(decode(&nonfinite).is_err());
+                }
+            }
+        }
+    }
 
     #[test]
     fn ordered_mono_bundle_preserves_identity_and_rejects_mismatches() {

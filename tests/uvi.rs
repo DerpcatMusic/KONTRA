@@ -182,7 +182,11 @@ fn clear_mapping_lua_and_audio() {
         matches!(delayed_change[0].action, Action::Start(ref n) if n.volume == 1.)
             && delayed_change[0].frame == 960
     );
-    assert!(!delayed_change.iter().any(|c| matches!(c.action, Action::Change { .. })));
+    assert!(
+        !delayed_change
+            .iter()
+            .any(|c| matches!(c.action, Action::Change { .. }))
+    );
     script::process("function onNote(e) local id=playNote(e.note,e.velocity,10);wait(20);assert(not releaseVoice(id)) end", "finite.lua", &inputs, 12000).unwrap();
 
     let cc = [Input {
@@ -254,6 +258,57 @@ fn clear_mapping_lua_and_audio() {
     .unwrap();
     assert!(held[5500][0].abs() > baseline[5500][0].abs());
     assert!((doubled[5500][0] - baseline[5500][0] - held[5500][0]).abs() < 1e-6);
+    // Relative changes apply to each duplicate's own base value.
+    let mut initial = transparent[0].clone();
+    if let Action::Start(ref mut note) = initial.action {
+        note.volume = 0.25;
+    }
+    for (relative, expected) in [(true, 0.625), (false, 1.)] {
+        let changes = [
+            initial.clone(),
+            transparent[0].clone(),
+            script::Command {
+                frame: 480,
+                action: Action::Change {
+                    id: 1,
+                    gain: Some(0.5),
+                    tune: None,
+                    pan: None,
+                    layer: None,
+                    relative,
+                },
+            },
+        ];
+        let mut changed = Vec::new();
+        uvi::render(&mapping, &changes, 1440, |frame| {
+            changed.push(frame);
+            Ok(())
+        })
+        .unwrap();
+        assert!((changed[1200][0] - expected * held[1200][0]).abs() < 1e-6);
+    }
+    // A released engine voice remains controllable while its tail drains.
+    let mut stopped = transparent.clone();
+    stopped.push(script::Command {
+        frame: 4801,
+        action: Action::Change {
+            id: 1,
+            gain: Some(0.),
+            tune: None,
+            pan: None,
+            layer: None,
+            relative: false,
+        },
+    });
+    let mut tail = Vec::new();
+    uvi::render(&mapping, &stopped, 5000, |frame| {
+        tail.push(frame);
+        Ok(())
+    })
+    .unwrap();
+    // The existing mapping engine ramps gain across its render block.
+    assert!(baseline[4930][0].abs() > 0.);
+    assert_eq!(tail[4930], [0., 0.]);
     let offset_mapping = uvi::parse_mapping(
         &dir.join("offset.dmap"),
         "<layers maxSampleStart='20'><layer><zone path='offset.wav'/></layer></layers>",

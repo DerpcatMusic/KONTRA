@@ -322,8 +322,14 @@ pub fn render(
     let mut engine = Engine::default();
     engine.set_bank(Some(Box::new(mapping.load_bank()?)));
     struct PostedVoice {
-        event: Option<crate::engine::EventId>,
+        // Key release consumes a gate, but the engine ID still addresses its
+        // draining voice for subsequent gain, tune, pan and fade commands.
+        event: crate::engine::EventId,
         note: u8,
+        released: bool,
+        volume: f32,
+        tune: f64,
+        pan: f32,
     }
     let mut voices: HashMap<u32, Vec<PostedVoice>> = HashMap::new();
     let mut cycle = vec![0; mapping.layers.len()];
@@ -345,19 +351,24 @@ pub fn render(
                         event.offset_us = note.offset_us;
                         if let Some(id) = engine.start_event(&event) {
                             voices.entry(note.id).or_default().push(PostedVoice {
-                                event: Some(id),
+                                event: id,
                                 note: note.note,
+                                released: false,
+                                volume: note.volume,
+                                tune: note.tune,
+                                pan: note.pan,
                             });
                         }
                     }
                 }
                 Action::Release(id) => {
-                    if let Some(event) = voices
+                    if let Some(posted) = voices
                         .get_mut(id)
                         .and_then(|v| v.last_mut())
-                        .and_then(|v| v.event.take())
+                        .filter(|v| !v.released)
                     {
-                        engine.release_event(event);
+                        posted.released = true;
+                        engine.release_event(posted.event);
                     }
                 }
                 Action::ReleaseNote {
@@ -373,10 +384,10 @@ pub fn render(
                     if let Some(events) = voices.get_mut(id) {
                         if let Some(posted) = events
                             .iter_mut()
-                            .find(|v| v.note == *note && v.event.is_some())
-                            && let Some(event) = posted.event.take()
+                            .find(|v| v.note == *note && !v.released)
                         {
-                            engine.release_event(event);
+                            posted.released = true;
+                            engine.release_event(posted.event);
                         }
                     }
                 }
@@ -437,7 +448,7 @@ pub fn render(
                         "Nonzero-target fade termination requires native Program playback"
                     );
                     if let Some(events) = voices.get(id) {
-                        for event in events.iter().filter_map(|v| v.event) {
+                        for event in events.iter().map(|v| v.event) {
                             if let Some(start) = start {
                                 engine.fade_event(event, 0., *start, false);
                             }
@@ -456,21 +467,28 @@ pub fn render(
                     tune,
                     pan,
                     layer,
+                    relative,
                 } => {
                     ensure!(
                         layer.is_none(),
                         "Scoped native layers are not part of a standalone DMAP"
                     );
-                    if let Some(ids) = voices.get(id) {
-                        for id in ids.iter().filter_map(|v| v.event) {
+                    if let Some(events) = voices.get_mut(id) {
+                        for voice in events {
                             if let Some(value) = gain {
-                                engine.change_event(id, EventChange::Volume(*value));
+                                voice.volume = if *relative { voice.volume * value } else { *value };
+                                ensure!(voice.volume.is_finite() && voice.volume >= 0., "Invalid UVI note gain");
+                                engine.change_event(voice.event, EventChange::Volume(voice.volume));
                             }
                             if let Some(value) = tune {
-                                engine.change_event(id, EventChange::Tune(*value));
+                                voice.tune = if *relative { voice.tune + value } else { *value };
+                                ensure!(voice.tune.is_finite() && voice.tune.abs() <= 120., "Unsupported UVI note tuning");
+                                engine.change_event(voice.event, EventChange::Tune(voice.tune));
                             }
                             if let Some(value) = pan {
-                                engine.change_event(id, EventChange::Pan(*value));
+                                voice.pan = if *relative { voice.pan + value } else { *value };
+                                ensure!((-1. ..=1.).contains(&voice.pan), "Unsupported UVI note pan");
+                                engine.change_event(voice.event, EventChange::Pan(voice.pan));
                             }
                         }
                     }

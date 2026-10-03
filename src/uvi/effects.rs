@@ -8,6 +8,8 @@
 //! DigitalEq and ThreeBandShelves equations were compared with the official
 //! Workstation VST2 using authored PCM16 impulses (all shapes/eight slopes,
 //! Q=0.3/0.70710678/2, bandwidth=0.2/1/2, gain scales=0/1/2).
+//! ParametricEQ fixed bands were compared using authored native impulses;
+//! legacy shelf gain/slope conventions are preserved independently of DigitalEq.
 //! Authored native IR probes establish fixed bus routing, power normalization,
 //! reverb duration windows, stereo input diffusion and sequential width mixing.
 
@@ -34,7 +36,7 @@ type Parameters = BTreeMap<String, ParameterValue>;
 pub fn supports(kind: &str) -> bool {
     matches!(
         kind,
-        "DigitalEq" | "ThreeBandShelves" | "Convolver" | "SampledReverb"
+        "DigitalEq" | "ParametricEQ" | "ThreeBandShelves" | "Convolver" | "SampledReverb"
     )
 }
 
@@ -110,6 +112,16 @@ fn check(kind: &str, name: &str, value: &ParameterValue) -> Result<()> {
             Some("Bandwidth") => (0.01, 10., false),
             _ => bail!("Unsupported DigitalEq parameter {name}"),
         },
+        ("ParametricEQ", _) => match band(name)
+            .filter(|(_, index)| *index < 8)
+            .map(|(name, _)| name)
+        {
+            Some("Enable") => (0., 1., true),
+            Some("Freq") => (10., 20000., false),
+            Some("Q") => (0.2, 12., false),
+            Some("Gain") => (-30., 20., false),
+            _ => bail!("Unsupported ParametricEQ parameter {name}"),
+        },
         _ => bail!("Unsupported {kind} parameter {name}"),
     };
     let v = number(value)?;
@@ -159,6 +171,28 @@ fn parameters(node: &ProgramNode) -> Result<Parameters> {
                     ("Bandwidth", 1.),
                 ] {
                     put(&format!("{key}{index}"), value);
+                }
+            }
+        }
+        "ParametricEQ" => {
+            for (index, frequency) in [30., 70., 180., 520., 1870., 3900., 7400., 16000.]
+                .into_iter()
+                .enumerate()
+            {
+                for (key, value) in [
+                    ("Freq", frequency),
+                    (
+                        "Q",
+                        if matches!(index, 1 | 6) {
+                            12.
+                        } else {
+                            f64::from(0.7_f32)
+                        },
+                    ),
+                    ("Gain", 0.),
+                    ("Enable", 0.),
+                ] {
+                    put(&format!("{key}{}", index + 1), value);
                 }
             }
         }
@@ -443,6 +477,47 @@ fn shelf_coefficients(high: bool, frequency: f64, gain: f64, rate: f64) -> [f64;
     }
 }
 
+// Native legacy peaking EQ uses the conventional RBJ Q control. Its shelves
+// map Q=0.2..12 to slope=0.1..1 and use twice the displayed dB gain.
+fn parametric_coefficients(index: usize, frequency: f64, q: f64, gain: f64, rate: f64) -> [f64; 6] {
+    let omega = std::f64::consts::TAU * frequency.min(rate * 0.499) / rate;
+    let (s, c) = omega.sin_cos();
+    if matches!(index, 2..=5) {
+        let a = 10f64.powf(gain / 40.);
+        let alpha = s / (2. * q);
+        return [
+            1. + alpha * a,
+            -2. * c,
+            1. - alpha * a,
+            1. + alpha / a,
+            -2. * c,
+            1. - alpha / a,
+        ];
+    }
+    let a = db(gain);
+    let slope = 0.1 + 0.9 * (q - 0.2) / 11.8;
+    let beta = s * ((a * a + 1.) * (1. / slope - 1.) + 2. * a).sqrt();
+    if index == 1 {
+        [
+            a * ((a + 1.) - (a - 1.) * c + beta),
+            2. * a * ((a - 1.) - (a + 1.) * c),
+            a * ((a + 1.) - (a - 1.) * c - beta),
+            (a + 1.) + (a - 1.) * c + beta,
+            -2. * ((a - 1.) + (a + 1.) * c),
+            (a + 1.) + (a - 1.) * c - beta,
+        ]
+    } else {
+        [
+            a * ((a + 1.) + (a - 1.) * c + beta),
+            -2. * a * ((a - 1.) + (a + 1.) * c),
+            a * ((a + 1.) + (a - 1.) * c - beta),
+            (a + 1.) - (a - 1.) * c + beta,
+            2. * ((a - 1.) - (a + 1.) * c),
+            (a + 1.) - (a - 1.) * c - beta,
+        ]
+    }
+}
+
 pub struct EqProcessor {
     sections: Vec<Section>,
     gain: f32,
@@ -495,6 +570,24 @@ impl EqProcessor {
                         sections.push(Section::new(c, channel));
                     }
                 }
+            }
+        } else if kind == "ParametricEQ" {
+            gain = 1.;
+            for i in 1..=8 {
+                let value = |key: &str| n(p, &format!("{key}{i}"));
+                if value("Enable") == 0. || ((2..=7).contains(&i) && value("Gain") == 0.) {
+                    continue;
+                }
+                let frequency = value("Freq");
+                let q = value("Q");
+                let coefficients = if matches!(i, 1 | 8) {
+                    // The native HP/LP gain fields are retained but have no
+                    // effect on their measured two-pole responses.
+                    pass_coefficients(i == 1, frequency, q, 2, rate)[0]
+                } else {
+                    parametric_coefficients(i - 1, frequency, q, value("Gain"), rate)
+                };
+                sections.push(Section::new(coefficients, 0));
             }
         } else {
             // Native first-order shelves with a shared middle-band level.
@@ -784,7 +877,10 @@ impl EffectProcessor {
             "Invalid UVI effect block size"
         );
         let parameters = parameters(node)?;
-        let processor = if matches!(node.kind.as_str(), "DigitalEq" | "ThreeBandShelves") {
+        let processor = if matches!(
+            node.kind.as_str(),
+            "DigitalEq" | "ParametricEQ" | "ThreeBandShelves"
+        ) {
             ProcessorKind::Eq(EqProcessor::new(&node.kind, &parameters, rate))
         } else {
             ProcessorKind::Impulse(ImpulseProcessor::empty(max_block))
@@ -795,7 +891,10 @@ impl EffectProcessor {
             rate,
             parameters,
             processor,
-            irs: if matches!(node.kind.as_str(), "DigitalEq" | "ThreeBandShelves") {
+            irs: if matches!(
+                node.kind.as_str(),
+                "DigitalEq" | "ParametricEQ" | "ThreeBandShelves"
+            ) {
                 None
             } else {
                 Some(Arc::clone(&irs))
@@ -807,6 +906,12 @@ impl EffectProcessor {
             result.load_resource(sample.clone())?;
         }
         Ok(result)
+    }
+    /// Install the renderer's shared lookup map without changing active DSP.
+    pub fn replace_resources(&mut self, resources: Arc<HashMap<String, Arc<Sample>>>) {
+        if let Some(current) = self.irs.as_mut() {
+            *current = resources;
+        }
     }
     /// Retained DSP buffer bytes, including inline processor state. Shared
     /// sample/map ownership, parameter-tree nodes, FFT plans and allocator
@@ -859,7 +964,7 @@ impl EffectProcessor {
                 if name != "Bypass" && !name.starts_with("Visible") {
                     let mut replacement = EqProcessor::new(&self.kind, &p, self.rate);
                     if replacement.sections.len() == eq.sections.len()
-                        && !["Enabled", "Type", "Slope", "Channels", "StereoMode"]
+                        && !["Enable", "Type", "Slope", "Channels", "StereoMode"]
                             .iter()
                             .any(|prefix| name.starts_with(prefix))
                     {
@@ -972,6 +1077,105 @@ mod tests {
             riff_metadata: Vec::new(),
         })
     }
+    #[test]
+    fn authored_parametric_eq_native_bands_and_channels() {
+        let cases = [
+            (
+                1,
+                0.7,
+                6.,
+                [
+                    0.113850668073,
+                    -0.0212006904185,
+                    -0.0190346911550,
+                    -0.0169402211905,
+                ],
+            ),
+            (
+                2,
+                12.,
+                6.,
+                [
+                    0.133396998048,
+                    0.0171969458461,
+                    0.0178823340684,
+                    0.0183392483741,
+                ],
+            ),
+            (
+                3,
+                0.7,
+                6.,
+                [
+                    0.132702976465,
+                    0.0143284164369,
+                    0.0122004440054,
+                    0.0101401610300,
+                ],
+            ),
+            (
+                7,
+                12.,
+                6.,
+                [
+                    0.466309189796,
+                    -0.0601144991815,
+                    -0.0547606833279,
+                    -0.0489895232022,
+                ],
+            ),
+            (
+                8,
+                2.,
+                -6.,
+                [
+                    0.000517799577210,
+                    0.00202989322133,
+                    0.00393058639020,
+                    0.00564602622762,
+                ],
+            ),
+        ];
+        for (band, q, gain, native) in cases {
+            let mut node = effect(r#"<ParametricEQ/>"#);
+            for (name, value) in [("Enable", 1.), ("Freq", 1000.), ("Q", q), ("Gain", gain)] {
+                node.attributes
+                    .insert(format!("{name}{band}"), value.to_string());
+            }
+            let mut fx =
+                EffectProcessor::new(&node, 12, 48000., 64, Arc::new(HashMap::new())).unwrap();
+            let mut io = vec![[0.; MAX_CHANNELS]; 1024];
+            for (ch, sample) in io[0].iter_mut().enumerate() {
+                *sample = 0.125 * (ch + 1) as f32 / 12.;
+            }
+            for block in io.chunks_mut(7) {
+                fx.process(block).unwrap();
+            }
+            for (frame, expected) in io.iter().zip(native) {
+                for (ch, sample) in frame.iter().enumerate() {
+                    assert!(
+                        (f64::from(*sample) - expected * (ch + 1) as f64 / 12.).abs() < 5e-8,
+                        "native band {band}, channel {ch}"
+                    );
+                }
+            }
+            assert!(io.iter().flatten().all(|v| v.is_finite()));
+            fx.set_parameter("Bypass", &ParameterValue::Boolean(true))
+                .unwrap();
+            let mut dry = [[0.25; MAX_CHANNELS]; 4];
+            fx.process(&mut dry).unwrap();
+            assert_eq!(dry, [[0.25; MAX_CHANNELS]; 4]);
+            assert!(
+                fx.set_parameter("Enable9", &ParameterValue::Number(1.))
+                    .is_err()
+            );
+            assert!(
+                fx.set_parameter("Q3", &ParameterValue::Number(f64::NAN))
+                    .is_err()
+            );
+        }
+    }
+
     #[test]
     fn authored_eq_live_frequency_contract() {
         // Original native impulses: stored frequency is unrestricted; the UI

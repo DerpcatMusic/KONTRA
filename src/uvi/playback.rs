@@ -30,6 +30,7 @@ pub const FIDELITY_DIAGNOSTIC: &str = "Native Program playback uses original sam
 const LIMIT: usize = 65_536;
 const VOICE_LIMIT: usize = 4096;
 const PROCESSOR_MEMORY_LIMIT: usize = 256 << 20;
+const SAMPLE_MEMORY_LIMIT: usize = 512 << 20;
 
 #[derive(Debug, Serialize)]
 pub struct Unsupported {
@@ -48,6 +49,7 @@ fn wrapper(kind: &str) -> bool {
             | "Auxs"
             | "Connections"
             | "ControlSignalSources"
+            | "Steps"
             | "Mappers"
             | "EventProcessors"
             | "BusRouters"
@@ -122,6 +124,10 @@ pub fn preflight(program: &Program) -> Vec<Unsupported> {
                 | "LFO"
                 | "AnalogADSR"
                 | "DAHDSR"
+                | "AHD"
+                | "AttackDecayEnv"
+                | "MultiEnvelope"
+                | "Step"
                 | "SignalConnection"
         ) || effects::supports(&node.kind)
             || filter::supports(&node.kind)
@@ -155,6 +161,32 @@ pub fn preflight(program: &Program) -> Vec<Unsupported> {
             );
         if !implemented {
             unsupported.push(Unsupported { node:id, kind:node.kind.clone(), reason:"Processor or control source is not executable by this renderer (including if later enabled)".into() });
+        }
+        if node.kind == "MultiEnvelope"
+            && node
+                .attributes
+                .get("Retrigger")
+                .is_some_and(|v| v.parse::<f64>() != Ok(1.))
+        {
+            unsupported.push(Unsupported {
+                node: id,
+                kind: node.kind.clone(),
+                reason: "MultiEnvelope modes that ignore note-off have no verified exhausted-source/insert-tail cleanup law".into(),
+            });
+        }
+        if node.kind == "Step"
+            && !node.parent.is_some_and(|steps| {
+                program.nodes[steps].kind == "Steps"
+                    && program.nodes[steps]
+                        .parent
+                        .is_some_and(|owner| program.nodes[owner].kind == "MultiEnvelope")
+            })
+        {
+            unsupported.push(Unsupported {
+                node: id,
+                kind: node.kind.clone(),
+                reason: "Envelope Step must belong to MultiEnvelope Steps".into(),
+            });
         }
         if node.kind == "Loop" {
             let valid_owner = node
@@ -681,7 +713,7 @@ fn validate_sample(sample: &Sample) -> Result<()> {
         sample.rate > 0
             && sample.frames > 0
             && sample.channels > 0
-            && sample.channels <= dsp::MAX_CHANNELS
+            && sample.channels <= 256
             && sample.frames.checked_mul(sample.channels) == Some(sample.interleaved.len())
             && sample.interleaved.iter().all(|value| value.is_finite()),
         "Invalid UVI sample dimensions or values"
@@ -794,11 +826,19 @@ impl<'a> Renderer<'a> {
             serde_json::to_string(&unsupported)?
         );
         let mut validated_samples = HashSet::new();
+        let mut sample_bytes = 0usize;
         for sample in samples.values() {
             if validated_samples.insert(Arc::as_ptr(sample)) {
                 validate_sample(sample)?;
+                sample_bytes = sample_bytes
+                    .checked_add(sample.interleaved.bytes())
+                    .context("UVI sample memory accounting overflow")?;
             }
         }
+        ensure!(
+            sample_bytes <= SAMPLE_MEMORY_LIMIT,
+            "UVI decoded samples exceed 512-MiB budget"
+        );
         let mut children = vec![Vec::new(); program.nodes.len()];
         for (id, n) in program.nodes.iter().enumerate() {
             if let Some(parent) = n.parent {
@@ -939,6 +979,66 @@ impl<'a> Renderer<'a> {
             renderer.routes.insert(id, target);
         }
         Ok(renderer)
+    }
+    /// Install caller-prepared PCM off the rendering worker. Existing aliases
+    /// are immutable so active oscillators keep their original resource.
+    /// Effect maps change here; their current convolution changes only on load.
+    pub fn install_prepared_samples(
+        &mut self,
+        additions: HashMap<String, Arc<Sample>>,
+    ) -> Result<()> {
+        let mut unique = HashSet::new();
+        let mut bytes = 0usize;
+        for sample in self.samples.values() {
+            if unique.insert(Arc::as_ptr(sample)) {
+                bytes = bytes
+                    .checked_add(sample.interleaved.bytes())
+                    .context("UVI sample memory accounting overflow")?;
+            }
+        }
+        let mut changed = false;
+        for (path, sample) in &additions {
+            if let Some(existing) = self.samples.get(path) {
+                ensure!(
+                    Arc::ptr_eq(existing, sample),
+                    "UVI prepared resource alias already refers to different PCM"
+                );
+            } else {
+                changed = true;
+            }
+            if unique.insert(Arc::as_ptr(sample)) {
+                validate_sample(sample)?;
+                bytes = bytes
+                    .checked_add(sample.interleaved.bytes())
+                    .context("UVI sample memory accounting overflow")?;
+            }
+        }
+        ensure!(
+            bytes <= SAMPLE_MEMORY_LIMIT,
+            "UVI decoded samples exceed 512-MiB budget"
+        );
+        if !changed {
+            return Ok(());
+        }
+        let mut resources = (*self.samples).clone();
+        resources.extend(additions);
+        let resources = Arc::new(resources);
+        for processor in self.processors.values_mut().chain(
+            self.voices
+                .iter_mut()
+                .flat_map(|voice| voice.processors.values_mut()),
+        ) {
+            if let Processor::Effect(effect) = processor {
+                effect.replace_resources(Arc::clone(&resources));
+            }
+        }
+        self.samples = resources;
+        Ok(())
+    }
+    /// Planned native sources need complete musical-event lookahead within
+    /// fixed 256-frame blocks, independent of the requested output length.
+    pub fn requires_planned_segments(&self) -> bool {
+        self.modulation.requires_planned_segments()
     }
     pub fn diagnostics(&self) -> Vec<&'static str> {
         vec![
@@ -1127,6 +1227,14 @@ impl<'a> Renderer<'a> {
                     && name == "Volume"
                 {
                     gain.set_effective_volume(*value)?;
+                } else if let Processor::Filter(filter) = processor {
+                    let typed = if name == "Bypass" {
+                        ParameterValue::Boolean(*value >= 0.5)
+                    } else {
+                        ParameterValue::Number(*value)
+                    };
+                    filter.set_effective_parameter(name, &typed, self.modulation.target_has_dynamic_source(&(*id, name.clone())))
+                        .with_context(|| format!("Modulated UVI filter parameter {name}={value} at node {id}, frame {}", self.frame))?;
                 } else {
                     processor.set(name, *value).with_context(|| {
                         format!(
@@ -1641,6 +1749,7 @@ impl<'a> Renderer<'a> {
                 tune,
                 pan,
                 layer,
+                relative,
             } => {
                 for voice in self
                     .voices
@@ -1648,16 +1757,32 @@ impl<'a> Renderer<'a> {
                     .filter(|v| v.note.id == *id && layer.is_none_or(|id| v.layer == id))
                 {
                     if let Some(v) = gain {
-                        ensure!(v.is_finite() && *v >= 0., "Invalid UVI note gain");
-                        voice.note.volume = *v;
+                        let value = if *relative {
+                            voice.note.volume * *v
+                        } else {
+                            *v
+                        };
+                        ensure!(
+                            v.is_finite() && *v >= 0. && value.is_finite() && value >= 0.,
+                            "Invalid UVI note gain"
+                        );
+                        voice.note.volume = value;
                     }
                     if let Some(v) = tune {
-                        ensure!(v.is_finite(), "Invalid UVI note tuning");
-                        voice.note.tune = *v;
+                        let value = if *relative { voice.note.tune + *v } else { *v };
+                        ensure!(
+                            v.is_finite() && value.is_finite() && value.abs() <= 120.,
+                            "Invalid UVI note tuning"
+                        );
+                        voice.note.tune = value;
                     }
                     if let Some(v) = pan {
-                        ensure!((-1. ..=1.).contains(v), "Invalid UVI note pan");
-                        voice.note.pan = *v;
+                        let value = if *relative { voice.note.pan + *v } else { *v };
+                        ensure!(
+                            (-1. ..=1.).contains(v) && (-1. ..=1.).contains(&value),
+                            "Invalid UVI note pan"
+                        );
+                        voice.note.pan = value;
                     }
                 }
             }
@@ -1816,6 +1941,12 @@ impl<'a> Renderer<'a> {
                         "Unverified live UVI trigger rule"
                     );
                 }
+                if self.program.nodes[*node].kind == "MultiEnvelope" && parameter == "Retrigger" {
+                    ensure!(
+                        matches!(value, ParameterValue::Number(v) if *v == 1.),
+                        "MultiEnvelope note-off-ignoring modes have no verified voice cleanup law"
+                    );
+                }
                 if parameter == "NumVoicesPerNote" {
                     ensure!(
                         matches!(value,ParameterValue::Number(n) if *n==1.),
@@ -1957,7 +2088,9 @@ impl<'a> Renderer<'a> {
                 target,
                 ramp_ms,
                 voice,
-            } => self.modulation.set_script_modulation(
+                layer,
+            } => self.modulation.set_script_modulation_scoped(
+                *layer,
                 *id,
                 *start,
                 *target,
@@ -2464,6 +2597,7 @@ impl<'a> Renderer<'a> {
         host: &[host::Command],
         frames: usize,
     ) -> Result<Vec<[f32; 2]>> {
+        self.check_processor_memory()?;
         ensure!(
             frames <= self.rate as usize * 60,
             "UVI render exceeds 60 seconds"
@@ -2482,9 +2616,41 @@ impl<'a> Renderer<'a> {
                 && host.first().is_none_or(|c| c.frame >= self.frame),
             "UVI command precedes current render position"
         );
+        let end = self
+            .frame
+            .checked_add(frames as u64)
+            .context("UVI render position overflow")?;
+        ensure!(
+            notes.last().is_none_or(|c| c.frame < end) && host.last().is_none_or(|c| c.frame < end),
+            "UVI command is outside the requested render interval; retain it for a later call"
+        );
+        ensure!(
+            !self.requires_planned_segments()
+                || (self.frame.is_multiple_of(256) && frames.is_multiple_of(256)),
+            "This UVI control source requires 256-frame aligned render partitions with all upcoming musical events queued"
+        );
+        ensure!(
+            !self.requires_planned_segments()
+                || host.iter().all(|command| {
+                    command.frame.is_multiple_of(256)
+                        || notes
+                            .binary_search_by_key(&command.frame, |note| note.frame)
+                            .is_ok()
+                }),
+            "Unverified host-only control mutation inside a planned UVI processing segment"
+        );
         let (mut ni, mut hi) = (0, 0);
         let mut output = Vec::with_capacity(frames);
         for _ in 0..frames {
+            let boundary = (self.frame / 256 + 1)
+                .checked_mul(256)
+                .context("UVI control block position overflow")?;
+            let segment_end = notes[ni..]
+                .iter()
+                .find(|command| command.frame > self.frame)
+                .map_or(boundary, |command| boundary.min(command.frame));
+            self.modulation
+                .set_control_segment_end_frame(Some(segment_end));
             while host.get(hi).is_some_and(|c| c.frame == self.frame) {
                 self.apply_host(&host[hi].action)?;
                 hi += 1;
@@ -2677,6 +2843,7 @@ mod tests {
                     target: 1.,
                     ramp_ms: 4. * 1000. / 48000.,
                     voice: Some(1),
+                    layer: None,
                 },
             },
             host::Command {
@@ -3235,6 +3402,7 @@ mod tests {
                     tune: None,
                     pan: None,
                     layer: None,
+                    relative: false,
                 },
             },
             script::Command {
@@ -4065,13 +4233,14 @@ mod tests {
         assert!((output[1811][0] - 0.033346776).abs() < 1e-7);
         assert!((output[3804][0] - 0.020425495).abs() < 1e-7);
         assert!(renderer.processor_bytes() > std::mem::size_of::<Processor>());
-        let unsupported =
-            parse_program(r#"<Program><Inserts><SparkVerb ModDepth="1"/></Inserts></Program>"#)
-                .unwrap();
+        let unsupported = parse_program(
+            r#"<Program><Inserts><SparkVerb ModDepth="1" Mode="0"/></Inserts></Program>"#,
+        )
+        .unwrap();
         assert!(
             preflight(&unsupported)
                 .iter()
-                .any(|entry| entry.reason.contains("modulation"))
+                .any(|entry| entry.reason.contains("moving Mode0"))
         );
     }
     #[test]
@@ -4112,6 +4281,7 @@ mod tests {
                             tune: Some(12.),
                             pan: None,
                             layer: Some(p.layers[0]),
+                            relative: false,
                         },
                     },
                     script::Command {
@@ -4126,6 +4296,7 @@ mod tests {
                             tune: Some(12.),
                             pan: None,
                             layer: Some(p.layers[0]),
+                            relative: false,
                         },
                     },
                 ],
@@ -4190,6 +4361,471 @@ mod tests {
             let value = renderer.parameters[target]["Value"].parse::<f64>().unwrap();
             assert!((value - expected).abs() < 8e-8, "{value} != {expected}");
             assert!(audio.iter().all(|frame| *frame == [0.125, 0.125]));
+        }
+    }
+    #[test]
+    fn relative_controls_apply_independently_to_each_live_duplicate_in_scope() {
+        let p = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup></Keygroups></Layer><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let mut source = sample(1);
+        source.interleaved = Storage::from_f32(vec![0.25; 8]).unwrap();
+        let mut renderer =
+            Renderer::new(&p, HashMap::from([("a".into(), Arc::new(source))]), 48000).unwrap();
+        let mut first = note(1);
+        first.volume = 0.25;
+        first.pan = -0.5;
+        let mut second = note(1);
+        second.tune = 12.;
+        second.pan = 0.5;
+        renderer
+            .render(
+                &[
+                    script::Command {
+                        frame: 0,
+                        action: script::Action::Start(first),
+                    },
+                    script::Command {
+                        frame: 0,
+                        action: script::Action::Start(second),
+                    },
+                ],
+                &[],
+                1,
+            )
+            .unwrap();
+        renderer
+            .apply_note(&script::Action::Change {
+                id: 1,
+                gain: Some(0.5),
+                tune: Some(12.),
+                pan: Some(0.25),
+                layer: Some(p.layers[0]),
+                relative: true,
+            })
+            .unwrap();
+        let values = renderer
+            .voices
+            .iter()
+            .map(|voice| (voice.note.volume, voice.note.tune, voice.note.pan))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            values,
+            vec![
+                (0.125, 12., -0.25),
+                (0.25, 0., -0.5),
+                (0.5, 24., 0.75),
+                (1., 12., 0.5)
+            ]
+        );
+        renderer
+            .apply_note(&script::Action::Change {
+                id: 1,
+                gain: Some(0.5),
+                tune: Some(12.),
+                pan: Some(0.25),
+                layer: None,
+                relative: false,
+            })
+            .unwrap();
+        assert!(renderer.voices.iter().all(|voice| (
+            voice.note.volume,
+            voice.note.tune,
+            voice.note.pan
+        ) == (0.5, 12., 0.25)));
+    }
+    #[test]
+    fn layer_script_modulation_filters_source_ancestry_not_receiving_voice() {
+        let p = parse_program(r#"<Program><ControlSignalSources><ScriptEventModulation Name="Shared" EventId="1" Bipolar="0"/></ControlSignalSources><Layers><Layer><ControlSignalSources><ScriptEventModulation Name="Local" EventId="1" Bipolar="0"/></ControlSignalSources><Keygroups><Keygroup><Connections><SignalConnection Source="$Layer/Local" Destination="Gain" Ratio="1"/></Connections><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup><Keygroup><Connections><SignalConnection Source="$Program/Shared" Destination="Gain" Ratio="1"/></Connections><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup></Keygroups></Layer><Layer><ControlSignalSources><ScriptEventModulation Name="Local" EventId="1" Bipolar="0"/></ControlSignalSources><Keygroups><Keygroup><Connections><SignalConnection Source="$Layer/Local" Destination="Gain" Ratio="1"/></Connections><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        for voice in [None, Some(1)] {
+            let mut source = sample(1);
+            source.interleaved = Storage::from_f32(vec![0.25; 8]).unwrap();
+            let mut renderer =
+                Renderer::new(&p, HashMap::from([("a".into(), Arc::new(source))]), 48000).unwrap();
+            let command = |frame, layer, target, voice| host::Command {
+                frame,
+                action: host::Action::ScriptModulation {
+                    id: 1,
+                    start: None,
+                    target,
+                    ramp_ms: 0.,
+                    voice,
+                    layer,
+                },
+            };
+            assert_eq!(
+                renderer
+                    .render(
+                        &[script::Command {
+                            frame: 0,
+                            action: script::Action::Start(note(1))
+                        }],
+                        &[command(0, Some(p.layers[0]), 0.5, voice)],
+                        1
+                    )
+                    .unwrap(),
+                vec![[0.0625, 0.0625]]
+            );
+            assert_eq!(
+                renderer
+                    .render(&[], &[command(1, None, 0.75, None)], 1)
+                    .unwrap(),
+                vec![[0.28125, 0.28125]]
+            );
+            assert_eq!(
+                renderer
+                    .render(&[], &[command(2, Some(p.layers[1]), 0.25, Some(1))], 1)
+                    .unwrap(),
+                vec![[0.21875, 0.21875]]
+            );
+        }
+    }
+    #[test]
+    fn rendering_rejects_future_commands_without_mutation_and_preserves_partitions() {
+        let p = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let mut source = sample(1);
+        source.interleaved = Storage::from_f32(vec![0.25; 8]).unwrap();
+        let resources = HashMap::from([("a".into(), Arc::new(source))]);
+        let commands = [
+            script::Command {
+                frame: 0,
+                action: script::Action::Start(note(1)),
+            },
+            script::Command {
+                frame: 2,
+                action: script::Action::Release(1),
+            },
+        ];
+        let mut renderer = Renderer::new(&p, resources.clone(), 48000).unwrap();
+        let parameter = host::Command {
+            frame: 0,
+            action: host::Action::Parameter {
+                node: p.root,
+                parameter: "Gain".into(),
+                value: ParameterValue::Number(0.5),
+            },
+        };
+        assert!(
+            renderer
+                .render(&commands, &[parameter], 2)
+                .unwrap_err()
+                .to_string()
+                .contains("outside")
+        );
+        assert_eq!(renderer.frame, 0);
+        assert!(renderer.voices.is_empty());
+        assert_eq!(renderer.number(p.root, "Gain", 1.).unwrap(), 1.);
+        assert!(
+            renderer
+                .render(
+                    &[],
+                    &[host::Command {
+                        frame: 2,
+                        action: host::Action::Parameter {
+                            node: p.root,
+                            parameter: "Gain".into(),
+                            value: ParameterValue::Number(0.5)
+                        }
+                    }],
+                    2
+                )
+                .is_err()
+        );
+        let mut partitioned = renderer.render(&commands[..1], &[], 2).unwrap();
+        partitioned.extend(renderer.render(&commands[1..], &[], 1).unwrap());
+        let mut whole = Renderer::new(&p, resources, 48000).unwrap();
+        assert_eq!(partitioned, whole.render(&commands, &[], 3).unwrap());
+        renderer.frame = u64::MAX;
+        assert!(
+            renderer
+                .render(&[], &[], 1)
+                .unwrap_err()
+                .to_string()
+                .contains("overflow")
+        );
+    }
+    #[test]
+    fn prepared_resources_keep_active_pcm_and_update_global_and_voice_impulse_maps() {
+        let p = parse_program(r#"<Program><Inserts><Convolver Dry="1" Wet="0"/></Inserts><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"/></Oscillators><Inserts><Convolver Dry="1" Wet="0"/></Inserts></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let mut source = sample(1);
+        source.interleaved = Storage::from_f32(vec![0.25; 8]).unwrap();
+        let a = Arc::new(source);
+        let mut renderer =
+            Renderer::new(&p, HashMap::from([("a".into(), Arc::clone(&a))]), 48000).unwrap();
+        renderer
+            .render(
+                &[script::Command {
+                    frame: 0,
+                    action: script::Action::Start(note(1)),
+                }],
+                &[],
+                1,
+            )
+            .unwrap();
+        let mut prepared = sample(1);
+        prepared.interleaved = Storage::from_f32(vec![0.5; 8]).unwrap();
+        let b = Arc::new(prepared);
+        renderer
+            .install_prepared_samples(HashMap::from([
+                ("b".into(), Arc::clone(&b)),
+                ("alias_b".into(), Arc::clone(&b)),
+            ]))
+            .unwrap();
+        assert!(Arc::ptr_eq(
+            &renderer.samples["b"],
+            &renderer.samples["alias_b"]
+        ));
+        renderer
+            .apply_host(&host::Action::LoadResource {
+                node: p.sample_zones[0].player,
+                kind: host::ResourceKind::Sample,
+                path: "b".into(),
+            })
+            .unwrap();
+        for (node, _) in p
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.kind == "Convolver")
+        {
+            renderer
+                .apply_host(&host::Action::LoadResource {
+                    node,
+                    kind: host::ResourceKind::Impulse,
+                    path: "b".into(),
+                })
+                .unwrap();
+        }
+        assert_eq!(renderer.render(&[], &[], 1).unwrap(), vec![[0.125, 0.125]]);
+        assert_eq!(
+            renderer
+                .render(
+                    &[script::Command {
+                        frame: 2,
+                        action: script::Action::Start(note(2))
+                    }],
+                    &[],
+                    1
+                )
+                .unwrap(),
+            vec![[0.375, 0.375]]
+        );
+        assert!(
+            renderer
+                .install_prepared_samples(HashMap::from([("a".into(), Arc::clone(&b))]))
+                .is_err()
+        );
+        assert!(Arc::ptr_eq(&renderer.samples["a"], &a));
+        let mut invalid = sample(1);
+        invalid.rate = 0;
+        assert!(
+            renderer
+                .install_prepared_samples(HashMap::from([("invalid".into(), Arc::new(invalid))]))
+                .is_err()
+        );
+        assert!(!renderer.samples.contains_key("invalid"));
+        renderer
+            .install_prepared_samples(HashMap::from([("a".into(), a)]))
+            .unwrap();
+    }
+    #[test]
+    fn wavetable_storage_width_does_not_expand_audio_source_layouts() {
+        let p = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let table = Arc::new(sample(65));
+        let resources = HashMap::from([
+            ("a".into(), Arc::new(sample(1))),
+            ("table".into(), Arc::clone(&table)),
+        ]);
+        let mut renderer = Renderer::new(&p, resources, 48000).unwrap();
+        assert!(
+            renderer
+                .apply_host(&host::Action::LoadResource {
+                    node: p.sample_zones[0].player,
+                    kind: host::ResourceKind::Sample,
+                    path: "table".into()
+                })
+                .is_err()
+        );
+        renderer
+            .install_prepared_samples(HashMap::from([("table_alias".into(), table)]))
+            .unwrap();
+        assert_eq!(renderer.source_channels[&p.sample_zones[0].keygroup], 1);
+    }
+    #[test]
+    fn ahd_and_multi_envelope_keep_proven_release_and_loop_metadata() {
+        for (kind, attributes, steps) in [
+            (
+                "AHD",
+                r#"AttackTime=".0011" HoldTime=".0013" DecayTime=".0017" AttackCurve="-.5" DecayCurve=".5""#,
+                "",
+            ),
+            (
+                "MultiEnvelope",
+                r#"Retrigger="1" LoopStart="0" LoopEnd="0" ReleaseStep="3""#,
+                r#"<Steps><Step Time=".1" DestLevel="1" Curve=".5"/><Step Time=".1" DestLevel=".25"/><Step Time=".1" DestLevel=".75"/><Step Time=".1" DestLevel="0"/></Steps>"#,
+            ),
+        ] {
+            let xml = format!(
+                r#"<Program><Layers><Layer><Keygroups><Keygroup><ControlSignalSources><{kind} Name="Env" {attributes}>{steps}</{kind}></ControlSignalSources><Connections><SignalConnection Source="$Keygroup/Env" Destination="Gain" Ratio="1"/></Connections><Oscillators><SamplePlayer SamplePath="a"><PlaybackOptions Stop="8" PlayRelease="1"><Loop Start="2" End="5"/></PlaybackOptions></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#
+            );
+            let p = parse_program(&xml).unwrap();
+            let mut source = sample(1);
+            source.interleaved = Storage::from_f32(vec![0.25; 8]).unwrap();
+            let mut renderer =
+                Renderer::new(&p, HashMap::from([("a".into(), Arc::new(source))]), 48000).unwrap();
+            let output = renderer
+                .render(
+                    &[
+                        script::Command {
+                            frame: 0,
+                            action: script::Action::Start(note(1)),
+                        },
+                        script::Command {
+                            frame: 113,
+                            action: script::Action::Release(1),
+                        },
+                    ],
+                    &[],
+                    5121,
+                )
+                .unwrap();
+            if kind == "AHD" {
+                assert!((f64::from(output[32][0]) - 0.125 * 0.8339776397).abs() < 1e-7);
+                // NoteOff ignores the one-shot gate but splits its native control
+                // segment; its post-off interpolation differs from a held note.
+                assert!(output[128][0] > 0.1);
+                assert!(output[256..].iter().all(|frame| *frame == [0., 0.]));
+            } else {
+                assert!((f64::from(output[113][0]) - 0.125 * 0.006635937839).abs() < 1e-8);
+                assert!((f64::from(output[2513][0]) - 0.125 * 0.003317968221).abs() < 1e-8);
+                let unknown =
+                    parse_program(&xml.replace("Retrigger=\"1\"", "Retrigger=\"2\"")).unwrap();
+                assert!(
+                    preflight(&unknown)
+                        .iter()
+                        .any(|u| u.reason.contains("cleanup"))
+                );
+            }
+            assert!(renderer.voices.is_empty());
+        }
+    }
+    #[test]
+    fn lfo_filter_frequency_uses_array_updates_without_scalar_rc() {
+        let p=parse_program(r#"<Program><ControlSignalSources><LFO Name="Cutoff" Freq="11" Depth="0.1" Bipolar="1" Type="0"/></ControlSignalSources><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"/></Oscillators><Inserts><XpanderFilter Freq="1000" Algorithm="1" Oversampling="0" DistortionType="2"><Connections><SignalConnection Source="$Program/Cutoff" Destination="Freq" Ratio="1"/></Connections></XpanderFilter></Inserts></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let filter_id = p
+            .nodes
+            .iter()
+            .position(|node| node.kind == "XpanderFilter")
+            .unwrap();
+        let mut source = sample(1);
+        source.interleaved = Storage::from_f32(vec![0.25; 8]).unwrap();
+        let mut renderer =
+            Renderer::new(&p, HashMap::from([("a".into(), Arc::new(source))]), 48000).unwrap();
+        let output = renderer
+            .render(
+                &[script::Command {
+                    frame: 0,
+                    action: script::Action::Start(note(1)),
+                }],
+                &[],
+                1024,
+            )
+            .unwrap();
+        let graph = ModulationGraph::new(&p).unwrap();
+        let mut reference = XpanderFilter::new(&p.nodes[filter_id], 1, 48000.).unwrap();
+        let mut scalar = XpanderFilter::new(&p.nodes[filter_id], 1, 48000.).unwrap();
+        let mut different = false;
+        for (frame, actual) in output.iter().enumerate() {
+            let input = Inputs {
+                voice: Some(1),
+                instance: Some(1),
+                velocity: 100,
+                time_seconds: frame as f64 / 48000.,
+                voice_time_seconds: frame as f64 / 48000.,
+                ..Default::default()
+            };
+            let values = graph
+                .evaluate_nodes(&input, &HashMap::new(), &HashSet::from([filter_id]))
+                .unwrap();
+            let value = ParameterValue::Number(values[&(filter_id, "Freq".into())]);
+            reference
+                .set_effective_parameter("Freq", &value, true)
+                .unwrap();
+            scalar
+                .set_effective_parameter("Freq", &value, false)
+                .unwrap();
+            let mut a = [0.; dsp::MAX_CHANNELS];
+            a[0] = 0.25;
+            let mut b = a;
+            reference.process(std::slice::from_mut(&mut a)).unwrap();
+            scalar.process(std::slice::from_mut(&mut b)).unwrap();
+            assert_eq!(*actual, [a[0] * 0.5, a[0] * 0.5]);
+            different |= (a[0] - b[0]).abs() > 1e-5;
+        }
+        assert!(different);
+    }
+    #[test]
+    fn attack_decay_uses_planned_note_gate_and_rejects_unseen_partition_events() {
+        let p=parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><ControlSignalSources><AttackDecayEnv Name="Env" Attack="0" DecayTime=".2"/></ControlSignalSources><Connections><SignalConnection Source="$Keygroup/Env" Destination="Gain" Ratio="1"/></Connections><Oscillators><SamplePlayer SamplePath="a"><PlaybackOptions Stop="8" PlayRelease="1"><Loop Start="2" End="5"/></PlaybackOptions></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let mut source = sample(1);
+        source.interleaved = Storage::from_f32(vec![0.25; 8]).unwrap();
+        let mut renderer =
+            Renderer::new(&p, HashMap::from([("a".into(), Arc::new(source))]), 48000).unwrap();
+        assert!(renderer.requires_planned_segments());
+        assert!(
+            renderer
+                .render(&[], &[], 113)
+                .unwrap_err()
+                .to_string()
+                .contains("aligned")
+        );
+        assert_eq!(renderer.frame, 0);
+        assert!(
+            renderer
+                .render(
+                    &[],
+                    &[host::Command {
+                        frame: 13,
+                        action: host::Action::Parameter {
+                            node: p.root,
+                            parameter: "Gain".into(),
+                            value: ParameterValue::Number(0.5)
+                        }
+                    }],
+                    256
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("host-only")
+        );
+        assert_eq!(renderer.number(p.root, "Gain", 1.).unwrap(), 1.);
+        let output = renderer
+            .render(
+                &[
+                    script::Command {
+                        frame: 0,
+                        action: script::Action::Start(note(1)),
+                    },
+                    script::Command {
+                        frame: 113,
+                        action: script::Action::Release(1),
+                    },
+                ],
+                &[],
+                512,
+            )
+            .unwrap();
+        for (frame, expected) in [
+            (96, 0.9742403030),
+            (112, 0.9895552397),
+            (113, 0.9905124307),
+            (128, 0.9949254990),
+            (145, 0.9999269843),
+            (256, 0.9764893055),
+        ] {
+            assert!(
+                (f64::from(output[frame][0]) - 0.125 * expected).abs() < 3e-8,
+                "frame {frame}: {}",
+                output[frame][0]
+            );
         }
     }
 }

@@ -5,15 +5,18 @@
 //! 2026-10-03, established the Hadamard topology, input normalization, shelves,
 //! cut filters, stereo matrix, width, mix and predelay. No vendor source
 //! expression, SDK source, commercial audio or extracted IR is included.
-//! Static numerical models predict 29 complete 48-kHz authored native tails
+//! Static numerical models predict 54 complete 48-kHz authored native tails
 //! within 1.3e-8. Delay vectors below are measured mathematical quantities;
-//! general Room/Shape mapping and delay modulation remain unsupported.
+//! unmeasured Shape/Quality combinations and moving Mode0 remain unsupported.
+//! Interval-bounded RoomSize mapping rejects uncertain prime-delay boundaries.
+//! Mode1/2 moving-delay models additionally match nine full native tails
+//! within 5e-6; native floating-point parity remains unverified.
 
 use super::{dsp::Frame, host::ParameterValue, program::ProgramNode};
 use anyhow::{Context, Result, bail, ensure};
 use std::collections::BTreeMap;
 
-pub const FIDELITY_DIAGNOSTIC: &str = "SparkVerb currently supports measured static 48-kHz delay layouts only; delay modulation, general Room/Shape mapping, mono insert promotion, live control smoothing and bypass transitions remain unsupported or native-unverified";
+pub const FIDELITY_DIAGNOSTIC: &str = "SparkVerb currently supports measured 48-kHz delay layouts; moving Mode0, unmeasured Shape/Quality combinations and uncertain prime-delay boundaries, mono insert promotion, live control smoothing and bypass transitions remain unsupported or native-unverified; measured Mode1/2 modulation tails agree within 5e-6 but native float parity is unverified";
 
 // name, default, minimum, maximum, integer. Native 4.0.9 defaults MixMode to 0.
 const PARAMETERS: &[(&str, f64, f64, f64, bool)] = &[
@@ -64,31 +67,74 @@ fn checked(name: &str, value: &ParameterValue) -> Result<f64> {
     Ok(f64::from(value as f32))
 }
 
-fn delays(p: &Parameters) -> Result<&'static [usize]> {
-    ensure!(
-        p["ModDepth"] == 0.,
-        "SparkVerb modulation is not implemented"
-    );
-    if p["Quality"] == 3. && p["RoomSize"] == 20. {
-        match p["Shape"] {
-            0.5 => return Ok(&[1223, 1487, 1823, 2213, 2693, 3299, 4003, 4889]),
-            1. => return Ok(&[787, 1049, 1423, 1901, 2557, 3449, 4637, 6247]),
-            _ => (),
-        }
+fn next_prime(mut value: usize) -> usize {
+    value = value.max(2);
+    while (2..=(value as f64).sqrt() as usize).any(|divisor| value.is_multiple_of(divisor)) {
+        value += 1;
     }
-    ensure!(p["Shape"] == 0., "SparkVerb room shape is not implemented");
-    match (p["Quality"] as u8, p["RoomSize"]) {
-        (2, 20.) => Ok(&[1709, 2143, 2699, 3407]),
-        (3, 4.) => Ok(&[367, 401, 443, 487, 541, 593, 659, 727]),
-        (3, 10.) => Ok(&[907, 997, 1103, 1217, 1361, 1481, 1637, 1811]),
-        (3, 20.) => Ok(&[1811, 1993, 2203, 2437, 2683, 2963, 3271, 3613]),
-        (3, 50.) => Ok(&[4513, 4987, 5501, 6079, 6709, 7411, 8179, 9029]),
-        (4, 20.) => Ok(&[
+    value
+}
+
+fn delays(p: &Parameters) -> Result<Vec<usize>> {
+    ensure!(
+        p["ModDepth"] == 0. || p["Mode"] != 0.,
+        "SparkVerb moving Mode0 native rounding is not implemented"
+    );
+    // Preserve individually verified native layouts, including their boundaries.
+    let measured: Option<&[usize]> = match (p["Quality"] as u8, p["RoomSize"], p["Shape"]) {
+        (2, 20., 0.) => Some(&[1709, 2143, 2699, 3407]),
+        (3, 4., 0.) => Some(&[367, 401, 443, 487, 541, 593, 659, 727]),
+        (3, 10., 0.) => Some(&[907, 997, 1103, 1217, 1361, 1481, 1637, 1811]),
+        (3, 20., 0.) => Some(&[1811, 1993, 2203, 2437, 2683, 2963, 3271, 3613]),
+        (3, 50., 0.) => Some(&[4513, 4987, 5501, 6079, 6709, 7411, 8179, 9029]),
+        (4, 20., 0.) => Some(&[
             1877, 1973, 2063, 2153, 2267, 2371, 2473, 2591, 2713, 2843, 2999, 3119, 3271, 3433,
             3581, 3761,
         ]),
-        _ => bail!("SparkVerb RoomSize/Quality delay layout is not implemented"),
+        (3, 20., 0.5) => Some(&[1223, 1487, 1823, 2213, 2693, 3299, 4003, 4889]),
+        (3, 20., 1.) => Some(&[787, 1049, 1423, 1901, 2557, 3449, 4637, 6247]),
+        (4, 20., 0.5) => Some(&[
+            1013, 1151, 1277, 1433, 1609, 1811, 2027, 2281, 2557, 2879, 3217, 3613, 4057, 4561,
+            5107, 5737,
+        ]),
+        (4, 20., 1.0) => Some(&[
+            499, 599, 727, 877, 1049, 1259, 1511, 1823, 2203, 2633, 3163, 3821, 4583, 5507, 6637,
+            7993,
+        ]),
+        _ => None,
+    };
+    if let Some(measured) = measured {
+        return Ok(measured.to_vec());
     }
+    // Authored native threshold probes bound the unrounded seconds per RoomSize unit
+    // coefficient at these fixed Shape/Quality pairs. No Shape interpolation.
+    let (lower, upper) = match (p["Quality"] as u8, p["Shape"]) {
+        (2, 0.) => (0.001771519600861144, 0.0017715204377366583),
+        (3, 0.) => (0.0018804209110257252, 0.0018804226402518885),
+        (4, 0.) => (0.0019527193467307564, 0.0019527200874251624),
+        (3, 0.5) => (0.0012706153921700843, 0.0012706163608489076),
+        (3, 1.) => (0.0008119173683025765, 0.0008119182878511134),
+        (4, 0.5) => (0.0010557298735631917, 0.0010557303800642363),
+        (4, 1.0) => (0.0005187613563812313, 0.0005187625887079876),
+        _ => bail!("SparkVerb Shape/Quality coefficient is not measured"),
+    };
+    let count = 1usize << p["Quality"] as u32;
+    let mut result = Vec::with_capacity(count);
+    for i in 0..count {
+        let factor = p["RoomSize"]
+            * 48000.
+            * 2f64.powf((1. + (p["Quality"] - 1.) * p["Shape"]) * i as f64 / (count - 1) as f64);
+        // A conservative .05-frame envelope also excludes uncertain native
+        // float rounding. Floor first, then choose the next prime inclusively.
+        let a = next_prime((lower * factor - 0.05).floor() as usize);
+        let b = next_prime((upper * factor + 0.05).floor() as usize);
+        ensure!(
+            a == b,
+            "SparkVerb RoomSize is too close to an uncertain prime-delay boundary"
+        );
+        result.push(a);
+    }
+    Ok(result)
 }
 
 fn parameters(node: &ProgramNode) -> Result<Parameters> {
@@ -161,6 +207,9 @@ impl Filter {
 }
 
 struct Line {
+    nominal_delay: usize,
+    modulation_amplitude: f64,
+    phase_step: u32,
     delay: Vec<f64>,
     position: usize,
     gain: f64,
@@ -173,6 +222,8 @@ pub struct SparkVerb {
     parameters: Parameters,
     lines: Vec<Line>,
     input_gain: f64,
+    clock: u64,
+    sine_table: [f32; 257],
     diffusion: [[Vec<f64>; 4]; 2],
     diffusion_positions: [[usize; 4]; 2],
     predelay: Vec<[f64; 2]>,
@@ -193,13 +244,29 @@ impl SparkVerb {
         let parameters = parameters(node)?;
         let lines = delays(&parameters)?
             .iter()
-            .map(|&d| Line {
-                delay: vec![0.; d],
-                position: 0,
-                gain: 0.,
-                low: Filter::default(),
-                high: Filter::default(),
-                dc: 0.,
+            .enumerate()
+            .map(|(i, &d)| {
+                let frequency = parameters["ModRate"] / (16. * d as f64);
+                let amplitude = parameters["ModDepth"] * std::f64::consts::LN_2
+                    / (1200. * std::f64::consts::TAU * frequency);
+                Line {
+                    nominal_delay: d,
+                    modulation_amplitude: if i % 2 == 0 { amplitude } else { -amplitude },
+                    phase_step: (frequency * 4294967296.).floor() as u32,
+                    delay: vec![
+                        0.;
+                        d + if amplitude == 0. {
+                            0
+                        } else {
+                            amplitude.ceil() as usize + 3
+                        }
+                    ],
+                    position: 0,
+                    gain: 0.,
+                    low: Filter::default(),
+                    high: Filter::default(),
+                    dc: 0.,
+                }
             })
             .collect();
         let predelay = vec![[0.; 2]; (parameters["PreDelay"] * 48.) as usize];
@@ -220,6 +287,14 @@ impl SparkVerb {
             diffusion_positions: [[0; 4]; 2],
             lines,
             input_gain: 0.,
+            clock: 0,
+            sine_table: std::array::from_fn(|i| {
+                if i == 256 {
+                    0.
+                } else {
+                    (std::f64::consts::TAU * i as f64 / 256.).sin() as f32
+                }
+            }),
             predelay,
             pre_position: 0,
             rolloff: [0.; 2],
@@ -233,7 +308,7 @@ impl SparkVerb {
         let time = p["DecayTime"] * p["RoomSize"] / 20.;
         let mut power = 0.;
         for line in &mut self.lines {
-            let d = line.delay.len();
+            let d = line.nominal_delay;
             line.gain = (-1000f64.ln() * d as f64 / (2. * 48000. * time)).exp();
             power += line.gain * line.gain;
             line.low.tune(
@@ -295,7 +370,15 @@ impl SparkVerb {
         ensure!(
             !matches!(
                 name,
-                "RoomSize" | "Shape" | "Quality" | "PreDelay" | "DiffusionStart" | "DiffusionOnOff"
+                "RoomSize"
+                    | "Shape"
+                    | "Quality"
+                    | "PreDelay"
+                    | "DiffusionStart"
+                    | "DiffusionOnOff"
+                    | "ModDepth"
+                    | "ModRate"
+                    | "Mode"
             ) || old == value,
             "Live SparkVerb delay-layout updates are not implemented"
         );
@@ -321,6 +404,7 @@ impl SparkVerb {
         self.predelay.fill([0.; 2]);
         self.pre_position = 0;
         self.rolloff = [0.; 2];
+        self.clock = 0;
     }
     pub fn process(&mut self, frames: &mut [Frame]) -> Result<()> {
         ensure!(
@@ -341,25 +425,57 @@ impl SparkVerb {
         } else {
             [(1. - mix).sqrt(), mix.sqrt()]
         };
+        let mode = self.parameters["Mode"] as u8;
         for frame in frames {
             let dry = [f64::from(frame[0]), f64::from(frame[1])];
             let mut input = dry;
+            if !self.predelay.is_empty() {
+                std::mem::swap(&mut input, &mut self.predelay[self.pre_position]);
+                self.pre_position = (self.pre_position + 1) % self.predelay.len();
+            }
             if self.parameters["DiffusionOnOff"] != 0. {
                 let a = self.parameters["Diffusion"];
-                for ch in 0..2 {
+                for (ch, channel) in input.iter_mut().enumerate() {
                     for stage in 0..4 {
                         let line = &mut self.diffusion[ch][stage];
                         let position = &mut self.diffusion_positions[ch][stage];
-                        let y = a * input[ch] + line[*position];
-                        line[*position] = input[ch] - a * y;
+                        let y = a * *channel + line[*position];
+                        line[*position] = *channel - a * y;
                         *position = (*position + 1) % line.len();
-                        input[ch] = y;
+                        *channel = y;
                     }
                 }
             }
             let mut delayed = [0.; 16];
             for (i, line) in self.lines.iter().enumerate() {
-                delayed[i] = line.delay[line.position] * line.gain;
+                let value = if line.modulation_amplitude == 0. {
+                    line.delay[line.position]
+                } else {
+                    // Native table endpoints are interpolated over 64 host frames.
+                    let block = self.clock & !63;
+                    let fraction = (self.clock & 63) as f64 / 64.;
+                    let a = table_sine(&self.sine_table, block, line.phase_step);
+                    let b = table_sine(&self.sine_table, block.wrapping_add(64), line.phase_step);
+                    let delay = line.nominal_delay as f64
+                        + line.modulation_amplitude * (a * (1. - fraction) + b * fraction);
+                    let position =
+                        (line.position as f64 - delay).rem_euclid(line.delay.len() as f64);
+                    let index = position.floor() as usize;
+                    let f = position - index as f64;
+                    let at = |offset: usize| {
+                        line.delay[(index + line.delay.len() + offset - 1) % line.delay.len()]
+                    };
+                    if mode == 1 {
+                        at(1) * (1. - f) + at(2) * f
+                    } else {
+                        // Four-point Lagrange support [-1, 0, 1, 2].
+                        at(0) * (-f * (f - 1.) * (f - 2.) / 6.)
+                            + at(1) * ((f + 1.) * (f - 1.) * (f - 2.) / 2.)
+                            + at(2) * (-(f + 1.) * f * (f - 2.) / 2.)
+                            + at(3) * ((f + 1.) * f * (f - 1.) / 6.)
+                    }
+                };
+                delayed[i] = value * line.gain;
             }
             for (i, line) in self.lines.iter_mut().enumerate() {
                 let feedback = delayed[..n]
@@ -383,21 +499,24 @@ impl SparkVerb {
                 mid * delayed[0] + side * delayed[1],
                 mid * delayed[0] - side * delayed[1],
             ];
-            let mut wet = [0.; 2];
-            for ch in 0..2 {
-                self.rolloff[ch] += self.rolloff_coefficient * (raw[ch] - self.rolloff[ch]);
-                wet[ch] = self.rolloff[ch];
+            for (ch, state) in self.rolloff.iter_mut().enumerate() {
+                *state += self.rolloff_coefficient * (raw[ch] - *state);
             }
-            if !self.predelay.is_empty() {
-                std::mem::swap(&mut wet, &mut self.predelay[self.pre_position]);
-                self.pre_position = (self.pre_position + 1) % self.predelay.len();
-            }
+            let wet = self.rolloff;
             for ch in 0..2 {
                 frame[ch] = (dry_gain * dry[ch] + wet_gain * wet[ch]) as f32;
             }
+            self.clock = self.clock.wrapping_add(1);
         }
         Ok(())
     }
+}
+
+fn table_sine(table: &[f32; 257], clock: u64, step: u32) -> f64 {
+    let phase = clock.wrapping_mul(u64::from(step)) as u32;
+    let index = (phase >> 24) as usize;
+    let fraction = (phase & 0x00ff_ffff) as f32 / 16777216.;
+    f64::from(table[index] + (table[index + 1] - table[index]) * fraction)
 }
 
 #[cfg(test)]
@@ -530,9 +649,107 @@ mod tests {
         frames[0][0] = 0.125;
         frames[0][1] = 0.125;
         fx.process(&mut frames).unwrap();
-        assert!((frames[0][0] - 0.10825317353010178).abs() < 1e-8);
-        assert!((frames[1811][0] - 0.016673387959599495).abs() < 1e-8);
-        assert!(SparkVerb::new(&node(&[("ModDepth", 1.)]), 2, 48000.).is_err());
+        assert!((frames[0][0] - 0.108_253_17).abs() < 1e-8);
+        assert!((frames[1811][0] - 0.016_673_388).abs() < 1e-8);
+        assert!(SparkVerb::new(&node(&[("ModDepth", 1.), ("Mode", 0.)]), 2, 48000.).is_err());
         assert!(SparkVerb::new(&node(&[]), 2, 44100.).is_err());
+    }
+    #[test]
+    fn uvi_sparkverb_matches_native_moving_delay_clock() {
+        // Original stereo PCM16 impulse at host frame8192, native Workstation4.0.9.
+        type Attributes<'a> = &'a [(&'a str, f64)];
+        type NativeTaps<'a> = &'a [(usize, f32)];
+        let cases: &[(Attributes<'_>, NativeTaps<'_>)] = &[
+            (
+                &[("ModDepth", 1.)],
+                &[(1813, 0.026664546), (1990, 0.021647312)],
+            ),
+            (
+                &[("ModDepth", 4.), ("Mode", 2.)],
+                &[(1818, -0.0010920132), (1820, 0.028593825)],
+            ),
+            (
+                &[("ModDepth", 4.), ("Quality", 2.)],
+                &[(1716, 0.011389901), (2131, 0.030591099)],
+            ),
+            (
+                &[("ModDepth", 4.), ("Quality", 4.)],
+                &[(1886, 0.0174198), (1962, 0.015131718)],
+            ),
+            (
+                &[("ModDepth", 4.), ("DiffusionOnOff", 1.), ("Diffusion", 0.5)],
+                &[(1819, 0.00043021297), (1982, 0.001314224)],
+            ),
+            (
+                &[("ModDepth", 4.), ("PreDelay", 10.)],
+                &[(2299, 0.029308943), (2462, 0.0041384716)],
+            ),
+        ];
+        for &(attrs, expected) in cases {
+            let node = node(attrs);
+            let mut whole = SparkVerb::new(&node, 2, 48000.).unwrap();
+            let mut split = SparkVerb::new(&node, 2, 48000.).unwrap();
+            let mut a = vec![[0.; 12]; 13000];
+            a[8192][..2].fill(0.125);
+            let mut b = a.clone();
+            whole.process(&mut a).unwrap();
+            for chunk in b.chunks_mut(17) {
+                split.process(chunk).unwrap();
+            }
+            assert_eq!(a, b, "host block partition changed the modulation clock");
+            for &(offset, native) in expected {
+                assert!(
+                    (a[8192 + offset][0] - native).abs() < 5e-6,
+                    "{attrs:?} frame{offset}"
+                );
+            }
+            whole.clear();
+            let mut reset = vec![[0.; 12]; 13000];
+            reset[8192][..2].fill(0.125);
+            whole.process(&mut reset).unwrap();
+            assert_eq!(a, reset, "clear did not reset the moving-delay clock");
+        }
+    }
+    #[test]
+    fn uvi_sparkverb_rejects_native_uncertain_prime_boundaries() {
+        // Native: first delay1811 below this transition,1823 above it.
+        for room in [20.0752735, 20.0752926] {
+            let error = SparkVerb::new(&node(&[("RoomSize", room)]), 2, 48000.)
+                .err()
+                .unwrap();
+            assert!(error.to_string().contains("prime-delay boundary"));
+        }
+        for (shape, lower, upper) in [(0.5, 20.0098438, 20.0098534), (1., 20.079834, 20.0798817)] {
+            for room in [lower, upper] {
+                let error = SparkVerb::new(
+                    &node(&[("RoomSize", room), ("Quality", 4.), ("Shape", shape)]),
+                    2,
+                    48000.,
+                )
+                .err()
+                .unwrap();
+                assert!(error.to_string().contains("prime-delay boundary"));
+            }
+        }
+        // A later internal line is also only .0028 frames from a boundary.
+        assert!(SparkVerb::new(&node(&[("RoomSize", 33.3), ("Shape", 1.)]), 2, 48000.).is_err());
+        for (room, shape, quality, first) in [
+            (7.25, 1., 3., 283),
+            (7.25, 0., 3., 659),
+            (33.3, 0., 3., 3011),
+            (7.25, 0.5, 3., 443),
+            (7.25, 0., 2., 617),
+            (33.3, 0., 4., 3121),
+            (4., 0., 4., 379),
+            (50., 0., 2., 4253),
+        ] {
+            let fx = SparkVerb::new(
+                &node(&[("RoomSize", room), ("Shape", shape), ("Quality", quality)]),
+                2,
+                48000.,
+            )
+            .unwrap();
+            assert_eq!(fx.lines[0].nominal_delay, first);
+        }
     }
 }

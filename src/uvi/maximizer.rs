@@ -165,8 +165,9 @@ impl Maximizer {
             parameters,
             smoothed,
             previous_targets: smoothed,
-            // Same native control-time calibration measured for DualDelay.
-            smoothing: 1. - (-32. / (rate * (433. / 48000.))).exp(),
+            // Native 32-frame control clock, independently measured by the
+            // limiter, delay, chorus and control-source probes.
+            smoothing: f64::from(1. - 0.33f32.powf(3200. / rate as f32)),
             delay: vec![[0.; 12]; max_half * 2 + 1],
             position: 0,
             elapsed: 0,

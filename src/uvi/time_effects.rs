@@ -13,7 +13,7 @@ use super::{dsp::Frame, host::ParameterValue, program::ProgramNode};
 use anyhow::{Context, Result, bail, ensure};
 use std::collections::BTreeMap;
 
-pub const FIDELITY_DIAGNOSTIC: &str = "UVI DualDelay peak EQ uses an RBJ approximation and modulation amplitude is empirically calibrated; WhiteChorus Speed/Depth startup is calibrated and phase-offset/read rounding remains approximate, with live controls outside Mix and rates outside 48 kHz native-unverified; DualDelay control smoothing outside Mix/Feedback/Rotation, rates outside 44.1/48/96 kHz and bypass transitions remain native-unverified";
+pub const FIDELITY_DIAGNOSTIC: &str = "UVI DualDelay peak EQ uses an RBJ approximation and modulation amplitude is empirically calibrated; WhiteChorus Speed/Depth startup is calibrated and phase-offset/read rounding remains approximate, with live NumVoices/Mode/Bypass changes and rates outside 48 kHz native-unverified; DualDelay control smoothing outside Mix/Feedback/Rotation, rates outside 44.1/48/96 kHz and bypass transitions remain native-unverified";
 const MAX_SECONDS: f64 = 5.;
 const MODULATION_DETUNE: f64 = 0.00057425;
 const MEMORY_LIMIT: usize = 64 << 20;
@@ -298,7 +298,7 @@ impl DualDelay {
             elapsed: 0,
             mix,
             mix_gains: [(1. - mix).sqrt(), mix.sqrt()],
-            mix_smoothing: 1. - (-32. / (rate * (433. / 48000.))).exp() as f32,
+            mix_smoothing: 1. - 0.33f32.powf(3200. / rate as f32),
             control_changed_at: [0; 3],
             previous_targets: [mix, 0., 0., 0.],
             input_rotation: [1., 0.],
@@ -540,8 +540,9 @@ struct WhiteChorus {
     position: usize,
     elapsed: u64,
     phase: u32,
-    phases: [u32; 8],
+    phases: [[u32; 2]; 8],
     sine: [f32; 257],
+    oscillator_endpoints: [[[f32; 2]; 2]; 8],
     speed: f64,
     depth: f64,
     startup_smoothing: f64,
@@ -552,7 +553,10 @@ struct WhiteChorus {
     mix: f32,
     mix_smoothing: f32,
     mix_changed_at: u64,
-    previous_targets: [f64; 3],
+    previous_targets: [f64; 8],
+    controls: [f64; 5],
+    controls_changed_at: [u64; 5],
+    low_gain: f32,
     low: [f32; 2],
     tone: [f32; 2],
     poles: [f32; 2],
@@ -561,11 +565,19 @@ struct WhiteChorus {
     voices: usize,
 }
 impl WhiteChorus {
+    const CLOCK_PARAMETERS: [&str; 5] = ["Crossover", "Tone", "Edge", "LowGain", "Trim"];
+    fn control_targets(parameters: &BTreeMap<String, f64>) -> [f64; 5] {
+        std::array::from_fn(|i| {
+            let value = parameters[Self::CLOCK_PARAMETERS[i]];
+            if i < 2 { value.ln() } else { value }
+        })
+    }
     fn new(node: &ProgramNode, rate: f64) -> Result<Self> {
         let parameters = parameters(node)?;
         let mix = parameters["Mix"] as f32;
         let speed_target = parameters["Speed"].ln();
         let depth_target = parameters["Depth"];
+        let controls = Self::control_targets(&parameters);
         // Depth40/Speed.1 reaches less than 75ms, including all voice extrema.
         let length = (rate * 0.1).ceil() as usize + 2;
         let mut result = Self {
@@ -575,7 +587,7 @@ impl WhiteChorus {
             position: 0,
             elapsed: 0,
             phase: 0,
-            phases: [0; 8],
+            phases: [[0; 2]; 8],
             sine: std::array::from_fn(|i| {
                 if i == 256 {
                     0.
@@ -583,6 +595,7 @@ impl WhiteChorus {
                     (std::f64::consts::TAU * i as f64 / 256.).sin() as f32
                 }
             }),
+            oscillator_endpoints: [[[0.; 2]; 2]; 8],
             speed: 0.2,
             depth: 5.,
             // ponytail: native startup is approximately 300ms. This calibrated
@@ -593,9 +606,21 @@ impl WhiteChorus {
             speed_changed_at: 0,
             depth_changed_at: 0,
             mix,
-            mix_smoothing: 1. - (-32. / (rate * (433. / 48000.))).exp() as f32,
+            mix_smoothing: 1. - 0.33f32.powf(3200. / rate as f32),
             mix_changed_at: 0,
-            previous_targets: [f64::from(mix), speed_target, depth_target],
+            previous_targets: [
+                f64::from(mix),
+                speed_target,
+                depth_target,
+                controls[0],
+                controls[1],
+                controls[2],
+                controls[3],
+                controls[4],
+            ],
+            controls,
+            controls_changed_at: [0; 5],
+            low_gain: 1.,
             low: [0.; 2],
             tone: [0.; 2],
             poles: [0.; 2],
@@ -609,17 +634,35 @@ impl WhiteChorus {
     fn tune(&mut self) {
         let p = &self.parameters;
         self.voices = p["NumVoices"] as usize;
-        self.gain = if p["Edge"] <= 0. {
-            ((1. + p["Edge"]) / self.voices as f64) as f32
+        let edge = self.controls[2];
+        self.gain = if edge <= 0. {
+            ((1. + edge) / self.voices as f64) as f32
         } else {
-            (1. / self.voices as f64 + (0.95 - 1. / self.voices as f64) * p["Edge"]) as f32
+            (1. / self.voices as f64 + (0.95 - 1. / self.voices as f64) * edge) as f32
         };
-        self.poles = [p["Crossover"], p["Tone"]]
+        self.poles = [self.controls[0].exp(), self.controls[1].exp()]
             .map(|f| 1. - (-std::f32::consts::TAU * f as f32 / self.rate as f32).exp());
-        self.trim = 10f64.powf(p["Trim"] / 20.) as f32;
+        self.low_gain = self.controls[3] as f32;
+        self.trim = 10f64.powf(self.controls[4] / 20.) as f32;
         for (i, phase) in self.phases.iter_mut().enumerate() {
-            let denominator = if p["Mode"] == 0. { self.voices } else { 8 };
-            *phase = ((2f64.powf(i as f64 / denominator as f64) - 1.) * 4294967296.) as u32;
+            let denominator = if p["Mode"] == 0. {
+                self.voices
+            } else {
+                2 * self.voices
+            };
+            *phase = std::array::from_fn(|ch| {
+                // Native stereo Mode0 interleaves half-offset banks; Mode1
+                // assigns each channel half of a bank twice the voice count.
+                let index = i as f64
+                    + if ch == 0 {
+                        0.
+                    } else if p["Mode"] == 0. {
+                        0.5
+                    } else {
+                        self.voices as f64
+                    };
+                ((2f64.powf(index / denominator as f64) - 1.) * 4294967296.) as u32
+            });
         }
     }
     fn set_parameter(&mut self, name: &str, value: &ParameterValue) -> Result<()> {
@@ -648,7 +691,14 @@ impl WhiteChorus {
                     }
                     self.depth_changed_at = self.elapsed;
                 }
-                _ => {}
+                _ => {
+                    if let Some(i) = Self::CLOCK_PARAMETERS.iter().position(|&p| p == name) {
+                        if self.controls_changed_at[i] != self.elapsed {
+                            self.previous_targets[i + 3] = if i < 2 { old.ln() } else { old };
+                        }
+                        self.controls_changed_at[i] = self.elapsed;
+                    }
+                }
             }
         }
         self.tune();
@@ -659,6 +709,7 @@ impl WhiteChorus {
         self.position = 0;
         self.elapsed = 0;
         self.phase = 0;
+        self.oscillator_endpoints = [[[0.; 2]; 2]; 8];
         self.speed = 0.2;
         self.depth = 5.;
         self.mix = self.parameters["Mix"] as f32;
@@ -667,9 +718,17 @@ impl WhiteChorus {
         self.depth_changed_at = 0;
         self.speed_target = self.parameters["Speed"].ln();
         self.depth_target = self.parameters["Depth"];
-        self.previous_targets = [f64::from(self.mix), self.speed_target, self.depth_target];
+        self.previous_targets[..3].copy_from_slice(&[
+            f64::from(self.mix),
+            self.speed_target,
+            self.depth_target,
+        ]);
+        self.controls = Self::control_targets(&self.parameters);
+        self.controls_changed_at = [0; 5];
+        self.previous_targets[3..].copy_from_slice(&self.controls);
         self.low = [0.; 2];
         self.tone = [0.; 2];
+        self.tune();
     }
     fn oscillator(&self, phase: u32) -> f32 {
         // Native uint32 phase step and 256-point linear sine lookup were
@@ -721,8 +780,32 @@ impl WhiteChorus {
                 };
                 self.depth_target +=
                     f64::from(self.mix_smoothing) * (depth_target - self.depth_target);
+                let targets = Self::control_targets(&self.parameters);
+                for (i, target) in targets.into_iter().enumerate() {
+                    let target = if self.elapsed == self.controls_changed_at[i] {
+                        self.previous_targets[i + 3]
+                    } else {
+                        target
+                    };
+                    self.controls[i] += f64::from(self.mix_smoothing) * (target - self.controls[i]);
+                }
+                self.tune();
             }
             let speed = self.speed as f32;
+            let phase_step = (f64::from(speed) / self.rate * 4294967296.) as u32;
+            if self.elapsed.is_multiple_of(64) {
+                // Native interpolates sine-table endpoints every64 frames,
+                // including across the lookup table's slope knots.
+                let next = self.phase.wrapping_add(phase_step.wrapping_mul(64));
+                self.oscillator_endpoints = std::array::from_fn(|i| {
+                    std::array::from_fn(|ch| {
+                        [
+                            self.oscillator(self.phase.wrapping_add(self.phases[i][ch])),
+                            self.oscillator(next.wrapping_add(self.phases[i][ch])),
+                        ]
+                    })
+                });
+            }
             let amplitude = self.rate as f32 * (1. - 2f32.powf(-(self.depth as f32) / 1200.))
                 / (std::f32::consts::TAU * speed);
             let base = self.rate as f32 / 1000. + amplitude;
@@ -735,11 +818,11 @@ impl WhiteChorus {
             }
             let mut wet = self.tone.map(|x| self.gain * x);
             for i in 0..self.voices {
-                let delay =
-                    base + amplitude * self.oscillator(self.phase.wrapping_add(self.phases[i]));
-                let voice = self.read(delay.max(1.));
                 for ch in 0..2 {
-                    wet[ch] += voice_gain * voice[ch];
+                    let [start, end] = self.oscillator_endpoints[i][ch];
+                    let oscillator = start + (end - start) * (self.elapsed % 64) as f32 / 64.;
+                    let delay = base + amplitude * oscillator;
+                    wet[ch] += voice_gain * self.read(delay.max(1.))[ch];
                 }
             }
             self.lines[self.position] = self.tone;
@@ -748,12 +831,9 @@ impl WhiteChorus {
             let wet_gain = self.mix.sqrt();
             for ch in 0..2 {
                 f[ch] = self.trim
-                    * (dry_gain * input[ch]
-                        + wet_gain * (wet[ch] + self.parameters["LowGain"] as f32 * self.low[ch]));
+                    * (dry_gain * input[ch] + wet_gain * (wet[ch] + self.low_gain * self.low[ch]));
             }
-            self.phase = self
-                .phase
-                .wrapping_add((f64::from(speed) / self.rate * 4294967296.) as u32);
+            self.phase = self.phase.wrapping_add(phase_step);
             self.speed += self.startup_smoothing * (self.speed_target.exp() - self.speed);
             self.depth += self.startup_smoothing * (self.depth_target - self.depth);
             self.elapsed = self.elapsed.wrapping_add(1);
@@ -828,13 +908,13 @@ mod tests {
                 );
             }
             assert!(f.iter().all(|f| f[1] == 0.));
-            assert!(fx.memory_bytes() < 40000);
+            assert!(fx.memory_bytes() < 41000);
         }
     }
     #[test]
     fn uvi_white_chorus_native_modes_voice_counts_and_levels() {
-        // Additional odd-phase voices retain a measured float-rounding
-        // residual below2e-5 at these early checkpoints; diagnosed above.
+        // Additional voice banks retain a measured float-rounding
+        // residual below 6e-6 at these early checkpoints; diagnosed above.
         for (attrs, checkpoints) in [
             (
                 "Mode='1'",
@@ -892,7 +972,7 @@ mod tests {
             fx.process(&mut f).unwrap();
             for (i, value) in checkpoints {
                 assert!(
-                    (f[8192 + i][0] - value).abs() < 2e-5,
+                    (f[8192 + i][0] - value).abs() < 6e-6,
                     "{attrs}/{i}: {} vs {value}",
                     f[8192 + i][0]
                 );
@@ -905,6 +985,151 @@ mod tests {
                 fx.set_parameter("SpeedAlias", &ParameterValue::Number(0.2))
                     .is_err()
             );
+        }
+    }
+    #[test]
+    fn uvi_white_chorus_native_six_and_eight_voice_mode_spacing() {
+        // Native reached Starter configurations: Mode1 uses half of a bank
+        // twice the selected voice count, rather than a fixed eight-voice bank.
+        for (voices, mode, checkpoints) in [
+            (
+                6,
+                0,
+                [
+                    (57, 0.05907764658),
+                    (82, 0.07886858284),
+                    (250, 0.06871520728),
+                ],
+            ),
+            (
+                6,
+                1,
+                [
+                    (220, 0.07728394866),
+                    (238, 0.04999915138),
+                    (264, 0.08675110340),
+                ],
+            ),
+            (
+                8,
+                1,
+                [
+                    (211, 0.06661188602),
+                    (229, 0.06103919819),
+                    (267, 0.13516837358),
+                ],
+            ),
+        ] {
+            let node = parse_program(&format!(
+                "<Program><Inserts><WhiteChorus NumVoices='{voices}' Mode='{mode}' Edge='-1' LowGain='0'/></Inserts></Program>"
+            )).unwrap().nodes.remove(2);
+            let mut fx = TimeEffect::new(&node, 2, 48000.).unwrap();
+            let mut frames = vec![[0.; 12]; 10000];
+            frames[8192][0] = 0.25;
+            fx.process(&mut frames).unwrap();
+            for (delay, expected) in checkpoints {
+                assert!(
+                    (frames[8192 + delay][0] - expected).abs() < 6e-6,
+                    "voices{voices}/mode{mode}/{delay}: {} vs {expected}",
+                    frames[8192 + delay][0]
+                );
+            }
+        }
+    }
+    #[test]
+    fn uvi_white_chorus_native_stereo_phase_banks() {
+        // Identical authored stereo impulses independently identify each
+        // channel's bank. The measured early read-rounding residual is <4e-6.
+        for (voices, mode, checkpoints) in [
+            (
+                4,
+                0,
+                [
+                    (77, 0.10163776577),
+                    (107, 0.11132773012),
+                    (254, 0.11599827558),
+                ],
+            ),
+            (
+                6,
+                0,
+                [
+                    (51, 0.04981407523),
+                    (220, 0.07694233954),
+                    (267, 0.08553870022),
+                ],
+            ),
+            (
+                8,
+                0,
+                [
+                    (52, 0.04956490919),
+                    (124, 0.08080752939),
+                    (256, 0.08101453632),
+                ],
+            ),
+            (
+                6,
+                1,
+                [
+                    (57, 0.05881531909),
+                    (107, 0.05063379183),
+                    (193, 0.07324445248),
+                ],
+            ),
+            (
+                8,
+                1,
+                [
+                    (71, 0.07002160698),
+                    (124, 0.08019130677),
+                    (193, 0.06306712329),
+                ],
+            ),
+        ] {
+            let node = parse_program(&format!(
+                "<Program><Inserts><WhiteChorus NumVoices='{voices}' Mode='{mode}' Edge='-1' LowGain='0'/></Inserts></Program>"
+            )).unwrap().nodes.remove(2);
+            let mut fx = TimeEffect::new(&node, 2, 48000.).unwrap();
+            let mut frames = vec![[0.; 12]; 10000];
+            frames[8192][..2].fill(0.25);
+            fx.process(&mut frames).unwrap();
+            for (delay, expected) in checkpoints {
+                assert!(
+                    (frames[8192 + delay][1] - expected).abs() < 4e-6,
+                    "voices{voices}/mode{mode}/right{delay}: {} vs {expected}",
+                    frames[8192 + delay][1]
+                );
+            }
+            assert!(frames.iter().any(|f| (f[0] - f[1]).abs() > 0.05));
+        }
+    }
+    #[test]
+    fn uvi_white_chorus_native_long_oscillator_clock() {
+        // Independent authored native impulse trains distinguish the 64-frame
+        // sine-endpoint clock from per-frame or 16/32/128-frame alternatives.
+        // The 1e-5 ceiling covers measured long-train read-rounding residuals
+        // below8e-6; the diagnostic deliberately retains that precision limit.
+        for (voices, mode, checkpoints) in [
+            (4, 0, [(135437, 0.03740978241), (299119, 0.01225477085)]),
+            (6, 1, [(213114, 0.05583680421), (446698, 0.08409113437)]),
+            (8, 1, [(110640, 0.07209462672), (397437, 0.00357553712)]),
+        ] {
+            let node=parse_program(&format!("<Program><Inserts><WhiteChorus NumVoices='{voices}' Mode='{mode}' Edge='-1' LowGain='0'/></Inserts></Program>")).unwrap().nodes.remove(2);
+            let mut fx = TimeEffect::new(&node, 2, 48000.).unwrap();
+            let count = checkpoints.iter().map(|(i, _)| *i).max().unwrap() + 1;
+            let mut frames = vec![[0.; 12]; count];
+            for i in (4096..count).step_by(4096) {
+                frames[i][0] = 0.25;
+            }
+            fx.process(&mut frames).unwrap();
+            for (i, value) in checkpoints {
+                assert!(
+                    (frames[i][0] - value).abs() < 1e-5,
+                    "voices{voices}/mode{mode}/{i}: {} vs {value}",
+                    frames[i][0]
+                );
+            }
         }
     }
     #[test]
@@ -929,6 +1154,123 @@ mod tests {
                     .fold(0f32, f32::max);
                 assert!(peak > 0.025, "Depth{depth} arrival{arrival}: {peak}");
             }
+        }
+    }
+    #[test]
+    fn uvi_white_chorus_native_direct_control_clocks() {
+        // Original Lua setters at host frame16384; the first wet voice arrives
+        // at48, so these earlier samples identify each consumer's control law.
+        for (name, start, target, checkpoints) in [
+            (
+                "Crossover",
+                20.,
+                1000.,
+                [
+                    (0, 0.05951308832),
+                    (31, 0.00045199221),
+                    (32, 0.00045042421),
+                    (47, 0.00042764642),
+                ],
+            ),
+            (
+                "Tone",
+                22050.,
+                2000.,
+                [
+                    (0, 0.05951308832),
+                    (31, 0.00045199221),
+                    (32, 0.00045079712),
+                    (47, 0.00043343627),
+                ],
+            ),
+            (
+                "Edge",
+                -0.5,
+                0.5,
+                [
+                    (0, 0.03008336388),
+                    (31, 0.00052733981),
+                    (32, 0.00051525282),
+                    (47, 0.00049541111),
+                ],
+            ),
+            (
+                "LowGain",
+                1.,
+                2.,
+                [
+                    (0, 0.05951308832),
+                    (31, 0.00045199221),
+                    (32, 0.00049363694),
+                    (47, 0.00047462762),
+                ],
+            ),
+            (
+                "Trim",
+                0.,
+                -6.,
+                [
+                    (0, 0.05951308832),
+                    (31, 0.00045199221),
+                    (32, 0.00042916110),
+                    (47, 0.00041263469),
+                ],
+            ),
+        ] {
+            let node = parse_program(&format!(
+                "<Program><Inserts><WhiteChorus {name}='{start}'/></Inserts></Program>"
+            ))
+            .unwrap()
+            .nodes
+            .remove(2);
+            let mut fx = TimeEffect::new(&node, 2, 48000.).unwrap();
+            fx.process(&mut vec![[0.; 12]; 16384]).unwrap();
+            fx.set_parameter(name, &ParameterValue::Number(target))
+                .unwrap();
+            assert_eq!(fx.parameter(name).unwrap(), ParameterValue::Number(target));
+            let mut frames = [[0.; 12]; 48];
+            frames[0][0] = 0.25;
+            fx.process(&mut frames).unwrap();
+            for (i, expected) in checkpoints {
+                assert!(
+                    (frames[i][0] - expected).abs() < 3e-8,
+                    "{name}/{i}: {} vs {expected}",
+                    frames[i][0]
+                );
+            }
+        }
+    }
+    #[test]
+    fn uvi_white_chorus_native_serialized_control_initialization() {
+        // Native load-time controls take effect immediately. They must not
+        // share the runtime setter's first-quantum hold or factory target.
+        for (name, value, first, at32) in [
+            ("Crossover", 1000., 0.08244666457, 0.00034789566),
+            ("Tone", 2000., 0.01501191128, 0.00045284559),
+            ("Edge", -0.5, 0.03008336388, 0.00052596111),
+            ("LowGain", 2., 0.06016672775, 0.00105192221),
+            ("Trim", -6., 0.02982719801, 0.00022594044),
+        ] {
+            let node = parse_program(&format!(
+                "<Program><Inserts><WhiteChorus {name}='{value}'/></Inserts></Program>"
+            ))
+            .unwrap()
+            .nodes
+            .remove(2);
+            let mut fx = TimeEffect::new(&node, 2, 48000.).unwrap();
+            let mut frames = [[0.; 12]; 48];
+            frames[0][0] = 0.25;
+            fx.process(&mut frames).unwrap();
+            assert!(
+                (frames[0][0] - first).abs() < 3e-8,
+                "{name}: {}",
+                frames[0][0]
+            );
+            assert!(
+                (frames[32][0] - at32).abs() < 3e-8,
+                "{name}/32: {}",
+                frames[32][0]
+            );
         }
     }
     #[test]
@@ -1075,23 +1417,48 @@ mod tests {
         );
     }
     #[test]
-    fn uvi_dual_delay_mix_native_control_smoothing() {
-        let mut fx = TimeEffect::new(&effect("Mix='0' Feedback='0'"), 2, 48000.).unwrap();
-        fx.set_parameter("Mix", &ParameterValue::Number(1.))
-            .unwrap();
-        let mut f = vec![[1.; 12]; 600];
-        fx.process(&mut f).unwrap();
-        for i in 0..32 {
-            assert_eq!(f[i][0], 1.);
-        }
-        for (i, m) in [
-            (32, 0.0712382197f32),
-            (128, 0.2559211552),
-            (512, 0.6934401393),
+    fn uvi_time_effect_mix_native_control_smoothing() {
+        for (kind, attrs, values) in [
+            (
+                "DualDelay",
+                "Mix='0' Feedback='0'",
+                [0.24092978239, 0.21564623713, 0.13840363920],
+            ),
+            (
+                "WhiteChorus",
+                "Mix='0' Edge='-1' LowGain='0' Crossover='5000'",
+                [0.24092979729, 0.21564625204, 0.13840366900],
+            ),
         ] {
-            assert!((f[i][0] - (1. - m).sqrt()).abs() < 6e-5, "{i}: {}", f[i][0]);
+            let node = parse_program(&format!(
+                "<Program><Inserts><{kind} {attrs}/></Inserts></Program>"
+            ))
+            .unwrap()
+            .nodes
+            .remove(2);
+            let mut fx = TimeEffect::new(&node, 2, 48000.).unwrap();
+            let mut warmup = vec![[0.; 12]; 16384];
+            for frame in &mut warmup {
+                frame[0] = 0.25;
+            }
+            fx.process(&mut warmup).unwrap();
+            fx.set_parameter("Mix", &ParameterValue::Number(1.))
+                .unwrap();
+            let mut frames = vec![[0.; 12]; 600];
+            for frame in &mut frames {
+                frame[0] = 0.25;
+            }
+            fx.process(&mut frames).unwrap();
+            assert!(frames[..32].iter().all(|f| f[0] == 0.25));
+            for (i, value) in [32, 128, 512].into_iter().zip(values) {
+                assert!(
+                    (frames[i][0] - value).abs() < 3e-8,
+                    "{kind}/{i}: {} vs {value}",
+                    frames[i][0]
+                );
+            }
+            assert_eq!(frames[32][0], frames[63][0]);
         }
-        assert_eq!(f[32][0], f[63][0]);
     }
     #[test]
     fn uvi_dual_delay_native_feedback_and_rotation_steps() {

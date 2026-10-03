@@ -120,6 +120,8 @@ pub enum Action {
         target: f64,
         ramp_ms: f64,
         voice: Option<u32>,
+        /// Issuing Layer, or Program-wide when absent.
+        layer: Option<NodeId>,
     },
     LoadResource {
         node: NodeId,
@@ -142,6 +144,8 @@ pub struct HostConfig<'a> {
     pub resources: Option<Resources>,
     /// Runtime-issued IDs, including voices posted for a future frame.
     pub valid_voice: Option<Rc<dyn Fn(u32) -> bool>>,
+    /// Read at emission so shared engine functions retain the calling scope.
+    pub layer_scope: Option<Rc<dyn Fn() -> Option<NodeId>>>,
 }
 
 #[derive(Clone)]
@@ -291,6 +295,7 @@ pub fn install(lua: &Lua, config: HostConfig<'_>) -> mlua::Result<Host> {
         now,
         resources,
         valid_voice,
+        layer_scope,
     } = config;
     lua.globals().set("__API_VERSION__", 23)?;
     let state = Rc::new(RefCell::new(program.map_or_else(Vec::new, |p| {
@@ -540,7 +545,7 @@ pub fn install(lua: &Lua, config: HostConfig<'_>) -> mlua::Result<Host> {
     }
     install_class(lua, &lua.globals())?;
     install_modules(lua, host.modules.clone(), &lua.globals())?;
-    install_modulation(lua, &host, now.clone(), valid_voice)?;
+    install_modulation(lua, &host, now.clone(), valid_voice, layer_scope)?;
     install_resources(lua, &host, now, resources, &lua.globals())?;
     install_ui(lua, &lua.globals())?;
     Ok(host)
@@ -979,6 +984,7 @@ fn install_modulation(
     host: &Host,
     now: Rc<dyn Fn() -> u64>,
     valid_voice: Option<Rc<dyn Fn(u32) -> bool>>,
+    layer_scope: Option<Rc<dyn Fn() -> Option<NodeId>>>,
 ) -> mlua::Result<()> {
     for (name, explicit_start) in [
         ("sendScriptModulation", false),
@@ -987,6 +993,7 @@ fn install_modulation(
         let commands = host.commands.clone();
         let clock = now.clone();
         let valid_voice = valid_voice.clone();
+        let layer_scope = layer_scope.clone();
         lua.globals().set(
             name,
             lua.create_function(move |_, mut args: MultiValue| {
@@ -1043,6 +1050,7 @@ fn install_modulation(
                         target,
                         ramp_ms,
                         voice,
+                        layer: layer_scope.as_ref().and_then(|scope| scope()),
                     },
                 )
             })?,
@@ -1073,8 +1081,7 @@ fn task(lua: &Lua, ids: &Cell<u32>, error: Option<&mlua::Error>) -> mlua::Result
     let id = ids
         .get()
         .checked_add(1)
-        .filter(|id| *id <= LIMIT as u32)
-        .ok_or_else(|| mlua::Error::runtime("UVI resource task limit exceeded"))?;
+        .ok_or_else(|| mlua::Error::runtime("UVI resource task ID space exhausted"))?;
     ids.set(id);
     let task = lua.create_table()?;
     task.set("id", id)?;
@@ -1691,6 +1698,17 @@ UVI_UI_STATE={widgets=widgets,order=order,root=root}
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn completed_resource_tasks_do_not_exhaust_after_65536() {
+        let lua = mlua::Lua::new();
+        let ids = std::cell::Cell::new(65536);
+        let result = super::task(&lua, &ids, None).unwrap();
+        assert_eq!(result.get::<u32>("id").unwrap(), 65537);
+        ids.set(u32::MAX);
+        assert!(super::task(&lua, &ids, None).is_err());
+        assert_eq!(ids.get(), u32::MAX);
+    }
+
     use super::super::program::parse_program;
     use super::*;
     use mlua::{LuaOptions, StdLib};
@@ -1730,6 +1748,7 @@ mod tests {
                 now: Rc::new(|| 0),
                 resources: None,
                 valid_voice: None,
+                layer_scope: None,
             },
         )
         .unwrap();
@@ -1798,6 +1817,7 @@ mod tests {
                 now: Rc::new(move || now.get()),
                 resources: None,
                 valid_voice: Some(Rc::new(|id| id == 1)),
+                layer_scope: None,
             },
         )
         .unwrap();
@@ -1897,6 +1917,7 @@ mod tests {
                 now: Rc::new(|| 31),
                 resources: None,
                 valid_voice: None,
+                layer_scope: None,
             },
         )
         .unwrap();
@@ -1929,6 +1950,7 @@ mod tests {
                 now: Rc::new(|| 0),
                 resources: None,
                 valid_voice: None,
+                layer_scope: None,
             },
         )
         .unwrap();
@@ -1959,6 +1981,7 @@ mod tests {
                 modules: BTreeMap::new(),
                 now: Rc::new(|| 42),
                 valid_voice: None,
+                layer_scope: None,
                 resources: Some(Rc::new(move |request| {
                     recorded.borrow_mut().push(request.clone());
                     Ok(match request {
@@ -2031,11 +2054,12 @@ mod tests {
             assert(not pcall(function()loadState('owned.state')end))
         "#).exec().unwrap();
         assert_eq!(host.commands.borrow().len(), 2);
-        assert!(host
-            .commands
-            .borrow()
-            .iter()
-            .all(|command| command.frame == 42));
+        assert!(
+            host.commands
+                .borrow()
+                .iter()
+                .all(|command| command.frame == 42)
+        );
         assert_eq!(requests.borrow().len(), 10);
         let text = String::from_utf8(saved.borrow().clone()).unwrap();
         assert!(text.contains("<UVI4><ScriptProcessor") && text.contains("<ScriptData t="));
@@ -2052,6 +2076,7 @@ mod tests {
                 now: Rc::new(|| 0),
                 resources: None,
                 valid_voice: None,
+                layer_scope: None,
             },
         )
         .unwrap();
@@ -2084,6 +2109,7 @@ mod tests {
                 now: Rc::new(|| 0),
                 resources: None,
                 valid_voice: None,
+                layer_scope: None,
             },
         )
         .unwrap();
@@ -2132,6 +2158,7 @@ mod tests {
                 now: Rc::new(|| 23),
                 resources: None,
                 valid_voice: None,
+                layer_scope: None,
             },
         )
         .unwrap();
@@ -2154,17 +2181,20 @@ mod tests {
         // Exhaustion of the configured Lua heap remains a recoverable Lua error.
         let small = vm();
         small.set_memory_limit(128 << 10).unwrap();
-        assert!(install(
-            &small,
-            HostConfig {
-                program: Some(&program),
-                modules: BTreeMap::new(),
-                now: Rc::new(|| 0),
-                resources: None,
-                valid_voice: None,
-            }
-        )
-        .is_err());
+        assert!(
+            install(
+                &small,
+                HostConfig {
+                    program: Some(&program),
+                    modules: BTreeMap::new(),
+                    now: Rc::new(|| 0),
+                    resources: None,
+                    valid_voice: None,
+                    layer_scope: None,
+                }
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -2191,6 +2221,7 @@ mod tests {
                 )]),
                 now: Rc::new(|| 11),
                 valid_voice: None,
+                layer_scope: None,
                 resources: Some(Rc::new(move |request| {
                     Ok(match request {
                         ResourceRequest::WriteState { path, bytes } => {
@@ -2265,13 +2296,15 @@ mod tests {
         assert!(lua.globals().get::<Value>("onSave").unwrap().is_nil());
         assert_eq!(storage.borrow().len(), 2);
         assert!(restore_widgets(&lua, &program).is_err());
-        assert!(host
-            .script_environment(&lua, &program, program.root)
-            .is_err());
-        assert!(host
-            .commands
-            .borrow()
-            .iter()
-            .all(|command| command.frame == 11));
+        assert!(
+            host.script_environment(&lua, &program, program.root)
+                .is_err()
+        );
+        assert!(
+            host.commands
+                .borrow()
+                .iter()
+                .all(|command| command.frame == 11)
+        );
     }
 }

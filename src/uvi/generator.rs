@@ -15,7 +15,7 @@ use std::{
     sync::Arc,
 };
 
-pub const FIDELITY_DIAGNOSTIC: &str = "Analog sine/PWM, Analog/Wavetable deterministic unison phase/detune/gain/stereo laws, filename-based wavetable slice morphing, wavetable phase-distortion modes 0/3 and tracked sine-FM ratio modes 0/1/2 were measured against authored native fixtures; polynomial anti-aliasing, hard-sync edge treatment, random phase/noise sequences and linear wavetable readout are original laws, with numerical parity unverified";
+pub const FIDELITY_DIAGNOSTIC: &str = "Analog sine/PWM, Analog/Wavetable deterministic unison phase/detune/gain/stereo laws, filename/channel-based wavetable slice morphing and unison index spread, wavetable phase-distortion modes 0/3 and tracked sine-FM ratio modes 0/1/2 were measured against authored native fixtures; polynomial anti-aliasing, hard-sync edge treatment, random phase/noise sequences and linear wavetable readout are original laws, with numerical parity unverified";
 
 pub fn supports(kind: &str) -> bool {
     matches!(kind, "MinBlepGenerator" | "WaveTableOscillator")
@@ -128,8 +128,8 @@ pub fn validate(node: &ProgramNode) -> Result<()> {
             table_fm(&n)?;
         }
         ensure!(
-            n("WaveIndexSpread", 0.)? == 0.,
-            "Wavetable unison index spread is not implemented"
+            (0. ..=1.).contains(&n("WaveIndexSpread", 0.)?),
+            "Invalid wavetable unison index spread"
         );
     }
     Ok(())
@@ -175,12 +175,13 @@ impl Generator {
         } else {
             let table = table.context("Missing resolved external wavetable")?;
             ensure!(
-                table.channels == 1
+                (1..=256).contains(&table.channels)
                     && table.frames >= 4
                     && table.frames <= 1 << 20
-                    && table.interleaved.len() == table.frames
+                    && table.interleaved.len() == table.frames * table.channels
+                    && table.interleaved.len() <= 1 << 20
                     && table.interleaved.iter().all(|n| n.is_finite()),
-                "Only bounded mono external wavetables are implemented"
+                "Only bounded mono or channel-sliced external wavetables are implemented"
             );
             let filename_cycle = node
                 .attributes
@@ -200,6 +201,10 @@ impl Generator {
             ensure!(
                 cycle >= 4 && cycle <= table.frames && table.frames % cycle == 0,
                 "Invalid external wavetable cycle geometry"
+            );
+            ensure!(
+                table.channels == 1 || filename_cycle.is_none(),
+                "Combining channel slices with filename cycle hints is unverified"
             );
             // Native external import recognizes a numeric filename suffix.
             // Retained RIFF clm metadata did not change authored native import;
@@ -339,8 +344,8 @@ impl Generator {
                     };
                     let phase = table_phase(phase, mode, amount)?;
                     ensure!(
-                        numeric("WaveIndexSpread", 0.)? == 0.,
-                        "Wavetable unison index spread is not implemented"
+                        (0. ..=1.).contains(&numeric("WaveIndexSpread", 0.)?),
+                        "Invalid wavetable unison index spread"
                     );
                     let index = numeric("WaveIndex", 0.)?;
                     let fade = numeric("FadeWaveIndex", 1.)?;
@@ -348,24 +353,42 @@ impl Generator {
                         (0. ..=1.).contains(&index) && [0., 1.].contains(&fade),
                         "Invalid wavetable wave index"
                     );
-                    let index = index * (table.frames / cycle - 1) as f64;
+                    // Native table spread moves successive oscillators toward
+                    // higher indices and clamps there, unlike centered detune.
+                    let index = (index
+                        + numeric("WaveIndexSpread", 0.)? * oscillator as f64
+                            / self.oscillators as f64)
+                        .min(1.);
+                    let slices = if table.channels == 1 {
+                        table.frames / cycle
+                    } else {
+                        table.channels
+                    };
+                    let index = index * (slices - 1) as f64;
                     let low = if fade == 0. {
                         index.round() as usize
                     } else {
                         index as usize
                     };
-                    let high = (low + 1).min(table.frames / cycle - 1);
+                    let high = (low + 1).min(slices - 1);
                     let read = |slice: usize| {
                         let at = phase * *cycle as f64;
                         let lo = at as usize % cycle;
                         let hi = (lo + 1) % cycle;
+                        let address = |frame| {
+                            if table.channels == 1 {
+                                slice * cycle + frame
+                            } else {
+                                frame * table.channels + slice
+                            }
+                        };
                         let a = table
                             .interleaved
-                            .value(slice * cycle + lo)
+                            .value(address(lo))
                             .expect("validated wavetable bounds");
                         let b = table
                             .interleaved
-                            .value(slice * cycle + hi)
+                            .value(address(hi))
                             .expect("validated wavetable bounds");
                         f64::from(a) + f64::from(b - a) * at.fract()
                     };
@@ -1190,6 +1213,104 @@ mod tests {
             assert_ne!(a.phase, c.phase);
             assert_ne!(a.phase[0], a.phase[1]);
             assert!(a.phase.iter().all(|p| (0. ..1.).contains(p)));
+        }
+    }
+    #[test]
+    fn authored_native_table_channels_and_index_spread() {
+        let p = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><WaveTableOscillator WavetablePath="authored.wav"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let node = p
+            .nodes
+            .iter()
+            .find(|n| n.kind == "WaveTableOscillator")
+            .unwrap();
+        // Independently authored 2/3/4/65-channel PCM16 WAVs at8000Hz establish
+        // that channel data are waves, rather than simultaneous output buses.
+        for channels in [2, 3, 4, 65] {
+            let table = Arc::new(Sample {
+                rate: 8000,
+                channels,
+                frames: 2048,
+                interleaved: super::super::storage::Storage::from_f32(
+                    (0..2048 * channels)
+                        .map(|i| {
+                            (4096. + 8192. * (i % channels) as f64 / (channels - 1) as f64).round()
+                                as f32
+                                / 32768.
+                        })
+                        .collect(),
+                )
+                .unwrap(),
+                loops: Vec::new(),
+                unity_note: None,
+                riff_metadata: Vec::new(),
+                wavetable_cycle_frames: None,
+            });
+            let mut g = Generator::new(node, 48000., Some(table)).unwrap();
+            for (index, native) in [(0., 0.0625), (0.5, 0.125), (1., 0.1875)] {
+                let actual = g
+                    .next(
+                        |name, default| {
+                            if name == "WaveIndex" {
+                                Ok(index)
+                            } else {
+                                number(node, name, default)
+                            }
+                        },
+                        261.6255653005986,
+                    )
+                    .unwrap()[0]
+                    * 0.5;
+                assert!((actual - native).abs() < 1e-7);
+            }
+            assert_eq!(g.channels(), 1);
+        }
+        let table = Arc::new(Sample {
+            rate: 44100,
+            channels: 1,
+            frames: 4096,
+            interleaved: super::super::storage::Storage::from_f32(
+                [vec![0.125; 2048], vec![0.375; 2048]].concat(),
+            )
+            .unwrap(),
+            loops: Vec::new(),
+            unity_note: None,
+            riff_metadata: Vec::new(),
+            wavetable_cycle_frames: None,
+        });
+        // Native L/R observations distinguish positive i/N index spread from
+        // centered detune positions and establish clamping at the top wave.
+        for (count, index, spread, native) in [
+            (2., 0.5, 0.0, [0.176776692, 0.176776692]),
+            (2., 0.5, 0.25, [0.176776692, 0.198873773]),
+            (2., 0.5, 0.5, [0.176776692, 0.220970869]),
+            (2., 0.5, 1.0, [0.176776692, 0.265165031]),
+            (2., 0.0, 0.5, [0.088388346, 0.132582515]),
+            (2., 0.2, 0.5, [0.123743691, 0.167937845]),
+            (2., 0.8, 0.5, [0.229809716, 0.265165031]),
+            (2., 1.0, 0.5, [0.265165031, 0.265165031]),
+            (3., 0.2, 0.6, [0.180421963, 0.209289476]),
+            (4., 0.2, 0.6, [0.215245888, 0.247254133]),
+            (8., 0.0, 1.0, [0.314807981, 0.348104656]),
+        ] {
+            let xml = format!(
+                r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><WaveTableOscillator WavetablePath="authored_2048.wav" NumOscs="{count}" WaveIndex="{index}" WaveIndexSpread="{spread}" PhaseSpread="0" Stereo="1" StereoSpread="1" StereoSpreadMode="0"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#
+            );
+            let p = parse_program(&xml).unwrap();
+            let node = p
+                .nodes
+                .iter()
+                .find(|n| n.kind == "WaveTableOscillator")
+                .unwrap();
+            let mut g = Generator::new(node, 48000., Some(table.clone())).unwrap();
+            let actual = g
+                .next(
+                    |name, default| number(node, name, default),
+                    261.6255653005986,
+                )
+                .unwrap();
+            for channel in 0..2 {
+                assert!((actual[channel] - native[channel]).abs() < 1e-7);
+            }
         }
     }
 }
