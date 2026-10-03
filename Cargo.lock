@@ -87,9 +87,9 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "alsa"
-version = "0.10.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c88dbbce13b232b26250e1e2e6ac18b6a891a646b8148285036ebce260ac5c3"
+checksum = "ed7572b7ba83a31e20d1b48970ee402d2e3e0537dcfe0a3ff4d6eb7508617d43"
 dependencies = [
  "alsa-sys",
  "bitflags 2.13.2",
@@ -99,9 +99,9 @@ dependencies = [
 
 [[package]]
 name = "alsa"
-version = "0.9.1"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed7572b7ba83a31e20d1b48970ee402d2e3e0537dcfe0a3ff4d6eb7508617d43"
+checksum = "7c88dbbce13b232b26250e1e2e6ac18b6a891a646b8148285036ebce260ac5c3"
 dependencies = [
  "alsa-sys",
  "bitflags 2.13.2",
@@ -409,18 +409,18 @@ dependencies = [
 
 [[package]]
 name = "bit-set"
-version = "0.10.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09ec2f926cc3060f09db9ebc5b52823d85268d24bb917e472c0c4bea35780a7d"
+checksum = "34ddef2995421ab6a5c779542c81ee77c115206f4ad9d5a8e05f4ff49716a3dd"
 dependencies = [
  "bit-vec",
 ]
 
 [[package]]
 name = "bit-set"
-version = "0.9.1"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34ddef2995421ab6a5c779542c81ee77c115206f4ad9d5a8e05f4ff49716a3dd"
+checksum = "09ec2f926cc3060f09db9ebc5b52823d85268d24bb917e472c0c4bea35780a7d"
 dependencies = [
  "bit-vec",
 ]
@@ -624,7 +624,7 @@ version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
- "unicode-width 0.2.2",
+ "unicode-width",
 ]
 
 [[package]]
@@ -1348,7 +1348,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.21",
- "windows 0.62.2",
+ "windows 0.56.0",
 ]
 
 [[package]]
@@ -1969,7 +1969,7 @@ dependencies = [
 [[package]]
 name = "moose-baseview"
 version = "0.3.4-moose.1"
-source = "git+https://github.com/Matari-Audio/moose#bffa4677d0b82119d38566ce7e932dc5c463d497"
+source = "git+https://github.com/Matari-Audio/moose?rev=bffa4677d0b82119d38566ce7e932dc5c463d497#bffa4677d0b82119d38566ce7e932dc5c463d497"
 dependencies = [
  "block2",
  "bytemuck",
@@ -1996,7 +1996,7 @@ dependencies = [
 [[package]]
 name = "moose-baseview"
 version = "0.3.4-moose.1"
-source = "git+https://github.com/Matari-Audio/moose?rev=bffa4677d0b82119d38566ce7e932dc5c463d497#bffa4677d0b82119d38566ce7e932dc5c463d497"
+source = "git+https://github.com/Matari-Audio/moose#bffa4677d0b82119d38566ce7e932dc5c463d497"
 dependencies = [
  "block2",
  "bytemuck",
@@ -3174,7 +3174,7 @@ dependencies = [
  "paste",
  "strum",
  "unicode-segmentation",
- "unicode-width 0.1.14",
+ "unicode-width",
 ]
 
 [[package]]
@@ -3670,6 +3670,9 @@ name = "strict-num"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6637bab7722d379c8b41ba849228d680cc12d0a45ba1fa2b48f2a30577a06731"
+dependencies = [
+ "float-cmp",
+]
 
 [[package]]
 name = "strum"
@@ -4050,7 +4053,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f01f9172fb8f4f925fb1e259c2f411be14af031ab8b35d517fd05cb78c0784d5"
 dependencies = [
  "ratatui",
- "unicode-width 0.1.14",
+ "unicode-width",
 ]
 
 [[package]]
@@ -4111,12 +4114,6 @@ name = "unicode-width"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7dd6e30e90baa6f72411720665d41d89b9a3d039dc45b8faea1ddd07f617f6af"
-
-[[package]]
-name = "unicode-width"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 
 [[package]]
 name = "untrusted"
