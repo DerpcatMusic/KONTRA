@@ -5147,7 +5147,7 @@ end on"#;
                     assert(e.frame.x==35 and e.frame.y==18)
                     assert(e.modifiers.alt and e.modifiers.shift and e.modifiers.control)
                 end
-                log=log..owner..string.sub(phase,1,1)
+                log=log..owner..(phase=='exit' and 'x' or string.sub(phase,1,1))
                 count:set_value(count:value()+1)
             end
             local function make(owner,color)
