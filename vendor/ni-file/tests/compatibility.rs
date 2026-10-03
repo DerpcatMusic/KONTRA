@@ -211,6 +211,48 @@ fn filename_table_records_preserve_native_metadata_and_edit_paths() {
     assert!(FNTableRecord::try_from(&ni_file::kontakt::Chunk { id: 0x3d, data: chunk.data }).is_err());
 }
 #[test]
+fn filename_calendar_view_keeps_paths_and_unrepresentable_raw_dates() {
+    use ni_file::kontakt::{Chunk, objects::{FNTableImpl, FNTableRecord, FileNameListPreK51}};
+    for raw_timestamp in [0u64, u64::MAX, i64::MAX as u64, i64::MIN as u64] {
+        for id in [0x3d, 0x4b] {
+            let mut data = Vec::new();
+            if id == 0x4b { data.extend(2u16.to_le_bytes()); }
+            data.extend(0u32.to_le_bytes()); // special files
+            data.extend(1u32.to_le_bytes()); // samples
+            data.extend(1i32.to_le_bytes()); // one literal filename segment
+            data.push(4);
+            let name: Vec<_> = "sample.wav".encode_utf16().collect();
+            data.extend((name.len() as u32).to_le_bytes());
+            for unit in name { data.extend(unit.to_le_bytes()); }
+            let timestamp_offset = data.len();
+            data.extend(raw_timestamp.to_le_bytes());
+            if id == 0x4b { data.extend(0x12345678u32.to_le_bytes()); }
+            data.extend(0u32.to_le_bytes()); // other files
+            let chunk = Chunk { id, data };
+            let (paths, dates) = if id == 0x4b {
+                let raw = FNTableRecord::try_from(&chunk).unwrap();
+                assert_eq!(raw.samples[0].timestamp, raw_timestamp);
+                assert_eq!(raw.to_chunk().unwrap().data, chunk.data);
+                let table = FNTableImpl::try_from(&chunk).unwrap();
+                (table.sample_filetable, table.sample_timestamp_table)
+            } else {
+                let table = FileNameListPreK51::try_from(&chunk).unwrap();
+                (table.sample_filetable, table.sample_timestamp_table)
+            };
+            assert_eq!(paths[&0], "sample.wav");
+            assert_eq!(dates.contains_key(&0), matches!(raw_timestamp, 0 | u64::MAX));
+            let mut encoded = Vec::new(); chunk.write(&mut encoded).unwrap();
+            assert_eq!(Chunk::read(Cursor::new(encoded)).unwrap().data, chunk.data);
+            for end in timestamp_offset..chunk.data.len() {
+                let truncated = Chunk { id, data: chunk.data[..end].to_vec() };
+                if id == 0x4b { assert!(FNTableImpl::try_from(&truncated).is_err()); }
+                else { assert!(FileNameListPreK51::try_from(&truncated).is_err()); }
+            }
+        }
+    }
+}
+
+#[test]
 fn zone_list_keeps_group_id() {
     let mut bytes = 1u32.to_le_bytes().to_vec();
     bytes.extend(17u32.to_le_bytes());
