@@ -66,6 +66,7 @@ const DEFAULT_POLYPHONY: usize = 512;
 pub struct GroupSettings {
     /// Amplitude envelope; `None` uses the engine's attack/release defaults.
     pub envelope: Option<Ahdsr>,
+    pub native_volume_env: bool,
     /// Flex amplitude envelope, multiplied with `envelope`.
     pub flex: Option<Flex>,
     /// Linear group volume.
@@ -98,7 +99,15 @@ impl From<&Group> for GroupSettings {
     /// assignments: none stored means velocity and bend do nothing.
     fn from(group: &Group) -> Self {
         Self {
-            envelope: group.volume_env.as_ref().map(Ahdsr::from),
+            envelope: group.volume_env.as_ref().map(|e| { let mut p = Ahdsr::from(e);
+                if group.native_volume_env {
+                    // Native physical setter multiplies milliseconds by the
+                    // f32 .001 before truncating at sourceRate, not division.
+                    p.attack = e.attack_ms * 0.001; p.hold = e.hold_ms * 0.001;
+                    p.decay = e.decay_ms * 0.001; p.release = e.release_ms * 0.001;
+                    p.ahd_only = e.unknown_flag != 0;
+                } p }),
+            native_volume_env: group.native_volume_env,
             flex: group.flex_env.as_ref().map(Flex::from),
             gain: group.gain,
             pan: group.pan,
@@ -125,7 +134,7 @@ impl From<&crate::import::Ahdsr> for Ahdsr {
             decay: env.decay_ms / 1000.0,
             sustain: env.sustain.clamp(0.0, 1.0),
             release: env.release_ms / 1000.0,
-            // Native mode/flag bytes have no verified AHD mapping.
+            // AHD is selected separately only for the admitted primary source.
             ahd_only: false,
         }
     }

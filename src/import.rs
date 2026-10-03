@@ -122,12 +122,15 @@ pub struct Group {
     /// Saved sine-only internal volume destinations; appended for legacy cache compatibility.
     #[serde(default)]
     pub volume_lfos: Vec<VolumeLfo>,
+    /// Proven untransformed v11 primary AHDSR and admitted source geometry.
+    #[serde(default)]
+    pub native_volume_env: bool,
 }
 
 impl Default for Group {
     fn default() -> Self {
         Self { name: String::new(), start_criteria: Default::default(), gain: 1.0, pan: 0.0, tune: 1.0, key_tracking: true, reverse: false, source_mode: Some(0),
-            release_trigger: false, release_counter_ms: 0, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), pitch_lfos: Vec::new(), fx: Default::default(), amp_split_slot: None, voice_group: None, interp_quality: 0, release_trigger_note_monophonic: false, wavetable: None, volume_lfos: Vec::new() }
+            release_trigger: false, release_counter_ms: 0, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), pitch_lfos: Vec::new(), fx: Default::default(), amp_split_slot: None, voice_group: None, interp_quality: 0, release_trigger_note_monophonic: false, wavetable: None, volume_lfos: Vec::new(), native_volume_env: false }
     }
 }
 
@@ -407,6 +410,7 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
         warnings.extend(crate::engine::filter::unsupported_at(&fx, instrument.groups[id].amp_split_slot));
         let group = &mut instrument.groups[id];
         group.volume_env = modulation.volume_env;
+        group.native_volume_env = modulation.native_volume_env;
         group.flex_env = modulation.flex_env;
         group.mods = modulation.mods;
         group.modulators = modulation.modulators;
@@ -793,6 +797,7 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
             channel: v.midi_channel,
             soloed: v.soloed,
             volume_env: modulation.volume_env,
+            native_volume_env: modulation.native_volume_env,
             flex_env: modulation.flex_env,
             mods: modulation.mods,
             modulators: modulation.modulators,

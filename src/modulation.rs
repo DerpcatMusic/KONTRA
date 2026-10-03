@@ -148,6 +148,7 @@ pub struct VolumeLfo {
 #[derive(Debug, Default)]
 pub(crate) struct GroupModulation {
     pub volume_env: Option<Ahdsr>,
+    pub native_volume_env: bool,
     pub flex_env: Option<FlexEnvelope>,
     pub mods: Vec<ModAssignment>,
     pub modulators: Vec<Modulator>,
@@ -194,14 +195,16 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                 }
             };
             match &params.modulator {
-                RawModulator::Ahdsr(env) if env.unknown_flag != 0 => out.warnings.push(
-                    "AHDSR mode switches are not decoded; AHD-only/retrigger behavior may differ".into()),
                 RawModulator::Flex(_) => out.warnings.push(
                     "Flex one-shot/loop switches are not decoded; playback uses sustain and key-release behavior".into()),
                 _ => {}
             }
             // The first volume envelope of each kind; the voice multiplies them.
             let volume = params.targets.iter().any(|t| t.param == "volume");
+            if let RawModulator::Ahdsr(env) = &params.modulator
+                && env.unknown_flag != 0 && (!volume || out.volume_env.is_some()) {
+                out.warnings.push("AHDSR mode switches outside the admitted primary volume source are not applied".into());
+            }
             let flex = matches!(params.modulator, RawModulator::Flex(_));
             let kind = match params.modulator {
                 RawModulator::Ahdsr(_) => "ahdsr".to_owned(),
@@ -213,6 +216,30 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                 .then_some(out.envelopes.len());
             let volume_env = match params.modulator {
                 RawModulator::Ahdsr(env) if volume && out.volume_env.is_none() => {
+                    // Typed 0x3f/v11 scalar law and source clock are proven for
+                    // this exact untransformed primary geometry. Packed note-
+                    // value records remain opaque; only their saved defaults
+                    // are admitted, never inferred as synchronized timing.
+                    let native_wrapper = modulator.0.private_data.ends_with(&2u32.to_le_bytes())
+                        && modulator.0.find_first(7)
+                            .and_then(|c| ni_file::kontakt::StructuredObject::try_from(c).ok())
+                            .is_some_and(|w| w.version == 0x90 && w.private_data.is_empty()
+                                && w.public_data == [0; 4] && w.children.len() == 1
+                                && w.children[0].id == 0x3f);
+                    let default_time = env.unknown_tail.len() == 52
+                        && env.unknown_tail.chunks_exact(13).all(|r|
+                            r == [0, 0, 128, 191, 0, 0, 0, 0, 0, 0, 128, 63, 0]);
+                    out.native_volume_env = native_wrapper && params.targets.len() == 1 && params.targets.iter().all(|t|
+                        t.param == "volume" && t.slot.is_none() && t.intensity == 1.
+                        && t.unknown_i16 == -1 && t.unknown_flags == 0x10 && !t.invert && t.lag_ms == 0
+                        && !t.shaper.as_ref().is_some_and(|s| s.enabled))
+                        && params.unknown_flags[0] <= 1 && params.unknown_flags[1..] == [0, 1, 0]
+                        && env.unknown_flag <= 1 && default_time;
+                    if !out.native_volume_env {
+                        out.warnings.push(format!("Primary AHDSR slot {slot}: native source kernel not applied; requires the admitted v90-kind0 wrapper/category2 and v11 source flag geometry, one unity uninverted volume target, zero lag, known flags, no enabled shaper and default opaque timing records"));
+                    } else {
+                        out.warnings.push(format!("Primary AHDSR slot {slot}: native finite-stage kernel and 32-frame amplitude interpolation admitted; held-voice retargeting and source bypass remain unsupported"));
+                    }
                     out.volume_env = Some(env);
                     volume_env_slot = Some(slot);
                     true
@@ -856,5 +883,75 @@ mod tests {
         assert_eq!(m.shape(0.25), 0.25);
         m.shaper = Some(ShaperCurve::Table(vec![1.0, 0.0]));
         assert_eq!(m.shape(0.25), 0.75);
+    }
+
+    #[test]
+    fn primary_ahdsr_admission_preserves_raw_metadata_and_rejects_unproven_transforms() {
+        use ni_file::kontakt::{Chunk, StructuredObject};
+        fn name(out: &mut Vec<u8>, text: &str) { out.extend((text.len() as u32).to_le_bytes()); out.extend(text.as_bytes()); }
+        fn object(id: u16, version: u16, private: &[u8], public: &[u8], children: &[u8]) -> Chunk {
+            let mut data = vec![1]; data.extend(version.to_le_bytes());
+            for part in [private, public, children] { data.extend((part.len() as u32).to_le_bytes()); data.extend(part); }
+            Chunk { id, data }
+        }
+        let raw = |depth: f32, flags: u8, lag: u16, invert: u8, source: [u8;4], ahd: u8, opaque: bool, shaper: bool, wrapper: (u16,u32,u32,bool)| {
+            let mut tail = [0, 0, 128, 191, 0, 0, 0, 0, 0, 0, 128, 63, 0].repeat(4);
+            if opaque { tail[0] = 1; }
+            let envelope = Ahdsr { attack_curve: 1., attack_ms: 125.012924, decay_ms: 0., hold_ms: 0.,
+                release_ms: 25000.043, sustain: 1., unknown_flag: ahd, unknown_tail: tail };
+            let mut concrete = Vec::new(); envelope.write(&mut concrete).unwrap();
+            let mut wrapped = Vec::new(); object(7, wrapper.0, if wrapper.3 { &[99] } else { &[] }, &wrapper.1.to_le_bytes(), &concrete).write(&mut wrapped).unwrap();
+            let mut private = 1u32.to_le_bytes().to_vec(); name(&mut private, "volume"); private.extend(depth.to_le_bytes());
+            private.extend((-1i16).to_le_bytes()); private.push(flags); private.extend(lag.to_le_bytes());
+            name(&mut private, "ENV_AHDSR_VOLUME"); private.push(invert);
+            private.push(u8::from(shaper));
+            if shaper { private.push(1); for _ in 0..128 { private.extend(0f32.to_le_bytes()); } }
+            private.extend(source); private.extend(0u32.to_le_bytes()); name(&mut private, "ENV_AHDSR_VOLUME"); private.extend(wrapper.2.to_le_bytes());
+            let internal = object(0x0d, 0x80, &private, &[], if wrapper.2 == 1 { &concrete } else { &wrapped });
+            let mut slots = vec![1]; internal.write(&mut slots).unwrap(); slots.extend([0; 15]);
+            RawGroup(StructuredObject { version: 0x95, public_data: vec![], private_data: vec![],
+                children: vec![object(INTERNAL_MODS_ID, 0x10, &[], &slots, &[])] })
+        };
+        let known_wrapper = (0x90,0,2,false);
+        for ahd in [0, 1] {
+            let decoded = read_group(&raw(1., 0x10, 0, 0, [0,0,1,0], ahd, false, false, known_wrapper)).unwrap();
+            assert!(decoded.native_volume_env);
+            let group = crate::import::Group { native_volume_env: true, volume_env: decoded.volume_env, ..Default::default() };
+            let saved = group.volume_env.as_ref().unwrap();
+            let mut chunk = saved.to_chunk().unwrap();
+            assert_eq!(&Ahdsr::try_from(&chunk).unwrap(), saved, "binary scalar/opaque fields remain lossless");
+            chunk.data[1] = 0x12;
+            assert!(Ahdsr::try_from(&chunk).is_err(), "unproved AHDSR versions cannot reach admission");
+            let json = serde_json::to_value(&group).unwrap();
+            let restored: crate::import::Group = serde_json::from_value(json.clone()).unwrap();
+            assert_eq!(restored.volume_env, group.volume_env, "cache retains raw AHD/timing metadata");
+            assert!(restored.native_volume_env);
+            let mut legacy = json; legacy.as_object_mut().unwrap().remove("native_volume_env");
+            let legacy_env = legacy["volume_env"].as_object_mut().unwrap();
+            legacy_env.remove("unknown_flag"); legacy_env.remove("unknown_tail");
+            let legacy: crate::import::Group = serde_json::from_value(legacy).unwrap();
+            assert!(!legacy.native_volume_env);
+            assert!(legacy.volume_env.unwrap().unknown_tail.is_empty(), "older caches remain readable without inventing raw timing metadata");
+        }
+        assert!(read_group(&raw(1.,0x10,0,0,[1,0,1,0],0,false,false,known_wrapper)).unwrap().native_volume_env,
+            "router-open UI state does not change the source law");
+        for wrapper in [(0x91,0,2,false),(0x90,1,2,false),(0x90,0,1,false),(0x90,0,2,true)] {
+            let decoded = read_group(&raw(1.,0x10,0,0,[0,0,1,0],0,false,false,wrapper)).unwrap();
+            assert!(!decoded.native_volume_env, "unproved wrapper/category geometry stays outside the native source");
+            assert!(decoded.volume_env.is_some());
+            assert!(decoded.warnings.iter().any(|w| w.contains("native source kernel not applied")));
+        }
+        for (depth, flags, lag, invert, source, ahd, opaque, shaper) in [
+            (0.5,0x10,0,0,[0,0,1,0],0,false,false), (1.,0x12,0,0,[0,0,1,0],0,false,false),
+            (1.,0x10,15,0,[0,0,1,0],0,false,false), (1.,0x10,0,1,[0,0,1,0],0,false,false),
+            (1.,0x10,0,0,[0,1,1,0],0,false,false), (1.,0x10,0,0,[0,0,0,0],0,false,false),
+            (1.,0x10,0,0,[0,0,1,1],0,false,false), (1.,0x10,0,0,[2,0,1,0],0,false,false), (1.,0x10,0,0,[0,0,1,0],2,false,false),
+            (1.,0x10,0,0,[0,0,1,0],0,true,false), (1.,0x10,0,0,[0,0,1,0],0,false,true),
+        ] {
+            let decoded = read_group(&raw(depth, flags, lag, invert, source, ahd, opaque, shaper, known_wrapper)).unwrap();
+            assert!(!decoded.native_volume_env);
+            assert!(decoded.warnings.iter().any(|w| w.contains("native source kernel not applied")));
+            assert!(decoded.volume_env.is_some(), "unadmitted metadata is retained for fallback and diagnostics");
+        }
     }
 }
