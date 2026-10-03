@@ -82,6 +82,25 @@ struct Hover {
     inside: bool,
     last: Option<HoverInput>,
 }
+#[derive(Clone, Default)]
+struct PointerCallbacks {
+    tap: [Option<Function>; 3], // start, double, complete
+    drag: [Option<Function>; 3], // start, update, complete
+    threshold: f64,
+}
+struct PointerCapture {
+    callbacks: PointerCallbacks,
+    origin: moose::mui::mui::prelude::Point,
+    last: HoverInput,
+    delivered: moose::mui::mui::prelude::Point,
+    dragging: bool,
+}
+struct PointerGesture {
+    callbacks: PointerCallbacks,
+    present: bool,
+    enabled: bool,
+    capture: Option<PointerCapture>,
+}
 struct Binding {
     kind: Box<str>,
     slot: usize,
@@ -109,7 +128,7 @@ pub(crate) struct Scene {
     instructions: Arc<AtomicUsize>,
     revision: Arc<AtomicU64>,
     output_meters: Arc<crate::fx::OutputMeters>,
-    gestures: Vec<Option<Function>>,
+    gestures: Vec<Option<PointerGesture>>,
     hovers: Vec<Option<Hover>>,
     identities: BTreeMap<String, usize>,
     pub(crate) assets: Arc<crate::native_assets::Assets>,
@@ -637,7 +656,7 @@ impl Scene {
     }
     fn snapshot_raw(&mut self) -> Result<Node> {
         self.instructions.store(0, Ordering::Relaxed);
-        self.gestures.clear();
+        for gesture in self.gestures.iter_mut().flatten() { gesture.present = false; }
         for hover in self.hovers.iter_mut().flatten() {
             hover.present = false;
         }
@@ -874,18 +893,20 @@ impl Scene {
             );
         }
         let tap: Option<Table> = modifiers.get("on_tap_gesture")?;
-        let gesture = if let Some(t) = tap {
-            Some(t.get::<Function>("start")?)
-        } else {
-            None
-        };
-        // Construction IDs remain stable across snapshots; gestures use a sparse table.
-        if self.gestures.len() <= id {
-            self.gestures.resize_with(id + 1, || None);
-        }
-        let has_tap = gesture.is_some() && !hidden && !disabled;
-        if let Some(g) = gesture.filter(|_| !hidden && !disabled) {
-            self.gestures[id] = Some(g);
+        let drag: Option<Table> = modifiers.get("on_drag_gesture")?;
+        let has_tap = (tap.is_some() || drag.is_some()) && !hidden && !disabled;
+        if tap.is_some() || drag.is_some() {
+            let callbacks = PointerCallbacks {
+                tap: if let Some(t) = tap { [t.get("start")?, t.get("double")?, t.get("complete")?] } else { [None,None,None] },
+                drag: if let Some(t) = &drag { [t.get("start")?, t.get("update")?, t.get("complete")?] } else { [None,None,None] },
+                threshold: drag.map(|t|t.get::<Option<f64>>("threshold")).transpose()?.flatten().unwrap_or(1.),
+            };
+            ensure!(callbacks.threshold.is_finite() && (0. ..=4096.).contains(&callbacks.threshold), "Invalid native UI drag threshold");
+            if self.gestures.len() <= id { self.gestures.resize_with(id+1,||None); }
+            let entry = self.gestures[id].get_or_insert(PointerGesture { callbacks: PointerCallbacks::default(), present: true, enabled: false, capture: None });
+            entry.callbacks = callbacks;
+            entry.present = true;
+            entry.enabled = has_tap;
         }
         let hover: Option<Table> = modifiers.get("on_hover_gesture")?;
         let has_hover = hover.is_some() && !hidden && !disabled;
@@ -1038,6 +1059,68 @@ impl Scene {
         }
         Ok(self.take_edits())
     }
+    /// Deliver the maintained MUI surface capture, never fabricate a pointer
+    /// position from the node's bounds. Retain press-time closures for the whole
+    /// drag: their fractional accumulators must survive reactive snapshots.
+    pub(crate) fn pointer_gestures(&mut self, ui: &moose::mui::mui::Ui, prefix: &str) -> Result<Vec<Edit>> {
+        self.instructions.store(0, Ordering::Relaxed);
+        self.parameters.lock().unwrap().edits.clear();
+        let pointer = ui.pointer();
+        for retiring in [true,false] {
+            for (id, entry) in self.gestures.iter_mut().enumerate() {
+                let Some(gesture) = entry else { continue; };
+                let retired = !gesture.present || !gesture.enabled;
+                if retired != retiring { continue; }
+                let key = format!("{prefix}-{id}");
+                let response = ui.get(key.as_str());
+                let surface = ui.scene().and_then(|scene|scene.surface(&key));
+                let current = pointer.pos.zip(surface).map(|(position,surface)|HoverInput { position, frame:surface.frame, mods:pointer.mods });
+                let mut calls = Vec::new();
+                if !retired && response.pressed && gesture.capture.is_none() {
+                    if let Some(input) = current {
+                        let callbacks = gesture.callbacks.clone();
+                        if let Some(callback) = &callbacks.tap[0] { calls.push((callback.clone(),input,"start",[0.,0.])); }
+                        if response.double_clicked {
+                            if let Some(callback) = &callbacks.tap[1] { calls.push((callback.clone(),input,"double",[0.,0.])); }
+                        }
+                        gesture.capture = Some(PointerCapture { callbacks, origin:input.position, last:input, delivered:input.position, dragging:false });
+                    }
+                }
+                if let Some(capture) = &mut gesture.capture {
+                    let input = current.unwrap_or(HoverInput { mods:pointer.mods, ..capture.last });
+                    let finish = retired || response.released || (!response.held && !response.pressed);
+                    if !retired && (response.held || response.released) {
+                        let travel = input.position-capture.origin;
+                        if !capture.dragging && travel.hypot() >= capture.callbacks.threshold && travel.hypot()>0. {
+                            capture.dragging = true;
+                            if let Some(callback) = &capture.callbacks.drag[0] { calls.push((callback.clone(),input,"start",[travel.x,travel.y])); }
+                        }
+                        if capture.dragging && input.position != capture.delivered {
+                            let delta = input.position-capture.delivered;
+                            if let Some(callback) = &capture.callbacks.drag[1] { calls.push((callback.clone(),input,"update",[delta.x,delta.y])); }
+                            capture.delivered = input.position;
+                        }
+                    }
+                    capture.last = input;
+                    if finish {
+                        if capture.dragging {
+                            if let Some(callback) = &capture.callbacks.drag[2] { calls.push((callback.clone(),input,"complete",[0.,0.])); }
+                        }
+                        if let Some(callback) = &capture.callbacks.tap[2] { calls.push((callback.clone(),input,"complete",[0.,0.])); }
+                        gesture.capture = None;
+                    }
+                }
+                for (callback,input,phase,delta) in calls {
+                    self.parameters.lock().unwrap().gesture_active = true;
+                    let result = pointer_event(&self.lua,input,phase,delta).and_then(|event|callback.call::<()>(event));
+                    self.parameters.lock().unwrap().gesture_active = false;
+                    result?;
+                }
+                if !gesture.present && gesture.capture.is_none() { *entry = None; }
+            }
+        }
+        Ok(self.take_edits())
+    }
     pub(crate) fn tap(&mut self, id: usize) -> Result<Vec<Edit>> {
         self.instructions.store(0, Ordering::Relaxed);
         self.parameters.lock().unwrap().edits.clear();
@@ -1045,6 +1128,8 @@ impl Scene {
             .gestures
             .get(id)
             .and_then(Option::as_ref)
+            .filter(|gesture|gesture.present && gesture.enabled)
+            .and_then(|gesture|gesture.callbacks.tap[0].as_ref())
             .context("Native UI gesture identity missing")?;
         let event = self.lua.create_table()?;
         event.set("kind", "tap")?;
@@ -1056,6 +1141,13 @@ impl Scene {
     }
 }
 
+fn pointer_event(lua: &Lua, input: HoverInput, phase: &str, delta: [f64;2]) -> mlua::Result<Table> {
+    let event = hover_event(lua,input,phase)?;
+    let movement = lua.create_table()?;
+    movement.set("x",delta[0])?; movement.set("y",delta[1])?;
+    event.set("delta",movement)?;
+    Ok(event)
+}
 fn hover_event(lua: &Lua, input: HoverInput, phase: &str) -> mlua::Result<Table> {
     let event = lua.create_table()?;
     event.set("kind", phase)?;

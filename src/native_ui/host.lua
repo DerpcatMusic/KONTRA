@@ -140,7 +140,7 @@ function native_component(target,props,children)
 end
 function native_modifier(node,name,props,args)
     local environment=name=="context" or name=="font_size" or name=="foreground_color" or name=="bold" or name=="line_limit"
-    assert(name=="frame" or name=="padding" or name=="hidden" or name=="disabled" or name=="opacity" or name=="offset" or name=="align" or name=="background" or name=="overlay" or name=="on_tap_gesture" or name=="on_hover_gesture" or environment,"Unsupported modifier: "..name)
+    assert(name=="frame" or name=="padding" or name=="hidden" or name=="disabled" or name=="opacity" or name=="offset" or name=="align" or name=="background" or name=="overlay" or name=="on_tap_gesture" or name=="on_hover_gesture" or name=="on_drag_gesture" or environment,"Unsupported modifier: "..name)
     if name=="overlay" then
         assert(next(props)==nil and #args==1 and type(args[1])=="table" and args[1].kind,"Overlay requires a component")
         return {kind="ZStack",props={},children={node,args[1]},modifiers={overlay={}}}
@@ -221,7 +221,12 @@ function native_modifier(node,name,props,args)
     end
     assert(node.modifiers[name]==nil,"Duplicate modifier")
     for key,value in pairs(props) do
-        assert((name=="on_tap_gesture" and key=="start" or name=="on_hover_gesture" and (key=="enter" or key=="move" or key=="exit")) and type(value)=="function","Unsupported gesture property")
+        local callback=(name=="on_tap_gesture" and (key=="start" or key=="double" or key=="complete"))
+            or (name=="on_hover_gesture" and (key=="enter" or key=="move" or key=="exit"))
+            or (name=="on_drag_gesture" and (key=="start" or key=="update" or key=="complete"))
+        assert((callback and type(value)=="function")
+            or (name=="on_drag_gesture" and key=="threshold" and type(value)=="number" and value>=0 and value<=4096),
+            "Unsupported gesture property: "..name.."."..key)
     end
     node.modifiers[name]=props; return node
 end
