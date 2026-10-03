@@ -2954,6 +2954,7 @@ mod real {
     /// the groups it plays with its channel alone (round robins aside).
     #[test]
     #[ignore = "requires the owner's local Solo library"]
+    #[cfg(feature = "plugin")]
     fn solo_cello_keeps_three_lines_apart() {
         let path = format!("{}/Solo/Instruments/01 Multi Patches/Solo - 03 Solo Cello.nki", crate::import::LIBRARY_ROOT);
         let i = crate::import::read(std::path::Path::new(&path)).unwrap();
