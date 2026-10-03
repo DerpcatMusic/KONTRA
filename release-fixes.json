@@ -1356,6 +1356,17 @@
       ],
       "validation": "Accepted scoped outcome. Fresh isolated source 4a4f5ca7765668c5adcd4928a20ca092be373578 passed locked all-targets/all-features checking, test compilation and production build; all 477 tracked source hashes remained unchanged. Frozen lib-test cef99c9623cb passed all 590 library regressions (30 ignored), all 59 reporter regressions and the actual manual-export regression; frozen playback-test 5faf6f575afe passed all 89 playback regressions (4 ignored). The parent source 9c1f7d149652f537683fbb58a5912ecf5a4bc12c passed six Ladder, ten BUFFR durable-file, eleven flight-recorder and one optional-date vendor regression, plus strict-MPE/native VST3 processing gates; the 4a correction changes only the authored reporter actor-lifecycle tests. Final versioned production identity and host gates are prepared separately before export. Production GitHub crash-upload/issue creation and Mac user-crash cause remain unverified. Typed 16 MiB serialized-JSON overflow preserves the exact private source before durable source-digest/recipe/limit-bound manual disposition. No network acknowledgement or incident deletion is invented. Unchanged evidence is skipped after permit release so other queued incidents can proceed once; changed source/recipe/limit is reevaluated. Offline delivery and unrelated failures do not acquire this terminal disposition. Logs and restored receipt truthfully say manual export required with automatic retry paused. Continuation/idempotence and tiny receipt refinements are grouped into this single outcome; original serializer cap and manual-export feature are not recounted. No production service roundtrip proof.",
       "accepted": true
+    },
+    {
+      "id": "saved-sine-volume-target-consumption",
+      "summary": "Apply admitted saved sine-LFO volume assignments through their shared native source clock and decoded amplifier placement instead of ignoring their volume contribution",
+      "source_commits": [
+        "76768c5cf819377ee8c0dab9e1e2ed3a1dc562fa",
+        "d2791ad42b9c940ee0b8b481b37d3bd63dd9f921",
+        "6e6397ce001b60f56e1610977015eb5a2dbe9db9"
+      ],
+      "validation": "Accepted one scoped logical defect, not one count per kernel/consumer/fixture. Fresh isolated candidate 6e6397ce001b60f56e1610977015eb5a2dbe9db9 passed locked all-targets/all-features check, release test compilation and production build. Frozen lib-test 4d9ff33a009ba69acdbe60f5f9a5648b2e8adcc92de2b32558f8a35a772a271b passed all seven native volume/depth/lag/shared-clock/target-identity/amplifier/zero-heap gates, 595 library regressions (30 ignored), 59 reporter regressions and manual-export gate; frozen playback edc484496c988160d782366ff555529deadd32dce56e242ad66a4a278054de7d passed 89 regressions (4 ignored). All478 tracked source hashes unchanged. Frozen production nativeCLAP/MPE/pedal/home/zone and ten nativeVST3 note-length/tuning gates passed. Admission is single saved sine volume target with known flags and positive lag; unsupported source modes, additional targets and separate invert/shaper/fade remain diagnosed. Live volume intensity editing and full preset sonic parity remain unproved. Final versioned production identity is required separately before publication.",
+      "accepted": true
     }
   ]
 }

@@ -8,6 +8,14 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ## Unreleased
 
+### Accepted 0.3.142 — saved sine-LFO volume
+
+One reviewed logical defect advances the accepted patch counter from 0.3.141.
+
+### Fixed after 0.3.141
+
+- Render admitted saved sine-LFO volume targets with their native bipolar depth and positive lag, shared 32-frame source clock, retained bypass state and decoded amplifier placement. Seven focused engine gates, including nonlinear ordering and zero audio heap, pass with 595 library and 89 playback regressions. Additional volume targets, unknown flags, separate invert/shaper/fade, live volume intensity edits and full preset sonic parity remain unsupported or unproved.
+
 ### Accepted 0.3.141 — reporter and native Ladder processing
 
 Eighteen reviewed logical outcomes advance the accepted baseline from 0.3.123 to
