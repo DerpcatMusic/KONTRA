@@ -561,7 +561,7 @@ pub fn unsupported_at(chain: &Chain, amp_split: Option<u8>) -> Vec<String> {
             }
             Params::Filter(f) if f.filter_type == 33 => {
                 out.push("Group Ladder LP4: bypass and subtype changes clear filter history; the native transition lifecycle is unverified".into());
-                out.push("Group Ladder LP4: repeated modulation control smoothing timing and nonzero secondary cutoff-clock activation remain unverified".into());
+                out.push("Group Ladder LP4: modulation source lag/segment sampling and nonzero secondary cutoff-clock activation remain unverified".into());
                 if !ladder::instant_cutoff(fx.version) {
                     out.push("Group Ladder LP4: unknown record cutoff-control mode uses ordinary smoothing".into());
                 }
@@ -1446,17 +1446,20 @@ impl VoiceFilter {
                 f.units.get(u).map_or([0.0; KNOBS], |unit| unit.knobs)
             });
             let mut gain_modulated = 0_u8;
+            let mut ladder_modulated = 0_u8;
             for (e, (_, routes, _, bypass)) in f.envs.iter().enumerate() {
                 // Bypass disconnects every target, including nonzero shaper
                 // intercepts. The envelope above still advances while bypassed.
                 if *bypass { continue; }
                 for (r, m) in routes.iter() {
                     rows[r.unit as usize][r.knob as usize] += r.sign * m.intensity * m.shape(levels[e][t]);
+                    if r.knob < 3 && (r.unit as usize) < MAX_UNITS { ladder_modulated |= 1 << r.unit; }
                     if r.knob == 2 && (r.unit as usize) < MAX_UNITS { gain_modulated |= 1 << r.unit; }
                 }
             }
             for ((r, i), value) in f.ext.iter().zip(&self.ext) {
                 rows[r.unit as usize][r.knob as usize] += r.sign * table.mods[*i as usize].intensity * value;
+                if r.knob < 3 && (r.unit as usize) < MAX_UNITS { ladder_modulated |= 1 << r.unit; }
                 if r.knob == 2 && (r.unit as usize) < MAX_UNITS { gain_modulated |= 1 << r.unit; }
             }
             let (l, r) = (&mut left[start..end], &mut right[start..end]);
@@ -1474,6 +1477,7 @@ impl VoiceFilter {
                         if unit.shape == Shape::Ladder {
                             let ladder = &mut self.ladders[index as usize];
                             ladder.record_version(unit.native_version);
+                            ladder.enabled_modulation(ladder_modulated & (1 << index) != 0);
                             if unit.bypass {
                                 ladder.clear();
                             } else {
@@ -1902,7 +1906,7 @@ mod tests {
                 let f=settings[0].filter.as_deref().unwrap();
                 assert_eq!(f.units.len(),1); assert_eq!(f.units[0].shape,Shape::Ladder);
                 assert_eq!(f.units[0].native_version,0x92);
-                assert!(unsupported_at(&groups[0].fx,Some(split)).iter().any(|w|w.contains("control smoothing")));
+                assert!(unsupported_at(&groups[0].fx,Some(split)).iter().any(|w|w.contains("modulation source")));
                 let mut voice=None;
                 assert_eq!(crate::plugin::tests::allocations(|| {
                     voice=Some(VoiceFilter::new(Some(f),&table,&input,RATE));
@@ -2007,6 +2011,51 @@ mod tests {
         let ui=crate::ksp::initialize("on init\ndeclare ui_label $label(1,1)\nset_engine_par($ENGINE_PAR_EFFECT_SUBTYPE,33,0,0,-1)\nset_engine_par($ENGINE_PAR_CUTOFF,1000000,0,0,-1)\nset_engine_par($ENGINE_PAR_GAIN,500000,0,0,-1)\nset_text($label,get_engine_par_disp($ENGINE_PAR_CUTOFF,0,0,-1) & \"|\" & get_engine_par_disp($ENGINE_PAR_GAIN,0,0,-1))\nend on",0,1).unwrap();
         assert_eq!(ui.controls[0].properties["$CONTROL_PAR_TEXT"],crate::ksp::Value::Text("19912.3|6.0".into()));
         eprintln!("Ladder={} VoiceFilter={} bytes; bounded8×124-byte native state",std::mem::size_of::<ladder::Ladder>(),std::mem::size_of::<VoiceFilter>());
+    }
+
+    #[test]
+    fn native_ladder_zero_depth_routes_keep_control_cadence_without_heap() {
+        use crate::{fx::Effect, modulation::{ModSource, ModTarget}};
+        let cc=[0;128];
+        let input=Inputs {cc:&cc,cc74:None,bend:0.0,pressure:0,note:60,velocity:100,counter:0.0};
+        for rate in [32_000.0,44_100.0,48_000.0,96_000.0] {
+            let effect=Effect {slot:0,kind:Kind::Filter,version:0x92,bypass:false,output_gain:1.0,dry_level:1.0,
+                params:Params::Filter(crate::fx::params::Filter {filter_type:33,cutoff:1.0,resonance:0.0,
+                    extra:[0.0;3],native_flag:Some(0)})};
+            let group=Group {fx:Chain {slots:vec![effect]},amp_split_slot:Some(0),mods:vec![
+                ModAssignment {name:"ZERO_GAIN".into(),source:ModSource::MidiCc(1),
+                    target:ModTarget::Module {param:"filterGain".into(),slot:0},intensity:0.0,
+                    invert:false,lag_ms:0,shaper:None}],..Default::default()};
+            let mut f=GroupFilter::new(&group).unwrap();
+            let table=ModTable::from(&group);
+            let mut voice=VoiceFilter::new(Some(&f),&table,&input,rate);
+            let mut reference=ladder::Ladder::default();
+            reference.record_version(0x92); reference.enabled_modulation(true);
+            reference.tune([1.0,0.0,0.0],rate);
+            voice.process(&f,&table,&mut [0.0;MAX_BLOCK],&mut [0.0;17],&mut [0.0;17],rate);
+            reference.process(&mut [0.0;17],&mut [0.0;17]);
+            // Depth0 still enables the route; a manual target edit must re-arm
+            // at each persistent native tick instead of settling in one ramp.
+            let mut ordinary=reference;
+            ordinary.enabled_modulation(false);
+            let mut difference=0_f64;
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                assert!(f.set_knob(0,Knob::FilterGain,0.5));
+                assert_eq!(f.knob(0,Knob::FilterGain),Some(0.5));
+                reference.tune([1.0,0.0,0.5],rate);
+                ordinary.tune([1.0,0.0,0.5],rate);
+                for frames in [1,15,47,65,1,127,128,128] {
+                    let (mut l,mut r)=([0.0001;128],[-0.0001;128]);
+                    let (mut el,mut er,mut ol,mut or)=(l,r,l,r);
+                    voice.process(&f,&table,&mut [0.0;MAX_BLOCK],&mut l[..frames],&mut r[..frames],rate);
+                    reference.process(&mut el[..frames],&mut er[..frames]);
+                    ordinary.process(&mut ol[..frames],&mut or[..frames]);
+                    assert_eq!(l[..frames],el[..frames]); assert_eq!(r[..frames],er[..frames]);
+                    difference+=l[..frames].iter().zip(&ol).map(|(a,b)|f64::from((a-b).abs())).sum::<f64>();
+                }
+            }),0);
+            assert!(difference>0.00001,"zero-depth route changes transient rate={rate}");
+        }
     }
 
     #[test]

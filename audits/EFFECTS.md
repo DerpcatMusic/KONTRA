@@ -397,8 +397,11 @@ versions 144..146 select a separate cutoff clock that is left unprepared by
 native construction and rate setup: cutoff therefore snapshots at the next
 32-frame boundary. This mode is independent of the saved High Quality byte.
 Unknown record versions use ordinary normalized-cutoff interpolation with an
-explicit diagnostic. Nonzero secondary-clock activation, repeated modulation
-write timing and High Quality oversampling remain explicit gaps. A sign-loss
+explicit diagnostic. Enabled group target routes re-arm this shared control
+quartet every 32 frames, including unchanged targets and zero-depth routes.
+Route switches retain its phase. Modulation-source lag and segment sampling,
+rack modulation routes, nonzero secondary-clock activation and High Quality
+oversampling remain explicit gaps. A sign-loss
 artifact exists in the native conditional cap branch when that secondary clock
 is nonzero; its activation is not established for these records and it is not
 reproduced or attributed to an actual preset. Bypass and subtype
@@ -423,7 +426,10 @@ retargeting, tiny-delta settlement and arbitrary block partitions. A separate
 version-mode gate checks the cutoff boundary snapshot while Gain and resonance
 continue their ordinary trajectories, including descending edits and reset.
 The group/rack gate retains version provenance and covers live target edits,
-readback and zero audio heap allocations. The clock
+readback and zero audio heap allocations. An independent geometric gain and
+four-pole voltage reference checks repeated target writes, mid-tick route
+switches and partition invariance at four rates; a zero-depth group route
+checks the actual routing bridge and zero heap. The clock
 adds 384 KiB for 1,024 voices; settled processing keeps its straight scalar loop.
 
 ### Native Daft identity and record correction
