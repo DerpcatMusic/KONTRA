@@ -35,6 +35,7 @@ pub(crate) struct Node {
     pub text_lines: Option<usize>,
     pub alignment: (Align, Align),
     pub anchor: Option<(Align, Align)>,
+    transparent: bool,
     pub padding: Insets,
     pub offset: [f64; 2],
     pub hidden: bool,
@@ -47,6 +48,15 @@ pub(crate) struct Node {
     pub children: Vec<Node>,
 }
 impl Node {
+    // Placement travels through modifier/conditional scopes, not through a
+    // frame or an authored container alignment. Its outward anchor stays
+    // distinct from the alignment used inside a real frame.
+    fn inherit_placement(&mut self, guide: (Align, Align)) {
+        if !self.transparent { return; }
+        let guide = self.anchor.unwrap_or(guide);
+        self.alignment = guide;
+        for child in &mut self.children { child.inherit_placement(guide); }
+    }
     fn text_bytes(&self) -> usize {
         let own = match &self.paint { Paint::Text(text) => text.len(), _ => 0 };
         self.children.iter().fold(own, |sum, child| sum.saturating_add(child.text_bytes()))
@@ -1016,6 +1026,11 @@ impl Scene {
             // A frame consumes it for its child's placement, then forms a new box.
             nodes[0].anchor
         } else { None };
+        let transparent = frame.is_none() && matches!(paint, Paint::Stack)
+            && nodes.len()==1 && !background && !overlay && !props.contains_key("alignment")?;
+        if let Some(guide) = anchor {
+            for child in &mut nodes { child.inherit_placement(guide); }
+        }
         Ok(Node {
             id,
             paint,
@@ -1029,6 +1044,7 @@ impl Scene {
             text_lines,
             alignment,
             anchor,
+            transparent,
             padding,
             offset,
             hidden,
