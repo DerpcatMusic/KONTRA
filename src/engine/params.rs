@@ -884,6 +884,7 @@ impl Address {
     pub(crate) fn decode(self, value: i32) -> f32 {
         let x = (value as f32 / UNIT).clamp(0.0, 1.0);
         match self {
+            Self::Filter(_, _, Knob::FilterGain) | Self::Fx(_, _, FxParam::Filter(Knob::FilterGain)) => value as f32 / UNIT,
             Self::Wavetable(_, WavePar::FormMode | WavePar::Form2Mode) => value as f32,
             Self::Wavetable(..) => x,
             // An instrument bus, or past the instrument output to output
@@ -945,6 +946,7 @@ impl Address {
     /// Inverse of [`decode`](Self::decode), rounded.
     pub(crate) fn encode(self, v: f32) -> i32 {
         let x = match self {
+            Self::Filter(_, _, Knob::FilterGain) | Self::Fx(_, _, FxParam::Filter(Knob::FilterGain)) => return (v * UNIT).round() as i32,
             Self::Wavetable(_, WavePar::FormMode | WavePar::Form2Mode) => return v as i32,
             Self::Wavetable(..) => v,
             Self::Group(_, GroupPar::Output) => {
@@ -1086,7 +1088,7 @@ pub fn display(id: i32, value: i32) -> Option<Disp> {
         // in milliseconds, so scripted labels match the effective DSP.
         id::RV2_TIME => Disp::Num(crate::fx::params::Reverb::time_seconds(x) * 1000., 1),
         _ => match crate::ksp::engine_par_name(id)? {
-            "$ENGINE_PAR_GAIN" => Disp::Num(12.0 * x, 1),
+            "$ENGINE_PAR_GAIN" => Disp::Num(12.0 * value as f32 / UNIT, 1),
             "$ENGINE_PAR_SEQ_LF_GAIN" | "$ENGINE_PAR_SEQ_LMF_GAIN"
                 | "$ENGINE_PAR_SEQ_HMF_GAIN" | "$ENGINE_PAR_SEQ_HF_GAIN" => {
                 Disp::Num(super::filter::geq_gain_db(x), 1)
