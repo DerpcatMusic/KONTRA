@@ -39,18 +39,34 @@ fn attach_incident_provenance(payload: &mut ReportPayload, incident: &CrashIncid
     payload.incident_build_id = Some(incident.build_id().to_owned());
 }
 
+struct AutomaticReportPermit<'a>(&'a std::sync::atomic::AtomicBool);
+
+impl<'a> AutomaticReportPermit<'a> {
+    fn acquire(active: &'a std::sync::atomic::AtomicBool) -> Option<Self> {
+        (!active.swap(true, Ordering::AcqRel)).then(|| Self(active))
+    }
+}
+
+impl Drop for AutomaticReportPermit<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 pub(super) fn try_auto_report_pending_incident() {
     let Some(incident) = pending_incident() else {
         return;
     };
-    if AUTOMATIC_CRASH_REPORT_STARTED.swap(true, Ordering::AcqRel) {
+    let Some(permit) = AutomaticReportPermit::acquire(&AUTOMATIC_CRASH_REPORT_STARTED) else {
         return;
-    }
+    };
     let started = crash::spawn_detached("kontra-support-report", move || {
+        // The module remains pinned after delivery; release the upload gate when
+        // this worker finishes so a later incident in the same host can report.
+        let _permit = permit;
         // Delayed native artifacts are searched only on this worker, never during host initialization.
         let incident = crash::refresh_pending_incident(&incident.id).unwrap_or(incident);
         if !incident.auto_reportable() {
-            AUTOMATIC_CRASH_REPORT_STARTED.store(false, Ordering::Release);
             return;
         }
         let identity = HOST_IDENTITY.lock_unpoisoned().clone();
@@ -71,13 +87,10 @@ pub(super) fn try_auto_report_pending_incident() {
         let result = send_report(payload);
         let (level, status) = match &result {
             Ok(message) => (crate::diagnostics::LogLevel::Info, message.clone()),
-            Err(error) => {
-                AUTOMATIC_CRASH_REPORT_STARTED.store(false, Ordering::Release);
-                (
-                    crate::diagnostics::LogLevel::Error,
-                    format!("Crash report retained for retry: {error}"),
-                )
-            }
+            Err(error) => (
+                crate::diagnostics::LogLevel::Error,
+                format!("Crash report retained for retry: {error}"),
+            ),
         };
         // Receipt or failure remains visible locally; pending evidence is deleted only after acknowledgement.
         let status_path = support_cache_path().with_file_name("last-report.json");
@@ -89,7 +102,6 @@ pub(super) fn try_auto_report_pending_incident() {
         crate::diagnostics::event(level, "support", "automatic_crash_report", value);
     });
     if let Err(error) = started {
-        AUTOMATIC_CRASH_REPORT_STARTED.store(false, Ordering::Release);
         crate::diagnostics::event(
             crate::diagnostics::LogLevel::Error,
             "support",
@@ -266,6 +278,62 @@ fn validate_receipt(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn completed_workers_allow_the_next_incident_after_ack_or_failure() {
+        use std::sync::mpsc;
+        let timeout = std::time::Duration::from_secs(5);
+        // The production flag is static because detached workers outlive their
+        // caller. This one-byte test flag is separate from all reporter globals.
+        let active: &'static std::sync::atomic::AtomicBool =
+            Box::leak(Box::new(std::sync::atomic::AtomicBool::new(false)));
+        for completion in 0..4 {
+            let permit = AutomaticReportPermit::acquire(active).unwrap();
+            let (entered, began) = mpsc::channel();
+            let (deliver, delivery) = mpsc::channel();
+            let (outcome, result) = mpsc::channel();
+            let (finish, finishing) = mpsc::channel();
+            let (finished, done) = mpsc::channel::<()>();
+            crash::spawn_detached("automatic-report-permit-test", move || {
+                // Locals drop in reverse order: closing `finished` proves the
+                // captured permit has dropped after this worker's body exits.
+                let _finished = finished;
+                let _permit = permit;
+                entered.send(()).unwrap();
+                delivery.recv_timeout(timeout).unwrap();
+                let receipt =
+                    r#"{"ok":true,"report_id":"first","diagnostics_sha256":"full-evidence"}"#;
+                let acknowledged = match completion {
+                    0 => validate_receipt(200, receipt, Some("full-evidence".into())).is_ok(),
+                    1 => validate_receipt(200, receipt, Some("wrong-sha".into())).is_ok(),
+                    2 => request_agent().is_ok(), // Network is disabled in tests.
+                    _ => crash::test_incident("0.3.115", "test").auto_reportable(),
+                };
+                outcome.send(acknowledged).unwrap();
+                finishing.recv_timeout(timeout).unwrap();
+                if !acknowledged {
+                    return; // Rejected receipt, offline or unconfirmed incident.
+                }
+                // Successful completion leaves through the same scope boundary.
+            })
+            .unwrap();
+            began.recv_timeout(timeout).unwrap();
+            assert!(AutomaticReportPermit::acquire(active).is_none());
+            deliver.send(()).unwrap();
+            assert_eq!(result.recv_timeout(timeout).unwrap(), completion == 0);
+            assert!(
+                AutomaticReportPermit::acquire(active).is_none(),
+                "delivery outcome must not release a still-running worker"
+            );
+            finish.send(()).unwrap();
+            assert_eq!(
+                done.recv_timeout(timeout),
+                Err(mpsc::RecvTimeoutError::Disconnected)
+            );
+            assert!(!active.load(Ordering::Acquire));
+        }
+        assert!(AutomaticReportPermit::acquire(active).is_some());
+    }
+
     #[test]
     fn delivery_requires_success_id_and_complete_evidence_hash() {
         let valid = r#"{"ok":true,"report_id":"abc","diagnostics_sha256":"sha"}"#;

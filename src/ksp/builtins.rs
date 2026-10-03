@@ -167,6 +167,8 @@ builtins! {
     GroupName "group_name" [I] 0 Str;
     GetNumZones "get_num_zones" [] 0 Int;
     GetZoneId "get_zone_id" [I] 0 Int;
+    GetZonePar "get_zone_par" [I I] 0 Int;
+    SetZonePar "set_zone_par" [I I I] 0 Int;
     PurgeGroup "purge_group" [I I] 0 Int;
     GetPurgeState "get_purge_state" [I] 0 Int;
     FindMod "find_mod" [I S] 0 Int;

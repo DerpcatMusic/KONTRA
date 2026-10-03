@@ -79,6 +79,7 @@ pub struct FxProcessor {
     /// The `$EFFECT_TYPE_*` of every stored slot, those without DSP too.
     types: Box<[(Rack, u8, f32)]>,
     max_block: usize,
+    tempo: f32,
     sleep: Sleep,
     /// Group taps have filled the current block's return inputs.
     group_inputs: bool,
@@ -322,6 +323,7 @@ impl ProgramFx {
             buses,
             bus_of,
             max_block,
+            tempo: 120.0,
             // Nothing rings yet.
             sleep: Sleep::ASLEEP,
             group_inputs: false,
@@ -333,6 +335,20 @@ impl ProgramFx {
 }
 
 impl FxProcessor {
+    /// Host tempo reaches every rack, including instrument buses. Repeated
+    /// unchanged transport snapshots do not walk or retune any effect.
+    pub fn set_tempo(&mut self, tempo: f32) {
+        if !tempo.is_finite() || tempo <= 0.0 || tempo == self.tempo { return }
+        self.tempo = tempo;
+        let insert = self.insert.iter_mut().filter_map(|s| match s {
+            Stage::Effect(s) => Some(s), Stage::Tap(_) => None,
+        });
+        for s in insert.chain(self.returns.iter_mut().map(|r| &mut r.slot))
+            .chain(&mut self.main).chain(self.buses.iter_mut().flat_map(|b| &mut b.chain)) {
+            if let Dsp::Block(b) = &mut s.dsp { b.set_tempo(tempo); }
+        }
+    }
+
     /// Whether processing leaves audio unchanged.
     pub fn is_empty(&self) -> bool {
         self.insert.is_empty() && self.returns.is_empty() && self.main.is_empty()
@@ -644,6 +660,17 @@ impl FxProcessor {
             }
         }
         None
+    }
+
+    pub(crate) fn restore_delay(&mut self, saved: &super::DelayState) -> bool {
+        let Some(slot) = self.slot_mut(saved.rack, saved.slot) else { return false };
+        let Dsp::Block(block) = &mut slot.dsp else { return false };
+        block.restore_delay(saved)
+    }
+
+    pub(crate) fn delay_fields(&self, rack: Rack, slot: u8) -> Option<(super::blocks::Fields, f32)> {
+        let Dsp::Block(block) = &self.slot(rack, slot)?.dsp else { return None };
+        Some((block.delay_fields()?, self.tempo))
     }
 
     /// Current value of a script-controllable parameter.

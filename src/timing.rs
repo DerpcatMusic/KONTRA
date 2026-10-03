@@ -884,7 +884,8 @@ pub fn found(i: &crate::import::Instrument, e: &Engine) -> Vec<articulate::Found
 pub fn engine_for(i: &crate::import::Instrument, rate: f64, budget: usize) -> anyhow::Result<Engine> {
     let (script, _) = crate::engine::load_scripts(i, i.script_state.clone(), rate);
     let controllers = script.as_deref().map_or(Vec::new(), |rt| rt.init_controllers.clone());
-    let bank = crate::engine::Bank::load_counting(i, budget, Default::default(), &controllers, &Default::default())?;
+    let mut bank = crate::engine::Bank::load_counting(i, budget, Default::default(), &controllers, &Default::default())?;
+    if let Some(rt)=script.as_deref() {bank.apply_script_zone_init(rt)?;}
     let mut e = Engine::default();
     e.reset(rate);
     e.blocking_streams = true;

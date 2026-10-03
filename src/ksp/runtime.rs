@@ -12,7 +12,7 @@ use super::compile::{self, Callback, Program, Setup, Ty};
 use super::engine::{EnginePar, EventId, Fade, GroupMask, KspEngine, NoteLength, NoteSpec};
 use super::vm::{self, Ctx, Forward, Kind, Machine, POLY_ROWS, SlotState, Stacks, Thread, Yield};
 use super::{HostState, Interface, KeyState, Value};
-use anyhow::{Result, bail};
+use anyhow::{Context as _,Result, bail};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
 use std::sync::{Arc, Mutex, Weak};
@@ -887,7 +887,10 @@ impl Env {
     }
 }
 
+static SERVICE_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 pub struct Runtime {
+    pub(crate) service_epoch: u64,
     /// Compiled code, shared with every runtime that compiled the same
     /// script (see [`compiled`]).
     programs: Vec<Arc<Program>>,
@@ -903,6 +906,8 @@ pub struct Runtime {
     /// before any sound engine existed (in call order); the playing engine
     /// applies them when the runtime is installed.
     pub init_engine_pars: Vec<(EnginePar, i32)>,
+    pub(crate) init_zone_source: usize,
+    pub(crate) init_zone_edits: Vec<super::engine::ZoneEdit>,
     pub(crate) native_state: crate::engine::native_state::NativeState,
     /// Controllers the scripts set while loading (`set_controller` in
     /// `on init` or `on persistence_changed`), in call order.
@@ -949,7 +954,10 @@ impl Runtime {
             service_channel: 0,
             fuel_cap: CALLBACK_FUEL,
             init_engine_pars: Vec::new(),
+            init_zone_edits: Vec::new(),
+            init_zone_source: 0,
             native_state: Default::default(),
+            service_epoch: SERVICE_EPOCH.fetch_add(1,std::sync::atomic::Ordering::Relaxed),
             init_controllers: Vec::new(),
             init_irs: Vec::new(),
         }
@@ -1230,6 +1238,9 @@ impl Runtime {
             bail!("At most {MAX_SLOTS} script slots");
         }
         self.env.sample_rate = engine.sample_rate();
+        let async_capacity = engine.zone_count().checked_mul(3).and_then(|n|n.checked_add(64)).context("Zone async storage overflow")?;
+        self.env.pending_async.reserve(async_capacity.saturating_sub(self.env.pending_async.len()));
+        self.env.async_done.reserve(async_capacity.saturating_sub(self.env.async_done.len()));
         let index = self.programs.len() as u8;
         let setup = Setup {
             groups: engine.group_count(),
@@ -2085,16 +2096,23 @@ impl Runtime {
     /// A worker finished an asynchronous load for this script slot.
     pub fn async_complete(&mut self, engine: &mut dyn KspEngine, slot: u8, id: i32, loaded: bool) {
         if slot as usize >= self.states.len() { return; }
-        self.env.finish_async(slot, id);
         if !loaded {
             self.env.note("load_ir_sample: file not found, or that slot holds no convolution effect");
         }
-        if self.env.async_done.len() < self.env.async_done.capacity() {
-            self.env.async_done.push((slot, id, i32::from(loaded)));
-        } else {
+        if !self.service_complete(engine, slot, id, loaded) {
+            self.env.finish_async(slot,id);
             self.env.note("KSP async completion callback queue exhausted");
+            self.settle(engine);
         }
+    }
+
+    pub(crate) fn service_complete(&mut self, engine: &mut dyn KspEngine, slot: u8, id: i32, loaded: bool) -> bool {
+        if slot as usize >= self.states.len() { return true; }
+        if self.env.async_done.len() == self.env.async_done.capacity() { return false; }
+        self.env.finish_async(slot, id);
+        self.env.async_done.push((slot, id, i32::from(loaded)));
         self.settle(engine);
+        true
     }
 
     /// A host-side edit of control `control` (index into `Interface::controls`).

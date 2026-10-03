@@ -11,6 +11,12 @@ struct Record {
     order: u64,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+struct DelayRecord {
+    state: crate::fx::DelayState,
+    touched: bool,
+}
+
 // Intensity aliases encode the same physical target with different value laws.
 // Keep the last writer's native address/value so restoring preserves its law.
 fn key(address: Address) -> Address {
@@ -44,6 +50,8 @@ pub(crate) struct NativeState {
     index: FxHashMap<Address, usize>,
     records: Vec<Record>,
     active: Vec<usize>,
+    delays: Vec<DelayRecord>,
+    delay_active: Vec<usize>,
     order: u64,
     misses: u64,
     last_miss: Option<EnginePar>,
@@ -65,6 +73,40 @@ impl NativeState {
             current,
             order: 0,
         });
+    }
+
+    pub(super) fn prepare_delays(&mut self, fx: &crate::fx::ProgramFx) {
+        use crate::fx::{Rack, Kind};
+        let racks = [(Rack::Insert, &fx.insert), (Rack::Send, &fx.send), (Rack::Main, &fx.main)]
+            .into_iter().chain(fx.buses.iter().filter(|b| b.index < 16).map(|b| (Rack::Bus(b.index as u8), &b.chain)));
+        for (rack, chain) in racks {
+            for slot in chain.slots.iter().filter(|s| s.kind == Kind::Delay && s.slot < 8) {
+                if self.delays.iter().any(|d| (d.state.rack, d.state.slot) == (rack, slot.slot as u8)) { continue }
+                if let Some(fields) = crate::fx::blocks::fields(&slot.params) {
+                    self.delays.push(DelayRecord { state: crate::fx::DelayState::from_fields(rack, slot.slot as u8, &fields), touched: false });
+                }
+            }
+        }
+        self.delay_active.reserve(self.delays.len());
+    }
+
+    // Called only after a successful Time/Unit write, with the actual DSP state.
+    pub(super) fn capture_delay(&mut self, state: crate::fx::DelayState, par: EnginePar) {
+        if let Some(i) = self.delays.iter().position(|d| (d.state.rack, d.state.slot) == (state.rack, state.slot)) {
+            if self.delays[i].state == state { return }
+            if !self.delays[i].touched { self.delay_active.push(i); }
+            self.delays[i] = DelayRecord { state, touched: true };
+        } else {
+            self.misses = self.misses.saturating_add(1);
+            self.last_miss = Some(par);
+        }
+    }
+
+    pub(super) fn restored_delay(&mut self, state: crate::fx::DelayState) {
+        if let Some(i) = self.delays.iter().position(|d| (d.state.rack, d.state.slot) == (state.rack, state.slot)) {
+            if !self.delays[i].touched { self.delay_active.push(i); }
+            self.delays[i] = DelayRecord { state, touched: true };
+        }
     }
 
     // No insertion, growth, formatting or allocation on the audio thread.
@@ -123,11 +165,19 @@ impl NativeState {
                 fx.set_param(rack, slot, par, address.decode(record.value));
             }
         }
+        // Apply physical caches after final-address replay, which can itself
+        // switch units and cannot reconstruct hidden intermediate cache edits.
+        self.replay_delays(fx);
+    }
+
+    pub(super) fn replay_delays(&self, fx: &mut crate::fx::FxProcessor) {
+        for &i in &self.delay_active { fx.restore_delay(&self.delays[i].state); }
     }
 
     pub(crate) fn snapshot(&self) -> NativeSnapshot {
         NativeSnapshot {
             records: self.records.clone(),
+            delays: self.delays.clone(),
             ..Default::default()
         }
     }
@@ -135,7 +185,9 @@ impl NativeState {
     pub(crate) fn capacity(&self) -> (usize, usize) {
         (
             self.records.len(),
-            self.records.capacity() * std::mem::size_of::<Record>()
+            self.delays.capacity() * std::mem::size_of::<DelayRecord>()
+                + self.delay_active.capacity() * std::mem::size_of::<usize>()
+                + self.records.capacity() * std::mem::size_of::<Record>()
                 + self.active.capacity() * std::mem::size_of::<usize>()
                 + self.index.capacity()
                     * (std::mem::size_of::<Address>() + std::mem::size_of::<usize>() + 1),
@@ -144,27 +196,35 @@ impl NativeState {
 
     pub(crate) fn refresh(&self, saved: &mut NativeSnapshot, budget: usize) -> bool {
         // Source epochs are checked before this call; shapes never grow in place.
-        if saved.records.len() != self.records.len() {
+        if saved.records.len() != self.records.len() || saved.delays.len() != self.delays.len() {
             saved.misses = self.misses.saturating_add(1);
             saved.changed = true;
             return true;
         }
-        let end = (saved.at + budget).min(self.active.len());
-        for &i in &self.active[saved.at..end] {
-            saved.changed |= saved.records[i] != self.records[i];
-            saved.records[i] = self.records[i];
+        let total = self.active.len() + self.delay_active.len();
+        let end = saved.at.saturating_add(budget).min(total);
+        for at in saved.at..end {
+            if let Some(&i) = self.active.get(at) {
+                saved.changed |= saved.records[i] != self.records[i];
+                saved.records[i] = self.records[i];
+            } else {
+                let i = self.delay_active[at - self.active.len()];
+                saved.changed |= saved.delays[i] != self.delays[i];
+                saved.delays[i] = self.delays[i];
+            }
         }
         saved.at = end;
         saved.changed |= saved.misses != self.misses;
         saved.misses = self.misses;
         saved.last_miss = self.last_miss;
-        end == self.active.len()
+        end == total
     }
 }
 
 #[derive(Clone, Default)]
 pub(crate) struct NativeSnapshot {
     records: Vec<Record>,
+    delays: Vec<DelayRecord>,
     at: usize,
     pub(crate) changed: bool,
     pub(crate) misses: u64,
@@ -185,12 +245,15 @@ impl NativeSnapshot {
             })
             .collect()
     }
+    pub(crate) fn saved_delays(&self) -> Vec<crate::fx::DelayState> {
+        self.delays.iter().filter(|d| d.touched).map(|d| d.state).collect()
+    }
     pub(crate) fn rewind(&mut self) {
         self.at = 0;
         self.changed = false;
     }
     pub(crate) fn is_empty(&self) -> bool {
-        self.records.is_empty()
+        self.records.is_empty() && self.delays.is_empty()
     }
 }
 
