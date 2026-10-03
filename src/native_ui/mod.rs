@@ -108,6 +108,8 @@ struct Binding {
     value: i32,
     meter_control: bool,
     meter: Option<crate::fx::MeterAttachment>,
+    range: Option<(i32,i32)>,
+    properties: crate::ksp::NativeProperties,
 }
 struct MeterBinding { slot: usize, control: usize, reader: Arc<crate::fx::MeterReader> }
 #[derive(Default)]
@@ -198,6 +200,7 @@ impl Scene {
             exposed,
             "Native UI controls have not been exposed with expose_controls"
         );
+        ensure!(rt.native_control_identifiers().count() <= 4096, "Native UI registry exceeds 4096 controls");
         let mut live = rt.live();
         rt.prepare_native_controls(&mut live);
         let mut p = Parameters::default();
@@ -210,6 +213,8 @@ impl Scene {
                 value: c.value,
                 meter_control: c.kind.as_ref() == "ui_level_meter",
                 meter: c.meter,
+                range: c.range,
+                properties: c.properties.clone(),
             });
         }
         p.unsupported.extend(rt.native_control_identifiers()
@@ -302,6 +307,47 @@ impl Scene {
                 crate::diagnostics::resource(&source, "native_ui/parameter", &warning);
             }
             Ok((Value::Integer(0), None, None))
+        })?)?;
+        let p = parameters.clone();
+        lua.globals().set("native_control_property", lua.create_function(move |lua, (name, property, index): (String, Value, Option<Value>)| {
+            fn integer(value: Value) -> mlua::Result<i32> {
+                match value {
+                    Value::Integer(v) => i32::try_from(v).map_err(|_| invalid("Native control property argument exceeds i32")),
+                    Value::Number(v) if v.is_finite() && v.fract()==0. && (i32::MIN as f64..=i32::MAX as f64).contains(&v) => Ok(v as i32),
+                    _ => Err(invalid("Native control property arguments require finite whole integers")),
+                }
+            }
+            let property=integer(property)?;
+            let index=integer(index.unwrap_or(Value::Integer(0)))?;
+            if !matches!(property,0|14|16|17|18|19|20|21|22) {
+                return Err(invalid(format!("Unsupported native KSP control property: {property}")));
+            }
+            let p=p.lock().unwrap();
+            let Some(b)=p.bindings.get(&name) else {
+                drop(p);
+                // This registry's miss branch uses the same integer-zero
+                // variant as scalar reads. Reuse their bounded named warning;
+                // declared unsupported kinds still raise instead of becoming0.
+                let (value,_,_)=lua.globals().get::<Function>("native_read")?.call::<(Value,Option<usize>,Option<usize>)>(name)?;
+                return Ok(value);
+            };
+            let props=&b.properties;
+            let item=usize::try_from(index).ok().filter(|i|*i<props.menu_len).and_then(|i|props.menu.get(i));
+            // Legacy Lua uses this enum, distinct from synthetic KSP symbol IDs.
+            // Native common-getter dispatch and actual resource callers establish
+            // these contracts; labels stay authored strings, never value formats.
+            match property {
+                0 => Ok(Value::String(lua.create_string(&props.text)?)),
+                14 => Ok(Value::String(lua.create_string(&props.label)?)),
+                16 => Ok(Value::Integer(i64::from(props.default_value))),
+                17 => Ok(Value::Integer(props.menu_len as i64)),
+                18 => Ok(Value::String(lua.create_string(item.map_or("",|m|m.text.as_str()))?)),
+                19 => Ok(Value::Integer(i64::from(item.map_or(0,|m|m.value)))),
+                20 => Ok(Value::Boolean(item.is_some_and(|m|m.visible))),
+                21 => Ok(Value::Integer(i64::from(b.range.map_or(0,|r|r.0)))),
+                22 => Ok(Value::Integer(i64::from(b.range.map_or(0,|r|r.1)))),
+                _ => unreachable!(),
+            }
         })?)?;
         let p = parameters.clone();
         let levels = rt.output_meters.clone();
@@ -638,10 +684,12 @@ impl Scene {
             if let Some(b) = p.bindings.get_mut(&c.name)
                 && b.slot == c.slot
                 && b.control == c.control
-                && (b.value != c.value || b.meter != c.meter)
+                && (b.value != c.value || b.meter != c.meter || b.range != c.range || b.properties != c.properties)
             {
                 b.value = c.value;
                 b.meter = c.meter;
+                b.range = c.range;
+                if b.properties != c.properties { b.properties = c.properties.clone(); }
                 self.revision.fetch_add(1, Ordering::Relaxed);
             }
             if let Some(meter) = p.meters.get(&c.name)

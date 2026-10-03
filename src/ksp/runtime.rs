@@ -208,6 +208,68 @@ impl std::fmt::Display for LiveFault {
     }
 }
 
+/// Property backing for legacy Native UI; raw menu rows retain hidden entries.
+/// Storage is prepared off-thread and refreshed in charged, allocation-free pieces.
+#[derive(Debug)]
+pub(crate) struct NativeProperties {
+    pub text: String,
+    pub label: String,
+    pub default_value: i32,
+    pub menu: Vec<super::ui::MenuItem>,
+    pub menu_len: usize,
+    revision: u64,
+}
+impl PartialEq for NativeProperties {
+    fn eq(&self, other: &Self) -> bool {
+        self.text == other.text && self.label == other.label && self.default_value == other.default_value
+            && self.menu_len == other.menu_len && self.menu[..self.menu_len] == other.menu[..other.menu_len]
+    }
+}
+impl Clone for NativeProperties {
+    fn clone(&self) -> Self {
+        fn text(s: &str, bytes: usize) -> String {
+            let mut out = String::with_capacity(bytes); out.push_str(s); out
+        }
+        Self { text: text(&self.text, self.text.capacity()), label: text(&self.label, self.label.capacity()),
+            default_value: self.default_value, menu_len: self.menu_len, revision: self.revision,
+            menu: self.menu.iter().map(|m| super::ui::MenuItem { text: text(&m.text, m.text.capacity()), value: m.value, visible: m.visible }).collect() }
+    }
+}
+impl NativeProperties {
+    fn prepare(c: &super::ui::ControlState) -> Self {
+        fn text(c: &super::ui::ControlState, par: i32) -> String {
+            let source = match c.get(par) { Some(super::ui::Prop::Str(s)) => s.as_str(), _ => "" };
+            let bytes = c.props.iter().find_map(|(p,v)| match v { super::ui::Prop::Str(s) if *p == par => Some(s.capacity()), _ => None })
+                .or_else(|| c.spare_text.iter().find(|(p,_)| *p == par).map(|(_,s)| s.capacity())).unwrap_or(0);
+            let mut out = String::with_capacity(bytes); out.push_str(source); out
+        }
+        Self { text: text(c,b::CONTROL_PAR_TEXT), label: text(c,b::CONTROL_PAR_LABEL), default_value: native_int(c,b::CONTROL_PAR_DEFAULT_VALUE),
+            menu: c.menu.iter().chain(&c.spare_menu).map(|m| {
+                let mut text=String::with_capacity(m.text.capacity()); text.push_str(&m.text);
+                super::ui::MenuItem { text, value:m.value, visible:m.visible }
+            }).collect(), menu_len:c.menu.len(), revision:c.revision }
+    }
+}
+fn native_int(c: &super::ui::ControlState, par: i32) -> i32 {
+    match c.get(par) { Some(super::ui::Prop::Int(v)) => *v, _ => 0 }
+}
+fn native_text(c: &super::ui::ControlState, par: i32) -> &str {
+    match c.get(par) { Some(super::ui::Prop::Str(v)) => v, _ => "" }
+}
+/// One budget unit copies at most 64 UTF-8 bytes. Completed snapshots alone publish.
+fn refresh_native_text(dst: &mut String, source: &str, at: &mut usize, left: &mut usize, changed: &mut bool) -> bool {
+    if *left == 0 { return false; }
+    if *at == 0 {
+        if dst == source { *left-=1; return true; }
+        *changed=true; dst.clear();
+    }
+    debug_assert!(source.len() <= dst.capacity(), "prepared native property capacity");
+    let end=source.floor_char_boundary(source.len().min(at.saturating_add(left.saturating_mul(64))));
+    dst.push_str(&source[*at..end]);
+    *left=left.saturating_sub((end-*at).div_ceil(64).max(1)); *at=end;
+    if end == source.len() { *at=0; true } else { false }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NativeControl {
     pub name: String,
@@ -219,6 +281,7 @@ pub(crate) struct NativeControl {
     pub meter: Option<crate::fx::MeterAttachment>,
     storage: usize,
     pub value: i32,
+    pub properties: NativeProperties,
 }
 
 /// What the host shows of running scripts, refreshed in place.
@@ -1498,7 +1561,7 @@ impl Runtime {
                     (Some(super::ui::Prop::Int(a)), Some(super::ui::Prop::Int(z))) => Some((*a, *z)),
                     _ => None,
                 };
-                live.native_controls.push(NativeControl { name: var.name.trim_start_matches('$').into(), slot, control, kind: kind.clone(), range, meter: c.meter, storage: var.slot as usize, value: state.mem.ints[var.slot as usize] });
+                live.native_controls.push(NativeControl { name: var.name.trim_start_matches('$').into(), slot, control, kind: kind.clone(), range, meter: c.meter, storage: var.slot as usize, value: state.mem.ints[var.slot as usize], properties: NativeProperties::prepare(c) });
             }
         }
     }
@@ -1645,18 +1708,50 @@ impl Runtime {
             if remaining == 0 { return false; }
             let c = &mut live.native_controls[at.native_at];
             let state = &self.states[c.slot];
-            let value = state.mem.ints[c.storage];
             let control = &state.ui.controls[c.control];
-            let range = match (control.get(b::CONTROL_PAR_MIN_VALUE), control.get(b::CONTROL_PAR_MAX_VALUE)) {
-                (Some(super::ui::Prop::Int(a)), Some(super::ui::Prop::Int(z))) => Some((*a, *z)),
-                _ => None,
-            };
-            if c.value != value || c.range != range || c.meter != control.meter {
-                c.value = value; c.range = range; c.meter = control.meter;
-                live.native_revision = live.native_revision.wrapping_add(1); at.changed = true;
+            if at.native_property == 0 {
+                let value = state.mem.ints[c.storage];
+                let range = match (control.get(b::CONTROL_PAR_MIN_VALUE), control.get(b::CONTROL_PAR_MAX_VALUE)) {
+                    (Some(super::ui::Prop::Int(a)), Some(super::ui::Prop::Int(z))) => Some((*a, *z)), _ => None,
+                };
+                if c.value != value || c.range != range || c.meter != control.meter {
+                    c.value=value; c.range=range; c.meter=control.meter;
+                    live.native_revision=live.native_revision.wrapping_add(1); at.changed=true;
+                }
+                remaining-=1;
+                if c.properties.revision == control.revision { at.native_at+=1; continue; }
+                at.native_property=1; at.native_revision=control.revision;
             }
-            at.native_at += 1;
-            remaining -= 1;
+            if at.native_revision != control.revision {
+                // Restart a partially copied control if another callback changed it.
+                at.native_property=1; at.native_text_at=0; at.native_revision=control.revision;
+            }
+            let props=&mut c.properties;
+            if at.native_property == 1 {
+                if remaining == 0 { return false; }
+                let value=native_int(control,b::CONTROL_PAR_DEFAULT_VALUE);
+                at.native_changed |= props.default_value != value || props.menu_len != control.menu.len();
+                props.default_value=value; props.menu_len=control.menu.len(); remaining-=1; at.native_property=2;
+            }
+            for (phase,par) in [(2,b::CONTROL_PAR_TEXT),(3,b::CONTROL_PAR_LABEL)] {
+                if at.native_property == phase {
+                    let dst=if phase==2 { &mut props.text } else { &mut props.label };
+                    if !refresh_native_text(dst,native_text(control,par),&mut at.native_text_at,&mut remaining,&mut at.native_changed) { return false; }
+                    at.native_property+=1;
+                }
+            }
+            while at.native_property-4 < control.menu.len() {
+                if remaining == 0 { return false; }
+                let index=at.native_property-4;
+                let source=&control.menu[index]; let dst=&mut props.menu[index];
+                at.native_changed |= dst.value!=source.value || dst.visible!=source.visible;
+                dst.value=source.value; dst.visible=source.visible;
+                if !refresh_native_text(&mut dst.text,&source.text,&mut at.native_text_at,&mut remaining,&mut at.native_changed) { return false; }
+                at.native_property+=1;
+            }
+            props.revision=at.native_revision;
+            if std::mem::take(&mut at.native_changed) { live.native_revision=live.native_revision.wrapping_add(1); at.changed=true; }
+            at.native_property=0; at.native_at+=1;
         }
         if let Some(out) = &mut live.interface
             && let Some(state) = self.states.get(live.slot)
@@ -3177,6 +3272,10 @@ pub(super) fn refresh_range(
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Refresh {
     native_at: usize,
+    native_property: usize,
+    native_text_at: usize,
+    native_revision: u64,
+    native_changed: bool,
     value_revision: u64,
     slot: usize,
     item: usize,

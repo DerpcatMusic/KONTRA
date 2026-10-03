@@ -94,6 +94,7 @@ local ui = {
 for _,kind in ipairs({"ZStack","HStack","VStack","Text","Rectangle","Image"}) do ui[kind]={kind=kind} end
 native_ui_host = strict("native_ui",ui)
 kontakt_host = strict("kontakt", {
+    get_ksp_control_property=function(name,property,index) return native_control_property(name,property,index) end,
     connect_level_meter=function(name) return strict("level_meter",native_connect_level_meter(name)) end,
     create_tmp_midi_file=function()
         error("Unsupported native UI API: kontakt.create_tmp_midi_file",2)
@@ -118,6 +119,7 @@ kontakt_host = strict("kontakt", {
                 end
                 return native_value(slot,control)
             end,
+            ksp_control_property=function(_,property,index) return native_control_property(name,property,index) end,
             set_value=function(_,value,index)
                 assert(index==nil or index==0,"Native UI array connections are unavailable")
                 local slot,control=resolve()
