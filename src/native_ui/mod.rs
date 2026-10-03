@@ -30,9 +30,11 @@ pub(crate) struct Node {
     pub text_size: f64,
     pub text_color: [f32; 4],
     pub alignment: (Align, Align),
+    pub anchor: Option<(Align, Align)>,
     pub padding: Insets,
     pub offset: [f64; 2],
     pub hidden: bool,
+    pub disabled: bool,
     pub opacity: f32,
     pub background: bool,
     pub tap: bool,
@@ -568,7 +570,7 @@ impl Scene {
         let node = self.node(
             root,
             self.lua.create_table()?,
-            (14., [1.; 4], false, 1.),
+            (14., [1.; 4], false, false, 1.),
             "0".into(),
             0,
             &mut seen,
@@ -581,7 +583,7 @@ impl Scene {
         &mut self,
         node: Table,
         context: Table,
-        style: (f64, [f32; 4], bool, f32),
+        style: (f64, [f32; 4], bool, bool, f32),
         path: String,
         depth: usize,
         seen: &mut BTreeSet<usize>,
@@ -608,7 +610,7 @@ impl Scene {
         let props: Table = node.get("props")?;
         let modifiers: Table = node.get("modifiers")?;
         let background = modifiers.get::<Option<Table>>("background")?.is_some();
-        let (mut text_size, mut text_color, mut hidden, mut opacity) = style;
+        let (mut text_size, mut text_color, mut hidden, mut disabled, mut opacity) = style;
         if let Some(modifier) = modifiers.get::<Option<Table>>("opacity")? {
             let value = match modifier.get::<Value>("value")? {
                 Value::Function(f) => f.call::<Value>(())?, value => value,
@@ -627,6 +629,13 @@ impl Scene {
             };
             let Value::Boolean(value) = value else { bail!("Native UI hidden requires a boolean"); };
             hidden |= value;
+        }
+        if let Some(modifier) = modifiers.get::<Option<Table>>("disabled")? {
+            let value = match modifier.get::<Value>("value")? {
+                Value::Function(f) => f.call::<Value>(())?, value => value,
+            };
+            let Value::Boolean(value) = value else { bail!("Native UI disabled requires a boolean"); };
+            disabled |= value;
         }
         let mut offset = [0.; 2];
         if let Some(modifier) = modifiers.get::<Option<Table>>("offset")? {
@@ -734,34 +743,10 @@ impl Scene {
             .flatten()
             .or(props.get::<Option<String>>("alignment")?)
         {
-            let (mut x, mut y) = (None, None);
-            ensure!(
-                (1..=2).contains(&name.split_whitespace().count()),
-                "Invalid native UI frame alignment: {name}"
-            );
-            for token in name.split_whitespace() {
-                match token {
-                    "left" | "right" => {
-                        ensure!(
-                            x.is_none(),
-                            "Conflicting native UI frame alignment: {name}"
-                        );
-                        x = Some(if token == "left" { Align::Start } else { Align::End });
-                    }
-                    "top" | "bottom" => {
-                        ensure!(
-                            y.is_none(),
-                            "Conflicting native UI frame alignment: {name}"
-                        );
-                        y = Some(if token == "top" { Align::Start } else { Align::End });
-                    }
-                    "center" => (),
-                    _ => bail!("Unsupported native UI frame alignment: {name}"),
-                }
-            }
-            ensure!(!matches!(paint, Paint::HStack(_)) || x.is_none(), "Native UI HStack requires vertical alignment");
-            ensure!(!matches!(paint, Paint::VStack(_)) || y.is_none(), "Native UI VStack requires horizontal alignment");
-            alignment = (x.unwrap_or(Align::Center), y.unwrap_or(Align::Center));
+            let (parsed, horizontal, vertical) = parse_alignment(&name)?;
+            ensure!(!matches!(paint, Paint::HStack(_)) || !horizontal, "Native UI HStack requires vertical alignment");
+            ensure!(!matches!(paint, Paint::VStack(_)) || !vertical, "Native UI VStack requires horizontal alignment");
+            alignment = parsed;
         }
         let width = frame
             .as_ref()
@@ -798,8 +783,8 @@ impl Scene {
         if self.gestures.len() <= id {
             self.gestures.resize_with(id + 1, || None);
         }
-        let has_tap = gesture.is_some() && !hidden;
-        if let Some(g) = gesture.filter(|_| !hidden) {
+        let has_tap = gesture.is_some() && !hidden && !disabled;
+        if let Some(g) = gesture.filter(|_| !hidden && !disabled) {
             self.gestures[id] = Some(g);
         }
         let children: Table = node.get("children")?;
@@ -808,7 +793,7 @@ impl Scene {
             nodes.push(self.node(
                 child?,
                 context.clone(),
-                (text_size, text_color, hidden, opacity),
+                (text_size, text_color, hidden, disabled, opacity),
                 format!("{path}/{index}"),
                 depth + 1,
                 seen,
@@ -816,6 +801,17 @@ impl Scene {
             )?);
         }
         ensure!(!background || nodes.len()==2,"Invalid native UI background wrapper");
+        let anchor = if let Some(modifier) = modifiers.get::<Option<Table>>("align")? {
+            let value = match modifier.get::<Value>("value")? {
+                Value::Function(f) => f.call::<Value>(())?, value => value,
+            };
+            let Value::String(name) = value else { bail!("Native UI align requires an alignment string"); };
+            Some(parse_alignment(&name.to_str()?)?.0)
+        } else if frame.is_none() && matches!(paint, Paint::Stack) && nodes.len()==1 {
+            // Transparent modifier scopes retain the child's placement guide.
+            // A frame consumes it for its child's placement, then forms a new box.
+            nodes[0].anchor
+        } else { None };
         Ok(Node {
             id,
             paint,
@@ -824,9 +820,11 @@ impl Scene {
             text_size,
             text_color,
             alignment,
+            anchor,
             padding,
             offset,
             hidden,
+            disabled,
             opacity,
             background,
             tap: has_tap,
@@ -852,6 +850,27 @@ impl Scene {
         result?;
         Ok(self.take_edits())
     }
+}
+
+fn parse_alignment(name: &str) -> Result<((Align, Align), bool, bool)> {
+    let (mut x, mut y) = (None, None);
+    ensure!(name.len() <= 32 && (1..=2).contains(&name.split_whitespace().count()),
+        "Invalid native UI alignment: {name}");
+    for token in name.split_whitespace() {
+        match token {
+            "left" | "right" => {
+                ensure!(x.is_none(), "Conflicting native UI alignment: {name}");
+                x = Some(if token == "left" { Align::Start } else { Align::End });
+            }
+            "top" | "bottom" => {
+                ensure!(y.is_none(), "Conflicting native UI alignment: {name}");
+                y = Some(if token == "top" { Align::Start } else { Align::End });
+            }
+            "center" => (),
+            _ => bail!("Unsupported native UI alignment: {name}"),
+        }
+    }
+    Ok(((x.unwrap_or(Align::Center), y.unwrap_or(Align::Center)), x.is_some(), y.is_some()))
 }
 
 #[cfg(test)]
