@@ -1241,6 +1241,14 @@ fn find_stale_candidate(stopping: &AtomicBool, confirmed_only: bool) -> Option<R
             continue;
         }
         let Some(mut marker) = read_json_or_discard::<SessionMarker>(&path) else {
+            if std::fs::metadata(&path).is_ok_and(|m| m.len() > super::LOCAL_REPORT_BYTES as u64) {
+                let _ = preserve_original_file(
+                    &path,
+                    "oversized-session-json-unparsed",
+                    stopping,
+                    None,
+                );
+            }
             continue;
         };
         if marker.pid == std::process::id()
@@ -1314,6 +1322,17 @@ fn find_stale_candidate(stopping: &AtomicBool, confirmed_only: bool) -> Option<R
             marker.events = records.into();
         }
         let panic = read_json(&panic_path);
+        if panic.is_none()
+            && std::fs::metadata(&panic_path)
+                .is_ok_and(|m| m.len() > super::LOCAL_REPORT_BYTES as u64)
+        {
+            let _ = preserve_original_file(
+                &panic_path,
+                "oversized-panic-json-unparsed",
+                stopping,
+                None,
+            );
+        }
 
         let detected_at = now_unix();
         let started_at = marker.started_at.min(detected_at);
@@ -1403,6 +1422,9 @@ fn find_stale_candidate(stopping: &AtomicBool, confirmed_only: bool) -> Option<R
 
 fn recover_pending_slot(pending: &Mutex<Option<CrashIncident>>, stopping: &AtomicBool) -> bool {
     let previous = pending.lock_unpoisoned().clone();
+    if previous.is_none() && !preserve_oversized_pending(stopping) {
+        return false;
+    }
     if previous
         .as_ref()
         .is_some_and(CrashIncident::auto_reportable)
@@ -1484,6 +1506,12 @@ fn find_deferred_candidate(stopping: &AtomicBool) -> Option<RecoveredCandidate> 
         }
         checked += 1;
         let incident: Option<CrashIncident> = read_json(&path);
+        if incident.is_none()
+            && std::fs::metadata(&path).is_ok_and(|m| m.len() > super::LOCAL_REPORT_BYTES as u64)
+        {
+            let _ =
+                preserve_original_file(&path, "oversized-deferred-json-unparsed", stopping, None);
+        }
         if let Some(mut incident) = incident {
             if !incident.auto_reportable() {
                 let evidence = super::platform::collect_crash_evidence(
@@ -1617,6 +1645,128 @@ fn archive_original(
             }
         },
     )
+}
+
+/// Preserve complete source bytes privately without buffering the full file.
+/// A second streamed pass validates the captured digest before atomic publication.
+pub(super) fn preserve_original_file(
+    source: &Path,
+    status: &str,
+    stopping: &AtomicBool,
+    parsed_original: Option<(u64, &str)>,
+) -> std::io::Result<String> {
+    let result = (|| {
+        use std::io::Read as _;
+        let mut file = std::fs::File::open(source)?;
+        let mut buffer = [0_u8; 64 * 1024];
+        let mut bytes = 0_u64;
+        let mut hasher = blake3::Hasher::new();
+        loop {
+            if stopping.load(Ordering::Acquire) {
+                return Err(std::io::ErrorKind::Interrupted.into());
+            }
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            bytes += read as u64;
+            hasher.update(&buffer[..read]);
+        }
+        let hash = hasher.finalize().to_hex().to_string();
+        if parsed_original
+            .is_some_and(|(parsed_bytes, parsed_hash)| parsed_bytes != bytes || parsed_hash != hash)
+        {
+            return Err(std::io::Error::other(
+                "Native source changed after parsing; a different file was not archived as the parsed report",
+            ));
+        }
+        let relative = format!("originals/{hash}.raw");
+        let archive = reports_dir().join(&relative);
+        let expected = LocalJournalEvidence {
+            bytes,
+            blake3: hash.clone(),
+            ..Default::default()
+        };
+        archive_original(source, &archive, Some(&expected), stopping)?;
+        let manifest = serde_json::json!({"status":status, "bytes":bytes, "blake3":hash,
+        "local_file":relative, "buffered_read_limit":super::LOCAL_REPORT_BYTES,
+        "automatically_uploaded":false});
+        if !persist_json(&archive.with_extension("json"), &manifest) {
+            return Err(std::io::Error::other(
+                "Complete original was archived, but its private manifest could not be published; source retained",
+            ));
+        }
+        Ok(format!(
+            "Complete original retained privately: {relative}; bytes={bytes}; BLAKE3={hash}; status={status}; raw original is retained locally and not uploaded as a file."
+        ))
+    })();
+    let (level, reason) = match &result {
+        Ok(status) => (crate::diagnostics::LogLevel::Info, status.clone()),
+        Err(error) => (
+            crate::diagnostics::LogLevel::Error,
+            format!("Private original archival failed: {error}. KONTRA did not remove the source."),
+        ),
+    };
+    crate::diagnostics::event(
+        level,
+        "support",
+        "complete_original_retention",
+        serde_json::json!({"reason":reason,"status":status}),
+    );
+    result
+}
+
+fn preserve_oversized_pending(stopping: &AtomicBool) -> bool {
+    let path = pending_incident_path();
+    match super::read_bounded_file(&path, super::LOCAL_REPORT_BYTES) {
+        Ok(Some(_)) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Ok(None) => {
+            match preserve_original_file(&path, "oversized-pending-json-unparsed", stopping, None) {
+                Ok(status) => {
+                    crate::diagnostics::event(
+                        crate::diagnostics::LogLevel::Warning,
+                        "support",
+                        "oversized_pending_report_archived",
+                        serde_json::json!({"reason":format!("{status} It could not be parsed or automatically submitted; export the private original for support.")}),
+                    );
+                    if stopping.load(Ordering::Acquire) {
+                        return false;
+                    }
+                    match std::fs::remove_file(path) {
+                        Ok(()) => true,
+                        Err(error) => {
+                            crate::diagnostics::event(
+                                crate::diagnostics::LogLevel::Error,
+                                "support",
+                                "oversized_pending_slot_retirement_failed",
+                                serde_json::json!({"reason":format!("The complete oversized original is privately archived, but its pending slot could not be retired ({error}); replacement remains blocked.")}),
+                            );
+                            false
+                        }
+                    }
+                }
+                Err(error) => {
+                    crate::diagnostics::event(
+                        crate::diagnostics::LogLevel::Error,
+                        "support",
+                        "oversized_pending_report_archive_failed",
+                        serde_json::json!({"reason":format!("Oversized pending evidence remains in place and blocks replacement because private archival failed: {error}")}),
+                    );
+                    false
+                }
+            }
+        }
+        Err(error) => {
+            crate::diagnostics::event(
+                crate::diagnostics::LogLevel::Error,
+                "support",
+                "pending_report_read_failed",
+                serde_json::json!({"reason":format!("Pending evidence could not be read and remains in place; replacement is blocked: {error}")}),
+            );
+            false
+        }
+    }
 }
 
 fn cleanup_session_files(marker: &Path, journal: Option<&Path>, panic: &Path) {
@@ -1838,14 +1988,19 @@ fn save_pending_incident(incident: &CrashIncident) -> bool {
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = super::read_bounded_file(path, super::LOCAL_REPORT_BYTES).ok()??;
     serde_json::from_slice(&bytes).ok()
 }
 
-/// As [`read_json`], but deletes a file that exists and does not parse, which would otherwise be
-/// skipped on every launch forever.
+/// As [`read_json`], but discards malformed inputs within the read budget.
+/// Oversized originals are retained and handled by the recovery worker.
 fn read_json_or_discard<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
-    let bytes = std::fs::read(path).ok()?;
+    let Some(bytes) = super::read_bounded_file(path, super::LOCAL_REPORT_BYTES).ok()? else {
+        // This reader also runs inside REPORTER's LazyLock initializer. Emit
+        // diagnostics only from the recovery worker; mirroring here would
+        // recursively access that same initializer. Oversize is not malformed.
+        return None;
+    };
     let value = serde_json::from_slice(&bytes).ok();
     if value.is_none() {
         let _ = std::fs::remove_file(path);
@@ -2449,6 +2604,66 @@ mod tests {
             !deferred.exists(),
             "acknowledged incident never returns to the queue"
         );
+    }
+
+    #[test]
+    fn oversized_pending_is_not_discarded_or_replaced_before_complete_private_retention() {
+        const CHILD: &str = "KONTRA_OVERSIZED_PENDING_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact","support::crash::tests::oversized_pending_is_not_discarded_or_replaced_before_complete_private_retention","--test-threads=1"])
+                .env(CHILD,"1").env("KONTRA_REPORT_DIR",directory.path()).env("KONTRA_DISABLE_NETWORK","1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let mut incident = test_incident("0.3.115", "authored-large-prior");
+        incident.platform_evidence =
+            "authored private original\n".repeat(super::super::LOCAL_REPORT_BYTES / 20);
+        assert!(save_pending_incident(&incident));
+        let original = std::fs::read(pending_incident_path()).unwrap();
+        assert!(original.len() > super::super::LOCAL_REPORT_BYTES);
+        assert!(load_pending_incident().is_none());
+        assert_eq!(
+            std::fs::read(pending_incident_path()).unwrap(),
+            original,
+            "oversize is not malformed JSON and must never be discarded"
+        );
+        let blocker = reports_dir().join("originals");
+        std::fs::write(&blocker, b"authored archive failure blocker").unwrap();
+        let pending = Mutex::new(None);
+        assert!(!recover_pending_slot(&pending, &AtomicBool::new(false)));
+        assert_eq!(std::fs::read(pending_incident_path()).unwrap(), original);
+        assert!(pending.lock_unpoisoned().is_none());
+        std::fs::remove_file(&blocker).unwrap();
+        assert!(!preserve_oversized_pending(&AtomicBool::new(true)));
+        assert!(pending_incident_path().exists());
+        assert!(preserve_oversized_pending(&AtomicBool::new(false)));
+        assert!(!pending_incident_path().exists());
+        let hash = blake3::hash(&original).to_hex().to_string();
+        let archive = blocker.join(format!("{hash}.raw"));
+        assert_eq!(std::fs::read(&archive).unwrap(), original);
+        let manifest: serde_json::Value = read_json(&archive.with_extension("json")).unwrap();
+        assert_eq!(manifest["bytes"], original.len());
+        assert_eq!(manifest["blake3"], hash);
+        assert_eq!(manifest["status"], "oversized-pending-json-unparsed");
+        assert_eq!(manifest["automatically_uploaded"], false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&archive).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                std::fs::metadata(archive.with_extension("json"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
     }
 
     #[test]
