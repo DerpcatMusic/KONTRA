@@ -641,6 +641,14 @@ pub(crate) fn rack(generic: i32) -> Option<Rack> {
 }
 
 impl Address {
+    /// Saved phase modifiers remain readable; their live source consumer is
+    /// unsupported, so setters and persistence preparation must reject writes.
+    pub(crate) fn saved_phase_only(self, groups: &[Group]) -> bool {
+        matches!(self, Self::Intensity { group, index, .. }
+            if groups.get(group as usize).and_then(|g| g.mods.get(index as usize))
+                .is_some_and(|m| matches!(&m.target, ModTarget::Module { param, .. } if param == "startPhase")))
+    }
+
     /// Map a KSP address onto the engine, or `None` when it is not modelled.
     pub(crate) fn resolve(par: EnginePar, groups: &[Group]) -> Option<Self> {
         let group = || {
