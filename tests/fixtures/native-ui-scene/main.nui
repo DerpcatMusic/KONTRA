@@ -34,9 +34,9 @@ return function()
         true and -- an authored conditional may continue after its comment
         @Card {parameter_id="Amount"}
         or @ui.ZStack {}
-        @Card {parameter_id="Remote"}.font_size(20).foreground_color(ui.Color.red).context(key=context.primary,value="remote").hidden(ui.create_computed(function() return remote:value()>=20 end))
+        @Card {parameter_id="Remote"}.font_size(20).foreground_color(ui.Color.red).context(key=context.primary,value="remote").hidden(ui.create_computed(function() return remote:value()>=0.20 end))
         @ui.Image {file=ui.create_computed(function()
-            return remote:value()<20 and "assets/pics/ready.svg" or "assets/pics/changed.svg"
+            return remote:value()<0.20 and "assets/pics/ready.svg" or "assets/pics/changed.svg"
         end),resizable=false}.padding(left=4,right=6,top=8,bottom=2).background(@ui.Rectangle {color=ui.Color(0,0,255),corner_radius=3}).frame(width=100,height=60,alignment="top left").frame(width=300,height=160,alignment="bottom right")
     }.font_size(12).foreground_color(tint).context(key=context.primary,value="inherited").context(key=context.secondary,value="second").frame(width=640 height=400).background(@ui.Rectangle {color=ui.Color.black,corner_radius=0})
 end
