@@ -19,6 +19,7 @@ pub(crate) enum Paint {
     VStack(f64),
     Text(String),
     Rectangle([f32; 4], f64),
+    Ring { color: [f32; 4], start: f64, angle: f64, thickness: f64 },
     Asset(crate::native_assets::AssetRef),
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -892,6 +893,15 @@ impl Scene {
                     color.get::<Option<f32>>("a")?.unwrap_or(1.),
                 ], radius)
             }
+            "Ring" => {
+                let color: Table = props.get("color")?;
+                let start = props.get::<Option<f64>>("start_angle")?.unwrap_or(0.);
+                let angle = props.get::<Option<f64>>("angle")?.unwrap_or(360.);
+                let thickness = props.get::<Option<f64>>("thickness")?.unwrap_or(4.);
+                ensure!(start.is_finite() && angle.is_finite() && (-360. ..=360.).contains(&angle), "Invalid or unsupported native UI Ring angle");
+                ensure!(thickness.is_finite() && (0. ..=4096.).contains(&thickness), "Invalid native UI Ring thickness");
+                Paint::Ring { color: [color.get::<f32>("r")? / 255., color.get::<f32>("g")? / 255., color.get::<f32>("b")? / 255., color.get::<Option<f32>>("a")?.unwrap_or(1.)], start: start.rem_euclid(360.), angle, thickness }
+            }
             "Image" => {
                 let value = props.get::<Value>("file")?;
                 let value = match value {
@@ -959,7 +969,7 @@ impl Scene {
                 ensure!(minimum[axis].unwrap_or(0.) <= maximum[axis].unwrap_or(4096.),"Conflicting native UI frame bounds");
             }
         }
-        if let Paint::Rectangle(color, _) = &paint {
+        if let Paint::Rectangle(color, _) | Paint::Ring { color, .. } = &paint {
             ensure!(
                 color
                     .iter()
