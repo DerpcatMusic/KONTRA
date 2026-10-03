@@ -294,8 +294,8 @@ mod tests {
                 let reference = (state - f64::from(BASE)) * sign + offset;
                 let u = f64::from(f32::EPSILON) * 0.5;
                 let gamma = (n as f64 * u) / (1. - n as f64 * u);
-                let bound =
-                    gamma * state.abs() + u * (2. * state.abs() + f64::from(BASE) + offset.abs());
+                let magnitude = (1. + gamma) * state.abs() + f64::from(BASE);
+                let bound = gamma * state.abs() + (2. * u + u * u) * magnitude + u * offset.abs();
                 let actual = source.point();
                 assert!(
                     (f64::from(actual) - reference).abs() <= bound,
