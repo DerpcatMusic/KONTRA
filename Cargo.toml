@@ -1,6 +1,6 @@
 [package]
 name = "kontakto"
-version = "0.3.123"
+version = "0.3.141"
 edition = "2024"
 rust-version = "1.92"
 license = "Apache-2.0"
@@ -46,7 +46,7 @@ ureq = { version = "3.4.0", default-features = false, features = ["rustls"] }
 derpcat-flight-recorder = { path = "vendor/derpcat-flight-recorder" }
 buffr-durable-file = { path = "vendor/buffr-durable-file" }
 moose = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", default-features = false, features = ["mui"], optional = true }
-moose-clap = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", optional = true }
+moose-clap = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", features = ["mpe-input"], optional = true }
 moose-vst3 = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", optional = true }
 moose-standalone = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", features = ["gui", "playback"], optional = true }
 clap-sys = { version = "0.5", optional = true }

@@ -905,6 +905,17 @@ pub fn read_journal(path: impl AsRef<Path>, limit: usize) -> Vec<Record> {
     journal::read(path.as_ref(), limit).unwrap_or_default()
 }
 
+pub use journal::JournalCapture;
+
+pub fn capture_journal(
+    path: impl AsRef<Path>,
+    head: usize,
+    tail: usize,
+    stopping: &std::sync::atomic::AtomicBool,
+) -> std::io::Result<JournalCapture> {
+    journal::capture(path.as_ref(), head, tail, stopping)
+}
+
 fn bounded(value: String, max_bytes: usize) -> String {
     if value.len() <= max_bytes {
         value

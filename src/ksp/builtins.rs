@@ -1061,6 +1061,7 @@ pub const ENGINE_PARS: &[&str] = &[
     "$ENGINE_PAR_WT_MOD_TUNE_UNIT",
     "$ENGINE_PAR_WT_MOD_TYPE",
     "$ENGINE_PAR_WT_MOD_WAVE",
+    "$ENGINE_PAR_GAIN",
 ];
 
 pub fn engine_par_id(name: &str) -> Option<i32> {

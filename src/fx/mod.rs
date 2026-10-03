@@ -558,6 +558,16 @@ impl ProgramFx {
                 ));
             }
             match &fx.params {
+                Params::Filter(f) if f.filter_type == 33 => {
+                    out.push(format!("{at}: Ladder LP4 bypass and subtype changes clear filter history; the native transition lifecycle is unverified"));
+                    out.push(format!("{at}: Ladder LP4 repeated modulation control smoothing timing and nonzero secondary cutoff-clock activation remain unverified"));
+                    if !matches!(fx.version, 0x90..=0x92) {
+                        out.push(format!("{at}: Ladder LP4 unknown record cutoff-control mode uses ordinary smoothing"));
+                    }
+                    if f.native_flag.is_some_and(|v| v != 0) {
+                        out.push(format!("{at}: Ladder LP4 High Quality oversampling is not applied; the single-rate kernel is used"));
+                    }
+                }
                 Params::Convolution(c) => {
                     if c.auto_gain() && ((c.envelope_active() && !c.envelope_supported())
                         || c.early.low_cut_hz != c.late.low_cut_hz

@@ -170,7 +170,8 @@ pub struct FNTableImpl {
     pub special_filetable: HashMap<u32, String>,
     /// List of samples (wav, ncw)
     pub sample_filetable: HashMap<u32, String>,
-    /// List of sample timestamps
+    /// Derived sample dates. No entry when the format has no timestamp or its
+    /// value cannot be represented as a date; FNTableRecord retains raw v2 bits.
     pub sample_timestamp_table: HashMap<u32, time::Date>,
     /// List of instruments (nki) and internal files (ir samples)
     pub other_filetable: HashMap<u32, String>,
@@ -243,9 +244,9 @@ impl FNTableImpl {
         let mut sample_timestamp_table = HashMap::new();
         for i in 0..file_count {
             let unix_timestamp = reader.read_u64_le()? as i64;
-            let datetime = OffsetDateTime::from_unix_timestamp(unix_timestamp).unwrap();
-            let timestamp: time::Date = datetime.date();
-            sample_timestamp_table.insert(i, timestamp);
+            if let Ok(datetime) = OffsetDateTime::from_unix_timestamp(unix_timestamp) {
+                sample_timestamp_table.insert(i, datetime.date());
+            }
         }
 
         // offsets?
