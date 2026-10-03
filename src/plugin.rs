@@ -5093,18 +5093,18 @@ end on"#;
                 log=log..owner..string.sub(phase,1,1)
                 count:set_value(count:value()+1)
             end
-            local function A()
-                return @ui.Rectangle {color=ui.Color.red}.frame(width=20,height=10)
-                    .on_hover_gesture(enter=function(e)record('A','enter',e)end,
-                        move=function(e)record('A','move',e)end,exit=function(e)record('A','exit',e)end)
-                    .offset(x=5,y=3).hidden(mode:value()==1).disabled(mode:value()==2).frame(width=80,height=40)
+            local function make(owner,color)
+                return function()
+                    local owner_state=ui.create_state(owner)
+                    assert(owner_state()==owner,'Component state owner collision')
+                    return @ui.Rectangle {color=color}.frame(width=20,height=10)
+                        .on_hover_gesture(enter=function(e)record(owner,'enter',e)end,
+                            move=function(e)record(owner,'move',e)end,exit=function(e)record(owner,'exit',e)end)
+                        .offset(x=5,y=3).hidden(mode:value()==1).disabled(mode:value()==2).frame(width=80,height=40)
+                end
             end
-            local function B()
-                return @ui.Rectangle {color=ui.Color.white}.frame(width=20,height=10)
-                    .on_hover_gesture(enter=function(e)record('B','enter',e)end,
-                        exit=function(e)record('B','exit',e)end)
-                    .offset(x=5,y=3).frame(width=80,height=40)
-            end
+            -- Two closures with the SAME source/definition line are distinct owners.
+            local A,B=make('A',ui.Color.red),make('B',ui.Color.white)
             local function Main()
                 return @ui.ZStack {
                     mode:value()==5 and @ui.Rectangle {color=ui.Color.black}.frame(width=80,height=40)
