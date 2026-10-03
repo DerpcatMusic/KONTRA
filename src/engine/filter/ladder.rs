@@ -39,6 +39,7 @@ struct Controls {
     phase: u8,
     pending: bool,
     started: bool,
+    instant_cutoff: bool,
 }
 
 impl Controls {
@@ -49,7 +50,7 @@ impl Controls {
             let inverse = 1.0 / (ticks as f32 * 32.0);
             for lane in 0..3 {
                 let increment = (self.target[lane] - self.current[lane]) * inverse;
-                if f64::from(increment * increment) < 1e-15 {
+                if (lane == 1 && self.instant_cutoff) || f64::from(increment * increment) < 1e-15 {
                     self.current[lane] = self.target[lane];
                     self.increment[lane] = 0.0;
                 } else {
@@ -116,7 +117,18 @@ fn compensation(q: f32) -> f32 {
     }
 }
 
+/// These readers enable the separate cutoff path whose native constructor
+/// and rate preparation leave its clock inverse zero. Other versions remain
+/// unknown; their ordinary cutoff clock is an explicitly diagnosed fallback.
+pub(super) fn instant_cutoff(version: u16) -> bool {
+    matches!(version, 0x90..=0x92)
+}
+
 impl Ladder {
+    pub(super) fn record_version(&mut self, version: u16) {
+        self.controls.instant_cutoff = instant_cutoff(version);
+    }
+
     /// Small-signal response, including the correction in the feedback path.
     /// Large signals additionally undergo the input soft clip.
     pub(super) fn magnitude(knobs: [f32; 3], hz: f32, rate: f32) -> f32 {
@@ -170,6 +182,7 @@ impl Ladder {
                 current: target,
                 target,
                 rate,
+                instant_cutoff: self.controls.instant_cutoff,
                 ..Controls::default()
             };
             self.coefficients(target, rate);
@@ -216,6 +229,7 @@ impl Ladder {
                 target,
                 rate,
                 started: true,
+                instant_cutoff: self.controls.instant_cutoff,
                 ..Controls::default()
             };
             self.coefficients(target, rate);
@@ -276,6 +290,77 @@ impl Ladder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_ladder_legacy_cutoff_snap_retains_gain_resonance_clock() {
+        prepare();
+        for version in [0x90, 0x91, 0x92, 0, 0x95] {
+            for rate in [32_000.0_f32, 44_100.0, 48_000.0, 96_000.0] {
+                let duration = ((rate * 0.002 / 32.0 + 0.5).floor() as usize).max(1) * 32;
+                let mut filter = Ladder::default();
+                filter.record_version(version);
+                filter.tune([0.25, 0.0, 0.0], rate);
+                let (mut l, mut r) = ([0.0; 9], [0.0; 9]);
+                filter.process(&mut l, &mut r);
+                filter.tune([0.75, 0.5, 0.5], rate);
+                let mut split = filter;
+                let (mut l, mut r) = ([0.00001; 512], [-0.00001; 512]);
+                let (mut sl, mut sr) = (l, r);
+                filter.process(&mut l, &mut r);
+                for range in [0..1, 1..23, 23..71, 71..117, 117..512] {
+                    split.process(&mut sl[range.clone()], &mut sr[range]);
+                }
+                assert_eq!(l, sl);
+                assert_eq!(r, sr);
+                let mut clock = Ladder::default();
+                clock.record_version(version);
+                clock.tune([0.25, 0.0, 0.0], rate);
+                clock.process(&mut [0.0; 9], &mut [0.0; 9]);
+                clock.tune([0.75, 0.5, 0.5], rate);
+                for frame in 9..32 + duration {
+                    clock.process(&mut [0.0; 1], &mut [0.0; 1]);
+                    let elapsed = if frame < 32 {
+                        0
+                    } else {
+                        (((frame - 32) / 4 + 1) * 4).min(duration)
+                    };
+                    let fraction = elapsed as f64 / duration as f64;
+                    let cutoff_fraction = if matches!(version, 0x90..=0x92) && frame >= 32 {
+                        1.0
+                    } else {
+                        fraction
+                    };
+                    assert!(
+                        (f64::from(clock.controls.current[1]) - (0.25 + 0.5 * cutoff_fraction))
+                            .abs()
+                            < 0.000002
+                    );
+                    assert!(
+                        (f64::from(clock.gain)
+                            - (1.0 + (10_f64.powf(6.0 / 20.0) - 1.0) * fraction))
+                            .abs()
+                            < 0.00003
+                    );
+                    assert!((f64::from(clock.feedback) - 4.16 * 0.75 * fraction).abs() < 0.000004);
+                }
+                // Retarget downward: the zero-inverse secondary clock snaps;
+                // no positive-increment cap artifact is introduced or claimed.
+                clock.tune([0.1, 0.5, 0.5], rate);
+                clock.process(&mut [0.0; 1], &mut [0.0; 1]);
+                if matches!(version, 0x90..=0x92) {
+                    assert_eq!(clock.controls.current[1], 0.1);
+                }
+                clock.clear();
+                clock.process(&mut [0.0; 1], &mut [0.0; 1]);
+                assert_eq!(clock.controls.current, clock.controls.target);
+                assert_eq!(clock.controls.remaining, 0);
+                assert_eq!(
+                    clock.controls.instant_cutoff,
+                    matches!(version, 0x90..=0x92)
+                );
+            }
+        }
+    }
 
     #[test]
     fn native_ladder_lp4_control_steps_follow_physical_clock_and_partition() {
