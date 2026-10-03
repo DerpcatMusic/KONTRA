@@ -515,8 +515,10 @@ published 0.3.96 binaries are unchanged. These entries describe the next source 
 - Native Distortion Damping uses the checked native law. Source: `b3e453e`.
 - Distortion's native DC filter runs after Damping with the checked scalar/SIMD
   summation order. Sources: `74e3c0e`, `cd940e2`; one DC-processing outcome.
-- macOS plug-in bundles retain the Finder package flag as well as `BNDL` metadata.
-  ZIP extraction and installed-payload gates check Finder/Foundation recognition
+- macOS plug-in packages use the signed standalone app’s imported CLAP/VST3
+  package-type declarations and user-context Launch Services registration. No
+  FinderInfo attributes are added to signed code. ZIP extraction and installed-
+  payload gates check Foundation/Workspace package recognition
   and both plug-in factories. Sources: `6001126`. Actual hosted Mac execution is
   still required; this source correction is not a Bitwig scan or playback result.
 - VST3 editor views retain their component while alive. Source: `3e76d60`.

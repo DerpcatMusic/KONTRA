@@ -45,7 +45,9 @@ def fixtures(root):
             cpu = 0x100000c if arch == 'arm64' else 0x1000007
             subtype = 0 if arch == 'arm64' else 3
             path.write_bytes(struct.pack('<8I', 0xfeedfacf, cpu, subtype, 1, 0, 0, 0, 0) + arch.encode() + fmt.encode() + json.dumps(info).encode())
-            if fmt != 'standalone':
+            if fmt == 'standalone':
+                (stage / 'KONTRA.app/Contents/Info.plist').write_bytes(plistlib.dumps(package.app_info(VERSION)))
+            else:
                 (stage / f'KONTRA.{fmt}/Contents/Info.plist').write_bytes(plistlib.dumps(dict(
                     CFBundleExecutable='KONTRA', CFBundleIdentifier=f'audio.matari.kontra.{fmt}',
                     CFBundlePackageType='BNDL',
@@ -94,10 +96,11 @@ class Packaging(unittest.TestCase):
             for name in package.MANIFESTS.values():
                 self.assertEqual((resources / 'source-builds' / arch / name).read_bytes(), (self.sources[arch] / name).read_bytes())
         plist = plistlib.loads((self.stage / 'payload/Applications/KONTRA.app/Contents/Info.plist').read_bytes())
-        self.assertEqual(plist['CFBundlePackageType'], 'APPL')
+        self.assertEqual(plist, package.app_info(VERSION))
+        self.assertFalse((resources / 'KONTRA.app').exists())
 
     def test_mismatched_identity_or_resources_never_produces_payload(self):
-        for case in ('revision', 'version', 'profile', 'features', 'resources', 'plist', 'arch', 'binary', 'legal', 'symlink'):
+        for case in ('revision', 'version', 'profile', 'features', 'resources', 'plist', 'app-types', 'arch', 'binary', 'legal', 'symlink'):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 sources = fixtures(root)
@@ -112,6 +115,10 @@ class Packaging(unittest.TestCase):
                 elif case == 'plist':
                     path = arm / 'KONTRA.vst3/Contents/Info.plist'
                     info = plistlib.loads(path.read_bytes()); info['CFBundleIdentifier'] = 'wrong.identity'
+                    path.write_bytes(plistlib.dumps(info))
+                elif case == 'app-types':
+                    path = arm / 'KONTRA.app/Contents/Info.plist'
+                    info = plistlib.loads(path.read_bytes()); info.pop('UTImportedTypeDeclarations')
                     path.write_bytes(plistlib.dumps(info))
                 elif case == 'arch':
                     shutil.copyfile(sources['x86_64'] / package.BINARIES['clap'], arm / package.BINARIES['clap'])
@@ -144,15 +151,18 @@ if name == 'codesign' and '--force' in args and pathlib.Path(args[-1]).is_dir():
     resource = signature / 'CodeResources'
     resource.write_text('synthetic signature resource')
     resource.chmod(0o600)
-    (pathlib.Path(args[-1]) / '.synthetic-finder-bit').unlink(missing_ok=True)
-if name == 'xcrun' and args[:3] == ['SetFile', '-a', 'B']:
-    (pathlib.Path(args[-1]) / '.synthetic-finder-bit').touch()
+if name == 'xcrun' and args[:1] == ['SetFile']: raise AssertionError('FinderInfo invalidates strict signatures')
+if name == 'xcrun' and args[:1] == ['swift']:
+    assert args[2] == '--register'
+    app = pathlib.Path(args[3])
+    info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+    assert info['CFBundlePackageType'] == 'APPL'
+    assert len(info['UTImportedTypeDeclarations']) == 2
+    assert all('com.apple.package' in t['UTTypeConformsTo'] for t in info['UTImportedTypeDeclarations'])
 if name == 'pkgbuild':
     payload = pathlib.Path(args[args.index('--root')+1])
     signatures = list(payload.rglob('_CodeSignature'))
     assert len(signatures) == 3
-    for bundle in ('Library/Audio/Plug-Ins/CLAP/KONTRA.clap', 'Library/Audio/Plug-Ins/VST3/KONTRA.vst3'):
-        assert (payload / bundle / '.synthetic-finder-bit').exists()
     for signature in signatures:
         assert signature.stat().st_mode & 0o777 == 0o755
         assert (signature / 'CodeResources').stat().st_mode & 0o777 == 0o644
@@ -166,7 +176,9 @@ if name == 'pkgbuild':
         assert args[args.index('--install-location')+1] == '/'
         scripts = pathlib.Path(args[args.index('--scripts')+1])
         assert (scripts / 'postinstall').stat().st_mode & 0o111
-        assert 'com.apple.FinderInfo' in (scripts / 'postinstall').read_text()
+        postinstall = (scripts / 'postinstall').read_text()
+        assert 'launchctl asuser' in postinstall and 'sudo -u' in postinstall and 'lsregister' in postinstall
+        assert 'xattr -' not in postinstall and 'SetFile' not in postinstall
         pathlib.Path(args[-1]).write_bytes(b'synthetic installer payload')
 if name == 'productsign': pathlib.Path(args[-1]).write_bytes(pathlib.Path(args[-2]).read_bytes())
 if name == 'xcrun' and args[:2] == ['notarytool', 'submit']:
@@ -183,7 +195,7 @@ if name == 'xcrun' and args[:2] == ['notarytool', 'submit']:
                    APPLE_ID='synthetic@example.invalid', APPLE_APP_SPECIFIC_PASSWORD='synthetic',
                    MOCK_LOG=str(self.root / 'calls.jsonl'))
         cases = [('valid', '', 'Accepted'), ('codesign', 'codesign', 'Accepted'),
-                 ('bundle-bit', 'SetFile', 'Accepted'),
+                 ('package-registration', 'swift', 'Accepted'),
                  ('productsign', 'productsign', 'Accepted'), ('pkgutil', 'pkgutil', 'Accepted'),
                  ('rejected', '', 'Invalid'), ('staple', 'staple', 'Accepted'), ('validate', 'validate', 'Accepted'), ('assessment', 'spctl', 'Accepted')]
         for case, tool, status in cases:

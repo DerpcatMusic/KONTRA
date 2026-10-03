@@ -14,10 +14,24 @@ import subprocess
 
 TARGETS = {"arm64": "aarch64-apple-darwin", "x86_64": "x86_64-apple-darwin"}
 FORMATS = ("clap", "vst3", "standalone")
-BINARIES = {"clap": "KONTRA.clap/Contents/MacOS/KONTRA", "vst3": "KONTRA.vst3/Contents/MacOS/KONTRA", "standalone": "kontakto-standalone"}
+BINARIES = {"clap": "KONTRA.clap/Contents/MacOS/KONTRA", "vst3": "KONTRA.vst3/Contents/MacOS/KONTRA", "standalone": "KONTRA.app/Contents/MacOS/KONTRA"}
 MANIFESTS = {"clap": "clap-build-info.json", "vst3": "vst3-build-info.json", "standalone": "build-info.json"}
 BUNDLES = {"clap": "Library/Audio/Plug-Ins/CLAP/KONTRA.clap", "vst3": "Library/Audio/Plug-Ins/VST3/KONTRA.vst3", "standalone": "Applications/KONTRA.app"}
 REQUIRED = ("LICENSE", "NOTICE", "THIRD_PARTY.md", "assets/OFL.txt", "docs/LEGAL.md")
+
+
+def app_info(version):
+    """Declare existing foreign plugin formats as packages, without FinderInfo."""
+    types = {"clap": "org.cleveraudio.clap", "vst3": "com.steinberg.vst3"}
+    return dict(CFBundleExecutable="KONTRA", CFBundleIdentifier="audio.matari.kontra.standalone",
+                CFBundleName="KONTRA", CFBundleDisplayName="KONTRA", CFBundlePackageType="APPL",
+                CFBundleVersion=version.split("-", 1)[0], CFBundleShortVersionString=version.split("-", 1)[0],
+                KONTRAVersion=version, NSHighResolutionCapable=True,
+                UTImportedTypeDeclarations=[dict(UTTypeIdentifier=id, UTTypeConformsTo=["com.apple.package", "com.apple.bundle"],
+                    UTTypeDescription=ext.upper() + " plug-in", UTTypeTagSpecification={"public.filename-extension": [ext]})
+                    for ext, id in types.items()],
+                CFBundleDocumentTypes=[dict(CFBundleTypeRole="None", LSHandlerRank="Alternate",
+                    LSItemContentTypes=[id], LSTypeIsPackage=True) for id in types.values()])
 
 
 def require(ok, reason):
@@ -65,7 +79,9 @@ def compose(arm64, x86_64, stage, revision, version, lipo="lipo"):
                         f"{arch}/{fmt}: binary lacks its declared {field}")
             actual = subprocess.check_output([lipo, "-archs", str(binary)], text=True).split()
             require(actual == [arch], f"{arch}/{fmt}: expected one {arch} slice, found {actual}")
-            if fmt != "standalone":
+            if fmt == "standalone":
+                require(plistlib.loads(files["KONTRA.app/Contents/Info.plist"]) == app_info(version), f"{arch}: invalid application package declarations")
+            else:
                 plist = plistlib.loads(files[f"KONTRA.{fmt}/Contents/Info.plist"])
                 require(plist.get("CFBundleExecutable") == "KONTRA" and plist.get("CFBundleIdentifier")
                         and plist.get("CFBundlePackageType") == "BNDL", f"{arch}/{fmt}: invalid bundle identity/type")
@@ -91,11 +107,7 @@ def compose(arm64, x86_64, stage, revision, version, lipo="lipo"):
             shutil.copytree(x86_64 / f"KONTRA.{fmt}", bundle, ignore=shutil.ignore_patterns("_CodeSignature"))
         else:
             (bundle / "Contents/MacOS").mkdir(parents=True)
-            (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps(dict(
-                CFBundleExecutable="KONTRA", CFBundleIdentifier="audio.matari.kontra.standalone",
-                CFBundleName="KONTRA", CFBundleDisplayName="KONTRA", CFBundlePackageType="APPL",
-                CFBundleVersion=version.split("-", 1)[0], CFBundleShortVersionString=version.split("-", 1)[0],
-                KONTRAVersion=version, NSHighResolutionCapable=True)))
+            (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps(app_info(version)))
         binary = bundle / "Contents/MacOS/KONTRA"
         subprocess.run([lipo, "-create", str(arm64 / BINARIES[fmt]), str(x86_64 / BINARIES[fmt]), "-output", str(binary)], check=True)
         require(set(subprocess.check_output([lipo, "-archs", str(binary)], text=True).split()) == set(TARGETS), f"{fmt}: universal composition failed")
@@ -106,7 +118,7 @@ def compose(arm64, x86_64, stage, revision, version, lipo="lipo"):
     resources = payload / BUNDLES["standalone"] / "Contents/Resources/KONTRA"
     resources.mkdir(parents=True)
     for name, data in inventories["arm64"].items():
-        if name.startswith(("KONTRA.clap/", "KONTRA.vst3/")):
+        if name.startswith(("KONTRA.clap/", "KONTRA.vst3/", "KONTRA.app/")):
             continue
         destination = resources / name
         destination.parent.mkdir(parents=True, exist_ok=True)
