@@ -206,12 +206,15 @@ pub fn filter_handles(s: &GroupSettings) -> Vec<Handle> {
     for unit in f.units() {
         let slot = unit.slot;
         match unit.shape {
-            Shape::Filter(_) | Shape::Model(_) => {
+            Shape::Filter(_) | Shape::Model(_) | Shape::Ladder => {
                 let (hz, _) = filter_settings(unit.knobs[0], unit.knobs[1]);
+                let hz = if unit.shape == Shape::Ladder {
+                    crate::engine::filter::ladder_cutoff(unit.knobs[0])
+                } else { hz };
                 let db = 20. * f.magnitude(hz, RATE).max(1e-6).log10();
                 out.push(Handle {
                     at: [freq_x(hz), db_y(db).clamp(0., 1.)],
-                    x: Some((Param::Cutoff(slot), octaves / 8.96)),
+                    x: Some((Param::Cutoff(slot), octaves / if unit.shape == Shape::Ladder { 575.0 / 60.0 } else { 8.96 })),
                     y: Some((Param::Resonance(slot), 1.)),
                     wheel: None,
                     active: !unit.bypass,

@@ -358,6 +358,7 @@ Filter type ids (`engine::filter::filter_type`, `KSP_FILTER_TYPES`):
 | 52..57 | SVF 1 and 2 section LP/BP/HP (not AR) | stored SVF knobs | medium |
 | 19 | Versatile | authored script names paired with stored groups | medium |
 | 58 | SV Notch 4 | authored menu name paired with selected-group native records | high |
+| 30..41 | Ladder LP1..4, HP1..4, BP2/4, Peak, Notch | native named constants paired with their initialized values and the versioned record conversion | high |
 
 The modern identity correction uses a census of 701 local factory snapshots,
 reading saved native records before running their scripts. Dominant menu/native
@@ -371,6 +372,35 @@ AR models use pass-band-compensated ladder sections, with their established pole
 counts; the exact amplitude-adaptive resonance algorithm remains an approximation.
 The existing formant proxy uses three vowel peaks; the phaser uses four all-passes
 summed with the input, without native feedback modelling.
+
+### Native Ladder LP4
+
+Subtype 33 uses a shared nonlinear four-pole kernel in group inserts and program
+racks. Versioned records preserve the leading Gain value, cutoff, resonance and
+raw flag. The Gain value zero is 0 dB, and its normalized range is 0..12 dB;
+slot output gain remains a separate operation. The cutoff law spans approximately
+25.957..19,912.266 Hz. KSP readback uses normalized values, while cutoff and Gain
+captions use those effective units.
+
+The single-rate kernel includes input soft saturation, four trapezoidal poles,
+resonance feedback, its low-frequency correction, and resonance compensation.
+The exponential interpolation entries are generated from a mathematical law;
+no captured tables are included. The response graph shows its small-signal
+transfer, which differs from large-signal saturation. Native control smoothing, its conditional cutoff limiter
+and High Quality oversampling remain explicit diagnostics. Other Ladder modes
+retain their named constants and decoded records but remain unsupported.
+These limits matter: enabling processing does not establish whole-effect
+audible equivalence. NI documents the LP4 topology, Gain and High Quality
+controls in its [filter reference](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/filter-reference).
+
+Each voice reserves eight fixed 76-byte Ladder states (608 bytes, or 608 KiB for
+1,024 voices), plus a single generated 9.38 KiB coefficient table warmed by
+filter and script construction. Audio lookup cannot initialize or lock it.
+Processing visits active native slots; nonlinear states never
+enter shared linear lanes. The focused checks cover independent double
+direct-form pole/soft-clip references, DC and frequency response across sample
+rates, full-resonance boundedness, channel isolation, block partition/reset,
+native parameter edits, insert/Amplifier order and zero heap allocations.
 
 ### Native Daft identity and record correction
 
