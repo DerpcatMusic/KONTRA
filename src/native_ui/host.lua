@@ -101,8 +101,8 @@ kontakt_host = strict("kontakt", {
     connect_parameter=function(name)
         assert(type(name)=="string" and #name>0,"Native UI parameter identifier requires a nonempty string")
         -- Retain the identity without reading KSP state. Unused handles and
-        -- computed closures stay lazy; an actual access must resolve a real
-        -- exposed control in this scene's source epoch.
+        -- computed closures stay lazy. Reads follow the native legacy registry's
+        -- integer-zero missing-name result; writes still require a real owner.
         local slot,control
         local function resolve()
             if slot==nil then slot,control=native_connect(name) end
@@ -111,7 +111,11 @@ kontakt_host = strict("kontakt", {
         return strict("parameter", {
             value=function(_,index)
                 assert(index==nil or index==0,"Native UI array connections are unavailable")
-                local slot,control=resolve()
+                if slot==nil then
+                    local value
+                    value,slot,control=native_read(name)
+                    return value
+                end
                 return native_value(slot,control)
             end,
             set_value=function(_,value,index)

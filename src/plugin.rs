@@ -1358,6 +1358,9 @@ fn native_scene(i: &Instrument, rt: Option<&Runtime>, live: &mut Option<Box<Live
             trace.detail("native_ui", scene.identity.as_str());
             if let Some(version) = &scene.target_version { trace.detail("native_ui_target_version", version.as_str()); }
             trace.detail("native_ui_modules", scene.resources.len());
+            for warning in scene.connection_warnings() {
+                trace.issue("native_ui", "missing_parameter_binding", warning);
+            }
             for (name,result) in &scene.assets.entries {
                 if let Err(error)=result { trace.issue("artwork","native_ui_asset",format!("{name}: {error}")); }
             }
@@ -5423,21 +5426,31 @@ end on"#;
             local ui=require('native_ui') local kontakt=require('kontakt')
             local unused=kontakt.connect_parameter('__Unowned')
             local computed=ui.create_computed(function() return unused:value() end)
-            -- Ordinary caught errors remain errors; no value/control is fabricated.
-            assert(not pcall(function() return kontakt.connect_parameter('__UnknownRead'):value() end))
+            -- The legacy native registry's exact-name miss is integer zero,
+            -- without assigning a control owner or accepting a write.
+            local missing=kontakt.connect_parameter('__UnknownRead')
+            local zero=missing:value()
+            assert(math.type(zero)=='integer' and zero==0 and missing:value()==0)
             assert(not pcall(function() kontakt.connect_parameter('__UnknownWrite'):set_value(7) end))
+            assert(not pcall(function() return kontakt.connect_parameter('Name'):value() end))
+            for i=1,80 do assert(kontakt.connect_parameter('__Missing'..i):value()==0) end
             local known=kontakt.connect_parameter('Known')
             return @ui.Text {text=ui.create_computed(function() return tostring(known:value()) end)}
                 .on_tap_gesture(start=function() known:set_value(known:value()+1) end)
                 .frame(width=40,height=20)
         "#).unwrap();
-        let script="on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $Known(0,100)\n$Known := 7\nend on\non ui_control($Known)\n$Known := $Known*2\nend on";
+        let script="on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_slider $Known(0,100)\ndeclare ui_text_edit @Name\n$Known := 7\nend on\non ui_control($Known)\n$Known := $Known*2\nend on";
         let instrument=Instrument{path:directory.join("fixture.nki"),scripts:vec![script.into(),"on init\nmake_perfview\ndeclare ui_slider $Known(0,100)\n$Known := 90\nend on".into()],..Default::default()};
         let (rt,errors)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);assert!(errors.is_empty(),"{errors:?}");let rt=rt.unwrap();
         let scene=Arc::new(Mutex::new(Scene::prepare(&instrument.path,&rt).unwrap().unwrap()));let mut live=first_script_live(&rt);rt.prepare_native_controls(&mut live);
         fn label(node:&Node)->Option<&str>{if let Paint::Text(text)=&node.paint{Some(text)}else{node.children.iter().find_map(label)}}
         fn tap_id(node:&Node)->Option<usize>{if node.tap{Some(node.id)}else{node.children.iter().find_map(tap_id)}}
         let initial=scene.lock().unwrap().snapshot().unwrap();assert_eq!(label(&initial),Some("7"));
+        let warnings=scene.lock().unwrap().connection_warnings();
+        assert_eq!(warnings.len(),65,"64 distinct missing names plus one omission warning");
+        assert!(warnings[0].contains("__UnknownRead") && warnings[0].contains("integer 0"));
+        assert!(warnings.last().unwrap().contains("omitted"));
+        assert!(!warnings.iter().any(|warning|warning.contains("__Unowned") || warning.contains("Name\"")),"unused handles and supported-but-unimplemented kinds do not become missing-name reads");
         let p=Arc::new(SamplerParams::new());let epoch={let mut view=p.shared.view.lock().unwrap();let epoch=next_epoch(&mut view,0,None,Some(live));view.parts[0].native_scene=Some(scene.clone());epoch};
         let mut dsp=Dsp::default();dsp.script_epoch[0]=epoch;dsp.rack.parts[0].set_script(Some(rt));
         let edits=scene.lock().unwrap().tap(tap_id(&initial).unwrap()).unwrap();assert_eq!((edits[0].slot,edits[0].control,edits[0].value),(0,0,8));
