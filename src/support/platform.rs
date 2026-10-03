@@ -1022,7 +1022,7 @@ fn decode_report_text(bytes: &[u8]) -> String {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn selected_signature_lines(text: &str, markers: &[&str]) -> String {
     let selected = text
         .lines()
@@ -1041,7 +1041,7 @@ fn selected_signature_lines(text: &str, markers: &[&str]) -> String {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn normalize_signature(value: &str) -> String {
     let mut normalized = String::with_capacity(value.len().min(512));
     let mut number = false;
