@@ -280,26 +280,58 @@ mod tests {
     use super::*;
     #[test]
     fn completed_workers_allow_the_next_incident_after_ack_or_failure() {
-        let active = std::sync::atomic::AtomicBool::new(false);
-        let first = AutomaticReportPermit::acquire(&active).unwrap();
-        assert!(AutomaticReportPermit::acquire(&active).is_none());
-        let receipt = r#"{"ok":true,"report_id":"first","diagnostics_sha256":"full-evidence"}"#;
-        assert!(validate_receipt(200, receipt, Some("wrong-sha".into())).is_err());
-        assert!(request_agent().is_err(), "test delivery is offline");
-        assert!(AutomaticReportPermit::acquire(&active).is_none());
-        assert_eq!(
-            validate_receipt(200, receipt, Some("full-evidence".into())).unwrap(),
-            "first"
-        );
-        assert!(
-            AutomaticReportPermit::acquire(&active).is_none(),
-            "acknowledgement alone does not end the worker"
-        );
-        drop(first);
-        let second = AutomaticReportPermit::acquire(&active).unwrap();
-        assert!(AutomaticReportPermit::acquire(&active).is_none());
-        drop(second); // Failed/offline completion also releases the same permit.
-        assert!(AutomaticReportPermit::acquire(&active).is_some());
+        use std::sync::mpsc;
+        let timeout = std::time::Duration::from_secs(5);
+        // The production flag is static because detached workers outlive their
+        // caller. This one-byte test flag is separate from all reporter globals.
+        let active: &'static std::sync::atomic::AtomicBool =
+            Box::leak(Box::new(std::sync::atomic::AtomicBool::new(false)));
+        for completion in 0..4 {
+            let permit = AutomaticReportPermit::acquire(active).unwrap();
+            let (entered, began) = mpsc::channel();
+            let (deliver, delivery) = mpsc::channel();
+            let (outcome, result) = mpsc::channel();
+            let (finish, finishing) = mpsc::channel();
+            let (finished, done) = mpsc::channel::<()>();
+            crash::spawn_detached("automatic-report-permit-test", move || {
+                // Locals drop in reverse order: closing `finished` proves the
+                // captured permit has dropped after this worker's body exits.
+                let _finished = finished;
+                let _permit = permit;
+                entered.send(()).unwrap();
+                delivery.recv_timeout(timeout).unwrap();
+                let receipt =
+                    r#"{"ok":true,"report_id":"first","diagnostics_sha256":"full-evidence"}"#;
+                let acknowledged = match completion {
+                    0 => validate_receipt(200, receipt, Some("full-evidence".into())).is_ok(),
+                    1 => validate_receipt(200, receipt, Some("wrong-sha".into())).is_ok(),
+                    2 => request_agent().is_ok(), // Network is disabled in tests.
+                    _ => crash::test_incident("0.3.115", "test").auto_reportable(),
+                };
+                outcome.send(acknowledged).unwrap();
+                finishing.recv_timeout(timeout).unwrap();
+                if !acknowledged {
+                    return; // Rejected receipt, offline or unconfirmed incident.
+                }
+                // Successful completion leaves through the same scope boundary.
+            })
+            .unwrap();
+            began.recv_timeout(timeout).unwrap();
+            assert!(AutomaticReportPermit::acquire(active).is_none());
+            deliver.send(()).unwrap();
+            assert_eq!(result.recv_timeout(timeout).unwrap(), completion == 0);
+            assert!(
+                AutomaticReportPermit::acquire(active).is_none(),
+                "delivery outcome must not release a still-running worker"
+            );
+            finish.send(()).unwrap();
+            assert_eq!(
+                done.recv_timeout(timeout),
+                Err(mpsc::RecvTimeoutError::Disconnected)
+            );
+            assert!(!active.load(Ordering::Acquire));
+        }
+        assert!(AutomaticReportPermit::acquire(active).is_some());
     }
 
     #[test]
