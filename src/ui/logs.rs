@@ -945,7 +945,7 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
                     .shrink(0)
             ]
             .pad(INSET)
-            .h(if event.script_slot.is_some() || event.stage.as_deref() == Some("scripts") || diagnostics::excerpt_text(&event.details).is_some() { 200. } else { 120. })
+            .h(if diagnostics::excerpt_text(&event.details).is_some() { 200. } else { 120. })
             .shrink(0)
             .scroll()
             .id("logs-details"),
@@ -1120,7 +1120,9 @@ mod tests {
             })
             .collect();
         let snapshot = DiagnosticSnapshot {
-            revision: 1,
+            // Copy/export workers later install real journal snapshots; do not
+            // give this unrelated synthetic history a live journal revision.
+            revision: u64::MAX,
             events,
             status: diagnostics::LogStatus {
                 total_events: 10_000,
@@ -1174,7 +1176,9 @@ mod tests {
             Some(3),
             "End reaches the oldest matching event"
         );
-        assert!(ui.scene().unwrap().surface("log-event-3").is_some());
+        assert!(ui.scene().unwrap().surface("log-event-3").is_some(),
+            "oldest selected event remains in the viewport: list={:?}, y={}, matches={}",
+            ui.scene().unwrap().surface("logs-list").map(|s| s.frame), state.y, state.matches.len());
         press(&mut ui, &mut state, &params, "logs-level-1");
         type_into(&mut ui, &mut state, &params, "logs-search", "Marker 1001 Fixture Strings Violin samples load:15");
         assert_eq!(
