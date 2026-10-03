@@ -96,22 +96,23 @@ int main(int argc,char** argv) {
     };
     // Give the real loader worker time to install the authored sample bank.
     for(int i=0;i<400;++i){block();std::this_thread::sleep_for(std::chrono::milliseconds(1));}
-    auto note=[&](bool on,int id,int length,int offset){
+    auto note=[&](bool on,int id,int length,int offset,float tuning){
         events.event={};events.event.type=on?kVst3NoteOnEvent:kVst3NoteOffEvent;
         events.event.sampleOffset=offset;
-        if(on)events.event.noteOn={0,60,0.f,0.8f,length,id};
+        if(on)events.event.noteOn={0,60,tuning,0.8f,length,id};
         else events.event.noteOff={0,60,0.f,id,0.f};
         events.present=true;
     };
     bool passed=true;
-    for(int length:{0,16,12000,-1,INT32_MIN}) {
-        const int id=100+(length==INT32_MIN?99:std::abs(length));
-        note(true,id,length,16);double energy=block();
+    for(bool anonymous:{false,true}) for(int length:{0,16,12000,-1,INT32_MIN}) {
+        const int id=anonymous?-1:100+(length==INT32_MIN?99:std::abs(length));
+        const float tuning=length==16?250.f:length==12000?-350.f:0.f;
+        note(true,id,length,16,tuning);double energy=block();
         require(std::all_of(pcm[0][0].begin(),pcm[0][0].begin()+16,[](float x){return x==0.f;}),"sample-exact onset");
         for(int i=0;i<16;++i) energy+=block();
-        std::printf("native length=%d attack_energy=%.9g\n",length,energy);
+        std::printf("native anonymous=%d length=%d tuning_cents=%.0f attack_energy=%.9g\n",anonymous,length,tuning,energy);
         passed &= energy>1e-4;
-        note(false,id,0,64);block();double tail=0.;
+        note(false,id,0,64,0.f);block();double tail=0.;
         for(int i=0;i<400;++i)tail=block();
         require(tail<1e-10,"native NoteOff closes sounding owner before sample exhaustion");
     }
