@@ -18,7 +18,8 @@ use std::{
 
 pub type Parameter = (NodeId, String);
 type SourceStateKey = (NodeId, Option<u32>, Option<u64>);
-pub const FIDELITY_DIAGNOSTIC: &str = "Native UVI control graph uses measured Mode0 gain, matrix, Ratio, Depth, Value, EQ GainScale, OnePole and LFO frequency laws; LFO sample scheduling, nonaligned target interpolation, host block segmentation, live envelope-control smoothing and float-rounding parity remain unverified against reference audio; random LFO clock seeds and cross-voice RNG ordering cannot be reconstructed from serialized programs";
+type BuiltinStateKey = (u8, Option<u32>, Option<u64>);
+pub const FIDELITY_DIAGNOSTIC: &str = "Native UVI control graph uses measured Mode0 gain, matrix, Ratio, Depth, Value, EQ GainScale, OnePole and LFO frequency laws; LFO sample scheduling, nonaligned target interpolation, host block segmentation, live envelope-control smoothing and float-rounding parity remain unverified against reference audio; random LFO and stochastic-source clock seeds, cross-voice RNG ordering and rare Gaussian float rounding cannot be reconstructed from serialized programs";
 const LIMIT: usize = 100_000;
 const DEPTH: usize = 128;
 
@@ -80,6 +81,9 @@ enum Source {
     Bend,
     Pressure,
     PolyPressure,
+    OrganPan,
+    Random(bool),
+    Alternate,
     Node(NodeId),
 }
 #[derive(Debug)]
@@ -514,6 +518,275 @@ impl ControlSegment {
         f64::from(self.points[index] + (offset % 32) as f32 * slope)
     }
 }
+#[derive(Clone)]
+struct SmoothRandomClock {
+    seed: u32,
+    rate: f32,
+    depth: f32,
+    sd: f32,
+    cached: Option<f32>,
+    first: f32,
+    second: f32,
+}
+impl SmoothRandomClock {
+    fn new(seed: u32, rate: f32, depth: f32, voice: bool) -> Self {
+        Self {
+            seed: ((seed.max(1) as u64 - 1) % 2147483646 + 1) as u32,
+            rate,
+            depth,
+            sd: if voice { 1.0 / 3.0 } else { 1.0 },
+            cached: None,
+            first: 0.0,
+            second: 0.0,
+        }
+    }
+    fn uniform(&mut self) -> f32 {
+        self.seed = ((self.seed as u64 * 48271) % 2147483647) as u32;
+        (self.seed as f32 - 1.0) / 2147483648.0
+    }
+    fn gaussian(&mut self) -> f32 {
+        if let Some(g) = self.cached.take() {
+            return g * self.sd;
+        }
+        for _ in 0..LIMIT {
+            let x = self.uniform() * 2.0 - 1.0;
+            let y = self.uniform() * 2.0 - 1.0;
+            let r = x * x + y * y;
+            if r >= 1.0 || x == 0.0 || y == 0.0 {
+                continue;
+            }
+            let (x, y, r, log_r) = if r <= 1.0e-4 {
+                // Range reduction for the polar pair; this rare path is statically
+                // grounded, though no authored render has forced it deliberately.
+                let exponent = ((x.abs().max(y.abs()).to_bits() >> 23) & 255) as i32 - 127;
+                let scale = 2.0_f32.powi(-exponent);
+                let x = x * scale;
+                let y = y * scale;
+                let r = x * x + y * y;
+                let log_r = r.ln() + exponent as f32 * 4.0_f32.ln();
+                (x, y, r, log_r)
+            } else {
+                (x, y, r, r.ln())
+            };
+            let k = (-2.0 * log_r / r).sqrt();
+            self.cached = Some(k * y);
+            return k * x * self.sd;
+        }
+        f32::NAN
+    }
+    fn random_start(&mut self) {
+        let y = self.gaussian();
+        self.first = y;
+        self.second = y;
+    }
+    fn point(&mut self, n: u32, fs: f32) -> f32 {
+        let a = if n == 0 {
+            -1.0
+        } else {
+            -((-(std::f64::consts::TAU) * self.rate as f64) / (fs / n as f32) as f64).exp() as f32
+        };
+        let q = 1.0 - a * a;
+        let g = self.gaussian();
+        self.first = q.sqrt() * g - a * self.first;
+        self.second = q / (1.0 + a * a).sqrt() * self.first - a * self.second;
+        let y = self.second;
+        let y2 = y * y;
+        let y4 = y2 * y2;
+        let y8 = y4 * y4;
+        y / (1.0 + y8).sqrt().sqrt().sqrt() * self.depth
+    }
+    // Raw points at 0,32,...; interpolate consecutive points using j/32.
+    // Partial lookahead runs on a COPY and is not committed. Full scope's final
+    // endpoint equals its last emitted point; next scope jumps to its new state.
+    fn controls(&mut self, n: u32, fs: f32, bipolar: bool) -> Vec<f32> {
+        let mut p = Vec::new();
+        let mut i = 0;
+        while i < n {
+            p.push(self.point((n - i).min(32), fs));
+            i += 32;
+        }
+        let mut preview = self.clone();
+        p.push(preview.point(n.wrapping_neg() & 31, fs));
+        if !bipolar {
+            for y in &mut p {
+                *y = y.abs();
+            }
+        } // Native live Bipolar setter oracle proved abs before interpolation.
+        p
+    }
+}
+#[derive(Clone)]
+struct DrunkClock {
+    seed: u32,
+    step: f32,
+    rate: f32,
+    bias: f32,
+    bipolar: bool,
+    walk: f32,
+    y: f32,
+    direction: f32,
+}
+impl DrunkClock {
+    fn new(
+        seed: u32,
+        initial: f32,
+        step: f32,
+        rate: f32,
+        bias: f32,
+        bipolar: bool,
+        voice: bool,
+    ) -> Self {
+        let y = if !voice {
+            0.0
+        } else if bipolar {
+            initial
+        } else {
+            initial.max(0.0)
+        };
+        Self {
+            seed,
+            step,
+            rate,
+            bias,
+            bipolar,
+            walk: y,
+            y,
+            direction: 1.0,
+        }
+    }
+    fn controls(&mut self, n: u32, fs: f32) -> Vec<f32> {
+        let mut p = Vec::new();
+        let mut i = 0;
+        while i < n {
+            let k = (n - i).min(32);
+            p.push(self.y);
+            self.seed = self.seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let u = self.seed as f32 * (1.0 / 4294967296.0);
+            let mut delta = k as f32 * self.step / fs;
+            if u + u + self.bias < 1.0 {
+                delta = -delta;
+            }
+            self.walk += delta * self.direction;
+            let low = if self.bipolar { -1.0 } else { 0.0 };
+            while self.walk < low || self.walk > 1.0 {
+                if self.walk < low {
+                    self.walk = low + (self.walk - low).abs();
+                    self.direction = -self.direction;
+                }
+                if self.walk > 1.0 {
+                    self.walk = 1.0 - (self.walk - 1.0).abs();
+                    self.direction = -self.direction;
+                }
+            }
+            let duration = k.max((fs / self.rate) as u32);
+            self.y += k as f32 / duration as f32 * (self.walk - self.y);
+            i += k;
+        }
+        let last = *p.last().unwrap();
+        let k = if n & 31 == 0 { 32 } else { n & 31 };
+        p.push(last + (self.y - last) * (32.0 / k as f32));
+        p
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct StochasticSettings {
+    rate: f32,
+    depth: f32,
+    step: f32,
+    bias: f32,
+    bipolar: bool,
+}
+enum StochasticSource {
+    Smooth(SmoothRandomClock),
+    Drunk(DrunkClock),
+}
+struct StochasticClock {
+    sample_rate: f64,
+    block_frames: u32,
+    origin: u64,
+    cursor: u64,
+    source: StochasticSource,
+    settings: StochasticSettings,
+    segment: Option<ControlSegment>,
+}
+impl StochasticClock {
+    fn controls(&mut self, frames: u32, settings: StochasticSettings) -> Vec<f32> {
+        self.settings = settings;
+        match &mut self.source {
+            StochasticSource::Smooth(source) => {
+                source.rate = settings.rate;
+                source.depth = settings.depth;
+                source.controls(frames, self.sample_rate as f32, settings.bipolar)
+            }
+            StochasticSource::Drunk(source) => {
+                source.rate = settings.rate;
+                source.step = settings.step;
+                source.bias = settings.bias;
+                source.bipolar = settings.bipolar;
+                source.controls(frames, self.sample_rate as f32)
+            }
+        }
+    }
+    fn advance(
+        &mut self,
+        frame: u64,
+        hint: Option<u64>,
+        off: Option<u64>,
+        settings: StochasticSettings,
+    ) -> Result<f64> {
+        let block = u64::from(self.block_frames);
+        let boundary = |at: u64| (at / block + 1) * block;
+        let planned = hint.unwrap_or_else(|| boundary(frame)).min(boundary(frame));
+        ensure!(
+            planned > frame,
+            "Invalid UVI stochastic control segment end"
+        );
+        if let Some(segment) = &self.segment
+            && frame < segment.end
+        {
+            ensure!(
+                frame >= segment.start,
+                "UVI stochastic clock moved backwards"
+            );
+            ensure!(
+                planned == segment.end && settings == self.settings,
+                "UVI stochastic source changed after processing its segment"
+            );
+            return Ok(segment.value(frame));
+        }
+        for _ in 0..LIMIT {
+            let mut end = boundary(self.cursor);
+            if self.cursor <= frame {
+                end = end.min(planned);
+            }
+            if let Some(off) = off
+                && self.cursor < off
+            {
+                end = end.min(off);
+            }
+            ensure!(
+                end > self.cursor && end - self.cursor <= 65536,
+                "Invalid UVI stochastic processing span"
+            );
+            let points = self.controls((end - self.cursor) as u32, settings);
+            ensure!(
+                points.iter().all(|point| point.is_finite()),
+                "Nonfinite UVI stochastic control points"
+            );
+            self.segment = Some(ControlSegment {
+                start: self.cursor,
+                end,
+                points,
+            });
+            self.cursor = end;
+            if frame < end {
+                return Ok(self.segment.as_ref().unwrap().value(frame));
+            }
+        }
+        bail!("UVI stochastic control-step limit exceeded")
+    }
+}
 struct AttackDecayClock {
     rate: f64,
     origin: u64,
@@ -925,6 +1198,12 @@ pub struct ModulationGraph {
     multi_clocks: RefCell<HashMap<SourceStateKey, MultiClock>>,
     multi_steps: HashMap<NodeId, Vec<NodeId>>,
     attack_decay_clocks: RefCell<HashMap<SourceStateKey, AttackDecayClock>>,
+    stochastic_clocks: RefCell<HashMap<SourceStateKey, StochasticClock>>,
+    global_stochastic: Vec<NodeId>,
+    builtin_seeds: RefCell<[u32; 2]>,
+    alternate_next: RefCell<f32>,
+    builtin_values: RefCell<HashMap<BuiltinStateKey, f32>>,
+    builtin_targets: HashMap<NodeId, u8>,
     control_segment_end: Option<u64>,
     random_seeds: RefCell<HashMap<NodeId, u32>>,
     random_lfo_clocks: RefCell<HashMap<SourceStateKey, RandomLfoClock>>,
@@ -1021,7 +1300,7 @@ pub fn supports_target(kind: &str, name: &str) -> bool {
     matches!(
         (kind, name),
         (
-            "SamplePlayer" | "MinBlepGenerator" | "WaveTableOscillator",
+            "SamplePlayer" | "MinBlepGenerator" | "WaveTableOscillator" | "FmOscillator",
             "Pitch" | "Gain"
         ) | ("Program" | "Layer" | "Keygroup", "Gain")
             | ("Gain", "Volume")
@@ -1032,6 +1311,7 @@ pub fn supports_target(kind: &str, name: &str) -> bool {
             | ("DigitalEq", "GainScale")
             | ("DAHDSR", "AttackTime" | "DecayTime" | "DelayTime")
             | ("DualDelay", "Feedback" | "Mix")
+            | ("DualDelayX", "Mix")
             | ("WhiteChorus", "Mix" | "Speed" | "Depth" | "Crossover")
             | ("XpanderFilter", "Freq" | "Q" | "Fat" | "Drive" | "Bypass")
             | ("AnalogADSR", "AttackTime" | "DecayTime" | "ReleaseTime")
@@ -1176,6 +1456,12 @@ impl ModulationGraph {
             multi_clocks: RefCell::new(HashMap::new()),
             multi_steps: HashMap::new(),
             attack_decay_clocks: RefCell::new(HashMap::new()),
+            stochastic_clocks: RefCell::new(HashMap::new()),
+            global_stochastic: Vec::new(),
+            builtin_seeds: RefCell::new([1; 2]),
+            alternate_next: RefCell::new(1.),
+            builtin_values: RefCell::new(HashMap::new()),
+            builtin_targets: HashMap::new(),
             control_segment_end: None,
             random_seeds: RefCell::new(HashMap::new()),
             random_lfo_clocks: RefCell::new(HashMap::new()),
@@ -1278,7 +1564,28 @@ impl ModulationGraph {
                 "@VoiceParam Velocity" => Source::Velocity,
                 "@PitchBend" => Source::Bend,
                 "@ChanAfterTouch" => Source::Pressure,
-                "@PolyPressure" | "@PolyAftertouch" => Source::PolyPressure,
+                "@OrganPan" | "@Random" | "@UnipolarRandom" | "@Alternate" => {
+                    let mut owner = Some(c.owner);
+                    while owner.is_some_and(|node| program.nodes[node].kind != "Keygroup") {
+                        owner = owner.and_then(|node| program.nodes[node].parent);
+                    }
+                    ensure!(
+                        owner.is_some(),
+                        "Unverified UVI note source outside Keygroup voice context"
+                    );
+                    if c.source == "@OrganPan" {
+                        Source::OrganPan
+                    } else if c.source == "@Alternate" {
+                        *graph.builtin_targets.entry(c.owner).or_default() |= 4;
+                        Source::Alternate
+                    } else {
+                        let bipolar = c.source == "@Random";
+                        *graph.builtin_targets.entry(c.owner).or_default() |=
+                            1 << u8::from(bipolar);
+                        Source::Random(bipolar)
+                    }
+                }
+                "@PolyAfterTouch" => Source::PolyPressure,
                 s if s.starts_with("@MIDI CC ") => {
                     let cc = s[9..].parse::<u8>().context("Invalid UVI MIDI CC source")?;
                     ensure!(cc < 128, "Invalid UVI MIDI CC source");
@@ -1300,6 +1607,8 @@ impl ModulationGraph {
                                 | "AHD"
                                 | "MultiEnvelope"
                                 | "AttackDecayEnv"
+                                | "StdRandom"
+                                | "Drunk"
                         ),
                         "Unsupported UVI source kind at node {id}"
                     );
@@ -1384,6 +1693,20 @@ impl ModulationGraph {
         absolute_sources.sort_unstable();
         absolute_sources.dedup();
         graph.absolute_order = absolute_sources;
+        graph.global_stochastic = graph
+            .target_sources
+            .values()
+            .flatten()
+            .copied()
+            .filter(|node| {
+                matches!(graph.kinds[*node].as_str(), "StdRandom" | "Drunk")
+                    && scope(program, *node).is_some_and(|owner| {
+                        matches!(graph.kinds[owner].as_str(), "Program" | "Layer")
+                    })
+            })
+            .collect();
+        graph.global_stochastic.sort_unstable();
+        graph.global_stochastic.dedup();
         Ok(graph)
     }
     pub fn is_absolute_source_parameter(&self, node: NodeId, name: &str) -> bool {
@@ -1413,7 +1736,14 @@ impl ModulationGraph {
             sources.iter().any(|node| {
                 matches!(
                     self.kinds[*node].as_str(),
-                    "LFO" | "DAHDSR" | "AHD" | "AnalogADSR" | "MultiEnvelope" | "AttackDecayEnv"
+                    "LFO"
+                        | "DAHDSR"
+                        | "AHD"
+                        | "AnalogADSR"
+                        | "MultiEnvelope"
+                        | "AttackDecayEnv"
+                        | "StdRandom"
+                        | "Drunk"
                 )
             })
         })
@@ -1429,6 +1759,8 @@ impl ModulationGraph {
                     "ScriptEventModulation" => &["EventId", "Bypass"][..],
                     "LFO" => &["Freq", "Depth", "Phase", "DelayTime", "RiseTime", "Bypass"][..],
                     "AttackDecayEnv" => &["Attack", "DecayTime", "Bypass"][..],
+                    "StdRandom" => &["Rate", "Depth", "Bypass"][..],
+                    "Drunk" => &["Rate", "Step", "Bias", "Bypass"][..],
                     "MultiEnvelope" => &["Speed", "Bypass"][..],
                     "AHD" => &["AttackTime", "HoldTime", "DecayTime", "Bypass"][..],
                     "DAHDSR" => &[
@@ -1586,10 +1918,16 @@ impl ModulationGraph {
     /// Retire one renderer instance without removing shared script ramps.
     pub fn remove_instance(&mut self, voice: u32, instance: u64) {
         let retained = |key: &SourceStateKey| key.1 != Some(voice) || key.2 != Some(instance);
+        self.builtin_values
+            .get_mut()
+            .retain(|(_, v, i), _| *v != Some(voice) || *i != Some(instance));
         self.analog_clocks.get_mut().retain(|key, _| retained(key));
         self.dah_clocks.get_mut().retain(|key, _| retained(key));
         self.multi_clocks.get_mut().retain(|key, _| retained(key));
         self.attack_decay_clocks
+            .get_mut()
+            .retain(|key, _| retained(key));
+        self.stochastic_clocks
             .get_mut()
             .retain(|key, _| retained(key));
         self.constant_clocks
@@ -1602,6 +1940,9 @@ impl ModulationGraph {
     }
     pub fn remove_voice(&mut self, voice: u32) {
         self.ramps.retain(|(_, _, v), _| *v != Some(voice));
+        self.builtin_values
+            .get_mut()
+            .retain(|(_, v, _), _| *v != Some(voice));
         self.analog_clocks
             .get_mut()
             .retain(|(_, v, _), _| *v != Some(voice));
@@ -1612,6 +1953,9 @@ impl ModulationGraph {
             .get_mut()
             .retain(|(_, v, _), _| *v != Some(voice));
         self.attack_decay_clocks
+            .get_mut()
+            .retain(|(_, v, _), _| *v != Some(voice));
+        self.stochastic_clocks
             .get_mut()
             .retain(|(_, v, _), _| *v != Some(voice));
         self.constant_clocks
@@ -1653,6 +1997,17 @@ impl ModulationGraph {
         input: &Inputs,
         live: &HashMap<Parameter, f64>,
     ) -> Result<Vec<(Parameter, f64)>> {
+        if !self.global_stochastic.is_empty() {
+            self.validate(input, live)?;
+            let mut memo = HashMap::new();
+            // Program/Layer free-running sources process silent segments too.
+            // Otherwise earlier musical cuts would lose their RNG draws.
+            for &node in &self.global_stochastic {
+                if self.setting(node, "TriggerMode", 1., live)? == 0. {
+                    self.source(&Source::Node(node), input, live, &mut memo, 0)?;
+                }
+            }
+        }
         if self.absolute_order.is_empty() {
             return Ok(Vec::new());
         }
@@ -1892,6 +2247,20 @@ impl ModulationGraph {
         );
         let mut memo = HashMap::new();
         let mut result = HashMap::new();
+        // Native note initialization draws builtin values for bypassed routes
+        // too. Preserve source order before processing this voice's targets.
+        for (node, mask) in &self.builtin_targets {
+            if nodes.contains(node) {
+                for bipolar in [false, true] {
+                    if mask & (1 << u8::from(bipolar)) != 0 {
+                        self.builtin_random(input, bipolar)?;
+                    }
+                }
+                if mask & 4 != 0 {
+                    self.builtin_alternate(input)?;
+                }
+            }
+        }
         for node in nodes {
             for p in self.node_targets.get(node).into_iter().flatten() {
                 result.insert(p.clone(), self.value(p, input, live, &mut memo, 0)?);
@@ -1990,6 +2359,7 @@ impl ModulationGraph {
                 "SamplePlayer"
                 | "MinBlepGenerator"
                 | "WaveTableOscillator"
+                | "FmOscillator"
                 | "Program"
                 | "Layer"
                 | "Keygroup",
@@ -2004,7 +2374,7 @@ impl ModulationGraph {
             ("OnePole" | "XpanderFilter", "Freq") => 1000.,
             ("XpanderFilter", "Fat") => 1.,
             ("DualDelay", "Feedback") => 0.3,
-            ("DualDelay", "Mix") => 0.5,
+            ("DualDelay" | "DualDelayX", "Mix") => 0.5,
             ("WhiteChorus", "Mix") => 1.,
             ("WhiteChorus", "Speed") => 0.2,
             ("WhiteChorus", "Depth") => 5.,
@@ -2016,6 +2386,9 @@ impl ModulationGraph {
             ("DAHDSR", "ReleaseTime") => 0.05,
             ("AHD", "HoldTime") => 1.,
             ("AHD", "DecayTime") => 0.1,
+            ("StdRandom", "Rate" | "Depth") => 1.,
+            ("Drunk", "Rate") => 100.,
+            ("Drunk", "Step") => 4.,
             ("AttackDecayEnv", "Attack") => 0.1,
             ("AttackDecayEnv", "DecayTime") => 0.3,
             ("GainMatrix", name) if name.starts_with("Gain_") => {
@@ -2120,7 +2493,11 @@ impl ModulationGraph {
             (base + 10. * self.delta(p, input, live, memo, depth + 1)?).clamp(0., 10.)
         } else if self.kinds[p.0] == "XpanderFilter" && p.1 == "Bypass" {
             f64::from((base + self.delta(p, input, live, memo, depth + 1)?).clamp(0., 1.) >= 0.5)
-        } else if self.kinds[p.0] == "DualDelay" && matches!(p.1.as_str(), "Feedback" | "Mix") {
+        } else if matches!(self.kinds[p.0].as_str(), "DualDelay" | "DualDelayX") && p.1 == "Mix" {
+            // Native negative-ratio steps smooth the raw goal first. The
+            // consumer clamps its current Mix, rather than this target.
+            base + self.delta(p, input, live, memo, depth + 1)?
+        } else if self.kinds[p.0] == "DualDelay" && p.1 == "Feedback" {
             (base + self.delta(p, input, live, memo, depth + 1)?).clamp(0., 1.)
         } else if self.kinds[p.0] == "WhiteChorus" {
             let delta = self.delta(p, input, live, memo, depth + 1)?;
@@ -2171,6 +2548,37 @@ impl ModulationGraph {
         ensure!(sum.is_finite(), "Nonfinite UVI modulation sum");
         Ok(sum)
     }
+    fn builtin_alternate(&self, input: &Inputs) -> Result<f64> {
+        let key = (2, input.voice, input.instance);
+        let mut values = self.builtin_values.borrow_mut();
+        ensure!(
+            values.len() < LIMIT || values.contains_key(&key),
+            "UVI builtin note state exceeds limit"
+        );
+        let value = values.entry(key).or_insert_with(|| {
+            let mut next = self.alternate_next.borrow_mut();
+            let value = *next;
+            *next = -value;
+            value
+        });
+        Ok(f64::from(*value))
+    }
+    fn builtin_random(&self, input: &Inputs, bipolar: bool) -> Result<f64> {
+        let key = (u8::from(bipolar), input.voice, input.instance);
+        let mut values = self.builtin_values.borrow_mut();
+        ensure!(
+            values.len() < LIMIT || values.contains_key(&key),
+            "UVI builtin random state exceeds limit"
+        );
+        let value = values.entry(key).or_insert_with(|| {
+            let mut seeds = self.builtin_seeds.borrow_mut();
+            let seed = &mut seeds[usize::from(bipolar)];
+            *seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let value = *seed as f32 * (1_f32 / 4294967296.);
+            if bipolar { value * 2. - 1. } else { value }
+        });
+        Ok(f64::from(*value))
+    }
     fn source(
         &self,
         s: &Source,
@@ -2204,12 +2612,28 @@ impl ModulationGraph {
             Source::Controller(cc) => (f64::from(input.controllers[usize::from(cc)]) / 127., false),
             Source::Bend => (input.pitch_bend, true),
             Source::Pressure => (input.channel_pressure, false),
+            Source::Random(bipolar) => (self.builtin_random(input, bipolar)?, bipolar),
+            Source::Alternate => (self.builtin_alternate(input)?, true),
             Source::PolyPressure => (input.poly_pressure, false),
+            Source::OrganPan => {
+                let value = f32::from(127 - input.key) * (1_f32 / 254.);
+                (
+                    f64::from(if input.key.is_multiple_of(2) {
+                        value
+                    } else {
+                        -value
+                    }),
+                    true,
+                )
+            }
             Source::Node(n) => {
                 let bipolar = self.boolean(
                     n,
                     "Bipolar",
-                    matches!(self.kinds[n].as_str(), "LFO" | "ScriptEventModulation"),
+                    matches!(
+                        self.kinds[n].as_str(),
+                        "LFO" | "ScriptEventModulation" | "StdRandom" | "Drunk"
+                    ),
                     live,
                 )?;
                 let bypass = self.value(&(n, "Bypass".into()), input, live, memo, depth + 1)?;
@@ -2288,6 +2712,9 @@ impl ModulationGraph {
                     "DAHDSR" | "AHD" => {
                         let value = self.dah(n, input, live, memo, depth + 1)?;
                         if bipolar { 2. * value - 1. } else { value }
+                    }
+                    "StdRandom" | "Drunk" => {
+                        self.stochastic(n, input, live, memo, depth + 1, bipolar)?
                     }
                     "AttackDecayEnv" => {
                         let value = self.attack_decay(n, input, live, memo, depth + 1)?;
@@ -2407,6 +2834,133 @@ impl ModulationGraph {
         );
         clock.advance(frame, off, settings)
     }
+    fn stochastic(
+        &self,
+        n: NodeId,
+        input: &Inputs,
+        live: &HashMap<Parameter, f64>,
+        memo: &mut HashMap<Parameter, f64>,
+        depth: usize,
+        bipolar: bool,
+    ) -> Result<f64> {
+        let mode = self.setting(n, "TriggerMode", 1., live)?;
+        ensure!(
+            mode == 0. || mode == 1.,
+            "Unverified UVI stochastic trigger mode at node {n}"
+        );
+        let smooth = self.kinds[n] == "StdRandom";
+        let rate = self.value(&(n, "Rate".into()), input, live, memo, depth + 1)? as f32;
+        let depth_value = if smooth {
+            self.value(&(n, "Depth".into()), input, live, memo, depth + 1)? as f32
+        } else {
+            1.
+        };
+        let step = if smooth {
+            0.
+        } else {
+            self.value(&(n, "Step".into()), input, live, memo, depth + 1)? as f32
+        };
+        let bias = if smooth {
+            0.
+        } else {
+            self.value(&(n, "Bias".into()), input, live, memo, depth + 1)? as f32
+        };
+        ensure!(
+            (if smooth { 0. } else { 0.1 }..=1000.).contains(&rate)
+                && (0. ..=1.).contains(&depth_value)
+                && (smooth || ((0.1..=1000.).contains(&step) && (-1. ..=1.).contains(&bias))),
+            "Invalid UVI stochastic source parameters at node {n}"
+        );
+        let mut owner = self.parents[n];
+        while owner.is_some_and(|node| {
+            !matches!(self.kinds[node].as_str(), "Program" | "Layer" | "Keygroup")
+        }) {
+            owner = owner.and_then(|node| self.parents[node]);
+        }
+        let program_clock =
+            owner.is_some_and(|node| matches!(self.kinds[node].as_str(), "Program" | "Layer"));
+        let frame = (input.time_seconds * input.sample_rate + 0.000001).floor() as u64;
+        let age = (input.voice_time_seconds * input.sample_rate + 0.000001).floor() as u64;
+        let voice_origin = frame.saturating_sub(age);
+        let origin = if mode == 0. && program_clock {
+            0
+        } else {
+            voice_origin
+        };
+        let key = if mode == 0. {
+            (n, None, None)
+        } else {
+            (n, input.voice, input.instance)
+        };
+        let settings = StochasticSettings {
+            rate,
+            depth: depth_value,
+            step,
+            bias,
+            bipolar,
+        };
+        let mut clocks = self.stochastic_clocks.borrow_mut();
+        ensure!(
+            clocks.len() < LIMIT || clocks.contains_key(&key),
+            "UVI stochastic state exceeds limit"
+        );
+        if let std::collections::hash_map::Entry::Vacant(entry) = clocks.entry(key) {
+            // Clock-based native seeds are unavailable offline. A stable seed
+            // preserves the measured RNG and filter laws, with an explicit
+            // fidelity diagnostic rather than a cross-process parity claim.
+            let seed = if mode == 0. && smooth {
+                1
+            } else {
+                (n as u32)
+                    .wrapping_mul(1664525)
+                    .wrapping_add(input.instance.unwrap_or(0) as u32)
+                    .wrapping_add(1)
+            };
+            let source = if smooth {
+                let mut source = SmoothRandomClock::new(seed, rate, depth_value, mode == 1.);
+                if mode == 1. && self.boolean(n, "RandomStart", false, live)? {
+                    source.random_start();
+                }
+                StochasticSource::Smooth(source)
+            } else {
+                let initial = self.setting(n, "InitialValue", 0., live)? as f32;
+                ensure!(
+                    (-1. ..=1.).contains(&initial),
+                    "Invalid UVI Drunk initial value"
+                );
+                StochasticSource::Drunk(DrunkClock::new(
+                    seed,
+                    initial,
+                    step,
+                    rate,
+                    bias,
+                    bipolar,
+                    mode == 1.,
+                ))
+            };
+            entry.insert(StochasticClock {
+                sample_rate: input.sample_rate,
+                block_frames: input.control_block_frames,
+                origin,
+                cursor: origin,
+                source,
+                settings,
+                segment: None,
+            });
+        }
+        let clock = clocks.get_mut(&key).unwrap();
+        ensure!(
+            clock.sample_rate == input.sample_rate
+                && clock.block_frames == input.control_block_frames
+                && (mode == 0. || clock.origin == origin),
+            "UVI stochastic clock configuration changed"
+        );
+        let off = input
+            .note_off_time_seconds
+            .map(|off| voice_origin + (off * input.sample_rate + 0.000001).floor() as u64);
+        clock.advance(frame, self.control_segment_end, off, settings)
+    }
+
     fn attack_decay(
         &self,
         n: NodeId,
@@ -2966,6 +3520,317 @@ impl ModulationGraph {
 mod tests {
     use super::*;
     use crate::uvi::program::parse_program;
+    #[test]
+    fn native_builtin_random_shared_draws_and_instance_lifetime() {
+        let p=parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup Gain="1"><Connections><SignalConnection Source="@Random" Destination="Gain" Ratio="1" Bypass="1"/></Connections><Oscillators><SamplePlayer SamplePath="a"><Connections><SignalConnection Source="@Random" Destination="Pitch" Ratio="12"/></Connections></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let mut graph = ModulationGraph::new(&p).unwrap();
+        let mut input = Inputs {
+            voice: Some(7),
+            instance: Some(1),
+            ..Inputs::default()
+        };
+        graph.builtin_seeds.replace([841, 184]);
+        // Native two-Keygroup stems: a shared generator emits alternating
+        // draws A,B; each instance holds its value across all target owners.
+        for (instance, expected) in [
+            0.30737759749103444,
+            0.9680597141675171,
+            0.8058558741112352,
+            0.4788782233480501,
+            0.013868807611801832,
+            0.2006070338784757,
+            0.6545398866256286,
+            0.2121805911937416,
+            0.11136263763872707,
+            0.15232035809647118,
+            0.2822447953203625,
+            0.7430048573661444,
+            0.35629671999884316,
+            0.019558610205064587,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            input.instance = Some(instance as u64 + 1);
+            let raw = graph.builtin_random(&input, true).unwrap();
+            assert!((f64::from((raw as f32 + 1.) * 0.5) - expected).abs() < 0.00000003);
+            assert_eq!(graph.builtin_random(&input, true).unwrap(), raw);
+        }
+        input.instance = Some(30);
+        let group = p
+            .nodes
+            .iter()
+            .position(|node| node.kind == "Keygroup")
+            .unwrap();
+        let nodes = HashSet::from([group]);
+        graph
+            .evaluate_nodes(&input, &HashMap::new(), &nodes)
+            .unwrap();
+        assert!(
+            graph
+                .builtin_values
+                .borrow()
+                .contains_key(&(1, Some(7), Some(30)))
+        );
+        graph.remove_instance(7, 30);
+        assert!(
+            !graph
+                .builtin_values
+                .borrow()
+                .contains_key(&(1, Some(7), Some(30)))
+        );
+        for expected in [
+            0.5619995668751752,
+            0.5604333834952392,
+            0.6591907765148308,
+            0.7986306516162879,
+            0.8822001911694924,
+            0.4466467168432694,
+            0.8458700742787615,
+        ] {
+            input.instance = Some(input.instance.unwrap() + 1);
+            assert!((graph.builtin_random(&input, false).unwrap() - expected).abs() < 0.00000003);
+        }
+        graph.remove_voice(7);
+        assert!(graph.builtin_values.borrow().is_empty());
+        let p=parse_program(r#"<Program><Connections><SignalConnection Source="@Random" Destination="Gain" Ratio="1"/></Connections></Program>"#).unwrap();
+        assert!(ModulationGraph::new(&p).is_err());
+    }
+    #[test]
+    fn native_alternate_counts_keygroup_instances_and_holds_note_value() {
+        let p=parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Connections><SignalConnection Source="@Alternate" Destination="Gain" Ratio="1"/></Connections></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let mut graph = ModulationGraph::new(&p).unwrap();
+        for note in 0..7 {
+            // Original two-Keygroup stems: A is always active and B silent;
+            // alternation belongs to each DSP instance, not MIDI-key parity.
+            for (group, expected) in [(0, 1.), (1, -1.)] {
+                let input = Inputs {
+                    voice: Some(note),
+                    instance: Some(u64::from(note) * 2 + group + 1),
+                    ..Inputs::default()
+                };
+                assert_eq!(graph.builtin_alternate(&input).unwrap(), expected);
+                assert_eq!(graph.builtin_alternate(&input).unwrap(), expected);
+            }
+            graph.remove_voice(note);
+        }
+        assert!(graph.builtin_values.borrow().is_empty());
+    }
+    #[test]
+    fn native_delay_mix_keeps_raw_goal_until_consumer_clamp() {
+        for kind in ["DualDelay", "DualDelayX"] {
+            let p=parse_program(&format!(r#"<Program><Inserts><{kind} Mix=".2"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Mix" Ratio="-.5"/></Connections></{kind}></Inserts></Program>"#)).unwrap();
+            let effect = p.nodes.iter().position(|node| node.kind == kind).unwrap();
+            let graph = ModulationGraph::new(&p).unwrap();
+            assert!(graph.unsupported_targets().is_empty());
+            for (cc, expected) in [(0, 0.2), (64, -0.05196850393700785), (127, -0.3)] {
+                let mut input = Inputs::default();
+                input.controllers[1] = cc;
+                let values = graph.evaluate(&input, &HashMap::new()).unwrap();
+                assert!((values[&(effect, "Mix".into())] - expected).abs() < 0.0000000001);
+            }
+        }
+    }
+    #[test]
+    fn native_poly_aftertouch_exact_name_and_unipolar_value() {
+        let xml = r#"<Program><Layers><Layer><Keygroups><Keygroup Gain="1"><Connections><SignalConnection Source="@PolyAfterTouch" Destination="Gain" Ratio="1"/></Connections></Keygroup></Keygroups></Layer></Layers></Program>"#;
+        let p = parse_program(xml).unwrap();
+        let graph = ModulationGraph::new(&p).unwrap();
+        let group = p
+            .nodes
+            .iter()
+            .position(|node| node.kind == "Keygroup")
+            .unwrap();
+        for raw in [0., 64. / 127., 1.] {
+            let input = Inputs {
+                poly_pressure: raw,
+                ..Inputs::default()
+            };
+            let values = graph.evaluate(&input, &HashMap::new()).unwrap();
+            assert_eq!(values[&(group, "Gain".into())], raw);
+        }
+        for invalid in ["@PolyPressure", "@PolyAftertouch"] {
+            let p = parse_program(&xml.replace("@PolyAfterTouch", invalid)).unwrap();
+            assert!(ModulationGraph::new(&p).is_err());
+        }
+    }
+    #[test]
+    fn native_stochastic_points_partial_segments_and_global_scope() {
+        let mut source = SmoothRandomClock::new(1866398178, 300., 0.7, true);
+        let points = source.controls(256, 48000., true);
+        for (index, expected) in [
+            (0, 0.5419383645057678),
+            (1, 0.47156980633735657),
+            (2, 0.74765944480896),
+            (3, 0.7814011573791504),
+            (4, 0.7124236226081848),
+            (7, 0.5312150120735168),
+        ] {
+            assert!((((points[index] + 1.) * 0.5) as f64 - expected).abs() < 0.0000001);
+        }
+        assert_eq!(points[7], points[8]);
+        let settings = StochasticSettings {
+            rate: 300.,
+            depth: 0.7,
+            step: 0.,
+            bias: 0.,
+            bipolar: true,
+        };
+        let mut clock = StochasticClock {
+            sample_rate: 48000.,
+            block_frames: 256,
+            origin: 0,
+            cursor: 0,
+            source: StochasticSource::Smooth(SmoothRandomClock::new(2057079015, 300., 0.7, true)),
+            settings,
+            segment: None,
+        };
+        for (frame, expected) in [
+            (0, 0.5282008051872253),
+            (12, 0.5376879572868347),
+            (13, 0.5526376962661743),
+            (32, 0.5306155681610107),
+            (45, 0.5155478119850159),
+            (77, 0.5073060393333435),
+            (224, 0.6338350772857666),
+            (256, 0.6554079055786133),
+            (288, 0.7138343453407288),
+        ] {
+            let end = if frame < 13 {
+                13
+            } else {
+                (frame / 256 + 1) * 256
+            };
+            let raw = clock.advance(frame, Some(end), Some(13), settings).unwrap();
+            let normalized = (raw as f32 + 1.) * 0.5;
+            assert!(
+                (f64::from(normalized) - expected).abs() < 0.00000012,
+                "Std frame{frame}: {normalized} != {expected}"
+            );
+        }
+        let mut drunk = DrunkClock::new(1, 0., 100., 100., 1., true, true);
+        let mut model = StochasticClock {
+            sample_rate: 48000.,
+            block_frames: 256,
+            origin: 0,
+            cursor: 0,
+            source: StochasticSource::Drunk(drunk.clone()),
+            settings: StochasticSettings {
+                rate: 100.,
+                depth: 1.,
+                step: 100.,
+                bias: 1.,
+                bipolar: true,
+            },
+            segment: None,
+        };
+        for (frame, expected) in [
+            (0, 0.5),
+            (32, 0.5022222399711609),
+            (64, 0.506518542766571),
+            (96, 0.5127506256103516),
+            (128, 0.5207894444465637),
+            (256, 0.5687206387519836),
+            (512, 0.7169595956802368),
+            (1024, 0.6624647378921509),
+        ] {
+            let raw = model.advance(frame, None, None, model.settings).unwrap();
+            assert!(
+                (f64::from((raw as f32 + 1.) * 0.5) - expected).abs() < 0.00000012,
+                "Drunk frame{frame}"
+            );
+        }
+        drunk.bipolar = false;
+        let points = drunk.controls(13, 48000.);
+        assert_eq!(points.len(), 2);
+        assert!(points[1] > points[0]);
+        for (scope, expected) in [
+            ("Program", 0.8390142917633057),
+            ("Keygroup", 0.5684139132499695),
+        ] {
+            let source = r#"<ControlSignalSources><StdRandom Name="Src" Rate="300" Depth=".7" TriggerMode="0" Bipolar="1"/></ControlSignalSources>"#;
+            let xml = format!(
+                r#"<Program>{}<Layers><Layer Name="L"><Keygroups><Keygroup Name="KG" Gain="1">{}<Connections><SignalConnection Source="{}" Destination="Gain" Ratio="1"/></Connections></Keygroup></Keygroups></Layer></Layers></Program>"#,
+                if scope == "Program" { source } else { "" },
+                if scope == "Keygroup" { source } else { "" },
+                if scope == "Program" {
+                    "$Program/Src"
+                } else {
+                    "$Keygroup/Src"
+                }
+            );
+            let p = parse_program(&xml).unwrap();
+            let graph = ModulationGraph::new(&p).unwrap();
+            assert!(graph.requires_planned_segments());
+            let group = p.nodes.iter().position(|n| n.kind == "Keygroup").unwrap();
+            assert!(graph.target_has_dynamic_source(&(group, "Gain".into())));
+            let input = Inputs {
+                time_seconds: 12000. / 48000.,
+                voice: Some(1),
+                instance: Some(1),
+                ..Inputs::default()
+            };
+            let values = graph
+                .evaluate_nodes(&input, &HashMap::new(), &HashSet::from([group]))
+                .unwrap();
+            assert!((values[&(group, "Gain".into())] - expected).abs() < 0.00000012);
+        }
+        let p=parse_program(r#"<Program><ControlSignalSources><Drunk Name="Src" TriggerMode="2"/></ControlSignalSources><Connections><SignalConnection Source="$Program/Src" Destination="Gain" Ratio="1"/></Connections></Program>"#).unwrap();
+        let graph = ModulationGraph::new(&p).unwrap();
+        assert!(graph.evaluate(&Inputs::default(), &HashMap::new()).is_err());
+    }
+    #[test]
+    fn native_fm_gain_and_pitch_mode_zero() {
+        let p=parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><FmOscillator Gain="1" Pitch="0"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Gain" Ratio=".5"/><SignalConnection Source="@MIDI CC 1" Destination="Pitch" Ratio="12"/></Connections></FmOscillator></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let oscillator = p
+            .nodes
+            .iter()
+            .position(|node| node.kind == "FmOscillator")
+            .unwrap();
+        let graph = ModulationGraph::new(&p).unwrap();
+        assert!(graph.unsupported_targets().is_empty());
+        for (cc, gain) in [(0, 0.5), (64, 0.751968502998), (127, 1.)] {
+            let mut input = Inputs::default();
+            input.controllers[1] = cc;
+            let values = graph.evaluate(&input, &HashMap::new()).unwrap();
+            assert!((values[&(oscillator, "Gain".into())] - gain).abs() < 0.00000003);
+            assert_eq!(
+                values[&(oscillator, "Pitch".into())],
+                12. * f64::from(cc) / 127.
+            );
+        }
+    }
+    #[test]
+    fn native_organ_pan_key_sign_and_half_range() {
+        let p = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Connections><SignalConnection Source="@OrganPan" Destination="Gain" Ratio="1"/></Connections></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let graph = ModulationGraph::new(&p).unwrap();
+        for (key, expected) in [
+            (0, 0.5),
+            (1, -0.4960629940032959),
+            (60, 0.26377952098846436),
+            (61, -0.25984251499176025),
+            (126, 0.0039370059967041016),
+            (127, 0.),
+        ] {
+            let input = Inputs {
+                key,
+                ..Inputs::default()
+            };
+            let (raw, bipolar) = graph
+                .source(
+                    &Source::OrganPan,
+                    &input,
+                    &HashMap::new(),
+                    &mut HashMap::new(),
+                    0,
+                )
+                .unwrap();
+            assert!(bipolar);
+            // Gain normalization loses a few low bits when recovering raw
+            // values near zero from the independent PCM capture.
+            assert!((raw - expected).abs() < 0.00000003);
+        }
+    }
     #[test]
     fn native_attack_decay_endpoints_and_planned_partial_segment() {
         let p=parse_program(r#"<Program><Layers><Layer Name="Layer"><Keygroups><Keygroup Name="Group" Gain="1"><ControlSignalSources><AttackDecayEnv Name="Env" Attack="0" DecayTime=".2"/></ControlSignalSources><Connections><SignalConnection Source="$Keygroup/Env" Destination="Gain" Ratio="1"/></Connections></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();

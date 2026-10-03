@@ -1,0 +1,1039 @@
+//! Dedicated allocating UVI playback thread with fixed, bounded packet transport.
+//! Start, inspect private failures, stop and destroy the controller off the audio
+//! thread. Only `Realtime` packet methods belong in an audio callback. This moves
+//! work off that callback; it does not establish a CPU deadline or real-time claim.
+
+use super::{
+    library::{BankResources, Library},
+    player::{self, Player},
+    script::{Input, InputKind},
+};
+use anyhow::{Context, Result, ensure};
+use crossbeam_queue::ArrayQueue;
+use std::{
+    panic::{AssertUnwindSafe, catch_unwind},
+    path::PathBuf,
+    rc::Rc,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
+    },
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
+};
+
+pub const BLOCK_FRAMES: usize = 256;
+pub const MAX_INPUTS: usize = 256;
+pub const QUEUE_CAPACITY: usize = 8;
+const POLL: Duration = Duration::from_millis(1);
+
+/// Epoch changes on every activation, even when the instrument/rate stays the same.
+/// Generation identifies the selected instrument. Frames are absolute within an
+/// activation, starting at zero; the controller never resets a running Player.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stamp {
+    pub epoch: u64,
+    pub generation: u64,
+    pub frame: u64,
+}
+
+/// Caller-owned local authority; no reader namespaces or keys enter packet queues.
+/// Deliberately has no Debug implementation containing private content state.
+pub struct StartConfig {
+    pub bank: PathBuf,
+    pub member: String,
+    pub metadata_namespace: Vec<u8>,
+    pub program_namespace: Vec<u8>,
+    pub content_key: Option<u64>,
+    pub content_bank: Option<String>,
+    pub sample_rate: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PacketError {
+    WrongEpoch,
+    WrongGeneration,
+    WrongFrame,
+    InvalidInput,
+    TooManyInputs,
+    Full,
+    Underrun,
+    Failed,
+    Stopped,
+}
+
+impl std::fmt::Display for PacketError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self, formatter)
+    }
+}
+impl std::error::Error for PacketError {}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Request {
+    pub stamp: Stamp,
+    pub input_count: u16,
+    pub inputs: [Input; MAX_INPUTS],
+}
+
+impl Request {
+    /// Fixed stack/inline storage only. Validation is repeated at submission, so
+    /// changing public packet fields cannot bypass the queue's trust boundary.
+    pub fn new(stamp: Stamp, inputs: &[Input]) -> std::result::Result<Self, PacketError> {
+        if inputs.len() > MAX_INPUTS {
+            return Err(PacketError::TooManyInputs);
+        }
+        let mut packet = Self {
+            stamp,
+            input_count: inputs.len() as u16,
+            inputs: [Input {
+                frame: 0,
+                kind: InputKind::NoteOff {
+                    channel: 0,
+                    note: 0,
+                },
+            }; MAX_INPUTS],
+        };
+        packet.inputs[..inputs.len()].copy_from_slice(inputs);
+        packet.validate()?;
+        Ok(packet)
+    }
+
+    fn validate(&self) -> std::result::Result<(), PacketError> {
+        let count = usize::from(self.input_count);
+        if count > MAX_INPUTS {
+            return Err(PacketError::TooManyInputs);
+        }
+        let end = self
+            .stamp
+            .frame
+            .checked_add(BLOCK_FRAMES as u64)
+            .ok_or(PacketError::WrongFrame)?;
+        if !self.stamp.frame.is_multiple_of(BLOCK_FRAMES as u64) {
+            return Err(PacketError::WrongFrame);
+        }
+        let inputs = &self.inputs[..count];
+        if inputs.iter().any(|input| {
+            input.frame < self.stamp.frame || input.frame >= end || !player::input_is_valid(input)
+        }) || inputs.windows(2).any(|pair| pair[0].frame > pair[1].frame)
+        {
+            return Err(PacketError::InvalidInput);
+        }
+        Ok(())
+    }
+}
+
+/// A rejected request is returned intact. Full queues do not advance the input
+/// cursor: retry this packet, or explicitly abort/replace the activation.
+#[derive(Debug, Clone, Copy)]
+pub struct Rejected {
+    pub reason: PacketError,
+    pub request: Request,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Output {
+    pub stamp: Stamp,
+    pub audio: [[f32; 2]; BLOCK_FRAMES],
+    pub commands: u32,
+    pub host_commands: u32,
+    pub logs: u32,
+    pub dropped_logs: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Status {
+    Starting,
+    Ready,
+    Failed,
+    Stopped,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Stats {
+    /// Rejected submissions (excluding Full) and fatal worker failures.
+    pub errors: u64,
+    /// Unsuccessful packet reads, not a hardware/audio-driver counter.
+    pub underruns: u64,
+    pub backpressure: u64,
+    pub stale_packets: u64,
+    pub rendered_blocks: u64,
+    pub initialization_ns: u64,
+    /// Player.render only: excludes initialization and queue waiting.
+    pub render_ns: u64,
+    pub max_render_ns: u64,
+    /// Render calls exceeding 256/sample_rate seconds, not arrival deadlines.
+    pub render_deadline_misses: u64,
+    pub cancelled_requests: u64,
+    pub cancelled_outputs: u64,
+}
+
+#[derive(Default)]
+struct Counters {
+    errors: AtomicU64,
+    underruns: AtomicU64,
+    backpressure: AtomicU64,
+    stale_packets: AtomicU64,
+    rendered_blocks: AtomicU64,
+    initialization_ns: AtomicU64,
+    render_ns: AtomicU64,
+    max_render_ns: AtomicU64,
+    render_deadline_misses: AtomicU64,
+    cancelled_requests: AtomicU64,
+    cancelled_outputs: AtomicU64,
+}
+
+#[derive(Default)]
+struct Details {
+    failure: Option<String>,
+    diagnostics: Vec<&'static str>,
+}
+
+struct Shared {
+    stamp: Stamp,
+    requests: ArrayQueue<Request>,
+    outputs: ArrayQueue<Output>,
+    stop: AtomicBool,
+    status: AtomicU8,
+    counters: Counters,
+    details: Mutex<Details>,
+}
+
+impl Shared {
+    fn new(epoch: u64, generation: u64) -> Self {
+        Self {
+            stamp: Stamp {
+                epoch,
+                generation,
+                frame: 0,
+            },
+            requests: ArrayQueue::new(QUEUE_CAPACITY),
+            outputs: ArrayQueue::new(QUEUE_CAPACITY),
+            stop: AtomicBool::new(false),
+            status: AtomicU8::new(Status::Starting as u8),
+            counters: Counters::default(),
+            details: Mutex::new(Details::default()),
+        }
+    }
+
+    fn status(&self) -> Status {
+        match self.status.load(Ordering::Acquire) {
+            0 => Status::Starting,
+            1 => Status::Ready,
+            2 => Status::Failed,
+            _ => Status::Stopped,
+        }
+    }
+
+    fn stats(&self) -> Stats {
+        let c = &self.counters;
+        Stats {
+            errors: c.errors.load(Ordering::Relaxed),
+            underruns: c.underruns.load(Ordering::Relaxed),
+            backpressure: c.backpressure.load(Ordering::Relaxed),
+            stale_packets: c.stale_packets.load(Ordering::Relaxed),
+            rendered_blocks: c.rendered_blocks.load(Ordering::Relaxed),
+            initialization_ns: c.initialization_ns.load(Ordering::Relaxed),
+            render_ns: c.render_ns.load(Ordering::Relaxed),
+            max_render_ns: c.max_render_ns.load(Ordering::Relaxed),
+            render_deadline_misses: c.render_deadline_misses.load(Ordering::Relaxed),
+            cancelled_requests: c.cancelled_requests.load(Ordering::Relaxed),
+            cancelled_outputs: c.cancelled_outputs.load(Ordering::Relaxed),
+        }
+    }
+
+    fn activation(&self, stamp: Stamp) -> std::result::Result<(), PacketError> {
+        if stamp.epoch != self.stamp.epoch {
+            return Err(PacketError::WrongEpoch);
+        }
+        if stamp.generation != self.stamp.generation {
+            return Err(PacketError::WrongGeneration);
+        }
+        if self.stop.load(Ordering::Acquire) {
+            return Err(PacketError::Stopped);
+        }
+        match self.status() {
+            Status::Failed => Err(PacketError::Failed),
+            Status::Stopped => Err(PacketError::Stopped),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Off-audio-thread controller. Dropping it stops and joins the worker; never
+/// transfer responsibility for this controller's destruction to the audio thread.
+pub struct Worker {
+    shared: Arc<Shared>,
+    thread: Option<JoinHandle<()>>,
+    next_request: u64,
+    minimum_output: u64,
+    pending_output: Option<Output>,
+}
+
+impl Worker {
+    pub fn start(config: StartConfig, epoch: u64, generation: u64) -> Result<Self> {
+        ensure!(
+            (8000..=192000).contains(&config.sample_rate),
+            "Invalid UVI worker sample rate"
+        );
+        ensure!(
+            !config.metadata_namespace.is_empty(),
+            "UVI worker requires a metadata namespace"
+        );
+        let shared = Arc::new(Shared::new(epoch, generation));
+        let worker_shared = shared.clone();
+        let handle = thread::Builder::new()
+            .name("kontra-uvi-playback".into())
+            .spawn(move || {
+                let initialized = Instant::now();
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    run(config, &worker_shared, initialized)
+                }));
+                let failure = match result {
+                    Ok(Ok(())) => None,
+                    Ok(Err(error)) => Some(format!("{error:#}")),
+                    Err(_) => Some("UVI playback worker panicked".to_owned()),
+                };
+                if worker_shared
+                    .counters
+                    .initialization_ns
+                    .load(Ordering::Relaxed)
+                    == 0
+                {
+                    worker_shared
+                        .counters
+                        .initialization_ns
+                        .store(nanos(initialized.elapsed()), Ordering::Relaxed);
+                }
+                if let Some(failure) = failure {
+                    worker_shared
+                        .counters
+                        .errors
+                        .fetch_add(1, Ordering::Relaxed);
+                    worker_shared
+                        .details
+                        .lock()
+                        .unwrap_or_else(|poison| poison.into_inner())
+                        .failure = Some(failure);
+                    worker_shared
+                        .status
+                        .store(Status::Failed as u8, Ordering::Release);
+                } else {
+                    worker_shared
+                        .status
+                        .store(Status::Stopped as u8, Ordering::Release);
+                }
+                while worker_shared.requests.pop().is_some() {
+                    worker_shared
+                        .counters
+                        .cancelled_requests
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                while worker_shared.outputs.pop().is_some() {
+                    worker_shared
+                        .counters
+                        .cancelled_outputs
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+            })
+            .context("Starting UVI playback worker")?;
+        Ok(Self {
+            shared,
+            thread: Some(handle),
+            next_request: 0,
+            minimum_output: 0,
+            pending_output: None,
+        })
+    }
+
+    /// Temporary exclusive borrow, suitable for one callback. No allocation,
+    /// reference-count change or destructor is attached to this packet port.
+    pub fn realtime(&mut self) -> Realtime<'_> {
+        Realtime {
+            shared: &self.shared,
+            next_request: &mut self.next_request,
+            minimum_output: &mut self.minimum_output,
+            pending_output: &mut self.pending_output,
+        }
+    }
+
+    pub fn status(&self) -> Status {
+        self.shared.status()
+    }
+    pub fn stats(&self) -> Stats {
+        self.shared.stats()
+    }
+
+    /// Control thread only: private diagnostics may contain instrument paths or
+    /// script data and are copied under a mutex, never from an audio callback.
+    pub fn private_failure(&self) -> Option<String> {
+        self.shared
+            .details
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .failure
+            .clone()
+    }
+    pub fn diagnostics(&self) -> Vec<&'static str> {
+        self.shared
+            .details
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .diagnostics
+            .clone()
+    }
+
+    pub fn wait_ready(&self, timeout: Duration) -> Result<()> {
+        let start = Instant::now();
+        loop {
+            match self.status() {
+                Status::Ready => return Ok(()),
+                Status::Failed => anyhow::bail!(
+                    "{}",
+                    self.private_failure()
+                        .unwrap_or_else(|| "UVI worker initialization failed".into())
+                ),
+                Status::Stopped => anyhow::bail!("UVI worker stopped before becoming ready"),
+                Status::Starting => {}
+            }
+            ensure!(
+                start.elapsed() < timeout,
+                "UVI worker initialization timed out"
+            );
+            thread::sleep(POLL);
+        }
+    }
+
+    /// Control thread only. Cancels even a worker waiting on a full output queue.
+    /// An in-flight disk read or render must still return before the join finishes.
+    pub fn stop(&mut self) {
+        self.shared.stop.store(true, Ordering::Release);
+        if let Some(handle) = self.thread.take() {
+            handle.thread().unpark();
+            if handle.join().is_err() {
+                self.shared.counters.errors.fetch_add(1, Ordering::Relaxed);
+                self.shared
+                    .status
+                    .store(Status::Failed as u8, Ordering::Release);
+            }
+        }
+        if self.pending_output.take().is_some() {
+            self.shared
+                .counters
+                .cancelled_outputs
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// Fixed-storage packet API: no allocation, mutex, formatting, wake syscall,
+/// file access, heavyweight drop or join. Queue progress is polled by the worker.
+pub struct Realtime<'a> {
+    shared: &'a Shared,
+    next_request: &'a mut u64,
+    minimum_output: &'a mut u64,
+    pending_output: &'a mut Option<Output>,
+}
+
+impl Realtime<'_> {
+    pub fn try_submit(&mut self, request: Request) -> std::result::Result<(), Rejected> {
+        let validation = self.shared.activation(request.stamp).and_then(|()| {
+            if request.stamp.frame != *self.next_request {
+                return Err(PacketError::WrongFrame);
+            }
+            request.validate()
+        });
+        if let Err(reason) = validation {
+            self.shared.counters.errors.fetch_add(1, Ordering::Relaxed);
+            return Err(Rejected { reason, request });
+        }
+        match self.shared.requests.push(request) {
+            Ok(()) => {
+                *self.next_request += BLOCK_FRAMES as u64;
+                Ok(())
+            }
+            Err(request) => {
+                self.shared
+                    .counters
+                    .backpressure
+                    .fetch_add(1, Ordering::Relaxed);
+                Err(Rejected {
+                    reason: PacketError::Full,
+                    request,
+                })
+            }
+        }
+    }
+
+    /// The caller supplies its current audio time. Late/stale packets are removed
+    /// in at most capacity+1 steps; an early packet stays inline for a later call.
+    /// Underrun never substitutes old audio or silently changes the input cursor.
+    pub fn try_receive(&mut self, expected: Stamp) -> std::result::Result<Output, PacketError> {
+        self.shared.activation(expected)?;
+        if expected.frame < *self.minimum_output
+            || !expected.frame.is_multiple_of(BLOCK_FRAMES as u64)
+            || expected.frame.checked_add(BLOCK_FRAMES as u64).is_none()
+        {
+            return Err(PacketError::WrongFrame);
+        }
+        *self.minimum_output = expected.frame;
+        for _ in 0..=QUEUE_CAPACITY {
+            let Some(output) = self
+                .pending_output
+                .take()
+                .or_else(|| self.shared.outputs.pop())
+            else {
+                break;
+            };
+            if output.stamp.epoch != expected.epoch
+                || output.stamp.generation != expected.generation
+                || output.stamp.frame < expected.frame
+            {
+                self.shared
+                    .counters
+                    .stale_packets
+                    .fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            if output.stamp.frame > expected.frame {
+                *self.pending_output = Some(output);
+                break;
+            }
+            *self.minimum_output += BLOCK_FRAMES as u64;
+            return Ok(output);
+        }
+        self.shared
+            .counters
+            .underruns
+            .fetch_add(1, Ordering::Relaxed);
+        Err(PacketError::Underrun)
+    }
+
+    pub fn status(&self) -> Status {
+        self.shared.status()
+    }
+    pub fn stats(&self) -> Stats {
+        self.shared.stats()
+    }
+}
+
+fn nanos(duration: Duration) -> u64 {
+    duration.as_nanos().min(u128::from(u64::MAX)) as u64
+}
+
+fn run(config: StartConfig, shared: &Shared, initialized: Instant) -> Result<()> {
+    // Everything containing Rc, borrowed graph nodes, Lua or file authority is
+    // created, used and destroyed in this stack frame on this dedicated thread.
+    if shared.stop.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let library = Rc::new(Library::open(
+        &config.bank,
+        &config.metadata_namespace,
+        config.content_key,
+    )?);
+    if let Some(identity) = &config.content_bank {
+        ensure!(
+            identity == &library.bank.header.bank_name
+                || std::fs::canonicalize(identity).ok()
+                    == Some(std::fs::canonicalize(&config.bank)?),
+            "Content state belongs to a different bank"
+        );
+    }
+    if shared.stop.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let loaded = library.program(&config.member, &config.program_namespace)?;
+    let unsupported = super::playback::preflight(&loaded.program);
+    ensure!(
+        unsupported.is_empty(),
+        "Native UVI graph preflight failed: {}",
+        serde_json::to_string(&unsupported)?
+    );
+    let resources = BankResources::new(library.clone(), &loaded.path, library.samples(&loaded)?)?;
+    let mut player = Player::new(
+        &loaded.program,
+        library.modules()?,
+        resources,
+        config.sample_rate,
+    )?;
+    shared
+        .details
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .diagnostics = player.diagnostics();
+    shared
+        .counters
+        .initialization_ns
+        .store(nanos(initialized.elapsed()).max(1), Ordering::Relaxed);
+    if shared.stop.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    shared.status.store(Status::Ready as u8, Ordering::Release);
+    let deadline = Duration::from_secs_f64(BLOCK_FRAMES as f64 / f64::from(config.sample_rate));
+    loop {
+        if shared.stop.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let Some(request) = shared.requests.pop() else {
+            // ponytail: 1 ms bounded polling avoids audio-thread wake/lock calls;
+            // replace it only after a measured transport deadline requires it.
+            thread::park_timeout(POLL);
+            continue;
+        };
+        ensure!(
+            request.stamp.epoch == shared.stamp.epoch
+                && request.stamp.generation == shared.stamp.generation
+                && request.stamp.frame == player.current_frame(),
+            "UVI worker request stamp is out of order"
+        );
+        let started = Instant::now();
+        let rendered = player.render(
+            &request.inputs[..usize::from(request.input_count)],
+            BLOCK_FRAMES,
+        );
+        let elapsed = started.elapsed();
+        let duration = nanos(elapsed);
+        shared
+            .counters
+            .render_ns
+            .fetch_add(duration, Ordering::Relaxed);
+        shared
+            .counters
+            .max_render_ns
+            .fetch_max(duration, Ordering::Relaxed);
+        if elapsed > deadline {
+            shared
+                .counters
+                .render_deadline_misses
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        let rendered = rendered?;
+        ensure!(
+            rendered.audio.len() == BLOCK_FRAMES,
+            "UVI worker renderer returned a short packet"
+        );
+        let mut output = Output {
+            stamp: request.stamp,
+            audio: [[0.; 2]; BLOCK_FRAMES],
+            commands: rendered.commands as u32,
+            host_commands: rendered.host_commands as u32,
+            logs: rendered.logs.len() as u32,
+            dropped_logs: rendered.dropped_logs as u32,
+        };
+        output.audio.copy_from_slice(&rendered.audio);
+        shared
+            .counters
+            .rendered_blocks
+            .fetch_add(1, Ordering::Relaxed);
+        loop {
+            if shared.stop.load(Ordering::Acquire) {
+                shared
+                    .counters
+                    .cancelled_outputs
+                    .fetch_add(1, Ordering::Relaxed);
+                return Ok(());
+            }
+            match shared.outputs.push(output) {
+                Ok(()) => break,
+                Err(pending) => {
+                    output = pending;
+                    thread::park_timeout(POLL);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{crypto, program::parse_program};
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn stamp(frame: u64) -> Stamp {
+        Stamp {
+            epoch: 7,
+            generation: 11,
+            frame,
+        }
+    }
+    fn note(frame: u64) -> Input {
+        Input {
+            frame,
+            kind: InputKind::NoteOn {
+                channel: 0,
+                note: 60,
+                velocity: 100,
+            },
+        }
+    }
+    fn output(stamp: Stamp) -> Output {
+        Output {
+            stamp,
+            audio: [[0.; 2]; BLOCK_FRAMES],
+            commands: 0,
+            host_commands: 0,
+            logs: 0,
+            dropped_logs: 0,
+        }
+    }
+
+    #[test]
+    fn fixed_packets_reject_bad_inputs_preserve_backpressure_and_future_output() {
+        assert!(!std::mem::needs_drop::<Request>());
+        assert!(!std::mem::needs_drop::<Output>());
+        assert!(!std::mem::needs_drop::<Realtime<'_>>());
+        let shared = Shared::new(7, 11);
+        let (mut next_request, mut minimum_output, mut pending_output) = (0, 0, None);
+        let mut realtime = Realtime {
+            shared: &shared,
+            next_request: &mut next_request,
+            minimum_output: &mut minimum_output,
+            pending_output: &mut pending_output,
+        };
+        let check = || {
+            let mut packet = Request::new(stamp(0), &[note(0)]).unwrap();
+            packet.stamp.epoch = 6;
+            assert_eq!(
+                realtime.try_submit(packet).unwrap_err().reason,
+                PacketError::WrongEpoch
+            );
+            packet.stamp = Stamp {
+                generation: 10,
+                ..stamp(0)
+            };
+            assert_eq!(
+                realtime.try_submit(packet).unwrap_err().reason,
+                PacketError::WrongGeneration
+            );
+            packet.stamp = stamp(256);
+            assert_eq!(
+                realtime.try_submit(packet).unwrap_err().reason,
+                PacketError::WrongFrame
+            );
+            packet.stamp = stamp(0);
+            packet.inputs[0] = Input {
+                frame: 0,
+                kind: InputKind::Transport {
+                    playing: true,
+                    beat: 0.,
+                    tempo: 1e100,
+                },
+            };
+            assert_eq!(
+                realtime.try_submit(packet).unwrap_err().reason,
+                PacketError::InvalidInput
+            );
+            packet.input_count = 257;
+            assert_eq!(
+                realtime.try_submit(packet).unwrap_err().reason,
+                PacketError::TooManyInputs
+            );
+            assert!(Request::new(stamp(0), &[note(2), note(1)]).is_err());
+            assert!(Request::new(stamp(0), &[note(256)]).is_err());
+            for index in 0..QUEUE_CAPACITY {
+                let frame = index as u64 * BLOCK_FRAMES as u64;
+                realtime
+                    .try_submit(Request::new(stamp(frame), &[note(frame)]).unwrap())
+                    .unwrap();
+            }
+            let frame = QUEUE_CAPACITY as u64 * BLOCK_FRAMES as u64;
+            let rejected = realtime
+                .try_submit(Request::new(stamp(frame), &[note(frame)]).unwrap())
+                .unwrap_err();
+            assert_eq!(rejected.reason, PacketError::Full);
+            assert_eq!(rejected.request.stamp, stamp(frame));
+            assert_eq!(rejected.request.inputs[0].frame, frame);
+            for index in 0..QUEUE_CAPACITY {
+                assert_eq!(
+                    shared.requests.pop().unwrap().stamp,
+                    stamp(index as u64 * 256)
+                );
+            }
+            realtime.try_submit(rejected.request).unwrap();
+            assert_eq!(shared.requests.pop().unwrap().stamp, stamp(frame));
+            assert_eq!(
+                realtime.try_receive(stamp(0)).unwrap_err(),
+                PacketError::Underrun
+            );
+            shared
+                .outputs
+                .push(output(Stamp {
+                    epoch: 6,
+                    ..stamp(0)
+                }))
+                .unwrap();
+            shared.outputs.push(output(stamp(512))).unwrap();
+            assert_eq!(
+                realtime.try_receive(stamp(0)).unwrap_err(),
+                PacketError::Underrun
+            );
+            assert_eq!(
+                realtime.try_receive(stamp(256)).unwrap_err(),
+                PacketError::Underrun
+            );
+            assert_eq!(realtime.try_receive(stamp(512)).unwrap().stamp, stamp(512));
+            assert_eq!(
+                realtime.try_receive(stamp(256)).unwrap_err(),
+                PacketError::WrongFrame
+            );
+            shared.outputs.push(output(stamp(256))).unwrap();
+            shared.outputs.push(output(stamp(768))).unwrap();
+            assert_eq!(realtime.try_receive(stamp(768)).unwrap().stamp, stamp(768));
+            shared.stop.store(true, Ordering::Release);
+            assert_eq!(
+                realtime
+                    .try_submit(Request::new(stamp(frame + 256), &[]).unwrap())
+                    .unwrap_err()
+                    .reason,
+                PacketError::Stopped
+            );
+            assert_eq!(
+                realtime.try_receive(stamp(1024)).unwrap_err(),
+                PacketError::Stopped
+            );
+        };
+        #[cfg(feature = "plugin")]
+        assert_eq!(
+            crate::plugin::tests::allocations(check),
+            0,
+            "packet paths allocate or free"
+        );
+        #[cfg(not(feature = "plugin"))]
+        {
+            let mut check = check;
+            check();
+        }
+        let stats = shared.stats();
+        assert_eq!(stats.backpressure, 1);
+        assert_eq!(stats.underruns, 3);
+        assert_eq!(stats.stale_packets, 2);
+        assert_eq!(stats.errors, 6);
+    }
+
+    // Original synthetic UFS metadata and Program, using the existing authored
+    // UFS record contract. No bank/sample/library content is embedded or copied.
+    fn authored_bank() -> (StartConfig, String) {
+        fn append(bytes: &mut Vec<u8>, payload: &[u8]) -> u64 {
+            let pointer = bytes.len() as u64 + 8;
+            bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(payload);
+            pointer
+        }
+        fn named(bytes: &mut Vec<u8>, tag: u32, name: &str, length: usize, key: u64) -> u64 {
+            let mut payload = vec![0; length];
+            payload[..4].copy_from_slice(&tag.to_le_bytes());
+            payload[4..4 + name.len()].copy_from_slice(name.as_bytes());
+            crypto::transform(&mut payload[4..260], key, bytes.len() as u64 + 12);
+            append(bytes, &payload)
+        }
+        let namespace = b"authored worker metadata";
+        let key = crypto::metadata_key(namespace, "WorkerAuthored");
+        let mut bytes = vec![0; 320];
+        bytes[..4].copy_from_slice(b"UFS2");
+        bytes[4..8].copy_from_slice(&3u32.to_le_bytes());
+        bytes[48..62].copy_from_slice(b"WorkerAuthored");
+        let root = named(&mut bytes, 0x2fba_3632, "Root", 272, key);
+        let member = named(&mut bytes, 0x6758_50e4, "authored.uvip", 289, key);
+        let source = r#"<Program Gain="0.5"><EventProcessors><ScriptProcessor><script><![CDATA[
+            local count=0
+            function onNote(e)count=count+1;postEvent(e);wait(8);changeVolume(e.id,0.25,false,true)end
+            function onController(e)assert(count==1);Program:setParameter('Gain',0.8)end
+            function onRelease(e)postEvent(e)end
+        ]]></script></ScriptProcessor></EventProcessors><Layers><Layer><Keygroups><Keygroup><Oscillators><MinBlepGenerator Waveform="4" StartPhase="0.25" BaseNote="60"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#.to_owned();
+        let data = append(&mut bytes, source.as_bytes());
+        bytes[member as usize + 260..member as usize + 268]
+            .copy_from_slice(&(source.len() as u64).to_le_bytes());
+        bytes[member as usize + 268..member as usize + 276].copy_from_slice(&data.to_le_bytes());
+        let mut descriptor = vec![0; 34];
+        descriptor[..4].copy_from_slice(&0x1847_b398u32.to_le_bytes());
+        let descriptor = append(&mut bytes, &descriptor);
+        bytes[root as usize + 260..root as usize + 268].copy_from_slice(&descriptor.to_le_bytes());
+        let pointer = bytes.len() as u64 + 8;
+        let mut table = vec![0; 16932];
+        table[..4].copy_from_slice(&0x3ca8_6aafu32.to_le_bytes());
+        table[4..8].copy_from_slice(&1u32.to_le_bytes());
+        table[8..21].copy_from_slice(b"authored.uvip");
+        crypto::transform(&mut table[8..264], key, pointer + 8);
+        table[264..272].copy_from_slice(&member.to_le_bytes());
+        table[272..288].fill(255);
+        append(&mut bytes, &table);
+        for field in [4, 12, 20] {
+            bytes[descriptor as usize + field..descriptor as usize + field + 8]
+                .copy_from_slice(&pointer.to_le_bytes());
+        }
+        let length = bytes.len() as u64;
+        bytes[32..40].copy_from_slice(&length.to_le_bytes());
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let bank =
+            std::env::temp_dir().join(format!("kontra-worker-{}-{unique}.ufs", std::process::id()));
+        std::fs::write(&bank, bytes).unwrap();
+        (
+            StartConfig {
+                bank,
+                member: "authored.uvip".into(),
+                metadata_namespace: namespace.to_vec(),
+                program_namespace: b"authored worker program".to_vec(),
+                content_key: None,
+                content_bank: Some("WorkerAuthored".into()),
+                sample_rate: 48000,
+            },
+            source,
+        )
+    }
+
+    fn receive(worker: &mut Worker, expected: Stamp) -> Output {
+        let started = Instant::now();
+        loop {
+            match worker.realtime().try_receive(expected) {
+                Ok(output) => return output,
+                Err(PacketError::Underrun) => {
+                    assert!(started.elapsed() < Duration::from_secs(5));
+                    thread::sleep(POLL);
+                }
+                Err(error) => panic!("{error:?}: {:?}", worker.private_failure()),
+            }
+        }
+    }
+
+    #[test]
+    fn dedicated_worker_matches_persistent_player_and_stops_with_both_queues_full() {
+        let (config, source) = authored_bank();
+        let path = config.bank.clone();
+        let library = Rc::new(Library::open(&path, &config.metadata_namespace, None).unwrap());
+        let loaded = library
+            .program(&config.member, &config.program_namespace)
+            .unwrap();
+        assert_eq!(
+            loaded.program.nodes.len(),
+            parse_program(&source).unwrap().nodes.len()
+        );
+        let resources = BankResources::new(library, &loaded.path, Default::default()).unwrap();
+        let mut expected = Player::new(
+            &loaded.program,
+            BTreeMap::new(),
+            resources,
+            config.sample_rate,
+        )
+        .unwrap();
+        let inputs = [
+            note(0),
+            Input {
+                frame: 300,
+                kind: InputKind::Controller {
+                    channel: 0,
+                    controller: 1,
+                    value: 127,
+                },
+            },
+        ];
+        let baseline = expected.render(&inputs, 512).unwrap();
+        let mut worker = Worker::start(config, 7, 11).unwrap();
+        worker.wait_ready(Duration::from_secs(5)).unwrap();
+        worker
+            .realtime()
+            .try_submit(Request::new(stamp(0), &inputs[..1]).unwrap())
+            .unwrap();
+        worker
+            .realtime()
+            .try_submit(Request::new(stamp(256), &inputs[1..]).unwrap())
+            .unwrap();
+        let first = receive(&mut worker, stamp(0));
+        let second = receive(&mut worker, stamp(256));
+        assert_eq!(
+            [first.audio.as_slice(), second.audio.as_slice()].concat(),
+            baseline.audio
+        );
+        assert!(first.audio.iter().any(|frame| frame[0] != 0.));
+        assert_eq!(first.commands + second.commands, baseline.commands as u32);
+        assert_eq!(
+            first.host_commands + second.host_commands,
+            baseline.host_commands as u32
+        );
+        assert_eq!(
+            second.commands, 1,
+            "Lua callback must resume across packet boundary"
+        );
+        let stats = worker.stats();
+        assert_eq!(stats.rendered_blocks, 2);
+        assert!(
+            stats.initialization_ns > 0
+                && stats.render_ns >= stats.max_render_ns
+                && stats.max_render_ns > 0
+        );
+        assert_eq!(stats.errors, 0);
+        // Fill eight queued outputs plus one rendered packet waiting to publish.
+        for index in 2..11 {
+            let mut packet = Request::new(stamp(index * 256), &[]).unwrap();
+            loop {
+                match worker.realtime().try_submit(packet) {
+                    Ok(()) => break,
+                    Err(Rejected {
+                        reason: PacketError::Full,
+                        request,
+                    }) => {
+                        packet = request;
+                        thread::sleep(POLL);
+                    }
+                    Err(error) => panic!("{error:?}"),
+                }
+            }
+        }
+        let started = Instant::now();
+        while worker.stats().rendered_blocks < 11 {
+            assert!(started.elapsed() < Duration::from_secs(5));
+            thread::sleep(POLL);
+        }
+        assert_eq!(worker.shared.outputs.len(), QUEUE_CAPACITY);
+        for index in 11..19 {
+            worker
+                .realtime()
+                .try_submit(Request::new(stamp(index * 256), &[note(index * 256)]).unwrap())
+                .unwrap();
+        }
+        assert_eq!(worker.shared.requests.len(), QUEUE_CAPACITY);
+        worker.stop();
+        assert_eq!(worker.status(), Status::Stopped);
+        let stats = worker.stats();
+        assert_eq!(stats.rendered_blocks, 11);
+        assert_eq!(stats.cancelled_requests, 8);
+        assert_eq!(stats.cancelled_outputs, 9);
+        assert!(worker.private_failure().is_none());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn initialization_failure_is_private_and_fixed_errors_cross_the_port() {
+        let (mut config, _) = authored_bank();
+        let path = config.bank.clone();
+        config.content_bank = Some("wrong authored bank".into());
+        let mut worker = Worker::start(config, 7, 11).unwrap();
+        assert!(worker.wait_ready(Duration::from_secs(5)).is_err());
+        assert_eq!(worker.status(), Status::Failed);
+        assert!(worker.private_failure().unwrap().contains("different bank"));
+        let rejected = worker
+            .realtime()
+            .try_submit(Request::new(stamp(0), &[note(0)]).unwrap())
+            .unwrap_err();
+        assert_eq!(rejected.reason, PacketError::Failed);
+        assert_eq!(rejected.request.stamp, stamp(0));
+        assert_eq!(
+            worker.realtime().try_receive(stamp(0)).unwrap_err(),
+            PacketError::Failed
+        );
+        worker.stop();
+        assert_eq!(worker.shared.requests.len(), 0);
+        std::fs::remove_file(path).unwrap();
+    }
+}

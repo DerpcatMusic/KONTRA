@@ -5,18 +5,18 @@
 //! 2026-10-03, established the Hadamard topology, input normalization, shelves,
 //! cut filters, stereo matrix, width, mix and predelay. No vendor source
 //! expression, SDK source, commercial audio or extracted IR is included.
-//! Static numerical models predict 54 complete 48-kHz authored native tails
+//! Static numerical models predict complete 48-kHz authored native tails
 //! within 1.3e-8. Delay vectors below are measured mathematical quantities;
-//! unmeasured Shape/Quality combinations and moving Mode0 remain unsupported.
+//! arbitrary Shape values and moving Mode0 remain unsupported.
 //! Interval-bounded RoomSize mapping rejects uncertain prime-delay boundaries.
-//! Mode1/2 moving-delay models additionally match nine full native tails
+//! Static and Mode1/2 models match 110 complete authored native stereo tails
 //! within 5e-6; native floating-point parity remains unverified.
 
 use super::{dsp::Frame, host::ParameterValue, program::ProgramNode};
 use anyhow::{Context, Result, bail, ensure};
 use std::collections::BTreeMap;
 
-pub const FIDELITY_DIAGNOSTIC: &str = "SparkVerb currently supports measured 48-kHz delay layouts; moving Mode0, unmeasured Shape/Quality combinations and uncertain prime-delay boundaries, mono insert promotion, live control smoothing and bypass transitions remain unsupported or native-unverified; measured Mode1/2 modulation tails agree within 5e-6 but native float parity is unverified";
+pub const FIDELITY_DIAGNOSTIC: &str = "SparkVerb currently supports measured 48-kHz delay layouts at Qualities2/3/4 and Shapes0/0.25/0.5/0.75/1; moving Mode0, other Shape values and uncertain prime-delay boundaries, mono insert promotion, live control smoothing and bypass transitions remain unsupported or native-unverified; measured Mode1/2 modulation tails agree within 5e-6 but native float parity is unverified";
 
 // name, default, minimum, maximum, integer. Native 4.0.9 defaults MixMode to 0.
 const PARAMETERS: &[(&str, f64, f64, f64, bool)] = &[
@@ -82,7 +82,21 @@ fn delays(p: &Parameters) -> Result<Vec<usize>> {
     );
     // Preserve individually verified native layouts, including their boundaries.
     let measured: Option<&[usize]> = match (p["Quality"] as u8, p["RoomSize"], p["Shape"]) {
+        (2, 20., 0.25) => Some(&[1559, 2081, 2777, 3709]),
+        (2, 20., 0.75) => Some(&[1289, 1931, 2897, 4337]),
+        (3, 20., 0.25) => Some(&[1499, 1741, 2017, 2339, 2711, 3163, 3659, 4229]),
+        (3, 20., 0.75) => Some(&[983, 1259, 1613, 2063, 2647, 3389, 4337, 5557]),
+        (4, 20., 0.25) => Some(&[
+            1399, 1523, 1657, 1783, 1931, 2099, 2269, 2459, 2671, 2897, 3137, 3407, 3691, 4001,
+            4337, 4703,
+        ]),
+        (4, 20., 0.75) => Some(&[
+            719, 839, 971, 1129, 1319, 1523, 1777, 2063, 2389, 2777, 3229, 3761, 4357, 5059, 5879,
+            6833,
+        ]),
         (2, 20., 0.) => Some(&[1709, 2143, 2699, 3407]),
+        (2, 20., 0.5) => Some(&[1423, 2011, 2843, 4019]),
+        (2, 20., 1.) => Some(&[1163, 1847, 2927, 4639]),
         (3, 4., 0.) => Some(&[367, 401, 443, 487, 541, 593, 659, 727]),
         (3, 10., 0.) => Some(&[907, 997, 1103, 1217, 1361, 1481, 1637, 1811]),
         (3, 20., 0.) => Some(&[1811, 1993, 2203, 2437, 2683, 2963, 3271, 3613]),
@@ -109,7 +123,15 @@ fn delays(p: &Parameters) -> Result<Vec<usize>> {
     // Authored native threshold probes bound the unrounded seconds per RoomSize unit
     // coefficient at these fixed Shape/Quality pairs. No Shape interpolation.
     let (lower, upper) = match (p["Quality"] as u8, p["Shape"]) {
+        (2, 0.25) => (0.0016240155948271176, 0.0016240162115794305),
+        (2, 0.75) => (0.0013408237995481043, 0.001340824314641331),
+        (3, 0.25) => (0.0015573274070970603, 0.00155732799692262),
+        (3, 0.75) => (0.00102227607893972, 0.0010222764663724373),
+        (4, 0.25) => (0.0014547655644295368, 0.0014547661231442631),
+        (4, 0.75) => (0.000747999770074844, 0.0007480000572868311),
         (2, 0.) => (0.001771519600861144, 0.0017715204377366583),
+        (2, 0.5) => (0.0014798827794494577, 0.001479886441030343),
+        (2, 1.) => (0.0012082169855667793, 0.0012082228428075476),
         (3, 0.) => (0.0018804209110257252, 0.0018804226402518885),
         (4, 0.) => (0.0019527193467307564, 0.0019527200874251624),
         (3, 0.5) => (0.0012706153921700843, 0.0012706163608489076),
@@ -451,13 +473,18 @@ impl SparkVerb {
                 let value = if line.modulation_amplitude == 0. {
                     line.delay[line.position]
                 } else {
-                    // Native table endpoints are interpolated over 64 host frames.
+                    // Native full-delay endpoints round to f32 before 64-frame interpolation.
                     let block = self.clock & !63;
                     let fraction = (self.clock & 63) as f64 / 64.;
                     let a = table_sine(&self.sine_table, block, line.phase_step);
                     let b = table_sine(&self.sine_table, block.wrapping_add(64), line.phase_step);
-                    let delay = line.nominal_delay as f64
-                        + line.modulation_amplitude * (a * (1. - fraction) + b * fraction);
+                    let delay_a = f64::from(
+                        (line.nominal_delay as f64 + line.modulation_amplitude * a) as f32,
+                    );
+                    let delay_b = f64::from(
+                        (line.nominal_delay as f64 + line.modulation_amplitude * b) as f32,
+                    );
+                    let delay = delay_a * (1. - fraction) + delay_b * fraction;
                     let position =
                         (line.position as f64 - delay).rem_euclid(line.delay.len() as f64);
                     let index = position.floor() as usize;
@@ -540,6 +567,48 @@ mod tests {
         // Original PCM16 .25 impulse, native centered mono bus=.125 per side.
         for (attrs, first, want, second, want2) in [
             (
+                vec![("Quality", 2.), ("Shape", 0.25)],
+                1559,
+                0.03323620557785034,
+                3118,
+                0.014852714724838734,
+            ),
+            (
+                vec![("Quality", 2.), ("Shape", 0.75)],
+                1289,
+                0.03412533178925514,
+                2578,
+                0.015549225732684135,
+            ),
+            (
+                vec![("Quality", 3.), ("Shape", 0.25)],
+                1499,
+                0.03420700132846832,
+                2998,
+                0.010855989530682564,
+            ),
+            (
+                vec![("Quality", 3.), ("Shape", 0.75)],
+                983,
+                0.03526425361633301,
+                1966,
+                0.011614862829446793,
+            ),
+            (
+                vec![("Quality", 4.), ("Shape", 0.25)],
+                1399,
+                0.03485891595482826,
+                2798,
+                0.00787913054227829,
+            ),
+            (
+                vec![("Quality", 4.), ("Shape", 0.75)],
+                719,
+                0.03583759814500809,
+                1438,
+                0.00850654672831297,
+            ),
+            (
                 vec![],
                 1811,
                 0.03334677591919899,
@@ -587,6 +656,20 @@ mod tests {
                 0.03271888196468353,
                 3418,
                 0.014464563690125942,
+            ),
+            (
+                vec![("Quality", 2.), ("Shape", 0.5)],
+                1423,
+                0.03370460122823715,
+                2846,
+                0.01521015353500843,
+            ),
+            (
+                vec![("Quality", 2.), ("Shape", 1.0)],
+                1163,
+                0.03445636108517647,
+                2326,
+                0.015843050554394722,
             ),
             (
                 vec![("Quality", 4.)],
@@ -719,10 +802,21 @@ mod tests {
                 .unwrap();
             assert!(error.to_string().contains("prime-delay boundary"));
         }
-        for (shape, lower, upper) in [(0.5, 20.0098438, 20.0098534), (1., 20.079834, 20.0798817)] {
+        for (quality, shape, lower, upper) in [
+            (2., 0.25, 20.0121155, 20.0121231),
+            (2., 0.75, 20.0436401, 20.0436478),
+            (3., 0.25, 20.0664215, 20.0664291),
+            (3., 0.75, 20.0532837, 20.0532913),
+            (4., 0.25, 20.0490417, 20.0490494),
+            (4., 0.75, 20.0534744, 20.0534821),
+            (4., 0.5, 20.0098438, 20.0098534),
+            (4., 1., 20.079834, 20.0798817),
+            (2., 0.5, 20.0465832, 20.0466328),
+            (2., 1., 20.0708008, 20.0708981),
+        ] {
             for room in [lower, upper] {
                 let error = SparkVerb::new(
-                    &node(&[("RoomSize", room), ("Quality", 4.), ("Shape", shape)]),
+                    &node(&[("RoomSize", room), ("Quality", quality), ("Shape", shape)]),
                     2,
                     48000.,
                 )
@@ -731,9 +825,43 @@ mod tests {
                 assert!(error.to_string().contains("prime-delay boundary"));
             }
         }
+        // Native Q2Shape.75 Room50 first delay3217 lies .0228 frames below a boundary.
+        assert!(
+            SparkVerb::new(
+                &node(&[("Quality", 2.), ("Shape", 0.75), ("RoomSize", 50.)]),
+                2,
+                48000.
+            )
+            .is_err()
+        );
+        // Native Q4Shape.25 Room4 has internal line7 at491, .0336 frames below boundary.
+        assert!(
+            SparkVerb::new(
+                &node(&[("Quality", 4.), ("Shape", 0.25), ("RoomSize", 4.)]),
+                2,
+                48000.
+            )
+            .is_err()
+        );
         // A later internal line is also only .0028 frames from a boundary.
         assert!(SparkVerb::new(&node(&[("RoomSize", 33.3), ("Shape", 1.)]), 2, 48000.).is_err());
         for (room, shape, quality, first) in [
+            (4., 0.5, 2., 293),
+            (50., 0.5, 2., 3557),
+            (4., 1.0, 2., 233),
+            (50., 1.0, 2., 2903),
+            (4.0, 0.25, 2., 311),
+            (50.0, 0.25, 2., 3907),
+            (4.0, 0.75, 2., 257),
+            (4.0, 0.25, 3., 307),
+            (50.0, 0.25, 3., 3739),
+            (4.0, 0.75, 3., 197),
+            (50.0, 0.75, 3., 2459),
+            (50.0, 0.25, 4., 3491),
+            (4.0, 0.75, 4., 149),
+            (50.0, 0.75, 4., 1801),
+            (49.5, 0.75, 2., 3187),
+            (4.25, 0.25, 4., 307),
             (7.25, 1., 3., 283),
             (7.25, 0., 3., 659),
             (33.3, 0., 3., 3011),

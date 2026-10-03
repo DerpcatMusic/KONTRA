@@ -149,6 +149,159 @@ fn clm_cycle_frames(bytes: &[u8]) -> Option<u32> {
     digits.parse().ok()
 }
 
+// Original parser using Apple's CAF 1.0 field definitions and LPCM alignment:
+// https://developer.apple.com/library/archive/documentation/MusicAudio/Reference/CAFSpec/CAF_spec/CAF_spec.html
+fn decode_caf(bytes: &[u8]) -> Result<Sample> {
+    ensure!(
+        bytes.get(..8) == Some(b"caff\0\x01\0\0"),
+        "Unsupported or truncated CAF header"
+    );
+    let mut at = 8usize;
+    let mut chunks = 0usize;
+    let mut metadata_bytes = 0usize;
+    let mut description = None;
+    let mut pcm = None;
+    while at < bytes.len() {
+        let header = bytes
+            .get(at..at + 12)
+            .context("Truncated CAF chunk header")?;
+        let length = i64::from_be_bytes(header[4..12].try_into().unwrap());
+        ensure!(length >= 0, "Indefinite CAF chunk lengths are unsupported");
+        let length = usize::try_from(length).context("CAF chunk size exceeds address space")?;
+        let end = (at + 12)
+            .checked_add(length)
+            .context("CAF chunk size overflow")?;
+        let body = bytes.get(at + 12..end).context("Truncated CAF chunk")?;
+        chunks += 1;
+        ensure!(chunks <= CHUNK_LIMIT, "CAF exceeds chunk limit");
+        ensure!(
+            chunks != 1 || &header[..4] == b"desc",
+            "CAF description must be the first chunk"
+        );
+        if &header[..4] != b"data" {
+            metadata_bytes = metadata_bytes
+                .checked_add(length)
+                .context("CAF metadata size overflow")?;
+            ensure!(
+                metadata_bytes <= METADATA_LIMIT,
+                "CAF metadata exceeds limit"
+            );
+        }
+        match &header[..4] {
+            b"desc" => {
+                ensure!(
+                    description.is_none() && body.len() == 32,
+                    "Invalid or duplicate CAF description"
+                );
+                let rate = f64::from_bits(u64::from_be_bytes(body[..8].try_into().unwrap()));
+                ensure!(
+                    rate.is_finite()
+                        && rate > 0.
+                        && rate <= f64::from(u32::MAX)
+                        && rate.fract() == 0.,
+                    "CAF sample rate must be a positive integer supported by the engine"
+                );
+                ensure!(&body[8..12] == b"lpcm", "Only CAF LPCM is supported");
+                let read = |at| u32::from_be_bytes(body[at..at + 4].try_into().unwrap());
+                let (flags, packet_bytes, packet_frames, channels, bits) =
+                    (read(12), read(16), read(20), read(24), read(28));
+                ensure!(flags & !3 == 0, "Unsupported CAF LPCM flags");
+                ensure!(
+                    packet_frames == 1
+                        && channels > 0
+                        && packet_bytes > 0
+                        && packet_bytes % channels == 0,
+                    "Unsupported CAF LPCM packet geometry"
+                );
+                let width = (packet_bytes / channels) as usize;
+                let floating = flags & 1 != 0;
+                ensure!(
+                    if floating {
+                        matches!((bits, width), (32, 4) | (64, 8))
+                    } else {
+                        matches!((bits, width), (16, 2) | (24, 3) | (24, 4) | (32, 4))
+                    },
+                    "Unsupported CAF LPCM sample width"
+                );
+                description = Some((
+                    rate as u32,
+                    channels as usize,
+                    packet_bytes as usize,
+                    bits,
+                    width,
+                    floating,
+                    flags & 2 != 0,
+                ));
+            }
+            b"data" => {
+                ensure!(
+                    pcm.is_none() && body.len() >= 4,
+                    "Invalid or duplicate CAF data chunk"
+                );
+                pcm = Some(&body[4..]); // The edit count is not audio data.
+            }
+            _ => {}
+        }
+        at = end;
+    }
+    let (rate, channels, frame_bytes, bits, width, floating, little) =
+        description.context("Missing CAF description")?;
+    let pcm = pcm.context("Missing CAF data")?;
+    ensure!(
+        !pcm.is_empty() && pcm.len() % frame_bytes == 0,
+        "Partial or empty CAF PCM frame"
+    );
+    let frames = pcm.len() / frame_bytes;
+    let count = frames
+        .checked_mul(channels)
+        .context("CAF sample count overflow")?;
+    ensure!(
+        count <= (MEMORY_LIMIT - bytes.len()) / size_of::<f32>(),
+        "Decoded CAF exceeds memory limit"
+    );
+    let mut interleaved = Vec::new();
+    interleaved.try_reserve_exact(count)?;
+    for sample in pcm.chunks_exact(width) {
+        let word = if little {
+            sample
+                .iter()
+                .rev()
+                .fold(0u64, |word, &byte| (word << 8) | u64::from(byte))
+        } else {
+            sample
+                .iter()
+                .fold(0u64, |word, &byte| (word << 8) | u64::from(byte))
+        };
+        let value = if floating {
+            if width == 4 {
+                f32::from_bits(word as u32)
+            } else {
+                f64::from_bits(word) as f32
+            }
+        } else {
+            let padding = width * 8 - bits as usize;
+            ensure!(
+                padding == 0 || word & ((1u64 << padding) - 1) == 0,
+                "Nonzero CAF LPCM padding bits"
+            );
+            let shift = 64 - width * 8;
+            let integer = ((word << shift) as i64) >> shift;
+            integer as f32 / 2f32.powi((width * 8 - 1) as i32)
+        };
+        interleaved.push(value);
+    }
+    Ok(Sample {
+        rate,
+        channels,
+        frames,
+        interleaved: Storage::from_f32(interleaved)?,
+        loops: Vec::new(),
+        unity_note: None,
+        wavetable_cycle_frames: None,
+        riff_metadata: Vec::new(),
+    })
+}
+
 fn sampler(bytes: &[u8], metadata: &mut Metadata) -> Result<()> {
     ensure!(bytes.len() >= 36, "Truncated RIFF sampler metadata");
     let loops = u32le(&bytes[28..]) as usize;
@@ -307,6 +460,9 @@ pub fn decode(bytes: &[u8]) -> Result<Sample> {
         !bytes.is_empty() && bytes.len() <= MEMORY_LIMIT,
         "Audio input exceeds memory limit or is empty"
     );
+    if bytes.starts_with(b"caff") {
+        return decode_caf(bytes);
+    }
     let metadata = metadata(bytes)?;
     let mut encoded = bytes.to_vec();
     if bytes.starts_with(b"RIFF") {
@@ -474,6 +630,114 @@ pub fn decode(bytes: &[u8]) -> Result<Sample> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caf_lpcm_retains_channel_order_and_rejects_bad_geometry() {
+        let fixture = |bits: u32, width: usize, floating: bool, little: bool| {
+            let mut pcm = Vec::new();
+            let mut expected = Vec::new();
+            for index in 0..12 {
+                let (word, value) = if floating {
+                    let value = [-0., -1., 0.125, 0.5, 0.123456789, -0.25][index % 6];
+                    (
+                        if width == 4 {
+                            (value as f32).to_bits() as u64
+                        } else {
+                            f64::to_bits(value)
+                        },
+                        value as f32,
+                    )
+                } else {
+                    let limit = 1i64 << (bits - 1);
+                    let value = [-limit, -128, -1, 0, 1, limit - 1][index % 6];
+                    (
+                        (value as u64) << (width * 8 - bits as usize),
+                        value as f32 / 2f32.powi((bits - 1) as i32),
+                    )
+                };
+                if little {
+                    pcm.extend_from_slice(&word.to_le_bytes()[..width]);
+                } else {
+                    pcm.extend_from_slice(&word.to_be_bytes()[8 - width..]);
+                }
+                expected.push(value);
+            }
+            let mut bytes = b"caff\0\x01\0\0desc".to_vec();
+            bytes.extend_from_slice(&32i64.to_be_bytes());
+            bytes.extend_from_slice(&48000f64.to_be_bytes());
+            bytes.extend_from_slice(b"lpcm");
+            bytes
+                .extend_from_slice(&(u32::from(floating) | (u32::from(little) << 1)).to_be_bytes());
+            bytes.extend_from_slice(&((width * 4) as u32).to_be_bytes());
+            bytes.extend_from_slice(&1u32.to_be_bytes());
+            bytes.extend_from_slice(&4u32.to_be_bytes());
+            bytes.extend_from_slice(&bits.to_be_bytes());
+            // CAF metadata chunks have no RIFF-style even-byte padding.
+            bytes.extend_from_slice(b"free");
+            bytes.extend_from_slice(&5i64.to_be_bytes());
+            bytes.extend_from_slice(&[0; 5]);
+            bytes.extend_from_slice(b"data");
+            bytes.extend_from_slice(&((pcm.len() + 4) as i64).to_be_bytes());
+            bytes.extend_from_slice(&0u32.to_be_bytes());
+            bytes.extend_from_slice(&pcm);
+            (bytes, expected)
+        };
+        for (bits, width, floating) in [
+            (16, 2, false),
+            (24, 3, false),
+            (24, 4, false),
+            (32, 4, false),
+            (32, 4, true),
+            (64, 8, true),
+        ] {
+            for little in [false, true] {
+                let (bytes, expected) = fixture(bits, width, floating, little);
+                let decoded = decode(&bytes).unwrap();
+                assert_eq!(
+                    (decoded.rate, decoded.channels, decoded.frames),
+                    (48000, 4, 3)
+                );
+                assert_eq!(decoded.interleaved.len(), 12);
+                assert!(
+                    decoded
+                        .interleaved
+                        .iter()
+                        .zip(expected)
+                        .all(|(a, b)| a.to_bits() == b.to_bits())
+                );
+                assert!(decode(&bytes[..bytes.len() - 1]).is_err());
+            }
+        }
+        let (valid, _) = fixture(24, 3, false, false);
+        for (at, replacement) in [
+            (28, b"ima4".as_slice()),
+            (32, &4u32.to_be_bytes()),
+            (40, &0u32.to_be_bytes()),
+            (44, &0u32.to_be_bytes()),
+            (20, &f64::NAN.to_be_bytes()),
+            (73, &(-1i64).to_be_bytes()),
+        ] {
+            let mut malformed = valid.clone();
+            malformed[at..at + replacement.len()].copy_from_slice(replacement);
+            assert!(decode(&malformed).is_err());
+        }
+        let mut partial = valid.clone();
+        partial.pop();
+        partial[73..81].copy_from_slice(&39i64.to_be_bytes());
+        assert!(decode(&partial).is_err());
+        let mut duplicate = valid.clone();
+        duplicate.extend_from_slice(&valid[8..52]);
+        assert!(decode(&duplicate).is_err());
+        let mut duplicate = valid.clone();
+        duplicate.extend_from_slice(&valid[69..]);
+        assert!(decode(&duplicate).is_err());
+        let (mut padded, _) = fixture(24, 4, false, false);
+        *padded.last_mut().unwrap() = 1;
+        assert!(decode(&padded).is_err());
+        let (mut nonfinite, _) = fixture(32, 4, true, true);
+        nonfinite[85..89].copy_from_slice(&f32::NAN.to_le_bytes());
+        assert!(decode(&nonfinite).is_err());
+    }
 
     #[test]
     fn literal_many_channel_pcm_retains_every_table_slice() {

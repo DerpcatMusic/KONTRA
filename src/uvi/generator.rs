@@ -1,6 +1,6 @@
 //! Native Program oscillators, with per-note phase state and resident resources.
 //!
-//! Parameter names/units: https://lua.uvi.net/_elements.html (Analog/Wavetable).
+//! Parameter names/units: https://lua.uvi.net/_elements.html (Analog/Wavetable/FM).
 //! Single-voice sine amplitude, polarity, phase and tuning were compared with
 //! authored fixtures in official UVI Workstation 4.0.9, without license changes.
 //! The discontinuous-wave anti-aliasing below is an original polynomial law,
@@ -15,10 +15,13 @@ use std::{
     sync::Arc,
 };
 
-pub const FIDELITY_DIAGNOSTIC: &str = "Analog sine/PWM, Analog/Wavetable deterministic unison phase/detune/gain/stereo laws, filename/channel-based wavetable slice morphing and unison index spread, wavetable phase-distortion modes 0/3 and tracked sine-FM ratio modes 0/1/2 were measured against authored native fixtures; polynomial anti-aliasing, hard-sync edge treatment, random phase/noise sequences and linear wavetable readout are original laws, with numerical parity unverified";
+pub const FIDELITY_DIAGNOSTIC: &str = "Native authored fixtures cover Analog sine/PWM, Analog/Wavetable deterministic unison phase/detune/gain/stereo, filename/channel-based wavetable slices and index spread, wavetable phase-distortion modes 0/3 and tracked sine-FM ratio modes 0/1/2, and tracked four-operator FM topologies 0/5/6/7/10 with D feedback; numerical parity remains unverified for polynomial anti-aliasing, hard-sync edges, random phase/noise sequences, linear wavetable readout and FM clock precision";
 
 pub fn supports(kind: &str) -> bool {
-    matches!(kind, "MinBlepGenerator" | "WaveTableOscillator")
+    matches!(
+        kind,
+        "MinBlepGenerator" | "WaveTableOscillator" | "FmOscillator"
+    )
 }
 
 fn number(node: &ProgramNode, name: &str, default: f64) -> Result<f64> {
@@ -36,6 +39,23 @@ fn number(node: &ProgramNode, name: &str, default: f64) -> Result<f64> {
 pub fn validate(node: &ProgramNode) -> Result<()> {
     ensure!(supports(&node.kind), "Unsupported UVI generator");
     let n = |name: &str, default: f64| number(node, name, default);
+    if node.kind == "WaveTableOscillator" {
+        let extension = node
+            .attributes
+            .get("WavetablePath")
+            .and_then(|path| path.rsplit(['/', '\\']).next())
+            .and_then(|file| file.rsplit_once('.').map(|(_, extension)| extension));
+        ensure!(
+            !extension.is_some_and(|extension| ["jpg", "jpeg", "png"]
+                .iter()
+                .any(|image| extension.eq_ignore_ascii_case(image))),
+            "Image-backed wavetable conversion is not implemented"
+        );
+    }
+    if node.kind == "FmOscillator" {
+        fm_settings(&n)?;
+        return Ok(());
+    }
     let voices = if node.kind == "MinBlepGenerator" {
         "NumOscillators"
     } else {
@@ -137,6 +157,7 @@ pub fn validate(node: &ProgramNode) -> Result<()> {
 
 enum Source {
     Analog,
+    Fm,
     Table { sample: Arc<Sample>, cycle: usize },
 }
 
@@ -150,6 +171,7 @@ pub struct Generator {
     stereo: bool,
     fm: bool,
     phase_spread: f64,
+    fm_feedback: f64,
 }
 
 impl Generator {
@@ -170,6 +192,20 @@ impl Generator {
             rate.is_finite() && (8_000. ..=192_000.).contains(&rate),
             "Invalid oscillator sample rate"
         );
+        if node.kind == "FmOscillator" {
+            return Ok(Self {
+                source: Source::Fm,
+                rate,
+                phase: [0.; 8],
+                master_phase: [0.; 8],
+                oscillators: 1,
+                noise: 0,
+                stereo: false,
+                fm: false,
+                phase_spread: 0.,
+                fm_feedback: 0.,
+            });
+        }
         let source = if node.kind == "MinBlepGenerator" {
             Source::Analog
         } else {
@@ -250,6 +286,7 @@ impl Generator {
             stereo: number(node, "Stereo", 0.)? != 0.,
             fm: node.kind == "WaveTableOscillator" && number(node, "EnableFM", 0.)? != 0.,
             phase_spread,
+            fm_feedback: 0.,
         })
     }
 
@@ -268,6 +305,20 @@ impl Generator {
             frequency_hz.is_finite() && frequency_hz >= 0.,
             "Invalid oscillator frequency"
         );
+        if matches!(self.source, Source::Fm) {
+            let settings = fm_settings(&numeric)?;
+            let phase =
+                std::array::from_fn(|i| TAU * (self.phase[i] + settings.phase[i] * settings.scale));
+            let value = fm_value(phase, &settings, &mut self.fm_feedback);
+            for i in 0..4 {
+                self.phase[i] = (self.phase[i]
+                    + frequency_hz / self.rate * settings.ratio[i] * settings.scale)
+                    .rem_euclid(1.);
+            }
+            let mut frame = [0.; super::dsp::MAX_CHANNELS];
+            frame[0] = value as f32;
+            return Ok(frame);
+        }
         let voices = if matches!(self.source, Source::Analog) {
             "NumOscillators"
         } else {
@@ -321,6 +372,7 @@ impl Generator {
             };
             let step = frequency_hz * 2f64.powf(detune / 1200.) / self.rate;
             let value = match &self.source {
+                Source::Fm => unreachable!("FM is rendered before unison"),
                 Source::Table {
                     sample: table,
                     cycle,
@@ -482,6 +534,132 @@ impl Generator {
     }
 }
 
+struct FmSettings {
+    level: [f64; 4],
+    ratio: [f64; 4],
+    phase: [f64; 4],
+    topology: u8,
+    scale: f64,
+    feedback: f64,
+}
+
+fn fm_settings(n: &impl Fn(&str, f64) -> Result<f64>) -> Result<FmSettings> {
+    let feedback = n("Feedback", 0.)?;
+    ensure!((0. ..=1.).contains(&feedback), "Invalid FM feedback");
+    let topology = n("Topology", 0.)?;
+    ensure!(
+        [0., 5., 6., 7., 10.].contains(&topology),
+        "Unsupported FM operator topology"
+    );
+    let version = n("FmOscillatorVersion", 0.)?;
+    ensure!(
+        [0., 1.].contains(&version),
+        "Unsupported FM oscillator version"
+    );
+    let mut level = [0.; 4];
+    let mut ratio = [0.; 4];
+    let mut phase = [0.; 4];
+    for (i, names) in [
+        [
+            "LevelA",
+            "RatioA",
+            "RatioFineA",
+            "SnapRatioA",
+            "PhaseA",
+            "FixedFreqA",
+        ],
+        [
+            "LevelB",
+            "RatioB",
+            "RatioFineB",
+            "SnapRatioB",
+            "PhaseB",
+            "FixedFreqB",
+        ],
+        [
+            "LevelC",
+            "RatioC",
+            "RatioFineC",
+            "SnapRatioC",
+            "PhaseC",
+            "FixedFreqC",
+        ],
+        [
+            "LevelD",
+            "RatioD",
+            "RatioFineD",
+            "SnapRatioD",
+            "PhaseD",
+            "FixedFreqD",
+        ],
+    ]
+    .iter()
+    .enumerate()
+    {
+        level[i] = n(names[0], 1.)?;
+        let coarse = n(names[1], 1.)?;
+        let fine = n(names[2], 0.)?;
+        let snap = n(names[3], 0.)?;
+        phase[i] = n(names[4], 0.)?;
+        // Native tracked captures are unchanged by Freq/FreqMultiplier fields.
+        // Their fixed-frequency consumer remains deliberately unsupported.
+        ensure!(
+            n(names[5], 0.)? == 0.,
+            "Fixed-frequency FM operators are not implemented"
+        );
+        ensure!((0. ..=20.).contains(&level[i]), "Invalid FM operator level");
+        ensure!(
+            (1. ..=40.).contains(&coarse)
+                && (-1200. ..=1200.).contains(&fine)
+                && [0., 1.].contains(&snap),
+            "Invalid FM operator ratio"
+        );
+        ensure!((0. ..=1.).contains(&phase[i]), "Invalid FM operator phase");
+        ratio[i] = if snap == 0. {
+            coarse
+        } else {
+            (coarse + 0.5).floor()
+        } * 2f64.powf(fine / 1200.);
+    }
+    Ok(FmSettings {
+        level,
+        ratio,
+        phase,
+        topology: topology as u8,
+        scale: if version == 0. { 0.5 } else { 1. },
+        feedback,
+    })
+}
+
+/// Native authored operator isolation plus independent phase/fine/ratio fixtures.
+/// Phase modulation uses the modulator's radian-valued output, unlike WT FM.
+fn fm_value(phase: [f64; 4], settings: &FmSettings, previous_d: &mut f64) -> f64 {
+    let level = settings.level;
+    // Native feedback uses the preceding unscaled D sine, independent of LevelD.
+    *previous_d = (phase[3] + settings.feedback * *previous_d).sin();
+    let raw = [
+        level[0] * phase[0].sin(),
+        level[1] * phase[1].sin(),
+        level[2] * phase[2].sin(),
+        level[3] * *previous_d,
+    ];
+    match settings.topology {
+        0 | 5 => {
+            let c = level[2] * (phase[2] + raw[3]).sin();
+            let b = level[1] * (phase[1] + c).sin();
+            if settings.topology == 0 {
+                level[0] * (phase[0] + b).sin()
+            } else {
+                raw[0] + b
+            }
+        }
+        6 => level[0] * (phase[0] + raw[1] + raw[2] + raw[3]).sin(),
+        7 => level[0] * (phase[0] + raw[1]).sin() + level[2] * (phase[2] + raw[3]).sin(),
+        10 => raw.iter().sum(),
+        _ => unreachable!("validated FM topology"),
+    }
+}
+
 fn next_random(state: &mut u32) -> u32 {
     *state ^= *state << 13;
     *state ^= *state >> 17;
@@ -607,6 +785,25 @@ mod tests {
 
     #[test]
     fn authored_native_external_table_slices() {
+        // Image resources must fail in preflight before the audio loader runs.
+        for path in [
+            "authored.jpg",
+            "authored.JPEG",
+            "authored.PNG",
+            r"C:\tables\authored.JpG",
+        ] {
+            let image = parse_program(&format!(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><WaveTableOscillator WavetablePath="{path}"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#)).unwrap();
+            let image = image
+                .nodes
+                .iter()
+                .find(|node| node.kind == "WaveTableOscillator")
+                .unwrap();
+            assert_eq!(
+                validate(image).unwrap_err().to_string(),
+                "Image-backed wavetable conversion is not implemented"
+            );
+            assert!(Generator::new(image, 48_000., None).is_err());
+        }
         let p = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><WaveTableOscillator WavetablePath="authored_128.wav" PhaseDistortionMode="3" PhaseDistortionAmount="0"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
         let node = p
             .nodes
@@ -1310,6 +1507,227 @@ mod tests {
                 .unwrap();
             for channel in 0..2 {
                 assert!((actual[channel] - native[channel]).abs() < 1e-7);
+            }
+        }
+    }
+    #[test]
+    fn authored_native_four_operator_fm() {
+        // Independently authored native fixtures, not values generated by this DSP.
+        // Mixed levels, phases, ratios, fine tuning and harmonic snapping exercise
+        // every admitted topology, both versions and nonzero D feedback.
+        for (topology, version, feedback, native) in [
+            (
+                0.,
+                1.,
+                0.,
+                [
+                    0.3496526777744293,
+                    0.21780210733413696,
+                    -0.3497423827648163,
+                    0.34804442524909973,
+                    0.34429341554641724,
+                ],
+            ),
+            (
+                5.,
+                1.,
+                0.,
+                [
+                    0.6546869277954102,
+                    0.03177136182785034,
+                    -0.4014642536640167,
+                    0.6363136768341064,
+                    -0.28029942512512207,
+                ],
+            ),
+            (
+                6.,
+                1.,
+                0.,
+                [
+                    0.30837351083755493,
+                    0.2014549970626831,
+                    -0.34748515486717224,
+                    0.23946194350719452,
+                    0.3497641682624817,
+                ],
+            ),
+            (
+                10.,
+                1.,
+                0.,
+                [
+                    0.9233050346374512,
+                    0.06094476580619812,
+                    -0.3223050832748413,
+                    0.28053271770477295,
+                    -0.3523567318916321,
+                ],
+            ),
+            (
+                0.,
+                0.,
+                1.,
+                [
+                    0.3005619943141937,
+                    0.28907546401023865,
+                    0.14037208259105682,
+                    0.1383959800004959,
+                    -0.2191067487001419,
+                ],
+            ),
+            (
+                6.,
+                1.,
+                0.37,
+                [
+                    0.30837351083755493,
+                    0.2004684954881668,
+                    -0.34795334935188293,
+                    0.21789395809173584,
+                    0.34804585576057434,
+                ],
+            ),
+            (
+                7.,
+                1.,
+                0.6,
+                [
+                    0.47180497646331787,
+                    0.1619706153869629,
+                    -0.21064996719360352,
+                    0.19575756788253784,
+                    0.47868961095809937,
+                ],
+            ),
+            (
+                5.,
+                0.,
+                0.37,
+                [
+                    0.46748751401901245,
+                    0.7478116750717163,
+                    0.43330276012420654,
+                    -0.4486665427684784,
+                    -0.6644572019577026,
+                ],
+            ),
+            (
+                10.,
+                0.,
+                0.37,
+                [
+                    0.7317759990692139,
+                    0.7381051778793335,
+                    0.21440300345420837,
+                    -0.4636915624141693,
+                    -0.8253520727157593,
+                ],
+            ),
+            (
+                6.,
+                0.,
+                0.224,
+                [
+                    0.3499845266,
+                    0.2983056307,
+                    0.2498360872,
+                    0.1441069394,
+                    -0.1261043698,
+                ],
+            ),
+        ] {
+            let mut p = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><FmOscillator/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+            let node = p
+                .nodes
+                .iter_mut()
+                .find(|n| n.kind == "FmOscillator")
+                .unwrap();
+            for (name, value) in [
+                ("Topology", topology),
+                ("FmOscillatorVersion", version),
+                ("Feedback", feedback),
+                ("LevelA", 0.7),
+                ("LevelB", 0.9),
+                ("LevelC", 0.3),
+                ("LevelD", 0.5),
+                ("RatioA", 1.6),
+                ("RatioB", 2.3),
+                ("RatioC", 3.1),
+                ("RatioD", 4.7),
+                ("RatioFineA", 17.),
+                ("RatioFineB", -22.),
+                ("RatioFineC", 30.),
+                ("SnapRatioA", 1.),
+                ("SnapRatioD", 1.),
+                ("PhaseA", 0.1),
+                ("PhaseB", 0.2),
+                ("PhaseC", 0.3),
+                ("PhaseD", 0.4),
+            ] {
+                node.attributes.insert(name.into(), value.to_string());
+            }
+            // Native full captures with these changed fixed-frequency controls
+            // were byte-identical while all four FixedFreq flags stayed false.
+            if (topology == 0. && version == 1. && feedback == 0.)
+                || (topology == 6. && version == 0. && feedback == 0.224)
+            {
+                for (name, value) in [
+                    ("FreqA", 0.13),
+                    ("FreqB", 0.28),
+                    ("FreqC", 1.1),
+                    ("FreqD", 1.8),
+                    ("FreqMultiplierA", 0.),
+                    ("FreqMultiplierB", 1.),
+                    ("FreqMultiplierC", 2.),
+                    ("FreqMultiplierD", 4.),
+                ] {
+                    node.attributes.insert(name.into(), value.to_string());
+                }
+            }
+            let mut g = Generator::new(node, 48_000., None).unwrap();
+            assert_eq!(g.channels(), 1);
+            for frame in 0..=120 {
+                let actual = g
+                    .next(
+                        |name, default| number(node, name, default),
+                        261.6255653005986,
+                    )
+                    .unwrap()[0]
+                    * 0.5;
+                if let Some(i) = [0, 30, 60, 90, 120].iter().position(|&at| at == frame) {
+                    assert!(
+                        (actual - native[i]).abs() < 3e-6,
+                        "topology {topology}, version {version}, feedback {feedback}, frame {frame}: {actual} vs {}",
+                        native[i]
+                    );
+                }
+            }
+            if version == 0. {
+                node.attributes.remove("FmOscillatorVersion");
+                let mut g = Generator::new(node, 48_000., None).unwrap();
+                let actual = g
+                    .next(
+                        |name, default| number(node, name, default),
+                        261.6255653005986,
+                    )
+                    .unwrap()[0]
+                    * 0.5;
+                assert!((actual - native[0]).abs() < 3e-6);
+            }
+            for (name, bad) in [
+                ("Topology", "1"),
+                ("FmOscillatorVersion", "2"),
+                ("FixedFreqA", "1"),
+                ("Feedback", "1.1"),
+            ] {
+                let previous = node.attributes.insert(name.into(), bad.into());
+                assert!(Generator::new(node, 48_000., None).is_err());
+                if let Some(value) = previous {
+                    node.attributes.insert(name.into(), value);
+                } else {
+                    node.attributes.remove(name);
+                }
             }
         }
     }

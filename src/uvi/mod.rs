@@ -13,7 +13,9 @@ pub mod host;
 pub mod library;
 pub mod maximizer;
 pub mod modulation;
+pub mod phasor;
 pub mod playback;
+pub mod player;
 pub mod program;
 pub mod resampling;
 pub mod sample;
@@ -23,6 +25,7 @@ pub mod storage;
 pub mod time_effects;
 pub mod ufs;
 pub mod waveshaper;
+pub mod worker;
 
 use crate::{
     audio,

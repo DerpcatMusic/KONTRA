@@ -171,6 +171,101 @@ fn validate_png(bytes: &[u8]) -> Result<usize> {
     anyhow::bail!("PNG has no IEND")
 }
 
+fn processing_end(end: u64) -> Result<u64> {
+    Ok(end
+        .checked_add(255)
+        .context("UVI padded timeline overflow")?
+        / 256
+        * 256)
+}
+
+/// Exercises the same fixed packet API intended for the live audio handoff.
+/// Waiting, preparation and controller destruction here are explicitly offline.
+fn play_worker(
+    args: &[String],
+    start: usize,
+    inputs: &[script::Input],
+    end: u64,
+    rate: u32,
+) -> Result<()> {
+    use std::time::{Duration, Instant};
+    use worker::{PacketError, Request, Stamp, StartConfig, Worker};
+    let (reader, state) = options(args, start)?;
+    let mut worker = Worker::start(
+        StartConfig {
+            bank: PathBuf::from(&args[1]),
+            member: args[2].clone(),
+            metadata_namespace: reader.metadata,
+            program_namespace: reader.program,
+            content_key: state.as_ref().map(|state| state.key),
+            content_bank: state.and_then(|state| state.bank),
+            sample_rate: rate,
+        },
+        1,
+        1,
+    )?;
+    worker.wait_ready(Duration::from_secs(60))?;
+    let diagnostics = worker.diagnostics();
+    let padded_end = processing_end(end)?;
+    let (mut input_index, mut commands, mut host_commands, mut logs, mut dropped_logs) =
+        (0, 0u64, 0u64, 0u64, 0u64);
+    let peak = write_wav(Path::new(&args[3]), rate, |write| {
+        for frame in (0..padded_end).step_by(worker::BLOCK_FRAMES) {
+            let stamp = Stamp {
+                epoch: 1,
+                generation: 1,
+                frame,
+            };
+            let next_input =
+                inputs.partition_point(|input| input.frame < frame + worker::BLOCK_FRAMES as u64);
+            let request = Request::new(stamp, &inputs[input_index..next_input])
+                .map_err(|error| anyhow::anyhow!("Invalid UVI worker packet: {error:?}"))?;
+            worker.realtime().try_submit(request).map_err(|rejected| {
+                anyhow::anyhow!("UVI worker packet rejected: {:?}", rejected.reason)
+            })?;
+            let started = Instant::now();
+            let output = loop {
+                match worker.realtime().try_receive(stamp) {
+                    Ok(output) => break output,
+                    Err(PacketError::Underrun) => {
+                        ensure!(
+                            started.elapsed() < Duration::from_secs(60),
+                            "UVI worker output timed out"
+                        );
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => anyhow::bail!(
+                        "UVI worker output failed: {error:?}; {}",
+                        worker.private_failure().unwrap_or_default()
+                    ),
+                }
+            };
+            commands += u64::from(output.commands);
+            host_commands += u64::from(output.host_commands);
+            logs += u64::from(output.logs);
+            dropped_logs += u64::from(output.dropped_logs);
+            for sample in output
+                .audio
+                .into_iter()
+                .take(end.saturating_sub(frame) as usize)
+            {
+                write(sample)?;
+            }
+            input_index = next_input;
+        }
+        Ok(())
+    })?;
+    worker.stop();
+    let stats = worker.stats();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(
+            &serde_json::json!({"frames":end,"processed_frames":padded_end,"sample_rate":rate,"block_frames":worker::BLOCK_FRAMES,"worker":true,"peak":peak,"event_commands":commands,"host_commands":host_commands,"diagnostics":diagnostics,"private_log_messages":logs,"dropped_logs":dropped_logs,"worker_initialization_ns":stats.initialization_ns,"worker_render_ns":stats.render_ns,"worker_max_render_ns":stats.max_render_ns,"worker_render_deadline_misses":stats.render_deadline_misses,"worker_backpressure":stats.backpressure,"worker_packet_polls":stats.underruns,"worker_errors":stats.errors})
+        )?
+    );
+    Ok(())
+}
+
 pub fn run(args: &[String]) -> Result<()> {
     let path = Path::new(args.get(1).context("UVI command requires a source path")?);
     match args[0].as_str() {
@@ -229,14 +324,23 @@ pub fn run(args: &[String]) -> Result<()> {
             let rendering = args[0] == "uvi-play";
             ensure!(
                 args.len() >= if rendering { 6 } else { 5 },
-                "Usage: uvi-check <bank.ufs> <member.uvip> --reader <exe> [--content-key-file <private-file>]\n       uvi-play <bank.ufs> <member.uvip> <output.wav> --reader <exe> [--content-key-file <private-file>] [--notes 60@0-500:100 | --events timeline.json] [--sample-rate 48000]"
+                "Usage: uvi-check <bank.ufs> <member.uvip> --reader <exe> [--content-key-file <private-file>]\n       uvi-play <bank.ufs> <member.uvip> <output.wav> --reader <exe> [--content-key-file <private-file>] [--notes 60@0-500:100 | --events timeline.json] [--sample-rate 48000] [--block-frames 256] [--worker]"
             );
             let start = if rendering { 4 } else { 3 };
             let mut args = args.to_vec();
+            let dedicated_worker = if let Some(index) = args.iter().position(|s| s == "--worker") {
+                ensure!(rendering && index >= start, "Misplaced --worker option");
+                args.remove(index);
+                ensure!(!args.iter().any(|s| s == "--worker"), "Repeated --worker");
+                true
+            } else {
+                false
+            };
             let mut notes = "60@0-500:100".to_owned();
             let mut explicit_notes = false;
             let mut event_file = None;
             let mut rate = 48000u32;
+            let mut block_frames = None;
             if let Some(index) = args.iter().position(|s| s == "--sample-rate") {
                 ensure!(index >= start, "Misplaced --sample-rate option");
                 rate = args
@@ -248,6 +352,26 @@ pub fn run(args: &[String]) -> Result<()> {
                 ensure!(
                     !args.iter().any(|s| s == "--sample-rate"),
                     "Repeated --sample-rate"
+                );
+            }
+            if let Some(index) = args.iter().position(|s| s == "--block-frames") {
+                ensure!(
+                    rendering && index >= start,
+                    "Misplaced --block-frames option"
+                );
+                let frames: usize = args
+                    .get(index + 1)
+                    .context("Missing --block-frames value")?
+                    .parse()?;
+                ensure!(
+                    frames > 0 && frames <= rate as usize * 60,
+                    "Invalid UVI block length"
+                );
+                block_frames = Some(frames);
+                args.drain(index..=index + 1);
+                ensure!(
+                    !args.iter().any(|s| s == "--block-frames"),
+                    "Repeated --block-frames"
                 );
             }
             if let Some(index) = args.iter().position(|s| s == "--notes") {
@@ -271,9 +395,6 @@ pub fn run(args: &[String]) -> Result<()> {
                 ensure!(!args.iter().any(|s| s == "--events"), "Repeated --events");
                 ensure!(!explicit_notes, "Use either --notes or --events");
             }
-            let (reader, library) = open_library(&args, start)?;
-            let library = Rc::new(library);
-            let loaded = library.program(&args[2], &reader.program)?;
             let inputs: Vec<script::Input> = if let Some(file) = event_file {
                 serde_json::from_str(&read_text(Path::new(&file))?)
                     .context("Invalid UVI event timeline JSON")?
@@ -287,6 +408,31 @@ pub fn run(args: &[String]) -> Result<()> {
                 .unwrap_or(0)
                 .checked_add(u64::from(rate))
                 .context("UVI event timeline overflow")?;
+            script::validate_sequence(&inputs, end - 1)?;
+            if rendering {
+                ensure!(
+                    inputs.iter().all(player::input_is_valid),
+                    "UVI audio transport tempo must be between 1 and 1000 BPM"
+                );
+            }
+            if dedicated_worker {
+                ensure!(
+                    block_frames.is_none_or(|frames| frames == worker::BLOCK_FRAMES),
+                    "The UVI worker uses fixed 256-frame blocks"
+                );
+                return play_worker(&args, start, &inputs, end, rate);
+            }
+            let (reader, library) = open_library(&args, start)?;
+            let library = Rc::new(library);
+            let loaded = library.program(&args[2], &reader.program)?;
+            let unsupported = playback::preflight(&loaded.program);
+            if rendering {
+                ensure!(
+                    unsupported.is_empty(),
+                    "Native UVI graph preflight failed: {}",
+                    serde_json::to_string(&unsupported)?
+                );
+            }
             let resources = library::BankResources::new(
                 library.clone(),
                 &loaded.path,
@@ -296,7 +442,58 @@ pub fn run(args: &[String]) -> Result<()> {
                     HashMap::new()
                 },
             )?;
-            let mut processed = script::process_program_chain_at_rate(
+            if rendering {
+                let mut player =
+                    player::Player::new(&loaded.program, library.modules()?, resources, rate)?;
+                let diagnostics = player.diagnostics();
+                let planned = player.requires_planned_segments();
+                // Bulk and smaller blocks use the same VM/DSP processing horizon.
+                // Planned-source lookahead can affect audible samples before a
+                // callback in the padded tail; do not truncate those commands.
+                let block_frames = block_frames.unwrap_or_else(|| {
+                    let limit = rate as usize * 60;
+                    if planned { limit / 256 * 256 } else { limit }
+                });
+                ensure!(
+                    !planned || block_frames.is_multiple_of(256),
+                    "This UVI graph requires --block-frames to be a multiple of 256"
+                );
+                let padded_end = processing_end(end)?;
+                let (mut input_index, mut commands, mut host_commands, mut logs, mut dropped_logs) =
+                    (0, 0, 0, 0, 0);
+                let peak = write_wav(Path::new(&args[3]), rate, |write| {
+                    while player.current_frame() < padded_end {
+                        let frame = player.current_frame();
+                        let chunk_end = padded_end.min(frame + block_frames as u64);
+                        let next_input = inputs.partition_point(|input| input.frame < chunk_end);
+                        let rendered = player.render(
+                            &inputs[input_index..next_input],
+                            (chunk_end - frame) as usize,
+                        )?;
+                        commands += rendered.commands;
+                        host_commands += rendered.host_commands;
+                        logs += rendered.logs.len();
+                        dropped_logs += rendered.dropped_logs;
+                        for sample in rendered
+                            .audio
+                            .into_iter()
+                            .take(end.saturating_sub(frame) as usize)
+                        {
+                            write(sample)?;
+                        }
+                        input_index = next_input;
+                    }
+                    Ok(())
+                })?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({"frames":end,"processed_frames":padded_end,"sample_rate":rate,"block_frames":block_frames,"peak":peak,"event_commands":commands,"host_commands":host_commands,"diagnostics":diagnostics,"private_log_messages":logs,"dropped_logs":dropped_logs})
+                    )?
+                );
+                return Ok(());
+            }
+            let processed = script::process_program_chain_at_rate(
                 &loaded.program,
                 library.modules()?,
                 Some(resources.capability()),
@@ -304,67 +501,12 @@ pub fn run(args: &[String]) -> Result<()> {
                 end,
                 rate,
             )?;
-            let unsupported = playback::preflight(&loaded.program);
-            if rendering {
-                // A file's end is exclusive; commands at that boundary have no audio frame.
-                processed.commands.retain(|command| command.frame < end);
-                processed
-                    .host_commands
-                    .retain(|command| command.frame < end);
-                let samples = resources.samples();
-                let mut renderer = playback::Renderer::new(&loaded.program, samples, rate)?;
-                let diagnostics = renderer.diagnostics();
-                let frames = if renderer.requires_planned_segments() {
-                    // Native source arrays are planned over complete 256-frame blocks.
-                    // Render their final block, retaining only the requested file extent.
-                    let padded_end = end
-                        .checked_add(255)
-                        .context("UVI padded timeline overflow")?
-                        / 256
-                        * 256;
-                    let chunk_limit = u64::from(rate) * 60 / 256 * 256;
-                    let mut output = Vec::with_capacity(end as usize);
-                    let (mut frame, mut note_index, mut host_index) = (0, 0, 0);
-                    while frame < padded_end {
-                        let chunk_end = padded_end.min(frame + chunk_limit);
-                        let next_note = processed
-                            .commands
-                            .partition_point(|command| command.frame < chunk_end);
-                        let next_host = processed
-                            .host_commands
-                            .partition_point(|command| command.frame < chunk_end);
-                        let chunk = renderer.render(
-                            &processed.commands[note_index..next_note],
-                            &processed.host_commands[host_index..next_host],
-                            (chunk_end - frame) as usize,
-                        )?;
-                        output.extend(chunk.into_iter().take(end.saturating_sub(frame) as usize));
-                        (frame, note_index, host_index) = (chunk_end, next_note, next_host);
-                    }
-                    output
-                } else {
-                    renderer.render(&processed.commands, &processed.host_commands, end as usize)?
-                };
-                let peak = write_wav(Path::new(&args[3]), rate, |write| {
-                    for frame in frames {
-                        write(frame)?;
-                    }
-                    Ok(())
-                })?;
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(
-                        &serde_json::json!({"frames":end,"sample_rate":rate,"peak":peak,"event_commands":processed.commands.len(),"host_commands":processed.host_commands.len(),"diagnostics":diagnostics,"private_log_messages":processed.logs.len(),"dropped_logs":processed.dropped_logs})
-                    )?
-                );
-            } else {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(
-                        &serde_json::json!({"program_nodes":loaded.program.nodes.len(),"sample_players":loaded.program.sample_zones.len(),"event_commands":processed.commands.len(),"host_commands":processed.host_commands.len(),"unsupported":unsupported,"private_log_messages":processed.logs.len(),"dropped_logs":processed.dropped_logs})
-                    )?
-                );
-            }
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &serde_json::json!({"program_nodes":loaded.program.nodes.len(),"sample_players":loaded.program.sample_zones.len(),"event_commands":processed.commands.len(),"host_commands":processed.host_commands.len(),"unsupported":unsupported,"private_log_messages":processed.logs.len(),"dropped_logs":processed.dropped_logs})
+                )?
+            );
         }
         "uvi-bank" => {
             let (reader, _) = options(args, 2)?;

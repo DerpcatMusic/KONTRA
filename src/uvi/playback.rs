@@ -12,6 +12,7 @@ use super::{
     host::{self, ParameterValue},
     maximizer::{self, Maximizer},
     modulation::{self, Inputs, ModulationGraph, Parameter},
+    phasor::{self, Phasor},
     program::{NodeId, Program},
     sample::{Sample, SampleLoop},
     script,
@@ -72,6 +73,12 @@ pub fn resolve_path(program: &Program, node: NodeId, path: &str) -> Result<NodeI
     ensure!(node < program.nodes.len(), "Invalid UVI path owner");
     let mut at = node;
     let mut path = path;
+    if let Some(rest) = path.strip_prefix("/uvi/Part 0/Program/") {
+        at = program.root;
+        path = rest;
+    } else {
+        ensure!(!path.starts_with('/'), "Unverified absolute UVI graph path");
+    }
     if let Some((scope, rest)) = path
         .split_once('/')
         .or_else(|| path.starts_with('$').then_some((path, "")))
@@ -126,6 +133,8 @@ pub fn preflight(program: &Program) -> Vec<Unsupported> {
                 | "DAHDSR"
                 | "AHD"
                 | "AttackDecayEnv"
+                | "StdRandom"
+                | "Drunk"
                 | "MultiEnvelope"
                 | "Step"
                 | "SignalConnection"
@@ -135,6 +144,7 @@ pub fn preflight(program: &Program) -> Vec<Unsupported> {
             || waveshaper::supports(&node.kind)
             || maximizer::supports(&node.kind)
             || sparkverb::supports(&node.kind)
+            || phasor::supports(&node.kind)
             || generator::supports(&node.kind)
             || wrapper(&node.kind)
             || matches!(
@@ -219,6 +229,15 @@ pub fn preflight(program: &Program) -> Vec<Unsupported> {
                 });
             }
         }
+        if phasor::supports(&node.kind) {
+            if let Err(error) = phasor::validate(node) {
+                unsupported.push(Unsupported {
+                    node: id,
+                    kind: node.kind.clone(),
+                    reason: error.to_string(),
+                });
+            }
+        }
         if sparkverb::supports(&node.kind) {
             if let Err(error) = sparkverb::validate(node) {
                 unsupported.push(Unsupported {
@@ -274,6 +293,15 @@ pub fn preflight(program: &Program) -> Vec<Unsupported> {
             "PortamentoMode",
             "NotePolyphony",
         ] {
+            if parameter == "TriggerMode"
+                && matches!(node.kind.as_str(), "StdRandom" | "Drunk")
+                && node
+                    .attributes
+                    .get(parameter)
+                    .is_some_and(|value| value.parse::<f64>() == Ok(1.))
+            {
+                continue;
+            }
             if node.attributes.get(parameter).is_some_and(|s| s != "0") {
                 unsupported.push(Unsupported {
                     node: id,
@@ -356,7 +384,8 @@ pub fn preflight(program: &Program) -> Vec<Unsupported> {
                     || time_effects::supports(&entry.kind)
                     || waveshaper::supports(&entry.kind)
                     || maximizer::supports(&entry.kind)
-                    || sparkverb::supports(&entry.kind);
+                    || sparkverb::supports(&entry.kind)
+                    || phasor::supports(&entry.kind);
                 if rendered_target
                     && scope.is_none()
                     && graph.has_release_envelopes(&HashSet::from([node]))
@@ -392,6 +421,7 @@ enum Processor {
     Wave(Box<WaveShaper>),
     Max(Maximizer),
     Spark(Box<SparkVerb>),
+    Phasor(Box<Phasor>),
 }
 impl Processor {
     fn new(
@@ -401,6 +431,13 @@ impl Processor {
         samples: &Arc<HashMap<String, Arc<Sample>>>,
     ) -> Result<Option<Self>> {
         let kind = node.kind.as_str();
+        if phasor::supports(kind) {
+            return Ok(Some(Self::Phasor(Box::new(Phasor::new(
+                node,
+                channel_count,
+                rate,
+            )?))));
+        }
         if sparkverb::supports(kind) {
             return Ok(Some(Self::Spark(Box::new(SparkVerb::new(
                 node,
@@ -465,6 +502,7 @@ impl Processor {
                 Self::Max(p) => p.memory_bytes() - std::mem::size_of::<Maximizer>(),
                 Self::Delay(p) => p.memory_bytes() - std::mem::size_of::<TrackDelay>(),
                 Self::Spark(p) => std::mem::size_of::<SparkVerb>() + p.memory_bytes(),
+                Self::Phasor(p) => p.memory_bytes(),
                 _ => 0,
             }
     }
@@ -487,6 +525,14 @@ impl Processor {
             Self::Wave(p) => p.set_parameter(name, &ParameterValue::Number(value)),
             Self::Max(p) => p.set_parameter(name, &ParameterValue::Number(value)),
             Self::Spark(p) => p.set_parameter(name, &ParameterValue::Number(value)),
+            Self::Phasor(p) => p.set_parameter(
+                name,
+                &if matches!(name, "Bypass" | "SyncToHost") {
+                    ParameterValue::Boolean(value >= 0.5)
+                } else {
+                    ParameterValue::Number(value)
+                },
+            ),
         }
     }
     fn set_value(&mut self, name: &str, value: &ParameterValue) -> Result<()> {
@@ -497,6 +543,7 @@ impl Processor {
             Self::Wave(p) => return p.set_parameter(name, value),
             Self::Max(p) => return p.set_parameter(name, value),
             Self::Spark(p) => return p.set_parameter(name, value),
+            Self::Phasor(p) => return p.set_parameter(name, value),
             _ => {}
         }
         let value = match value {
@@ -539,6 +586,7 @@ impl Processor {
             Self::Wave(p) => p.process(std::slice::from_mut(frame))?,
             Self::Max(p) => p.process(std::slice::from_mut(frame))?,
             Self::Spark(p) => p.process(std::slice::from_mut(frame))?,
+            Self::Phasor(p) => p.process(std::slice::from_mut(frame))?,
         }
         Ok(())
     }
@@ -659,6 +707,7 @@ struct Voice {
     note_off: Option<u64>,
     channels: usize,
     fade: Option<VoiceFade>,
+    gain: GainClock,
     keygroup: NodeId,
     layer: NodeId,
     oscillators: Vec<Oscillator>,
@@ -917,6 +966,7 @@ impl<'a> Renderer<'a> {
                 || waveshaper::supports(&node.kind)
                 || maximizer::supports(&node.kind)
                 || sparkverb::supports(&node.kind)
+                || phasor::supports(&node.kind)
                 || matches!(
                     node.kind.as_str(),
                     "GainMatrix" | "Gain" | "OnePole" | "TrackDelay"
@@ -1035,6 +1085,10 @@ impl<'a> Renderer<'a> {
         self.samples = resources;
         Ok(())
     }
+    /// Absolute output position of the next rendered frame.
+    pub fn current_frame(&self) -> u64 {
+        self.frame
+    }
     /// Planned native sources need complete musical-event lookahead within
     /// fixed 256-frame blocks, independent of the requested output length.
     pub fn requires_planned_segments(&self) -> bool {
@@ -1049,6 +1103,7 @@ impl<'a> Renderer<'a> {
             waveshaper::FIDELITY_DIAGNOSTIC,
             maximizer::FIDELITY_DIAGNOSTIC,
             sparkverb::FIDELITY_DIAGNOSTIC,
+            phasor::FIDELITY_DIAGNOSTIC,
             effects::FIDELITY_DIAGNOSTIC,
             modulation::FIDELITY_DIAGNOSTIC,
             generator::FIDELITY_DIAGNOSTIC,
@@ -1235,6 +1290,9 @@ impl<'a> Renderer<'a> {
                     };
                     filter.set_effective_parameter(name, &typed, self.modulation.target_has_dynamic_source(&(*id, name.clone())))
                         .with_context(|| format!("Modulated UVI filter parameter {name}={value} at node {id}, frame {}", self.frame))?;
+                } else if let Processor::Time(effect) = processor {
+                    effect.set_effective(name, &ParameterValue::Number(*value))
+                        .with_context(|| format!("Modulated UVI time parameter {name}={value} at node {id}, frame {}",self.frame))?;
                 } else {
                     processor.set(name, *value).with_context(|| {
                         format!(
@@ -1309,6 +1367,7 @@ impl<'a> Renderer<'a> {
                             | Processor::Wave(_)
                             | Processor::Max(_)
                             | Processor::Spark(_)
+                            | Processor::Phasor(_)
                     ) {
                         continue;
                     }
@@ -1327,6 +1386,7 @@ impl<'a> Renderer<'a> {
                 match &mut p {
                     Processor::Delay(delay) => delay.set_tempo(self.tempo)?,
                     Processor::Time(effect) => effect.set_tempo(self.tempo)?,
+                    Processor::Phasor(effect) => effect.set_tempo(self.tempo)?,
                     _ => {}
                 }
                 bytes = bytes.saturating_add(p.memory_bytes());
@@ -1626,6 +1686,7 @@ impl<'a> Renderer<'a> {
                 note_off: None,
                 channels,
                 fade: None,
+                gain: GainClock::new(self.frame, 0.),
                 keygroup: group,
                 layer,
                 oscillators,
@@ -1636,6 +1697,11 @@ impl<'a> Renderer<'a> {
                 &self.live,
                 &self.scope_nodes[&Some(group)],
             )?;
+            let target = targets
+                .get(&(group, "Gain".into()))
+                .copied()
+                .unwrap_or(numeric(&self.parameters, group, "Gain", 1.)?);
+            voice.gain = GainClock::new(self.frame, target as f32);
             for osc in &mut voice.oscillators {
                 if osc.generator.is_none() {
                     let target = targets
@@ -1883,6 +1949,7 @@ impl<'a> Renderer<'a> {
                     match p {
                         Processor::Delay(p) => p.set_tempo(*tempo)?,
                         Processor::Time(p) => p.set_tempo(*tempo)?,
+                        Processor::Phasor(p) => p.set_tempo(*tempo)?,
                         _ => {}
                     }
                 }
@@ -1891,6 +1958,7 @@ impl<'a> Renderer<'a> {
                         match p {
                             Processor::Delay(p) => p.set_tempo(*tempo)?,
                             Processor::Time(p) => p.set_tempo(*tempo)?,
+                            Processor::Phasor(p) => p.set_tempo(*tempo)?,
                             _ => {}
                         }
                     }
@@ -1910,17 +1978,30 @@ impl<'a> Renderer<'a> {
                     *node < self.parameters.len(),
                     "Invalid UVI parameter target"
                 );
-                if matches!(
-                    parameter.as_str(),
-                    "TriggerMode"
-                        | "TriggerSync"
-                        | "LatchTrigger"
-                        | "ExclusiveGroup"
-                        | "PlayMode"
-                        | "VelocityCurve"
-                        | "PortamentoMode"
-                        | "NotePolyphony"
-                ) {
+                let stochastic_trigger = parameter == "TriggerMode"
+                    && matches!(
+                        self.program.nodes[*node].kind.as_str(),
+                        "StdRandom" | "Drunk"
+                    );
+                if stochastic_trigger {
+                    ensure!(
+                        matches!(value,ParameterValue::Number(n) if *n == numeric(&self.parameters,*node,"TriggerMode",1.)?),
+                        "Changing stochastic clock trigger ownership requires graph rebuild"
+                    );
+                }
+                if !stochastic_trigger
+                    && matches!(
+                        parameter.as_str(),
+                        "TriggerMode"
+                            | "TriggerSync"
+                            | "LatchTrigger"
+                            | "ExclusiveGroup"
+                            | "PlayMode"
+                            | "VelocityCurve"
+                            | "PortamentoMode"
+                            | "NotePolyphony"
+                    )
+                {
                     ensure!(
                         matches!(value,ParameterValue::Number(n) if *n==0.)
                             || matches!(value, ParameterValue::Boolean(false)),
@@ -2513,6 +2594,14 @@ impl<'a> Renderer<'a> {
                     || self.number(voice.keygroup, "Pan", 0.)? == 0.,
                 "Nonzero pan for this multichannel layout is unverified"
             );
+            let parameter = (voice.keygroup, "Gain".into());
+            if !self.modulation.target_has_dynamic_source(&parameter) {
+                let target = self.number(voice.keygroup, "Gain", 1.)? as f32;
+                self.effective.insert(
+                    parameter,
+                    f64::from(voice.gain.value(self.frame, target, self.rate)),
+                );
+            }
             self.bus(
                 voice.keygroup,
                 &mut frame,
@@ -3714,7 +3803,7 @@ mod tests {
     }
     #[test]
     fn polyphonic_pressure_routes_per_key_and_channel_with_omni_broadcast() {
-        let p = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" NoteTracking="0"><Connections><SignalConnection Source="@PolyPressure" Destination="Gain" Ratio="1"/></Connections></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let p = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" NoteTracking="0"><Connections><SignalConnection Source="@PolyAfterTouch" Destination="Gain" Ratio="1"/></Connections></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
         let mut source = sample(1);
         source.interleaved = Storage::from_f32(vec![1.; 8]).unwrap();
         let mut renderer =
@@ -4464,17 +4553,29 @@ mod tests {
                     .unwrap(),
                 vec![[0.0625, 0.0625]]
             );
-            assert_eq!(
-                renderer
-                    .render(&[], &[command(1, None, 0.75, None)], 1)
-                    .unwrap(),
-                vec![[0.28125, 0.28125]]
+            let settled = renderer
+                .render(&[], &[command(1, None, 0.75, None)], 8191)
+                .unwrap();
+            assert!(
+                settled
+                    .last()
+                    .unwrap()
+                    .iter()
+                    .all(|value| (*value - 0.28125).abs() < 1e-6)
             );
-            assert_eq!(
-                renderer
-                    .render(&[], &[command(2, Some(p.layers[1]), 0.25, Some(1))], 1)
-                    .unwrap(),
-                vec![[0.21875, 0.21875]]
+            let settled = renderer
+                .render(
+                    &[],
+                    &[command(8192, Some(p.layers[1]), 0.25, Some(1))],
+                    8192,
+                )
+                .unwrap();
+            assert!(
+                settled
+                    .last()
+                    .unwrap()
+                    .iter()
+                    .all(|value| (*value - 0.21875).abs() < 1e-6)
             );
         }
     }
@@ -4827,5 +4928,219 @@ mod tests {
                 output[frame][0]
             );
         }
+    }
+    #[test]
+    fn keygroup_scalar_pressure_gain_matches_native_control_points() {
+        let p=parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Connections><SignalConnection Source="@ChanAfterTouch" Destination="Gain" Ratio="1"/></Connections><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let mut source = sample(1);
+        source.interleaved = Storage::from_f32(vec![0.25; 8]).unwrap();
+        let mut renderer =
+            Renderer::new(&p, HashMap::from([("a".into(), Arc::new(source))]), 48000).unwrap();
+        let output = renderer
+            .render(
+                &[
+                    script::Command {
+                        frame: 0,
+                        action: script::Action::Start(note(1)),
+                    },
+                    script::Command {
+                        frame: 512,
+                        action: script::Action::AfterTouch {
+                            channel: 0,
+                            value: 64,
+                        },
+                    },
+                ],
+                &[],
+                8193,
+            )
+            .unwrap();
+        for (frame, gain) in [(512, 0.), (1024, 0.3494858146), (8192, 0.503937006)] {
+            let expected = 0.125 * gain;
+            assert!(
+                (f64::from(output[frame][0]) - expected).abs() < 1e-7,
+                "frame {frame}: {:?}",
+                output[frame]
+            );
+            assert_eq!(output[frame][0], output[frame][1]);
+        }
+        assert_eq!(renderer.current_frame(), 8193);
+    }
+    #[test]
+    fn mono_phasor_matches_native_impulse_before_keygroup_pan() {
+        let p=parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"/></Oscillators><Inserts><Phasor MinFreq="1000" MaxFreq="1000" Feedback="0" Order="3"/></Inserts></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        assert!(preflight(&p).is_empty());
+        let mut source = sample(1);
+        source.frames = 12;
+        source.loops.clear();
+        let mut pulse = vec![0.; 12];
+        pulse[0] = 0.25;
+        source.interleaved = Storage::from_f32(pulse).unwrap();
+        let mut renderer =
+            Renderer::new(&p, HashMap::from([("a".into(), Arc::new(source))]), 48000).unwrap();
+        let output = renderer
+            .render(
+                &[script::Command {
+                    frame: 0,
+                    action: script::Action::Start(note(1)),
+                }],
+                &[],
+                12,
+            )
+            .unwrap();
+        for (actual, native) in output.iter().zip([
+            0.2601984143257141,
+            -0.12562325596809387,
+            -0.03202161192893982,
+            0.014917660504579544,
+            0.03294673189520836,
+            0.03425484523177147,
+            0.026977399364113808,
+            0.01633840799331665,
+            0.005507950205355883,
+            -0.003760534105822444,
+            -0.010662119835615158,
+            -0.015001287683844566,
+        ]) {
+            assert!((f64::from(actual[0]) - native * 0.5).abs() < 1e-7);
+            assert_eq!(actual[0], actual[1]);
+        }
+    }
+    #[test]
+    fn verified_legacy_program_path_keeps_other_parts_strict() {
+        let p=parse_program(r#"<Program><ControlSignalSources><ConstantModulation Name="Src" Value=".25"/></ControlSignalSources><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let owner = p.sample_zones[0].player;
+        assert_eq!(
+            resolve_path(&p, owner, "/uvi/Part 0/Program/Src").unwrap(),
+            resolve_path(&p, owner, "$Program/Src").unwrap()
+        );
+        for path in [
+            "/uvi/Part 1/Program/Src",
+            "/uvi/Part 0/Arbitrary/Src",
+            "Src",
+        ] {
+            assert!(resolve_path(&p, owner, path).is_err());
+        }
+    }
+    #[test]
+    fn drunk_native_points_use_planned_array_gain_without_scalar_rc() {
+        let p=parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><ControlSignalSources><Drunk Name="Src" InitialValue="0" Rate="100" Step="100" Bias="1" Bipolar="1" TriggerMode="1"/></ControlSignalSources><Connections><SignalConnection Source="$Keygroup/Src" Destination="Gain" Ratio="1"/></Connections><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        assert!(preflight(&p).is_empty(), "{:?}", preflight(&p));
+        let mut source = sample(1);
+        source.interleaved = Storage::from_f32(vec![0.25; 8]).unwrap();
+        let mut renderer =
+            Renderer::new(&p, HashMap::from([("a".into(), Arc::new(source))]), 48000).unwrap();
+        assert!(renderer.requires_planned_segments());
+        let output = renderer
+            .render(
+                &[script::Command {
+                    frame: 0,
+                    action: script::Action::Start(note(1)),
+                }],
+                &[],
+                1280,
+            )
+            .unwrap();
+        for (frame, native) in [
+            (0, 0.5),
+            (32, 0.5022222399711609),
+            (64, 0.506518542766571),
+            (96, 0.5127506256103516),
+            (128, 0.5207894444465637),
+            (256, 0.5687206387519836),
+            (512, 0.7169595956802368),
+            (1024, 0.6624647378921509),
+        ] {
+            assert!(
+                (f64::from(output[frame][0]) - 0.125 * native).abs() < 3e-8,
+                "frame {frame}: {:?}",
+                output[frame]
+            );
+        }
+        let p=parse_program(r#"<Program><ControlSignalSources><StdRandom Name="Src" Rate="300" Depth=".7" Bipolar="1" TriggerMode="0"/></ControlSignalSources><Layers><Layer><Keygroups><Keygroup><Connections><SignalConnection Source="$Program/Src" Destination="Gain" Ratio="1"/></Connections><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        assert!(preflight(&p).is_empty(), "{:?}", preflight(&p));
+        let mut source = sample(1);
+        source.interleaved = Storage::from_f32(vec![0.25; 8]).unwrap();
+        let resources = HashMap::from([("a".into(), Arc::new(source))]);
+        let mut split = Renderer::new(&p, resources.clone(), 48000).unwrap();
+        assert_eq!(split.render(&[], &[], 256).unwrap(), vec![[0.; 2]; 256]);
+        let commands = [script::Command {
+            frame: 256,
+            action: script::Action::Start(note(1)),
+        }];
+        let split = split.render(&commands, &[], 512).unwrap();
+        let mut whole = Renderer::new(&p, resources, 48000).unwrap();
+        let whole = whole.render(&commands, &[], 768).unwrap();
+        assert_eq!(split, whole[256..]);
+        assert!(split.windows(2).any(|frames| frames[0] != frames[1]));
+    }
+    #[test]
+    fn delay_graph_mix_smooths_raw_target_before_clamping_audio_gain() {
+        let p=parse_program(r#"<Program><Inserts><DualDelay DelayTime="0.125" Feedback="0" Mix="0.2"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Mix" Ratio="-0.5"/></Connections></DualDelay></Inserts><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let delay = p
+            .nodes
+            .iter()
+            .position(|node| node.kind == "DualDelay")
+            .unwrap();
+        let mut source = sample(2);
+        source.interleaved = Storage::from_f32((0..8).flat_map(|_| [0.25, 0.]).collect()).unwrap();
+        let mut renderer =
+            Renderer::new(&p, HashMap::from([("a".into(), Arc::new(source))]), 48000).unwrap();
+        let output = renderer
+            .render(
+                &[
+                    script::Command {
+                        frame: 0,
+                        action: script::Action::Start(note(1)),
+                    },
+                    script::Command {
+                        frame: 16384,
+                        action: script::Action::Controller {
+                            channel: 0,
+                            controller: 1,
+                            value: 127,
+                        },
+                    },
+                ],
+                &[],
+                16900,
+            )
+            .unwrap();
+        for (offset, native) in [
+            (0, 0.2236067951),
+            (31, 0.2236067951),
+            (32, 0.2285310030),
+            (64, 0.2330112010),
+            (128, 0.2408284694),
+            (512, 0.25),
+        ] {
+            assert!(
+                (f64::from(output[16384 + offset][0]) - native).abs() < 3e-8,
+                "offset{offset}: {:?}",
+                output[16384 + offset]
+            );
+            assert_eq!(output[16384 + offset][1], 0.);
+        }
+        assert_eq!(
+            numeric(&renderer.parameters, delay, "Mix", 0.).unwrap(),
+            0.2
+        );
+        assert!(
+            renderer
+                .render(
+                    &[],
+                    &[host::Command {
+                        frame: 16900,
+                        action: host::Action::Parameter {
+                            node: delay,
+                            parameter: "Mix".into(),
+                            value: ParameterValue::Number(-0.3)
+                        }
+                    }],
+                    1
+                )
+                .is_err()
+        );
+        assert_eq!(renderer.current_frame(), 16900);
     }
 }

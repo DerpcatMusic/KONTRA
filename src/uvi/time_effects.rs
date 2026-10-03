@@ -205,6 +205,19 @@ impl TimeEffect {
             TimeProcessor::Chorus(p) => p.set_parameter(name, value),
         }
     }
+    /// Signal targets have a separate native Mix domain from script setters:
+    /// smooth the finite raw target, then clamp the audible mixing gains.
+    pub fn set_effective(&mut self, name: &str, value: &ParameterValue) -> Result<()> {
+        if name == "Mix"
+            && let TimeProcessor::Delay(p) = &mut self.0
+        {
+            let target = scalar(value)? as f32;
+            ensure!(target.is_finite(), "Nonfinite UVI delay Mix target");
+            p.set_mix_target(target);
+            return Ok(());
+        }
+        self.set_parameter(name, value)
+    }
     pub fn set_tempo(&mut self, tempo: f64) -> Result<()> {
         ensure!(
             tempo.is_finite() && (1. ..=1000.).contains(&tempo),
@@ -254,6 +267,7 @@ struct DualDelay {
     modulation: [f32; 2],
     elapsed: u64,
     mix: f32,
+    mix_target: f32,
     mix_gains: [f32; 2],
     mix_smoothing: f32,
     control_changed_at: [u64; 3],
@@ -297,6 +311,7 @@ impl DualDelay {
             modulation: [0.; 2],
             elapsed: 0,
             mix,
+            mix_target: mix,
             mix_gains: [(1. - mix).sqrt(), mix.sqrt()],
             mix_smoothing: 1. - 0.33f32.powf(3200. / rate as f32),
             control_changed_at: [0; 3],
@@ -370,9 +385,10 @@ impl DualDelay {
             self.tune()?;
             return Err(error);
         }
-        if value != old
+        if name == "Mix" {
+            self.set_mix_target(value as f32);
+        } else if value != old
             && let Some(control) = match name {
-                "Mix" => Some(0),
                 "Feedback" | "FeedbackRatio" => Some(1),
                 "Rotation" => Some(2),
                 _ => None,
@@ -380,7 +396,6 @@ impl DualDelay {
         {
             if self.control_changed_at[control] != self.elapsed {
                 match control {
-                    0 => self.previous_targets[0] = old as f32,
                     1 => self.previous_targets[1..3].copy_from_slice(&old_feedback),
                     2 => self.previous_targets[3] = old as f32,
                     _ => unreachable!(),
@@ -389,6 +404,15 @@ impl DualDelay {
             self.control_changed_at[control] = self.elapsed;
         }
         Ok(())
+    }
+    fn set_mix_target(&mut self, target: f32) {
+        if target != self.mix_target {
+            if self.control_changed_at[0] != self.elapsed {
+                self.previous_targets[0] = self.mix_target;
+            }
+            self.control_changed_at[0] = self.elapsed;
+            self.mix_target = target;
+        }
     }
     pub fn set_tempo(&mut self, tempo: f64) -> Result<()> {
         ensure!(
@@ -410,6 +434,7 @@ impl DualDelay {
         self.elapsed = 0;
         self.control_changed_at = [0; 3];
         self.mix = self.parameters["Mix"] as f32;
+        self.mix_target = self.mix;
         self.mix_gains = [(1. - self.mix).sqrt(), self.mix.sqrt()];
         self.low = [0.; 2];
         self.high = [0.; 2];
@@ -437,10 +462,13 @@ impl DualDelay {
                 let mix_target = if self.elapsed == self.control_changed_at[0] {
                     self.previous_targets[0]
                 } else {
-                    self.parameters["Mix"] as f32
+                    self.mix_target
                 };
-                self.mix += self.mix_smoothing * (mix_target - self.mix);
-                self.mix_gains = [(1. - self.mix).sqrt(), self.mix.sqrt()];
+                let next_mix = self.mix + self.mix_smoothing * (mix_target - self.mix);
+                ensure!(next_mix.is_finite(), "Nonfinite UVI delay Mix control");
+                self.mix = next_mix;
+                let audible_mix = self.mix.clamp(0., 1.);
+                self.mix_gains = [(1. - audible_mix).sqrt(), audible_mix.sqrt()];
                 for ch in 0..2 {
                     let target = if self.elapsed == self.control_changed_at[1] {
                         self.previous_targets[1 + ch]
@@ -517,9 +545,11 @@ impl DualDelay {
             self.lines[self.position] = next;
             self.position = (self.position + 1) % self.lines.len();
             self.elapsed = self.elapsed.wrapping_add(1);
-            let out = rotate(
-                width(delayed, self.parameters["OutputWidth"] as f32),
-                self.output_rotation,
+            // Native applies output rotation before width; these operations
+            // do not commute when both controls differ from their defaults.
+            let out = width(
+                rotate(delayed, self.output_rotation),
+                self.parameters["OutputWidth"] as f32,
             );
             for ch in 0..2 {
                 f[ch] = dry * input[ch] + wet * out[ch];
@@ -1349,6 +1379,100 @@ mod tests {
             fx.set_parameter("DelayTime", &ParameterValue::Number(f64::NAN))
                 .is_err()
         );
+    }
+    #[test]
+    fn uvi_dual_delay_native_raw_mix_target_and_reversal() {
+        // Original DC + CC connection: Mix .2, Ratio -.5, CC127 at16384,
+        // then CC0 at32768. Metadata remains .2 while the raw goal is -.3.
+        let mut fx = TimeEffect::new(&effect("Feedback='0' Mix='0.2'"), 2, 48000.).unwrap();
+        let metadata = fx.parameter("Mix").unwrap();
+        let dc = |n| vec![[0.25, 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.]; n];
+        fx.process(&mut dc(16384)).unwrap();
+        fx.set_effective("Mix", &ParameterValue::Number(-0.3))
+            .unwrap();
+        assert_eq!(fx.parameter("Mix").unwrap(), metadata);
+        assert!(
+            fx.set_parameter("Mix", &ParameterValue::Number(-0.3))
+                .is_err()
+        );
+        assert!(
+            fx.set_effective("Mix", &ParameterValue::Number(f64::NAN))
+                .is_err()
+        );
+        assert!(
+            fx.set_effective("Mix", &ParameterValue::Number(f64::MAX))
+                .is_err()
+        );
+        let mut down = dc(16384);
+        fx.process(&mut down).unwrap();
+        for (i, expected) in [
+            (0, 0.2236067951),
+            (31, 0.2236067951),
+            (32, 0.2285310030),
+            (64, 0.2330112010),
+            (128, 0.2408284694),
+            (512, 0.25),
+        ] {
+            assert!((down[i][0] - expected).abs() < 3e-8);
+        }
+        fx.set_effective("Mix", &ParameterValue::Number(0.2))
+            .unwrap();
+        let mut up = dc(1100);
+        fx.process(&mut up).unwrap();
+        for (i, expected) in [
+            (32, 0.25),
+            (128, 0.25),
+            (384, 0.25),
+            (512, 0.2440856099),
+            (768, 0.2351646274),
+            (1024, 0.2300771326),
+        ] {
+            assert!((up[i][0] - expected).abs() < 3e-8, "{i}: {}", up[i][0]);
+        }
+        assert_eq!(fx.parameter("Mix").unwrap(), metadata);
+        // An explicit script write also resets an effective target when the
+        // metadata value already equals the script value.
+        fx.set_effective("Mix", &ParameterValue::Number(-0.3))
+            .unwrap();
+        fx.set_parameter("Mix", &metadata).unwrap();
+        let TimeProcessor::Delay(delay) = fx.0 else {
+            unreachable!()
+        };
+        assert_eq!(delay.mix_target, 0.2f32);
+    }
+    #[test]
+    fn uvi_dual_delay_native_combined_stereo_routing() {
+        // Original stereo-host impulse, independently characterized against
+        // native legacy DualDelay and DualDelayX with shaping disabled.
+        let mut fx = TimeEffect::new(
+            &effect("DelayTime='0.001' Feedback='0.4' Mix='0.7' LowCut='230' HighCut='7300' Rotation='73' InputWidth='0.37' OutputWidth='0.61' InputRotation='-0.7' OutputRotation='0.8' DelayRatio='0.33' FeedbackRatio='-0.21'"),
+            2,
+            48000.,
+        )
+        .unwrap();
+        let mut frames = vec![[0.; 12]; 300];
+        frames[0][0] = 0.25;
+        fx.process(&mut frames).unwrap();
+        for (i, expected) in [
+            (32, [0.00118245697, -0.00201184768]),
+            (33, [0.00064492557, -0.00109728472]),
+            (48, [0.02258636430, 0.01871825568]),
+            (49, [0.00798956025, 0.00669017108]),
+            (64, [-0.00066578778, -0.00065462047]),
+            (80, [-0.00173245405, 0.00315187522]),
+            (96, [0.00109349343, 0.00048162483]),
+            (128, [-0.00095924834, -0.00068177789]),
+            (256, [-0.00000186548, -0.00000575619]),
+        ] {
+            for ch in 0..2 {
+                assert!(
+                    (frames[i][ch] - expected[ch]).abs() < 3e-8,
+                    "{i}/{ch}: {} vs {}",
+                    frames[i][ch],
+                    expected[ch]
+                );
+            }
+        }
     }
     #[test]
     fn uvi_dual_delay_fraction_mix_ratio_and_tempo() {

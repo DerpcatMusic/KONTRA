@@ -2512,7 +2512,7 @@ pub fn validate_inputs_at_rate(inputs: &[Input], until: u64, sample_rate: u32) -
     validate_sequence(inputs, until)
 }
 
-fn validate_sequence(inputs: &[Input], until: u64) -> Result<()> {
+pub(crate) fn validate_sequence(inputs: &[Input], until: u64) -> Result<()> {
     ensure!(
         inputs.len() <= LIMIT && inputs.windows(2).all(|w| w[0].frame <= w[1].frame),
         "UVI inputs must be bounded and sorted"
@@ -2527,8 +2527,9 @@ fn validate_sequence(inputs: &[Input], until: u64) -> Result<()> {
     Ok(())
 }
 
-fn validate_input(input: &Input) -> Result<()> {
-    let valid = match input.kind {
+/// Shared allocation-free ingress check for the VM and realtime worker port.
+pub(crate) fn input_is_valid(input: &Input) -> bool {
+    match input.kind {
         InputKind::NoteOn {
             channel,
             note,
@@ -2552,9 +2553,12 @@ fn validate_input(input: &Input) -> Result<()> {
         InputKind::Transport { beat, tempo, .. } => {
             beat.is_finite() && tempo.is_finite() && tempo > 0.
         }
-    };
+    }
+}
+
+fn validate_input(input: &Input) -> Result<()> {
     ensure!(
-        valid,
+        input_is_valid(input),
         "Invalid UVI MIDI/transport input at frame {}",
         input.frame
     );

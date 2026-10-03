@@ -482,7 +482,7 @@ mod tests {
             },
         });
         let resources =
-            BankResources::new(library, "Programs/authored.uvip", HashMap::new()).unwrap();
+            BankResources::new(library.clone(), "Programs/authored.uvip", HashMap::new()).unwrap();
         let read = resources.capability();
         let relative = "../Samples/authored.wav";
         let absolute = "/Samples/authored.wav";
@@ -513,6 +513,143 @@ mod tests {
             })
             .is_err()
         );
+        // Exercise VM scheduling, a new resource alias and DSP state together.
+        let program = program::parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="../Samples/authored.wav" BaseNote="60" Interpolation="0"/></Oscillators></Keygroup></Keygroups></Layer></Layers><EventProcessors><ScriptProcessor><script><![CDATA[function onNote(e) postEvent(e);wait(0.01);changeVolume(e.id,0.5,false,true) end; function onController(e) local path=e.value==0 and '../../outside.wav' or '/Samples/authored.wav';local t=loadSample(Program.layers[1].keygroups[1].oscillators[1],path);assert(t.success) end]]></script></ScriptProcessor></EventProcessors></Program>"#).unwrap();
+        let make_resources = || {
+            BankResources::new(
+                library.clone(),
+                "Programs/authored.uvip",
+                HashMap::from([(relative.into(), samples[relative].clone())]),
+            )
+            .unwrap()
+        };
+        let mut partitioned =
+            super::super::player::Player::new(&program, BTreeMap::new(), make_resources(), 96000)
+                .unwrap();
+        let mut bulk =
+            super::super::player::Player::new(&program, BTreeMap::new(), make_resources(), 96000)
+                .unwrap();
+        use super::super::script::{Input, InputKind};
+        let note = |frame| Input {
+            frame,
+            kind: InputKind::NoteOn {
+                channel: 0,
+                note: 60,
+                velocity: 100,
+            },
+        };
+        let controller = |frame, value| Input {
+            frame,
+            kind: InputKind::Controller {
+                channel: 0,
+                controller: 1,
+                value,
+            },
+        };
+        let inputs = [
+            note(0),
+            controller(1, 127),
+            note(1),
+            Input {
+                frame: 6,
+                kind: InputKind::NoteOff {
+                    channel: 0,
+                    note: 60,
+                },
+            },
+        ];
+        let bad = [
+            note(0),
+            Input {
+                frame: 1,
+                kind: InputKind::Controller {
+                    channel: 16,
+                    controller: 1,
+                    value: 127,
+                },
+            },
+        ];
+        assert!(partitioned.render(&bad, 2).is_err());
+        assert_eq!(partitioned.current_frame(), 0);
+        for tempo in [0.5, 1000.1, 1e100] {
+            let transport = Input {
+                frame: 1,
+                kind: InputKind::Transport {
+                    playing: true,
+                    beat: 0.,
+                    tempo,
+                },
+            };
+            assert!(partitioned.render(&[note(0), transport], 2).is_err());
+            assert_eq!(partitioned.current_frame(), 0);
+        }
+        let first = partitioned.render(&inputs[..1], 1).unwrap();
+        assert_eq!(first.commands, 1);
+        assert!(first.audio[0].iter().all(|sample| *sample > 0.));
+        assert_eq!(partitioned.current_frame(), 1);
+        assert!(partitioned.render(&[note(2)], 1).is_err());
+        assert_eq!(partitioned.current_frame(), 1);
+        let rest = partitioned.render(&inputs[1..], 7).unwrap();
+        let full = bulk.render(&inputs, 8).unwrap();
+        let combined = first
+            .audio
+            .into_iter()
+            .chain(rest.audio)
+            .collect::<Vec<_>>();
+        assert_eq!(combined, full.audio);
+        assert_eq!(first.commands + rest.commands, full.commands);
+        assert_eq!(first.host_commands + rest.host_commands, full.host_commands);
+        assert!(full.logs.is_empty());
+        assert_eq!(partitioned.current_frame(), 8);
+        assert!(partitioned.render(&[controller(8, 0)], 1).is_err());
+        assert_eq!(partitioned.current_frame(), 8);
+        assert!(
+            partitioned
+                .render(&[], 1)
+                .unwrap_err()
+                .to_string()
+                .contains("must be replaced")
+        );
+        // A global planned source must keep its clock through silent blocks.
+        let planned = program::parse_program(r#"<Program><ControlSignalSources><StdRandom Name="Src" Rate="300" Depth=".7" Bipolar="1" TriggerMode="0"/></ControlSignalSources><Layers><Layer><Keygroups><Keygroup><Connections><SignalConnection Source="$Program/Src" Destination="Gain" Ratio="1"/></Connections><Oscillators><SamplePlayer SamplePath="../Samples/authored.wav" BaseNote="60"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let mut whole =
+            super::super::player::Player::new(&planned, BTreeMap::new(), make_resources(), 48000)
+                .unwrap();
+        let mut split =
+            super::super::player::Player::new(&planned, BTreeMap::new(), make_resources(), 48000)
+                .unwrap();
+        assert!(split.requires_planned_segments());
+        assert!(split.render(&[], 255).is_err());
+        assert_eq!(split.current_frame(), 0);
+        let silent = split.render(&[], 256).unwrap();
+        assert_eq!(silent.audio, vec![[0.; 2]; 256]);
+        let inputs = [note(256), note(512)];
+        let tail = split.render(&inputs, 512).unwrap();
+        let full = whole.render(&inputs, 768).unwrap();
+        assert_eq!(tail.audio, full.audio[256..]);
+        assert!(tail.audio.iter().flatten().any(|value| *value != 0.));
+        // A delayed note in padded lookahead changes envelope interpolation
+        // before the file's end. Both processing modes must retain it.
+        let padded = program::parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup Gain="1"><ControlSignalSources><AttackDecayEnv Name="Env" Attack="0" DecayTime=".2"/></ControlSignalSources><Connections><SignalConnection Source="$Keygroup/Env" Destination="Gain" Ratio="1"/></Connections><Oscillators><FmOscillator Gain=".25"/></Oscillators></Keygroup></Keygroups></Layer></Layers><EventProcessors><ScriptProcessor><script><![CDATA[function onNote(e) wait(1000-getTime());playNote(60,100,0);wait(3.125);playNote(72,100,0) end]]></script></ScriptProcessor></EventProcessors></Program>"#).unwrap();
+        let mut bulk =
+            super::super::player::Player::new(&padded, BTreeMap::new(), make_resources(), 48000)
+                .unwrap();
+        let mut split =
+            super::super::player::Player::new(&padded, BTreeMap::new(), make_resources(), 48000)
+                .unwrap();
+        assert!(bulk.requires_planned_segments());
+        let full = bulk.render(&[note(142)], 48384).unwrap();
+        assert_eq!(full.commands, 2);
+        let mut audio = Vec::new();
+        for frame in (0..48384).step_by(256) {
+            let block_inputs = if frame == 0 {
+                vec![note(142)]
+            } else {
+                Vec::new()
+            };
+            audio.extend(split.render(&block_inputs, 256).unwrap().audio);
+        }
+        assert_eq!(audio, full.audio);
         std::fs::remove_file(path).unwrap();
     }
     #[test]
