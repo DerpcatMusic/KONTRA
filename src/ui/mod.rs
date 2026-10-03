@@ -59,6 +59,47 @@ use std::time::{Duration, Instant};
 use theme::*;
 
 pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
+    editor_with(params, editor_inner)
+}
+
+fn editor_with(
+    params: Arc<SamplerParams>,
+    build: impl FnOnce(Arc<SamplerParams>) -> Box<dyn Editor>,
+) -> Box<dyn Editor> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build(params))) {
+        Ok(editor) => editor,
+        Err(payload) => {
+            let reason = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("non-string panic payload");
+            let mut excerpt: String = reason.chars().take(512).collect();
+            if excerpt.len() < reason.len() {
+                excerpt.push_str(" [payload truncated]");
+            }
+            if let Err(secondary) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::diagnostics::event(
+                    crate::diagnostics::LogLevel::Warning,
+                    "renderer",
+                    "caught_editor_panic",
+                    serde_json::json!({
+                        "action":"construction","fatal":false,"reason":excerpt,
+                        "recovery":"Original payload resumed to the existing caller firewall; no fatal crash incident created"
+                    }),
+                );
+                let _ = crate::diagnostics::flush(std::time::Duration::from_millis(100));
+            })) {
+                // Never run a secondary panic payload's potentially panicking
+                // destructor while forwarding the original construction cause.
+                std::mem::forget(secondary);
+            }
+            std::panic::resume_unwind(payload)
+        }
+    }
+}
+
+fn editor_inner(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let meters = Arc::new(Meters::default());
     let computer = Arc::new(computer::Computer::default());
     let picker = Arc::new(picker::Picker::default());
@@ -81,7 +122,8 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
             // Persist the attempt before entering native graphics code: an
             // access violation does not unwind or wait for queued log writes.
             if line.starts_with("mui-baseview: GPU init ")
-                || line.starts_with("mui-baseview: native window init entering native code ") {
+                || line.starts_with("mui-baseview: native window init entering native code ")
+                || line.starts_with("moose-mui: caught nonfatal Rust panic ") {
                 let _ = crate::diagnostics::flush(std::time::Duration::from_millis(100));
             }
         })
@@ -1279,5 +1321,58 @@ impl Cx<'_> {
         self.state.scope = source;
         let rate = f64::from_bits(self.p.shared.rate.load(Ordering::Relaxed)) as f32;
         self.state.analyser.update(&self.p.shared.scope, source, rate)
+    }
+}
+
+#[cfg(test)]
+mod caught_editor_tests {
+    use super::*;
+
+    #[test]
+    fn caught_editor_construction_keeps_bounded_context_and_original_firewall_semantics() {
+        let params = Arc::new(SamplerParams::new());
+        let message = format!("authored editor construction probe {}", "界".repeat(600));
+        let original = message.clone();
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            editor_with(params.clone(), |_| std::panic::panic_any(message));
+        }))
+        .err()
+        .expect("original panic must continue toward caller firewall");
+        assert_eq!(*payload.downcast::<String>().unwrap(), original);
+        let snapshot = crate::diagnostics::snapshot();
+        let event = snapshot
+            .events
+            .iter()
+            .rev()
+            .find(|event| {
+                event.module == "renderer"
+                    && event.event == "caught_editor_panic"
+                    && event.details["reason"]
+                        .as_str()
+                        .is_some_and(|s| s.starts_with("authored editor construction probe"))
+            })
+            .expect("construction failure is visible in the existing journal history");
+        assert_eq!(event.details["fatal"], false);
+        assert_eq!(event.details["action"], "construction");
+        let reason = event.details["reason"].as_str().unwrap();
+        assert!(reason.ends_with(" [payload truncated]"));
+        assert_eq!(
+            reason.chars().count(),
+            512 + " [payload truncated]".chars().count()
+        );
+        let result = moose::core::wrapper::run_extern_callback_with::<(), Option<Box<dyn Editor>>>(
+            "test",
+            "editor_construction",
+            None,
+            || {
+                Some(editor_with(params, |_| {
+                    panic!("authored constructor fallback probe")
+                }))
+            },
+        );
+        assert!(
+            result.is_none(),
+            "existing MOOSE failure contract remains unchanged"
+        );
     }
 }

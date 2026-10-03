@@ -75,3 +75,21 @@ defines MIDI_MPE as raw MIDI with polyphonic expression. The real exported
 factory/state/process gate is `tools/test_native_clap.py ... --require-mpe`;
 it checks every input and output port and plays an original tone through
 configured lower-zone member/manager bend and pedal routing.
+
+## Plugin-owned caught editor unwind context
+
+`moose-mui` records bounded UTF-8 context when its editor opening unwinds,
+including host parent extraction, through the existing per-editor `on_log`
+sink. KONTRA similarly records editor construction failures in its existing
+journal. Both resume the original panic payload into MOOSE's existing caller
+firewall; a busy or panicking diagnostic sink cannot replace that payload.
+The two failure paths attempt the existing bounded off-audio journal flush.
+They install no process-global panic hook or native exception/signal handler,
+and do not change audio callbacks, native pointer validity or opening results.
+
+These are nonfatal caught Rust failures, not synthetic native crash incidents
+or automatic submissions. Panic location/original unwind frames cannot be
+recovered after unwinding without a hook; unrelated factory/lifecycle/audio
+firewalls still retain their existing stderr-only panic diagnostic. Native
+exceptions, access violations and aborts still require the strictly matched
+OS crash artifact. This change does not identify any reported Mac crash cause.
