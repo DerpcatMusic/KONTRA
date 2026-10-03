@@ -83,6 +83,7 @@ struct Hover {
     last: Option<HoverInput>,
 }
 struct Binding {
+    kind: Box<str>,
     slot: usize,
     control: usize,
     value: i32,
@@ -181,6 +182,7 @@ impl Scene {
         // NI expose_controls resolves identical identifiers to the first slot.
         for c in &live.native_controls {
             p.bindings.entry(c.name.clone()).or_insert(Binding {
+                kind: c.kind.clone(),
                 slot: c.slot,
                 control: c.control,
                 value: c.value,
@@ -273,7 +275,9 @@ impl Scene {
                 p.bindings
                     .values()
                     .find(|b| b.slot == slot && b.control == control)
-                    .map(|b| b.value)
+                    .map(|b| if matches!(b.kind.as_ref(), "ui_button" | "ui_switch") {
+                        Value::Boolean(b.value != 0)
+                    } else { Value::Integer(i64::from(b.value)) })
                     .ok_or_else(|| invalid("Native UI control identity changed"))
             })?,
         )?;
@@ -281,7 +285,7 @@ impl Scene {
         let changed = revision.clone();
         lua.globals().set(
             "native_set",
-            lua.create_function(move |_, (slot, control, value): (usize, usize, i32)| {
+            lua.create_function(move |_, (slot, control, value): (usize, usize, Value)| {
                 let mut p = p.lock().unwrap();
                 if !p.gesture_active {
                     return Err(invalid(
@@ -296,6 +300,20 @@ impl Scene {
                     .values_mut()
                     .find(|b| b.slot == slot && b.control == control)
                     .ok_or_else(|| invalid("Native UI control identity changed"))?;
+                let value = if matches!(b.kind.as_ref(), "ui_button" | "ui_switch") {
+                    match value {
+                        Value::Boolean(value) => i32::from(value),
+                        _ => return Err(invalid("Boolean native parameter requires a Boolean value")),
+                    }
+                } else {
+                    match value {
+                        Value::Integer(value) => i32::try_from(value)
+                            .map_err(|_| invalid("Native integer parameter exceeds i32"))?,
+                        Value::Number(value) if value.is_finite() && value.fract() == 0.
+                            && (i32::MIN as f64 ..= i32::MAX as f64).contains(&value) => value as i32,
+                        _ => return Err(invalid("Native integer parameter requires a finite whole value")),
+                    }
+                };
                 b.value = value;
                 p.edits.push(Edit {
                     slot,
