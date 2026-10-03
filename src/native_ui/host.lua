@@ -142,7 +142,7 @@ function native_component(target,props,children)
 end
 function native_modifier(node,name,props,args)
     local environment=name=="context" or name=="font_size" or name=="foreground_color" or name=="bold" or name=="line_limit"
-    assert(name=="frame" or name=="padding" or name=="hidden" or name=="disabled" or name=="opacity" or name=="offset" or name=="align" or name=="background" or name=="overlay" or name=="on_tap_gesture" or name=="on_hover_gesture" or name=="on_drag_gesture" or environment,"Unsupported modifier: "..name)
+    assert(name=="frame" or name=="padding" or name=="hidden" or name=="disabled" or name=="opacity" or name=="offset" or name=="rotation" or name=="align" or name=="background" or name=="overlay" or name=="on_tap_gesture" or name=="on_hover_gesture" or name=="on_drag_gesture" or environment,"Unsupported modifier: "..name)
     if name=="overlay" or name=="background" then
         assert(#args==1 and type(args[1])=="table" and args[1].kind,"Decoration requires a component")
         for key,value in pairs(props) do
@@ -181,6 +181,12 @@ function native_modifier(node,name,props,args)
             assert((key=="x" or key=="y") and (type(value)=="number" or type(value)=="function"),"Invalid native UI offset property")
         end
         return {kind="ZStack",props={},children={node},modifiers={offset=props}}
+    end
+    if name=="rotation" then
+        assert(next(props)==nil and #args==1,"Rotation requires one degree argument")
+        local value=args[1]
+        assert(type(value)=="number" or type(value)=="function","Rotation requires a number")
+        return {kind="ZStack",props={},children={node},modifiers={rotation={value=value}}}
     end
     if name=="opacity" then
         assert(next(props)==nil and #args==1,"Invalid opacity arguments")

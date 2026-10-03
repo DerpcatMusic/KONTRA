@@ -214,6 +214,7 @@ fn primitive(
         el.opacity(node.opacity)
     } else { el };
     let el = el.offset(node.offset[0], node.offset[1]);
+    let el = if let Some(rotation) = node.rotation { el.rotation(rotation) } else { el };
     let el = if node.disabled { el.disabled() } else { el };
     if node.hidden { el.opacity(0.).disabled() } else { el }
 }
