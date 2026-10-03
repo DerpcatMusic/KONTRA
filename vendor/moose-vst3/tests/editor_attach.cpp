@@ -33,14 +33,46 @@ int main() {
     view.comp = &component;
     int parent_token;
     void* parent = &parent_token; // Only forwarded to fake callbacks, never dereferenced.
+    #if defined(__APPLE__)
+    const auto platform = kPlatformTypeNSView;
+    #elif defined(_WIN32)
+    const auto platform = kPlatformTypeHWND;
+    #else
+    const auto platform = kPlatformTypeX11;
+    #endif
+
+    // Reject native representation mismatches before changing attachment
+    // state or forwarding the pointer to Rust/native code.
+    const char* rejected_types[] = {"unsupported", "HIView", "UIView", "nsview", nullptr};
+    for (const char* type : rejected_types) {
+        if (view.vtbl->attached(&view, parent, type) != kResultFalse
+            || component.attachedView || opens || closes) return 10;
+    }
+    if (view.vtbl->isPlatformTypeSupported(&view, nullptr) != kResultFalse
+        || view.vtbl->isPlatformTypeSupported(&view, platform) != kResultOk) return 11;
+    if (view.vtbl->attached(&view, nullptr, platform) != kResultFalse
+        || component.attachedView || opens || closes) return 12;
+    callbacks.gui_open = nullptr;
+    if (view.vtbl->attached(&view, parent, platform) != kResultFalse
+        || component.attachedView || opens || closes) return 13;
+    callbacks.gui_open = [](void* context, void* parent) {
+        if (context != &context_token) std::abort();
+        ++opens;
+        observed_parent = parent;
+    };
+
+    if (view.vtbl->removed(&view) != kResultOk || closes != 0) return 15;
 
     // Fresh inactive instance: no state restore or audio activation precedes
     // IPlugView::attached. The editor must exist when attached succeeds.
-    if (view.vtbl->attached(&view, parent, kPlatformTypeX11) != kResultOk
+    if (view.vtbl->attached(&view, parent, platform) != kResultOk
         || opens != 1 || observed_parent != parent) {
         std::fprintf(stderr, "FAIL: attached fresh inactive view, gui_open calls=%d\n", opens);
         return 1;
     }
+    // A failed reattachment must preserve the currently attached editor.
+    if (view.vtbl->attached(&view, parent, "unsupported") != kResultFalse
+        || component.attachedView != &view || opens != 1 || closes != 0) return 14;
 
     ViewRect size{};
     if (view.vtbl->getSize(&view, &size) != kResultOk || size.right != 1180 || size.bottom != 760) return 8;
@@ -62,7 +94,7 @@ int main() {
     if (component.setActive(0) != kResultOk || opens != 1) return 5;
 
     // A reopened editor remains independent of processor activation.
-    if (view.vtbl->attached(&view, parent, kPlatformTypeX11) != kResultOk || opens != 2) return 6;
+    if (view.vtbl->attached(&view, parent, platform) != kResultOk || opens != 2) return 6;
     if (view.vtbl->removed(&view) != kResultOk || closes != 2) return 7;
-    std::puts("PASS: inactive attach, resize, later restore/activation, remove and reopen");
+    std::puts("PASS: native parent validation, rejected attachment state, inactive attach, resize, restore/activation, remove and reopen");
 }
