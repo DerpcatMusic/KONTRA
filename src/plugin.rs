@@ -5753,10 +5753,11 @@ end on"#;
                         .on_drop(of={'application/x-authored-binary'},action=function()count:set_value(55)end) or @ui.ZStack{})
                     .hidden(mode:value()==1).disabled(mode:value()==2)
             end
-            return function() return @ui.HStack {spacing=10,
+            local function Main() return @ui.HStack {spacing=10,
                 @ui.Rectangle{color=ui.Color(0,0,255)}.frame(width=20,height=20).on_drag_gesture(update=function()end)
                 mode:value()==3 and @ui.Rectangle{color=ui.Color.red}.frame(width=40,height=20) or @Target{}
             }.frame(width=100,height=40) end
+            return @Main{}
         "#).unwrap();
         let instrument=Instrument{path:directory.path().join("fixture.nki"),scripts:vec![
             "on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_value_edit $Mode(0,5,1)\ndeclare ui_value_edit $Count(0,100,1)\nend on\non ui_control($Count)\n$Count := $Count*2\nend on".into(),
@@ -5913,6 +5914,8 @@ end on"#;
             assert_eq!(observed.native_controls.iter().find(|control|control.name=="Mode").unwrap().value, mode, "fixture publishes the actual selected mode");
             scene.lock().unwrap().observe(&observed);
             let root=scene.lock().unwrap().snapshot().unwrap();
+            fn drops(node:&Node)->usize{usize::from(node.drop)+node.children.iter().map(drops).sum::<usize>()}
+            assert_eq!(drops(&root)==0,matches!(mode,1|2|3),"removed/hidden/disabled fixture has no active drop owners in mode {mode}");
             let target=colored(&root,[1.,0.,0.,1.]).unwrap();
             assert_eq!((target.hidden,target.disabled),(mode==1,mode==2),"fixture target state in mode {mode}");
             let (mut ui, _, key) = release(&scene, binary());
