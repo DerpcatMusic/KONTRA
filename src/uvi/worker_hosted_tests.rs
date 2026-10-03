@@ -1404,3 +1404,101 @@ fn actual_worker_active_voice_count_tracks_on_off_and_clears_on_shutdown() {
     drop(port);
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn actual_worker_choke_at_subpacket_frame_keeps_lua_state_and_new_note_audio() {
+    let (config, source) = super::tests::authored_bank_with_script(
+        r#"
+local count=0
+function onInit() knob=Knob{name='alive',value=.25} end
+function onNote(e) count=count+1;knob:setValue(.25+count/10);postEvent(e) end
+function onRelease(e) error('choke is not release') end
+"#,
+    );
+    let path = config.bank.clone();
+    let processor = parse_program(&source)
+        .unwrap()
+        .nodes
+        .iter()
+        .position(|n| n.kind == "ScriptProcessor")
+        .unwrap();
+    let mut worker = Worker::start_hosted(config, 7, 9).unwrap();
+    worker.wait_ready(Duration::from_secs(5)).unwrap();
+    let entries = [
+        HostedInput::On {
+            root: root(1),
+            input: note(0),
+        },
+        HostedInput::Choke {
+            root: root(1),
+            frame: 64,
+        },
+        HostedInput::On {
+            root: root(2),
+            input: note(128),
+        },
+    ];
+    check_callback(|| {
+        worker
+            .realtime()
+            .try_submit_hosted(
+                HostedRequest::new(Request::new(stamp(0), &[]).unwrap(), &entries).unwrap(),
+            )
+            .unwrap();
+    });
+    let start = Instant::now();
+    let rendered = loop {
+        match worker.realtime().try_receive(stamp(0)) {
+            Ok(output) => break output,
+            Err(PacketError::Underrun) => {
+                assert!(start.elapsed() < Duration::from_secs(5));
+                thread::yield_now();
+            }
+            Err(e) => panic!("{e:?}"),
+        }
+    };
+    assert!(
+        rendered.audio[..64]
+            .iter()
+            .flatten()
+            .any(|v| v.abs() > 1e-5)
+    );
+    assert!(rendered.audio[64..128].iter().all(|v| *v == [0., 0.]));
+    assert!(
+        rendered.audio[128..]
+            .iter()
+            .flatten()
+            .any(|v| v.abs() > 1e-5)
+    );
+    let start = Instant::now();
+    let completion = loop {
+        match worker
+            .realtime()
+            .try_receive_completion(stamp(256))
+            .unwrap()
+        {
+            Some(completion) => break completion,
+            None => {
+                assert!(start.elapsed() < Duration::from_secs(5));
+                thread::yield_now();
+            }
+        }
+    };
+    assert_eq!(completion.root, root(1));
+    assert_eq!(completion.stamp, stamp(256));
+    let request = worker.request_ui_snapshot(processor).unwrap();
+    let start = Instant::now();
+    let ui = loop {
+        if let Some(reply) = worker.poll_ui_snapshot() {
+            assert_eq!(reply.request, request);
+            break reply.snapshot.unwrap();
+        }
+        assert!(start.elapsed() < Duration::from_secs(5));
+        thread::yield_now();
+    };
+    assert!(
+        matches!(ui.widgets[0].value,Some(super::super::host::UiValue::Number(v)) if v==f64::from(0.45_f32))
+    );
+    worker.stop();
+    std::fs::remove_file(path).unwrap();
+}

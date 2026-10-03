@@ -217,7 +217,9 @@ impl HostedRequest {
                     last_on = root.token;
                     (Some(root), input.frame)
                 }
-                HostedInput::Off { root, frame } => (Some(root), frame),
+                HostedInput::Off { root, frame } | HostedInput::Choke { root, frame } => {
+                    (Some(root), frame)
+                }
                 HostedInput::Event(input) => {
                     if !player::input_is_valid(&input)
                         || matches!(
@@ -287,6 +289,18 @@ pub struct UiSnapshotReply {
     pub snapshot: std::result::Result<UiSnapshot, UiSnapshotError>,
 }
 
+/// Control-only, all processors at one native boundary; private data, no Debug.
+pub struct StateSnapshotReply {
+    pub request: u64,
+    pub stamp: Stamp,
+    pub snapshot: std::result::Result<super::state::SavedState, StateSnapshotError>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateSnapshotError {
+    Execution,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiSnapshotError {
     Unavailable,
@@ -298,7 +312,8 @@ struct UiSnapshotRequest {
     processor: NodeId,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 #[repr(u8)]
 pub enum Status {
     Starting,
@@ -307,7 +322,7 @@ pub enum Status {
     Stopped,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, serde::Serialize)]
 pub struct Stats {
     /// Rejected submissions (excluding Full) and fatal worker failures.
     pub errors: u64,
@@ -316,9 +331,18 @@ pub struct Stats {
     pub backpressure: u64,
     pub stale_packets: u64,
     pub rendered_blocks: u64,
+    /// Exclusive boundary of the latest successfully rendered packet.
+    pub processed_frame: u64,
+    /// Lua print records returned by successfully rendered packets.
+    pub logs: u64,
+    /// Print records omitted by the bounded Lua log sink in those packets.
+    pub dropped_logs: u64,
     /// Retained renderer voice instances after its latest completed packet;
     /// includes held/releasing silent voices, not an audibility estimate.
+    /// Cleared when the activation stops or fails.
     pub active_voices: u64,
+    /// Historical census at processed_frame, retained after stop/failure.
+    pub last_completed_voices: u64,
     pub initialization_ns: u64,
     /// Player.render only: excludes initialization and queue waiting.
     pub render_ns: u64,
@@ -340,7 +364,11 @@ struct Counters {
     backpressure: AtomicU64,
     stale_packets: AtomicU64,
     rendered_blocks: AtomicU64,
+    processed_frame: AtomicU64,
+    logs: AtomicU64,
+    dropped_logs: AtomicU64,
     active_voices: AtomicU64,
+    last_completed_voices: AtomicU64,
     initialization_ns: AtomicU64,
     render_ns: AtomicU64,
     max_render_ns: AtomicU64,
@@ -353,11 +381,18 @@ struct Counters {
 #[derive(Default)]
 struct Details {
     failure: Option<String>,
+    phase: &'static str,
+    phase_frame: u64,
+    program_report: Option<serde_json::Value>,
+    load_report: Option<Arc<serde_json::Value>>,
     diagnostics: Vec<&'static str>,
     ui_processors: Vec<NodeId>,
     ui_latest: u64,
     ui_request: Option<UiSnapshotRequest>,
     ui_reply: Option<UiSnapshotReply>,
+    state_latest: u64,
+    state_request: Option<(u64, u64)>,
+    state_reply: Option<StateSnapshotReply>,
 }
 
 struct Shared {
@@ -370,6 +405,7 @@ struct Shared {
     counters: Counters,
     details: Mutex<Details>,
     ui_pending: AtomicBool,
+    state_pending: AtomicBool,
 }
 
 struct HostedTransport {
@@ -399,8 +435,12 @@ impl Shared {
             stop: AtomicBool::new(false),
             status: AtomicU8::new(Status::Starting as u8),
             counters: Counters::default(),
-            details: Mutex::new(Details::default()),
+            details: Mutex::new(Details {
+                phase: "starting",
+                ..Details::default()
+            }),
             ui_pending: AtomicBool::new(false),
+            state_pending: AtomicBool::new(false),
         }
     }
 
@@ -421,7 +461,11 @@ impl Shared {
             backpressure: c.backpressure.load(Ordering::Relaxed),
             stale_packets: c.stale_packets.load(Ordering::Relaxed),
             rendered_blocks: c.rendered_blocks.load(Ordering::Relaxed),
+            processed_frame: c.processed_frame.load(Ordering::Relaxed),
+            logs: c.logs.load(Ordering::Relaxed),
+            dropped_logs: c.dropped_logs.load(Ordering::Relaxed),
             active_voices: c.active_voices.load(Ordering::Relaxed),
+            last_completed_voices: c.last_completed_voices.load(Ordering::Relaxed),
             initialization_ns: c.initialization_ns.load(Ordering::Relaxed),
             render_ns: c.render_ns.load(Ordering::Relaxed),
             max_render_ns: c.max_render_ns.load(Ordering::Relaxed),
@@ -492,12 +536,27 @@ impl Worker {
     }
 
     pub fn start(config: StartConfig, epoch: u64, generation: u64) -> Result<Self> {
-        Self::start_inner(config, epoch, generation, false)
+        Self::start_inner(config, epoch, generation, false, None)
     }
     pub fn start_hosted(config: StartConfig, epoch: u64, generation: u64) -> Result<Self> {
-        Self::start_inner(config, epoch, generation, true)
+        Self::start_inner(config, epoch, generation, true, None)
     }
-    fn start_inner(config: StartConfig, epoch: u64, generation: u64, hosted: bool) -> Result<Self> {
+    /// Off audio. Saved script/widget data never grants filesystem/content authority.
+    pub fn start_hosted_with_state(
+        config: StartConfig,
+        epoch: u64,
+        generation: u64,
+        saved: super::state::SavedState,
+    ) -> Result<Self> {
+        Self::start_inner(config, epoch, generation, true, Some(saved))
+    }
+    fn start_inner(
+        config: StartConfig,
+        epoch: u64,
+        generation: u64,
+        hosted: bool,
+        saved: Option<super::state::SavedState>,
+    ) -> Result<Self> {
         ensure!(
             (8000..=192000).contains(&config.sample_rate),
             "Invalid UVI worker sample rate"
@@ -516,8 +575,21 @@ impl Worker {
             .name("kontra-uvi-playback".into())
             .spawn(move || {
                 let initialized = Instant::now();
+                let mut trace = crate::diagnostics::LoadTrace::new(&config.bank, 0, None);
+                trace.detail("backend", "native_uvi");
+                trace.detail("member", config.member.clone());
+                trace.detail("epoch", epoch);
+                trace.detail("generation", generation);
+                trace.detail("sample_rate", config.sample_rate);
+                trace.detail("hosted", hosted);
                 let result = catch_unwind(AssertUnwindSafe(|| {
-                    run(config, &worker_shared, initialized)
+                    run(
+                        config,
+                        &worker_shared,
+                        initialized,
+                        saved.as_ref(),
+                        &mut trace,
+                    )
                 }));
                 let failure = match result {
                     Ok(Ok(())) => None,
@@ -535,6 +607,26 @@ impl Worker {
                         .initialization_ns
                         .store(nanos(initialized.elapsed()), Ordering::Relaxed);
                 }
+                if let Some(reason) = &failure {
+                    let details = worker_shared
+                        .details
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    trace.detail("failure_phase", details.phase);
+                    trace.detail("failure_frame", details.phase_frame);
+                    drop(details);
+                    trace.fail(reason.clone());
+                }
+                let report = trace.finish(if failure.is_some() {
+                    "failed"
+                } else {
+                    "stopped"
+                });
+                worker_shared
+                    .details
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .load_report = Some(report);
                 finish(&worker_shared, failure);
             })
             .context("Starting UVI playback worker")?;
@@ -581,6 +673,28 @@ impl Worker {
             .failure
             .clone()
     }
+    /// Private control-thread inspection. A parsed/admitted graph is not proof
+    /// that any particular node executed or matched Falcon numerically.
+    pub fn diagnostic_report(&self) -> serde_json::Value {
+        let details = self
+            .shared
+            .details
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        serde_json::json!({
+            "status":self.status(), "phase":details.phase, "frame":details.phase_frame,
+            "epoch":self.shared.stamp.epoch, "generation":self.shared.stamp.generation,
+            "program":details.program_report, "stats":self.stats(),
+            "failure":details.failure, "load_trace":details.load_report.as_deref(),
+            "runtime_evidence":"worker_lifecycle_and_completed_packets_only",
+            "per_node_execution_proof":false, "falcon_fidelity_proof":false,
+            "renderer_fidelity_caveats":details.diagnostics,
+            "voice_census_semantics":"active_voices_cleared_on_stop_or_failure; last_completed_voices_historical_not_audibility",
+            "lua_print_payloads_retained":false,
+            "lua_print_counter_scope":"completed_render_packets_only",
+        })
+    }
+
     pub fn diagnostics(&self) -> Vec<&'static str> {
         self.shared
             .details
@@ -637,6 +751,39 @@ impl Worker {
             .take()
     }
 
+    /// Controller only. Reject stale activation before replacing any request.
+    /// expected.frame is the minimum processed boundary, never a clock advance.
+    pub fn request_state_snapshot(&self, expected: Stamp) -> std::result::Result<u64, PacketError> {
+        self.shared.activation(expected)?;
+        let mut details = self
+            .shared
+            .details
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let id = details
+            .state_latest
+            .checked_add(1)
+            .ok_or(PacketError::Full)?;
+        details.state_latest = id;
+        details.state_request = Some((id, expected.frame));
+        details.state_reply = None;
+        drop(details);
+        self.shared.state_pending.store(true, Ordering::Release);
+        if let Some(handle) = &self.thread {
+            handle.thread().unpark();
+        }
+        Ok(id)
+    }
+
+    pub fn poll_state_snapshot(&self) -> Option<StateSnapshotReply> {
+        self.shared
+            .details
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .state_reply
+            .take()
+    }
+
     pub fn wait_ready(&self, timeout: Duration) -> Result<()> {
         let start = Instant::now();
         loop {
@@ -671,10 +818,7 @@ impl Worker {
                     .store(Status::Failed as u8, Ordering::Release);
             }
         }
-        self.shared
-            .counters
-            .active_voices
-            .store(0, Ordering::Relaxed);
+        // Preserve the latest completed-packet voice census after stop.
         if self
             .cursor
             .as_mut()
@@ -945,10 +1089,52 @@ fn capture_ui(player: &Player<'_>, shared: &Shared) {
     }
 }
 
+fn capture_state(player: &mut Player<'_>, shared: &Shared) -> Result<()> {
+    if !shared.state_pending.swap(false, Ordering::AcqRel) {
+        return Ok(());
+    }
+    let request = {
+        let mut details = shared.details.lock().unwrap_or_else(|p| p.into_inner());
+        let Some((request, minimum)) = details.state_request else {
+            return Ok(());
+        };
+        if player.current_frame() < minimum {
+            shared.state_pending.store(true, Ordering::Release);
+            return Ok(());
+        }
+        details.state_request = None;
+        request
+    };
+    phase(shared, "state_capture", player.current_frame());
+    let captured = player.saved_state();
+    let (snapshot, failure) = match captured {
+        Ok(state) => (Ok(state), None),
+        Err(error) => (Err(StateSnapshotError::Execution), Some(error)),
+    };
+    let reply = StateSnapshotReply {
+        request,
+        stamp: Stamp {
+            frame: player.current_frame(),
+            ..shared.stamp
+        },
+        snapshot,
+    };
+    let mut details = shared.details.lock().unwrap_or_else(|p| p.into_inner());
+    if details.state_latest == request && !shared.stop.load(Ordering::Acquire) {
+        details.state_reply = Some(reply);
+    }
+    drop(details);
+    if let Some(error) = failure {
+        return Err(error.context("Native state capture failed; activation aborted"));
+    }
+    Ok(())
+}
+
 /// Controller observes an activation abort, not successful ends for discarded
 /// roots. A future adapter must retire canonical owners through its lifecycle.
 fn finish(shared: &Shared, failure: Option<String>) {
     shared.counters.active_voices.store(0, Ordering::Relaxed);
+    // Stats retain the census from the latest completed packet after failure/stop.
     if let Some(failure) = failure {
         shared.counters.errors.fetch_add(1, Ordering::Relaxed);
         shared
@@ -1085,12 +1271,20 @@ fn transfer_completions(
     Ok(transferred)
 }
 
-fn run(config: StartConfig, shared: &Shared, initialized: Instant) -> Result<()> {
+fn run(
+    config: StartConfig,
+    shared: &Shared,
+    initialized: Instant,
+    saved: Option<&super::state::SavedState>,
+    trace: &mut crate::diagnostics::LoadTrace,
+) -> Result<()> {
     // Everything containing Rc, borrowed graph nodes, Lua or file authority is
     // created, used and destroyed in this stack frame on this dedicated thread.
     if shared.stop.load(Ordering::Acquire) {
         return Ok(());
     }
+    phase(shared, "bank_open", 0);
+    trace.stage("uvi_bank_open");
     let library = Rc::new(Library::open(
         &config.bank,
         &config.metadata_namespace,
@@ -1113,31 +1307,42 @@ fn run(config: StartConfig, shared: &Shared, initialized: Instant) -> Result<()>
     if shared.stop.load(Ordering::Acquire) {
         return Ok(());
     }
+    phase(shared, "program_decode", 0);
+    trace.stage("uvi_program_decode");
     let loaded = library.program(&config.member, &config.program_namespace)?;
+    let report = serde_json::to_value(super::diagnostics::report(&loaded.program))?;
+    trace.detail("native_program_graph", report.clone());
+    shared
+        .details
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .program_report = Some(report);
+    phase(shared, "preflight", 0);
+    trace.stage("uvi_preflight");
     let unsupported = super::playback::preflight(&loaded.program);
     ensure!(
         unsupported.is_empty(),
         "Native UVI graph preflight failed: {}",
         serde_json::to_string(&unsupported)?
     );
+    phase(shared, "resources", 0);
+    trace.stage("uvi_resources");
     let resources = BankResources::new(library.clone(), &loaded.path, library.samples(&loaded)?)?;
-    let mut player = if shared.hosted.is_some() {
-        Player::new_hosted(
-            &loaded.program,
-            library.modules()?,
-            resources,
-            config.sample_rate,
-            shared.stamp.epoch,
-            shared.stamp.generation,
-        )?
-    } else {
-        Player::new(
-            &loaded.program,
-            library.modules()?,
-            resources,
-            config.sample_rate,
-        )?
-    };
+    let activation = shared
+        .hosted
+        .as_ref()
+        .map(|_| (shared.stamp.epoch, shared.stamp.generation));
+    let modules = library.modules()?;
+    phase(shared, "renderer_lua_init", 0);
+    trace.stage("uvi_renderer_lua_init");
+    let mut player = Player::new_with_state(
+        &loaded.program,
+        modules,
+        resources,
+        config.sample_rate,
+        activation,
+        saved,
+    )?;
     {
         let mut details = shared
             .details
@@ -1159,8 +1364,16 @@ fn run(config: StartConfig, shared: &Shared, initialized: Instant) -> Result<()>
     if shared.stop.load(Ordering::Acquire) {
         return Ok(());
     }
+    phase(shared, "serve", 0);
+    trace.stage("uvi_serve");
     shared.status.store(Status::Ready as u8, Ordering::Release);
     serve(&mut player, shared, config.sample_rate)
+}
+
+fn phase(shared: &Shared, name: &'static str, frame: u64) {
+    let mut details = shared.details.lock().unwrap_or_else(|p| p.into_inner());
+    details.phase = name;
+    details.phase_frame = frame;
 }
 
 fn serve(player: &mut Player<'_>, shared: &Shared, sample_rate: u32) -> Result<()> {
@@ -1177,6 +1390,8 @@ fn serve(player: &mut Player<'_>, shared: &Shared, sample_rate: u32) -> Result<(
             transfer_completions(player, shared, pending)?;
         }
         capture_ui(&player, shared);
+        capture_state(player, shared)?;
+        phase(shared, "serve", player.current_frame());
         let packet = if let Some(hosted) = &shared.hosted {
             hosted
                 .requests
@@ -1197,6 +1412,7 @@ fn serve(player: &mut Player<'_>, shared: &Shared, sample_rate: u32) -> Result<(
                 && request.stamp.frame == player.current_frame(),
             "UVI worker request stamp is out of order"
         );
+        phase(shared, "packet_render", request.stamp.frame);
         let started = Instant::now();
         // A queued authoritative-lifetime rejection is fatal: return before
         // rendering or advancing this block; finish() aborts the activation.
@@ -1232,7 +1448,20 @@ fn serve(player: &mut Player<'_>, shared: &Shared, sample_rate: u32) -> Result<(
                 .render_deadline_misses
                 .fetch_add(1, Ordering::Relaxed);
         }
-        let rendered = rendered?;
+        let rendered = rendered
+            .with_context(|| format!("UVI packet rendering at frame {}", request.stamp.frame))?;
+        shared
+            .counters
+            .processed_frame
+            .store(player.current_frame(), Ordering::Relaxed);
+        shared
+            .counters
+            .logs
+            .fetch_add(rendered.logs.len() as u64, Ordering::Relaxed);
+        shared
+            .counters
+            .dropped_logs
+            .fetch_add(rendered.dropped_logs as u64, Ordering::Relaxed);
         if let Some(pending) = &mut pending_completions {
             refresh_completions(pending, rendered.host_completions)?;
             transfer_completions(player, shared, pending)?;
@@ -1257,6 +1486,10 @@ fn serve(player: &mut Player<'_>, shared: &Shared, sample_rate: u32) -> Result<(
             .store(player.active_voices() as u64, Ordering::Relaxed);
         shared
             .counters
+            .last_completed_voices
+            .store(player.active_voices() as u64, Ordering::Relaxed);
+        shared
+            .counters
             .rendered_blocks
             .fetch_add(1, Ordering::Relaxed);
         loop {
@@ -1271,6 +1504,8 @@ fn serve(player: &mut Player<'_>, shared: &Shared, sample_rate: u32) -> Result<(
                 transfer_completions(player, shared, pending)?;
             }
             capture_ui(&player, shared);
+            capture_state(player, shared)?;
+            phase(shared, "serve", player.current_frame());
             match shared.outputs.push(output) {
                 Ok(()) => break,
                 Err(pending) => {
@@ -1287,6 +1522,146 @@ pub(crate) mod tests {
     use super::super::{crypto, program::parse_program};
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn diagnostic_report_retains_decoded_graph_when_unknown_node_fails_preflight() {
+        let (config, _) = authored_bank_with_script(
+            "]]></script></ScriptProcessor><UnsupportedDiagnosticNode/><ScriptProcessor><script><![CDATA[",
+        );
+        let path = config.bank.clone();
+        let worker = Worker::start(config, 7, 11).unwrap();
+        assert!(worker.wait_ready(Duration::from_secs(3)).is_err());
+        let report = worker.diagnostic_report();
+        assert_eq!(report["status"], "failed");
+        assert_eq!(report["phase"], "preflight");
+        assert_eq!(report["program"]["parsed"], true);
+        assert_eq!(report["program"]["preflight_admitted"], false);
+        assert!(
+            report["program"]["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|node| node["kind"] == "UnsupportedDiagnosticNode")
+        );
+        assert_eq!(report["stats"]["rendered_blocks"], 0);
+        assert_eq!(report["per_node_execution_proof"], false);
+        assert!(
+            report["failure"]
+                .as_str()
+                .unwrap()
+                .contains("UnsupportedDiagnosticNode")
+        );
+        assert_eq!(
+            report["load_trace"]["details"]["failure_phase"],
+            "preflight"
+        );
+        drop(worker);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn runtime_diagnostic_preserves_script_node_original_line_frame_and_latest_packet_stats() {
+        let (config, _) = authored_bank_with_script(
+            "counter=0\nfunction onNote(e)\n if counter==1 then error('runtime-private-marker') end\n counter=counter+1\n print('private-print-marker')\n postEvent(e)\nend",
+        );
+        let path = config.bank.clone();
+        let mut worker = Worker::start(config, 7, 11).unwrap();
+        worker.wait_ready(Duration::from_secs(3)).unwrap();
+        worker
+            .realtime()
+            .try_submit(Request::new(stamp(0), &[note(0)]).unwrap())
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if worker
+                .realtime()
+                .try_receive_available(stamp(0))
+                .unwrap()
+                .is_some()
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        }
+        let before = worker.stats();
+        assert_eq!(before.rendered_blocks, 1);
+        assert!(before.active_voices > 0);
+        worker
+            .realtime()
+            .try_submit(Request::new(stamp(256), &[note(256)]).unwrap())
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while worker.status() != Status::Failed {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        }
+        let report = worker.diagnostic_report();
+        assert_eq!(report["phase"], "packet_render");
+        assert_eq!(report["frame"], 256);
+        let failure = report["failure"].as_str().unwrap();
+        assert!(
+            failure.contains("UVI ScriptProcessor node 2")
+                && failure.contains(":3:")
+                && failure.contains("runtime-private-marker"),
+            "{failure}"
+        );
+        assert_eq!(report["stats"]["rendered_blocks"], 1);
+        assert_eq!(report["stats"]["processed_frame"], 256);
+        assert_eq!(report["stats"]["active_voices"], 0);
+        assert_eq!(
+            report["stats"]["last_completed_voices"],
+            before.active_voices
+        );
+        assert_eq!(report["stats"]["logs"], 1);
+        assert!(
+            !serde_json::to_string(&report)
+                .unwrap()
+                .contains("private-print-marker")
+        );
+        assert_eq!(report["load_trace"]["details"]["failure_frame"], 256);
+        drop(worker);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn stopped_report_retains_last_completed_packet_voice_census_and_boundary() {
+        let (config, _) = authored_bank_with_script("function onNote(e)postEvent(e)end");
+        let path = config.bank.clone();
+        let mut worker = Worker::start(config, 7, 11).unwrap();
+        worker.wait_ready(Duration::from_secs(3)).unwrap();
+        worker
+            .realtime()
+            .try_submit(Request::new(stamp(0), &[note(0)]).unwrap())
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if worker
+                .realtime()
+                .try_receive_available(stamp(0))
+                .unwrap()
+                .is_some()
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        }
+        let latest = worker.stats();
+        assert!(latest.active_voices > 0);
+        worker.stop();
+        let report = worker.diagnostic_report();
+        assert_eq!(report["status"], "stopped");
+        assert_eq!(report["phase"], "serve");
+        assert_eq!(report["stats"]["active_voices"], 0);
+        assert_eq!(
+            report["stats"]["last_completed_voices"],
+            latest.active_voices
+        );
+        assert_eq!(report["stats"]["rendered_blocks"], 1);
+        assert_eq!(report["stats"]["processed_frame"], 256);
+        std::fs::remove_file(path).unwrap();
+    }
 
     fn stamp(frame: u64) -> Stamp {
         Stamp {

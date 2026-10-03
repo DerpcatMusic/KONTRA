@@ -1,6 +1,6 @@
 # Player backend boundary
 
-This document describes optional UVI loading, live audio and instrument UI integration in the isolated `codex/uvi-latest-integration` working tree over `fbee110`, reviewed on 2026-10-03. The current integration is a source candidate, not a released binary or a completed real-time performance proof. The broader common backend contract below remains proposed. No complete Falcon parity or support for unimplemented SFZ, Sine, Koda or other backends is claimed.
+This document describes optional UVI loading, live audio and instrument UI integration in the isolated `codex/uvi-latest-integration` working tree following `510446d`/`0a56891`, reviewed on 2026-10-04. The current integration is a source candidate, not a released binary or a completed real-time performance proof. The broader common backend contract below remains proposed. No complete Falcon parity or support for unimplemented SFZ, Sine, Koda or other backends is claimed.
 
 The user's concurrent core/MIDI refactor remains separately owned and unmerged. Its precision, protocol and lifecycle requirements inform this boundary; its dirty source is not an accepted API snapshot.
 
@@ -44,7 +44,7 @@ Teardown also has structural ownership: Dsp's registry Arc lease is declared aft
 
 `src/plugin/uvi_ui.rs:15` owns a loader-side mailbox. It discovers native ScriptProcessors, requests one snapshot at a time fairly, checks request/processor/activation stamps and publishes immutable snapshot/artwork Arcs (`34`). Native artwork authority/decoding stays in `uvi::ui_assets`; neither the editor nor callback runs Lua or decodes images.
 
-Each PartView receives only matching epoch/generation UI state (`src/plugin/uvi_load.rs:48`). `src/ui/uvi_instrument.rs:205` projects available native widgets and artwork through the existing editor infrastructure; `138` sends stamped native edits. Shared ingress rejects superseded/failed activations, and audio forwards bounded edits at the native event clock (`src/plugin.rs:1505`, `4290`). This is a basic native instrument panel, not a promise of complete vendor UI rendering or persisted arbitrary Lua state. Core owns rack/browser/host parameter identity; backend owns native widgets, script parameter semantics and native state versioning.
+Each PartView receives only matching epoch/generation UI state (`src/plugin/uvi_load.rs:48`). `src/ui/uvi_instrument.rs:205` projects available native widgets and artwork through the existing editor infrastructure; `138` sends stamped native edits. Shared ingress rejects superseded/failed activations, and audio forwards bounded edits at the native event clock (`src/plugin.rs:1505`, `4290`). This is a basic native instrument panel, not a promise of complete vendor UI rendering. Bounded native state captures persistent widgets, authored onSave data, original-node parameter deltas and approved resource paths; arbitrary VM stacks, voices and transport are excluded. Core owns rack/browser/host parameter identity; backend owns native widgets, script parameter semantics and native state versioning.
 
 ## Authoritative ownership and shared sampler facilities
 
@@ -98,3 +98,22 @@ The official [Rust ABI reference](https://doc.rust-lang.org/reference/items/exte
 The authored two-restored-part adoption/keyboard/mixer/UI scenario is at `src/plugin/uvi_integration_tests.rs:122`. It passes through the production loader/callback, checks exact native PCM after shared gain/pan, native Lua control changes and snapshots, keyboard release, reset to a new rate/block context, stale UI rejection, removal and latency retirement. Missing host timing retains the adapter's last valid timing instead of falsely failing playback. The callback allocation counter remains zero throughout this scenario. A separate authored test captures the complete editor and checks native controls, popup menus, keyboard, mixer edits and terminal failure presentation.
 
 Validation on 2026-10-03 at `510446d`: `cargo test --locked --profile ci --features uvi -- --skip ui::tests::screenshot --test-threads=4` passes, including 888 library tests (31 ignored and one unrelated screenshot filtered), 89 CLI tests (four ignored), and both two-test integration targets. The subsequent delay-admission change passes both authored plugin integration tests and UVI-enabled/disabled all-target checks. Focused tests also cover packet stitching/offline equivalence, exact rooted event/End ownership, receipt-ordered controllers and prepared delay/direct outputs. Passing allocation tests does not establish a callback-wide deadline proof. Paid renderer throughput and real host playback/UI validation remain required; this document neither declares complete Falcon behavior nor a shipping runtime.
+
+## Native state follow-up
+
+`Part.uvi_state` retains opaque versioned native bytes even when the backend is disabled. `NativeState` shares its allocation across Selection/View clones and delegates to the existing byte-vector JSON/host codec; Debug exposes its length only. Backend state contains no container access keys. `uvi::state` validates the exact Program fingerprint, complete processor set, typed source-node overrides and approved resource targets before constructing a replacement. Existing absent-XML Gain/Pan parameter defaults remain unsupported.
+
+The loader/controller owns capture requests and replies. Audio publishes only an atomic minimum processed-packet frame. Commit checks source, activation epoch, worker and core generations, plus the currently saved baseline; captured bytes and baseline change together so a regular capture cannot cause a reload loop. Ordinary loader polling only drains explicit save replies and never invokes authored onSave. Native widget edits remain on the audio timeline.
+
+Explicit rack Save waits at most 500ms for coherent native state, then reports success or retains the prior bytes with an error. The host Params pre-save hook cannot propagate an error to CLAP/VST3 serialization; it retains prior bytes and logs a failed capture. This is a documented limitation, especially for an unsealed partial audio packet in a stopped host. Source changes clear state. Restoration preloads saved resources/parameters before native constructor/onLoad/changed/onInit precedence; unsaved programs preserve Session initialization before Renderer construction for dynamic onInit loads.
+
+### Truthful native diagnostics
+
+UVI graph reports belong to `src/uvi/diagnostics.rs`; the worker owns lifecycle,
+frame and renderer statistics. Root rack code only exports controller reports
+and records configuration/adoption failures through the existing shared journal.
+No graph/Lua inspection, serialization, formatting or diagnostic mutex is added
+to the host audio callback. Graph admission and completed packets are different
+evidence; individual node execution and vendor fidelity are not inferred.
+`active_voices` keeps its cleanup contract. `last_completed_voices` is historical
+and survives failure/stop, explicitly separate from current audibility.

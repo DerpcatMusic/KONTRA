@@ -1138,19 +1138,7 @@ impl<'a> Renderer<'a> {
         self.modulation.requires_planned_segments()
     }
     pub fn diagnostics(&self) -> Vec<&'static str> {
-        vec![
-            FIDELITY_DIAGNOSTIC,
-            dsp::FIDELITY_DIAGNOSTIC,
-            filter::FIDELITY_DIAGNOSTIC,
-            time_effects::FIDELITY_DIAGNOSTIC,
-            waveshaper::FIDELITY_DIAGNOSTIC,
-            maximizer::FIDELITY_DIAGNOSTIC,
-            sparkverb::FIDELITY_DIAGNOSTIC,
-            phasor::FIDELITY_DIAGNOSTIC,
-            effects::FIDELITY_DIAGNOSTIC,
-            modulation::FIDELITY_DIAGNOSTIC,
-            generator::FIDELITY_DIAGNOSTIC,
-        ]
+        super::diagnostics::fidelity_diagnostics()
     }
     fn base_number(&self, node: NodeId, name: &str, default: f64) -> Result<f64> {
         if let Some(&index) = self.numbers[node].get(name) {
@@ -1523,7 +1511,14 @@ impl<'a> Renderer<'a> {
                 attributes: self.parameters[id].clone(),
                 text: String::new(),
             };
-            if let Some(mut p) = Processor::new(&live_node, self.rate, channels, &self.samples)? {
+            if let Some(mut p) = Processor::new(&live_node, self.rate, channels, &self.samples)
+                .with_context(|| {
+                    format!(
+                        "UVI {} constructor at node {id}, channels {channels}, rate {}, frame {}",
+                        n.kind, self.rate, self.frame
+                    )
+                })?
+            {
                 for (name, value) in &self.parameters[id] {
                     if matches!(
                         p,
@@ -1961,6 +1956,25 @@ impl<'a> Renderer<'a> {
         root: Option<script::HostRoot>,
     ) -> Result<()> {
         match action {
+            script::Action::ChokeRoot => {
+                let root = root.context("Hosted choke has no ancestry")?;
+                let mut killed = HashSet::new();
+                self.voices.retain(|voice| {
+                    if voice.root == Some(root) {
+                        killed.insert(voice.note.id);
+                        self.modulation.remove_instance(voice.note.id, voice.instance);
+                        false
+                    } else {
+                        true
+                    }
+                });
+                for id in killed {
+                    if !self.voices.iter().any(|voice| voice.note.id == id) {
+                        self.modulation.remove_voice(id);
+                        self.snapshots.remove(&id);
+                    }
+                }
+            }
             script::Action::Start(note) => self.start(note, root)?,
             script::Action::ReleaseNote {
                 id,
@@ -2385,8 +2399,14 @@ impl<'a> Renderer<'a> {
             } else {
                 processors
                     .get_mut(&id)
-                    .context("UVI insert has no executable processor")?
-                    .process(frame)?;
+                    .context("UVI insert has no executable processor")
+                    .and_then(|processor| processor.process(frame))
+                    .with_context(|| {
+                        format!(
+                            "UVI {} insert at node {id}, frame {}",
+                            self.program.nodes[id].kind, self.frame
+                        )
+                    })?;
             }
         }
         Ok(())
@@ -2707,7 +2727,17 @@ impl<'a> Renderer<'a> {
             for osc in &mut voice.oscillators {
                 add(
                     &mut frame,
-                    self.oscillator(osc, &voice.note, voice.channels)?,
+                    self.oscillator(osc, &voice.note, voice.channels)
+                        .with_context(|| {
+                            format!(
+                                "UVI {} oscillator at node {}, frame {}, voice {}, instance {}",
+                                self.program.nodes[osc.player].kind,
+                                osc.player,
+                                self.frame,
+                                voice.note.id,
+                                voice.instance
+                            )
+                        })?,
                 );
             }
             let mut fade = 1f64;
@@ -2855,6 +2885,35 @@ impl<'a> Renderer<'a> {
         roots.dedup();
         roots
     }
+    /// Apply owning-worker commands at the current boundary without advancing PCM.
+    pub(crate) fn apply_boundary(
+        &mut self,
+        notes: &[script::Command],
+        roots: Option<&[Option<script::HostRoot>]>,
+        host: &[host::Command],
+    ) -> Result<()> {
+        ensure!(
+            notes.len() <= LIMIT && host.len() <= LIMIT,
+            "UVI boundary command limit exceeded"
+        );
+        ensure!(
+            notes.iter().all(|c| c.frame == self.frame)
+                && host.iter().all(|c| c.frame == self.frame),
+            "UVI commands are outside the saved boundary"
+        );
+        ensure!(
+            roots.is_none_or(|r| r.len() == notes.len()),
+            "Hosted boundary ancestry length mismatch"
+        );
+        for command in host {
+            self.apply_host(&command.action)?;
+        }
+        for (index, command) in notes.iter().enumerate() {
+            self.apply_note_rooted(&command.action, roots.and_then(|r| r[index]))?;
+        }
+        self.check_processor_memory()
+    }
+
     /// Events are at absolute output frame positions. Host parameter commands
     /// at a frame precede note commands, so initialization affects the attack.
     pub fn render(
@@ -2885,6 +2944,11 @@ impl<'a> Renderer<'a> {
                 .all(|r| r.epoch > 0 && r.generation > 0 && r.token > 0),
             "Invalid hosted ancestry"
         );
+        ensure!(
+            notes.iter().zip(roots).all(|(command, root)|
+                !matches!(command.action, script::Action::ChokeRoot) || root.is_some()),
+            "Hosted choke has no ancestry"
+        );
         self.render_inner(notes, Some(roots), host, frames)
     }
     fn render_inner(
@@ -2894,6 +2958,11 @@ impl<'a> Renderer<'a> {
         host: &[host::Command],
         frames: usize,
     ) -> Result<Vec<[f32; 2]>> {
+        ensure!(
+            roots.is_some() || notes.iter().all(|command|
+                !matches!(command.action, script::Action::ChokeRoot)),
+            "Hosted choke has no ancestry"
+        );
         self.check_processor_memory()?;
         ensure!(
             frames <= self.rate as usize * 60,
@@ -3025,6 +3094,25 @@ mod tests {
             tune: 0.,
             offset_us: 0,
         }
+    }
+    #[test]
+    fn first_note_processor_constructor_error_identifies_node_and_audio_configuration() {
+        let program = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" NoteTracking="0"/></Oscillators><Inserts><Exciter Amount="2" Mode="1" Oversampling="0"/></Inserts></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let exciter = program.nodes.iter().position(|n| n.kind == "Exciter").unwrap();
+        let mut renderer = Renderer::new(
+            &program,
+            HashMap::from([("a".into(), Arc::new(sample(1)))]),
+            48000,
+        ).unwrap();
+        let error = renderer.render(
+            &[script::Command { frame: 17, action: script::Action::Start(note(7)) }],
+            &[],
+            18,
+        ).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains(&format!("Exciter constructor at node {exciter}")), "{message}");
+        assert!(message.contains("channels 1, rate 48000, frame 17"), "{message}");
+        assert!(message.contains("Exciter requires a measured 48-kHz stereo bus"), "{message}");
     }
     #[test]
     fn registered_numeric_text_fallback_waits_for_every_finite_repair() {
@@ -4039,8 +4127,8 @@ mod tests {
                     1
                 )
                 .unwrap_err()
-                .to_string()
-                .contains("source width")
+                .chain()
+                .any(|cause| cause.to_string().contains("source width"))
         );
     }
     #[test]
@@ -5521,6 +5609,104 @@ mod tests {
                 .is_err()
         );
         assert_eq!(renderer.current_frame(), 16900);
+    }
+    #[test]
+    fn rooted_choke_discards_owned_delay_but_shared_tail_can_continue() {
+        let root = script::HostRoot {
+            epoch: 7,
+            generation: 9,
+            token: 1,
+        };
+        for shared in [false, true] {
+            let delay = r#"<Inserts><TrackDelay DelayTime="0.001"/></Inserts>"#;
+            let program=parse_program(&format!(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" NoteTracking="0"/></Oscillators>{}</Keygroup></Keygroups>{}</Layer></Layers></Program>"#,
+                if shared{""}else{delay},if shared{delay}else{""})).unwrap();
+            let mut renderer = Renderer::new(
+                &program,
+                HashMap::from([("a".into(), Arc::new(sample(1)))]),
+                48000,
+            )
+            .unwrap();
+            renderer
+                .render_with_roots(
+                    &[script::Command {
+                        frame: 0,
+                        action: script::Action::Start(note(7)),
+                    }],
+                    &[Some(root)],
+                    &[],
+                    8,
+                )
+                .unwrap();
+            let silent = renderer
+                .render_with_roots(
+                    &[script::Command {
+                        frame: 8,
+                        action: script::Action::ChokeRoot,
+                    }],
+                    &[Some(root)],
+                    &[],
+                    8,
+                )
+                .unwrap();
+            assert!(silent.iter().all(|frame| *frame == [0., 0.]));
+            assert!(renderer.sounding_roots().is_empty());
+            let tail = renderer.render_with_roots(&[], &[], &[], 64).unwrap();
+            assert_eq!(tail.iter().any(|frame| frame[0].abs() > 0.), shared);
+        }
+    }
+    #[test]
+    fn rooted_choke_stops_same_id_siblings_only_at_ordered_frame() {
+        let program=parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" NoteTracking="0"/></Oscillators></Keygroup><Keygroup><Oscillators><SamplePlayer SamplePath="a" NoteTracking="0"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let samples = HashMap::from([("a".into(), Arc::new(sample(1)))]);
+        let mut rooted = Renderer::new(&program, samples.clone(), 48000).unwrap();
+        let mut survivor = Renderer::new(&program, samples, 48000).unwrap();
+        let root = |token| script::HostRoot {
+            epoch: 7,
+            generation: 9,
+            token,
+        };
+        let starts = [
+            script::Command {
+                frame: 0,
+                action: script::Action::Start(note(7)),
+            },
+            script::Command {
+                frame: 0,
+                action: script::Action::Start(note(7)),
+            },
+            script::Command {
+                frame: 1,
+                action: script::Action::ChokeRoot,
+            },
+        ];
+        let output = rooted
+            .render_with_roots(
+                &starts,
+                &[Some(root(1)), Some(root(2)), Some(root(1))],
+                &[],
+                3,
+            )
+            .unwrap();
+        let expected = survivor.render(&starts[..1], &[], 3).unwrap();
+        assert_eq!(output[0], [expected[0][0] * 2., expected[0][1] * 2.]);
+        assert_eq!(output[1..], expected[1..]);
+        assert_eq!(rooted.sounding_roots(), [root(2)]);
+        assert_eq!(rooted.active_voices(), 2);
+        // Root metadata is essential; never fall back to an opaque-ID stop.
+        assert!(
+            rooted
+                .render_with_roots(
+                    &[script::Command {
+                        frame: 3,
+                        action: script::Action::ChokeRoot
+                    }],
+                    &[None],
+                    &[],
+                    1
+                )
+                .is_err()
+        );
     }
     #[test]
     fn backend_launch_ancestry_preserves_fifo_and_legacy_pcm() {

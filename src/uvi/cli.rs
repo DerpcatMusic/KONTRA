@@ -42,14 +42,19 @@ impl ContentState {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            ensure!(file.metadata()?.permissions().mode() & 0o077 == 0,
-                "Content-state file must be private (chmod 600)");
+            ensure!(
+                file.metadata()?.permissions().mode() & 0o077 == 0,
+                "Content-state file must be private (chmod 600)"
+            );
         }
         let mut bytes = Vec::new();
         file.take(4097).read_to_end(&mut bytes)?;
         ensure!(bytes.len() <= 4096, "Content-state file exceeds limit");
         if bytes.len() == 8 {
-            Ok(Self { key: u64::from_le_bytes(bytes.try_into().unwrap()), bank: None })
+            Ok(Self {
+                key: u64::from_le_bytes(bytes.try_into().unwrap()),
+                bank: None,
+            })
         } else {
             serde_json::from_slice(&bytes).context("Invalid local content-state file")
         }
@@ -262,7 +267,7 @@ fn play_worker(
     println!(
         "{}",
         serde_json::to_string_pretty(
-            &serde_json::json!({"frames":end,"processed_frames":padded_end,"sample_rate":rate,"block_frames":worker::BLOCK_FRAMES,"worker":true,"peak":peak,"event_commands":commands,"host_commands":host_commands,"diagnostics":diagnostics,"private_log_messages":logs,"dropped_logs":dropped_logs,"worker_initialization_ns":stats.initialization_ns,"worker_render_ns":stats.render_ns,"worker_max_render_ns":stats.max_render_ns,"worker_render_deadline_misses":stats.render_deadline_misses,"worker_backpressure":stats.backpressure,"worker_packet_polls":stats.underruns,"worker_errors":stats.errors})
+            &serde_json::json!({"frames":end,"processed_frames":padded_end,"sample_rate":rate,"block_frames":worker::BLOCK_FRAMES,"worker":true,"runtime_report":worker.diagnostic_report(),"peak":peak,"event_commands":commands,"host_commands":host_commands,"diagnostics":diagnostics,"private_log_messages":logs,"dropped_logs":dropped_logs,"worker_initialization_ns":stats.initialization_ns,"worker_render_ns":stats.render_ns,"worker_max_render_ns":stats.max_render_ns,"worker_render_deadline_misses":stats.render_deadline_misses,"worker_backpressure":stats.backpressure,"worker_packet_polls":stats.underruns,"worker_errors":stats.errors})
         )?
     );
     Ok(())
@@ -509,6 +514,50 @@ pub fn run(args: &[String]) -> Result<()> {
                     &serde_json::json!({"program_nodes":loaded.program.nodes.len(),"sample_players":loaded.program.sample_zones.len(),"event_commands":processed.commands.len(),"host_commands":processed.host_commands.len(),"unsupported":unsupported,"private_log_messages":processed.logs.len(),"dropped_logs":processed.dropped_logs})
                 )?
             );
+        }
+        "uvi-diagnose" => {
+            ensure!(
+                args.len() >= 5,
+                "Usage: uvi-diagnose <bank.ufs> <member.uvip> --reader <official-exe> [--content-key-file <private-file>] [--sample-rate 48000]"
+            );
+            let mut args = args.to_vec();
+            let mut rate = 48000u32;
+            if let Some(index) = args.iter().position(|arg| arg == "--sample-rate") {
+                ensure!(index >= 3, "Misplaced --sample-rate");
+                rate = args
+                    .get(index + 1)
+                    .context("Missing --sample-rate value")?
+                    .parse()?;
+                ensure!((8000..=192000).contains(&rate), "Invalid UVI sample rate");
+                args.drain(index..=index + 1);
+                ensure!(
+                    !args.iter().any(|arg| arg == "--sample-rate"),
+                    "Repeated --sample-rate"
+                );
+            }
+            let (reader, state) = options(&args, 3)?;
+            let mut worker = worker::Worker::start(
+                worker::StartConfig {
+                    bank: PathBuf::from(&args[1]),
+                    expected_bank_uuid: None,
+                    member: args[2].clone(),
+                    metadata_namespace: reader.metadata,
+                    program_namespace: reader.program,
+                    content_key: state.as_ref().map(|state| state.key),
+                    content_bank: state.and_then(|state| state.bank),
+                    sample_rate: rate,
+                },
+                1,
+                1,
+            )?;
+            let ready = worker.wait_ready(std::time::Duration::from_secs(60));
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&worker.diagnostic_report())?
+            );
+            worker.stop();
+            // Machine-readable stdout remains available on failed initialization.
+            ready.context("UVI diagnosis found an initialization failure")?;
         }
         "uvi-bank" => {
             let (reader, _) = options(args, 2)?;

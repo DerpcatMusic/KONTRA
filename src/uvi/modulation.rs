@@ -1172,6 +1172,9 @@ struct LfoClock {
     phase: f64,
 }
 struct TriangleLfoClock {
+    wave: f64,
+    amplitude: f32,
+    bipolar: bool,
     frame: u64,
     phase: u32,
     increment: u32,
@@ -1190,6 +1193,18 @@ fn triangle_lfo_value(phase: u32) -> f32 {
         2. - 4. * position
     } else {
         4. * position - 4.
+    }
+}
+// Native built-in square uses a 256-entry +/-1 table, interpolates
+// index127 to128, and holds the final entry until uint32 phase wraps.
+fn square_lfo_value(phase: u32) -> f32 {
+    let index = phase >> 24;
+    if index < 127 {
+        1.
+    } else if index == 127 {
+        1. - 2. * ((phase & 0x00ff_ffff) as f32 * (1_f32 / 16777216.))
+    } else {
+        -1.
     }
 }
 struct AbsoluteClock {
@@ -1362,6 +1377,11 @@ fn mapper_path(program: &Program, owner: NodeId, path: &str) -> Result<NodeId> {
         at = scope(program, id);
     }
     bail!("Unresolved UVI mapper reference")
+}
+// A measured endpoint converter is not sufficient to admit a live route:
+// its controller CURRENT/FUTURE points must be prepared before conversion.
+fn wavetable_control(kind: &str, name: &str) -> bool {
+    kind == "WaveTableOscillator" && matches!(name, "PhaseDistortionAmount" | "WaveIndex")
 }
 pub fn supports_target(kind: &str, name: &str) -> bool {
     matches!(
@@ -1709,8 +1729,12 @@ impl ModulationGraph {
                         let attributes = &program.nodes[id].attributes;
                         let wave = number(attributes, "WaveFormType", 0.)?;
                         ensure!(
-                            [0., 2., 6., 9.].contains(&wave),
+                            [0., 1., 2., 6., 9.].contains(&wave),
                             "Unverified UVI LFO waveform type at node {id}"
+                        );
+                        ensure!(
+                            wave != 1. || number(attributes, "Retrigger", 1.)? == 1.,
+                            "Unverified UVI square LFO trigger mode at node {id}"
                         );
                         let smooth = number(attributes, "Smooth", 0.)?;
                         ensure!(
@@ -1781,6 +1805,17 @@ impl ModulationGraph {
         // a script can enable those, so bypass cannot hide a dependency cycle.
         let mut finished = HashSet::new();
         let mut active = HashSet::new();
+        for (node, name) in graph.connections.keys() {
+            ensure!(
+                graph.kinds[*node] != "LFO"
+                    || number(&graph.bases[*node], "WaveFormType", 0.)? != 1.
+                    || !matches!(
+                        name.as_str(),
+                        "Freq" | "Depth" | "Phase" | "DelayTime" | "RiseTime"
+                    ),
+                "Unverified connected UVI square LFO parameter {name} at node {node}"
+            );
+        }
         for p in graph.connections.keys() {
             graph.visit(p, &mut finished, &mut active, 0)?;
         }
@@ -2777,7 +2812,9 @@ impl ModulationGraph {
         }
         let edges = cached.map_or(&[][..], |cached| cached.edges.as_slice());
         ensure!(
-            !edges.iter().any(|c| c.mode == 0) || supports_target(&self.kinds[p.0], &p.1),
+            !edges.iter().any(|c| c.mode == 0)
+                || supports_target(&self.kinds[p.0], &p.1)
+                || wavetable_control(&self.kinds[p.0], &p.1),
             "Unverified UVI modulation target conversion at node {} parameter {}",
             p.0,
             p.1
@@ -2850,6 +2887,11 @@ impl ModulationGraph {
                 (base + self.delta_edges(edges, input, live, memo, depth + 1)?).clamp(0., 1.)
                     >= 0.5,
             )
+        } else if wavetable_control(&self.kinds[p.0], &p.1) {
+            // Authored Workstation 4.0.9 fixtures prove this normalized endpoint
+            // law. A live route converts/clamps CURRENT and FUTURE separately,
+            // then interpolates; raw per-sample CC evaluation cannot admit it.
+            (base + self.delta_edges(edges, input, live, memo, depth + 1)?).clamp(0., 1.)
         } else if matches!(self.kinds[p.0].as_str(), "DualDelay" | "DualDelayX") && p.1 == "Mix" {
             // Native negative-ratio steps smooth the raw goal first. The
             // consumer clamps its current Mix, rather than this target.
@@ -3835,6 +3877,26 @@ impl ModulationGraph {
             (0. ..=9.).contains(&wave) && wave.fract() == 0.,
             "Invalid UVI LFO waveform type"
         );
+        ensure!(
+            wave != 1.
+                || !self.node_targets[n].iter().any(|(_, name)| matches!(
+                    name.as_str(),
+                    "Freq" | "Depth" | "Phase" | "DelayTime" | "RiseTime"
+                )),
+            "Unverified connected UVI square LFO parameter at node {n}"
+        );
+        // Square waveform transitions have no measured clock-state law. Check
+        // before branching so switching away from square cannot evade the gate.
+        if let Some(state) =
+            self.triangle_lfo_clocks
+                .borrow()
+                .get(&(n, input.voice, input.instance))
+        {
+            ensure!(
+                (state.wave != 1. && wave != 1.) || state.wave == wave,
+                "Unverified live UVI square LFO waveform change at node {n}"
+            );
+        }
         if wave == 6. {
             ensure!(
                 retrigger == 1. && delay == 0. && rise == 0.,
@@ -3847,8 +3909,12 @@ impl ModulationGraph {
             smooth == 0.,
             "Unimplemented UVI deterministic LFO smoothing at node {n}"
         );
-        if wave == 2. {
-            // Authored native triangles use an integer phase accumulator and
+        if wave == 1. || wave == 2. {
+            ensure!(
+                wave != 1. || retrigger == 1.,
+                "Unverified UVI square LFO trigger mode at node {n}"
+            );
+            // Authored native squares and triangles use an integer phase accumulator and
             // interpolate 32-frame control points, including triangle corners.
             let rate = input.sample_rate as f32;
             let increment = ((16777216_f32 / rate) * (freq as f32 * 256.)).floor();
@@ -3894,6 +3960,9 @@ impl ModulationGraph {
                 "UVI triangle LFO state exceeds limit"
             );
             let state = clocks.entry(key).or_insert(TriangleLfoClock {
+                wave,
+                amplitude: amplitude as f32,
+                bipolar,
                 frame: point_frame,
                 phase: phase_start.wrapping_add((increment as u32).wrapping_mul(elapsed as u32)),
                 increment: increment as u32,
@@ -3904,6 +3973,13 @@ impl ModulationGraph {
                 rate: input.sample_rate,
                 block_frames: input.control_block_frames,
             });
+            ensure!(
+                wave != 1.
+                    || (state.increment == increment as u32
+                        && state.amplitude == amplitude as f32
+                        && state.bipolar == bipolar),
+                "Unverified live UVI square LFO frequency/depth/polarity change at node {n}"
+            );
             ensure!(
                 state.origin == origin
                     && state.delay_frames == delay_frames
@@ -3927,7 +4003,11 @@ impl ModulationGraph {
                 state.increment = increment as u32;
             }
             let value = |phase, elapsed: u64| {
-                let raw = triangle_lfo_value(phase);
+                let raw = if wave == 1. {
+                    square_lfo_value(phase)
+                } else {
+                    triangle_lfo_value(phase)
+                };
                 let raw = if bipolar { raw } else { (raw + 1.) * 0.5 };
                 let rise = if rise_frames == 0 {
                     1.
@@ -4001,6 +4081,133 @@ impl ModulationGraph {
 mod tests {
     use super::*;
     use crate::uvi::program::parse_program;
+    #[test]
+    fn native_square_lfo_table_endpoints_and_wrap() {
+        let xml = r#"<Program><ControlSignalSources><LFO Name="Osc" WaveFormType="1" Freq="2" Phase="0" Depth="1" Retrigger="1" Bipolar="0" Smooth="0"/></ControlSignalSources><Layers><Layer><Keygroups><Keygroup Gain="1"><Connections><SignalConnection Source="$Program/Osc" Destination="Gain" Ratio="1"/></Connections></Keygroup></Keygroups></Layer></Layers></Program>"#;
+        let program = parse_program(xml).unwrap();
+        let graph = ModulationGraph::new(&program).unwrap();
+        let group = program
+            .nodes
+            .iter()
+            .position(|n| n.kind == "Keygroup")
+            .unwrap();
+        // Original authored 48k DC source, including the table's index127
+        // transition and final held entry before uint32 wrap.
+        for (frame, expected) in [
+            (11904, 1.),
+            (11936, 0.6833572387695312),
+            (11968, 0.3420257568359375),
+            (12000, 0.00069427490234375),
+            (12032, 0.),
+            (23968, 0.),
+            (24000, 0.),
+            (24001, 0.03125),
+            (24031, 0.96875),
+            (24032, 1.),
+        ] {
+            let time = frame as f64 / 48000.;
+            let input = Inputs {
+                time_seconds: time,
+                voice_time_seconds: time,
+                voice: Some(1),
+                instance: Some(1),
+                ..Inputs::default()
+            };
+            assert_eq!(
+                graph.evaluate(&input, &HashMap::new()).unwrap()[&(group, "Gain".into())],
+                expected
+            );
+        }
+        assert_eq!(square_lfo_value(127 << 24), 1.);
+        assert_eq!(square_lfo_value(128 << 24), -1.);
+        assert_eq!(square_lfo_value(u32::MAX), -1.);
+    }
+    #[test]
+    fn square_lfo_unmeasured_smoothing_and_trigger_modes_remain_gated() {
+        let xml = r#"<Program><ControlSignalSources><LFO Name="Osc" WaveFormType="1" Freq="2" Retrigger="1" Smooth="0"/></ControlSignalSources><Layers><Layer><Keygroups><Keygroup><Connections><SignalConnection Source="$Program/Osc" Destination="Gain" Ratio="1"/></Connections></Keygroup></Keygroups></Layer></Layers></Program>"#;
+        for changed in [
+            xml.replace("Smooth=\"0\"", "Smooth=\".01\""),
+            xml.replace("Retrigger=\"1\"", "Retrigger=\"0\""),
+            xml.replace("Retrigger=\"1\"", "Retrigger=\"2\""),
+            xml.replace("WaveFormType=\"1\"", "WaveFormType=\"3\""),
+        ] {
+            assert!(ModulationGraph::new(&parse_program(&changed).unwrap()).is_err());
+        }
+        let program = parse_program(xml).unwrap();
+        let graph = ModulationGraph::new(&program).unwrap();
+        let source = program.nodes.iter().position(|n| n.kind == "LFO").unwrap();
+        let connected = xml.replace("Smooth=\"0\"/>",
+            "Smooth=\"0\"><Connections><SignalConnection Source=\"@MIDI CC 1\" Destination=\"Freq\" Ratio=\".1\"/></Connections></LFO>");
+        assert!(ModulationGraph::new(&parse_program(&connected).unwrap()).is_err());
+        graph.evaluate(&Inputs::default(), &HashMap::new()).unwrap();
+        let later = Inputs {
+            time_seconds: 32. / 48000.,
+            voice_time_seconds: 32. / 48000.,
+            ..Inputs::default()
+        };
+        for (name, value) in [("Freq", 4.), ("Depth", 0.5), ("Bipolar", 0.)] {
+            assert!(
+                graph
+                    .evaluate(&later, &HashMap::from([((source, name.into()), value)]))
+                    .is_err()
+            );
+        }
+        for (name, value) in [("Smooth", 0.01), ("Retrigger", 0.)] {
+            assert!(
+                graph
+                    .evaluate(
+                        &Inputs::default(),
+                        &HashMap::from([((source, name.into()), value)])
+                    )
+                    .is_err()
+            );
+        }
+    }
+    #[test]
+    fn square_lfo_live_waveform_transitions_remain_gated() {
+        for (from, to) in [(1, 2), (2, 1), (1, 0)] {
+            let xml = format!(
+                r#"<Program><ControlSignalSources><LFO Name="Osc" WaveFormType="{from}" Freq="2" Depth="1" Retrigger="1" Smooth="0"/></ControlSignalSources><Layers><Layer><Keygroups><Keygroup Gain="1"><Connections><SignalConnection Source="$Program/Osc" Destination="Gain" Ratio="1"/></Connections></Keygroup></Keygroups></Layer></Layers></Program>"#
+            );
+            let program = parse_program(&xml).unwrap();
+            let graph = ModulationGraph::new(&program).unwrap();
+            let source = program.nodes.iter().position(|n| n.kind == "LFO").unwrap();
+            graph.evaluate(&Inputs::default(), &HashMap::new()).unwrap();
+            let later = Inputs {
+                time_seconds: 32. / 48000.,
+                voice_time_seconds: 32. / 48000.,
+                ..Inputs::default()
+            };
+            assert!(
+                graph
+                    .evaluate(
+                        &later,
+                        &HashMap::from([((source, "WaveFormType".into()), f64::from(to))])
+                    )
+                    .is_err(),
+                "accepted live waveform {from} -> {to}"
+            );
+        }
+    }
+    #[test]
+    fn square_lfo_live_selection_cannot_bypass_connected_parameter_gate() {
+        let xml = r#"<Program><ControlSignalSources><LFO Name="Osc" WaveFormType="2" Freq="2" Retrigger="1" Smooth="0"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Freq" Ratio=".1"/></Connections></LFO></ControlSignalSources><Layers><Layer><Keygroups><Keygroup Gain="1"><Connections><SignalConnection Source="$Program/Osc" Destination="Gain" Ratio="1"/></Connections></Keygroup></Keygroups></Layer></Layers></Program>"#;
+        let program = parse_program(xml).unwrap();
+        let graph = ModulationGraph::new(&program).unwrap();
+        let source = program
+            .nodes
+            .iter()
+            .position(|node| node.kind == "LFO")
+            .unwrap();
+        assert!(
+            graph
+                .evaluate(
+                    &Inputs::default(),
+                    &HashMap::from([((source, "WaveFormType".into()), 1.)])
+                )
+                .is_err()
+        );
+    }
     #[test]
     fn cached_helpers_preserve_eager_base_errors_depth_and_zero_emission() {
         let program = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"/></Oscillators><Inserts><OnePole Freq="NaN"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Freq" Ratio="1"/></Connections></OnePole></Inserts></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
@@ -4358,7 +4565,7 @@ mod tests {
                     "{settings} at {frame}: {value} != {expected}"
                 );
             }
-            let unknown = xml.replace("WaveFormType=\"2\"", "WaveFormType=\"1\"");
+            let unknown = xml.replace("WaveFormType=\"2\"", "WaveFormType=\"4\"");
             assert!(ModulationGraph::new(&parse_program(&unknown).unwrap()).is_err());
         }
     }
@@ -4457,6 +4664,38 @@ mod tests {
             graph.remove_voice(note);
         }
         assert!(graph.builtin_values.borrow().is_empty());
+    }
+    #[test]
+    fn authored_native_wavetable_mode0_endpoints_keep_live_routes_gated() {
+        // Twelve authored native sine-table comparisons are byte-identical
+        // after settling: six goals for each destination, including both
+        // clipping endpoints and a nonbinary CC value. Moving constant-table
+        // captures additionally establish conversion before interpolation.
+        for name in ["PhaseDistortionAmount", "WaveIndex"] {
+            for (base, ratio, cc, expected) in [
+                (0.5, -0.5, 0, 0.5),
+                (0.5, -0.5, 64, 0.24803149606299213),
+                (0.5, -0.5, 127, 0.),
+                (0.25, 0.5, 64, 0.5019685039370079),
+                (0.9, 0.5, 127, 1.),
+                (0.1, -0.5, 127, 0.),
+            ] {
+                let p = parse_program(&format!(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><WaveTableOscillator {name}="{base}"><Connections><SignalConnection Source="@MIDI CC 1" Destination="{name}" Ratio="{ratio}" ConnectionMode="0" SignalConnectionVersion="1"/></Connections></WaveTableOscillator></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#)).unwrap();
+                let owner = p
+                    .nodes
+                    .iter()
+                    .position(|n| n.kind == "WaveTableOscillator")
+                    .unwrap();
+                let graph = ModulationGraph::new(&p).unwrap();
+                let mut input = Inputs::default();
+                input.controllers[1] = cc;
+                let values = graph.evaluate(&input, &HashMap::new()).unwrap();
+                assert!((values[&(owner, name.into())] - expected).abs() < 1e-12);
+                assert!(!supports_target("WaveTableOscillator", name));
+                assert!(!supports_absolute_target("WaveTableOscillator", name));
+                assert_eq!(graph.unsupported_targets(), [(owner, name.into())]);
+            }
+        }
     }
     #[test]
     fn native_delay_mix_keeps_raw_goal_until_consumer_clamp() {

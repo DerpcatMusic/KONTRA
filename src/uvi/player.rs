@@ -82,7 +82,7 @@ impl<'a> Player<'a> {
         resources: BankResources,
         sample_rate: u32,
     ) -> Result<Self> {
-        Self::new_inner(program, modules, resources, sample_rate, None)
+        Self::new_inner(program, modules, resources, sample_rate, None, None)
     }
     pub fn new_hosted(
         program: &'a Program,
@@ -98,7 +98,19 @@ impl<'a> Player<'a> {
             resources,
             sample_rate,
             Some((epoch, generation)),
+            None,
         )
+    }
+    /// Prepare a fresh replacement; malformed state cannot mutate a live player.
+    pub fn new_with_state(
+        program: &'a Program,
+        modules: BTreeMap<String, Vec<u8>>,
+        resources: BankResources,
+        sample_rate: u32,
+        activation: Option<(u64, u64)>,
+        saved: Option<&super::state::SavedState>,
+    ) -> Result<Self> {
+        Self::new_inner(program, modules, resources, sample_rate, activation, saved)
     }
     fn new_inner(
         program: &'a Program,
@@ -106,6 +118,7 @@ impl<'a> Player<'a> {
         resources: BankResources,
         sample_rate: u32,
         activation: Option<(u64, u64)>,
+        saved: Option<&super::state::SavedState>,
     ) -> Result<Self> {
         let hosted = activation.is_some();
         let unsupported = super::playback::preflight(program);
@@ -115,20 +128,47 @@ impl<'a> Player<'a> {
             serde_json::to_string(&unsupported)?
         );
         let capability = Some(resources.capability());
-        let session = if let Some((epoch, generation)) = activation {
-            Session::new_hosted_program_chain(
+        if let Some(saved) = saved {
+            saved.validate(program)?;
+            saved.prepare_audio(capability.as_ref().unwrap())?;
+        }
+        // A fresh instrument may load aliases during authored initialization.
+        // Only restoration has a complete captured override set to prevalidate.
+        let prepared = if let Some(saved) = saved {
+            let mut renderer = Renderer::new(program, resources.samples(), sample_rate)?;
+            saved.prepare_renderer(&mut renderer)?;
+            Some(renderer)
+        } else {
+            None
+        };
+        let mut session = if let Some((epoch, generation)) = activation {
+            Session::new_hosted_program_chain_with_state(
                 program,
                 modules,
                 capability,
                 sample_rate,
                 epoch,
                 generation,
+                saved,
             )?
         } else {
-            Session::new_program_chain(program, modules, capability, sample_rate)?
+            Session::new_program_chain_with_state(program, modules, capability, sample_rate, saved)?
         };
-        let samples = resources.samples();
-        let renderer = Renderer::new(program, samples, sample_rate)?;
+        let mut renderer = match prepared {
+            Some(renderer) => renderer,
+            None => Renderer::new(program, resources.samples(), sample_rate)?,
+        };
+        if saved.is_some() {
+            let processed = session.drain()?;
+            // The preload is the prefix; authored onLoad/changed/onInit commands
+            // follow it and therefore retain final native initialization authority.
+            renderer.install_prepared_samples(resources.samples())?;
+            renderer.apply_boundary(
+                &processed.commands,
+                hosted.then_some(processed.command_roots.as_slice()),
+                &processed.host_commands,
+            )?;
+        }
         let resource_revision = resources.revision();
         Ok(Self {
             session,
@@ -169,6 +209,31 @@ impl<'a> Player<'a> {
     ) -> Result<super::host::UiSnapshot> {
         ensure!(!self.failed, "UVI player must be replaced after a failure");
         self.session.ui_snapshot(processor)
+    }
+
+    pub fn saved_state(&mut self) -> Result<super::state::SavedState> {
+        ensure!(!self.failed, "UVI player must be replaced after a failure");
+        let result = (|| {
+            let saved = self.session.saved_state(self.frame)?;
+            let processed = self.session.drain()?;
+            if self.resources.revision() != self.resource_revision {
+                self.renderer
+                    .install_prepared_samples(self.resources.samples())?;
+                self.resource_revision = self.resources.revision();
+            }
+            self.renderer.apply_boundary(
+                &processed.commands,
+                self.hosted.then_some(processed.command_roots.as_slice()),
+                &processed.host_commands,
+            )?;
+            Ok(saved)
+        })();
+        // onSave can mutate Lua before an error. Never continue a partially
+        // failed native callback; the old persisted payload remains untouched.
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
     }
 
     /// Inputs use absolute frames in [current_frame, current_frame + frames).
@@ -306,6 +371,9 @@ impl<'a> Player<'a> {
                             }
                             HostedInput::Off { root, frame } => {
                                 self.session.host_note_off(root, frame)?
+                            }
+                            HostedInput::Choke { root, frame } => {
+                                self.session.host_note_choke(root, frame)?
                             }
                             HostedInput::Event(input) => self.session.input(input)?,
                         }

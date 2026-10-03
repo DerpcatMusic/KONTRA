@@ -76,7 +76,45 @@ fn enabled(snapshot: &UiSnapshot, widget: &UiWidget) -> bool {
 }
 
 fn name(widget: &UiWidget) -> &str {
-    widget.display_name.as_deref().unwrap_or(&widget.name)
+    widget
+        .display_name
+        .as_deref()
+        .filter(|label| !label.is_empty())
+        .unwrap_or(&widget.name)
+}
+
+// Native Button/OnOffButton labels are off until the script enables them;
+// supplying custom artwork does not change that default.
+fn button_text(widget: &UiWidget) -> &str {
+    if widget.style.show_label == Some(true) {
+        widget
+            .style
+            .text
+            .as_deref()
+            .or(widget.display_name.as_deref())
+            .unwrap_or("")
+    } else {
+        ""
+    }
+}
+
+// Theme controls have intrinsic text/padding too. Scale those with the
+// authored canvas instead of leaving fixed-size text inside resized fields.
+fn scale_control(el: &mut El, ui: &Ui, scale: f64) {
+    let font = el.payload().text_px(ui.theme());
+    el.payload_mut().text_size = Some(font * scale);
+    let pad = el.padding(ui.theme().spacing);
+    *el = el.clone().pad(edges(
+        pad.top * scale,
+        pad.right * scale,
+        pad.bottom * scale,
+        pad.left * scale,
+    ));
+    let gap = el.gap_mut();
+    *gap = (gap.resolve(ui.theme().spacing) * scale).into();
+    for child in el.children_mut() {
+        scale_control(child, ui, scale);
+    }
 }
 
 fn range(widget: &UiWidget) -> Option<std::ops::RangeInclusive<f64>> {
@@ -234,7 +272,11 @@ pub fn view(
         .scene()
         .and_then(|s| s.surface(&format!("part-{owner}")))
         .map_or(width, |s| s.frame.size.width);
-    let scale = (room / width).clamp(0.1, 1.);
+    let scale = if room.is_finite() && room > 0. {
+        room / width
+    } else {
+        1.
+    };
     let mut layers = Vec::with_capacity(snapshot.widgets.len() + 1);
     if let Some(image) = snapshot
         .root
@@ -245,7 +287,7 @@ pub fn view(
     {
         layers.push(
             block(width * scale, height * scale)
-                .fill(Fill::Image(image.clone(), Fit::Fill))
+                .fill(Fill::Image(image.clone(), Fit::Contain))
                 .at(0., 0.),
         );
     }
@@ -267,6 +309,7 @@ pub fn view(
             .last()
             .map_or(response.mods, |key| key.mods);
         let label = name(widget);
+        let display_name = widget.display_name.as_deref().unwrap_or(label);
         let mut value = numeric(state, widget);
         let mut control = match widget.kind {
             UiKind::Knob | UiKind::Slider | UiKind::NumBox => {
@@ -293,10 +336,11 @@ pub fn view(
                             &mut send,
                         );
                     }
-                    let field = field.el.value_text(number_text(value, widget.integer)).el();
+                    let mut field = field.el.value_text(number_text(value, widget.integer)).el();
+                    scale_control(&mut field, ui, scale);
                     let content = if widget.style.show_label != Some(false) {
                         row![
-                            caption(label).text_size(SMALL * scale).lines(1),
+                            caption(display_name).text_size(SMALL * scale).lines(1),
                             field.flex(1).min_w(0)
                         ]
                         .gap(TIGHT * scale)
@@ -350,10 +394,10 @@ pub fn view(
                 } else {
                     (value - range.start()) / (range.end() - range.start())
                 };
-                let face = if let Some(image) =
-                    picture(widget, pictures, value, response.held, response.hovered)
-                {
-                    block(w, h).fill(Fill::Image(image, Fit::Fill))
+                let image = picture(widget, pictures, value, response.held, response.hovered);
+                let skinned = image.is_some();
+                let face = if let Some(image) = image {
+                    block(w, h).fill(Fill::Image(image, Fit::Contain))
                 } else if widget.kind == UiKind::Knob {
                     dial_face(
                         unit,
@@ -373,12 +417,17 @@ pub fn view(
                 };
                 let captions = usize::from(widget.style.show_label != Some(false))
                     + usize::from(widget.style.show_value != Some(false));
-                let mut content = vec![
-                    face.size(w, (h - captions as f64 * SMALL * scale * 1.4).max(1.))
-                        .shrink(0),
-                ];
+                let mut content = if skinned {
+                    vec![spacer()]
+                } else {
+                    vec![
+                        face.clone()
+                            .size(w, (h - captions as f64 * SMALL * scale * 1.4).max(1.))
+                            .shrink(0),
+                    ]
+                };
                 if widget.style.show_label != Some(false) {
-                    content.push(caption(label).text_size(SMALL * scale).lines(1));
+                    content.push(caption(display_name).text_size(SMALL * scale).lines(1));
                 }
                 if widget.style.show_value != Some(false) {
                     content.push(
@@ -387,9 +436,15 @@ pub fn view(
                             .lines(1),
                     );
                 }
-                col(content)
-                    .gap(0)
-                    .align(Align::Center)
+                let captions = col(content).gap(0).align(Align::Center);
+                // Skin coordinates describe the complete source frame. Captions
+                // overlay that frame; reserving their height squeezes its art.
+                let content = if skinned {
+                    stack![face.size(w, h), captions.size(w, h)]
+                } else {
+                    captions
+                };
+                content
                     .focusable()
                     .a11y(A11y::Slider {
                         value,
@@ -409,22 +464,12 @@ pub fn view(
                     Some(UiEditValue::Boolean(on)) => on,
                     _ => matches!(widget.value, Some(UiValue::Boolean(true))),
                 };
-                let (hit, el) = if widget.kind == UiKind::Button {
-                    action(
-                        ui,
-                        id.as_str(),
-                        widget.style.text.as_deref().unwrap_or(label),
-                        false,
-                    )
+                let (hit, mut el) = if widget.kind == UiKind::Button {
+                    action(ui, id.as_str(), button_text(widget), false)
                 } else {
-                    latch(
-                        ui,
-                        id.as_str(),
-                        widget.style.text.as_deref().unwrap_or(label),
-                        label,
-                        on,
-                    )
+                    latch(ui, id.as_str(), button_text(widget), label, on)
                 };
+                scale_control(&mut el, ui, scale);
                 if usable && hit {
                     send_edit(
                         state,
@@ -441,14 +486,20 @@ pub fn view(
                     );
                 }
                 value = f64::from(on);
-                el
+                el.named(label.to_owned())
             }
             UiKind::Menu => {
                 let selected = (value as usize)
                     .checked_sub(1)
                     .and_then(|i| widget.items.get(i))
                     .map_or("Choose…", String::as_str);
-                let (hit, el) = dropdown(ui, id.as_str(), selected, label);
+                let (hit, mut el) = dropdown(ui, id.as_str(), selected, label);
+                scale_control(&mut el, ui, scale);
+                if let Some(caret) = el.children_mut().get_mut(1) {
+                    *caret = glyph(Icon::Down, TEXT * scale, secondary());
+                }
+                // Generic field minimums must not overrule the authored width.
+                let el = el.min_w(0);
                 if usable && hit {
                     state.menu = if state.menu == Some(widget.id) {
                         None
@@ -458,7 +509,7 @@ pub fn view(
                 }
                 if widget.style.show_label != Some(false) {
                     row![
-                        caption(label).text_size(SMALL * scale).lines(1),
+                        caption(display_name).text_size(SMALL * scale).lines(1),
                         el.flex(1).min_w(0)
                     ]
                     .gap(TIGHT * scale)
@@ -608,6 +659,7 @@ pub fn view(
             }
             UiKind::Panel | UiKind::Viewport | UiKind::Image => block(w, h),
             UiKind::XY | UiKind::WaveView | UiKind::AudioMeter => caption(label)
+                .text_size(SMALL * scale)
                 .fill(secondary())
                 .tip("This display is unavailable.")
                 .lines(1),
@@ -621,18 +673,14 @@ pub fn view(
                 response.hovered,
             )
         {
-            let image = block(w, h).fill(Fill::Image(image, Fit::Fill));
+            let image = block(w, h).fill(Fill::Image(image, Fit::Contain));
             control = if matches!(
                 widget.kind,
                 UiKind::Panel | UiKind::Viewport | UiKind::Image
             ) {
                 image
             } else if matches!(widget.kind, UiKind::Button | UiKind::OnOffButton) {
-                let words = if widget.style.show_label == Some(false) {
-                    String::new()
-                } else {
-                    widget.style.text.as_deref().unwrap_or(label).to_owned()
-                };
+                let words = button_text(widget).to_owned();
                 stack![
                     image,
                     row![caption(words).lines(1)]
@@ -651,7 +699,7 @@ pub fn view(
                     e.stroke(accent()).stroke_width(1)
                 })
             } else {
-                stack![image, control]
+                stack![image, control.size(w, h)]
             };
         } else if let Some(fill) = colour(widget.style.background_colour.as_deref()) {
             control = control.fill(fill);
@@ -666,6 +714,7 @@ pub fn view(
     }
     stack(layers)
         .size(width * scale, height * scale)
+        .shrink(0)
         .clip()
         .fill(
             colour(snapshot.root.background_colour.as_deref())
@@ -915,6 +964,99 @@ mod tests {
             1. / 60.,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn authored_panel_scales_up_and_down_without_changing_coordinates() {
+        let mut snapshot = authored();
+        let menu = &mut snapshot.widgets[4];
+        menu.style.show_label = Some(false);
+        menu.style.background_image = Some(crate::uvi::host::UiArtwork {
+            path: "menu.png".into(),
+            bank_root: false,
+        });
+        menu.absolute_bounds.width = 60.;
+        menu.absolute_bounds.height = 18.;
+        menu.bounds = menu.absolute_bounds;
+        let mut pictures = HashMap::new();
+        pictures.insert(
+            "menu.png".into(),
+            Arc::new(Picture {
+                frames: vec![Arc::new(
+                    moose::mui::mui::scene::Image::rgba(20, 10, vec![255; 800]).unwrap(),
+                )],
+                stretch: [false; 2],
+                atlas: None,
+            }),
+        );
+        let current = stamp(4);
+        let mut ui = super::super::theme::ui();
+        let mut state = State::default();
+        for room in [320., 960., 480.] {
+            let scale = room / snapshot.root.width;
+            for _ in 0..3 {
+                let panel = view(
+                    &mut ui,
+                    &mut state,
+                    0,
+                    current,
+                    current,
+                    &snapshot,
+                    &pictures,
+                    |_, _| false,
+                );
+                ui.frame(
+                    col![panel]
+                        .align(Align::Start)
+                        .size(room, snapshot.root.height * scale)
+                        .id("part-0"),
+                    Some(Size::new(room, snapshot.root.height * scale)),
+                    Input::default(),
+                    1. / 60.,
+                )
+                .unwrap();
+            }
+            let scene = ui.scene().unwrap();
+            let stage = scene.surface("uvi-stage-0").unwrap().frame;
+            assert!((stage.size.width - room).abs() < 0.01);
+            assert!((stage.size.height - snapshot.root.height * scale).abs() < 0.01);
+            let menu = scene
+                .surface(&identity(0, current, &snapshot, 5))
+                .unwrap()
+                .frame;
+            assert!((menu.x - 388. * scale).abs() < 0.01);
+            assert!((menu.y - 108. * scale).abs() < 0.01);
+            assert!((menu.size.width - 60. * scale).abs() < 0.01);
+            assert!((menu.size.height - 18. * scale).abs() < 0.01);
+            let knob = scene
+                .surface(&identity(0, current, &snapshot, 2))
+                .unwrap()
+                .frame;
+            let intrinsic = snapshot.widgets[1].absolute_bounds;
+            assert!((knob.x - intrinsic.x * scale).abs() < 0.01);
+            assert!((knob.y - intrinsic.y * scale).abs() < 0.01);
+            assert!((knob.size.width - intrinsic.width * scale).abs() < 0.01);
+            assert!((knob.size.height - intrinsic.height * scale).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn native_button_labels_require_explicit_show_label() {
+        let mut widget = authored().widgets[5].clone();
+        for kind in [UiKind::Button, UiKind::OnOffButton] {
+            widget.kind = kind;
+            widget.display_name = Some("Authored label".into());
+            widget.style.text = Some("Authored text".into());
+            widget.style.show_label = None;
+            assert_eq!(button_text(&widget), "");
+            widget.style.show_label = Some(false);
+            assert_eq!(button_text(&widget), "");
+            widget.style.show_label = Some(true);
+            assert_eq!(button_text(&widget), "Authored text");
+            widget.style.text = None;
+            assert_eq!(button_text(&widget), "Authored label");
+            assert_eq!(name(&widget), "Authored label");
+        }
     }
 
     #[test]

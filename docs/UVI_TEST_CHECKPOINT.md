@@ -1,0 +1,103 @@
+# UVI Linux test checkpoint
+
+This is a private experimental checkpoint, not complete Falcon compatibility.
+The optional UVI player shares KONTRA's browser, rack mixer, routing and keyboard.
+Unsupported native graphs remain explicit failures. Starter coverage is still
+1/50; the paid-library audit and native DSP comparisons have separate limits in
+[uvi-compatibility.md](uvi-compatibility.md).
+
+## Start and load
+
+Build the CLI, plugin library and standalone with the `uvi,standalone` features.
+The test package identifies its exact source and enabled features in its manifest.
+It contains no vendor executable, bank, sample, script or access state.
+
+Configure the local official Workstation reader with `KONTRA_UVI_READER`.
+For protected banks, `KONTRA_UVI_AUTHORITY_DIR` points to private bank-bound JSON
+files named by the bank UUID (32 lowercase hexadecimal characters plus `.json`).
+These are local resource access inputs, separate from saved instrument controls.
+The reader and bank files must remain present. The CLI setup commands are in the
+[README](../README.md#experimental-uvi-interoperability).
+
+Add the folder containing the banks in KONTRA's library settings and rescan.
+UVI and Kontakt entries appear in the same browser. Select a supported UVI
+program and wait for its controls before playing. Actual sample rate, host block
+size and preparation limits can affect admission.
+
+## Check the behavior
+
+1. Play from the keyboard, then from the DAW. Check release, overlap and sustain.
+2. Resize the editor; artwork and hit targets should follow one uniform scale.
+3. Change a native control and verify the sound follows it.
+4. Change rack gain, pan, mute and solo alongside another part.
+5. Save a KONTRA multi, reopen it, and compare controls and sound. Test DAW save
+   and reopen separately; the host pre-save API cannot report a failed capture.
+6. Remove the part or reset the audio configuration and check that a replacement
+   loads without old controls acting on the new instrument.
+
+Save requires already applied control edits and a processed audio boundary.
+If rack Save says it is waiting, resume audio processing and save again. A failed
+native onSave retains the previous successful payload. DAW capture failures are
+reported in Logs and retain prior state; they must not be read as fresh saves.
+Ordinary playback/UI polling never runs onSave. Voice state and transport are
+not part of instrument persistence.
+
+Report the exact build identity, bank/program, sample rate and host block size
+with any failure. Private logs or screenshots can contain purchased-library
+names and artwork. Render-deadline reliability, complete native fonts/units,
+advanced displays and full Falcon sound parity remain unproven.
+
+## Read a diagnosis
+
+`kontakto uvi-diagnose bank.ufs member.uvip --reader UVIWorkstationx64.exe
+--content-key-file private-state.json` emits JSON after attempting initialization.
+Use `--sample-rate` for the actual rate. Failed initialization still emits the
+available report on stdout and exits with an error. This command sends no notes:
+Ready means initialized, not that the musical behavior has been exercised.
+
+The report separates decoded node identity and preflight rejection reasons from
+worker evidence. Preflight admission is conditional on later resource/DSP/script
+validation; even a bypassed unknown processor is rejected because a script could
+enable it. Packet counters and retained voice instances describe this renderer,
+not Falcon equivalence or audible voices. A zero error count with zero rendered
+packets proves no playback. Per-node execution tracing remains unimplemented and
+is explicitly labeled unverified.
+
+The editor's existing Logs and diagnostic export include UVI initialization
+stages and failures. Rack worker snapshots retain current status/counters; worker
+load journals retain decoded graph details even when admission fails. Lua errors
+retain processor/chunk/line and resumed frame when available; DSP errors identify
+processor/node/frame at the instrumented boundaries. Missing source context is not
+invented. Authored print counts and drops are measured separately from errors.
+The JSON/journal contain names and failure messages, not full commercial scripts,
+program XML, samples, reader constants or access keys. Review private names before
+sharing. Journals and exports have their existing retention and truncation limits.
+
+## What is actually established
+
+| Area | Established evidence | Remaining work |
+| --- | --- | --- |
+| UFS/program/sample access | Owned-corpus directory and decode checks; native identities retained | Unsupported protection/layouts remain failures; no universal-bank claim |
+| Lua and MIDI | Authored initialization, timed commands, control edits, transport and rooted note tests | Complete host API, MPE/tuning/expression and every library interaction |
+| Native DSP | Scoped native comparisons and explicitly bounded admitted settings | Unsupported oscillators/routes/modes and broader live/rate fidelity |
+| VWinds controls | Original-source panel with uniform intrinsic 720×480 scaling; 273 widgets/38 images retained | Native fonts/units, advanced displays and full interaction/audio comparison |
+| Rack persistence | Real two-part save/reopen control and exact PCM regression | Host save failures cannot be returned through the framework hook |
+| Playback scheduling | Allocation-free callback transport and bounded packet ownership tests | Sustainable deadlines on user hardware; prior paid-worker misses remain |
+| Compatibility accounting | Parsed/admitted/rejected graph plus measured worker lifecycle/counters | Per-node execution tracing and native end-to-end musical parity |
+
+VWinds is a hybrid sample/modelling product. Its publisher describes harmonic
+alignment, airflow/vibrato and recorded or modelled transitions in the
+[VWinds manual](https://www.acousticsamples.net/index.php?product_id=112&route=product/productmanual).
+The installed program must be examined individually: implementing a generic
+physical model does not establish its compatibility, and decoding its full graph
+does not prove its transition or timbre behavior.
+
+## Checkpoint validation
+
+The combined `uvi,standalone` optimized CI test run passed 934 library checks,
+89 CLI/playback checks and four additional binary/integration checks. Thirty-five
+external-fixture checks were ignored and one screenshot check was excluded.
+The fresh native tests include root Choke ownership, state construction and
+resource precedence, no periodic onSave, real two-part rack save/reopen exact PCM,
+UI scaling bounds, graph admission reporting and DSP/Lua error attribution.
+These checks are scoped regressions, not a count of compatible Falcon features.

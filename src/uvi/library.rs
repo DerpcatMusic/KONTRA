@@ -710,6 +710,38 @@ mod tests {
                 .to_string()
                 .contains("must be replaced")
         );
+        // Initialization loads aliases before the first Renderer cache snapshot.
+        // The captured override paths must also prepare an equivalent fresh restore.
+        let initialized = program::parse_program(r#"<Program><Inserts><Convolver Dry="1" Wet="0"/></Inserts><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="../Samples/authored.wav" BaseNote="60" Interpolation="0"/></Oscillators></Keygroup></Keygroups></Layer></Layers><EventProcessors><ScriptProcessor><script><![CDATA[
+          function onInit()
+            assert(loadSample(Program.layers[1].keygroups[1].oscillators[1],'/Samples/authored.wav').success)
+            assert(loadImpulse(Program.inserts[1],'/Samples/authored.wav').success)
+          end
+        ]]></script></ScriptProcessor></EventProcessors></Program>"#).unwrap();
+        let mut initial = super::super::player::Player::new(
+            &initialized,
+            BTreeMap::new(),
+            make_resources(),
+            48000,
+        )
+        .unwrap();
+        let saved = initial.saved_state().unwrap();
+        let expected = initial.render(&[note(0)], 8).unwrap();
+        assert!(expected.audio.iter().flatten().any(|value| *value != 0.));
+        let mut restored = super::super::player::Player::new_with_state(
+            &initialized,
+            BTreeMap::new(),
+            make_resources(),
+            48000,
+            None,
+            Some(&saved),
+        )
+        .unwrap();
+        assert_eq!(
+            restored.render(&[note(0)], 8).unwrap().audio,
+            expected.audio
+        );
+
         // A global planned source must keep its clock through silent blocks.
         let planned = program::parse_program(r#"<Program><ControlSignalSources><StdRandom Name="Src" Rate="300" Depth=".7" Bipolar="1" TriggerMode="0"/></ControlSignalSources><Layers><Layer><Keygroups><Keygroup><Connections><SignalConnection Source="$Program/Src" Destination="Gain" Ratio="1"/></Connections><Oscillators><SamplePlayer SamplePath="../Samples/authored.wav" BaseNote="60"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
         let mut whole =

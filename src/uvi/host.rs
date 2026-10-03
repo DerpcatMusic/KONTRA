@@ -23,7 +23,7 @@ use super::program::{NodeId, Program};
 use mlua::{
     AnyUserData, Function, Lua, MetaMethod, MultiValue, Table, UserData, UserDataMethods, Value,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, HashMap, HashSet},
@@ -33,7 +33,7 @@ use std::{
 const LIMIT: usize = 65_536;
 const SOURCE_LIMIT: usize = 2 << 20;
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ParameterValue {
     Number(f64),
     Boolean(bool),
@@ -62,7 +62,7 @@ impl ParameterValue {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum ResourceKind {
     Sample,
     Impulse,
@@ -157,9 +157,11 @@ pub struct HostConfig<'a> {
 pub struct Host {
     pub commands: Rc<RefCell<Vec<Command>>>,
     pub parameters: Rc<RefCell<Vec<BTreeMap<String, ParameterValue>>>>,
-    objects: Table,
+    pub(crate) baseline: Vec<BTreeMap<String, ParameterValue>>,
+    pub(crate) loaded_resources: Rc<RefCell<BTreeMap<NodeId, (ResourceKind, String)>>>,
+    pub(crate) objects: Table,
     identities: Rc<RefCell<HashMap<usize, NodeId>>>,
-    types: Rc<Vec<String>>,
+    pub(crate) types: Rc<Vec<String>>,
     modules: Rc<BTreeMap<String, Vec<u8>>>,
     resources: Option<Resources>,
     now: Rc<dyn Fn() -> u64>,
@@ -884,6 +886,27 @@ fn collections() -> [(&'static str, &'static str); 10] {
 }
 
 /// Must be installed before running the instrument's source.
+pub(crate) fn source_parameters(program: &Program) -> Vec<BTreeMap<String, ParameterValue>> {
+    let wrappers = collections().map(|(_, xml)| xml);
+    program
+        .nodes
+        .iter()
+        .map(|node| {
+            let mut values: BTreeMap<_, _> = node
+                .attributes
+                .iter()
+                .map(|(name, value)| (name.clone(), attribute(name, value)))
+                .collect();
+            if !wrappers.contains(&node.kind.as_str()) && node.kind != "Connections" {
+                values
+                    .entry("Bypass".into())
+                    .or_insert(ParameterValue::Boolean(false));
+            }
+            values
+        })
+        .collect()
+}
+
 pub fn install(lua: &Lua, config: HostConfig<'_>) -> mlua::Result<Host> {
     let HostConfig {
         program,
@@ -894,19 +917,12 @@ pub fn install(lua: &Lua, config: HostConfig<'_>) -> mlua::Result<Host> {
         layer_scope,
     } = config;
     lua.globals().set("__API_VERSION__", 23)?;
-    let state = Rc::new(RefCell::new(program.map_or_else(Vec::new, |p| {
-        p.nodes
-            .iter()
-            .map(|n| {
-                n.attributes
-                    .iter()
-                    .map(|(k, v)| (k.clone(), attribute(k, v)))
-                    .collect()
-            })
-            .collect()
-    })));
+    let baseline = program.map_or_else(Vec::new, source_parameters);
+    let state = Rc::new(RefCell::new(baseline.clone()));
     let host = Host {
         parameters: state.clone(),
+        baseline,
+        loaded_resources: Rc::new(RefCell::new(BTreeMap::new())),
         commands: Rc::new(RefCell::new(Vec::new())),
         objects: lua.create_table()?,
         identities: Rc::new(RefCell::new(HashMap::new())),
@@ -1211,6 +1227,50 @@ pub fn restore_widgets_scoped(
     environment: &Table,
 ) -> mlua::Result<usize> {
     restore_widgets_in(lua, program, Some(processor), environment)
+}
+
+pub(crate) fn restore_saved_widgets(
+    lua: &Lua,
+    program: &Program,
+    environment: &Table,
+) -> mlua::Result<usize> {
+    // Unlike embedded preset state, this bundle promises a captured widget set.
+    // Native widgets belong to the main script chunk. Reject absent controls
+    // rather than silently accepting a restore that leaves defaults intact.
+    let mut scalars = HashSet::new();
+    let mut tables = HashSet::new();
+    for widget in environment
+        .get::<Table>("UVI_UI_STATE")?
+        .get::<Table>("order")?
+        .sequence_values::<Table>()
+    {
+        let widget = widget?;
+        let kind = widget.get::<String>("kind")?;
+        if persistent_parameter_widget(&kind) && widget.get::<bool>("persistent")? {
+            let names = if kind == "Table" {
+                &mut tables
+            } else {
+                &mut scalars
+            };
+            names.insert(widget.get::<String>("name")?);
+        }
+    }
+    for node in &program.nodes {
+        let missing = match node.kind.as_str() {
+            "ScriptProcessor" => node
+                .attributes
+                .keys()
+                .any(|name| name != "API_version" && !scalars.contains(name)),
+            "ScriptData" => node.attributes.keys().any(|name| !tables.contains(name)),
+            _ => false,
+        };
+        if missing {
+            return Err(mlua::Error::runtime(
+                "UVI saved widget is unavailable at the native restoration boundary",
+            ));
+        }
+    }
+    restore_widgets_in(lua, program, None, environment)
 }
 
 fn restore_widgets_in(
@@ -1678,7 +1738,7 @@ fn install_modulation(
     Ok(())
 }
 
-fn resource_path(path: &str) -> mlua::Result<()> {
+pub(crate) fn resource_path(path: &str) -> mlua::Result<()> {
     if path.is_empty() || path.len() > 4096 || path.contains('\0') {
         return Err(mlua::Error::runtime("Invalid UVI resource path"));
     }
@@ -1724,6 +1784,16 @@ fn json_data(lua: &Lua, bytes: &[u8]) -> mlua::Result<Value> {
 
 /// Native loadState restores controls/callbacks, then onLoad; it does not rerun onInit.
 fn read_state(lua: &Lua, bytes: &[u8]) -> mlua::Result<(Program, Option<Value>)> {
+    let (program, saved) = parse_state(bytes)?;
+    let saved = saved
+        .map(|value| {
+            super::script::saved_value(lua, &value, 0, &mut 0).map_err(mlua::Error::external)
+        })
+        .transpose()?;
+    Ok((program, saved))
+}
+
+pub(crate) fn parse_state(bytes: &[u8]) -> mlua::Result<(Program, Option<serde_json::Value>)> {
     if bytes.len() > SOURCE_LIMIT {
         return Err(mlua::Error::runtime("UVI state exceeds 2 MiB"));
     }
@@ -1751,12 +1821,19 @@ fn read_state(lua: &Lua, bytes: &[u8]) -> mlua::Result<(Program, Option<Value>)>
         ));
     }
     let processor = processors[0];
-    if processor.descendants().filter(|n| n.is_element()).any(|n| {
-        !matches!(
-            n.tag_name().name(),
-            "ScriptProcessor" | "ScriptData" | "state"
-        )
-    }) {
+    let children = processor
+        .children()
+        .filter(|n| n.is_element())
+        .collect::<Vec<_>>();
+    if children.iter().any(|n| {
+        !matches!(n.tag_name().name(), "ScriptData" | "state")
+            || n.children().any(|child| child.is_element())
+    }) || children
+        .iter()
+        .filter(|n| n.has_tag_name("ScriptData"))
+        .count()
+        > 1
+    {
         return Err(mlua::Error::runtime(
             "UVI script state contains unsupported elements",
         ));
@@ -1770,15 +1847,41 @@ fn read_state(lua: &Lua, bytes: &[u8]) -> mlua::Result<(Program, Option<Value>)>
     }
     let saved = states
         .first()
-        .map(|n| json_data(lua, n.text().unwrap_or("").as_bytes()))
+        .map(|n| {
+            serde_json::from_str::<serde_json::Value>(n.text().unwrap_or(""))
+                .map_err(mlua::Error::external)
+        })
         .transpose()?;
     if saved
         .as_ref()
-        .is_some_and(|s| !matches!(s, Value::Table(_) | Value::Nil))
+        .is_some_and(|s| !s.is_object() && !s.is_array() && !s.is_null())
     {
         return Err(mlua::Error::runtime(
             "UVI script state must decode to a table or nil",
         ));
+    }
+    fn bounded(value: &serde_json::Value, depth: usize, count: &mut usize) -> mlua::Result<()> {
+        *count += 1;
+        if depth > 64 || *count > LIMIT {
+            return Err(mlua::Error::runtime("UVI state exceeds structure limit"));
+        }
+        match value {
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    bounded(value, depth + 1, count)?;
+                }
+            }
+            serde_json::Value::Object(values) => {
+                for value in values.values() {
+                    bounded(value, depth + 1, count)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    if let Some(saved) = &saved {
+        bounded(saved, 0, &mut 0)?;
     }
     let wrapped = format!("<Program>{}</Program>", &source[processor.range()]);
     let program = super::program::parse_program(&wrapped).map_err(mlua::Error::external)?;
@@ -1864,7 +1967,7 @@ fn xml_text(value: &str) -> String {
 }
 
 // Original synthetic native saveState probes establish this document shape.
-fn save_state(environment: &Table) -> mlua::Result<Vec<u8>> {
+pub(crate) fn save_state(environment: &Table) -> mlua::Result<Vec<u8>> {
     let mut scalars = String::new();
     let mut tables = String::new();
     let order = environment
@@ -1944,6 +2047,7 @@ fn install_resources(
         let commands = host.commands.clone();
         let clock = now.clone();
         let parameters = host.parameters.clone();
+        let loaded_resources = host.loaded_resources.clone();
         let ids = host.identities.clone();
         let target_types = target_types.clone();
         let resources = resources.clone();
@@ -2010,6 +2114,9 @@ fn install_resources(
                         }
                         parameters.borrow_mut()[node]
                             .insert("SamplePath".into(), ParameterValue::Text(path.clone()));
+                        loaded_resources
+                            .borrow_mut()
+                            .insert(node, (kind, path.clone()));
                         Ok(())
                     })();
                     let task = task(lua, &task_ids, result.as_ref().err())?;
@@ -2283,7 +2390,12 @@ local function construct(kind,...)
   end
   p.name=p.name or args[1];if p.name==nil and (kind=='Panel' or kind=='Viewport')then p.name=''end
   if type(p.name)~='string' then error('UVI widget requires a name') end
-  p.displayName=p.displayName or p.name; p.tooltip=p.tooltip or p.name
+  if kind=='Button' or kind=='OnOffButton' or kind=='Knob' then
+    p.displayName=p.displayName or ''
+    if p.showLabel==nil then p.showLabel=kind=='Knob' end
+    if kind=='Knob' and p.showValue==nil then p.showValue=true end
+  else p.displayName=p.displayName or p.name end
+  p.tooltip=p.tooltip or p.name
   p.integer=p.integer or false
   if kind=='WaveView' then p.sample=p.sample or '' end
   if kind=='Table' then p.length=p.length or args[2] or 16; p.default=p.default or args[3] or 0; p.min=p.min or args[4] or 0; p.max=p.max or args[5] or 1; p.integer=p.integer or args[6] or false; p.values={}; if p.length<1 or p.length>65536 or p.length%1~=0 then error('Invalid UVI Table length') end; for i=1,p.length do p.values[i]=p.default end
@@ -2359,6 +2471,33 @@ mod tests {
         environment.raw_set("_G", environment.clone()).unwrap();
         install_ui(lua, &environment).unwrap();
         environment
+    }
+
+    #[test]
+    fn native_button_and_knob_caption_defaults_preserve_empty_strings() {
+        let lua = vm();
+        let environment = ui_environment(&lua);
+        lua.load(
+            r#"
+          button=Button('button');toggle=OnOffButton('toggle',false)
+          knob=Knob{'knob',0.3,0,1};knob:setStripImage('strip.png',2)
+          explicit=Button{name='explicit',displayName='Visible',showLabel=true,text=''}
+        "#,
+        )
+        .set_environment(environment.clone())
+        .exec()
+        .unwrap();
+        let snapshot = snapshot_ui(0, &environment).unwrap();
+        for widget in &snapshot.widgets[..2] {
+            assert_eq!(widget.display_name.as_deref(), Some(""));
+            assert_eq!(widget.style.show_label, Some(false));
+        }
+        assert_eq!(snapshot.widgets[2].display_name.as_deref(), Some(""));
+        assert_eq!(snapshot.widgets[2].style.show_label, Some(true));
+        assert_eq!(snapshot.widgets[2].style.show_value, Some(true));
+        assert_eq!(snapshot.widgets[3].display_name.as_deref(), Some("Visible"));
+        assert_eq!(snapshot.widgets[3].style.show_label, Some(true));
+        assert_eq!(snapshot.widgets[3].style.text.as_deref(), Some(""));
     }
 
     #[test]

@@ -19,8 +19,8 @@ use crate::{
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
@@ -36,6 +36,7 @@ pub(super) enum Error {
     EndpointTaken,
     Bridge(BridgeError),
     Slot(super::uvi::Error),
+    State,
 }
 
 /// Move through ready/audio/retired ownership; never destroy in process/reset.
@@ -96,6 +97,7 @@ struct Control {
     retired: Arc<AtomicBool>,
     exported: bool,
     cancelled: bool,
+    state_pending: Option<(u64, Stamp)>,
 }
 impl Control {
     fn removable(&self) -> bool {
@@ -122,6 +124,32 @@ impl Registry {
         max_host_frames: usize,
         worker_lead_packets: usize,
     ) -> Result<(), Error> {
+        self.prepare_with_state(
+            config,
+            source,
+            epoch,
+            generation,
+            part_generation,
+            slot,
+            max_host_frames,
+            worker_lead_packets,
+            &[],
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_with_state(
+        &mut self,
+        config: StartConfig,
+        source: UviSource,
+        epoch: u64,
+        generation: u64,
+        part_generation: u64,
+        slot: usize,
+        max_host_frames: usize,
+        worker_lead_packets: usize,
+        saved: &[u8],
+    ) -> Result<(), Error> {
         if epoch == 0
             || generation == 0
             || config.bank != source.bank
@@ -135,8 +163,45 @@ impl Registry {
             return Err(Error::DuplicateActivation);
         }
         let rate = config.sample_rate;
-        let assets = UiAssets::open(&config).ok();
-        let worker = Worker::start_hosted(config, epoch, generation).map_err(|_| Error::Start)?;
+        let mut trace = crate::diagnostics::LoadTrace::new(&source.bank, 0, Some(slot));
+        trace.detail("backend", "uvi");
+        trace.detail("member", source.member.clone());
+        trace.detail("epoch", epoch);
+        trace.detail("generation", generation);
+        trace.stage("uvi_controller_setup");
+        let assets = match UiAssets::open(&config) {
+            Ok(assets) => Some(assets),
+            Err(error) => {
+                trace.issue(
+                    "ui",
+                    "uvi_artwork_authority_unavailable",
+                    format!("{error:#}"),
+                );
+                None
+            }
+        };
+        let worker = if saved.is_empty() {
+            Worker::start_hosted(config, epoch, generation)
+        } else {
+            let state = match crate::uvi::state::SavedState::decode(saved) {
+                Ok(state) => state,
+                Err(error) => {
+                    trace.fail(format!("UVI saved state: {error:#}"));
+                    trace.finish("failed");
+                    return Err(Error::State);
+                }
+            };
+            Worker::start_hosted_with_state(config, epoch, generation, state)
+        };
+        let worker = match worker {
+            Ok(worker) => worker,
+            Err(error) => {
+                trace.fail(format!("Starting UVI worker: {error:#}"));
+                trace.finish("failed");
+                return Err(Error::Start);
+            }
+        };
+        trace.finish("worker_started");
         let stamp = Stamp {
             epoch,
             generation,
@@ -156,6 +221,7 @@ impl Registry {
                 retired: Arc::new(AtomicBool::new(false)),
                 exported: false,
                 cancelled: false,
+                state_pending: None,
             },
         );
         Ok(())
@@ -212,6 +278,7 @@ impl Registry {
                 retired: Arc::new(AtomicBool::new(false)),
                 exported: false,
                 cancelled: false,
+                state_pending: None,
             },
         );
         Ok(())
@@ -244,6 +311,28 @@ impl Registry {
             })
     }
 
+    /// Control/editor thread only. Includes measured packet counters, never a
+    /// claim that every decoded node has executed or matches Falcon.
+    pub fn diagnostic_report(&self) -> serde_json::Value {
+        let mut controls: Vec<_> = self.controls.iter().collect();
+        controls.sort_by_key(|(identity, _)| **identity);
+        serde_json::json!(
+            controls
+                .into_iter()
+                .map(|(&(epoch, generation), control)| {
+                    serde_json::json!({
+                        "epoch":epoch, "generation":generation, "slot":control.slot,
+                        "source":control.source, "sample_rate":control.rate,
+                        "max_host_frames":control.maximum, "lead_packets":control.lead,
+                        "endpoint_exported":control.exported, "cancelled":control.cancelled,
+                        "endpoint_retired":control.retired.load(Ordering::Acquire),
+                        "worker":control.worker.diagnostic_report(),
+                    })
+                })
+                .collect::<Vec<_>>()
+        )
+    }
+
     pub fn status(&self, epoch: u64, generation: u64) -> Option<Status> {
         self.controls
             .get(&(epoch, generation))
@@ -274,7 +363,7 @@ impl Registry {
             .ok_or(Error::EndpointTaken)?;
         let bridge = Bridge::new(port, epoch, generation, control.maximum, control.lead)
             .map_err(Error::Bridge)?;
-        let slot = Slot::new(bridge, epoch, generation).map_err(Error::Slot)?;
+        let slot = Slot::new(bridge, epoch, generation, control.rate).map_err(Error::Slot)?;
         let audio = Audio {
             slot: Some(Box::new(slot)),
             stamp: Stamp {
@@ -317,6 +406,54 @@ impl Registry {
             return None;
         }
         control.mailbox.poll(&control.worker)
+    }
+
+    /// Serialized control lane only. Explicit saves replace an older pending
+    /// request; its reply cannot overwrite the newer state.
+    pub fn request_state(&mut self, stamp: Stamp, force: bool) -> Result<bool, Error> {
+        let control = self
+            .controls
+            .get_mut(&(stamp.epoch, stamp.generation))
+            .ok_or(Error::MissingActivation)?;
+        if control.cancelled || !control.exported || control.retired.load(Ordering::Acquire) {
+            return Err(Error::Cancelled);
+        }
+        if !force && control.state_pending.is_some() {
+            return Ok(false);
+        }
+        let request = control
+            .worker
+            .request_state_snapshot(stamp)
+            .map_err(|_| Error::State)?;
+        control.state_pending = Some((request, stamp));
+        Ok(true)
+    }
+
+    pub fn poll_state(
+        &mut self,
+        epoch: u64,
+        generation: u64,
+    ) -> Option<Result<(Stamp, Vec<u8>), Error>> {
+        let control = self.controls.get_mut(&(epoch, generation))?;
+        if control.cancelled {
+            return None;
+        }
+        let reply = control.worker.poll_state_snapshot()?;
+        let (request, minimum) = control.state_pending?;
+        if reply.request != request
+            || reply.stamp.epoch != epoch
+            || reply.stamp.generation != generation
+            || reply.stamp.frame < minimum.frame
+        {
+            return None;
+        }
+        control.state_pending = None;
+        Some(reply.snapshot.map_err(|_| Error::State).and_then(|state| {
+            state
+                .encode()
+                .map(|bytes| (reply.stamp, bytes))
+                .map_err(|_| Error::State)
+        }))
     }
 
     /// Off audio. False means exported endpoints still need their ordinary
@@ -464,5 +601,111 @@ mod tests {
         assert!(receipt.load(Ordering::Acquire));
         assert!(weak.upgrade().is_none());
         std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn native_state_mailbox_roundtrips_controls_and_original_parameter_without_ui_replay() {
+        use crate::uvi::host::{UiEdit, UiEditValue, UiModifiers, UiValue};
+        let (mut config, _) = crate::uvi::worker::tests::authored_bank_with_script(
+            "n=Knob('n',0.25,0,1);function n:changed()Program:setParameter('Gain',self.value)end;function onSave()return {saved=true}end;function onLoad(s)assert(s.saved and Program:getParameter('Gain')==0.75)end",
+        );
+        config.expected_bank_uuid = Some([0; 16]);
+        let restored_config = StartConfig {
+            bank: config.bank.clone(),
+            expected_bank_uuid: config.expected_bank_uuid,
+            member: config.member.clone(),
+            metadata_namespace: config.metadata_namespace.clone(),
+            program_namespace: config.program_namespace.clone(),
+            content_key: config.content_key,
+            content_bank: config.content_bank.clone(),
+            sample_rate: config.sample_rate,
+        };
+        let source = UviSource {
+            bank: config.bank.clone(),
+            bank_uuid: [0; 16],
+            member: config.member.clone(),
+        };
+        let mut registry = Registry::default();
+        registry
+            .prepare(config, source.clone(), 10, 20, 1, 0, 256, 1)
+            .unwrap();
+        registry.controls[&(10, 20)]
+            .worker
+            .wait_ready(Duration::from_secs(3))
+            .unwrap();
+        let processor = registry.controls[&(10, 20)].worker.ui_processors()[0];
+        let mut audio = registry.take_ready(10, 20).unwrap().unwrap();
+        audio
+            .slot_mut()
+            .push_ui(UiEdit {
+                processor,
+                widget: 1,
+                value: UiEditValue::Number(0.75),
+                modifiers: UiModifiers::default(),
+            })
+            .unwrap();
+        let mut left = [0.; 256];
+        let mut right = [0.; 256];
+        audio
+            .slot_mut()
+            .process_mode(&mut left, &mut right, true)
+            .unwrap();
+        let stamp = Stamp {
+            epoch: 10,
+            generation: 20,
+            frame: 256,
+        };
+        assert!(registry.request_state(stamp, false).unwrap());
+        assert!(
+            !registry.request_state(stamp, false).unwrap(),
+            "pending requests coalesce"
+        );
+        assert!(
+            registry.request_state(stamp, true).unwrap(),
+            "explicit save supersedes pending request"
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let bytes = loop {
+            if let Some(reply) = registry.poll_state(10, 20) {
+                let (actual, bytes) = reply.unwrap();
+                assert!(actual.frame >= 256);
+                break bytes;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        registry.cancel(10, 20);
+        drop(audio);
+        registry.poll_retired();
+        registry
+            .prepare_with_state(
+                restored_config,
+                source.clone(),
+                10,
+                21,
+                2,
+                0,
+                256,
+                1,
+                &bytes,
+            )
+            .unwrap();
+        registry.controls[&(10, 21)]
+            .worker
+            .wait_ready(Duration::from_secs(3))
+            .unwrap();
+        let worker = &registry.controls[&(10, 21)].worker;
+        let request = worker.request_ui_snapshot(processor).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(reply) = worker.poll_ui_snapshot() {
+                assert_eq!(reply.request, request);
+                assert!(reply.snapshot.unwrap().widgets[0].value == Some(UiValue::Number(0.75)));
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        registry.cancel(10, 21);
+        std::fs::remove_file(source.bank).unwrap();
     }
 }

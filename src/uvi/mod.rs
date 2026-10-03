@@ -6,8 +6,10 @@ pub use cli::run as cli;
 
 pub mod crypto;
 pub mod bridge;
+pub mod diagnostics;
 pub mod dsp;
 pub mod effects;
+pub mod exciter;
 pub mod filter;
 pub mod generator;
 pub mod host;
@@ -22,6 +24,7 @@ pub mod resampling;
 pub mod sample;
 pub mod script;
 pub mod sparkverb;
+pub mod state;
 pub mod storage;
 pub mod time_effects;
 pub mod ufs;
@@ -345,6 +348,9 @@ pub fn render(
         while let Some(command) = commands.get(next).filter(|c| c.frame <= at) {
             use script::Action;
             match &command.action {
+                Action::ChokeRoot => {
+                    anyhow::bail!("Hosted root choking requires the native Program renderer")
+                }
                 Action::Start(note) => {
                     if let Some(index) = mapping.select(note, &mut cycle) {
                         let mut groups = GroupMask::none();

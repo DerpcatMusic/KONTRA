@@ -751,6 +751,7 @@ fn library_of(shelf: &crate::library::Shelf, path: &Path) -> String {
 /// Instrument state belongs to its preset; rack routing and player settings stay.
 fn replace_part(part: &mut Part, path: String) {
     part.uvi = None;
+    part.uvi_state.clear();
     part.snapshot.clear();
     part.path = path;
     part.program = 0;
@@ -1065,6 +1066,22 @@ fn build(
             // Parts added, removed or rerouted are routed at once.
             p.shared.reroute(&mut selection);
             let mut current = write(&p.selection);
+            #[cfg(feature = "uvi")]
+            let before = {
+                // Native persistence can publish during a UI frame. Keep those
+                // bytes when applying independent mixer/rack edits from that frame.
+                let mut before = before.clone();
+                for (slot, old) in before.parts.iter_mut().enumerate() {
+                    if let Some(now) = current.parts.get(slot).filter(|now| now.uvi == old.uvi) {
+                        if let Some(edited) = selection.parts.get_mut(slot)
+                            .filter(|edited| edited.uvi == old.uvi && edited.uvi_state == old.uvi_state) {
+                            edited.uvi_state = now.uvi_state.clone();
+                        }
+                        old.uvi_state = now.uvi_state.clone();
+                    }
+                }
+                before
+            };
             if *current == before {
                 *current = selection;
                 p.shared.sync_overrides(&current);

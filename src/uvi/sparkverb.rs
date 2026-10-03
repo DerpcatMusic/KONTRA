@@ -17,7 +17,7 @@ use super::{dsp::Frame, host::ParameterValue, program::ProgramNode};
 use anyhow::{Context, Result, bail, ensure};
 use std::collections::BTreeMap;
 
-pub const FIDELITY_DIAGNOSTIC: &str = "SparkVerb currently supports measured 48-kHz delay layouts at Qualities2/3/4 and Shapes0/0.25/0.5/0.75/1; moving Mode0, other Shape values and uncertain prime-delay boundaries, mono insert promotion, live control smoothing and bypass transitions remain unsupported or native-unverified; measured Mode1/2 modulation tails at native 256/64-frame host blocks agree within 5e-6; smaller or unaligned native host-span behavior is unimplemented and native float parity is unverified";
+pub const FIDELITY_DIAGNOSTIC: &str = "SparkVerb currently supports measured 48-kHz delay layouts at Qualities2/3/4 and Shapes0/0.25/0.5/0.75/1 plus individually verified frozen RoomSize/Shape tuples; moving Mode0, other unmeasured Shape values and uncertain prime-delay boundaries, mono insert promotion, live control smoothing and bypass transitions remain unsupported or native-unverified; measured Mode1/2 modulation tails at native 256/64-frame host blocks agree within 5e-6; smaller or unaligned native host-span behavior is unimplemented and native float parity is unverified";
 
 // name, default, minimum, maximum, integer. Native 4.0.9 defaults MixMode to 0.
 const PARAMETERS: &[(&str, f64, f64, f64, bool)] = &[
@@ -81,6 +81,141 @@ fn delays(p: &Parameters) -> Result<Vec<usize>> {
         p["ModDepth"] == 0. || p["Mode"] != 0.,
         "SparkVerb moving Mode0 native rounding is not implemented"
     );
+    // Individually measured 48-kHz tuples. This admits only exact f32
+    // settings whose complete authored native tails pass, not Shape interpolation.
+    const FROZEN_LAYOUTS: &[(u8, f32, f32, &[usize])] = &[
+        (
+            4,
+            4.26915_f32,
+            0.648_f32,
+            &[
+                179, 211, 233, 269, 307, 349, 401, 461, 541, 601, 691, 797, 907, 1039, 1193, 1361,
+            ],
+        ),
+        (
+            4,
+            18.956425_f32,
+            0.50400007_f32,
+            &[
+                967, 1087, 1213, 1361, 1523, 1709, 1931, 2153, 2423, 2719, 3061, 3433, 3847, 4327,
+                4861, 5471,
+            ],
+        ),
+        (2, 23.201225_f32, 0.719495_f32, &[1511, 2251, 3347, 4987]),
+        (
+            4,
+            22.863468_f32,
+            0.0_f32,
+            &[
+                2143, 2251, 2351, 2467, 2579, 2707, 2833, 2963, 3109, 3251, 3407, 3571, 3733, 3907,
+                4093, 4289,
+            ],
+        ),
+        (
+            4,
+            37.600845_f32,
+            0.35206902_f32,
+            &[
+                2311, 2543, 2797, 3079, 3389, 3719, 4091, 4493, 4943, 5437, 5981, 6571, 7229, 7949,
+                8741, 9613,
+            ],
+        ),
+        (2, 10.444465_f32, 0.0_f32, &[907, 1123, 1409, 1777]),
+        (
+            4,
+            5.09757_f32,
+            0.596_f32,
+            &[
+                227, 263, 293, 337, 379, 433, 491, 563, 641, 727, 823, 937, 1069, 1213, 1381, 1567,
+            ],
+        ),
+        (
+            3,
+            6.70492_f32,
+            0.786765_f32,
+            &[331, 419, 541, 683, 883, 1151, 1471, 1901],
+        ),
+        (
+            3,
+            15.7022_f32,
+            0.548787_f32,
+            &[919, 1151, 1399, 1721, 2111, 2609, 3203, 3943],
+        ),
+        (
+            4,
+            20.0_f32,
+            0.4903125_f32,
+            &[
+                1031, 1151, 1291, 1447, 1621, 1823, 2039, 2287, 2579, 2879, 3217, 3607, 4049, 4547,
+                5077, 5693,
+            ],
+        ),
+        (2, 14.7254_f32, 0.719495_f32, &[967, 1427, 2129, 3163]),
+        (
+            3,
+            28.2865_f32,
+            0.784665_f32,
+            &[1361, 1741, 2237, 2887, 3727, 4801, 6197, 7993],
+        ),
+        (
+            4,
+            19.878502_f32,
+            0.6176_f32,
+            &[
+                859, 983, 1123, 1277, 1459, 1663, 1901, 2161, 2467, 2819, 3217, 3671, 4201, 4783,
+                5441, 6211,
+            ],
+        ),
+        (
+            3,
+            19.2033_f32,
+            0.428787_f32,
+            &[1249, 1493, 1801, 2161, 2609, 3119, 3761, 4507],
+        ),
+        (
+            4,
+            30.000002_f32,
+            0.42_f32,
+            &[
+                1693, 1877, 2081, 2311, 2579, 2851, 3163, 3511, 3907, 4327, 4799, 5333, 5923, 6569,
+                7297, 8093,
+            ],
+        ),
+        (
+            4,
+            15.5234_f32,
+            0.336069_f32,
+            &[
+                977, 1069, 1181, 1289, 1423, 1549, 1699, 1867, 2053, 2251, 2467, 2707, 2969, 3253,
+                3571, 3917,
+            ],
+        ),
+        (
+            4,
+            30.000002_f32,
+            0.74399996_f32,
+            &[
+                1087, 1277, 1471, 1709, 1979, 2293, 2663, 3109, 3593, 4177, 4861, 5623, 6521, 7573,
+                8803, 10211,
+            ],
+        ),
+        (
+            4,
+            20.717_f32,
+            0.816069_f32,
+            &[
+                677, 797, 937, 1091, 1279, 1511, 1777, 2069, 2423, 2843, 3329, 3907, 4583, 5381,
+                6299, 7393,
+            ],
+        ),
+    ];
+    if let Some((_, _, _, vector)) = FROZEN_LAYOUTS.iter().find(|(q, room, shape, _)| {
+        *q == p["Quality"] as u8
+            && f64::from(*room) == p["RoomSize"]
+            && f64::from(*shape) == p["Shape"]
+    }) {
+        return Ok(vector.to_vec());
+    }
     // Preserve individually verified native layouts, including their boundaries.
     let measured: Option<&[usize]> = match (p["Quality"] as u8, p["RoomSize"], p["Shape"]) {
         (2, 20., 0.25) => Some(&[1559, 2081, 2777, 3709]),
@@ -562,6 +697,35 @@ mod tests {
                 .collect(),
             text: String::new(),
         }
+    }
+    #[test]
+    fn uvi_sparkverb_frozen_layouts_match_authored_native_taps() {
+        // Independent PCM16 impulse measurements, centered .125 per side.
+        for (attrs, taps) in [
+            (
+                [
+                    ("Quality", 4.),
+                    ("RoomSize", 20.716999),
+                    ("Shape", 0.81606901),
+                ],
+                [(677, 0.035866353660821915), (1354, 0.008553548716008663)],
+            ),
+            (
+                [("Quality", 4.), ("RoomSize", 22.863468), ("Shape", 0.)],
+                [(2143, 0.03377707675099373), (4286, 0.0073777479119598866)],
+            ),
+        ] {
+            let mut fx = SparkVerb::new(&node(&attrs), 2, 48000.).unwrap();
+            let mut input = vec![[0.; 12]; 8000];
+            input[0][..2].fill(0.125);
+            fx.process(&mut input).unwrap();
+            assert!(input[..taps[0].0].iter().all(|f| f[0] == 0.));
+            for (frame, value) in taps {
+                assert!((f64::from(input[frame][0]) - value).abs() < 2e-8);
+            }
+        }
+        let attrs = [("Quality", 4.), ("RoomSize", 20.716999), ("Shape", 0.81607)];
+        assert!(SparkVerb::new(&node(&attrs), 2, 48000.).is_err());
     }
     #[test]
     fn uvi_sparkverb_matches_native_static_network_and_output() {

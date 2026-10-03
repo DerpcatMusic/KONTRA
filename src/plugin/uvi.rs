@@ -41,6 +41,7 @@ struct Owner {
     key: u8,
     held: bool,
     completed: bool,
+    choked: bool,
 }
 
 struct Notes {
@@ -90,6 +91,7 @@ impl Notes {
             key,
             held: true,
             completed: false,
+            choked: false,
         });
         Ok(root)
     }
@@ -203,11 +205,19 @@ pub(crate) struct Slot {
     discarded_packets: u64,
     host_tempo: f64,
     host_beat: f64,
+    host_playing: bool,
+    host_transport_frame: Option<u64>,
+    sample_rate: u32,
 }
 
 impl Slot {
-    pub(crate) fn new(bridge: Bridge, epoch: u64, generation: u64) -> Result<Self, Error> {
-        if epoch == 0 || generation == 0 {
+    pub(crate) fn new(
+        bridge: Bridge,
+        epoch: u64,
+        generation: u64,
+        sample_rate: u32,
+    ) -> Result<Self, Error> {
+        if epoch == 0 || generation == 0 || !(8000..=192000).contains(&sample_rate) {
             return Err(Error::InvalidInput);
         }
         let frame = bridge.frame();
@@ -221,6 +231,9 @@ impl Slot {
             discarded_packets: 0,
             host_tempo: 120.,
             host_beat: 0.,
+            host_playing: false,
+            host_transport_frame: None,
+            sample_rate,
         })
     }
     pub(crate) fn frame(&self) -> u64 {
@@ -232,7 +245,9 @@ impl Slot {
     pub(crate) fn error(&self) -> Option<Error> {
         self.error
     }
-    pub(crate) fn active_voices(&self) -> u64 { self.active_voices }
+    pub(crate) fn active_voices(&self) -> u64 {
+        self.active_voices
+    }
     pub(crate) fn underruns(&self) -> u64 {
         self.underruns
     }
@@ -326,6 +341,60 @@ impl Slot {
         }
         Ok(())
     }
+    fn choke_matching(&mut self, matches: impl Fn(Owner) -> bool) -> Result<(), Error> {
+        let count = self
+            .notes
+            .owners
+            .iter()
+            .flatten()
+            .filter(|owner| !owner.completed && !owner.choked && matches(**owner))
+            .count();
+        // Admit the entire bounded fanout before changing gates or queueing a prefix.
+        if self.error.is_none() && count > self.bridge.remaining_hosted_capacity() {
+            for owner in self
+                .notes
+                .owners
+                .iter_mut()
+                .flatten()
+                .filter(|owner| matches(**owner))
+            {
+                owner.held = false;
+            }
+            return Err(self.fail(Error::Bridge(BridgeError::Worker(
+                PacketError::TooManyInputs,
+            ))));
+        }
+        for owner in self
+            .notes
+            .owners
+            .iter_mut()
+            .flatten()
+            .filter(|owner| matches(**owner))
+        {
+            owner.held = false;
+        }
+        for owner in self
+            .notes
+            .owners
+            .iter_mut()
+            .flatten()
+            .filter(|owner| matches(**owner))
+        {
+            if self.error.is_none() && !owner.completed && !owner.choked {
+                if let Err(error) = self.bridge.push_hosted(HostedInput::Choke {
+                    root: owner.root,
+                    frame: self.frame,
+                }) {
+                    return Err(self.fail(Error::Bridge(error)));
+                }
+                owner.choked = true;
+            }
+        }
+        if self.error.is_some() {
+            self.notes.abort();
+        }
+        Ok(())
+    }
     /// `reached` comes from articulate::reaches using the accepted controls
     /// and Router. Key-up resolves stored original targets even after rerouting.
     /// Feed at the current segment boundary, before Kontakt articulation.
@@ -342,20 +411,9 @@ impl Slot {
             }
             In::HostOff(pattern) => return self.release_pattern(pattern),
             In::HostChoke(pattern) => {
-                if self
-                    .notes
-                    .owners
-                    .iter()
-                    .flatten()
-                    .any(|owner| owner.host.is_some_and(|note| pattern.matches(note)))
-                {
-                    self.notes.release_matching(
-                        |owner| owner.host.is_some_and(|note| pattern.matches(note)),
-                        |_| Ok(()),
-                    )?;
-                    return Err(self.fail(Error::UnsupportedChoke));
-                }
-                return Ok(());
+                return self.choke_matching(|owner| {
+                    owner.host.is_some_and(|note| pattern.matches(note))
+                });
             }
             In::NoteOff(channel, key) => {
                 if channel >= 16 || key >= 128 {
@@ -402,6 +460,8 @@ impl Slot {
                             return Err(Error::InvalidInput);
                         }
                         if controller == 120 {
+                            // Detached onInit/UI voices have no physical-port owner.
+                            // Keep channel panic gated until their native stop law is proven.
                             self.notes.stop_channel(port, channel);
                             return Err(self.fail(Error::UnsupportedChoke));
                         }
@@ -491,12 +551,47 @@ impl Slot {
             },
         })
     }
-    /// Format wrappers use zero/nonfinite timing when the host supplies none.
-    /// Keep the last valid timing while still delivering play/stop transitions.
-    pub(crate) fn set_host_transport(&mut self, playing: bool, beat: f64, tempo: f64) -> Result<(), Error> {
-        if (1. ..=1000.).contains(&tempo) { self.host_tempo = tempo; }
-        if beat.is_finite() { self.host_beat = beat; }
-        self.push_event(InputKind::Transport { playing, beat: self.host_beat, tempo: self.host_tempo })
+    /// Synchronize only host timing discontinuities. Session advances an accepted
+    /// snapshot at the activation sample rate between callbacks.
+    pub(crate) fn set_host_transport(
+        &mut self,
+        playing: bool,
+        beat: f64,
+        tempo: f64,
+    ) -> Result<(), Error> {
+        let elapsed = self.frame - self.host_transport_frame.unwrap_or(self.frame);
+        let predicted = self.host_beat
+            + if self.host_playing {
+                elapsed as f64 / f64::from(self.sample_rate) * self.host_tempo / 60.
+            } else {
+                0.
+            };
+        let tempo = if (1. ..=1000.).contains(&tempo) {
+            tempo
+        } else {
+            self.host_tempo
+        };
+        let beat = if beat.is_finite() { beat } else { predicted };
+        // Host beat calculations can reassociate the same sample-rate arithmetic.
+        // Permit only floating rounding, not a sample-sized seek/deviation.
+        let rounding = 8. * f64::EPSILON * predicted.abs().max(beat.abs()).max(1.);
+        if self.host_transport_frame.is_some()
+            && playing == self.host_playing
+            && tempo == self.host_tempo
+            && (beat - predicted).abs() <= rounding
+        {
+            return Ok(());
+        }
+        self.push_event(InputKind::Transport {
+            playing,
+            beat,
+            tempo,
+        })?;
+        self.host_playing = playing;
+        self.host_beat = beat;
+        self.host_tempo = tempo;
+        self.host_transport_frame = Some(self.frame);
+        Ok(())
     }
     pub(crate) fn push_event(&mut self, kind: InputKind) -> Result<(), Error> {
         let input = Input {
@@ -564,7 +659,11 @@ impl Slot {
             left.fill(0.);
             right.fill(0.);
         }
-        self.active_voices = if self.error.is_none() { self.bridge.active_voices() } else { 0 };
+        self.active_voices = if self.error.is_none() {
+            self.bridge.active_voices()
+        } else {
+            0
+        };
         self.frame = next;
         result
     }
@@ -613,6 +712,248 @@ mod tests {
             id,
             clap: true,
         }
+    }
+    fn authored_slot() -> (crate::uvi::worker::Worker, Slot, std::path::PathBuf, usize) {
+        let (config, source) = crate::uvi::worker::tests::authored_bank_with_script(
+            r#"
+            knob=Knob{name='persist',value=.25}
+            function onNote(e) postEvent(e) end
+            function onRelease(e) postEvent(e) end
+        "#,
+        );
+        let path = config.bank.clone();
+        let program = crate::uvi::program::parse_program(&source).unwrap();
+        let processor = program
+            .nodes
+            .iter()
+            .position(|n| n.kind == "ScriptProcessor")
+            .unwrap();
+        let mut worker = crate::uvi::worker::Worker::start_hosted(config, 7, 9).unwrap();
+        worker
+            .wait_ready(std::time::Duration::from_secs(5))
+            .unwrap();
+        let bridge = Bridge::new(worker.take_audio_port().unwrap(), 7, 9, 256, 1).unwrap();
+        (
+            worker,
+            Slot::new(bridge, 7, 9, 48000).unwrap(),
+            path,
+            processor,
+        )
+    }
+    fn render_slot(slot: &mut Slot, blocks: usize) -> bool {
+        let mut audible = false;
+        for _ in 0..blocks {
+            let mut left = [0.; 256];
+            let mut right = [0.; 256];
+            slot.process_mode(&mut left, &mut right, true).unwrap();
+            audible |= left.iter().chain(&right).any(|v| v.abs() > 1e-5);
+        }
+        audible
+    }
+    #[test]
+    fn actual_worker_choke_keeps_activation_ui_and_consumed_end_fence() {
+        let (mut worker, mut slot, path, processor) = authored_slot();
+        slot.feed(In::HostOn(note(10), 100, 0.), 0, true, false)
+            .unwrap();
+        slot.feed(In::HostOn(note(11), 100, 0.), 0, true, false)
+            .unwrap();
+        // Root A's physical gate is released, but sustain retains its DSP tail.
+        slot.feed(In::Cc(2, 64, 127), 0, true, false).unwrap();
+        slot.feed(In::HostOff(pattern(10)), 0, false, false)
+            .unwrap();
+        assert!(render_slot(&mut slot, 4));
+        assert_eq!(
+            super::super::tests::allocations(|| slot
+                .feed(In::HostChoke(pattern(10)), 0, false, false)
+                .unwrap()),
+            0
+        );
+        let room = slot.bridge.remaining_hosted_capacity();
+        assert_eq!(
+            super::super::tests::allocations(|| slot
+                .feed(In::HostChoke(pattern(10)), 0, false, false)
+                .unwrap()),
+            0
+        );
+        assert_eq!(
+            slot.bridge.remaining_hosted_capacity(),
+            room,
+            "duplicate stop consumed packet room"
+        );
+        assert!(
+            !slot
+                .notes
+                .owners
+                .iter()
+                .flatten()
+                .find(|o| o.host == Some(note(10)))
+                .unwrap()
+                .held
+        );
+        assert!(
+            slot.host_note_pending(note(10)),
+            "admission is not a fabricated completion"
+        );
+        assert!(render_slot(&mut slot, 3));
+        let stop = slot.frame();
+        slot.collect_completions(stop - 256).unwrap();
+        assert!(
+            slot.host_note_pending(note(10)),
+            "prefetched End crossed consumed PCM fence"
+        );
+        render_slot(&mut slot, 1);
+        slot.collect_completions(slot.frame()).unwrap();
+        assert!(!slot.host_note_pending(note(10)) && slot.host_note_pending(note(11)));
+        assert!(
+            slot.has_host_note(note(10)),
+            "core End backpressure must retain identity"
+        );
+        slot.retire_host_note(note(10));
+        slot.feed(In::HostOn(note(12), 100, 0.), 0, true, false)
+            .unwrap();
+        assert!(render_slot(&mut slot, 3));
+        assert!(slot.error().is_none());
+        let request = worker.request_ui_snapshot(processor).unwrap();
+        let started = std::time::Instant::now();
+        let snapshot = loop {
+            if let Some(reply) = worker.poll_ui_snapshot() {
+                assert_eq!(reply.request, request);
+                break reply.snapshot.unwrap();
+            }
+            assert!(started.elapsed() < std::time::Duration::from_secs(5));
+            std::thread::yield_now();
+        };
+        assert!(matches!(
+            snapshot.widgets[0].value,
+            Some(crate::uvi::host::UiValue::Number(0.25))
+        ));
+        drop(slot);
+        worker.stop();
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn cc120_stays_gated_with_detached_voices_and_released_owned_tails() {
+        let (config, _) = crate::uvi::worker::tests::authored_bank_with_script(
+            "function onInit() playNote(60,100,-1) end function onNote(e)postEvent(e)end function onRelease(e)postEvent(e)end",
+        );
+        let path = config.bank.clone();
+        let mut worker = crate::uvi::worker::Worker::start_hosted(config, 7, 9).unwrap();
+        worker
+            .wait_ready(std::time::Duration::from_secs(5))
+            .unwrap();
+        let bridge = Bridge::new(worker.take_audio_port().unwrap(), 7, 9, 256, 1).unwrap();
+        let mut slot = Slot::new(bridge, 7, 9, 48000).unwrap();
+        slot.feed(In::HostOn(note(10), 100, 0.), 0, true, false)
+            .unwrap();
+        let other = HostNote {
+            port: 1,
+            ..note(11)
+        };
+        slot.feed(In::HostOn(other, 100, 0.), 1, true, false)
+            .unwrap();
+        slot.feed(In::Cc(2, 64, 127), 0, true, false).unwrap();
+        slot.feed(In::HostOff(pattern(10)), 0, false, false)
+            .unwrap();
+        assert!(render_slot(&mut slot, 4));
+        let room = slot.bridge.remaining_hosted_capacity();
+        assert_eq!(
+            super::super::tests::allocations(|| assert!(matches!(
+                slot.feed(In::Cc(2, 120, 0), 0, true, false),
+                Err(Error::UnsupportedChoke)
+            ))),
+            0
+        );
+        assert_eq!(slot.bridge.remaining_hosted_capacity(), room);
+        assert_eq!(slot.error(), Some(Error::UnsupportedChoke));
+        assert!(slot.bridge.failure().is_some());
+        assert!(!slot.host_note_pending(note(10)) && slot.host_note_pending(other));
+        assert!(
+            slot.has_host_note(note(10)),
+            "core End backpressure retains identity"
+        );
+        drop(slot);
+        worker.stop();
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn worker_stop_during_choke_releases_every_matched_gate_and_keeps_other_held() {
+        let (mut worker, mut slot, path, _) = authored_slot();
+        slot.feed(In::HostOn(note(10), 100, 0.), 0, true, false)
+            .unwrap();
+        slot.feed(In::HostOn(note(11), 100, 0.), 0, true, false)
+            .unwrap();
+        let other = HostNote {
+            channel: 3,
+            ..note(12)
+        };
+        slot.feed(In::HostOn(other, 100, 0.), 0, true, false)
+            .unwrap();
+        worker.stop();
+        assert_eq!(
+            super::super::tests::allocations(|| assert!(
+                slot.feed(
+                    In::HostChoke(HostPattern {
+                        id: -1,
+                        ..pattern(10)
+                    }),
+                    0,
+                    false,
+                    false
+                )
+                .is_err()
+            )),
+            0
+        );
+        assert!(!slot.host_note_pending(note(10)) && !slot.host_note_pending(note(11)));
+        assert!(slot.host_note_pending(other));
+        drop(slot);
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn choke_fanout_admits_all_or_aborts_before_enqueueing_a_prefix() {
+        let (mut worker, mut slot, path, _) = authored_slot();
+        slot.feed(In::HostOn(note(10), 100, 0.), 0, true, false)
+            .unwrap();
+        slot.feed(In::HostOn(note(11), 100, 0.), 0, true, false)
+            .unwrap();
+        let other = HostNote {
+            channel: 3,
+            ..note(12)
+        };
+        slot.feed(In::HostOn(other, 100, 0.), 0, true, false)
+            .unwrap();
+        for _ in 0..crate::uvi::worker::MAX_HOSTED_INPUTS - 4 {
+            slot.feed(In::Cc(2, 1, 0), 0, true, false).unwrap();
+        }
+        assert_eq!(slot.bridge.remaining_hosted_capacity(), 1);
+        let all = HostPattern {
+            id: -1,
+            ..pattern(10)
+        };
+        assert_eq!(
+            super::super::tests::allocations(|| assert!(matches!(
+                slot.feed(In::HostChoke(all), 0, false, false),
+                Err(Error::Bridge(BridgeError::Worker(
+                    PacketError::TooManyInputs
+                )))
+            ))),
+            0
+        );
+        assert_eq!(
+            slot.bridge.remaining_hosted_capacity(),
+            1,
+            "a fanout prefix escaped admission"
+        );
+        assert!(slot.bridge.failure().is_some());
+        assert!(slot.notes.owners.iter().flatten().all(|o| o.completed));
+        assert!(!slot.host_note_pending(note(10)) && !slot.host_note_pending(note(11)));
+        assert!(
+            slot.host_note_pending(other),
+            "overflow abort preserves unrelated physical gate"
+        );
+        drop(slot);
+        worker.stop();
+        std::fs::remove_file(path).unwrap();
     }
     #[test]
     fn typed_retrigger_fifo_and_exact_identity_survive_end_backpressure() {
@@ -746,5 +1087,132 @@ mod tests {
             }),
             0
         );
+    }
+    use crate::uvi::{
+        playback::Renderer,
+        program::parse_program,
+        script::{Action, Command, Note},
+        worker::Worker,
+    };
+    fn render_note(id: u32) -> Note {
+        Note {
+            id,
+            note: 60,
+            velocity: 100,
+            channel: 0,
+            dim1: 0,
+            dim2: None,
+            layers: None,
+            oscillator: None,
+            volume: 1.,
+            pan: 0.,
+            tune: 0.,
+            offset_us: 0,
+        }
+    }
+    #[test]
+    fn transport_maximum_one_host_frame_redundant_snapshots_leave_notes_and_pcm_exact() {
+        for playing in [false, true] {
+            let expected_changes = usize::from(playing);
+            let lua = format!(
+                "local changes=0 function onTransport(p)changes=changes+1 end function onNote(e)assert(changes=={expected_changes});postEvent(e)end"
+            );
+            let (config, xml) = crate::uvi::worker::tests::authored_bank_with_script(&lua);
+            let bank = config.bank.clone();
+            let mut worker = Worker::start_hosted(config, 7, 9).unwrap();
+            worker
+                .wait_ready(std::time::Duration::from_secs(5))
+                .unwrap();
+            let bridge = Bridge::new(worker.take_audio_port().unwrap(), 7, 9, 1, 1).unwrap();
+            let mut slot = Slot::new(bridge, 7, 9, 48000).unwrap();
+            let latency = slot.latency_frames() as usize;
+            let program = parse_program(&xml).unwrap();
+            let mut renderer = Renderer::new(&program, Default::default(), 48000).unwrap();
+            let commands = [0, 127, 255]
+                .into_iter()
+                .enumerate()
+                .map(|(i, frame)| Command {
+                    frame,
+                    action: Action::Start(render_note(i as u32 + 1)),
+                })
+                .collect::<Vec<_>>();
+            let expected = renderer.render(&commands, &[], 1024).unwrap();
+            assert!(expected.iter().any(|x| x[0].abs() > 0.1));
+            for frame in 0..latency + 1024 {
+                let beat = if playing {
+                    4. + frame as f64 / 48000. * 2.
+                } else {
+                    4.
+                };
+                let mut l = [0.];
+                let mut r = [0.];
+                assert_eq!(
+                    crate::plugin::tests::allocations(|| {
+                        slot.set_host_transport(playing, beat, 120.).unwrap();
+                        if [0, 127, 255].contains(&frame) {
+                            slot.feed(In::NoteOn(0, 60, 100), 0, true, false).unwrap()
+                        }
+                        slot.process_mode(&mut l, &mut r, true).unwrap();
+                    }),
+                    0
+                );
+                if frame < latency {
+                    assert_eq!([l[0], r[0]], [0., 0.])
+                } else {
+                    assert_eq!([l[0], r[0]], expected[frame - latency])
+                }
+            }
+            assert_eq!(slot.error(), None);
+            assert_eq!(slot.underruns(), 0);
+            assert_eq!(slot.discarded_packets(), 0);
+            drop(slot);
+            worker.stop();
+            std::fs::remove_file(bank).unwrap();
+        }
+    }
+    #[test]
+    fn transport_seek_tempo_stop_and_missing_snapshots_keep_time_and_callback_order() {
+        let source = r#"
+ local changes=0
+ function onTransport(p)changes=changes+1 end
+ function onNote(e)
+  local stage=e.note-60
+  if stage==0 then assert(changes==1 and getBeatTime()==4 and getTempo()==120)
+  elseif stage==1 then assert(changes==1 and math.abs(getBeatTime()-(4+1/24000))<1e-12)
+  elseif stage==2 then assert(changes==1 and math.abs(getBeatTime()-(4+3/24000))<1e-12)
+  elseif stage==3 then assert(changes==1 and getBeatTime()==9 and getTempo()==90)
+  elseif stage==4 then assert(changes==2 and getBeatTime()==10)
+  else assert(changes==2 and getBeatTime()==11 and getTempo()==100)end
+  postEvent(e)
+ end
+ "#;
+        let (config, _) = crate::uvi::worker::tests::authored_bank_with_script(source);
+        let bank = config.bank.clone();
+        let mut worker = Worker::start_hosted(config, 7, 9).unwrap();
+        worker
+            .wait_ready(std::time::Duration::from_secs(5))
+            .unwrap();
+        let bridge = Bridge::new(worker.take_audio_port().unwrap(), 7, 9, 1, 1).unwrap();
+        let mut slot = Slot::new(bridge, 7, 9, 48000).unwrap();
+        for (frame, playing, beat, tempo) in [
+            (0, true, 4., 120.),
+            (1, true, f64::NAN, 0.),
+            (2, true, 4. + 3. / 24000., 120.),
+            (3, true, 9., 90.),
+            (4, false, 10., 90.),
+            (5, false, 11., 100.),
+        ] {
+            slot.set_host_transport(playing, beat, tempo).unwrap();
+            slot.feed(In::NoteOn(0, 60 + frame as u8, 100), 0, true, false)
+                .unwrap();
+            slot.process_mode(&mut [0.], &mut [0.], true).unwrap();
+        }
+        for _ in 6..1024 {
+            slot.process_mode(&mut [0.], &mut [0.], true).unwrap();
+        }
+        assert_eq!(slot.error(), None);
+        drop(slot);
+        worker.stop();
+        std::fs::remove_file(bank).unwrap();
     }
 }

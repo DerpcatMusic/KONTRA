@@ -715,7 +715,8 @@ mod tests {
             assert!(super::performance(&instrument, Some(&ui)).err().unwrap().contains("Invalid instrument wallpaper name"));
         }
         ui.wallpaper = "absent.jpg".into();
-        assert!(super::performance(&instrument, Some(&ui)).err().unwrap().contains("absent.jpg was not found"));
+        let missing = super::performance(&instrument, Some(&ui)).err().unwrap();
+        assert!(missing.contains("absent.jpg was not found"), "{missing}");
         std::fs::write(folder.join("bad.jpg"), &jpeg[..20]).unwrap();
         std::fs::write(folder.join("bad.png"), &png[..12]).unwrap();
         for (name, kind) in [("bad.jpg", "JPEG header:"), ("bad.png", "PNG header:")] {

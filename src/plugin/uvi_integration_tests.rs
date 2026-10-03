@@ -12,11 +12,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const BLOCK: usize = 256;
 const PROGRAM: &str = r#"<Program Gain="1"><EventProcessors><ScriptProcessor><script><![CDATA[
+level=Knob{name='authored_level',displayName='Authored level',value=1,min=0,max=1,bounds={10,10,60,60}}
+level.changed=function(self)Program:setParameter('Gain',self.value)end
 function onInit()
     setSize(180,100)
     makePerformanceView()
-    level=Knob{name='authored level',value=1,min=0,max=1,bounds={10,10,60,60}}
-    level.changed=function(self)Program:setParameter('Gain',self.value)end
 end
 function onNote(e)postEvent(e)end
 function onRelease(e)postEvent(e)end
@@ -103,7 +103,7 @@ fn edit(params: &SamplerParams, slot: usize, value: f64) -> (Stamp, UiEdit) {
             snapshot
                 .widgets
                 .iter()
-                .find(|widget| widget.name == "authored level")
+                .find(|widget| widget.name == "authored_level")
                 .map(|widget| (snapshot.processor, widget.id))
         })
         .unwrap();
@@ -346,7 +346,7 @@ fn restored_native_rack_adopts_after_delay_ack_and_renders_keyboard_gain_pan_and
                     .iter()
                     .flat_map(|snapshot| &snapshot.widgets)
                     .any(|widget| {
-                        widget.name == "authored level" && widget.value == Some(UiValue::Number(0.))
+                        widget.name == "authored_level" && widget.value == Some(UiValue::Number(0.))
                     })
             });
         if observed {
@@ -447,43 +447,187 @@ fn restored_native_rack_adopts_after_delay_ack_and_renders_keyboard_gain_pan_and
 }
 
 #[test]
+fn native_rack_save_reopens_authored_controls_and_applied_gain() {
+    let directory = tempfile::tempdir().unwrap();
+    let bank = directory.path().join("authored.ufs");
+    let source_text = PROGRAM.replace(
+        "function onNote(e)",
+        "saves=0\nfunction onSave() saves=saves+1;return {saves=saves} end\nfunction onNote(e)",
+    );
+    crate::library::tests::authored_uvi_bank_with_source(&bank, 19, source_text.as_bytes());
+    let source = library::UviSource {
+        bank,
+        bank_uuid: [19; 16],
+        member: "Piano.uvip".into(),
+    };
+    let mut params = SamplerParams::new();
+    params.shared.libraries = crate::library::tests::authored_uvi_scanner(directory.path());
+    let part = Part {
+        uvi: Some(source),
+        ..Default::default()
+    };
+    *params.selection.write().unwrap() = Selection {
+        parts: vec![part.clone(), Part { mute: true, ..part }],
+        order: vec![0, 1],
+        ..Default::default()
+    };
+    let mut dsp = Dsp::default();
+    Sampler::reset(&mut dsp, &params, &AudioConfig::new(48000., BLOCK));
+    wait_live(&mut dsp, &params);
+    let (stamp, input) = edit(&params, 0, 0.25);
+    assert!(params.shared.edit_uvi(0, stamp, input));
+    render(&mut dsp, &params, 1024);
+    let generation = dsp.uvi[0].as_ref().unwrap().generation();
+    let mut selection = params.selection.read().unwrap().clone();
+    params.capture_uvi_state(&mut selection).unwrap();
+    for part in &selection.parts {
+        let encoded: serde_json::Value = serde_json::from_slice(part.uvi_state.as_ref()).unwrap();
+        let (_, data) =
+            crate::uvi::host::parse_state(encoded["processors"][0][1].as_str().unwrap().as_bytes())
+                .unwrap();
+        assert_eq!(
+            data.unwrap()["saves"],
+            1,
+            "ordinary loader polls must not invoke onSave"
+        );
+    }
+    Load.run(&params);
+    assert_eq!(
+        dsp.uvi[0].as_ref().unwrap().generation(),
+        generation,
+        "publishing captured state must not reload its source"
+    );
+    let multi_path = directory.path().join("authored.kontra-multi");
+    SavedMulti::of("Authored", &selection)
+        .save(&multi_path)
+        .unwrap();
+    let restored = SavedMulti::read(&multi_path).unwrap();
+    assert!(restored.parts == selection.parts);
+
+    let mut reopened = SamplerParams::new();
+    reopened.shared.libraries = crate::library::tests::authored_uvi_scanner(directory.path());
+    *reopened.selection.write().unwrap() = Selection {
+        parts: restored.parts,
+        order: vec![0, 1],
+        ..Default::default()
+    };
+    let mut next = Dsp::default();
+    Sampler::reset(&mut next, &reopened, &AudioConfig::new(48000., BLOCK));
+    wait_live(&mut next, &reopened);
+    assert!(
+        reopened.shared.view.lock().unwrap().parts[0]
+            .uvi_ui
+            .as_ref()
+            .unwrap()
+            .snapshots
+            .iter()
+            .flat_map(|s| &s.widgets)
+            .any(|w| w.name == "authored_level" && w.value == Some(UiValue::Number(0.25)))
+    );
+    let latency = next.uvi[0].as_ref().unwrap().latency_frames() as usize;
+    params.shared.press_key(0, 60, 100);
+    reopened.shared.press_key(0, 60, 100);
+    let before = render(&mut dsp, &params, latency + 1024);
+    let after = render(&mut next, &reopened, latency + 1024);
+    assert_eq!(
+        before, after,
+        "restored applied Gain must produce identical PCM"
+    );
+    assert!(after.iter().flatten().any(|sample| sample.abs() > 0.001));
+    drop(next);
+    drop(reopened);
+    drop(dsp);
+    drop(params);
+}
+
+#[test]
 fn unsupported_native_delay_layout_finishes_loading_and_is_memoized() {
     let directory = tempfile::tempdir().unwrap();
     let bank = directory.path().join("authored.ufs");
     crate::library::tests::authored_uvi_bank_with_source(&bank, 9, PROGRAM.as_bytes());
     let mut params = SamplerParams::new();
     params.shared.libraries = crate::library::tests::authored_uvi_scanner(directory.path());
-    let source = library::UviSource { bank, bank_uuid: [9; 16], member: "Piano.uvip".into() };
-    params.selection.write().unwrap().parts.push(Part { uvi: Some(source.clone()), ..Default::default() });
+    let source = library::UviSource {
+        bank,
+        bank_uuid: [9; 16],
+        member: "Piano.uvip".into(),
+    };
+    params.selection.write().unwrap().parts.push(Part {
+        uvi: Some(source.clone()),
+        ..Default::default()
+    });
     params.shared.ensure_parts(64);
     params.shared.grown.store(64, Ordering::Release);
-    params.shared.uvi_max_host_frames.store(65_536, Ordering::Release);
+    params
+        .shared
+        .uvi_max_host_frames
+        .store(65_536, Ordering::Release);
     uvi_load::service(&params);
     let first = {
         let view = params.shared.view.lock().unwrap();
         let part = &view.parts[0];
         assert!(!part.loading);
-        assert_eq!(part.status, "The current audio configuration is unsupported by UVI playback.");
+        assert_eq!(
+            part.status,
+            "The current audio configuration is unsupported by UVI playback."
+        );
         assert!(part.uvi_ui.is_none());
         part.uvi_activation.clone().unwrap()
     };
-    assert_eq!(uvi_delay_ready(&params), Err(uvi_delay::Error::MemoryBudget));
+    assert_eq!(
+        uvi_delay_ready(&params),
+        Err(uvi_delay::Error::MemoryBudget)
+    );
     assert_eq!(params.shared.uvi_delay_wanted.load(Ordering::Acquire), 0);
     assert!(params.shared.uvi_delays.is_empty());
-    assert!(params.shared.uvi_controls.lock().unwrap().status(first.epoch, first.generation).is_none());
-    for _ in 0..3 { uvi_load::service(&params); }
-    let next = params.shared.view.lock().unwrap().parts[0].uvi_activation.clone().unwrap();
-    assert_eq!((first.epoch, first.generation), (next.epoch, next.generation));
-    assert_eq!(params.selection.read().unwrap().parts[0].uvi.as_ref(), Some(&source));
-    assert_eq!(params.shared.uvi_delay_prepared.lock().unwrap().as_ref().unwrap().context,
-        (first.epoch, 64, 65_536));
+    assert!(
+        params
+            .shared
+            .uvi_controls
+            .lock()
+            .unwrap()
+            .status(first.epoch, first.generation)
+            .is_none()
+    );
+    for _ in 0..3 {
+        uvi_load::service(&params);
+    }
+    let next = params.shared.view.lock().unwrap().parts[0]
+        .uvi_activation
+        .clone()
+        .unwrap();
+    assert_eq!(
+        (first.epoch, first.generation),
+        (next.epoch, next.generation)
+    );
+    assert_eq!(
+        params.selection.read().unwrap().parts[0].uvi.as_ref(),
+        Some(&source)
+    );
+    assert_eq!(
+        params
+            .shared
+            .uvi_delay_prepared
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .context,
+        (first.epoch, 64, 65_536)
+    );
     // A changed context is independently admitted; pending callback ack is not
     // memoized as the former terminal failure.
-    params.shared.uvi_max_host_frames.store(BLOCK, Ordering::Release);
+    params
+        .shared
+        .uvi_max_host_frames
+        .store(BLOCK, Ordering::Release);
     assert_eq!(uvi_delay_ready(&params), Ok(false));
     assert_eq!(params.shared.uvi_delay_wanted.load(Ordering::Acquire), 1);
     assert_eq!(uvi_delay_ready(&params), Ok(false));
     let prepared = params.shared.uvi_delays.pop().unwrap();
-    params.shared.uvi_delay_installed.store(prepared.ticket, Ordering::Release);
+    params
+        .shared
+        .uvi_delay_installed
+        .store(prepared.ticket, Ordering::Release);
     assert_eq!(uvi_delay_ready(&params), Ok(true));
 }

@@ -35,6 +35,8 @@ mod uvi;
 #[cfg(feature = "uvi")]
 mod uvi_control;
 #[cfg(feature = "uvi")]
+mod uvi_state;
+#[cfg(feature = "uvi")]
 pub(crate) mod uvi_load;
 #[cfg(feature = "uvi")]
 mod uvi_delay;
@@ -42,6 +44,42 @@ mod uvi_delay;
 mod uvi_integration_tests;
 #[cfg(feature = "uvi")]
 const UVI_LEAD_PACKETS: usize = 16;
+
+/// Opaque native persistence, shared by rack/UI clones. Debug never prints
+/// authored values. The wire format remains the existing byte vector.
+#[derive(Clone, Default, PartialEq)]
+pub struct NativeState(Arc<Vec<u8>>);
+impl NativeState {
+    pub fn is_empty(&self) -> bool { self.0.is_empty() }
+    pub fn clear(&mut self) { *self = Self::default(); }
+}
+impl From<Vec<u8>> for NativeState {
+    fn from(bytes: Vec<u8>) -> Self { Self(Arc::new(bytes)) }
+}
+impl AsRef<[u8]> for NativeState {
+    fn as_ref(&self) -> &[u8] { self.0.as_slice() }
+}
+impl std::fmt::Debug for NativeState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeState").field("bytes", &self.0.len()).finish()
+    }
+}
+impl serde::Serialize for NativeState {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serde::Serialize::serialize(self.0.as_ref(), serializer)
+    }
+}
+impl<'de> serde::Deserialize<'de> for NativeState {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        <Vec<u8> as serde::Deserialize>::deserialize(deserializer).map(Self::from)
+    }
+}
+impl StateField for NativeState {
+    fn write_field(&self, buf: &mut Vec<u8>) { self.0.as_ref().write_field(buf); }
+    fn read_field(cursor: &mut moose::core::custom_state::StateCursor) -> Option<Self> {
+        Vec::<u8>::read_field(cursor).map(Self::from)
+    }
+}
 
 #[derive(State, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -106,6 +144,9 @@ pub struct Part {
     /// Native bank/member identity; appended to retain positional host states.
     /// An absent backend remains identifiable when its feature is disabled.
     pub uvi: Option<library::UviSource>,
+    /// Opaque native program state, retained even by builds without UVI.
+    /// Appended for positional host-state compatibility.
+    pub uvi_state: NativeState,
 }
 impl Part {
     pub(crate) fn is_empty(&self) -> bool {
@@ -122,6 +163,7 @@ impl Part {
     }
     fn select_snapshot(&mut self, path: String) {
         self.snapshot = path;
+        self.uvi_state.clear();
         self.script_state.clear();
         self.ir_settings.clear();
         self.engine_state.clear();
@@ -231,6 +273,7 @@ impl Default for Part {
             engine_state: Vec::new(),
             delay_state: Vec::new(),
             uvi: None,
+            uvi_state: NativeState::default(),
         }
     }
 }
@@ -351,7 +394,7 @@ impl Selection {
 }
 
 #[derive(Params)]
-#[params(output_port_name = "port_name", output_port_names_revision = "port_names_revision")]
+#[params(output_port_name = "port_name", output_port_names_revision = "port_names_revision", pre_save = "capture_native_state")]
 pub struct SamplerParams {
     #[param(name="Volume",range="linear(-60, 6)",default=-12.0,unit="dB",smooth="exp(5)")]
     pub volume: FloatParam,
@@ -377,6 +420,23 @@ pub struct SamplerParams {
 pub(crate) use SamplerParamsParamId as P;
 
 impl SamplerParams {
+    fn capture_native_state(&self) {
+        #[cfg(feature = "uvi")]
+        let mut selection = self.selection.read().unwrap().clone();
+        #[cfg(feature = "uvi")]
+        if let Err(error) = self.capture_uvi_state(&mut selection) {
+            // Params pre_save cannot return an error; retain the last successful state.
+            crate::diagnostics::event(crate::diagnostics::LogLevel::Error, "uvi", "state_capture_failed",
+                serde_json::json!({"reason":error.to_string()}));
+        }
+    }
+
+    /// Off audio: explicit rack saves require a fresh, coherent native snapshot.
+    #[cfg(feature = "uvi")]
+    pub(crate) fn capture_uvi_state(&self, selection: &mut Selection) -> anyhow::Result<()> {
+        uvi_state::capture(self, selection)
+    }
+
     /// Serialized loader only. The controller and its blocking destructor stay
     /// here until an audio bridge has a separately owned, fixed packet port.
     #[cfg(feature = "uvi")]
@@ -439,9 +499,11 @@ impl SamplerParams {
                 "prepared":prepared.as_ref().map(|p| serde_json::json!({
                     "source":p.key.request.source, "slot":p.key.request.slot, "new":p.key.request.new,
                     "epoch":p.key.epoch, "generation":p.generation, "sample_rate":f64::from_bits(p.key.rate),
+                    "worker":p.worker.as_ref().map(|worker| worker.diagnostic_report()),
                     "status":p.status, "initialized":Some(&p.key) == uvi_load_key(self, &selection).as_ref()
                         && p.worker.as_ref().is_some_and(|worker| worker.status() == crate::uvi::worker::Status::Ready),
                 })),
+                "rack_workers":self.shared.uvi_controls.lock().unwrap().diagnostic_report(),
                 "block_frames":crate::uvi::worker::BLOCK_FRAMES, "queue_capacity":crate::uvi::worker::QUEUE_CAPACITY,
             });
         }
@@ -502,6 +564,8 @@ pub(crate) struct PartShared {
     uvi_part_generation: AtomicU64,
     #[cfg(feature = "uvi")]
     uvi_failed: AtomicBool,
+    #[cfg(feature = "uvi")]
+    uvi_state_frame: AtomicU64,
     pub(crate) generation: AtomicU64,
     /// Out of [`crate::engine::LOAD_DONE`], rising within each load.
     pub(crate) load_progress: AtomicU32,
@@ -540,6 +604,8 @@ pub struct Shared {
     uvi_delay_installed: AtomicU64,
     #[cfg(feature = "uvi")]
     uvi_controls: Arc<Mutex<uvi_control::Registry>>,
+    #[cfg(feature = "uvi")]
+    uvi_state_capture: Mutex<()>,
     #[cfg(feature = "uvi")]
     uvi_edits: ArrayQueue<(usize, crate::uvi::worker::Stamp, crate::uvi::host::UiEdit)>,
     /// Persistence snapshots: the loader lends one per scripted slot, the audio thread fills it in place and returns it.
@@ -797,7 +863,7 @@ impl PartView {
         let stamp = published.stamp;
         Self {
             uvi_activation: Some(uvi_load::Activation { source, epoch: stamp.epoch, generation: stamp.generation,
-                part_generation: 0, rate: 48000, max_host_frames: MAX_BLOCK, published: true }),
+                saved_state: NativeState::default(), part_generation: 0, rate: 48000, max_host_frames: MAX_BLOCK, published: true }),
             uvi_ui: Some(published), status: "UVI instrument".into(), ..Default::default()
         }
     }
@@ -878,6 +944,8 @@ impl Default for Shared {
             uvi_delay_installed: AtomicU64::new(0),
             #[cfg(feature = "uvi")]
             uvi_controls: Arc::default(),
+            #[cfg(feature = "uvi")]
+            uvi_state_capture: Mutex::new(()),
             #[cfg(feature = "uvi")]
             uvi_edits: ArrayQueue::new(256),
             snapshot_requests: ArrayQueue::new(2 * RACK_SLOTS),
@@ -2285,17 +2353,27 @@ fn prepare_uvi(params: &SamplerParams, selection: &Selection) {
         };
         if uvi_load_key(params, &params.selection.read().unwrap()) != Some(key.clone()) { return; }
         let generation = params.shared.uvi_generation.fetch_add(1, Ordering::AcqRel) + 1;
+        let mut trace = crate::diagnostics::LoadTrace::new(&key.request.source.bank, 0, key.request.slot.map(|slot| slot as usize));
+        trace.detail("backend", "uvi");
+        trace.detail("member", key.request.source.member.clone());
+        trace.detail("epoch", key.epoch);
+        trace.detail("generation", generation);
+        trace.stage("uvi_controller_setup");
         let (worker, status, ui) = match configured {
             Ok(config) => {
-                let assets = crate::uvi::ui_assets::UiAssets::open(&config).ok();
+                let assets = match crate::uvi::ui_assets::UiAssets::open(&config) {
+                    Ok(assets) => Some(assets),
+                    Err(error) => { trace.issue("ui", "uvi_artwork_authority_unavailable", format!("{error:#}")); None }
+                };
                 match Worker::start_hosted(config, key.epoch, generation) {
                     Ok(worker) => (Some(worker), STARTING, Some(uvi_ui::Mailbox::new(
                         crate::uvi::worker::Stamp { epoch: key.epoch, generation, frame: 0 }, assets))),
-                    Err(_) => (None, FAILED, None),
+                    Err(error) => { trace.fail(format!("Starting UVI worker: {error:#}")); (None, FAILED, None) },
                 }
             },
-            Err(reason) => (None, reason, None),
+            Err(reason) => { trace.fail(reason); (None, reason, None) },
         };
+        trace.finish(if worker.is_some() { "worker_started" } else { "failed" });
         let prepared = UviPrepared { key: key.clone(), generation, worker, status, ui };
         if uvi_load_key(params, &params.selection.read().unwrap()) != Some(key.clone()) { drop(prepared); return; }
         *params.shared.uvi_prepared.lock().unwrap() = Some(prepared);
@@ -2314,6 +2392,11 @@ fn prepare_uvi(params: &SamplerParams, selection: &Selection) {
         };
         (p.status, failed, ui)
     };
+    if let Some(worker) = &failed {
+        crate::diagnostics::event(crate::diagnostics::LogLevel::Error, "uvi", "uvi_staging_failed",
+            serde_json::json!({"path":key.request.source.bank, "member":key.request.source.member,
+                "epoch":key.epoch, "reason":worker.private_failure()}));
+    }
     drop(failed);
     if uvi_load_key(params, &params.selection.read().unwrap()) != Some(key.clone()) { return; }
     let mut view = params.shared.view.lock().unwrap();
@@ -2428,6 +2511,7 @@ fn install_prepared_uvi(params: &SamplerParams) {
         };
     part.path.clear(); part.snapshot.clear(); part.program = 0;
     part.uvi = Some(key.request.source.clone());
+    part.uvi_state.clear();
     part.name.clear();
     part.group = u32::MAX; part.articulate = Default::default(); part.mpe = Default::default();
     part.tune = 0.;
@@ -2441,7 +2525,7 @@ fn install_prepared_uvi(params: &SamplerParams) {
     drop(current);
     let mut view = params.shared.view.lock().unwrap();
     view.parts[slot] = PartView {
-        uvi_activation: Some(uvi_load::Activation { source: key.request.source, epoch: key.epoch,
+        uvi_activation: Some(uvi_load::Activation { source: key.request.source, saved_state: NativeState::default(), epoch: key.epoch,
             generation, part_generation, rate, max_host_frames: key.max_host_frames, published: false }),
         status: "Preparing UVI playback…".into(), loading: true, ..Default::default()
     };
@@ -4163,6 +4247,7 @@ impl PluginLogic for Sampler {
                     s.uvi[slot] = Some(audio);
                     s.native_slots[slot] = true;
                     let atoms = part_atoms(&s.shared_parts, &p.shared, slot).unwrap();
+                    atoms.uvi_state_frame.store(0, Ordering::Release);
                     atoms.uvi_failed.store(false, Ordering::Release);
                     atoms.uvi_part_generation.store(generation, Ordering::Release);
                     atoms.uvi_generation.store(native_generation, Ordering::Release);
@@ -4296,6 +4381,13 @@ impl PluginLogic for Sampler {
                 if let Some(audio) = audio {
                     let player = audio.slot_mut();
                     let consumed_start = player.frame();
+                    // Include this callback's partial native packet before dequeuing controls.
+                    // A snapshot waits for real PCM processing at this boundary.
+                    let boundary = consumed_start.saturating_add(frames as u64)
+                        .div_ceil(crate::uvi::worker::BLOCK_FRAMES as u64)
+                        .saturating_mul(crate::uvi::worker::BLOCK_FRAMES as u64);
+                    part_atoms(&s.shared_parts, &p.shared, slot).unwrap()
+                        .uvi_state_frame.store(boundary, Ordering::Release);
                     if player.collect_completions(consumed_start).is_err()
                         || player.set_host_transport(cx.transport.playing, cx.transport.position_beats,
                             cx.transport.tempo).is_err() {
@@ -5609,6 +5701,23 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn opaque_native_state_survives_json_and_host_codec_without_backend_types() {
+        use moose::core::custom_state::State;
+        let part = Part { uvi_state:vec![0,1,255,128].into(), ..Default::default() };
+        assert!(Part::deserialize(&State::serialize(&part)) == Some(part.clone()));
+        let clone=part.clone();
+        assert!(Arc::ptr_eq(&part.uvi_state.0,&clone.uvi_state.0), "UI selection clones share opaque bytes");
+        assert_eq!(format!("{:?}",part.uvi_state),"NativeState { bytes: 4 }");
+        let mut old_bytes=Vec::new(); vec![0u8,1,255,128].write_field(&mut old_bytes);
+        let mut new_bytes=Vec::new(); part.uvi_state.write_field(&mut new_bytes);
+        assert_eq!(new_bytes,old_bytes,"native byte wrapper retains the Vec wire codec");
+        let json=serde_json::to_string(&part).unwrap();
+        assert_eq!(serde_json::to_string(&part.uvi_state).unwrap(),"[0,1,255,128]");
+        assert!(serde_json::from_str::<Part>(&json).unwrap() == part);
+        assert!(serde_json::from_str::<Part>("{}").unwrap().uvi_state.is_empty());
+    }
 
     #[test]
     fn performance_pages_keep_slot_callbacks_and_late_buffers_separate() {
@@ -7302,13 +7411,13 @@ end on"#.into()], fx: crate::fx::ProgramFx { insert: Chain { slots: vec![Effect 
         assert!(read==saved,"host binary keeps appended physical state");
         let count=u32::from_le_bytes(binary[4..8].try_into().unwrap());
         let mut at=8; let mut older=binary[..8].to_vec();
-        let mut positional=(count-2).to_le_bytes().to_vec();
-        for _ in 0..count-2 {
+        let mut positional=(count-3).to_le_bytes().to_vec();
+        for _ in 0..count-3 {
             let len=u32::from_le_bytes(binary[at+4..at+8].try_into().unwrap()) as usize;
             older.extend(&binary[at..at+8+len]); positional.extend(&binary[at+4..at+8+len]); at+=8+len;
         }
-        older[4..8].copy_from_slice(&(count-2).to_le_bytes());
-        let mut old_expected=saved.clone(); old_expected.delay_state.clear(); old_expected.uvi=None;
+        older[4..8].copy_from_slice(&(count-3).to_le_bytes());
+        let mut old_expected=saved.clone(); old_expected.delay_state.clear(); old_expected.uvi=None; old_expected.uvi_state.clear();
         assert!(Part::deserialize(&older)==Some(old_expected.clone()),"older keyed state defaults new caches");
         assert!(Part::deserialize(&positional)==Some(old_expected),"older positional state retains prior fields");
         let saved:Part=serde_json::from_str(&serde_json::to_string(&read).unwrap()).unwrap();

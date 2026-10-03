@@ -49,6 +49,7 @@ struct RootInput {
     channel: u8,
     note: u8,
     held: bool,
+    choked: bool,
     ended: Option<u64>,
 }
 
@@ -77,6 +78,8 @@ pub struct Note {
 
 #[derive(Debug, Clone, Serialize)]
 pub enum Action {
+    /// Backend-only immediate stop; activation-local ancestry is in command_roots.
+    ChokeRoot,
     Start(Note),
     Release(u32),
     /// Key release forwarded through the issuing processor's downstream chain.
@@ -196,6 +199,11 @@ pub enum HostedInput {
         root: HostRoot,
         frame: u64,
     },
+    /// Stop this backend root without synthesizing a Lua release callback.
+    Choke {
+        root: HostRoot,
+        frame: u64,
+    },
     /// Non-note input in the same wire order as owned On/Off messages.
     /// Notes must use On/Off so they cannot bypass the activation ledger.
     Event(Input),
@@ -204,7 +212,7 @@ impl HostedInput {
     pub fn frame(&self) -> u64 {
         match self {
             Self::On { input, .. } | Self::Event(input) => input.frame,
-            Self::Off { frame, .. } => *frame,
+            Self::Off { frame, .. } | Self::Choke { frame, .. } => *frame,
         }
     }
 }
@@ -522,6 +530,8 @@ struct State {
     voices: HashMap<u32, Voice>,
     next_trigger: u64,
     triggers: HashMap<u64, HeldTrigger>,
+    // Hosted-only ancestry; an empty legacy map allocates nothing.
+    trigger_roots: HashMap<u64, HostRoot>,
     trigger_queues: HashMap<(Option<NodeId>, u32, u8), VecDeque<u64>>,
     input_velocities: HashMap<u32, u8>,
     keys: HashMap<(u8, u8), VecDeque<u32>>,
@@ -537,7 +547,7 @@ impl State {
         root.filter(|root| {
             self.roots
                 .get(root)
-                .is_some_and(|owner| owner.ended.is_none())
+                .is_some_and(|owner| owner.ended.is_none() && !owner.choked)
         })
     }
     fn note_held(&self, trigger: u64) -> bool {
@@ -550,6 +560,7 @@ impl State {
         lua: &Lua,
         event: &Table,
         processor: Option<NodeId>,
+        root: Option<HostRoot>,
     ) -> mlua::Result<Option<u64>> {
         let kind = event.get::<u32>("type")?;
         if kind != 144 && kind != 128 {
@@ -567,6 +578,9 @@ impl State {
                 .ok_or_else(|| mlua::Error::runtime("UVI trigger ID space exhausted"))?;
             let trigger = self.next_trigger;
             self.triggers.insert(trigger, HeldTrigger { held: true });
+            if let Some(root) = self.live_root(root) {
+                self.trigger_roots.insert(trigger, root);
+            }
             self.trigger_queues
                 .entry((processor, id, note))
                 .or_default()
@@ -1293,8 +1307,15 @@ impl Runtime {
         modules: BTreeMap<String, Vec<u8>>,
         resources: Option<host::Resources>,
         sample_rate: u32,
+        saved: Option<&super::state::SavedState>,
     ) -> Result<Self> {
+        if let Some(saved) = saved {
+            saved.validate(program)?;
+        }
         let mut rt = Self::vm(Some(program), modules, resources, sample_rate)?;
+        if let Some(saved) = saved {
+            saved.preload(&rt.lua, rt.host.as_ref().unwrap())?;
+        }
         rt.state.borrow_mut().chain = Some(EventChain::new(program)?);
         let processors = program
             .nodes
@@ -1346,6 +1367,10 @@ impl Runtime {
                 .context("UVI scoped Lua initialization")?;
             ensure!(rt.fuel.get() > 0, "UVI instruction budget exceeded");
             rt.scope(processor);
+            let restored = saved
+                .and_then(|state| state.processor(processor))
+                .map(|text| host::parse_state(text.as_bytes()))
+                .transpose()?;
             let states = program
                 .nodes
                 .iter()
@@ -1355,9 +1380,17 @@ impl Runtime {
                 states.len() <= 1,
                 "Multiple UVI saved states on one processor"
             );
-            if let Some(saved) = states.first() {
-                let value: serde_json::Value =
-                    serde_json::from_str(&saved.text).context("Invalid UVI saved JSON state")?;
+            let value = if let Some((_, value)) = &restored {
+                value.clone()
+            } else {
+                states
+                    .first()
+                    .map(|saved| {
+                        serde_json::from_str(&saved.text).context("Invalid UVI saved JSON state")
+                    })
+                    .transpose()?
+            };
+            if let Some(value) = value {
                 ensure!(
                     value.is_object() || value.is_array() || value.is_null(),
                     "UVI saved script state must be a table or nil"
@@ -1370,7 +1403,11 @@ impl Runtime {
             }
             rt.scope(processor);
             rt.fuel.set(FUEL);
-            host::restore_widgets_scoped(&rt.lua, program, processor, &environment)?;
+            if let Some((program, _)) = &restored {
+                host::restore_saved_widgets(&rt.lua, program, &environment)?;
+            } else {
+                host::restore_widgets_scoped(&rt.lua, program, processor, &environment)?;
+            }
             ensure!(rt.fuel.get() > 0, "UVI instruction budget exceeded");
             rt.advance(0)?;
         }
@@ -1436,7 +1473,7 @@ impl Runtime {
                     let parent =
                         self.state
                             .borrow_mut()
-                            .receive(&self.lua, event, Some(processor))?;
+                            .receive(&self.lua, event, Some(processor), root)?;
                     let environment = self.environments[&processor].clone();
                     let callback = match event.get::<u32>("type")? {
                         144 => "onNote",
@@ -2088,8 +2125,15 @@ impl Runtime {
             };
             self.fuel.set(FUEL);
             if let Some(task) = task {
+                let processor = task.processor;
+                let frame = self.state.borrow().now;
                 resume_task(task, &self.state, &self.fuel, &self.resumes, &self.depth)
-                    .context("UVI musical callback")?;
+                    .with_context(|| match processor {
+                        Some(processor) => format!(
+                            "UVI ScriptProcessor node {processor} callback at frame {frame}"
+                        ),
+                        None => format!("UVI musical callback at frame {frame}"),
+                    })?;
             }
             if let Some(forward) = forward {
                 let event = event_snapshot(&self.lua, &forward.event)?;
@@ -2310,6 +2354,7 @@ impl Runtime {
         });
         parents.extend(state.trigger_queues.values().flatten().copied());
         state.triggers.retain(|id, _| parents.contains(id));
+        state.trigger_roots.retain(|id, _| parents.contains(id));
         Ok(())
     }
 
@@ -2330,6 +2375,7 @@ impl Runtime {
                 "Invalid UVI transport input"
             );
             let mut s = self.state.borrow_mut();
+            let playing_changed = s.playing != playing;
             s.playing = playing;
             s.beat = beat;
             s.tempo = tempo;
@@ -2342,6 +2388,9 @@ impl Runtime {
                 },
             )?;
             drop(s);
+            if !playing_changed {
+                return self.advance(input.frame);
+            }
             if self.state.borrow().chain.is_some() {
                 let processors = self.environments.keys().copied().collect::<Vec<_>>();
                 for processor in processors {
@@ -2385,6 +2434,7 @@ impl Runtime {
                                 channel,
                                 note,
                                 held: true,
+                                choked: false,
                                 ended: None,
                             },
                         );
@@ -2500,7 +2550,7 @@ impl Runtime {
             self.deliver(&event, None, None, parent, None, root)?;
             return self.advance(input.frame);
         }
-        let parent = self.state.borrow_mut().receive(&self.lua, &event, None)?;
+        let parent = self.state.borrow_mut().receive(&self.lua, &event, None, root)?;
         let globals = self.lua.globals();
         let handler = globals
             .get::<Option<Function>>("onEvent")?
@@ -2564,6 +2614,7 @@ impl std::error::Error for UiEditError {
 /// Never call this VM from a plugin audio callback.
 pub struct Session {
     runtime: Runtime,
+    program_fingerprint: [u8; 32],
 }
 
 impl Session {
@@ -2573,8 +2624,19 @@ impl Session {
         resources: Option<host::Resources>,
         sample_rate: u32,
     ) -> Result<Self> {
+        Self::new_program_chain_with_state(program, modules, resources, sample_rate, None)
+    }
+
+    pub fn new_program_chain_with_state(
+        program: &Program,
+        modules: BTreeMap<String, Vec<u8>>,
+        resources: Option<host::Resources>,
+        sample_rate: u32,
+        saved: Option<&super::state::SavedState>,
+    ) -> Result<Self> {
         Ok(Self {
-            runtime: Runtime::new_chain(program, modules, resources, sample_rate)?,
+            runtime: Runtime::new_chain(program, modules, resources, sample_rate, saved)?,
+            program_fingerprint: super::state::fingerprint(program)?,
         })
     }
 
@@ -2586,8 +2648,30 @@ impl Session {
         epoch: u64,
         generation: u64,
     ) -> Result<Self> {
+        Self::new_hosted_program_chain_with_state(
+            program,
+            modules,
+            resources,
+            sample_rate,
+            epoch,
+            generation,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_hosted_program_chain_with_state(
+        program: &Program,
+        modules: BTreeMap<String, Vec<u8>>,
+        resources: Option<host::Resources>,
+        sample_rate: u32,
+        epoch: u64,
+        generation: u64,
+        saved: Option<&super::state::SavedState>,
+    ) -> Result<Self> {
         ensure!(epoch > 0 && generation > 0, "Invalid hosted activation");
-        let session = Self::new_program_chain(program, modules, resources, sample_rate)?;
+        let session =
+            Self::new_program_chain_with_state(program, modules, resources, sample_rate, saved)?;
         {
             let mut state = session.runtime.state.borrow_mut();
             let initialized_commands = state.commands.len();
@@ -2614,7 +2698,9 @@ impl Session {
             ensure!(event.frame() >= last_frame, "Hosted input precedes clock");
             last_frame = event.frame();
             let root = match event {
-                HostedInput::On { root, .. } | HostedInput::Off { root, .. } => *root,
+                HostedInput::On { root, .. }
+                | HostedInput::Off { root, .. }
+                | HostedInput::Choke { root, .. } => *root,
                 HostedInput::Event(input) => {
                     validate_input(input)?;
                     ensure!(
@@ -2653,6 +2739,9 @@ impl Session {
                                 .is_some_and(|owner| owner.ended.is_none()),
                         "Unknown or complete hosted root"
                     );
+                }
+                HostedInput::Choke { .. } => {
+                    ensure!(root.token <= last_token, "Unknown hosted choke root");
                 }
                 HostedInput::Event(_) => unreachable!("non-note input was validated above"),
             }
@@ -2705,6 +2794,75 @@ impl Session {
             },
             Some(root),
         )
+    }
+    /// Cancel rooted work without onRelease. A historical root may already have
+    /// transferred its completion to the worker queue; repeating its choke is
+    /// then a no-op. The adapter supplies genuine previously admitted tokens.
+    pub fn host_note_choke(&mut self, root: HostRoot, frame: u64) -> Result<()> {
+        ensure!(frame >= self.current_frame(), "Hosted choke precedes clock");
+        {
+            let state = self.runtime.state.borrow();
+            ensure!(
+                state.root_activation == Some((root.epoch, root.generation))
+                    && root.token > 0
+                    && root.token <= state.last_root,
+                "Unknown hosted choke root"
+            );
+        }
+        self.advance(frame)?;
+        let mut state = self.runtime.state.borrow_mut();
+        let Some(owner) = state.roots.get(&root).copied() else {
+            return Ok(());
+        };
+        if owner.ended.is_some() || owner.choked {
+            return Ok(());
+        }
+        state.tasks.retain(|_, task| task.root != Some(root));
+        state
+            .forwards
+            .retain(|_, forward| forward.root != Some(root));
+        let commands = std::mem::take(&mut state.commands);
+        let roots = std::mem::take(&mut state.command_roots);
+        (state.commands, state.command_roots) = commands
+            .into_iter()
+            .zip(roots)
+            .filter(|(command, ancestry)| command.frame < frame || *ancestry != Some(root))
+            .unzip();
+        if let Some(queue) = state.keys.get_mut(&(owner.channel, owner.note)) {
+            queue.retain(|id| *id != owner.id);
+        }
+        state.input_velocities.remove(&owner.id);
+        let triggers = state
+            .trigger_roots
+            .iter()
+            .filter_map(|(id, ancestry)| (*ancestry == root).then_some(*id))
+            .collect::<HashSet<_>>();
+        for id in &triggers {
+            if let Some(trigger) = state.triggers.get_mut(id) {
+                trigger.held = false;
+            }
+        }
+        for queue in state.trigger_queues.values_mut() {
+            queue.retain(|trigger| !triggers.contains(trigger));
+        }
+        let registrations = state
+            .posted_roots
+            .iter()
+            .filter_map(|(key, ancestry)| (*ancestry == Some(root)).then_some(*key))
+            .collect::<Vec<_>>();
+        for (processor, id) in registrations {
+            posted_events(&self.runtime.lua, processor)?.raw_set(id, Value::Nil)?;
+            state.posted_roots.remove(&(processor, id));
+        }
+        let previous = state.current_root;
+        state.current_root = Some(root);
+        let result = state.emit(frame, Action::ChokeRoot);
+        state.current_root = previous;
+        result?;
+        let owner = state.roots.get_mut(&root).unwrap();
+        owner.held = false;
+        owner.choked = true;
+        Ok(())
     }
     /// Called only after drain commands were rendered. Live instances include
     /// their sustain/envelope/per-voice processor lifetime, never shared FX.
@@ -2774,6 +2932,64 @@ impl Session {
     }
     pub fn current_frame(&self) -> u64 {
         self.runtime.state.borrow().now
+    }
+
+    /// Allocating worker only. onSave may execute Lua; commands stay on the
+    /// native frame boundary for the next normal Player drain/render.
+    pub fn saved_state(&mut self, frame: u64) -> Result<super::state::SavedState> {
+        self.runtime.advance(frame)?;
+        let processors = self
+            .runtime
+            .environments
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        let mut documents = BTreeMap::new();
+        let mut bytes = 0usize;
+        let previous = {
+            let mut state = self.runtime.state.borrow_mut();
+            let previous = (
+                state.current,
+                state.current_root,
+                state.current_processor,
+                state.current_layer,
+            );
+            state.current = None;
+            state.current_root = None;
+            previous
+        };
+        let result = (|| {
+            for processor in processors {
+                self.runtime.scope(processor);
+                self.runtime.fuel.set(FUEL);
+                let document = host::save_state(&self.runtime.environments[&processor])?;
+                ensure!(
+                    self.runtime.fuel.get() > 0,
+                    "UVI instruction budget exceeded"
+                );
+                bytes = bytes
+                    .checked_add(document.len())
+                    .context("UVI state size overflow")?;
+                ensure!(
+                    bytes <= super::state::MAX_STATE_BYTES,
+                    "UVI saved state exceeds 2 MiB"
+                );
+                documents.insert(processor, String::from_utf8(document)?);
+            }
+            super::state::SavedState::new(
+                self.program_fingerprint,
+                documents,
+                self.runtime.host.as_ref().unwrap(),
+            )
+        })();
+        let mut state = self.runtime.state.borrow_mut();
+        (
+            state.current,
+            state.current_root,
+            state.current_processor,
+            state.current_layer,
+        ) = previous;
+        result
     }
 
     /// Copy one initialized processor's UI on the VM's owning thread.
@@ -3566,6 +3782,21 @@ mod tests {
         assert_eq!(third.dropped_logs, 0);
     }
 
+    #[test]
+    fn yielded_callback_error_retains_processor_frame_and_lua_line() {
+        let program = session_program("function onNote(e)\n wait(1)\n error('authored callback marker')\nend");
+        let processor = program.nodes.iter().position(|n| n.kind == "ScriptProcessor").unwrap();
+        let mut session = Session::new_program_chain(&program, BTreeMap::new(), None, 48000).unwrap();
+        session.input(Input {
+            frame: 7,
+            kind: InputKind::NoteOn { channel: 0, note: 60, velocity: 100 },
+        }).unwrap();
+        let error = session.advance(55).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains(&format!("UVI ScriptProcessor node {processor} callback at frame 55")), "{message}");
+        assert!(message.contains(":3:"), "{message}");
+        assert!(message.contains("authored callback marker"), "{message}");
+    }
     #[test]
     fn session_rejects_invalid_chunks_before_mutation() {
         let program = session_program("function onController(e) print('called');postEvent(e) end");
@@ -4573,6 +4804,57 @@ mod tests {
             .is_err()
         );
     }
+    #[test]
+    fn transport_snapshots_update_timing_but_only_play_stop_calls_on_transport() {
+        let p = session_program(
+            r#"
+          local changes=0
+          function onTransport(playing) changes=changes+1 end
+          function onNote(e)
+            if e.note==60 then assert(changes==0 and getBeatTime()==4 and getTempo()==120)
+            elseif e.note==61 then assert(changes==1 and getBeatTime()==8)
+            elseif e.note==62 then assert(changes==1 and getBeatTime()==42 and getTempo()==90)
+            elseif e.note==63 then assert(changes==2 and getBeatTime()==43)
+            else assert(changes==2 and getBeatTime()==44 and getTempo()==100) end
+          end
+        "#,
+        );
+        let mut s = Session::new_program_chain(&p, BTreeMap::new(), None, 48000).unwrap();
+        for (frame, playing, beat, tempo, note) in [
+            (0, false, 4., 120., 60),
+            (1, true, 8., 120., 61),
+            (2, true, 42., 90., 62),
+            (3, false, 43., 90., 63),
+            (4, false, 44., 100., 64),
+        ] {
+            s.input(Input {
+                frame,
+                kind: InputKind::Transport {
+                    playing,
+                    beat,
+                    tempo,
+                },
+            })
+            .unwrap();
+            s.input(Input {
+                frame,
+                kind: InputKind::NoteOn {
+                    channel: 0,
+                    note,
+                    velocity: 100,
+                },
+            })
+            .unwrap();
+        }
+        let out = s.drain().unwrap();
+        assert_eq!(
+            out.commands
+                .iter()
+                .filter(|c| matches!(c.action, Action::Transport { .. }))
+                .count(),
+            5
+        );
+    }
 }
 
 #[cfg(test)]
@@ -4617,6 +4899,263 @@ mod hosted_tests {
                 _ => None,
             })
             .collect()
+    }
+    #[test]
+    fn hosted_choke_cancels_waiting_and_delayed_descendants_without_release() {
+        let mut s = session(
+            r#"
+            function onNote(e)
+                saved=e
+                postEvent(e)
+                postEvent(e,100)
+                spawn(function() wait(120);playNote(72,100,50) end)
+                wait(150);playNote(74,100,50)
+            end
+            function onRelease(e) error('choke synthesized release') end
+            function onController(e) releaseVoice(saved.id);postEvent(e) end
+        "#,
+        );
+        s.host_note_on(root(1), on(0, 100)).unwrap();
+        s.host_note_choke(root(1), 48).unwrap();
+        s.host_note_choke(root(1), 48).unwrap();
+        s.host_note_off(root(1), 48).unwrap();
+        s.advance(12000).unwrap();
+        let out = s.drain().unwrap();
+        assert_eq!(out.commands.len(), 2);
+        assert!(matches!(out.commands[0].action, Action::Start(_)));
+        assert!(matches!(out.commands[1].action, Action::ChokeRoot));
+        assert_eq!(out.command_roots, [Some(root(1)), Some(root(1))]);
+        assert_eq!(done(&mut s, 12001, &[]).unwrap(), [root(1)]);
+        // A queued acknowledgement may precede host consumption; repeated stop is harmless.
+        s.host_note_choke(root(1), 12001).unwrap();
+        s.input(Input {
+            frame: 12001,
+            kind: InputKind::Controller {
+                channel: 0,
+                controller: 1,
+                value: 2,
+            },
+        })
+        .unwrap();
+        let out = s.drain().unwrap();
+        assert_eq!(out.commands.len(), 1);
+        assert!(matches!(out.commands[0].action, Action::Controller { .. }));
+        s.host_note_on(root(2), on(12001, 90)).unwrap();
+        assert!(
+            s.drain()
+                .unwrap()
+                .commands
+                .iter()
+                .any(|c| matches!(c.action, Action::Start(_)))
+        );
+    }
+    #[test]
+    fn hosted_choke_cancels_layer_forward_and_retained_release_but_fresh_post_is_detached() {
+        let p=super::super::program::parse_program(r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
+            local saved
+            function onNote(e) saved=saved or e;postEvent(e);postEvent(e,100) end
+            function onRelease(e) error('choke synthesized program release') end
+            function onController(e)
+                if e.value==1 then releaseVoice(saved.id)
+                else postEvent({type=Event.NoteOn,id=saved.id,note=70,velocity=100}) end
+            end
+        ]]></script></ScriptProcessor></EventProcessors><Layers><Layer><EventProcessors><ScriptProcessor><script><![CDATA[
+            function onNote(e)postEvent(e);wait(150);playNote(72,100,10)end
+            function onRelease(e)error('choke synthesized layer release')end
+        ]]></script></ScriptProcessor></EventProcessors></Layer></Layers></Program>"#).unwrap();
+        let mut s =
+            Session::new_hosted_program_chain(&p, BTreeMap::new(), None, 48000, 7, 9).unwrap();
+        s.host_note_on(root(1), on(0, 100)).unwrap();
+        assert!(!s.runtime.state.borrow().forwards.is_empty());
+        s.host_note_choke(root(1), 48).unwrap();
+        assert!(s.runtime.state.borrow().forwards.is_empty());
+        s.input(Input {
+            frame: 48,
+            kind: InputKind::Controller {
+                channel: 0,
+                controller: 1,
+                value: 1,
+            },
+        })
+        .unwrap();
+        s.advance(8000).unwrap();
+        let out = s.drain().unwrap();
+        assert_eq!(
+            out.commands
+                .iter()
+                .filter(|c| matches!(c.action, Action::Start(_)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            out.commands
+                .iter()
+                .filter(|c| matches!(c.action, Action::ChokeRoot))
+                .count(),
+            1
+        );
+        assert_eq!(done(&mut s, 8001, &[]).unwrap(), [root(1)]);
+        // An explicit new post with the stored opaque ID cannot revive sealed ancestry.
+        s.input(Input {
+            frame: 8001,
+            kind: InputKind::Controller {
+                channel: 0,
+                controller: 1,
+                value: 2,
+            },
+        })
+        .unwrap();
+        let out = s.drain().unwrap();
+        assert!(
+            out.commands
+                .iter()
+                .any(|c| matches!(&c.action,Action::Start(n) if n.note==70))
+        );
+        assert!(out.command_roots.iter().all(Option::is_none));
+        // Stable same-frame wire order admits a fresh root after On -> Choke.
+        s.host_note_on(root(2), on(8001, 100)).unwrap();
+        s.host_note_choke(root(2), 8001).unwrap();
+        s.host_note_on(root(3), on(8001, 100)).unwrap();
+        let out = s.drain().unwrap();
+        assert!(matches!(out.commands[0].action, Action::ChokeRoot));
+        assert_eq!(out.command_roots[0], Some(root(2)));
+        assert!(
+            out.commands
+                .iter()
+                .zip(&out.command_roots)
+                .any(|(c, r)| matches!(c.action, Action::Start(_)) && *r == Some(root(3)))
+        );
+        assert!(
+            !out.commands
+                .iter()
+                .zip(&out.command_roots)
+                .any(|(c, r)| matches!(c.action, Action::Start(_)) && *r == Some(root(2)))
+        );
+    }
+    #[test]
+    fn hosted_choke_keeps_another_roots_same_id_registration_and_gate() {
+        let mut s = session(
+            r#"
+            function onNote(e) if saved==nil then saved=e end postEvent(saved) end
+            function onController(e) releaseVoice(saved.id) end
+            function onRelease(e) postEvent(e) end
+        "#,
+        );
+        s.host_note_on(root(1), on(0, 100)).unwrap();
+        s.host_note_on(root(2), on(0, 90)).unwrap();
+        s.host_note_choke(root(1), 1).unwrap();
+        {
+            let state = s.runtime.state.borrow();
+            assert!(state.posted_roots.values().any(|r| *r == Some(root(2))));
+            assert!(
+                state
+                    .trigger_roots
+                    .iter()
+                    .any(|(id, r)| *r == root(2) && state.triggers[id].held)
+            );
+            assert!(
+                state
+                    .trigger_roots
+                    .iter()
+                    .filter(|(_, r)| **r == root(1))
+                    .all(|(id, _)| !state.triggers[id].held)
+            );
+        }
+        s.input(Input {
+            frame: 2,
+            kind: InputKind::Controller {
+                channel: 0,
+                controller: 1,
+                value: 2,
+            },
+        })
+        .unwrap();
+        let out = s.drain().unwrap();
+        assert!(out.commands.iter().zip(&out.command_roots).any(|(c,r)|
+            matches!(c.action,Action::ReleaseNote{..})&&*r==Some(root(2))));
+        assert_eq!(done(&mut s, 3, &[root(2)]).unwrap(), [root(1)]);
+    }
+    #[test]
+    fn hosted_choke_retains_full_ledger_until_queued_completion_ack() {
+        let mut s = session("function onNote(e)end");
+        for token in 1..=HOST_ROOT_CAPACITY as u64 {
+            s.host_note_on(root(token), on(0, 100)).unwrap();
+        }
+        s.host_note_choke(root(1), 1).unwrap();
+        s.drain().unwrap();
+        assert_eq!(
+            s.complete_host_roots(2, &[]).unwrap(),
+            [HostCompletion {
+                root: root(1),
+                frame: 2
+            }]
+        );
+        let events = [
+            HostedInput::Choke {
+                root: root(1),
+                frame: 100,
+            },
+            HostedInput::On {
+                root: root(HOST_ROOT_CAPACITY as u64 + 1),
+                input: on(101, 100),
+            },
+        ];
+        assert!(s.validate_hosted_inputs(&events).is_err());
+        assert_eq!(s.current_frame(), 1);
+        assert_eq!(s.runtime.state.borrow().roots.len(), HOST_ROOT_CAPACITY);
+        s.host_note_choke(root(1), 2).unwrap();
+        assert!(s.drain().unwrap().commands.is_empty());
+        assert_eq!(s.complete_host_roots(3, &[]).unwrap()[0].frame, 2);
+        s.acknowledge_host_completions(&[root(1)]).unwrap();
+        s.host_note_choke(root(1), 3).unwrap();
+        s.host_note_on(root(HOST_ROOT_CAPACITY as u64 + 1), on(3, 100))
+            .unwrap();
+    }
+    #[test]
+    fn hosted_choke_batch_admission_rejects_suffix_before_mutation() {
+        let mut s = session("function onNote(e)postEvent(e)end");
+        let prefix = HostedInput::On {
+            root: root(1),
+            input: on(10, 100),
+        };
+        for bad in [
+            HostedInput::Choke {
+                root: root(2),
+                frame: 11,
+            },
+            HostedInput::Choke {
+                root: HostRoot {
+                    epoch: 8,
+                    ..root(1)
+                },
+                frame: 11,
+            },
+            HostedInput::Choke {
+                root: root(0),
+                frame: 11,
+            },
+        ] {
+            assert!(s.validate_hosted_inputs(&[prefix, bad]).is_err());
+            assert_eq!(s.current_frame(), 0);
+            assert!(s.runtime.state.borrow().roots.is_empty());
+        }
+        let events = [
+            prefix,
+            HostedInput::Choke {
+                root: root(1),
+                frame: 11,
+            },
+            HostedInput::Off {
+                root: root(1),
+                frame: 11,
+            },
+        ];
+        s.validate_hosted_inputs(&events).unwrap();
+        s.host_note_on(root(1), on(10, 100)).unwrap();
+        s.host_note_choke(root(1), 11).unwrap();
+        s.host_note_off(root(1), 11).unwrap();
+        assert_eq!(s.runtime.state.borrow().roots.len(), 1);
+        assert!(s.runtime.state.borrow().roots[&root(1)].choked);
     }
     #[test]
     fn hosted_packet_admission_rejects_invalid_suffix_without_mutation() {
@@ -4758,6 +5297,7 @@ mod hosted_tests {
             match event {
                 HostedInput::On { root, input } => s.host_note_on(root, input).unwrap(),
                 HostedInput::Off { root, frame } => s.host_note_off(root, frame).unwrap(),
+                HostedInput::Choke { root, frame } => s.host_note_choke(root, frame).unwrap(),
                 HostedInput::Event(input) => s.input(input).unwrap(),
             }
         }
@@ -4808,6 +5348,7 @@ mod hosted_tests {
                 match event {
                     HostedInput::On { root, input } => s.host_note_on(root, input).unwrap(),
                     HostedInput::Off { root, frame } => s.host_note_off(root, frame).unwrap(),
+                    HostedInput::Choke { root, frame } => s.host_note_choke(root, frame).unwrap(),
                     HostedInput::Event(input) => s.input(input).unwrap(),
                 }
             }
@@ -4858,6 +5399,7 @@ mod hosted_tests {
             match event {
                 HostedInput::On { root, input } => s.host_note_on(root, input).unwrap(),
                 HostedInput::Off { root, frame } => s.host_note_off(root, frame).unwrap(),
+                HostedInput::Choke { root, frame } => s.host_note_choke(root, frame).unwrap(),
                 HostedInput::Event(input) => s.input(input).unwrap(),
             }
         }
@@ -4950,6 +5492,7 @@ mod hosted_tests {
             s.input(on(frame, 100)).unwrap();
             let state = s.runtime.state.borrow();
             assert!(state.root_activation.is_none());
+            assert_eq!(state.trigger_roots.capacity(), 0);
             assert!(state.command_roots.is_empty());
             assert_eq!(state.command_roots.capacity(), 0);
             assert!(state.posted_roots.is_empty());

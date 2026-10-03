@@ -5,12 +5,13 @@ use crate::uvi::worker::Status;
 const STARTING: &str = "Loading UVI instrument…";
 const PREPARING: &str = "Preparing UVI playback…";
 const READY: &str = "UVI instrument";
-const FAILED: &str = "The UVI instrument could not be loaded.";
+const FAILED: &str = "UVI playback failed. Open Logs for the cause.";
 const UNSUPPORTED: &str = "The current audio configuration is unsupported by UVI playback.";
 
 #[derive(Clone)]
 pub(crate) struct Activation {
     pub(super) source: library::UviSource,
+    pub(super) saved_state: NativeState,
     pub(super) epoch: u64,
     pub(super) generation: u64,
     pub(super) part_generation: u64,
@@ -20,8 +21,17 @@ pub(crate) struct Activation {
 }
 
 impl Activation {
-    fn context_matches(&self, params: &SamplerParams, slot: usize, selection: &Selection) -> bool {
+    pub(super) fn context_matches(
+        &self,
+        params: &SamplerParams,
+        slot: usize,
+        selection: &Selection,
+    ) -> bool {
         selection.parts.get(slot).and_then(|part| part.uvi.as_ref()) == Some(&self.source)
+            && selection
+                .parts
+                .get(slot)
+                .is_some_and(|part| part.uvi_state == self.saved_state)
             && params.shared.uvi_epoch.load(Ordering::Acquire) == self.epoch
             && params.shared.rate() == f64::from(self.rate)
             && params.shared.uvi_max_host_frames.load(Ordering::Acquire) == self.max_host_frames
@@ -31,7 +41,7 @@ impl Activation {
                 .is_some_and(|part| part.generation.load(Ordering::Acquire) == self.part_generation)
     }
 
-    fn current(&self, params: &SamplerParams, slot: usize) -> bool {
+    pub(super) fn current(&self, params: &SamplerParams, slot: usize) -> bool {
         self.context_matches(params, slot, &params.selection.read().unwrap())
     }
 }
@@ -70,7 +80,9 @@ fn update(
     }
     part.status = status.into();
     part.loading = loading;
-    if !loading && status != READY { part.uvi_ui = None; }
+    if !loading && status != READY {
+        part.uvi_ui = None;
+    }
     if let Some(ui) = ui.filter(|ui| {
         (ui.stamp.epoch, ui.stamp.generation) == (activation.epoch, activation.generation)
     }) {
@@ -156,6 +168,7 @@ pub(super) fn service(params: &SamplerParams) {
                 continue;
             };
             let activation = Activation {
+                saved_state: current.parts[slot].uvi_state.clone(),
                 source,
                 epoch,
                 generation: params.shared.uvi_generation.fetch_add(1, Ordering::AcqRel) + 1,
@@ -185,13 +198,13 @@ pub(super) fn service(params: &SamplerParams) {
         if !activation.current(params, slot) {
             continue;
         }
-        let started = configured.ok().is_some_and(|config| {
-            params
+        let started = match configured {
+            Ok(config) => params
                 .shared
                 .uvi_controls
                 .lock()
                 .unwrap()
-                .prepare(
+                .prepare_with_state(
                     config,
                     activation.source.clone(),
                     activation.epoch,
@@ -200,9 +213,22 @@ pub(super) fn service(params: &SamplerParams) {
                     slot,
                     activation.max_host_frames,
                     UVI_LEAD_PACKETS,
+                    activation.saved_state.as_ref(),
                 )
-                .is_ok()
-        });
+                .is_ok(),
+            Err(reason) => {
+                let mut trace =
+                    crate::diagnostics::LoadTrace::new(&activation.source.bank, 0, Some(slot));
+                trace.detail("backend", "uvi");
+                trace.detail("member", activation.source.member.clone());
+                trace.detail("epoch", activation.epoch);
+                trace.detail("generation", activation.generation);
+                trace.stage("uvi_configuration");
+                trace.fail(reason);
+                trace.finish("failed");
+                false
+            }
+        };
         if !activation.current(params, slot) {
             cancel(params, &activation);
             continue;
@@ -231,13 +257,26 @@ pub(super) fn service(params: &SamplerParams) {
                 .map(|activation| (slot, activation))
         })
         .collect();
-    let delay_ready = if activations.is_empty() { Ok(false) } else { uvi_delay_ready(params) };
+    let delay_ready = if activations.is_empty() {
+        Ok(false)
+    } else {
+        uvi_delay_ready(params)
+    };
     for (slot, activation) in activations {
         if !activation.current(params, slot) {
             cancel(params, &activation);
             continue;
         }
-        if delay_ready.is_err() && !activation.published {
+        if let Err(error) = delay_ready
+            && !activation.published
+        {
+            crate::diagnostics::event(
+                crate::diagnostics::LogLevel::Error,
+                "uvi",
+                "uvi_delay_admission_failed",
+                serde_json::json!({"slot":slot, "epoch":activation.epoch, "generation":activation.generation,
+                    "max_host_frames":maximum, "reason":format!("{error:?}")}),
+            );
             // Terminal allocation/layout failure is distinct from callback ack.
             // Keep the failed identity, and preserve already exported players.
             cancel(params, &activation);
@@ -260,7 +299,9 @@ pub(super) fn service(params: &SamplerParams) {
             } else {
                 let status = registry.status(activation.epoch, activation.generation);
                 let ui = registry.poll_ui(activation.epoch, activation.generation);
-                let ready = if delay_ready == Ok(true) && !activation.published && status == Some(Status::Ready)
+                let ready = if delay_ready == Ok(true)
+                    && !activation.published
+                    && status == Some(Status::Ready)
                 {
                     registry.take_ready(activation.epoch, activation.generation)
                 } else {
@@ -303,7 +344,14 @@ pub(super) fn service(params: &SamplerParams) {
                     continue;
                 }
             }
-            Err(_) => {
+            Err(error) => {
+                crate::diagnostics::event(
+                    crate::diagnostics::LogLevel::Error,
+                    "uvi",
+                    "uvi_endpoint_failed",
+                    serde_json::json!({"slot":slot, "epoch":activation.epoch, "generation":activation.generation,
+                        "reason":format!("{error:?}")}),
+                );
                 cancel(params, &activation);
                 update(params, slot, &activation, FAILED, false, None);
                 continue;
@@ -330,10 +378,20 @@ pub(super) fn service(params: &SamplerParams) {
             }
             Some(Status::Starting) => update(params, slot, &activation, STARTING, true, None),
             _ => {
+                if failed {
+                    crate::diagnostics::event(
+                        crate::diagnostics::LogLevel::Error,
+                        "uvi",
+                        "uvi_audio_endpoint_failed",
+                        serde_json::json!({"slot":slot, "epoch":activation.epoch, "generation":activation.generation,
+                            "reason":"Audio endpoint failed; inspect the preceding worker fault and rack packet counters"}),
+                    );
+                }
                 cancel(params, &activation);
                 update(params, slot, &activation, FAILED, false, None);
             }
         }
     }
+    super::uvi_state::poll(params);
     params.shared.uvi_controls.lock().unwrap().poll_retired();
 }

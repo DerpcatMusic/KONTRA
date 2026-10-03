@@ -15,6 +15,7 @@
 
 use super::{
     dsp::{Frame, MAX_CHANNELS},
+    exciter::{self, Exciter},
     host::ParameterValue,
     program::ProgramNode,
     resampling,
@@ -36,7 +37,12 @@ type Parameters = BTreeMap<String, ParameterValue>;
 pub fn supports(kind: &str) -> bool {
     matches!(
         kind,
-        "DigitalEq" | "ParametricEQ" | "ThreeBandShelves" | "Convolver" | "SampledReverb"
+        "DigitalEq"
+            | "ParametricEQ"
+            | "ThreeBandShelves"
+            | "Convolver"
+            | "SampledReverb"
+            | "Exciter"
     )
 }
 
@@ -69,6 +75,9 @@ fn band(name: &str) -> Option<(&str, usize)> {
 /// Validation performs no file access; it rejects unsupported active controls.
 /// Resource paths are deliberately absent from error messages.
 pub fn validate(node: &ProgramNode) -> Result<()> {
+    if exciter::supports(&node.kind) {
+        return exciter::validate(node);
+    }
     parameters(node).map(|_| ())
 }
 
@@ -844,6 +853,7 @@ impl ImpulseProcessor {
 }
 
 pub enum ProcessorKind {
+    Exciter(Box<Exciter>),
     Eq(EqProcessor),
     Impulse(ImpulseProcessor),
 }
@@ -876,6 +886,16 @@ impl EffectProcessor {
             (1..=8192).contains(&max_block),
             "Invalid UVI effect block size"
         );
+        if exciter::supports(&node.kind) {
+            return Ok(Self {
+                kind: node.kind.clone(),
+                channels,
+                rate,
+                parameters: BTreeMap::new(),
+                processor: ProcessorKind::Exciter(Box::new(Exciter::new(node, channels, rate)?)),
+                irs: None,
+            });
+        }
         let parameters = parameters(node)?;
         let processor = if matches!(
             node.kind.as_str(),
@@ -920,6 +940,7 @@ impl EffectProcessor {
         std::mem::size_of::<Self>()
             + self.kind.capacity()
             + match &self.processor {
+                ProcessorKind::Exciter(exciter) => exciter.memory_bytes(),
                 ProcessorKind::Eq(eq) => eq.sections.capacity() * std::mem::size_of::<Section>(),
                 ProcessorKind::Impulse(ir) => {
                     ir.convolvers
@@ -935,6 +956,7 @@ impl EffectProcessor {
     }
     pub fn diagnostics(&self) -> &'static str {
         match &self.processor {
+            ProcessorKind::Exciter(_) => exciter::FIDELITY_DIAGNOSTIC,
             ProcessorKind::Impulse(ir)
                 if ir.sample.as_ref().is_some_and(|sample| {
                     !resampling::verified_rate(sample.rate, self.rate)
@@ -947,12 +969,18 @@ impl EffectProcessor {
         }
     }
     pub fn parameter(&self, name: &str) -> Result<ParameterValue> {
+        if let ProcessorKind::Exciter(exciter) = &self.processor {
+            return exciter.parameter(name);
+        }
         self.parameters
             .get(name)
             .cloned()
             .context("Unknown UVI effect parameter")
     }
     pub fn set_parameter(&mut self, name: &str, value: &ParameterValue) -> Result<()> {
+        if let ProcessorKind::Exciter(exciter) = &mut self.processor {
+            return exciter.set_parameter(name, value);
+        }
         check(&self.kind, name, value)?;
         if self.parameters.get(name) == Some(value) {
             return Ok(());
@@ -960,6 +988,7 @@ impl EffectProcessor {
         let mut p = self.parameters.clone();
         p.insert(name.into(), value.clone());
         match &mut self.processor {
+            ProcessorKind::Exciter(_) => unreachable!("delegated above"),
             ProcessorKind::Eq(eq) => {
                 if name != "Bypass" && !name.starts_with("Visible") {
                     let mut replacement = EqProcessor::new(&self.kind, &p, self.rate);
@@ -1029,10 +1058,14 @@ impl EffectProcessor {
                 .all(|x| x.is_finite()),
             "Nonfinite UVI effect input"
         );
+        if let ProcessorKind::Exciter(exciter) = &mut self.processor {
+            return exciter.process(io);
+        }
         if on(&self.parameters, "Bypass") {
             return Ok(());
         }
         match &mut self.processor {
+            ProcessorKind::Exciter(_) => unreachable!("delegated above"),
             ProcessorKind::Eq(eq) => eq.process(io, self.channels),
             ProcessorKind::Impulse(ir) => {
                 ir.process(io, &self.parameters, self.channels, &self.kind)?
@@ -1077,6 +1110,38 @@ mod tests {
             wavetable_image: false,
             riff_metadata: Vec::new(),
         })
+    }
+    #[test]
+    fn authored_exciter_delegation_and_atomic_preflight() {
+        let node = effect("<Exciter Amount='2' Mode='1' Oversampling='0'/>");
+        assert!(supports(&node.kind));
+        validate(&node).unwrap();
+        let mut combined =
+            EffectProcessor::new(&node, 2, 48000., 256, Arc::new(HashMap::new())).unwrap();
+        let mut direct = Exciter::new(&node, 2, 48000.).unwrap();
+        let mut input = vec![[0.; 12]; 512];
+        input[0][0] = 0.125;
+        input[17][1] = -0.25;
+        let mut reference = input.clone();
+        combined.process(&mut input).unwrap();
+        direct.process(&mut reference).unwrap();
+        assert_eq!(input, reference);
+        assert!(
+            combined
+                .set_parameter("Amount", &ParameterValue::Number(3.))
+                .is_err()
+        );
+        assert_eq!(
+            combined.parameter("Amount").unwrap(),
+            ParameterValue::Number(2.)
+        );
+        assert!(combined.diagnostics().contains("fitted"));
+        assert!(
+            combined.memory_bytes()
+                >= std::mem::size_of::<EffectProcessor>() + direct.memory_bytes()
+        );
+        assert!(validate(&effect("<Exciter Oversampling='1'/>")).is_err());
+        assert!(EffectProcessor::new(&node, 1, 48000., 256, Arc::new(HashMap::new())).is_err());
     }
     #[test]
     fn authored_parametric_eq_native_bands_and_channels() {

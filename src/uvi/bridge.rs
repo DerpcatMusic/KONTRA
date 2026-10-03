@@ -211,7 +211,7 @@ impl Bridge {
                         && player::input_is_valid(&input)
                         && matches!(input.kind, InputKind::NoteOn { .. })
                 }
-                HostedInput::Off { root, .. } => self.root_valid(root),
+                HostedInput::Off { root, .. } | HostedInput::Choke { root, .. } => self.root_valid(root),
                 HostedInput::Event(input) => {
                     player::input_is_valid(&input)
                         && !matches!(
@@ -230,6 +230,10 @@ impl Bridge {
         self.partial.roots[count] = event;
         self.partial.root_count += 1;
         Ok(())
+    }
+    /// Fixed packet room for atomic host-pattern fanout; no reservation or allocation.
+    pub fn remaining_hosted_capacity(&self) -> usize {
+        MAX_HOSTED_INPUTS - usize::from(self.partial.root_count)
     }
     fn root_valid(&self, root: super::script::HostRoot) -> bool {
         root.epoch == self.stamp.epoch && root.generation == self.stamp.generation && root.token > 0

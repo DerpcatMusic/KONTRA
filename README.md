@@ -12,9 +12,11 @@ KONTRA supplies no commercial Kontakt instrument libraries. You supply your own 
 
 The optional `uvi` feature adds local UFS2/v3 directory and member decoding,
 protected Program XML decoding, a Lua 5.1 host, multichannel sample loading,
-and offline graph rendering. These commands are development tools; UVI banks
-are not yet integrated into the plug-in browser, and full Falcon compatibility
-is not established. See the [current evidence and limits](docs/uvi-compatibility.md)
+and native per-part playback through the shared rack mixer. UVI banks and
+Kontakt libraries share the browser; supported UVI programs expose their
+authored controls and bank artwork. This remains experimental, and full Falcon
+compatibility is not established. See the [current evidence and limits](docs/uvi-compatibility.md)
+and [player ownership boundary](docs/PLAYER_BACKEND_BOUNDARY.md)
 and [observed container layout](docs/uvi-format.md).
 
 Build with `cargo build --locked --profile ci --no-default-features --features uvi`.
@@ -25,6 +27,7 @@ not redistributed. For an encrypted bank with a suitable PNG resource:
 ```sh
 kontakto uvi-key bank.ufs private-state.json --reader UVIWorkstationx64.exe
 kontakto uvi-check bank.ufs member.uvip --reader UVIWorkstationx64.exe --content-key-file private-state.json
+kontakto uvi-diagnose bank.ufs member.uvip --reader UVIWorkstationx64.exe --content-key-file private-state.json
 kontakto uvi-play bank.ufs member.uvip output.wav --reader UVIWorkstationx64.exe --content-key-file private-state.json
 ```
 
