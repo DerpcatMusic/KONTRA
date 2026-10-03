@@ -99,9 +99,20 @@ pub struct Requests {
 }
 
 impl Requests {
-    /// Receive uncaptured GPU errors without taking the UI/model lock.
+    /// Receive startup diagnostics and uncaptured GPU errors without taking
+    /// the UI/model lock.
     pub fn on_log(&self, hook: LogHook) {
         *self.log.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
+    }
+
+    // KONTAKTO patch: startup must be observable before borrowing the
+    // handler or locking the model. A busy/reentrant sink retains stderr.
+    fn startup_log(&self, line: &str) {
+        eprintln!("{line}");
+        let hook = self.log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        if let Some(hook) = hook {
+            report_diagnostic(&hook, line);
+        }
     }
 
     /// KONTAKTO patch: hand every key event to `hook` first.
@@ -190,8 +201,15 @@ pub fn open<V: View + Send + 'static>(
         .with_parent(parent)
         .with_scale_factor_override(scale);
     let sink = Arc::clone(&shared);
-    let window =
-        Window::create(settings, build(shared, requests, true)).and_then(|w| w.show().map(|()| w));
+    // KONTAKTO patch: the builder's ready marker precedes baseview's event
+    // loop initialization. Distinguish creation and the synchronous show.
+    let window = Window::create(settings, build(shared, Arc::clone(&requests), true))
+        .and_then(|w| {
+            requests.startup_log("mui-baseview: native window creation complete; requesting show");
+            w.show()?;
+            requests.startup_log("mui-baseview: native window show complete");
+            Ok(w)
+        });
     window
         .map_err(|e| log(&sink, &format!("mui-baseview: window failed ({e})")))
         .ok()
@@ -235,7 +253,7 @@ fn build<V: View + Send + 'static>(
         let size = cx.size();
         let physical = (size.physical.width, size.physical.height);
         log(&shared, &format!("mui-baseview: native window init creating accessibility adapter; physical_size={physical:?} device_scale={}", size.scale_factor));
-        let mut handler = Handler::new(shared, requests, physical, size.scale_factor);
+        let mut handler = Handler::new(shared, Arc::clone(&requests), physical, size.scale_factor);
         handler.a11y = Some(A11y::new());
         handler.parented = parented;
         log(&handler.shared, "mui-baseview: native window ready; waiting for first frame");
@@ -247,6 +265,9 @@ fn build<V: View + Send + 'static>(
             pending_events: RefCell::new(VecDeque::new()),
             timed,
             reentrant: Cell::new(0),
+            requests,
+            first_frame: Cell::new(false),
+            borrow_failed: Cell::new(false),
         })
     }
 }
@@ -281,6 +302,8 @@ pub struct Handler<V> {
     /// The queue and the frame schedule.
     pub driver: Driver,
     timing: Option<timing::Capture>,
+    // KONTAKTO patch: one startup decision, with no subsequent log allocation.
+    first_tick: bool,
 }
 
 impl<V: View> Handler<V> {
@@ -310,10 +333,15 @@ impl<V: View> Handler<V> {
             notch: (None, 0),
             driver: Driver::new(size, scale, Box::new(Clipboard::default())),
             timing,
+            first_tick: false,
         }
     }
 
     fn tick(&mut self, window: &WindowContext, sample: &mut Option<NativeFrameSample>) {
+        let first_tick = !std::mem::replace(&mut self.first_tick, true);
+        if first_tick {
+            self.requests.startup_log(&format!("mui-baseview: first tick entering physical_size={:?} device_scale={}", self.driver.size(), self.scale));
+        }
         let requests = &self.requests;
         let packed = requests.size.swap(0, Ordering::AcqRel);
         let bits = requests.scale.swap(0, Ordering::AcqRel);
@@ -335,10 +363,16 @@ impl<V: View> Handler<V> {
         // A hidden or detached editor cannot present, and on Windows this is
         // the host's GUI thread: a blocking present there freezes the host.
         let Ok(handle) = window.window_handle().map(|h| h.as_raw()) else {
+            if first_tick {
+                self.requests.startup_log("mui-baseview: first tick handle_available=false; skipped=no_window");
+            }
             if let Some(s) = sample { s.outcome = NativeFrameOutcome::NoWindow; }
             return;
         };
         if platform::should_skip_frame(handle) {
+            if first_tick {
+                self.requests.startup_log("mui-baseview: first tick handle_available=true; skipped=hidden");
+            }
             if let Some(s) = sample { s.outcome = NativeFrameOutcome::Hidden; }
             return;
         }
@@ -349,6 +383,13 @@ impl<V: View> Handler<V> {
         }
         let now = Instant::now();
         let size = self.driver.size();
+        if first_tick {
+            let decision = if target_size(size.0, size.1).is_none() { "zero_size" }
+                else if self.gpu.is_some() { "gpu_ready" }
+                else if now < self.gpu_retry_at { "gpu_retry_pending" }
+                else { "gpu_init" };
+            self.requests.startup_log(&format!("mui-baseview: first tick handle_available=true physical_size={size:?}; decision={decision}"));
+        }
         if self.requests.redraw.swap(false, Ordering::AcqRel) {
             self.driver.redraw();
         }
@@ -661,6 +702,10 @@ struct Adapter<V> {
     pending_events: RefCell<VecDeque<Event>>,
     timed: bool,
     reentrant: Cell<u64>,
+    // KONTAKTO patch: accessible even while the handler is reentrantly borrowed.
+    requests: Arc<Requests>,
+    first_frame: Cell<bool>,
+    borrow_failed: Cell<bool>,
 }
 
 impl<V: View> Adapter<V> {
@@ -690,6 +735,7 @@ fn guard<V: View, R>(h: &mut Handler<V>, f: impl FnOnce(&mut Handler<V>) -> R) -
 
 impl<V: View + 'static> WindowHandler for Adapter<V> {
     fn on_frame(&self) -> Result<(), HandlerError> {
+        startup_once(&self.requests, &self.first_frame, "mui-baseview: first on_frame entered; borrowing handler");
         if let Ok(mut h) = self.handler.try_borrow_mut() {
             let at = h.timing.as_ref().map(|_| Instant::now());
             self.drain(&mut h);
@@ -704,8 +750,11 @@ impl<V: View + 'static> WindowHandler for Adapter<V> {
                     capture.record(sample, Instant::now(), self.reentrant.replace(0));
                 }
             }
-        } else if self.timed {
-            self.reentrant.set(self.reentrant.get().saturating_add(1));
+        } else {
+            startup_once(&self.requests, &self.borrow_failed, "mui-baseview: on_frame skipped; handler already borrowed");
+            if self.timed {
+                self.reentrant.set(self.reentrant.get().saturating_add(1));
+            }
         }
         Ok(())
     }
@@ -842,20 +891,32 @@ fn log<V: View>(shared: &Mutex<Shared<V>>, line: &str) {
     lock(shared).view.log(line);
 }
 
+// KONTAKTO patch: per-window markers, including a first callback that
+// cannot borrow the handler. Static strings allocate only inside the sink.
+fn startup_once(requests: &Requests, emitted: &Cell<bool>, line: &str) {
+    if !emitted.replace(true) {
+        requests.startup_log(line);
+    }
+}
+
 fn report_gpu_error(hook: &LogHook, error: impl std::fmt::Display) {
     // Retain mui-vello's stderr diagnostic as well as the app's persistent
     // sink. Do not change its separate device-lost callback or recovery.
     eprintln!("mui-vello: uncaptured GPU error: {error}");
     let line = format!("mui-baseview: GPU failed (uncaptured error: {error})");
+    report_diagnostic(hook, &line);
+}
+
+fn report_diagnostic(hook: &LogHook, line: &str) {
     let mut sink = match hook.try_lock() {
         Ok(sink) => sink,
         Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-        // A sink may itself trigger another GPU diagnostic. Preserve stderr
+        // A sink may itself trigger another native diagnostic. Preserve stderr
         // without blocking or recursively entering its FnMut callback.
         Err(std::sync::TryLockError::WouldBlock) => return,
     };
-    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink(&line))).is_err() {
-        eprintln!("mui-baseview: diagnostic sink panicked; GPU error retained on stderr");
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink(line))).is_err() {
+        eprintln!("mui-baseview: diagnostic sink panicked; diagnostic retained on stderr");
     }
 }
 
