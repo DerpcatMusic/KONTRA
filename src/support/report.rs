@@ -136,7 +136,11 @@ fn attach_incident_provenance(payload: &mut ReportPayload, incident: &CrashIncid
         "0.0.0-unknown".into()
     };
     payload.build_id = recorded_field(incident.build_id());
-    payload.host_name = recorded_field(&incident.host_name);
+    payload.host_name = recorded_field(if incident.host_name.trim().is_empty() {
+        &incident.host_process
+    } else {
+        &incident.host_name
+    });
     payload.plugin_format = recorded_field(&incident.plugin_api);
     payload.os_name = recorded_field(if incident.platform.os_name.trim().is_empty() {
         &incident.os
@@ -760,18 +764,39 @@ mod tests {
         for version in ["0.3.64", "1.2.3-rc.1", "0.0.0-unknown"] {
             assert!(valid_recorded_version(version));
         }
-        // A missing display name does not borrow even a known *recorded* process
-        // name; that name remains separately available to interpret the evidence.
-        incident.host_process = "Studio One".into();
-        let payload =
-            automatic_report_payload(&incident, &("REAPER".into(), "CLAP".into()), &reopening, "");
-        assert!(payload.host_name.starts_with("Unknown"));
-        assert!(
-            payload
-                .diagnostics
-                .unwrap()
-                .contains("Host process: Studio One")
-        );
+        // If only the recorded process is available, it is the host fallback.
+        // The reopening host still cannot supply any missing incident field.
+        for process in ["Studio One", "Reason", " "] {
+            incident.host_process = process.into();
+            let payload = automatic_report_payload(
+                &incident,
+                &("REAPER".into(), "CLAP".into()),
+                &reopening,
+                "Host: REAPER",
+            );
+            let expected = if process.trim().is_empty() {
+                "Unknown (not recorded at incident time)"
+            } else {
+                process
+            };
+            let wire = serde_json::to_value(&payload).unwrap();
+            assert_eq!(wire["host_name"], expected);
+            for field in ["diagnostics", "diagnostics_full"] {
+                let diagnostics = wire[field].as_str().unwrap();
+                assert_eq!(
+                    diagnostics
+                        .lines()
+                        .find_map(|line| line.strip_prefix("Host: ")),
+                    Some(expected)
+                );
+                assert_eq!(
+                    diagnostics
+                        .lines()
+                        .find_map(|line| line.strip_prefix("Host process: ")),
+                    Some(expected)
+                );
+            }
+        }
     }
 
     #[test]
