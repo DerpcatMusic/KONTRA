@@ -1183,21 +1183,18 @@ fn reporter_worker(
                 break;
             }
             ReporterControl::Submitted(incident_id) => {
-                let copies = [
-                    load_pending_incident()
-                        .is_some_and(|incident| incident.id == incident_id)
-                        .then(pending_incident_path),
-                    // Failed/cancelled replacement can leave a same-ID deferred
-                    // copy. Retire only queue copies; full private originals stay.
-                    (incident_id.len() == 16 && incident_id.bytes().all(|b| b.is_ascii_hexdigit()))
-                        .then(|| {
-                            reports_dir()
-                                .join("deferred")
-                                .join(format!("{incident_id}.json"))
-                        }),
-                ];
-                for copy in copies.into_iter().flatten() {
-                    if let Err(error) = std::fs::remove_file(copy) {
+                if incident_id.len() != 16 || !incident_id.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    continue;
+                }
+                // Failed/cancelled replacement can leave a same-ID deferred
+                // copy. Retire only exact queue copies; full originals stay.
+                for copy in [
+                    pending_incident_path(),
+                    reports_dir()
+                        .join("deferred")
+                        .join(format!("{incident_id}.json")),
+                ] {
+                    if let Err(error) = retire_acknowledged_copy(&copy, &incident_id, &stopping) {
                         if error.kind() != std::io::ErrorKind::NotFound {
                             crate::diagnostics::event(
                                 crate::diagnostics::LogLevel::Error,
@@ -1212,6 +1209,37 @@ fn reporter_worker(
             }
         }
     }
+}
+
+fn retire_acknowledged_copy(
+    path: &Path,
+    incident_id: &str,
+    stopping: &AtomicBool,
+) -> std::io::Result<()> {
+    if stopping.load(Ordering::Acquire) {
+        return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+    }
+    let _publisher_lock =
+        buffr_durable_file::acquire_publisher_lock(path, std::time::Duration::from_millis(500))?;
+    if stopping.load(Ordering::Acquire) {
+        return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+    }
+    let Some(bytes) = super::read_bounded_file(path, super::LOCAL_REPORT_BYTES)? else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "queue copy exceeds the validation budget; retained without retirement",
+        ));
+    };
+    let incident: CrashIncident = serde_json::from_slice(&bytes).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "queue copy cannot be validated; retained without retirement",
+        )
+    })?;
+    if incident.id == incident_id {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
 }
 
 fn detect_stale_sessions(stopping: &AtomicBool) -> Option<CrashIncident> {
@@ -1718,6 +1746,28 @@ pub(super) fn preserve_original_file(
 
 fn preserve_oversized_pending(stopping: &AtomicBool) -> bool {
     let path = pending_incident_path();
+    if stopping.load(Ordering::Acquire) {
+        return false;
+    }
+    let _publisher_lock = match buffr_durable_file::acquire_publisher_lock(
+        &path,
+        std::time::Duration::from_millis(500),
+    ) {
+        Ok(lock) => lock,
+        Err(error) => {
+            crate::diagnostics::event(
+                crate::diagnostics::LogLevel::Error,
+                "support",
+                "pending_report_lock_failed",
+                serde_json::json!({"reason":format!(
+                    "Pending evidence could not be locked for safe recovery ({error}); replacement remains blocked.")}),
+            );
+            return false;
+        }
+    };
+    if stopping.load(Ordering::Acquire) {
+        return false;
+    }
     match super::read_bounded_file(&path, super::LOCAL_REPORT_BYTES) {
         Ok(Some(_)) => true,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
@@ -1967,7 +2017,19 @@ fn pending_incident_path() -> PathBuf {
 
 fn load_pending_incident() -> Option<CrashIncident> {
     let path = pending_incident_path();
-    let mut incident: CrashIncident = read_json_or_discard(&path)?;
+    // The LazyLock initializer also calls this reader: no mirrored diagnostics
+    // here. Keep the publisher lock through any malformed/legacy retirement.
+    let _publisher_lock =
+        buffr_durable_file::acquire_publisher_lock(&path, std::time::Duration::from_millis(500))
+            .ok()?;
+    let bytes = super::read_bounded_file(&path, super::LOCAL_REPORT_BYTES).ok()??;
+    let mut incident: CrashIncident = match serde_json::from_slice(&bytes) {
+        Ok(incident) => incident,
+        Err(_) => {
+            let _ = std::fs::remove_file(&path);
+            return None;
+        }
+    };
     if incident.source_schema < 5 {
         let _ = std::fs::remove_file(path);
         return None;
@@ -1992,15 +2054,13 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
     serde_json::from_slice(&bytes).ok()
 }
 
-/// As [`read_json`], but discards malformed inputs within the read budget.
-/// Oversized originals are retained and handled by the recovery worker.
+/// Discards malformed bounded session JSON only while holding its publisher lock.
+/// Oversized originals remain for the recovery worker's private archival.
 fn read_json_or_discard<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
-    let Some(bytes) = super::read_bounded_file(path, super::LOCAL_REPORT_BYTES).ok()? else {
-        // This reader also runs inside REPORTER's LazyLock initializer. Emit
-        // diagnostics only from the recovery worker; mirroring here would
-        // recursively access that same initializer. Oversize is not malformed.
-        return None;
-    };
+    let _publisher_lock =
+        buffr_durable_file::acquire_publisher_lock(path, std::time::Duration::from_millis(500))
+            .ok()?;
+    let bytes = super::read_bounded_file(path, super::LOCAL_REPORT_BYTES).ok()??;
     let value = serde_json::from_slice(&bytes).ok();
     if value.is_none() {
         let _ = std::fs::remove_file(path);
@@ -2664,6 +2724,100 @@ mod tests {
                 0o600
             );
         }
+    }
+
+    #[test]
+    fn pending_retirement_serializes_with_an_actual_competing_publisher() {
+        const CHILD: &str = "KONTRA_PENDING_RETIREMENT_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "support::crash::tests::pending_retirement_serializes_with_an_actual_competing_publisher", "--test-threads=1"])
+                .env(CHILD, "1").env("KONTRA_REPORT_DIR", directory.path())
+                .env("KONTRA_DISABLE_NETWORK", "1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let path = pending_incident_path();
+        let original = vec![b' '; super::super::LOCAL_REPORT_BYTES + 1];
+        buffr_durable_file::publish_private(&path, &original).unwrap();
+        let hash = blake3::hash(&original).to_hex().to_string();
+        let archive = reports_dir().join("originals").join(format!("{hash}.raw"));
+        // Hold the archive publisher so the real recovery worker pauses after
+        // acquiring the pending publisher lock, before it can retire anything.
+        let archive_lock =
+            buffr_durable_file::acquire_publisher_lock(&archive, std::time::Duration::ZERO)
+                .unwrap();
+        let recovery = std::thread::spawn(|| preserve_oversized_pending(&AtomicBool::new(false)));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            match buffr_durable_file::acquire_publisher_lock(&path, std::time::Duration::ZERO) {
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Ok(lock) => drop(lock),
+                Err(error) => panic!("unexpected pending lock error: {error}"),
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "recovery did not acquire its lock"
+            );
+            std::thread::yield_now();
+        }
+        let mut next = test_incident("0.3.115", "authored-competing-publisher");
+        next.id = "fedcba9876543210".into();
+        let next_bytes = serde_json::to_vec(&next).unwrap();
+        let publisher_path = path.clone();
+        let published_bytes = next_bytes.clone();
+        let (entered, receiver) = mpsc::channel();
+        let publisher = std::thread::spawn(move || {
+            buffr_durable_file::publish_private_streaming(
+                &publisher_path,
+                std::time::Duration::from_secs(2),
+                |file| {
+                    entered.send(()).unwrap();
+                    std::io::Write::write_all(file, &published_bytes)
+                },
+            )
+        });
+        assert!(
+            matches!(
+                receiver.recv_timeout(std::time::Duration::from_millis(25)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "publisher entered while recovery held its lock"
+        );
+        drop(archive_lock);
+        assert!(recovery.join().unwrap());
+        publisher.join().unwrap().unwrap();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            next_bytes,
+            "retirement must not delete the other host's new publication"
+        );
+        assert_eq!(std::fs::read(&archive).unwrap(), original);
+        let stopped = AtomicBool::new(false);
+        retire_acknowledged_copy(&path, "0123456789abcdef", &stopped).unwrap();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            next_bytes,
+            "another ID cannot be retired"
+        );
+        // Busy ACK retirement gives up without deleting, using the same lock as
+        // the real publisher. Cancellation also retains the queue copy.
+        let lock =
+            buffr_durable_file::acquire_publisher_lock(&path, std::time::Duration::ZERO).unwrap();
+        assert!(retire_acknowledged_copy(&path, &next.id, &stopped).is_err());
+        assert!(load_pending_incident().is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), next_bytes);
+        drop(lock);
+        assert!(retire_acknowledged_copy(&path, &next.id, &AtomicBool::new(true)).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), next_bytes);
+        retire_acknowledged_copy(&path, &next.id, &stopped).unwrap();
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::read(&archive).unwrap(),
+            original,
+            "ACK preserves full original evidence"
+        );
     }
 
     #[test]
