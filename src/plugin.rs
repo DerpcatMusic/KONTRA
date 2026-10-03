@@ -5692,7 +5692,7 @@ end on"#,"🦀".repeat(600));
                 // its source. One-budget-unit copies restart and remain bounded.
                 let mut passes=0;
                 assert_eq!(allocations(||{while !dsp.rack.parts[0].script().unwrap().refresh_live_within(&mut narrow,&mut cursor,1){passes+=1;assert!(passes<500);}}),0);
-                assert_eq!(narrow.native_controls[0].properties.label,"Latest🦀");assert_eq!(narrow.native_controls[1].properties.menu_len,3);
+                assert_eq!(narrow.native_controls[0].value,9);assert_eq!(narrow.native_controls[0].properties.label,"Latest🦀");assert_eq!(narrow.native_controls[1].properties.menu_len,3);
             }
         }
         assert!(dsp.rack.parts[0].script().unwrap().diagnostics().is_empty());
