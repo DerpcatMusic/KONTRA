@@ -1326,17 +1326,16 @@ fn reporter_worker(
                     && status.diagnostics_sha256 == evidence_sha256
                 {
                     let mut active = pending.lock_unpoisoned();
-                    if active.as_ref().is_some_and(|i| i.id == incident_id) {
-                        *active = None;
+                    if !active.as_ref().is_some_and(|i| i.id == incident_id) {
+                        // A terminal size failure continues exactly once, when
+                        // it clears A. A replay cannot restart unrelated B after
+                        // B's transient failure stopped the upload burst.
+                        continue;
                     }
-                    let adopted = active.as_ref().is_some_and(CrashIncident::auto_reportable);
+                    *active = None;
                     drop(active);
                     drop(source_lock);
-                    if adopted {
-                        spawn_auto_report();
-                    } else {
-                        let _ = REPORTER.send(ReporterControl::ScanQueue(false, None));
-                    }
+                    let _ = REPORTER.send(ReporterControl::ScanQueue(false, None));
                 }
             }
             ReporterControl::ScanQueue(wrapped, scan_cursor) => {
@@ -4050,6 +4049,43 @@ mod tests {
             && event.reason.as_deref().is_some_and(
                 |reason| reason.contains(first_id) && reason.contains("manual export")
             )));
+        // A repeated terminal control must not restart B after an offline
+        // delivery. Unlike ACK completion, manual failure never clears A early.
+        let (entered, began) = mpsc::channel();
+        let (outcome, outcome_receiver) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        super::super::report::test_detached_automatic_delivery(
+            second_id.into(),
+            Err("authored offline delivery".into()),
+            entered,
+            outcome,
+            released,
+        )
+        .unwrap();
+        began.recv_timeout(timeout).unwrap();
+        assert!(!outcome_receiver.recv_timeout(timeout).unwrap());
+        release.send(()).unwrap();
+        let deadline = std::time::Instant::now() + timeout;
+        while super::super::report::test_automatic_report_is_busy() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(REPORTER.send(ReporterControl::ManualRequired(
+            first_id.into(),
+            status.diagnostics_sha256
+        )));
+        let (barrier, reached) = mpsc::sync_channel(1);
+        assert!(REPORTER.send(ReporterControl::Barrier(barrier)));
+        reached.recv_timeout(timeout).unwrap();
+        assert!(matches!(
+            event_receiver.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        assert_eq!(
+            REPORTER.pending.lock_unpoisoned().as_ref().unwrap().id,
+            second_id
+        );
+        assert!(manual_upload_path(second_id).is_some_and(|path| !path.exists()));
         REPORTER.shutdown();
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", TEST, "--test-threads=1"])
