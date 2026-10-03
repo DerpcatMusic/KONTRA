@@ -472,6 +472,7 @@ impl KspEngine for Host<'_> {
         let Some(address) = self.address(par) else {
             return self.bank.is_some_and(|b| Address::inert(par, b.groups()));
         };
+        if self.bank.is_some_and(|b| address.saved_phase_only(b.groups())) { return false }
         let native = value;
         let value = address.decode(value);
         if let Address::GroupType(g, s) = address {
@@ -744,7 +745,8 @@ impl<'a> ScriptSetup<'a> {
         let mut state = super::native_state::NativeState::default();
         let mut add = |par: EnginePar| {
             let Some(address) = self.address(par) else { return };
-            if matches!(address, Address::GroupType(..) | Address::Fx(_, _, FxParam::Type)) { return }
+            if matches!(address, Address::GroupType(..) | Address::Fx(_, _, FxParam::Type))
+                || address.saved_phase_only(self.groups) { return }
             if let Some(value) = self.engine_par(par) { state.prepare(address, par, value); }
         };
         let ids: Vec<_> = (params::id::VOLUME..).map_while(|id| crate::ksp::engine_par_name(id).map(|_| id)).collect();
@@ -869,6 +871,7 @@ impl KspEngine for ScriptSetup<'_> {
         let Some(address) = self.address(par) else {
             return Address::inert(par, self.groups);
         };
+        if address.saved_phase_only(self.groups) { return false }
         let v = address.decode(value);
         if let Address::Fx(rack, slot, FxParam::Convolution(n)) = address {
             let mut settings = self.loads.iter().rev().find_map(|l| match l.load {

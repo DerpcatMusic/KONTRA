@@ -182,6 +182,7 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
 
     // Internal-modulator slot of the volume AHDSR, which module targets address.
     let mut volume_env_slot = None;
+    let mut neutral_phase_assignments = Vec::new();
     if let Some(chunk) = group.0.find_first(INTERNAL_MODS_ID) {
         let mut skipped = 0;
         let mut skipped_lfos = 0;
@@ -379,6 +380,16 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                 kind: "external".into(),
             });
             for target in params.targets {
+                // Native startPhase uses base + signal * intensity. Only this
+                // exact saved Constant/+0 shape is a proven neutral modifier;
+                // keep its assignment and exclude it from source invalidation.
+                if assignment.0.version == 0x100 && params.source == ModSource::Constant
+                    && target.param == "startPhase" && target.slot.is_some()
+                    && target.intensity.to_bits() == 0 && target.unknown_i16 == -1
+                    && target.unknown_flags == 0x10 && target.lag_ms == 0 && !target.invert
+                    && !target.shaper.as_ref().is_some_and(|s| s.enabled) {
+                    neutral_phase_assignments.push(out.mods.len());
+                }
                 let intensity = target_depth(&target);
                 out.mods.push(ModAssignment {
                     name: params.name.clone(),
@@ -414,22 +425,24 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
     // External frequency/phase/weight assignments invalidate this narrow
     // saved-only clock; never silently substitute its initial state.
     out.pitch_lfos.retain(|lfo| {
-        let driven = out.mods.iter().any(|m| match &m.target {
+        let driven = out.mods.iter().enumerate().any(|(index, m)| match &m.target {
             // Effect and internal-source slots are separate namespaces.
             // A recognized insert target cannot alter the LFO at that number.
             ModTarget::Module { param, slot } if *slot == lfo.slot =>
                 crate::engine::filter::Knob::parse(param).is_none()
-                    && crate::engine::filter::stage_knob(param).is_none(),
+                    && crate::engine::filter::stage_knob(param).is_none()
+                    && !neutral_phase_assignments.contains(&index),
             _ => false,
         });
         if driven { out.warnings.push(format!("Internal LFO slot {} pitch not applied: external source controls its parameters", lfo.slot)); }
         !driven
     });
     out.volume_lfos.retain(|lfo| {
-        let driven = out.mods.iter().any(|m| match &m.target {
+        let driven = out.mods.iter().enumerate().any(|(index, m)| match &m.target {
             ModTarget::Module { param, slot } if *slot == lfo.source.slot =>
                 crate::engine::filter::Knob::parse(param).is_none()
-                    && crate::engine::filter::stage_knob(param).is_none(),
+                    && crate::engine::filter::stage_knob(param).is_none()
+                    && !neutral_phase_assignments.contains(&index),
             _ => false,
         });
         if driven { out.warnings.push(format!("Internal LFO slot {} volume not applied: external source controls its parameters", lfo.source.slot)); }
@@ -713,6 +726,153 @@ mod tests {
         assert!(!unknown.pitch_lfos.iter().any(|l| l.slot == 7), "unknown same-slot source controls remain unsupported");
         assert!(unknown.pitch_lfos.iter().any(|l| l.slot == 6), "other sources remain eligible");
         assert!(unknown.warnings.iter().any(|w| w.contains("external source controls its parameters")));
+    }
+
+    #[test]
+    fn zero_depth_constant_phase_preserves_saved_sine_and_rejects_live_depth_without_heap() {
+        use ni_file::kontakt::{Chunk, StructuredObject, objects::{Lfo, LfoRecord}};
+        use crate::{audio::Sample, engine::{Bank, Engine, ScriptSetup, load_scripts},
+            import::{Group, Instrument, Zone}, ksp::{EnginePar, KspEngine, Value}};
+        #[derive(Clone, Copy)]
+        struct Phase { depth: f32, source: u32, flags: u8, lag: u16, invert: bool,
+            shaper: Option<bool>, version: u16, tag: i16 }
+        let neutral = Phase { depth: 0., source: 9, flags: 0x10, lag: 0,
+            invert: false, shaper: None, version: 0x100, tag: -1 };
+        fn name(out: &mut Vec<u8>, text: &str) {
+            out.extend((text.len() as u32).to_le_bytes()); out.extend(text.as_bytes());
+        }
+        fn object(id: u16, version: u16, private: &[u8], public: &[u8], children: &[u8]) -> Chunk {
+            let mut data = vec![1]; data.extend(version.to_le_bytes());
+            for part in [private, public, children] { data.extend((part.len() as u32).to_le_bytes()); data.extend(part); }
+            Chunk { id, data }
+        }
+        fn header(out: &mut Vec<u8>, param: &str, slot: Option<u8>, depth: f32,
+            flags: u8, lag: u16, invert: bool, tag: i16) {
+            name(out, param); out.extend(depth.to_le_bytes()); out.extend(tag.to_le_bytes());
+            out.push(flags); out.extend(lag.to_le_bytes()); name(out, param);
+            out.extend(slot); out.push(u8::from(invert));
+        }
+        let raw = |phase: Option<Phase>, bypass: bool, nonneutral_sibling: bool| {
+            let source = Lfo { structured: false, version: 0x71, waveform: 5,
+                initial_values: [0., 16., 0.5, 0.4990234375], records: [
+                    LfoRecord { flag: true, values: [1. / 24., 0., 0.] },
+                    LfoRecord { flag: true, values: [-1., 0., 0.] }],
+                trailing_flag: false, trailing_values: Some([1., 0., 0., 0., 0.]), additional_flag: None };
+            let mut child = Vec::new(); source.to_chunk().unwrap().write(&mut child).unwrap();
+            let mut private = 2u32.to_le_bytes().to_vec();
+            header(&mut private, "volume", None, 0.5, 0x10, 15, false, -1);
+            header(&mut private, "pitch", None, 0.25, 0x10, 0, false, -1);
+            private.extend([0, 0]); private.extend([0, u8::from(bypass), 1, 0]);
+            private.extend(0u32.to_le_bytes()); name(&mut private, "Saved sine"); private.extend(1u32.to_le_bytes());
+            let mut internal = vec![1]; object(0x0d, 0x80, &private, &[], &child).write(&mut internal).unwrap();
+            internal.extend([0; 15]);
+            let mut children = vec![object(INTERNAL_MODS_ID, 0x10, &[], &internal, &[])];
+            if let Some(phase) = phase {
+                let count = 1 + u32::from(nonneutral_sibling);
+                let mut private = count.to_le_bytes().to_vec();
+                header(&mut private, "startPhase", Some(0), phase.depth, phase.flags, phase.lag, phase.invert, phase.tag);
+                if nonneutral_sibling { header(&mut private, "startPhase", Some(0), 0.1, 0x10, 0, false, -1); }
+                match phase.shaper {
+                    None => private.push(0),
+                    Some(enabled) => { private.extend([1, u8::from(enabled)]);
+                        for _ in 0..128 { private.extend(0.5f32.to_le_bytes()); } }
+                }
+                if nonneutral_sibling { private.push(0); }
+                name(&mut private, "Phase assignment");
+                if phase.source == 0 { private.extend(2u32.to_le_bytes()); private.extend([0; 2]); }
+                else { private.extend(1u32.to_le_bytes()); private.extend(phase.source.to_le_bytes());
+                    if phase.source == 4 { private.push(1); } private.extend([0; 4]); }
+                private.extend(0u32.to_le_bytes());
+                let mut external = vec![1]; object(0x0c, phase.version, &private, &[], &[]).write(&mut external).unwrap();
+                external.extend([0; 31]); children.push(object(EXTERNAL_MODS_ID, 0x10, &[], &external, &[]));
+            }
+            RawGroup(StructuredObject { version: 0x95, public_data: vec![], private_data: vec![], children })
+        };
+        let group = |raw: RawGroup| {
+            let decoded = read_group(&raw).unwrap();
+            Group { mods: decoded.mods, modulators: decoded.modulators,
+                pitch_lfos: decoded.pitch_lfos, volume_lfos: decoded.volume_lfos, ..Group::default() }
+        };
+        let baseline = read_group(&raw(None, false, false)).unwrap();
+        for shaper in [None, Some(false)] {
+            let saved = read_group(&raw(Some(Phase { shaper, ..neutral }), false, false)).unwrap();
+            assert_eq!(saved.pitch_lfos, baseline.pitch_lfos);
+            assert_eq!(saved.volume_lfos, baseline.volume_lfos);
+            assert_eq!(saved.mods[0].intensity.to_bits(), 0);
+            assert_eq!(saved.mods[0].target, ModTarget::Module { param: "startPhase".into(), slot: 0 });
+            assert_eq!(saved.modulators[1].assignments, Some(0));
+            assert_eq!(saved.modulators[1].targets, ["startPhase"]);
+        }
+        for phase in [Phase { depth: f32::from_bits(1), ..neutral }, Phase { depth: -0., ..neutral },
+            Phase { depth: 0.1, ..neutral }, Phase { source: 0, ..neutral },
+            Phase { source: 4, ..neutral }, Phase { source: 6, ..neutral },
+            Phase { flags: 0, ..neutral }, Phase { flags: 0x12, ..neutral },
+            Phase { flags: 0x90, ..neutral }, Phase { lag: 1, ..neutral },
+            Phase { lag: 32768, ..neutral }, Phase { invert: true, ..neutral },
+            Phase { shaper: Some(true), ..neutral }, Phase { version: 0x102, ..neutral },
+            Phase { tag: 0, ..neutral }] {
+            let rejected = read_group(&raw(Some(phase), false, false)).unwrap();
+            assert!(rejected.pitch_lfos.is_empty() && rejected.volume_lfos.is_empty());
+            assert_eq!(rejected.warnings.iter().filter(|w| w.contains("external source controls its parameters")).count(), 2);
+            assert_eq!(rejected.mods.len(), 1, "rejection must preserve the original assignment");
+        }
+        let sibling = read_group(&raw(Some(neutral), false, true)).unwrap();
+        assert!(sibling.pitch_lfos.is_empty() && sibling.volume_lfos.is_empty(),
+            "a neutral row cannot hide a separate nonzero assignment to the same source");
+
+        let script = "on init\ndeclare ui_slider $depth(0,1000000)\nset_engine_par($ENGINE_PAR_MOD_TARGET_INTENSITY,1000000,0,1,0)\ndeclare $saved := get_engine_par($ENGINE_PAR_MOD_TARGET_INTENSITY,0,1,0)\ndeclare $signed := get_engine_par($ENGINE_PAR_MOD_TARGET_MP_INTENSITY,0,1,0)\nmake_persistent($saved)\nmake_persistent($signed)\nend on\non ui_control($depth)\nset_engine_par($ENGINE_PAR_MOD_TARGET_MP_INTENSITY,$depth,0,1,0)\nend on";
+        for bypass in [false, true] {
+            let saved = group(raw(Some(neutral), bypass, false));
+            assert_eq!(saved.pitch_lfos[0].bypassed, bypass);
+            assert_eq!(saved.volume_lfos[0].source.bypassed, bypass);
+            let instrument = Instrument { groups: vec![saved.clone()], scripts: vec![script.into()], ..Default::default() };
+            let mut setup = ScriptSetup::new(&instrument, 48_000.);
+            let par = |id, slot, generic| EnginePar { id, group: 0, slot, generic };
+            for id in [crate::engine::params::id::MOD_TARGET_INTENSITY, crate::engine::params::id::MOD_TARGET_MP_INTENSITY] {
+                assert!(setup.engine_par(par(id, 1, 0)).is_some(), "saved depth stays readable");
+                assert!(!setup.set_engine_par(0, par(id, 1, 0), 750000), "live phase has no consumer");
+            }
+            assert!(setup.set_engine_par(0, par(crate::engine::params::id::MOD_TARGET_MP_INTENSITY, 0, 1), 750000),
+                "existing internal pitch alias must remain writable");
+            let mut aliases = saved.clone();
+            aliases.mods.extend([assignment(ModSource::Constant, ModTarget::Pitch, 0.),
+                assignment(ModSource::Constant, ModTarget::Volume, 0.)]);
+            aliases.modulators[1].targets.extend(["Pitch".into(), "Volume".into()]);
+            let aliases = Instrument { groups: vec![aliases], ..Default::default() };
+            let mut aliases = ScriptSetup::new(&aliases, 48_000.);
+            for target in [1, 2] {
+                assert!(aliases.set_engine_par(0, par(crate::engine::params::id::MOD_TARGET_INTENSITY, 1, target), 250000));
+                assert!(aliases.set_engine_par(0, par(crate::engine::params::id::MOD_TARGET_MP_INTENSITY, 1, target), 750000));
+            }
+            let create = |group| {
+                let mut engine = Engine::default(); engine.attack = 0.0001;
+                engine.set_bank(Some(Box::new(Bank::from_samples(vec![group], vec![Zone::default()],
+                    vec![(std::path::PathBuf::new(), Sample { rate: 48_000, frames: vec![[0.25; 2]; 4096] })]).unwrap())));
+                engine
+            };
+            let mut live = create(saved);
+            let (runtime, errors) = load_scripts(&instrument, vec![], 48_000.);
+            assert!(errors.is_empty(), "{errors:?}"); live.set_script(runtime);
+            let persisted = live.script().unwrap().persistence();
+            assert_eq!(persisted[0]["$saved"], Value::Int(0));
+            assert_eq!(persisted[0]["$signed"], Value::Int(500000));
+            let mut reference = create(group(raw(None, bypass, false)));
+            let (mut a, mut ar, mut b, mut br) = ([0.; 128], [0.; 128], [0.; 128], [0.; 128]);
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                live.ui_control(0, 0, 850000);
+                live.note_on(0, 60, 127); reference.note_on(0, 60, 127);
+                for _ in 0..8 {
+                    live.render(&mut a[..17], &mut ar[..17]); live.render(&mut a[17..], &mut ar[17..]);
+                    reference.render(&mut b, &mut br);
+                    assert_eq!(a, b); assert_eq!(ar, br);
+                }
+            }), 0);
+            assert!(live.script().unwrap().engine_state().is_empty(), "unsupported edits cannot be persisted as applied");
+            assert_eq!(live.bank().unwrap().settings[0].mods.mods[0].intensity, 0.);
+            let diagnostics = live.script().unwrap().diagnostics();
+            assert!(diagnostics.iter().filter(|d| d.contains("parameter not implemented by the engine")).count() >= 2,
+                "both init and live setter failures must be visible: {diagnostics:?}");
+        }
     }
 
     #[test]
