@@ -13,22 +13,16 @@ case "$KONTRA_TARGET" in
   *) echo 'Unsupported notarization target' >&2; exit 1 ;;
 esac
 source "$(dirname "$0")/macos_signing_keychain.sh"
-for product in KONTRA.clap KONTRA.vst3 kontakto-standalone; do
-  binary="$STAGE/$product"
-  [ "$product" = kontakto-standalone ] || binary="$binary/Contents/MacOS/KONTRA"
+for product in KONTRA.clap KONTRA.vst3 KONTRA.app; do
+  binary="$STAGE/$product/Contents/MacOS/KONTRA"
   lipo "$binary" -verify_arch "$arch"
   codesign --force --sign "$APPLE_DEVELOPER_ID_APPLICATION" --keychain "$keychain" \
     --options runtime --timestamp "$STAGE/$product"
+  chmod -R a+rX "$STAGE/$product"
   codesign --verify --deep --strict "$STAGE/$product"
 done
-# Finder's package bit is separate from BNDL and signatures. Set it after
-# signing (QA1940 forbids FinderInfo during signing), then verify that payload.
-for bundle in KONTRA.clap KONTRA.vst3; do
-  xcrun SetFile -a B "$STAGE/$bundle"
-  codesign --verify --deep --strict "$STAGE/$bundle"
-done
-xcrun swift .github/scripts/check_macos_bundles.swift "$STAGE/KONTRA.clap" "$STAGE/KONTRA.vst3"
-# ZIPs and bare Mach-O executables cannot carry stapled tickets. A DMG holds
+xcrun swift .github/scripts/check_macos_bundles.swift --register "$STAGE/KONTRA.app" "$STAGE/KONTRA.clap" "$STAGE/KONTRA.vst3"
+# ZIP containers cannot carry stapled tickets. A DMG holds
 # these same signed products plus the legal/build metadata for offline delivery.
 hdiutil create -quiet -format UDZO -volname KONTRA -srcfolder "$STAGE" "$work/KONTRA.dmg"
 codesign --force --sign "$APPLE_DEVELOPER_ID_APPLICATION" --keychain "$keychain" --timestamp "$work/KONTRA.dmg"
@@ -53,7 +47,7 @@ stage = pathlib.Path(os.environ['STAGE'])
 info = json.load(open(sys.argv[1]))
 identity = json.loads((stage / 'build-info.json').read_text())
 assert identity['target'] == os.environ['KONTRA_TARGET'] and identity['revision'] == os.environ['GITHUB_SHA']
-files = ['KONTRA.dmg', 'KONTRA.clap/Contents/MacOS/KONTRA', 'KONTRA.vst3/Contents/MacOS/KONTRA', 'kontakto-standalone']
+files = ['KONTRA.dmg', 'KONTRA.clap/Contents/MacOS/KONTRA', 'KONTRA.vst3/Contents/MacOS/KONTRA', 'KONTRA.app/Contents/MacOS/KONTRA']
 receipt = dict(version=identity['version'], revision=identity['revision'], target=identity['target'],
     id=info['id'], status=info['status'], stapled=True, signatures_verified=True,
     sha256={name: hashlib.sha256((stage / name).read_bytes()).hexdigest() for name in files})

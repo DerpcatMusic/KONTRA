@@ -123,6 +123,17 @@ jobs:
           cp clap-build-info.json vst3-build-info.json "$stage/"
           printf '%s\n' "$GITHUB_SHA" > "$stage/SOURCE_COMMIT.txt"
           "$stage/$exe" --build-info > "$stage/build-info.json"
+          if [ "$RUNNER_OS" = macOS ]; then
+            mkdir -p "$stage/KONTRA.app/Contents/MacOS"
+            mv "$stage/$exe" "$stage/KONTRA.app/Contents/MacOS/KONTRA"
+            python3 - "$stage" <<'PYAPP'
+          import json, pathlib, plistlib, sys
+          sys.path.insert(0, '.github/scripts')
+          from package_macos import app_info
+          stage = pathlib.Path(sys.argv[1])
+          (stage / 'KONTRA.app/Contents/Info.plist').write_bytes(plistlib.dumps(app_info(json.loads((stage / 'build-info.json').read_text())['version'])))
+          PYAPP
+          fi
           echo "STAGE=$stage" >> "$GITHUB_ENV"
       - name: Normalize macOS bundle versions
         if: runner.os == 'macOS'
@@ -164,7 +175,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           ditto -x -k "$STAGE.zip" extracted-plugins
-          xcrun swift .github/scripts/check_macos_bundles.swift \
+          xcrun swift .github/scripts/check_macos_bundles.swift --register "extracted-plugins/$STAGE/KONTRA.app" \
             "extracted-plugins/$STAGE/KONTRA.clap" "extracted-plugins/$STAGE/KONTRA.vst3"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -245,7 +256,7 @@ jobs:
                               str(installed)], check=True)
               print(f'Installed and rollback-verified: /{relative}')
           PYINSTALL
-          xcrun swift .github/scripts/check_macos_bundles.swift \
+          xcrun swift .github/scripts/check_macos_bundles.swift --register /Applications/KONTRA.app \
             /Library/Audio/Plug-Ins/CLAP/KONTRA.clap /Library/Audio/Plug-Ins/VST3/KONTRA.vst3
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

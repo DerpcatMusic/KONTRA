@@ -1,6 +1,7 @@
 // Native discovery gate, not a Bitwig/DAW playback test. Run with xcrun swift.
 import AppKit
 import CoreFoundation
+import CoreServices
 import Darwin
 import Foundation
 import UniformTypeIdentifiers
@@ -9,20 +10,20 @@ func require(_ condition: Bool, _ message: String) {
     guard condition else { fputs(message + "\n", stderr); exit(1) }
 }
 
-require(CommandLine.arguments.count > 1, "Pass the CLAP and VST3 bundle paths")
-for path in CommandLine.arguments.dropFirst() {
-    let url = URL(fileURLWithPath: path).standardizedFileURL
+require(CommandLine.arguments.count == 5 && CommandLine.arguments[1] == "--register", "Pass --register KONTRA.app CLAP VST3 paths")
+let registrar = URL(fileURLWithPath: CommandLine.arguments[2]).standardizedFileURL
+require(Bundle(url: registrar)?.infoDictionary?["CFBundlePackageType"] as? String == "APPL", "Missing owned application")
+require(LSRegisterURL(registrar as CFURL, true) == noErr, "Application type registration failed")
+for path in CommandLine.arguments.dropFirst(3) {
+    var url = URL(fileURLWithPath: path).standardizedFileURL
+    url.removeAllCachedResourceValues()
     let values = try url.resourceValues(forKeys: [.isPackageKey, .contentTypeKey])
     require(values.isPackage == true, "Finder does not recognize a package: \(path)")
     require(NSWorkspace.shared.isFilePackage(atPath: url.path), "Workspace does not recognize a package: \(path)")
     guard let type = values.contentType else { fatalError("Missing native UTType: \(path)") }
-    require(type.conforms(to: .directory), "Unexpected native UTType: \(type.identifier)")
-    let finder = Process(); finder.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-    finder.arguments = ["GetFileInfo", "-a", url.path]
-    let pipe = Pipe(); finder.standardOutput = pipe
-    try finder.run(); finder.waitUntilExit()
-    let flags = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-    require(finder.terminationStatus == 0 && flags.contains("B"), "Missing Finder bundle bit: \(path)")
+    require(type.conforms(to: .package), "Native type does not conform to package: \(type.identifier)")
+    let forbidden = url.withUnsafeFileSystemRepresentation { getxattr($0!, "com.apple.FinderInfo", nil, 0, 0, XATTR_NOFOLLOW) }
+    require(forbidden == -1 && errno == ENOATTR, "FinderInfo detritus on signed bundle: \(path)")
     guard let bundle = Bundle(url: url), let executable = bundle.executableURL else { fatalError("Not a loadable bundle: \(path)") }
     require(bundle.infoDictionary?["CFBundlePackageType"] as? String == "BNDL", "Wrong plug-in package type: \(path)")
     guard let module = dlopen(executable.path, RTLD_NOW | RTLD_LOCAL) else { fatalError(String(cString: dlerror())) }
@@ -65,7 +66,7 @@ for path in CommandLine.arguments.dropFirst() {
         _ = unsafeBitCast(methods[2], to: Method.self)(plugins)
         require(classes > 0, "VST3 factory is empty")
     }
-    let result: [String: Any] = ["bundle": url.path, "finder_bundle_bit": true,
+    let result: [String: Any] = ["bundle": url.path, "finder_info_absent": true, "package_uti": true,
         "is_package": true, "workspace_package": true, "content_type": type.identifier,
         "package_type": "BNDL", "factory_classes": classes]
     print(String(data: try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]), encoding: .utf8)!)
