@@ -8,7 +8,7 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ## Unreleased
 
-### Accepted 0.3.123 core follow-up
+### Fixed after 0.3.115
 
 Eight newly accepted logical fixes advance 0.3.115 to0.3.123; closing the already-counted VST3 optional-length outcome adds no duplicate count.
 
