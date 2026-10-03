@@ -41,6 +41,8 @@ native_ui_util_host = strict("native_ui_util", {
 })
 local active, instances = nil, {}
 local instance_count = 0
+-- Retain function keys so GC cannot recycle a component target identity.
+local targets, target_count = {}, 0
 local function color(r,g,b,a)
     local channels={r,g,b}
     for index=1,3 do
@@ -232,7 +234,13 @@ function native_expand(node,path,inherited)
         context=setmetatable({[scope.key]=scope.value},{__index=inherited})
     end
     if node.kind~="Component" then return node,context end
-    local key=path..":"..native_component_key(node.target)
+    local target_id=targets[node.target]
+    if not target_id then
+        assert(target_count<4096,"Native UI component-target budget exceeded")
+        native_component_validate(node.target)
+        target_count=target_count+1;target_id=target_count;targets[node.target]=target_id
+    end
+    local key=path..":"..target_id
     local instance=instances[key]
     if not instance then
         assert(instance_count<4096,"Native UI state-instance budget exceeded")

@@ -307,17 +307,13 @@ impl Scene {
             })?,
         )?;
         lua.globals().set(
-            "native_component_key",
+            "native_component_validate",
             lua.create_function(|_, target: Function| {
                 let info = target.info();
                 if info.what != "Lua" {
                     return Err(invalid("Native component targets require Lua functions"));
                 }
-                Ok(format!(
-                    "{}:{}",
-                    info.source.unwrap_or_default(),
-                    info.line_defined.unwrap_or(0)
-                ))
+                Ok(())
             })?,
         )?;
         lua.load(include_str!("host.lua"))
