@@ -81,6 +81,8 @@ pub struct GroupSettings {
     /// Internal AHDSRs driving pitch; every native internal-modulator slot.
     pub pitch_envelopes: Box<[super::params::PitchEnvelope]>,
     pub pitch_lfos: Box<[crate::modulation::PitchLfo]>,
+    /// Saved retriggered sine sources driving amplitude at the native32-frame clock.
+    pub volume_lfos: Box<[crate::modulation::VolumeLfo]>,
     /// Insert filters and EQs; `None` costs voices nothing.
     pub filter: Option<Box<GroupFilter>>,
     /// Kontakt interpolation quality; every setting currently uses 4-point Hermite.
@@ -105,6 +107,7 @@ impl From<&Group> for GroupSettings {
             mods: ModTable::from(group),
             pitch_envelopes: super::params::PitchEnvelope::from_group(group),
             pitch_lfos: if group.wavetable.is_none() { group.pitch_lfos.clone().into_boxed_slice() } else { Box::new([]) },
+            volume_lfos: if group.wavetable.is_none() { group.volume_lfos.clone().into_boxed_slice() } else { Box::new([]) },
             filter: GroupFilter::new(group),
             interp_quality: group.interp_quality,
             wavetable: group.wavetable,

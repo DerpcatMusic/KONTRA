@@ -129,6 +129,17 @@ impl PitchLfo {
     }
 }
 
+/// One admitted saved sine source driving one native volume target.
+/// Timing is shared with the pitch path at the same native internal slot.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct VolumeLfo {
+    pub source: PitchLfo,
+    pub target: u32,
+    pub intensity: f32,
+    pub negative: bool,
+    pub lag_ms: i16,
+}
+
 /// Modulation read from one group, plus notes about what was left out.
 #[derive(Debug, Default)]
 pub(crate) struct GroupModulation {
@@ -138,6 +149,7 @@ pub(crate) struct GroupModulation {
     pub modulators: Vec<Modulator>,
     pub envelopes: Vec<ModEnvelope>,
     pub pitch_lfos: Vec<PitchLfo>,
+    pub volume_lfos: Vec<VolumeLfo>,
     pub warnings: Vec<String>,
 }
 
@@ -246,15 +258,45 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                     let pitch: Vec<_> = params.targets.iter().enumerate()
                         .filter(|(_, t)| t.param == "pitch" && t.slot.is_none()).collect();
                     let depth: f32 = pitch.iter().map(|(_, t)| target_depth(t)).sum();
-                    if supported && depth.is_finite() && !pitch.is_empty() && pitch.iter().all(|(_, t)| !t.invert && t.lag_ms == 0
-                        && !t.shaper.as_ref().is_some_and(|s| s.enabled) && target_depth(t).is_finite()) {
+                    let pitch_admitted = supported && depth.is_finite() && !pitch.is_empty() && pitch.iter().all(|(_, t)| !t.invert && t.lag_ms == 0
+                        && !t.shaper.as_ref().is_some_and(|s| s.enabled) && target_depth(t).is_finite());
+                    if pitch_admitted {
                         out.pitch_lfos.push(PitchLfo { slot: slot as u8,
                             count: lfo.initial_values[1], note_value: lfo.records[0].values[0],
                             sine: weights[0], fade_ms: lfo.initial_values[0], depth,
                             targets: pitch.iter().map(|(i, t)| (*i as u32, target_depth(t))).collect(),
                             bypassed: params.unknown_flags[1] != 0 });
-                        out.warnings.push(format!("Internal LFO slot {slot}: saved retriggered sine-only Multi pitch with legacy unsynchronized fade-in is eligible for ordinary sampler playback; live source bypass is supported for this admitted pitch path; live LFO timing and other targets remain unsupported"));
-                    } else { skipped_lfos += 1; }
+                        out.warnings.push(format!("Internal LFO slot {slot}: saved retriggered sine-only Multi pitch with legacy unsynchronized fade-in is eligible for ordinary sampler playback; live source bypass is supported for this admitted pitch path; live LFO timing and unadmitted target configurations remain unsupported"));
+                    } else if !pitch.is_empty() {
+                        out.warnings.push(format!("Internal LFO slot {slot} pitch not applied: source clock or target depth/inversion/lag/shaper is unsupported"));
+                    }
+                    let volume: Vec<_> = params.targets.iter().enumerate()
+                        .filter(|(_, t)| t.param == "volume" && t.slot.is_none()).collect();
+                    // The native internal array has16 sources. One target per
+                    // source is an explicit consumer subset, not a format cap.
+                    let admitted = supported && lfo.initial_values[0] == 0. && volume.len() == 1
+                        && volume.iter().all(|(_, t)| t.intensity.is_finite() && t.intensity >= 0.
+                            && !t.invert && (t.lag_ms as i16) >= 0
+                            && t.unknown_flags & !0x02 == 0x10
+                            && !t.shaper.as_ref().is_some_and(|s| s.enabled));
+                    if admitted {
+                        let (target, t) = volume[0];
+                        out.volume_lfos.push(VolumeLfo {
+                            source: PitchLfo { slot: slot as u8, count: lfo.initial_values[1],
+                                note_value: lfo.records[0].values[0], sine: weights[0], fade_ms: 0.,
+                                depth: 0., targets: Vec::new(), bypassed: params.unknown_flags[1] != 0 },
+                            target: target as u32, intensity: t.intensity,
+                            negative: t.unknown_flags & 0x02 != 0, lag_ms: t.lag_ms as i16,
+                        });
+                        out.warnings.push(format!("Internal LFO slot {slot}: saved retriggered sine-only Multi volume with zero/positive lag is eligible for ordinary sampler playback; live source bypass is supported; live intensity/timing, nonzero fade and other targets remain unsupported; gain uses the existing Amplifier path, with native full group-FX placement not independently verified"));
+                    } else if !volume.is_empty() {
+                        out.warnings.push(format!("Internal LFO slot {slot} volume not applied: requires one saved phase-zero sine-only target, zero source fade, nonnegative signed lag, known polarity flags, no separate inversion or enabled shaper"));
+                    }
+                    if !pitch_admitted && !admitted { skipped_lfos += 1; }
+                    if params.targets.iter().any(|t| !matches!((t.param.as_str(), t.slot),
+                        ("pitch" | "volume", None))) {
+                        out.warnings.push(format!("Internal LFO slot {slot}: target assignments other than admitted pitch and volume are not applied"));
+                    }
                     false
                 }
                 _ => {
@@ -350,6 +392,16 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
             _ => false,
         });
         if driven { out.warnings.push(format!("Internal LFO slot {} pitch not applied: external source controls its parameters", lfo.slot)); }
+        !driven
+    });
+    out.volume_lfos.retain(|lfo| {
+        let driven = out.mods.iter().any(|m| match &m.target {
+            ModTarget::Module { param, slot } if *slot == lfo.source.slot =>
+                crate::engine::filter::Knob::parse(param).is_none()
+                    && crate::engine::filter::stage_knob(param).is_none(),
+            _ => false,
+        });
+        if driven { out.warnings.push(format!("Internal LFO slot {} volume not applied: external source controls its parameters", lfo.source.slot)); }
         !driven
     });
     Ok(out)
@@ -462,22 +514,22 @@ mod tests {
             out.extend((s.len() as u32).to_le_bytes());
             out.extend(s.as_bytes());
         }
-        let targets = |params: &[(&str, Option<u8>)], lag: u16| {
+        let targets = |params: &[(&str, Option<u8>)], lag: u16, flags: u8, invert: bool| {
             let mut b = (params.len() as u32).to_le_bytes().to_vec();
             for (param, slot) in params {
                 name(&mut b, param);
                 b.extend(0.5f32.to_le_bytes());
                 b.extend((-1i16).to_le_bytes());
-                b.push(0x10);
+                b.push(flags);
                 b.extend(lag.to_le_bytes());
                 name(&mut b, "<none>");
                 b.extend(slot);
-                b.push(0); // invert
+                b.push(u8::from(invert)); // separate inversion
             }
             b.extend(std::iter::repeat_n(0, params.len())); // no shapers
             b
         };
-        let mut ext = targets(&[("pan", None), ("loopStart", None), ("loopLength", None), ("filterCutoff", Some(0))], 15);
+        let mut ext = targets(&[("pan", None), ("loopStart", None), ("loopLength", None), ("filterCutoff", Some(0))], 15, 0x10, false);
         name(&mut ext, "Loop_Start");
         ext.extend(2u32.to_le_bytes()); // unassigned
         ext.extend([0, 0]);
@@ -486,7 +538,7 @@ mod tests {
         let p = ExternalMod(object(0x100, ext, Vec::new())).params().unwrap();
         assert_eq!(p.targets.iter().map(|t| t.slot).collect::<Vec<_>>(), [None, None, None, Some(0)]);
 
-        let mut int = targets(&[("pan", None)], 15);
+        let mut int = targets(&[("pan", None)], 15, 0x10, false);
         int.extend([0, 1, 1, 0]);
         int.extend(187u32.to_le_bytes());
         name(&mut int, "LFO_P1");
@@ -507,26 +559,55 @@ mod tests {
                 ni_file::kontakt::objects::LfoRecord { flag: true, values: [1. / 24., 0., 0.] },
                 ni_file::kontakt::objects::LfoRecord { flag: true, values: [-1., 0., 0.] }],
             trailing_flag: false, trailing_values: Some([0.03, 0., 0., 0., 0.]), additional_flag: None };
-        let mut private = targets(&[("pan", None), ("pitch", None), ("volume", None), ("pitch", None)], 0);
-        private.extend([0, 0, 1, 0]); private.extend(0u32.to_le_bytes());
-        name(&mut private, "Saved pitch"); private.extend(1u32.to_le_bytes());
-        let mut wrapper = vec![1];
-        let internal = object(0x80, private, vec![source.to_chunk().unwrap()]);
-        let mut data = vec![1]; data.extend(internal.version.to_le_bytes());
-        for part in [&internal.private_data[..], &[][..]] { data.extend((part.len() as u32).to_le_bytes()); data.extend(part); }
-        let mut children = Vec::new(); internal.children[0].write(&mut children).unwrap();
-        data.extend((children.len() as u32).to_le_bytes()); data.extend(children);
-        Chunk { id: 0x0d, data }.write(&mut wrapper).unwrap(); wrapper.extend([0; 15]);
-        let raw = RawGroup(StructuredObject { version: 0x95, public_data: vec![], private_data: vec![],
-            children: vec![Chunk { id: INTERNAL_MODS_ID, data: {
-                let mut data = vec![1]; data.extend(0x10u16.to_le_bytes()); data.extend(0u32.to_le_bytes());
-                data.extend((wrapper.len() as u32).to_le_bytes()); data.extend(wrapper); data.extend(0u32.to_le_bytes()); data
-            }}] });
+        let saved = |rows: &[(&str, Option<u8>)], lag, flags, invert, fade| {
+            let mut source = source.clone(); source.initial_values[0] = fade;
+            let mut private = targets(rows, lag, flags, invert);
+            private.extend([0, 0, 1, 0]); private.extend(0u32.to_le_bytes());
+            name(&mut private, "Saved sine"); private.extend(1u32.to_le_bytes());
+            let mut wrapper = vec![1];
+            let internal = object(0x80, private, vec![source.to_chunk().unwrap()]);
+            let mut data = vec![1]; data.extend(internal.version.to_le_bytes());
+            for part in [&internal.private_data[..], &[][..]] { data.extend((part.len() as u32).to_le_bytes()); data.extend(part); }
+            let mut children = Vec::new(); internal.children[0].write(&mut children).unwrap();
+            data.extend((children.len() as u32).to_le_bytes()); data.extend(children);
+            Chunk { id: 0x0d, data }.write(&mut wrapper).unwrap(); wrapper.extend([0; 15]);
+            RawGroup(StructuredObject { version: 0x95, public_data: vec![], private_data: vec![],
+                children: vec![Chunk { id: INTERNAL_MODS_ID, data: {
+                    let mut data = vec![1]; data.extend(0x10u16.to_le_bytes()); data.extend(0u32.to_le_bytes());
+                    data.extend((wrapper.len() as u32).to_le_bytes()); data.extend(wrapper); data.extend(0u32.to_le_bytes()); data
+                }}] })
+        };
+        let raw = saved(&[("pan", None), ("pitch", None), ("volume", None), ("pitch", None)], 0, 0x10, false, 0.);
         let decoded = read_group(&raw).unwrap();
         assert_eq!(decoded.pitch_lfos.len(), 1);
         assert_eq!(decoded.pitch_lfos[0].slot, 0);
         assert_eq!(decoded.pitch_lfos[0].targets, [(1, 0.5), (3, 0.5)], "do not compress native target indices");
         assert_eq!(decoded.pitch_lfos[0].depth, 1.);
+        assert_eq!(decoded.volume_lfos.len(), 1);
+        assert_eq!((decoded.volume_lfos[0].source.slot, decoded.volume_lfos[0].target), (0, 2));
+        assert_eq!(decoded.volume_lfos[0].intensity, 0.5);
+        assert!(!decoded.volume_lfos[0].negative);
+        assert_eq!(decoded.volume_lfos[0].lag_ms, 0);
+        assert!(decoded.warnings.iter().any(|w| w.contains("other than admitted pitch and volume")));
+
+        let volume = [("volume", None)];
+        let negative = read_group(&saved(&volume, 15, 0x12, false, 0.)).unwrap();
+        assert_eq!((negative.volume_lfos[0].negative, negative.volume_lfos[0].lag_ms), (true, 15));
+        for (rows, lag, flags, invert, fade) in [
+            (&volume[..], 32768, 0x10, false, 0.),
+            (&volume[..], 15, 0x14, false, 0.),
+            (&volume[..], 15, 0x10, true, 0.),
+            (&volume[..], 15, 0x10, false, 1.),
+            (&[("volume", None), ("volume", None)][..], 15, 0x10, false, 0.),
+        ] {
+            let rejected = read_group(&saved(rows, lag, flags, invert, fade)).unwrap();
+            assert!(rejected.volume_lfos.is_empty());
+            assert!(rejected.warnings.iter().any(|w| w.contains("volume not applied")));
+        }
+        let rejected_pitch = read_group(&saved(&[("pitch", None)], 15, 0x10, false, 0.)).unwrap();
+        assert!(rejected_pitch.pitch_lfos.is_empty());
+        assert!(rejected_pitch.warnings.iter().any(|w| w.contains("pitch not applied")),
+            "eligible source waveform cannot silence invalid destination warnings");
     }
 
     #[test]
