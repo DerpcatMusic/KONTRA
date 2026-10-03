@@ -1355,7 +1355,8 @@ fn rejected_loops_report_bounds_and_do_not_substitute_a_sample() {
     assert_eq!(bank.zone_skip_counts.summary(), "invalid loops: 1");
     assert_eq!(bank.zones().iter().map(|z| z.low_key).collect::<Vec<_>>(), [60, 62]);
     let issue = bank.issues.iter().find(|s| s.starts_with("invalid loop:")).unwrap();
-    for detail in ["zone ID 2", "group 0", "keys 61..=61", "sample frames 32", "zone start 0", "end offset -1", "loop Some((4, 32))"] {
+    // The rejected zone is source index1, between valid source indices0 and2.
+    for detail in ["zone ID 1", "group 0", "keys 61..=61", "sample frames 32", "zone start 0", "end offset -1", "loop Some((4, 32))"] {
         assert!(issue.contains(detail), "missing {detail}: {issue}");
     }
     let mut e = engine_with(bank);
@@ -2054,8 +2055,9 @@ fn bypassed_native_release_script_plays_only_selected_groups_for_every_duration(
             // Generated Note work must first assign its engine voice. A child
             // following this already released parent also receives End work,
             // so its KSP event is gone even though its native sample continues.
-            assert_eq!(e.script().unwrap().last_message(), if duration < 0 { "0" } else { "2" },
-                "the selected zone has source ID2; a completed KSP event reports zero");
+            // layered() declares one source zone per group in group order.
+            assert_eq!(e.script().unwrap().last_message(), if duration < 0 { "0" } else { "1" },
+                "selected group1 has source ID1; a completed KSP event reports zero");
             let voices = e.voice_census();
             let tails: Vec<_> = voices.iter().filter(|v| v.release_trigger).collect();
             assert_eq!(tails.len(), 1, "duration={duration}, pedal={pedal}: exactly one selected manual release");
