@@ -918,7 +918,14 @@ fn pin_module_containing(_address: *const std::ffi::c_void) -> Result<(), String
 fn spawn_auto_report() {
     #[cfg(test)]
     if let Some(observer) = TEST_AUTOMATIC_REPORT_OBSERVER.lock_unpoisoned().as_ref() {
-        if let Some(incident) = pending_incident() {
+        // Use the actual acquisition path, exactly as the production kickoff.
+        // The observer replaces delivery only; a busy gate still rejects it.
+        let Some(permit) = super::report::test_acquire_automatic_report_permit() else {
+            return;
+        };
+        let incident = pending_incident();
+        drop(permit);
+        if let Some(incident) = incident {
             let _ = observer.send(TestAutomaticEvent::Ready(
                 incident.id,
                 super::report::test_automatic_report_is_busy(),
@@ -1260,6 +1267,12 @@ fn reporter_worker(
                         }
                     }
                 }
+                if retired {
+                    let mut active = pending.lock_unpoisoned();
+                    if active.as_ref().is_some_and(|i| i.id == incident_id) {
+                        *active = None;
+                    }
+                }
                 resumable_id = retired.then_some(incident_id);
             }
             ReporterControl::Resume(incident_id) => {
@@ -1269,7 +1282,18 @@ fn reporter_worker(
                     && !stopping.load(Ordering::Acquire)
                 {
                     resumable_id = None;
-                    let _ = REPORTER.send(ReporterControl::ScanQueue(false, None));
+                    let adopted = pending
+                        .lock_unpoisoned()
+                        .as_ref()
+                        .is_some_and(CrashIncident::auto_reportable);
+                    if adopted {
+                        // A registration/scan may have adopted the next report
+                        // while the previous upload still owned the permit. Its
+                        // busy kickoff is retried only after this verified success.
+                        spawn_auto_report();
+                    } else {
+                        let _ = REPORTER.send(ReporterControl::ScanQueue(false, None));
+                    }
                 }
             }
             ReporterControl::ScanQueue(wrapped, scan_cursor) => {
@@ -1308,6 +1332,14 @@ fn reporter_worker(
                     *pending.lock_unpoisoned() = Some(incident);
                     spawn_auto_report();
                     continue; // Resume only after this delivery's ACK + permit drop.
+                }
+                if let QueueScanProgress::Halted(reason) = &progress {
+                    crate::diagnostics::event(
+                        crate::diagnostics::LogLevel::Error,
+                        "support",
+                        "pending_report_scan_halted",
+                        serde_json::json!({"reason":reason}),
+                    );
                 }
                 let next = match progress {
                     QueueScanProgress::Advanced(cursor) => Some((wrapped, cursor)),
@@ -2324,7 +2356,8 @@ fn save_pending_incident(incident: &CrashIncident) -> bool {
 enum QueueScanProgress {
     Advanced(String),
     Exhausted,
-    Halted,
+    Halted(String),
+    Cancelled,
 }
 
 /// Inspect at most 32 safe queue files per registration. A lexical cursor
@@ -2352,11 +2385,19 @@ fn find_pending_candidates(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return (None, None, QueueScanProgress::Exhausted);
         }
-        Err(_) => return (None, None, QueueScanProgress::Halted),
+        Err(error) => {
+            return (
+                None,
+                None,
+                QueueScanProgress::Halted(format!(
+                    "Could not enumerate pending reports; their evidence remains local: {error}"
+                )),
+            );
+        }
     };
     for entry in entries.flatten() {
         if stopping.load(Ordering::Acquire) {
-            return (None, None, QueueScanProgress::Halted);
+            return (None, None, QueueScanProgress::Cancelled);
         }
         let name = entry.file_name().to_string_lossy().into_owned();
         let Some(id) = name.strip_suffix(".json") else {
@@ -2377,7 +2418,7 @@ fn find_pending_candidates(
     let mut unknown: Option<CrashIncident> = None;
     for (name, path) in &paths {
         if stopping.load(Ordering::Acquire) {
-            return (None, None, QueueScanProgress::Halted);
+            return (None, None, QueueScanProgress::Cancelled);
         }
         let Some((mut incident, observed_hash)) =
             name.strip_suffix(".json").and_then(pending_snapshot)
@@ -2428,8 +2469,10 @@ fn find_pending_candidates(
         .last_key_value()
         .map(|(name, _)| name.as_str())
         .unwrap_or("");
-    let progress = if stopping.load(Ordering::Acquire) || !persist_json(&cursor_path, &next) {
-        QueueScanProgress::Halted
+    let progress = if stopping.load(Ordering::Acquire) {
+        QueueScanProgress::Cancelled
+    } else if !persist_json(&cursor_path, &next) {
+        QueueScanProgress::Halted("Could not persist the queue scan cursor; remaining evidence is retained locally and scanning stopped.".into())
     } else if paths.is_empty() {
         QueueScanProgress::Exhausted
     } else {
@@ -3775,8 +3818,30 @@ mod tests {
             ),
             "acknowledgement cannot advance while its worker still owns the permit"
         );
-        release.send(()).unwrap();
+        // Interleave a real queued scan before A finishes its receipt/status
+        // work. B can be adopted, but the production gate prevents its upload.
+        assert!(REPORTER.send(ReporterControl::ScanQueue(false, None)));
+        let deadline = std::time::Instant::now() + timeout;
+        while REPORTER
+            .pending
+            .lock_unpoisoned()
+            .as_ref()
+            .is_none_or(|i| i.id != second.id)
+        {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(super::super::report::test_automatic_report_is_busy());
         let mut scans = 0;
+        while let Ok(event) = event_receiver.try_recv() {
+            match event {
+                TestAutomaticEvent::Scanned(_, _) => scans += 1,
+                TestAutomaticEvent::Ready(id, _) => {
+                    panic!("upload started before permit release for {id}")
+                }
+            }
+        }
+        release.send(()).unwrap();
         loop {
             match event_receiver.recv_timeout(timeout).unwrap() {
                 TestAutomaticEvent::Scanned(_, _) => scans += 1,
@@ -3796,6 +3861,14 @@ mod tests {
         assert_eq!(
             REPORTER.pending.lock_unpoisoned().as_ref().unwrap().id,
             second.id
+        );
+        assert!(REPORTER.send(ReporterControl::Resume(first.id.clone())));
+        assert!(
+            matches!(
+                event_receiver.recv_timeout(std::time::Duration::from_millis(25)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "a repeated completion must not kick off B twice"
         );
         // Wrong digest and offline completion never acknowledge or enqueue a retry.
         for failure in [
