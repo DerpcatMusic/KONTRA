@@ -1,6 +1,8 @@
 //! Embedded legacy native UI subset. Loading, Lua and scene evaluation are off audio.
 //! Unsupported syntax/APIs/images fail explicitly; exported KSP views remain usable.
 mod frontend;
+mod drops;
+pub(crate) use drops::Payload as DropPayload;
 use crate::ksp::{Live, Runtime};
 use anyhow::{Context, Result, bail, ensure};
 use mlua::{Function, HookTriggers, Lua, LuaOptions, StdLib, Table, Value, VmState};
@@ -47,6 +49,7 @@ pub(crate) struct Node {
     pub overlay: bool,
     pub tap: bool,
     pub hover: bool,
+    pub drop: bool,
     pub children: Vec<Node>,
 }
 impl Node {
@@ -115,6 +118,12 @@ struct PointerGesture {
     present: bool,
     enabled: bool,
     capture: Option<PointerCapture>,
+}
+struct DropTarget {
+    action: Function,
+    formats: Vec<String>,
+    present: bool,
+    enabled: bool,
 }
 struct Binding {
     kind: Box<str>,
@@ -214,6 +223,7 @@ pub(crate) struct Scene {
     output_meters: Arc<crate::fx::OutputMeters>,
     gestures: Vec<Option<PointerGesture>>,
     hovers: Vec<Option<Hover>>,
+    drops: Vec<Option<DropTarget>>,
     identities: BTreeMap<String, usize>,
     pub(crate) assets: Arc<crate::native_assets::Assets>,
     asset_pending: BTreeSet<String>,
@@ -627,6 +637,7 @@ impl Scene {
             output_meters: rt.output_meters.clone(),
             gestures: Vec::new(),
             hovers: Vec::new(),
+            drops: Vec::new(),
             identities: BTreeMap::new(),
             assets: Arc::default(),
             asset_pending: BTreeSet::new(),
@@ -743,6 +754,10 @@ impl Scene {
     pub(crate) fn connection_warnings(&self) -> Vec<String> {
         self.parameters.lock().unwrap().warnings.clone()
     }
+    pub(crate) fn drop_source_warning(&self) -> Option<&'static str> {
+        self.drops.iter().flatten().any(|target| target.formats.iter().any(|format|format!="text/uri-list"))
+            .then_some("Native UI file drops supply text/uri-list; other MIME formats require a matching typed drag source. The NI internal clipboard producer is unavailable.")
+    }
     pub(crate) fn observe(&self, live: &Live) {
         let mut p = self.parameters.lock().unwrap();
         for c in &live.native_controls {
@@ -770,6 +785,7 @@ impl Scene {
     fn snapshot_raw(&mut self) -> Result<Node> {
         self.instructions.store(0, Ordering::Relaxed);
         for gesture in self.gestures.iter_mut().flatten() { gesture.present = false; }
+        for target in self.drops.iter_mut().flatten() { target.present = false; }
         for hover in self.hovers.iter_mut().flatten() {
             hover.present = false;
         }
@@ -1078,6 +1094,17 @@ impl Scene {
             entry.enabled = has_hover;
         }
         let children: Table = node.get("children")?;
+        let drop:Option<Table>=modifiers.get("on_drop")?;
+        let has_drop=drop.is_some() && !hidden && !disabled;
+        if let Some(drop)=drop {
+            let formats=drop.get::<Table>("of")?.sequence_values::<String>().collect::<mlua::Result<Vec<_>>>()?;
+            ensure!(!formats.is_empty() && formats.len()<=16 && formats.iter().all(|format|drops::valid_format(format)), "Invalid native UI drop formats");
+            let unique:BTreeSet<_>=formats.iter().collect();
+            ensure!(unique.len()==formats.len(), "Duplicate native UI drop format");
+            let target=DropTarget {action:drop.get("action")?,formats,present:true,enabled:has_drop};
+            if self.drops.len()<=id {self.drops.resize_with(id+1,||None);}
+            self.drops[id]=Some(target);
+        }
         let mut nodes = Vec::new();
         for (index, child) in children.sequence_values::<Table>().enumerate() {
             nodes.push(self.node(
@@ -1131,11 +1158,81 @@ impl Scene {
             overlay,
             tap: has_tap,
             hover: has_hover,
+            drop: has_drop,
             children: nodes,
         })
     }
     pub(crate) fn take_edits(&self) -> Vec<Edit> {
         std::mem::take(&mut self.parameters.lock().unwrap().edits)
+    }
+    /// Follow the real displayed target ancestry; only a matching enabled
+    /// owner can consume a drop. Layout/rotation/clipping stay owned by MUI.
+    pub(crate) fn drop_target(
+        &self,
+        ui: &moose::mui::mui::Ui,
+        prefix: &str,
+        key: &str,
+        payload: &DropPayload,
+    ) -> Option<usize> {
+        let scene = ui.scene()?;
+        let mut surface = scene.surface(key)?;
+        for _ in 0..=64 {
+            let id = surface
+                .key
+                .as_str()
+                .strip_prefix(prefix)?
+                .strip_prefix('-')?
+                .parse::<usize>()
+                .ok()?;
+            if !surface.disabled
+                && self
+                    .drops
+                    .get(id)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|target| {
+                        target.present && target.enabled && payload.matches(&target.formats)
+                    })
+            {
+                return Some(id);
+            }
+            surface = scene.surface(surface.parent.as_ref()?.as_str())?;
+        }
+        None
+    }
+    pub(crate) fn perform_drop(
+        &mut self,
+        ui: &moose::mui::mui::Ui,
+        prefix: &str,
+        id: usize,
+        position: moose::mui::mui::prelude::Point,
+        payload: DropPayload,
+    ) -> Result<Vec<Edit>> {
+        self.instructions.store(0, Ordering::Relaxed);
+        self.parameters.lock().unwrap().edits.clear();
+        let target = self
+            .drops
+            .get(id)
+            .and_then(Option::as_ref)
+            .filter(|target| target.present && target.enabled && payload.matches(&target.formats))
+            .context("Native UI drop owner is unavailable or does not accept this format")?;
+        let surface = ui
+            .scene()
+            .and_then(|scene| scene.surface(&format!("{prefix}-{id}")))
+            .context("Native UI displayed drop frame missing")?;
+        ensure!(!surface.disabled, "Native UI drop owner is disabled");
+        let event = drops::Event {
+            payload,
+            position: surface.local(position),
+            frame: surface.frame,
+        };
+        self.parameters.lock().unwrap().gesture_active = true;
+        let result = self
+            .lua
+            .create_userdata(event)
+            .and_then(|event| target.action.call::<()>(event));
+        self.parameters.lock().unwrap().gesture_active = false;
+        result?;
+        Ok(self.take_edits())
     }
     /// Observe the actual displayed MUI scene. Parent and child hover regions
     /// each track their own enter/move/exit, including ancestor clipping.

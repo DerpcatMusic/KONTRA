@@ -142,7 +142,16 @@ function native_component(target,props,children)
 end
 function native_modifier(node,name,props,args)
     local environment=name=="context" or name=="font_size" or name=="foreground_color" or name=="bold" or name=="line_limit"
-    assert(name=="frame" or name=="padding" or name=="hidden" or name=="disabled" or name=="opacity" or name=="offset" or name=="rotation" or name=="align" or name=="background" or name=="overlay" or name=="on_tap_gesture" or name=="on_hover_gesture" or name=="on_drag_gesture" or environment,"Unsupported modifier: "..name)
+    assert(name=="frame" or name=="padding" or name=="hidden" or name=="disabled" or name=="opacity" or name=="offset" or name=="rotation" or name=="align" or name=="background" or name=="overlay" or name=="on_tap_gesture" or name=="on_hover_gesture" or name=="on_drag_gesture" or name=="on_drop" or environment,"Unsupported modifier: "..name)
+    if name=="on_drop" then
+        assert(#args==0,"Drop requires named legacy of/action fields")
+        for key in pairs(props) do assert(key=="of" or key=="action","Unsupported native UI drop property: "..key) end
+        assert(type(props.action)=="function" and type(props.of)=="table","Drop requires formats and an action callback")
+        assert(#props.of>0 and #props.of<=16,"Native drop format count exceeds its budget")
+        for key in pairs(props.of) do assert(type(key)=="number" and key%1==0 and key>=1 and key<=#props.of,"Drop formats require a dense list") end
+        for i=1,#props.of do assert(type(props.of[i])=="string","Drop formats require strings") end
+        return {kind="ZStack",props={},children={node},modifiers={on_drop=props}}
+    end
     if name=="overlay" or name=="background" then
         assert(#args==1 and type(args[1])=="table" and args[1].kind,"Decoration requires a component")
         for key,value in pairs(props) do

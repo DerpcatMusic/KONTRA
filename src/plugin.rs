@@ -1358,6 +1358,7 @@ fn native_scene(i: &Instrument, rt: Option<&Runtime>, live: &mut Option<Box<Live
             trace.detail("native_ui", scene.identity.as_str());
             if let Some(version) = &scene.target_version { trace.detail("native_ui_target_version", version.as_str()); }
             trace.detail("native_ui_modules", scene.resources.len());
+            if let Some(warning) = scene.drop_source_warning() { trace.issue("native_ui", "native_drop_source", warning); }
             for warning in scene.connection_warnings() {
                 trace.issue("native_ui", "missing_parameter_binding", warning);
             }
@@ -5718,6 +5719,324 @@ end on"#;
             assert!(Scene::prepare(&instrument.path,engine.script().unwrap()).is_err(),"{modifier}");
         }
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn native_ui_drop_routes_real_typed_releases_and_files_to_current_exact_slot() {
+        use crate::native_ui::{DropPayload, Node, Paint, Scene};
+        use moose::mui::mui::prelude::*;
+        let directory = tempfile::tempdir().unwrap();
+        let resources = directory.path().join("Resources/native_ui");
+        std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("main.nui"),r#"
+            local ui=require('native_ui') local k=require('kontakt')
+            local mode=k.connect_parameter('Mode') local count=k.connect_parameter('Count')
+            local function drop(e)
+                assert(e.position.x==2 and e.position.y==3)
+                assert(e.frame.width==40 and e.frame.height==20)
+                if e:has_format('application/x-authored-binary') then
+                    local bytes=e:data('application/x-authored-binary')
+                    assert(#bytes==4 and bytes:byte(1)==0 and bytes:byte(4)==255)
+                    if mode:value()==4 then count:set_value(13) e:data('absent') end
+                    count:set_value(42)
+                else
+                    assert(e:has_format('text/uri-list'))
+                    assert(e:data('text/uri-list'):match('^file:///') and e:data('text/uri-list'):match('%%20') and e:data('text/uri-list'):match('\r\n$'))
+                    count:set_value(21)
+                end
+            end
+            local function Target()
+                return @ui.Rectangle{color=ui.Color.red}.frame(width=40,height=20)
+                    .on_drop(of={'application/x-authored-binary','text/uri-list'},action=drop)
+                    .on_drop(of={'application/x-authored-binary'},action=function()count:set_value(7)end)
+                    .overlay(mode:value()==5 and @ui.Rectangle{color=ui.Color.green}.frame(width=40,height=20)
+                        .on_drop(of={'application/x-authored-binary'},action=function()count:set_value(55)end) or @ui.ZStack{})
+                    .hidden(mode:value()==1).disabled(mode:value()==2)
+            end
+            return function() return @ui.HStack {spacing=10,
+                @ui.Rectangle{color=ui.Color.blue}.frame(width=20,height=20).on_drag_gesture(update=function()end)
+                mode:value()==3 and @ui.Rectangle{color=ui.Color.red}.frame(width=40,height=20) or @Target{}
+            }.frame(width=100,height=40) end
+        "#).unwrap();
+        let instrument=Instrument{path:directory.path().join("fixture.nki"),scripts:vec![
+            "on init\nmake_perfview\nload_native_ui(\"main\")\nexpose_controls\ndeclare ui_value_edit $Mode(0,5,1)\ndeclare ui_value_edit $Count(0,100,1)\nend on\non ui_control($Count)\n$Count := $Count*2\nend on".into(),
+            "on init\nmake_perfview\ndeclare ui_value_edit $Count(0,100,1)\n$Count := 99\nend on".into()],..Default::default()};
+        let (rt, errors) = crate::engine::load_scripts(&instrument, Vec::new(), 48000.);
+        assert!(errors.is_empty(), "{errors:?}");
+        let rt = rt.unwrap();
+        let scene = Arc::new(Mutex::new(
+            Scene::prepare(&instrument.path, &rt).unwrap().unwrap(),
+        ));
+        let mut live = first_script_live(&rt);
+        rt.prepare_native_controls(&mut live);
+        let p = Arc::new(SamplerParams::new());
+        let epoch = {
+            let mut view = p.shared.view.lock().unwrap();
+            let epoch = next_epoch(&mut view, 0, None, Some(live));
+            view.parts[0].native_scene = Some(scene.clone());
+            epoch
+        };
+        let mut dsp = Dsp::default();
+        dsp.script_epoch[0] = epoch;
+        dsp.rack.parts[0].set_script(Some(rt));
+        fn colored(node: &Node, color: [f32; 4]) -> Option<&Node> {
+            if matches!(node.paint,Paint::Rectangle(value,_) if value==color) {
+                Some(node)
+            } else {
+                node.children.iter().find_map(|node| colored(node, color))
+            }
+        }
+        fn frame(scene: &Arc<Mutex<Scene>>, ui: &mut Ui, pointer: PointerInput) {
+            let mut scene = scene.lock().unwrap();
+            let root = scene.snapshot().unwrap();
+            ui.frame(
+                crate::ui::native_scene::scene_tree_at(&root, &scene.assets, "native-ui-0").clip(),
+                None,
+                pointer,
+                0.016,
+            )
+            .unwrap();
+        }
+        fn points(scene: &Arc<Mutex<Scene>>, ui: &Ui) -> (Point, Point) {
+            let root = scene.lock().unwrap().snapshot().unwrap();
+            let point = |color| {
+                let node = colored(&root, color).unwrap();
+                let frame = ui
+                    .scene()
+                    .unwrap()
+                    .surface(&format!("native-ui-0-{}", node.id))
+                    .unwrap()
+                    .frame;
+                Point::new(frame.x + 2., frame.y + 3.)
+            };
+            (point([0., 0., 1., 1.]), point([1., 0., 0., 1.]))
+        }
+        fn release(scene: &Arc<Mutex<Scene>>, payload: DropPayload) -> (Ui, Point, String) {
+            let mut ui = Ui::default()
+                .font(Font::new(&include_bytes!("../assets/NotoSans.ttf")[..]).unwrap());
+            frame(scene, &mut ui, PointerInput::default());
+            let (start, target) = points(scene, &ui);
+            let source = ui.target_at(start).unwrap().0.to_owned();
+            frame(
+                scene,
+                &mut ui,
+                PointerInput {
+                    pos: Some(start),
+                    buttons: Buttons::PRIMARY,
+                    ..Default::default()
+                },
+            );
+            ui.start_drag(source.clone(), payload);
+            frame(
+                scene,
+                &mut ui,
+                PointerInput {
+                    pos: Some(target),
+                    buttons: Buttons::PRIMARY,
+                    ..Default::default()
+                },
+            );
+            assert!(ui.dragging::<DropPayload>().is_some());
+            frame(
+                scene,
+                &mut ui,
+                PointerInput {
+                    pos: Some(target),
+                    ..Default::default()
+                },
+            );
+            let key = ui
+                .dropped()
+                .map(|(from, target)| {
+                    assert_eq!(from, source);
+                    target.to_owned()
+                })
+                .unwrap_or_default();
+            (ui, target, key)
+        }
+        let binary = || {
+            DropPayload::new([(
+                "application/x-authored-binary".into(),
+                Arc::<[u8]>::from([0, b'4', b'2', 255]),
+            )])
+            .unwrap()
+            .with_origin(0, epoch, &scene)
+        };
+        let (mut ui, _, key) = release(&scene, binary());
+        crate::ui::native_scene::typed_drop(&p, &mut ui, 0, epoch, &scene);
+        assert!(
+            ui.dropped_on::<DropPayload>(key.as_str()).is_none(),
+            "nearest matching owner consumes exactly once"
+        );
+        let (mut left, mut right) = ([0.; 64], [0.; 64]);
+        let live = p.shared.view.lock().unwrap().parts[0].live.take().unwrap();
+        p.shared.live_requests.push((0, epoch, live)).ok().unwrap();
+        let mut slices = [left.as_mut_slice(), right.as_mut_slice()];
+        let mut buffer = AudioBuffer::from_slices_checked(&[], &mut slices, 64);
+        let transport = TransportInfo::default();
+        let mut output = EventList::with_capacity(4);
+        let events = EventList::with_capacity(1);
+        let mut cx = ProcessContext::new(&transport, 48000., 64, &mut output);
+        assert_eq!(
+            allocations(|| {
+                for _ in 0..8 {
+                    Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx);
+                }
+            }),
+            0
+        );
+        p.shared.publish_live(true);
+        let value = |dsp: &Dsp| {
+            dsp.rack.parts[0].script().unwrap().interface(0).controls[1].properties["$CONTROL_PAR_VALUE"].clone()
+        };
+        assert_eq!(
+            value(&dsp),
+            crate::ksp::Value::Int(84),
+            "inner callback routes through actual queued KSP UI control"
+        );
+        assert_eq!(
+            dsp.rack.parts[0].script().unwrap().interface(1).controls[0].properties["$CONTROL_PAR_VALUE"],
+            crate::ksp::Value::Int(99)
+        );
+        let mut observed = dsp.rack.parts[0].script().unwrap().live();
+        dsp.rack.parts[0]
+            .script()
+            .unwrap()
+            .prepare_native_controls(&mut observed);
+        for mode in [1, 2, 3, 4, 5, 0] {
+            dsp.rack.parts[0].ui_control(0, 0, mode);
+            dsp.rack.parts[0].render(&mut left, &mut right);
+            dsp.rack.parts[0]
+                .script()
+                .unwrap()
+                .refresh_live(&mut observed);
+            scene.lock().unwrap().observe(&observed);
+            let (mut ui, _, key) = release(&scene, binary());
+            crate::ui::native_scene::typed_drop(&p, &mut ui, 0, epoch, &scene);
+            if mode < 4 && mode != 0 {
+                if !key.is_empty() {
+                    assert!(
+                        ui.dropped_on::<DropPayload>(key.as_str()).is_some(),
+                        "rejected releases retain their payload"
+                    );
+                }
+                assert!(
+                    p.shared.edits.pop().is_none(),
+                    "hidden/disabled/removed owners cannot run callbacks"
+                );
+            } else {
+                let edit = p.shared.edits.pop().unwrap();
+                assert_eq!(
+                    (edit.slot, edit.control, edit.value),
+                    (
+                        0,
+                        1,
+                        if mode == 4 {
+                            13
+                        } else if mode == 5 {
+                            55
+                        } else {
+                            42
+                        }
+                    )
+                );
+                assert!(
+                    p.shared.edits.pop().is_none(),
+                    "exactly one nearest owner fires"
+                );
+                if mode == 4 {
+                    assert!(
+                        p.shared.view.lock().unwrap().parts[0]
+                            .native_status
+                            .contains("absent"),
+                        "missing format error is visible and earlier callback edits survive"
+                    );
+                }
+            }
+        }
+        // Actual file hover only offers the payload; release executes once and
+        // supplies genuine encoded URIs, never the private NI clipboard format.
+        let mut ui = Ui::default();
+        frame(&scene, &mut ui, PointerInput::default());
+        let (_, target) = points(&scene, &ui);
+        let files = [directory.path().join("space #.nki")];
+        assert!(crate::ui::native_scene::files(
+            &p, &ui, target, &files, false
+        ));
+        assert!(
+            p.shared.edits.pop().is_none(),
+            "file hover never performs the action"
+        );
+        assert!(crate::ui::native_scene::files(
+            &p, &ui, target, &files, true
+        ));
+        assert_eq!(p.shared.edits.pop().unwrap().value, 21);
+        assert!(p.shared.edits.pop().is_none());
+        assert!(
+            !crate::ui::native_scene::files(&p, &ui, Point::new(200., 200.), &files, true),
+            "outside/clipped releases have no native owner"
+        );
+        assert!(
+            scene
+                .lock()
+                .unwrap()
+                .drop_source_warning()
+                .unwrap()
+                .contains("NI internal clipboard producer")
+        );
+        let unknown =
+            DropPayload::new([("application/x-unmatched".into(), Arc::<[u8]>::from([1]))]).unwrap();
+        let (mut ui, _, key) = release(&scene, unknown);
+        crate::ui::native_scene::typed_drop(&p, &mut ui, 0, epoch, &scene);
+        assert!(
+            ui.dropped_on::<DropPayload>(key.as_str()).is_some(),
+            "unmatched typed payload remains available to its consumer"
+        );
+        let stale = DropPayload::new([(
+            "application/x-authored-binary".into(),
+            Arc::<[u8]>::from([0, b'4', b'2', 255]),
+        )])
+        .unwrap()
+        .with_origin(0, epoch + 1, &scene);
+        let (mut ui, _, key) = release(&scene, stale);
+        crate::ui::native_scene::typed_drop(&p, &mut ui, 0, epoch, &scene);
+        assert!(
+            ui.dropped_on::<DropPayload>(key.as_str()).is_some(),
+            "stale source cannot invoke a drop callback"
+        );
+        let (mut ui, _, key) = release(&scene, binary());
+        p.shared.view.lock().unwrap().parts[0].script_epoch = epoch + 1;
+        crate::ui::native_scene::typed_drop(&p, &mut ui, 0, epoch, &scene);
+        assert!(
+            ui.dropped_on::<DropPayload>(key.as_str()).is_some(),
+            "stale destination cannot invoke a drop callback"
+        );
+        p.shared.view.lock().unwrap().parts[0].script_epoch = epoch;
+        let (mut ui, _, key) = release(&scene, binary());
+        p.shared.view.lock().unwrap().parts[0].native_scene = Some(Arc::new(Mutex::new(
+            Scene::prepare(&instrument.path, dsp.rack.parts[0].script().unwrap())
+                .unwrap()
+                .unwrap(),
+        )));
+        crate::ui::native_scene::typed_drop(&p, &mut ui, 0, epoch, &scene);
+        assert!(
+            ui.dropped_on::<DropPayload>(key.as_str()).is_some(),
+            "replacement scene with the same epoch cannot receive an old scene's callback"
+        );
+        assert!(p.shared.edits.pop().is_none());
+        for registration in [
+            "of={},action=function()end",
+            "of={'x','x'},action=function()end",
+            "of={'x'},perform=function()end",
+        ] {
+            std::fs::write(resources.join("main.nui"),format!("local ui=require('native_ui') return @ui.Rectangle{{color=ui.Color.red}}.on_drop({registration})")).unwrap();
+            assert!(
+                Scene::prepare(&instrument.path, dsp.rack.parts[0].script().unwrap()).is_err(),
+                "{registration}"
+            );
+        }
+        assert!(DropPayload::new([("x".repeat(257), Arc::<[u8]>::from([1]))]).is_err());
+        assert!(DropPayload::new([("x".into(), Arc::<[u8]>::from(vec![0; 1 << 20]))]).is_err());
     }
 
     #[test]

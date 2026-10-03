@@ -1,6 +1,8 @@
 //! Render the supported native scene primitives; assets never use classic-picture guesses.
 use super::Cx;
-use crate::native_ui::{Node, Paint};
+use crate::native_ui::{DropPayload, Node, Paint, Scene};
+use crate::plugin::SamplerParams;
+use std::sync::{Arc, Mutex};
 use moose::mui::mui::prelude::*;
 
 pub(super) fn view(ui: &mut Ui, cx: &mut Cx, part: usize) -> Option<El> {
@@ -32,6 +34,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, part: usize) -> Option<El> {
             v.native_status = error;
         }
     }
+    typed_drop(cx.p, ui, part, epoch, &scene);
     gesture(cx, part, epoch, &scene, |scene| {
         scene.hover(ui, &format!("native-ui-{part}"))
     });
@@ -62,7 +65,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, part: usize) -> Option<El> {
             })
             .collect();
         let el = primitive(node, children, assets);
-        let el = if node.hover { el.tracks_pointer() } else { el };
+        let el = if node.hover || node.drop { el.tracks_pointer() } else { el };
         let id = format!("native-ui-{part}-{}", node.id);
         if node.tap {
             let response = ui.get(id.as_str());
@@ -95,28 +98,220 @@ fn gesture(
     scene: &std::sync::Arc<std::sync::Mutex<crate::native_ui::Scene>>,
     run: impl FnOnce(&mut crate::native_ui::Scene) -> anyhow::Result<Vec<crate::native_ui::Edit>>,
 ) {
-    let (edits, mut failure) = {
+    let (edits, failure) = {
         let mut scene = scene.lock().unwrap();
         match run(&mut scene) {
             Ok(edits) => (edits, None),
             Err(error) => (scene.take_edits(), Some(format!("Native UI gesture failed: {error:#}"))),
         }
     };
+    publish_edits(cx.p, part, epoch, scene, edits, failure);
+}
+
+fn current(p: &SamplerParams, part: usize, epoch: u64, scene: &Arc<Mutex<Scene>>) -> bool {
+    p.shared
+        .view
+        .lock()
+        .unwrap()
+        .parts
+        .get(part)
+        .is_some_and(|view| {
+            epoch != 0
+                && view.script_epoch == epoch
+                && view
+                    .native_scene
+                    .as_ref()
+                    .is_some_and(|active| Arc::ptr_eq(active, scene))
+        })
+}
+
+fn publish_edits(
+    p: &SamplerParams,
+    part: usize,
+    epoch: u64,
+    scene: &Arc<Mutex<Scene>>,
+    edits: Vec<crate::native_ui::Edit>,
+    mut failure: Option<String>,
+) {
     for edit in edits {
-        if !cx.p.shared.edit_control_slot(part, epoch, edit.slot, edit.control, edit.value) {
+        if !p
+            .shared
+            .edit_control_slot(part, epoch, edit.slot, edit.control, edit.value)
+        {
             failure = Some("Native UI control edit rejected: stale source or full queue".into());
         }
     }
     if let Some(message) = failure {
-        let mut view = cx.p.shared.view.lock().unwrap();
-        if let Some(v) = view.parts.get_mut(part).filter(|v| v.script_epoch == epoch) {
-            v.native_status = message.clone();
-        }
+        let mut view = p.shared.view.lock().unwrap();
+        let path = view
+            .parts
+            .get_mut(part)
+            .filter(|view| {
+                view.script_epoch == epoch
+                    && view
+                        .native_scene
+                        .as_ref()
+                        .is_some_and(|active| Arc::ptr_eq(active, scene))
+            })
+            .and_then(|view| {
+                view.native_status = message.clone();
+                view.instrument.as_ref().map(|i| i.path.clone())
+            });
         drop(view);
-        if let Some(i) = super::instrument::instrument_of(cx, part) {
-            crate::diagnostics::resource(&i.path, "native_ui/gesture", &message);
+        if let Some(path) = path {
+            crate::diagnostics::resource(&path, "native_ui/gesture", &message);
         }
     }
+}
+
+/// The editor's typed drag producer supplies its actual formats and optional
+/// source identity. No library-specific internal clipboard format is invented.
+pub(crate) fn typed_drop(
+    p: &SamplerParams,
+    ui: &mut Ui,
+    part: usize,
+    epoch: u64,
+    scene: &Arc<Mutex<Scene>>,
+) {
+    let prefix = format!("native-ui-{part}");
+    let Some((source, target)) = ui
+        .dropped()
+        .filter(|(_, target)| target.starts_with(&format!("{prefix}-")))
+        .map(|(source, target)| (source.to_owned(), target.to_owned()))
+    else {
+        return;
+    };
+    let Some(payload) = ui.dropped_on::<DropPayload>(target.as_str()) else {
+        return;
+    };
+    let accepted = ui.pointer().pos.is_some_and(|position| {
+        drop_payload(
+            p,
+            ui,
+            part,
+            epoch,
+            scene,
+            &prefix,
+            &target,
+            position,
+            payload.clone(),
+            true,
+        )
+    });
+    if !accepted {
+        ui.start_drag(source, payload);
+    }
+}
+
+pub(crate) fn drop_payload(
+    p: &SamplerParams,
+    ui: &Ui,
+    part: usize,
+    epoch: u64,
+    scene: &Arc<Mutex<Scene>>,
+    prefix: &str,
+    target: &str,
+    position: Point,
+    payload: DropPayload,
+    dropped: bool,
+) -> bool {
+    if !position.x.is_finite()
+        || !position.y.is_finite()
+        || ui.target_at(position).is_none_or(|(hit, _)| hit != target)
+    {
+        return false;
+    }
+    if !current(p, part, epoch, scene) {
+        return false;
+    }
+    if let Some((origin_part, origin_epoch, origin_scene)) = &payload.origin {
+        if !origin_scene
+            .upgrade()
+            .is_some_and(|origin| current(p, *origin_part, *origin_epoch, &origin))
+        {
+            return false;
+        }
+    }
+    let (edits, failure) = {
+        let mut scene = scene.lock().unwrap();
+        let Some(owner) = scene.drop_target(ui, prefix, target, &payload) else {
+            return false;
+        };
+        if !dropped {
+            return true;
+        }
+        match scene.perform_drop(ui, prefix, owner, position, payload) {
+            Ok(edits) => (edits, None),
+            Err(error) => (
+                scene.take_edits(),
+                Some(format!("Native UI drop failed: {error:#}")),
+            ),
+        }
+    };
+    publish_edits(p, part, epoch, scene, edits, failure);
+    true
+}
+
+pub(crate) fn files(
+    p: &SamplerParams,
+    ui: &Ui,
+    position: Point,
+    paths: &[std::path::PathBuf],
+    dropped: bool,
+) -> bool {
+    let Some((target, _)) = ui.target_at(position) else {
+        return false;
+    };
+    let Some(part) = target
+        .strip_prefix("native-ui-")
+        .and_then(|name| name.split('-').next())
+        .and_then(|part| part.parse::<usize>().ok())
+    else {
+        return false;
+    };
+    let Some((epoch, scene)) = p
+        .shared
+        .view
+        .lock()
+        .unwrap()
+        .parts
+        .get(part)
+        .and_then(|view| {
+            view.native_scene
+                .clone()
+                .map(|scene| (view.script_epoch, scene))
+        })
+    else {
+        return false;
+    };
+    let payload = match DropPayload::files(paths) {
+        Ok(payload) => payload,
+        Err(error) => {
+            if dropped {
+                publish_edits(
+                    p,
+                    part,
+                    epoch,
+                    &scene,
+                    Vec::new(),
+                    Some(format!("Native UI file drop failed: {error:#}")),
+                );
+            }
+            return false;
+        }
+    };
+    drop_payload(
+        p,
+        ui,
+        part,
+        epoch,
+        &scene,
+        &format!("native-ui-{part}"),
+        target,
+        position,
+        payload,
+        dropped,
+    )
 }
 
 // An annular sector uses exact circular path segments, not sampled polygons.
@@ -223,20 +418,24 @@ pub(crate) fn paint_snapshot(node: &Node, offered: (f64, f64)) -> El {
     { let _ = offered; scene_tree(node, &crate::native_assets::Assets::default()) }
 }
 pub(crate) fn scene_tree(node: &Node, assets: &crate::native_assets::Assets) -> El {
+    scene_tree_at(node, assets, "native-snapshot")
+}
+
+pub(crate) fn scene_tree_at(node: &Node, assets: &crate::native_assets::Assets, prefix: &str) -> El {
     let children = node
         .children
         .iter()
         .enumerate()
         .map(|(index, child)| {
             let anchor = node.anchor.or(child.anchor).unwrap_or(node.alignment);
-            let el = scene_tree(child, assets).anchor(anchor.0, anchor.1);
+            let el = scene_tree_at(child, assets, prefix).anchor(anchor.0, anchor.1);
             if node.background && index==0 { el.underlay() } else if node.overlay && index==1 { el.overlay() } else { el }
         })
         .collect();
     let el = primitive(node, children, assets);
-    let el = if node.hover { el.tracks_pointer() } else { el };
+    let el = if node.hover || node.drop { el.tracks_pointer() } else { el };
     let el = if node.tap { el.cursor(Cursor::Hand).focusable().a11y(A11y::Button).named("Native UI pointer target") } else { el };
-    el.id(format!("native-snapshot-{}", node.id))
+    el.id(format!("{prefix}-{}", node.id))
 }
 
 // Admission uses the same font/layout/asset adapter as editor rendering, not

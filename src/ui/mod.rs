@@ -815,6 +815,7 @@ fn sanitize(selection: &mut Selection) {
 /// Files dragged in from the desktop: `.nki` into the slot under the pointer
 /// or free slots, one `.nkm` replaces the rack. Returns whether they are accepted.
 fn native_files(p: &SamplerParams, picker: &picker::Picker, ui: &Ui, at: Point, paths: &[PathBuf], dropped: bool) -> bool {
+    if native_scene::files(p, ui, at, paths, dropped) { return true; }
     let inside = |id: &str| {
         ui.scene().and_then(|s| s.surface(id)).is_some_and(|s| {
             let r = s.frame;
