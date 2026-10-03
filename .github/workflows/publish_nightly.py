@@ -144,7 +144,7 @@ def main():
             assert archive.testzip() is None, p.name
             prefix = f"KONTRA-nightly-{platform}/"
             if platform.startswith("macos-"):
-                binaries = ("KONTRA.clap/Contents/MacOS/KONTRA", "KONTRA.vst3/Contents/MacOS/KONTRA", "kontakto-standalone")
+                binaries = ("KONTRA.clap/Contents/MacOS/KONTRA", "KONTRA.vst3/Contents/MacOS/KONTRA", "KONTRA.app/Contents/MacOS/KONTRA")
             elif platform.startswith("windows-"):
                 binaries = ("KONTRA.clap", "KONTRA.vst3/Contents/x86_64-win/KONTRA.vst3", "kontakto-standalone.exe")
             else:
@@ -162,10 +162,14 @@ def main():
             assert archive.read(prefix + "SOURCE_COMMIT.txt").decode().strip() == SHA, p.name
             info = [json.loads(archive.read(prefix + name)) for name in ("clap-build-info.json", "vst3-build-info.json", "build-info.json")]
             if platform.startswith("macos-"):
-                for bundle in ("KONTRA.clap", "KONTRA.vst3"):
+                for bundle in ("KONTRA.clap", "KONTRA.vst3", "KONTRA.app"):
                     plist = plistlib.loads(archive.read(prefix + bundle + "/Contents/Info.plist"))
                     assert plist["CFBundleShortVersionString"] == plist["CFBundleVersion"] == version.split("-", 1)[0]
                     assert plist["KONTRAVersion"] == version
+                app = plistlib.loads(archive.read(prefix + "KONTRA.app/Contents/Info.plist"))
+                assert app["CFBundlePackageType"] == "APPL"
+                assert {t["UTTypeIdentifier"] for t in app["UTImportedTypeDeclarations"]} == {"org.cleveraudio.clap", "com.steinberg.vst3"}
+                assert all("com.apple.package" in t["UTTypeConformsTo"] for t in app["UTImportedTypeDeclarations"])
                 notarization = json.loads(archive.read(prefix + "notarization.json"))
                 assert notarization["status"] == "Accepted" and notarization["stapled"] is True and notarization["signatures_verified"] is True, "Untrusted Mac delivery"
                 assert re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", notarization["id"]), "Missing Apple submission ID"
