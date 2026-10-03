@@ -1074,6 +1074,7 @@ mod tests {
             loops: Vec::new(),
             unity_note: None,
             wavetable_cycle_frames: None,
+            wavetable_image: false,
             riff_metadata: Vec::new(),
         })
     }
@@ -1289,6 +1290,7 @@ mod tests {
                 loops: Vec::new(),
                 unity_note: None,
                 wavetable_cycle_frames: None,
+                wavetable_image: false,
                 riff_metadata: Vec::new(),
             }),
         );
@@ -1304,6 +1306,7 @@ mod tests {
                 loops: Vec::new(),
                 unity_note: None,
                 wavetable_cycle_frames: None,
+                wavetable_image: false,
                 riff_metadata: Vec::new(),
             }),
         );
@@ -1319,6 +1322,7 @@ mod tests {
                 loops: Vec::new(),
                 unity_note: None,
                 wavetable_cycle_frames: None,
+                wavetable_image: false,
                 riff_metadata: Vec::new(),
             }),
         );

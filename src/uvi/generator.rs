@@ -6,7 +6,7 @@
 //! The discontinuous-wave anti-aliasing below is an original polynomial law,
 //! not a reconstruction of UVI's minimum-phase BLEP implementation.
 
-use super::{dsp::Frame, program::ProgramNode, sample::Sample};
+use super::{dsp::Frame, program::ProgramNode, sample::Sample, storage::Storage};
 use anyhow::{Context, Result, ensure};
 use std::{
     collections::hash_map::DefaultHasher,
@@ -15,7 +15,147 @@ use std::{
     sync::Arc,
 };
 
-pub const FIDELITY_DIAGNOSTIC: &str = "Native authored fixtures cover Analog sine/PWM, Analog/Wavetable deterministic unison phase/detune/gain/stereo, filename/channel-based wavetable slices and index spread, wavetable phase-distortion modes 0/3 and tracked sine-FM ratio modes 0/1/2, and tracked four-operator FM topologies 0/5/6/7/10 with D feedback; numerical parity remains unverified for polynomial anti-aliasing, hard-sync edges, random phase/noise sequences, linear wavetable readout and FM clock precision";
+pub const FIDELITY_DIAGNOSTIC: &str = "Native authored fixtures cover Analog sine/PWM, Analog/Wavetable deterministic unison phase/detune/gain/stereo, filename/channel-based wavetable slices and index spread, bounded PNG image-wavetable conversion, wavetable phase-distortion modes 0/3 and tracked sine-FM ratio modes 0/1/2, and tracked four-operator FM topologies 0/5/6/7/10 with D feedback; numerical parity remains unverified for polynomial anti-aliasing, hard-sync edges, random phase/noise sequences, linear wavetable readout and FM clock precision";
+
+pub(crate) const IMAGE_BYTES_LIMIT: usize = 8 << 20;
+const IMAGE_FRAMES: usize = 2048;
+
+pub(crate) fn image_signature(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"\x89PNG\r\n\x1a\n") || bytes.starts_with(&[0xff, 0xd8])
+}
+
+fn image_dimensions(width: usize, height: usize) -> Result<()> {
+    ensure!(
+        (1..=IMAGE_FRAMES).contains(&width) && (1..=256).contains(&height),
+        "Image wavetables require 1..2048 columns and 1..256 rows; larger-image resampling/cropping is unverified"
+    );
+    Ok(())
+}
+
+/// Decode only measured image color models, with limits before pixel allocation.
+/// This resource is a table bank, never audio for a SamplePlayer or Lua readAudio.
+pub(crate) fn image_wavetable(bytes: &[u8]) -> Result<Sample> {
+    ensure!(
+        bytes.len() <= IMAGE_BYTES_LIMIT,
+        "Image wavetable exceeds 8 MiB source limit"
+    );
+    let (width, height, components, pixels) = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        let decoder = png::Decoder::new_with_limits(
+            std::io::Cursor::new(bytes),
+            png::Limits {
+                bytes: IMAGE_BYTES_LIMIT,
+            },
+        );
+        let mut reader = decoder
+            .read_info()
+            .context("Invalid image-wavetable PNG header")?;
+        let info = reader.info();
+        let (width, height) = (info.width as usize, info.height as usize);
+        image_dimensions(width, height)?;
+        ensure!(
+            info.bit_depth == png::BitDepth::Eight && info.animation_control.is_none(),
+            "Only still 8-bit image-wavetable PNGs are measured"
+        );
+        let components = match info.color_type {
+            png::ColorType::Grayscale => 1,
+            png::ColorType::GrayscaleAlpha => 2,
+            png::ColorType::Rgb => 3,
+            png::ColorType::Rgba => 4,
+            _ => anyhow::bail!("Indexed image-wavetable PNG color conversion is unverified"),
+        };
+        ensure!(
+            info.trns.is_none(),
+            "Image-wavetable PNG transparency is unverified"
+        );
+        let size = reader
+            .output_buffer_size()
+            .context("Image-wavetable PNG size overflow")?;
+        ensure!(
+            size == width * height * components,
+            "Unexpected image-wavetable PNG layout"
+        );
+        let mut pixels = vec![0; size];
+        let output = reader
+            .next_frame(&mut pixels)
+            .context("Invalid image-wavetable PNG pixels")?;
+        ensure!(
+            output.buffer_size() == size,
+            "Incomplete image-wavetable PNG pixels"
+        );
+        (width, height, components, pixels)
+    } else {
+        ensure!(
+            bytes.starts_with(&[0xff, 0xd8]),
+            "Expected image-wavetable PNG or JPEG signature"
+        );
+        anyhow::bail!(
+            "JPEG image-wavetable decoding is not implemented with verified native fidelity"
+        )
+    };
+    image_pixels(width, height, components, &pixels)
+}
+
+fn image_pixels(width: usize, height: usize, components: usize, pixels: &[u8]) -> Result<Sample> {
+    image_dimensions(width, height)?;
+    ensure!(
+        (1..=4).contains(&components) && pixels.len() == width * height * components,
+        "Invalid image-wavetable pixel layout"
+    );
+    if components == 2 || components == 4 {
+        ensure!(
+            pixels
+                .chunks_exact(components)
+                .all(|pixel| pixel[components - 1] == 255),
+            "Nonopaque image-wavetable alpha conversion is unverified"
+        );
+    }
+    let mut brightness = vec![0u8; IMAGE_FRAMES * height];
+    let colors = if components <= 2 { 1 } else { 3 };
+    for x in 0..IMAGE_FRAMES {
+        let position = (x as f64 + 0.5) * width as f64 / IMAGE_FRAMES as f64 - 0.5;
+        let base = position.floor();
+        let left = (base as isize).clamp(0, width as isize - 1) as usize;
+        let right = (base as isize + 1).clamp(0, width as isize - 1) as usize;
+        let fraction = ((position - base) * 256.).round() / 256.;
+        for row in 0..height {
+            let mut value = 0;
+            for color in 0..colors {
+                let a = pixels[(row * width + left) * components + color] as f64;
+                let b = pixels[(row * width + right) * components + color] as f64;
+                let normalized = ((a * (1. - fraction) + b * fraction) / 255.) as f32;
+                // Authored native PNGs establish 8-bit subpixel interpolation
+                // and truncation to ten fraction bits before byte rounding.
+                // This is a measured conversion law, not vendor implementation code.
+                let truncated = f32::from_bits(normalized.to_bits() & !0x1fff);
+                value = value.max((truncated * 255.).round() as u8);
+            }
+            brightness[x * height + height - row - 1] = value;
+        }
+    }
+    let mean = brightness.iter().map(|&v| v as f64).sum::<f64>() / brightness.len() as f64;
+    let peak = *brightness.iter().max().unwrap() as f64 - mean;
+    let values = brightness
+        .into_iter()
+        .map(|v| {
+            if peak == 0. {
+                0.
+            } else {
+                ((v as f64 - mean) / peak) as f32
+            }
+        })
+        .collect();
+    Ok(Sample {
+        rate: 48_000,
+        channels: height,
+        frames: IMAGE_FRAMES,
+        interleaved: Storage::from_f32(values)?,
+        loops: Vec::new(),
+        unity_note: None,
+        wavetable_cycle_frames: Some(IMAGE_FRAMES as u32),
+        wavetable_image: true,
+        riff_metadata: Vec::new(),
+    })
+}
 
 pub fn supports(kind: &str) -> bool {
     matches!(
@@ -39,19 +179,6 @@ fn number(node: &ProgramNode, name: &str, default: f64) -> Result<f64> {
 pub fn validate(node: &ProgramNode) -> Result<()> {
     ensure!(supports(&node.kind), "Unsupported UVI generator");
     let n = |name: &str, default: f64| number(node, name, default);
-    if node.kind == "WaveTableOscillator" {
-        let extension = node
-            .attributes
-            .get("WavetablePath")
-            .and_then(|path| path.rsplit(['/', '\\']).next())
-            .and_then(|file| file.rsplit_once('.').map(|(_, extension)| extension));
-        ensure!(
-            !extension.is_some_and(|extension| ["jpg", "jpeg", "png"]
-                .iter()
-                .any(|image| extension.eq_ignore_ascii_case(image))),
-            "Image-backed wavetable conversion is not implemented"
-        );
-    }
     if node.kind == "FmOscillator" {
         fm_settings(&n)?;
         return Ok(());
@@ -211,6 +338,12 @@ impl Generator {
         } else {
             let table = table.context("Missing resolved external wavetable")?;
             ensure!(
+                !table.wavetable_image
+                    || (table.frames == IMAGE_FRAMES
+                        && table.wavetable_cycle_frames == Some(IMAGE_FRAMES as u32)),
+                "Invalid imported image-wavetable geometry"
+            );
+            ensure!(
                 (1..=256).contains(&table.channels)
                     && table.frames >= 4
                     && table.frames <= 1 << 20
@@ -219,13 +352,16 @@ impl Generator {
                     && table.interleaved.iter().all(|n| n.is_finite()),
                 "Only bounded mono or channel-sliced external wavetables are implemented"
             );
-            let filename_cycle = node
-                .attributes
-                .get("WavetablePath")
-                .and_then(|p| p.rsplit(['/', '\\']).next())
-                .and_then(|p| p.rsplit_once('.').map(|(stem, _)| stem))
-                .and_then(|p| p.rsplit_once('_').map(|(_, size)| size))
-                .and_then(|size| size.parse::<usize>().ok());
+            let filename_cycle = (!table.wavetable_image)
+                .then(|| {
+                    node.attributes
+                        .get("WavetablePath")
+                        .and_then(|p| p.rsplit(['/', '\\']).next())
+                        .and_then(|p| p.rsplit_once('.').map(|(stem, _)| stem))
+                        .and_then(|p| p.rsplit_once('_').map(|(_, size)| size))
+                        .and_then(|size| size.parse::<usize>().ok())
+                })
+                .flatten();
             ensure!(
                 filename_cycle.is_some()
                     || table
@@ -784,26 +920,171 @@ mod tests {
     use crate::uvi::program::parse_program;
 
     #[test]
-    fn authored_native_external_table_slices() {
-        // Image resources must fail in preflight before the audio loader runs.
-        for path in [
-            "authored.jpg",
-            "authored.JPEG",
-            "authored.PNG",
-            r"C:\tables\authored.JpG",
-        ] {
-            let image = parse_program(&format!(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><WaveTableOscillator WavetablePath="{path}"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#)).unwrap();
-            let image = image
-                .nodes
-                .iter()
-                .find(|node| node.kind == "WaveTableOscillator")
-                .unwrap();
-            assert_eq!(
-                validate(image).unwrap_err().to_string(),
-                "Image-backed wavetable conversion is not implemented"
-            );
-            assert!(Generator::new(image, 48_000., None).is_err());
+    fn authored_native_image_conversion_and_bounds() {
+        // Independently authored gray pairs were measured at exact StartPhase
+        // positions in official Workstation4.0.9. Values below are imported
+        // bytes inferred from constant black/white calibration rows.
+        let pairs = [
+            (128, 134),
+            (140, 146),
+            (146, 152),
+            (0, 255),
+            (255, 0),
+            (128, 0),
+            (0, 128),
+            (128, 255),
+            (255, 128),
+            (0, 6),
+            (6, 12),
+            (12, 18),
+            (0, 0),
+            (255, 255),
+        ];
+        let pixels: Vec<u8> = pairs
+            .iter()
+            .flat_map(|&(a, b)| [a].into_iter().chain(std::iter::repeat_n(b, 127)))
+            .collect();
+        let table = image_pixels(128, pairs.len(), 1, &pixels).unwrap();
+        assert!(table.wavetable_image);
+        assert_eq!(
+            (table.frames, table.channels, table.wavetable_cycle_frames),
+            (2048, 14, Some(2048))
+        );
+        let at = |row: usize, x: usize| table.interleaved.value(x * 14 + 13 - row).unwrap() as f64;
+        let black = at(12, 0);
+        let white = at(13, 0);
+        let expected = [
+            [128, 128, 128, 129, 130, 131, 134],
+            [140, 140, 140, 141, 142, 144, 146],
+            [146, 146, 147, 147, 148, 150, 152],
+            [0, 0, 24, 40, 72, 151, 255],
+            [255, 255, 231, 215, 183, 104, 0],
+            [128, 128, 116, 108, 92, 52, 0],
+            [0, 0, 12, 20, 36, 76, 128],
+            [128, 128, 140, 148, 164, 203, 255],
+            [255, 255, 243, 235, 219, 180, 128],
+            [0, 0, 1, 1, 2, 4, 6],
+            [6, 6, 7, 7, 8, 10, 12],
+            [12, 12, 13, 13, 14, 16, 18],
+        ];
+        for (row, values) in expected.iter().enumerate() {
+            for (x, pixel) in [0, 1, 9, 10, 12, 17, 25].into_iter().zip(values) {
+                assert_eq!(
+                    ((at(row, x) - black) / (white - black) * 255.).round() as u8,
+                    *pixel
+                );
+            }
         }
+        let rgb = [[255, 255, 255], [255, 255, 0], [255, 0, 0], [128, 128, 128]];
+        let rgba: Vec<u8> = rgb
+            .iter()
+            .flat_map(|c| c.iter().copied().chain([255]))
+            .collect();
+        let colors = image_pixels(1, 4, 4, &rgba).unwrap();
+        assert_eq!(colors.interleaved.to_vec().unwrap()[..4], [-3., 1., 1., 1.]);
+        let program = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><WaveTableOscillator WavetablePath="authored_128.wav"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let node = program
+            .nodes
+            .iter()
+            .find(|n| n.kind == "WaveTableOscillator")
+            .unwrap();
+        // Signature-imported image metadata defeats an unrelated filename hint.
+        let mut generator = Generator::new(node, 48000., Some(Arc::new(colors))).unwrap();
+        assert_eq!(generator.channels(), 1);
+        assert_eq!(
+            generator
+                .next(|n, d| number(node, n, d), 261.625565)
+                .unwrap()[..2],
+            [-3., 0.]
+        );
+        assert!(image_pixels(0, 1, 3, &[]).is_err());
+        assert!(image_pixels(2049, 1, 3, &[]).is_err());
+        assert!(image_pixels(1, 257, 3, &[]).is_err());
+        assert!(image_pixels(1, 1, 4, &[0, 0, 0, 128]).is_err());
+        assert!(image_pixels(1, 1, 3, &[0, 0]).is_err());
+        assert!(image_signature(b"\x89PNG\r\n\x1a\n"));
+        assert!(image_signature(&[255, 216]));
+        assert!(!image_signature(b"RIFF"));
+        assert_eq!(
+            image_wavetable(&[255, 216]).unwrap_err().to_string(),
+            "JPEG image-wavetable decoding is not implemented with verified native fidelity"
+        );
+        assert!(image_wavetable(b"RIFF").is_err());
+        assert!(image_wavetable(&vec![0; IMAGE_BYTES_LIMIT + 1]).is_err());
+        for (width, height, bit_depth, color, data, accepted) in [
+            (
+                128,
+                14,
+                png::BitDepth::Eight,
+                png::ColorType::Grayscale,
+                pixels,
+                true,
+            ),
+            (1, 4, png::BitDepth::Eight, png::ColorType::Rgba, rgba, true),
+            (
+                1,
+                1,
+                png::BitDepth::Eight,
+                png::ColorType::Rgba,
+                vec![0, 0, 0, 128],
+                false,
+            ),
+            (
+                2049,
+                1,
+                png::BitDepth::Eight,
+                png::ColorType::Grayscale,
+                vec![0; 2049],
+                false,
+            ),
+            (
+                1,
+                257,
+                png::BitDepth::Eight,
+                png::ColorType::Grayscale,
+                vec![0; 257],
+                false,
+            ),
+            (
+                1,
+                1,
+                png::BitDepth::Sixteen,
+                png::ColorType::Grayscale,
+                vec![0; 2],
+                false,
+            ),
+        ] {
+            let mut encoded = Vec::new();
+            let mut encoder = png::Encoder::new(&mut encoded, width, height);
+            encoder.set_color(color);
+            encoder.set_depth(bit_depth);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&data)
+                .unwrap();
+            let decoded = image_wavetable(&encoded);
+            if accepted {
+                let decoded = decoded.unwrap();
+                let original = image_pixels(
+                    width as usize,
+                    height as usize,
+                    if color == png::ColorType::Rgba { 4 } else { 1 },
+                    &data,
+                )
+                .unwrap();
+                assert_eq!(
+                    decoded.interleaved.to_vec().unwrap(),
+                    original.interleaved.to_vec().unwrap()
+                );
+            } else {
+                assert!(decoded.is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn authored_native_external_table_slices() {
         let p = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><WaveTableOscillator WavetablePath="authored_128.wav" PhaseDistortionMode="3" PhaseDistortionAmount="0"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
         let node = p
             .nodes
@@ -822,6 +1103,7 @@ mod tests {
             unity_note: None,
             riff_metadata: Vec::new(),
             wavetable_cycle_frames: Some(128),
+            wavetable_image: false,
         });
         let plain = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><WaveTableOscillator WavetablePath="authored.wav"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
         let plain = plain
@@ -1047,6 +1329,7 @@ mod tests {
             unity_note: None,
             riff_metadata: Vec::new(),
             wavetable_cycle_frames: None,
+            wavetable_image: false,
         });
         let mut g = Generator::new(node, 48_000., Some(table)).unwrap();
         // Native authored PCM16 external sine table at neutral phase mode3.
@@ -1081,6 +1364,7 @@ mod tests {
             unity_note: None,
             riff_metadata: Vec::new(),
             wavetable_cycle_frames: None,
+            wavetable_image: false,
         });
         let mut g = Generator::new(node, 48_000., Some(constant)).unwrap();
         // A non-sine authored table distinguishes native resource loading from
@@ -1113,6 +1397,7 @@ mod tests {
             unity_note: None,
             riff_metadata: Vec::new(),
             wavetable_cycle_frames: None,
+            wavetable_image: false,
         });
         // Independently authored PCM16 sine table rendered in Workstation4.0.9.
         // These cover both phase bends, three ratio quantizers, reciprocal
@@ -1441,6 +1726,7 @@ mod tests {
                 unity_note: None,
                 riff_metadata: Vec::new(),
                 wavetable_cycle_frames: None,
+                wavetable_image: false,
             });
             let mut g = Generator::new(node, 48000., Some(table)).unwrap();
             for (index, native) in [(0., 0.0625), (0.5, 0.125), (1., 0.1875)] {
@@ -1473,6 +1759,7 @@ mod tests {
             unity_note: None,
             riff_metadata: Vec::new(),
             wavetable_cycle_frames: None,
+            wavetable_image: false,
         });
         // Native L/R observations distinguish positive i/N index spread from
         // centered detune positions and establish clamping at the top wave.

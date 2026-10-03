@@ -10,13 +10,14 @@
 //! arbitrary Shape values and moving Mode0 remain unsupported.
 //! Interval-bounded RoomSize mapping rejects uncertain prime-delay boundaries.
 //! Static and Mode1/2 models match 110 complete authored native stereo tails
-//! within 5e-6; native floating-point parity remains unverified.
+//! within 5e-6 at native 256-frame host blocks (64-frame controls also match).
+//! Smaller or unaligned native host-span behavior and float parity are unimplemented.
 
 use super::{dsp::Frame, host::ParameterValue, program::ProgramNode};
 use anyhow::{Context, Result, bail, ensure};
 use std::collections::BTreeMap;
 
-pub const FIDELITY_DIAGNOSTIC: &str = "SparkVerb currently supports measured 48-kHz delay layouts at Qualities2/3/4 and Shapes0/0.25/0.5/0.75/1; moving Mode0, other Shape values and uncertain prime-delay boundaries, mono insert promotion, live control smoothing and bypass transitions remain unsupported or native-unverified; measured Mode1/2 modulation tails agree within 5e-6 but native float parity is unverified";
+pub const FIDELITY_DIAGNOSTIC: &str = "SparkVerb currently supports measured 48-kHz delay layouts at Qualities2/3/4 and Shapes0/0.25/0.5/0.75/1; moving Mode0, other Shape values and uncertain prime-delay boundaries, mono insert promotion, live control smoothing and bypass transitions remain unsupported or native-unverified; measured Mode1/2 modulation tails at native 256/64-frame host blocks agree within 5e-6; smaller or unaligned native host-span behavior is unimplemented and native float parity is unverified";
 
 // name, default, minimum, maximum, integer. Native 4.0.9 defaults MixMode to 0.
 const PARAMETERS: &[(&str, f64, f64, f64, bool)] = &[

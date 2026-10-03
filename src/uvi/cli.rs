@@ -5,13 +5,13 @@ use sha2::{Digest, Sha256};
 use std::io::{Seek, SeekFrom, Write};
 use std::{collections::HashMap, rc::Rc};
 
-struct ReaderNamespaces {
-    metadata: Vec<u8>,
-    program: Vec<u8>,
+pub(crate) struct ReaderNamespaces {
+    pub(crate) metadata: Vec<u8>,
+    pub(crate) program: Vec<u8>,
 }
 
 impl ReaderNamespaces {
-    fn open(path: &Path) -> Result<Self> {
+    pub(crate) fn open(path: &Path) -> Result<Self> {
         let mut bytes = Vec::new();
         File::open(path)?
             .take((64 << 20) + 1)
@@ -30,10 +30,30 @@ impl ReaderNamespaces {
 }
 
 #[derive(Deserialize)]
-struct ContentState {
-    key: u64,
+pub(crate) struct ContentState {
+    pub(crate) key: u64,
     #[serde(default)]
-    bank: Option<String>,
+    pub(crate) bank: Option<String>,
+}
+
+impl ContentState {
+    pub(crate) fn open(path: &Path) -> Result<Self> {
+        let file = File::open(path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            ensure!(file.metadata()?.permissions().mode() & 0o077 == 0,
+                "Content-state file must be private (chmod 600)");
+        }
+        let mut bytes = Vec::new();
+        file.take(4097).read_to_end(&mut bytes)?;
+        ensure!(bytes.len() <= 4096, "Content-state file exceeds limit");
+        if bytes.len() == 8 {
+            Ok(Self { key: u64::from_le_bytes(bytes.try_into().unwrap()), bank: None })
+        } else {
+            serde_json::from_slice(&bytes).context("Invalid local content-state file")
+        }
+    }
 }
 
 fn options(args: &[String], start: usize) -> Result<(ReaderNamespaces, Option<ContentState>)> {
@@ -48,26 +68,7 @@ fn options(args: &[String], start: usize) -> Result<(ReaderNamespaces, Option<Co
             }
             "--content-key-file" => {
                 ensure!(state.is_none(), "Repeated --content-key-file");
-                let file = File::open(value)?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    ensure!(
-                        file.metadata()?.permissions().mode() & 0o077 == 0,
-                        "Content-state file must be private (chmod 600)"
-                    );
-                }
-                let mut bytes = Vec::new();
-                file.take(4097).read_to_end(&mut bytes)?;
-                ensure!(bytes.len() <= 4096, "Content-state file exceeds limit");
-                state = Some(if bytes.len() == 8 {
-                    ContentState {
-                        key: u64::from_le_bytes(bytes.try_into().unwrap()),
-                        bank: None,
-                    }
-                } else {
-                    serde_json::from_slice(&bytes).context("Invalid local content-state file")?
-                });
+                state = Some(ContentState::open(Path::new(value))?);
             }
             other => anyhow::bail!("Unknown UVI option {other}"),
         }
@@ -194,6 +195,7 @@ fn play_worker(
     let mut worker = Worker::start(
         StartConfig {
             bank: PathBuf::from(&args[1]),
+            expected_bank_uuid: None,
             member: args[2].clone(),
             metadata_namespace: reader.metadata,
             program_namespace: reader.program,

@@ -86,6 +86,7 @@ enum Row {
     Folder { path: String, name: String, depth: usize, count: usize, open: bool },
     /// `under` is its folder, shown under its name in a flat list.
     Preset { path: PathBuf, depth: usize, under: String },
+    Uvi { preset: Arc<crate::library::UviPreset>, under: String },
 }
 
 impl Row {
@@ -94,18 +95,21 @@ impl Row {
         match self {
             Row::Folder { path, .. } => path.clone(),
             Row::Preset { path, .. } => path.to_string_lossy().into_owned(),
+            Row::Uvi { preset, .. } => preset.source.cursor_key(),
         }
     }
 
     fn depth(&self) -> usize {
         match self {
             Row::Folder { depth, .. } | Row::Preset { depth, .. } => *depth,
+            Row::Uvi { .. } => 0,
         }
     }
 
     fn height(&self) -> f64 {
         match self {
             Row::Preset { under, .. } if !under.is_empty() => ROW2,
+            Row::Uvi { under, .. } if !under.is_empty() => ROW2,
             _ => ROW,
         }
     }
@@ -113,7 +117,7 @@ impl Row {
     fn id(&self, n: usize) -> String {
         match self {
             Row::Folder { .. } => format!("folder-{n}"),
-            Row::Preset { .. } => format!("instrument-{n}"),
+            Row::Preset { .. } | Row::Uvi { .. } => format!("instrument-{n}"),
         }
     }
 }
@@ -136,7 +140,7 @@ impl Listed {
             tops.push(y);
             y += row.height();
             indices.entry(row.key()).or_insert(n);
-            presets += usize::from(matches!(row, Row::Preset { .. }));
+            presets += usize::from(matches!(row, Row::Preset { .. } | Row::Uvi { .. }));
         }
         tops.push(y);
         Self { rows, tops, indices, presets }
@@ -159,6 +163,11 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         for (n, file) in presets.iter().enumerate().filter(|(_, f)| import::is_multi(f) == multis) {
             if let Some(library) = catalog.of(file) {
                 by.entry(library.name.clone()).or_default().push(n);
+            }
+        }
+        if !multis {
+            for bank in catalog.uvi.keys() {
+                if let Some(library) = catalog.of(bank) { by.entry(library.name.clone()).or_default(); }
             }
         }
         (*files, *shelf, *kind, *grouped) = (Arc::downgrade(&presets), scanned, multis, Arc::new(by));
@@ -435,7 +444,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     let made_of = {
         let mut h = DefaultHasher::new();
         (Arc::as_ptr(&presets) as usize, presets.len(), Arc::as_ptr(&catalog) as usize, multis).hash(&mut h);
-        (&cx.state.source, &needle, &favorites, &recent, &dirs, &settings.folders, &settings.names).hash(&mut h);
+        (&cx.state.source, &needle, &favorites, &recent, &dirs, &settings.folders, &settings.names, &cx.selection.uvi_favorites, &cx.selection.uvi_recent).hash(&mut h);
         h.finish()
     };
     if cx.state.browse.rows.0 != Some(made_of) {
@@ -498,9 +507,16 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     {
         let size = cx.p.shared.libraries.size(&library.dir);
         above.push(library_heading(library, settings.library_name(library), size));
+        if let Some(bank) = catalog.uvi.get(&library.dir).filter(|bank| !bank.status.is_empty()) {
+            above.push(hint(&bank.status));
+        }
         if needle.is_empty() {
             above.extend(crumbs(ui, cx, library, &listed));
         }
+    }
+    if cx.selection.uvi_requested.is_some() && cx.view.uvi_attempted == cx.selection.uvi_requested && !cx.view.uvi_status.is_empty() {
+        above.push(hint(&cx.view.uvi_status));
+        cx.state.notice = cx.view.uvi_status.clone();
     }
     if listed_rows.is_empty() && !arranged.is_empty() {
         above.push(hint(empty));
@@ -523,6 +539,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         items.push(match &listed_rows[n] {
             Row::Folder { .. } => folder(ui, cx, n, &listed_rows[n]),
             Row::Preset { path, depth, under } => preset(ui, cx, n, path, *depth, under),
+            Row::Uvi { preset, under } => uvi_preset(ui, cx, n, preset, under),
         });
     }
     items.push(block(1, y - tops[last.max(first)]).shrink(0));
@@ -535,8 +552,10 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     // How many presets are listed, folded away or not; all of them before
     // a library is chosen.
     let count = match &cx.state.source {
-        Some(Source::Library(name)) if needle.is_empty() => grouped.get(name).map_or(0, Vec::len),
-        None if needle.is_empty() => grouped.values().map(Vec::len).sum(),
+        Some(Source::Library(name)) if needle.is_empty() => grouped.get(name).map_or(0, Vec::len)
+            + if multis { 0 } else { catalog.named(name).and_then(|l| catalog.uvi.get(&l.dir)).map_or(0, |bank| bank.presets.len()) },
+        None if needle.is_empty() => grouped.values().map(Vec::len).sum::<usize>()
+            + if multis { 0 } else { catalog.uvi.values().map(|bank| bank.presets.len()).sum() },
         _ => listed.presets,
     };
     let counted = caption(count.to_string())
@@ -636,7 +655,7 @@ fn list(
     let files = |name: &str| -> Vec<&Path> {
         grouped.get(name).into_iter().flatten().map(|&n| view.files[n].as_path()).collect()
     };
-    match &cx.state.source {
+    let mut rows = match &cx.state.source {
         Some(Source::Favorites) => favorites.iter().filter_map(|p| flat(p, true)).collect(),
         Some(Source::Recent) => recent.iter().filter_map(|p| flat(p, true)).collect(),
         Some(Source::Library(name)) if !words.is_empty() => files(name).into_iter().filter_map(|p| flat(p, false)).collect(),
@@ -654,7 +673,35 @@ fn list(
             .filter_map(|p| flat(p, true))
             .collect(),
         None => Vec::new(),
+    };
+    let uvi_start = rows.len();
+    if !cx.state.multis {
+        for (bank_path, bank) in &view.shelf.uvi {
+            let Some(library) = view.shelf.of(bank_path) else { continue };
+            for preset in &bank.presets {
+                let included = match &cx.state.source {
+                    Some(Source::Favorites) => cx.selection.uvi_favorites.contains(&preset.source),
+                    Some(Source::Recent) => cx.selection.uvi_recent.contains(&preset.source),
+                    Some(Source::Library(name)) => name == &library.name,
+                    None => !words.is_empty(),
+                };
+                if included && words.iter().all(|word| preset.search.contains(word)) {
+                    let under = match &cx.state.source {
+                        Some(Source::Library(_)) => preset.folder.clone(),
+                        _ => format!("{} / {}", cx.settings.library_name(library), preset.folder),
+                    };
+                    rows.push(Row::Uvi { preset: preset.clone(), under });
+                }
+            }
+        }
     }
+    if matches!(cx.state.source, Some(Source::Recent)) {
+        rows[uvi_start..].sort_by_key(|row| match row {
+            Row::Uvi { preset, .. } => cx.selection.uvi_recent.iter().position(|source| source == &preset.source),
+            _ => None,
+        });
+    }
+    rows
 }
 
 /// `folder`'s rows: its folders, each followed by its own rows when open,
@@ -722,12 +769,12 @@ fn load(cx: &mut Cx, path: &Path, new: bool) {
     keep_place(cx);
     let selected = (cx.state.chosen()).filter(|&s| cx.selection.parts.get(s).is_some_and(|p| !p.path.is_empty()));
     match selected {
-        _ if import::is_multi(path) => cx.open(path),
-        _ if new => cx.add(text),
+        _ if import::is_multi(path) => cx.open_preset(crate::library::PresetTarget::File(path.to_owned()), false, None),
+        _ if new => cx.open_preset(crate::library::PresetTarget::File(path.to_owned()), true, None),
         // Already in the rack: shown, not loaded twice.
-        _ if cx.selection.parts.iter().any(|p| p.path == text && p.program == 0) => cx.open(path),
-        Some(slot) => cx.replace(slot, text),
-        _ => cx.open(path),
+        _ if cx.selection.parts.iter().any(|p| p.path == text && p.program == 0) => cx.open_preset(crate::library::PresetTarget::File(path.to_owned()), false, None),
+        Some(slot) => cx.open_preset(crate::library::PresetTarget::File(path.to_owned()), false, Some(slot)),
+        _ => cx.open_preset(crate::library::PresetTarget::File(path.to_owned()), false, None),
     }
 }
 
@@ -873,6 +920,7 @@ fn crumbs(ui: &mut Ui, cx: &mut Cx, library: &Library, listed: &Listed) -> Optio
     let folder = match &rows[at] {
         Row::Folder { path, .. } => PathBuf::from(path),
         Row::Preset { path, .. } => path.parent()?.to_path_buf(),
+        Row::Uvi { .. } => return None,
     };
     let inside = folder.strip_prefix(&library.dir).ok()?;
     // One folder deep, its row says as much.
@@ -948,8 +996,7 @@ fn empty_state(ui: &mut Ui, cx: &mut Cx) -> El {
     col![
         body("No libraries yet").text_size(TEXT).lines(1),
         caption(
-            "Add the folder that holds your Kontakt libraries: each library in it is found, \
-             with or without a library file. Or add one library's own folder."
+            "Add a folder of Kontakt libraries or UVI soundbanks, or one library's own folder."
         )
         .fill(secondary())
         .lines(5),
@@ -1127,12 +1174,15 @@ fn walk(ui: &mut Ui, cx: &mut Cx, listed: &Listed, page: usize, focus_to: &mut O
                 match &rows[n] {
                     Row::Folder { path, open, .. } => set_open(cx, path, !open),
                     Row::Preset { path, .. } => load(cx, &path.clone(), k.mods.shift),
+                    Row::Uvi { preset, .. } => load_uvi(cx, &preset.source, k.mods.shift),
                 }
                 None
             }
             (Key::Enter, None) if from_search => {
-                if let Some(Row::Preset { path, .. }) = rows.iter().find(|r| matches!(r, Row::Preset { .. })) {
-                    load(cx, &path.clone(), k.mods.shift);
+                match rows.iter().find(|r| matches!(r, Row::Preset { .. } | Row::Uvi { .. })) {
+                    Some(Row::Preset { path, .. }) => load(cx, &path.clone(), k.mods.shift),
+                    Some(Row::Uvi { preset, .. }) => load_uvi(cx, &preset.source, k.mods.shift),
+                    _ => {},
                 }
                 None
             }
@@ -1280,6 +1330,48 @@ fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &Path, depth: usize, under: 
     interactive(el, cursor)
 }
 
+fn load_uvi(cx: &mut Cx, source: &crate::library::UviSource, new: bool) {
+    cx.state.cursor = Some(source.cursor_key());
+    keep_place(cx);
+    cx.open_preset(crate::library::PresetTarget::Uvi(source.clone()), new, if new { None } else { cx.state.chosen() });
+}
+
+fn uvi_preset(ui: &mut Ui, cx: &mut Cx, n: usize, preset: &crate::library::UviPreset, under: &str) -> El {
+    let id = format!("instrument-{n}");
+    let star_id = format!("star-{n}");
+    let key = preset.source.cursor_key();
+    let favorite = cx.selection.uvi_favorites.contains(&preset.source);
+    if ui.get(star_id.as_str()).activated() { cx.toggle_uvi_favorite(&preset.source); }
+    let r = ui.get(id.as_str());
+    if r.clicked_with(Button::Primary) { cx.state.cursor = Some(key.clone()); }
+    if r.double_clicked { load_uvi(cx, &preset.source, true); }
+    else if r.key_activated {
+        load_uvi(cx, &preset.source, ui.keys(id.as_str()).iter().any(|k| k.mods.shift));
+    }
+    if r.clicked_with(Button::Secondary) {
+        cx.state.cursor = Some(key.clone());
+        menu::open(ui, cx, menu::Target::Uvi(preset.source.clone()));
+    }
+    if r.dragged && r.button == Some(Button::Primary) {
+        ui.start_drag(id.as_str(), RackDrag::Uvi(preset.source.clone()));
+    }
+    let cursor = cx.state.cursor.as_deref() == Some(key.as_str());
+    let star = stack![glyph(if favorite { Icon::StarFilled } else { Icon::Star }, TEXT, secondary()).centered()]
+        .square(TEXT + 2.).focusable().a11y(A11y::Toggle { on: favorite })
+        .named(if favorite { "Remove from favorites" } else { "Add to favorites" }).id(star_id);
+    let name = body(preset.name.clone()).text_size(TEXT).lines(1).min_w(0);
+    let name = if under.is_empty() { name.flex(1) } else {
+        col![name, caption(under.to_owned()).fill(secondary()).lines(1).min_w(0)]
+            .gap(1).align(Align::Start).flex(1).min_w(0)
+    };
+    interactive(row![name, caption("UVI").fill(secondary()).shrink(0), star]
+        .gap(INSET - 1.).align(Align::Center).pad(edges(0., SPACE, 0., SPACE))
+        .h(if under.is_empty() { ROW } else { ROW2 }).when(cursor, |e| e.fill(Role::Raised))
+        .focusable().a11y(A11y::Button).named(format!("{}, UVI program", preset.name))
+        .tip(format!("{}\n{}\nLive UVI playback is not available yet", preset.source.bank.display(), preset.source.member))
+        .id(id).shrink(0), cursor)
+}
+
 fn hint(text: &str) -> El {
     col![body(text).fill(secondary()).text_size(TEXT).lines(4)]
         .pad(edges(SPACE, INSET, SPACE, INSET))
@@ -1296,6 +1388,54 @@ fn stem(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selecting_a_real_uvi_row_preserves_the_playing_kontakt_part() {
+        use crate::{library, plugin::{Part, SamplerParams}};
+        let p = Arc::new(SamplerParams::new());
+        let part = Part { path: "/original/piano.nki".into(), snapshot: "/original/piano.nksn".into(), ..Default::default() };
+        p.selection.write().unwrap().parts = vec![part.clone()];
+        let source = library::UviSource { bank: "/original/catalog.ufs".into(), bank_uuid: [4; 16], member: "Root/Keys/Piano.uvip".into() };
+        let mut bank = library::UviBank::default();
+        bank.presets.push(Arc::new(library::UviPreset { source: source.clone(), name: "Piano".into(), folder: "Root / Keys".into(), search: "piano root keys uvi".into() }));
+        let mut shelf = library::Shelf::new(vec![Library { dir: source.bank.clone(), name: "Original UVI bank".into(), instruments: 1, ..Default::default() }]);
+        shelf.uvi.insert(source.bank.clone(), Arc::new(bank));
+        p.shared.view.lock().unwrap().shelf = Arc::new(shelf);
+        let mut draw = super::super::build(&p, Arc::default(), Arc::default(), Arc::default(), Arc::default());
+        let mut bridge = moose::mui::Bridge::new(p.clone());
+        let mut ui = super::super::theme::ui();
+        for focus in [None, Some("library-0"), Some("instrument-0")] {
+            if let Some(id) = focus { ui.focus(id); }
+            for frame in 0..3 {
+                let input = if focus.is_some() && frame == 0 { Input { keys: vec![KeyPress { key: Key::Enter, mods: Mods::default() }], ..Default::default() } } else { Input::default() };
+                let root = draw(&mut ui, &mut bridge);
+                ui.frame(root, Some(Size::new(1180., 760.)), input, 1. / 60.).unwrap();
+            }
+        }
+        let selection = p.selection.read().unwrap();
+        assert!(selection.parts == [part], "catalog selection cannot replace the active Kontakt source or snapshot");
+        assert_eq!(selection.uvi_requested.as_ref().map(|request| &request.source), Some(&source));
+        assert_eq!(selection.uvi_recent, [source]);
+    }
+
+    #[test]
+    fn mixed_rows_keep_same_named_uvi_members_and_kontakt_paths_distinct() {
+        let preset = |bank: &str, member: &str| Arc::new(crate::library::UviPreset {
+            source: crate::library::UviSource { bank: bank.into(), bank_uuid: [1; 16], member: member.into() },
+            name: "Piano".into(), folder: "Root / Keys".into(), search: "piano root keys uvi".into(),
+        });
+        let rows = vec![
+            Row::Preset { path: "/banks/Piano.nki".into(), depth: 0, under: String::new() },
+            Row::Uvi { preset: preset("/banks/a.ufs", "Root/Keys/Piano.uvip"), under: "A / Keys".into() },
+            Row::Uvi { preset: preset("/banks/b.ufs", "Root/Keys/Piano.uvip"), under: "B / Keys".into() },
+            Row::Uvi { preset: preset("/banks/a.ufs", "Root/Other/Piano.uvip"), under: "A / Other".into() },
+        ];
+        let listed = Listed::new(rows);
+        assert_eq!((listed.presets, listed.indices.len()), (4, 4));
+        for (index, row) in listed.rows.iter().enumerate() {
+            assert_eq!(listed.indices[&row.key()], index);
+        }
+    }
 
     #[test]
     fn cached_rows_preserve_scroll_offsets_counts_and_cursor_positions() {

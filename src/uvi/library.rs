@@ -1,6 +1,6 @@
 //! Local UFS resources: exact virtual paths, private keyed reads and shared PCM.
 use super::{
-    crypto, host,
+    crypto, generator, host,
     program::{self, Program},
     sample::{self, Sample},
     ufs::{Directory, Member, Ufs},
@@ -170,12 +170,37 @@ impl Library {
         let members = resources(&self.directory, program_path, path)?;
         let mut operands = Vec::with_capacity(members.len());
         for member in members {
-            operands.push(sample::decode(&self.read(member)?)?);
+            let bytes = self.read(member)?;
+            ensure!(
+                !generator::image_signature(&bytes),
+                "Image wavetable resources cannot be loaded through audio callbacks"
+            );
+            operands.push(sample::decode(&bytes)?);
         }
         if operands.len() == 1 {
             Ok(operands.pop().unwrap())
         } else {
             sample::assemble_mono(operands)
+        }
+    }
+
+    /// Initial WaveTableOscillator resources may contain audio or measured images.
+    /// The signature, rather than the filename suffix, selects image conversion.
+    fn wavetable(&self, program_path: &str, path: &str) -> Result<Sample> {
+        let members = resources(&self.directory, program_path, path)?;
+        if members.len() != 1 {
+            return self.audio(program_path, path);
+        }
+        let member = members[0];
+        ensure!(
+            member.size <= generator::IMAGE_BYTES_LIMIT as u64,
+            "Wavetable resource exceeds 8 MiB source limit"
+        );
+        let bytes = self.read(member)?;
+        if generator::image_signature(&bytes) {
+            generator::image_wavetable(&bytes)
+        } else {
+            sample::decode(&bytes)
         }
     }
 
@@ -253,31 +278,48 @@ impl Library {
     /// Decode each referenced sample once, retaining every source channel.
     /// Bypassed oscillators still need their resources if Lua enables them.
     pub fn samples(&self, loaded: &LoadedProgram) -> Result<HashMap<String, Arc<Sample>>> {
-        let mut result = HashMap::new();
+        let mut result = HashMap::<String, Arc<Sample>>::new();
         let mut cache = HashMap::<Vec<u64>, Arc<Sample>>::new();
         let mut total = 0usize;
         let paths = loaded
             .program
             .sample_zones
             .iter()
-            .map(|z| z.sample_path.as_str())
+            .map(|z| (z.sample_path.as_str(), false))
             .chain(loaded.program.nodes.iter().filter_map(|n| {
                 match n.kind.as_str() {
-                    "Convolver" | "SampledReverb" => n.attributes.get("SamplePath"),
-                    "WaveTableOscillator" => n.attributes.get("WavetablePath"),
+                    "Convolver" | "SampledReverb" => n
+                        .attributes
+                        .get("SamplePath")
+                        .map(|path| (path.as_str(), false)),
+                    "WaveTableOscillator" => n
+                        .attributes
+                        .get("WavetablePath")
+                        .map(|path| (path.as_str(), true)),
                     _ => None,
                 }
-                .map(String::as_str)
             }));
-        for path in paths.filter(|p| !p.is_empty()) {
-            if result.contains_key(path) {
+        for (path, wavetable) in paths.filter(|(p, _)| !p.is_empty()) {
+            if let Some(sample) = result.get(path) {
+                ensure!(
+                    wavetable || !sample.wavetable_image,
+                    "Image wavetable resources cannot be used as audio"
+                );
                 continue;
             }
             let identity = self.audio_identity(&loaded.path, path)?;
             let sample = if let Some(sample) = cache.get(&identity) {
+                ensure!(
+                    wavetable || !sample.wavetable_image,
+                    "Image wavetable resources cannot be used as audio"
+                );
                 sample.clone()
             } else {
-                let decoded = self.audio(&loaded.path, path)?;
+                let decoded = if wavetable {
+                    self.wavetable(&loaded.path, path)?
+                } else {
+                    self.audio(&loaded.path, path)?
+                };
                 total = total
                     .checked_add(decoded.interleaved.bytes())
                     .context("UVI sample memory overflow")?;
@@ -332,7 +374,9 @@ impl BankResources {
         );
         let mut audio_cache = HashMap::new();
         for (path, sample) in samples.borrow().iter() {
-            audio_cache.insert(library.audio_identity(program_path, path)?, sample.clone());
+            if !sample.wavetable_image {
+                audio_cache.insert(library.audio_identity(program_path, path)?, sample.clone());
+            }
         }
         let capability: host::Resources = {
             let library = library.clone();
@@ -346,6 +390,10 @@ impl BankResources {
                         host::ResourceRequest::ReadAudio { path, .. } => {
                             let existing = cache.borrow().get(path).cloned();
                             let sample = if let Some(sample) = existing {
+                                ensure!(
+                                    !sample.wavetable_image,
+                                    "Image wavetable resources cannot be loaded through audio callbacks"
+                                );
                                 sample
                             } else {
                                 let alias_total = alias_bytes(aliases.get(), path)?;
@@ -453,11 +501,22 @@ mod tests {
             wav.finalize().unwrap();
         }
         let wav = cursor.into_inner();
+        let mut image = Vec::new();
+        let mut encoder = png::Encoder::new(&mut image, 1, 4);
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&[255, 255, 255, 255, 255, 0, 255, 0, 0, 128, 128, 128])
+            .unwrap();
         let mut bytes = vec![0u8; 320];
         bytes[..4].copy_from_slice(b"UFS2");
         bytes[4..8].copy_from_slice(&3u32.to_le_bytes());
         bytes[48..56].copy_from_slice(b"Authored");
         bytes.extend_from_slice(&wav);
+        let image_offset = bytes.len() as u64;
+        bytes.extend_from_slice(&image);
         let path =
             std::env::temp_dir().join(format!("kontra-bank-resource-{}.ufs", std::process::id()));
         std::fs::write(&path, &bytes).unwrap();
@@ -465,16 +524,28 @@ mod tests {
             bank: Ufs::open(&path).unwrap(),
             content_key: None,
             directory: Directory {
-                files: vec![Member {
-                    record_offset: 320,
-                    name: "authored.wav".into(),
-                    path: Some("Samples/authored.wav".into()),
-                    parent: None,
-                    size: wav.len() as u64,
-                    offset: 320,
-                    mode: 0,
-                    footer: Vec::new(),
-                }],
+                files: vec![
+                    Member {
+                        record_offset: 320,
+                        name: "authored.wav".into(),
+                        path: Some("Samples/authored.wav".into()),
+                        parent: None,
+                        size: wav.len() as u64,
+                        offset: 320,
+                        mode: 0,
+                        footer: Vec::new(),
+                    },
+                    Member {
+                        record_offset: image_offset,
+                        name: "disguised_128.wav".into(),
+                        path: Some("Samples/disguised_128.wav".into()),
+                        parent: None,
+                        size: image.len() as u64,
+                        offset: image_offset,
+                        mode: 0,
+                        footer: Vec::new(),
+                    },
+                ],
                 directories: Vec::new(),
                 records: Vec::new(),
                 warnings: Vec::new(),
@@ -490,6 +561,35 @@ mod tests {
             kind: host::ResourceKind::Sample,
             path: path.into(),
         };
+        let image_path = "../Samples/disguised_128.wav";
+        let program = program::parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><WaveTableOscillator WavetablePath="../Samples/disguised_128.wav"/><WaveTableOscillator WavetablePath="/Samples/authored.wav"/><SamplePlayer SamplePath="../Samples/authored.wav"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let loaded = LoadedProgram {
+            program,
+            path: "Programs/authored.uvip".into(),
+        };
+        let initial = library.samples(&loaded).unwrap();
+        assert!(initial[image_path].wavetable_image);
+        assert_eq!(initial[image_path].wavetable_cycle_frames, Some(2048));
+        assert!(!initial[relative].wavetable_image);
+        assert!(Arc::ptr_eq(&initial[relative], &initial[absolute]));
+        let image_resources = BankResources::new(library.clone(), &loaded.path, initial).unwrap();
+        let image_read = image_resources.capability();
+        for image_alias in [image_path, "/Samples/disguised_128.wav"] {
+            assert!(
+                image_read(&request(image_alias))
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Image wavetable")
+            );
+            assert_eq!(image_resources.revision(), 0);
+            assert_eq!(image_resources.samples().len(), 3);
+        }
+        assert!(library.audio(&loaded.path, image_path).is_err());
+        let invalid = LoadedProgram {
+            program: program::parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="../Samples/disguised_128.wav"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap(),
+            path: loaded.path,
+        };
+        assert!(library.samples(&invalid).is_err());
         assert_eq!(resources.revision(), 0);
         let host::ResourceResponse::Audio(info) = read(&request(relative)).unwrap() else {
             panic!()

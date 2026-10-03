@@ -11,6 +11,7 @@ use super::{
     program::{NodeId, Program},
 };
 use anyhow::{Context, Result, bail, ensure};
+use rustc_hash::FxHashMap;
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap, HashSet},
@@ -86,7 +87,7 @@ enum Source {
     Alternate,
     Node(NodeId),
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Connection {
     mode: u32,
     node: NodeId,
@@ -1170,17 +1171,76 @@ struct LfoClock {
     frequency: f64,
     phase: f64,
 }
+struct TriangleLfoClock {
+    frame: u64,
+    phase: u32,
+    increment: u32,
+    phase_parameter: f32,
+    origin: u64,
+    delay_frames: u64,
+    rise_frames: u64,
+    rate: f64,
+    block_frames: u32,
+}
+fn triangle_lfo_value(phase: u32) -> f32 {
+    let position = phase as f32 * (1_f32 / 4294967296.);
+    if position < 0.25 {
+        4. * position
+    } else if position < 0.75 {
+        2. - 4. * position
+    } else {
+        4. * position - 4.
+    }
+}
 struct AbsoluteClock {
     producer: ConstantClock,
     filtered: HashMap<NodeId, f32>,
     published: HashMap<NodeId, f32>,
 }
+struct CachedParameter {
+    key: Parameter,
+    number: Option<f64>,
+    slot: usize,
+    edges: Vec<Connection>,
+}
+/// One bounded slot per compiled numeric parameter. An epoch invalidates all
+/// values without clearing or reallocating the buffer between voices/frames.
+struct MemoScratch {
+    epoch: u64,
+    values: Vec<f64>,
+    stamps: Vec<u64>,
+}
+impl MemoScratch {
+    fn new(slots: usize) -> Self {
+        Self {
+            epoch: 1,
+            values: vec![0.; slots],
+            stamps: vec![0; slots],
+        }
+    }
+    fn begin(&mut self) {
+        self.epoch = self.epoch.wrapping_add(1);
+        if self.epoch == 0 {
+            self.stamps.fill(0);
+            self.epoch = 1;
+        }
+    }
+    fn get(&self, slot: usize) -> Option<f64> {
+        (self.stamps[slot] == self.epoch).then_some(self.values[slot])
+    }
+    fn insert(&mut self, slot: usize, value: f64) {
+        self.values[slot] = value;
+        self.stamps[slot] = self.epoch;
+    }
+}
 pub struct ModulationGraph {
     parents: Vec<Option<NodeId>>,
     kinds: Vec<String>,
     bases: Vec<BTreeMap<String, String>>,
+    cached_parameters: Vec<BTreeMap<String, CachedParameter>>,
     connections: HashMap<Parameter, Vec<Connection>>,
-    node_targets: HashMap<NodeId, Vec<Parameter>>,
+    node_targets: Vec<Vec<Parameter>>,
+    memo: RefCell<MemoScratch>,
     absolute_order: Vec<NodeId>,
     absolute_clocks: HashMap<NodeId, AbsoluteClock>,
     absolute_audio_bases: HashMap<Parameter, f64>,
@@ -1193,22 +1253,23 @@ pub struct ModulationGraph {
     script_ranges: HashMap<u8, bool>,
     event_order: u64,
     scoped_ramps: bool,
-    analog_clocks: RefCell<HashMap<SourceStateKey, AnalogClock>>,
-    dah_clocks: RefCell<HashMap<SourceStateKey, DahClock>>,
-    multi_clocks: RefCell<HashMap<SourceStateKey, MultiClock>>,
+    analog_clocks: RefCell<FxHashMap<SourceStateKey, AnalogClock>>,
+    dah_clocks: RefCell<FxHashMap<SourceStateKey, DahClock>>,
+    multi_clocks: RefCell<FxHashMap<SourceStateKey, MultiClock>>,
     multi_steps: HashMap<NodeId, Vec<NodeId>>,
-    attack_decay_clocks: RefCell<HashMap<SourceStateKey, AttackDecayClock>>,
-    stochastic_clocks: RefCell<HashMap<SourceStateKey, StochasticClock>>,
+    attack_decay_clocks: RefCell<FxHashMap<SourceStateKey, AttackDecayClock>>,
+    stochastic_clocks: RefCell<FxHashMap<SourceStateKey, StochasticClock>>,
     global_stochastic: Vec<NodeId>,
     builtin_seeds: RefCell<[u32; 2]>,
     alternate_next: RefCell<f32>,
-    builtin_values: RefCell<HashMap<BuiltinStateKey, f32>>,
+    builtin_values: RefCell<FxHashMap<BuiltinStateKey, f32>>,
     builtin_targets: HashMap<NodeId, u8>,
     control_segment_end: Option<u64>,
-    random_seeds: RefCell<HashMap<NodeId, u32>>,
-    random_lfo_clocks: RefCell<HashMap<SourceStateKey, RandomLfoClock>>,
-    lfo_clocks: RefCell<HashMap<SourceStateKey, LfoClock>>,
-    constant_clocks: RefCell<HashMap<SourceStateKey, ConstantClock>>,
+    random_seeds: RefCell<FxHashMap<NodeId, u32>>,
+    random_lfo_clocks: RefCell<FxHashMap<SourceStateKey, RandomLfoClock>>,
+    lfo_clocks: RefCell<FxHashMap<SourceStateKey, LfoClock>>,
+    triangle_lfo_clocks: RefCell<FxHashMap<SourceStateKey, TriangleLfoClock>>,
+    constant_clocks: RefCell<FxHashMap<SourceStateKey, ConstantClock>>,
 }
 fn number(attrs: &BTreeMap<String, String>, name: &str, default: f64) -> Result<f64> {
     let value = attrs
@@ -1437,8 +1498,32 @@ impl ModulationGraph {
             parents: program.nodes.iter().map(|node| node.parent).collect(),
             kinds: program.nodes.iter().map(|n| n.kind.clone()).collect(),
             bases: program.nodes.iter().map(|n| n.attributes.clone()).collect(),
+            cached_parameters: program
+                .nodes
+                .iter()
+                .enumerate()
+                .map(|(id, node)| {
+                    node.attributes
+                        .iter()
+                        .filter_map(|(name, text)| {
+                            text.parse::<f64>().ok().map(|number| {
+                                (
+                                    name.clone(),
+                                    CachedParameter {
+                                        key: (id, name.clone()),
+                                        number: number.is_finite().then_some(number),
+                                        slot: 0,
+                                        edges: Vec::new(),
+                                    },
+                                )
+                            })
+                        })
+                        .collect()
+                })
+                .collect(),
             connections: HashMap::new(),
-            node_targets: HashMap::new(),
+            node_targets: vec![Vec::new(); program.nodes.len()],
+            memo: RefCell::new(MemoScratch::new(0)),
             absolute_order: Vec::new(),
             absolute_clocks: HashMap::new(),
             absolute_audio_bases: HashMap::new(),
@@ -1451,22 +1536,23 @@ impl ModulationGraph {
             script_ranges: HashMap::new(),
             event_order: 0,
             scoped_ramps: false,
-            analog_clocks: RefCell::new(HashMap::new()),
-            dah_clocks: RefCell::new(HashMap::new()),
-            multi_clocks: RefCell::new(HashMap::new()),
+            analog_clocks: RefCell::new(FxHashMap::default()),
+            dah_clocks: RefCell::new(FxHashMap::default()),
+            multi_clocks: RefCell::new(FxHashMap::default()),
             multi_steps: HashMap::new(),
-            attack_decay_clocks: RefCell::new(HashMap::new()),
-            stochastic_clocks: RefCell::new(HashMap::new()),
+            attack_decay_clocks: RefCell::new(FxHashMap::default()),
+            stochastic_clocks: RefCell::new(FxHashMap::default()),
             global_stochastic: Vec::new(),
             builtin_seeds: RefCell::new([1; 2]),
             alternate_next: RefCell::new(1.),
-            builtin_values: RefCell::new(HashMap::new()),
+            builtin_values: RefCell::new(FxHashMap::default()),
             builtin_targets: HashMap::new(),
             control_segment_end: None,
-            random_seeds: RefCell::new(HashMap::new()),
-            random_lfo_clocks: RefCell::new(HashMap::new()),
-            lfo_clocks: RefCell::new(HashMap::new()),
-            constant_clocks: RefCell::new(HashMap::new()),
+            random_seeds: RefCell::new(FxHashMap::default()),
+            random_lfo_clocks: RefCell::new(FxHashMap::default()),
+            lfo_clocks: RefCell::new(FxHashMap::default()),
+            triangle_lfo_clocks: RefCell::new(FxHashMap::default()),
+            constant_clocks: RefCell::new(FxHashMap::default()),
         };
         for (id, n) in program.nodes.iter().enumerate() {
             match n.kind.as_str() {
@@ -1612,6 +1698,29 @@ impl ModulationGraph {
                         ),
                         "Unsupported UVI source kind at node {id}"
                     );
+                    if program.nodes[id].kind == "LFO" {
+                        let attributes = &program.nodes[id].attributes;
+                        let wave = number(attributes, "WaveFormType", 0.)?;
+                        ensure!(
+                            [0., 2., 6., 9.].contains(&wave),
+                            "Unverified UVI LFO waveform type at node {id}"
+                        );
+                        let smooth = number(attributes, "Smooth", 0.)?;
+                        ensure!(
+                            (0. ..=1.).contains(&smooth),
+                            "Invalid UVI LFO smoothing at node {id}"
+                        );
+                        ensure!(
+                            wave == 6. || smooth == 0.,
+                            "Unimplemented UVI deterministic LFO smoothing at node {id}"
+                        );
+                        if wave == 9. {
+                            ensure!(
+                                graph.tables.contains_key(&id),
+                                "UVI user LFO table is missing at node {id}"
+                            );
+                        }
+                    }
                     Source::Node(id)
                 }
             };
@@ -1659,7 +1768,7 @@ impl ModulationGraph {
                 });
         }
         for p in graph.connections.keys() {
-            graph.node_targets.entry(p.0).or_default().push(p.clone());
+            graph.node_targets[p.0].push(p.clone());
         }
         // Validate the full graph, including currently bypassed connections:
         // a script can enable those, so bypass cannot hide a dependency cycle.
@@ -1707,6 +1816,80 @@ impl ModulationGraph {
             .collect();
         graph.global_stochastic.sort_unstable();
         graph.global_stochastic.dedup();
+        let mut keys = Vec::new();
+        for parameter in graph.connections.keys() {
+            keys.push(parameter.clone());
+            keys.extend(graph.dependencies(parameter));
+        }
+        for connection in graph.connections.values().flatten() {
+            for name in ["Ratio", "Bypass", "Inverted"] {
+                keys.push((connection.node, name.into()));
+            }
+        }
+        for node in graph
+            .target_sources
+            .values()
+            .flatten()
+            .copied()
+            .collect::<HashSet<_>>()
+        {
+            for name in [
+                "Bypass",
+                "Bipolar",
+                "Retrigger",
+                "NoteOffRetrigger",
+                "Smooth",
+                "SyncToHost",
+                "WaveFormType",
+                "VelocityAmount",
+                "VelocitySens",
+                "TriggerMode",
+                "RandomStart",
+                "InitialValue",
+                "LoopStart",
+                "LoopEnd",
+                "ReleaseStep",
+                "NumSteps",
+                "Style",
+                "AttackCurve",
+                "DecayCurve",
+                "ReleaseCurve",
+                "ManualTrigger",
+                "InvertVelocity",
+                "KeyToAttack",
+                "VelToAttack",
+                "KeyToDecay",
+                "VelToDecay",
+                "Punch",
+                "AttackDecayMode",
+                "DynamicRange",
+            ] {
+                keys.push((node, name.into()));
+            }
+        }
+        for key in keys {
+            graph.cached_parameters[key.0]
+                .entry(key.1.clone())
+                .or_insert(CachedParameter {
+                    key,
+                    number: None,
+                    slot: 0,
+                    edges: Vec::new(),
+                });
+        }
+        let mut slots = 0;
+        for node in &mut graph.cached_parameters {
+            for cached in node.values_mut() {
+                cached.slot = slots;
+                cached.edges = graph
+                    .connections
+                    .get(&cached.key)
+                    .cloned()
+                    .unwrap_or_default();
+                slots += 1;
+            }
+        }
+        graph.memo = RefCell::new(MemoScratch::new(slots));
         Ok(graph)
     }
     pub fn is_absolute_source_parameter(&self, node: NodeId, name: &str) -> bool {
@@ -1934,6 +2117,9 @@ impl ModulationGraph {
             .get_mut()
             .retain(|key, _| retained(key));
         self.lfo_clocks.get_mut().retain(|key, _| retained(key));
+        self.triangle_lfo_clocks
+            .get_mut()
+            .retain(|key, _| retained(key));
         self.random_lfo_clocks
             .get_mut()
             .retain(|key, _| retained(key));
@@ -1962,6 +2148,9 @@ impl ModulationGraph {
             .get_mut()
             .retain(|(_, v, _), _| *v != Some(voice));
         self.lfo_clocks
+            .get_mut()
+            .retain(|(_, v, _), _| *v != Some(voice));
+        self.triangle_lfo_clocks
             .get_mut()
             .retain(|(_, v, _), _| *v != Some(voice));
         self.random_lfo_clocks
@@ -1999,7 +2188,8 @@ impl ModulationGraph {
     ) -> Result<Vec<(Parameter, f64)>> {
         if !self.global_stochastic.is_empty() {
             self.validate(input, live)?;
-            let mut memo = HashMap::new();
+            let mut memo = self.memo.borrow_mut();
+            memo.begin();
             // Program/Layer free-running sources process silent segments too.
             // Otherwise earlier musical cuts would lose their RNG draws.
             for &node in &self.global_stochastic {
@@ -2223,13 +2413,18 @@ impl ModulationGraph {
         live: &HashMap<Parameter, f64>,
     ) -> Result<HashMap<Parameter, f64>> {
         self.validate(input, live)?;
-        let mut memo = HashMap::new();
+        let mut memo = self.memo.borrow_mut();
+        memo.begin();
         for p in self.connections.keys() {
             self.value(p, input, live, &mut memo, 0)?;
         }
-        Ok(memo
-            .into_iter()
-            .filter(|(p, _)| self.connections.contains_key(p))
+        Ok(self
+            .connections
+            .keys()
+            .map(|p| {
+                let slot = self.cached_parameters[p.0][&p.1].slot;
+                (p.clone(), memo.get(slot).expect("evaluated target"))
+            })
             .collect())
     }
     /// Evaluate selected target nodes, recursively retaining their complete
@@ -2240,13 +2435,37 @@ impl ModulationGraph {
         live: &HashMap<Parameter, f64>,
         nodes: &HashSet<NodeId>,
     ) -> Result<HashMap<Parameter, f64>> {
+        let mut result = HashMap::new();
+        self.evaluate_nodes_emit(input, live, nodes, |p, value| {
+            result.insert(p.clone(), value);
+        })?;
+        Ok(result)
+    }
+    /// Reuse the graph's compiled memo and emit borrowed target keys. Nothing
+    /// is emitted on an evaluation error; callers may reuse their output slots.
+    pub fn evaluate_nodes_into(
+        &mut self,
+        input: &Inputs,
+        live: &HashMap<Parameter, f64>,
+        nodes: &HashSet<NodeId>,
+        emit: impl FnMut(&Parameter, f64),
+    ) -> Result<()> {
+        self.evaluate_nodes_emit(input, live, nodes, emit)
+    }
+    fn evaluate_nodes_emit(
+        &self,
+        input: &Inputs,
+        live: &HashMap<Parameter, f64>,
+        nodes: &HashSet<NodeId>,
+        mut emit: impl FnMut(&Parameter, f64),
+    ) -> Result<()> {
         self.validate(input, live)?;
         ensure!(
             nodes.iter().all(|id| *id < self.bases.len()),
             "Invalid UVI modulation target node"
         );
-        let mut memo = HashMap::new();
-        let mut result = HashMap::new();
+        let mut memo = self.memo.borrow_mut();
+        memo.begin();
         // Native note initialization draws builtin values for bypassed routes
         // too. Preserve source order before processing this voice's targets.
         for (node, mask) in &self.builtin_targets {
@@ -2262,11 +2481,20 @@ impl ModulationGraph {
             }
         }
         for node in nodes {
-            for p in self.node_targets.get(node).into_iter().flatten() {
-                result.insert(p.clone(), self.value(p, input, live, &mut memo, 0)?);
+            for p in &self.node_targets[*node] {
+                self.value(p, input, live, &mut memo, 0)?;
             }
         }
-        Ok(result)
+        for node in nodes {
+            for p in &self.node_targets[*node] {
+                let cached = &self.cached_parameters[p.0][&p.1];
+                emit(
+                    &cached.key,
+                    memo.get(cached.slot).expect("evaluated target"),
+                );
+            }
+        }
+        Ok(())
     }
     /// Inspect routed ratio-times-source sums before target conversion.
     /// These are control-domain signals, not physical-unit parameter deltas.
@@ -2276,7 +2504,8 @@ impl ModulationGraph {
         live: &HashMap<Parameter, f64>,
     ) -> Result<HashMap<Parameter, f64>> {
         self.validate(input, live)?;
-        let mut memo = HashMap::new();
+        let mut memo = self.memo.borrow_mut();
+        memo.begin();
         let mut result = HashMap::new();
         for p in self.connections.keys() {
             result.insert(p.clone(), self.delta(p, input, live, &mut memo, 0)?);
@@ -2330,11 +2559,21 @@ impl ModulationGraph {
         default: f64,
         live: &HashMap<Parameter, f64>,
     ) -> Result<f64> {
-        if let Some(value) = live.get(&(node, name.into())) {
-            Ok(*value)
-        } else {
-            number(&self.bases[node], name, default)
+        if let Some(cached) = self.cached_parameters[node].get(name) {
+            if let Some(value) = live.get(&cached.key) {
+                return Ok(*value);
+            }
+            if let Some(value) = cached.number {
+                return Ok(value);
+            }
+        } else if let Some((_, value)) = live
+            .iter()
+            .find(|((id, parameter), _)| *id == node && parameter == name)
+        {
+            // Public live overrides may introduce a field absent from XML.
+            return Ok(*value);
         }
+        number(&self.bases[node], name, default)
     }
     fn boolean(
         &self,
@@ -2353,6 +2592,12 @@ impl ModulationGraph {
     fn base(&self, p: &Parameter, live: &HashMap<Parameter, f64>) -> Result<f64> {
         if let Some(v) = live.get(p) {
             return Ok(*v);
+        }
+        if let Some(value) = self.cached_parameters[p.0]
+            .get(&p.1)
+            .and_then(|cached| cached.number)
+        {
+            return Ok(value);
         }
         let default = match (self.kinds[p.0].as_str(), p.1.as_str()) {
             (
@@ -2399,27 +2644,40 @@ impl ModulationGraph {
         };
         number(&self.bases[p.0], &p.1, default)
     }
+    fn value_named(
+        &self,
+        node: NodeId,
+        name: &str,
+        input: &Inputs,
+        live: &HashMap<Parameter, f64>,
+        memo: &mut MemoScratch,
+        depth: usize,
+    ) -> Result<f64> {
+        if let Some(cached) = self.cached_parameters[node].get(name) {
+            self.value(&cached.key, input, live, memo, depth)
+        } else {
+            self.value(&(node, name.into()), input, live, memo, depth)
+        }
+    }
     fn value(
         &self,
         p: &Parameter,
         input: &Inputs,
         live: &HashMap<Parameter, f64>,
-        memo: &mut HashMap<Parameter, f64>,
+        memo: &mut MemoScratch,
         depth: usize,
     ) -> Result<f64> {
         ensure!(
             depth < DEPTH,
             "UVI modulation evaluation depth exceeds limit"
         );
-        if let Some(v) = memo.get(p) {
-            return Ok(*v);
+        let cached = self.cached_parameters[p.0].get(&p.1);
+        if let Some(value) = cached.and_then(|cached| memo.get(cached.slot)) {
+            return Ok(value);
         }
+        let edges = cached.map_or(&[][..], |cached| cached.edges.as_slice());
         ensure!(
-            !self
-                .connections
-                .get(p)
-                .is_some_and(|edges| edges.iter().any(|c| c.mode == 0))
-                || supports_target(&self.kinds[p.0], &p.1),
+            !edges.iter().any(|c| c.mode == 0) || supports_target(&self.kinds[p.0], &p.1),
             "Unverified UVI modulation target conversion at node {} parameter {}",
             p.0,
             p.1
@@ -2429,11 +2687,7 @@ impl ModulationGraph {
             .get(p)
             .copied()
             .unwrap_or(self.base(p, live)?);
-        let value = if !self
-            .connections
-            .get(p)
-            .is_some_and(|edges| edges.iter().any(|c| c.mode == 0))
-        {
+        let value = if !edges.iter().any(|c| c.mode == 0) {
             base
         } else if (matches!(p.1.as_str(), "Gain" | "Volume" | "Ratio" | "Depth")
             && self.kinds[p.0] != "WhiteChorus")
@@ -2441,14 +2695,14 @@ impl ModulationGraph {
             || (self.kinds[p.0] == "DAHDSR" && matches!(p.1.as_str(), "AttackTime" | "DecayTime"))
         {
             let mut factor = 1.;
-            for c in &self.connections[p] {
+            for c in edges {
                 if c.mode != 0 {
                     continue;
                 }
                 if self.boolean(c.node, "Bypass", false, live)? {
                     continue;
                 }
-                let ratio = self.value(&(c.node, "Ratio".into()), input, live, memo, depth + 1)?;
+                let ratio = self.value_named(c.node, "Ratio", input, live, memo, depth + 1)?;
                 let (mut source, bipolar) = self.source(&c.source, input, live, memo, depth + 1)?;
                 if self.boolean(c.node, "Inverted", false, live)? {
                     source = if bipolar { -source } else { 1. - source };
@@ -2516,7 +2770,9 @@ impl ModulationGraph {
             base + self.delta(p, input, live, memo, depth + 1)?
         };
         ensure!(value.is_finite(), "Nonfinite UVI modulation result");
-        memo.insert(p.clone(), value);
+        if let Some(cached) = cached {
+            memo.insert(cached.slot, value);
+        }
         Ok(value)
     }
     fn delta(
@@ -2524,18 +2780,22 @@ impl ModulationGraph {
         p: &Parameter,
         input: &Inputs,
         live: &HashMap<Parameter, f64>,
-        memo: &mut HashMap<Parameter, f64>,
+        memo: &mut MemoScratch,
         depth: usize,
     ) -> Result<f64> {
         let mut sum = 0.;
-        for c in self.connections.get(p).into_iter().flatten() {
+        for c in self.cached_parameters[p.0]
+            .get(&p.1)
+            .into_iter()
+            .flat_map(|cached| &cached.edges)
+        {
             if c.mode != 0 {
                 continue;
             }
             if self.boolean(c.node, "Bypass", false, live)? {
                 continue;
             }
-            let ratio = self.value(&(c.node, "Ratio".into()), input, live, memo, depth + 1)?;
+            let ratio = self.value_named(c.node, "Ratio", input, live, memo, depth + 1)?;
             let (mut value, bipolar) = self.source(&c.source, input, live, memo, depth + 1)?;
             if self.boolean(c.node, "Inverted", false, live)? {
                 value = if bipolar { -value } else { 1. - value };
@@ -2584,7 +2844,7 @@ impl ModulationGraph {
         s: &Source,
         input: &Inputs,
         live: &HashMap<Parameter, f64>,
-        memo: &mut HashMap<Parameter, f64>,
+        memo: &mut MemoScratch,
         depth: usize,
     ) -> Result<(f64, bool)> {
         let (value, bipolar) = match *s {
@@ -2636,7 +2896,7 @@ impl ModulationGraph {
                     ),
                     live,
                 )?;
-                let bypass = self.value(&(n, "Bypass".into()), input, live, memo, depth + 1)?;
+                let bypass = self.value_named(n, "Bypass", input, live, memo, depth + 1)?;
                 ensure!(
                     bypass == 0. || bypass == 1.,
                     "Invalid UVI modulation source Bypass"
@@ -2647,7 +2907,7 @@ impl ModulationGraph {
                 let v = match self.kinds[n].as_str() {
                     "ConstantModulation" => {
                         let v = self
-                            .value(&(n, "Value".into()), input, live, memo, depth + 1)?
+                            .value_named(n, "Value", input, live, memo, depth + 1)?
                             .clamp(0., 1.);
                         let style = self.setting(n, "Style", 0., live)?;
                         ensure!(
@@ -2690,8 +2950,7 @@ impl ModulationGraph {
                         if bipolar { 2. * value - 1. } else { value }
                     }
                     "ScriptEventModulation" => {
-                        let id =
-                            self.value(&(n, "EventId".into()), input, live, memo, depth + 1)?;
+                        let id = self.value_named(n, "EventId", input, live, memo, depth + 1)?;
                         ensure!(
                             (0. ..=127.).contains(&id) && id.fract() == 0.,
                             "Invalid live UVI script EventId"
@@ -2741,7 +3000,7 @@ impl ModulationGraph {
         n: NodeId,
         input: &Inputs,
         live: &HashMap<Parameter, f64>,
-        memo: &mut HashMap<Parameter, f64>,
+        memo: &mut MemoScratch,
         depth: usize,
     ) -> Result<f64> {
         ensure!(
@@ -2759,7 +3018,7 @@ impl ModulationGraph {
             }
             let max = if index == 3 { 30. } else { 10. };
             durations[index] = self
-                .value(&(n, name.into()), input, live, memo, depth + 1)?
+                .value_named(n, name, input, live, memo, depth + 1)?
                 .clamp(0., max) as f32
                 * input.sample_rate as f32;
         }
@@ -2781,13 +3040,13 @@ impl ModulationGraph {
             sustain: if one_shot {
                 0.
             } else {
-                self.value(&(n, "SustainLevel".into()), input, live, memo, depth + 1)?
+                self.value_named(n, "SustainLevel", input, live, memo, depth + 1)?
                     .clamp(0., 1.)
             },
             release: if one_shot {
                 0.
             } else {
-                self.value(&(n, "ReleaseTime".into()), input, live, memo, depth + 1)?
+                self.value_named(n, "ReleaseTime", input, live, memo, depth + 1)?
                     .clamp(0., 20.) as f32
                     * input.sample_rate as f32
             },
@@ -2839,7 +3098,7 @@ impl ModulationGraph {
         n: NodeId,
         input: &Inputs,
         live: &HashMap<Parameter, f64>,
-        memo: &mut HashMap<Parameter, f64>,
+        memo: &mut MemoScratch,
         depth: usize,
         bipolar: bool,
     ) -> Result<f64> {
@@ -2849,21 +3108,21 @@ impl ModulationGraph {
             "Unverified UVI stochastic trigger mode at node {n}"
         );
         let smooth = self.kinds[n] == "StdRandom";
-        let rate = self.value(&(n, "Rate".into()), input, live, memo, depth + 1)? as f32;
+        let rate = self.value_named(n, "Rate", input, live, memo, depth + 1)? as f32;
         let depth_value = if smooth {
-            self.value(&(n, "Depth".into()), input, live, memo, depth + 1)? as f32
+            self.value_named(n, "Depth", input, live, memo, depth + 1)? as f32
         } else {
             1.
         };
         let step = if smooth {
             0.
         } else {
-            self.value(&(n, "Step".into()), input, live, memo, depth + 1)? as f32
+            self.value_named(n, "Step", input, live, memo, depth + 1)? as f32
         };
         let bias = if smooth {
             0.
         } else {
-            self.value(&(n, "Bias".into()), input, live, memo, depth + 1)? as f32
+            self.value_named(n, "Bias", input, live, memo, depth + 1)? as f32
         };
         ensure!(
             (if smooth { 0. } else { 0.1 }..=1000.).contains(&rate)
@@ -2966,11 +3225,11 @@ impl ModulationGraph {
         n: NodeId,
         input: &Inputs,
         live: &HashMap<Parameter, f64>,
-        memo: &mut HashMap<Parameter, f64>,
+        memo: &mut MemoScratch,
         depth: usize,
     ) -> Result<f64> {
-        let attack = self.value(&(n, "Attack".into()), input, live, memo, depth + 1)? as f32;
-        let decay = self.value(&(n, "DecayTime".into()), input, live, memo, depth + 1)? as f32;
+        let attack = self.value_named(n, "Attack", input, live, memo, depth + 1)? as f32;
+        let decay = self.value_named(n, "DecayTime", input, live, memo, depth + 1)? as f32;
         ensure!(
             decay > 0. && decay.is_finite(),
             "Invalid UVI AttackDecayEnv decay time"
@@ -3015,7 +3274,7 @@ impl ModulationGraph {
         n: NodeId,
         input: &Inputs,
         live: &HashMap<Parameter, f64>,
-        memo: &mut HashMap<Parameter, f64>,
+        memo: &mut MemoScratch,
         depth: usize,
     ) -> Result<f64> {
         ensure!(
@@ -3041,7 +3300,7 @@ impl ModulationGraph {
             "Unverified shared UVI MultiEnvelope legato mode at node {n}"
         );
         let global = mode == 0. && !per_group;
-        let speed = self.value(&(n, "Speed".into()), input, live, memo, depth + 1)? as f32;
+        let speed = self.value_named(n, "Speed", input, live, memo, depth + 1)? as f32;
         ensure!(
             speed.is_finite() && speed > 0.,
             "Invalid UVI MultiEnvelope speed"
@@ -3144,7 +3403,7 @@ impl ModulationGraph {
         n: NodeId,
         input: &Inputs,
         live: &HashMap<Parameter, f64>,
-        memo: &mut HashMap<Parameter, f64>,
+        memo: &mut MemoScratch,
         depth: usize,
     ) -> Result<f64> {
         ensure!(
@@ -3166,10 +3425,10 @@ impl ModulationGraph {
         let time = |name: &str,
                     key_name: &str,
                     velocity_name: &str,
-                    memo: &mut HashMap<Parameter, f64>|
+                    memo: &mut MemoScratch|
          -> Result<f64> {
             let base = self
-                .value(&(n, name.into()), input, live, memo, depth + 1)?
+                .value_named(n, name, input, live, memo, depth + 1)?
                 .clamp(0.0001, 10.);
             let key_depth = self.setting(n, key_name, 0., live)?.clamp(-2., 2.);
             let velocity_depth = self.setting(n, velocity_name, 0., live)?.clamp(-1., 1.);
@@ -3181,11 +3440,11 @@ impl ModulationGraph {
             attack: coefficient(time("AttackTime", "KeyToAttack", "VelToAttack", memo)?),
             decay: coefficient(time("DecayTime", "KeyToDecay", "VelToDecay", memo)?),
             release: coefficient(
-                self.value(&(n, "ReleaseTime".into()), input, live, memo, depth + 1)?
+                self.value_named(n, "ReleaseTime", input, live, memo, depth + 1)?
                     .clamp(0.0001, 10.),
             ),
             sustain: self
-                .value(&(n, "SustainLevel".into()), input, live, memo, depth + 1)?
+                .value_named(n, "SustainLevel", input, live, memo, depth + 1)?
                 .clamp(0., 1.) as f32,
             punch: self.setting(n, "Punch", 0., live)?.clamp(0., 1.) as f32,
             attack_decay: self.boolean(n, "AttackDecayMode", false, live)?,
@@ -3227,7 +3486,7 @@ impl ModulationGraph {
     pub fn has_release_envelopes(&self, nodes: &HashSet<NodeId>) -> bool {
         nodes
             .iter()
-            .flat_map(|node| self.node_targets.get(node).into_iter().flatten())
+            .flat_map(|node| self.node_targets.get(*node).into_iter().flatten())
             .flat_map(|target| self.target_sources.get(target).into_iter().flatten())
             .any(|node| {
                 matches!(
@@ -3244,11 +3503,12 @@ impl ModulationGraph {
         nodes: &HashSet<NodeId>,
     ) -> Result<bool> {
         self.validate(input, live)?;
-        let mut memo = HashMap::new();
+        let mut memo = self.memo.borrow_mut();
+        memo.begin();
         let mut envelopes = HashSet::new();
         for target in nodes
             .iter()
-            .flat_map(|node| self.node_targets.get(node).into_iter().flatten())
+            .flat_map(|node| self.node_targets.get(*node).into_iter().flatten())
         {
             for node in self.target_sources.get(target).into_iter().flatten() {
                 if matches!(
@@ -3260,7 +3520,7 @@ impl ModulationGraph {
             }
         }
         for node in envelopes {
-            if self.value(&(node, "Bypass".into()), input, live, &mut memo, 0)? != 0. {
+            if self.value_named(node, "Bypass", input, live, &mut memo, 0)? != 0. {
                 continue;
             }
             match self.kinds[node].as_str() {
@@ -3417,7 +3677,7 @@ impl ModulationGraph {
         bipolar: bool,
         input: &Inputs,
         live: &HashMap<Parameter, f64>,
-        memo: &mut HashMap<Parameter, f64>,
+        memo: &mut MemoScratch,
         depth: usize,
     ) -> Result<f64> {
         let smooth = self.setting(n, "Smooth", 0., live)?;
@@ -3435,17 +3695,17 @@ impl ModulationGraph {
         } else {
             input.time_seconds
         };
-        let delay = self.value(&(n, "DelayTime".into()), input, live, memo, depth + 1)?;
-        let rise = self.value(&(n, "RiseTime".into()), input, live, memo, depth + 1)?;
-        let frequency = self.value(&(n, "Freq".into()), input, live, memo, depth + 1)?;
+        let delay = self.value_named(n, "DelayTime", input, live, memo, depth + 1)?;
+        let rise = self.value_named(n, "RiseTime", input, live, memo, depth + 1)?;
+        let frequency = self.value_named(n, "Freq", input, live, memo, depth + 1)?;
         let freq = if self.boolean(n, "SyncToHost", false, live)? {
             ensure!(frequency > 0., "Invalid synchronized UVI LFO beat period");
             f64::from((input.host_tempo as f32 * (1_f32 / 60.)) / frequency as f32)
         } else {
             frequency
         };
-        let phase = self.value(&(n, "Phase".into()), input, live, memo, depth + 1)?;
-        let amplitude = self.value(&(n, "Depth".into()), input, live, memo, depth + 1)?;
+        let phase = self.value_named(n, "Phase", input, live, memo, depth + 1)?;
+        let amplitude = self.value_named(n, "Depth", input, live, memo, depth + 1)?;
         ensure!(
             delay >= 0. && rise >= 0. && freq >= 0. && (0. ..=1.).contains(&amplitude),
             "Invalid UVI LFO parameters"
@@ -3467,6 +3727,107 @@ impl ModulationGraph {
             smooth == 0.,
             "Unimplemented UVI deterministic LFO smoothing at node {n}"
         );
+        if wave == 2. {
+            // Authored native triangles use an integer phase accumulator and
+            // interpolate 32-frame control points, including triangle corners.
+            let rate = input.sample_rate as f32;
+            let increment = ((16777216_f32 / rate) * (freq as f32 * 256.)).floor();
+            ensure!(
+                (0. ..4294967296.).contains(&increment),
+                "Unsupported UVI triangle LFO phase increment"
+            );
+            ensure!(
+                input.time_seconds * input.sample_rate < (u64::MAX - 65536) as f64,
+                "UVI triangle LFO clock overflow"
+            );
+            let frame = (input.time_seconds * input.sample_rate + 0.000001).floor() as u64;
+            let age = (clock * input.sample_rate + 0.000001).floor() as u64;
+            ensure!(age <= frame, "Invalid UVI triangle LFO voice clock");
+            let origin = frame - age;
+            let duration = |seconds: f64| -> Result<u64> {
+                let frames = ((seconds as f32 * rate) / 32.).ceil() * 32.;
+                ensure!(
+                    frames.is_finite() && frames >= 0. && f64::from(frames) < u64::MAX as f64,
+                    "Invalid UVI triangle LFO duration"
+                );
+                Ok(frames as u64)
+            };
+            let delay_frames = duration(delay)?;
+            let rise_frames = duration(rise)?;
+            if age < delay_frames {
+                return Ok(0.);
+            }
+            let start = origin
+                .checked_add(delay_frames)
+                .context("UVI triangle LFO clock overflow")?;
+            let block_frames = u64::from(input.control_block_frames);
+            let block_start = frame / block_frames * block_frames;
+            let interval_start = block_start.max(start);
+            let point_frame = interval_start + (frame - interval_start) / 32 * 32;
+            let elapsed = point_frame - start;
+            let phase_parameter = phase as f32;
+            let phase_start = (phase_parameter.rem_euclid(1.) * 4294967296.) as u32;
+            let key = (n, input.voice, input.instance);
+            let mut clocks = self.triangle_lfo_clocks.borrow_mut();
+            ensure!(
+                clocks.len() < LIMIT || clocks.contains_key(&key),
+                "UVI triangle LFO state exceeds limit"
+            );
+            let state = clocks.entry(key).or_insert(TriangleLfoClock {
+                frame: point_frame,
+                phase: phase_start.wrapping_add((increment as u32).wrapping_mul(elapsed as u32)),
+                increment: increment as u32,
+                phase_parameter,
+                origin,
+                delay_frames,
+                rise_frames,
+                rate: input.sample_rate,
+                block_frames: input.control_block_frames,
+            });
+            ensure!(
+                state.origin == origin
+                    && state.delay_frames == delay_frames
+                    && state.rise_frames == rise_frames
+                    && state.phase_parameter == phase_parameter
+                    && state.rate == input.sample_rate
+                    && state.block_frames == input.control_block_frames,
+                "Unverified live UVI triangle LFO phase/timing change at node {n}"
+            );
+            ensure!(
+                point_frame >= state.frame,
+                "UVI triangle LFO clock moved backwards"
+            );
+            if point_frame != state.frame {
+                state.phase = state.phase.wrapping_add(
+                    state
+                        .increment
+                        .wrapping_mul((point_frame - state.frame) as u32),
+                );
+                state.frame = point_frame;
+                state.increment = increment as u32;
+            }
+            let value = |phase, elapsed: u64| {
+                let raw = triangle_lfo_value(phase);
+                let raw = if bipolar { raw } else { (raw + 1.) * 0.5 };
+                let rise = if rise_frames == 0 {
+                    1.
+                } else {
+                    (elapsed as f32 / rise_frames as f32).min(1.)
+                };
+                raw * amplitude as f32 * rise
+            };
+            let left = value(state.phase, elapsed);
+            // Native last-point Rise lookahead advances one extra source frame;
+            // the next host block recomputes its ordinary control point.
+            let extra = u64::from(point_frame + 32 == block_start + block_frames);
+            let right = value(
+                state.phase.wrapping_add(state.increment.wrapping_mul(32)),
+                elapsed + 32 + extra,
+            );
+            return Ok(f64::from(
+                left + (right - left) * ((frame - point_frame) as f32 / 32.),
+            ));
+        }
         if clock < delay {
             return Ok(0.);
         }
@@ -3520,6 +3881,276 @@ impl ModulationGraph {
 mod tests {
     use super::*;
     use crate::uvi::program::parse_program;
+    #[test]
+    fn indexed_evaluation_reuses_storage_and_emits_only_complete_results() {
+        let program = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" Pitch="3" Gain="1"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Pitch" Ratio="2"><Connections><SignalConnection Source="@MIDI CC 2" Destination="Ratio" Ratio="1"/></Connections></SignalConnection><SignalConnection Source="@MIDI CC 1" Destination="Gain" Ratio=".5"/></Connections></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let mut graph = ModulationGraph::new(&program).unwrap();
+        let player = program.sample_zones[0].player;
+        let target = (player, "Pitch".into());
+        let nodes = HashSet::from([player]);
+        let mut input = Inputs::default();
+        input.controllers[2] = 127;
+        let mut live = HashMap::new();
+        let mut output = HashMap::new();
+        let (values, stamps, slots) = {
+            let memo = graph.memo.borrow();
+            (
+                memo.values.as_ptr(),
+                memo.stamps.as_ptr(),
+                memo.values.len(),
+            )
+        };
+        for cc in 0..128 {
+            input.controllers[1] = cc;
+            live.insert(target.clone(), f64::from(cc));
+            let expected = graph.evaluate_nodes(&input, &live, &nodes).unwrap();
+            output.clear();
+            graph
+                .evaluate_nodes_into(&input, &live, &nodes, |p, v| {
+                    output.insert(p.clone(), v);
+                })
+                .unwrap();
+            assert_eq!(expected, output);
+            assert_eq!(output[&target], f64::from(cc) + 2. * f64::from(cc) / 127.);
+        }
+        live.clear();
+        input.controllers[1] = 0;
+        // Epoch wrap must invalidate every prior dependency, including Ratio.
+        graph.memo.borrow_mut().epoch = u64::MAX;
+        graph
+            .evaluate_nodes_into(&input, &live, &nodes, |p, v| {
+                output.insert(p.clone(), v);
+            })
+            .unwrap();
+        assert_eq!(output[&target], 3.);
+        let memo = graph.memo.borrow();
+        assert_eq!(
+            (
+                memo.values.as_ptr(),
+                memo.stamps.as_ptr(),
+                memo.values.len()
+            ),
+            (values, stamps, slots)
+        );
+        drop(memo);
+        let mut emitted = 0;
+        input.controllers[0] = 128;
+        assert!(
+            graph
+                .evaluate_nodes_into(&input, &live, &nodes, |_, _| emitted += 1)
+                .is_err()
+        );
+        assert_eq!(emitted, 0);
+        input.controllers[0] = 0;
+        assert!(
+            graph
+                .evaluate_nodes_into(
+                    &input,
+                    &live,
+                    &HashSet::from([program.nodes.len()]),
+                    |_, _| emitted += 1
+                )
+                .is_err()
+        );
+        assert_eq!(emitted, 0);
+        // A dependency failure after successful targets must publish nothing.
+        let ratio = program.connections[0].node;
+        live.insert((ratio, "Bypass".into()), 0.5);
+        assert!(
+            graph
+                .evaluate_nodes_into(&input, &live, &nodes, |_, _| emitted += 1)
+                .is_err()
+        );
+        assert_eq!(emitted, 0);
+        live.clear();
+        graph
+            .evaluate_nodes_into(&input, &live, &nodes, |_, _| emitted += 1)
+            .unwrap();
+        assert_eq!(emitted, 2);
+    }
+    #[test]
+    fn compiled_parameters_keep_live_overrides_defaults_and_recursive_mapping() {
+        let program = parse_program(r#"<Program><ControlSignalSources><ConstantModulation Name="Unused" Value=".4"/></ControlSignalSources><Mappers><ControlSignalMapper Name="Curve" Min="0" Max="1">0 1</ControlSignalMapper></Mappers><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" Pitch="3"><Connections><SignalConnection Name="Outer" Source="@MIDI CC 1" Destination="Pitch" Ratio="2" Mapper="Curve"><Connections><SignalConnection Source="@MIDI CC 2" Destination="Ratio" Ratio="1"/></Connections></SignalConnection></Connections></SamplePlayer></Oscillators><Inserts><GainMatrix/><OnePole Freq="NaN"/></Inserts></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let graph = ModulationGraph::new(&program).unwrap();
+        let player = program.sample_zones[0].player;
+        let id = |kind: &str| {
+            program
+                .nodes
+                .iter()
+                .position(|node| node.kind == kind)
+                .unwrap()
+        };
+        let outer = program
+            .connections
+            .iter()
+            .find(|connection| connection.owner == player)
+            .unwrap()
+            .node;
+        let mut input = Inputs::default();
+        input.controllers[1] = 127;
+        input.controllers[2] = 127;
+        let parameter = (player, "Pitch".into());
+        let mut live = HashMap::new();
+        assert_eq!(graph.evaluate(&input, &live).unwrap()[&parameter], 5.);
+        live.insert(parameter.clone(), 7.);
+        assert_eq!(graph.evaluate(&input, &live).unwrap()[&parameter], 9.);
+        live.insert((outer, "Ratio".into()), 6.);
+        assert_eq!(graph.evaluate(&input, &live).unwrap()[&parameter], 13.);
+        live.insert((outer, "Inverted".into()), 1.);
+        assert_eq!(graph.evaluate(&input, &live).unwrap()[&parameter], 7.);
+        live.insert((outer, "Bypass".into()), 1.);
+        assert_eq!(graph.evaluate(&input, &live).unwrap()[&parameter], 7.);
+        live.clear();
+        assert_eq!(graph.evaluate(&input, &live).unwrap()[&parameter], 5.);
+        assert_eq!(graph.base(&(player, "Gain".into()), &live).unwrap(), 1.);
+        assert_eq!(
+            graph
+                .base(&(id("GainMatrix"), "Gain_1_1".into()), &live)
+                .unwrap(),
+            1.
+        );
+        assert_eq!(
+            graph
+                .base(&(id("GainMatrix"), "Gain_2_1".into()), &live)
+                .unwrap(),
+            0.
+        );
+        let unused = id("ConstantModulation");
+        let custom = (unused, "CustomNumeric".into());
+        assert_eq!(
+            graph.setting(unused, "CustomNumeric", 0.25, &live).unwrap(),
+            0.25
+        );
+        live.insert(custom.clone(), 0.75);
+        assert_eq!(
+            graph.setting(unused, "CustomNumeric", 0.25, &live).unwrap(),
+            0.75
+        );
+        live.insert(custom.clone(), 1.);
+        assert_eq!(
+            graph.setting(unused, "CustomNumeric", 0.25, &live).unwrap(),
+            1.
+        );
+        live.remove(&custom);
+        assert_eq!(
+            graph.setting(unused, "CustomNumeric", 0.25, &live).unwrap(),
+            0.25
+        );
+        let invalid = (id("OnePole"), "Freq".into());
+        assert!(graph.base(&invalid, &live).is_err());
+        live.insert(invalid.clone(), 1000.);
+        assert_eq!(graph.base(&invalid, &live).unwrap(), 1000.);
+        live.remove(&invalid);
+        assert!(graph.base(&invalid, &live).is_err());
+    }
+    #[test]
+    fn native_triangle_lfo_fixed_phase_control_points_rise_and_preflight() {
+        let cases: &[(&str, &[(u64, f64)])] = &[
+            (
+                "Freq=\"2\"",
+                &[
+                    (0, 0.5),
+                    (31, 0.5025832653),
+                    (32, 0.5026666522),
+                    (5999, 0.9986665249),
+                    (6000, 0.9986666441),
+                    (6016, 0.9986693859),
+                    (12000, 0.5000054240),
+                    (24000, 0.4999891520),
+                ],
+            ),
+            (
+                "Freq=\"2\" Phase=\".25\"",
+                &[
+                    (0, 1.),
+                    (32, 0.9973333478),
+                    (12000, 0.000005424022675),
+                    (24000, 0.9999891520),
+                ],
+            ),
+            (
+                "Freq=\"20\"",
+                &[
+                    (592, 0.9866666794),
+                    (600, 0.9900001287),
+                    (608, 0.9933335185),
+                    (624, 0.9800001979),
+                    (2400, 0.4999992251),
+                ],
+            ),
+            (
+                "Freq=\"4.1452475\" Depth=\".124\" RiseTime=\"1.0681459\"",
+                &[
+                    (0, 0.),
+                    (32, 0.00003910565283),
+                    (255, 0.0003366463643),
+                    (256, 0.0003367809113),
+                    (2785, 0.006604612805),
+                    (2815, 0.006713249721),
+                    (2816, 0.006714486983),
+                    (51296, 0.07938920707),
+                ],
+            ),
+            (
+                "Freq=\"4.1452475\" Depth=\".124\" RiseTime=\"1.0681459\" Bipolar=\"1\"",
+                &[
+                    (0, 0.5),
+                    (255, 0.5000272989),
+                    (256, 0.5000273585),
+                    (2815, 0.5033097267),
+                    (2816, 0.5033108592),
+                    (51296, 0.5173891783),
+                ],
+            ),
+            (
+                "Freq=\"2\" RiseTime=\".0006666666666666666\"",
+                &[(0, 0.), (31, 0.4869583249), (32, 0.5026666522)],
+            ),
+            (
+                "Freq=\"2\" RiseTime=\".001\"",
+                &[(32, 0.2513333261), (64, 0.5053333044)],
+            ),
+            (
+                "Freq=\"2\" DelayTime=\".001\"",
+                &[(0, 0.), (32, 0.), (64, 0.5), (256, 0.5159999132)],
+            ),
+        ];
+        for (settings, points) in cases {
+            let polarity = if settings.contains("Bipolar=") {
+                ""
+            } else {
+                " Bipolar=\"0\""
+            };
+            let xml = format!(
+                r#"<Program><ControlSignalSources><LFO Name="Osc" WaveFormType="2" Retrigger="1" {settings}{polarity}/></ControlSignalSources><Layers><Layer><Keygroups><Keygroup Gain="1"><Connections><SignalConnection Source="$Program/Osc" Destination="Gain" Ratio="1"/></Connections></Keygroup></Keygroups></Layer></Layers></Program>"#
+            );
+            let program = parse_program(&xml).unwrap();
+            let graph = ModulationGraph::new(&program).unwrap();
+            let group = program
+                .nodes
+                .iter()
+                .position(|node| node.kind == "Keygroup")
+                .unwrap();
+            for &(frame, expected) in *points {
+                let time = frame as f64 / 48000.;
+                let input = Inputs {
+                    time_seconds: time,
+                    voice_time_seconds: time,
+                    voice: Some(1),
+                    instance: Some(1),
+                    ..Inputs::default()
+                };
+                let value =
+                    graph.evaluate(&input, &HashMap::new()).unwrap()[&(group, "Gain".into())];
+                assert!(
+                    (value - expected).abs() < 0.0000002,
+                    "{settings} at {frame}: {value} != {expected}"
+                );
+            }
+            let unknown = xml.replace("WaveFormType=\"2\"", "WaveFormType=\"1\"");
+            assert!(ModulationGraph::new(&parse_program(&unknown).unwrap()).is_err());
+        }
+    }
     #[test]
     fn native_builtin_random_shared_draws_and_instance_lifetime() {
         let p=parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup Gain="1"><Connections><SignalConnection Source="@Random" Destination="Gain" Ratio="1" Bypass="1"/></Connections><Oscillators><SamplePlayer SamplePath="a"><Connections><SignalConnection Source="@Random" Destination="Pitch" Ratio="12"/></Connections></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
@@ -3821,7 +4452,7 @@ mod tests {
                     &Source::OrganPan,
                     &input,
                     &HashMap::new(),
-                    &mut HashMap::new(),
+                    &mut MemoScratch::new(0),
                     0,
                 )
                 .unwrap();

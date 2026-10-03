@@ -16,12 +16,14 @@ plugin = ["dep:moose", "dep:png", "dep:rfd", "dep:mui-text", "dep:zune-jpeg"]
 clap = ["plugin", "dep:moose-clap", "dep:clap-sys"]
 vst3 = ["plugin", "dep:moose-vst3"]
 standalone = ["plugin", "dep:moose-standalone"]
+# Development: Moose's existing reloadable CLAP/VST3 shell.
+shell = ["plugin", "moose/shell"]
 # Reads a library's own access data to open its encrypted content (src/access.rs).
 library-access = ["dep:aes"]
 # `audit-ui --shots`: draws views with the CPU renderer (kept out of the plugin).
 shots = ["plugin", "dep:mui"]
 # Experimental UVI containers, programs and offline Lua 5.1 processing.
-uvi = ["dep:roxmltree", "dep:mlua", "dep:sha2", "dep:base64", "dep:crc32fast", "symphonia/flac"]
+uvi = ["dep:roxmltree", "dep:mlua", "dep:sha2", "dep:base64", "dep:crc32fast", "dep:png", "symphonia/flac"]
 
 [dependencies]
 rustc-hash = "=2.1.3"
@@ -81,6 +83,12 @@ strip = "symbols"
 
 [profile.dev]
 debug = "line-tables-only"
+
+# Built once for `cargo moose build --shell --debug`; the reloadable
+# implementation then uses the ordinary dev profile without release LTO.
+[profile.shell]
+inherits = "release"
+lto = false
 
 [profile.dev.package."*"]
 debug = false

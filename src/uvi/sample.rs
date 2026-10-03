@@ -42,6 +42,8 @@ pub struct Sample {
     pub unity_note: Option<u32>,
     /// RIFF `clm ` cycle-size hint; wavetable consumers validate its geometry.
     pub wavetable_cycle_frames: Option<u32>,
+    /// Native image-import tables always use 2048 frames per cycle.
+    pub wavetable_image: bool,
     /// Original FLAC APPLICATION `riff` payloads, including their application ID.
     #[serde(skip)]
     pub riff_metadata: Vec<Vec<u8>>,
@@ -65,6 +67,7 @@ pub fn assemble_mono(mut samples: Vec<Sample>) -> Result<Sample> {
     let mut metadata_chunks = 0usize;
     for sample in &samples {
         ensure!(sample.channels == 1, "Sample bundle operands must be mono");
+        ensure!(!sample.wavetable_image, "Image tables cannot form audio bundles");
         ensure!(
             sample.rate == rate && sample.frames == frames,
             "Mono bundle timing mismatch"
@@ -122,6 +125,7 @@ pub fn assemble_mono(mut samples: Vec<Sample>) -> Result<Sample> {
         loops,
         unity_note,
         wavetable_cycle_frames,
+        wavetable_image: false,
         riff_metadata,
     })
 }
@@ -298,6 +302,7 @@ fn decode_caf(bytes: &[u8]) -> Result<Sample> {
         loops: Vec::new(),
         unity_note: None,
         wavetable_cycle_frames: None,
+        wavetable_image: false,
         riff_metadata: Vec::new(),
     })
 }
@@ -525,6 +530,7 @@ pub fn decode(bytes: &[u8]) -> Result<Sample> {
             loops: metadata.loops,
             unity_note: metadata.unity_note,
             wavetable_cycle_frames: metadata.wavetable_cycle_frames,
+            wavetable_image: false,
             riff_metadata: metadata.riff,
         });
     }
@@ -623,6 +629,7 @@ pub fn decode(bytes: &[u8]) -> Result<Sample> {
         loops: metadata.loops,
         unity_note: metadata.unity_note,
         wavetable_cycle_frames: metadata.wavetable_cycle_frames,
+        wavetable_image: false,
         riff_metadata: metadata.riff,
     })
 }
@@ -874,6 +881,7 @@ mod tests {
             }],
             unity_note: Some(64),
             wavetable_cycle_frames: None,
+            wavetable_image: false,
             riff_metadata: vec![vec![value as u8]],
         };
         for channels in [2, 10, 12] {
@@ -907,6 +915,10 @@ mod tests {
         let stale = assemble_mono(vec![stale_left, stale_right]).unwrap();
         assert_eq!(stale.loops[0].end, 5);
         assert_eq!(stale.interleaved.len(), 6);
+        let mut image = mono(0.);
+        image.wavetable_image = true;
+        assert!(assemble_mono(vec![image]).is_err());
+        assert!(!mono(0.).wavetable_image);
         assert!(assemble_mono(Vec::new()).is_err());
         let mut mismatches = vec![
             mono(1.),

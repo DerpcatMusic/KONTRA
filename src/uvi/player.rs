@@ -8,6 +8,36 @@ use super::{
 use anyhow::{Context, Result, ensure};
 use std::collections::BTreeMap;
 
+pub const MAX_UI_EDITS: usize = 64;
+
+/// Owned, fixed-size widget edit on the same absolute clock as MIDI inputs.
+#[derive(Clone, Copy)]
+pub struct UiInput {
+    pub frame: u64,
+    pub edit: super::host::UiEdit,
+}
+
+impl std::fmt::Debug for UiInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UiInput")
+            .field("frame", &self.frame)
+            .field("processor", &self.edit.processor)
+            .field("widget", &self.edit.widget)
+            .finish_non_exhaustive()
+    }
+}
+
+pub(crate) fn ui_input_is_valid(input: &UiInput) -> bool {
+    use super::host::UiEditValue;
+    let finite = |value: f64| value.is_finite() && (value as f32).is_finite();
+    input.edit.widget > 0
+        && match input.edit.value {
+            UiEditValue::Number(value) => finite(value),
+            UiEditValue::TableCell { index, value } => index > 0 && finite(value),
+            UiEditValue::Boolean(_) | UiEditValue::Push => true,
+        }
+}
+
 /// The VM can represent any positive finite tempo; the currently admitted DSP
 /// processors share a bounded tempo range. Reject incompatible audio input
 /// before advancing either clock. This check also serves realtime ingress.
@@ -25,6 +55,8 @@ pub struct Rendered {
     /// Private script diagnostics; do not publish without reviewing their contents.
     pub logs: Vec<String>,
     pub dropped_logs: usize,
+    /// Bit i reports a nonfatal admission rejection of ui_inputs[i].
+    pub rejected_ui: u64,
 }
 
 /// Owns the VM and resource cache alongside the native graph renderer.
@@ -84,9 +116,31 @@ impl<'a> Player<'a> {
         self.renderer.diagnostics()
     }
 
+    /// Read initialized controls on this player's owning thread without running
+    /// callbacks, reading resources or advancing either playback clock.
+    pub fn ui_snapshot(
+        &self,
+        processor: super::program::NodeId,
+    ) -> Result<super::host::UiSnapshot> {
+        ensure!(!self.failed, "UVI player must be replaced after a failure");
+        self.session.ui_snapshot(processor)
+    }
+
     /// Inputs use absolute frames in [current_frame, current_frame + frames).
     /// Callbacks at the end boundary remain pending for the following block.
     pub fn render(&mut self, inputs: &[script::Input], frames: usize) -> Result<Rendered> {
+        self.render_with_ui(inputs, &[], frames)
+    }
+
+    /// MIDI and UI streams must each be ordered. UI edits run before MIDI at
+    /// equal frames, preserving order within each stream. Both clocks advance
+    /// once through the original block; there is no independent idle UI clock.
+    pub fn render_with_ui(
+        &mut self,
+        inputs: &[script::Input],
+        ui_inputs: &[UiInput],
+        frames: usize,
+    ) -> Result<Rendered> {
         ensure!(
             !self.failed,
             "UVI player must be replaced after an execution or render failure"
@@ -114,8 +168,43 @@ impl<'a> Player<'a> {
             inputs.iter().all(input_is_valid),
             "UVI audio transport tempo must be between 1 and 1000 BPM"
         );
+        ensure!(
+            ui_inputs.len() <= MAX_UI_EDITS
+                && ui_inputs.iter().all(|input| {
+                    input.frame >= self.frame && input.frame < end && ui_input_is_valid(input)
+                })
+                && ui_inputs
+                    .windows(2)
+                    .all(|pair| pair[0].frame <= pair[1].frame),
+            "Invalid UVI player UI input sequence"
+        );
         let result = (|| {
-            let processed = self.session.process(inputs, end - 1)?;
+            let mut rejected_ui = 0u64;
+            let processed = if ui_inputs.is_empty() {
+                self.session.process(inputs, end - 1)?
+            } else {
+                let (mut midi, mut ui) = (0, 0);
+                while midi < inputs.len() || ui < ui_inputs.len() {
+                    if ui < ui_inputs.len()
+                        && (midi == inputs.len() || ui_inputs[ui].frame <= inputs[midi].frame)
+                    {
+                        let input = &ui_inputs[ui];
+                        match self.session.edit_ui(&input.edit, input.frame) {
+                            Ok(()) => {}
+                            Err(script::UiEditError::Rejected(_)) => rejected_ui |= 1u64 << ui,
+                            Err(error @ script::UiEditError::Execution(_)) => {
+                                return Err(error.into());
+                            }
+                        }
+                        ui += 1;
+                    } else {
+                        self.session.input(inputs[midi])?;
+                        midi += 1;
+                    }
+                }
+                self.session.advance(end - 1)?;
+                self.session.drain()?
+            };
             if self.resources.revision() != self.resource_revision {
                 self.renderer
                     .install_prepared_samples(self.resources.samples())?;
@@ -131,6 +220,7 @@ impl<'a> Player<'a> {
                 host_commands: processed.host_commands.len(),
                 logs: processed.logs,
                 dropped_logs: processed.dropped_logs,
+                rejected_ui,
             })
         })();
         // Script/processor failures may have changed state before they surfaced.

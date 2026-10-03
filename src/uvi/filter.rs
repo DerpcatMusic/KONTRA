@@ -17,7 +17,7 @@ use super::{
 use anyhow::{Context, Result, bail, ensure};
 use std::collections::BTreeMap;
 
-pub const FIDELITY_DIAGNOSTIC: &str = "UVI Xpander shapes, both solvers and saturation have authored native comparisons at 48 kHz; quiet rate paths are compared at 8/32/44.1/48/64/96/192 kHz; scalar cutoff transitions are compared at 32/48/96 kHz; Q/Fat transitions, scalar soft/hardDrive with both solvers, and dynamic softDrive with AlgorithmII direct/oversampled paths are compared at 48 kHz, with native rounding residuals up to 3e-5; other live transitions, partial control-block timing, cross-rate saturation and exact float-rounding parity remain unverified";
+pub const FIDELITY_DIAGNOSTIC: &str = "UVI Xpander shapes, both solvers and saturation have authored native comparisons at 48 kHz; quiet rate paths are compared at 8/32/44.1/48/64/96/192 kHz; scalar cutoff transitions are compared at 32/48/96 kHz; Q/Fat transitions, scalar KeyTracking with the AlgorithmII direct path, scalar soft/hardDrive with both solvers, and dynamic softDrive with AlgorithmII direct/oversampled paths are compared at 48 kHz, with native rounding residuals up to 3e-5; matrix-connected Freq/Q/Fat/Drive/KeyTracking and Bypass-only cold starts are compared with AlgorithmII direct at 48 kHz; plain scalar cold starts are compared at 32/48/96 kHz with both solvers and at 32/256-frame blocks at 48 kHz; other cold configurations, other live transitions, partial control-block timing, cross-rate saturation and exact float-rounding parity remain unverified";
 const DEFAULTS: [(&str, f64); 10] = [
     ("Bypass", 0.),
     ("Freq", 1000.),
@@ -200,7 +200,7 @@ struct Control {
 }
 
 impl Control {
-    // Freq/Q near-target coefficient ramps span a host block. Held gain
+    // Freq/Q/Tracking near-target coefficient ramps span a host block. Held gain
     // controls reach the same normalized target at the next control point.
     fn point(
         &mut self,
@@ -235,7 +235,7 @@ impl Control {
     }
 }
 
-const CONTROL_NAMES: [&str; 4] = ["Freq", "Q", "Fat", "Drive"];
+const CONTROL_NAMES: [&str; 5] = ["Freq", "Q", "Fat", "Drive", "KeyTracking"];
 
 pub struct XpanderFilter {
     channels: usize,
@@ -253,7 +253,11 @@ pub struct XpanderFilter {
     frame: usize,
     block_frames: usize,
     processed: bool,
-    controls: [Control; 4],
+    matrix_initialization: bool,
+    controls: [Control; 5],
+    cutoff_point: f64,
+    tracking: f64,
+    frequency_remaining: usize,
     frequency_end: [f64; 3],
     frequency_ramp: [f32; 3],
     frequency_increment: [f32; 3],
@@ -296,7 +300,11 @@ impl XpanderFilter {
             frame: 0,
             block_frames: 256,
             processed: false,
-            controls: [Control::default(); 4],
+            matrix_initialization: false,
+            controls: [Control::default(); 5],
+            cutoff_point: 1000.,
+            tracking: 0.,
+            frequency_remaining: 0,
             frequency_end: [0.; 3],
             frequency_ramp: [0.; 3],
             frequency_increment: [0.; 3],
@@ -329,12 +337,14 @@ impl XpanderFilter {
     }
 
     pub fn set_parameter(&mut self, name: &str, value: &ParameterValue) -> Result<()> {
-        self.set_effective_parameter(name, value, false)
+        self.set_value(name, value, false, false)
     }
 
+    /// This writer is for connected matrix targets, including unchanged values.
     /// Dynamic sources supply raw points at the 32-frame control clock.
     /// Scalar controls (including CC and Constant) retain independent RCs.
-    /// Freq/Q interpolate solver coefficients; Fat/Drive hold each point.
+    /// Freq/Tracking share solver coefficient ramps; Q interpolates independently.
+    /// Fat/Drive hold each point.
     /// The renderer may call this every output frame; coefficient points are
     /// sampled here, so repeated values must not restart an in-flight ramp.
     pub fn set_effective_parameter(
@@ -342,6 +352,15 @@ impl XpanderFilter {
         name: &str,
         value: &ParameterValue,
         dynamic: bool,
+    ) -> Result<()> {
+        self.set_value(name, value, dynamic, true)
+    }
+    fn set_value(
+        &mut self,
+        name: &str,
+        value: &ParameterValue,
+        dynamic: bool,
+        matrix: bool,
     ) -> Result<()> {
         let value = match value {
             ParameterValue::Number(n) if name != "Bypass" => *n,
@@ -353,12 +372,15 @@ impl XpanderFilter {
         if let Some(index) = control {
             self.controls[index].dynamic = dynamic;
         }
+        if !self.processed && matrix && (control.is_some() || name == "Bypass") {
+            self.matrix_initialization = true;
+        }
         let current = self.parameters.get_mut(name).expect("validated key");
         if *current == value {
             return Ok(());
         }
         *current = value;
-        if self.processed && control.is_some() {
+        if control.is_some() && (self.processed || matrix) {
             self.controls[control.unwrap()].settle_begin = None;
             return Ok(());
         }
@@ -419,10 +441,13 @@ impl XpanderFilter {
     }
 
     fn reset_control(&mut self) {
-        for i in 0..4 {
+        for i in 0..5 {
             self.controls[i].future = self.position(i);
             self.controls[i].settle_begin = None;
         }
+        self.cutoff_point = self.parameters["Freq"];
+        self.tracking = self.parameters["KeyTracking"];
+        self.frequency_remaining = 0;
         self.frequency_end = [self.stage, self.pole, self.feedback_factor];
         self.frequency_ramp = self.frequency_end.map(|v| v as f32);
         self.frequency_increment = [0.; 3];
@@ -434,29 +459,116 @@ impl XpanderFilter {
         self.pending_drive = None;
     }
 
+    // Native unconnected controls ramp raw solver parameters over one host
+    // block, converting endpoints in chunks of at most64 internal frames.
+    fn scalar_startup_tick(&mut self) -> Result<()> {
+        let span = (64 / self.phases).min(self.block_frames);
+        if self.frame % span != 0 {
+            return Ok(());
+        }
+        self.configure_frequency(self.parameters["Freq"])?;
+        if self.frame == 0 {
+            self.frequency_end = [
+                0.,
+                if self.parameters["Algorithm"] == 0. {
+                    1.
+                } else {
+                    0.
+                },
+                self.feedback_factor,
+            ];
+            self.q_end = 0.;
+        }
+        let start = self.frequency_end;
+        let start_q = self.q_end;
+        let proportion = ((self.frame + span) as f64 / self.block_frames as f64).min(1.);
+        let (stage, pole) = if self.parameters["Algorithm"] == 0. {
+            (self.stage * proportion, 1. + (self.pole - 1.) * proportion)
+        } else {
+            let raw = self.stage / (1. - self.stage) * proportion;
+            (raw / (1. + raw), 0.)
+        };
+        self.frequency_end = [stage, pole, self.feedback_factor];
+        self.frequency_ramp = start.map(|v| v as f32);
+        self.frequency_remaining = span * self.phases;
+        self.frequency_increment = std::array::from_fn(|i| {
+            (self.frequency_end[i] as f32 - self.frequency_ramp[i])
+                / self.frequency_remaining as f32
+        });
+        self.q_ramp = start_q as f32;
+        self.q_end = self.parameters["Q"] * proportion;
+        self.q_increment = (self.q_end as f32 - self.q_ramp) / self.frequency_remaining as f32;
+        let coefficients = |frequency: [f64; 3], q: f64| {
+            let feedback = 4. * q * frequency[2];
+            [
+                feedback,
+                1. + self.fat * feedback,
+                if self.parameters["Algorithm"] == 0. {
+                    1.
+                } else {
+                    1. / (1. + feedback * frequency[0].powi(4))
+                },
+            ]
+        };
+        self.other_ramp = coefficients(start, start_q).map(|v| v as f32);
+        let end = coefficients(self.frequency_end, self.q_end);
+        self.other_increment = std::array::from_fn(|i| {
+            (end[i] as f32 - self.other_ramp[i]) / self.frequency_remaining as f32
+        });
+        Ok(())
+    }
+
     fn control_tick(&mut self) -> Result<()> {
+        if !self.matrix_initialization && self.frame < self.block_frames {
+            return self.scalar_startup_tick();
+        }
         if self.control_phase != 0 {
             return Ok(());
         }
         let alpha = 1f32 - 0.33f32.powf(3200. / self.rate as f32);
         let phases = self.phases;
-        for index in 0..4 {
+        let initializing = !self.processed && self.matrix_initialization;
+        if initializing {
+            // Connected controls select the native zero-coefficient startup;
+            // scalar futures still begin at the serialized parameter values.
+            self.frequency_end = [
+                0.,
+                if self.parameters["Algorithm"] == 0. {
+                    1.
+                } else {
+                    0.
+                },
+                self.feedback_factor,
+            ];
+            self.frequency_ramp = self.frequency_end.map(|v| v as f32);
+            self.q_end = 0.;
+            self.q_ramp = 0.;
+        }
+        let mut frequency_span = initializing.then_some(32);
+        for index in 0..5 {
             let target = self.position(index);
-            let Some((point, span)) =
-                self.controls[index].point(target, alpha, self.frame, self.block_frames, index < 2)
-            else {
+            let Some((point, span)) = self.controls[index].point(
+                target,
+                alpha,
+                self.frame,
+                self.block_frames,
+                index < 2 || index == 4,
+            ) else {
                 continue;
             };
             let value = self.physical(index, point);
             match index {
-                0 => {
-                    self.frequency_ramp = self.frequency_end.map(|v| v as f32);
-                    self.configure_frequency(value)?;
-                    self.frequency_end = [self.stage, self.pole, self.feedback_factor];
-                    self.frequency_increment = std::array::from_fn(|i| {
-                        (self.frequency_end[i] as f32 - self.frequency_ramp[i])
-                            / (span * phases) as f32
-                    });
+                0 | 4 => {
+                    let previous = if index == 0 {
+                        &mut self.cutoff_point
+                    } else {
+                        &mut self.tracking
+                    };
+                    if *previous != value {
+                        *previous = value;
+                        frequency_span =
+                            Some(frequency_span.map_or(span, |old: usize| old.min(span)));
+                    }
                 }
                 1 => {
                     self.q_ramp = self.q_end as f32;
@@ -467,6 +579,23 @@ impl XpanderFilter {
                 3 => self.pending_drive = Some(value),
                 _ => unreachable!(),
             }
+        }
+        if let Some(span) = frequency_span {
+            // Both cutoff controls feed one solver ramp. A new point arriving
+            // during a long final ramp resumes from the current coefficients.
+            if self.frequency_remaining == 0 {
+                self.frequency_ramp = self.frequency_end.map(|v| v as f32);
+            }
+            self.configure_frequency(self.cutoff_point)?;
+            self.frequency_end = [self.stage, self.pole, self.feedback_factor];
+            self.frequency_remaining = span * phases;
+            self.frequency_increment = std::array::from_fn(|i| {
+                (self.frequency_end[i] as f32 - self.frequency_ramp[i])
+                    / self.frequency_remaining as f32
+            });
+        } else if self.frequency_remaining == 0 {
+            self.frequency_ramp = self.frequency_end.map(|v| v as f32);
+            self.frequency_increment = [0.; 3];
         }
         // A settling cutoff must not stop another active controller. Predict
         // the next32-frame endpoints from each independent coefficient ramp.
@@ -484,10 +613,11 @@ impl XpanderFilter {
             [
                 feedback,
                 1. + self.fat * feedback,
+                // Native interpolates the reciprocal zero-delay solve.
                 if self.parameters["Algorithm"] == 0. {
                     1.
                 } else {
-                    1. + feedback * stage.powi(4)
+                    1. / (1. + feedback * stage.powi(4))
                 },
             ]
         };
@@ -500,6 +630,7 @@ impl XpanderFilter {
     }
 
     fn configure(&mut self) -> Result<()> {
+        self.tracking = self.parameters["KeyTracking"];
         self.configure_frequency(self.parameters["Freq"])
     }
     fn configure_frequency(&mut self, base_frequency: f64) -> Result<()> {
@@ -507,7 +638,7 @@ impl XpanderFilter {
         // Native tracking extends below/above the stored 20..20000Hz range.
         // Each solver applies its own internal-rate ceiling after tracking.
         let frequency =
-            base_frequency * ((f64::from(self.note) - 60.) * p["KeyTracking"] / 12.).exp2();
+            base_frequency * ((f64::from(self.note) - 60.) * self.tracking / 12.).exp2();
         self.phases = if p["Oversampling"] != 0. || (p["Algorithm"] == 0. && self.rate <= 48_000.) {
             2
         } else {
@@ -579,9 +710,12 @@ impl XpanderFilter {
                     normalization,
                 ];
                 for i in 0..3 {
-                    self.frequency_ramp[i] += self.frequency_increment[i];
+                    if self.frequency_remaining != 0 {
+                        self.frequency_ramp[i] += self.frequency_increment[i];
+                    }
                     self.other_ramp[i] += self.other_increment[i];
                 }
+                self.frequency_remaining = self.frequency_remaining.saturating_sub(1);
                 self.q_ramp += self.q_increment;
             }
             for (channel, x) in frame[..self.channels].iter_mut().enumerate() {
@@ -596,7 +730,7 @@ impl XpanderFilter {
                         pole,
                         feedback,
                         compensation,
-                        denominator,
+                        inverse_denominator,
                         drive,
                         _normalization,
                     ] = coeff;
@@ -621,7 +755,7 @@ impl XpanderFilter {
                         1 => input.clamp(-1., 1.),
                         2 => input,
                         _ => unreachable!(),
-                    } / denominator;
+                    } * inverse_denominator;
                     let mut result = mix[0] * tap;
                     for (stage, offset) in offsets.into_iter().enumerate() {
                         let y = stage_gain * tap + offset;
@@ -668,6 +802,11 @@ mod tests {
 
     #[test]
     fn authored_native_xpander_shapes_saturation_and_fragmentation() {
+        fn settled(mut fx: XpanderFilter) -> XpanderFilter {
+            // These native impulses occurred after8192 silent sample frames.
+            fx.process(&mut [[0.; MAX_CHANNELS]; 256]).unwrap();
+            fx
+        }
         // Original native authored 32/32768 impulse, normalized to unity.
         // Independent output samples at frames 3, 7, 15 and 31. No bank assets.
         #[rustfmt::skip]
@@ -711,7 +850,7 @@ mod tests {
             [3.729834259e-01, 6.830838323e-02, -3.585213050e-02, -3.391582146e-02, ],
         ];
         for (mode, expected) in SHAPES.iter().enumerate() {
-            let mut fx = filter(&format!("Mode=\"{mode}\" DistortionType=\"2\""), 2);
+            let mut fx = settled(filter(&format!("Mode=\"{mode}\" DistortionType=\"2\""), 2));
             let mut io = [[0.; MAX_CHANNELS]; 128];
             io[0][0] = 1. / 1024.;
             io[0][1] = -1. / 2048.;
@@ -735,7 +874,7 @@ mod tests {
             (20000., [5.733842775e-02, 6.801758893e-03, 1.000533189e-06]),
         ];
         for (freq, expected) in FREQUENCIES {
-            let mut fx = filter(&format!("Freq=\"{freq}\" DistortionType=\"2\""), 1);
+            let mut fx = settled(filter(&format!("Freq=\"{freq}\" DistortionType=\"2\""), 1));
             let mut io = [[0.; MAX_CHANNELS]; 256];
             io[0][0] = 1. / 1024.;
             fx.process(&mut io).unwrap();
@@ -759,7 +898,10 @@ mod tests {
             (0.75, 1., 3.670306504e-02),
         ];
         for (q, fat, expected) in COMPENSATION {
-            let mut fx = filter(&format!("Q=\"{q}\" Fat=\"{fat}\" DistortionType=\"2\""), 1);
+            let mut fx = settled(filter(
+                &format!("Q=\"{q}\" Fat=\"{fat}\" DistortionType=\"2\""),
+                1,
+            ));
             let mut io = [[0.; MAX_CHANNELS]; 128];
             io[0][0] = 1. / 1024.;
             fx.process(&mut io).unwrap();
@@ -778,8 +920,8 @@ mod tests {
         ];
         for (distortion, expected) in SATURATION.iter().enumerate() {
             let attributes = format!("Q=\"0.75\" DistortionType=\"{distortion}\"");
-            let mut whole = filter(&attributes, 1);
-            let mut split = filter(&attributes, 1);
+            let mut whole = settled(filter(&attributes, 1));
+            let mut split = settled(filter(&attributes, 1));
             let mut a = [[0.; MAX_CHANNELS]; 128];
             a[0][0] = 32767. / 32768.;
             let mut b = a;
@@ -810,10 +952,10 @@ mod tests {
         ];
         for (drive, expected) in DRIVES {
             for (distortion, expected) in expected.into_iter().enumerate() {
-                let mut fx = filter(
+                let mut fx = settled(filter(
                     &format!("Mode=\"0\" Drive=\"{drive}\" DistortionType=\"{distortion}\""),
                     1,
-                );
+                ));
                 let mut io = [[0.; MAX_CHANNELS]; 4096];
                 for frame in &mut io {
                     frame[0] = 0.125;
@@ -855,12 +997,12 @@ mod tests {
             (20000., 1, 2, [1.273746311e-04, 4.596724212e-01, 6.881806850e-01, 7.403402925e-01, ], ),
         ];
         for (freq, oversampling, distortion, expected) in ZERO_DELAY {
-            let mut fx = filter(
+            let mut fx = settled(filter(
                 &format!(
                     "Algorithm=\"1\" Oversampling=\"{oversampling}\" Q=\"0.75\" Freq=\"{freq}\" DistortionType=\"{distortion}\""
                 ),
                 1,
-            );
+            ));
             let mut io = [[0.; MAX_CHANNELS]; 128];
             io[0][0] = 32767. / 32768.;
             fx.process(&mut io).unwrap();
@@ -881,10 +1023,10 @@ mod tests {
             (36, [7.798839808e-01, -1.485915929e-01, 1.201692689e-02, 1.601552777e-02, ], ),
         ];
         for (mode, expected) in ZERO_DELAY_SHAPES {
-            let mut fx = filter(
+            let mut fx = settled(filter(
                 &format!("Algorithm=\"1\" Oversampling=\"0\" Mode=\"{mode}\" DistortionType=\"2\""),
                 1,
-            );
+            ));
             let mut io = [[0.; MAX_CHANNELS]; 128];
             io[0][0] = 32767. / 32768.;
             fx.process(&mut io).unwrap();
@@ -925,12 +1067,12 @@ mod tests {
             (1, 1, 20., 1, [5.537178367e-02, 6.487253308e-02]),
         ];
         for (algorithm, oversampling, drive, distortion, expected) in DRIVE_FEEDBACK {
-            let mut fx = filter(
+            let mut fx = settled(filter(
                 &format!(
                     "Algorithm=\"{algorithm}\" Oversampling=\"{oversampling}\" Q=\"0.75\" Drive=\"{drive}\" DistortionType=\"{distortion}\""
                 ),
                 1,
-            );
+            ));
             let mut io = [[0.; MAX_CHANNELS]; 128];
             io[0][0] = 32767. / 32768.;
             fx.process(&mut io).unwrap();
@@ -965,12 +1107,12 @@ mod tests {
             (1, 2, 36, [2.687813248e-03, 1.585525870e+00, -9.091910720e-02, 2.851120941e-02]),
         ];
         for (algorithm, distortion, mode, expected) in MIXED_FEEDBACK {
-            let mut fx = filter(
+            let mut fx = settled(filter(
                 &format!(
                     "Algorithm=\"{algorithm}\" Oversampling=\"1\" Q=\"0.75\" DistortionType=\"{distortion}\" Mode=\"{mode}\""
                 ),
                 1,
-            );
+            ));
             let mut io = [[0.; MAX_CHANNELS]; 128];
             io[0][0] = 32767. / 32768.;
             fx.process(&mut io).unwrap();
@@ -991,7 +1133,7 @@ mod tests {
         ];
         for rate in [8000., 32000.] {
             let p = parse_program("<Program><Inserts><XpanderFilter Algorithm=\"1\" Oversampling=\"0\" Freq=\"20000\" DistortionType=\"2\"/></Inserts></Program>").unwrap();
-            let mut fx = XpanderFilter::new(&p.nodes[2], 1, rate).unwrap();
+            let mut fx = settled(XpanderFilter::new(&p.nodes[2], 1, rate).unwrap());
             assert_eq!(
                 fx.parameter("Freq").unwrap(),
                 ParameterValue::Number(20000.)
@@ -1015,12 +1157,12 @@ mod tests {
             (1, 1, [1.482522786e-01, 1.494636089e-01, 1.508403420e-01, 1.535664499e-01]),
         ];
         for (algorithm, oversampling, expected) in BYPASS_RESUME {
-            let mut fx = filter(
+            let mut fx = settled(filter(
                 &format!(
                     "Freq=\"50\" Algorithm=\"{algorithm}\" Oversampling=\"{oversampling}\" DistortionType=\"2\""
                 ),
                 1,
-            );
+            ));
             let mut io: Vec<Frame> = (0..16448)
                 .map(|i| {
                     let mut frame = [0.; MAX_CHANNELS];
@@ -1075,7 +1217,7 @@ mod tests {
             let p = parse_program(&format!(
                 "<Program><Inserts><XpanderFilter Freq=\"{frequency}\" Algorithm=\"{algorithm}\" Oversampling=\"{oversampling}\" DistortionType=\"2\"/></Inserts></Program>"
             )).unwrap();
-            let mut fx = XpanderFilter::new(&p.nodes[2], 1, rate).unwrap();
+            let mut fx = settled(XpanderFilter::new(&p.nodes[2], 1, rate).unwrap());
             let mut io = vec![[0.; MAX_CHANNELS]; 128];
             io[0][0] = 1.;
             fx.process(&mut io).unwrap();
@@ -1104,12 +1246,12 @@ mod tests {
             (1, 84, 1., 20000., [9.968687296e-01, 6.165740546e-03, 6.012714002e-03, 5.171092693e-03]),
         ];
         for (algorithm, note, tracking, frequency, expected) in TRACKED_IMPULSE {
-            let mut fx = filter(
+            let mut fx = settled(filter(
                 &format!(
                     "Mode=\"0\" Freq=\"{frequency}\" Algorithm=\"{algorithm}\" Oversampling=\"0\" KeyTracking=\"{tracking}\" DistortionType=\"2\""
                 ),
                 1,
-            );
+            ));
             fx.set_note(note).unwrap();
             let mut io = vec![[0.; MAX_CHANNELS]; 128];
             io[0][0] = 1.;
@@ -1128,7 +1270,7 @@ mod tests {
                 let p = parse_program(&format!(
                     "<Program><Inserts><XpanderFilter Mode=\"{mode}\" Oversampling=\"0\" DistortionType=\"2\"/></Inserts></Program>"
                 )).unwrap();
-                let mut fx = XpanderFilter::new(&p.nodes[2], 1, rate).unwrap();
+                let mut fx = settled(XpanderFilter::new(&p.nodes[2], 1, rate).unwrap());
                 let mut io = vec![[0.; MAX_CHANNELS]; 32];
                 io[0][0] = 1.;
                 fx.process(&mut io).unwrap();
@@ -1139,7 +1281,7 @@ mod tests {
             assert!((sum[0][0] - 1.).abs() < 1e-7);
             assert!(sum[1..].iter().all(|frame| frame[0].abs() < 1e-7));
         }
-        let mut fx = filter("DistortionType=\"2\"", 1);
+        let mut fx = settled(filter("DistortionType=\"2\"", 1));
         let previous = fx.parameter("Algorithm").unwrap();
         assert!(
             fx.set_parameter("Algorithm", &ParameterValue::Number(2.))
@@ -1540,7 +1682,50 @@ mod tests {
 
     fn authored_native_lfo_point(n: usize) -> f64 {
         #[rustfmt::skip]
-        const SOURCE: [f32;513] = [
+        const SOURCE: [f32;769] = [
+            5.000000000E-01, 5.041883588E-01, 5.083767176E-01, 5.125648379E-01, 5.167506933E-01, 5.209364891E-01,
+            5.251216292E-01, 5.293024182E-01, 5.334832072E-01, 5.376623869E-01, 5.418356061E-01, 5.460088253E-01,
+            5.501791835E-01, 5.543423295E-01, 5.585054755E-01, 5.626642108E-01, 5.668147206E-01, 5.709652901E-01,
+            5.751094818E-01, 5.792449713E-01, 5.833804607E-01, 5.875072479E-01, 5.916251540E-01, 5.957430601E-01,
+            5.998497009E-01, 6.039475203E-01, 6.080453396E-01, 6.121289730E-01, 6.162042618E-01, 6.202796102E-01,
+            6.243373752E-01, 6.283876896E-01, 6.324380636E-01, 6.364671588E-01, 6.404900551E-01, 6.445130110E-01,
+            6.485107541E-01, 6.525038481E-01, 6.564968824E-01, 6.604604721E-01, 6.644213200E-01, 6.683821678E-01,
+            6.723089218E-01, 6.762350798E-01, 6.801593304E-01, 6.840484738E-01, 6.879376769E-01, 6.918219924E-01,
+            6.956718564E-01, 6.995216608E-01, 7.033634186E-01, 7.071716189E-01, 7.109798193E-01, 7.147763371E-01,
+            7.185406089E-01, 7.223048210E-01, 7.260535955E-01, 7.297716141E-01, 7.334896326E-01, 7.371879816E-01,
+            7.408575416E-01, 7.445271015E-01, 7.481725216E-01, 7.517914176E-01, 7.554103136E-01, 7.590003014E-01,
+            7.625663280E-01, 7.661323547E-01, 7.696645260E-01, 7.731755376E-01, 7.766865492E-01, 7.801584005E-01,
+            7.836123109E-01, 7.870662212E-01, 7.904753685E-01, 7.938700914E-01, 7.972648144E-01, 8.006088734E-01,
+            8.039423227E-01, 8.072758317E-01, 8.105525374E-01, 8.138227463E-01, 8.170930147E-01, 8.203001022E-01,
+            8.235051632E-01, 8.267075419E-01, 8.298454285E-01, 8.329833150E-01, 8.361136913E-01, 8.391824961E-01,
+            8.422513604E-01, 8.453074694E-01, 8.483054638E-01, 8.513033986E-01, 8.542832136E-01, 8.572084904E-01,
+            8.601337671E-01, 8.630352020E-01, 8.658860326E-01, 8.687368631E-01, 8.715579510E-01, 8.743325472E-01,
+            8.771072030E-01, 8.798459768E-01, 8.825427890E-01, 8.852396011E-01, 8.878941536E-01, 8.905115128E-01,
+            8.931288123E-01, 8.956974149E-01, 8.982337117E-01, 9.007700086E-01, 9.032508731E-01, 9.057045579E-01,
+            9.081583023E-01, 9.105497003E-01, 9.129193425E-01, 9.152890444E-01, 9.175892472E-01, 9.198734164E-01,
+            9.221575856E-01, 9.243651628E-01, 9.265625477E-01, 9.287598133E-01, 9.308731556E-01, 9.329823256E-01,
+            9.350894690E-01, 9.371091723E-01, 9.391288757E-01, 9.411401749E-01, 9.430691600E-01, 9.449982047E-01,
+            9.469122887E-01, 9.487494826E-01, 9.505866766E-01, 9.524022341E-01, 9.541465044E-01, 9.558907747E-01,
+            9.576064348E-01, 9.592567682E-01, 9.609070420E-01, 9.625217915E-01, 9.640771151E-01, 9.656324387E-01,
+            9.671452045E-01, 9.686045647E-01, 9.700639844E-01, 9.714735746E-01, 9.728361368E-01, 9.741988182E-01,
+            9.755042791E-01, 9.767692685E-01, 9.780342579E-01, 9.792348146E-01, 9.804013968E-01, 9.815680385E-01,
+            9.826627374E-01, 9.837303162E-01, 9.847978354E-01, 9.857860208E-01, 9.867538214E-01, 9.877216816E-01,
+            9.886025786E-01, 9.894701242E-01, 9.903376102E-01, 9.911107421E-01, 9.918774366E-01, 9.926434159E-01,
+            9.933087826E-01, 9.939742088E-01, 9.946317673E-01, 9.951955080E-01, 9.957591891E-01, 9.963078499E-01,
+            9.967695475E-01, 9.972312450E-01, 9.976706505E-01, 9.980300069E-01, 9.983893633E-01, 9.987192154E-01,
+            9.989760518E-01, 9.992328882E-01, 9.994529486E-01, 9.996071458E-01, 9.997613430E-01, 9.998714328E-01,
+            9.999228120E-01, 9.999742508E-01, 9.999743104E-01, 9.999229312E-01, 9.998715520E-01, 9.997616410E-01,
+            9.996074438E-01, 9.994533062E-01, 9.992334843E-01, 9.989765882E-01, 9.987197518E-01, 9.983900785E-01,
+            9.980307221E-01, 9.976713657E-01, 9.972321391E-01, 9.967704415E-01, 9.963087440E-01, 9.957603216E-01,
+            9.951965809E-01, 9.946328402E-01, 9.939755201E-01, 9.933101535E-01, 9.926447868E-01, 9.918789864E-01,
+            9.911122918E-01, 9.903393984E-01, 9.894718528E-01, 9.886043668E-01, 9.877236485E-01, 9.867558479E-01,
+            9.857879877E-01, 9.848000407E-01, 9.837324619E-01, 9.826649427E-01, 9.815703630E-01, 9.804037809E-01,
+            9.792371392E-01, 9.780368209E-01, 9.767718315E-01, 9.755069017E-01, 9.742015600E-01, 9.728389382E-01,
+            9.714763165E-01, 9.700669050E-01, 9.686075449E-01, 9.671481252E-01, 9.656356573E-01, 9.640803337E-01,
+            9.625250101E-01, 9.609104395E-01, 9.592601061E-01, 9.576097727E-01, 9.558942914E-01, 9.541500211E-01,
+            9.524057508E-01, 9.505904317E-01, 9.487532377E-01, 9.469159842E-01, 9.450020790E-01, 9.430730343E-01,
+            9.411439896E-01, 9.391329288E-01, 9.371132851E-01, 9.350935221E-01, 9.329866171E-01, 9.308774471E-01,
+            9.287643433E-01, 9.265669584E-01, 9.243696332E-01, 9.221622348E-01,
             9.198780656e-01, 9.175938368e-01, 9.152938128e-01, 9.129241109e-01, 9.105544686e-01, 9.081633091e-01,
             9.057095647e-01, 9.032558203e-01, 9.007751942e-01, 8.982388973e-01, 8.957026005e-01, 8.931341171e-01,
             8.905168176e-01, 8.878995180e-01, 8.852450848e-01, 8.825482726e-01, 8.798514605e-01, 8.771128058e-01,
@@ -1628,12 +1813,7 @@ mod tests {
             5.418186188e-01, 5.459918380e-01, 5.501622558e-01, 5.543254018e-01, 5.584885478e-01, 5.626472831e-01,
             5.667978525e-01, 5.709484220e-01, 5.750926733e-01,
         ];
-        let point = n / 32 * 32;
-        if point < 8192 {
-            (1. + (std::f64::consts::TAU * 2. * point as f64 / 48000.).sin()) * 0.5
-        } else {
-            f64::from(SOURCE[(point - 8192) / 32])
-        }
+        f64::from(SOURCE[n / 32])
     }
 
     #[test]
@@ -1782,6 +1962,338 @@ mod tests {
                 assert!(
                     (output[n] - native).abs() < 1e-6,
                     "native hardDrive Algorithm{algorithm} OS{oversampling}, frame{n}: {} vs {native}",
+                    output[n]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn authored_native_tracking_and_cutoff_keep_independent_clocks() {
+        // Original note72 LP1/linear probes separate normalized Tracking RC
+        // from normalized log-cutoff RC. Both feed one coefficient ramp.
+        // Opposing, additive and overlapping steps distinguish this from
+        // instantaneous tracking or one combined scalar RC.
+        // In the native overlap host, CCdelta64 executes its Lua setter at
+        // block begin12800. The leaf receives that observed setter time;
+        // this does not establish general MIDI event-offset lowering.
+        const POINTS: [usize; 24] = [
+            8192, 8224, 8256, 8960, 10000, 12032, 12288, 12544, 12800, 12801, 12828, 12832, 12833,
+            12864, 13056, 13312, 16384, 16416, 19000, 20480, 20736, 21312, 21504, 23040,
+        ];
+        #[rustfmt::skip]
+        let cases = [
+            ("only", 1000.0, 1.0, false, 1e-06, [1.392019242e-01, 9.931978583e-02, 3.904127330e-02, 1.840819418e-01, 1.930874884e-01, -9.176774323e-02, -8.988073468e-02, 2.016528696e-01, -1.566388309e-01, -1.781161427e-01, 7.354921848e-02, -7.199079543e-02, -1.054768711e-01, 3.075519204e-02, -1.015951112e-02, 1.690591574e-01, -1.240283176e-01, -2.858594060e-02, -1.407382786e-01, 1.445538849e-01, -6.882883608e-02, 1.041812524e-01, -1.140090153e-01, -1.455102116e-01]),
+            ("cancel", 500.0, 1.0, false, 1e-06, [1.392019242e-01, 9.931978583e-02, 3.446416184e-02, 1.461426318e-01, 1.138233766e-01, -1.754882932e-02, -1.044955999e-01, 1.452916116e-01, -7.312262058e-02, -9.475281835e-02, 9.522990137e-02, -2.230965300e-03, -2.851834334e-02, 6.921859086e-02, -5.589948595e-02, 1.414595097e-01, -4.393297806e-02, 2.949998528e-02, -1.405370682e-01, 1.445477754e-01, -6.882883608e-02, 1.041812524e-01, -1.140090153e-01, -1.455102116e-01]),
+            ("add", 1500.0, 0.75, false, 1e-06, [1.392019242e-01, 9.931978583e-02, 4.060704634e-02, 1.888070554e-01, 2.125008106e-01, -1.178703979e-01, -7.466407120e-02, 2.091575414e-01, -1.810277402e-01, -2.004290819e-01, 5.655802041e-02, -9.785499424e-02, -1.315782368e-01, 9.919256903e-03, 1.215253212e-02, 1.661712974e-01, -1.498627961e-01, -5.304811522e-02, -1.408056468e-01, 1.445522457e-01, -6.882791966e-02, 1.041813120e-01, -1.140093133e-01, -1.455102116e-01]),
+            ("overlap", 20000.0, 0.05, true, 2e-06, [1.392019242e-01, 9.931978583e-02, 5.523375794e-02, 1.487274766e-01, 2.432464957e-01, -2.154917419e-01, 3.155081347e-02, 1.769452989e-01, -2.478511333e-01, -2.495804578e-01, -5.282136798e-02, -2.010877281e-01, -2.244860381e-01, -1.038495377e-01, 1.264514029e-01, 9.307311475e-02, -2.354491353e-01, -1.651065499e-01, -2.019059807e-01, 1.827553213e-01, -2.288174182e-01, 1.624545753e-01, -1.513438076e-01, -1.462782025e-01]),
+        ];
+        for (tag, frequency, tracking, overlap, tolerance, expected) in cases {
+            let mut fx = filter(
+                r#"Mode="0" Algorithm="1" Oversampling="0" DistortionType="2""#,
+                1,
+            );
+            fx.set_note(72).unwrap();
+            let mut output = Vec::new();
+            for n in 0..24576 {
+                if overlap {
+                    if n == 8192 || n == 20480 {
+                        fx.set_parameter(
+                            "Freq",
+                            &ParameterValue::Number(if n == 8192 { frequency } else { 1000. }),
+                        )
+                        .unwrap();
+                    }
+                    if n == 12800 || n == 16384 {
+                        fx.set_parameter(
+                            "KeyTracking",
+                            &ParameterValue::Number(if n == 12800 { tracking } else { 0. }),
+                        )
+                        .unwrap();
+                    }
+                } else if n == 8192 || n == 16384 {
+                    fx.set_parameter(
+                        "Freq",
+                        &ParameterValue::Number(if n == 8192 { frequency } else { 1000. }),
+                    )
+                    .unwrap();
+                    fx.set_parameter(
+                        "KeyTracking",
+                        &ParameterValue::Number(if n == 8192 { tracking } else { 0. }),
+                    )
+                    .unwrap();
+                }
+                let mut io = [[0.; MAX_CHANNELS]];
+                io[0][0] = authored_sine(n, 48000.);
+                fx.process(&mut io).unwrap();
+                output.push(io[0][0]);
+            }
+            for (n, native) in POINTS.into_iter().zip(expected) {
+                assert!(
+                    (output[n] - native).abs() < tolerance,
+                    "native independent cutoff/tracking {tag} frame{n}: {} vs {native}",
+                    output[n]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn authored_native_matrix_controls_start_from_zero_coefficients() {
+        // Original 48k PCM16 sine and paired LFO->Gain/DC observations.
+        // Matrix-connected filters ramp solver/Q coefficients from zero over
+        // 32 frames, even when a scalar CC target equals its serialized base.
+        // Scalar RC futures retain that base; dynamic points skip that RC.
+        #[rustfmt::skip]
+        const POINTS: [usize;22] = [0,1,2,4,8,16,24,31,32,33,63,64,65,91,128,256,512,1024,8192,12288,16384,23040];
+        #[rustfmt::skip]
+        let cases: [(&str,&str,f64,[f32;22]);5] = [
+            ("Freq",r#"DistortionType="2""#,0.1,[0.000000000e+00,1.190295079e-04,7.057777839e-04,4.934405908e-03,3.135957569e-02,8.878512681e-02,-4.344717413e-02,-1.604389399e-01,-1.574005187e-01,-1.477883756e-01,-1.652470976e-01,-1.749614179e-01,-1.789862216e-01,9.347143583e-03,-6.078448147e-02,1.796222776e-01,-9.757538885e-02,1.763360351e-01,2.021695077e-01,-1.048069000e-01,-4.701037332e-02,-1.655779630e-01]),
+            ("Q",r#"DistortionType="2""#,0.75,[0.000000000e+00,9.033700917e-05,5.516947131e-04,4.102432635e-03,2.948020957e-02,1.052622423e-01,-7.034590095e-02,-3.145911396e-01,-3.199325800e-01,-3.118176758e-01,-3.695586920e-01,-4.148410857e-01,-4.474622011e-01,1.604536176e-01,-2.788140438e-02,4.054080844e-01,-1.072212383e-01,5.087450147e-01,6.072319150e-01,-3.179932833e-01,-4.897114262e-02,-3.453055322e-01]),
+            ("KeyTracking",r#"DistortionType="2""#,0.75,[0.000000000e+00,1.099992514e-04,6.522777257e-04,4.563058726e-03,2.909689024e-02,8.411154151e-02,-3.777113557e-02,-1.532173902e-01,-1.515066475e-01,-1.435478628e-01,-1.551044732e-01,-1.656694859e-01,-1.708463728e-01,1.639947854e-02,-5.097339302e-02,1.706322283e-01,-8.584198356e-02,1.704588830e-01,1.895819306e-01,-1.059208736e-01,-4.623983428e-02,-1.611101925e-01]),
+            ("Fat",r#"Q="0.75" Fat="0" DistortionType="2""#,1.0,[0.000000000e+00,9.033695824e-05,5.516941310e-04,4.102423787e-03,2.948007919e-02,1.052275151e-01,-7.204568386e-02,-3.220185339e-01,-3.274537325e-01,-3.186823726e-01,-4.963802993e-01,-5.601983666e-01,-6.089756489e-01,3.788838387e-01,4.212827981e-02,4.376961887e-01,-4.397104308e-02,5.611379743e-01,6.090657115e-01,-4.162817299e-01,-3.723109607e-03,-4.121481776e-01]),
+            ("Drive",r#"Q="0.75" DistortionType="0""#,12.0,[0.000000000e+00,1.908639533e-04,1.188225695e-03,9.024746716e-03,6.383012980e-02,2.420392931e-01,-1.530187875e-01,-5.954233408e-01,-6.265035272e-01,-6.339635253e-01,-5.088337660e-01,-5.705873966e-01,-6.236268878e-01,2.101472914e-01,-8.439113200e-02,5.972206593e-01,-2.153246701e-01,6.967823505e-01,6.064583063e-01,-6.184144020e-01,-1.029847935e-01,-6.882558465e-01]),
+        ];
+        for (name, attrs, ratio, expected) in cases {
+            let mut fx = filter(
+                &format!(r#"Mode="0" Algorithm="1" Oversampling="0" {attrs}"#),
+                1,
+            );
+            fx.set_note(72).unwrap();
+            let mut output = Vec::new();
+            for n in 0..24576 {
+                let source = authored_native_lfo_point(n);
+                let target = if name == "Freq" {
+                    1000. * 1000f64.powf(ratio * source)
+                } else {
+                    ratio * source
+                };
+                fx.set_effective_parameter(name, &ParameterValue::Number(target), true)
+                    .unwrap();
+                let mut io = [[0.; MAX_CHANNELS]];
+                io[0][0] = authored_sine(n, 48000.);
+                fx.process(&mut io).unwrap();
+                output.push(io[0][0]);
+            }
+            for (n, native) in POINTS.into_iter().zip(expected) {
+                assert!(
+                    (output[n] - native).abs() < 3e-6,
+                    "native cold matrix {name} frame{n}: {} vs {native}",
+                    output[n]
+                );
+            }
+        }
+        #[rustfmt::skip]
+        let scalar_cases: [(f64,[f32;22]);2] = [
+            (0.0,[0.000000000e+00,8.629212971e-05,5.117894616e-04,3.585818689e-03,2.306760475e-02,7.044614851e-02,-2.355593257e-02,-1.302671880e-01,-1.316603273e-01,-1.278581172e-01,-1.234239563e-01,-1.355924606e-01,-1.433449239e-01,3.279042244e-02,-2.483948320e-02,1.406688094e-01,-5.320595577e-02,1.456556320e-01,1.392019242e-01,-1.044955999e-01,-4.393297434e-02,-1.455102116e-01]),
+            (0.75,[0.000000000e+00,8.629212971e-05,5.117894616e-04,3.585818689e-03,2.306760475e-02,7.044614851e-02,-2.355593257e-02,-1.302671880e-01,-1.316603273e-01,-1.278635710e-01,-1.273344457e-01,-1.394374222e-01,-1.469869018e-01,2.924316749e-02,-3.417472169e-02,1.634898782e-01,-9.252796322e-02,1.778681725e-01,1.930532604e-01,-9.867250919e-02,-1.030933037e-01,-1.794820279e-01]),
+        ];
+        for (target, expected) in scalar_cases {
+            if target == 0. {
+                // Original Bypass-only CC0 capture is bit-identical to the
+                // unchanged continuous-control matrix baseline over24576 frames.
+                let mut bypass = filter(
+                    r#"Mode="0" Algorithm="1" Oversampling="0" DistortionType="2""#,
+                    1,
+                );
+                bypass.set_note(72).unwrap();
+                let mut output = Vec::new();
+                for n in 0..24576 {
+                    bypass
+                        .set_effective_parameter("Bypass", &ParameterValue::Boolean(false), false)
+                        .unwrap();
+                    let mut io = [[0.; MAX_CHANNELS]];
+                    io[0][0] = authored_sine(n, 48000.);
+                    bypass.process(&mut io).unwrap();
+                    output.push(io[0][0]);
+                }
+                for (n, native) in POINTS.into_iter().zip(expected) {
+                    assert!(
+                        (output[n] - native).abs() < 1e-6,
+                        "native Bypass-only cold matrix frame{n}"
+                    );
+                }
+            }
+            let mut fx = filter(
+                r#"Mode="0" Algorithm="1" Oversampling="0" DistortionType="2""#,
+                1,
+            );
+            fx.set_note(72).unwrap();
+            let mut output = Vec::new();
+            for n in 0..24576 {
+                fx.set_effective_parameter("KeyTracking", &ParameterValue::Number(target), false)
+                    .unwrap();
+                let mut io = [[0.; MAX_CHANNELS]];
+                io[0][0] = authored_sine(n, 48000.);
+                fx.process(&mut io).unwrap();
+                output.push(io[0][0]);
+            }
+            for (n, native) in POINTS.into_iter().zip(expected) {
+                assert!(
+                    (output[n] - native).abs() < 1e-6,
+                    "native cold scalar matrix Tracking={target} frame{n}: {} vs {native}",
+                    output[n]
+                );
+            }
+        }
+
+        // Independent authored warmed impulses establish Mode0 KeyTracking
+        // conversion, including negative Ratio and both physical clamps.
+        #[rustfmt::skip]
+        let tracking_cases: [(f64,f64,f64,[f32;6]);5] = [
+            (0.2,0.5,0.,[3.502391651e-02,6.514113396e-02,5.601514503e-02,2.633638680e-02,7.873310708e-03,7.036548341e-04]),
+            (0.2,0.5,63.,[4.108368605e-02,7.541589439e-02,6.302244216e-02,2.568366751e-02,6.108237896e-03,3.454886028e-04]),
+            (0.2,0.5,127.,[4.821702838e-02,8.713452518e-02,7.032905519e-02,2.409114875e-02,4.339240957e-03,1.407752716e-04]),
+            (0.8,0.5,127.,[5.816827342e-02,1.028023586e-01,7.888303697e-02,2.098390087e-02,2.521914430e-03,3.642660522e-05]),
+            (0.2,-0.5,127.,[3.075589612e-02,5.772809684e-02,5.062618479e-02,2.626123093e-02,9.187955409e-03,1.124673639e-03]),
+        ];
+        for (base, ratio, cc, expected) in tracking_cases {
+            let mut fx = filter(
+                &format!(
+                    r#"Mode="0" Algorithm="1" Oversampling="0" DistortionType="2" KeyTracking="{base}""#
+                ),
+                1,
+            );
+            fx.set_note(72).unwrap();
+            let target = (base + ratio * cc / 127.).clamp(0., 1.);
+            let mut output = Vec::new();
+            for n in 0..9000 {
+                fx.set_effective_parameter("KeyTracking", &ParameterValue::Number(target), false)
+                    .unwrap();
+                let mut io = [[0.; MAX_CHANNELS]];
+                io[0][0] = if n == 8192 { 0.5 } else { 0. };
+                fx.process(&mut io).unwrap();
+                output.push(io[0][0]);
+            }
+            for (n, native) in [8192, 8193, 8194, 8199, 8207, 8223]
+                .into_iter()
+                .zip(expected)
+            {
+                assert!(
+                    (output[n] - native).abs() < 1e-7,
+                    "native Tracking matrix base{base} ratio{ratio} CC{cc} frame{n}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn authored_native_high_cutoff_q_interpolates_reciprocal_feedback_solve() {
+        // Original authored 1379Hz PCM16 sine, direct Q setters0->.75 at8192
+        // and back at16384, 18kHz cutoff, LP1, AlgorithmII/direct at48k.
+        // Native interpolates the reciprocal solve coefficient, which cannot
+        // be exchanged with interpolating the denominator at this cutoff.
+        #[rustfmt::skip]
+        const POINTS:[usize;22]=[8192,8193,8223,8224,8241,8255,8256,8288,8320,8448,8704,9000,12000,16384,16416,16512,16640,16701,16896,18000,20736,23040];
+        #[rustfmt::skip]
+        let cases:[(u8,[f32;22]);2]=[
+            (1,[2.080610991e-01,1.798464656e-01,2.485674918e-01,2.490397096e-01,-2.502437532e-01,2.091641724e-01,2.305141687e-01,1.576830447e-01,4.636128992e-02,-2.434368134e-01,1.048971936e-01,-1.118588895e-01,-2.501869500e-01,-2.431959510e-01,-1.827916503e-01,1.637150794e-01,9.623236954e-02,-2.306540012e-01,1.292134076e-01,1.720395237e-01,-2.459781468e-01,-1.284771562e-01]),
+            (2,[2.080611736e-01,1.798465252e-01,2.485675812e-01,2.490397990e-01,-2.502438128e-01,2.091642469e-01,2.305142581e-01,1.576831043e-01,4.636130482e-02,-2.434369028e-01,1.048972383e-01,-1.118589416e-01,-2.501870394e-01,-2.431959361e-01,-1.827916503e-01,1.637151241e-01,9.623239189e-02,-2.306540906e-01,1.292134523e-01,1.720395833e-01,-2.459782362e-01,-1.284772009e-01]),
+        ];
+        for (distortion, expected) in cases {
+            let mut fx = filter(
+                &format!(
+                    r#"Freq="18000" Mode="0" Algorithm="1" Oversampling="0" DistortionType="{distortion}""#
+                ),
+                1,
+            );
+            let mut output = Vec::new();
+            for n in 0..24576 {
+                if n == 8192 || n == 16384 {
+                    fx.set_parameter(
+                        "Q",
+                        &ParameterValue::Number(if n == 8192 { 0.75 } else { 0. }),
+                    )
+                    .unwrap();
+                }
+                let mut io = [[0.; MAX_CHANNELS]];
+                io[0][0] = authored_sine(n, 48000.);
+                fx.process(&mut io).unwrap();
+                output.push(io[0][0]);
+            }
+            for (n, native) in POINTS.into_iter().zip(expected) {
+                assert!(
+                    (output[n] - native).abs() < 1e-6,
+                    "native highcut Q solve mode{distortion} frame{n}: {} vs {native}",
+                    output[n]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn authored_native_scalar_startup_uses_host_block_and_internal_chunks() {
+        // Original authored 1379Hz PCM16 sine, LP1, at48k. Unconnected scalar
+        // coefficient ramps span the host block and use <=64 internal frames.
+        // AlgorithmI ramps its raw polynomial g; AlgorithmII ramps rawtan(pi*f/internalRate)
+        // before each endpoint's bilinear conversion. Native float residuals
+        // are bounded per independently measured solver/control combination.
+        #[rustfmt::skip]
+        const POINTS:[usize;26]=[0,1,3,7,15,31,32,63,64,95,127,128,191,192,217,249,253,255,256,257,265,268,296,512,1024,4095];
+        #[rustfmt::skip]
+        let cases:[(&str,&str,usize,f32,[f32;26]);12]=[
+            ("a1-q0",r#"Algorithm="1" Oversampling="0" DistortionType="2""#,256,1e-06,[0.000000000e+00,1.130820419e-05,2.089247573e-04,2.213424770e-03,1.081344858e-02,-1.942267269e-02,-2.133641392e-02,-2.528970689e-02,-3.159736097e-02,-1.118486561e-02,2.144810557e-02,6.649165414e-03,1.062233970e-01,9.607443959e-02,5.699444562e-02,1.730920398e-03,9.698454291e-02,1.290640682e-01,1.390244067e-01,1.443760991e-01,3.329179808e-02,-4.493279755e-02,1.166495085e-01,-5.320595577e-02,1.456556320e-01,3.966958728e-03]),
+            ("a1-q75",r#"Algorithm="1" Oversampling="0" Q=".75" DistortionType="2""#,256,8e-06,[0.000000000e+00,1.144072212e-05,2.146980405e-04,2.348225564e-03,1.206640992e-02,-2.709918842e-02,-2.971001528e-02,-4.580548406e-02,-5.675443634e-02,-2.661543898e-02,5.142481998e-02,1.485951617e-02,3.687176108e-01,3.398413956e-01,1.816517115e-01,-8.579823375e-02,4.133111537e-01,6.131519675e-01,6.873100400e-01,7.398242950e-01,3.090188801e-01,-1.167431474e-01,8.179454207e-01,-6.146780401e-02,7.766121626e-01,2.431763262e-01]),
+            ("quiet-soft",r#"Algorithm="1" Oversampling="0" Freq="100" Q=".5" Fat=".5" Drive="6" DistortionType="0""#,256,3e-07,[0.000000000e+00,2.327287802e-06,4.276350955e-05,4.440114426e-04,2.236753237e-03,-4.177334718e-03,-4.667209461e-03,-4.888162017e-03,-6.545061711e-03,4.604017013e-04,1.227247529e-02,8.439659141e-03,4.155541584e-02,4.106064886e-02,-2.040073559e-05,-2.704642899e-02,1.229383796e-02,3.153993189e-02,4.030380398e-02,4.810310528e-02,4.309380427e-02,1.473191101e-02,6.209146231e-02,9.952808730e-03,5.473988131e-02,3.206234798e-02]),
+            ("highq-soft",r#"Algorithm="1" Oversampling="0" Freq="5000" Q=".8" Drive="12" DistortionType="0""#,256,2e-05,[0.000000000e+00,2.178337018e-04,3.908612765e-03,3.704645112e-02,1.697802097e-01,-3.528306782e-01,-3.765156269e-01,-6.057613492e-01,-6.601653099e-01,-7.022142410e-01,-7.510362864e-01,-8.219976425e-01,-4.570471346e-01,-6.500540972e-01,9.511040449e-01,9.010380507e-01,9.177131057e-01,8.263369203e-01,6.868516207e-01,4.414256513e-01,-8.485567570e-01,-9.130077362e-01,-6.573821902e-01,-9.167743921e-01,4.407577217e-02,-8.767448068e-01]),
+            ("highcut-hard",r#"Algorithm="1" Oversampling="0" Freq="18000" Q=".5" DistortionType="1""#,256,2e-06,[0.000000000e+00,2.660280152e-04,4.927044269e-03,4.961400479e-02,1.552467495e-01,-2.361543179e-01,-2.019187808e-01,-2.386945188e-01,-2.146815956e-01,-2.538543344e-01,-2.141696215e-01,-2.349108011e-01,2.359044738e-03,-4.270568863e-02,2.505857944e-01,2.146402597e-01,2.465842664e-01,2.149505913e-01,1.883746386e-01,1.559405029e-01,-1.754101664e-01,-2.427880615e-01,-2.168103494e-02,-2.462493479e-01,1.088679135e-01,-2.082774788e-01]),
+            ("highq-linear",r#"Algorithm="1" Oversampling="0" Q=".8" DistortionType="2""#,256,9e-06,[0.000000000e+00,1.144955877e-05,2.150829678e-04,2.357212827e-03,1.214994770e-02,-2.761098929e-02,-3.026829101e-02,-4.717257619e-02,-5.843106285e-02,-2.762557752e-02,5.354713276e-02,1.553086378e-02,3.877734840e-01,3.578449786e-01,1.883655936e-01,-9.914479405e-02,4.352785349e-01,6.515299678e-01,7.325415015e-01,7.906011939e-01,3.417334557e-01,-1.151836067e-01,8.993622661e-01,-4.954123124e-02,8.267725110e-01,2.808781862e-01]),
+            ("a1-os-q0",r#"Algorithm="1" Oversampling="1" DistortionType="2""#,256,2e-06,[0.000000000e+00,6.150370879e-09,6.643801953e-06,8.983418811e-04,9.967972524e-03,-1.189457532e-02,-1.510919817e-02,-5.683737341e-03,-1.334178261e-02,1.914879121e-02,5.595577136e-02,4.443844408e-02,1.160743386e-01,1.158885211e-01,-3.536332631e-03,-6.474260241e-02,3.610100970e-02,8.361151814e-02,1.037622169e-01,1.205664128e-01,9.606418759e-02,2.542665042e-02,1.447176784e-01,1.668018848e-02,1.368298978e-01,7.192029804e-02]),
+            ("a1-os-hard",r#"Algorithm="1" Oversampling="1" Freq="18000" Q=".5" DistortionType="1""#,256,2e-06,[0.000000000e+00,1.174596704e-07,1.274847746e-04,1.687064022e-02,1.440618634e-01,-2.565132380e-01,-2.614123821e-01,-2.952323556e-01,-2.926279306e-01,-2.380715758e-01,-1.437421888e-01,-1.805858910e-01,1.085112542e-01,6.531966478e-02,2.271476388e-01,1.414591968e-01,2.445652783e-01,2.514538169e-01,2.425341308e-01,2.259183228e-01,-8.381736279e-02,-1.949053258e-01,8.661325276e-02,-2.045492232e-01,1.957048476e-01,-1.308391988e-01]),
+            ("a0-q0",r#"Algorithm="0" Oversampling="0" DistortionType="2""#,256,8e-06,[0.000000000e+00,8.823883846e-09,8.319600056e-06,9.352095076e-04,9.809459560e-03,-1.187651884e-02,-1.495414786e-02,-6.306321360e-03,-1.373313274e-02,1.764407940e-02,5.383488908e-02,4.237821326e-02,1.148824096e-01,1.143236086e-01,-1.043746597e-03,-6.180530787e-02,3.881926090e-02,8.568369597e-02,1.054027453e-01,1.217186153e-01,9.331792593e-02,2.229475230e-02,1.435513645e-01,1.356372144e-02,1.373095661e-01,6.892423332e-02]),
+            ("a0-hard",r#"Algorithm="0" Oversampling="0" Freq="18000" Q=".5" DistortionType="1""#,256,2e-06,[0.000000000e+00,1.080254464e-07,1.024595986e-04,1.144418679e-02,1.034537256e-01,-1.940816641e-01,-2.082259655e-01,-3.313027620e-01,-3.433620930e-01,-2.709571123e-01,-1.656388193e-01,-2.018701434e-01,9.787444025e-02,5.357766151e-02,2.326229960e-01,1.477819532e-01,2.463334203e-01,2.505766153e-01,2.403927147e-01,2.226004303e-01,-9.028415382e-02,-1.994251907e-01,8.023406565e-02,-2.087270766e-01,1.915316284e-01,-1.367844641e-01]),
+            ("b32-q0",r#"Algorithm="1" Oversampling="0" DistortionType="2""#,32,3e-07,[0.000000000e+00,8.629212971e-05,1.590582891e-03,1.649166271e-02,6.949540973e-02,-1.302671880e-01,-1.316603273e-01,-1.234239563e-01,-1.355924606e-01,-6.985714287e-02,1.510655158e-03,-2.483948320e-02,1.252555549e-01,1.095308140e-01,7.384254038e-02,3.060763003e-03,9.919524193e-02,1.309483945e-01,1.406688094e-01,1.458182037e-01,3.379635885e-02,-4.459248483e-02,1.166581288e-01,-5.320595577e-02,1.456556320e-01,3.966958728e-03]),
+            ("b32-q75",r#"Algorithm="1" Oversampling="0" Q=".75" DistortionType="2""#,32,3e-06,[0.000000000e+00,9.438189591e-05,1.942460891e-03,2.457013167e-02,1.358272433e-01,-5.018182397e-01,-5.100778937e-01,-7.998852134e-01,-9.011882544e-01,2.200774848e-02,1.861204803e-01,6.657887995e-02,8.471710086e-01,8.005856276e-01,1.198337674e-01,-1.587007940e-01,3.778213561e-01,5.940016508e-01,6.754853129e-01,7.353627086e-01,3.568490148e-01,-5.955226719e-02,7.711324096e-01,-6.428296864e-02,7.765625119e-01,2.431763262e-01]),
+        ];
+        for (tag, attrs, block, bound, expected) in cases {
+            let mut fx = filter(&format!(r#"Mode="0" {attrs}"#), 1);
+            fx.set_control_block_frames(block).unwrap();
+            let mut output = Vec::new();
+            for n in 0..4096 {
+                let mut io = [[0.; MAX_CHANNELS]];
+                io[0][0] = authored_sine(n, 48000.);
+                fx.process(&mut io).unwrap();
+                output.push(io[0][0]);
+            }
+            for (n, native) in POINTS.into_iter().zip(expected) {
+                assert!(
+                    (output[n] - native).abs() < bound,
+                    "native scalar startup {tag} frame{n}: {} vs {native}",
+                    output[n]
+                );
+            }
+        }
+
+        // Same-rate original PCM files and paired dry captures establish exact
+        // first4096 inputs, avoiding sample interpolation at32/96k rates.
+        #[rustfmt::skip]
+        let rates:[(f64,&str,f32,[f32;26]);8]=[
+            (32000.,r#"Algorithm="0" Oversampling="0" Freq="1000" DistortionType="2""#,1.2e-05,[0.000000000e+00,3.444921148e-08,2.299367952e-05,1.987774158e-03,9.153585881e-03,2.164603444e-03,7.627828512e-03,2.553758211e-02,1.619650982e-02,-5.987991393e-02,7.134255022e-02,7.938984036e-02,-3.335522488e-02,-2.339848317e-03,6.330680102e-02,2.524745651e-02,-1.133534387e-01,-1.432621479e-01,-1.427748948e-01,-1.317036301e-01,1.252099127e-01,1.412751973e-01,1.003831974e-03,-1.369242817e-01,-1.058824733e-01,1.421139687e-01]),
+            (32000.,r#"Algorithm="1" Oversampling="0" Freq="1000" DistortionType="2""#,1e-06,[0.000000000e+00,2.510654485e-05,4.479426134e-04,3.956916276e-03,3.778569167e-03,1.437014528e-02,1.860173792e-02,-3.911220992e-04,-1.214405056e-02,-4.036504775e-02,8.152237535e-02,7.472382486e-02,4.375435412e-02,7.175463438e-02,1.199352443e-01,-6.729388982e-02,-1.440480798e-01,-1.229590625e-01,-9.807015210e-02,-6.582064927e-02,1.455745995e-01,8.712376654e-02,-9.006436169e-02,-7.564468682e-02,-2.051620372e-02,1.331056505e-01]),
+            (32000.,r#"Algorithm="1" Oversampling="1" Freq="1000" DistortionType="2""#,1.5e-06,[0.000000000e+00,2.442012281e-08,1.877187060e-05,1.944174175e-03,9.658543393e-03,1.578803989e-03,7.283537649e-03,2.748467959e-02,1.798586547e-02,-6.213094667e-02,7.204965502e-02,8.086950332e-02,-3.706838936e-02,-5.824822001e-03,6.035079807e-02,2.999788336e-02,-1.107043549e-01,-1.430670321e-01,-1.438914090e-01,-1.340635568e-01,1.229394674e-01,1.429234594e-01,5.968707148e-03,-1.390025765e-01,-1.095638350e-01,1.412893087e-01]),
+            (32000.,r#"Algorithm="1" Oversampling="1" Freq="12000" Q=".5" DistortionType="1""#,3e-06,[0.000000000e+00,3.113956382e-07,2.404732804e-04,2.434142493e-02,7.722477615e-02,1.466919333e-01,1.942598820e-01,-1.767302752e-01,-2.510733008e-01,9.671900421e-03,1.761194468e-01,1.119123250e-01,2.108804882e-01,2.448125482e-01,2.577050328e-01,-2.035662830e-01,-2.339137048e-01,-1.458893716e-01,-8.420370519e-02,-1.636403799e-02,2.214385122e-01,5.798053741e-02,-2.253479064e-01,-3.435566276e-02,6.798219681e-02,1.715847403e-01]),
+            (96000.,r#"Algorithm="0" Oversampling="0" Freq="1000" DistortionType="2""#,6.5e-06,[0.000000000e+00,4.261053164e-06,6.556075095e-05,6.824753364e-04,5.365895573e-03,2.126106620e-02,2.162667736e-02,-3.993261606e-02,-4.128613696e-02,5.404496565e-02,-6.187672168e-02,-6.669186056e-02,-5.452191457e-02,-6.373907626e-02,-3.073339723e-02,5.979112536e-02,1.050671283e-02,-1.552939415e-02,-2.851443738e-02,-4.128399119e-02,-1.236271709e-01,-1.400518864e-01,8.955042064e-02,1.409956366e-01,-5.590795353e-02,-1.306407452e-01]),
+            (96000.,r#"Algorithm="1" Oversampling="0" Freq="1000" DistortionType="2""#,2e-06,[0.000000000e+00,2.856672381e-06,5.392286766e-05,6.334506324e-04,5.286063068e-03,2.173827216e-02,2.215293236e-02,-4.071767628e-02,-4.217540100e-02,5.459990725e-02,-6.205981597e-02,-6.706103683e-02,-5.318896845e-02,-6.259163469e-02,-3.343420848e-02,6.272234768e-02,1.355289202e-02,-1.256755181e-02,-2.562984638e-02,-3.851654381e-02,-1.224962398e-01,-1.397411972e-01,8.749467134e-02,1.407762170e-01,-5.330055580e-02,-1.298071742e-01]),
+            (96000.,r#"Algorithm="1" Oversampling="1" Freq="1000" DistortionType="2""#,3e-06,[0.000000000e+00,3.257742742e-09,3.450642680e-06,2.881340624e-04,4.004747141e-03,2.195967361e-02,2.272849157e-02,-3.658633307e-02,-3.873056546e-02,4.740198329e-02,-4.967938736e-02,-5.568588898e-02,-3.114877269e-02,-4.132160544e-02,-5.751305073e-02,8.679796755e-02,4.198284820e-02,1.665198989e-02,3.616502509e-03,-9.517194703e-03,-1.037884876e-01,-1.278487146e-01,6.173393875e-02,1.294665188e-01,-2.444276772e-02,-1.132333279e-01]),
+            (96000.,r#"Algorithm="0" Oversampling="0" Freq="18000" Q=".5" DistortionType="1""#,3e-06,[0.000000000e+00,5.206274000e-05,8.084048750e-04,8.455298841e-03,6.331721693e-02,1.594073027e-01,1.522250324e-01,-2.438932806e-01,-2.195954770e-01,1.887577772e-01,-2.135767341e-01,-1.968407333e-01,-2.544927001e-01,-2.501664162e-01,1.991100311e-01,-1.482405961e-01,-2.103506476e-01,-2.317064106e-01,-2.396470308e-01,-2.450190932e-01,-2.230780721e-01,-1.824758053e-01,2.503724098e-01,1.769981384e-01,-2.515680790e-01,-2.093728930e-01]),
+        ];
+        for (rate, attrs, bound, expected) in rates {
+            let p = parse_program(&format!(
+                r#"<Program><XpanderFilter Mode="0" {attrs}/></Program>"#
+            ))
+            .unwrap();
+            let mut fx = XpanderFilter::new(&p.nodes[1], 1, rate).unwrap();
+            let mut output = Vec::new();
+            for n in 0..4096 {
+                let mut io = [[0.; MAX_CHANNELS]];
+                io[0][0] = authored_sine(n, rate);
+                fx.process(&mut io).unwrap();
+                output.push(io[0][0]);
+            }
+            for (n, native) in POINTS.into_iter().zip(expected) {
+                assert!(
+                    (output[n] - native).abs() < bound,
+                    "native scalar startup rate{rate} {attrs} frame{n}: {} vs {native}",
                     output[n]
                 );
             }

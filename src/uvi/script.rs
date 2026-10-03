@@ -25,6 +25,8 @@ use std::{
 const RATE: f64 = 48000.;
 const TEMPO: f64 = 120.;
 const LIMIT: usize = 65_536;
+// Bound retirement latency even when allocation-driven GC completes between drains.
+const GC_MAX_DRAINS: u8 = 64;
 // A measured sequencer callback uses 2.011M instructions for finite UI updates.
 // Leave headroom while bounding every outer resume, including nested run/pcall.
 const FUEL: u32 = 4_000_000;
@@ -1202,6 +1204,7 @@ struct Runtime {
     depth: Rc<Cell<usize>>,
     host: Option<host::Host>,
     environments: BTreeMap<NodeId, Table>,
+    gc_drains: u8,
 }
 
 impl Runtime {
@@ -1868,6 +1871,7 @@ impl Runtime {
             depth,
             host: object_host,
             environments: BTreeMap::new(),
+            gc_drains: 0,
         })
     }
 
@@ -2075,9 +2079,21 @@ impl Runtime {
                 }
             }
         }
-        // ponytail: full GC per drain bounds weak-handle metadata; use incremental
-        // collection if measured worker throughput needs it.
-        self.lua.gc_collect()?;
+        self.gc_drains += 1;
+        let pressure = {
+            let mut state = self.state.borrow_mut();
+            state.keys.retain(|_, ids| !ids.is_empty());
+            state.voices.len() >= LIMIT / 2 || state.triggers.len() >= LIMIT / 2
+        };
+        if pressure || self.gc_drains >= GC_MAX_DRAINS {
+            self.lua.gc_collect()?;
+        } else if !self.lua.gc_step()? {
+            return Ok(());
+        }
+        self.gc_drains = 0;
+        // Inspect weak userdata only after a collection finishes: mlua values
+        // temporarily root them, which could otherwise keep dead handles alive.
+        // ponytail: native GC steps can include atomic work; this VM stays off RT.
         let mut retained = HashSet::new();
         if let Some(cache) = self
             .lua
@@ -2091,7 +2107,6 @@ impl Runtime {
             }
         }
         let mut state = self.state.borrow_mut();
-        state.keys.retain(|_, ids| !ids.is_empty());
         retained.extend(state.keys.values().flatten().copied());
         for command in &state.commands {
             match &command.action {
@@ -2337,6 +2352,38 @@ pub struct Processed {
     pub dropped_logs: usize,
 }
 
+/// Admission failures are nonfatal to playback. Execution failures can leave
+/// state changed and require the owning Player to stop. Underlying diagnostics
+/// can contain private script data; Debug/Display expose only the error class.
+pub enum UiEditError {
+    Rejected(anyhow::Error),
+    Execution(anyhow::Error),
+}
+
+impl std::fmt::Debug for UiEditError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Rejected(_) => "UiEditError::Rejected",
+            Self::Execution(_) => "UiEditError::Execution",
+        })
+    }
+}
+impl std::fmt::Display for UiEditError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Rejected(_) => "UVI UI edit rejected",
+            Self::Execution(_) => "UVI UI edit execution failed",
+        })
+    }
+}
+impl std::error::Error for UiEditError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(match self {
+            Self::Rejected(error) | Self::Execution(error) => error.as_ref(),
+        })
+    }
+}
+
 /// Persistent allocating Lua session, owned by a control/worker thread.
 /// Inputs and advances use absolute frames at the declared sample rate. Drain
 /// after each chunk to reset output/log/resume budgets and retire unreachable IDs.
@@ -2362,6 +2409,58 @@ impl Session {
     }
     pub fn current_frame(&self) -> u64 {
         self.runtime.state.borrow().now
+    }
+
+    /// Copy one initialized processor's UI on the VM's owning thread.
+    /// Reading does not run widget callbacks or advance the musical clock.
+    /// The result owns its data and can be sent to a separate UI thread.
+    pub fn ui_snapshot(&self, processor: NodeId) -> Result<host::UiSnapshot> {
+        let environment = self
+            .runtime
+            .environments
+            .get(&processor)
+            .context("UVI script processor is not initialized")?;
+        Ok(host::snapshot_ui(processor, environment)?)
+    }
+
+    /// Run one GUI edit on this session's owning control thread at an absolute
+    /// frame. Initial admission precedes clock mutation; pending callbacks can
+    /// change control state, so admission is repeated at the execution frame.
+    /// Changed callbacks use the existing scoped scheduler and may yield. Drain
+    /// outputs normally; no callbacks or Lua handles belong on the GUI thread.
+    pub fn edit_ui(
+        &mut self,
+        edit: &host::UiEdit,
+        frame: u64,
+    ) -> std::result::Result<(), UiEditError> {
+        if frame < self.current_frame() {
+            return Err(UiEditError::Rejected(anyhow::anyhow!(
+                "UVI timeline must advance monotonically"
+            )));
+        }
+        let environment = self
+            .runtime
+            .environments
+            .get(&edit.processor)
+            .context("UVI script processor is not initialized")
+            .map_err(UiEditError::Rejected)?
+            .clone();
+        host::prepare_ui_edit(&self.runtime.lua, &environment, edit)
+            .map_err(|error| UiEditError::Rejected(error.into()))?;
+        self.runtime
+            .advance(frame)
+            .map_err(UiEditError::Execution)?;
+        let (setter, args) = host::prepare_ui_edit(&self.runtime.lua, &environment, edit)
+            .map_err(|error| UiEditError::Rejected(error.into()))?;
+        self.runtime.scope(edit.processor);
+        let scheduled = self.runtime.spawn(setter, args, None);
+        {
+            let mut state = self.runtime.state.borrow_mut();
+            state.current_processor = None;
+            state.current_layer = None;
+        }
+        scheduled.map_err(UiEditError::Execution)?;
+        self.runtime.advance(frame).map_err(UiEditError::Execution)
     }
 
     pub fn input(&mut self, input: Input) -> Result<()> {
@@ -2604,6 +2703,147 @@ mod tests {
     }
 
     #[test]
+    fn session_ui_edits_are_scoped_scheduled_and_prevalidated() {
+        let program=parse_program(r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
+          n=Knob('same',0.25,0,1)
+          n.changed=function(...)
+            assert(select('#',...)==1);local self=...
+            Program.layers[1]:setParameter('Gain',self.value)
+            sendScriptModulation(1,self.value,0);wait(10);playNote(60,90,5)
+          end
+        ]]></script></ScriptProcessor></EventProcessors><Layers><Layer Gain="1"><EventProcessors><ScriptProcessor><script><![CDATA[
+          n=Knob('same',0.25,0,1)
+          n.changed=function(...)
+            assert(select('#',...)==1);local self=...
+            sendScriptModulation(1,self.value,0);wait(10);playNote(72,90,5)
+          end
+        ]]></script></ScriptProcessor></EventProcessors></Layer></Layers></Program>"#).unwrap();
+        let processors = program
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.kind == "ScriptProcessor")
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>();
+        let mut session =
+            Session::new_program_chain(&program, BTreeMap::new(), None, 48_000).unwrap();
+        let request = |processor, widget, value| host::UiEdit {
+            processor,
+            widget,
+            value,
+            modifiers: host::UiModifiers::default(),
+        };
+        for bad in [
+            request(processors[0], 0, host::UiEditValue::Number(0.5)),
+            request(processors[0], 1, host::UiEditValue::Boolean(true)),
+            request(processors[0], 1, host::UiEditValue::Number(2.0)),
+            request(program.root, 1, host::UiEditValue::Number(0.5)),
+        ] {
+            assert!(matches!(
+                session.edit_ui(&bad, 100),
+                Err(UiEditError::Rejected(_))
+            ));
+            assert_eq!(session.current_frame(), 0);
+        }
+        assert!(session.drain().unwrap().host_commands.is_empty());
+        let edit = request(processors[0], 1, host::UiEditValue::Number(0.75));
+        session.edit_ui(&edit, 100).unwrap();
+        assert!(
+            matches!(session.ui_snapshot(processors[0]).unwrap().widgets[0].value,Some(host::UiValue::Number(n))if n==0.75)
+        );
+        assert!(
+            matches!(session.ui_snapshot(processors[1]).unwrap().widgets[0].value,Some(host::UiValue::Number(n))if n==0.25)
+        );
+        let first = session.drain().unwrap();
+        assert!(first.commands.is_empty());
+        assert!(first.host_commands.iter().any(|command|command.frame==100 && matches!(command.action,host::Action::ScriptModulation{target,layer:None,..}if target==0.75)));
+        session.edit_ui(&edit, 100).unwrap();
+        assert!(session.drain().unwrap().host_commands.is_empty());
+        assert!(session.edit_ui(&edit, 99).is_err());
+        assert_eq!(session.current_frame(), 100);
+        session
+            .edit_ui(
+                &request(processors[1], 1, host::UiEditValue::Number(0.5)),
+                100,
+            )
+            .unwrap();
+        let second = session.drain().unwrap();
+        assert!(second.host_commands.iter().any(|command|command.frame==100 && matches!(command.action,host::Action::ScriptModulation{target,layer:Some(layer),..}if target==0.5 && layer==program.layers[0])));
+        session.advance(580).unwrap();
+        let resumed = session.drain().unwrap();
+        let notes = resumed
+            .commands
+            .iter()
+            .filter_map(|command| match &command.action {
+                Action::Start(note) => Some((command.frame, note.note, note.layers.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            notes
+                .iter()
+                .any(|(frame, key, _)| *frame == 580 && *key == 60)
+        );
+        assert!(notes.iter().any(|(frame, key, layers)| *frame == 580
+            && *key == 72
+            && *layers == Some(vec![program.layers[0]])));
+    }
+
+    #[test]
+    fn session_ui_edit_revalidates_after_pending_work_and_reports_callback_errors() {
+        let program = session_program(
+            r#"
+          n=Knob('gain',0.25,0,1)
+          n.changed=function()error('authored callback failure')end
+          function onInit()wait(10);n:setRange(0,0.5)end
+        "#,
+        );
+        let processor = program
+            .nodes
+            .iter()
+            .position(|n| n.kind == "ScriptProcessor")
+            .unwrap();
+        let mut session =
+            Session::new_program_chain(&program, BTreeMap::new(), None, 48_000).unwrap();
+        let mut request = host::UiEdit {
+            processor,
+            widget: 1,
+            value: host::UiEditValue::Number(0.75),
+            modifiers: host::UiModifiers::default(),
+        };
+        assert!(matches!(
+            session.edit_ui(&request, 480),
+            Err(UiEditError::Rejected(_))
+        ));
+        assert_eq!(session.current_frame(), 480);
+        assert!(
+            matches!(session.ui_snapshot(processor).unwrap().widgets[0].value,Some(host::UiValue::Number(n))if n==0.25)
+        );
+        assert!(session.drain().unwrap().host_commands.is_empty());
+        request.value = host::UiEditValue::Number(0.5);
+        let failure = session.edit_ui(&request, 480).unwrap_err();
+        assert!(matches!(failure, UiEditError::Execution(_)));
+        assert!(!format!("{failure:?} {failure}").contains("authored callback failure"));
+        // Native setter updates the value before calling changed; callback errors
+        // are reported, not hidden behind a fake successful transaction.
+        assert!(
+            matches!(session.ui_snapshot(processor).unwrap().widgets[0].value,Some(host::UiValue::Number(n))if n==0.5)
+        );
+        let program = session_program(
+            "n=Knob('gain',0.25,0,1);function onInit()wait(10);error('authored pending failure')end",
+        );
+        let mut session =
+            Session::new_program_chain(&program, BTreeMap::new(), None, 48_000).unwrap();
+        assert!(matches!(
+            session.edit_ui(&request, 480),
+            Err(UiEditError::Execution(_))
+        ));
+        assert!(
+            matches!(session.ui_snapshot(processor).unwrap().widgets[0].value,Some(host::UiValue::Number(n))if n==0.25)
+        );
+    }
+
+    #[test]
     fn session_uses_actual_rate_and_resumes_across_chunks() {
         for rate in [44100, 96000] {
             let program = session_program(&format!(
@@ -2763,6 +3003,9 @@ mod tests {
             initial.commands[1].action,
             Action::ReleaseNote { .. }
         ));
+        for _ in 0..GC_MAX_DRAINS * 2 {
+            session.drain().unwrap();
+        }
         let later = session
             .process(
                 &[Input {
@@ -2967,13 +3210,15 @@ mod tests {
                 .unwrap_or_else(|error| panic!("chunk {chunk}: {error:#}"));
             assert_eq!(out.commands.len(), 256);
             let state = session.runtime.state.borrow();
-            assert!(state.voices.len() <= 256 && state.triggers.len() <= 256);
-            assert!(state.trigger_queues.len() <= 128);
+            assert!(state.voices.len() <= 16_384 && state.triggers.len() <= 32_768);
+            assert!(state.trigger_queues.len() <= 32_768);
             assert!(state.keys.is_empty() && state.input_velocities.is_empty());
         }
         assert!(session.runtime.state.borrow().next_id as usize > LIMIT);
         assert!(session.runtime.state.borrow().next_trigger as usize > LIMIT);
-        session.drain().unwrap();
+        for _ in 0..GC_MAX_DRAINS * 2 {
+            session.drain().unwrap();
+        }
         assert!(session.runtime.state.borrow().voices.is_empty());
         assert!(session.runtime.state.borrow().triggers.is_empty());
         let scopes = session
@@ -2984,6 +3229,78 @@ mod tests {
         for scope in scopes.pairs::<u64, Table>() {
             assert_eq!(scope.unwrap().1.pairs::<u32, Table>().count(), 0);
         }
+    }
+
+    #[test]
+    fn session_gc_preserves_retained_identity_and_retires_dropped_handles() {
+        let program = session_program(
+            r#"
+            local kept, keys
+            function onInit()
+                kept=playNote(60,100,1)
+                keys={[kept]=true}
+            end
+            function onController(e)
+                if e.value==1 then
+                    assert(keys[kept])
+                    changeTune(kept,7,false,true)
+                else
+                    kept=nil
+                    keys=nil
+                end
+            end
+        "#,
+        );
+        let mut session =
+            Session::new_program_chain(&program, BTreeMap::new(), None, 48000).unwrap();
+        assert_eq!(session.process(&[], 96).unwrap().commands.len(), 2);
+        for _ in 0..GC_MAX_DRAINS * 2 {
+            session.drain().unwrap();
+        }
+        assert_eq!(session.runtime.state.borrow().voices.len(), 1);
+        let cache = session
+            .runtime
+            .lua
+            .named_registry_value::<Table>("kontakto.uvi.voice_ids")
+            .unwrap();
+        assert!(!matches!(cache.raw_get::<Value>(1).unwrap(), Value::Nil));
+        assert!(matches!(
+            session
+                .process(
+                    &[Input {
+                        frame: 96,
+                        kind: InputKind::Controller {
+                            channel: 0,
+                            controller: 1,
+                            value: 1
+                        },
+                    }],
+                    96
+                )
+                .unwrap()
+                .commands[0]
+                .action,
+            Action::Change { tune: Some(7.), .. }
+        ));
+        session
+            .process(
+                &[Input {
+                    frame: 96,
+                    kind: InputKind::Controller {
+                        channel: 0,
+                        controller: 1,
+                        value: 2,
+                    },
+                }],
+                96,
+            )
+            .unwrap();
+        for _ in 0..GC_MAX_DRAINS * 2 {
+            session.drain().unwrap();
+        }
+        assert!(matches!(cache.raw_get::<Value>(1).unwrap(), Value::Nil));
+        let state = session.runtime.state.borrow();
+        assert!(state.voices.is_empty() && state.triggers.is_empty());
     }
 
     #[test]

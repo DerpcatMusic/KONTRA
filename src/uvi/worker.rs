@@ -4,8 +4,10 @@
 //! work off that callback; it does not establish a CPU deadline or real-time claim.
 
 use super::{
+    host::UiSnapshot,
     library::{BankResources, Library},
     player::{self, Player},
+    program::NodeId,
     script::{Input, InputKind},
 };
 use anyhow::{Context, Result, ensure};
@@ -25,6 +27,7 @@ use std::{
 pub const BLOCK_FRAMES: usize = 256;
 pub const MAX_INPUTS: usize = 256;
 pub const QUEUE_CAPACITY: usize = 8;
+pub use player::{MAX_UI_EDITS, UiInput};
 const POLL: Duration = Duration::from_millis(1);
 
 /// Epoch changes on every activation, even when the instrument/rate stays the same.
@@ -41,6 +44,8 @@ pub struct Stamp {
 /// Deliberately has no Debug implementation containing private content state.
 pub struct StartConfig {
     pub bank: PathBuf,
+    /// Catalog identity checked again against the bank actually opened here.
+    pub expected_bank_uuid: Option<[u8; 16]>,
     pub member: String,
     pub metadata_namespace: Vec<u8>,
     pub program_namespace: Vec<u8>,
@@ -74,13 +79,23 @@ pub struct Request {
     pub stamp: Stamp,
     pub input_count: u16,
     pub inputs: [Input; MAX_INPUTS],
+    pub ui_count: u16,
+    pub ui_inputs: [UiInput; MAX_UI_EDITS],
 }
 
 impl Request {
     /// Fixed stack/inline storage only. Validation is repeated at submission, so
     /// changing public packet fields cannot bypass the queue's trust boundary.
     pub fn new(stamp: Stamp, inputs: &[Input]) -> std::result::Result<Self, PacketError> {
-        if inputs.len() > MAX_INPUTS {
+        Self::new_with_ui(stamp, inputs, &[])
+    }
+
+    pub fn new_with_ui(
+        stamp: Stamp,
+        inputs: &[Input],
+        ui_inputs: &[UiInput],
+    ) -> std::result::Result<Self, PacketError> {
+        if inputs.len() > MAX_INPUTS || ui_inputs.len() > MAX_UI_EDITS {
             return Err(PacketError::TooManyInputs);
         }
         let mut packet = Self {
@@ -93,15 +108,27 @@ impl Request {
                     note: 0,
                 },
             }; MAX_INPUTS],
+            ui_count: ui_inputs.len() as u16,
+            ui_inputs: [UiInput {
+                frame: 0,
+                edit: super::host::UiEdit {
+                    processor: 0,
+                    widget: 0,
+                    value: super::host::UiEditValue::Push,
+                    modifiers: super::host::UiModifiers::default(),
+                },
+            }; MAX_UI_EDITS],
         };
         packet.inputs[..inputs.len()].copy_from_slice(inputs);
+        packet.ui_inputs[..ui_inputs.len()].copy_from_slice(ui_inputs);
         packet.validate()?;
         Ok(packet)
     }
 
     fn validate(&self) -> std::result::Result<(), PacketError> {
         let count = usize::from(self.input_count);
-        if count > MAX_INPUTS {
+        let ui_count = usize::from(self.ui_count);
+        if count > MAX_INPUTS || ui_count > MAX_UI_EDITS {
             return Err(PacketError::TooManyInputs);
         }
         let end = self
@@ -116,6 +143,17 @@ impl Request {
         if inputs.iter().any(|input| {
             input.frame < self.stamp.frame || input.frame >= end || !player::input_is_valid(input)
         }) || inputs.windows(2).any(|pair| pair[0].frame > pair[1].frame)
+        {
+            return Err(PacketError::InvalidInput);
+        }
+        let ui_inputs = &self.ui_inputs[..ui_count];
+        if ui_inputs.iter().any(|input| {
+            input.frame < self.stamp.frame
+                || input.frame >= end
+                || !player::ui_input_is_valid(input)
+        }) || ui_inputs
+            .windows(2)
+            .any(|pair| pair[0].frame > pair[1].frame)
         {
             return Err(PacketError::InvalidInput);
         }
@@ -139,6 +177,29 @@ pub struct Output {
     pub host_commands: u32,
     pub logs: u32,
     pub dropped_logs: u32,
+    /// Matches the UI input indices in the corresponding fixed request packet.
+    pub rejected_ui: u64,
+}
+
+/// Control/UI-thread response. The owned snapshot can contain private captions
+/// and artwork references, so this packet deliberately has no Debug implementation.
+pub struct UiSnapshotReply {
+    pub request: u64,
+    /// Activation identity and the exclusive playback boundary at capture time.
+    pub stamp: Stamp,
+    pub processor: NodeId,
+    pub snapshot: std::result::Result<UiSnapshot, UiSnapshotError>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiSnapshotError {
+    Unavailable,
+}
+
+#[derive(Clone, Copy)]
+struct UiSnapshotRequest {
+    id: u64,
+    processor: NodeId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,6 +249,9 @@ struct Counters {
 struct Details {
     failure: Option<String>,
     diagnostics: Vec<&'static str>,
+    ui_latest: u64,
+    ui_request: Option<UiSnapshotRequest>,
+    ui_reply: Option<UiSnapshotReply>,
 }
 
 struct Shared {
@@ -198,6 +262,7 @@ struct Shared {
     status: AtomicU8,
     counters: Counters,
     details: Mutex<Details>,
+    ui_pending: AtomicBool,
 }
 
 impl Shared {
@@ -214,6 +279,7 @@ impl Shared {
             status: AtomicU8::new(Status::Starting as u8),
             counters: Counters::default(),
             details: Mutex::new(Details::default()),
+            ui_pending: AtomicBool::new(false),
         }
     }
 
@@ -384,6 +450,39 @@ impl Worker {
             .clone()
     }
 
+    /// Control thread only. Coalesces to the latest requested panel: at most one
+    /// pending request and one bounded owned reply are retained. Superseded
+    /// replies are discarded on this thread or the allocating playback worker.
+    pub fn request_ui_snapshot(&self, processor: NodeId) -> std::result::Result<u64, PacketError> {
+        self.shared.activation(self.shared.stamp)?;
+        let mut details = self
+            .shared
+            .details
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let id = details.ui_latest.checked_add(1).ok_or(PacketError::Full)?;
+        details.ui_latest = id;
+        details.ui_request = Some(UiSnapshotRequest { id, processor });
+        details.ui_reply = None;
+        drop(details);
+        self.shared.ui_pending.store(true, Ordering::Release);
+        if let Some(handle) = &self.thread {
+            handle.thread().unpark();
+        }
+        Ok(id)
+    }
+
+    /// Control thread only; never use this mutex or snapshot destructor in an
+    /// audio callback. Match the reply's request and activation before painting.
+    pub fn poll_ui_snapshot(&self) -> Option<UiSnapshotReply> {
+        self.shared
+            .details
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .ui_reply
+            .take()
+    }
+
     pub fn wait_ready(&self, timeout: Duration) -> Result<()> {
         let start = Instant::now();
         loop {
@@ -528,6 +627,39 @@ fn nanos(duration: Duration) -> u64 {
     duration.as_nanos().min(u128::from(u64::MAX)) as u64
 }
 
+fn capture_ui(player: &Player<'_>, shared: &Shared) {
+    if !shared.ui_pending.load(Ordering::Acquire)
+        || !shared.ui_pending.swap(false, Ordering::AcqRel)
+    {
+        return;
+    }
+    let request = shared
+        .details
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .ui_request
+        .take();
+    let Some(request) = request else { return };
+    let reply = UiSnapshotReply {
+        request: request.id,
+        stamp: Stamp {
+            frame: player.current_frame(),
+            ..shared.stamp
+        },
+        processor: request.processor,
+        snapshot: player
+            .ui_snapshot(request.processor)
+            .map_err(|_| UiSnapshotError::Unavailable),
+    };
+    let mut details = shared
+        .details
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    if details.ui_latest == request.id && !shared.stop.load(Ordering::Acquire) {
+        details.ui_reply = Some(reply);
+    }
+}
+
 fn run(config: StartConfig, shared: &Shared, initialized: Instant) -> Result<()> {
     // Everything containing Rc, borrowed graph nodes, Lua or file authority is
     // created, used and destroyed in this stack frame on this dedicated thread.
@@ -539,6 +671,12 @@ fn run(config: StartConfig, shared: &Shared, initialized: Instant) -> Result<()>
         &config.metadata_namespace,
         config.content_key,
     )?);
+    ensure!(
+        config
+            .expected_bank_uuid
+            .is_none_or(|uuid| uuid == library.bank.header.uuid),
+        "UVI bank identity changed before worker initialization"
+    );
     if let Some(identity) = &config.content_bank {
         ensure!(
             identity == &library.bank.header.bank_name
@@ -582,6 +720,7 @@ fn run(config: StartConfig, shared: &Shared, initialized: Instant) -> Result<()>
         if shared.stop.load(Ordering::Acquire) {
             return Ok(());
         }
+        capture_ui(&player, shared);
         let Some(request) = shared.requests.pop() else {
             // ponytail: 1 ms bounded polling avoids audio-thread wake/lock calls;
             // replace it only after a measured transport deadline requires it.
@@ -595,8 +734,9 @@ fn run(config: StartConfig, shared: &Shared, initialized: Instant) -> Result<()>
             "UVI worker request stamp is out of order"
         );
         let started = Instant::now();
-        let rendered = player.render(
+        let rendered = player.render_with_ui(
             &request.inputs[..usize::from(request.input_count)],
+            &request.ui_inputs[..usize::from(request.ui_count)],
             BLOCK_FRAMES,
         );
         let elapsed = started.elapsed();
@@ -627,6 +767,7 @@ fn run(config: StartConfig, shared: &Shared, initialized: Instant) -> Result<()>
             host_commands: rendered.host_commands as u32,
             logs: rendered.logs.len() as u32,
             dropped_logs: rendered.dropped_logs as u32,
+            rejected_ui: rendered.rejected_ui,
         };
         output.audio.copy_from_slice(&rendered.audio);
         shared
@@ -641,6 +782,7 @@ fn run(config: StartConfig, shared: &Shared, initialized: Instant) -> Result<()>
                     .fetch_add(1, Ordering::Relaxed);
                 return Ok(());
             }
+            capture_ui(&player, shared);
             match shared.outputs.push(output) {
                 Ok(()) => break,
                 Err(pending) => {
@@ -683,6 +825,7 @@ mod tests {
             host_commands: 0,
             logs: 0,
             dropped_logs: 0,
+            rejected_ui: 0,
         }
     }
 
@@ -822,6 +965,21 @@ mod tests {
     // Original synthetic UFS metadata and Program, using the existing authored
     // UFS record contract. No bank/sample/library content is embedded or copied.
     fn authored_bank() -> (StartConfig, String) {
+        authored_bank_with_script(
+            r#"
+            local count=0
+            function onInit()
+                knob=Knob{name='authored',value=0.25}
+                knob.changed=function()error('snapshot ran callback')end
+            end
+            function onNote(e)count=count+1;postEvent(e);wait(8);changeVolume(e.id,0.25,false,true)end
+            function onController(e)assert(count==1);Program:setParameter('Gain',0.8)end
+            function onRelease(e)postEvent(e)end
+        "#,
+        )
+    }
+
+    fn authored_bank_with_script(script: &str) -> (StartConfig, String) {
         fn append(bytes: &mut Vec<u8>, payload: &[u8]) -> u64 {
             let pointer = bytes.len() as u64 + 8;
             bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
@@ -843,12 +1001,9 @@ mod tests {
         bytes[48..62].copy_from_slice(b"WorkerAuthored");
         let root = named(&mut bytes, 0x2fba_3632, "Root", 272, key);
         let member = named(&mut bytes, 0x6758_50e4, "authored.uvip", 289, key);
-        let source = r#"<Program Gain="0.5"><EventProcessors><ScriptProcessor><script><![CDATA[
-            local count=0
-            function onNote(e)count=count+1;postEvent(e);wait(8);changeVolume(e.id,0.25,false,true)end
-            function onController(e)assert(count==1);Program:setParameter('Gain',0.8)end
-            function onRelease(e)postEvent(e)end
-        ]]></script></ScriptProcessor></EventProcessors><Layers><Layer><Keygroups><Keygroup><Oscillators><MinBlepGenerator Waveform="4" StartPhase="0.25" BaseNote="60"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#.to_owned();
+        let source = format!(
+            r#"<Program Gain="0.5"><EventProcessors><ScriptProcessor><script><![CDATA[{script}]]></script></ScriptProcessor></EventProcessors><Layers><Layer><Keygroups><Keygroup><Oscillators><MinBlepGenerator Waveform="4" StartPhase="0.25" BaseNote="60"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#
+        );
         let data = append(&mut bytes, source.as_bytes());
         bytes[member as usize + 260..member as usize + 268]
             .copy_from_slice(&(source.len() as u64).to_le_bytes());
@@ -882,6 +1037,7 @@ mod tests {
         (
             StartConfig {
                 bank,
+                expected_bank_uuid: None,
                 member: "authored.uvip".into(),
                 metadata_namespace: namespace.to_vec(),
                 program_namespace: b"authored worker program".to_vec(),
@@ -905,6 +1061,58 @@ mod tests {
                 Err(error) => panic!("{error:?}: {:?}", worker.private_failure()),
             }
         }
+    }
+
+    fn receive_ui(worker: &Worker, request: u64) -> UiSnapshotReply {
+        let started = Instant::now();
+        loop {
+            if let Some(reply) = worker.poll_ui_snapshot() {
+                assert_eq!(reply.request, request, "superseded UI reply escaped");
+                return reply;
+            }
+            assert!(started.elapsed() < Duration::from_secs(5));
+            thread::sleep(POLL);
+        }
+    }
+
+    #[test]
+    fn worker_ui_snapshots_coalesce_are_owned_and_do_not_advance_idle_playback() {
+        let (config, source) = authored_bank();
+        let path = config.bank.clone();
+        let program = parse_program(&source).unwrap();
+        let processor = program
+            .nodes
+            .iter()
+            .position(|node| node.kind == "ScriptProcessor")
+            .unwrap();
+        let mut worker = Worker::start(config, 7, 11).unwrap();
+        worker.request_ui_snapshot(usize::MAX).unwrap();
+        let latest = worker.request_ui_snapshot(processor).unwrap();
+        worker.wait_ready(Duration::from_secs(5)).unwrap();
+        let reply = receive_ui(&worker, latest);
+        assert_eq!(reply.stamp, stamp(0));
+        assert_eq!(reply.processor, processor);
+        let snapshot = reply.snapshot.ok().unwrap();
+        assert!(matches!(
+            snapshot.widgets[0].value,
+            Some(super::super::host::UiValue::Number(0.25))
+        ));
+        assert_eq!(worker.stats().rendered_blocks, 0);
+        assert!(worker.poll_ui_snapshot().is_none());
+        let invalid = worker.request_ui_snapshot(usize::MAX).unwrap();
+        let reply = receive_ui(&worker, invalid);
+        assert_eq!(reply.stamp, stamp(0));
+        assert!(matches!(reply.snapshot, Err(UiSnapshotError::Unavailable)));
+        assert_eq!(worker.status(), Status::Ready);
+        assert_eq!(worker.stats().errors, 0);
+        worker.stop();
+        assert_eq!(
+            worker.request_ui_snapshot(processor),
+            Err(PacketError::Stopped)
+        );
+        drop(worker);
+        assert!(snapshot.widgets[0].name == "authored");
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -996,6 +1204,18 @@ mod tests {
             thread::sleep(POLL);
         }
         assert_eq!(worker.shared.outputs.len(), QUEUE_CAPACITY);
+        // The UI mailbox must remain responsive while audio output is full.
+        let processor = loaded
+            .program
+            .nodes
+            .iter()
+            .position(|node| node.kind == "ScriptProcessor")
+            .unwrap();
+        let request = worker.request_ui_snapshot(processor).unwrap();
+        let reply = receive_ui(&worker, request);
+        assert_eq!(reply.stamp, stamp(11 * 256));
+        assert!(reply.snapshot.is_ok());
+        assert_eq!(worker.stats().rendered_blocks, 11);
         for index in 11..19 {
             worker
                 .realtime()
@@ -1034,6 +1254,234 @@ mod tests {
         );
         worker.stop();
         assert_eq!(worker.shared.requests.len(), 0);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn worker_rechecks_catalog_bank_uuid_before_becoming_ready() {
+        let (mut config, _) = authored_bank();
+        let path = config.bank.clone();
+        config.expected_bank_uuid = Some([1; 16]);
+        let mut worker = Worker::start(config, 7, 11).unwrap();
+        assert!(worker.wait_ready(Duration::from_secs(5)).is_err());
+        assert_eq!(worker.status(), Status::Failed);
+        assert!(
+            worker
+                .private_failure()
+                .unwrap()
+                .contains("bank identity changed")
+        );
+        assert_eq!(worker.stats().rendered_blocks, 0);
+        worker.stop();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    fn ui_input(frame: u64, processor: NodeId, value: super::super::host::UiEditValue) -> UiInput {
+        UiInput {
+            frame,
+            edit: super::super::host::UiEdit {
+                processor,
+                widget: 1,
+                value,
+                modifiers: Default::default(),
+            },
+        }
+    }
+
+    #[test]
+    fn fixed_ui_packets_revalidate_public_fields_without_callback_allocations() {
+        use super::super::host::UiEditValue;
+        let shared = Shared::new(7, 11);
+        let (mut next_request, mut minimum_output, mut pending_output) = (0, 0, None);
+        let mut realtime = Realtime {
+            shared: &shared,
+            next_request: &mut next_request,
+            minimum_output: &mut minimum_output,
+            pending_output: &mut pending_output,
+        };
+        let check = || {
+            let edit = ui_input(0, 2, UiEditValue::Number(0.75));
+            let packet = Request::new_with_ui(stamp(0), &[], &[edit]).unwrap();
+            let mut bad = packet;
+            bad.ui_count = (MAX_UI_EDITS + 1) as u16;
+            assert_eq!(
+                realtime.try_submit(bad).unwrap_err().reason,
+                PacketError::TooManyInputs
+            );
+            bad = packet;
+            bad.ui_inputs[0].edit.value = UiEditValue::Number(f64::NAN);
+            assert_eq!(
+                realtime.try_submit(bad).unwrap_err().reason,
+                PacketError::InvalidInput
+            );
+            bad = packet;
+            bad.ui_inputs[0].frame = 256;
+            assert_eq!(
+                realtime.try_submit(bad).unwrap_err().reason,
+                PacketError::InvalidInput
+            );
+            assert!(Request::new_with_ui(stamp(0), &[], &[edit; MAX_UI_EDITS + 1]).is_err());
+            assert!(
+                Request::new_with_ui(stamp(0), &[], &[UiInput { frame: 1, ..edit }, edit]).is_err()
+            );
+            realtime.try_submit(packet).unwrap();
+            let queued = shared.requests.pop().unwrap();
+            assert_eq!(queued.ui_count, 1);
+            assert!(queued.ui_inputs[0].edit == edit.edit);
+        };
+        #[cfg(feature = "plugin")]
+        assert_eq!(crate::plugin::tests::allocations(check), 0);
+        #[cfg(not(feature = "plugin"))]
+        {
+            let mut check = check;
+            check();
+        }
+    }
+
+    #[test]
+    fn worker_ui_edits_share_midi_clock_yield_across_packets_and_preserve_pcm() {
+        use super::super::host::{UiEditValue, UiValue};
+        let (config, source) = authored_bank_with_script(
+            r#"
+            function onInit()
+                knob=Knob{name='authored',value=0.25}
+                knob.changed=function(self)
+                    Program:setParameter('Gain',self.value)
+                    wait(8)
+                    Program:setParameter('Gain',self.value*0.5)
+                end
+            end
+            function onNote(e)assert(knob.value==0.75);postEvent(e)end
+            function onController(e)assert(knob.value==0.5)end
+        "#,
+        );
+        let path = config.bank.clone();
+        let library = Rc::new(Library::open(&path, &config.metadata_namespace, None).unwrap());
+        let loaded = library
+            .program(&config.member, &config.program_namespace)
+            .unwrap();
+        let processor = parse_program(&source)
+            .unwrap()
+            .nodes
+            .iter()
+            .position(|node| node.kind == "ScriptProcessor")
+            .unwrap();
+        let resources = BankResources::new(library, &loaded.path, Default::default()).unwrap();
+        let mut expected = Player::new(&loaded.program, BTreeMap::new(), resources, 48000).unwrap();
+        let inputs = [
+            note(0),
+            Input {
+                frame: 300,
+                kind: InputKind::Controller {
+                    channel: 0,
+                    controller: 1,
+                    value: 127,
+                },
+            },
+        ];
+        let edits = [
+            ui_input(0, processor, UiEditValue::Number(0.75)),
+            UiInput {
+                frame: 123,
+                edit: super::super::host::UiEdit {
+                    widget: 99,
+                    ..ui_input(0, processor, UiEditValue::Number(0.1)).edit
+                },
+            },
+            ui_input(180, processor, UiEditValue::Boolean(true)),
+            ui_input(300, processor, UiEditValue::Number(0.5)),
+        ];
+        let malformed = ui_input(0, processor, UiEditValue::Number(f64::NAN));
+        assert!(expected.render_with_ui(&inputs, &[malformed], 768).is_err());
+        assert_eq!(expected.current_frame(), 0);
+        assert!(matches!(
+            expected.ui_snapshot(processor).unwrap().widgets[0].value,
+            Some(UiValue::Number(0.25))
+        ));
+        let baseline = expected.render_with_ui(&inputs, &edits, 768).unwrap();
+        assert_eq!(baseline.rejected_ui, 0b110);
+        let mut worker = Worker::start(config, 7, 11).unwrap();
+        worker.wait_ready(Duration::from_secs(5)).unwrap();
+        worker
+            .realtime()
+            .try_submit(Request::new_with_ui(stamp(0), &inputs[..1], &edits[..3]).unwrap())
+            .unwrap();
+        worker
+            .realtime()
+            .try_submit(Request::new_with_ui(stamp(256), &inputs[1..], &edits[3..]).unwrap())
+            .unwrap();
+        worker
+            .realtime()
+            .try_submit(Request::new(stamp(512), &[]).unwrap())
+            .unwrap();
+        let first = receive(&mut worker, stamp(0));
+        let second = receive(&mut worker, stamp(256));
+        let third = receive(&mut worker, stamp(512));
+        assert_eq!(
+            [
+                first.audio.as_slice(),
+                second.audio.as_slice(),
+                third.audio.as_slice()
+            ]
+            .concat(),
+            baseline.audio
+        );
+        assert_eq!(first.rejected_ui, 0b110);
+        assert_eq!(second.rejected_ui | third.rejected_ui, 0);
+        assert_eq!(
+            first.commands + second.commands + third.commands,
+            baseline.commands as u32
+        );
+        assert_eq!(
+            first.host_commands + second.host_commands + third.host_commands,
+            baseline.host_commands as u32
+        );
+        let request = worker.request_ui_snapshot(processor).unwrap();
+        let reply = receive_ui(&worker, request);
+        assert_eq!(reply.stamp, stamp(768));
+        assert!(reply.snapshot.ok().unwrap() == expected.ui_snapshot(processor).unwrap());
+        assert_eq!(worker.stats().errors, 0);
+        worker.stop();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn ui_callback_failure_requires_player_replacement_and_fails_worker() {
+        let (config, source) = authored_bank();
+        let path = config.bank.clone();
+        let library = Rc::new(Library::open(&path, &config.metadata_namespace, None).unwrap());
+        let loaded = library
+            .program(&config.member, &config.program_namespace)
+            .unwrap();
+        let processor = parse_program(&source)
+            .unwrap()
+            .nodes
+            .iter()
+            .position(|node| node.kind == "ScriptProcessor")
+            .unwrap();
+        let resources = BankResources::new(library, &loaded.path, Default::default()).unwrap();
+        let mut player = Player::new(&loaded.program, BTreeMap::new(), resources, 48000).unwrap();
+        let edit = ui_input(0, processor, super::super::host::UiEditValue::Number(0.75));
+        assert!(player.render_with_ui(&[], &[edit], 256).is_err());
+        assert!(player.render(&[], 256).is_err());
+        assert!(player.ui_snapshot(processor).is_err());
+        let mut worker = Worker::start(config, 7, 11).unwrap();
+        worker.wait_ready(Duration::from_secs(5)).unwrap();
+        worker
+            .realtime()
+            .try_submit(Request::new_with_ui(stamp(0), &[], &[edit]).unwrap())
+            .unwrap();
+        let start = Instant::now();
+        while worker.status() != Status::Failed {
+            assert!(start.elapsed() < Duration::from_secs(5));
+            thread::sleep(POLL);
+        }
+        assert_eq!(worker.stats().rendered_blocks, 0);
+        assert_eq!(
+            worker.realtime().try_receive(stamp(0)).unwrap_err(),
+            PacketError::Failed
+        );
+        worker.stop();
         std::fs::remove_file(path).unwrap();
     }
 }

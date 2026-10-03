@@ -1,7 +1,7 @@
 //! UVI interoperability entry points. Container/crypto, program graphs, audio,
 //! scripting and DSP retain their own state and validation boundaries.
 
-mod cli;
+pub(crate) mod cli;
 pub use cli::run as cli;
 
 pub mod crypto;

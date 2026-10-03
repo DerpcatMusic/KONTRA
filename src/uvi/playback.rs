@@ -717,6 +717,10 @@ struct Voice {
 pub struct Renderer<'a> {
     program: &'a Program,
     parameters: Vec<BTreeMap<String, String>>,
+    numbers: Vec<BTreeMap<String, usize>>,
+    number_slots: Vec<CachedNumber>,
+    active_numbers: Vec<usize>,
+    effective_generation: u64,
     samples: Arc<HashMap<String, Arc<Sample>>>,
     rate: f64,
     frame: u64,
@@ -733,13 +737,31 @@ pub struct Renderer<'a> {
     buses: HashMap<NodeId, Frame>,
     routes: HashMap<NodeId, NodeId>,
     modulation: ModulationGraph,
-    effective: HashMap<Parameter, f64>,
     live: HashMap<Parameter, f64>,
     controllers: [[u8; 128]; 16],
     bends: [f64; 16],
     pressures: [f64; 16],
     poly_pressures: [[u8; 128]; 16],
     tempo: f64,
+}
+
+#[derive(Default)]
+struct CachedNumber {
+    parameter: Parameter,
+    base: Option<f64>,
+    effective: Option<(u64, f64)>,
+    dynamic: Option<bool>,
+}
+
+impl CachedNumber {
+    fn new(node: NodeId, name: String, text: &str) -> Self {
+        Self {
+            parameter: (node, name),
+            base: text.parse::<f64>().ok().filter(|n| n.is_finite()),
+            effective: None,
+            dynamic: None,
+        }
+    }
 }
 
 fn numeric(
@@ -894,10 +916,29 @@ impl<'a> Renderer<'a> {
                 children[parent].push(id);
             }
         }
-        let parameters = program.nodes.iter().map(|n| n.attributes.clone()).collect();
+        let parameters: Vec<_> = program.nodes.iter().map(|n| n.attributes.clone()).collect();
+        let mut number_slots = Vec::new();
+        let numbers = parameters
+            .iter()
+            .enumerate()
+            .map(|(node, attributes)| {
+                attributes
+                    .iter()
+                    .map(|(name, text)| {
+                        let index = number_slots.len();
+                        number_slots.push(CachedNumber::new(node, name.clone(), text));
+                        (name.clone(), index)
+                    })
+                    .collect()
+            })
+            .collect();
         let mut renderer = Self {
             program,
             parameters,
+            numbers,
+            number_slots,
+            active_numbers: Vec::new(),
+            effective_generation: 0,
             samples: Arc::new(samples),
             rate: f64::from(rate),
             frame: 0,
@@ -914,7 +955,6 @@ impl<'a> Renderer<'a> {
             buses: HashMap::new(),
             routes: HashMap::new(),
             modulation: ModulationGraph::new(program)?,
-            effective: HashMap::new(),
             live: HashMap::new(),
             controllers: [[0; 128]; 16],
             bends: [0.; 16],
@@ -1109,11 +1149,112 @@ impl<'a> Renderer<'a> {
             generator::FIDELITY_DIAGNOSTIC,
         ]
     }
-    fn number(&self, node: NodeId, name: &str, default: f64) -> Result<f64> {
-        if let Some(value) = self.effective.get(&(node, name.into())) {
-            return Ok(*value);
+    fn base_number(&self, node: NodeId, name: &str, default: f64) -> Result<f64> {
+        if let Some(&index) = self.numbers[node].get(name) {
+            let number = &self.number_slots[index];
+            if let Some(value) = number.base {
+                return Ok(value);
+            }
+            // Preserve the original error for a nonnumeric or nonfinite attribute.
+            if self.parameters[node].contains_key(name) {
+                return numeric(&self.parameters, node, name, default);
+            }
         }
-        numeric(&self.parameters, node, name, default)
+        ensure!(default.is_finite(), "Nonfinite UVI parameter {name}");
+        Ok(default)
+    }
+    fn number(&self, node: NodeId, name: &str, default: f64) -> Result<f64> {
+        if let Some(&index) = self.numbers[node].get(name) {
+            let number = &self.number_slots[index];
+            if let Some((generation, value)) = number.effective {
+                if generation == self.effective_generation {
+                    return Ok(value);
+                }
+            }
+            if let Some(value) = number.base {
+                return Ok(value);
+            }
+            if self.parameters[node].contains_key(name) {
+                return numeric(&self.parameters, node, name, default);
+            }
+        }
+        ensure!(default.is_finite(), "Nonfinite UVI parameter {name}");
+        Ok(default)
+    }
+    fn evaluate_scope(&mut self, inputs: Inputs, scope: Option<NodeId>) -> Result<()> {
+        // Persistent slots retain their keys and storage. An epoch expires the
+        // prior voice/scope; only active slot indices are rebuilt each sample.
+        let generation = self
+            .effective_generation
+            .checked_add(1)
+            .context("UVI control evaluation identity overflow")?;
+        self.active_numbers.clear();
+        let numbers = &mut self.numbers;
+        let slots = &mut self.number_slots;
+        let active = &mut self.active_numbers;
+        self.modulation.evaluate_nodes_into(
+            &inputs,
+            &self.live,
+            &self.scope_nodes[&scope],
+            |parameter, value| {
+                let (node, name) = parameter;
+                let index = if let Some(&index) = numbers[*node].get(name.as_str()) {
+                    index
+                } else {
+                    let index = slots.len();
+                    slots.push(CachedNumber {
+                        parameter: parameter.clone(),
+                        ..Default::default()
+                    });
+                    numbers[*node].insert(name.clone(), index);
+                    index
+                };
+                slots[index].effective = Some((generation, value));
+                active.push(index);
+            },
+        )?;
+        self.effective_generation = generation;
+        for &index in &self.active_numbers {
+            if self.number_slots[index].dynamic.is_none() {
+                self.number_slots[index].dynamic = Some(
+                    self.modulation
+                        .target_has_dynamic_source(&self.number_slots[index].parameter),
+                );
+            }
+        }
+        Ok(())
+    }
+    fn dynamic_source(&self, node: NodeId, name: &str) -> bool {
+        self.numbers[node]
+            .get(name)
+            .and_then(|&index| self.number_slots[index].dynamic)
+            .unwrap_or(false)
+    }
+    fn cache_effective_value(&mut self, node: NodeId, name: &str, value: f64) {
+        let index = if let Some(&index) = self.numbers[node].get(name) {
+            index
+        } else {
+            let index = self.number_slots.len();
+            self.number_slots.push(CachedNumber {
+                parameter: (node, name.into()),
+                dynamic: Some(false),
+                ..Default::default()
+            });
+            self.numbers[node].insert(name.into(), index);
+            index
+        };
+        self.number_slots[index].effective = Some((self.effective_generation, value));
+    }
+    fn set_parameter_text(&mut self, node: NodeId, name: String, text: String) {
+        if let Some(&index) = self.numbers[node].get(name.as_str()) {
+            self.number_slots[index].base = text.parse::<f64>().ok().filter(|n| n.is_finite());
+        } else {
+            let index = self.number_slots.len();
+            self.number_slots
+                .push(CachedNumber::new(node, name.clone(), &text));
+            self.numbers[node].insert(name.clone(), index);
+        }
+        self.parameters[node].insert(name, text);
     }
     fn boolean(&self, node: NodeId, name: &str) -> Result<bool> {
         let value = self.number(node, name, 0.)?;
@@ -1135,7 +1276,7 @@ impl<'a> Renderer<'a> {
         ensure!(options.len() <= 1, "Multiple UVI playback-options nodes");
         let reverse = self.boolean(player, "Reverse")?;
         let play_release = if let Some(&id) = options.first() {
-            let value = numeric(&self.parameters, id, "PlayRelease", 1.)?;
+            let value = self.base_number(id, "PlayRelease", 1.)?;
             ensure!([0., 1.].contains(&value), "Invalid UVI looped-release flag");
             value != 0.
         } else {
@@ -1144,7 +1285,7 @@ impl<'a> Renderer<'a> {
         let (start, end, marker_span, reverse, silent, loop_data) =
             if let Some(&id) = options.first() {
                 let marker = |node, name, default| -> Result<usize> {
-                    let value = numeric(&self.parameters, node, name, default)?;
+                    let value = self.base_number(node, name, default)?;
                     ensure!(
                         value >= 0. && value.fract() == 0. && value <= u32::MAX as f64,
                         "Invalid UVI sample {name} marker"
@@ -1157,13 +1298,13 @@ impl<'a> Renderer<'a> {
                     start <= stop && stop <= sample.frames,
                     "Invalid or inverted UVI sample playback markers"
                 );
-                let direction = numeric(&self.parameters, id, "PlayDirection", 0.)?;
+                let direction = self.base_number(id, "PlayDirection", 0.)?;
                 ensure!(
                     [0., 1.].contains(&direction),
                     "Unverified UVI serialized playback direction"
                 );
                 let reverse = reverse || direction == 1.;
-                let play_release = numeric(&self.parameters, id, "PlayRelease", 1.)?;
+                let play_release = self.base_number(id, "PlayRelease", 1.)?;
                 ensure!(
                     [0., 1.].contains(&play_release),
                     "Invalid UVI looped-release flag"
@@ -1182,7 +1323,7 @@ impl<'a> Renderer<'a> {
                 );
                 let loop_data = if let Some(&loop_id) = self.children[id].first() {
                     ensure!(
-                        numeric(&self.parameters, loop_id, "Type", 0.)? == 0.,
+                        self.base_number(loop_id, "Type", 0.)? == 0.,
                         "Serialized alternate/one-shot loop law is unverified"
                     );
                     let loop_start = marker(loop_id, "Start", 0.)?;
@@ -1276,7 +1417,13 @@ impl<'a> Renderer<'a> {
         }
     }
     fn update_processors(&self, processors: &mut HashMap<NodeId, Processor>) -> Result<()> {
-        for ((id, name), value) in &self.effective {
+        for &index in &self.active_numbers {
+            let number = &self.number_slots[index];
+            let (id, name) = &number.parameter;
+            let value = &number
+                .effective
+                .context("Missing evaluated UVI parameter")?
+                .1;
             if let Some(processor) = processors.get_mut(id) {
                 if let Processor::Gain(gain) = processor
                     && name == "Volume"
@@ -1288,7 +1435,7 @@ impl<'a> Renderer<'a> {
                     } else {
                         ParameterValue::Number(*value)
                     };
-                    filter.set_effective_parameter(name, &typed, self.modulation.target_has_dynamic_source(&(*id, name.clone())))
+                    filter.set_effective_parameter(name, &typed, number.dynamic.unwrap_or(false))
                         .with_context(|| format!("Modulated UVI filter parameter {name}={value} at node {id}, frame {}", self.frame))?;
                 } else if let Processor::Time(effect) = processor {
                     effect.set_effective(name, &ParameterValue::Number(*value))
@@ -1700,14 +1847,14 @@ impl<'a> Renderer<'a> {
             let target = targets
                 .get(&(group, "Gain".into()))
                 .copied()
-                .unwrap_or(numeric(&self.parameters, group, "Gain", 1.)?);
+                .unwrap_or(self.base_number(group, "Gain", 1.)?);
             voice.gain = GainClock::new(self.frame, target as f32);
             for osc in &mut voice.oscillators {
                 if osc.generator.is_none() {
                     let target = targets
                         .get(&(osc.player, "Gain".into()))
                         .copied()
-                        .unwrap_or(numeric(&self.parameters, osc.player, "Gain", 1.)?);
+                        .unwrap_or(self.base_number(osc.player, "Gain", 1.)?);
                     osc.gain = Some(GainClock::new(self.frame, target as f32));
                 }
             }
@@ -1762,13 +1909,8 @@ impl<'a> Renderer<'a> {
             "Invalid UVI key-release routing"
         );
         let key = f64::from(note)
-            + numeric(&self.parameters, self.program.root, "TransposeOctaves", 0.)? * 12.
-            + numeric(
-                &self.parameters,
-                self.program.root,
-                "TransposeSemiTones",
-                0.,
-            )?;
+            + self.base_number(self.program.root, "TransposeOctaves", 0.)? * 12.
+            + self.base_number(self.program.root, "TransposeSemiTones", 0.)?;
         let mut targets = HashSet::new();
         for &owner in &self.program.layers {
             if layer.is_some_and(|layer| owner != layer) {
@@ -1985,7 +2127,7 @@ impl<'a> Renderer<'a> {
                     );
                 if stochastic_trigger {
                     ensure!(
-                        matches!(value,ParameterValue::Number(n) if *n == numeric(&self.parameters,*node,"TriggerMode",1.)?),
+                        matches!(value,ParameterValue::Number(n) if *n == self.base_number(*node,"TriggerMode",1.)?),
                         "Changing stochastic clock trigger ownership requires graph rebuild"
                     );
                 }
@@ -2099,7 +2241,7 @@ impl<'a> Renderer<'a> {
                     self.live.insert((*node, parameter.clone()), value);
                 }
                 self.check_processor_memory()?;
-                self.parameters[*node].insert(parameter.clone(), text);
+                self.set_parameter_text(*node, parameter.clone(), text);
             }
             host::Action::LoadResource {
                 node,
@@ -2128,8 +2270,8 @@ impl<'a> Renderer<'a> {
                 );
                 source_layout(self.samples[path].channels)?;
                 self.sample_playback(*node, &self.samples[path])?;
-                self.parameters[*node].insert("SamplePath".into(), path.clone());
-                self.parameters[*node].insert("SamplePurged".into(), "0".into());
+                self.set_parameter_text(*node, "SamplePath".into(), path.clone());
+                self.set_parameter_text(*node, "SamplePurged".into(), "0".into());
             }
             host::Action::LoadResource {
                 node,
@@ -2158,10 +2300,7 @@ impl<'a> Renderer<'a> {
                     }
                 }
                 self.check_processor_memory()?;
-                self.parameters
-                    .get_mut(*node)
-                    .context("Invalid UVI resource node")?
-                    .insert("SamplePath".into(), path.clone());
+                self.set_parameter_text(*node, "SamplePath".into(), path.clone());
             }
             host::Action::ScriptModulation {
                 id,
@@ -2480,10 +2619,7 @@ impl<'a> Renderer<'a> {
             }
         }
         let target = self.number(osc.player, "Gain", 1.)?;
-        let gain = if self
-            .modulation
-            .target_has_dynamic_source(&(osc.player, "Gain".into()))
-        {
+        let gain = if self.dynamic_source(osc.player, "Gain") {
             target
         } else {
             f64::from(
@@ -2531,11 +2667,7 @@ impl<'a> Renderer<'a> {
                 released.insert(voice.instance);
                 continue;
             }
-            self.effective = self.modulation.evaluate_nodes(
-                &self.inputs(Some(voice)),
-                &self.live,
-                &self.scope_nodes[&Some(voice.keygroup)],
-            )?;
+            self.evaluate_scope(self.inputs(Some(voice)), Some(voice.keygroup))?;
             self.update_processors(&mut voice.processors)?;
             let mut frame = [0.; dsp::MAX_CHANNELS];
             for osc in &mut voice.oscillators {
@@ -2594,13 +2726,11 @@ impl<'a> Renderer<'a> {
                     || self.number(voice.keygroup, "Pan", 0.)? == 0.,
                 "Nonzero pan for this multichannel layout is unverified"
             );
-            let parameter = (voice.keygroup, "Gain".into());
-            if !self.modulation.target_has_dynamic_source(&parameter) {
+            if !self.dynamic_source(voice.keygroup, "Gain") {
                 let target = self.number(voice.keygroup, "Gain", 1.)? as f32;
-                self.effective.insert(
-                    parameter,
-                    f64::from(voice.gain.value(self.frame, target, self.rate)),
-                );
+                let value = f64::from(voice.gain.value(self.frame, target, self.rate));
+                self.cache_effective_value(voice.keygroup, "Gain", value);
+                // Bus gain reads its persistent slot, so the clock needs no owned key.
             }
             self.bus(
                 voice.keygroup,
@@ -2645,11 +2775,7 @@ impl<'a> Renderer<'a> {
             }
         }
         // Keep held voices after source exhaustion so per-note filter/delay state can drain.
-        self.effective = self.modulation.evaluate_nodes(
-            &self.inputs(None),
-            &self.live,
-            &self.scope_nodes[&None],
-        )?;
+        self.evaluate_scope(self.inputs(None), None)?;
         self.update_processors(&mut processors)?;
         let mut output = [0.; dsp::MAX_CHANNELS];
         for &layer in &self.program.layers {
@@ -2798,6 +2924,7 @@ mod tests {
             }],
             unity_note: None,
             wavetable_cycle_frames: None,
+            wavetable_image: false,
             riff_metadata: vec![b"riff".to_vec()],
         }
     }
@@ -2816,6 +2943,69 @@ mod tests {
             tune: 0.,
             offset_us: 0,
         }
+    }
+    #[test]
+    fn numeric_cache_tracks_mutations_scope_defaults_and_invalid_text() {
+        let program = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" Gain="0.25"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let mut renderer = Renderer::new(
+            &program,
+            HashMap::from([("a".into(), Arc::new(sample(1)))]),
+            48000,
+        )
+        .unwrap();
+        let player = program.sample_zones[0].player;
+        let change = |name: &str, value| host::Action::Parameter {
+            node: player,
+            parameter: name.into(),
+            value,
+        };
+        assert_eq!(renderer.number(player, "Gain", 1.).unwrap(), 0.25);
+        renderer
+            .apply_host(&change("Gain", ParameterValue::Number(0.5)))
+            .unwrap();
+        assert_eq!(renderer.base_number(player, "Gain", 1.).unwrap(), 0.5);
+        renderer.cache_effective_value(player, "Gain", 0.125);
+        assert_eq!(renderer.number(player, "Gain", 1.).unwrap(), 0.125);
+        assert_eq!(renderer.base_number(player, "Gain", 1.).unwrap(), 0.5);
+        renderer
+            .apply_host(&change("Gain", ParameterValue::Number(0.75)))
+            .unwrap();
+        // A live base mutation does not overwrite this frame's evaluated scope.
+        assert_eq!(renderer.number(player, "Gain", 1.).unwrap(), 0.125);
+        renderer
+            .evaluate_scope(renderer.inputs(None), None)
+            .unwrap();
+        assert_eq!(renderer.number(player, "Gain", 1.).unwrap(), 0.75);
+        assert_eq!(renderer.number(player, "Absent", 3.).unwrap(), 3.);
+        renderer
+            .apply_host(&change("SamplePurged", ParameterValue::Boolean(true)))
+            .unwrap();
+        assert!(renderer.boolean(player, "SamplePurged").unwrap());
+        renderer
+            .apply_host(&host::Action::LoadResource {
+                node: player,
+                kind: host::ResourceKind::Sample,
+                path: "a".into(),
+            })
+            .unwrap();
+        assert!(!renderer.boolean(player, "SamplePurged").unwrap());
+        for invalid in ["not-a-number", "NaN", "inf"] {
+            renderer
+                .apply_host(&change("Gain", ParameterValue::Text(invalid.into())))
+                .unwrap();
+            assert_eq!(
+                renderer.number(player, "Gain", 1.).unwrap_err().to_string(),
+                numeric(&renderer.parameters, player, "Gain", 1.)
+                    .unwrap_err()
+                    .to_string()
+            );
+        }
+        assert!(renderer.number(player, "Absent", f64::NAN).is_err());
+        assert!(
+            renderer
+                .apply_host(&change("Gain", ParameterValue::Number(f64::NAN)))
+                .is_err()
+        );
     }
     #[test]
     fn oscillators_sum_before_matrix_and_release_keeps_other_note_owned_voice() {
@@ -3306,6 +3496,7 @@ mod tests {
             loops: Vec::new(),
             unity_note: None,
             wavetable_cycle_frames: None,
+            wavetable_image: false,
             riff_metadata: Vec::new(),
         });
         for (direction, reverse) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
@@ -3675,10 +3866,15 @@ mod tests {
     }
     #[test]
     fn keygroup_xpander_executes_before_projection_with_actual_note_tracking() {
-        let p = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" NoteTracking="0"><PlaybackOptions Stop="8"/></SamplePlayer></Oscillators><Inserts><XpanderFilter Freq="1000" Q="0.75" DistortionType="0"/></Inserts></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let p = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" NoteTracking="0"><PlaybackOptions Stop="264"/></SamplePlayer></Oscillators><Inserts><XpanderFilter Freq="1000" Q="0.75" DistortionType="0"/></Inserts></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
         let mut source = sample(1);
-        let mut pcm = vec![0.; 8];
-        pcm[0] = 32767. / 32768.;
+        // These native impulse observations were captured after silence. Warm
+        // the serialized scalar solver through its initial 256-frame ramp;
+        // retain the original observations and tolerance, not a cold substitute.
+        let mut pcm = vec![0.; 264];
+        pcm[256] = 32767. / 32768.;
+        source.frames = 264;
+        source.loops.clear();
         source.interleaved = Storage::from_f32(pcm).unwrap();
         let resources = HashMap::from([("a".into(), Arc::new(source))]);
         let mut renderer = Renderer::new(&p, resources.clone(), 48000).unwrap();
@@ -3689,7 +3885,7 @@ mod tests {
                     action: script::Action::Start(note(1)),
                 }],
                 &[],
-                32,
+                288,
             )
             .unwrap();
         for (frame, expected) in [
@@ -3698,8 +3894,12 @@ mod tests {
             (15, 4.259800911e-02),
             (31, 2.153839171e-02),
         ] {
-            assert!((output[frame][0] - expected * 0.5).abs() < 1e-6);
+            assert!((output[256 + frame][0] - expected * 0.5).abs() < 1e-6);
         }
+        assert!(output[..256].iter().all(|frame| *frame == [0., 0.]));
+        // Keep the note-tracking comparison audible during its original short
+        // interval rather than comparing only the new fixture's silent prefix.
+        let resources = HashMap::from([("a".into(), Arc::new(sample(1)))]);
         let tracked = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" NoteTracking="0"><PlaybackOptions Stop="8"/></SamplePlayer></Oscillators><Inserts><XpanderFilter Freq="1000" KeyTracking="1"/></Inserts></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
         let fixed = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" NoteTracking="0"><PlaybackOptions Stop="8"/></SamplePlayer></Oscillators><Inserts><XpanderFilter Freq="2000" KeyTracking="0"/></Inserts></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
         let mut key = note(1);

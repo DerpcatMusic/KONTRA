@@ -3,8 +3,10 @@
 //! 2026-10-03.
 //! Parameter facts: https://lua.uvi.net/_elements.html and UVI Falcon manual
 //! https://uvi.s3.us-east-1.amazonaws.com/UVIFC/falcon_2026_manual.pdf.
-//! No vendor source or sample-bank content is included. Stationary DualDelay
+//! No vendor source or sample-bank content is included. DualDelay and DualDelayX
 //! uses measured RC filters, feedback rotation, fractional time and sqrt mixing.
+//! X tape uses measured transposed shelves, normalized tanh and post-delay gain;
+//! its unproved diffusion, dispersion, grit and ducking sections are rejected.
 //! WhiteChorus uses measured uint32 phase, a 256-entry sine table, RC crossover,
 //! and a common Tone feedback line feeding parallel voices. Its Speed/Depth
 //! startup clock and DualDelay modulation amplitude remain calibrated models.
@@ -13,7 +15,7 @@ use super::{dsp::Frame, host::ParameterValue, program::ProgramNode};
 use anyhow::{Context, Result, bail, ensure};
 use std::collections::BTreeMap;
 
-pub const FIDELITY_DIAGNOSTIC: &str = "UVI DualDelay peak EQ uses an RBJ approximation and modulation amplitude is empirically calibrated; WhiteChorus Speed/Depth startup is calibrated and phase-offset/read rounding remains approximate, with live NumVoices/Mode/Bypass changes and rates outside 48 kHz native-unverified; DualDelay control smoothing outside Mix/Feedback/Rotation, rates outside 44.1/48/96 kHz and bypass transitions remain native-unverified";
+pub const FIDELITY_DIAGNOSTIC: &str = "UVI DualDelay/DualDelayX peak EQ uses an RBJ approximation and modulation amplitude is empirically calibrated; DualDelayX tape has measured finite-precision sine residuals up to 2.3e-7, live tape/switch, reflection, filtering and modulation enable transitions are rejected, and scalar clocks outside Mix/Feedback/Rotation/TapeDrive/TapeWarmth remain native-unverified; WhiteChorus Speed/Depth startup is calibrated and phase-offset/read rounding remains approximate, with live NumVoices/Mode/Bypass changes and rates outside 48 kHz native-unverified; legacy DualDelay control smoothing outside Mix/Feedback/Rotation, rates outside 44.1/48/96 kHz and bypass transitions remain native-unverified";
 const MAX_SECONDS: f64 = 5.;
 const MODULATION_DETUNE: f64 = 0.00057425;
 const MEMORY_LIMIT: usize = 64 << 20;
@@ -44,6 +46,31 @@ const DELAY: &[(&str, f64, f64, f64, bool)] = &[
     ("DualDelayVersion", 1., 0., 1., true),
 ];
 
+const DELAY_X: &[(&str, f64, f64, f64, bool)] = &[
+    ("TapeSaturation", 0., 0., 1., true),
+    ("TapeDrive", 0., 0., 1., false),
+    ("TapeWarmth", 0.5, 0., 1., false),
+    ("Reflection", 0., 0., 1., true),
+    ("PeakCompensation", 1., 0., 1., false),
+    ("Modulation", 1., 0., 1., true),
+    ("DispersionSpread", 20., 1., 100., false),
+    ("DispersionFreq", 200., 0., 20000., false),
+    ("Dispersion", 0., 0., 1., true),
+    ("DiffusionSpread", 20., 1., 100., false),
+    ("DiffusionAmount", 0.2, 0., 1., false),
+    ("Diffusion", 0., 0., 1., true),
+    ("CrusherFreq", 9., 0., 9., true),
+    ("CrusherBits", 16., 4., 16., true),
+    ("Crusher", 0., 0., 1., true),
+    ("Filtering", 1., 0., 1., true),
+    ("DuckerThreshold", -10., -100., 0., false),
+    ("DuckerAttack", 1., 1., 100., false),
+    ("DuckerHold", 1., 1., 1000., false),
+    ("DuckerDecay", 200., 10., 1000., false),
+    ("DuckerAttenuation", 20., 0., 50., false),
+    ("DuckerBypass", 1., 0., 1., true),
+];
+
 const CHORUS: &[(&str, f64, f64, f64, bool)] = &[
     ("Bypass", 0., 0., 1., true),
     ("Speed", 0.2, 0.1, 1., false),
@@ -59,7 +86,26 @@ const CHORUS: &[(&str, f64, f64, f64, bool)] = &[
 ];
 
 pub fn supports(kind: &str) -> bool {
-    matches!(kind, "DualDelay" | "WhiteChorus")
+    matches!(kind, "DualDelay" | "DualDelayX" | "WhiteChorus")
+}
+
+fn controls(kind: &str) -> impl Iterator<Item = &'static (&'static str, f64, f64, f64, bool)> + '_ {
+    let base = if kind == "WhiteChorus" { CHORUS } else { DELAY };
+    let extra = if kind == "DualDelayX" { DELAY_X } else { &[] };
+    base.iter()
+        .filter(move |p| kind != "DualDelayX" || p.0 != "DualDelayVersion")
+        .chain(extra.iter())
+}
+
+fn validate_delay_x(p: &BTreeMap<String, f64>) -> Result<()> {
+    for name in ["Dispersion", "Diffusion", "Crusher"] {
+        ensure!(p[name] == 0., "Unsupported active DualDelayX {name}");
+    }
+    ensure!(
+        p["DuckerBypass"] == 1.,
+        "Unsupported active DualDelayX ducking"
+    );
+    Ok(())
 }
 
 fn scalar(value: &ParameterValue) -> Result<f64> {
@@ -71,9 +117,7 @@ fn scalar(value: &ParameterValue) -> Result<f64> {
 }
 
 fn checked(kind: &str, name: &str, value: &ParameterValue) -> Result<f64> {
-    let controls = if kind == "DualDelay" { DELAY } else { CHORUS };
-    let (_, _, low, high, integer) = controls
-        .iter()
+    let (_, _, low, high, integer) = controls(kind)
         .find(|p| p.0 == name)
         .with_context(|| format!("Unsupported {kind} parameter {name}"))?;
     let value = scalar(value)?;
@@ -91,8 +135,7 @@ fn parameters(node: &ProgramNode) -> Result<BTreeMap<String, f64>> {
         node.kind
     );
     let kind = &node.kind;
-    let controls = if kind == "DualDelay" { DELAY } else { CHORUS };
-    let mut p: BTreeMap<String, f64> = controls.iter().map(|&(n, v, ..)| (n.into(), v)).collect();
+    let mut p: BTreeMap<String, f64> = controls(kind).map(|&(n, v, ..)| (n.into(), v)).collect();
     for (name, raw) in &node.attributes {
         if name == "Name" {
             continue;
@@ -114,6 +157,9 @@ fn parameters(node: &ProgramNode) -> Result<BTreeMap<String, f64>> {
         );
         p.insert("DualDelayVersion".into(), 1.);
     }
+    if kind == "DualDelayX" {
+        validate_delay_x(&p)?;
+    }
     Ok(p)
 }
 
@@ -127,13 +173,13 @@ struct Peak {
     z: [[f32; 2]; 2],
 }
 impl Peak {
-    fn tune(&mut self, frequency: f64, gain: f64, q: f64, rate: f64) {
+    fn tune(&mut self, frequency: f64, gain: f64, q: f64, compensation: f64, rate: f64) {
         let w = std::f64::consts::TAU * frequency.min(rate * 0.49) / rate;
         let a = 10f64.powf(gain / 40.);
         let alpha = w.sin() / (2. * q);
         let a0 = 1. + alpha / a;
         // Native feedback EQ normalizes boosts by the maximum band gain.
-        let scale = 10f64.powf(-gain.max(0.) / 20.);
+        let scale = 10f64.powf(-gain.max(0.) * compensation / 20.);
         self.c = [
             ((1. + alpha * a) / a0 * scale) as f32,
             (-2. * w.cos() / a0 * scale) as f32,
@@ -183,7 +229,9 @@ impl TimeEffect {
             "Invalid UVI time-effect sample rate"
         );
         Ok(Self(match node.kind.as_str() {
-            "DualDelay" => TimeProcessor::Delay(Box::new(DualDelay::new(node, channels, rate)?)),
+            "DualDelay" | "DualDelayX" => {
+                TimeProcessor::Delay(Box::new(DualDelay::new(node, channels, rate)?))
+            }
             "WhiteChorus" => TimeProcessor::Chorus(Box::new(WhiteChorus::new(node, rate)?)),
             _ => bail!("Unsupported UVI time effect {}", node.kind),
         }))
@@ -254,7 +302,92 @@ impl TimeEffect {
     }
 }
 
+// X stores normalized saturated samples. The inverse shelf and compensation
+// belong after the raw delay: live Drive/Warmth probes distinguish this from
+// a stationary-equivalent arrangement with both shelves in the writer.
+struct Tape {
+    controls: [f32; 2],
+    targets: [f32; 2],
+    previous_targets: [f32; 2],
+    changed_at: [u64; 2],
+    drive_gain: f32,
+    output_gain: f32,
+    pre: [f32; 3],
+    post: [f32; 3],
+    pre_state: [f32; 2],
+    post_state: [f32; 2],
+}
+impl Tape {
+    fn new(drive: f32, warmth: f32, rate: f64) -> Self {
+        let mut result = Self {
+            controls: [drive, warmth],
+            targets: [drive, warmth],
+            previous_targets: [drive, warmth],
+            changed_at: [0; 2],
+            drive_gain: 1.,
+            output_gain: 1.,
+            pre: [0.; 3],
+            post: [0.; 3],
+            pre_state: [0.; 2],
+            post_state: [0.; 2],
+        };
+        result.tune(rate);
+        result
+    }
+    fn tune(&mut self, rate: f64) {
+        self.drive_gain = 10f64.powf(1.5 * f64::from(self.controls[0])) as f32;
+        let a = f64::from(self.drive_gain) * 0.3f64.sqrt();
+        self.output_gain = (0.1f64.sqrt() / (1. - a.tanh() / a).sqrt()) as f32;
+        let gain = 10f64.powf(f64::from(self.controls[1]));
+        let c = (std::f64::consts::PI * 2500. / rate).tan() * gain.sqrt();
+        let b0 = ((gain + c) / (1. + c)) as f32;
+        let b1 = ((-gain + c) / (1. + c)) as f32;
+        let a1 = ((-1. + c) / (1. + c)) as f32;
+        self.pre = [b0, b1, a1];
+        self.post = [1. / b0, a1 / b0, b1 / b0];
+    }
+    fn set_target(&mut self, i: usize, value: f32, elapsed: u64) {
+        if value != self.targets[i] {
+            if self.changed_at[i] != elapsed {
+                self.previous_targets[i] = self.targets[i];
+            }
+            self.targets[i] = value;
+            self.changed_at[i] = elapsed;
+        }
+    }
+    fn advance(&mut self, elapsed: u64, alpha: f32, rate: f64) {
+        for i in 0..2 {
+            let target = if elapsed == self.changed_at[i] {
+                self.previous_targets[i]
+            } else {
+                self.targets[i]
+            };
+            self.controls[i] += alpha * (target - self.controls[i]);
+            if elapsed.is_multiple_of(256) && (alpha * (target - self.controls[i])).abs() < 1e-6 {
+                self.controls[i] = target;
+            }
+        }
+        self.tune(rate);
+    }
+    fn encode(&mut self, x: f32, ch: usize) -> f32 {
+        let [b0, b1, a1] = self.pre;
+        let y = b0 * x + self.pre_state[ch];
+        self.pre_state[ch] = b1 * x - a1 * y;
+        y.tanh()
+    }
+    fn decode(&mut self, x: [f32; 2]) -> [f32; 2] {
+        let [b0, b1, a1] = self.post;
+        std::array::from_fn(|ch| {
+            let y = b0 * x[ch] + self.post_state[ch];
+            self.post_state[ch] = b1 * x[ch] - a1 * y;
+            y
+        })
+    }
+}
+
 struct DualDelay {
+    is_x: bool,
+    tape: Option<Tape>,
     rate: f64,
     tempo: f64,
     parameters: BTreeMap<String, f64>,
@@ -291,6 +424,18 @@ impl DualDelay {
             "Invalid UVI delay sample rate"
         );
         let parameters = parameters(node)?;
+        let is_x = node.kind == "DualDelayX";
+        ensure!(
+            !is_x || [44100., 48000., 96000.].contains(&rate),
+            "DualDelayX sample rate is native-unverified"
+        );
+        let tape = (is_x && parameters["TapeSaturation"] != 0.).then(|| {
+            Tape::new(
+                parameters["TapeDrive"] as f32,
+                parameters["TapeWarmth"] as f32,
+                rate,
+            )
+        });
         let mix = parameters["Mix"] as f32;
         // Native maximum-time modulation can read beyond five seconds. Retain
         // the full published Depth20/Rate.1 detune envelope to avoid overwrite
@@ -299,6 +444,8 @@ impl DualDelay {
         let length = ((MAX_SECONDS + max_detune_seconds) * rate).ceil() as usize + 2;
         ensure!(length * 8 <= MEMORY_LIMIT, "UVI delay exceeds memory bound");
         let mut result = Self {
+            is_x,
+            tape,
             rate,
             tempo: 120.,
             parameters,
@@ -334,6 +481,9 @@ impl DualDelay {
     }
     fn tune(&mut self) -> Result<()> {
         let p = &self.parameters;
+        if self.is_x {
+            validate_delay_x(p)?;
+        }
         let seconds = p["DelayTime"]
             * if p["SyncToHost"] != 0. {
                 60. / self.tempo
@@ -348,8 +498,11 @@ impl DualDelay {
         self.feedback_target = ratio(p["Feedback"], p["FeedbackRatio"]);
         // ponytail: this detune calibration was measured at 44.1/48/96 kHz, not a
         // vendor formula. Refit against other rates before claiming parity.
-        let detune =
-            self.rate * MODULATION_DETUNE * p["ModDepth"] / (std::f64::consts::TAU * p["ModRate"]);
+        let detune = if self.is_x && p["Modulation"] == 0. {
+            0.
+        } else {
+            self.rate * MODULATION_DETUNE * p["ModDepth"] / (std::f64::consts::TAU * p["ModRate"])
+        };
         self.modulation = self
             .frames
             .map(|n| detune.min(f64::from(n) * 0.005 * p["ModDepth"]) as f32);
@@ -358,8 +511,13 @@ impl DualDelay {
         self.feedback_rotation = rotation(f64::from(self.rotation) * std::f64::consts::PI / 180.);
         self.poles = [p["HighCut"], p["LowCut"]]
             .map(|f| 1. - (-std::f32::consts::TAU * f as f32 / self.rate as f32).exp());
-        self.peak
-            .tune(p["PeakFreq"], p["PeakGain"], p["PeakQ"], self.rate);
+        self.peak.tune(
+            p["PeakFreq"],
+            p["PeakGain"],
+            p["PeakQ"],
+            if self.is_x { p["PeakCompensation"] } else { 1. },
+            self.rate,
+        );
         Ok(())
     }
     /// Retained delay-line bytes for the renderer's aggregate preparation bound.
@@ -374,7 +532,19 @@ impl DualDelay {
             .context("Unknown UVI delay parameter")
     }
     pub fn set_parameter(&mut self, name: &str, value: &ParameterValue) -> Result<()> {
-        let value = checked("DualDelay", name, value)?;
+        let kind = if self.is_x { "DualDelayX" } else { "DualDelay" };
+        let value = checked(kind, name, value)?;
+        if self.is_x
+            && matches!(
+                name,
+                "TapeSaturation" | "Reflection" | "Filtering" | "Modulation"
+            )
+        {
+            ensure!(
+                self.parameters[name] == value,
+                "DualDelayX {name} live transition is native-unverified"
+            );
+        }
         let old_feedback = self.feedback_target;
         let old = self
             .parameters
@@ -387,6 +557,14 @@ impl DualDelay {
         }
         if name == "Mix" {
             self.set_mix_target(value as f32);
+        } else if let Some(tape) = &mut self.tape
+            && matches!(name, "TapeDrive" | "TapeWarmth")
+        {
+            tape.set_target(
+                usize::from(name == "TapeWarmth"),
+                value as f32,
+                self.elapsed,
+            );
         } else if value != old
             && let Some(control) = match name {
                 "Feedback" | "FeedbackRatio" => Some(1),
@@ -439,6 +617,13 @@ impl DualDelay {
         self.low = [0.; 2];
         self.high = [0.; 2];
         self.peak.z = [[0.; 2]; 2];
+        if let Some(tape) = &mut self.tape {
+            *tape = Tape::new(
+                self.parameters["TapeDrive"] as f32,
+                self.parameters["TapeWarmth"] as f32,
+                self.rate,
+            );
+        }
         self.feedback = self.feedback_target;
         self.rotation = self.parameters["Rotation"] as f32;
         self.previous_targets = [self.mix, self.feedback[0], self.feedback[1], self.rotation];
@@ -467,6 +652,14 @@ impl DualDelay {
                 let next_mix = self.mix + self.mix_smoothing * (mix_target - self.mix);
                 ensure!(next_mix.is_finite(), "Nonfinite UVI delay Mix control");
                 self.mix = next_mix;
+                // Native Mix snaps only at the host's 256-frame boundary,
+                // after the 32-frame update, using its own measured epsilon.
+                if self.elapsed.is_multiple_of(256)
+                    && (self.mix_smoothing * (mix_target - self.mix)).abs()
+                        < if self.is_x { 1e-6 } else { 1e-7 }
+                {
+                    self.mix = mix_target;
+                }
                 let audible_mix = self.mix.clamp(0., 1.);
                 self.mix_gains = [(1. - audible_mix).sqrt(), audible_mix.sqrt()];
                 for ch in 0..2 {
@@ -476,6 +669,12 @@ impl DualDelay {
                         self.feedback_target[ch]
                     };
                     self.feedback[ch] += self.mix_smoothing * (target - self.feedback[ch]);
+                    if self.is_x
+                        && self.elapsed.is_multiple_of(256)
+                        && (self.mix_smoothing * (target - self.feedback[ch])).abs() < 1e-6
+                    {
+                        self.feedback[ch] = target;
+                    }
                 }
                 let rotation_target = if self.elapsed == self.control_changed_at[2] {
                     self.previous_targets[3]
@@ -485,6 +684,9 @@ impl DualDelay {
                 self.rotation += self.mix_smoothing * (rotation_target - self.rotation);
                 self.feedback_rotation =
                     rotation(f64::from(self.rotation) * std::f64::consts::PI / 180.);
+                if let Some(tape) = &mut self.tape {
+                    tape.advance(self.elapsed, self.mix_smoothing, self.rate);
+                }
             }
             let [dry, wet] = self.mix_gains;
             let input = [f[0], f[1]];
@@ -523,28 +725,50 @@ impl DualDelay {
                 };
                 *y = sample;
             }
-            let back = rotate(delayed, self.feedback_rotation);
-            let source = rotate(
+            if let Some(tape) = &mut self.tape {
+                delayed = tape.decode(delayed);
+            }
+            let back = if self.is_x && self.parameters["Reflection"] != 0. {
+                let [c, s] = self.feedback_rotation;
+                [
+                    s * delayed[0] + c * delayed[1],
+                    c * delayed[0] - s * delayed[1],
+                ]
+            } else {
+                rotate(delayed, self.feedback_rotation)
+            };
+            let mut source = rotate(
                 width(input, self.parameters["InputWidth"] as f32),
                 self.input_rotation,
             );
+            if let Some(tape) = &self.tape {
+                source = source.map(|x| x * tape.drive_gain);
+            }
             let mut next = [0.; 2];
             for ch in 0..2 {
-                // Native feedback gain is stored with the input: a live gain step
-                // leaves the first delayed echo unchanged, then affects repeats.
-                let x = (source[ch] + back[ch]) * self.feedback[ch];
-                self.low[ch] += self.poles[0] * (x - self.low[ch]);
-                self.high[ch] += self.poles[1] * (self.low[ch] - self.high[ch]);
-                let filtered = self.low[ch] - self.high[ch];
-                next[ch] = if self.parameters["PeakGain"] == 0. {
-                    filtered
-                } else {
-                    self.peak.step(filtered, ch)
-                };
+                // Legacy scales the input before filter state; X scales the
+                // filtered/saturated writer. Live steps distinguish the order.
+                let x = (source[ch] + back[ch]) * if self.is_x { 1. } else { self.feedback[ch] };
+                let mut y = x;
+                if !self.is_x || self.parameters["Filtering"] != 0. {
+                    self.low[ch] += self.poles[0] * (x - self.low[ch]);
+                    self.high[ch] += self.poles[1] * (self.low[ch] - self.high[ch]);
+                    y = self.low[ch] - self.high[ch];
+                    if self.parameters["PeakGain"] != 0. {
+                        y = self.peak.step(y, ch);
+                    }
+                }
+                if let Some(tape) = &mut self.tape {
+                    y = tape.encode(y, ch);
+                }
+                next[ch] = y * if self.is_x { self.feedback[ch] } else { 1. };
             }
             self.lines[self.position] = next;
             self.position = (self.position + 1) % self.lines.len();
             self.elapsed = self.elapsed.wrapping_add(1);
+            if let Some(tape) = &self.tape {
+                delayed = delayed.map(|x| x * tape.output_gain);
+            }
             // Native applies output rotation before width; these operations
             // do not commute when both controls differ from their defaults.
             let out = width(
@@ -794,6 +1018,11 @@ impl WhiteChorus {
                     self.parameters["Mix"] as f32
                 };
                 self.mix += self.mix_smoothing * (mix_target - self.mix);
+                if self.elapsed.is_multiple_of(256)
+                    && (self.mix_smoothing * (mix_target - self.mix)).abs() < 1e-7
+                {
+                    self.mix = mix_target;
+                }
                 // Native connected Speed eases in its logarithmic control
                 // domain before the slower oscillator-rate startup clock.
                 let speed_target = if self.elapsed == self.speed_changed_at {
@@ -887,6 +1116,300 @@ mod tests {
         .unwrap()
         .nodes
         .remove(2)
+    }
+    fn delay_x(attrs: &str) -> ProgramNode {
+        let mut node = effect(attrs);
+        node.kind = "DualDelayX".into();
+        node
+    }
+    #[test]
+    fn uvi_dual_delay_x_typed_controls_and_unproved_sections() {
+        let node = delay_x("");
+        let mut fx = TimeEffect::new(&node, 2, 48000.).unwrap();
+        assert_eq!(controls("DualDelayX").count(), 43);
+        assert_eq!(
+            fx.parameter("TapeWarmth").unwrap(),
+            ParameterValue::Number(0.5)
+        );
+        assert!(fx.parameter("DualDelayVersion").is_err());
+        assert!(validate(&delay_x("DualDelayVersion='1'")).is_err());
+        for attrs in [
+            "Diffusion='1'",
+            "Dispersion='1'",
+            "Crusher='1'",
+            "DuckerBypass='0'",
+        ] {
+            assert!(validate(&delay_x(attrs)).is_err(), "{attrs}");
+            assert!(TimeEffect::new(&delay_x(attrs), 2, 48000.).is_err());
+        }
+        assert!(
+            fx.set_parameter("Diffusion", &ParameterValue::Boolean(true))
+                .is_err()
+        );
+        assert_eq!(
+            fx.parameter("Diffusion").unwrap(),
+            ParameterValue::Number(0.)
+        );
+        assert!(
+            fx.set_parameter("TapeDrive", &ParameterValue::Number(1.01))
+                .is_err()
+        );
+        assert!(
+            fx.set_parameter("TapeSaturation", &ParameterValue::Boolean(true))
+                .is_err()
+        );
+        assert!(TimeEffect::new(&node, 2, 32000.).is_err());
+    }
+    #[test]
+    fn uvi_dual_delay_x_native_reflection_and_filter_gates() {
+        let mut fx = TimeEffect::new(
+            &delay_x(
+                "DelayTime='.001' Feedback='.5' Mix='1' Filtering='0' Reflection='1' Rotation='45'",
+            ),
+            2,
+            48000.,
+        )
+        .unwrap();
+        let mut frames = vec![[0.; 12]; 1000];
+        frames[0][1] = 0.25;
+        fx.process(&mut frames).unwrap();
+        for (i, expected) in [
+            (48, [0., 0.1249995083]),
+            (96, [0.04419383034, -0.04419383407]),
+            (144, [0., 0.03124964051]),
+        ] {
+            for ch in 0..2 {
+                assert!(
+                    (frames[i][ch] - expected[ch]).abs() < 3e-8,
+                    "{i}/{ch}: {}",
+                    frames[i][ch]
+                );
+            }
+        }
+        let mut fx = TimeEffect::new(
+            &delay_x("DelayTime='.01' Feedback='.5' Mix='1' Filtering='0' PeakGain='6'"),
+            2,
+            48000.,
+        )
+        .unwrap();
+        let mut frames = vec![[0.; 12]; 700];
+        frames[0][0] = 0.25;
+        fx.process(&mut frames).unwrap();
+        assert!((frames[480][0] - 0.1249999851).abs() < 3e-8);
+        assert!(frames[481..488].iter().all(|f| f[0] == 0.));
+        let mut fx = TimeEffect::new(
+            &delay_x(
+                "DelayTime='.01' Feedback='.5' Mix='1' ModDepth='4' ModRate='.3' Modulation='0'",
+            ),
+            2,
+            48000.,
+        )
+        .unwrap();
+        let mut frames = vec![[0.; 12]; 700];
+        frames[0][0] = 0.25;
+        fx.process(&mut frames).unwrap();
+        assert!((frames[480][0] - 0.1155783758).abs() < 3e-8);
+    }
+    #[test]
+    fn uvi_dual_delay_x_native_tape_static() {
+        for (drive, warmth, samples) in [
+            (0., 0., [0.1295884699, 0., 0.]),
+            (0., 0.5, [0.1155816615, -0.003736798884, -0.002602618420]),
+            (0.2, 0.5, [0.09910318255, -0.01154534239, -0.008080410771]),
+            (0.5, 0.5, [0.07186803222, -0.03689695895, -0.02698104829]),
+            (1., 0.5, [0.06097087264, -0.06373913586, -0.07856545597]),
+        ] {
+            let node = delay_x(&format!(
+                "DelayTime='.001' Feedback='.5' Mix='1' Filtering='0' TapeSaturation='1' TapeDrive='{drive}' TapeWarmth='{warmth}'"
+            ));
+            let mut fx = TimeEffect::new(&node, 2, 48000.).unwrap();
+            let mut frames = vec![[0.; 12]; 1000];
+            frames[0][0] = 0.25;
+            fx.process(&mut frames).unwrap();
+            for (i, expected) in [48, 50, 52].into_iter().zip(samples) {
+                assert!(
+                    (frames[i][0] - expected).abs() < 3e-8,
+                    "Drive{drive}/Warmth{warmth}/{i}: {} vs {expected}",
+                    frames[i][0]
+                );
+            }
+        }
+    }
+    #[test]
+    fn uvi_dual_delay_x_native_tape_cross_rate() {
+        for (rate, drive, warmth, i, expected) in [
+            (44100., 0.2, 0.5, 45, -0.002058978425),
+            (44100., 0.5, 1., 46, -0.02649354935),
+            (96000., 0.2, 0.5, 96, 0.09421595931),
+            (96000., 0.5, 1., 212, -0.007202530280),
+        ] {
+            let node = delay_x(&format!(
+                "DelayTime='.001' Feedback='.5' Mix='1' Filtering='0' TapeSaturation='1' TapeDrive='{drive}' TapeWarmth='{warmth}'"
+            ));
+            let mut fx = TimeEffect::new(&node, 2, rate).unwrap();
+            let mut frames = vec![[0.; 12]; 1000];
+            frames[0][0] = 0.25;
+            fx.process(&mut frames).unwrap();
+            assert!(
+                (frames[i][0] - expected).abs() < 3e-8,
+                "{rate}/{i}: {} vs {expected}",
+                frames[i][0]
+            );
+        }
+    }
+    #[test]
+    fn uvi_dual_delay_x_native_tape_live_controls() {
+        for (name, target, samples) in [
+            (
+                "TapeDrive",
+                0.5,
+                [
+                    0.002694309456,
+                    0.002738363342,
+                    0.003171588993,
+                    0.003356239991,
+                    0.003415464424,
+                ],
+            ),
+            (
+                "TapeWarmth",
+                0.8,
+                [
+                    0.002786492463,
+                    0.002918473911,
+                    0.002823625226,
+                    0.002828329569,
+                    0.002829542384,
+                ],
+            ),
+        ] {
+            let node = delay_x(
+                "DelayTime='.001' Feedback='.01' Mix='1' Filtering='0' TapeSaturation='1' TapeDrive='.2' TapeWarmth='.5'",
+            );
+            let mut fx = TimeEffect::new(&node, 2, 48000.).unwrap();
+            let mut frames = vec![[0.; 12]; 16384];
+            for frame in &mut frames {
+                frame[0] = 0.25;
+            }
+            fx.process(&mut frames).unwrap();
+            fx.set_parameter(name, &ParameterValue::Number(target))
+                .unwrap();
+            let mut frames = vec![[0.; 12]; 4700];
+            for frame in &mut frames {
+                frame[0] = 0.25;
+            }
+            fx.process(&mut frames).unwrap();
+            for (i, expected) in [32, 80, 512, 1024, 4352].into_iter().zip(samples) {
+                assert!(
+                    (frames[i][0] - expected).abs() < 1e-8,
+                    "{name}/{i}: {} vs {expected}",
+                    frames[i][0]
+                );
+            }
+        }
+    }
+    #[test]
+    fn uvi_dual_delay_x_native_feedback_order_and_mix_snap() {
+        let mut fx = TimeEffect::new(
+            &delay_x("DelayTime='.001' Feedback='.3' Mix='1'"),
+            2,
+            48000.,
+        )
+        .unwrap();
+        let mut frames = vec![[0.; 12]; 16384];
+        for i in [4096, 8192, 12288] {
+            frames[i][0] = 0.25;
+        }
+        fx.process(&mut frames).unwrap();
+        fx.set_parameter("Feedback", &ParameterValue::Number(0.6))
+            .unwrap();
+        let mut frames = vec![[0.; 12]; 600];
+        frames[0][0] = 0.25;
+        fx.process(&mut frames).unwrap();
+        // X gain follows the filter state. Legacy's superficially equivalent
+        // stationary ordering produces .02043339424 at96 instead.
+        for (i, expected) in [
+            (96, 0.02042107284),
+            (128, -0.0003028174688),
+            (256, -0.0003457333660),
+            (512, -0.0001492632728),
+        ] {
+            assert!(
+                (frames[i][0] - expected).abs() < 3e-8,
+                "{i}: {} vs {expected}",
+                frames[i][0]
+            );
+        }
+        let mut fx = TimeEffect::new(&delay_x("Feedback='0' Mix='0'"), 2, 48000.).unwrap();
+        let mut frames = vec![[0.; 12]; 16384];
+        for frame in &mut frames {
+            frame[0] = 0.25;
+        }
+        fx.process(&mut frames).unwrap();
+        fx.set_parameter("Mix", &ParameterValue::Number(1.))
+            .unwrap();
+        let mut frames = vec![[0.; 12]; 6000];
+        for frame in &mut frames {
+            frame[0] = 0.25;
+        }
+        fx.process(&mut frames).unwrap();
+        assert!((frames[4608][0] - 0.001220703125).abs() < 3e-8);
+        assert_eq!(frames[4863][0], frames[4832][0]);
+        assert_eq!(frames[4864][0], 0.);
+    }
+    #[test]
+    fn uvi_dual_delay_x_native_tape_independent_routing_and_sine() {
+        let node = delay_x(
+            "DelayTime='.001' Feedback='.4' Mix='.7' LowCut='230' HighCut='7300' Rotation='73' InputWidth='.37' OutputWidth='.61' InputRotation='-.7' OutputRotation='.8' DelayRatio='.33' FeedbackRatio='-.21' TapeSaturation='1' TapeDrive='.2' TapeWarmth='.5'",
+        );
+        let mut fx = TimeEffect::new(&node, 2, 48000.).unwrap();
+        let mut frames = vec![[0.; 12]; 1000];
+        frames[0][0] = 0.25;
+        fx.process(&mut frames).unwrap();
+        for (i, expected) in [
+            (32, [0.001433747122, -0.002439395757]),
+            (48, [0.02458427660, 0.02038822696]),
+            (80, [-0.001876554452, 0.003431939753]),
+            (96, [0.001156237558, 0.0004797187285]),
+            (256, [-0.000001415771749, -0.000003861824098]),
+        ] {
+            for ch in 0..2 {
+                assert!(
+                    (frames[i][ch] - expected[ch]).abs() < 3e-8,
+                    "{i}/{ch}: {} vs {}",
+                    frames[i][ch],
+                    expected[ch]
+                );
+            }
+        }
+        let node = delay_x(
+            "DelayTime='.001' Feedback='.72' Mix='1' LowCut='342.28' HighCut='9068.97' TapeSaturation='1' TapeDrive='.172' TapeWarmth='.58'",
+        );
+        let mut fx = TimeEffect::new(&node, 2, 48000.).unwrap();
+        let mut frames = vec![[0.; 12]; 40001];
+        for (i, frame) in frames.iter_mut().enumerate() {
+            // Same original 16-bit quantized 1 kHz source as the native probe.
+            frame[0] = (8192. * (std::f64::consts::TAU * 1000. * i as f64 / 48000.).sin()).round()
+                as f32
+                / 32768.;
+            frame[0] *= 0.99999988;
+        }
+        fx.process(&mut frames).unwrap();
+        // Full independent native sine render measured max2.24e-7, unlike
+        // sparse impulses; this precision ceiling is explicitly diagnosed.
+        for (i, expected) in [
+            (1000, -0.1672999561),
+            (8192, -0.2997734249),
+            (16384, 0.1672971100),
+            (24576, 0.1794879735),
+            (40000, 0.1672971100),
+        ] {
+            assert!(
+                (frames[i][0] - expected).abs() < 3e-7,
+                "{i}: {} vs {expected}",
+                frames[i][0]
+            );
+        }
     }
     #[test]
     fn uvi_white_chorus_native_voices_and_feedback_network() {
@@ -1582,6 +2105,55 @@ mod tests {
                 );
             }
             assert_eq!(frames[32][0], frames[63][0]);
+        }
+    }
+    #[test]
+    fn uvi_time_effect_native_late_mix_snap() {
+        // Independent native DC captures distinguish a 256-frame snap from
+        // floating-point convergence or snapping every control quantum.
+        for (kind, attrs, residual) in [
+            ("DualDelay", "Feedback='0'", 0.),
+            (
+                "WhiteChorus",
+                "Edge='-1' LowGain='0' Crossover='5000'",
+                2.98023224e-8,
+            ),
+        ] {
+            let node = parse_program(&format!(
+                "<Program><Inserts><{kind} Mix='0' {attrs}/></Inserts></Program>"
+            ))
+            .unwrap()
+            .nodes
+            .remove(2);
+            let mut fx = TimeEffect::new(&node, 2, 48000.).unwrap();
+            let mut warmup = vec![[0.; 12]; 16384];
+            for frame in &mut warmup {
+                frame[0] = 0.25;
+            }
+            fx.process(&mut warmup).unwrap();
+            fx.set_parameter("Mix", &ParameterValue::Number(1.))
+                .unwrap();
+            let mut frames = vec![[0.; 12]; 9000];
+            for frame in &mut frames {
+                frame[0] = 0.25;
+            }
+            // An arbitrary caller chunk boundary must not reset the clock.
+            fx.process(&mut frames[..5749]).unwrap();
+            fx.process(&mut frames[5749..]).unwrap();
+            for (i, expected) in [
+                (5632, 0.000371262373),
+                (5856, 0.000286280265),
+                (5887, 0.000286280265),
+                (5888, 0.),
+                (8192, 0.),
+            ] {
+                assert!(
+                    (frames[i][0] - expected - residual).abs() < 3e-8,
+                    "{kind}/{i}: {} vs {}",
+                    frames[i][0],
+                    expected + residual
+                );
+            }
         }
     }
     #[test]

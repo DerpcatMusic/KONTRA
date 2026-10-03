@@ -325,7 +325,7 @@ fn fingerprint(view: &View, h: &mut DefaultHasher) {
     fn at<T>(a: &Option<Arc<T>>) -> usize {
         a.as_ref().map_or(0, |a| Arc::as_ptr(a) as *const () as usize)
     }
-    (&view.status, &view.multi_status, view.scanned).hash(h);
+    (&view.status, &view.multi_status, view.scanned, &view.uvi_status, &view.uvi_attempted).hash(h);
     (Arc::as_ptr(&view.files) as usize, view.artwork.len()).hash(h);
     for v in &view.parts {
         (v.loading, v.bytes, &v.status, v.program, &v.interface_status, &v.runtime_status, &v.wallpaper_status).hash(h);
@@ -512,10 +512,36 @@ struct Cx<'a> {
 #[derive(Clone)]
 enum RackDrag {
     Instrument(String),
+    Uvi(crate::library::UviSource),
     Part(usize),
 }
 
 impl Cx<'_> {
+    /// Native selections remain requests until the live adapter can install them.
+    /// No bank/member alias is handed to the Kontakt importer or marked loaded.
+    fn open_preset(&mut self, target: crate::library::PresetTarget, new: bool, slot: Option<usize>) {
+        match target {
+            crate::library::PresetTarget::File(path) => {
+                if new { self.add(path.to_string_lossy().into_owned()); }
+                else if let Some(slot) = slot { self.replace(slot, path.to_string_lossy().into_owned()); }
+                else { self.open(&path); }
+            }
+            crate::library::PresetTarget::Uvi(source) => {
+                self.selection.uvi_recent.retain(|old| old != &source);
+                self.selection.uvi_recent.insert(0, source.clone());
+                self.selection.uvi_recent.truncate(6);
+                self.selection.uvi_requested = Some(crate::library::UviRequest { source, slot: slot.and_then(|s| u32::try_from(s).ok()), new });
+                self.state.notice = "UVI playback is not available yet. Checking this program…".into();
+            }
+        }
+    }
+
+    fn toggle_uvi_favorite(&mut self, source: &crate::library::UviSource) {
+        match self.selection.uvi_favorites.iter().position(|old| old == source) {
+            Some(at) => { self.selection.uvi_favorites.remove(at); }
+            None => self.selection.uvi_favorites.push(source.clone()),
+        }
+    }
     /// `library`'s artwork made into what the editor shows, once it is.
     /// Its own artwork, unless the player chose a picture or the generated
     /// cover for it; the generated cover when it has none.
@@ -607,6 +633,7 @@ impl Cx<'_> {
     /// Open a preset from the browser: a multi replaces the rack, an instrument
     /// already in the rack is shown, anything else takes a free slot.
     fn open(&mut self, path: &Path) {
+        self.selection.uvi_requested = None;
         let text = path.to_string_lossy().into_owned();
         self.remember(&text);
         if import::is_multi(path) {
@@ -633,6 +660,7 @@ impl Cx<'_> {
 
     /// Add an instrument to the first free slot and show it.
     fn add(&mut self, path: String) {
+        self.selection.uvi_requested = None;
         self.remember(&path);
         let part = new_part(&self.selection, &self.settings, path);
         let slot = add_part(&mut self.selection, part);
@@ -650,6 +678,7 @@ impl Cx<'_> {
 
     /// Put another instrument (or a multi) in `slot`.
     fn replace(&mut self, slot: usize, path: String) {
+        self.selection.uvi_requested = None;
         self.remember(&path);
         if import::is_multi(Path::new(&path)) {
             self.p.shared.queue_multi(path);
@@ -1186,6 +1215,7 @@ fn resize_corner(ui: &mut Ui, from: &mut Option<Size>, window: Size, zoom: f64, 
 fn ghost(ui: &Ui, cx: &Cx) -> Option<El> {
     let label = match ui.dragging::<RackDrag>()? {
         RackDrag::Instrument(path) => header::stem(path),
+        RackDrag::Uvi(source) => Path::new(&source.member).file_stem().unwrap_or_default().to_string_lossy().into_owned(),
         RackDrag::Part(slot) => rack::name(cx, *slot),
     };
     let at = ui.local("editor-root")?;

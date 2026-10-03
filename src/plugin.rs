@@ -120,6 +120,19 @@ impl StateField for Streaming {
         })
     }
 }
+
+impl StateField for library::UviSource {
+    fn write_field(&self, buf: &mut Vec<u8>) { serde_json::to_string(self).unwrap().write_field(buf); }
+    fn read_field(cursor: &mut moose::core::custom_state::StateCursor) -> Option<Self> {
+        serde_json::from_str(&String::read_field(cursor)?).ok()
+    }
+}
+impl StateField for library::UviRequest {
+    fn write_field(&self, buf: &mut Vec<u8>) { serde_json::to_string(self).unwrap().write_field(buf); }
+    fn read_field(cursor: &mut moose::core::custom_state::StateCursor) -> Option<Self> {
+        serde_json::from_str(&String::read_field(cursor)?).ok()
+    }
+}
 impl StateField for Edits {
     fn write_field(&self, buf: &mut Vec<u8>) {
         serde_json::to_string(self).unwrap_or_default().write_field(buf);
@@ -268,6 +281,11 @@ pub struct Selection {
     pub align_transport_only: bool,
     /// How parts are routed to buses and host ports ([`routing::Outputs`]).
     pub outputs: u8,
+    /// Appended: pre-keyed Kontakt sessions retain positional field ordering.
+    pub uvi_favorites: Vec<library::UviSource>,
+    pub uvi_recent: Vec<library::UviSource>,
+    /// Requested, not loaded: retained while the live adapter is unavailable.
+    pub uvi_requested: Option<library::UviRequest>,
 }
 impl Selection {
     /// Output bus `n`, default when never set.
@@ -325,6 +343,16 @@ pub struct SamplerParams {
 pub(crate) use SamplerParamsParamId as P;
 
 impl SamplerParams {
+    /// Serialized loader only. The controller and its blocking destructor stay
+    /// here until an audio bridge has a separately owned, fixed packet port.
+    #[cfg(feature = "uvi")]
+    pub(crate) fn with_prepared_uvi_worker<T>(&self, use_worker: impl FnOnce(&library::UviRequest, u64, u64, &mut crate::uvi::worker::Worker) -> T) -> Option<T> {
+        let key = uvi_load_key(self, &self.selection.read().unwrap())?;
+        let mut prepared = self.shared.uvi_prepared.lock().unwrap();
+        let prepared = prepared.as_mut().filter(|prepared| prepared.key == key)?;
+        let worker = prepared.worker.as_mut().filter(|worker| worker.status() == crate::uvi::worker::Status::Ready)?;
+        Some(use_worker(&key.request, key.epoch, prepared.generation, worker))
+    }
     /// Host output port `index`'s name, as last published (`routing.rs`).
     fn port_name(&self, index: u32) -> Option<String> {
         let names = self.shared.port_names.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -368,6 +396,20 @@ impl SamplerParams {
         });
         drop(view);
         let mut context = context;
+        #[cfg(feature = "uvi")]
+        {
+            let prepared = self.shared.uvi_prepared.lock().unwrap();
+            context["uvi"] = serde_json::json!({
+                "requested":selection.uvi_requested, "live_installed":false,
+                "prepared":prepared.as_ref().map(|p| serde_json::json!({
+                    "source":p.key.request.source, "slot":p.key.request.slot, "new":p.key.request.new,
+                    "epoch":p.key.epoch, "generation":p.generation, "sample_rate":f64::from_bits(p.key.rate),
+                    "status":p.status, "initialized":Some(&p.key) == uvi_load_key(self, &selection).as_ref()
+                        && p.worker.as_ref().is_some_and(|worker| worker.status() == crate::uvi::worker::Status::Ready),
+                })),
+                "block_frames":crate::uvi::worker::BLOCK_FRAMES, "queue_capacity":crate::uvi::worker::QUEUE_CAPACITY,
+            });
+        }
         context["log_flush_error"] = serde_json::json!(crate::diagnostics::flush(std::time::Duration::from_secs(2)).err());
         context
     }
@@ -438,6 +480,13 @@ pub struct Shared {
     ready: ArrayQueue<(usize, u64, Handoff)>,
     pending_ready: Mutex<std::collections::VecDeque<(usize, u64, Handoff)>>,
     discard: ArrayQueue<Retired>,
+    /// Loader-only staging. A Worker owns a blocking join, never a Dsp payload.
+    #[cfg(feature = "uvi")]
+    uvi_prepared: Mutex<Option<UviPrepared>>,
+    #[cfg(feature = "uvi")]
+    uvi_epoch: AtomicU64,
+    #[cfg(feature = "uvi")]
+    uvi_generation: AtomicU64,
     /// Persistence snapshots: the loader lends one per scripted slot, the audio thread fills it in place and returns it.
     snapshot_requests: ArrayQueue<(usize, u64, Box<PersistenceSnapshot>)>,
     /// Refreshed snapshots, and whether any value in them changed.
@@ -706,6 +755,8 @@ pub(crate) struct View {
     pub(crate) files: Arc<Vec<PathBuf>>,
     pub(crate) parts: Vec<PartView>,
     pub(crate) status: String,
+    pub(crate) uvi_attempted: Option<library::UviRequest>,
+    pub(crate) uvi_status: String,
     /// When an editor last showed the rack (see [`Shared::watched`]).
     pub(crate) watched_at: Option<Instant>,
 }
@@ -723,6 +774,12 @@ impl Default for Shared {
             ready: ArrayQueue::new(64),
             pending_ready: Mutex::default(),
             discard: ArrayQueue::new(64),
+            #[cfg(feature = "uvi")]
+            uvi_prepared: Mutex::default(),
+            #[cfg(feature = "uvi")]
+            uvi_epoch: AtomicU64::new(1),
+            #[cfg(feature = "uvi")]
+            uvi_generation: AtomicU64::new(0),
             snapshot_requests: ArrayQueue::new(2 * RACK_SLOTS),
             snapshots: ArrayQueue::new(2 * RACK_SLOTS),
             live_requests: ArrayQueue::new(2 * RACK_SLOTS),
@@ -801,6 +858,8 @@ impl Default for Shared {
                 files: Arc::default(),
                 parts: (0..RACK_SLOTS).map(|_| PartView::default()).collect(),
                 status: "Choose a library and select a preset".into(),
+                uvi_attempted: None,
+                uvi_status: String::new(),
                 watched_at: None,
             }),
         }
@@ -1917,6 +1976,100 @@ impl BackgroundTask for AudioDiagnosticsTask {
 }
 
 pub struct Load;
+
+#[cfg(feature = "uvi")]
+#[derive(Clone, PartialEq, Eq)]
+struct UviLoadKey {
+    request: library::UviRequest,
+    epoch: u64,
+    rate: u64,
+    catalog: u64,
+    /// Exact active Kontakt identity/generation, without changing that engine.
+    target: Option<((String, u32, String), u64)>,
+}
+
+#[cfg(feature = "uvi")]
+struct UviPrepared {
+    key: UviLoadKey,
+    generation: u64,
+    worker: Option<crate::uvi::worker::Worker>,
+    status: &'static str,
+}
+
+#[cfg(feature = "uvi")]
+fn uvi_load_key(params: &SamplerParams, selection: &Selection) -> Option<UviLoadKey> {
+    let request = selection.uvi_requested.clone()?;
+    let target = request.slot.and_then(|slot| {
+        let slot = slot as usize;
+        Some((selection.parts.get(slot)?.source(), params.shared.part(slot)?.generation.load(Ordering::Acquire)))
+    });
+    Some(UviLoadKey { request, epoch: params.shared.uvi_epoch.load(Ordering::Acquire),
+        rate: params.shared.rate.load(Ordering::Acquire), catalog: params.shared.libraries.wanted(), target })
+}
+
+#[cfg(feature = "uvi")]
+fn prepare_uvi(params: &SamplerParams, selection: &Selection) {
+    use crate::uvi::worker::{Status, Worker};
+    const STARTING: &str = "Loading the UVI instrument; the current instrument is still playing.";
+    const READY: &str = "The UVI instrument is prepared; live playback is not available yet.";
+    const FAILED: &str = "The UVI instrument could not be loaded; the current instrument is still playing.";
+    let key = uvi_load_key(params, selection);
+    let retired = {
+        let mut prepared = params.shared.uvi_prepared.lock().unwrap();
+        if prepared.as_ref().map(|p| &p.key) != key.as_ref() { prepared.take() } else { None }
+    };
+    // Stop/join and all graph/Lua/resource destruction run only on Load.
+    drop(retired);
+    let Some(key) = key else {
+        let mut view = params.shared.view.lock().unwrap();
+        if params.selection.read().unwrap().uvi_requested.is_none() {
+            view.uvi_attempted = None; view.uvi_status.clear();
+        }
+        return;
+    };
+    let missing = params.shared.uvi_prepared.lock().unwrap().is_none();
+    if missing {
+        let rate = f64::from_bits(key.rate);
+        let configured = if key.request.new && key.request.slot.is_some()
+            || key.request.slot.is_some() && key.target.is_none() {
+            Err("The UVI destination changed. Select its program again.")
+        } else if !(8000. ..=192000.).contains(&rate) || rate.fract() != 0. {
+            Err("The current sample rate is unsupported by this UVI instrument.")
+        } else {
+            params.shared.libraries.uvi_worker_config(&key.request.source, rate as u32)
+        };
+        if uvi_load_key(params, &params.selection.read().unwrap()) != Some(key.clone()) { return; }
+        let generation = params.shared.uvi_generation.fetch_add(1, Ordering::AcqRel) + 1;
+        let (worker, status) = match configured {
+            Ok(config) => match Worker::start(config, key.epoch, generation) {
+                Ok(worker) => (Some(worker), STARTING), Err(_) => (None, FAILED),
+            },
+            Err(reason) => (None, reason),
+        };
+        let prepared = UviPrepared { key: key.clone(), generation, worker, status };
+        if uvi_load_key(params, &params.selection.read().unwrap()) != Some(key.clone()) { drop(prepared); return; }
+        *params.shared.uvi_prepared.lock().unwrap() = Some(prepared);
+    }
+    let (status, failed) = {
+        let mut prepared = params.shared.uvi_prepared.lock().unwrap();
+        let p = prepared.as_mut().unwrap();
+        let failed = match p.worker.as_ref().map(Worker::status) {
+            Some(Status::Ready) => { p.status = READY; None },
+            Some(Status::Failed | Status::Stopped) => { p.status = FAILED; p.worker.take() },
+            _ => None,
+        };
+        (p.status, failed)
+    };
+    drop(failed);
+    if uvi_load_key(params, &params.selection.read().unwrap()) != Some(key.clone()) { return; }
+    let mut view = params.shared.view.lock().unwrap();
+    if params.selection.read().unwrap().uvi_requested.as_ref() == Some(&key.request)
+        && params.shared.uvi_epoch.load(Ordering::Acquire) == key.epoch {
+        view.uvi_attempted = Some(key.request);
+        if view.uvi_status != status { view.uvi_status = status.into(); }
+    }
+}
+
 impl BackgroundTask for Load {
     type Params = SamplerParams;
     const SERIALIZED: bool = true;
@@ -1988,6 +2141,25 @@ impl BackgroundTask for Load {
         let prepared_snapshot = prepare_snapshot(params);
         let selection = params.selection.read().unwrap().clone();
         params.shared.ensure_parts(selection.parts.len());
+        #[cfg(feature = "uvi")]
+        prepare_uvi(params, &selection);
+        #[cfg(not(feature = "uvi"))]
+        {
+        let uvi_changed = params.shared.view.lock().unwrap().uvi_attempted != selection.uvi_requested;
+        if uvi_changed {
+            let status = selection.uvi_requested.as_ref().map(|request| {
+                match params.shared.libraries.inspect_uvi(&request.source) {
+                    Ok(()) => "UVI program passed graph preflight; live UVI playback is not available yet.".to_owned(),
+                    Err(reason) => reason.to_owned(),
+                }
+            }).unwrap_or_default();
+            let mut view = params.shared.view.lock().unwrap();
+            if params.selection.read().unwrap().uvi_requested == selection.uvi_requested {
+                view.uvi_attempted = selection.uvi_requested.clone();
+                view.uvi_status = status;
+            }
+        }
+        }
         params.shared.prepare_growth();
         params
             .shared
@@ -2000,7 +2172,10 @@ impl BackgroundTask for Load {
             view.scanned = generation;
             match scanned {
                 Some(scanned) => {
-                    view.status = format!("{} libraries · {} presets", scanned.shelf.libraries.len(), scanned.files.len());
+                    view.uvi_attempted = None;
+                    view.uvi_status.clear();
+                    let presets = scanned.files.len() + scanned.shelf.uvi.values().map(|bank| bank.presets.len()).sum::<usize>();
+                    view.status = format!("{} libraries · {presets} presets", scanned.shelf.libraries.len());
                     if let Some(imported) = &scanned.imported {
                         view.status += &match imported.len() {
                             0 => " · nothing new from Kontakt".to_owned(),
@@ -3250,6 +3425,8 @@ impl PluginLogic for Sampler {
         p.shared
             .rate
             .store(c.sample_rate.to_bits(), Ordering::Release);
+        #[cfg(feature = "uvi")]
+        p.shared.uvi_epoch.fetch_add(1, Ordering::AcqRel);
         s.until_poll = 0;
         s.until_diagnostics = 0;
         s.audition_left.fill(0);
@@ -5920,6 +6097,117 @@ end on"#,dir.display());
         moose_test::assert_state_round_trip::<Plugin>();
     }
     #[test]
+    #[cfg(feature = "uvi")]
+    fn staged_uvi_worker_is_owned_off_audio_and_rejects_cancel_reset_and_stale_destination() {
+        let dir = std::env::temp_dir().join(format!("kontra-uvi-staged-ready-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bank = dir.join("authored.ufs");
+        crate::library::tests::authored_uvi_bank(&bank, 4);
+        let mut params = SamplerParams::new();
+        params.shared.libraries = crate::library::tests::authored_uvi_scanner(&dir);
+        let part = Part { path: "/playing/original.nki".into(), snapshot: "/playing/original.nksn".into(), ..Default::default() };
+        let request = library::UviRequest { source: library::UviSource { bank, bank_uuid: [4; 16], member: "Piano.uvip".into() }, slot: Some(0), new: false };
+        *params.selection.write().unwrap() = Selection { parts: vec![part.clone()], uvi_requested: Some(request.clone()), ..Default::default() };
+        params.shared.part(0).unwrap().generation.store(9, Ordering::Release);
+        let ready = |params: &SamplerParams| {
+            let start = Instant::now();
+            loop {
+                prepare_uvi(params, &params.selection.read().unwrap().clone());
+                if let Some(identity) = params.with_prepared_uvi_worker(|_, epoch, generation, worker| {
+                    assert!(worker.stats().initialization_ns > 0); (epoch, generation)
+                }) { break identity; }
+                assert!(start.elapsed().as_secs() < 5, "authored worker did not initialize: {}", params.shared.view.lock().unwrap().uvi_status);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        };
+        let first = ready(&params);
+        assert!(params.shared.ready.is_empty(), "a staged controller never enters the Kontakt callback queue");
+        assert!(params.selection.read().unwrap().parts == [part.clone()]);
+        assert_eq!(params.shared.part(0).unwrap().generation.load(Ordering::Acquire), 9);
+        // Same-rate reset still changes the activation identity, with no join in reset.
+        let mut dsp = Dsp::default();
+        let config = AudioConfig::new(48000., 256);
+        assert_eq!(allocations(|| Sampler::reset(&mut dsp, &params, &config)), 0);
+        assert!(params.with_prepared_uvi_worker(|_, _, _, _| ()).is_none());
+        let reset = ready(&params);
+        assert_ne!(first, reset);
+        params.selection.write().unwrap().parts[0].snapshot = "/playing/changed.nksn".into();
+        assert!(params.with_prepared_uvi_worker(|_, _, _, _| ()).is_none());
+        assert_ne!(ready(&params), reset);
+        params.selection.write().unwrap().uvi_requested = None;
+        prepare_uvi(&params, &params.selection.read().unwrap().clone());
+        assert!(params.shared.uvi_prepared.lock().unwrap().is_none());
+        // A request superseded before provider completion cannot publish or start.
+        let stale = Selection { parts: vec![part], uvi_requested: Some(request), ..Default::default() };
+        let generation = params.shared.uvi_generation.load(Ordering::Acquire);
+        prepare_uvi(&params, &stale);
+        assert!(params.shared.uvi_prepared.lock().unwrap().is_none());
+        assert_eq!(params.shared.uvi_generation.load(Ordering::Acquire), generation);
+        assert!(params.shared.ready.is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "uvi")]
+    fn staged_uvi_failure_keeps_the_existing_source_and_retires_the_controller() {
+        let dir = std::env::temp_dir().join(format!("kontra-uvi-staged-failure-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bank = dir.join("authored.ufs");
+        crate::library::tests::authored_uvi_bank_with_source(&bank, 5, br#"<Program><EventProcessors><ScriptProcessor><script>error('original authored initialization failure')</script></ScriptProcessor></EventProcessors><Layers><Layer><Keygroups><Keygroup><Oscillators><MinBlepGenerator Waveform="4" StartPhase="0.25" BaseNote="60"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#);
+        let mut params = SamplerParams::new();
+        params.shared.libraries = crate::library::tests::authored_uvi_scanner(&dir);
+        let part = Part { path: "/playing/original.nki".into(), ..Default::default() };
+        *params.selection.write().unwrap() = Selection { parts: vec![part.clone()], uvi_requested: Some(library::UviRequest {
+            source: library::UviSource { bank, bank_uuid: [5; 16], member: "Piano.uvip".into() }, slot: Some(0), new: false,
+        }), ..Default::default() };
+        let source = params.selection.read().unwrap().uvi_requested.as_ref().unwrap().source.clone();
+        assert!(params.shared.libraries.uvi_worker_config(&source, 48000).is_ok(), "failure must come from initialization, not provider rejection");
+        let start = Instant::now();
+        loop {
+            prepare_uvi(&params, &params.selection.read().unwrap().clone());
+            if params.shared.uvi_prepared.lock().unwrap().as_ref().is_some_and(|prepared| prepared.worker.is_none()) { break; }
+            assert!(start.elapsed().as_secs() < 5);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let generation = params.shared.uvi_generation.load(Ordering::Acquire);
+        prepare_uvi(&params, &params.selection.read().unwrap().clone());
+        assert_eq!(params.shared.uvi_generation.load(Ordering::Acquire), generation, "failure is not retried every audio poll");
+        assert!(params.selection.read().unwrap().parts == [part]);
+        assert!(params.shared.ready.is_empty());
+        assert!(!params.shared.view.lock().unwrap().uvi_status.contains("original authored initialization failure"), "raw private failures stay out of public status");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn uvi_requests_round_trip_without_changing_legacy_kontakt_state() {
+        use moose::core::custom_state::State;
+        let source = library::UviSource { bank: "/banks/original.ufs".into(), bank_uuid: [7; 16], member: "Root/Keys/Piano.uvip".into() };
+        let selection = Selection {
+            parts: vec![Part { path: "/libraries/piano.nki".into(), snapshot: "/libraries/piano.nksn".into(), ..Default::default() }],
+            order: vec![0], favorites: vec!["/libraries/piano.nki".into()], recent: vec!["/libraries/piano.nki".into()],
+            uvi_favorites: vec![source.clone()], uvi_recent: vec![source.clone()],
+            uvi_requested: Some(library::UviRequest { source, slot: Some(0), new: false }), ..Default::default()
+        };
+        let bytes = selection.serialize();
+        assert!(Selection::deserialize(&bytes) == Some(selection.clone()));
+        let old_count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) - 3;
+        let mut old_keyed = bytes[..8].to_vec();
+        old_keyed[4..8].copy_from_slice(&old_count.to_le_bytes());
+        let mut legacy = old_count.to_le_bytes().to_vec();
+        let mut at = 8;
+        for _ in 0..old_count {
+            let len = u32::from_le_bytes(bytes[at + 4..at + 8].try_into().unwrap()) as usize;
+            old_keyed.extend_from_slice(&bytes[at..at + 8 + len]);
+            legacy.extend_from_slice(&bytes[at + 4..at + 8 + len]);
+            at += 8 + len;
+        }
+        let mut old = selection;
+        old.uvi_favorites.clear(); old.uvi_recent.clear(); old.uvi_requested = None;
+        assert!(Selection::deserialize(&old_keyed) == Some(old.clone()));
+        assert!(Selection::deserialize(&legacy) == Some(old));
+    }
+
+    #[test]
     fn rack_state_round_trip() {
         use moose::core::custom_state::State;
         let state = Selection {
@@ -5955,6 +6243,9 @@ end on"#,dir.display());
             midi_thru: true,
             favorites: vec!["/libraries/Solo/a.nki".into()],
             recent: vec!["second.nki".into(), "first.nkm".into()],
+            uvi_favorites: Vec::new(),
+            uvi_recent: Vec::new(),
+            uvi_requested: None,
             qwerty: true,
             browser_width: 300.,
             browser_split: 0.4,

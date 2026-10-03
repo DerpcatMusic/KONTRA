@@ -10,6 +10,66 @@ use std::{
 };
 
 #[test]
+fn initialized_ui_snapshot_preserves_scope_without_running_callbacks() {
+    let program = uvi::program::parse_program(
+        r#"<Program><EventProcessors>
+      <ScriptProcessor><script><![CDATA[
+        function onInit()
+          setSize(200,100)
+          knob=Knob{name='same',value=0.25,bounds={1,2,20,30}}
+          knob.changed=function()error('snapshot ran callback')end
+        end
+      ]]></script></ScriptProcessor>
+      </EventProcessors><Layers><Layer><EventProcessors>
+      <ScriptProcessor><script><![CDATA[
+        function onInit()
+          setSize(400,300)
+          knob=Knob{name='same',value=0.75,bounds={5,6,40,50}}
+          knob.changed=function()error('snapshot ran callback')end
+        end
+      ]]></script></ScriptProcessor>
+      </EventProcessors></Layer></Layers></Program>"#,
+    )
+    .unwrap();
+    let processors: Vec<_> = program
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(id, node)| (node.kind == "ScriptProcessor").then_some(id))
+        .collect();
+    let mut session = script::Session::new_program_chain(
+        &program,
+        std::collections::BTreeMap::new(),
+        None,
+        48000,
+    )
+    .unwrap();
+    let first = session.ui_snapshot(processors[0]).unwrap();
+    let second = session.ui_snapshot(processors[1]).unwrap();
+    assert!(first.processor != second.processor);
+    assert!(first.widgets[0].id == second.widgets[0].id);
+    assert!(first.widgets[0].name == second.widgets[0].name);
+    assert!(first.root.width == 200. && second.root.width == 400.);
+    assert!(matches!(
+        first.widgets[0].value,
+        Some(uvi::host::UiValue::Number(0.25))
+    ));
+    assert!(matches!(
+        second.widgets[0].value,
+        Some(uvi::host::UiValue::Number(0.75))
+    ));
+    assert!(first == session.ui_snapshot(processors[0]).unwrap());
+    assert!(session.ui_snapshot(usize::MAX).is_err());
+    assert_eq!(session.current_frame(), 0);
+    let drained = session.drain().unwrap();
+    assert!(
+        drained.commands.is_empty() && drained.host_commands.is_empty() && drained.logs.is_empty()
+    );
+    drop(session);
+    assert!(first.widgets[0].bounds.x == 1. && second.widgets[0].bounds.x == 5.);
+}
+
+#[test]
 fn clear_mapping_lua_and_audio() {
     let dir = std::env::temp_dir().join(format!(
         "kontra-uvi-{}-{}",
