@@ -515,7 +515,10 @@ mod tests {
         member(&mut bytes, 512, 0xff, b"clear");
         member(&mut bytes, 768, 0x100, &b"secret".iter().map(|b| b ^ 7).collect::<Vec<_>>());
         bytes.resize(1046, 0);
-        let dir = std::env::temp_dir().join(format!("kontra-lazy-resources-{}", std::process::id()));
+        // Ancestor resource discovery scans one child level. Keep this archive
+        // below its own temporary library root, outside other tests' sibling scans.
+        let owner = tempfile::tempdir().unwrap();
+        let dir = owner.path().join("library");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("resources.nkr"), bytes).unwrap();
         let mut resources = Resources::of(&dir.join("instrument.nki"), "pictures");
