@@ -1066,13 +1066,36 @@ impl Scene {
         self.instructions.store(0, Ordering::Relaxed);
         self.parameters.lock().unwrap().edits.clear();
         let pointer = ui.pointer();
+        // Named paint/layout descendants are real MUI capture surfaces. Bubble
+        // that one response to the nearest enabled native gesture owner, never
+        // synthesize another hit or notify every ancestor independently.
+        let mut responses = BTreeMap::new();
+        if let Some(scene) = ui.scene() {
+            for surface in scene.surfaces() {
+                let response = ui.get(surface.key.as_str());
+                if !response.pressed && !response.held && !response.released { continue; }
+                let mut current = Some(surface);
+                for _ in 0..=64 {
+                    let Some(surface) = current else { break; };
+                    if let Some(id) = surface.key.as_str().strip_prefix(prefix)
+                        .and_then(|key|key.strip_prefix('-')).and_then(|key|key.parse::<usize>().ok()) {
+                        if self.gestures.get(id).and_then(Option::as_ref)
+                            .is_some_and(|gesture|gesture.present && gesture.enabled) {
+                            responses.insert(id,response);
+                            break;
+                        }
+                    } else { break; }
+                    current = surface.parent.as_ref().and_then(|parent|scene.surface(parent.as_str()));
+                }
+            }
+        }
         for retiring in [true,false] {
             for (id, entry) in self.gestures.iter_mut().enumerate() {
                 let Some(gesture) = entry else { continue; };
                 let retired = !gesture.present || !gesture.enabled;
                 if retired != retiring { continue; }
                 let key = format!("{prefix}-{id}");
-                let response = ui.get(key.as_str());
+                let response = responses.get(&id).copied().unwrap_or_default();
                 let surface = ui.scene().and_then(|scene|scene.surface(&key));
                 let current = pointer.pos.zip(surface).map(|(position,surface)|HoverInput { position, frame:surface.frame, mods:pointer.mods });
                 let mut calls = Vec::new();
@@ -1087,7 +1110,11 @@ impl Scene {
                     }
                 }
                 if let Some(capture) = &mut gesture.capture {
-                    let input = current.unwrap_or(HoverInput { mods:pointer.mods, ..capture.last });
+                    let input = HoverInput {
+                        position:current.map_or(capture.last.position,|input|input.position),
+                        frame:capture.last.frame,
+                        mods:pointer.mods,
+                    };
                     let finish = retired || response.released || (!response.held && !response.pressed);
                     if !retired && (response.held || response.released) {
                         let travel = input.position-capture.origin;
