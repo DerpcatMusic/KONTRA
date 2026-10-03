@@ -14,9 +14,7 @@ import sys
 import wave
 
 
-def main():
-    plugin, cli, out = [Path(p).resolve() for p in sys.argv[1:]]
-    source = Path(__file__).resolve().parents[1]
+def create_fixture(cli, out):
     samples = out / "samples"
     samples.mkdir(parents=True, exist_ok=True)
     with wave.open(str(samples / "Tone C3.wav"), "wb") as audio:
@@ -26,15 +24,28 @@ def main():
     subprocess.run([str(cli), "create-library", str(samples), "--name", "NativeMIDI",
                     "--vendor", "AuthoredTest", "--out", str(out / "library"), "--kontakt-only"], check=True)
     nki = next((out / "library").rglob("*.nki"))
-    multi = out / "tone.kontra-multi"
+    return nki
+
+
+def export_state(cli, out, nki, name="tone", **routing):
+    multi = out / f"{name}.kontra-multi"
+    part = {"path": str(nki), "port": 0, "channel": -1, "output": 0,
+            "aux": -1, "aux_gain": -60., "output_manual": True, "mic_buses": [], "mic_names": []}
+    part.update(routing)
     multi.write_text(json.dumps({"format": "kontra-multi", "version": 1, "name": "Native MIDI fixture",
-                                "parts": [{"path": str(nki), "port": 0, "channel": -1, "output": 0,
-                                           "aux": -1, "aux_gain": -60., "output_manual": True,
-                                           "mic_buses": [], "mic_names": []}]}))
-    state = out / "tone.state"
+                                "parts": [part]}))
+    state = out / f"{name}.state"
     exported = subprocess.run([str(cli), "export-multi-state", str(multi), str(state)], check=True,
                               capture_output=True, text=True)
-    (out / "state-export.json").write_text(exported.stdout)
+    (out / ("state-export.json" if name == "tone" else f"{name}-state-export.json")).write_text(exported.stdout)
+    return state
+
+
+def main():
+    plugin, cli, out = [Path(p).resolve() for p in sys.argv[1:]]
+    source = Path(__file__).resolve().parents[1]
+    nki = create_fixture(cli, out)
+    state = export_state(cli, out, nki)
     host = out / "native-midi-audio"
     subprocess.run(["g++", "-std=c++17", "-O2", str(source / "vendor/moose-vst3/tests/native_midi_audio.cpp"),
                     "-ldl", "-pthread", "-o", str(host)], check=True)

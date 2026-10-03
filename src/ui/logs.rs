@@ -457,7 +457,7 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
         let (redact, redact_el) = check(
             ui,
             "logs-redact",
-            "Redact local paths in the report",
+            "Redact paths in structured logs",
             state.redact,
         );
         if redact {
@@ -466,10 +466,10 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
         content.push(col![
             body("Support report preview").text_size(TEXT),
             caption(crate::build_info::LABEL).fill(secondary()).tip(crate::build_info::SUMMARY).lines(2),
-            caption("Build and audio settings, load summaries, current logs and retained inactive sessions. No sample, script or access-key contents.").fill(secondary()).lines(3),
+            caption("Build/audio settings, logs and exact archived private crash evidence. Crash originals are UNREDACTED and may contain personal paths or sensitive native fields; review before sharing.").fill(secondary()).lines(3),
             caption("Recent view: up to 2048 events / 2 MiB. Inactive history: 7 days / 64 MiB; active log rotation: up to 16 MiB.").fill(secondary()).lines(3),
             field(ui, "logs-export-path", &mut state.destination, "New report folder"),
-            row![redact_el, caption(if state.redact { "Local paths are redacted" } else { "Local paths will be included" }).lines(2)].gap(SPACE).align(Align::Center),
+            row![redact_el, caption(if state.redact { "Structured log paths are redacted; crash originals are unchanged" } else { "Structured log paths and private crash originals will be included" }).lines(2)].gap(SPACE).align(Align::Center),
         ].gap(TIGHT).align(Align::Stretch).pad(INSET).shrink(0).id("logs-preview"));
         let running = state.export_thread.is_some()
             || state

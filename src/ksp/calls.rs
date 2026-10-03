@@ -1050,7 +1050,16 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 return push_int(m, v);
             }
             // Shown by Kontakt's value law, as its own knobs show it.
-            match m.engine.engine_par_display(p, v).or_else(|| crate::engine::engine_par_display(p.id, v)) {
+            let subtype = EnginePar { id: crate::engine::engine_par::EFFECT_SUBTYPE, ..p };
+            let ladder_cutoff = p.id == crate::engine::engine_par::CUTOFF
+                && m.engine.engine_par(subtype).or_else(|| m.env.engine_par(subtype)) == Some(33);
+            let shown = if ladder_cutoff {
+                Some(crate::engine::Disp::Num(crate::engine::filter::ladder_cutoff(
+                    (v as f32 / 1_000_000.0).clamp(0.0, 1.0)), 1))
+            } else {
+                m.engine.engine_par_display(p, v).or_else(|| crate::engine::engine_par_display(p.id, v))
+            };
+            match shown {
                 Some(shown) => push_fmt(m, format_args!("{shown}")),
                 None => push_fmt(m, format_args!("{v}")),
             }
