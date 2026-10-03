@@ -1590,12 +1590,11 @@ fn screenshot() {
         .filter_map(|w| w.trim().parse().ok())
         .map(|w: u16| (w, if w < 1000 { 600 } else if w > 1500 { 1000 } else { 760 }))
         .collect();
-    // Prepare each library variant once; every state/width still gets fresh
-    // shared state, selection and view. Interfaces and artwork are immutable Arcs.
-    let loaded_rack = racked(&files, &instruments, true, "perform");
-    let empty_rack = racked(&files, &instruments, false, "perform");
-    let covers_rack = racked(&files, &instruments, false, "covers");
-    let no_libraries_rack = racked(&files, &instruments, false, "no-libraries");
+    // Prepare only the library variants used by the filtered states. Every
+    // state/width gets fresh shared state, selection and view; immutable Arcs
+    // retain the prepared interfaces and artwork.
+    let (mut loaded_rack, mut empty_rack, mut covers_rack, mut no_libraries_rack) =
+        (None, None, None, None);
     // Sticky headers need a second part to scroll past the first.
     let sticky_ok = instruments.len() > 1;
     for &(state, loaded, presses) in states
@@ -1605,10 +1604,10 @@ fn screenshot() {
     {
         for &(width, height) in &sizes {
             let prepared = match state {
-                "covers" => &covers_rack,
-                "no-libraries" => &no_libraries_rack,
-                _ if loaded => &loaded_rack,
-                _ => &empty_rack,
+                "covers" => covers_rack.get_or_insert_with(|| racked(&files, &instruments, false, "covers")),
+                "no-libraries" => no_libraries_rack.get_or_insert_with(|| racked(&files, &instruments, false, "no-libraries")),
+                _ if loaded => loaded_rack.get_or_insert_with(|| racked(&files, &instruments, true, "perform")),
+                _ => empty_rack.get_or_insert_with(|| racked(&files, &instruments, false, "perform")),
             };
             let p = copied_rack(prepared, state);
             if state == "library-ui" { p.selection.write().unwrap().parts.iter_mut().for_each(|p| p.view = 1); }
