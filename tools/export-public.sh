@@ -184,9 +184,10 @@ done < <(scan -cEI "$ksp" . | grep -v ':0$' || true)
 # known exceptions; the latter is a public download-integrity check, not a key.
 while IFS= read -r f; do
   if [ "$f" = ./release-fixes.json ]; then
-    # Reviewed compiled-executable digest in five authored validation notes,
-    # not a key. Preserve the ledger; every other hex string still fails.
-    sed 's/Frozen executable SHA d1080da925e7118b46f3f0d5fa7e752404b00b7aef52777bb1c7ee118efadfb5;//g' "$f" |
+    # Reviewed compiled-executable digests in authored validation notes,
+    # not keys. Preserve the ledger; every other hex string still fails.
+    sed -e 's/Frozen executable SHA d1080da925e7118b46f3f0d5fa7e752404b00b7aef52777bb1c7ee118efadfb5;//g' \
+      -e 's/Frozen lib-test SHA256 fe33b9577cf2e49d808d685901ad6ec166e39bdab7da9bc0b8b395ddf1b5dfa5; production CDLL 45802d001a477db4f223038d660bed8f4daf160d05182c9ae767fa54bbc83bae\.//g' "$f" |
       grep -qEI '(^|[^0-9A-Fa-f])[0-9A-Fa-f]{64}([^0-9A-Fa-f]|$)' || continue
   fi
   leak "64-digit hex string in $f"
