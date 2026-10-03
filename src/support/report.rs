@@ -25,8 +25,6 @@ struct ReportPayload {
     machine_hashes: Vec<[u8; 32]>,
     #[serde(skip)]
     incident_metadata: String,
-    #[serde(skip)]
-    reporter_context: String,
 }
 #[derive(Deserialize)]
 struct ReportResponse {
@@ -213,12 +211,7 @@ fn valid_recorded_version(value: &str) -> bool {
 }
 
 fn set_report_diagnostics(payload: &mut ReportPayload, complete: &str) {
-    let diagnostics = format!(
-        "{}\n{}\n\n{}",
-        payload.incident_metadata,
-        redact_log(complete),
-        payload.reporter_context
-    );
+    let diagnostics = format!("{}\n{}", payload.incident_metadata, redact_log(complete));
     payload.diagnostics = Some(bounded_diagnostics(diagnostics.clone()));
     payload.diagnostics_full = Some(diagnostics);
 }
@@ -228,7 +221,7 @@ fn automatic_report_payload(
     current_identity: &(String, String),
     current_platform: &platform::PlatformSnapshot,
     complete: &str,
-) -> ReportPayload {
+) -> (ReportPayload, String) {
     let mut payload = ReportPayload {
         schema: 3, product: "kontra", version: String::new(), build_id: String::new(),
         incident_id: Some(incident.id.clone()), incident_kind: None, incident_version: None,
@@ -238,18 +231,32 @@ fn automatic_report_payload(
         description: "The previous host session ended with a confirmed crash while KONTRA was loaded. Fault attribution is unknown unless the attached exception and stack establish it. This report was sent automatically after KONTRA reloaded.".into(),
         diagnostics_attached: true, diagnostics: None, diagnostics_full: None, machine_hashes: Vec::new(),
         incident_metadata: String::new(),
-        reporter_context: format!(
-            "Reporter context (reopening session; not crash attribution):\nReporter KONTRA version: {}\nReporter build ID: {}\nReporter host: {}\nReporter plugin format: {}\n{}",
-            crate::build_info::BUILD.version, crate::build_info::BUILD.build_hash,
-            recorded_field(&current_identity.0).replace("not recorded at incident time", "not available in reopening session"),
-            recorded_field(&current_identity.1).replace("not recorded at incident time", "not available in reopening session"),
-            current_platform.render().lines().map(|line| format!("Reporter {line}")).collect::<Vec<_>>().join("\n"),
-        ),
     };
-    payload.reporter_context = redact_log(&payload.reporter_context);
     attach_incident_provenance(&mut payload, incident);
     set_report_diagnostics(&mut payload, complete);
-    payload
+    // Reopening context remains local. Including it in the submitted evidence
+    // would change the acknowledgement digest and create duplicate issues when
+    // another host/build retries exactly the same recorded incident.
+    let reporter_context = redact_log(&format!(
+        "Reporter context (reopening session; local only):\nReporter KONTRA version: {}\nReporter build ID: {}\nReporter host: {}\nReporter plugin format: {}\n{}",
+        crate::build_info::BUILD.version,
+        crate::build_info::BUILD.build_hash,
+        recorded_field(&current_identity.0).replace(
+            "not recorded at incident time",
+            "not available in reopening session"
+        ),
+        recorded_field(&current_identity.1).replace(
+            "not recorded at incident time",
+            "not available in reopening session"
+        ),
+        current_platform
+            .render()
+            .lines()
+            .map(|line| format!("Reporter {line}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    ));
+    (payload, reporter_context)
 }
 
 pub(super) struct AutomaticReportPermit<'a>(&'a std::sync::atomic::AtomicBool);
@@ -302,11 +309,17 @@ pub(super) fn try_auto_report_pending_incident() {
         }
         let identity = HOST_IDENTITY.lock_unpoisoned().clone();
         let platform = platform::snapshot(&std::sync::atomic::AtomicBool::new(false));
-        let payload = automatic_report_payload(
+        let (payload, reporter_context) = automatic_report_payload(
             &incident,
             &identity,
             platform,
             &crash::complete_diagnostics(&incident.id),
+        );
+        crate::diagnostics::event(
+            crate::diagnostics::LogLevel::Info,
+            "support",
+            "crash_report_reopening_context",
+            serde_json::json!({"incident_id":incident.id,"reason":reporter_context}),
         );
         let result = send_report(payload);
         let level = if result.is_ok() {
@@ -656,7 +669,7 @@ mod tests {
             "Host: REAPER 7.5\nOperating system: Windows\nOS version: 11\nProcess architecture: x86_64\nPlugin format: CLAP\n{}",
             "diagnostic line\n".repeat(4_000)
         );
-        let payload = automatic_report_payload(
+        let (payload, local_context) = automatic_report_payload(
             &incident,
             &("REAPER 7.5".into(), "CLAP".into()),
             &reopening,
@@ -691,13 +704,14 @@ mod tests {
             }
         }
         let full = wire["diagnostics_full"].as_str().unwrap();
-        assert!(full.contains("Reporter host: REAPER 7.5\nReporter plugin format: CLAP"));
-        assert!(full.contains("Reporter Operating system: Windows"));
-        assert!(full.contains(&format!(
+        assert!(!full.contains("Reporter context") && !full.contains("Reporter build ID:"));
+        assert!(local_context.contains("Reporter host: REAPER 7.5\nReporter plugin format: CLAP"));
+        assert!(local_context.contains("Reporter Operating system: Windows"));
+        assert!(local_context.contains(&format!(
             "Reporter KONTRA version: {}",
             crate::build_info::BUILD.version
         )));
-        assert!(full.contains(&format!(
+        assert!(local_context.contains(&format!(
             "Reporter build ID: {}",
             crate::build_info::BUILD.build_hash
         )));
@@ -728,7 +742,7 @@ mod tests {
             "1.2.3\nHost: REAPER",
         ] {
             incident.version = version.into();
-            let payload = automatic_report_payload(
+            let (payload, _) = automatic_report_payload(
                 &incident,
                 &("REAPER".into(), "CLAP".into()),
                 &reopening,
@@ -768,7 +782,7 @@ mod tests {
         // The reopening host still cannot supply any missing incident field.
         for process in ["Studio One", "Reason", " "] {
             incident.host_process = process.into();
-            let payload = automatic_report_payload(
+            let (payload, _) = automatic_report_payload(
                 &incident,
                 &("REAPER".into(), "CLAP".into()),
                 &reopening,
@@ -802,7 +816,7 @@ mod tests {
     #[test]
     fn refreshed_delivery_rebuilds_both_metadata_previews_and_redacts_values() {
         let mut incident = crash::test_incident("0.3.64", "recorded-build");
-        let mut payload = automatic_report_payload(
+        let (mut payload, _) = automatic_report_payload(
             &incident,
             &("REAPER".into(), "CLAP".into()),
             &Default::default(),
@@ -844,6 +858,51 @@ mod tests {
         let bounded = recorded_field(&"😀".repeat(1_000));
         assert!(bounded.ends_with(" [metadata summary truncated]"));
         assert_eq!(bounded.chars().filter(|&c| c == '😀').count(), 256);
+    }
+
+    #[test]
+    fn identical_recorded_evidence_keeps_the_same_wire_bytes_and_sha_across_reopening_hosts() {
+        use sha2::Digest as _;
+        let incident = crash::test_incident("0.3.64", "a-previous-recorded-build");
+        // Exercise the production complete renderer too: its preview may say
+        // "previous install", but submitted bytes cannot depend on reporter BUILD.
+        let complete = incident.render_diagnostics(true);
+        assert!(!complete.contains("recorded by a previous install"));
+        assert!(complete.contains("Version that recorded this incident: 0.3.64\n"));
+        let first_platform = platform::PlatformSnapshot {
+            os_name: "macOS".into(),
+            os_version: "15.6".into(),
+            process_architecture: "aarch64".into(),
+            ..Default::default()
+        };
+        let second_platform = platform::PlatformSnapshot {
+            os_name: "Windows".into(),
+            os_version: "11".into(),
+            process_architecture: "x86_64".into(),
+            ..Default::default()
+        };
+        let (first, first_context) = automatic_report_payload(
+            &incident,
+            &("Studio One 7.2".into(), "VST3".into()),
+            &first_platform,
+            &complete,
+        );
+        let (second, second_context) = automatic_report_payload(
+            &incident,
+            &("REAPER 7.5".into(), "CLAP".into()),
+            &second_platform,
+            &complete,
+        );
+        assert_ne!(first_context, second_context);
+        assert_eq!(first.diagnostics, second.diagnostics);
+        assert_eq!(first.diagnostics_full, second.diagnostics_full);
+        let first_sha = sha2::Sha256::digest(first.diagnostics_full.as_ref().unwrap().as_bytes());
+        let second_sha = sha2::Sha256::digest(second.diagnostics_full.as_ref().unwrap().as_bytes());
+        assert_eq!(first_sha, second_sha);
+        assert_eq!(
+            bounded_report_body(&first, 16 * 1024 * 1024).unwrap(),
+            bounded_report_body(&second, 16 * 1024 * 1024).unwrap()
+        );
     }
     #[test]
     fn delivery_status_restores_a_readable_receipt_without_untrusted_fields() {
