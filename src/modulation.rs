@@ -288,7 +288,7 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                             target: target as u32, intensity: t.intensity,
                             negative: t.unknown_flags & 0x02 != 0, lag_ms: t.lag_ms as i16,
                         });
-                        out.warnings.push(format!("Internal LFO slot {slot}: saved retriggered sine-only Multi volume with zero/positive lag is eligible for ordinary sampler playback; live source bypass is supported; live intensity/timing, nonzero fade and other targets remain unsupported; gain uses the existing Amplifier path, with native full group-FX placement not independently verified"));
+                        out.warnings.push(format!("Internal LFO slot {slot}: saved retriggered sine-only Multi volume with zero/positive lag is eligible for ordinary sampler playback; live source bypass is supported; live intensity/timing, nonzero fade and other targets remain unsupported"));
                     } else if !volume.is_empty() {
                         out.warnings.push(format!("Internal LFO slot {slot} volume not applied: requires one saved phase-zero sine-only target, zero source fade, nonnegative signed lag, known polarity flags, no separate inversion or enabled shaper"));
                     }
