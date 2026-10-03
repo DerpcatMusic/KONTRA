@@ -2703,6 +2703,89 @@ mod tests {
     }
 
     #[test]
+    fn session_restores_parameter_widgets_beside_stateless_buttons_and_roundtrips_state() {
+        let program=parse_program(r#"<Program><EventProcessors><ScriptProcessor click="1" panel="0.9" gain="0.75" enabled="1"><ScriptData curve="0,250000 0,500000"/><script><![CDATA[
+          calls=0
+          panel=Panel('panel');button=panel:Button('click')
+          button.persistent=true
+          button.changed=function()error('stateless Button must not be restored')end
+          gain=panel:Knob{'gain',0,0,1}
+          gain.changed=function(...)assert(select('#',...)==1);calls=calls+1 end
+          curve=panel:Table{'curve',2,0,0,1}
+          curve.changed=function(self,index)assert(index==1 or index==2);calls=calls+1 end
+          enabled=panel:OnOffButton{'enabled',false}
+          enabled.changed=function(self,mods)assert(type(mods)=='userdata');calls=calls+1 end
+          function onSave()return {authored=true}end
+          function onLoad(data)assert(data.authored)end
+          function onInit()
+            assert(button.value==nil and button.setValue==nil and calls==4)
+            assert(gain.value==0.75 and enabled.value and curve:getValue(1)==0.25 and curve:getValue(2)==0.5)
+            assert(saveState('authored-state.xml').success)
+            gain:setValue(0.125,false);enabled:setValue(false,false);curve:setValue(2,0.125,false)
+            assert(loadState('authored-state.xml').success)
+            assert(calls==7 and gain.value==0.75 and enabled.value and curve:getValue(2)==0.5)
+            assert(button.value==nil and button.setValue==nil)
+          end
+        ]]></script></ScriptProcessor></EventProcessors><Layers><Layer/></Layers></Program>"#).unwrap();
+        let saved = Rc::new(RefCell::new(None::<Vec<u8>>));
+        let storage = saved.clone();
+        let resources = Some(Rc::new(
+            move |request: &host::ResourceRequest| -> mlua::Result<host::ResourceResponse> {
+                match request {
+                    host::ResourceRequest::WriteState { path, bytes }
+                        if path == "authored-state.xml" =>
+                    {
+                        *storage.borrow_mut() = Some(bytes.clone());
+                        Ok(host::ResourceResponse::Saved)
+                    }
+                    host::ResourceRequest::ReadState { path } if path == "authored-state.xml" => {
+                        Ok(host::ResourceResponse::Bytes(
+                            storage
+                                .borrow()
+                                .clone()
+                                .ok_or_else(|| mlua::Error::runtime("Authored state not saved"))?,
+                        ))
+                    }
+                    _ => Err(mlua::Error::runtime("Unapproved authored capability")),
+                }
+            },
+        ) as host::Resources);
+        let mut session =
+            Session::new_program_chain(&program, BTreeMap::new(), resources, 48_000).unwrap();
+        let processor = program
+            .nodes
+            .iter()
+            .position(|n| n.kind == "ScriptProcessor")
+            .unwrap();
+        let snapshot = session.ui_snapshot(processor).unwrap();
+        assert!(
+            snapshot.widgets[1].kind == host::UiKind::Button && snapshot.widgets[1].value.is_none()
+        );
+        assert!(matches!(snapshot.widgets[2].value,Some(host::UiValue::Number(n))if n==0.75));
+        assert!(session.drain().unwrap().host_commands.is_empty());
+        let bytes = saved.borrow();
+        let document =
+            roxmltree::Document::parse(std::str::from_utf8(bytes.as_ref().unwrap()).unwrap())
+                .unwrap();
+        let scalar = document
+            .descendants()
+            .find(|node| node.has_tag_name("ScriptProcessor"))
+            .unwrap();
+        assert!(scalar.attribute("click").is_none() && scalar.attribute("panel").is_none());
+        assert!(
+            scalar.attribute("gain") == Some("0.75") && scalar.attribute("enabled") == Some("1")
+        );
+        assert!(
+            document
+                .descendants()
+                .find(|node| node.has_tag_name("ScriptData"))
+                .unwrap()
+                .attribute("curve")
+                .is_some()
+        );
+    }
+
+    #[test]
     fn session_ui_edits_are_scoped_scheduled_and_prevalidated() {
         let program=parse_program(r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
           n=Knob('same',0.25,0,1)

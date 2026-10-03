@@ -1188,6 +1188,15 @@ fn node_id(object: &Table, identities: &RefCell<HashMap<usize, NodeId>>) -> mlua
         .ok_or_else(|| mlua::Error::runtime("Table is not a UVI Program object"))
 }
 
+// Only native parameter widgets have persistent values. Stateless Button and
+// containers/labels/images may appear beside them, including stale scalar XML.
+fn persistent_parameter_widget(kind: &str) -> bool {
+    matches!(
+        kind,
+        "Table" | "Knob" | "Slider" | "NumBox" | "Menu" | "OnOffButton"
+    )
+}
+
 /// Restore observed ScriptProcessor scalars and ScriptData Table cells after
 /// constructors execute. Native restoration visits Tables first, then scalar
 /// controls, in constructor order, notifying immediately after each changed cell.
@@ -1244,14 +1253,14 @@ fn restore_widgets_in(
     for tables in [true, false] {
         for widget in order.sequence_values::<Table>() {
             let widget = widget?;
-            if (widget.get::<String>("kind")? == "Table") != tables {
+            let kind = widget.get::<String>("kind")?;
+            if !persistent_parameter_widget(&kind) || (kind == "Table") != tables {
                 continue;
             }
             if !widget.get::<bool>("persistent")? {
                 continue;
             }
             let name = widget.get::<String>("name")?;
-            let kind = widget.get::<String>("kind")?;
             let set = widget.get::<Function>("setValue")?;
             if kind == "Table" {
                 let Some(text) = data.first().and_then(|n| n.attributes.get(&name)) else {
@@ -1285,7 +1294,7 @@ fn restore_widgets_in(
                 restored += 1;
             } else if let Some(text) = processor.attributes.get(&name) {
                 let value = match kind.as_str() {
-                    "Button" | "OnOffButton" => match text.as_str() {
+                    "OnOffButton" => match text.as_str() {
                         "0" => Value::Boolean(false),
                         "1" => Value::Boolean(true),
                         _ => {
@@ -1863,11 +1872,11 @@ fn save_state(environment: &Table) -> mlua::Result<Vec<u8>> {
         .get::<Table>("order")?;
     for widget in order.sequence_values::<Table>() {
         let widget = widget?;
-        if !widget.get::<bool>("persistent")? {
+        let kind = widget.get::<String>("kind")?;
+        if !persistent_parameter_widget(&kind) || !widget.get::<bool>("persistent")? {
             continue;
         }
         let name = widget.get::<String>("name")?;
-        let kind = widget.get::<String>("kind")?;
         let (destination, value) = if kind == "Table" {
             let get = widget.get::<Function>("getValue")?;
             let values = (1..=widget.get::<usize>("length")?)
@@ -1877,10 +1886,7 @@ fn save_state(environment: &Table) -> mlua::Result<Vec<u8>> {
                 })
                 .collect::<mlua::Result<Vec<_>>>()?;
             (&mut tables, values.join(" "))
-        } else if matches!(
-            kind.as_str(),
-            "Knob" | "Slider" | "NumBox" | "Menu" | "Button" | "OnOffButton"
-        ) {
+        } else {
             let value = match ParameterValue::from_lua(widget.get::<Value>("value")?)? {
                 ParameterValue::Number(n) => n.to_string(),
                 ParameterValue::Boolean(b) => if b { "1" } else { "0" }.to_owned(),
@@ -1891,8 +1897,6 @@ fn save_state(environment: &Table) -> mlua::Result<Vec<u8>> {
                 }
             };
             (&mut scalars, value)
-        } else {
-            continue;
         };
         destination.push_str(&format!(" {}=\"{}\"", name, xml_text(&value)));
         if scalars.len() + tables.len() > SOURCE_LIMIT {
@@ -2796,6 +2800,31 @@ mod tests {
             matches!(&commands[0],Command{frame:31,action:Action::LoadResource{kind:ResourceKind::Sample,path,..}} if path=="approved-resource")
         );
     }
+    #[test]
+    fn host_parameter_widget_with_malformed_setter_still_fails_restoration() {
+        let program=parse_program(r#"<Program><EventProcessors><ScriptProcessor gain="0.5"/></EventProcessors></Program>"#).unwrap();
+        let lua = vm();
+        install_ui(&lua, &lua.globals()).unwrap();
+        lua.load(
+            r#"
+          gain=Knob{'gain',0,0,1}
+          local original=getmetatable(gain).__index
+          setmetatable(gain,{__index=function(self,key)
+            if key=='setValue' then return nil end
+            return original(self,key)
+          end})
+        "#,
+        )
+        .exec()
+        .unwrap();
+        let failure = restore_widgets(&lua, &program).unwrap_err();
+        assert!(
+            failure
+                .to_string()
+                .contains("error converting Lua nil to function")
+        );
+    }
+
     #[test]
     fn host_unchanged_persisted_widget_does_not_invoke_callback() {
         let program=parse_program(r#"<Program><EventProcessors><ScriptProcessor n="0.6"><ScriptData t="0,250000 0,750000"/></ScriptProcessor></EventProcessors></Program>"#).unwrap();
