@@ -37,7 +37,7 @@ per target:
   str8  param          "volume" | "pitch" | "playPos" | "eqGain1" | "filterCutoff" | "ahdsr_attack" ...
   f32   intensity
   i16   unknown        (-1 in every record)
-  u8    flags          (0x10 always; 0x04/0x02 unknown)
+  u8    flags          (0x02 negative target depth; other bits retained)
   u16   lag            (0, 40, 120, 128, 250, 500)
   str8  target name    KSP find_target name; "<none>" or "" when unnamed
   u8    slot           ONLY when param is not volume/pitch/playPos
@@ -53,7 +53,7 @@ str8 is a `u32` length followed by bytes.
 | Field | Confidence | Evidence |
 |---|---|---|
 | param | high | Readable ids. Only `volume`, `pitch` and `playPos` omit the slot byte. The rule is inferred from the parameter name, and every record parses exactly. |
-| intensity | high (storage), medium (scale) | Always 0..=1 locally, never negative. `pitch` from pitch bend is 0.1667 in 214k records (0.1599 in 168), and 2/12 matches the usual ±2 semitone bend. `Group::pitch_bend_range()` therefore uses intensity × 12. |
+| intensity | high (storage), medium (scale) | Stored as a magnitude with negative direction in target flag 0x02. `pitch` from pitch bend is 0.1667 in 214k records (0.1599 in 168), and 2/12 matches the usual ±2 semitone bend. `Group::pitch_bend_range()` therefore uses signed intensity × 12. |
 | lag_ms | medium | The Kontakt manual gives Lag in ms. Values are round numbers: 250 on PB_PITCH, 500/120/128 on CC volume. |
 | slot | medium | eqGain\* uses slots 0/2/4, filterCutoff 0/2/3/5 and ahdsr_attack/release 0/1. These match FX-chain positions and internal-modulator slots. |
 | invert | medium | Always 0/1. It is set on 63,805 volume assignments. Its order relative to the shaper has not been verified. |
@@ -444,10 +444,43 @@ returns 507160. This corroborates the
 (post 34, edited May 2025), without claiming Kontakt render calibration.
 Both internal and external cutoff depth addresses use this law and retain their
 normalized limits. Pitch alone permits extended modern depths. Unipolar depth,
-other signed targets, source flags, target polarity flags and shapers retain their
+other signed targets, source flags and shapers retain their
 existing behavior. The three inspected Conflux snapshots are script-only and
 provide no independent native target-depth records; their changed UI amounts
 are not treated as matched saved-depth evidence.
+
+### Saved target direction and signed intensity aliases
+
+Independent native producer inspection establishes the target sign separately
+from the serialized `invert` control. The signed setter at `1408cb735` converts
+depth, writes its absolute magnitude through parameter 718, then writes the
+negative comparison through parameter 1056. That parameter's setter at
+`1408c3834` sets or clears bit 1 of the original target's flag byte. The shared
+target reader `140d09d50` and writer `140d16040` identify the same byte decoded as
+`ModTarget::unknown_flags`, independently of the invert byte. This closes the
+previously uncertain 0x02 interpretation without using saved UI values as an
+oracle. The inspected local executable's SHA-256 is
+`0fe6356e0879d058b6e5b73507c54c5e345cea451b35287c974e438291d4dae8`.
+
+Import applies this negative direction to the independently supported slotless
+`pitch` and module `filterCutoff` targets in both AHDSR and external assignments.
+The raw magnitude, flags and independent invert field remain unchanged in the
+vendor reader/writer. Other target laws retain their existing behavior. In the
+actual Contradiction snapshot, group 37's filter envelope has magnitude 1 and
+flags 0x12; Beta Decay group 51 has magnitude 1 and flags 0x10. These now import
+as -1 and +1 respectively. This does not establish either program's complete
+sound parity or explain its loudness in isolation.
+
+Native KSP registration assigns both `INTMOD_INTENSITY` and
+`MOD_TARGET_MP_INTENSITY` the same public constant 449. For proven pitch and
+cutoff routes they now resolve to the same physical address, signed cubic
+conversion and readback, including external assignments. Other legacy target
+laws remain rejected by the existing resolver guards. The authored saved-target
+regression checks both source layouts, signs, target indices, raw preservation,
+and separate invert state. The PCM alias gate also compares imported signed
+records with physical-depth reference groups and both live setters, with finite
+output and zero audio-thread allocations. These are engine causal checks,
+not Kontakt reference renders.
 
 Explicit `INTMOD_BYPASS` and modern `MOD_TARGET_INTENSITY` /
 `MOD_TARGET_MP_INTENSITY` now also address decoded AHDSRs driving group filter,
@@ -692,3 +725,167 @@ frequency/phase modulation buffers. These details, plus group freewheel
 ownership, prevent treating a generic per-voice digital oscillator as
 verified playback. No proprietary waveform tables, arbitrary calibration,
 source bypass clock law or amplitude-lifetime change is included here.
+
+
+## Constant loop-boundary controls (2026-10-02)
+
+The native target registry identifies `loopStart`/`loopLength` as destinations
+7/8. The common target-output binder places their 32-frame control buffers at
+voice-context offsets 0x2f10/0x3010; SamplerModule reads those same buffers and
+passes them to the loop consumer. That consumer adds truncated float32
+fractions of total physical sample frames to both loop bounds (`loopStart`)
+or to the end (`loopLength`). Independent decoder-length and WAV byte-bound
+setters identify its total-frame member. Its gating member is a signed sample
+preload-byte budget, not a source-mode enum; serialized mode 0 produces zero
+budget, while mode 3 prepares a nonzero budget and disables this consumer.
+The exact named-mode registry bridge remains separate.
+
+A stored UI/timing case and the original script inverse lookup independently
+produce normalized writes 751086/14233. Cubic signed conversion yields
++0.1266360866/-0.9170098731, matching native magnitudes 0.1266360730/0.9170099497
+within float32 precision. Thus loop targets share the signed cubic setter and
+inverse-cube-root readback law; this is a matched writer record, not an
+assumption from the pitch law. The independently traced target sign bit is
+applied to these two destinations; the separate Invert button is retained.
+The official [NI zone API](https://docs.native-instruments.com/ni-tech-manuals/kontakt-api-reference-manual/en/zone)
+defines loop geometry in sample frames, but does not publish this normalized
+modulation law. The producer/binder/consumer chain supplies that evidence.
+
+Playback prepares all eligible Constant, zero-lag, unshaped and non-inverted
+assignments, including initially zero depths. On held forward full-sample
+loops in serialized Source mode 0, geometry updates at native 32-frame ticks.
+Native sample bounds and minimum four-frame length are retained. The saved
+crossfade is clamped **after** the offset, so moving a zero-start loop does
+not erase its crossfade. Live edits preserve the fractional physical sample
+cursor and reconfigure the existing streamer with the same map used by RAM
+playback. Until-release paths keep their final seam and tail after note-off.
+
+Cropped, reverse, alternating, other-source, shaped, inverted and lagged
+assignments remain diagnosed. Behind-cursor seam transitions and invalid
+signed bounds are deferred; each distinct edit is counted once in the voice
+census and retried on eligible control ticks without audio allocation.
+Edits after release retain the final geometry. No arbitrary assignment cap,
+forced whole-sample RAM, new modulation framework or full Kontakt loop-parity
+claim is introduced. The focused authored gate covers signed writer/readback,
+physical bounds, nonaligned control fragments, fractional cursor continuity,
+RAM/stream PCM equality, deferred retry and until-release lifetime with zero
+audio-thread heap operations. Actual-library PCM validation remains separate.
+
+## Saved sine-only Multi pitch playback (2026-10-02)
+
+A first audible subset now prepares saved version0x71 Multi sources only:
+retrigger enabled, zero phase, synchronized positive note value
+and count>=1, sine weight magnitude<=1, and the other four weights zero.
+Only ordinary sampler pitch targets with finite signed depth, zero lag,
+no inversion and no enabled shaper are applied. External assignments to
+the source's own parameters exclude it. Other states and live LFO timing engine
+parameter writes retain explicit unsupported diagnostics. Live source bypass is
+applied only to these prepared pitch LFOs, by original source slot. Admitted pitch sources
+retain each original target index and signed depth. Signed legacy and modern
+intensity aliases and unsigned target intensity address those individual routes,
+update the prepared sum without allocation or phase reset, and share one physical
+source-slot/target persistence record. Non-pitch targets and older metadata without
+individual target identities remain unsupported.
+
+Independent source scheduling identifies a sampleRate/32 source clock,
+ceil(audioFrames/32) waveform points and correction for the final partial
+control interval. The sine-only legacy Multi component has the opposite
+sign from the simple sine source. Source bypass pauses its phase. The
+pitch target binder is independently connected to the ordinary sampler's
+pitch buffer: it linearly interpolates previous/current control points
+per audio frame with a retained modulo32 offset, rather than holding
+pitch for32 frames. KONTRA's command/voice-planning fragments are not native
+source-dispatch blocks: source points are sampled at that retained note-clock
+boundary, so 17/111 fragments and an unrelated eligible loop's 32-frame planner
+splits cannot shift the oscillator. The native producer's partial-block phase
+correction independently establishes actual elapsed-frame phase advancement;
+arbitrary native host-block dispatch alignment remains unverified. The renderer applies that curve only to affected
+voices; ordinary fixed-pitch lanes retain their existing fast path.
+The oscillator continues through the existing release envelope and does
+not extend voice lifetime. No amplitude bypass lifecycle is changed.
+
+Sine values use the standard sine function rather than copying the
+proprietary legacy waveform table; this is an explicit numerical
+approximation. The authored gate independently generates control points
+and the audio ramp, then compares actual PCM from a linear sample, both
+bipolar halves, short fragments, retrigger, release retirement and zero
+heap activity. The combined Constant-loop gate additionally compares
+unchanged-loop eligibility against no control assignment, 128 versus 17/111
+PCM, RAM versus bare-stream playback, and a command at frame141 split as
+13/115 versus 13/19/96 with native-tick application and bounded release.
+It does not establish full reference Kontakt sonic parity.
+Free-running/shared ownership, other waveforms and Multi mixes, synchronized
+fade-in, external phase/frequency modulation, lag and live legacy
+frequency dispatch remain unsupported.
+
+Recognized group-insert modulation targets use a separate slot namespace from
+internal LFO sources. A saved `shaper` assignment to group effect slot7 therefore
+does not invalidate the saved pitch LFO at internal slot7. The shared reader uses
+the existing effect-parameter classifiers; unknown same-numbered module targets
+still exclude the saved-only source clock with a diagnostic. The authored raw
+fixture preserves the actual-shaped Constant zero-depth/15 ms lag assignment and
+checks both the recognized insert case and conservative unknown-source rejection.
+
+The native pitch pipeline interpolates normalized octave values before an
+in-place exponential conversion to playback ratios. KONTRA follows that order
+with standard floating-point math; it does not interpolate ratio endpoints or
+copy the proprietary exponential approximation. A private optimized stdlib probe
+measured about 6.1 ms per 1,048,576 planned frames for this subset on this host;
+that is not a whole-engine performance or real-library timing claim. Cached
+exponential recurrences have not been introduced.
+
+### Saved legacy pitch LFO fade-in (2026-10-03)
+
+Saved version0x71 sources additionally retain unsynchronized fade-in durations
+in milliseconds, within the documented0..5000 ms range. The typed reader,
+object copy, source initializer, reset and final waveform consumer independently
+connect the saved delay to the source fade state. Duration becomes
+`N = trunc(fade_ms * (sampleRate / 32) * .001)` control points. Reset starts
+at `0.3f32`; the factor is `pow(1 + 1 / double(0.3f32), 1 / N)`, rounded to
+f32. For exactly N points the source output is multiplied by `state - 0.3f32`,
+then the f32 state is multiplied by the factor and clamped to0..1. Later
+points pass through. The legacy reader explicitly seeds the mode false;
+version0x73's final boolean enables a different clamp and remains unsupported.
+This preserves the older curve instead of replacing it with a linear fade.
+The oscillator continues throughout the fade; note retrigger restarts both
+phase and fade, and bypass pauses their source-clock progression.
+
+The selected saved Prelude192 value0.21523452 ms produces zero fade points
+at48 kHz, Keytar123's2.3047996 ms produces three, and Keytar142's1.9533157 ms
+produces two. These are raw snapshot properties, not post-callback readbacks.
+Their onset timing does not establish a cause for longer quiet/thin reports.
+The existing authored physical-cursor/PCM gate covers these values plus40 ms,
+an independent closed-form fade reference, planner fragmentation, retrigger,
+release retirement and zero heap activity. A separate stdlib-only Clock check
+passes18 rate/duration cases with maximum analytic cursor error0.000019351
+source frames; it is a standalone math check, not an engine PCM result.
+
+Primary control semantics: [Kontakt modulation reference](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/modulation).
+The mathematical legacy distinction comes from independent native dataflow,
+not from interpreting the manual's general description as an exact curve.
+
+### Live bypass of prepared pitch LFOs
+
+`$ENGINE_PAR_INTMOD_BYPASS` controls each admitted pitch source's prepared
+bypass flag. The source slot is preserved independently from envelope indices
+and insert-effect slots. Existing native edit storage seeds getters, applies
+changes without audio-thread allocation, and restores edits before init getters.
+Unprepared free-running or wider-wave sources remain unsupported; this does not
+implement their clocks or enable non-pitch routes.
+
+Independent native source processing skips both waveform generation and target
+binding for a bypassed source. The pitch consumer validates the current target
+buffer before interpolating it: when no active source binds pitch, it uses base
+pitch and leaves its previous/current interpolation state intact. With another
+active source, only the remaining contribution enters the ordinary control-point
+sum. Phase and legacy fade progression pause while bypassed; the separate
+audio interpolation offset continues. KONTRA retains the existing note-clock
+32-frame adapter and its documented native host-alignment boundary.
+
+The focused gate uses an independent linear-source PCM reference for single and
+mixed sources, mid-tick removal/resumption, paused phase/fade, all-source bypass,
+13/19 versus128 fragments, release retirement, zero heap, readback, restoration
+and a fresh load without prior edits. Actual-library parity remains a separate
+validation task. The general parameter contract is documented in the
+[Kontakt engine parameter reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters#modulation);
+the clock and interpolation behavior is grounded in independent native dataflow.

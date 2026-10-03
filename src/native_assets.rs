@@ -2,10 +2,10 @@
 //! SVG paths stay retained vectors; bitmap assets retain their source pixels.
 use moose::mui::mui::scene::{Image, Vector, VectorCommand};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::Cursor,
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 use vello_svg::{
     kurbo::{Affine, Shape},
@@ -213,6 +213,70 @@ fn decode_webp(bytes: &[u8]) -> Result<Image, String> {
     Image::rgba(w, h, rgba).ok_or_else(|| "Invalid WebP pixel buffer".into())
 }
 
+/// Bound compact <use> expansion before usvg allocates normalized nodes.
+/// roxmltree supplies the XML topology; this is a resource-limit preflight,
+/// never a second SVG renderer/parser. Memoization keeps doubling graphs cheap.
+fn svg_expansion_budget(xml: &roxmltree::Document<'_>, source_bytes: usize) -> Result<(), String> {
+    fn count<'a, 'input>(
+        node: roxmltree::Node<'a, 'input>,
+        ids: &HashMap<String, roxmltree::Node<'a, 'input>>,
+        memo: &mut HashMap<roxmltree::NodeId, usize>,
+        active: &mut HashSet<roxmltree::NodeId>,
+        depth: usize,
+        max: usize,
+    ) -> Result<usize, String> {
+        if let Some(n) = memo.get(&node.id()) {
+            return Ok(*n);
+        }
+        if depth > 512 || !active.insert(node.id()) {
+            return Err("SVG use expansion is cyclic or too deeply nested".into());
+        }
+        let mut n = 1usize;
+        for child in node.children().filter(|n| n.is_element()) {
+            n = n.saturating_add(count(child, ids, memo, active, depth + 1, max)?);
+        }
+        if node.tag_name().name() == "use" {
+            if let Some(href) = node
+                .attribute("href")
+                .or_else(|| node.attribute(("http://www.w3.org/1999/xlink", "href")))
+            {
+                let id = href
+                    .strip_prefix('#')
+                    .ok_or("External SVG use references are not supported")?;
+                let target = *ids.get(id).ok_or("SVG use target was not found")?;
+                n = n.saturating_add(count(target, ids, memo, active, depth + 1, max)?);
+            }
+        }
+        active.remove(&node.id());
+        if n > max {
+            return Err("SVG use expansion exceeds preparation memory budget".into());
+        }
+        memo.insert(node.id(), n);
+        Ok(n)
+    }
+    // Original attributes/path preprocessing plus a conservative allowance for
+    // each expanded normalized node/box. Retained storage is counted separately.
+    let source = source_bytes.saturating_mul(64);
+    let remaining = PIXEL_LIMIT
+        .checked_sub(source)
+        .ok_or("SVG source exceeds preparation memory budget")?;
+    let max = remaining / 2048;
+    let mut ids = HashMap::new();
+    for n in xml.descendants().filter(|n| n.is_element()) {
+        if let Some(id) = n.attribute("id") {
+            ids.entry(id.to_owned()).or_insert(n);
+        }
+    }
+    count(
+        xml.root_element(),
+        &ids,
+        &mut HashMap::new(),
+        &mut HashSet::new(),
+        0,
+        max,
+    )?;
+    Ok(())
+}
 fn decode_svg(bytes: &[u8]) -> Result<Vector, String> {
     let text = std::str::from_utf8(bytes).map_err(|e| e.to_string())?;
     // usvg may discard unsupported/unresolved nodes during preprocessing. State
@@ -237,6 +301,7 @@ fn decode_svg(bytes: &[u8]) -> Result<Vector, String> {
             return Err(format!("Native SVG feature {name:?} is not supported"));
         }
     }
+    svg_expansion_budget(&xml, bytes.len())?;
     let filtered = xml
         .descendants()
         .any(|n| n.is_element() && n.tag_name().name() == "filter");
@@ -258,12 +323,22 @@ fn decode_svg(bytes: &[u8]) -> Result<Vector, String> {
     let tree = usvg::Tree::from_data(bytes, &options).map_err(|e| e.to_string())?;
     if filtered {
         let size = tree.size();
+        let retained = normalized_storage(&tree, bytes.len())
+            .saturating_add(bytes.len())
+            .saturating_add(FILTER_CACHE_LIMIT);
+        if retained > PIXEL_LIMIT {
+            return Err("Filtered SVG normalized tree exceeds retained memory budget".into());
+        }
         return Vector::filtered(
             size.width() as f64,
             size.height() as f64,
             Arc::new(FilteredSvg {
                 tree,
                 source: bytes.into(),
+                retained,
+                revision: std::sync::atomic::AtomicU64::new(0),
+                retry: std::sync::atomic::AtomicBool::new(false),
+                wake: OnceLock::new(),
                 state: Mutex::new(RasterState {
                     images: Vec::with_capacity(2),
                     pending: Vec::with_capacity(2),
@@ -280,6 +355,108 @@ fn decode_svg(bytes: &[u8]) -> Result<Vector, String> {
     Vector::new(size.width() as f64, size.height() as f64, sink.0)
         .ok_or_else(|| "Invalid native SVG geometry or layer stack".into())
 }
+fn normalized_storage(tree: &usvg::Tree, source_bytes: usize) -> usize {
+    let mut bytes = std::mem::size_of::<usvg::Tree>()
+        .saturating_add(normalized_tree_bytes(tree.root(), source_bytes));
+    // subroots visits only the first nested clip. The normalized tree's full
+    // referenced-clip index covers arbitrary clip chains; duplicate charges
+    // are conservative and do not require an allocation/identity tracker.
+    bytes = bytes.saturating_add(
+        tree.clip_paths()
+            .len()
+            .saturating_mul(2)
+            .max(4)
+            .saturating_mul(std::mem::size_of::<Arc<usvg::ClipPath>>()),
+    );
+    for clip in tree.clip_paths() {
+        bytes = bytes
+            .saturating_add(std::mem::size_of::<usvg::ClipPath>())
+            .saturating_add(clip.id().len().saturating_mul(2))
+            .saturating_add(normalized_tree_bytes(clip.root(), source_bytes));
+    }
+    bytes
+}
+/// Count normalized nodes, not source length: <use> may expand a compact
+/// document into many retained boxes. Repeated shared paint/path buffers are
+/// charged conservatively, including spare Vec capacity and reference storage.
+fn normalized_tree_bytes(group: &usvg::Group, source_bytes: usize) -> usize {
+    use std::mem::size_of;
+    fn paint(p: &usvg::Paint) -> usize {
+        fn gradient(g: &usvg::BaseGradient) -> usize {
+            g.id()
+                .len()
+                .saturating_mul(2)
+                .saturating_add(g.stops().len().saturating_mul(2 * size_of::<usvg::Stop>()))
+        }
+        match p {
+            usvg::Paint::Color(_) => 0,
+            usvg::Paint::LinearGradient(g) => {
+                size_of::<usvg::LinearGradient>().saturating_add(gradient(g))
+            }
+            usvg::Paint::RadialGradient(g) => {
+                size_of::<usvg::RadialGradient>().saturating_add(gradient(g))
+            }
+            usvg::Paint::Pattern(_) => usize::MAX,
+        }
+    }
+    let mut bytes = size_of::<usvg::Group>()
+        .saturating_add(group.id().len().saturating_mul(2))
+        .saturating_add(
+            group
+                .children()
+                .len()
+                .saturating_mul(2)
+                .max(4)
+                .saturating_mul(size_of::<usvg::Node>()),
+        )
+        .saturating_add(
+            group
+                .filters()
+                .len()
+                .saturating_mul(2 * size_of::<Arc<usvg::filter::Filter>>()),
+        );
+    for filter in group.filters() {
+        // Primitive structs plus conservative source-backed tables/input/result
+        // strings. These remain shared references; charging every use is safe.
+        bytes = bytes
+            .saturating_add(size_of::<usvg::filter::Filter>())
+            .saturating_add(
+                filter
+                    .primitives()
+                    .len()
+                    .saturating_mul(2 * size_of::<usvg::filter::Primitive>()),
+            )
+            .saturating_add(source_bytes.saturating_mul(16));
+    }
+    for node in group.children() {
+        let owned = match node {
+            usvg::Node::Group(g) => normalized_tree_bytes(g, source_bytes),
+            usvg::Node::Path(p) => {
+                let mut n = size_of::<usvg::Path>() + p.id().len() * 2;
+                n = n
+                    .saturating_add(std::mem::size_of_val(p.data().points()).saturating_mul(2))
+                    .saturating_add(std::mem::size_of_val(p.data().verbs()).saturating_mul(2));
+                if let Some(fill) = p.fill() {
+                    n = n.saturating_add(paint(fill.paint()));
+                }
+                if let Some(stroke) = p.stroke() {
+                    n = n.saturating_add(paint(stroke.paint())).saturating_add(
+                        stroke
+                            .dasharray()
+                            .map_or(0, |d| d.len().saturating_mul(2 * size_of::<f32>())),
+                    );
+                }
+                n
+            }
+            usvg::Node::Image(_) | usvg::Node::Text(_) => usize::MAX,
+        };
+        bytes = bytes.saturating_add(owned);
+        node.subroots(|root| {
+            bytes = bytes.saturating_add(normalized_tree_bytes(root, source_bytes));
+        });
+    }
+    bytes
+}
 // Effects require compositing. Preserve the normalized vector tree and source;
 // only the exact requested device-sized intermediate is rasterized. The source
 // belongs to this instrument's asset cache, with no global cache or worker.
@@ -290,7 +467,6 @@ struct RasterState {
     pending: Vec<(u32, u32)>,
     inflight: Option<(u32, u32)>,
     errors: Vec<((u32, u32), String)>,
-    wake: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 impl std::fmt::Debug for RasterState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -301,11 +477,23 @@ impl std::fmt::Debug for RasterState {
             .finish_non_exhaustive()
     }
 }
-#[derive(Debug)]
 struct FilteredSvg {
     tree: usvg::Tree,
     source: Arc<[u8]>,
+    retained: usize,
+    revision: std::sync::atomic::AtomicU64,
+    retry: std::sync::atomic::AtomicBool,
+    wake: OnceLock<Arc<dyn Fn() + Send + Sync>>,
     state: Mutex<RasterState>,
+}
+impl std::fmt::Debug for FilteredSvg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FilteredSvg")
+            .field("size", &self.tree.size())
+            .field("source_bytes", &self.source.len())
+            .field("retained", &self.retained)
+            .finish_non_exhaustive()
+    }
 }
 impl FilteredSvg {
     fn charge(width: u32, height: u32) -> Result<usize, String> {
@@ -387,15 +575,27 @@ impl FilteredSvg {
 }
 impl moose::mui::mui::scene::RasterSource for FilteredSvg {
     fn retained_bytes(&self) -> usize {
-        self.source
-            .len()
-            .saturating_mul(65)
-            .saturating_add(FILTER_CACHE_LIMIT)
+        self.retained.max(self.source.len())
+    }
+    fn revision(&self) -> u64 {
+        self.revision.load(std::sync::atomic::Ordering::Acquire)
     }
     fn prepared_image(&self, width: u32, height: u32) -> Result<Option<Image>, String> {
         Self::charge(width, height)?;
-        let Ok(mut state) = self.state.try_lock() else {
-            return Ok(None);
+        let mut state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err("SVG filter cache unavailable".into());
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                self.retry.store(true, std::sync::atomic::Ordering::Release);
+                self.revision
+                    .fetch_add(1, std::sync::atomic::Ordering::Release);
+                if let Some(wake) = self.wake.get() {
+                    wake();
+                }
+                return Ok(None);
+            }
         };
         if let Some(image) = state
             .images
@@ -414,34 +614,31 @@ impl moose::mui::mui::scene::RasterSource for FilteredSvg {
             }
             state.pending.push(size);
         }
-        let wake = (!state.pending.is_empty())
-            .then(|| state.wake.clone())
-            .flatten();
+        let pending = !state.pending.is_empty();
         drop(state);
-        if let Some(wake) = wake {
-            wake();
+        if pending {
+            if let Some(wake) = self.wake.get() {
+                wake();
+            }
         }
         Ok(None)
     }
     fn set_waker(&self, wake: Arc<dyn Fn() + Send + Sync>) {
-        if let Ok(mut state) = self.state.lock() {
-            state.wake = Some(wake);
-        }
+        let _ = self.wake.set(wake);
     }
     fn wake_pending(&self) -> bool {
-        let Ok(state) = self.state.try_lock() else {
-            return false;
-        };
-        let pending = !state.pending.is_empty();
-        let wake = pending.then(|| state.wake.clone()).flatten();
-        drop(state);
-        if let Some(wake) = wake {
-            wake();
+        let pending = self.retry.load(std::sync::atomic::Ordering::Acquire)
+            || self.state.try_lock().is_ok_and(|s| !s.pending.is_empty());
+        if pending {
+            if let Some(wake) = self.wake.get() {
+                wake();
+            }
         }
         pending
     }
     fn prepare_requested(&self) -> Result<bool, String> {
-        let mut changed = false;
+        let retry = self.retry.swap(false, std::sync::atomic::Ordering::AcqRel);
+        let mut changed = retry;
         let mut failure = None;
         for _ in 0..2 {
             let size = {
@@ -482,7 +679,14 @@ impl moose::mui::mui::scene::RasterSource for FilteredSvg {
                     failure = Some(error);
                 }
             }
+            drop(state);
+            self.revision
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
             changed = true;
+        }
+        if retry {
+            self.revision
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
         }
         if let Some(error) = failure {
             Err(error)
@@ -686,6 +890,161 @@ mod tests {
         assert!(decode("bad.svg", br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="16"><mask id="m"/></svg>"#).unwrap_err().contains("mask"));
     }
     #[test]
+    fn native_svg_charges_normalized_use_expansion() {
+        let mut svg = String::from(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><defs><filter id="f"><feGaussianBlur stdDeviation=".5"/></filter><g id="p0"><rect width="2" height="2"/></g>"##,
+        );
+        for depth in 1..=12 {
+            svg.push_str(&format!(
+                r##"<g id="p{depth}"><use href="#p{}"/><use href="#p{}"/></g>"##,
+                depth - 1,
+                depth - 1
+            ));
+        }
+        svg.push_str(r##"</defs><use href="#p12" filter="url(#f)"/></svg>"##);
+        let tree = usvg::Tree::from_data(svg.as_bytes(), &usvg::Options::default()).unwrap();
+        let normalized = normalized_tree_bytes(tree.root(), svg.len());
+        assert!(
+            normalized > svg.len() * 65,
+            "compact use expansion must be charged by actual nodes: {normalized} vs {}",
+            svg.len() * 65
+        );
+        let asset = Asset::Vector(Arc::new(decode_svg(svg.as_bytes()).unwrap()));
+        assert!(asset.retained_bytes() >= normalized + FILTER_CACHE_LIMIT);
+        let folder = std::env::temp_dir().join(format!(
+            "kontra-svg-budget-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let resources = folder.join("Resources/native_ui");
+        std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("expanded.svg"), &svg).unwrap();
+        let instrument = folder.join("case.nki");
+        let budget = svg.len() * 65 + FILTER_CACHE_LIMIT;
+        let bounded = Assets::prepare_bounded(&instrument, ["expanded.svg"], budget);
+        std::fs::remove_dir_all(&folder).unwrap();
+        assert!(
+            bounded.entries["expanded.svg"]
+                .as_ref()
+                .unwrap_err()
+                .contains("retained budget")
+        );
+        let deep = svg.replace(r#"p12" filter"#, r#"p19" filter"#);
+        let extra = (13..=19)
+            .map(|d| {
+                format!(
+                    r##"<g id="p{d}"><use href="#p{}"/><use href="#p{}"/></g>"##,
+                    d - 1,
+                    d - 1
+                )
+            })
+            .collect::<String>();
+        let deep = deep.replace("</defs>", &(extra + "</defs>"));
+        assert!(
+            decode_svg(deep.as_bytes())
+                .unwrap_err()
+                .contains("expansion"),
+            "compact large expansion must be rejected before usvg"
+        );
+    }
+    #[test]
+    fn native_svg_ready_cache_contention_retries_retained_paint() {
+        use moose::mui::mui::scene::RasterSource;
+        use moose::mui::mui::scene::{self, prelude::*};
+        let bytes = br##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><defs><filter id="f"><feGaussianBlur stdDeviation="1"/></filter></defs><rect x="5" y="5" width="10" height="10" fill="#f00" filter="url(#f)"/></svg>"##;
+        let tree = usvg::Tree::from_data(bytes, &usvg::Options::default()).unwrap();
+        let filter = Arc::new(FilteredSvg {
+            retained: normalized_tree_bytes(tree.root(), bytes.len())
+                + bytes.len()
+                + FILTER_CACHE_LIMIT,
+            tree,
+            source: bytes.as_slice().into(),
+            revision: std::sync::atomic::AtomicU64::new(0),
+            retry: std::sync::atomic::AtomicBool::new(false),
+            wake: OnceLock::new(),
+            state: Mutex::new(RasterState::default()),
+        });
+        let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let wake_count = wakes.clone();
+        filter.set_waker(Arc::new(move || {
+            wake_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }));
+        assert!(filter.prepared_image(20, 20).unwrap().is_none());
+        assert!(filter.prepare_requested().unwrap());
+        let first = filter.prepared_image(20, 20).unwrap().unwrap();
+        let vector = Arc::new(Vector::filtered(20., 20., filter.clone()).unwrap());
+        let spec = scene::SceneSpec::new(
+            block(20., 20.).fill(scene::Fill::Vector(vector, scene::Fit::Fill)),
+        )
+        .offered(scene::Size::new(20., 20.));
+        let before = scene::resolve(&spec).unwrap();
+        let guard = filter.state.lock().unwrap();
+        let wake_before = wakes.load(std::sync::atomic::Ordering::Relaxed);
+        // Controlled contention: a blocking read/cold raster would deadlock on
+        // this thread. The pending frame captures the previous Paint revision.
+        assert!(filter.prepared_image(20, 20).unwrap().is_none());
+        assert!(filter.revision() > 1);
+        assert!(wakes.load(std::sync::atomic::Ordering::Relaxed) > wake_before);
+        drop(guard);
+        assert!(
+            filter.prepare_requested().unwrap(),
+            "empty worker retry must publish readiness"
+        );
+        let ready = filter.prepared_image(20, 20).unwrap().unwrap();
+        assert!(
+            Arc::ptr_eq(&first.rgba, &ready.rgba),
+            "retry must reuse prepared pixels without rerasterizing"
+        );
+        let after = scene::resolve(&spec).unwrap();
+        assert_ne!(
+            before.paint, after.paint,
+            "retained GPU encoding must invalidate same Vector Arc after a busy miss"
+        );
+        assert!(!filter.wake_pending());
+        assert!(
+            !filter.prepare_requested().unwrap(),
+            "completed retry must not make an idle worker loop"
+        );
+    }
+    #[test]
+    fn native_png_bounds_compressed_metadata_before_pixel_decode() {
+        let mut bytes = Vec::new();
+        let mut info = png::Info::with_size(1, 1);
+        info.color_type = png::ColorType::Rgba;
+        info.bit_depth = png::BitDepth::Eight;
+        info.icc_profile = Some(std::borrow::Cow::Owned(vec![0; 64 << 10]));
+        {
+            let mut writer = png::Encoder::with_info(&mut bytes, info)
+                .unwrap()
+                .write_header()
+                .unwrap();
+            writer.write_image_data(&[255, 0, 0, 255]).unwrap();
+            writer.finish().unwrap();
+        }
+        assert!(
+            bytes.len() < 4096,
+            "authored metadata must be highly compressed"
+        );
+        let unlimited = crate::artwork::decode_report(&bytes).unwrap();
+        assert_eq!((unlimited.width, unlimited.height), (1, 1));
+        let normal = crate::artwork::png_reader(&bytes, usize::MAX).unwrap();
+        assert_eq!(normal.info().icc_profile.as_ref().unwrap().len(), 64 << 10);
+        let bounded = crate::artwork::png_reader(&bytes, 1024).unwrap();
+        assert!(
+            bounded.info().icc_profile.is_none(),
+            "bounded decoder must discard over-limit noncritical ICC before allocation"
+        );
+        let pixels = crate::artwork::decode_report_bounded(&bytes, 1024).unwrap();
+        assert_eq!(
+            pixels.rgba.as_ref(),
+            unlimited.rgba.as_ref(),
+            "discarding noncritical metadata must preserve valid pixels"
+        );
+    }
+    #[test]
     fn native_svg_filter_glow_preserves_pixels_and_device_cache_identity() {
         use moose::mui::mui::{
             scene::{self, prelude::*},
@@ -779,8 +1138,12 @@ mod tests {
         }
         assert!(Asset::Vector(vector).retained_bytes() >= FILTER_CACHE_LIMIT);
         assert!(
-            Assets::prepare_bounded(Path::new("/does-not-exist.nki"), ["assets/a.svg"], 0).entries
-                ["assets/a.svg"]
+            Assets::prepare_bounded(
+                std::path::Path::new("/does-not-exist.nki"),
+                ["assets/a.svg"],
+                0
+            )
+            .entries["assets/a.svg"]
                 .as_ref()
                 .unwrap_err()
                 .contains("budget")

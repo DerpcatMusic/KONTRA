@@ -401,7 +401,9 @@ normalized x = value/1e6 through a law):
 | Delay | stereo ring, ping-pong pan, damping low pass, feedback | time `2000 x^3` ms; `*_UNIT` raw (`-1` stored, read as free ms; a sync unit reads time x 125 ms, 120 BPM) | low |
 | Chorus, Flanger | modulated delay lines, feedback (flanger) | normalized | low |
 | Phaser | 6 allpasses | normalized | low |
-| Transient Master, Lo-Fi, Distortion, Skreamer, Tape Saturator, Saturation | per-sample shapers (Pade tanh), Lo-Fi bit/rate reduction | normalized; Saturation shape -1..1 | low |
+| Transient Master, Lo-Fi, Skreamer, Tape Saturator | per-sample shapers (Pade tanh), Lo-Fi bit/rate reduction | normalized | low |
+| Distortion | native Tube and Transistor scalar cores, steady-state Damping and DC filtering; parameter smoothing remains diagnosed | direct normalized Drive; independent linear Output | scalar laws grounded; full effect approximate |
+| Saturation | native Classic piecewise quadratic/cubic transfer; Enhanced/Drums retain a warned proxy | Shape -1..1; linear Output | Classic law grounded; other modes unverified |
 | Filter, EQ, Solid G-EQ | the group filter sections (`RackFilter`) | as group filters; G-EQ +-15 dB, bands 30-450, 200-2500, 600-7000, 1500-16k Hz, shelves unless the bell switch is on | low |
 
 Effect `0x1d` (class name Surround Panner) is Saturation: `$ENGINE_PAR_SHAPE` reaches it
@@ -411,6 +413,42 @@ targets `shaper`, `distortionIntensity`, `bitdepth` and `downsample` move them
 (normalized). A rack Filter/EQ storing output gain 0 and dry level 0 is read as unset
 (unity): ANALOG STRINGS' active insert EQ is stored so and no script sets it. Bypassed
 send slots return nothing.
+
+Tube Distortion now uses its native asymmetric rational/cubic scalar curve in
+both group and rack inserts. Drive 0 passes the core input unchanged; it does
+not introduce clipping or invented drive compensation. The sign-specific blend
+boundaries are Drive 0.25 and 0.75. The common linear Output follows processing.
+Damping now uses the native steady-state exponential/polynomial cutoff mapping
+and bilinear one-pole recurrence. The native following DC filter is implemented; Damping parameter smoothing
+remains unimplemented and diagnosed. Transistor now uses its native piecewise linear/power scalar law,
+with linked inverse thresholds, float negative power and double positive power.
+Drive 0 and input beyond the native quarter-amplitude range preserve input.
+Group/rack diagnostics name the remaining Damping parameter smoothing gap.
+Whole-effect native equivalence is not claimed. The scalar core correction passed
+independent numeric, allocation, readback and routing gates in the combined
+510-test library and 89-test playback suites. Validation of the following DC
+filter and its updated routing gates is pending. The Transistor power branches
+cost more than the old hard-clip proxy; no throughput/FPS improvement is claimed.
+The scalar kernels reuse existing coefficients. The following DC filter uses
+fixed coefficients and histories, with sizes recorded below.
+
+Classic Saturation now uses the native parameter binding and scalar transfer law,
+shared by rack and group inserts. With Shape `s`, let `a = 4s`. For `s >= 0.25`,
+the output is `sign(x) * (2u - u²)`, where `u = min(abs(ax), 1)`. For
+`0 < s < 0.25`, it blends that quadratic at unscaled input with the original input
+using weight `a`. Negative Shape uses `x * (x² + q) / (1 + q)`, with
+`q = 4 + 3.9s`. The native near-zero Shape interval passes input unchanged.
+The common linear Output gain follows the shaper; it is not a gain-compensation
+control. In particular, Shape 1 maps quiet input 0.01 to 0.0784 before Output,
+which the former tanh proxy failed to do. Enhanced and Drums select separate native
+kernels; those modes retain the previous approximation with explicit group/rack
+diagnostics. Native modulation smoothing and those two kernels remain unverified.
+The independent numeric gate covers branch boundaries, signed stereo input,
+above-unit input, linear Output and zero allocations; the existing ordered group
+gate now checks the native quiet-input transfer instead of an invented peak limit.
+Four focused release gates and the combined library/playback suites pass. Matched
+actual Contradiction replay confirms the output change with identical source
+travel, loop bounds, events and controls; Catastrophic remains byte-identical.
 
 Level checks (`kontakto render`, before and after): Dolce, Pacific, Vista, Solo, Una
 Corda, CHORUS and Afflatus 2 Horns unchanged. Mega Brass +1 dB (Skreamer, Saturation;
@@ -515,3 +553,35 @@ tails across blocks, a silent Amplifier through the real voice planner, and allo
 guards. Its release-build validation is pending. This does not establish Kontakt
 sonic equivalence or resolve unapplied convolution Auto Gain, Volume Envelope, or
 native sample-rate/latency modes.
+
+Distortion Damping is shared by both scalar modes and group/rack inserts. Its
+previous 20 kHz-to-200 Hz exponential smoother has been replaced with the native
+steady-state coefficient law and a one-pole filter with equal feedforward
+coefficients. At 48 kHz, maximum Damping has a corner near 2.2 kHz. Rate-dependent
+coefficient, stereo impulse, partition, reset and zero-allocation gates are
+authored; combined validation is pending. This change reuses four existing
+state slots and adds no per-voice memory by itself. The later DC filter adds
+fixed state; live Damping parameter smoothing remains an explicit gap, so
+whole-effect equivalence is not claimed.
+
+Distortion now applies the native prepared DC high-pass after Damping and before
+linear Output. Preparation uses the order-two zero-resonance prototype, the
+native rate-dependent frequency transform and Nyquist gain normalization. It
+retains all five separately rounded float coefficients and float histories,
+using the native SIMD feedforward-first summation order. The native scalar
+feedback-first float sum leaves a steady DC bias (about 0.0153 for a unit
+constant input at 48 kHz). The SIMD order rejects that numerical bias without
+changing the prepared transfer function or using additional precision/state.
+It shares Damping output history
+with DC input history rather than changing to a different recurrence. Fixed
+coefficient storage also caches the sample rate, avoiding repeated DC preparation
+on ordinary control updates. Drive grows from 72 to 96 bytes; the authored gate
+prints final sizes: Drive 96, VoiceEffect 96 and VoiceFilter 3244 bytes in the
+combined root build.
+The fixed eight-stage array therefore adds at most 192 bytes per voice (192 KiB
+for 1024 voices), with no render allocation. The rack tail now follows the
+prepared digital poles down to the existing silence threshold, replacing the
+old 10 ms drive allowance for Distortion only. Independent coefficient, stereo
+DC rejection, transfer-function, signed impulse, partition, reset and allocation
+gates are authored; combined validation remains pending. Damping parameter
+smoothing and whole-effect audible equivalence remain unproved.

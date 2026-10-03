@@ -8,7 +8,35 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ## Unreleased
 
+### Fixed after 0.3.115
+
+Eight newly accepted logical fixes advance 0.3.115 to0.3.123; closing the already-counted VST3 optional-length outcome adds no duplicate count.
+
+- Source-zone group/key edits now prepare on the worker in order. Init edits are installed before the bank becomes playable; runtime completions retain exact source IDs, budgets and restore freshness. Actual Conflux captures now select different physical wavetables rather than all playing the same fallback source.
+- Held-note expression retains its original destination when MIDI channel modes or routing change, through pedals and release ownership.
+- Modern version0x90–0x92 Ladder records preserve leading Gain, cutoff, resonance and raw native flags with byte-exact roundtrip. Ladder DSP is still unsupported in this release.
+- Legacy Delay saved sync units use host tempo across all rack scopes. Independent absolute/synchronized physical caches survive binary and JSON host state and stale paired restoration; unknown saved units retain explicit diagnostics. Native fixed-ring duration limits remain separate.
+- Integer division/remainder by zero returns native zero without generating invented script faults. Bounds, unavailable MIDI context and real nonfinite-result errors remain visible.
+- Automatic crash-report delivery releases its worker permit on completion, allowing later confirmed incidents in the same host. Invalid acknowledgements and offline failures retain pending evidence.
+- Live and restored bypass reaches admitted saved pitch LFO sources, preserving paused source phase/fade and removing only the selected contribution. Wider waves, free-running clocks and live frequency remain unsupported.
+- The native VST3 adapter now accepts negative optional note-length metadata. Real exported processing passes ten authored-tone cases covering anonymous/live note IDs, independent cents-frequency checks, sample offset 16 and explicit note-off. This closes the adapter gap disclosed in 0.3.115; the reported Mac keyboard/arranger payload has not been captured, so its cause remains unconfirmed.
+- Frozen coherent core cfef7b0 passes the locked all-targets/all-features check, optimized production build, 555 library regressions (30 ignored), 89 playback regressions (four ignored), and the real exported VST3 gate. These checks establish the listed behaviors, not full sonic parity or Mac DAW crash resolution.
+
 ### Verified processing and diagnostics follow-ups
+
+- Tube and Transistor Distortion now use their checked native scalar curves without the previous invented drive compensation. Independent signed boundaries, live Drive readback, group/rack routing and zero-heap gates pass. The separately reviewed Damping/DC corrections are recorded below; whole-effect parity and corrected actual preset replay are not established.
+- Optional KSP `note_off` microsecond offsets now replace existing duration timers and retain the exact scheduled event under pool pressure. Concurrent-note, channel, timing, invalid-offset and zero-heap checks pass.
+- Stale script restores now cancel before obtaining a fresh epoch or publishing old scripts/effects. Controlled races cover source/state replacement, generation changes and removal; unrelated gain edits preserve valid restores.
+- Saved legacy unsynchronized fade-in now reaches eligible retriggered sine Multi pitch sources on the same 32-frame clock. Independent physical cursor/PCM, fragmentation, retrigger, lifetime and zero-heap checks pass. Synchronized fades, wider waveforms, free-running clocks and live frequency remain unsupported.
+- The combined follow-up source passes 510 library tests and all 89 playback regressions, with 30 and four deliberately ignored cases respectively.
+- Classic Saturation now uses the checked native piecewise polynomial Shape law and linear Output instead of the previous proxy. Independent scalar/ordered-processing/readback/zero-heap gates pass, alongside all 89 playback regressions. Matched Contradiction replay gains 17.78 dB RMS with unchanged onset, events, controls, cursor travel and loop bounds; the bypassed Catastrophic control remains byte-identical. These observations do not certify sonic parity. Enhanced/Drums modes retain explicitly diagnosed approximations.
+- Recognized group-effect targets no longer disable an unrelated internal pitch LFO at the same numeric slot. Unknown source-parameter assignments remain guarded; legitimate effect assignments are retained.
+- Signed and unsigned intensity writes now reach admitted internal pitch LFO targets using original source/target indices. Callback readback, physical-depth PCM, unchanged phase, alias persistence, seeded restore and zero audio heap pass focused gates.
+- Native Constant loop start/length assignments now control eligible forward full-sample sampler loops on 32-frame ticks, preserve fractional cursor/crossfade/streaming, and retain the final release seam. Unsupported geometry and behind-cursor edits remain diagnosed and deferred. Voice diagnostics expose applied bounds separately from virtual position. Six matched real-preset captures confirm applied windows and held wraps; Prelude changes substantially, while Contradiction remains quiet. These observations do not certify sonic parity.
+- Saved retriggered, zero-delay sine-only Multi pitch assignments now run through a note-owned clock and audio-rate interpolation. Planner fragmentation no longer changes that clock. Focused semantic/PCM/zero-heap gates and all 89 playback regressions pass; wider waveforms, delayed/free-running ownership and live frequency remain unsupported. Six actual reported-preset captures exposed a separately corrected slot collision; three matched actual captures confirm pitch-source travel in Rad Prelude and Beta Decay, with unchanged controls and a byte-identical Catastrophic negative control. These checks do not establish full sonic parity.
+
+- Legacy and modern signed modulation aliases now share the verified pitch/cutoff laws and exact target identity. Other unsupported legacy target laws remain guarded.
+- Saved negative pitch and cutoff modulation now applies the native target sign bit independently of invert, with raw records preserved and both directions checked against physical-depth PCM references. Loop modulation remains incomplete.
 
 - Native convolution early/late Size ratios now survive Reverse, Auto Gain, predelay, callbacks and restore independently; editing one Size leaves the other intact. Older host states retain their prior uniform behavior. Native nonunit time stretch remains incomplete.
 
@@ -18,7 +46,7 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 - Explicit positive convolution crossover now prepares separate early/late filters at unit Size and matching sample rates, with the checked 50 ms blend and original source duration. Nonunit Size, automatic crossover and resampling remain approximate.
 
-- Both Mac release architectures now require timestamped Developer ID signatures, Apple acceptance, and a validated stapled DMG; unsigned fallback is removed. Existing credentials were reused through the owned signing workflow. The next real Apple submission is pending.
+- macOS delivery adds one universal Intel/Apple Silicon installer for CLAP, VST3 and the standalone app, with standard plug-in folders and `/Applications/KONTRA.app`. Publication requires timestamped Developer ID Application product signatures, a Developer ID Installer package signature, Apple acceptance and validated stapled tickets. Separate architecture ZIPs retain notarized DMGs for compatibility. Existing owned signing credentials are reused; there is no unsigned fallback. Real submission IDs and package/product hashes are recorded in the release receipts.
 - Modern signed cutoff intensity now uses the independently corroborated cubic law and inverse readback, with normalized bounds retained. The actual Conflux saved value showed the old linear conversion overstating its depth by about 4,877×; other modulation laws are unchanged.
 - Native LFO waveform-specific v0x71–v0x73 records now decode and write losslessly with strict size/flag checks. Forty-two authored combinations and 60 actual selected records pass. LFO playback/freewheel behavior is still incomplete.
 - Nonunit convolution Size now reports its resampling approximation and affected Auto Gain energy explicitly. Native pitch-preserving IR time stretch remains unavailable.
@@ -38,11 +66,16 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Fixed after 0.3.64
 
+- Structured nightly notes now retain reviewed processing and version-specific fix headings instead of falsely reporting no reviewed changes.
 - Modern signed pitch intensity now follows the checked cubic conversion and retains 24/36-semitone values; non-pitch modulation laws are unchanged.
 - Convolution Reverse now reverses the source impulse response before rate conversion and predelay. Auto Gain uses the verified prepared-energy law, and live switches and eight-knot IR Volume Envelope passed focused processing checks. Unequal early/late shaping remains approximate.
 - Large load dependency lists now use bounded typed journal chunks that can be reassembled completely in support reports. Source excerpts and path redaction remain intact; oversized individual values still report truncation.
 
 ### Added
+
+- Bounded Falcon/UVI metadata inspection and format/runtime research document
+  the next compatibility requirements. This does not add Falcon playback.
+- A Rust dependency audit records reuse opportunities and verified runtime limits.
 
 - Headless `audit-patch` accepts explicit snapshot and program selection while
   using the existing import, script, bank, effect and paced note/chord path.
@@ -108,9 +141,11 @@ below record reviewed source checkpoints; they are not claims about pending work
   782-file / 788-program corpus verifies 230,627 byte-exact record roundtrips and
   edited-value readbacks with zero errors.
 - Typed native LFO parsing and writing for known fields, with 9,600 actual-library
-  chunks round-tripping byte-for-byte. Import preserves this metadata; LFO clocks,
-  waveform generation and routing remain unsupported, some tables remain raw,
-  and typed rate/phase metadata does not establish DSP behavior.
+  chunks round-tripping byte-for-byte. Eligible retriggered sine Multi pitch
+  sources now play with proven legacy unsynchronized fade-in; broader waveforms,
+  free-running clocks, synchronized fades and live frequency remain unsupported.
+  Some tables remain raw, and typed metadata alone
+  does not establish DSP behavior.
 - Named bitmap font loading for 256-glyph Windows-1252 RGBA strips declared during
   initialization. Actual Areia Advanced resources verify two 256-glyph, 14-pixel
   fonts with variable advances and the native gray/orange switch-state change;
@@ -433,7 +468,7 @@ updating favorites; no supplied IDs were repaired or compared with Kontakt.
 | Controllers/menus | Authored configured-home routing, value indices, persisted positions and physical ownership; actual six-Analog replay | Every library callback, Lua UI and host workflow remain outside this evidence. |
 | Diagnostics/editor | Bounded actions/excerpts and startup causes; zero writer-drop/write-error/retention-loss in the checked Morphology runs | One truncated information event per Morphology run; Void window/embedding repair remains unverified. |
 | Streaming/convolution | First-block RAM/zero-heap gate; checked zero-underrun preloaded runs and native three-IR selection/host roundtrip | Uninterrupted realtime performance and Kontakt convolution/sound parity are not established. |
-| Wavetable DSP | Source identity diagnostics and retained opaque metadata | New wavetable DSP remains incomplete/unshipped; no wavetable playback parity claim. |
+| Wavetable DSP | Resident 2048-frame cycles, note-based pitch, live position and Linear/ASYM2MP phase forms; nine actual Conflux captures | Native bandwidth-table preparation and High/Best anti-aliasing remain missing; no complete wavetable or preset playback parity claim. |
 
 - The accepted parsing/preservation gates cover bounded known source headers,
   modern compact snapshots and counted modulation slots. Three later checked
@@ -471,19 +506,90 @@ updating favorites; no supplied IDs were repaired or compared with Kontakt.
   finite resident renders without heap operations; their reference is the same
   engine with authored routing changes. Added inline fields measure 116 bytes per
   voice on the checked Rust 1.98.1 build, not a throughput or parity improvement.
-- Wavetable source diagnostics do not implement wavetable DSP. Partial group FX,
+- Wavetable record decoding alone does not establish DSP behavior. Partial group FX,
   decoded envelopes and selected compressor IDs do not establish Kontakt sonic
   equivalence; unsupported processing remains visible.
 - Larger racks remain bounded by memory, voice budgets and host/editor capabilities.
   User zoom, cached snapshots and native file-picker tests do not certify every
   gesture, resource, preset or file-dialog workflow.
 
+### Fixed
+
+The 14 newly accepted logical defects are source-reviewed and recorded individually
+in `release-fixes.json`; follow-up and safety fixtures do not add counts. The previous
+published 0.3.96 binaries are unchanged. These entries describe the next source cut.
+
+- The direct Rust VST3 event-admission path accepts unused optional note-length
+  metadata without shortening retained ownership, including negative hints.
+  Sources: `a357e1e`, `401d59e`. The native VST3 adapter in this 0.3.115 cut still
+  drops negative optional lengths before this path; end-to-end native delivery
+  and the reported Mac keyboard/clip silence are not established by these tests.
+- Legacy unsynchronized Delay Time uses the checked conversion across its admitted
+  absolute range. Sources: `f191cc2`, fractional fixture follow-up `aaf2959`.
+- Delay writes the current input before advancing its ring clock, preserving the
+  intended sample position. Source: `4ec2958`.
+- Native Distortion Damping uses the checked native law. Source: `b3e453e`.
+- Distortion's native DC filter runs after Damping with the checked scalar/SIMD
+  summation order. Sources: `74e3c0e`, `cd940e2`; one DC-processing outcome.
+- macOS plug-in packages use the signed standalone app’s imported CLAP/VST3
+  package-type declarations and user-context Launch Services registration. No
+  FinderInfo attributes are added to signed code. ZIP extraction and installed-
+  payload gates check Foundation/Workspace package recognition
+  and both plug-in factories. Sources: `6001126`. Actual hosted Mac execution is
+  still required; this source correction is not a Bitwig scan or playback result.
+- VST3 editor views retain their component while alive. Source: `3e76d60`.
+- VST3 resize frames retain their owner through attachment and replacement.
+  Source: `3784c67`.
+- VST3 run-loop registration follows the currently attached view.
+  Source: `e3822b2`.
+- Attached GUI view ownership is independent of creation order. Source: `be80724`.
+- Native editor startup and thread information is persisted before entering the
+  platform window path, preserving context if startup fails. Source: `c3763d1`.
+- VST3 initial cents tuning is applied atomically with note onset, including bounded
+  extreme finite values. Sources: `53ab06f`, `2d5822e`.
+- Zero-rate integer sample taps avoid the reproduced zero-stride iterator panic.
+  This shared renderer correction is distinct from atomic initial tuning.
+  Source: `4529cbf`.
+
+### Added
+
+- Confirmed previous-session host crashes recover accessible native evidence and
+  complete sanitized diagnostic activity through the reused BUFFR reporter.
+  This is the fourteenth accepted defect outcome: reliable crash-evidence recovery
+  and acknowledged delivery, grouped with its retry/cancellation follow-ups.
+  The private report includes the full sanitized evidence; the public issue is
+  limited to safe platform/host/format/build/failure metadata. Automatic reports
+  exclude library source excerpts, samples, access data and credentials. Full-hash
+  acknowledgements govern delivery; failed or delayed reports remain retryable.
+  No host-wide crash hook is installed, and host crashes do not establish KONTRA
+  fault ownership. Sources: `665ffee`, `72d3b9b`, `0c7b622`.
+
+### Known limits
+
+- Frozen optimized source `d7b9e11ad096283aab06c79c15732d9bd5a48a03` passes
+  all 547 library tests (30 ignored), including 30 support tests, and 89 playback
+  tests (4 ignored). Dedicated extreme-onset, zero-stride PCM and exact scalar/SIMD
+  checks pass in executable prefix `eebeb2eb1efd`. The clean CDLL prefix
+  `d504c6786bb0` embeds that exact revision; its actual Linux VST3 factory exposes
+  one KONTRA class with unchanged class ID and releases all factory references.
+  Strict C++ editor attachment/lifetime gates pass on unchanged shim sources.
+  These are optimized Linux and driver-free checks, not native Mac or every-host
+  embedding validation. The tested executable carries its original 0.3.101
+  metadata; the accepted ledger derives the next package version as 0.3.115.
+- Native macOS Swift/Finder/factory checks, Developer ID signatures, Installer
+  execution and Apple acceptance remain required hosted shipping gates for this
+  cut. Existing 0.3.96 notarization does not verify these changed bundles.
+- Crash recovery/delivery fixtures do not establish a real-world host-crash-to-server
+  end-to-end result. Native evidence depends on accessible host/OS artifacts;
+  public/private rendering is a support-service contract. Manual local exports may
+  retain bounded, reviewed source excerpts; automatic reports exclude them.
+- These corrections do not implement Conflux's native Lua interface or establish
+  complete Kontakt processing parity, every host workflow or complete-library
+  compatibility. No production crash report or synthetic public issue was sent
+  as part of the test evidence.
+
 ### Candidates — not shipped
 
-- New wavetable DSP remains incomplete and unshipped. Diagnostic information-event
-  inventory splitting is future work, not a counted fix in this release.
-- The physical CC120 sibling-ownership follow-up must pass its gate before the
-  final source is shipped/installed; it belongs to the same counted CC120 unit.
 - Audit/source-identity metrics, the checked CLI JSON helper and delivery
   instrumentation are observability features, not additional logical defects.
 

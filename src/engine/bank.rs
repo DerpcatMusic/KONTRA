@@ -80,6 +80,7 @@ pub struct GroupSettings {
     pub mods: ModTable,
     /// Internal AHDSRs driving pitch; every native internal-modulator slot.
     pub pitch_envelopes: Box<[super::params::PitchEnvelope]>,
+    pub pitch_lfos: Box<[crate::modulation::PitchLfo]>,
     /// Insert filters and EQs; `None` costs voices nothing.
     pub filter: Option<Box<GroupFilter>>,
     /// Kontakt interpolation quality; every setting currently uses 4-point Hermite.
@@ -103,6 +104,7 @@ impl From<&Group> for GroupSettings {
             bus: None,
             mods: ModTable::from(group),
             pitch_envelopes: super::params::PitchEnvelope::from_group(group),
+            pitch_lfos: if group.wavetable.is_none() { group.pitch_lfos.clone().into_boxed_slice() } else { Box::new([]) },
             filter: GroupFilter::new(group),
             interp_quality: group.interp_quality,
             wavetable: group.wavetable,
@@ -153,13 +155,17 @@ impl From<&crate::import::FlexEnvelope> for Flex {
 }
 
 /// A sample's resident data: one or more spans of decoded frames.
+#[derive(Clone)]
 pub(crate) struct SampleData {
     pub rate: u32,
+    /// Total physical frames, independent of resident spans or zone bounds.
+    pub frames: u64,
     pub(crate) spans: Vec<Span>,
     /// Some zone path leaves the resident spans and must stream.
     pub(crate) streamed: bool,
 }
 
+#[derive(Clone)]
 pub(crate) struct Span {
     pub start: u64,
     /// Shared with every bank in the process holding the same frames
@@ -295,6 +301,12 @@ pub fn memory_budget() -> usize {
 }
 
 impl SampleData {
+    /// One span covering the complete prepared wavetable window.
+    pub(crate) fn wavetable_span(&self, table: super::wavetable::Table) -> Option<u32> {
+        let first = table.first as u64;
+        let end = first + (table.cycles * super::wavetable::CYCLE) as u64;
+        self.spans.iter().position(|s| s.start <= first && s.end() >= end).map(|i|i as u32)
+    }
     /// The resident span holding `frame`.
     pub(crate) fn span_at(&self, frame: u64) -> Option<u32> {
         let i = self.spans.partition_point(|s| s.end() <= frame);
@@ -302,6 +314,7 @@ impl SampleData {
             .get(i)
             .filter(|s| s.start <= frame)
             .map(|_| i as u32)
+            .or_else(||self.spans.last().filter(|s|s.start<=frame && frame<s.end()).map(|_|(self.spans.len()-1) as u32))
     }
 }
 
@@ -315,7 +328,7 @@ impl Span {
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) struct ZonePlay {
     pub sample: u32,
-    /// Positive source identity, preserved when other zones fail to load.
+    /// Zero-based source identity, preserved when other zones fail to load.
     pub zone_id: u32,
     pub map: PlayMap,
     /// Maximum start offset in frames.
@@ -378,7 +391,7 @@ impl ZoneSkipCounts {
 }
 
 #[derive(Clone, Copy)]
-enum ZoneSkipCause { UnavailableReference, UnreadableSample, InvalidGroup, InvalidSampleBounds, InvalidLoop, UnsupportedSource }
+pub(super) enum ZoneSkipCause { UnavailableReference, UnreadableSample, InvalidGroup, InvalidSampleBounds, InvalidLoop, UnsupportedSource }
 
 /// Everything a part needs to play, immutable once handed to an engine.
 pub struct Bank {
@@ -386,8 +399,13 @@ pub struct Bank {
     /// Zones, their playback and the zones on each key are the same for
     /// every bank of one instrument: parts and instances share one copy
     /// (17 MiB a part on Areia).
-    zones: Arc<[Zone]>,
+    pub(super) zones: Arc<[Zone]>,
     source_zone_count: usize,
+    pub(super) zone_context: Option<Arc<super::zone::Context>>,
+    pub(super) zone_init_epoch: u64,
+    pub(super) zone_parent: Option<Arc<super::zone::State>>,
+    pub(super) zone_state: Option<Arc<super::zone::State>>,
+    pub(super) zone_spares: std::collections::VecDeque<crate::ksp::engine::ZoneEdit>,
     /// What voices play: [`Bank::base`] with the player's overrides on top.
     pub settings: Vec<GroupSettings>,
     /// The library's values as its scripts have set them, under the
@@ -398,9 +416,11 @@ pub struct Bank {
     pub(crate) playable: Vec<bool>,
     /// Prepared once: normal attacks need a tail scan only for Note Mono releases.
     pub(crate) note_mono_releases: bool,
+    /// Prepared native controls whose sample geometry updates every 32 frames.
+    pub(super) native_controls: bool,
     /// Zones mapped to key `k` are `key_zones[key_start[k]..key_start[k + 1]]`.
-    key_start: [u32; 129],
-    key_zones: Arc<[u32]>,
+    pub(super) key_start: [u32; 129],
+    pub(super) key_zones: Arc<[u32]>,
     pub(crate) samples: Vec<SampleData>,
     pub(crate) voice_groups: Vec<Option<VoiceGroup>>,
     pub(crate) polyphony: usize,
@@ -433,6 +453,8 @@ pub struct Bank {
 pub const LOAD_DONE: u32 = 1000;
 
 impl Bank {
+    pub(crate) fn has_native_controls(&self) -> bool { self.native_controls }
+
     /// Load every group of `instrument` within [`MEMORY_LIMIT`], streaming
     /// long samples from disk.
     pub fn load(instrument: &Instrument) -> Result<Self> {
@@ -606,7 +628,7 @@ impl Bank {
                     Ok(())
                 };
                 let spans = read_spans().map(|()| kept);
-                (spans, streamed, header.rate, (source, path))
+                (spans, streamed, header.rate, header.frames, (source, path))
             },
         );
         check()?;
@@ -614,7 +636,8 @@ impl Bank {
         let mut samples = Vec::with_capacity(decoded.len());
         let mut streamed = Vec::with_capacity(decoded.len());
         let mut bytes = 0;
-        for (id, (spans, streamed_sample, rate, source)) in decoded.into_iter().enumerate() {
+        let mut zone_sources=Vec::with_capacity(decoded.len());
+        for (id, (spans, streamed_sample, rate, frames, source)) in decoded.into_iter().enumerate() {
             let (spans, streamed_sample) = match spans {
                 Ok(spans) => (spans, streamed_sample),
                 Err(e) => {
@@ -623,9 +646,11 @@ impl Bank {
                 }
             };
             bytes += spans.iter().map(|s| s.data.bytes()).sum::<usize>();
+            zone_sources.push(Some(source.0.clone()));
             streamed.push(streamed_sample.then(|| resident::source(source)));
             samples.push(SampleData {
                 rate,
+                frames,
                 spans,
                 streamed: streamed_sample,
             });
@@ -637,6 +662,7 @@ impl Bank {
             None
         };
         let mut bank = builder.finish(samples, streamer, bytes)?;
+        bank.prepare_zone_service(&instrument.zones, Some(instrument.zones.as_ptr() as usize),zone_sources);
         trace.mark("finish");
         (bank.preload, bank.planned, bank.cover) = (preload, planned, cover);
         bank.residency = tracked
@@ -736,6 +762,7 @@ impl Bank {
         let mut samples = Vec::with_capacity(kept.len());
         let mut streamed = Vec::with_capacity(kept.len());
         let mut bytes = Streamer::BYTES;
+        let mut zone_sources=Vec::with_capacity(kept.len());
         for (id, (source, header, path)) in kept.into_iter().enumerate() {
             let waves: Vec<_> = builder.plays.iter().filter(|p| p.sample as usize == id && p.wavetable.is_some())
                 .map(|p| (p, (0, 0))).collect();
@@ -764,13 +791,16 @@ impl Bank {
             }
             samples.push(SampleData {
                 rate: header.rate,
+                frames: header.frames,
                 spans: resident_spans,
                 streamed: true,
             });
+            zone_sources.push(Some(source.clone()));
             streamed.push(Some(resident::source((source, path))));
         }
         let streamer = Streamer::spawn(streamed)?;
         let mut bank = builder.finish(samples, Some(streamer), bytes)?;
+        bank.prepare_zone_service(&instrument.zones, Some(instrument.zones.as_ptr() as usize),zone_sources);
         (bank.preload, bank.cover) = (0, 0);
         trace.mark("bare");
         Ok(bank)
@@ -799,12 +829,14 @@ impl Bank {
             .iter()
             .map(|(_, s)| (s.rate, s.frames.len() as u64))
             .collect();
-        let source_ids = (1..=zones.len() as u32).collect();
+        let source = zones.clone();
+        let source_ids = (0..zones.len() as u32).collect();
         let builder = Builder::new(groups, zones, zone_samples, source_ids, info, Issues::default())?;
         let samples: Vec<_> = samples
             .into_iter()
             .map(|(_, s)| SampleData {
                 rate: s.rate,
+                frames: s.frames.len() as u64,
                 spans: vec![Span {
                     start: 0,
                     data: Frames::new(Pcm::pack(&s.frames, false)),
@@ -813,7 +845,9 @@ impl Bank {
             })
             .collect();
         let bytes = samples.iter().map(|s| s.spans[0].data.bytes()).sum();
-        builder.finish(samples, None, bytes)
+        let mut bank = builder.finish(samples, None, bytes)?;
+        bank.prepare_zone_service(&source, None,vec![None;bank.samples.len()]);
+        Ok(bank)
     }
 
     /// The smart memory manager for this bank, once (see `residency.rs`).
@@ -977,6 +1011,11 @@ impl Builder {
                             "loop crossfade shortened in {}",
                             zone.sample.display()
                         ));
+                    }
+                    if group.mods.iter().any(|m| super::params::loop_control_supported(group, m))
+                        && (zone.loop_range.as_ref().is_some_and(|l| l.alternating)
+                            || map.controlled_loop([0.; 2], frames).is_none()) {
+                        issues.note(format_args!("loop controls are not processed for cropped, reverse, alternating, absent or shorter-than-four-frame loops: {} (zone ID {zone_id})", zone.sample.display()));
                     }
                     let start_mod = zone
                         .start_mod
@@ -1258,11 +1297,17 @@ impl Builder {
             key_zones.extend(on_key.map(|(i, _)| i as u32));
         }
         key_start[128] = key_zones.len() as u32;
+        let native_controls = plays.iter().zip(&zones).any(|(p, z)|
+            self.settings[z.group].mods.has_loop_controls()
+                && z.loop_range.as_ref().is_some_and(|l| !l.alternating)
+                && p.map.controlled_loop([0.; 2], samples[p.sample as usize].frames).is_some());
         Ok(Bank {
             groups: self.groups,
             zones: intern(&ZONES, zones),
             source_zone_count: self.source_zone_count,
+            zone_context: None, zone_init_epoch:0, zone_parent: None, zone_state: None, zone_spares: Default::default(),
             base: self.settings.clone(),
+            native_controls,
             settings: self.settings,
             plays: intern(&PLAYS, plays),
             playable,
@@ -1289,7 +1334,7 @@ impl Builder {
 
 /// Validate a zone against its sample and build its playback path. The flag
 /// reports a loop crossfade shortened to fit before the loop start.
-fn play_map(zone: &Zone, group: &Group, frames: u64) -> Result<(PlayMap, bool), (ZoneSkipCause, &'static str)> {
+pub(super) fn play_map(zone: &Zone, group: &Group, frames: u64) -> Result<(PlayMap, bool), (ZoneSkipCause, &'static str)> {
     let start = zone.start as u64;
     let end = frames
         .checked_add_signed(i64::from(zone.end))
@@ -1462,7 +1507,7 @@ fn keep_zones(
             Some(Some(id)) => {
                 zones.push(zone.clone());
                 zone_samples.push(id);
-                source_ids.push(index as u32 + 1);
+                source_ids.push(index as u32);
             }
         }
     }

@@ -38,6 +38,16 @@ pub fn load_scripts_with_state(
     instrument: &Instrument, persisted: Vec<Persisted>, rate: f64,
     ir_settings: &[crate::fx::IrSlotSettings], engine_state: &[crate::ksp::engine::NativeEdit],
 ) -> (Option<Box<Runtime>>, Vec<String>) {
+    load_scripts_with_delay_state(instrument, persisted, rate, ir_settings, engine_state, &[])
+}
+
+/// Physical Delay caches accompany final-address edits in new host states.
+/// The existing entry point keeps legacy/empty-state behavior unchanged.
+pub fn load_scripts_with_delay_state(
+    instrument: &Instrument, persisted: Vec<Persisted>, rate: f64,
+    ir_settings: &[crate::fx::IrSlotSettings], engine_state: &[crate::ksp::engine::NativeEdit],
+    delay_state: &[crate::fx::DelayState],
+) -> (Option<Box<Runtime>>, Vec<String>) {
     if instrument.scripts.is_empty() {
         return (None, Vec::new());
     }
@@ -45,6 +55,10 @@ pub fn load_scripts_with_state(
     // Kontakt saves engine state separately from script variables. Seed it
     // before init so authored get_engine_par calls see the restored values.
     let mut restore_errors = Vec::new();
+    setup.saved_delays = delay_state.iter().copied().filter(|saved| {
+        let mut fields = [0.0; crate::fx::blocks::FIELDS]; saved.apply(&mut fields)
+    }).collect();
+    for saved in &setup.saved_delays { setup.fx.to_mut().restore_delay(saved); }
     for saved in ir_settings {
         let (rack, slot, settings) = (saved.rack, saved.slot, saved.settings);
         if setup.fx.param(rack, slot, FxParam::Convolution(0)).is_none()
@@ -87,11 +101,23 @@ pub fn load_scripts_with_state(
             && setup.set_engine_par(0, par, value) { restored.push((par, value)); }
         else { restore_errors.push(format!("Saved engine parameter is unavailable: {par:?}")); }
     }
+    let saved_delays = std::mem::take(&mut setup.saved_delays);
+    let mut restored_delays = Vec::new();
+    for saved in &saved_delays {
+        if setup.fx.to_mut().restore_delay(saved) { restored_delays.push(*saved); }
+        else { restore_errors.push(format!("Saved Delay state is unavailable: {:?} slot {}", saved.rack, saved.slot)); }
+    }
+    if saved_delays.len() != delay_state.len() {
+        restore_errors.push("Invalid saved Delay state rejected".into());
+    }
     rt.native_state = setup.prepare_native_state();
+    for saved in restored_delays { rt.native_state.restored_delay(saved); }
     for &(par, value) in &restored {
         if let Some(address) = setup.address(par) { rt.native_state.restored(address, par, value); }
     }
     rt.init_engine_pars = setup.pars;
+    rt.init_zone_edits = setup.zone_edits;
+    rt.init_zone_source = instrument.zones.as_ptr() as usize;
     rt.init_controllers = setup.controllers;
     rt.init_irs = setup.loads;
     let errors = restore_errors.into_iter().chain(errors
@@ -206,6 +232,8 @@ pub(super) struct Host<'a> {
     pub writes: &'a mut Vec<Write>,
     pub write_index: &'a mut (u32, std::collections::HashMap<Address, usize>),
     pub ir_requests: &'a mut Vec<IrRequest>,
+    pub zone_inflight: &'a mut usize,
+    pub zone_requests: &'a mut std::collections::VecDeque<crate::ksp::engine::ZoneEdit>,
 }
 
 impl Host<'_> {
@@ -213,6 +241,10 @@ impl Host<'_> {
     fn address(&self, par: EnginePar) -> Option<Address> {
         let address = Address::resolve(par, self.bank?.groups())?;
         match address {
+            // A saved beat multiplier can predate our named KSP unit set.
+            // Permit changing its unit without inventing a numeric readback.
+            Address::Fx(rack, slot, FxParam::Field(FxKind::Delay, 4))
+                if self.fx.delay_fields(rack, slot).is_some() => Some(address),
             Address::Fx(rack, slot, param) => self.fx.param(rack, slot, param).map(|_| address),
             _ => Some(address),
         }
@@ -259,6 +291,17 @@ impl Host<'_> {
         let i = self.commands.partition_point(|c| c.at <= at);
         self.commands.insert(i, Command { at, channel, input_channel, id, kind });
         true
+    }
+
+    fn delay_fields(&self, rack: Rack, slot: u8) -> Option<crate::fx::blocks::Fields> {
+        let (mut fields, tempo) = self.fx.delay_fields(rack, slot)?;
+        for w in self.writes.iter() {
+            if let Address::Fx(r, s, FxParam::Field(FxKind::Delay, n)) = w.address
+                && (r, s) == (rack, slot) {
+                crate::fx::blocks::set_delay_field(&mut fields, n, w.value, tempo);
+            }
+        }
+        Some(fields)
     }
 }
 
@@ -398,6 +441,21 @@ impl KspEngine for Host<'_> {
     }
 
     fn zone_count(&self) -> usize { self.bank.map_or(0, Bank::zone_count) }
+    fn zone_par(&self, zone: i32, par: crate::ksp::engine::ZonePar) -> Option<i32> {
+        self.bank?.zone_par(zone,par)
+    }
+    fn request_zone_edit(&mut self, edit: crate::ksp::engine::ZoneEdit) -> Result<(), &'static str> {
+        let bank = self.bank.ok_or("set_zone_par: no sample bank")?;
+        let id = usize::try_from(edit.zone).map_err(|_|"set_zone_par: invalid source zone ID")?;
+        let mut mapping = *bank.zone_state.as_ref().and_then(|s|s.maps.get(id)).ok_or("set_zone_par: invalid source zone ID")?;
+        if !bank.zone_editable(id) { return Err("set_zone_par: source zone has no playable sample; mapping unchanged"); }
+        mapping.set(edit.par,edit.value,bank.groups().len())?;
+        if self.zone_requests.len() == self.zone_requests.capacity() { return Err("set_zone_par: request queue exhausted"); }
+        self.zone_requests.push_back(edit);
+        *self.zone_inflight += 1;
+        Ok(())
+    }
+
 
     fn group_name(&self, group: usize) -> &str {
         self.bank
@@ -422,6 +480,11 @@ impl KspEngine for Host<'_> {
         if !loaded(address, value, |r, s| self.fx.param(r, s, FxParam::Type)) {
             return false;
         }
+        if let Address::Fx(r, s, FxParam::Field(FxKind::Delay, n @ (0 | 4))) = address {
+            let Some(mut fields) = self.delay_fields(r, s) else { return false };
+            let tempo = self.fx.delay_fields(r, s).map_or(120.0, |(_, tempo)| tempo);
+            if !crate::fx::blocks::set_delay_field(&mut fields, n, value, tempo) { return false }
+        }
         // Render applies every parameter before notes at the same sample. Keep
         // its last value, including what later callbacks read, without queuing
         // a full group-envelope restore again for each articulation switch.
@@ -431,7 +494,10 @@ impl KspEngine for Host<'_> {
             self.write_index.1.extend(self.writes.iter().enumerate()
                 .filter(|(_, w)| w.at == at).map(|(i, w)| (w.address, i)));
         }
-        if let Some(&i) = self.write_index.1.get(&address) {
+        // Time and Unit writes restore each other's saved cache. Keep their
+        // ordering even when one callback changes the same address twice.
+        let delay_clock = matches!(address, Address::Fx(_, _, FxParam::Field(FxKind::Delay, 0 | 4)));
+        if !delay_clock && let Some(&i) = self.write_index.1.get(&address) {
             self.writes[i].value = value;
             self.writes[i].par = par;
             self.writes[i].native = native;
@@ -452,6 +518,11 @@ impl KspEngine for Host<'_> {
     /// The latest queued value, else the engine's current one.
     fn engine_par(&self, par: EnginePar) -> Option<i32> {
         let address = self.address(par)?;
+        if let Address::Fx(r, s, FxParam::Field(FxKind::Delay, n @ (0 | 4))) = address {
+            let fields = self.delay_fields(r, s)?;
+            let tempo = self.fx.delay_fields(r, s)?.1;
+            return Some(address.encode(crate::fx::blocks::normalized_field(FxKind::Delay, n, &fields, tempo)?));
+        }
         let queued = self.writes.iter().rev().find(|w| w.address == address);
         let value = match queued {
             Some(w) => w.value,
@@ -463,6 +534,11 @@ impl KspEngine for Host<'_> {
             },
         };
         Some(address.encode(value))
+    }
+
+    fn engine_par_display(&self, par: EnginePar, value: i32) -> Option<super::Disp> {
+        let Address::Fx(r, s, FxParam::Field(FxKind::Delay, 0)) = self.address(par)? else { return None };
+        crate::fx::blocks::delay_display(&self.delay_fields(r, s)?, value)
     }
 
     fn find_mod(&self, group: usize, is: &dyn Fn(&str) -> bool) -> Option<usize> {
@@ -616,6 +692,8 @@ fn instrument((volume, pan, tune): (f32, f32, f32), p: GroupPar) -> Option<f32> 
 pub struct ScriptSetup<'a> {
     groups: &'a [Group],
     zones: usize,
+    zone_mappings: Vec<super::zone::Mapping>,
+    zone_edits: Vec<crate::ksp::engine::ZoneEdit>,
     /// The instrument's effects with the ones scripts loaded.
     fx: std::borrow::Cow<'a, ProgramFx>,
     path: &'a std::path::Path,
@@ -626,6 +704,7 @@ pub struct ScriptSetup<'a> {
     effects: Vec<(Address, f32)>,
     pars: Vec<(EnginePar, i32)>,
     saved: Vec<crate::ksp::engine::NativeEdit>,
+    saved_delays: Vec<crate::fx::DelayState>,
     controllers: Vec<(u8, u8)>,
     /// Effects and impulse responses loaded, in order.
     loads: Vec<ScriptIr>,
@@ -636,6 +715,8 @@ impl<'a> ScriptSetup<'a> {
         Self {
             groups: &instrument.groups,
             zones: instrument.zones.len(),
+            zone_mappings: instrument.zones.iter().map(super::zone::Mapping::from).collect(),
+            zone_edits: Vec::new(),
             fx: std::borrow::Cow::Borrowed(&instrument.fx),
             path: &instrument.path,
             rate,
@@ -644,6 +725,7 @@ impl<'a> ScriptSetup<'a> {
             effects: Vec::new(),
             pars: Vec::new(),
             saved: Vec::new(),
+            saved_delays: Vec::new(),
             controllers: Vec::new(),
             loads: Vec::new(),
         }
@@ -687,12 +769,17 @@ impl<'a> ScriptSetup<'a> {
                 for &id in &ids { add(EnginePar { id, group: -1, slot, generic }); }
             }
         }
+        state.prepare_delays(&self.fx);
         state
     }
 
     fn address(&self, par: EnginePar) -> Option<Address> {
         let address = Address::resolve(par, self.groups)?;
         match address {
+            // Preserve unclassified native beat values while permitting a
+            // transition to one of the documented named units.
+            Address::Fx(rack, slot, FxParam::Field(FxKind::Delay, 4))
+                if self.fx.delay_fields(rack, slot).is_some() => Some(address),
             Address::Fx(rack, slot, param) => self.fx.param(rack, slot, param).map(|_| address),
             _ => Some(address),
         }
@@ -715,6 +802,11 @@ impl<'a> ScriptSetup<'a> {
         });
         self.loads.retain(|l| (l.rack, l.slot) != (rack, slot));
         self.loads.push(ScriptIr { rack, slot, load: Load::Kind(kind) });
+        // A newly created Delay can now consume its validated physical state
+        // before subsequent init getters; other kinds never receive it.
+        for saved in self.saved_delays.iter().filter(|s| (s.rack, s.slot) == (rack, slot)) {
+            self.fx.to_mut().restore_delay(saved);
+        }
         // Some scripts create their rack in init. Seed its saved controls as
         // soon as the type exists, before subsequent authored getter calls.
         let saved: Vec<_> = self.saved.iter().copied().filter(|edit|
@@ -751,6 +843,19 @@ impl KspEngine for ScriptSetup<'_> {
     }
 
     fn zone_count(&self) -> usize { self.zones }
+    fn zone_par(&self, zone: i32, par: crate::ksp::engine::ZonePar) -> Option<i32> {
+        usize::try_from(zone).ok().and_then(|id|self.zone_mappings.get(id)).map(|m|m.get(par))
+    }
+    fn request_zone_edit(&mut self, edit: crate::ksp::engine::ZoneEdit) -> Result<(), &'static str> {
+        let id = usize::try_from(edit.zone).map_err(|_|"set_zone_par: invalid source zone ID")?;
+        if self.zone_edits.len() >= self.zones.saturating_mul(3).saturating_add(64) { return Err("set_zone_par: init request queue exhausted"); }
+        self.zone_mappings.get_mut(id).ok_or("set_zone_par: invalid source zone ID")?.set(edit.par,edit.value,self.groups.len())?;
+        self.zone_edits.push(edit);
+        // Init runs on the loader. These IDs complete only after the bank and
+        // the prepared mappings have reached the playing engine.
+        Ok(())
+    }
+
 
     fn group_name(&self, group: usize) -> &str {
         self.groups.get(group).map_or("", |g| &g.name)
@@ -773,6 +878,11 @@ impl KspEngine for ScriptSetup<'_> {
             if !settings.set(n, v) { return false }
             self.loads.retain(|l| (l.rack, l.slot) != (rack, slot) || !matches!(l.load, Load::Convolution(_)));
             self.loads.push(ScriptIr { rack, slot, load: Load::Convolution(settings) });
+        }
+        if let Address::Fx(r, s, FxParam::Field(FxKind::Delay, n @ (0 | 4))) = address {
+            if !self.fx.to_mut().set_delay_field(r, s, n, v) { return false }
+            self.pars.push((par, value));
+            return true;
         }
         match address {
             Address::GroupType(g, s) => return params::group_type(self.groups, g, s) == Some(v),
@@ -816,6 +926,11 @@ impl KspEngine for ScriptSetup<'_> {
             _ => params::read(&self.settings, address)?,
         };
         Some(address.encode(value))
+    }
+
+    fn engine_par_display(&self, par: EnginePar, value: i32) -> Option<super::Disp> {
+        let Address::Fx(r, s, FxParam::Field(FxKind::Delay, 0)) = self.address(par)? else { return None };
+        crate::fx::blocks::delay_display(&self.fx.delay_fields(r, s)?, value)
     }
 
     fn find_mod(&self, group: usize, is: &dyn Fn(&str) -> bool) -> Option<usize> {
