@@ -5670,7 +5670,7 @@ end on"#,"🦀".repeat(600));
         // must use all-slot backing, not its visible-menu/property projection.
         let mut live=rt.live_for_slot(Some(1));rt.prepare_native_controls(&mut live);
         let mut narrow=live.clone();assert_eq!(narrow.native_controls[0].properties.label.capacity(),live.native_controls[0].properties.label.capacity());
-        let p=Arc::new(SamplerParams::new());let epoch={let mut view=p.shared.view.lock().unwrap();let epoch=next_epoch(&mut view,0,None,Some(live));view.parts[0].native_scene=Some(scene.clone());epoch};
+        let p=Arc::new(SamplerParams::new());let epoch={let mut view=p.shared.view.lock().unwrap();let epoch=next_epoch(&mut view,0,None,Some(Box::new(live)));view.parts[0].native_scene=Some(scene.clone());epoch};
         let mut dsp=Dsp::default();dsp.script_epoch[0]=epoch;dsp.rack.parts[0].set_script(Some(rt));
         fn label(node:&Node)->Option<&str>{if let Paint::Text(s)=&node.paint{Some(s)}else{node.children.iter().find_map(label)}}
         fn tap(node:&Node)->Option<usize>{if node.tap{Some(node.id)}else{node.children.iter().find_map(tap)}}
