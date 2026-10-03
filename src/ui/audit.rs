@@ -747,10 +747,16 @@ mod tests {
             let mut rendered_changes = 0;
             let mut publication_ms = Vec::new();
             let mut frame_stages = [Vec::new(), Vec::new(), Vec::new()];
+            let mut cpu_stages = [Vec::new(), Vec::new(), Vec::new()];
+            // Weak identities reserve addresses without keeping source pixels live.
+            let mut seen_image_buffers = std::collections::HashMap::new();
             let mut frame_work = Vec::new();
             let initial_fitted = fitted::audit_counts(0);
             let mut previous_fitted = initial_fitted;
             let partition = std::env::var_os("KONTRA_UI_BENCH_PARTITION").is_some();
+            let cold_cpu_cache = std::env::var_os("KONTRA_UI_BENCH_COLD_CPU_CACHE").is_some();
+            assert!(!cold_cpu_cache || (gpu.is_none() && std::env::var_os("KONTRA_UI_BENCH_BUILD_ONLY").is_none()),
+                "cold CPUCache comparison requires the software reference painter");
             let mut last_published = None;
             let mut published_arc_owners = Vec::new();
             let mut publication_rows = Vec::new();
@@ -769,6 +775,9 @@ mod tests {
                     view.parts[0].wallpaper = part.wallpaper.clone();
                     drop(view);
                     observer_draw = Some((Bridge::new(published.clone()), build(published, Arc::default(), Arc::default(), Arc::default(), art.clone())));
+                    // The direct-stage benchmark otherwise warmed this cache.
+                    // Opt in to one real cold observer frame, then retain it.
+                    if cold_cpu_cache { cache = vello::Cache::default(); }
                 }
                 fitted::ready();
                 // Native MuiEditor publishes before its changed fingerprint;
@@ -802,12 +811,38 @@ mod tests {
                 ui.frame(tree, Some(Size::new(1180.,900.)), Input::default(),1./60.).unwrap();
                 frame_stages[1].push(stage.elapsed().as_secs_f64()*1000.);
                 let counts = fitted::audit_counts(0);
-                frame_work.push(serde_json::json!({
+                let mut work = serde_json::json!({
                     "control_builds":perf_view::control_builds()-builds,
                     "fitted_queued":counts.0-previous_fitted.0,
                     "fitted_completed":counts.1-previous_fitted.1,
                     "fitted_generation":fitted::generation(0),
-                }));
+                });
+                if partition {
+                    let scene = ui.scene().unwrap();
+                    let mut frame_images = std::collections::HashSet::new();
+                    let mut image_paints = 0;
+                    let mut new_buffers = 0;
+                    let mut new_bytes = 0;
+                    for paint in &scene.paint {
+                        if let moose::mui::mui::scene::Paint::Image { image, .. } = &paint.paint {
+                            image_paints += 1;
+                            let key = Arc::as_ptr(&image.rgba) as *const u8 as usize;
+                            frame_images.insert(key);
+                            if let std::collections::hash_map::Entry::Vacant(entry) = seen_image_buffers.entry(key) {
+                                entry.insert(Arc::downgrade(&image.rgba));
+                                new_buffers += 1;
+                                new_bytes += image.rgba.len();
+                            }
+                        }
+                    }
+                    work["scene_images"] = serde_json::json!({
+                        "paints":image_paints,"unique_frame_buffers":frame_images.len(),
+                        "new_buffers":new_buffers,"new_rgba_bytes":new_bytes,
+                        "unique_buffers_seen":seen_image_buffers.len(),
+                        "scope":"direct bitmap paint identities; not renderer cache entries or texture uploads",
+                    });
+                }
+                frame_work.push(work);
                 previous_fitted = counts;
                 let stage = Instant::now();
                 let scene = ui.scene().unwrap();
@@ -819,10 +854,19 @@ mod tests {
                     rendered_changes += usize::from(stats.renders > 0);
                     device.poll(vello::vello::wgpu::PollType::wait_indefinitely()).unwrap();
                 } else {
+                    let at = Instant::now();
                     ctx.reset();
                     vello::paint(&mut vello::Cpu {ctx: &mut ctx, resources: &mut resources, cache: &mut cache}, scene, transform).unwrap();
+                    cpu_stages[0].push(at.elapsed().as_secs_f64()*1000.);
+                    let at = Instant::now();
                     ctx.flush();
+                    cpu_stages[1].push(at.elapsed().as_secs_f64()*1000.);
+                    let at = Instant::now();
                     ctx.render(&mut pixmap, &mut resources);
+                    cpu_stages[2].push(at.elapsed().as_secs_f64()*1000.);
+                    frame_work.last_mut().unwrap()["cpu_stage_ms"] = serde_json::json!({
+                        "encode_and_reset":cpu_stages[0].last(),"flush":cpu_stages[1].last(),"raster":cpu_stages[2].last(),
+                    });
                 }
                 frame_stages[2].push(stage.elapsed().as_secs_f64()*1000.);
                 rendered.push(start.elapsed().as_secs_f64()*1000.);
@@ -837,14 +881,25 @@ mod tests {
             rendered.sort_by(f64::total_cmp);
             publication_ms.sort_by(f64::total_cmp);
             let summarize = |mut samples: Vec<f64>| {
+                if samples.is_empty() { return serde_json::json!({"n":0}); }
                 samples.sort_by(f64::total_cmp);
                 serde_json::json!({"n":samples.len(),"mean":samples.iter().sum::<f64>()/samples.len() as f64,
                     "p99":samples[((samples.len()-1) as f64*0.99).ceil() as usize]})
             };
             let stages: serde_json::Map<String, serde_json::Value> = ["build", "layout", "render"]
                 .into_iter().zip(frame_stages).map(|(name,samples)| (name.into(),summarize(samples))).collect();
+            let cpu_cache_groups: serde_json::Map<String, serde_json::Value> = ["encode_and_reset", "flush", "raster"]
+                .into_iter().zip(&cpu_stages).map(|(name,samples)| (name.into(),serde_json::json!({
+                    "first_observer":summarize(samples.first().copied().into_iter().collect()),
+                    "later_observers":summarize(samples.iter().skip(1).copied().collect()),
+                }))).collect();
+            let cpu_stage_ms: serde_json::Map<String, serde_json::Value> = ["encode_and_reset", "flush", "raster"]
+                .into_iter().zip(cpu_stages).map(|(name,samples)| (name.into(),summarize(samples))).collect();
             println!("UI_BENCH_CALLBACK {}", serde_json::json!({"worker":report,
-                "stage_ms":stages,"frame_work":frame_work,
+                "stage_ms":stages,"cpu_stage_ms":cpu_stage_ms,
+                "cpu_cache":{"reset_before_first_observer":cold_cpu_cache,
+                    "scope":"MUI CPUCache only; existing CPUResources/context remain; new scene identities are not cache misses",
+                    "groups":cpu_cache_groups},"frame_work":frame_work,
                 "fitted_jobs":{"queued":previous_fitted.0-initial_fitted.0,"completed":previous_fitted.1-initial_fitted.1},"observer_frames":rendered.len(),"changed_gpu_frames":rendered_changes,
                 "live_publication_ms":{"mean":publication_ms.iter().sum::<f64>()/publication_ms.len() as f64,"p99":publication_ms[((publication_ms.len()-1) as f64*0.99).ceil() as usize]},
                 "callback_published_render_ms":{"mean":rendered.iter().sum::<f64>()/rendered.len() as f64,"p99":rendered[((rendered.len()-1) as f64*0.99).ceil() as usize]}}));

@@ -635,6 +635,33 @@ impl Envelope {
     }
 }
 
+/// Primary amplitude consumer; Flex and pitch/module sources keep their
+/// independently admitted clocks in `Envelope`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Amplitude {
+    Ordinary(Envelope),
+    Native(super::ahdsr::Native),
+}
+impl Amplitude {
+    pub fn new(p: &Ahdsr, rate: f32, native: bool) -> Self {
+        if native { Self::Native(super::ahdsr::Native::new(p, rate)) }
+        else { Self::Ordinary(Envelope::new(p, rate)) }
+    }
+    pub fn release(&mut self, flex: Option<&Flex>) { match self {
+        Self::Ordinary(e) => e.release(flex), Self::Native(e) => e.release(),
+    } }
+    pub fn done(&self) -> bool { match self { Self::Ordinary(e) => e.done(), Self::Native(e) => e.done() } }
+    pub fn level(&self) -> f32 { match self { Self::Ordinary(e) => e.level(), Self::Native(e) => e.level() } }
+    pub fn phase(&self) -> Phase { match self { Self::Ordinary(e) => e.phase(), Self::Native(e) => e.phase() } }
+    fn shape(&self, n: usize) -> Option<Shape> { match self { Self::Ordinary(e) => e.shape(n), Self::Native(_) => None } }
+    pub fn skip(&mut self, n: usize, flex: Option<&Flex>, rate: f32) { match self {
+        Self::Ordinary(e) => e.skip(n, flex, rate), Self::Native(e) => e.skip(n),
+    } }
+    pub fn render(&mut self, out: &mut [f32], flex: Option<&Flex>, rate: f32) { match self {
+        Self::Ordinary(e) => e.render(out, flex, rate), Self::Native(e) => e.render(out),
+    } }
+}
+
 /// Linear gain ramp for steals, chokes and scripted fades.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Fade {
@@ -985,7 +1012,7 @@ pub(crate) struct Voice {
     pub settled: Option<u32>,
     pub stream: Option<Stream>,
     /// AHDSR envelope (the engine defaults without one, unity with only a flex).
-    pub env: Envelope,
+    pub env: Amplitude,
     /// The group's flex envelope, multiplied with `env`.
     pub flex: Option<Envelope>,
     pub fade: Fade,
@@ -1161,9 +1188,9 @@ impl Voice {
         let (travel, last) = if curved_pitch {
             let mut preview = self.pitch_lfo;
             let mut positions = [0; MAX_BLOCK];
-            preview.positions(&group.pitch_lfos, cx.rate, cx.tempo, self.step * self.tune * self.pitch.1, &mut positions[..n])
+            preview.positions(&group.pitch_lfos, &[], cx.rate, cx.tempo, self.step * self.tune * self.pitch.1, &mut positions[..n], None)
         } else {
-            self.pitch_lfo.skip_bypassed(n);
+            if group.volume_lfos.is_empty() { self.pitch_lfo.skip_bypassed(n); }
             (fixed_step * n as u64, fixed_step * (n as u64 - 1))
         };
         let level = self.base_level * group.gain * modulation * self.volume * x.gain;
@@ -1205,7 +1232,7 @@ impl Voice {
         let mut lane = None;
         // One gain all block, before any filter: the voice's frames can be
         // summed, weighted, with others resampled alike.
-        if let Some(class) = class.filter(|_| self.wavetable.is_none() && !curved_pitch && !muted && !declick && self.gains == target && self.fade.steady()) {
+        if let Some(class) = class.filter(|_| self.wavetable.is_none() && !curved_pitch && group.volume_lfos.is_empty() && !muted && !declick && self.gains == target && self.fade.steady()) {
             let flex = match &self.flex {
                 Some(env) => env.shape(n),
                 None => Some(Shape::Flat(1.0)),
@@ -1302,10 +1329,11 @@ impl Voice {
         let Plan { n, step, target, muted, declick, .. } = self.plan;
         let group = &cx.bank.settings[self.group as usize];
         let own = group.filter.as_ref().filter(|_| !bare);
-        if self.plan.curved_pitch {
+        if self.plan.curved_pitch || !group.volume_lfos.is_empty() {
             let base_step = self.step * self.tune * self.pitch.1;
-            self.pitch_lfo.positions(&group.pitch_lfos, cx.rate, cx.tempo, base_step,
-                &mut scratch.positions[..n]);
+            let volume = (!group.volume_lfos.is_empty()).then_some(&mut scratch.out[0][..n]);
+            self.pitch_lfo.positions(&group.pitch_lfos, &group.volume_lfos, cx.rate, cx.tempo, base_step,
+                &mut scratch.positions[..n], volume);
         }
         let amp = &mut scratch.amp[..n];
         let flex = &mut scratch.flex[..n];
@@ -1324,6 +1352,9 @@ impl Voice {
                 amp.iter_mut().zip(flex.iter()).for_each(|(a, f)| *a *= f);
             }
             self.fade.apply(amp);
+            if !group.volume_lfos.is_empty() {
+                amp.iter_mut().zip(&scratch.out[0][..n]).for_each(|(a, volume)| *a *= volume);
+            }
             if let Some(end) = declick {
                 let declick = DECLICK * cx.rate;
                 for (i, a) in amp.iter_mut().enumerate() {
