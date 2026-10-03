@@ -739,6 +739,7 @@ pub struct Renderer<'a> {
     routes: HashMap<NodeId, NodeId>,
     modulation: ModulationGraph,
     live: HashMap<Parameter, f64>,
+    registered_live_valid: bool,
     controllers: [[u8; 128]; 16],
     bends: [f64; 16],
     pressures: [f64; 16],
@@ -957,6 +958,7 @@ impl<'a> Renderer<'a> {
             routes: HashMap::new(),
             modulation: ModulationGraph::new(program)?,
             live: HashMap::new(),
+            registered_live_valid: true,
             controllers: [[0; 128]; 16],
             bends: [0.; 16],
             pressures: [0.; 16],
@@ -1182,6 +1184,13 @@ impl<'a> Renderer<'a> {
         ensure!(default.is_finite(), "Nonfinite UVI parameter {name}");
         Ok(default)
     }
+    fn release_finished(&self, input: &Inputs, nodes: &HashSet<NodeId>) -> Result<bool> {
+        if self.registered_live_valid {
+            self.modulation.release_registered_finished(input, nodes)
+        } else {
+            self.modulation.release_finished(input, &self.live, nodes)
+        }
+    }
     fn evaluate_scope(&mut self, inputs: Inputs, scope: Option<NodeId>) -> Result<()> {
         // Persistent slots retain their keys and storage. An epoch expires the
         // prior voice/scope; only active slot indices are rebuilt each sample.
@@ -1193,27 +1202,36 @@ impl<'a> Renderer<'a> {
         let numbers = &mut self.numbers;
         let slots = &mut self.number_slots;
         let active = &mut self.active_numbers;
-        self.modulation.evaluate_nodes_into(
-            &inputs,
-            &self.live,
-            &self.scope_nodes[&scope],
-            |parameter, value| {
-                let (node, name) = parameter;
-                let index = if let Some(&index) = numbers[*node].get(name.as_str()) {
-                    index
-                } else {
-                    let index = slots.len();
-                    slots.push(CachedNumber {
-                        parameter: parameter.clone(),
-                        ..Default::default()
-                    });
-                    numbers[*node].insert(name.clone(), index);
-                    index
-                };
-                slots[index].effective = Some((generation, value));
-                active.push(index);
-            },
-        )?;
+        let emit = |parameter: &Parameter, value| {
+            let (node, name) = parameter;
+            let index = if let Some(&index) = numbers[*node].get(name.as_str()) {
+                index
+            } else {
+                let index = slots.len();
+                slots.push(CachedNumber {
+                    parameter: parameter.clone(),
+                    ..Default::default()
+                });
+                numbers[*node].insert(name.clone(), index);
+                index
+            };
+            slots[index].effective = Some((generation, value));
+            active.push(index);
+        };
+        if self.registered_live_valid {
+            self.modulation.evaluate_registered_nodes_into(
+                &inputs,
+                &self.scope_nodes[&scope],
+                emit,
+            )?;
+        } else {
+            self.modulation.evaluate_nodes_into(
+                &inputs,
+                &self.live,
+                &self.scope_nodes[&scope],
+                emit,
+            )?;
+        }
         self.effective_generation = generation;
         for &index in &self.active_numbers {
             if self.number_slots[index].dynamic.is_none() {
@@ -1883,11 +1901,7 @@ impl<'a> Renderer<'a> {
                 }
                 let nodes = &self.scope_nodes[&Some(voice.keygroup)];
                 if !self.modulation.has_release_envelopes(nodes)
-                    || self.modulation.release_finished(
-                        &self.inputs(Some(&voice)),
-                        &self.live,
-                        nodes,
-                    )?
+                    || self.release_finished(&self.inputs(Some(&voice)), nodes)?
                 {
                     removed.insert(voice.note.id);
                     self.modulation
@@ -2248,7 +2262,18 @@ impl<'a> Renderer<'a> {
                     self.routes.insert(*node, target);
                 }
                 if let Ok(value) = text.parse::<f64>() {
+                    if value.is_finite() {
+                        self.modulation
+                            .update_live_parameter(*node, parameter, value)?;
+                    }
                     self.live.insert((*node, parameter.clone()), value);
+                    // Nonfinite Text writes retain the public-map error contract.
+                    // Only repairing an invalid write needs a setter-time rescan.
+                    if !value.is_finite() {
+                        self.registered_live_valid = false;
+                    } else if !self.registered_live_valid {
+                        self.registered_live_valid = self.live.values().all(|v| v.is_finite());
+                    }
                 }
                 self.check_processor_memory()?;
                 self.set_parameter_text(*node, parameter.clone(), text);
@@ -2668,9 +2693,8 @@ impl<'a> Renderer<'a> {
         let mut released = HashSet::new();
         for voice in &mut voices {
             if voice.note_off.is_some()
-                && self.modulation.release_finished(
+                && self.release_finished(
                     &self.inputs(Some(voice)),
-                    &self.live,
                     &self.scope_nodes[&Some(voice.keygroup)],
                 )?
             {
@@ -2996,6 +3020,103 @@ mod tests {
             tune: 0.,
             offset_us: 0,
         }
+    }
+    #[test]
+    fn registered_numeric_text_fallback_waits_for_every_finite_repair() {
+        let program = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" Gain="1" Pitch="0"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Gain" Ratio=".5"/><SignalConnection Source="@MIDI CC 2" Destination="Pitch" Ratio="1"/></Connections></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let mut renderer = Renderer::new(
+            &program,
+            HashMap::from([("a".into(), Arc::new(sample(1)))]),
+            48000,
+        )
+        .unwrap();
+        let player = program.sample_zones[0].player;
+        let change = |name: &str, value| host::Action::Parameter {
+            node: player,
+            parameter: name.into(),
+            value,
+        };
+        assert!(renderer.registered_live_valid);
+        renderer
+            .apply_host(&change("Gain", ParameterValue::Number(0.5)))
+            .unwrap();
+        for (name, text) in [("Gain", "NaN"), ("Pitch", "inf")] {
+            renderer
+                .apply_host(&change(name, ParameterValue::Text(text.into())))
+                .unwrap();
+            assert!(!renderer.registered_live_valid);
+            assert!(
+                renderer
+                    .evaluate_scope(renderer.inputs(None), None)
+                    .is_err()
+            );
+        }
+        renderer
+            .apply_host(&change("Gain", ParameterValue::Text("not-a-number".into())))
+            .unwrap();
+        assert!(renderer.live[&(player, "Gain".into())].is_nan());
+        assert!(!renderer.registered_live_valid);
+        renderer
+            .apply_host(&change("UnrelatedNumeric", ParameterValue::Number(7.)))
+            .unwrap();
+        assert!(!renderer.registered_live_valid);
+        assert!(
+            renderer
+                .evaluate_scope(renderer.inputs(None), None)
+                .is_err()
+        );
+        renderer
+            .apply_host(&change("Gain", ParameterValue::Number(1.25)))
+            .unwrap();
+        assert!(!renderer.registered_live_valid);
+        assert!(renderer.live[&(player, "Pitch".into())].is_infinite());
+        assert!(
+            renderer
+                .evaluate_scope(renderer.inputs(None), None)
+                .is_err()
+        );
+        assert!(
+            renderer
+                .apply_host(&change("Pitch", ParameterValue::Number(f64::NAN)))
+                .is_err()
+        );
+        assert!(!renderer.registered_live_valid);
+        assert!(renderer.live[&(player, "Pitch".into())].is_infinite());
+        renderer
+            .apply_host(&change("Pitch", ParameterValue::Text("0.75".into())))
+            .unwrap();
+        assert!(renderer.registered_live_valid);
+        let input = renderer.inputs(None);
+        let nodes = HashSet::from([player]);
+        let expected = renderer
+            .modulation
+            .evaluate_nodes(&input, &renderer.live, &nodes)
+            .unwrap();
+        let mut actual = HashMap::new();
+        renderer
+            .modulation
+            .evaluate_registered_nodes_into(&input, &nodes, |p, v| {
+                actual.insert(p.clone(), v.to_bits());
+            })
+            .unwrap();
+        assert_eq!(
+            actual,
+            expected
+                .into_iter()
+                .map(|(p, v)| (p, v.to_bits()))
+                .collect()
+        );
+        renderer
+            .evaluate_scope(renderer.inputs(None), None)
+            .unwrap();
+        assert_eq!(
+            renderer.base_number(player, "Gain", 0.).unwrap().to_bits(),
+            1.25f64.to_bits()
+        );
+        assert_eq!(
+            renderer.base_number(player, "Pitch", 0.).unwrap().to_bits(),
+            0.75f64.to_bits()
+        );
     }
     #[test]
     fn numeric_cache_tracks_mutations_scope_defaults_and_invalid_text() {

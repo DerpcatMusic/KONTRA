@@ -1200,6 +1200,7 @@ struct AbsoluteClock {
 struct CachedParameter {
     key: Parameter,
     number: Option<f64>,
+    override_value: Option<f64>,
     slot: usize,
     edges: Vec<Connection>,
 }
@@ -1232,6 +1233,11 @@ impl MemoScratch {
         self.values[slot] = value;
         self.stamps[slot] = self.epoch;
     }
+}
+#[derive(Clone, Copy)]
+enum Overrides<'a> {
+    External(&'a HashMap<Parameter, f64>),
+    Registered,
 }
 pub struct ModulationGraph {
     parents: Vec<Option<NodeId>>,
@@ -1512,6 +1518,7 @@ impl ModulationGraph {
                                     CachedParameter {
                                         key: (id, name.clone()),
                                         number: number.is_finite().then_some(number),
+                                        override_value: None,
                                         slot: 0,
                                         edges: Vec::new(),
                                     },
@@ -1873,6 +1880,7 @@ impl ModulationGraph {
                 .or_insert(CachedParameter {
                     key,
                     number: None,
+                    override_value: None,
                     slot: 0,
                     edges: Vec::new(),
                 });
@@ -2186,6 +2194,8 @@ impl ModulationGraph {
         input: &Inputs,
         live: &HashMap<Parameter, f64>,
     ) -> Result<Vec<(Parameter, f64)>> {
+        let external = live;
+        let live = Overrides::External(live);
         if !self.global_stochastic.is_empty() {
             self.validate(input, live)?;
             let mut memo = self.memo.borrow_mut();
@@ -2280,7 +2290,7 @@ impl ModulationGraph {
             }
             for (_, edge) in &edges {
                 for name in ["Ratio", "Offset", "Inverted", "Bypass"] {
-                    if let Some(value) = live.get(&(edge.node, name.into())) {
+                    if let Some(value) = external.get(&(edge.node, name.into())) {
                         ensure!(
                             *value
                                 == number(
@@ -2412,6 +2422,7 @@ impl ModulationGraph {
         input: &Inputs,
         live: &HashMap<Parameter, f64>,
     ) -> Result<HashMap<Parameter, f64>> {
+        let live = Overrides::External(live);
         self.validate(input, live)?;
         let mut memo = self.memo.borrow_mut();
         memo.begin();
@@ -2436,7 +2447,7 @@ impl ModulationGraph {
         nodes: &HashSet<NodeId>,
     ) -> Result<HashMap<Parameter, f64>> {
         let mut result = HashMap::new();
-        self.evaluate_nodes_emit(input, live, nodes, |p, value| {
+        self.evaluate_nodes_emit(input, Overrides::External(live), nodes, |p, value| {
             result.insert(p.clone(), value);
         })?;
         Ok(result)
@@ -2450,12 +2461,62 @@ impl ModulationGraph {
         nodes: &HashSet<NodeId>,
         emit: impl FnMut(&Parameter, f64),
     ) -> Result<()> {
-        self.evaluate_nodes_emit(input, live, nodes, emit)
+        self.evaluate_nodes_emit(input, Overrides::External(live), nodes, emit)
+    }
+    /// Renderer-owned numeric writes are validated before touching stored state.
+    pub(crate) fn update_live_parameter(
+        &mut self,
+        node: NodeId,
+        name: &str,
+        value: f64,
+    ) -> Result<()> {
+        ensure!(
+            node < self.bases.len() && value.is_finite(),
+            "Invalid UVI live parameter override"
+        );
+        if let Some(cached) = self.cached_parameters[node].get_mut(name) {
+            cached.override_value = Some(value);
+        } else {
+            let memo = self.memo.get_mut();
+            let slot = memo.values.len();
+            memo.values.push(0.);
+            memo.stamps.push(0);
+            self.cached_parameters[node].insert(
+                name.into(),
+                CachedParameter {
+                    key: (node, name.into()),
+                    number: None,
+                    override_value: Some(value),
+                    slot,
+                    edges: Vec::new(),
+                },
+            );
+        }
+        Ok(())
+    }
+    pub(crate) fn evaluate_registered_nodes_into(
+        &mut self,
+        input: &Inputs,
+        nodes: &HashSet<NodeId>,
+        emit: impl FnMut(&Parameter, f64),
+    ) -> Result<()> {
+        self.evaluate_nodes_emit(input, Overrides::Registered, nodes, emit)
+    }
+    pub(crate) fn release_registered_finished(
+        &self,
+        input: &Inputs,
+        nodes: &HashSet<NodeId>,
+    ) -> Result<bool> {
+        ensure!(
+            nodes.iter().all(|node| *node < self.bases.len()),
+            "Invalid UVI modulation target node"
+        );
+        self.release_nodes_finished(input, Overrides::Registered, nodes)
     }
     fn evaluate_nodes_emit(
         &self,
         input: &Inputs,
-        live: &HashMap<Parameter, f64>,
+        live: Overrides<'_>,
         nodes: &HashSet<NodeId>,
         mut emit: impl FnMut(&Parameter, f64),
     ) -> Result<()> {
@@ -2503,6 +2564,7 @@ impl ModulationGraph {
         input: &Inputs,
         live: &HashMap<Parameter, f64>,
     ) -> Result<HashMap<Parameter, f64>> {
+        let live = Overrides::External(live);
         self.validate(input, live)?;
         let mut memo = self.memo.borrow_mut();
         memo.begin();
@@ -2512,7 +2574,7 @@ impl ModulationGraph {
         }
         Ok(result)
     }
-    fn validate(&self, input: &Inputs, live: &HashMap<Parameter, f64>) -> Result<()> {
+    fn validate(&self, input: &Inputs, live: Overrides<'_>) -> Result<()> {
         ensure!(
             input.key < 128
                 && input.tune_semitones.is_finite()
@@ -2545,33 +2607,35 @@ impl ModulationGraph {
                     .is_none_or(|t| t.is_finite() && t >= 0. && t <= input.voice_time_seconds),
             "Invalid UVI modulation clock"
         );
-        ensure!(
-            live.iter()
-                .all(|((n, _), v)| *n < self.bases.len() && v.is_finite()),
-            "Invalid UVI live parameter override"
-        );
+        if let Overrides::External(live) = live {
+            ensure!(
+                live.iter()
+                    .all(|((n, _), v)| *n < self.bases.len() && v.is_finite()),
+                "Invalid UVI live parameter override"
+            );
+        }
         Ok(())
     }
-    fn setting(
-        &self,
-        node: NodeId,
-        name: &str,
-        default: f64,
-        live: &HashMap<Parameter, f64>,
-    ) -> Result<f64> {
+    fn setting(&self, node: NodeId, name: &str, default: f64, live: Overrides<'_>) -> Result<f64> {
         if let Some(cached) = self.cached_parameters[node].get(name) {
-            if let Some(value) = live.get(&cached.key) {
-                return Ok(*value);
+            let override_value = match live {
+                Overrides::External(live) => live.get(&cached.key).copied(),
+                Overrides::Registered => cached.override_value,
+            };
+            if let Some(value) = override_value {
+                return Ok(value);
             }
             if let Some(value) = cached.number {
                 return Ok(value);
             }
-        } else if let Some((_, value)) = live
-            .iter()
-            .find(|((id, parameter), _)| *id == node && parameter == name)
-        {
-            // Public live overrides may introduce a field absent from XML.
-            return Ok(*value);
+        } else if let Overrides::External(live) = live {
+            if let Some((_, value)) = live
+                .iter()
+                .find(|((id, parameter), _)| *id == node && parameter == name)
+            {
+                // Public live overrides may introduce a field absent from XML.
+                return Ok(*value);
+            }
         }
         number(&self.bases[node], name, default)
     }
@@ -2580,7 +2644,7 @@ impl ModulationGraph {
         node: NodeId,
         name: &str,
         default: bool,
-        live: &HashMap<Parameter, f64>,
+        live: Overrides<'_>,
     ) -> Result<bool> {
         let value = self.setting(node, name, f64::from(default), live)?;
         ensure!(
@@ -2589,7 +2653,7 @@ impl ModulationGraph {
         );
         Ok(value == 1.)
     }
-    fn base(&self, p: &Parameter, live: &HashMap<Parameter, f64>) -> Result<f64> {
+    fn base(&self, p: &Parameter, live: Overrides<'_>) -> Result<f64> {
         self.base_cached(
             p,
             self.cached_parameters
@@ -2602,10 +2666,14 @@ impl ModulationGraph {
         &self,
         p: &Parameter,
         cached: Option<&CachedParameter>,
-        live: &HashMap<Parameter, f64>,
+        live: Overrides<'_>,
     ) -> Result<f64> {
-        if let Some(v) = live.get(p) {
-            return Ok(*v);
+        let override_value = match live {
+            Overrides::External(live) => live.get(p).copied(),
+            Overrides::Registered => cached.and_then(|cached| cached.override_value),
+        };
+        if let Some(value) = override_value {
+            return Ok(value);
         }
         if let Some(value) = cached.and_then(|cached| cached.number) {
             return Ok(value);
@@ -2660,7 +2728,7 @@ impl ModulationGraph {
         node: NodeId,
         name: &str,
         input: &Inputs,
-        live: &HashMap<Parameter, f64>,
+        live: Overrides<'_>,
         memo: &mut MemoScratch,
         depth: usize,
     ) -> Result<f64> {
@@ -2674,7 +2742,7 @@ impl ModulationGraph {
         &self,
         p: &Parameter,
         input: &Inputs,
-        live: &HashMap<Parameter, f64>,
+        live: Overrides<'_>,
         memo: &mut MemoScratch,
         depth: usize,
     ) -> Result<f64> {
@@ -2696,7 +2764,7 @@ impl ModulationGraph {
         p: &Parameter,
         cached: Option<&CachedParameter>,
         input: &Inputs,
-        live: &HashMap<Parameter, f64>,
+        live: Overrides<'_>,
         memo: &mut MemoScratch,
         depth: usize,
     ) -> Result<f64> {
@@ -2814,7 +2882,7 @@ impl ModulationGraph {
         &self,
         p: &Parameter,
         input: &Inputs,
-        live: &HashMap<Parameter, f64>,
+        live: Overrides<'_>,
         memo: &mut MemoScratch,
         depth: usize,
     ) -> Result<f64> {
@@ -2827,7 +2895,7 @@ impl ModulationGraph {
         &self,
         edges: &[Connection],
         input: &Inputs,
-        live: &HashMap<Parameter, f64>,
+        live: Overrides<'_>,
         memo: &mut MemoScratch,
         depth: usize,
     ) -> Result<f64> {
@@ -2887,7 +2955,7 @@ impl ModulationGraph {
         &self,
         s: &Source,
         input: &Inputs,
-        live: &HashMap<Parameter, f64>,
+        live: Overrides<'_>,
         memo: &mut MemoScratch,
         depth: usize,
     ) -> Result<(f64, bool)> {
@@ -3043,7 +3111,7 @@ impl ModulationGraph {
         &self,
         n: NodeId,
         input: &Inputs,
-        live: &HashMap<Parameter, f64>,
+        live: Overrides<'_>,
         memo: &mut MemoScratch,
         depth: usize,
     ) -> Result<f64> {
@@ -3141,7 +3209,7 @@ impl ModulationGraph {
         &self,
         n: NodeId,
         input: &Inputs,
-        live: &HashMap<Parameter, f64>,
+        live: Overrides<'_>,
         memo: &mut MemoScratch,
         depth: usize,
         bipolar: bool,
@@ -3268,7 +3336,7 @@ impl ModulationGraph {
         &self,
         n: NodeId,
         input: &Inputs,
-        live: &HashMap<Parameter, f64>,
+        live: Overrides<'_>,
         memo: &mut MemoScratch,
         depth: usize,
     ) -> Result<f64> {
@@ -3317,7 +3385,7 @@ impl ModulationGraph {
         &self,
         n: NodeId,
         input: &Inputs,
-        live: &HashMap<Parameter, f64>,
+        live: Overrides<'_>,
         memo: &mut MemoScratch,
         depth: usize,
     ) -> Result<f64> {
@@ -3446,7 +3514,7 @@ impl ModulationGraph {
         &self,
         n: NodeId,
         input: &Inputs,
-        live: &HashMap<Parameter, f64>,
+        live: Overrides<'_>,
         memo: &mut MemoScratch,
         depth: usize,
     ) -> Result<f64> {
@@ -3544,6 +3612,14 @@ impl ModulationGraph {
         &self,
         input: &Inputs,
         live: &HashMap<Parameter, f64>,
+        nodes: &HashSet<NodeId>,
+    ) -> Result<bool> {
+        self.release_nodes_finished(input, Overrides::External(live), nodes)
+    }
+    fn release_nodes_finished(
+        &self,
+        input: &Inputs,
+        live: Overrides<'_>,
         nodes: &HashSet<NodeId>,
     ) -> Result<bool> {
         self.validate(input, live)?;
@@ -3720,7 +3796,7 @@ impl ModulationGraph {
         n: NodeId,
         bipolar: bool,
         input: &Inputs,
-        live: &HashMap<Parameter, f64>,
+        live: Overrides<'_>,
         memo: &mut MemoScratch,
         depth: usize,
     ) -> Result<f64> {
@@ -3960,7 +4036,14 @@ mod tests {
         let mut memo = graph.memo.borrow_mut();
         assert!(
             graph
-                .value_named(target.0, "Freq", &input, &live, &mut memo, DEPTH)
+                .value_named(
+                    target.0,
+                    "Freq",
+                    &input,
+                    Overrides::External(&live),
+                    &mut memo,
+                    DEPTH
+                )
                 .is_err()
         );
         drop(memo);
@@ -4108,46 +4191,68 @@ mod tests {
         assert_eq!(graph.evaluate(&input, &live).unwrap()[&parameter], 7.);
         live.clear();
         assert_eq!(graph.evaluate(&input, &live).unwrap()[&parameter], 5.);
-        assert_eq!(graph.base(&(player, "Gain".into()), &live).unwrap(), 1.);
         assert_eq!(
             graph
-                .base(&(id("GainMatrix"), "Gain_1_1".into()), &live)
+                .base(&(player, "Gain".into()), Overrides::External(&live))
                 .unwrap(),
             1.
         );
         assert_eq!(
             graph
-                .base(&(id("GainMatrix"), "Gain_2_1".into()), &live)
+                .base(
+                    &(id("GainMatrix"), "Gain_1_1".into()),
+                    Overrides::External(&live)
+                )
+                .unwrap(),
+            1.
+        );
+        assert_eq!(
+            graph
+                .base(
+                    &(id("GainMatrix"), "Gain_2_1".into()),
+                    Overrides::External(&live)
+                )
                 .unwrap(),
             0.
         );
         let unused = id("ConstantModulation");
         let custom = (unused, "CustomNumeric".into());
         assert_eq!(
-            graph.setting(unused, "CustomNumeric", 0.25, &live).unwrap(),
+            graph
+                .setting(unused, "CustomNumeric", 0.25, Overrides::External(&live))
+                .unwrap(),
             0.25
         );
         live.insert(custom.clone(), 0.75);
         assert_eq!(
-            graph.setting(unused, "CustomNumeric", 0.25, &live).unwrap(),
+            graph
+                .setting(unused, "CustomNumeric", 0.25, Overrides::External(&live))
+                .unwrap(),
             0.75
         );
         live.insert(custom.clone(), 1.);
         assert_eq!(
-            graph.setting(unused, "CustomNumeric", 0.25, &live).unwrap(),
+            graph
+                .setting(unused, "CustomNumeric", 0.25, Overrides::External(&live))
+                .unwrap(),
             1.
         );
         live.remove(&custom);
         assert_eq!(
-            graph.setting(unused, "CustomNumeric", 0.25, &live).unwrap(),
+            graph
+                .setting(unused, "CustomNumeric", 0.25, Overrides::External(&live))
+                .unwrap(),
             0.25
         );
         let invalid = (id("OnePole"), "Freq".into());
-        assert!(graph.base(&invalid, &live).is_err());
+        assert!(graph.base(&invalid, Overrides::External(&live)).is_err());
         live.insert(invalid.clone(), 1000.);
-        assert_eq!(graph.base(&invalid, &live).unwrap(), 1000.);
+        assert_eq!(
+            graph.base(&invalid, Overrides::External(&live)).unwrap(),
+            1000.
+        );
         live.remove(&invalid);
-        assert!(graph.base(&invalid, &live).is_err());
+        assert!(graph.base(&invalid, Overrides::External(&live)).is_err());
     }
     #[test]
     fn native_triangle_lfo_fixed_phase_control_points_rise_and_preflight() {
@@ -4557,7 +4662,7 @@ mod tests {
                 .source(
                     &Source::OrganPan,
                     &input,
-                    &HashMap::new(),
+                    Overrides::External(&HashMap::new()),
                     &mut MemoScratch::new(0),
                     0,
                 )
@@ -5595,5 +5700,331 @@ mod tests {
         let p = parse_program(&unsupported).unwrap();
         let g = ModulationGraph::new(&p).unwrap();
         assert!(g.evaluate(&input, &HashMap::new()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod registered_proof {
+    use super::*;
+    use crate::uvi::program::parse_program;
+    fn fixture() -> Program {
+        parse_program(r#"<Program><ControlSignalSources><ConstantModulation Name="Unused" Value="0.4"/></ControlSignalSources><Mappers><ControlSignalMapper Name="Curve" Min="0" Max="1">0 1</ControlSignalMapper></Mappers><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" Pitch="3"><Connections><SignalConnection Name="Outer" Source="@MIDI CC 1" Destination="Pitch" Ratio="2" Mapper="Curve"><Connections><SignalConnection Source="@MIDI CC 2" Destination="Ratio" Ratio="1"/></Connections></SignalConnection><SignalConnection Source="@MIDI CC 3" Destination="Gain" Ratio="0.5"/></Connections></SamplePlayer></Oscillators><Inserts><GainMatrix/><OnePole Freq="NaN"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Freq" Ratio="1"/></Connections></OnePole></Inserts></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap()
+    }
+    fn bits(
+        graph: &mut ModulationGraph,
+        input: &Inputs,
+        nodes: &HashSet<NodeId>,
+    ) -> Result<BTreeMap<Parameter, u64>> {
+        let mut out = BTreeMap::new();
+        graph.evaluate_registered_nodes_into(input, nodes, |p, v| {
+            out.insert(p.clone(), v.to_bits());
+        })?;
+        Ok(out)
+    }
+    #[test]
+    fn registered_updates_are_atomic_isolated_and_keep_defaults() {
+        let p = fixture();
+        let player = p.sample_zones[0].player;
+        let unused = p
+            .nodes
+            .iter()
+            .position(|n| n.kind == "ConstantModulation")
+            .unwrap();
+        let filter = p.nodes.iter().position(|n| n.kind == "OnePole").unwrap();
+        let nodes = HashSet::from([player]);
+        let input = Inputs::default();
+        let mut a = ModulationGraph::new(&p).unwrap();
+        let mut b = ModulationGraph::new(&p).unwrap();
+        let empty = HashMap::new();
+        assert_eq!(
+            a.base(&(player, "Gain".into()), Overrides::Registered)
+                .unwrap()
+                .to_bits(),
+            1f64.to_bits()
+        );
+        assert_eq!(
+            a.setting(unused, "CustomNumeric", 0.25, Overrides::Registered)
+                .unwrap()
+                .to_bits(),
+            0.25f64.to_bits()
+        );
+        a.update_live_parameter(player, "Pitch", -0.).unwrap();
+        let key = (player, "Pitch".into());
+        let before = bits(&mut a, &input, &nodes).unwrap();
+        for (node, value) in [
+            (player, f64::NAN),
+            (player, f64::INFINITY),
+            (player, f64::NEG_INFINITY),
+            (p.nodes.len(), 1.),
+            (usize::MAX, 0.),
+        ] {
+            let count = a.memo.borrow().values.len();
+            assert!(a.update_live_parameter(node, "Pitch", value).is_err());
+            assert_eq!(a.memo.borrow().values.len(), count);
+            assert_eq!(bits(&mut a, &input, &nodes).unwrap(), before);
+        }
+        assert_eq!(
+            b.base(&key, Overrides::Registered).unwrap().to_bits(),
+            3f64.to_bits()
+        );
+        assert_eq!(
+            a.base(&key, Overrides::External(&empty)).unwrap().to_bits(),
+            3f64.to_bits()
+        );
+        assert_eq!(
+            a.base(&key, Overrides::Registered).unwrap().to_bits(),
+            (-0f64).to_bits()
+        );
+        let n = a.memo.borrow().values.len();
+        a.update_live_parameter(unused, "CustomNumeric", 0.75)
+            .unwrap();
+        assert_eq!(a.memo.borrow().values.len(), n + 1);
+        let slot = a.cached_parameters[unused]["CustomNumeric"].slot;
+        let storage = a.memo.borrow().values.as_ptr();
+        for value in [1., -0., 1e300] {
+            a.update_live_parameter(unused, "CustomNumeric", value)
+                .unwrap();
+            assert_eq!(a.memo.borrow().values.len(), n + 1);
+            assert_eq!(a.memo.borrow().values.as_ptr(), storage);
+            assert_eq!(a.cached_parameters[unused]["CustomNumeric"].slot, slot);
+            assert_eq!(
+                a.setting(unused, "CustomNumeric", 0.25, Overrides::Registered)
+                    .unwrap()
+                    .to_bits(),
+                value.to_bits()
+            );
+        }
+        assert_eq!(
+            b.setting(unused, "CustomNumeric", 0.25, Overrides::Registered)
+                .unwrap(),
+            0.25
+        );
+        assert!(
+            a.base(&(filter, "Freq".into()), Overrides::Registered)
+                .is_err()
+        );
+        a.update_live_parameter(filter, "Freq", 1000.).unwrap();
+        assert_eq!(
+            a.base(&(filter, "Freq".into()), Overrides::Registered)
+                .unwrap(),
+            1000.
+        );
+        assert!(
+            a.base(&(filter, "Freq".into()), Overrides::External(&empty))
+                .is_err()
+        );
+        assert!(
+            b.base(&(filter, "Freq".into()), Overrides::Registered)
+                .is_err()
+        );
+        // External insertion/removal never replaces or clears the owned slot.
+        let mut external = HashMap::from([(key.clone(), 9.)]);
+        assert_eq!(a.base(&key, Overrides::External(&external)).unwrap(), 9.);
+        external.remove(&key);
+        assert_eq!(a.base(&key, Overrides::External(&external)).unwrap(), 3.);
+        assert_eq!(
+            a.base(&key, Overrides::Registered).unwrap().to_bits(),
+            (-0f64).to_bits()
+        );
+        // Eager fallback remains an error even when an absolute audio base exists.
+        b.absolute_audio_bases
+            .insert((filter, "Freq".into()), 1000.);
+        let filter_nodes = HashSet::from([filter]);
+        let mut emitted = 0;
+        assert!(
+            b.evaluate_registered_nodes_into(&input, &filter_nodes, |_, _| emitted += 1)
+                .is_err()
+        );
+        assert_eq!(emitted, 0);
+        b.update_live_parameter(filter, "Freq", 1000.).unwrap();
+        assert!(bits(&mut b, &input, &filter_nodes).is_ok());
+    }
+    #[test]
+    fn registered_results_match_external_bits_for_nested_mapping_and_updates() {
+        let p = fixture();
+        let player = p.sample_zones[0].player;
+        let outer = p
+            .connections
+            .iter()
+            .find(|c| c.owner == player)
+            .unwrap()
+            .node;
+        let external = ModulationGraph::new(&p).unwrap();
+        let mut registered = ModulationGraph::new(&p).unwrap();
+        let nodes = HashSet::from([player]);
+        let mut live = HashMap::new();
+        let mut input = Inputs::default();
+        for cc in 0..128 {
+            input.controllers[1] = cc;
+            input.controllers[2] = 127 - cc;
+            input.controllers[3] = cc / 2;
+            for (node, name, value) in [
+                (player, "Pitch", f64::from(cc) - 64.),
+                (player, "Gain", f64::from(cc) / 127.),
+                (outer, "Ratio", 2. + f64::from(cc) / 20.),
+                (outer, "Inverted", f64::from(cc % 2)),
+                (outer, "Bypass", f64::from(cc % 3 == 0)),
+                (p.root, "AbsentNumeric", f64::from(cc)),
+            ] {
+                live.insert((node, name.into()), value);
+                registered.update_live_parameter(node, name, value).unwrap();
+            }
+            let expected = external
+                .evaluate_nodes(&input, &live, &nodes)
+                .unwrap()
+                .into_iter()
+                .map(|(p, v)| (p, v.to_bits()))
+                .collect::<BTreeMap<_, _>>();
+            assert_eq!(bits(&mut registered, &input, &nodes).unwrap(), expected);
+            let mut emitted = HashMap::new();
+            registered
+                .evaluate_nodes_into(&input, &live, &nodes, |p, v| {
+                    emitted.insert(p.clone(), v.to_bits());
+                })
+                .unwrap();
+            assert_eq!(emitted.into_iter().collect::<BTreeMap<_, _>>(), expected);
+        }
+        registered
+            .update_live_parameter(outer, "Bypass", 0.5)
+            .unwrap();
+        live.insert((outer, "Bypass".into()), 0.5);
+        let mut callbacks = 0;
+        assert!(
+            registered
+                .evaluate_registered_nodes_into(&input, &nodes, |_, _| callbacks += 1)
+                .is_err()
+        );
+        assert_eq!(callbacks, 0);
+        assert!(external.evaluate_nodes(&input, &live, &nodes).is_err());
+    }
+    #[test]
+    fn registered_keeps_full_inputs_and_external_map_validation() {
+        let p = fixture();
+        let player = p.sample_zones[0].player;
+        let nodes = HashSet::from([player]);
+        let mut graph = ModulationGraph::new(&p).unwrap();
+        let valid = Inputs::default();
+        let empty = HashMap::new();
+        let cases: Vec<(&str, fn(&mut Inputs))> = vec![
+            ("key", |i| i.key = 128),
+            ("velocity", |i| i.velocity = 128),
+            ("unrelated controller", |i| i.controllers[127] = 128),
+            ("tune NaN", |i| i.tune_semitones = f64::NAN),
+            ("tune infinity", |i| i.tune_semitones = f64::INFINITY),
+            ("tune overflow", |i| {
+                i.tune_semitones = f64::from(f32::MAX) * 2.
+            }),
+            ("bend NaN", |i| i.pitch_bend = f64::NAN),
+            ("bend low", |i| i.pitch_bend = -1.1),
+            ("bend high", |i| i.pitch_bend = 1.1),
+            ("channel pressure NaN", |i| i.channel_pressure = f64::NAN),
+            ("channel pressure low", |i| i.channel_pressure = -0.1),
+            ("channel pressure high", |i| i.channel_pressure = 1.1),
+            ("poly pressure NaN", |i| i.poly_pressure = f64::NAN),
+            ("poly pressure low", |i| i.poly_pressure = -0.1),
+            ("poly pressure high", |i| i.poly_pressure = 1.1),
+            ("rate NaN", |i| i.sample_rate = f64::NAN),
+            ("rate infinity", |i| i.sample_rate = f64::INFINITY),
+            ("rate low", |i| i.sample_rate = 999.),
+            ("rate high", |i| i.sample_rate = 768001.),
+            ("tempo NaN", |i| i.host_tempo = f64::NAN),
+            ("tempo infinity", |i| i.host_tempo = f64::INFINITY),
+            ("tempo low", |i| i.host_tempo = -1.),
+            ("tempo overflow", |i| {
+                i.host_tempo = f64::from(f32::MAX) * 2.
+            }),
+            ("block low", |i| i.control_block_frames = 31),
+            ("block high", |i| i.control_block_frames = 65537),
+            ("block unaligned", |i| i.control_block_frames = 33),
+            ("time NaN", |i| i.time_seconds = f64::NAN),
+            ("time infinity", |i| i.time_seconds = f64::INFINITY),
+            ("time negative", |i| i.time_seconds = -1.),
+            ("clock overflow", |i| {
+                i.time_seconds = u64::MAX as f64 / i.sample_rate
+            }),
+            ("voice time NaN", |i| i.voice_time_seconds = f64::NAN),
+            ("voice time infinity", |i| {
+                i.voice_time_seconds = f64::INFINITY
+            }),
+            ("voice time negative", |i| i.voice_time_seconds = -1.),
+            ("off NaN", |i| i.note_off_time_seconds = Some(f64::NAN)),
+            ("off infinity", |i| {
+                i.note_off_time_seconds = Some(f64::INFINITY)
+            }),
+            ("off negative", |i| i.note_off_time_seconds = Some(-1.)),
+            ("off beyond voice", |i| i.note_off_time_seconds = Some(1.)),
+        ];
+        for (name, mutate) in cases {
+            let mut input = Inputs::default();
+            mutate(&mut input);
+            let mut external_calls = 0;
+            let mut registered_calls = 0;
+            let external = graph
+                .evaluate_nodes_into(&input, &empty, &nodes, |_, _| external_calls += 1)
+                .unwrap_err()
+                .to_string();
+            let registered = graph
+                .evaluate_registered_nodes_into(&input, &nodes, |_, _| registered_calls += 1)
+                .unwrap_err()
+                .to_string();
+            assert_eq!(external, registered, "{name}");
+            assert_eq!((external_calls, registered_calls), (0, 0), "{name}");
+            assert!(
+                graph.release_finished(&input, &empty, &nodes).is_err(),
+                "{name}"
+            );
+            assert!(
+                graph.release_registered_finished(&input, &nodes).is_err(),
+                "{name}"
+            );
+        }
+        for map in [
+            HashMap::from([((p.root, "Unrelated".into()), f64::NAN)]),
+            HashMap::from([((p.root, "Unrelated".into()), f64::INFINITY)]),
+            HashMap::from([((p.nodes.len(), "Unrelated".into()), 0.)]),
+        ] {
+            let mut calls = 0;
+            assert!(graph.evaluate(&valid, &map).is_err());
+            assert!(graph.evaluate_nodes(&valid, &map, &nodes).is_err());
+            assert!(
+                graph
+                    .evaluate_nodes_into(&valid, &map, &nodes, |_, _| calls += 1)
+                    .is_err()
+            );
+            assert!(graph.deltas(&valid, &map).is_err());
+            assert!(graph.release_finished(&valid, &map, &nodes).is_err());
+            assert_eq!(calls, 0);
+            assert!(bits(&mut graph, &valid, &nodes).is_ok());
+        }
+        let mut count = 0;
+        assert!(
+            graph
+                .evaluate_registered_nodes_into(&valid, &HashSet::from([p.nodes.len()]), |_, _| {
+                    count += 1
+                })
+                .is_err()
+        );
+        assert_eq!(count, 0);
+        assert!(
+            graph
+                .release_registered_finished(&valid, &HashSet::from([p.nodes.len()]))
+                .is_err()
+        );
+        // Typed enum checks remain at source evaluation, after finite registration.
+        let p=parse_program(r#"<Program><ControlSignalSources><LFO Name="L" Freq="1" Depth="1" WaveFormType="0"/></ControlSignalSources><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"><Connections><SignalConnection Source="$Program/L" Destination="Pitch" Ratio="1"/></Connections></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let source = p.nodes.iter().position(|n| n.kind == "LFO").unwrap();
+        let mut g = ModulationGraph::new(&p).unwrap();
+        g.update_live_parameter(source, "WaveFormType", 0.5)
+            .unwrap();
+        let mut calls = 0;
+        assert!(
+            g.evaluate_registered_nodes_into(
+                &valid,
+                &HashSet::from([p.sample_zones[0].player]),
+                |_, _| calls += 1
+            )
+            .is_err()
+        );
+        assert_eq!(calls, 0);
     }
 }
