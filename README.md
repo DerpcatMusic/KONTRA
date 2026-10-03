@@ -12,7 +12,9 @@ Rust. Custom UI framework. Windows, macOS, Linux. CLAP, VST3, standalone.
 | Scripts, UI & effects | Partial support | Full coverage |
 | Falcon / UFS | Metadata inspection | Playback |
 
-[Full feature status: ✓ implemented · ◐ partial · ✗ missing](docs/FEATURES.md) — DSP, filters, scripting, UI, formats and routing, with source evidence and official Kontakt/Falcon documentation.
+## Feature status
+
+See the **[full feature inventory](docs/FEATURES.md)** for ✓ implemented, ◐ partial and ✗ missing functionality across DSP, filters, scripting, UI, formats and routing. Each entry includes implementation evidence and remaining gaps, cross-referenced with official Kontakt, KSP, Falcon and UVIScript documentation.
 
 [Download nightlies](https://github.com/DerpcatMusic/KONTRA/releases/latest) · [Contribute](CONTRIBUTING.md)
 
