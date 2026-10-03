@@ -288,7 +288,7 @@ impl CrashIncident {
         self.render_diagnostics(false)
     }
 
-    fn render_diagnostics(&self, complete: bool) -> String {
+    pub(super) fn render_diagnostics(&self, complete: bool) -> String {
         let panic = self.panic.as_ref().map_or_else(String::new, |panic| {
             let mut rendered = format!(
                 "\nRust panic observed: {} [{}] at {} · {}",
@@ -333,12 +333,14 @@ impl CrashIncident {
         // A stale marker from an older install is recovered by whatever build
         // starts next, so the recorded version alone reads as if the running
         // build crashed with the old one's binaries.
-        let recorded_version =
-            if self.build_id.is_empty() || self.build_id == crate::build_info::BUILD.build_hash {
-                self.version.clone()
-            } else {
-                format!("{} (recorded by a previous install)", self.version)
-            };
+        let recorded_version = if complete
+            || self.build_id.is_empty()
+            || self.build_id == crate::build_info::BUILD.build_hash
+        {
+            self.version.clone()
+        } else {
+            format!("{} (recorded by a previous install)", self.version)
+        };
         let mut output = format!(
             "{}\nIncident ID: {}\nClassification: {}\nVersion that recorded this incident: {}\nBuild ID that recorded this incident: {}\nHost: {}\nPlugin format: {}\nHost process: {}\nOS: {}\nArchitecture: {}\nProcess ID: {}\nStarted: {}\nDetected: {}\nDropped diagnostic events: {}{}",
             self.session_status(),
@@ -1077,7 +1079,7 @@ fn incident_diagnostics(incident_id: &str, base: &str, complete: bool) -> String
         return assemble_enriched_diagnostics(&preview, &incident.platform_evidence, &current);
     }
     format!(
-        "Crash evidence collected with permission:\n{}\n\nCorrelated operating-system or host evidence:\n{}\n\nCurrent KONTRA diagnostics:\n{current}",
+        "Crash evidence collected with permission:\n{}\n\nCorrelated operating-system or host evidence:\n{}",
         incident.render_diagnostics(true),
         if incident.platform_evidence.is_empty() {
             "No correlated native crash report was collected."
