@@ -163,12 +163,12 @@ ksp='^[[:space:]]*"?(declare (const |ui_|polyphonic |global |read |pers |[%$!@~?
 while IFS=: read -r f n; do
   case $f in
     *.rs) case $f in
-      ./src/ksp/tests.rs) limit=231 ;; # Adds 8 authored optional_note_off fixture lines after wait_async's 223.
+      ./src/ksp/tests.rs) limit=246 ;; # Adds 15 authored integer arithmetic/waited-note callback/control lines after 231.
       ./src/import.rs) limit=5 ;; # Authored wavetable control-constant fixture.
-      ./src/engine/params.rs) limit=5 ;; # Authored live saved pitch-LFO callback/control fixture.
+      ./src/engine/params.rs) limit=10 ;; # Adds 5 authored live pitch-LFO bypass callback/control lines after 5.
       ./src/articulate.rs) limit=31 ;;
       ./tests/playback.rs) limit=79 ;;
-      ./src/plugin.rs) limit=99 ;; # Authored native-send, source-context, script-page and live IR-switch fixtures.
+      ./src/plugin.rs) limit=119 ;; # Adds 20 authored live zone-remap/init callback/control lines after 99.
       ./src/ui/vector.rs) limit=15 ;; # Authored graph/fader projection fixture.
       ./src/ksp/vm.rs) limit=7 ;; # Authored shared revision-owner fixture.
       ./tests/*|*/tests.rs) limit=40 ;;
