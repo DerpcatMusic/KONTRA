@@ -2190,7 +2190,7 @@ mod tests {
     #[test]
     fn saved_pitch_lfo_and_constant_loop_are_partition_invariant_in_ram_and_stream() {
         use crate::{audio::Sample, engine::{Bank, Engine}, import::{Instrument, Loop, PitchLfo, Zone}};
-        let mut group = Group { pitch_lfos: vec![PitchLfo { slot: 7, count: 1.,
+        let mut group = Group { pitch_lfos: vec![PitchLfo { start_phase: 0., slot: 7, count: 1.,
             note_value: 1. / 24., sine: 0.5, fade_ms: 0., depth: 0.5, targets: vec![], bypassed: false }],
             mods: ["loopStart", "loopLength"].into_iter().map(|param| ModAssignment {
                 name: "Constant".into(), source: ModSource::Constant,
@@ -2296,9 +2296,9 @@ mod tests {
         use crate::{audio::Sample, engine::{Bank, Engine, load_scripts, load_scripts_with_state},
             import::{Instrument, PitchLfo, Zone}, ksp::Value};
         let mut group = Group { pitch_lfos: vec![
-            PitchLfo { slot: 7, count: 1., note_value: 1. / 24., sine: 0.5, fade_ms: 0.,
+            PitchLfo { start_phase: 0., slot: 7, count: 1., note_value: 1. / 24., sine: 0.5, fade_ms: 0.,
                 depth: 0.2, targets: vec![(1, 0.25), (3, -0.05)], bypassed: false },
-            PitchLfo { slot: 3, count: 2., note_value: 1. / 24., sine: 0.1, fade_ms: 0.,
+            PitchLfo { start_phase: 0., slot: 3, count: 2., note_value: 1. / 24., sine: 0.1, fade_ms: 0.,
                 depth: 0.1, targets: vec![(1, 0.1)], bypassed: false }], ..Group::default() };
         group.modulators.resize_with(8, || Modulator { name: String::new(), targets: vec![],
             assignments: None, volume_env: false, bypassed: false, flex: false,
@@ -2394,10 +2394,16 @@ mod tests {
 
     #[test]
     fn saved_sine_volume_reaches_amplifier_and_retains_shared_bypass_without_heap() {
+        for start_phase in [0., 0.25, 0.4990234375, 0.5, 0.75, 1.] {
+            saved_sine_volume_reaches_amplifier_and_retains_shared_bypass_without_heap_at_phase(start_phase);
+        }
+    }
+
+    fn saved_sine_volume_reaches_amplifier_and_retains_shared_bypass_without_heap_at_phase(start_phase: f32) {
         use crate::{audio::Sample, engine::{Bank, Engine, load_scripts, load_scripts_with_state},
             import::{Instrument, PitchLfo, VolumeLfo, Zone}};
         for mixed in [false, true] {
-            let source = PitchLfo { slot: 7, count: 16., note_value: 1. / 24., sine: 1.,
+            let source = PitchLfo { start_phase, slot: 7, count: 16., note_value: 1. / 24., sine: 1.,
                 fade_ms: 0., depth: 0.25, targets: vec![(2, 0.25)], bypassed: false };
             let mut group = Group { volume_lfos: vec![VolumeLfo { source: source.clone(), target: 4,
                 intensity: 1., negative: false, lag_ms: 15 }], ..Group::default() };
@@ -2432,6 +2438,8 @@ mod tests {
                 let (rt, errors) = load_scripts(&instrument, vec![], 48_000.);
                 assert!(errors.is_empty(), "{errors:?}"); engine.set_script(rt);
             }
+            assert_eq!(full.bank().unwrap().settings[0].volume_lfos[0].source.start_phase.to_bits(), start_phase.to_bits(),
+                "the public imported source phase survives Bank preparation exactly");
             let mut plain_group = group.clone(); plain_group.volume_lfos.clear();
             let mut plain = create(plain_group);
             let mut snapshot = full.script().unwrap().native_state.snapshot();
@@ -2442,11 +2450,13 @@ mod tests {
                 full.render(&mut a, &mut ar); plain.render(&mut c, &mut cr);
                 split.render(&mut b[..17], &mut br[..17]); split.render(&mut b[17..], &mut br[17..]);
                 assert!(a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-7));
-                let signal = -(std::f64::consts::TAU * 3. * 32. / 48_000.).sin() as f32;
-                let expected = 0.5 + ((signal + 1.) * 0.5 - 0.5) * 0.18508725;
+                let initial = (1. - (std::f64::consts::TAU * f64::from(start_phase)).sin() as f32) * 0.5;
+                let signal = -(std::f64::consts::TAU * (f64::from(start_phase) + 3. * 32. / 48_000.)).sin() as f32;
+                let expected = initial + ((signal + 1.) * 0.5 - initial) * 0.18508725;
                 assert!(c[64] > 0.01);
                 assert!((a[64] / c[64] - expected).abs() < 1e-6,
                     "native control-point gain reaches actual resident sample output");
+                let note_start = a;
                 // Mid-interval bypass and resume, including all-source bypass
                 // for the shared pitch+volume source. No clock reset on either.
                 for (n, paused) in [(13, true), (39, false), (128, true), (77, false)] {
@@ -2474,6 +2484,14 @@ mod tests {
                     full.render(&mut a, &mut ar); split.render(&mut b, &mut br); plain.render(&mut c, &mut cr);
                 }
                 assert_eq!((full.active_voices(), split.active_voices(), plain.active_voices()), (0, 0, 0));
+                for engine in [&mut full, &mut split] {
+                    engine.ui_control(0, 0, 0); engine.note_on(0, 60, 127);
+                }
+                full.render(&mut a, &mut ar);
+                split.render(&mut b[..17], &mut br[..17]); split.render(&mut b[17..], &mut br[17..]);
+                assert!(a.iter().zip(note_start).all(|(a, initial)| (a - initial).abs() < 1e-7),
+                    "a new note retriggers the saved phase and target lag");
+                assert!(a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-7));
             }), 0);
             let edits = snapshot.saved();
             assert!(edits.iter().any(|edit| edit.par == par && edit.value == 1));
@@ -2492,7 +2510,7 @@ mod tests {
     fn saved_sine_volume_uses_decoded_nonlinear_amplifier_split_without_heap() {
         use crate::{audio::Sample, engine::{Bank, Engine}, import::{PitchLfo, VolumeLfo, Zone},
             fx::{Chain, Effect, Kind, Params, params::{Field, Value}}};
-        let source = PitchLfo { slot: 7, count: 16., note_value: 1. / 24., sine: 0.,
+        let source = PitchLfo { start_phase: 0., slot: 7, count: 16., note_value: 1. / 24., sine: 0.,
             fade_ms: 0., depth: 0., targets: vec![], bypassed: false };
         let effect = Effect { slot: 0, kind: Kind::SurroundPanner, version: 0, bypass: false,
             output_gain: 1., dry_level: 0., params: Params::Fields(
@@ -2534,10 +2552,10 @@ mod tests {
         use crate::{audio::Sample, engine::{Bank, Engine, load_scripts, load_scripts_with_state},
             import::{Instrument, PitchLfo, Zone}, ksp::Value};
         for mixed in [false, true] {
-            let mut group = Group { pitch_lfos: vec![PitchLfo { slot: 7, count: 1.,
+            let mut group = Group { pitch_lfos: vec![PitchLfo { start_phase: 0., slot: 7, count: 1.,
                 note_value: 1. / 24., sine: 0.5, fade_ms: 6., depth: 0.4,
                 targets: vec![(0, 0.4)], bypassed: false }], ..Group::default() };
-            if mixed { group.pitch_lfos.push(PitchLfo { slot: 3, count: 2.,
+            if mixed { group.pitch_lfos.push(PitchLfo { start_phase: 0., slot: 3, count: 2.,
                 note_value: 1. / 24., sine: 0.3, fade_ms: 0., depth: 0.13,
                 targets: vec![(0, 0.13)], bypassed: false }); }
             group.modulators.resize_with(8, || Modulator { name: String::new(), targets: vec![],
