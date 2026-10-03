@@ -115,8 +115,6 @@ def main(argv=None):
         if row.get("reason") == "compiler-message" and row.get("message", {}).get("rendered"):
             print(row["message"]["rendered"], end="", file=sys.stderr)
     if built.returncode:
-        # Cargo JSON carries compiler diagnostics on stdout.
-        print(built.stdout, end="", file=sys.stderr)
         return built.returncode
     binary = test_binary(built.stdout, args.target)
     print("Cargo verified test executable: " + binary, flush=True)
