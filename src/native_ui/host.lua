@@ -209,7 +209,7 @@ function native_modifier(node,name,props,args)
     end
     if name=="frame" then
         for key,value in pairs(props) do
-            assert(((key=="width" or key=="height") and type(value)=="number" and value>=0 and value<=4096)
+            assert(((key=="width" or key=="height" or key=="min_width" or key=="min_height" or key=="max_width" or key=="max_height") and type(value)=="number" and value>=0 and (value<=4096 or ((key=="max_width" or key=="max_height") and value==math.huge)))
                 or (key=="alignment" and type(value)=="string"),"Unsupported frame property")
         end
         return {kind="ZStack",props={},children={node},modifiers={frame=props}}

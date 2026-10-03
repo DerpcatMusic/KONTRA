@@ -170,6 +170,12 @@ fn primitive(
             }
         },
     };
+    let el = el.min_size(Size::new(node.minimum[0].unwrap_or(0.),node.minimum[1].unwrap_or(0.)));
+    let el = if node.maximum.iter().any(Option::is_some) {
+        //4096 is the existing admitted scene bound, not a made-up infinite
+        // pixel extent. The unspecified axis retains every admitted size.
+        el.max_size(Size::new(node.maximum[0].unwrap_or(4096.),node.maximum[1].unwrap_or(4096.)))
+    } else { el };
     // NI opacity applies to each painted descendant, not a flattened stack.
     // Carry the product through composition and let MUI blend each primitive.
     let el = if !matches!(node.paint, Paint::Stack | Paint::HStack(_) | Paint::VStack(_)) && node.opacity != 1. {

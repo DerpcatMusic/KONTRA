@@ -27,6 +27,8 @@ pub(crate) struct Node {
     pub paint: Paint,
     pub width: Option<f64>,
     pub height: Option<f64>,
+    pub minimum: [Option<f64>; 2],
+    pub maximum: [Option<f64>; 2],
     pub text_size: f64,
     pub text_color: [f32; 4],
     pub text_bold: bool,
@@ -932,6 +934,21 @@ impl Scene {
                 .all(|v| v.is_finite() && (0. ..=4096.).contains(&v)),
             "Invalid native UI frame"
         );
+        let mut minimum = [None; 2];
+        let mut maximum = [None; 2];
+        if let Some(frame) = &frame {
+            for (axis,name) in ["width","height"].into_iter().enumerate() {
+                minimum[axis]=frame.get::<Option<f64>>(format!("min_{name}"))?;
+                maximum[axis]=frame.get::<Option<f64>>(format!("max_{name}"))?;
+                ensure!(minimum[axis].is_none_or(|v|v.is_finite() && (0. ..=4096.).contains(&v)),"Invalid native UI minimum frame bound");
+                // Authentic legacy modules use math.huge only as an unbounded
+                // maximum. Normalize it to absence; measured roots remain4096.
+                if maximum[axis]==Some(f64::INFINITY) { maximum[axis]=None; }
+                ensure!(maximum[axis].is_none_or(|v|v.is_finite() && (0. ..=4096.).contains(&v)),"Invalid native UI maximum frame bound");
+                ensure!(!frame.contains_key(name)? || (!frame.contains_key(format!("min_{name}"))? && !frame.contains_key(format!("max_{name}"))?),"Native UI frame cannot mix fixed and ranged dimensions on one axis");
+                ensure!(minimum[axis].unwrap_or(0.) <= maximum[axis].unwrap_or(4096.),"Conflicting native UI frame bounds");
+            }
+        }
         if let Paint::Rectangle(color, _) = &paint {
             ensure!(
                 color
@@ -1004,6 +1021,8 @@ impl Scene {
             paint,
             width,
             height,
+            minimum,
+            maximum,
             text_size,
             text_color,
             text_bold,
