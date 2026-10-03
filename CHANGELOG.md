@@ -8,6 +8,22 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ## Unreleased
 
+### Accepted 0.3.148 — primary envelope processing and visible crash receipts
+
+Two reviewed logical fixes advance the accepted counter from 0.3.146.
+
+### Fixed after 0.3.146
+
+- Render strictly admitted saved primary AHDSR sources on their native finite 32-frame control clock, preserving native attack/release curves, captured release state, interpolation, pedal ownership, retrigger and sample EOF. Four focused mathematical/resident-engine gates pass, including fragmented blocks and no audio heap allocations. Unsupported transforms retain diagnosed fallback instead of being silently admitted.
+- Keep crash-report delivery status, report ID and an allowed public GitHub issue link above the Logs filters. Default warning/error filters, search changes and replacement histories no longer hide the receipt; Copy issue link accepts only the validated public KONTRA issue URL.
+
+### Known limits for 0.3.148
+
+- Fresh isolated f119048 passes locked all-targets/all-features checking and optimized builds, 600 library regressions (30 ignored), 89 playback regressions (four ignored), 59 reporter checks, manual export, seven saved-volume/phase checks, actual Logs/receipt/native-parent checks, four primary-AHDSR gates, Linux exported CLAP/VST3 processing and strict C++ editor attachment. Final version metadata and hosted release checks are verified separately before publication.
+- Primary AHDSR admission is deliberately bounded to the proved saved format and unity target. Held-voice live envelope changes, transformed targets and other unproved formats remain unsupported or diagnosed. These gates do not establish whole-preset sound equivalence or fix the reported AREIA double attack by themselves.
+- Mac/Windows DAW runtime, the reported uncaptured Mac opening-crash cause, a genuine production crash-to-issue roundtrip and full native Lua UI rendering remain unverified. Performance counters are test instrumentation, not a GPU or display-FPS result.
+
+
 ### Accepted 0.3.146 — saved phase, native parent validation and diagnostics
 
 Four reviewed logical fixes advance the accepted counter from 0.3.142. Together

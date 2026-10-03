@@ -1195,7 +1195,7 @@
     },
     {
       "id": "ladder-versioned-cutoff-clock-mode",
-      "summary": "Retain version144–146 Ladder cutoff boundary snapshots independently of the Gain/resonance clock",
+      "summary": "Retain version144\u2013146 Ladder cutoff boundary snapshots independently of the Gain/resonance clock",
       "source_commits": [
         "3d5a34b1ddb58211ea38e7d9d76ec3c4c6c59b5c"
       ],
@@ -1404,6 +1404,24 @@
         "b9092670541028963650fd2ced5011850819dcf2"
       ],
       "validation": "Regression reproduces missing Added categories on the old parser; all 24 nightly publication scenarios and signing fixtures pass with the generic parser fix. Published 0.3.141 body corrected without rewriting immutable binary/assets or its disclosed original manifest. No additional plug-in runtime behavior is claimed.",
+      "accepted": true
+    },
+    {
+      "id": "crash-receipt-default-filter-visibility",
+      "summary": "Keep crash delivery status, report ID and validated public issue links visible independently of Logs search and severity filters",
+      "source_commits": [
+        "a706d15a8d0896352efa2371ea8fc8c63d9a2a00"
+      ],
+      "validation": "Fresh isolated f119048 passes locked all-targets/all-features check, optimized library/playback compilation and production builds. All 479 tracked source hashes remain unchanged. Frozen executables pass 600 library regressions (30 ignored), 89 playback regressions (4 ignored), all 59 reporter checks, manual export, seven saved-volume/phase gates, actual Logs/default-filter receipt UI, four primary-AHDSR gates and CLAP parent validation. Exact exported CLAP note/MIDI/pedal/home/MPE-zone and ten VST3 processing cases pass; strict C++ editor-attachment fixture passes. Final version metadata and hosted release checks are verified separately. No actual macOS DAW crash cause, genuine production issue roundtrip, GPU FPS or full-preset sonic equivalence is claimed.",
+      "accepted": true
+    },
+    {
+      "id": "saved-primary-ahdsr-native-clock",
+      "summary": "Render the strictly admitted saved primary AHDSR subset with native finite control counts, curve, capture and interpolation laws",
+      "source_commits": [
+        "0d85fba61787ca99f49a1a4d351ed4727824c066"
+      ],
+      "validation": "Fresh isolated f119048 passes locked all-targets/all-features check, optimized library/playback compilation and production builds. All 479 tracked source hashes remain unchanged. Frozen executables pass 600 library regressions (30 ignored), 89 playback regressions (4 ignored), all 59 reporter checks, manual export, seven saved-volume/phase gates, actual Logs/default-filter receipt UI, four primary-AHDSR gates and CLAP parent validation. Exact exported CLAP note/MIDI/pedal/home/MPE-zone and ten VST3 processing cases pass; strict C++ editor-attachment fixture passes. Final version metadata and hosted release checks are verified separately. No actual macOS DAW crash cause, genuine production issue roundtrip, GPU FPS or full-preset sonic equivalence is claimed.",
       "accepted": true
     }
   ]
