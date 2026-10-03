@@ -820,7 +820,7 @@ mod tests {
         assert!(sibling.pitch_lfos.is_empty() && sibling.volume_lfos.is_empty(),
             "a neutral row cannot hide a separate nonzero assignment to the same source");
 
-        let script = "on init\ndeclare ui_slider $depth(0,1000000)\nset_engine_par($ENGINE_PAR_MOD_TARGET_INTENSITY,1000000,0,1,0)\ndeclare $saved := get_engine_par($ENGINE_PAR_MOD_TARGET_INTENSITY,0,1,0)\ndeclare $signed := get_engine_par($ENGINE_PAR_MOD_TARGET_MP_INTENSITY,0,1,0)\nmake_persistent($saved)\nmake_persistent($signed)\nend on\non ui_control($depth)\nset_engine_par($ENGINE_PAR_MOD_TARGET_MP_INTENSITY,$depth,0,1,0)\nend on";
+        let script = "on init\ndeclare ui_slider $depth(0,1000000)\nset_engine_par($ENGINE_PAR_MOD_TARGET_INTENSITY,1000000,0,1,0)\ndeclare $saved := get_engine_par($ENGINE_PAR_MOD_TARGET_INTENSITY,0,1,0)\ndeclare $signed := get_engine_par($ENGINE_PAR_MOD_TARGET_MP_INTENSITY,0,1,0)\nmake_persistent($saved)\nmake_persistent($signed)\nend on\non ui_control($depth)\nset_engine_par($ENGINE_PAR_MOD_TARGET_MP_INTENSITY,$depth,0,1,0)\n$saved := get_engine_par($ENGINE_PAR_MOD_TARGET_INTENSITY,0,1,0)\n$signed := get_engine_par($ENGINE_PAR_MOD_TARGET_MP_INTENSITY,0,1,0)\nend on";
         for bypass in [false, true] {
             let saved = group(raw(Some(neutral), bypass, false));
             assert_eq!(saved.pitch_lfos[0].bypassed, bypass);
@@ -856,6 +856,13 @@ mod tests {
             let persisted = live.script().unwrap().persistence();
             assert_eq!(persisted[0]["$saved"], Value::Int(0));
             assert_eq!(persisted[0]["$signed"], Value::Int(500000));
+            let unsigned = par(crate::engine::params::id::MOD_TARGET_INTENSITY, 1, 0);
+            let signed = par(crate::engine::params::id::MOD_TARGET_MP_INTENSITY, 1, 0);
+            assert_eq!(live.script().unwrap().env.engine_par(unsigned), Some(1000000),
+                "init executed and retained the unsupported request only in the KSP fallback cache");
+            assert_eq!(live.script().unwrap().env.engine_par(signed), None,
+                "the live setter has not run yet");
+            assert!(live.script().unwrap().init_engine_pars.is_empty(), "unsupported init writes are not applied");
             let mut reference = create(group(raw(None, bypass, false)));
             let (mut a, mut ar, mut b, mut br) = ([0.; 128], [0.; 128], [0.; 128], [0.; 128]);
             assert_eq!(crate::test_support::allocations(|| {
@@ -869,9 +876,18 @@ mod tests {
             }), 0);
             assert!(live.script().unwrap().engine_state().is_empty(), "unsupported edits cannot be persisted as applied");
             assert_eq!(live.bank().unwrap().settings[0].mods.mods[0].intensity, 0.);
-            let diagnostics = live.script().unwrap().diagnostics();
-            assert!(diagnostics.iter().filter(|d| d.contains("parameter not implemented by the engine")).count() >= 2,
-                "both init and live setter failures must be visible: {diagnostics:?}");
+            assert_eq!(live.script().unwrap().env.engine_par(unsigned), Some(1000000));
+            assert_eq!(live.script().unwrap().env.engine_par(signed), Some(850000),
+                "the live callback executed and retained its distinct unsupported request");
+            let persisted = live.script().unwrap().persistence();
+            assert_eq!(persisted[0]["$saved"], Value::Int(0));
+            assert_eq!(persisted[0]["$signed"], Value::Int(500000),
+                "live get_engine_par reads real saved depth before the fallback cache");
+            // These service notes are deduplicated by text, unlike structured
+            // runtime faults. Their row count is not a setter execution count.
+            assert_eq!(live.script().unwrap().diagnostics(),
+                ["set_engine_par: parameter not implemented by the engine; value stored"],
+                "both requests share one truthful warning; only the fallback cache stores their values");
         }
     }
 
