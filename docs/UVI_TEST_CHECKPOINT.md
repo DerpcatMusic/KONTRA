@@ -143,6 +143,11 @@ The [user's Piccolo request-capacity failure](UVI_PICCOLO_REQUEST_CAPACITY_EVIDE
 identifies queue exhaustion during playback, not a decoding failure. The
 [render timer boundary](UVI_PACKET_COST_BOUNDARY_EVIDENCE.md) excludes additional
 worker service work; a below-budget mean does not establish sustainable playback.
+One bounded service retry before a full-ring abort preserves packet order and
+capacity. Optional bridge-owned failure frontiers are published with the first
+cause and shown separately from later worker observations. These additions are
+source-reviewed only; prepared queue/atomic/UI checks are uncompiled and unrun.
+They do not establish that the user's Piccolo playback failure is fixed.
 
 ## Check the behavior
 

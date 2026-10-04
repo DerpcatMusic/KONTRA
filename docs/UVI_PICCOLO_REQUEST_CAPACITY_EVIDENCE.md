@@ -33,6 +33,21 @@ still used when the endpoint reports worker failure/stoppage, or when no
 endpoint cause was captured. Full worker evidence remains in the report.
 The prepared regression is uncompiled and unexecuted.
 
+The bridge also makes one bounded service retry when its pending ring is full
+at packet sealing. This permits room that became available after the earlier
+service poll to be used, preserving FIFO order, the completed packet and the
+original capacity/latency. Persistent pressure still aborts. Authored real-queue
+fixtures are prepared but unrun; their Ready status is a fixture, not proof of
+native readiness or sustainable throughput.
+
+An optional failure snapshot retains the bridge's own frame, partial packet,
+submitted/received/discard/consumed frontiers, latency and local queue counts
+through the existing atomic first-cause publication. Those values are frozen
+after the bridge abort and are separate from the reported caller frame and later
+worker observations. Direct faults or panics without an owned bridge abort can
+have no frontier snapshot. This is not a census of concurrent worker queues.
+Info and Logs expose the retained evidence; neither infers CPU ownership.
+
 No queue-size increase, request dropping, event reordering, new render
 algorithm or CPU improvement is established by this evidence. Fixing this
 Piccolo playback failure requires verification after the user lifts the CPU
