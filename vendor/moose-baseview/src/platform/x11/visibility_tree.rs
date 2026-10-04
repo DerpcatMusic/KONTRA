@@ -63,7 +63,8 @@ impl AncestryList {
             return false;
         };
 
-        // KONTAKTO patch: retain the reparented window, not its old parent.
+        // Retain the reparented window and remove its old ancestry. Keeping
+        // the old parent makes an unmapped former parent hide a viewable child.
         inner.truncate(index.saturating_add(1));
 
         true
@@ -201,8 +202,8 @@ impl AncestorVisibilityState {
 
         if let Some(new_parent) = new_parent {
             if Some(new_parent) == root_id.get() {
-                // KONTAKTO patch: root is not an ancestry entry, but both
-                // the retained mapping state and cached visibility need refreshing.
+                // Root is not an ancestry entry, but mapping state and cached
+                // visibility still need refreshing after this reparent.
                 self.regenerate_from_last_window(connection);
                 return;
             }

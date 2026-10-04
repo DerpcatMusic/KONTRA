@@ -228,6 +228,7 @@ impl EventLoop {
             return;
         }
 
+        self.drain_ime();
         // Any socket error will be handled in the next poll
         let _ = self.window.connection.conn.flush();
     }
@@ -426,7 +427,57 @@ impl EventLoop {
         Ok(())
     }
 
+    fn drain_ime(&mut self) {
+        let events =
+            self.window.ime.borrow_mut().as_mut().map(|ime| ime.drain()).unwrap_or_default();
+        for event in events {
+            // MUI's queued XIM callbacks must observe bounded-close revocation too.
+            if self.window.main_thread_shared.callbacks_revoked() {
+                break;
+            }
+            match event {
+                super::ime::NativeEvent::Input(event) => {
+                    self.handle_event(event);
+                }
+                super::ime::NativeEvent::Key(event) => {
+                    let is_down =
+                        event.response_type & 0x7f == x11rb::protocol::xproto::KEY_PRESS_EVENT;
+                    let mut key = if is_down {
+                        convert_key_press_event(&event, &mut self.xkb_state)
+                    } else {
+                        convert_key_release_event(&event, &mut self.xkb_state)
+                    };
+                    if let Some(pressed) = self.pressed_keys.get_mut(usize::from(event.detail)) {
+                        key.repeat = is_down && *pressed;
+                        *pressed = is_down;
+                    }
+                    if self.handler.on_event(Event::Keyboard(key)) == EventStatus::Ignored {
+                        self.forward_key_event(event);
+                    }
+                }
+            }
+        }
+    }
+
     fn handle_xcb_event(&mut self, event: XEvent) -> Result<(), ConnectionError> {
+        let filtered = self.window.ime.borrow_mut().as_mut().is_some_and(|ime| ime.filter(&event));
+        self.drain_ime();
+        if self.window.main_thread_shared.callbacks_revoked() {
+            return Ok(());
+        }
+        if filtered {
+            return Ok(());
+        }
+        if let XEvent::KeyPress(key) | XEvent::KeyRelease(key) = &event {
+            if key.event == self.window.raw_id() {
+                let forwarded =
+                    self.window.ime.borrow_mut().as_mut().is_some_and(|ime| ime.forward(key));
+                if forwarded {
+                    return Ok(());
+                }
+            }
+        }
+
         // For all the keyboard and mouse events, you can fetch
         // `x`, `y`, `detail`, and `state`.
         // - `x` and `y` are the position inside the window where the cursor currently is
@@ -476,7 +527,7 @@ impl EventLoop {
             }
 
             XEvent::SelectionNotify(event) => {
-                if event.selection == self.window.connection.atoms.XdndSelection {
+                if event.property == self.window.connection.atoms.XdndSelection {
                     self.drag_n_drop.handle_selection_notify_event(
                         &self.window,
                         &*self.handler,
@@ -591,11 +642,17 @@ impl EventLoop {
 
             XEvent::FocusIn(event) if event.event == self.window.raw_id() => {
                 self.window.is_focused.set(true);
+                let config = self.window.ime_configuration.borrow().clone();
+                self.window.set_ime_configuration(config);
+                self.drain_ime();
                 self.handle_event(Event::Window(WindowEvent::Focused));
             }
 
             XEvent::FocusOut(e) if e.event == self.window.raw_id() => {
                 self.window.is_focused.set(false);
+                let config = self.window.ime_configuration.borrow().clone();
+                self.window.set_ime_configuration(config);
+                self.drain_ime();
                 self.pressed_keys.fill(false);
                 self.release_forwarded_keys();
                 self.handle_event(Event::Window(WindowEvent::Unfocused));

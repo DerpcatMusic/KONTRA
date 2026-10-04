@@ -79,8 +79,43 @@ listening, real DAW, cross-platform provider-runtime or shipping-profile tests.
 
 ## UI follow-on
 
-The user also authorized integration of PR33 head `b94ad84`, based on main
-`ac2adc9`. Its recorded CI results apply to that candidate, not this newer core.
-Import its shared native bridges and preserved X11/browser behavior as a
-separate checkpoint. Preserve the core's MIDI ownership and retained-image
-resource changes rather than replacing the sampler with the audited snapshot.
+PR33 head `b94ad84`, based on main `ac2adc9`, is integrated selectively as a
+second merge. The histories have different roots. An explicit `ours` merge
+strategy retains the core tree before importing the requested native-host/UI
+paths; it does not substitute the older audited sampler snapshot.
+
+Imported: distinct `kontra-native-host`, upstream accessibility/IME bridges,
+MUI822 native baseview/xim, X11 visibility fixes, oversized-row reveal and native
+CI checks. The Linux parent hook and cancellable picker runtime from the UI
+baseline are connected while retaining UVI preview-close/cancel behavior.
+`Shared` owns final picker-worker shutdown. Root MUI packages stay locked to
+`822b1922ad1872aaee15b371a31410b0f3580b88`. Local `mui-vello` is rebased to that
+revision with both dead-image sweeps and the image-to-vector CPU regression
+preserved; the MIDI-capable `moose-core` patch is also retained.
+
+New local results on the combined tree:
+
+| Check | Result |
+| --- | --- |
+| Locked workspace/all-targets, `uvi,standalone` | Passed |
+| Locked library, no default features | Passed |
+| Native host headless tests |21 passed,2 intentionally ignored |
+| Software-GL provider lifecycle/presentation under fresh Xvfb |2 passed without retries |
+| App-lock X11 late-parent/root-reparent tests |2 passed without retries |
+| Browser source geometry |3 passed |
+| Renderer image→vector ownership regression |1 passed |
+| Picker validation/ownership/cancellation/shutdown |4 passed |
+| Large browser scroll/search |1 passed |
+| Bank scenarios, rack-growth PCM, NativeUI pointer/Lua, UVI restore/playback |Rerun after MUI migration; all passed |
+| Workflow safety |4 passed |
+| License tooling self-test |Passed; reports existing unresolved ni-file redistribution permission |
+| Changed-source mechanical UI detector |No findings; not a visual/runtime proof |
+
+Logs use `/tmp/kontra-pi-ui-*`. Historical PR CI is not new CI for this merged
+core. Real DAW/editor interactions, native pixel readback and macOS/Windows
+provider runtime remain unverified; the previously reported candidate X11
+intermittency is not erased by these local passes.
+
+The user subsequently authorized a local test-build replacement with rollback
+backups. Installation and build hashes will be recorded separately; neither
+that request nor the compilation checks establish a finished broader migration.

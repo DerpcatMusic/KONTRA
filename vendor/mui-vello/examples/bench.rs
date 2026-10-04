@@ -1,4 +1,4 @@
-//! What a frame costs on a Kurv-sized editor, on the CPU rasteriser and on
+//! What a frame costs on a synth-sized editor, on the CPU rasteriser and on
 //! the retained GPU renderer.
 //!
 //!     cargo run -p mui-vello --profile perf --features cpu,gpu-effects --example bench
@@ -160,7 +160,7 @@ fn editor(ui: &mut Ui, app: &mut App) -> El {
         .collect();
 
     let body = col![
-        row![title("Kurv"), spacer(), caption("48 kHz")].pad(S),
+        row![title("Synth"), spacer(), caption("48 kHz")].pad(S),
         grid(8, knobs).gap(M).pad(M).shell(10.0, Role::Raised),
         col(sliders).gap(S).pad(M),
         grid(20, labels).gap(Xs).pad(S),

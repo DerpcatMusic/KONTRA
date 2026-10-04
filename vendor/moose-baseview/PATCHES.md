@@ -1,31 +1,23 @@
-# KONTRA changes to moose-baseview
+# KONTRA local native-window preservation
 
-Source: [Matari-Audio/moose](https://github.com/Matari-Audio/moose/tree/bffa4677d0b82119d38566ce7e932dc5c463d497/crates/moose-baseview),
-revision `bffa4677d0b82119d38566ce7e932dc5c463d497`, crate
-`moose-baseview 0.3.4-moose.1`. This copies only the already locked baseview
-crate, not the surrounding MOOSE framework. Its upstream authors are retained
-in `Cargo.toml`, and its MIT and Apache-2.0 licenses are retained unchanged.
-`README.md` records the earlier RustAudio/baseview origin and MOOSE changes.
+Base: MUI `822b1922ad1872aaee15b371a31410b0f3580b88` vendored
+`moose-baseview`, with its unchanged local `../xim-rs` IME dependencies.
 
-KONTRA's authored patch changes `src/platform/x11/visibility_tree.rs`:
+Preserves KONTRA `c96ad3a` root-reparent visibility behavior while consuming
+the newer MUI display/accessibility integration:
 
-- Reparenting retains the window itself and removes its former ancestors.
-- Reparenting to the root refreshes mapping state and cached visibility before
-  returning. The root remains excluded from the ancestry list.
+- `remove_after_window` retains the reparented window, removes its old parent.
+- Reparenting to the X11 root refreshes mapping/visibility before returning.
 
-The previous code retained an unmapped old parent and skipped regeneration on
-a root reparent. An original Xvfb test reproduced a server-viewable child with
-zero frame callbacks after that transition. The late-parent-map control received
-callbacks normally. This proves that transition's bookkeeping defect; it does
-not establish the cause of a separate reported host failure.
-
-Original native regressions are in `tests/x11_visibility.rs`. They require an
-isolated X11 server and are ignored by default. Run with:
+The original native X11 regression is retained in `tests/x11_visibility.rs` and
+mirrored into the custom host integration tests so CI uses the application lock.
+Run against an isolated server:
 
 ```sh
-xvfb-run -a cargo test --locked --profile ci -p moose-baseview --test x11_visibility -- --ignored --test-threads=1
+xvfb-run -a cargo test --locked -p kontra-native-host \
+  --test x11_visibility -- --ignored --test-threads=1
 ```
 
-No backend, surface alpha, rendering, constructor, or other platform behavior
-is changed. No upstream executable or commercial instrument was used as a
-fixture.
+The application MUI source patch consumes this package. New MUI parent-before/
+after-map pixel tests cover a different transition and must also pass before
+deployment. This local preservation does not claim complete DAW validation.

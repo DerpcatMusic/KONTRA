@@ -53,7 +53,6 @@ pub enum GetPropertyError {
     TypeMismatch(xproto::Atom),
     FormatMismatch(c_int),
     Overflow,
-    TooLarge,
 }
 
 impl fmt::Display for GetPropertyError {
@@ -66,7 +65,6 @@ impl fmt::Display for GetPropertyError {
             GetPropertyError::Overflow => {
                 f.write_str("Overflow while trying to read property value")
             }
-            GetPropertyError::TooLarge => f.write_str("X11 property exceeds drag-and-drop limit"),
         }
     }
 }
@@ -91,13 +89,13 @@ const PROPERTY_BUFFER_SIZE: u32 = 1024; // 4k of RAM ought to be enough for anyo
 
 pub(crate) fn get_property<T: Pod>(
     window: xproto::Window, property: xproto::Atom, property_type: xproto::Atom,
-    conn: &XCBConnection, max_items: usize,
+    conn: &XCBConnection,
 ) -> Result<Vec<T>, GetPropertyError> {
     let mut iter = PropIterator::new(conn, window, property, property_type);
     let mut data = vec![];
 
     loop {
-        if !iter.next_window(&mut data, max_items)? {
+        if !iter.next_window(&mut data)? {
             break;
         }
     }
@@ -156,9 +154,7 @@ impl<'a, T: Pod> PropIterator<'a, T> {
     /// Get the next window and append it to `data`.
     ///
     /// Returns whether there are more windows to fetch.
-    fn next_window(
-        &mut self, data: &mut Vec<T>, max_items: usize,
-    ) -> Result<bool, GetPropertyError> {
+    fn next_window(&mut self, data: &mut Vec<T>) -> Result<bool, GetPropertyError> {
         // Send the request and wait for the reply.
         let reply = self
             .conn
@@ -180,14 +176,6 @@ impl<'a, T: Pod> PropIterator<'a, T> {
         // Make sure that the reply is of the correct format.
         if reply.format != self.format {
             return Err(GetPropertyError::FormatMismatch(reply.format.into()));
-        }
-
-        let remaining_bytes =
-            max_items.saturating_sub(data.len()).saturating_mul(mem::size_of::<T>());
-        if reply.value.len() > remaining_bytes
-            || (reply.bytes_after != 0 && reply.value.len() >= remaining_bytes)
-        {
-            return Err(GetPropertyError::TooLarge);
         }
 
         // Append the data to the output.
