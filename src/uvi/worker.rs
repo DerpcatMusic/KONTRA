@@ -463,6 +463,7 @@ struct Details {
     load_report: Option<Arc<serde_json::Value>>,
     diagnostics: Vec<&'static str>,
     ui_processors: Vec<NodeId>,
+    initialized_ui: Option<Arc<Vec<UiSnapshot>>>,
     ui_latest: u64,
     ui_request: Option<UiSnapshotRequest>,
     ui_reply: Option<UiSnapshotReply>,
@@ -868,6 +869,19 @@ impl Worker {
             .unwrap_or_else(|poison| poison.into_inner())
             .diagnostics
             .clone()
+    }
+
+    /// Owned initialization boundary, before audio readiness. The controller
+    /// must keep gestures disabled until the audio endpoint is adopted.
+    /// Lua, resource access and snapshot creation remain on this worker.
+    pub fn initialized_ui(&self) -> Option<(Stamp, Arc<Vec<UiSnapshot>>)> {
+        if self.shared.stop.load(Ordering::Acquire)
+            || matches!(self.status(), Status::Failed | Status::Stopped)
+        {
+            return None;
+        }
+        let details = self.shared.details.lock().unwrap_or_else(|p| p.into_inner());
+        details.initialized_ui.clone().map(|snapshots| (self.shared.stamp, snapshots))
     }
 
     /// Control thread only. Ordered processor identities for panel snapshots;
@@ -1376,6 +1390,8 @@ fn capture_runtime(player: &Player<'_>, shared: &Shared) {
 /// roots. A future adapter must retire canonical owners through its lifecycle.
 fn finish(shared: &Shared, failure: Option<String>) {
     shared.counters.active_voices.store(0, Ordering::Relaxed);
+    // Never retain an initialized panel after its worker fails or is cancelled.
+    shared.details.lock().unwrap_or_else(|p| p.into_inner()).initialized_ui = None;
     // Stats retain the census from the latest completed packet after failure/stop.
     if let Some(failure) = failure {
         shared.counters.errors.fetch_add(1, Ordering::Relaxed);
@@ -1581,6 +1597,29 @@ fn run(
         activation,
         saved,
         &mut |name| initialization_stage(shared, trace, name),
+        &mut |session| {
+            if shared.stop.load(Ordering::Acquire) { return; }
+            // The normal Ready mailbox remains available for larger chains.
+            // Do not let one eager batch amplify per-processor UI budgets.
+            let processors: Vec<_> = loaded.program.nodes.iter().enumerate()
+                .filter_map(|(id, node)| (node.kind == "ScriptProcessor").then_some(id))
+                .take(65).collect();
+            if processors.len() > 64 { return; }
+            let mut snapshots = Vec::new();
+            let mut widgets = 0usize;
+            for processor in processors {
+                if shared.stop.load(Ordering::Acquire) { return; }
+                if let Ok(snapshot) = session.ui_snapshot(processor) {
+                    widgets += snapshot.widgets.len();
+                    if widgets > 16_384 { return; }
+                    snapshots.push(snapshot);
+                }
+            }
+            let mut details = shared.details.lock().unwrap_or_else(|p| p.into_inner());
+            if !shared.stop.load(Ordering::Acquire) {
+                details.initialized_ui = Some(Arc::new(snapshots));
+            }
+        },
     )?;
     {
         let mut details = shared
@@ -1784,6 +1823,103 @@ pub(crate) mod tests {
     use super::super::{crypto, program::parse_program};
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn initialized_ui_is_owned_stamped_and_cleared_on_failure_or_stop() {
+        for failure in [None, Some("authored terminal failure".to_owned())] {
+            let worker = Worker { shared: Arc::new(Shared::new(7, 11)), thread: None,
+                cursor: Some(PacketCursor::default()) };
+            let initialized = Arc::new(Vec::new());
+            worker.shared.details.lock().unwrap().initialized_ui = Some(initialized.clone());
+            let (stamp, captured) = worker.initialized_ui().unwrap();
+            assert_eq!((stamp.epoch, stamp.generation, stamp.frame), (7, 11, 0));
+            assert!(Arc::ptr_eq(&captured, &initialized));
+            assert_eq!(worker.status(), Status::Starting);
+            assert!(worker.ui_processors().is_empty());
+            worker.shared.stop.store(true, Ordering::Release);
+            assert!(worker.initialized_ui().is_none());
+            finish(&worker.shared, failure);
+            assert!(worker.shared.details.lock().unwrap().initialized_ui.is_none());
+            assert!(worker.initialized_ui().is_none());
+        }
+    }
+
+    #[test]
+    fn authored_initialization_failure_never_publishes_partial_ui() {
+        let (config, _) = authored_bank_with_script(
+            "function onInit()knob=Knob('partial',0.5,0,1);error('authored initialization failure')end");
+        let path = config.bank.clone();
+        let mut worker = Worker::start(config, 7, 11).unwrap();
+        assert!(worker.wait_ready(Duration::from_secs(5)).is_err());
+        assert_eq!(worker.status(), Status::Failed);
+        assert!(worker.initialized_ui().is_none());
+        assert_eq!(worker.stats().rendered_blocks, 0);
+        worker.stop();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn renderer_failure_retires_an_initialized_panel_without_audio() {
+        let (fixture, source) = authored_bank_with_script(
+            "function onInit()knob=Knob('initialized',0.5,0,1)end");
+        std::fs::remove_file(fixture.bank).unwrap();
+        // Generator parameters pass graph preflight, but renderer ownership
+        // validation rejects this oscillator outside a Keygroup.
+        let source = source.replace("<Layers><Layer><Keygroups><Keygroup><Oscillators>", "<Oscillators>")
+            .replace("</Oscillators></Keygroup></Keygroups></Layer></Layers>", "</Oscillators>");
+        let (config, _) = authored_bank_with_program(&source);
+        let path = config.bank.clone();
+        let library = Rc::new(Library::open(&path, &config.metadata_namespace, None).unwrap());
+        let loaded = library.program(&config.member, &config.program_namespace).unwrap();
+        let published = std::cell::Cell::new(false);
+        let result = Player::new_with_state_traced(&loaded.program, BTreeMap::new(),
+            BankResources::new(library, &loaded.path, Default::default()).unwrap(),
+            48000, None, None, &mut |_| {}, &mut |_| published.set(true));
+        assert!(published.get());
+        assert!(result.is_err());
+        let mut worker = Worker::start(config, 7, 11).unwrap();
+        assert!(worker.wait_ready(Duration::from_secs(5)).is_err());
+        assert!(worker.initialized_ui().is_none());
+        assert_eq!(worker.stats().rendered_blocks, 0);
+        worker.stop();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn initialized_ui_follows_authored_lua_and_preserves_restore_apply_order() {
+        use super::super::host::UiValue;
+        let (config, _) = authored_bank_with_script(r#"
+            knob=Knob{name='authored',value=0.25}
+            function onInit()knob.value=0.75;Program:setParameter('Gain',0.6)end
+            function onSave()return {saved=true}end
+            function onLoad(data)assert(data.saved);Program:setParameter('Gain',0.7)end
+        "#);
+        let path = config.bank.clone();
+        let library = Rc::new(Library::open(&path, &config.metadata_namespace, None).unwrap());
+        let loaded = library.program(&config.member, &config.program_namespace).unwrap();
+        let processor = loaded.program.nodes.iter().position(|n| n.kind == "ScriptProcessor").unwrap();
+        let phase = std::cell::Cell::new("");
+        let seen = std::cell::RefCell::new(Vec::new());
+        let mut fresh = Player::new_with_state_traced(&loaded.program, BTreeMap::new(),
+            BankResources::new(library.clone(), &loaded.path, Default::default()).unwrap(),
+            48000, Some((7,11)), None, &mut |name|phase.set(name), &mut |session| {
+                seen.borrow_mut().push(phase.get());
+                assert!(matches!(session.ui_snapshot(processor).unwrap().widgets[0].value,
+                    Some(UiValue::Number(n)) if n==0.75));
+            }).unwrap();
+        assert_eq!(*seen.borrow(), vec!["uvi_lua_init"]);
+        let saved = fresh.saved_state().unwrap();
+        seen.borrow_mut().clear();
+        let mut restored = Player::new_with_state_traced(&loaded.program, BTreeMap::new(),
+            BankResources::new(library, &loaded.path, Default::default()).unwrap(),
+            48000, Some((7,12)), Some(&saved), &mut |name|phase.set(name), &mut |session| {
+                seen.borrow_mut().push(phase.get());
+                assert!(session.ui_snapshot(processor).unwrap() == fresh.ui_snapshot(processor).unwrap());
+            }).unwrap();
+        assert_eq!(*seen.borrow(), vec!["uvi_restore_apply"]);
+        assert!(restored.saved_state().is_ok());
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn compact_initialization_progress_does_not_enqueue_or_copy_graph_reports() {

@@ -28,10 +28,22 @@ impl Storage {
             values.len() <= MAX_SOURCE_BYTES / size_of::<f32>(),
             "UVI PCM exceeds storage input limit"
         );
-        ensure!(values.iter().all(|x| x.is_finite()), "Nonfinite UVI PCM");
+        // One bounded pass validates finiteness and preserves floating -0.
+        let mut negative_zero = false;
+        for chunk in values.chunks(256) {
+            let (finite, negative) =
+                chunk
+                    .iter()
+                    .fold((true, false), |(finite, negative), value| {
+                        (
+                            finite & value.is_finite(),
+                            negative | (value.to_bits() == 0x8000_0000),
+                        )
+                    });
+            ensure!(finite, "Nonfinite UVI PCM");
+            negative_zero |= negative;
+        }
         let samples = values.len();
-        // Integer PCM cannot represent the sign bit of floating-point -0.
-        let negative_zero = values.iter().any(|x| *x == 0. && x.is_sign_negative());
         if samples % 2 != 0 {
             values.try_reserve_exact(1)?;
             values.push(0.);
@@ -114,6 +126,29 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validation_covers_chunk_boundaries_and_preserves_signed_zero() {
+        for len in [255usize, 256, 257, 513] {
+            let mut values = vec![0.5; len];
+            values[len - 1] = -0.0;
+            let stored = Storage::from_f32(values.clone()).unwrap();
+            assert_eq!(stored.bytes(), len.next_multiple_of(2) * size_of::<f32>());
+            assert!(
+                stored
+                    .iter()
+                    .zip(&values)
+                    .all(|(actual, expected)| actual.to_bits() == expected.to_bits())
+            );
+            for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                values[len - 1] = invalid;
+                assert_eq!(
+                    Storage::from_f32(values.clone()).unwrap_err().to_string(),
+                    "Nonfinite UVI PCM"
+                );
+            }
+        }
+    }
 
     #[test]
     fn packed_pcm_retains_every_channel_and_exact_random_reads() {

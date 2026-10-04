@@ -250,7 +250,9 @@ pub fn view(
     pictures: &HashMap<String, Arc<Picture>>,
     mut send: impl FnMut(Stamp, UiInput) -> bool,
 ) -> El {
-    if !state.adopt(current, captured, snapshot.processor) || snapshot.widgets.len() > 4096 {
+    let admitted = state.adopt(current, captured, snapshot.processor);
+    let initializing = current.epoch == captured.epoch && captured.generation > current.generation;
+    if (!admitted && !initializing) || snapshot.widgets.len() > 4096 {
         return caption("Loading instrument controls…")
             .fill(secondary())
             .pad(INSET);
@@ -300,7 +302,7 @@ pub fn view(
             continue;
         }
         let id = identity(owner, current, snapshot, widget.id);
-        let usable = enabled(snapshot, widget);
+        let usable = admitted && enabled(snapshot, widget);
         let bounds = widget.absolute_bounds;
         let (w, h) = (bounds.width * scale, bounds.height * scale);
         let response = ui.get(id.as_str());
@@ -964,6 +966,34 @@ mod tests {
             1. / 60.,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn initialized_panel_is_visible_but_cannot_edit_until_audio_adoption() {
+        let snapshot = authored();
+        let mut ui = super::super::theme::ui();
+        let mut state = State::default();
+        let mut edits = Vec::new();
+        let current = stamp(3);
+        let captured = stamp(4);
+        for _ in 0..3 {
+            tick(&mut ui, &mut state, &snapshot, current, captured, Input::default(), &mut edits);
+        }
+        let id = identity(0, current, &snapshot, 6);
+        assert!(ui.scene().unwrap().surface("uvi-stage-0").is_some());
+        assert!(ui.scene().unwrap().surface(&id).is_some());
+        ui.focus(id);
+        tick(&mut ui, &mut state, &snapshot, current, captured,
+            Input { keys: vec![KeyPress { key: Key::Space, mods: Mods::default() }], ..Input::default() },
+            &mut edits);
+        assert!(edits.is_empty());
+        assert!(state.pending.is_none() && state.menu.is_none());
+        let mut stale = captured;
+        stale.epoch -= 1;
+        tick(&mut ui, &mut state, &snapshot, current, stale, Input::default(), &mut edits);
+        assert!(ui.scene().unwrap().surface("uvi-stage-0").is_none());
+        tick(&mut ui, &mut state, &snapshot, captured, captured, Input::default(), &mut edits);
+        assert!(ui.scene().unwrap().surface("uvi-stage-0").is_some());
     }
 
     #[test]

@@ -2550,7 +2550,10 @@ impl Runtime {
             self.deliver(&event, None, None, parent, None, root)?;
             return self.advance(input.frame);
         }
-        let parent = self.state.borrow_mut().receive(&self.lua, &event, None, root)?;
+        let parent = self
+            .state
+            .borrow_mut()
+            .receive(&self.lua, &event, None, root)?;
         let globals = self.lua.globals();
         let handler = globals
             .get::<Option<Function>>("onEvent")?
@@ -3296,6 +3299,346 @@ fn collect(mut rt: Runtime, inputs: &[Input], until: u64) -> Result<Processed> {
 mod tests {
     use super::super::program::parse_program;
     use super::*;
+
+    fn audio_on(frame: u64) -> Input {
+        Input {
+            frame,
+            kind: InputKind::NoteOn {
+                channel: 0,
+                note: 60,
+                velocity: 100,
+            },
+        }
+    }
+
+    fn audio_root(token: u64) -> HostRoot {
+        HostRoot {
+            epoch: 7,
+            generation: 9,
+            token,
+        }
+    }
+
+    fn audio_completion_program(source: &str) -> Program {
+        parse_program(&format!("<Program Gain='1'><Layers><Layer Gain='1'><EventProcessors><ScriptProcessor><script><![CDATA[{source}]]></script></ScriptProcessor></EventProcessors><Keygroups><Keygroup Gain='1'><Oscillators><SamplePlayer Gain='1' SamplePath='old.wav' NoteTracking='0'/></Oscillators></Keygroup></Keygroups><Inserts><Convolver Dry='1' Wet='0'/></Inserts></Layer></Layers></Program>")).unwrap()
+    }
+
+    fn audio_completion_resources() -> host::Resources {
+        Rc::new(|request| match request {
+            host::ResourceRequest::ReadAudio { path, .. } if path == "new.wav" => {
+                Ok(host::ResourceResponse::Audio(host::ResourceInfo {
+                    name: path.clone(),
+                    rate: 48_000,
+                    channels: 1,
+                    frames: 256,
+                }))
+            }
+            _ => Err(mlua::Error::runtime("Authored missing audio")),
+        })
+    }
+
+    #[test]
+    fn audio_resource_completions_are_deferred_yieldable_and_include_failures() {
+        for (api, target) in [
+            (
+                "loadSample",
+                "Program.layers[1].keygroups[1].oscillators[1]",
+            ),
+            ("loadImpulse", "Program.layers[1].inserts[1]"),
+        ] {
+            for (path, success) in [("new.wav", true), ("missing.wav", false)] {
+                let source = format!(
+                    r#"
+                    history=''
+                    spawn=function()error('authored global must not replace completion scheduler')end
+                    function onInit()
+                        history='A'
+                        local task={api}({target},'{path}',function(t)
+                            assert(t.finished and t.state=='finished' and t.success=={success})
+                            assert(not isNoteHeld() and this.parent.type=='Layer')
+                            assert(history=='AB');history=history..'C'
+                            wait(1);history=history..'D';print(history)
+                            playNote(60,100,2)
+                        end)
+                        assert(history=='A' and task.success=={success})
+                        assert(task.id==1 and task.progress==1)
+                        if not task.success then assert(string.find(task.error,'Authored missing audio'))end
+                        history=history..'B'
+                    end
+                "#
+                );
+                let program = audio_completion_program(&source);
+                let mut session = Session::new_program_chain(
+                    &program,
+                    BTreeMap::new(),
+                    Some(audio_completion_resources()),
+                    48_000,
+                )
+                .unwrap();
+                let initial = session.drain().unwrap();
+                assert!(initial.commands.is_empty() && initial.logs.is_empty());
+                assert_eq!(initial.host_commands.len(), usize::from(success));
+                session.advance(47).unwrap();
+                assert!(session.drain().unwrap().commands.is_empty());
+                session.advance(48).unwrap();
+                let done = session.drain().unwrap();
+                assert_eq!(done.logs, ["ABCD"]);
+                assert!(
+                    matches!(&done.commands[0], Command { frame:48, action:Action::Start(note) } if note.layers==Some(vec![program.nodes.iter().position(|node|node.kind=="Layer").unwrap()]))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn audio_resource_failure_preserves_playable_pcm_and_existing_metadata() {
+        use super::super::{playback::Renderer, sample::Sample, storage::Storage};
+        use std::{collections::HashMap, sync::Arc};
+        let old = Arc::new(Sample {
+            rate: 48_000,
+            channels: 1,
+            frames: 256,
+            interleaved: Storage::from_f32(vec![0.25; 256]).unwrap(),
+            loops: vec![],
+            unity_note: None,
+            wavetable_cycle_frames: None,
+            wavetable_image: false,
+            riff_metadata: vec![],
+        });
+        let source = r#"
+            function onNote(e)
+                local oscillator=Program.layers[1].keygroups[1].oscillators[1]
+                local before=oscillator.sampleInfo
+                local failed=loadSample(oscillator,'missing.wav',function(t)
+                    assert(not t.success and t.error);print('failed completion')
+                end)
+                assert(not failed.success and oscillator.sampleInfo==before)
+                assert(oscillator:getParameter('SamplePath')=='old.wav')
+                postEvent(e)
+            end
+        "#;
+        let program = audio_completion_program(source);
+        let mut session = Session::new_program_chain(
+            &program,
+            BTreeMap::new(),
+            Some(audio_completion_resources()),
+            48_000,
+        )
+        .unwrap();
+        let result = session.process(&[audio_on(0)], 3).unwrap();
+        assert_eq!(result.logs, ["failed completion"]);
+        assert!(result.host_commands.is_empty());
+        let mut renderer = Renderer::new(
+            &program,
+            HashMap::from([("old.wav".into(), old.clone())]),
+            48_000,
+        )
+        .unwrap();
+        let pcm = renderer
+            .render(&result.commands, &result.host_commands, 4)
+            .unwrap();
+        assert!(pcm.iter().all(|frame| frame[0] > 0.));
+        let control = audio_completion_program("function onNote(e)postEvent(e)end");
+        let mut control_session =
+            Session::new_program_chain(&control, BTreeMap::new(), None, 48_000).unwrap();
+        let control_result = control_session.process(&[audio_on(0)], 3).unwrap();
+        let mut control_renderer =
+            Renderer::new(&control, HashMap::from([("old.wav".into(), old)]), 48_000).unwrap();
+        assert_eq!(
+            pcm,
+            control_renderer
+                .render(&control_result.commands, &[], 4)
+                .unwrap()
+        );
+        println!("Authored failed-load PCM equals retained-source control: {pcm:?}");
+    }
+
+    #[test]
+    fn audio_resource_success_swaps_future_voices_without_replacing_active_pcm() {
+        use super::super::{playback::Renderer, sample::Sample, storage::Storage};
+        use std::{collections::HashMap, sync::Arc};
+        let sample = |value| {
+            Arc::new(Sample {
+                rate: 48_000,
+                channels: 1,
+                frames: 256,
+                interleaved: Storage::from_f32(vec![value; 256]).unwrap(),
+                loops: vec![],
+                unity_note: None,
+                wavetable_cycle_frames: None,
+                wavetable_image: false,
+                riff_metadata: vec![],
+            })
+        };
+        let program = audio_completion_program(
+            r#"
+            function onNote(e)
+                if e.note==61 then
+                    local oscillator=Program.layers[1].keygroups[1].oscillators[1]
+                    local task=loadSample(oscillator,'new.wav',function(t)
+                        assert(t.success);print('completed after return')
+                    end)
+                    assert(task.success and oscillator.sampleInfo.name=='new.wav')
+                    print('returned')
+                end
+                postEvent(e)
+            end
+        "#,
+        );
+        let mut session = Session::new_program_chain(
+            &program,
+            BTreeMap::new(),
+            Some(audio_completion_resources()),
+            48_000,
+        )
+        .unwrap();
+        let mut second = audio_on(4);
+        second.kind = InputKind::NoteOn {
+            channel: 0,
+            note: 61,
+            velocity: 100,
+        };
+        let result = session.process(&[audio_on(0), second], 7).unwrap();
+        assert_eq!(result.logs, ["returned", "completed after return"]);
+        assert_eq!(result.host_commands.len(), 1);
+        assert_eq!(result.host_commands[0].frame, 4);
+        let mut renderer = Renderer::new(
+            &program,
+            HashMap::from([("old.wav".into(), sample(0.25))]),
+            48_000,
+        )
+        .unwrap();
+        renderer
+            .install_prepared_samples(HashMap::from([("new.wav".into(), sample(0.5))]))
+            .unwrap();
+        let pcm = renderer
+            .render(&result.commands, &result.host_commands, 8)
+            .unwrap();
+        assert!(pcm[0][0] > 0.);
+        assert!(pcm[..4].iter().all(|frame| *frame == pcm[0]));
+        assert!(
+            pcm[4..]
+                .iter()
+                .all(|frame| *frame == [3. * pcm[0][0], 3. * pcm[0][1]])
+        );
+        println!(
+            "Authored successful sample-swap PCM: {pcm:?}; callbacks: {:?}",
+            result.logs
+        );
+    }
+
+    #[test]
+    fn audio_resource_failures_without_callbacks_reach_bounded_desktop_diagnostics() {
+        let reason = format!("Authored audio journal marker {}", "é".repeat(1000));
+        let full = reason.clone();
+        let resources: host::Resources = Rc::new(move |_| Err(mlua::Error::runtime(full.clone())));
+        let program = audio_completion_program(
+            r#"
+            print=function()error('authored override must not hide resource failures')end
+            function onInit()
+                local oscillator=Program.layers[1].keygroups[1].oscillators[1]
+                local impulse=Program.layers[1].inserts[1]
+                for _,task in ipairs{loadSample(oscillator,'missing.wav'),loadImpulse(impulse,'missing.wav')}do
+                    assert(task.finished and not task.success and string.len(task.error)>2000)
+                    assert(task.error=='runtime error: Authored audio journal marker '..string.rep('é',1000))
+                end
+            end
+        "#,
+        );
+        let mut session =
+            Session::new_program_chain(&program, BTreeMap::new(), Some(resources), 48_000).unwrap();
+        let result = session.drain().unwrap();
+        assert!(
+            result.commands.is_empty() && result.host_commands.is_empty() && result.logs.is_empty()
+        );
+        let snapshot = crate::diagnostics::snapshot();
+        let failures = snapshot
+            .events
+            .iter()
+            .filter(|event| {
+                event.code.as_deref() == Some("resource_task_failed")
+                    && event.reason.as_deref().is_some_and(|text| {
+                        text.starts_with("runtime error: Authored audio journal marker ")
+                    })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(failures.len(), 2);
+        for (event, kind) in failures.into_iter().zip(["Sample", "Impulse"]) {
+            assert_eq!(event.module, "uvi.host");
+            assert_eq!(event.level, crate::diagnostics::LogLevel::Warning);
+            assert_eq!(event.details["kind"], kind);
+            assert_eq!(event.details["frame"], 0);
+            assert!(event.details["node"].as_u64().is_some());
+            assert_eq!(event.details["reason_truncated"], true);
+            let bounded = event.reason.as_deref().unwrap();
+            assert_eq!(bounded.chars().count(), 512);
+            assert!(("runtime error: ".to_owned() + &reason).starts_with(bounded));
+            assert_eq!(event.details.as_object().unwrap().len(), 5);
+        }
+    }
+
+    #[test]
+    fn audio_resource_completion_descendants_follow_host_root_choke() {
+        let program = audio_completion_program(
+            r#"
+            function onNote(e)
+                loadSample(Program.layers[1].keygroups[1].oscillators[1],'missing.wav',function(t)
+                    assert(not t.success and not isNoteHeld());print('completion')
+                    wait(1);playNote(62,100,1)
+                end)
+                postEvent(e)
+            end
+            function onRelease(e)postEvent(e)end
+        "#,
+        );
+        let mut session = Session::new_hosted_program_chain(
+            &program,
+            BTreeMap::new(),
+            Some(audio_completion_resources()),
+            48_000,
+            7,
+            9,
+        )
+        .unwrap();
+        session.host_note_on(audio_root(1), audio_on(0)).unwrap();
+        assert_eq!(session.drain().unwrap().logs, ["completion"]);
+        session.host_note_choke(audio_root(1), 1).unwrap();
+        session.drain().unwrap();
+        session.advance(48).unwrap();
+        let out = session.drain().unwrap();
+        assert!(out.commands.is_empty() && out.logs.is_empty());
+        session.host_note_on(audio_root(2), audio_on(49)).unwrap();
+        session.drain().unwrap();
+        session.advance(97).unwrap();
+        let out = session.drain().unwrap();
+        assert!(
+            matches!(&out.commands[0],Command {frame:97,action:Action::Start(note)} if note.note==62)
+        );
+        assert_eq!(out.command_roots[0], Some(audio_root(2)));
+    }
+
+    #[test]
+    fn audio_resource_completion_errors_propagate_on_resume() {
+        let program = audio_completion_program(
+            r#"
+            function onInit()
+                loadSample(Program.layers[1].keygroups[1].oscillators[1],'new.wav',function(t)
+                    assert(t.success);wait(1);error('authored completion failure')
+                end)
+            end
+        "#,
+        );
+        let mut session = Session::new_program_chain(
+            &program,
+            BTreeMap::new(),
+            Some(audio_completion_resources()),
+            48_000,
+        )
+        .unwrap();
+        assert_eq!(session.drain().unwrap().host_commands.len(), 1);
+        let error = session.advance(48).unwrap_err();
+        assert!(format!("{error:#}").contains("authored completion failure"));
+    }
 
     fn session_program(source: &str) -> Program {
         parse_program(&format!("<Program Gain='0.5'><EventProcessors><ScriptProcessor><script><![CDATA[{source}]]></script></ScriptProcessor></EventProcessors><Layers><Layer/></Layers></Program>")).unwrap()

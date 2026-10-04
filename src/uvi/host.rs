@@ -2056,6 +2056,9 @@ fn install_resources(
 ) -> mlua::Result<()> {
     let task_ids = host.task_ids.clone();
     let target_types = host.types.clone();
+    // Capture the runtime scheduler before authored scripts can replace globals.
+    // Standalone object hosts have no cooperative runtime and complete inline.
+    let callback_scheduler = environment.get::<Option<Function>>("spawn")?;
     for (name, kind) in [
         ("loadSample", ResourceKind::Sample),
         ("loadImpulse", ResourceKind::Impulse),
@@ -2068,6 +2071,7 @@ fn install_resources(
         let target_types = target_types.clone();
         let resources = resources.clone();
         let task_ids = task_ids.clone();
+        let callback_scheduler = callback_scheduler.clone();
         environment.set(
             name,
             lua.create_function(
@@ -2085,16 +2089,6 @@ fn install_resources(
                             "UVI resource target has incompatible processor type",
                         ));
                     }
-                    // Retain even failed requests so a renderer cannot silently discard a required load.
-                    emit(
-                        &commands,
-                        &*clock,
-                        Action::LoadResource {
-                            node,
-                            kind,
-                            path: path.clone(),
-                        },
-                    )?;
                     let result = (|| {
                         let ResourceResponse::Audio(info) = resource_read(
                             &resources,
@@ -2125,19 +2119,52 @@ fn install_resources(
                                 Value::Number(info.frames as f64 * 1000. / info.rate as f64),
                             ),
                         ])?;
+                        Ok(sample)
+                    })();
+                    if let Ok(sample) = &result {
+                        // A failed task leaves the current asset intact. Output-capacity
+                        // failure still aborts admission before host metadata can change.
+                        emit(
+                            &commands,
+                            &*clock,
+                            Action::LoadResource {
+                                node,
+                                kind,
+                                path: path.clone(),
+                            },
+                        )?;
                         if kind == ResourceKind::Sample {
-                            object.set("sampleInfo", sample)?;
+                            object.set("sampleInfo", sample.clone())?;
                         }
                         parameters.borrow_mut()[node]
                             .insert("SamplePath".into(), ParameterValue::Text(path.clone()));
                         loaded_resources
                             .borrow_mut()
                             .insert(node, (kind, path.clone()));
-                        Ok(())
-                    })();
+                    }
                     let task = task(lua, &task_ids, result.as_ref().err())?;
-                    if let (Ok(()), Some(callback)) = (result, callback) {
-                        callback.call::<()>(task.clone())?;
+                    if let Err(error) = &result {
+                        let exact = error.to_string();
+                        let reason = exact.chars().take(512).collect::<String>();
+                        crate::diagnostics::event(
+                            crate::diagnostics::LogLevel::Warning,
+                            "uvi.host",
+                            "resource_task_failed",
+                            serde_json::json!({
+                                "node":node, "kind":kind, "frame":clock(),
+                                "reason":reason,
+                                "reason_truncated":exact.chars().nth(512).is_some(),
+                            }),
+                        );
+                    }
+                    if let Some(callback) = callback {
+                        if let Some(scheduler) = &callback_scheduler {
+                            // Completion includes failures. The existing scoped scheduler
+                            // supplies ordering, yielding, budgets and host-root ownership.
+                            scheduler.call::<()>((callback, task.clone()))?;
+                        } else {
+                            callback.call::<()>(task.clone())?;
+                        }
                     }
                     Ok(task)
                 },
@@ -2923,7 +2950,82 @@ mod tests {
     }
 
     #[test]
-    fn host_restores_original_values_and_reports_deferred_resource_failure() {
+    fn audio_resource_validation_preserves_previous_asset_and_checks_arguments_before_reads() {
+        let program=parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="old.wav"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let lua = vm();
+        let reads = Rc::new(Cell::new(0));
+        let observed = reads.clone();
+        let host = install(
+            &lua,
+            HostConfig {
+                program: Some(&program),
+                modules: BTreeMap::new(),
+                now: Rc::new(|| 17),
+                valid_voice: None,
+                layer_scope: None,
+                resources: Some(Rc::new(move |request| {
+                    observed.set(observed.get() + 1);
+                    match request {
+                        ResourceRequest::ReadAudio { path, .. } if path == "wrong-response.wav" => {
+                            Ok(ResourceResponse::Saved)
+                        }
+                        ResourceRequest::ReadAudio { path, .. } => {
+                            Ok(ResourceResponse::Audio(ResourceInfo {
+                                name: path.clone(),
+                                rate: if path == "invalid-metadata.wav" {
+                                    0
+                                } else {
+                                    48_000
+                                },
+                                channels: 1,
+                                frames: 256,
+                            }))
+                        }
+                        _ => Err(mlua::Error::runtime("Unexpected authored resource request")),
+                    }
+                })),
+            },
+        )
+        .unwrap();
+        lua.load(
+            r#"
+            local oscillator=Program.layers[1].keygroups[1].oscillators[1]
+            assert(loadSample(oscillator,'owned.wav').success)
+            local previous=oscillator.sampleInfo
+            local completed=0
+            for _,path in ipairs{'invalid-metadata.wav','wrong-response.wav'}do
+                local task=loadSample(oscillator,path,function(t)
+                    completed=completed+1;assert(t.finished and not t.success and t.error)
+                end)
+                assert(not task.success and oscillator.sampleInfo==previous)
+                assert(oscillator:getParameter('SamplePath')=='owned.wav')
+            end
+            assert(completed==2)
+            assert(not pcall(function()loadSample(Program.layers[1],'owned.wav')end))
+            assert(not pcall(function()loadImpulse(oscillator,'owned.wav')end))
+            assert(not pcall(function()loadSample(oscillator,'')end))
+            assert(not pcall(function()loadSample(oscillator,'nul\0path')end))
+            assert(not pcall(function()loadSample(oscillator,'owned.wav',true)end))
+            assert(not pcall(function()loadSample({},'owned.wav')end))
+        "#,
+        )
+        .exec()
+        .unwrap();
+        assert_eq!(reads.get(), 3);
+        assert_eq!(host.commands.borrow().len(), 1);
+        let node = program
+            .nodes
+            .iter()
+            .position(|node| node.kind == "SamplePlayer")
+            .unwrap();
+        assert_eq!(
+            host.loaded_resources.borrow().get(&node),
+            Some(&(ResourceKind::Sample, "owned.wav".into()))
+        );
+    }
+
+    #[test]
+    fn host_restores_original_values_and_completes_failed_resource_tasks() {
         let program=parse_program(r#"<Program Name="P"><EventProcessors><ScriptProcessor Name="Script" n="0.8" enabled="1"><ScriptData t="0,100000 0,750000"/></ScriptProcessor></EventProcessors><Layers><Layer Name="L"><Keygroups><Keygroup Name="K"><Oscillators><SamplePlayer Name="S" SamplePath="synthetic.wav"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
         let lua = vm();
         let host = install(
@@ -2943,17 +3045,16 @@ mod tests {
           n=Knob{'n',0,0,1};n.changed=function(self)called=called+1;assert(math.abs(self.value-0.8)<1e-6 and t:getValue(2)==0.75)end
           t=Table{'t',2,0,0,1};t.changed=function(self,index)called=called+1 end
           enabled=OnOffButton{'enabled',false}
-          loadSample(Program.layers[1].keygroups[1].oscillators[1],'approved-resource',function(task)assert(task.finished and not task.success)end)
+          completed=0
+          loadSample(Program.layers[1].keygroups[1].oscillators[1],'approved-resource',function(task)completed=completed+1;assert(task.finished and not task.success and task.error)end)
+          assert(completed==1)
         "#).exec().unwrap();
         assert_eq!(restore_widgets(&lua, &program).unwrap(), 3);
         lua.load("assert(called==3 and enabled.value==true and math.abs(t:getValue(1)-0.1)<1e-6)")
             .exec()
             .unwrap();
         let commands = host.commands.borrow();
-        assert_eq!(commands.len(), 1);
-        assert!(
-            matches!(&commands[0],Command{frame:31,action:Action::LoadResource{kind:ResourceKind::Sample,path,..}} if path=="approved-resource")
-        );
+        assert!(commands.is_empty());
     }
     #[test]
     fn host_parameter_widget_with_malformed_setter_still_fails_restoration() {
@@ -3073,7 +3174,8 @@ mod tests {
             local task=loadSample(oscillator,'owned.wav',function(t)assert(t.success and t.finished and t.state=='finished')end)
             assert(task.id==1 and oscillator.sampleInfo.duration==500 and oscillator.sampleInfo.samplerate==48000)
             assert(oscillator:getParameter('SamplePath')=='owned.wav')
-            local bad=loadSample(oscillator,'unapproved.wav',function()error('failed load must not call completion')end);assert(not bad.success and oscillator:getParameter('SamplePath')=='owned.wav')
+            local completed=false
+            local bad=loadSample(oscillator,'unapproved.wav',function(t)completed=true;assert(t.finished and not t.success and t.error)end);assert(completed and not bad.success and oscillator:getParameter('SamplePath')=='owned.wav')
             local json=loadData('owned.json',function(data)assert(data.name=='authored' and data.values[2]==3)end)
             assert(json.success and string.find(json.data,'authored'))
             local badJSON=loadData('invalid.json',function()error('failed JSON decoding must not call completion')end);assert(badJSON.success and badJSON.data=='invalid' and badJSON.error)
@@ -3095,7 +3197,7 @@ mod tests {
             k.changed=function()error('callback error propagates')end;k:setValue(0.1,false)
             assert(not pcall(function()loadState('owned.state')end))
         "#).exec().unwrap();
-        assert_eq!(host.commands.borrow().len(), 2);
+        assert_eq!(host.commands.borrow().len(), 1);
         assert!(
             host.commands
                 .borrow()
