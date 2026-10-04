@@ -5,6 +5,7 @@ pub(crate) mod access;
 pub(crate) mod cli;
 pub use cli::run as cli;
 
+pub mod biquad;
 pub mod comb;
 pub mod crypto;
 pub mod bridge;

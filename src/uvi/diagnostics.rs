@@ -49,6 +49,7 @@ pub fn fidelity_diagnostics() -> Vec<&'static str> {
         super::maximizer::FIDELITY_DIAGNOSTIC,
         super::sparkverb::FIDELITY_DIAGNOSTIC,
         super::phasor::FIDELITY_DIAGNOSTIC,
+        super::biquad::FIDELITY_DIAGNOSTIC,
         super::effects::FIDELITY_DIAGNOSTIC,
         super::exciter::FIDELITY_DIAGNOSTIC,
         super::modulation::FIDELITY_DIAGNOSTIC,

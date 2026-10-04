@@ -5,6 +5,7 @@
 //! established matrix width, output layouts, mono pan and gain control timing;
 //! this renderer does not assert overall numerical parity with Falcon.
 use super::{
+    biquad::{self, BiquadFilter},
     dsp::{self, Frame, Gain, GainMatrix, OnePole, TrackDelay},
     effects::{self, EffectProcessor},
     filter::{self, XpanderFilter},
@@ -178,6 +179,7 @@ pub fn preflight(program: &Program) -> Vec<Unsupported> {
             || maximizer::supports(&node.kind)
             || sparkverb::supports(&node.kind)
             || phasor::supports(&node.kind)
+            || biquad::supports(&node.kind)
             || generator::supports(&node.kind)
             || wrapper(&node.kind)
             || matches!(
@@ -270,6 +272,22 @@ pub fn preflight(program: &Program) -> Vec<Unsupported> {
         }
         if time_effects::supports(&node.kind) {
             if let Err(error) = time_effects::validate(node) {
+                unsupported.push(Unsupported {
+                    node: id,
+                    kind: node.kind.clone(),
+                    reason: error.to_string(),
+                });
+            }
+        }
+        if biquad::supports(&node.kind) {
+            let result = biquad::validate(node).and_then(|_| {
+                ensure!(
+                    program.connections.iter().all(|connection| connection.owner != id),
+                    "BiquadFilter connected control generation is unverified"
+                );
+                Ok(())
+            });
+            if let Err(error) = result {
                 unsupported.push(Unsupported {
                     node: id,
                     kind: node.kind.clone(),
@@ -433,7 +451,8 @@ pub fn preflight(program: &Program) -> Vec<Unsupported> {
                     || waveshaper::supports(&entry.kind)
                     || maximizer::supports(&entry.kind)
                     || sparkverb::supports(&entry.kind)
-                    || phasor::supports(&entry.kind);
+                    || phasor::supports(&entry.kind)
+                    || biquad::supports(&entry.kind);
                 if rendered_target
                     && scope.is_none()
                     && graph.has_release_envelopes(&HashSet::from([node]))
@@ -487,6 +506,7 @@ enum Processor {
     Max(Maximizer),
     Spark(Box<SparkVerb>),
     Phasor(Box<Phasor>),
+    Biquad(BiquadFilter),
 }
 impl Processor {
     fn new(
@@ -496,6 +516,11 @@ impl Processor {
         samples: &Arc<HashMap<String, Arc<Sample>>>,
     ) -> Result<Option<Self>> {
         let kind = node.kind.as_str();
+        if biquad::supports(kind) {
+            return Ok(Some(Self::Biquad(BiquadFilter::new(
+                node, channel_count, rate,
+            )?)));
+        }
         if phasor::supports(kind) {
             return Ok(Some(Self::Phasor(Box::new(Phasor::new(
                 node,
@@ -573,6 +598,7 @@ impl Processor {
     }
     fn set(&mut self, name: &str, value: f64) -> Result<()> {
         match self {
+            Self::Biquad(p) => p.set_parameter(name, &ParameterValue::Number(value)),
             Self::Matrix(p) => p.set_parameter(name, value),
             Self::Gain(p) => p.set_parameter(name, value),
             Self::Pole(p) => p.set_parameter(name, value),
@@ -602,6 +628,7 @@ impl Processor {
     }
     fn set_value(&mut self, name: &str, value: &ParameterValue) -> Result<()> {
         match self {
+            Self::Biquad(p) => return p.set_parameter(name, value),
             Self::Effect(p) => return p.set_parameter(name, value),
             Self::Filter(p) => return p.set_parameter(name, value),
             Self::Time(p) => return p.set_parameter(name, value),
@@ -641,6 +668,7 @@ impl Processor {
             Self::Gain(p) => return Ok(p.parameter("Bypass")? != 0.),
             Self::Pole(p) => return Ok(p.parameter("Bypass")? != 0.),
             Self::Delay(p) => return Ok(p.parameter("Bypass")? != 0.),
+            Self::Biquad(p) => p.parameter("Bypass")?,
             Self::Effect(p) => p.parameter("Bypass")?,
             Self::Filter(p) => p.parameter("Bypass")?,
             Self::Time(p) => p.parameter("Bypass")?,
@@ -672,6 +700,7 @@ impl Processor {
             Self::Max(p) => p.process(std::slice::from_mut(frame))?,
             Self::Spark(p) => p.process(std::slice::from_mut(frame))?,
             Self::Phasor(p) => p.process(std::slice::from_mut(frame))?,
+            Self::Biquad(p) => p.process(std::slice::from_mut(frame))?,
         }
         Ok(())
     }
@@ -1120,6 +1149,7 @@ impl<'a> Renderer<'a> {
                 || maximizer::supports(&node.kind)
                 || sparkverb::supports(&node.kind)
                 || phasor::supports(&node.kind)
+                || biquad::supports(&node.kind)
                 || matches!(
                     node.kind.as_str(),
                     "GainMatrix" | "Gain" | "OnePole" | "TrackDelay"
@@ -1153,6 +1183,7 @@ impl<'a> Renderer<'a> {
                 || time_effects::supports(&node.kind) || waveshaper::supports(&node.kind)
                 || maximizer::supports(&node.kind) || sparkverb::supports(&node.kind)
                 || phasor::supports(&node.kind)
+                || biquad::supports(&node.kind)
                 || matches!(node.kind.as_str(), "GainMatrix" | "Gain" | "OnePole" | "TrackDelay"))
                 .then_some(id)
         }).collect();
@@ -1672,6 +1703,7 @@ impl<'a> Renderer<'a> {
                             | Processor::Max(_)
                             | Processor::Spark(_)
                             | Processor::Phasor(_)
+                            | Processor::Biquad(_)
                     ) {
                         continue;
                     }
@@ -2380,6 +2412,9 @@ impl<'a> Renderer<'a> {
                         self.parameters[*node].get(parameter) == Some(&text),
                         "Changing compiled UVI control identity/endpoint/mode requires graph rebuild"
                     );
+                }
+                if biquad::supports(kind) {
+                    biquad::validate_static_write(&self.parameters[*node], parameter, value)?;
                 }
                 let mut bytes = self.processor_bytes();
                 if let Some(p) = self.processors.get_mut(node) {
@@ -3210,6 +3245,56 @@ impl<'a> Renderer<'a> {
 mod tests {
     use super::*;
     use crate::uvi::{program::parse_program, sample::SampleLoop, storage::Storage};
+    #[test]
+    fn biquad_static_controls_reject_before_clock_or_prepared_parameters_change() {
+        let p = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"/></Oscillators><Inserts><BiquadFilter Freq="161.43584" Q=".059999999" Mode="0"/></Inserts></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let id = p
+            .nodes
+            .iter()
+            .position(|n| n.kind == "BiquadFilter")
+            .unwrap();
+        let edit = |frame, value| host::Command {
+            frame,
+            action: host::Action::Parameter {
+                node: id,
+                parameter: "Freq".into(),
+                value: ParameterValue::Number(value),
+            },
+        };
+        for active in [false, true] {
+            let mut renderer = Renderer::new(
+                &p,
+                HashMap::from([("a".into(), Arc::new(sample(1)))]),
+                48000,
+            )
+            .unwrap();
+            if active {
+                renderer
+                    .render(
+                        &[script::Command {
+                            frame: 0,
+                            action: script::Action::Start(note(1)),
+                        }],
+                        &[],
+                        1,
+                    )
+                    .unwrap();
+            }
+            let frame = renderer.current_frame();
+            let parameters = renderer.parameters.clone();
+            assert!(renderer.render(&[], &[edit(frame, 2000.)], 1).is_err());
+            assert_eq!(renderer.current_frame(), frame);
+            assert_eq!(renderer.parameters, parameters);
+            renderer.render(&[], &[edit(frame, 161.43584)], 1).unwrap();
+        }
+        assert!(
+            !preflight(
+                &parse_program("<Program><Inserts><BiquadFilter Bypass='1'/></Inserts></Program>")
+                    .unwrap()
+            )
+            .is_empty()
+        );
+    }
     #[test]
     fn unimplemented_sources_are_reported_once_at_the_source_node() {
         for kind in ["MultiLFO"] {
