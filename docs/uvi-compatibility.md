@@ -64,10 +64,13 @@ a duplicate StepEnvelope rejection formerly attributed to ControlGraph. The next
 source pass implements the measured global StepEnvelope scope and reports 786
 issues: both Step source blockers disappear, while the first existing deterministic
 LFO smoothing blocker becomes visible. This does not admit the program.
-Dedicated CombFilter and
-MS20 scalar leaves match authored native helper comparisons but remain outside
-Program admission because the connected-control clock, startup and bypass
-behavior are unverified. See [MS20 evidence](UVI_MS20_SCALAR_EVIDENCE.md).
+Dedicated CombFilter, MS20, Flanger, Drive, Diode and MultiLFO leaves match scoped
+authored native comparisons but remain outside Program admission. Connected
+control/graph lifecycle, unmeasured callback stages and broader settings retain
+explicit rejection reasons. See [MS20 evidence](UVI_MS20_SCALAR_EVIDENCE.md),
+[Comb held-Value boundary](UVI_COMB_VALUE_CONTROL_EVIDENCE.md),
+[Diode circuit boundary](UVI_DIODE_CIRCUIT_EVIDENCE.md) and
+[MultiLFO endpoint boundary](UVI_MULTILFO_ENDPOINT_EVIDENCE.md).
 
 A subsequent decode-only frontier checked all 50 Starter programs, all 40
 declared VWinds programs across 25 banks, and eight selected Augmented Orchestra
@@ -99,6 +102,20 @@ reduce instructions a further 3.65% relative to the combined lookup/Constant/
 Script memo baseline. The paced candidate still reaches RequestCapacity at
 frame 300,032; renderer wall-time spikes and worker/callback overhead remain
 under investigation. This is not a blackout fix or a realtime guarantee.
+
+Subsequent controlled subphase measurements locate two cold-packet CPU spikes
+in repeated SampledReverb impulse reconstruction. The next source reuses
+immutable PCM reads within each FIR reconstruction call without changing the
+curve, setter order or prepared-resource lifetime. Startup packet CPU improves
+37.7% at frame zero and 50.5% at frame 2304 in the bounded paired captures;
+sustained CPU improvement is not demonstrated. Both candidate paced captures
+have zero Bridge underruns, while one baseline has 38 despite its separate
+Worker underrun counter remaining zero. The [IR evidence](UVI_IR_SOURCE_READ_EVIDENCE.md)
+records this distinction. Fresh integrated source `72c671e` separately passes
+10- and 20-second Alto Worker/Bridge replays with finite nonzero audio, Ready
+status, zero endpoint failures, Bridge underruns, backpressure and worker errors.
+Its 38 copied modules match that recorded commit; unchanged external SDK glue
+is disclosed. These are source-helper observations, not a live Bitwig guarantee.
 
 Installed `25105ae` also initializes the single statically admitted Starter FM
 preset. One original-script MIDI-60 probe (120 ms hold plus one-second tail)
