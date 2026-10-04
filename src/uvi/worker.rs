@@ -987,8 +987,9 @@ impl Worker {
         let id = details.ui_latest.checked_add(1).ok_or(PacketError::Full)?;
         details.ui_latest = id;
         details.ui_request = Some(UiSnapshotRequest { id, processor });
-        details.ui_reply = None;
+        let previous = details.ui_reply.take();
         drop(details);
+        drop(previous);
         self.shared.ui_pending.store(true, Ordering::Release);
         if let Some(handle) = &self.thread {
             handle.thread().unpark();
@@ -1022,8 +1023,9 @@ impl Worker {
             .ok_or(PacketError::Full)?;
         details.state_latest = id;
         details.state_request = Some((id, expected.frame));
-        details.state_reply = None;
+        let previous = details.state_reply.take();
         drop(details);
+        drop(previous);
         self.shared.state_pending.store(true, Ordering::Release);
         if let Some(handle) = &self.thread {
             handle.thread().unpark();
@@ -1058,8 +1060,9 @@ impl Worker {
             .ok_or(PacketError::Full)?;
         details.runtime_latest = id;
         details.runtime_request = Some((id, expected.frame));
-        details.runtime_reply = None;
+        let previous = details.runtime_reply.take();
         drop(details);
+        drop(previous);
         self.shared.runtime_pending.store(true, Ordering::Release);
         if let Some(handle) = &self.thread {
             handle.thread().unpark();
@@ -1378,9 +1381,13 @@ fn capture_ui(player: &Player<'_>, shared: &Shared) {
         .details
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
-    if details.ui_latest == request.id && !shared.stop.load(Ordering::Acquire) {
-        details.ui_reply = Some(reply);
-    }
+    let previous = if details.ui_latest == request.id && !shared.stop.load(Ordering::Acquire) {
+        details.ui_reply.replace(reply)
+    } else {
+        None
+    };
+    drop(details);
+    drop(previous);
 }
 
 fn capture_state(player: &mut Player<'_>, shared: &Shared) -> Result<()> {
@@ -1414,10 +1421,13 @@ fn capture_state(player: &mut Player<'_>, shared: &Shared) -> Result<()> {
         snapshot,
     };
     let mut details = shared.details.lock().unwrap_or_else(|p| p.into_inner());
-    if details.state_latest == request && !shared.stop.load(Ordering::Acquire) {
-        details.state_reply = Some(reply);
-    }
+    let previous = if details.state_latest == request && !shared.stop.load(Ordering::Acquire) {
+        details.state_reply.replace(reply)
+    } else {
+        None
+    };
     drop(details);
+    drop(previous);
     if let Some(error) = failure {
         return Err(error.context("Native state capture failed; activation aborted"));
     }
@@ -1452,16 +1462,25 @@ fn capture_runtime(player: &Player<'_>, shared: &Shared) {
         })
         .map_err(|_| RuntimeSnapshotError::Unavailable);
     let mut details = shared.details.lock().unwrap_or_else(|p| p.into_inner());
-    if details.runtime_latest == request && !shared.stop.load(Ordering::Acquire) {
-        if let Ok(report) = &snapshot {
-            details.runtime_report = Some(report.clone());
-        }
-        details.runtime_reply = Some(RuntimeSnapshotReply {
+    let previous = if details.runtime_latest == request && !shared.stop.load(Ordering::Acquire) {
+        let report = if let Ok(report) = &snapshot {
+            details.runtime_report.replace(report.clone())
+        } else {
+            None
+        };
+        let reply = details.runtime_reply.replace(RuntimeSnapshotReply {
             request,
             stamp,
             snapshot,
         });
-    }
+        (report, reply)
+    } else {
+        (None, None)
+    };
+    // A superseded snapshot can own the whole graph. Release its last owner
+    // after the phase/mailbox mutex, even when no controller retains it.
+    drop(details);
+    drop(previous);
 }
 
 /// Controller observes an activation abort, not successful ends for discarded
