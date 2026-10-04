@@ -36,11 +36,22 @@ pub const FIDELITY_DIAGNOSTIC: &str = "Native UVI control graph uses measured Mo
 const LIMIT: usize = 100_000;
 const DEPTH: usize = 128;
 
+/// Authoritative host beat at a renderer frame. This clock is independent
+/// from elapsed audio time and can change position at a transport snapshot.
+#[derive(Clone, Copy, Debug)]
+pub struct HostPosition {
+    pub frame: u64,
+    pub beat: f64,
+    pub playing: bool,
+}
+
 pub struct Inputs {
     /// Render rate used by native 32-sample control clocks.
     pub sample_rate: f64,
     /// Host tempo for synchronized sources, in beats per minute.
     pub host_tempo: f64,
+    /// None selects the synthetic offline clock; hosted rendering supplies snapshots.
+    pub host_position: Option<HostPosition>,
     /// Reference processing block controlling Constant snap checks.
     pub control_block_frames: u32,
     pub key: u8,
@@ -66,6 +77,7 @@ impl Default for Inputs {
         Self {
             sample_rate: 48000.,
             host_tempo: 120.,
+            host_position: None,
             control_block_frames: 256,
             key: 60,
             tune_semitones: 0.,
@@ -1287,6 +1299,7 @@ pub struct ModulationGraph {
     target_sources: HashMap<Parameter, HashSet<NodeId>>,
     mappers: HashMap<NodeId, Mapper>,
     tables: HashMap<NodeId, Vec<f64>>,
+    step_settings: RefCell<FxHashMap<NodeId, (f64, f64, f32, u32)>>,
     ramps: HashMap<(u8, Option<NodeId>, Option<u32>), Ramp>,
     script_ranges: HashMap<u8, bool>,
     event_order: u64,
@@ -1583,6 +1596,7 @@ impl ModulationGraph {
             target_sources: HashMap::new(),
             mappers: HashMap::new(),
             tables: HashMap::new(),
+            step_settings: RefCell::new(FxHashMap::default()),
             ramps: HashMap::new(),
             script_ranges: HashMap::new(),
             event_order: 0,
@@ -1607,6 +1621,18 @@ impl ModulationGraph {
         };
         for (id, n) in program.nodes.iter().enumerate() {
             match n.kind.as_str() {
+                "StepEnvelope" => {
+                    let steps = number(&n.attributes, "NumSteps", 16.)?;
+                    ensure!((1. ..=128.).contains(&steps) && steps.fract() == 0., "Invalid UVI StepEnvelope step count at node {id}");
+                    let levels = n.attributes.get("Levels").context("UVI StepEnvelope Levels are missing")?;
+                    ensure!(levels.split_whitespace().count() <= 128, "UVI StepEnvelope Levels exceed limit");
+                    let values: Vec<f64> = levels.split_whitespace().map(|v| v.replace(',', ".").parse()).collect::<std::result::Result<_, _>>()?;
+                    ensure!(values.len() >= steps as usize && values.len() <= 128 && values.iter().all(|v| (-1. ..=1.).contains(v)), "Invalid UVI StepEnvelope Levels at node {id}");
+                    for (name, expected) in [("SyncToHost", 1.), ("Retrigger", 0.), ("InterpolationMode", 0.), ("Smooth", 0.), ("Bipolar", 0.), ("Depth", 1.), ("ManualTrigger", 0.), ("Bypass", 0.)] {
+                        ensure!(number(&n.attributes, name, if name == "Depth" { 1. } else { 0. })? == expected, "Unverified UVI StepEnvelope {name} at node {id}");
+                    }
+                    graph.tables.insert(id, values);
+                }
                 "MultiEnvelope" => {
                     let container = program
                         .nodes
@@ -1738,6 +1764,7 @@ impl ModulationGraph {
                         "ConstantModulation"
                             | "ScriptEventModulation"
                             | "LFO"
+                            | "StepEnvelope"
                             | "AnalogADSR"
                             | "DAHDSR"
                             | "AHD"
@@ -1995,6 +2022,7 @@ impl ModulationGraph {
                 matches!(
                     self.kinds[*node].as_str(),
                     "LFO"
+                        | "StepEnvelope"
                         | "DAHDSR"
                         | "AHD"
                         | "AnalogADSR"
@@ -2020,6 +2048,7 @@ impl ModulationGraph {
                     "StdRandom" => &["Rate", "Depth", "Bypass"][..],
                     "Drunk" => &["Rate", "Step", "Bias", "Bypass"][..],
                     "MultiEnvelope" => &["Speed", "Bypass"][..],
+                    "StepEnvelope" => &["Freq", "Depth", "Smooth", "ManualTrigger", "Bypass"][..],
                     "AHD" => &["AttackTime", "HoldTime", "DecayTime", "Bypass"][..],
                     "DAHDSR" => &[
                         "DelayTime",
@@ -2657,6 +2686,7 @@ impl ModulationGraph {
                 && input.host_tempo.is_finite()
                 && input.host_tempo >= 0.
                 && input.host_tempo <= f64::from(f32::MAX)
+                && input.host_position.is_none_or(|position| position.beat.is_finite())
                 && (1000. ..=768000.).contains(&input.sample_rate)
                 && (32..=65536).contains(&input.control_block_frames)
                 && input.control_block_frames.is_multiple_of(32)
@@ -2761,8 +2791,9 @@ impl ModulationGraph {
             | ("Gain", "Volume")
             | ("DigitalEq", "GainScale")
             | ("SignalConnection", "Ratio")
-            | ("LFO", "Depth") => 1.,
+            | ("LFO" | "StepEnvelope", "Depth") => 1.,
             ("LFO", "Freq") => 0.5,
+            ("StepEnvelope", "Freq") => 1.,
             ("MultiEnvelope", "Speed") => 1.,
             ("OnePole" | "XpanderFilter", "Freq") => 1000.,
             ("XpanderFilter", "Fat") => 1.,
@@ -3095,6 +3126,9 @@ impl ModulationGraph {
                     bypass == 0. || bypass == 1.,
                     "Invalid UVI modulation source Bypass"
                 );
+                if self.kinds[n] == "StepEnvelope" {
+                    self.step_gate(n, input, live)?;
+                }
                 if bypass != 0. {
                     return Ok((0., bipolar));
                 }
@@ -3162,6 +3196,7 @@ impl ModulationGraph {
                         v
                     }
                     "LFO" => self.lfo(n, bipolar, input, live, memo, depth + 1)?,
+                    "StepEnvelope" => self.step(n, input, live)?,
                     "DAHDSR" | "AHD" => {
                         let value = self.dah(n, input, live, memo, depth + 1)?;
                         if bipolar { 2. * value - 1. } else { value }
@@ -3196,6 +3231,117 @@ impl ModulationGraph {
         };
         ensure!(value.is_finite(), "Nonfinite UVI modulation source");
         Ok((value, bipolar))
+    }
+    fn step_gate(&self, n: NodeId, input: &Inputs, live: Overrides<'_>) -> Result<()> {
+        // Workstation 4.0.9 authored native caller fixtures cover the global,
+        // host-synchronized, unsmoothed table source. Other modes stay gated.
+        for (name, expected) in [
+            ("SyncToHost", 1.),
+            ("Retrigger", 0.),
+            ("InterpolationMode", 0.),
+            ("Smooth", 0.),
+            ("Bipolar", 0.),
+            ("Depth", 1.),
+            ("ManualTrigger", 0.),
+            ("Bypass", 0.),
+        ] {
+            ensure!(
+                self.setting(n, name, if name == "Depth" { 1. } else { 0. }, live)? == expected,
+                "Unverified UVI StepEnvelope {name} at node {n}"
+            );
+        }
+        ensure!(
+            self.node_targets[n].is_empty(),
+            "Unverified connected UVI StepEnvelope parameter at node {n}"
+        );
+        let steps = self.setting(n, "NumSteps", 16., live)?;
+        ensure!(
+            steps == number(&self.bases[n], "NumSteps", 16.)?,
+            "Unverified live UVI StepEnvelope step count at node {n}"
+        );
+        let frequency = self.setting(n, "Freq", 1., live)? as f32;
+        ensure!(
+            frequency > 0. && frequency <= 20. && input.host_tempo > 0.,
+            "Invalid UVI StepEnvelope frequency/tempo at node {n}"
+        );
+        if let Some(position) = input.host_position {
+            let frame = (input.time_seconds * input.sample_rate + 0.000001).floor() as u64;
+            ensure!(
+                position.playing,
+                "Unverified stopped UVI StepEnvelope host clock at node {n}"
+            );
+            ensure!(
+                position.beat >= 0. && position.frame <= frame,
+                "Invalid UVI StepEnvelope host position at node {n}"
+            );
+            ensure!(
+                position.frame.is_multiple_of(32),
+                "Unverified unaligned UVI StepEnvelope transport snapshot at node {n}"
+            );
+        }
+        let settings = (
+            input.sample_rate,
+            input.host_tempo,
+            frequency,
+            input.control_block_frames,
+        );
+        let mut previous = self.step_settings.borrow_mut();
+        let initial = previous.entry(n).or_insert(settings);
+        ensure!(
+            initial.0 == settings.0
+                && initial.2 == settings.2
+                && initial.3 == settings.3
+                && (input.host_position.is_some() || initial.1 == settings.1),
+            "Unverified live UVI StepEnvelope frequency/clock change at node {n}"
+        );
+        Ok(())
+    }
+    fn step(&self, n: NodeId, input: &Inputs, live: Overrides<'_>) -> Result<f64> {
+        let values = self
+            .tables
+            .get(&n)
+            .context("UVI StepEnvelope Levels are missing")?;
+        let count = self.setting(n, "NumSteps", 16., live)? as usize;
+        let frequency = f64::from(self.setting(n, "Freq", 1., live)? as f32);
+        ensure!(
+            input.time_seconds * input.sample_rate < (u64::MAX - 65536) as f64,
+            "UVI StepEnvelope clock overflow"
+        );
+        let frame = (input.time_seconds * input.sample_rate + 0.000001).floor() as u64;
+        let block = u64::from(input.control_block_frames);
+        let block_start = frame / block * block;
+        let (start, beat) = if let Some(position) = input.host_position {
+            let start = block_start.max(position.frame);
+            let beat = position.beat
+                + (start - position.frame) as f64 / input.sample_rate * input.host_tempo / 60.;
+            (start, beat)
+        } else {
+            (
+                block_start,
+                block_start as f64 / input.sample_rate * input.host_tempo / 60.,
+            )
+        };
+        let tick = (frame - start) / 32;
+        // Native consumes the supplied host beat at the block start, then
+        // advances double phase at each 32-frame point. A transport snapshot
+        // starts a fresh position projection rather than accruing a seek gap.
+        let mut phase = beat / frequency;
+        let increment = 32.
+            * (f64::from(input.host_tempo as f32) * (1. / 60.)
+                / f64::from(input.sample_rate as f32))
+            * (1. / frequency);
+        for _ in 0..tick {
+            phase += increment;
+        }
+        ensure!(
+            phase.is_finite() && phase >= 0. && phase + increment < f64::from(i32::MAX),
+            "UVI StepEnvelope phase overflow"
+        );
+        let left = values[(phase.floor() as u64 % count as u64) as usize] as f32;
+        let right = values[((phase + increment).floor() as u64 % count as u64) as usize] as f32;
+        Ok(f64::from(
+            left + (right - left) * ((frame - start - tick * 32) as f32 / 32.),
+        ))
     }
     fn dah(
         &self,
@@ -4127,6 +4273,108 @@ impl ModulationGraph {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_step_envelope_global_points_and_unmeasured_modes_stay_gated() {
+        let levels = (0..16)
+            .map(|i| ((i * 37 % 129) as f64 / 128.).to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let xml = format!(
+            r#"<Program><ControlSignalSources><StepEnvelope Name="Seq" SyncToHost="1" Retrigger="0" Freq=".25" NumSteps="16" Levels="{levels}"/></ControlSignalSources><Layers><Layer><Keygroups><Keygroup Gain="1"><Connections><SignalConnection Source="$Program/Seq" Destination="Gain" Ratio="1"/></Connections></Keygroup></Keygroups></Layer></Layers></Program>"#
+        );
+        let program = parse_program(&xml).unwrap();
+        let graph = ModulationGraph::new(&program).unwrap();
+        let target = program
+            .nodes
+            .iter()
+            .position(|n| n.kind == "Keygroup")
+            .unwrap();
+        let source = program
+            .nodes
+            .iter()
+            .position(|n| n.kind == "StepEnvelope")
+            .unwrap();
+        for (frame, expected) in [
+            (0, 0.),
+            (5999, 0.135498046875),
+            (6000, 0.14453125),
+            (6001, 0.153564453125),
+            (6015, 0.280029296875),
+            (11983, 0.424560546875),
+            (11999, 0.569091796875),
+        ] {
+            let input = Inputs {
+                time_seconds: frame as f64 / 48000.,
+                ..Default::default()
+            };
+            assert_eq!(
+                graph.evaluate(&input, &HashMap::new()).unwrap()[&(target, "Gain".into())],
+                expected
+            );
+        }
+        for (name, value) in [
+            ("Smooth", 0.1),
+            ("InterpolationMode", 1.),
+            ("Retrigger", 1.),
+            ("Bipolar", 1.),
+            ("SyncToHost", 0.),
+            ("Depth", 0.5),
+            ("ManualTrigger", 1.),
+            ("Bypass", 1.),
+            ("NumSteps", 8.),
+            ("Freq", 0.5),
+        ] {
+            let overrides = HashMap::from([((source, name.into()), value)]);
+            assert!(
+                graph.evaluate(&Inputs::default(), &overrides).is_err(),
+                "{name}"
+            );
+        }
+        // Global host-position projection survives voice replacement and a
+        // caller-position rewind; a new graph owns a new fixed clock setup.
+        for voice in [1, 2] {
+            let input = Inputs {
+                time_seconds: 6000. / 48000.,
+                voice: Some(voice),
+                instance: Some(u64::from(voice)),
+                ..Default::default()
+            };
+            assert_eq!(
+                graph.evaluate(&input, &HashMap::new()).unwrap()[&(target, "Gain".into())],
+                0.14453125
+            );
+        }
+        assert_eq!(
+            graph.evaluate(&Inputs::default(), &HashMap::new()).unwrap()[&(target, "Gain".into())],
+            0.
+        );
+        let replacement = ModulationGraph::new(&program).unwrap();
+        assert_eq!(
+            replacement
+                .evaluate(&Inputs::default(), &HashMap::new())
+                .unwrap()[&(target, "Gain".into())],
+            0.
+        );
+        let tempo_change = Inputs {
+            host_tempo: 121.,
+            ..Default::default()
+        };
+        assert!(graph.evaluate(&tempo_change, &HashMap::new()).is_err());
+        for (name, value) in [
+            ("Smooth", ".1"),
+            ("InterpolationMode", "1"),
+            ("Retrigger", "1"),
+            ("Bipolar", "1"),
+            ("SyncToHost", "0"),
+            ("Depth", ".5"),
+        ] {
+            let mut changed = parse_program(&xml).unwrap();
+            changed.nodes[source]
+                .attributes
+                .insert(name.into(), value.into());
+            assert!(ModulationGraph::new(&changed).is_err(), "{name}");
+        }
+    }
     use super::*;
     use crate::uvi::program::parse_program;
     #[test]
