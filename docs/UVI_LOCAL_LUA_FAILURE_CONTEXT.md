@@ -43,3 +43,16 @@ allocation. Every existing fuel reset clears both, including per-processor
 `onSave`: a save failure can be returned by a public Session without retiring it.
 A later callback must retain its own processor, frame, chunk, and line. The
 original returned error remains independent of subsequent resets.
+
+## Lua logical line endings
+
+The Lua-local excerpt path follows the bundled Lua 5.1 lexer's logical newline
+rule: CR, LF, CRLF and LFCR each advance one line. Repeated equal bytes and
+triples retain their additional empty lines. It reads the already loaded source
+without normalizing or copying the complete script. The existing five-line,
+512-byte-per-line excerpt bounds and metadata privacy remain in place. Shared
+KSP excerpt semantics are unchanged.
+
+This correction has source review and prepared authored processor/module tests;
+compilation, test execution and plugin integration remain pending under the CPU
+restriction. Earlier failure-context evidence does not verify this revision.
