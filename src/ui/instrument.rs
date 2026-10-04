@@ -449,7 +449,7 @@ fn native_activity_lines(activity: &crate::uvi::worker::WorkerLoadActivity) -> V
         lines.push(("Program graph: not yet parsed".into(), false));
     }
     if let Some(rejected) = activity.static_rejected_nodes {
-        lines.push((format!("Static playback check: {rejected} rejected graph nodes"), rejected != 0));
+        lines.push((format!("Static playback check: {rejected} known rejected graph nodes"), rejected != 0));
     } else {
         lines.push(("Static playback check: pending".into(), false));
     }

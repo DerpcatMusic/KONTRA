@@ -119,6 +119,14 @@ draft would unlock no programs in that bank. The draft remains private and
 unadmitted. Decode, static admission, initialization, actual control behavior,
 finite playback, native fidelity and realtime deadlines remain separate claims.
 
+Static rejection counts represent known distinct rejected nodes. Processor
+checks inspect nodes individually, but control-graph construction stops at its
+first failure; the report records that scope explicitly. The count is not a
+complete census of every unsupported setting in a rejected program. Later
+Kontakt monolith source also rejects descending offsets and malformed markers
+instead of overflowing or asserting. These latest diagnostic/parser changes
+remain uncompiled and unexecuted under the same CPU restriction.
+
 ## Check the behavior
 
 1. Play from the keyboard, then from the DAW. Check release, overlap and sustain.
