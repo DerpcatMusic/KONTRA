@@ -88,6 +88,24 @@ and stochastic clocks are unchanged. External builds confound elapsed/CPU
 comparisons. The paced combined probe still reaches RequestCapacity at frame
 41,984, so sustainable playback remains unresolved.
 
+The next source pass adds per-evaluation LFO source memoization only after
+successful evaluation, preserving original signed-zero, derived-infinite
+frequency and depth-limit paths. Thirty-seven focused modulation checks and
+all six actual Alto PCM/event/state hashes match. Two alternating counter pairs
+reduce instructions a further 3.65% relative to the combined lookup/Constant/
+Script memo baseline. The paced candidate still reaches RequestCapacity at
+frame 300,032; renderer wall-time spikes and worker/callback overhead remain
+under investigation. This is not a blackout fix or a realtime guarantee.
+
+Installed `25105ae` also initializes the single statically admitted Starter FM
+preset. One original-script MIDI-60 probe (120 ms hold plus one-second tail)
+renders 53,760 finite stereo frames with nonzero output and zero worker errors;
+seven instrumented source/FX nodes process 210 blocks each. This adds a scoped
+generator-path observation beyond the paid sample-player corpus. It does not
+expand the 1/50 Starter compatibility claim to full musical/native parity or
+verify a live plugin endpoint. Catalog, decode and admission counts remain
+distinct as recorded in the [checkpoint report](UVI_TEST_CHECKPOINT.md).
+
 Live loading snapshots report stage durations, graph counts, current initial
 resource, successful aliases/unique decodes and resident PCM. An actual Clarinet
 V2 source-worker capture included 52 partial resource updates and ended at

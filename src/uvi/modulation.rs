@@ -3074,10 +3074,10 @@ impl ModulationGraph {
                 )
             }
             Source::Node(n) => {
-                let cache_source = matches!(self.kinds[n].as_str(), "ConstantModulation" | "ScriptEventModulation");
+                let cache_source = matches!(self.kinds[n].as_str(), "ConstantModulation" | "ScriptEventModulation" | "LFO");
                 if cache_source {
                     if let Some(&value) = memo.sources.get(&n) {
-                        ensure!(depth + 1 < DEPTH, "UVI modulation evaluation depth exceeds limit");
+                        ensure!(depth + 1 + usize::from(self.kinds[n] == "LFO") < DEPTH, "UVI modulation evaluation depth exceeds limit");
                         return Ok(value);
                     }
                 }
@@ -3183,7 +3183,11 @@ impl ModulationGraph {
                     }
                     _ => bail!("Unsupported UVI modulation source"),
                 };
-                if cache_source {
+                // Repeated f64-clock reads can change signed zero or reject
+                // a derived infinite frequency. Preserve those original paths.
+                if cache_source && (self.kinds[n] != "LFO" || self.lfo_clocks.borrow()
+                    .get(&(n, input.voice, input.instance))
+                    .is_none_or(|clock| clock.frequency.is_finite() && clock.phase.to_bits() != (-0f64).to_bits())) {
                     ensure!(v.is_finite(), "Nonfinite UVI modulation source");
                     memo.sources.insert(n, (v, bipolar));
                 }
@@ -6051,6 +6055,127 @@ mod registered_proof {
             out.insert(p.clone(), v.to_bits());
         })?;
         Ok(out)
+    }
+    fn lfo_memo_fixture(wave: u32) -> Program {
+        let user = if wave == 9 { format!("<UserTable>{}</UserTable>", (0..256).map(|i| ((i as f64 / 256. * std::f64::consts::TAU).sin()).to_string()).collect::<Vec<_>>().join(" ")) } else { String::new() };
+        parse_program(&format!(r#"<Program><ControlSignalSources><LFO Name="L" WaveFormType="{wave}" Freq="2" Phase="-0" Depth="1" Retrigger="1" Smooth="0" Bipolar="1">{user}</LFO></ControlSignalSources><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"><Connections><SignalConnection Source="$Program/L" Destination="Gain" Ratio="1"/></Connections></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#)).unwrap()
+    }
+    fn lfo_memo_state(graph: &ModulationGraph, node: NodeId, input: &Inputs) -> Vec<u64> {
+        let key = (node, input.voice, input.instance);
+        let mut bits = Vec::new();
+        if let Some(c) = graph.lfo_clocks.borrow().get(&key) {
+            bits.extend([c.time.to_bits(), c.frequency.to_bits(), c.phase.to_bits()]);
+        }
+        if let Some(c) = graph.triangle_lfo_clocks.borrow().get(&key) {
+            bits.extend([c.frame, c.phase as u64, c.increment as u64, c.wave.to_bits(), c.origin,
+                c.delay_frames, c.rise_frames, c.rate.to_bits(), c.block_frames as u64,
+                c.phase_parameter.to_bits() as u64, c.amplitude.to_bits() as u64, c.bipolar as u64]);
+        }
+        if let Some(c) = graph.random_lfo_clocks.borrow().get(&key) {
+            bits.extend([c.block, c.block_start, c.rate.to_bits(), c.block_frames as u64,
+                c.unit.phase as u64, c.unit.previous_phase as u64, c.unit.random.to_bits() as u64,
+                c.unit.smooth_previous.to_bits() as u64, c.unit.previous_step as u64,
+                c.unit.reset_pending as u64, c.unit.phase_parameter.to_bits() as u64]);
+            bits.extend(c.controls.iter().map(|v| v.to_bits() as u64));
+        }
+        if let Some(seed) = graph.random_seeds.borrow().get(&node) { bits.push(*seed as u64); }
+        bits
+    }
+    #[test]
+    fn lfo_memo_preserves_repeat_reads_native_clocks_rng_and_voice_context() {
+        for wave in [0, 1, 2, 6, 9] {
+            let p = lfo_memo_fixture(wave);
+            let node = p.nodes.iter().position(|n| n.kind == "LFO").unwrap();
+            let mut graph = ModulationGraph::new(&p).unwrap();
+            graph.random_seeds.borrow_mut().insert(node, 123);
+            if wave == 6 { graph.update_live_parameter(node, "Smooth", 0.032567389).unwrap(); }
+            for voice in [1, 2] {
+                for frame in [0, 1, 31, 32, 63, 64, 255, 256, 257, 511, 512] {
+                    let input = Inputs { voice: Some(voice), instance: Some(voice as u64),
+                        key: 60 + voice as u8, velocity: 80 + voice as u8,
+                        time_seconds: frame as f64 / 48000., voice_time_seconds: frame as f64 / 48000.,
+                        ..Inputs::default() };
+                    if wave != 1 { graph.update_live_parameter(node, "Freq", if frame < 64 { 2. } else { 4. }).unwrap(); }
+                    let mut memo = graph.memo.borrow_mut();
+                    memo.begin();
+                    let first = graph.source(&Source::Node(node), &input, Overrides::Registered, &mut memo, 0).unwrap();
+                    let before = lfo_memo_state(&graph, node, &input);
+                    let repeated = graph.source(&Source::Node(node), &input, Overrides::Registered, &mut memo, 0).unwrap();
+                    assert_eq!((first.0.to_bits(), first.1), (repeated.0.to_bits(), repeated.1));
+                    assert_eq!(before, lfo_memo_state(&graph, node, &input));
+                    memo.sources.clear();
+                    let original = graph.source(&Source::Node(node), &input, Overrides::Registered, &mut memo, 0).unwrap();
+                    assert_eq!((first.0.to_bits(), first.1), (original.0.to_bits(), original.1));
+                    assert_eq!(before, lfo_memo_state(&graph, node, &input));
+                    assert!(graph.source(&Source::Node(node), &input, Overrides::Registered, &mut memo, DEPTH - 2).is_err());
+                    memo.sources.clear();
+                    assert!(graph.source(&Source::Node(node), &input, Overrides::Registered, &mut memo, DEPTH - 2).is_err());
+                    assert!(graph.source(&Source::Node(node), &input, Overrides::Registered, &mut memo, DEPTH - 1).is_err());
+                }
+            }
+            graph.update_live_parameter(node, "WaveFormType", 3.).unwrap();
+            let mut memo = graph.memo.borrow_mut();
+            memo.begin();
+            let input = Inputs { time_seconds: 512. / 48000., voice_time_seconds: 512. / 48000.,
+                voice: Some(2), instance: Some(2), ..Inputs::default() };
+            assert!(graph.source(&Source::Node(node), &input, Overrides::Registered, &mut memo, 0).is_err());
+            assert!(!memo.sources.contains_key(&node));
+        }
+    }
+    #[test]
+    fn lfo_memo_preserves_derived_sync_overflow_for_each_clock_family() {
+        for wave in [0, 1, 2, 6, 9] {
+            let p = lfo_memo_fixture(wave);
+            let node = p.nodes.iter().position(|n| n.kind == "LFO").unwrap();
+            let mut graph = ModulationGraph::new(&p).unwrap();
+            graph.random_seeds.borrow_mut().insert(node, 123);
+            let input = Inputs { voice: Some(1), instance: Some(1), ..Inputs::default() };
+            {
+                let mut memo = graph.memo.borrow_mut();
+                memo.begin();
+                graph.source(&Source::Node(node), &input, Overrides::Registered, &mut memo, 0).unwrap();
+            }
+            // Finite serialized/override period underflows in the f32 sync law.
+            graph.update_live_parameter(node, "Freq", 1e-300).unwrap();
+            graph.update_live_parameter(node, "SyncToHost", 1.).unwrap();
+            let mut memo = graph.memo.borrow_mut();
+            memo.begin();
+            let first = graph.source(&Source::Node(node), &input, Overrides::Registered, &mut memo, 0);
+            if wave == 1 || wave == 2 {
+                assert!(first.is_err());
+                assert!(!memo.sources.contains_key(&node));
+            } else if wave == 6 {
+                let first = first.unwrap();
+                let before = lfo_memo_state(&graph, node, &input);
+                memo.sources.clear();
+                let original = graph.source(&Source::Node(node), &input, Overrides::Registered, &mut memo, 0).unwrap();
+                assert_eq!((first.0.to_bits(), first.1), (original.0.to_bits(), original.1));
+                assert_eq!(before, lfo_memo_state(&graph, node, &input));
+            } else {
+                assert!(first.unwrap().0.is_finite());
+                assert!(!memo.sources.contains_key(&node));
+                assert!(graph.source(&Source::Node(node), &input, Overrides::Registered, &mut memo, 0).is_err());
+            }
+        }
+    }
+    #[test]
+    fn lfo_memo_declines_f64_signed_zero_frequency_transition() {
+        let p = lfo_memo_fixture(0);
+        let node = p.nodes.iter().position(|n| n.kind == "LFO").unwrap();
+        let mut graph = ModulationGraph::new(&p).unwrap();
+        graph.update_live_parameter(node, "Freq", 0.).unwrap();
+        let input = Inputs { voice: Some(1), instance: Some(1), ..Inputs::default() };
+        graph.lfo_clocks.borrow_mut().insert((node, input.voice, input.instance),
+            LfoClock { time: 0., frequency: -0., phase: -0. });
+        let mut memo = graph.memo.borrow_mut();
+        memo.begin();
+        let first = graph.source(&Source::Node(node), &input, Overrides::Registered, &mut memo, 0).unwrap();
+        assert_eq!(first.0.to_bits(), (-0f64).to_bits());
+        assert!(!memo.sources.contains_key(&node));
+        let second = graph.source(&Source::Node(node), &input, Overrides::Registered, &mut memo, 0).unwrap();
+        assert_eq!(second.0.to_bits(), 0f64.to_bits());
+        let third = graph.source(&Source::Node(node), &input, Overrides::Registered, &mut memo, 0).unwrap();
+        assert_eq!(third.0.to_bits(), second.0.to_bits());
     }
     #[test]
     fn source_memo_resets_between_same_frame_voices_inputs_and_live_writes() {
