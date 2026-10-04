@@ -88,6 +88,7 @@ they do not establish this preset's connected graph or its control timing.
 Connected modulation, full host lifecycle, larger channel counts through the
 outer wrapper, other rates/tempos and whole-program audio remain unverified.
 All four actual Bartok Flanger inserts therefore remain preflight blockers.
+
 ## Active-input validation follow-up
 
 Later source validates the complete active frame input before selecting controls
