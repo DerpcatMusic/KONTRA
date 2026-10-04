@@ -5,7 +5,8 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
 use std::io::{self, Cursor};
 use symphonia::core::{
-    audio::SampleBuffer,
+    audio::{AudioBufferRef, SampleBuffer, Signal},
+    conv::FromSample,
     codecs::DecoderOptions,
     errors::Error as AudioError,
     formats::FormatOptions,
@@ -608,6 +609,22 @@ pub fn decode(bytes: &[u8]) -> Result<Sample> {
             decoded.capacity() <= MEMORY_LIMIT / channels / size_of::<f32>(),
             "Audio packet exceeds memory limit"
         );
+        if channels == 1 && let AudioBufferRef::S32(samples) = &decoded {
+            // This is the same scalar conversion used by SampleBuffer. A mono
+            // source already has interleaved order, so append it directly.
+            let samples = samples.chan(0);
+            ensure!(
+                samples.len() <= count - interleaved.len(),
+                "Decoded more frames than declared"
+            );
+            let start = interleaved.len();
+            interleaved.extend(samples.iter().map(|&sample| f32::from_sample(sample)));
+            ensure!(
+                interleaved[start..].iter().all(|sample| sample.is_finite()),
+                "Nonfinite audio sample"
+            );
+            continue;
+        }
         // SampleBuffer capacity is measured in interleaved scalars. The
         // dimensions and packet bound above also bound every replacement.
         let buffer = buffer
@@ -997,6 +1014,57 @@ mod tests {
                 .to_string()
                 .contains("memory limit")
         );
+    }
+
+    #[test]
+    fn mono_integer_packets_preserve_rounding_and_partial_tail() {
+        for bits in [24, 32] {
+            let mut output = Cursor::new(Vec::new());
+            let mut expected = Vec::new();
+            {
+                let mut writer = hound::WavWriter::new(
+                    &mut output,
+                    hound::WavSpec {
+                        channels: 1,
+                        sample_rate: 48000,
+                        bits_per_sample: bits,
+                        sample_format: hound::SampleFormat::Int,
+                    },
+                )
+                .unwrap();
+                let values = if bits == 24 {
+                    [-(1 << 23), (1 << 23) - 1, -1, 0, 1, 1234567, -7654321]
+                } else {
+                    [i32::MIN, i32::MAX, -1, 0, 1, 1_234_567_891, -1_987_654_321]
+                };
+                for frame in 0..10007 {
+                    let value = values[frame % values.len()];
+                    expected.push(value as f32 / 2f32.powi(i32::from(bits) - 1));
+                    writer.write_sample(value).unwrap();
+                }
+                writer.finalize().unwrap();
+            }
+            let mut bytes = output.into_inner();
+            if bytes.len() % 2 != 0 {
+                bytes.push(0);
+                let extent = (bytes.len() - 8) as u32;
+                bytes[4..8].copy_from_slice(&extent.to_le_bytes());
+            }
+            let decoded = decode(&bytes).unwrap();
+            assert_eq!(
+                (decoded.rate, decoded.channels, decoded.frames),
+                (48000, 1, 10007)
+            );
+            assert_eq!(decoded.interleaved.len(), expected.len());
+            assert!(
+                decoded
+                    .interleaved
+                    .iter()
+                    .zip(expected)
+                    .all(|(a, b)| a.to_bits() == b.to_bits())
+            );
+            assert!(decode(&bytes[..bytes.len() - 1]).is_err());
+        }
     }
 
     #[test]
