@@ -7,7 +7,7 @@ The newer framework integration had lost KONTRA's `c96ad3a` X11 visibility
 behavior. The vendored native baseview retains the child while discarding its
 former parent ancestry and refreshes cached visibility when reparented to root.
 The application's MUI source patch consumes this baseview through its existing
-local mui-baseview host. Its sibling xim-rs path dependencies are included with
+local kontra-native-host. Its sibling xim-rs path dependencies are included with
 upstream licenses and provenance. The generated baseview library lock is ignored;
 the application Cargo.lock remains authoritative for the plugin.
 
@@ -35,16 +35,42 @@ pass; restoring the old reveal rule makes the oversized-row case fail while
 the ordinary/boundary cases pass. Rustfmt parses the updated browser using the
 2024 edition, and the staged diff passes whitespace checks. A full plugin
 build, GPU pixel test, real host interaction and Mac/Windows testing were not
-performed during this focused change.
+performed during the initial visibility/reveal stage. The subsequent shared
+bridge migration passed the full plugin all-targets/standalone cargo check,
+21 headless custom-host tests, and both ignored native tests under Xvfb with
+software GL. Those prove presentation/replacement and lifecycle, not pixel
+readback or real DAW/macOS/Windows runtime behavior.
+
+## Shared accessibility and IME bridge
+
+The custom host is now named `kontra-native-host`; the upstream mui-baseview
+patch is removed. moose-mui keeps its stable dependency alias and `window`
+re-export, while the custom host consumes upstream NativeAccessibility,
+AccessibilityUi and IME helpers at the existing pinned MUI revision.
+Duplicated provider actions, semantic translation and X11 bounds code are
+removed. Apply/prepare run under the model lock; native bounds, focus and
+publication run outside it. The native-first pair is dropped on WillClose
+before model access and before the adapter's WindowContext is destroyed.
+Upstream's thread-confined native endpoint and post-drop invalidation apply.
+Compile assertions verify native !Send/!Sync and portable Send. Native
+wheel/pointer hooks, parent-dialog cancellation, diagnostics and reentrant-event
+queue remain local. IME helpers scale geometry exactly once; the local code
+only converts physical values to baseview's representation.
+
+Run the custom host's headless tests with:
+
+```sh
+cargo test --locked -p kontra-native-host --lib
+WGPU_BACKEND=gl LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a \
+  cargo test --locked -p kontra-native-host --lib -- --ignored --test-threads=1
+```
+
+The ignored lifecycle test uses the production adapter builder and closes it
+twice before show, checking provider attachment, model release and native
+parent callbacks. The separate ignored surface test covers software-GL present,
+surface replacement and reopening, including parent mapping order.
 
 ## Further framework reuse
-
-Upstream NativeAccessibility/AccessibilityUi and native IME helpers can replace
-local bridge duplication after giving the custom host a distinct package name:
-the current local `mui-baseview` patch shadows the upstream package supplying
-those APIs. Preserve native wheel/pointer hooks, parent-dialog cancellation and
-bounded capture, and validate lock release before provider publication and
-window-thread teardown. A rename alone does not complete that migration.
 
 ListState/variable_list can replace browser height indexing and spacers, but
 requires permanent unique row IDs, retained model state and a deliberate

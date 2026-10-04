@@ -1874,6 +1874,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "kontra-native-host"
+version = "0.4.0"
+dependencies = [
+ "arboard",
+ "keyboard-types",
+ "moose-baseview 0.3.4-moose.1",
+ "mui",
+ "mui-baseview",
+ "objc",
+ "raw-window-handle",
+ "static_assertions",
+ "wgpu 30.0.1",
+ "x11-dl",
+ "x11rb",
+]
+
+[[package]]
 name = "kurbo"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2256,11 +2273,11 @@ name = "moose-mui"
 version = "7.0.0"
 dependencies = [
  "keyboard-types",
+ "kontra-native-host",
  "moose",
  "moose-core",
  "moose-params",
  "mui",
- "mui-baseview",
  "raw-window-handle",
 ]
 
@@ -2368,6 +2385,7 @@ dependencies = [
 [[package]]
 name = "mui-baseview"
 version = "0.4.0"
+source = "git+https://github.com/Matari-Audio/MUI#822b1922ad1872aaee15b371a31410b0f3580b88"
 dependencies = [
  "accesskit_macos",
  "accesskit_unix",

@@ -12,7 +12,17 @@ The Unix provider joins generation-owned workers on teardown. On macOS,
 the native provider uses runtime class names that coexist with other Matari
 plugins loaded by the same host. Its Git revision
 matches the other MUI packages in `Cargo.lock`. The combined accessibility
-adapter remains the existing KONTRA implementation.
+adapter now uses upstream `NativeAccessibility` and `AccessibilityUi` through
+the distinct `kontra-native-host` package. It does not override upstream
+`mui-baseview`; provider/action/X11 bounds implementation is shared instead of
+copied. The native endpoint stays on the window thread, portable actions/tree
+preparation run under the model lock, and provider publication happens after
+release. `WillClose` drops the native-first endpoint pair before model access;
+the window adapter also drops Handler before its WindowContext.
+
+Native IME event and geometry conversions use upstream public helpers. The
+local code only converts the resulting physical geometry into baseview's
+representation. `Driver::ui_scale()` is applied once, preserving Unicode ranges.
 
 Linux picker parenting snapshots the live X11 window before the first frame
 and clears it before native close, outside the UI model lock. The local
