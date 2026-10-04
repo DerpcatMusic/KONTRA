@@ -134,7 +134,8 @@ fn member_read_contract(header: &super::ufs::Header, members: &[&super::ufs::Mem
     Ok(h.finalize().into())
 }
 
-fn plan(lib: &Library, loaded: &LoadedProgram) -> Result<Vec<Alias>> {
+fn plan(lib: &Library, loaded: &LoadedProgram, stop: Option<&AtomicBool>) -> Result<Vec<Alias>> {
+    sample::check_cancel(stop)?;
     let mut seen = HashSet::new();
     let mut identities = HashMap::new();
     let mut aliases = Vec::new();
@@ -142,6 +143,7 @@ fn plan(lib: &Library, loaded: &LoadedProgram) -> Result<Vec<Alias>> {
     let paths = library::initial_paths(loaded);
     ensure!(!paths.is_empty() && paths.len() <= 65536, "Optional cache path bound");
     for (path, image) in paths {
+        sample::check_cancel(stop)?;
         ensure!(!image, "Image/wavetable import uses the original loader");
         if !seen.insert(path) {
             continue;
@@ -505,7 +507,7 @@ pub(crate) fn load(
     let enabled = cache_path.is_some();
     let prepared = (|| -> Result<_> {
         let path = cache_path.context("Cache disabled")?;
-        let aliases = plan(lib, loaded)?;
+        let aliases = plan(lib, loaded, stop)?;
         let bank = bank_hash(bank_path, stop)?;
         Ok((path, aliases, bank))
     })();
@@ -618,11 +620,29 @@ mod tests {
             ).unwrap(), path: "Programs/authored.uvip".into(),
         };
         assert_eq!(library::initial_paths(&loaded), vec![("/Samples/tone.wav", false)]);
+        // Directly exercise optional planning: a pre-existing stop wins before
+        // even an invalid alias is resolved; None/false retain the real failure.
+        let missing = LoadedProgram {
+            program: super::super::program::parse_program(
+                r#"<Program><Effects><Convolver SamplePath="/Samples/missing.wav"/></Effects></Program>"#
+            ).unwrap(), path: loaded.path.clone(),
+        };
+        let baseline_error = plan(&lib, &missing, None).err().expect("missing alias");
+        assert!(!baseline_error.is::<sample::LoadCancelled>());
+        let stop = AtomicBool::new(false);
+        let running_error = plan(&lib, &missing, Some(&stop)).err().expect("missing alias");
+        assert_eq!(format!("{running_error:#}"), format!("{baseline_error:#}"));
+        stop.store(true, Ordering::Relaxed);
+        let cancelled = plan(&lib, &missing, Some(&stop)).err().expect("stopped plan");
+        assert!(cancelled.is::<sample::LoadCancelled>());
+        let cancelled = plan(&lib, &loaded, Some(&stop)).err().expect("stopped valid plan");
+        assert!(cancelled.is::<sample::LoadCancelled>());
+
         let bank_digest = bank_hash(&bank_path, None).unwrap();
         let first = lib.samples(&loaded).unwrap();
         let first_bits = first["/Samples/tone.wav"].interleaved.iter().map(f32::to_bits).collect::<Vec<_>>();
         assert_eq!(first_bits[0], 0.25f32.to_bits());
-        let first_plan = plan(&lib, &loaded).unwrap();
+        let first_plan = plan(&lib, &loaded, None).unwrap();
         write(&cache_path, &lib, &loaded, bank_digest, first_plan, &first, None).unwrap();
         assert!(cache_path.is_file());
         let (_, initial_hit) = load(&lib, &loaded, &bank_path, Some(&cache_path), &mut |_,_,_,_,_|{}, None).unwrap();
