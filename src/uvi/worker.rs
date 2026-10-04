@@ -469,6 +469,8 @@ struct Details {
     resource_activity: ResourceActivity,
     activity_cache: Option<(Instant, &'static str, Status, usize, Arc<WorkerLoadActivity>)>,
     failure: Option<Arc<str>>,
+    load_id: Option<Arc<str>>,
+    load_stage: &'static str,
     lua_failure: Option<Arc<super::lua_failure::Context>>,
     phase: &'static str,
     phase_frame: u64,
@@ -675,6 +677,8 @@ impl Worker {
             .spawn(move || {
                 let initialized = Instant::now();
                 let mut trace = crate::diagnostics::LoadTrace::new(&config.bank, 0, None);
+                let load_id = Arc::from(trace.load_id());
+                worker_shared.details.lock().unwrap_or_else(|p| p.into_inner()).load_id = Some(load_id);
                 trace.detail("backend", "native_uvi");
                 trace.detail("member", config.member.clone());
                 trace.detail("epoch", epoch);
@@ -711,6 +715,7 @@ impl Worker {
                         .details
                         .lock()
                         .unwrap_or_else(|p| p.into_inner());
+                    details.load_stage = trace.current_stage();
                     details.initialization.finish(if failure.is_some() {
                         "failed"
                     } else {
@@ -782,6 +787,12 @@ impl Worker {
             .failure
             .clone();
         failure.map(|reason| reason.to_string())
+    }
+    /// Loader terminal association only: retain scalars and the exact trace ID.
+    /// No journal/report serialization or copied failure text under Details.
+    pub(crate) fn private_failure_context(&self) -> (Option<Arc<str>>, &'static str, &'static str, u64) {
+        let details = self.shared.details.lock().unwrap_or_else(|p| p.into_inner());
+        (details.load_id.clone(), details.load_stage, details.phase, details.phase_frame)
     }
     pub(crate) fn private_lua_failure(&self) -> Option<Arc<super::lua_failure::Context>> {
         self.shared.details.lock().unwrap_or_else(|p| p.into_inner()).lua_failure.clone()
@@ -1750,6 +1761,7 @@ fn run(
         .finish("ready");
     phase(shared, "serve", 0);
     trace.stage("uvi_serve");
+    shared.details.lock().unwrap_or_else(|p| p.into_inner()).load_stage = trace.current_stage();
     shared.status.store(Status::Ready as u8, Ordering::Release);
     serve(&mut player, shared, config.sample_rate)
         .map_err(|error| retain_lua_failure(shared, error, &loaded.program))
@@ -1775,6 +1787,7 @@ fn initialization_stage(
         details.initialization.stage(phase);
     }
     trace.stage(name);
+    shared.details.lock().unwrap_or_else(|p| p.into_inner()).load_stage = trace.current_stage();
 }
 
 fn phase(shared: &Shared, name: &'static str, frame: u64) {
@@ -2254,16 +2267,80 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn early_transport_abort_retains_serve_stage_without_final_report() {
+        let worker = Worker { shared: Arc::new(Shared::new(7, 11)), thread: None,
+            cursor: Some(PacketCursor::default()) };
+        let mut trace = crate::diagnostics::LoadTrace::new(std::path::Path::new("authored-context-bank.ufs"), 0, None);
+        initialization_stage(&worker.shared, &mut trace, "uvi_preflight");
+        assert_eq!(worker.private_failure_context().1, "uvi_preflight");
+        trace.stage("uvi_serve");
+        {
+            let mut details = worker.shared.details.lock().unwrap();
+            details.load_id = Some(Arc::from(trace.load_id()));
+            details.load_stage = trace.current_stage();
+        }
+        phase(&worker.shared, "packet_render", 256);
+        // Authored equivalent of an early transport abort; no Player/acknowledgement is executed.
+        worker.shared.status.store(Status::Failed as u8, Ordering::Release);
+        let (id, stage, phase, frame) = worker.private_failure_context();
+        assert_eq!(id.as_deref(), Some(trace.load_id()));
+        assert_eq!((stage, phase, frame), ("uvi_serve", "packet_render", 256));
+        assert!(worker.shared.details.lock().unwrap().load_report.is_none());
+        trace.finish("failed");
+    }
+
+    #[test]
+    fn terminal_context_retains_exact_trace_identity_before_final_report() {
+        let mut identities = Vec::new();
+        for generation in [11, 12] {
+            let mut trace = crate::diagnostics::LoadTrace::new(std::path::Path::new("authored-context-bank.ufs"), 0, None);
+            trace.stage("uvi_preflight");
+            let id: Arc<str> = Arc::from(trace.load_id());
+            let worker = Worker { shared: Arc::new(Shared::new(7, generation)), thread: None,
+                cursor: Some(PacketCursor::default()) };
+            {
+                let mut details = worker.shared.details.lock().unwrap();
+                details.load_id = Some(id.clone());
+                details.load_stage = trace.current_stage();
+                details.phase = "preflight";
+                details.phase_frame = 0;
+            }
+            finish(&worker.shared, Some("authored preflight cause".into()));
+            let mut context = None;
+            assert_eq!(crate::test_support::allocations(|| context = Some(worker.private_failure_context())), 0);
+            let (actual, stage, phase, frame) = context.unwrap();
+            assert!(Arc::ptr_eq(actual.as_ref().unwrap(), &id));
+            let metadata = serde_json::json!({"path":"authored-context-bank.ufs", "member":"authored.uvip",
+                "epoch":worker.shared.stamp.epoch,"generation":worker.shared.stamp.generation,
+                "load_id":actual.as_deref(),"stage":stage,"phase":phase,"frame":frame});
+            assert_eq!(metadata["load_id"], trace.load_id());
+            assert_eq!(metadata["generation"], generation);
+            assert_eq!(metadata["stage"], "uvi_preflight");
+            assert_eq!(metadata["phase"], "preflight");
+            assert!(worker.shared.details.lock().unwrap().load_report.is_none());
+            identities.push(id);
+            trace.finish("failed");
+        }
+        assert_ne!(identities[0], identities[1], "same bank, separate activation traces are never associated by reason");
+    }
+
+    #[test]
     fn diagnostic_report_retains_decoded_graph_when_unknown_node_fails_preflight() {
         let (config, _) = authored_bank_with_script(
             "]]></script></ScriptProcessor><UnsupportedDiagnosticNode/><ScriptProcessor><script><![CDATA[",
         );
         let path = config.bank.clone();
-        let worker = Worker::start(config, 7, 11).unwrap();
+        let mut worker = Worker::start(config, 7, 11).unwrap();
         assert!(worker.wait_ready(Duration::from_secs(3)).is_err());
+        // Failed is published before journal/report completion; join before inspecting that final report.
+        worker.stop();
         let report = worker.diagnostic_report();
         assert_eq!(report["status"], "failed");
         assert_eq!(report["phase"], "preflight");
+        let (load_id, stage, phase, frame) = worker.private_failure_context();
+        assert_eq!((stage, phase, frame), ("uvi_preflight", "preflight", 0));
+        assert_eq!(load_id.as_deref(), report["load_trace"]["load_id"].as_str());
+        assert!(report["failure"].as_str().unwrap().len() < 4096);
         assert_eq!(report["program"]["parsed"], true);
         assert_eq!(report["program"]["preflight_admitted"], false);
         assert!(

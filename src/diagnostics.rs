@@ -1543,6 +1543,12 @@ impl LoadTrace {
         }
         this
     }
+    /// Borrowed identity assigned by this trace; no report or graph copy.
+    pub(crate) fn load_id(&self) -> &str {
+        self.report["load_id"].as_str().expect("LoadTrace owns its assigned load identity")
+    }
+    /// Actual trace stage, including a transition that ended before failure.
+    pub(crate) fn current_stage(&self) -> &'static str { self.stage }
     fn record(&mut self, event: &str, data: Value) {
         let stage = data["stage"].as_str().unwrap_or(self.stage);
         let module = match stage {

@@ -61,10 +61,43 @@ impl<'a> ProgramPreflight<'a> {
         ensure!(
             self.unsupported.is_empty(),
             "Native UVI graph preflight failed: {}",
-            serde_json::to_string(&self.unsupported)?
+            preflight_failure_summary(&self.unsupported)
         );
         Ok(())
     }
+}
+
+// Human summary only. Existing structured node causes remain authoritative;
+// control construction stops at its first error, so these are known rejections.
+fn preflight_failure_summary(rejected: &[Unsupported]) -> String {
+    use std::fmt::Write;
+    const KINDS: usize = 12;
+    let brief = |text: &str, limit: usize| {
+        let mut chars = text.chars();
+        let mut text: String = chars.by_ref().take(limit)
+            .map(|c| if c.is_control() { ' ' } else { c }).collect();
+        if chars.next().is_some() { text.push('…'); }
+        text
+    };
+    let mut nodes = HashSet::new();
+    let mut kinds: BTreeMap<&str, HashSet<NodeId>> = BTreeMap::new();
+    for rejection in rejected {
+        nodes.insert(rejection.node);
+        kinds.entry(&rejection.kind).or_default().insert(rejection.node);
+    }
+    let mut text = format!("{} known rejected graph nodes; {} rejection records; scope: per-node checks and first control-graph construction failure. Kinds (unique nodes per kind): ",
+        nodes.len(), rejected.len());
+    for (index, (kind, nodes)) in kinds.iter().take(KINDS).enumerate() {
+        if index != 0 { text.push_str(", "); }
+        let _ = write!(text, "{}={}", brief(kind, 32), nodes.len());
+    }
+    if kinds.len() > KINDS { let _ = write!(text, "; {} more kinds", kinds.len() - KINDS); }
+    if let Some(first) = rejected.first() {
+        let _ = write!(text, ". First listed rejection: node {} {}: {}", first.node,
+            brief(&first.kind, 32), brief(&first.reason, 160));
+    }
+    text.push_str(". Full node causes are available in structured graph diagnostics.");
+    text
 }
 
 fn wrapper(kind: &str) -> bool {
@@ -3625,11 +3658,35 @@ mod tests {
         assert!(blocked[0].reason.contains("Unsupported UVI control source"));
     }
     #[test]
+    fn preflight_summary_is_bounded_deterministic_and_does_not_serialize_node_causes() {
+        let rejected = (0..512).map(|index| Unsupported {
+            node: index % 256,
+            kind: if index % 2 == 0 { "CombFilter" } else { "MS20" }.into(),
+            reason: "authored 🧪 cause\n".repeat(80),
+        }).collect::<Vec<_>>();
+        let before = serde_json::to_value(&rejected).unwrap();
+        let summary = preflight_failure_summary(&rejected);
+        assert!(summary.starts_with("256 known rejected graph nodes; 512 rejection records;"));
+        assert!(summary.contains("CombFilter=128, MS20=128"));
+        assert!(summary.contains("First listed rejection: node 0 CombFilter: authored 🧪 cause"));
+        assert!(summary.contains("first control-graph construction failure"));
+        assert!(summary.len() < 1024 && !summary.contains('\n') && !summary.contains("\"reason\":"));
+        assert_eq!(summary, preflight_failure_summary(&rejected));
+        assert_eq!(serde_json::to_value(&rejected).unwrap(), before);
+        let many_kinds = (0..15).map(|index| Unsupported { node: index,
+            kind: format!("{index:02}{}", "🧪".repeat(100)),
+            reason: "🧪".repeat(1000) }).collect::<Vec<_>>();
+        let summary = preflight_failure_summary(&many_kinds);
+        assert!(summary.contains("3 more kinds") && summary.len() < 4096);
+        assert!(summary.contains('…'));
+    }
+
+    #[test]
     fn reused_program_preflight_keeps_rejections_and_runtime_admission() {
         let rejected = parse_program("<Program><Inserts><UnknownFX/></Inserts></Program>").unwrap();
         let preflighted = ProgramPreflight::new(&rejected);
         let expected = format!("Native UVI graph preflight failed: {}",
-            serde_json::to_string(&preflight(&rejected)).unwrap());
+            preflight_failure_summary(&preflight(&rejected)));
         assert_eq!(preflighted.validate().unwrap_err().to_string(), expected);
         assert_eq!(Renderer::new_preflighted(&preflighted, HashMap::new(), 48000)
             .err().unwrap().to_string(), expected);

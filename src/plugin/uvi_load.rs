@@ -129,10 +129,12 @@ pub(super) fn prepare_uvi(params: &SamplerParams, selection: &Selection) {
         (display, failed, p.generation, ui)
     };
     if let Some(worker) = &failed {
+        let (load_id, stage, phase, frame) = worker.private_failure_context();
         crate::diagnostics::event(crate::diagnostics::LogLevel::Error, "uvi", "uvi_staging_failed",
             serde_json::json!({"path":key.request.source.bank, "member":key.request.source.member,
                 "slot":key.request.slot, "epoch":key.epoch, "generation":generation,
                 "reason":worker.private_failure(),
+                "load_id":load_id.as_deref(), "stage":stage, "phase":phase, "frame":frame,
                 "worker":{"lua_failure":worker.private_lua_failure().map(|context|context.metadata())}}));
     }
     drop(failed);
