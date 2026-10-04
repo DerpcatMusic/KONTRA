@@ -180,6 +180,8 @@ struct Connection {
     node: NodeId,
     // Bound after all parameter slots exist; named live writes keep slots stable.
     ratio_slot: usize,
+    bypass_slot: usize,
+    inverted_slot: usize,
     source: Source,
     mapper: Option<NodeId>,
 }
@@ -1987,6 +1989,8 @@ impl ModulationGraph {
                     mode: c.mode,
                     node: c.node,
                     ratio_slot: 0, // Bound before the completed graph is returned.
+                    bypass_slot: 0,
+                    inverted_slot: 0,
                     source,
                     mapper,
                 });
@@ -2125,10 +2129,12 @@ impl ModulationGraph {
                 graph.parameter_values.push(cached);
             }
         }
-        // Every connection's Ratio key was included above, even if XML omitted
-        // the default. Resolve it once instead of hashing its name per edge/frame.
+        // Every connection's Ratio, Bypass and Inverted records were included
+        // above, even if XML omitted their defaults. Bind their stable slots once.
         for connection in graph.connections.values_mut().flatten() {
             connection.ratio_slot = graph.cached_parameters[connection.node]["Ratio"];
+            connection.bypass_slot = graph.cached_parameters[connection.node]["Bypass"];
+            connection.inverted_slot = graph.cached_parameters[connection.node]["Inverted"];
         }
         for cached in &mut graph.parameter_values {
             cached.edges = graph.connections.get(&cached.key).cloned().unwrap_or_default();
@@ -2876,7 +2882,13 @@ impl ModulationGraph {
             .map(|&slot| &self.parameter_values[slot])
     }
     fn setting(&self, node: NodeId, name: &str, default: f64, live: Overrides<'_>) -> Result<f64> {
-        if let Some(cached) = self.cached_parameter(node, name) {
+        self.setting_cached(node, name, default, live, self.cached_parameter(node, name))
+    }
+    fn setting_cached(
+        &self, node: NodeId, name: &str, default: f64, live: Overrides<'_>,
+        cached: Option<&CachedParameter>,
+    ) -> Result<f64> {
+        if let Some(cached) = cached {
             let override_value = match live {
                 Overrides::External(live) => live.get(&cached.key).copied(),
                 Overrides::Registered => cached.override_value,
@@ -2905,7 +2917,14 @@ impl ModulationGraph {
         default: bool,
         live: Overrides<'_>,
     ) -> Result<bool> {
-        let value = self.setting(node, name, f64::from(default), live)?;
+        self.boolean_cached(node, name, default, live, self.cached_parameter(node, name))
+    }
+    // Boolean settings use scalar overrides/defaults, not recursive value_cached.
+    fn boolean_cached(
+        &self, node: NodeId, name: &str, default: bool, live: Overrides<'_>,
+        cached: Option<&CachedParameter>,
+    ) -> Result<bool> {
+        let value = self.setting_cached(node, name, f64::from(default), live, cached)?;
         ensure!(
             value == 0. || value == 1.,
             "Invalid live UVI modulation Boolean {name}"
@@ -3060,13 +3079,13 @@ impl ModulationGraph {
                         if c.mode != 0 {
                             continue;
                         }
-                        if self.boolean(c.node, "Bypass", false, live)? {
+                        if self.boolean_cached(c.node, "Bypass", false, live, Some(&self.parameter_values[c.bypass_slot]))? {
                             continue;
                         }
                         let cached_ratio = &self.parameter_values[c.ratio_slot];
                         let ratio = self.value_cached(&cached_ratio.key, Some(cached_ratio), input, live, memo, depth + 1)?;
                         let (mut source, bipolar) = self.source(&c.source, input, live, memo, depth + 1)?;
-                        if self.boolean(c.node, "Inverted", false, live)? {
+                        if self.boolean_cached(c.node, "Inverted", false, live, Some(&self.parameter_values[c.inverted_slot]))? {
                             source = if bipolar { -source } else { 1. - source };
                         }
                         if let Some(id) = c.mapper {
@@ -3174,13 +3193,13 @@ impl ModulationGraph {
             if c.mode != 0 {
                 continue;
             }
-            if self.boolean(c.node, "Bypass", false, live)? {
+            if self.boolean_cached(c.node, "Bypass", false, live, Some(&self.parameter_values[c.bypass_slot]))? {
                 continue;
             }
             let cached_ratio = &self.parameter_values[c.ratio_slot];
             let ratio = self.value_cached(&cached_ratio.key, Some(cached_ratio), input, live, memo, depth + 1)?;
             let (mut value, bipolar) = self.source(&c.source, input, live, memo, depth + 1)?;
-            if self.boolean(c.node, "Inverted", false, live)? {
+            if self.boolean_cached(c.node, "Inverted", false, live, Some(&self.parameter_values[c.inverted_slot]))? {
                 value = if bipolar { -value } else { 1. - value };
             }
             if let Some(id) = c.mapper {
@@ -5138,6 +5157,217 @@ mod tests {
         let b = evaluate(&mut reference, &input, &nodes);
         assert_eq!(a, b);
         assert!(a.unwrap_err().contains("Unverified UVI modulation target conversion"));
+    }
+
+    // Frozen original scalar-setting lookup, independent of the new helper.
+    fn legacy_connection_setting(
+        graph: &ModulationGraph, node: NodeId, name: &str, default: f64, live: Overrides<'_>,
+    ) -> Result<f64> {
+        if let Some(cached) = graph.cached_parameter(node, name) {
+            let value = match live {
+                Overrides::External(values) => values.get(&cached.key).copied(),
+                Overrides::Registered => cached.override_value,
+            };
+            if let Some(value) = value { return Ok(value); }
+            if let Some(value) = cached.number { return Ok(value); }
+        } else if let Overrides::External(values) = live {
+            if let Some((_, value)) = values.iter().find(|((id, parameter), _)| *id == node && parameter == name) {
+                return Ok(*value);
+            }
+        }
+        number(&graph.bases[node], name, default)
+    }
+    fn legacy_connection_boolean(
+        graph: &ModulationGraph, node: NodeId, name: &str, default: bool, live: Overrides<'_>,
+    ) -> Result<bool> {
+        let value = legacy_connection_setting(graph, node, name, f64::from(default), live)?;
+        ensure!(value == 0. || value == 1., "Invalid live UVI modulation Boolean {name}");
+        Ok(value == 1.)
+    }
+    fn connection_setting_fixture(destination: &str, mode: u32) -> Program {
+        parse_program(&format!(r#"<Program><ControlSignalSources>
+            <ConstantModulation Name="Src" Value=".25"/></ControlSignalSources>
+            <Layers><Layer><Keygroups><Keygroup><Oscillators>
+            <SamplePlayer SamplePath="authored.wav" Gain="1" Pitch="3"><Connections>
+            <SignalConnection Source="$Program/Src" Destination="{destination}" Ratio=".5"
+                ConnectionMode="{mode}" SignalConnectionVersion="1"/>
+            </Connections></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#)).unwrap()
+    }
+    #[test]
+    fn bound_connection_setting_slots_match_legacy_scalar_bits_and_errors() {
+        #[allow(dead_code)]
+        struct LegacyConnection {
+            mode: u32, node: NodeId, ratio_slot: usize, source: Source, mapper: Option<NodeId>,
+        }
+        let old = std::mem::size_of::<LegacyConnection>();
+        let new = std::mem::size_of::<Connection>();
+        eprintln!("connection_inline_bytes bound={new} legacy={old} two_copy_delta={}",
+            2 * (new as i128 - old as i128));
+        for name in ["Bypass", "Inverted"] {
+            for text in [None, Some("0"), Some("-0"), Some("1"), Some(".5"), Some("bad"), Some("NaN"), Some("inf")] {
+                // Malformed cases intentionally exercise the graph boundary
+                // after a valid parse; the Program parser rejects such flags.
+                let mut program = connection_setting_fixture("Gain", 0);
+                let edge = program.connections[0].node;
+                if let Some(text) = text { program.nodes[edge].attributes.insert(name.into(), text.into()); }
+                for override_value in [None, Some(-0.), Some(0.), Some(1.), Some(0.5)] {
+                    let mut graph = ModulationGraph::new(&program).unwrap();
+                    let connection = &graph.cached_parameter(program.sample_zones[0].player, "Gain").unwrap().edges[0];
+                    let slot = if name == "Bypass" { connection.bypass_slot } else { connection.inverted_slot };
+                    assert_eq!(graph.parameter_values[slot].key, (edge, name.into()));
+                    let mut external = HashMap::new();
+                    if let Some(value) = override_value {
+                        external.insert((edge, name.into()), value);
+                        graph.update_live_parameter(edge, name, value).unwrap();
+                    }
+                    // Appending an unrelated field must not move these bindings.
+                    graph.update_live_parameter(edge, "AuthoredLater", 7.).unwrap();
+                    assert_eq!(graph.cached_parameters[edge][name], slot);
+                    for live in [Overrides::External(&external), Overrides::Registered] {
+                        for default in [false, true] {
+                            let cached = Some(&graph.parameter_values[slot]);
+                            let actual = graph.setting_cached(edge, name, f64::from(default), live, cached)
+                                .map(f64::to_bits).map_err(|error| format!("{error:#}"));
+                            let old = legacy_connection_setting(&graph, edge, name, f64::from(default), live)
+                                .map(f64::to_bits).map_err(|error| format!("{error:#}"));
+                            assert_eq!(actual, old, "{name} text={text:?} override={override_value:?}");
+                            assert_eq!(graph.boolean_cached(edge, name, default, live, cached).map_err(|e| format!("{e:#}")),
+                                legacy_connection_boolean(&graph, edge, name, default, live).map_err(|e| format!("{e:#}")));
+                            assert_eq!(graph.boolean(edge, name, default, live).map_err(|e| format!("{e:#}")),
+                                legacy_connection_boolean(&graph, edge, name, default, live).map_err(|e| format!("{e:#}")));
+                        }
+                    }
+                    external.insert((edge, "AbsentPublicField".into()), -0.);
+                    assert!(graph.cached_parameter(edge, "AbsentPublicField").is_none());
+                    assert_eq!(graph.setting(edge, "AbsentPublicField", 3., Overrides::External(&external)).unwrap().to_bits(),
+                        legacy_connection_setting(&graph, edge, "AbsentPublicField", 3., Overrides::External(&external)).unwrap().to_bits());
+                }
+            }
+        }
+    }
+    #[test]
+    fn bound_connection_setting_slots_preserve_source_state_and_failure_order() {
+        fn state(graph: &ModulationGraph) -> BTreeMap<SourceStateKey, (u64, u32, u64, u64, u64, u32, u32, u32)> {
+            graph.constant_clocks.borrow().iter().map(|(key, clock)| (*key,
+                (clock.rate.to_bits(), clock.block_frames, clock.frame, clock.integrated,
+                 clock.point_frame, clock.current.to_bits(), clock.point.to_bits(), clock.target.to_bits())))
+                .collect()
+        }
+        // A one-edge authored procedural reference preserves the original
+        // scalar Boolean/Ratio/source order for Factor and additive targets.
+        fn legacy_result(graph: &ModulationGraph, player: NodeId, name: &str, input: &Inputs) -> Result<f64> {
+            let cached = graph.cached_parameter(player, name).unwrap();
+            let base = graph.absolute_audio_bases.get(&cached.key).copied()
+                .unwrap_or(graph.base_cached(&cached.key, Some(cached), Overrides::Registered)?);
+            let mut memo = graph.memo.borrow_mut();
+            memo.begin();
+            let (mut factor, mut sum) = (1., 0.);
+            for edge in &cached.edges {
+                if edge.mode != 0 { continue; }
+                if legacy_connection_boolean(graph, edge.node, "Bypass", false, Overrides::Registered)? { continue; }
+                let depth = if name == "Gain" { 1 } else { 2 };
+                let ratio = &graph.parameter_values[edge.ratio_slot];
+                let ratio = graph.value_cached(&ratio.key, Some(ratio), input, Overrides::Registered, &mut memo, depth)?;
+                let (mut value, bipolar) = graph.source(&edge.source, input, Overrides::Registered, &mut memo, depth)?;
+                if legacy_connection_boolean(graph, edge.node, "Inverted", false, Overrides::Registered)? {
+                    value = if bipolar { -value } else { 1. - value };
+                }
+                assert!(edge.mapper.is_none());
+                if name == "Gain" {
+                    let value = if bipolar { (value + 1.) * 0.5 } else { value };
+                    let ratio = ratio.clamp(-1., 1.);
+                    factor *= 1. - ratio.max(0.) + ratio * value;
+                } else { sum += ratio * value; }
+            }
+            if name != "Gain" { ensure!(sum.is_finite(), "Nonfinite UVI modulation sum"); }
+            let value = if name == "Gain" { base * factor } else { base + sum };
+            ensure!(value.is_finite(), "Nonfinite UVI modulation result");
+            Ok(value)
+        }
+        for name in ["Gain", "Pitch"] {
+            for (bypass, inverted, ratio, consumes_source) in [
+                (".5", "0", "1", false), ("0", ".5", "1", true),
+                ("1", ".5", "NaN", false), ("0", "0", "NaN", false),
+                ("0", "1", ".5", true), ("-0", "-0", "-.5", true),
+            ] {
+                for warm in [false, true] {
+                    let mut program = connection_setting_fixture(name, 0);
+                    let edge = program.connections[0].node;
+                    for (key, value) in [("Bypass", bypass), ("Inverted", inverted), ("Ratio", ratio)] {
+                        program.nodes[edge].attributes.insert(key.into(), value.into());
+                    }
+                    let player = program.sample_zones[0].player;
+                    let source = program.nodes.iter().position(|node| node.name.as_deref() == Some("Src")).unwrap();
+                    let mut actual = ModulationGraph::new(&program).unwrap();
+                    let mut reference = ModulationGraph::new(&program).unwrap();
+                    let mut input = Inputs { voice: Some(7), instance: Some(9), ..Default::default() };
+                    if warm {
+                        for graph in [&actual, &reference] {
+                            let mut memo = graph.memo.borrow_mut(); memo.begin();
+                            graph.source(&Source::Node(source), &input, Overrides::Registered, &mut memo, 0).unwrap();
+                        }
+                    }
+                    for graph in [&mut actual, &mut reference] { graph.update_live_parameter(source, "Value", 0.75).unwrap(); }
+                    input.time_seconds = 64. / 48000.; input.voice_time_seconds = input.time_seconds;
+                    let a = { let mut memo = actual.memo.borrow_mut(); memo.begin();
+                        actual.value_named(player, name, &input, Overrides::Registered, &mut memo, 0) }
+                        .map(f64::to_bits).map_err(|e| format!("{e:#}"));
+                    let b = legacy_result(&reference, player, name, &input)
+                        .map(f64::to_bits).map_err(|e| format!("{e:#}"));
+                    assert_eq!(a, b, "{name} bypass={bypass} inverted={inverted} ratio={ratio} warm={warm}");
+                    assert_eq!(state(&actual), state(&reference));
+                    let clocks = actual.constant_clocks.borrow();
+                    if consumes_source { assert_eq!(clocks[&(source, Some(7), Some(9))].frame, 64); }
+                    else if warm { assert_eq!(clocks[&(source, Some(7), Some(9))].frame, 0); }
+                    else { assert!(clocks.is_empty()); }
+                }
+            }
+            if name == "Gain" {
+                // Mode1-only target evaluation still ignores invalid relative-path
+                // controls; this test does not publish/prepare Mode1 producers.
+                let mut program = connection_setting_fixture(name, 1);
+                let edge = program.connections[0].node;
+                program.nodes[edge].attributes.insert("Bypass".into(), ".5".into());
+                program.nodes[edge].attributes.insert("Inverted".into(), ".5".into());
+                let graph = ModulationGraph::new(&program).unwrap();
+                let player = program.sample_zones[0].player;
+                let input = Inputs::default();
+                let actual = { let mut memo = graph.memo.borrow_mut(); memo.begin();
+                    graph.value_named(player, name, &input, Overrides::Registered, &mut memo, 0).unwrap() };
+                assert_eq!(actual.to_bits(), legacy_result(&graph, player, name, &input).unwrap().to_bits());
+                assert!(graph.constant_clocks.borrow().is_empty());
+            }
+        }
+    }
+    #[test]
+    #[ignore = "Synthetic lookup-only probe; run centrally with a declared CPU window"]
+    fn connection_setting_slot_lookup_probe() {
+        use std::{hint::black_box, time::Instant};
+        let program = connection_setting_fixture("Gain", 0);
+        let mut graph = ModulationGraph::new(&program).unwrap();
+        let player = program.sample_zones[0].player;
+        let edge = graph.cached_parameter(player, "Gain").unwrap().edges[0].clone();
+        graph.update_live_parameter(edge.node, "Bypass", 0.).unwrap();
+        graph.update_live_parameter(edge.node, "Inverted", 1.).unwrap();
+        for named in [true, false, false, true] {
+            let start = Instant::now();
+            let mut sum = 0u64;
+            for _ in 0..131072 {
+                let graph = black_box(&graph);
+                for (name, slot) in [("Bypass", edge.bypass_slot), ("Inverted", edge.inverted_slot)] {
+                    let value = if named {
+                        legacy_connection_boolean(graph, edge.node, name, false, Overrides::Registered).unwrap()
+                    } else {
+                        graph.boolean_cached(edge.node, name, false, Overrides::Registered,
+                            Some(&graph.parameter_values[slot])).unwrap()
+                    };
+                    sum = sum.wrapping_add(u64::from(black_box(value)));
+                }
+            }
+            assert_eq!(sum, 131072);
+            eprintln!("synthetic_setting_lookup named={named} queries=262144 elapsed_ns={} checksum={}",
+                start.elapsed().as_nanos(), black_box(sum));
+        }
     }
 
     #[test]
