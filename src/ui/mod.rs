@@ -30,6 +30,8 @@ mod header;
 mod instrument;
 #[cfg(feature = "uvi")]
 mod uvi_instrument;
+#[cfg(feature = "uvi")]
+mod uvi_mapping;
 mod keyboard;
 mod logs;
 mod menu;
@@ -389,6 +391,8 @@ enum Tab {
 struct EditorState {
     #[cfg(feature = "uvi")]
     uvi: HashMap<usize, uvi_instrument::State>,
+    #[cfg(feature = "uvi")]
+    uvi_mapping: HashMap<usize, (crate::uvi::worker::Stamp, uvi_mapping::State)>,
     search: String,
     /// What the browser's lower pane lists; `None` searches every library.
     source: Option<browser::Source>,
@@ -930,6 +934,8 @@ fn build(
     let mut state = EditorState {
         #[cfg(feature = "uvi")]
         uvi: HashMap::new(),
+        #[cfg(feature = "uvi")]
+        uvi_mapping: HashMap::new(),
         search: String::new(),
         source: None,
         pane: None,

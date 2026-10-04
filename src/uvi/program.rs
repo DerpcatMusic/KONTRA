@@ -43,7 +43,7 @@ pub struct SignalConnection {
     pub inverted: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct SampleZone {
     pub player: NodeId,
     pub keygroup: NodeId,

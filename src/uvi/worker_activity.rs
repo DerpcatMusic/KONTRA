@@ -1,6 +1,7 @@
 //! Bounded control/UI loading evidence. Never constructed on the audio thread.
 use super::{Stats, Status};
 use std::time::Duration;
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub struct LoadStage {
@@ -22,6 +23,8 @@ pub struct ResourceActivity {
 
 #[derive(Clone, Debug)]
 pub struct WorkerLoadActivity {
+    /// Initial authored mapping only; sharing its Arc never clones zone data.
+    pub mapping: Option<Arc<super::super::mapping::Inspection>>,
     pub status: Status,
     pub phase: &'static str,
     pub frame: u64,

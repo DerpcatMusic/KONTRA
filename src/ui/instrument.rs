@@ -296,8 +296,10 @@ fn stage_page(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
 /// Groups on the left; the selected group's zones on a key × velocity grid.
 pub fn mapping(ui: &mut Ui, cx: &mut Cx) -> El {
     if cx.part().is_some_and(|part| part.uvi.is_some()) {
-        return native_unavailable("Key and velocity mapping",
-            "Use this instrument’s Rack controls for its supported settings.");
+        #[cfg(feature = "uvi")]
+        return super::uvi_mapping::view(ui, cx);
+        #[cfg(not(feature = "uvi"))]
+        return native_unavailable("Key and velocity mapping", "UVI support is disabled in this version.");
     }
     let instrument = current(cx).cloned();
     let slot = cx.state.selected;
@@ -331,7 +333,40 @@ pub fn mapping(ui: &mut Ui, cx: &mut Cx) -> El {
             )
         })
         .collect();
-    let grid = canvas(move |s| {
+    let grid = mapping_grid(zones, "Selected group key and velocity mapping");
+    row![
+        col(groups)
+            .gap(1)
+            .w(SIDEBAR_MIN)
+            .shrink(0)
+            .min_h(0)
+            .scroll()
+            .id("groups-scroll"),
+        col![
+            grid,
+            row![
+                caption(note_name(0)),
+                spacer(),
+                caption("Key × velocity"),
+                spacer(),
+                caption(note_name(127))
+            ]
+            .shrink(0)
+        ]
+        .gap(SPACE)
+        .flex(1)
+        .min_w(0)
+        .min_h(0)
+    ]
+    .gap(INSET)
+    .pad(INSET)
+    .flex(1)
+    .min_h(0)
+}
+
+/// Shared read-only key × velocity canvas. Each backend owns its range adapter.
+pub(super) fn mapping_grid(zones: Vec<(u8, u8, u8, u8, bool)>, name: &'static str) -> El {
+    canvas(move |s| {
         let mut draw = Vec::new();
         for n in (0..128).step_by(12) {
             draw.push(Draw::fill(
@@ -367,35 +402,8 @@ pub fn mapping(ui: &mut Ui, cx: &mut Cx) -> El {
     .fill(Role::Field)
     .radius(0)
     .clip()
-    .named("Selected group key and velocity mapping");
-    row![
-        col(groups)
-            .gap(1)
-            .w(SIDEBAR_MIN)
-            .shrink(0)
-            .min_h(0)
-            .scroll()
-            .id("groups-scroll"),
-        col![
-            grid,
-            row![
-                caption(note_name(0)),
-                spacer(),
-                caption("Key × velocity"),
-                spacer(),
-                caption(note_name(127))
-            ]
-            .shrink(0)
-        ]
-        .gap(SPACE)
-        .flex(1)
-        .min_w(0)
-        .min_h(0)
-    ]
-    .gap(INSET)
-    .pad(INSET)
-    .flex(1)
-    .min_h(0)
+    .named(name)
+
 }
 
 #[cfg(feature = "uvi")]
@@ -508,7 +516,7 @@ pub fn info(ui: &mut Ui, cx: &mut Cx) -> El {
             caption(format!("Bank: {}", source.bank.display())).fill(secondary()).lines(4),
             caption(format!("Program: {}", source.member)).fill(secondary()).lines(4),
             body(status).lines(3).id("native-instrument-status"),
-            caption("Playback and controls follow this UVI program. Key mapping and the Sound editor are unavailable; use the instrument’s Rack controls.")
+            caption("Playback and controls follow this UVI program. Mapping inspects its initial sample zones without editing; Sound editing is unavailable. Use the instrument’s Rack controls to change its sound.")
                 .fill(secondary()).lines(4)];
         if let Some(report) = &v.load_report {
             if let Some(reason) = report["failure"].as_str().or_else(|| report["failure"]["reason"].as_str()) {

@@ -937,6 +937,26 @@ impl PartView {
         self.uvi_activation.as_ref().is_some_and(|a| a.source == *source
             && (a.epoch, a.generation) == (stamp.epoch, stamp.generation))
     }
+    /// Inspection follows the full loader context before and after audio
+    /// adoption. Endpoint ownership determines readiness, not visibility.
+    #[cfg(feature = "uvi")]
+    pub(crate) fn uvi_mapping_inspection(
+        &self, params: &SamplerParams, slot: usize, selection: &Selection,
+    ) -> Option<(Arc<crate::uvi::mapping::Inspection>, bool)> {
+        let activation = self.uvi_activation.as_ref()?;
+        if !activation.context_matches(params, slot, selection) { return None; }
+        let activity = self.uvi_activity.as_ref()?;
+        let mapping = activity.mapping.as_ref()?;
+        if (mapping.stamp.epoch, mapping.stamp.generation) != (activation.epoch, activation.generation) {
+            return None;
+        }
+        let ready = activity.status == crate::uvi::worker::Status::Ready && activation.published
+            && params.shared.part(slot).is_some_and(|part|
+                part.uvi_generation.load(Ordering::Acquire) == activation.generation
+                && part.uvi_part_generation.load(Ordering::Acquire) == activation.part_generation
+                && !part.uvi_failed.load(Ordering::Acquire));
+        Some((mapping.clone(), ready))
+    }
     #[cfg(feature = "uvi")]
     pub(crate) fn local_lua_failure(
         &self, bank: &Path, member: &str, epoch: u64, generation: u64,
