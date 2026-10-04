@@ -133,7 +133,7 @@ fn resource_with<'a>(
 }
 
 /// A starred filename is an ordered list of synchronized mono channels.
-fn resources<'a>(
+pub(crate) fn resources<'a>(
     directory: &'a Directory,
     program_path: &str,
     path: &str,
