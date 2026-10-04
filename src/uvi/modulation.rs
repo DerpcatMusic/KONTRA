@@ -1311,6 +1311,7 @@ struct AbsoluteClock {
 struct CachedParameter {
     key: Parameter,
     law: TargetLaw,
+    relative: bool,
     number: Option<f64>,
     override_value: Option<f64>,
     slot: usize,
@@ -1710,6 +1711,7 @@ impl ModulationGraph {
                                 CachedParameter {
                                     key: (id, name.clone()),
                                     law: TargetLaw::new(&node.kind, name),
+                                    relative: false,
                                     number: number.is_finite().then_some(number),
                                     override_value: None,
                                     slot: 0,
@@ -2105,6 +2107,7 @@ impl ModulationGraph {
                 .entry(key.1.clone())
                 .or_insert(CachedParameter {
                     law: TargetLaw::new(&graph.kinds[key.0], &key.1),
+                    relative: false,
                     key,
                     number: None,
                     override_value: None,
@@ -2129,6 +2132,7 @@ impl ModulationGraph {
         }
         for cached in &mut graph.parameter_values {
             cached.edges = graph.connections.get(&cached.key).cloned().unwrap_or_default();
+            cached.relative = cached.edges.iter().any(|c| c.mode == 0);
         }
         for (node, targets) in graph.node_targets.iter().enumerate() {
             graph.node_target_slots[node] = targets
@@ -2732,6 +2736,7 @@ impl ModulationGraph {
             self.parameter_values.push(CachedParameter {
                 key: (node, name.into()),
                 law: TargetLaw::new(&self.kinds[node], name),
+                relative: false,
                 number: None,
                 override_value: Some(value),
                 slot,
@@ -3032,7 +3037,7 @@ impl ModulationGraph {
             return Ok(value);
         }
         let edges = cached.map_or(&[][..], |cached| cached.edges.as_slice());
-        let relative = edges.iter().any(|c| c.mode == 0);
+        let relative = cached.is_some_and(|cached| cached.relative);
         let law = cached.map_or(TargetLaw::Unverified, |cached| cached.law);
         ensure!(
             !relative || law != TargetLaw::Unverified,
@@ -5016,6 +5021,125 @@ mod tests {
             .unwrap();
         assert_eq!(emitted, 2);
     }
+    #[test]
+    fn compiled_relative_presence_matches_legacy_scan_bits_state_and_errors() {
+        #[allow(dead_code)]
+        struct LegacyCachedParameter {
+            key: Parameter,
+            law: TargetLaw,
+            number: Option<f64>,
+            override_value: Option<f64>,
+            slot: usize,
+            edges: Vec<Connection>,
+        }
+        eprintln!("cached_parameter_inline_bytes presence={} baseline={}",
+            std::mem::size_of::<CachedParameter>(), std::mem::size_of::<LegacyCachedParameter>());
+        fn legacy_scan(graph: &mut ModulationGraph) {
+            for parameter in &mut graph.parameter_values {
+                parameter.relative = parameter.edges.iter().any(|edge| edge.mode == 0);
+            }
+        }
+        fn evaluate(graph: &mut ModulationGraph, input: &Inputs, nodes: &HashSet<NodeId>)
+            -> std::result::Result<BTreeMap<Parameter, u64>, String>
+        {
+            let mut values = BTreeMap::new();
+            graph.evaluate_registered_nodes_into(input, nodes, |key, value| {
+                values.insert(key.clone(), value.to_bits());
+            }).map(|_| values).map_err(|error| format!("{error:#}"))
+        }
+        fn state(graph: &ModulationGraph) -> BTreeMap<SourceStateKey, (u64, u32, u64, u64, u64, u32, u32, u32)> {
+            graph.constant_clocks.borrow().iter().map(|(key, clock)| (*key,
+                (clock.rate.to_bits(), clock.block_frames, clock.frame, clock.integrated,
+                 clock.point_frame, clock.current.to_bits(), clock.point.to_bits(), clock.target.to_bits())))
+                .collect()
+        }
+        for modes in [&[0][..], &[1][..], &[1, 0][..]] {
+            let connections = modes.iter().map(|mode| format!(r#"
+                <SignalConnection Source="$Program/Src" Destination="Gain" Ratio=".5"
+                    ConnectionMode="{mode}" SignalConnectionVersion="1"><Connections>
+                <SignalConnection Source="@MIDI CC 2" Destination="Ratio" Ratio=".25"/>
+                </Connections></SignalConnection>"#)).collect::<String>();
+            let program = parse_program(&format!(r#"<Program><ControlSignalSources>
+                <ConstantModulation Name="Src" Value=".25"/></ControlSignalSources>
+                <Layers><Layer><Keygroups><Keygroup><Oscillators>
+                <SamplePlayer SamplePath="authored.wav" Gain="1"><Connections>{connections}</Connections></SamplePlayer>
+                </Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#)).unwrap();
+            let source = program.nodes.iter().position(|n| n.name.as_deref() == Some("Src")).unwrap();
+            let player = program.sample_zones[0].player;
+            let nodes = HashSet::from([player]);
+            let mut actual = ModulationGraph::new(&program).unwrap();
+            let mut reference = ModulationGraph::new(&program).unwrap();
+            for parameter in &actual.parameter_values {
+                assert_eq!(parameter.relative, parameter.edges.iter().any(|edge| edge.mode == 0));
+            }
+            assert_eq!(actual.cached_parameter(player, "Gain").unwrap().relative, modes.contains(&0));
+            for voice in [1, 2] {
+                for frame in [0, 1, 31, 32, 64, 256] {
+                    for bypass in [0., 1.] {
+                        for graph in [&mut actual, &mut reference] {
+                            graph.update_live_parameter(source, "Value", if frame < 32 { 0.25 } else { 0.75 }).unwrap();
+                            graph.update_live_parameter(player, "Gain", 0.8).unwrap();
+                            graph.update_live_parameter(player, "AuthoredNewNumeric", -0.).unwrap();
+                            for edge in program.connections.iter().filter(|edge| edge.owner == player) {
+                                graph.update_live_parameter(edge.node, "Bypass", bypass).unwrap();
+                                graph.update_live_parameter(edge.node, "Inverted", f64::from(frame >= 64)).unwrap();
+                            }
+                        }
+                        assert!(!actual.cached_parameter(player, "AuthoredNewNumeric").unwrap().relative);
+                        legacy_scan(&mut reference);
+                        let mut input = Inputs { voice: Some(voice), instance: Some(voice as u64),
+                            time_seconds: f64::from(frame) / 48000., voice_time_seconds: f64::from(frame) / 48000.,
+                            ..Default::default() };
+                        input.controllers[2] = if frame < 64 { 0 } else { 127 };
+                        assert_eq!(evaluate(&mut actual, &input, &nodes), evaluate(&mut reference, &input, &nodes));
+                        assert_eq!(state(&actual), state(&reference));
+                        for graph in [&actual, &reference] {
+                            let mut memo = graph.memo.borrow_mut();
+                            memo.begin();
+                            assert_eq!(graph.value_named(player, "AuthoredNewNumeric", &input,
+                                Overrides::Registered, &mut memo, 0).unwrap().to_bits(), (-0f64).to_bits());
+                            assert_eq!(graph.value_named(player, "Gain", &input, Overrides::Registered,
+                                &mut memo, DEPTH).unwrap_err().to_string(),
+                                "UVI modulation evaluation depth exceeds limit");
+                        }
+                    }
+                }
+            }
+            for graph in [&mut actual, &mut reference] {
+                for edge in program.connections.iter().filter(|edge| edge.owner == player) {
+                    graph.update_live_parameter(edge.node, "Bypass", 0.5).unwrap();
+                }
+                assert_eq!(graph.update_live_parameter(player, "RejectedNumeric", f64::NAN)
+                    .unwrap_err().to_string(), "Invalid UVI live parameter override");
+                assert!(graph.cached_parameter(player, "RejectedNumeric").is_none());
+            }
+            legacy_scan(&mut reference);
+            let input = Inputs { voice: Some(2), instance: Some(2),
+                time_seconds: 256. / 48000., voice_time_seconds: 256. / 48000., ..Default::default() };
+            let a = evaluate(&mut actual, &input, &nodes);
+            let b = evaluate(&mut reference, &input, &nodes);
+            assert_eq!(a, b);
+            assert_eq!(a.is_err(), modes.contains(&0));
+            assert_eq!(state(&actual), state(&reference));
+        }
+        // Bypassing a relative edge must not hide its unsupported target law,
+        // nor reorder that rejection behind the deliberately nonfinite base.
+        let program = parse_program(r#"<Program><Inserts><OnePole Other="NaN"><Connections>
+            <SignalConnection Source="@MIDI CC 1" Destination="Other" Bypass="1"/>
+            </Connections></OnePole></Inserts></Program>"#).unwrap();
+        let node = program.nodes.iter().position(|node| node.kind == "OnePole").unwrap();
+        let mut actual = ModulationGraph::new(&program).unwrap();
+        let mut reference = ModulationGraph::new(&program).unwrap();
+        assert!(actual.cached_parameter(node, "Other").unwrap().relative);
+        legacy_scan(&mut reference);
+        let input = Inputs::default();
+        let nodes = HashSet::from([node]);
+        let a = evaluate(&mut actual, &input, &nodes);
+        let b = evaluate(&mut reference, &input, &nodes);
+        assert_eq!(a, b);
+        assert!(a.unwrap_err().contains("Unverified UVI modulation target conversion"));
+    }
+
     #[test]
     fn bound_connection_ratio_slots_keep_live_writes_and_nested_order() {
         let p = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" Gain="1" Pitch="3"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Gain" Ratio=".5"><Connections><SignalConnection Source="@MIDI CC 2" Destination="Ratio" Ratio=".25"/></Connections></SignalConnection><SignalConnection Source="@MIDI CC 3" Destination="Pitch"><Connections><SignalConnection Source="@MIDI CC 4" Destination="Ratio" Ratio=".75"/></Connections></SignalConnection></Connections></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();

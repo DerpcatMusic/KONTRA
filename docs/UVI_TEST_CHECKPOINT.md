@@ -8,11 +8,11 @@ Unsupported native graphs remain explicit failures. Starter coverage is still
 
 ## Current installed checkpoint
 
-At the recorded installation on 2026-10-04, 19:21 UTC, the standalone, CLAP
+At the recorded installation on 2026-10-04, 19:51 UTC, the standalone, CLAP
 and VST3 identify clean source
-`cebaf809e85126fafb2f394ab0f985eedc23a68c`, build hash `fa461d02b85edcc0`,
+`8bae38cd67dc2d1b14b8facf0cecb76da950603a`, build hash `60d01a6e6890deed`,
 version 0.3.148, baseline Linux x86_64 and optimized `ci` profile. The package is
-`KONTRA-UVI-checkpoint-cebaf80-linux-x86_64`. Factory enumeration and runtime
+`KONTRA-UVI-checkpoint-8bae38c-linux-x86_64`. Factory enumeration and runtime
 library resolution pass; all 28 configuration/access files were preserved.
 Running host instances retain their earlier binary until the user reloads them.
 For a later local package, its build-info and VERIFICATION files supersede this
@@ -36,7 +36,7 @@ remain historical evidence, rather than repeated checks of the current binary.
 Tickets prove initial callback dispatch or nonfatal rejection, not completion of
 a yielded callback or audible output. Buffering/polling latency remains.
 
-Installed `cebaf80` corrects positive exact CLAP/VST3 velocity lowering
+Historical `cebaf80` corrects positive exact CLAP/VST3 velocity lowering
 and rejected exact-zero UVI ownership, and implements documented script AfterTouch
 omni forwarding/consumption. Twenty focused synthetic functional checks pass,
 including nine new authored cases: quiet exact PCM, prior Worker/Slot PCM survival,
