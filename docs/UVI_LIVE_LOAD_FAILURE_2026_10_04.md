@@ -1,0 +1,105 @@
+# Live load failures, 2026-10-04
+
+Read from the user's retained local journals after installing clean source
+`cc54c675706277a75de71b68029b08b5a473592a`, build `c01b223593a9516e`.
+This investigation only read logs and source; it did not replay audio, decode
+another bank, rebuild, restart the host or change settings.
+
+## Augmented Orchestra: the selected program cannot execute yet
+
+`Presets/04 Hybrid/Aesthetic Dune MW.uvip` failed in `uvi_preflight` at frame
+zero. Bank opening and program decoding completed; sample loading, Lua
+initialization, sound preparation and rack installation were not reached.
+This particular error is KONTRA's playback admission check, not an activation
+error or evidence of failed program decryption. Browser indexing is separate
+from loading a playable rack instrument.
+
+The retained graph reports 97,046 nodes, 76,310 connections, 6,984 sample zones
+and one script processor. Its inventory identifies 787 distinct rejected nodes:
+
+| Feature | Rejected nodes | Remaining execution boundary |
+| --- | ---: | --- |
+| CombFilter | 389 | Connected controls and graph/property lifecycle |
+| MS20 | 388 | Hosted controls, smoothing, tracking and complete processor integration |
+| Flanger | 4 | Independent controls and connected modulation |
+| StepEnvelope | 1 | Unverified Smooth setting at node 10 |
+| MultiLFO | 1 | Native source evaluation, connected clocks, events and random-state ordering |
+| DiodeClipper | 1 | Gain, reset, hosted controls and full callback lifecycle |
+| FeedbackMachine | 1 | Unsupported processor/control source |
+| Drive | 1 | Hosted smoothing, modes, oversampling and voice lifecycle |
+| Layer | 1 | Unsupported nondefault PlayMode |
+
+These counts were reconstructed from the retained typed node chunks and agree
+with `static_rejected_nodes`. Their scope is per-node checks plus the first
+control-graph construction failure; they are not an exhaustive census of every
+unsupported property. Node 13 is MultiLFO, but fixing that node alone cannot
+admit this program. Initially bypassed nodes also remain checked because
+instrument controls can enable them later.
+
+The implementation boundary starts at `ProgramPreflight::validate` in
+`src/uvi/playback.rs`; worker initialization retains the structured graph in
+`src/uvi/worker.rs` before enforcing that check. Isolated native helper
+comparisons do not establish connected whole-program execution. The playback
+solution is to implement and verify the missing source, effects and lifecycle
+paths, then admit their verified scope. Removing the checks would conceal
+missing sound behavior rather than supply it.
+
+## Why the failure message and Logs were misleading
+
+`prepare_uvi` in `src/plugin/uvi_load.rs` unconditionally appended "the current
+instrument is still playing", even with an empty rack. The source correction
+removes that claim from both loading and failure messages.
+
+`ProgramPreflight::validate` serialized every rejection into one error string.
+The retained staging event was 371,377 bytes before abbreviation. Its data
+became only `diagnostic_truncated` and `original_bytes`, losing the member and
+generation needed for reliable association. The same failure was reported by
+the loader issue, loader completion and staging notification. They are three
+reports of one rejected load, not three separately proven DSP crashes.
+
+The source corrections being prepared use a bounded count/kind summary, retain
+the existing typed per-node causes, carry the exact worker load ID and stage
+into staging notifications, and wrap Logs text within the available width.
+Association must use genuine identity; older abbreviated staging events cannot
+be joined to other attempts merely because their bank and reason look alike.
+
+The recorded attempt finished in 1,630.68 ms. Its recorded stages were bank
+opening 432.51 ms, program decode 260.03 ms, diagnosis/preflight reporting
+881.47 ms and preflight failure reporting 56.56 ms. These are that attempt's
+retained wall-time measurements, not a new benchmark or general loading claim.
+
+## Oboe: a separate failure after initialization
+
+The next journal records `VWinds-Oboe_V2.ufs`, `Presets/Oboe.uvip`, reaching
+playback before failing with `Bridge(RequestCapacity)` at the reported process
+frame 95,360. This failure belongs to the host/worker audio bridge, not the
+Augmented Orchestra feature checks.
+
+The audio-owned first-fault frontier retains 27 pending requests in a ring
+with capacity 27 and no prefetched audio. Submitted and received frontiers
+were 88,320 and 86,016 frames; the current playout packet began at 90,624.
+Completed delivery was therefore 18 native packets (96 ms at 48 kHz) behind
+that packet. This describes a delivery backlog, not its CPU or scheduler cause.
+
+The later worker observation was Ready with zero recorded errors, one active
+voice, 338 completed packets and 32 over-budget attempts. Recorded render wall
+time averaged 4.20 ms and peaked at 44.56 ms against a 5.33 ms packet budget.
+These later concurrent counters are not an atomic snapshot of the fault.
+The timer excludes several service operations, so the mean does not establish
+sustainable throughput. No specific processor or CPU contention is proven to
+have caused this fault.
+
+Static queue arithmetic is consistent with the retained frontier; no duplicate
+packet or wrong-stamp cause is established by this evidence. The next playback
+solution requires identifying and reducing worker service delays while
+preserving control timing and audio behavior. Increasing queue capacity alone
+does not establish a throughput fix. See
+[the render-timer and convolution boundary](UVI_PACKET_COST_BOUNDARY_EVIDENCE.md).
+
+## Verification boundary
+
+Installed binaries remain `cc54c67` during this investigation. Subsequent
+message/layout/association source changes require compilation and editor
+verification; no new build, tests or playback runs are claimed here. Neither
+failure has been shown resolved by the installed checkpoint, and complete
+Falcon compatibility remains unimplemented.
