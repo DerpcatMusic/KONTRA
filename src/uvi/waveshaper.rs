@@ -3,6 +3,8 @@
 //! (256-frame blocks, 2026-10-03).
 //! Public control facts: https://lua.uvi.net/_elements.html#WaveShaper and
 //! https://s3.amazonaws.com/uvi/UVIFC/falcon_manual.pdf. No vendor source copied.
+//! Original scalar helper execution additionally confirms sine drive/sample
+//! float32 multiplication order (2026-10-04); SIMD reduction is not established.
 //! Unsupported modes and oversampling reject rather than substituting another DSP.
 
 use super::{
@@ -89,7 +91,10 @@ fn shape(x: f32, mode: u8, amount: f32, knee: f32) -> f32 {
     let drive = (8. * amount).exp2();
     let y = f64::from(x) * f64::from(drive);
     match mode {
-        0 => (y * std::f64::consts::FRAC_PI_2).sin() as f32,
+        // Native caches the drive coefficient and multiplies each sample in
+        // float32 before its sine helper. A double product shifts high-drive
+        // transfer points even when the sine itself is correctly rounded.
+        0 => (x * (std::f32::consts::FRAC_PI_2 * drive)).sin(),
         1 => (1. - ((y + 1.).rem_euclid(4.) - 2.).abs()) as f32,
         2 | 3 => {
             let p = 10f64.powf(f64::from(knee) / 10.);
@@ -263,6 +268,33 @@ impl WaveShaper {
 mod tests {
     use super::super::dsp::MAX_CHANNELS;
     use super::*;
+    #[test]
+    fn native_scalar_sine_float32_drive_order() {
+        // Official scalar SSE sine helper executed with authored arguments.
+        // Coefficient/sample multiply order comes from its native caller;
+        // these points do not establish SIMD or original-preset parity.
+        for (amount, x, native) in [
+            (0.0, 0.25, 0.3826834559440613),
+            (0.125, 0.25, 0.7071067690849304),
+            (0.20000000298023224, 0.25, 0.9285327792167664),
+            (0.5, 0.25, 1.7484555314695172e-07),
+            (0.75, 0.25, 6.993822125878069e-07),
+            (1.0, 0.25, 2.7975288503512274e-06),
+            (0.0, -8.03125, -0.04906816408038139),
+            (0.125, -8.03125, -0.0980181097984314),
+            (0.20000000298023224, -8.03125, -0.5173951983451843),
+            (0.5, -8.03125, -0.7071123123168945),
+            (0.75, -8.03125, 3.128914249828085e-05),
+            (1.0, -8.03125, -0.0001251565699931234),
+            (1.0, 0.75, 7.631923608641955e-07),
+            (1.0, 1.03125, 1.6308178601320833e-05),
+        ] {
+            assert!(
+                (f64::from(shape(x, 0, amount, 0.)) - native).abs() < 6e-8,
+                "amount {amount}, input {x}"
+            );
+        }
+    }
     #[test]
     fn authored_native_wave_shaper_curve_and_filter() {
         // Original stationary native transfer points, not preset/sample data.

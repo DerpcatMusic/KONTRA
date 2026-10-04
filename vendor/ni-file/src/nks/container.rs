@@ -94,6 +94,11 @@ impl NKSContainer {
 
     /// Decompress raw internal preset data
     pub fn decompressed_preset(&self) -> Result<Vec<u8>, Error> {
+        self.decompressed_preset_bounded(usize::MAX)
+    }
+
+    /// Decompress with a caller-selected maximum expanded byte length.
+    pub fn decompressed_preset_bounded(&self, max_expanded: usize) -> Result<Vec<u8>, Error> {
         if self.compressed_data.is_empty() {
             return Err(Error::Static("No compressed preset data"));
         }
@@ -104,7 +109,10 @@ impl NKSContainer {
                 // zlib compression
                 let mut decoder = ZlibDecoder::new(reader);
                 let mut decompressed_data = Vec::new();
-                decoder.read_to_end(&mut decompressed_data)?;
+                (&mut decoder).take(max_expanded as u64).read_to_end(&mut decompressed_data)?;
+                if decoder.read(&mut [0])? != 0 {
+                    return Err(Error::Static("Expanded NKS preset exceeds decode limit"));
+                }
 
                 decompressed_data
             }
@@ -119,6 +127,9 @@ impl NKSContainer {
                     || i32::try_from(self.compressed_data.len()).is_err()
                 {
                     return Err(Error::Static("Invalid expanded NKS preset size"));
+                }
+                if decompressed_size > max_expanded {
+                    return Err(Error::Static("Expanded NKS preset exceeds decode limit"));
                 }
                 let mut decompressed_data = Vec::new();
                 decompressed_data
@@ -165,6 +176,45 @@ mod tests {
     use std::fs::File;
 
     use super::*;
+
+    #[test]
+    fn bounded_zlib_checks_exact_output_length() -> Result<(), Error> {
+        use std::io::Write;
+        use crate::kontakt::objects::BPatchHeaderV1;
+        let bytes = b"authored expanded preset";
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(bytes)?;
+        let container = NKSContainer {
+            header: BPatchHeader::BPatchHeaderV1(BPatchHeaderV1 {
+                u_version: 2, u_a: 0, u_b: 0, u_c: 0, u_d: 0,
+                created_at: time::Date::from_calendar_date(2000, time::Month::January, 1).unwrap(),
+                samples_size: 0,
+            }),
+            compressed_data: encoder.finish()?,
+            meta_info: None,
+        };
+        assert_eq!(container.decompressed_preset_bounded(bytes.len())?, bytes);
+        assert!(matches!(container.decompressed_preset_bounded(bytes.len() - 1),
+            Err(Error::Static("Expanded NKS preset exceeds decode limit"))));
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_fastlz_rejects_corrupt_expanded_header() -> Result<(), Error> {
+        // Authored v42 header with a declared 2 GiB expansion and tiny compressed body.
+        let mut bytes = vec![0; 212];
+        bytes[..4].copy_from_slice(&0xEA37631Au32.to_le_bytes());
+        let mut header = BPatchHeaderV42::read_le(Cursor::new(bytes))?;
+        header.decompressed_length = i32::MAX as u32;
+        let container = NKSContainer {
+            header: BPatchHeader::BPatchHeaderV42(header),
+            compressed_data: vec![3, b't', b'e', b's', b't'],
+            meta_info: None,
+        };
+        assert!(matches!(container.decompressed_preset_bounded(256 * 1024 * 1024),
+            Err(Error::Static("Expanded NKS preset exceeds decode limit"))));
+        Ok(())
+    }
 
     #[test]
     fn test_nksv1_nki_0x5ee56eb3() -> Result<(), NKSError> {

@@ -30,6 +30,14 @@ impl EncryptionItem {
         frame: &ItemData,
         key: Option<&dyn super::subtree_item::LibraryKey>,
     ) -> Result<Self, NIFileError> {
+        Self::read_with_key_bounded(frame, key, usize::MAX)
+    }
+
+    pub fn read_with_key_bounded(
+        frame: &ItemData,
+        key: Option<&dyn super::subtree_item::LibraryKey>,
+        max_expanded: usize,
+    ) -> Result<Self, NIFileError> {
         let subtree_frame = frame
             .child()
             .ok_or(NIFileError::Static("Missing preset subtree"))?;
@@ -44,9 +52,10 @@ impl EncryptionItem {
             ));
         }
         Ok(Self {
-            subtree: SubtreeItem::read_with_key(
+            subtree: SubtreeItem::read_with_key_bounded(
                 Cursor::new(&subtree_frame.data),
                 if is_encrypted { key } else { None },
+                max_expanded,
             )?,
             is_encrypted,
         })

@@ -26,6 +26,14 @@ Stationary 48-kHz stereo Exciter Modes0/1 at Oversampling0 and individually meas
 
 Combined optimized CI validation of the current frozen source with `uvi,standalone` passes **977 library tests, 89 CLI/playback tests and four additional binary/integration checks**, with 35 external-fixture tests ignored and one screenshot excluded. This includes the native two-part rack save/reopen PCM regression and new diagnostic failure cases. The older corpus and native-comparison measurements below remain separately scoped; they were not all rerun for this checkpoint.
 
+A subsequent source follow-up admits bounded larger PNG image wavetables using
+the measured native software-image rescaler. Ten original fixtures match complete
+pre-FFT normalized helper output. This corrects an earlier raw-import assumption
+inferred from downstream oscillator audio; native FFT/harmonic generation,
+constant-input final output and the Windows hardware branch remain unverified.
+JPEG, transparency and moving controls remain gated. This source change follows
+installed checkpoint `75998c3` and is not included in that build.
+
 Current audio-resource completion checks cover successful and failed `loadSample`
 and `loadImpulse` tasks: callbacks run after return through the existing product
 scheduler and may yield. Failed reads/metadata retain the previous resource and
@@ -59,6 +67,20 @@ members, but these directory counts are not image/UI decode coverage. No synthes
 generator was exercised by this paid-corpus note pass. The retained 3,505 deadline
 misses in 11,280 blocks under two audit jobs do not establish sustainable realtime
 performance or a new controlled timing benchmark.
+
+A separately instrumented five-program investigation established that the authored
+callbacks narrow their serialized zone ranges: the original/V2 Clarinets use
+49–93 instead of 48–94; the other three use 24–59, 52–84 and 74–108, each excluding
+the outer mapping keys. All 70 original note callbacks arrived, while 40 original
+outside-range probes emitted no Starts. Additional fresh boundary probes confirm
+script suppression before Renderer admission; this does not justify changing the
+renderer. The observed range globals are bank conventions, not a universal API.
+
+That investigation also reproduced invalid generated noise velocities. In a
+seeded original Clarinet fixture, valid input49/64 produced release noise with
+velocity0; other cases generated negative or greater-than127 values. Existing
+API validation reports the error. Vendor clipping/handling remains unverified,
+so errors must not be hidden or called a complete expressive pass.
 
 Evidence is tracked separately rather than collapsed into a compatibility percentage:
 
