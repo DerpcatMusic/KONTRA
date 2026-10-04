@@ -4,11 +4,12 @@ Status reviewed 2026-10-04. KONTRA's optional `uvi` path implements bounded UFS/
 
 ## Current status
 
-The installed standalone, CLAP and VST3 checkpoint is **`1213001`**. Source
-follow-ups after that checkpoint are **not installed**. Installation and focused
-validation are recorded in [the checkpoint report](UVI_TEST_CHECKPOINT.md#checkpoint-validation);
-historical full-suite and full-corpus counts below do not describe a new run of
-either the installed package or the latest source.
+The previous recorded standalone, CLAP and VST3 installation is **`1213001`**,
+documented in [the checkpoint report](UVI_TEST_CHECKPOINT.md#checkpoint-validation).
+Later source evidence below awaits package verification. A newer artifact's
+manifest identifies its exact source and enabled features; installation requires
+its own receipt. Historical full-suite and full-corpus counts do not describe a
+new run of a later package or source.
 
 | Area | Established scope | Exact remaining boundary |
 | --- | --- | --- |
@@ -24,11 +25,21 @@ either the installed package or the latest source.
 The recent V2 Clarinet preload reads **1,231 mode-0 FLAC inputs totaling
 120,229,269 encoded bytes**, decoding 38,903 packets with **zero sample-decryption
 calls**. Decryption is therefore not the measured bottleneck for that load.
-The uninstalled conversion-buffer reuse preserves **158,605,863 scalar bit
+The source conversion-buffer reuse preserves **158,605,863 scalar bit
 patterns**, metadata and progress while reducing buffer allocation requests
 from 38,903 to 1,231. Requested allocation traffic is not peak memory, and no
 whole-load startup speed gain was demonstrated. Catalog hydration, sample
 preparation and renderer CPU measurements must remain separate.
+
+Later source adds [hierarchical preset menus](UVI_HIERARCHICAL_MENU_EVIDENCE.md):
+actual original/V2 source UI selection preserves authored item indices and
+invokes the hosted changed callback across tested sizes. Native menu placement
+and style remain unverified. A [bounded static BiquadFilter path](UVI_BIQUAD_STATIC_EVIDENCE.md)
+has 36 actual Rust/native comparisons and 69 longer actual Rust/native tone
+comparisons, with explicit numerical residuals. It admits two of seven observed
+nodes and **zero additional whole presets**. Changed/connected controls, broader
+filter modes/settings and whole-host fidelity remain gated. These are source
+proofs pending package verification, not new installed or native-parity claims.
 
 The [player ownership boundary](PLAYER_BACKEND_BOUNDARY.md) records the current
 internal integration and proposed shared API. The chronological records below
