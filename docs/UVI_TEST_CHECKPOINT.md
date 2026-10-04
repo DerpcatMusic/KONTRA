@@ -150,7 +150,7 @@ does not prove its transition or timbre behavior.
 
 ## Checkpoint validation
 
-Installed checkpoint `1213001` replaces the standalone, CLAP and VST3 binaries,
+Previous recorded installed checkpoint `1213001` replaced the standalone, CLAP and VST3 binaries,
 with the previous files backed up and settings/access records unchanged. Both
 actual Clarinet UI diagnoses initialize with zero resource failures; each owns
 one bank font. The original four-second Clarinet render is byte-identical to
@@ -183,7 +183,9 @@ Worker/Bridge observations use disclosed unchanged SDK glue; they do not verify
 live Bitwig operation, sustained deadlines on every machine or native musical
 parity. The original reported blackout remains unclassified.
 
-Source changes after `1213001` are not yet installed. They restore authored
+Later source evidence after `1213001` awaits package verification. A newer
+artifact's manifest identifies its exact source and enabled features; its
+installation needs a separate receipt. The source changes restore authored
 help text, index preparation resource paths, avoid cloning completed full load
 reports and skip unused Lua collection tables. A conservative Step gate rejects
 transport snapshots inside a logical generation block; measured Diode circuit
@@ -193,7 +195,16 @@ resource metadata and progress events in the actual V2 Clarinet initial load.
 That load made zero sample-decryption calls; buffer allocation requests fell
 from 38,903 to 1,231 without a demonstrated total startup speed improvement.
 
-At installed checkpoint `75998c3`, the combined `uvi,standalone` optimized CI test run passed 977 library checks,
+The later source also includes [hierarchical preset menus](UVI_HIERARCHICAL_MENU_EVIDENCE.md)
+with actual source UI/hosted-callback checks across 360/720/1080 pixels and
+[bounded static BiquadFilter admission](UVI_BIQUAD_STATIC_EVIDENCE.md). The filter
+has 36 actual Rust/native cases and 69 actual Rust/native 32,768-frame tone
+cases; two of seven observed nodes pass its gate, while **zero whole presets**
+become playable. Menu native style/placement, changed/connected filter controls,
+broader settings and whole-host audio parity remain unverified. These focused
+source observations are not a new installed-plugin or full-corpus validation.
+
+At historical installed checkpoint `75998c3`, the combined `uvi,standalone` optimized CI test run passed 977 library checks,
 89 CLI/playback checks and four additional binary/integration checks. Thirty-five
 external-fixture checks were ignored and one screenshot check was excluded.
 The authored and retained native regressions include root Choke ownership, state construction and
@@ -203,7 +214,7 @@ These checks are scoped regressions, not a count of compatible Falcon features.
 Later source changes use focused functional checks and feature checks; this
 broad suite count is historical and does not describe a new checkpoint run.
 
-The installed `f4e2a17` CLI was also checked against all 40 catalog programs in
+The previously installed `f4e2a17` CLI was also checked against all 40 catalog programs in
 25 paid banks: parsing/preflight, script checks, initialization-only diagnosis
 and short authored-note Worker renders passed. Each written WAV independently
 verified 72,000 finite stereo frames at 48 kHz and nonzero output. This scoped
