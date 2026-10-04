@@ -276,6 +276,41 @@ fn numbox_readout(
     }
 }
 
+
+// Decorate existing input surfaces only: help must not turn background images
+// or labels into new hit targets over the bank's controls.
+fn widget_tooltip(el: &mut El, widget: &UiWidget) {
+    let Some(help) = widget
+        .style
+        .tooltip
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    else {
+        return;
+    };
+    fn apply(el: &mut El, widget: &UiWidget, help: &str) {
+        if el.payload().has(moose::mui::mui::scene::Element::FOCUSABLE) {
+            let extra = el.payload().extras().tip.as_deref();
+            let said = match extra {
+                Some(extra)
+                    if help == extra
+                        || help == widget.name
+                            && extra.starts_with(&format!("{}:", name(widget))) =>
+                {
+                    extra.to_owned()
+                }
+                Some(extra) => format!("{help} — {extra}"),
+                None => help.to_owned(),
+            };
+            *el = el.clone().tip(said);
+        }
+        for child in el.children_mut() {
+            apply(child, widget, help);
+        }
+    }
+    apply(el, widget, help);
+}
+
 fn shown_value(state: &State, widget: &UiWidget) -> Option<UiEditValue> {
     state
         .pending
@@ -465,6 +500,7 @@ pub fn view(
                             number_text(*range.end(), widget.integer)));
                     scale_control(&mut field, ui, scale);
                     numbox_readout(&mut field, widget, value, pictures, scale);
+                    widget_tooltip(&mut field, widget);
                     let mut content = if widget.style.show_label != Some(false) {
                         row![
                             caption(display_name).text_size(SMALL * scale).lines(1),
@@ -820,6 +856,7 @@ pub fn view(
         } else if let Some(fill) = colour(widget.style.background_colour.as_deref()) {
             control = control.fill(fill);
         }
+        widget_tooltip(&mut control, widget);
         widget_font(&mut control, widget, fonts);
         layers.push(
             control
@@ -1147,6 +1184,50 @@ mod tests {
     }
 
     #[test]
+    fn authored_tooltips_hover_without_changing_control_hits() {
+        let mut snapshot = authored();
+        for id in [2, 4, 5, 6, 7, 9] {
+            snapshot.widgets[id - 1].style.tooltip = Some(format!("Authored help {id}"));
+        }
+        snapshot.widgets[0].style.tooltip = Some("Decorative help".into());
+        snapshot.widgets[2].style.tooltip = Some(snapshot.widgets[2].name.clone());
+        let current = stamp(4);
+        let mut ui = super::super::theme::ui();
+        let mut state = State::default();
+        let mut edits = Vec::new();
+        for _ in 0..3 {
+            tick(&mut ui, &mut state, &snapshot, current, current, Input::default(), &mut edits);
+        }
+        for widget in [2, 4, 5, 6, 7, 9] {
+            let tip = ui.scene().unwrap().surface(&identity(0, current, &snapshot, widget))
+                .unwrap().tip.as_deref().unwrap();
+            assert!(tip.starts_with(&format!("Authored help {widget}")));
+        }
+        let numeric = ui.scene().unwrap().surface(&identity(0, current, &snapshot, 4)).unwrap();
+        assert_eq!(numeric.tip.as_deref(), Some("Authored help 4 — Enter a number from 1 to 16."));
+        let slider = ui.scene().unwrap().surface(&identity(0, current, &snapshot, 3)).unwrap();
+        assert_eq!(slider.tip.as_deref(), Some("Level: 0–1"), "the default name does not duplicate range help");
+        assert!(!ui.scene().unwrap().surfaces().any(|surface|
+            surface.tip.as_deref() == Some("Decorative help")), "decorations gain no help hit targets");
+        let toggle = identity(0, current, &snapshot, 6);
+        let frame = ui.scene().unwrap().surface(&toggle).unwrap().frame;
+        let pos = Point::new(frame.x + frame.size.width * 0.5, frame.y + frame.size.height * 0.5);
+        for _ in 0..60 {
+            tick(&mut ui, &mut state, &snapshot, current, current,
+                PointerInput { pos: Some(pos), ..PointerInput::default() }.into(), &mut edits);
+        }
+        assert!(ui.scene().unwrap().surface("/tip").is_some(), "the genuine hover shows help");
+        for buttons in [Buttons::PRIMARY, Buttons::default()] {
+            tick(&mut ui, &mut state, &snapshot, current, current,
+                PointerInput { pos: Some(pos), buttons, ..PointerInput::default() }.into(), &mut edits);
+        }
+        tick(&mut ui, &mut state, &snapshot, current, current, Input::default(), &mut edits);
+        assert!(edits.iter().any(|(stamp, input)| same_activation(*stamp, current)
+            && input.edit.widget == 6 && input.edit.value == UiEditValue::Boolean(false)),
+            "authored help does not intercept the existing input surface");
+    }
+
+    #[test]
     fn authored_panel_scales_up_and_down_without_changing_coordinates() {
         let mut snapshot = authored();
         let menu = &mut snapshot.widgets[4];
@@ -1278,6 +1359,7 @@ mod tests {
                 widget.style.show_label = Some(false);
                 widget.style.unit = Some(2.);
                 widget.style.display_text = display.map(str::to_owned);
+                widget.style.tooltip = Some("Authored numeric help".into());
                 let current = stamp(4);
                 let id = identity(0, current, &snapshot, 4);
                 let mut ui = super::super::theme::ui();
@@ -1288,7 +1370,7 @@ mod tests {
                 }
                 let bounds = ui.scene().unwrap().surface(&id).unwrap().frame;
                 assert_eq!(ui.scene().unwrap().surface(&id).unwrap().tip.as_deref(),
-                    Some("Enter a number from 0 to 1."));
+                    Some("Authored numeric help — Enter a number from 0 to 1."));
                 let pos = Point::new(bounds.x+0.5*bounds.size.width,
                     bounds.y+0.5*bounds.size.height);
                 let mut double_clicked = false;
