@@ -87,6 +87,13 @@ impl WindowContext {
         self.inner.set_keyboard_capture(capture)
     }
 
+    /// Configure native text input; `None` disables it. Coordinates are physical
+    /// pixels relative to the client area, selection offsets are UTF-8 bytes.
+    /// Unchanged configuration is ignored to preserve active composition.
+    pub fn set_ime_configuration(&self, configuration: Option<crate::ImeConfiguration>) {
+        self.inner.set_ime_configuration(configuration);
+    }
+
     /// Returns the current size of this window.
     pub fn size(&self) -> WindowSize {
         self.inner.size()

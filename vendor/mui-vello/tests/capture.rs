@@ -94,6 +94,26 @@ fn ordered_fragments_preserve_late_floats_over_other_parts() {
             .count()
             > 1
     );
+    assert_reassembles(&scene, &layers);
+    // Nested roots: the socket comes out of the panel, and the panel's own
+    // paint under it stays (whole, not a hole cut to the socket's shape).
+    let nested = scene.capture_layers(&["panel", "socket"]).unwrap();
+    assert_reassembles(&scene, &nested);
+    let panel: Vec<_> = nested
+        .iter()
+        .filter(|l| l.part.as_deref() == Some("panel"))
+        .map(|l| raster(&l.scene))
+        .collect();
+    let f = scene.surface("socket").unwrap().frame;
+    let under_socket =
+        (f.y + f.size.height / 2.) as usize * 120 + (f.x + f.size.width / 2.) as usize;
+    assert!(
+        panel.iter().any(|r| r[under_socket][3] == 255),
+        "the panel is whole under its socket"
+    );
+}
+
+fn assert_reassembles(scene: &ResolvedScene, layers: &[mui_material::CaptureLayer]) {
     let mut assembled = vec![[0.; 4]; 120 * 80];
     for layer in layers {
         for (dst, src) in assembled.iter_mut().zip(raster(&layer.scene)) {
@@ -104,7 +124,7 @@ fn ordered_fragments_preserve_late_floats_over_other_parts() {
             dst[3] = a + dst[3] * (1. - a);
         }
     }
-    for (want, got) in raster(&scene).iter().zip(assembled) {
+    for (want, got) in raster(scene).iter().zip(assembled) {
         for c in 0..3 {
             assert!(
                 (f64::from(want[c]) * f64::from(want[3]) / 255. - got[c]).abs() <= 3.,
@@ -112,5 +132,40 @@ fn ordered_fragments_preserve_late_floats_over_other_parts() {
             );
         }
     }
-    assert!(scene.capture_layers(&["panel", "socket"]).is_err());
+}
+
+/// A child pulled out of a clipped panel is drawn whole: the part of it the
+/// panel's clip hid is there in its free raster, and only there.
+#[test]
+fn a_freed_child_is_not_cut_by_its_old_parents_clip() {
+    // The panel (x 30..90) is narrower than its bar (x 30..120).
+    let tree = stack([stack([
+        block(60., 40.).fill(Role::Surface),
+        block(90., 10.).fill(Role::Danger).id("knob"),
+    ])
+    .size(60., 40.)
+    .radius(8.)
+    .clip()
+    .id("panel")])
+    .size(120., 80.)
+    .fill(Role::Background)
+    .id("root");
+    let scene = resolve(&SceneSpec::new(tree)).unwrap();
+    let layers = scene.capture_layers(&["panel", "knob"]).unwrap();
+    let knob = layers
+        .iter()
+        .find(|l| l.part.as_deref() == Some("knob"))
+        .unwrap();
+    let outside = 40 * 120 + 100;
+    assert_eq!(raster(&knob.scene)[outside][3], 0, "clipped where it sits");
+    assert_eq!(
+        raster(&knob.free().unwrap())[outside][3],
+        255,
+        "whole once free"
+    );
+    let inside = 40 * 120 + 50;
+    assert_eq!(
+        raster(&knob.free().unwrap())[inside],
+        raster(&knob.scene)[inside]
+    );
 }

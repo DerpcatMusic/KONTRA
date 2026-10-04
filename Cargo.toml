@@ -12,7 +12,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [features]
 default = ["plugin", "clap", "vst3", "library-access"]
-plugin = ["dep:moose", "dep:png", "dep:rfd", "dep:mui-text", "dep:zune-jpeg", "dep:image-webp", "dep:resvg"]
+plugin = ["dep:moose", "dep:png", "dep:rfd", "dep:mui-native-dialog", "dep:mui-text", "dep:zune-jpeg", "dep:image-webp", "dep:resvg"]
 clap = ["plugin", "dep:moose-clap", "dep:clap-sys"]
 vst3 = ["plugin", "dep:moose-vst3"]
 standalone = ["plugin", "dep:moose-standalone"]
@@ -63,11 +63,15 @@ moose-vst3 = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b
 moose-standalone = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", features = ["gui", "playback"], optional = true }
 clap-sys = { version = "0.5", optional = true }
 mui = { git = "https://github.com/Matari-Audio/MUI", features = ["cpu"], optional = true }
-# Native file dialogs; on Linux the XDG desktop portal over a runtime-loaded libdbus.
-rfd = { version = "0.17", default-features = false, features = ["xdg-portal"], optional = true }
 # Library covers: the name typeset from the bundled font, and JPEG artwork the player picks.
 mui-text = { git = "https://github.com/Matari-Audio/MUI", optional = true }
 zune-jpeg = { version = "0.5", default-features = false, features = ["std"], optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+mui-native-dialog = { git = "https://github.com/Matari-Audio/MUI", features = ["xdg-portal"], optional = true }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"], optional = true }
 
 # Stream rings hand idle pages back (madvise).
 [build-dependencies]
@@ -150,14 +154,13 @@ moose-params = { path = "vendor/moose-params" }
 moose-derive = { path = "vendor/moose-derive" }
 moose-clap = { path = "vendor/moose-clap" }
 moose-vst3 = { path = "vendor/moose-vst3" }
-# Locked baseview source with an X11 root-reparent visibility fix.
-moose-baseview = { path = "vendor/moose-baseview" }
 
 # MUI's vello with a fix for images vanishing after a partial redraw; see vendor/vello/PATCHES.md.
 [patch."https://github.com/Matari-Audio/MUI"]
 vello = { path = "vendor/vello" }
-# mui-baseview with a raw key hook (key ups for the computer keyboard); see its Cargo.toml.
-mui-baseview = { path = "vendor/mui-baseview" }
+# Preserve PR33's X11 fixes in MUI's native host, not MOOSE's older package.
+moose-baseview = { path = "vendor/moose-baseview" }
+# moose-mui uses kontra-native-host; upstream mui-baseview supplies shared bridges.
 # Release obsolete image copies even when the next frame draws only vectors.
 mui-vello = { path = "vendor/mui-vello" }
 
@@ -165,8 +168,8 @@ mui-vello = { path = "vendor/mui-vello" }
 symphonia-format-riff = { path = "vendor/symphonia-format-riff" }
 
 [workspace]
-members = [".", "vendor/moose-core", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3", "vendor/mui-vello"]
-exclude = ["vendor/ni-file", "vendor/ncw", "vendor/vello", "vendor/mui-baseview", "vendor/moose-baseview", "vendor/symphonia-format-riff", "vendor/derpcat-flight-recorder", "vendor/buffr-durable-file"]
+members = [".", "vendor/moose-core", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3", "vendor/mui-vello", "vendor/mui-baseview"]
+exclude = ["vendor/ni-file", "vendor/ncw", "vendor/vello", "vendor/moose-baseview", "vendor/xim-rs", "vendor/symphonia-format-riff", "vendor/derpcat-flight-recorder", "vendor/buffr-durable-file"]
 resolver = "3"
 
 # Optimized CI keeps release semantics while avoiding cross-crate ThinLTO.

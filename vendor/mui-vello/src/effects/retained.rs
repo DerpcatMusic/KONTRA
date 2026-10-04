@@ -57,6 +57,8 @@ pub struct GpuRenderer {
     stale: bool,
     /// The view the target was last presented to.
     presented: Option<wgpu::TextureView>,
+    /// The present writes straight alpha: see [`GpuRenderer::set_straight_alpha`].
+    straight: bool,
 }
 
 /// Vello's output: compute shaders write only a storage texture, so the
@@ -76,8 +78,10 @@ struct Passes {
     layout: wgpu::BindGroupLayout,
     blur: wgpu::RenderPipeline,
     present: wgpu::RenderPipeline,
-    /// The present pass reads no uniform, but shares the layout.
-    idle: wgpu::Buffer,
+    /// The present for a surface that composites straight alpha.
+    present_straight: wgpu::RenderPipeline,
+    /// The present's uniform: only its frame size is read.
+    frame: wgpu::Buffer,
 }
 
 /// One backdrop's textures: Vello renders what is under it into `prefix`,
@@ -227,7 +231,8 @@ impl Passes {
         Self {
             blur: pipeline("fs_blur", wgpu::TextureFormat::Rgba8Unorm),
             present: pipeline("fs_present", format),
-            idle: uniform(device),
+            present_straight: pipeline("fs_present_straight", format),
+            frame: uniform(device),
             layout,
         }
     }
@@ -392,7 +397,8 @@ impl GpuRenderer {
         budget: Budget,
     ) -> Result<Self, Error> {
         checked_size(device, size)?;
-        // What leaves the present pass is sRGB-encoded and premultiplied; an
+        // What leaves the present pass is sRGB-encoded (and premultiplied,
+        // unless `set_straight_alpha`); an
         // sRGB attachment would encode it a second time on store.
         if format.is_srgb() {
             return Err(Error::Unsupported("target must be a non-sRGB format"));
@@ -411,7 +417,7 @@ impl GpuRenderer {
         .map_err(|e| Error::Device(e.to_string()))?;
         let passes = Passes::new(device, format);
         let target = Self::target(device, &passes, size);
-        Ok(Self {
+        let renderer = Self {
             device: device.clone(),
             queue: queue.clone(),
             vello,
@@ -436,7 +442,28 @@ impl GpuRenderer {
             patch: None,
             stale: false,
             presented: None,
-        })
+            straight: false,
+        };
+        renderer.write_frame();
+        Ok(renderer)
+    }
+
+    /// Tell the present pass the frame's size: past it, it writes clear.
+    fn write_frame(&self) {
+        let mut bytes = [0u8; 32];
+        bytes[24..28].copy_from_slice(&self.size[0].to_le_bytes());
+        bytes[28..32].copy_from_slice(&self.size[1].to_le_bytes());
+        self.queue.write_buffer(&self.passes.frame, 0, &bytes);
+    }
+
+    /// Present straight alpha rather than premultiplied: for a surface
+    /// configured `CompositeAlphaMode::PostMultiplied`, which composites
+    /// its colour as it stands. Off by default.
+    pub fn set_straight_alpha(&mut self, straight: bool) {
+        if straight != self.straight {
+            self.straight = straight;
+            self.presented = None;
+        }
     }
 
     fn target(device: &wgpu::Device, passes: &Passes, size: [u32; 2]) -> Target {
@@ -449,7 +476,7 @@ impl GpuRenderer {
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         Target {
-            bind: bind(device, &passes.layout, &view, &passes.idle),
+            bind: bind(device, &passes.layout, &view, &passes.frame),
             texture,
             view,
             size,
@@ -465,6 +492,7 @@ impl GpuRenderer {
                 let grown = [size[0].max(have[0]), size[1].max(have[1])];
                 self.target = Self::target(&self.device, &self.passes, grown);
             }
+            self.write_frame();
             self.invalidate();
         }
         Ok(())
@@ -674,15 +702,12 @@ impl GpuRenderer {
                 // Changed only off the target.
                 self.retained.clone_from(&resolved.paint);
             }
-            Change::Part(r @ [x, y, w, h]) => {
+            Change::Part(r @ [.., w, h]) => {
                 self.valid = false;
                 self.presented = None;
                 self.encode(resolved, xf, overlay, Some(r))?;
                 stats.encoded_scenes += 1;
                 let limit = self.target.size;
-                // Rendered where the frame has it, from the corner: moved,
-                // gradients and strokes would round differently.
-                let (w, h) = (x + w, y + h);
                 if self
                     .patch
                     .as_ref()
@@ -739,14 +764,10 @@ impl GpuRenderer {
                     label: Some("MUI present"),
                 });
             if let (Some([x, y, w, h]), Some(patch)) = (copy, &self.patch) {
-                let origin = wgpu::Origin3d { x, y, z: 0 };
                 encoder.copy_texture_to_texture(
+                    patch.as_image_copy(),
                     wgpu::TexelCopyTextureInfo {
-                        origin,
-                        ..patch.as_image_copy()
-                    },
-                    wgpu::TexelCopyTextureInfo {
-                        origin,
+                        origin: wgpu::Origin3d { x, y, z: 0 },
                         ..self.target.texture.as_image_copy()
                     },
                     wgpu::Extent3d {
@@ -756,12 +777,13 @@ impl GpuRenderer {
                     },
                 );
             }
-            self.passes.draw(
-                &mut encoder,
-                &self.passes.present,
-                &self.target.bind,
-                target,
-            );
+            let present = if self.straight {
+                &self.passes.present_straight
+            } else {
+                &self.passes.present
+            };
+            self.passes
+                .draw(&mut encoder, present, &self.target.bind, target);
             self.queue.submit([encoder.finish()]);
             if self.valid {
                 self.presented = Some(target.clone());
@@ -795,9 +817,16 @@ impl GpuRenderer {
             .zip(paint[head..].iter().rev())
             .take_while(|(a, b)| a == b)
             .count();
+        // Lists of one length line up entry for entry: one that is the same
+        // at the same place paints the same, so only the ones that differ
+        // count. Otherwise every entry between the shared ends does.
+        let aligned = old.len() == paint.len();
         let mut r = NOTHING;
         for list in [old, paint] {
             for (i, p) in list.iter().enumerate().take(list.len() - tail).skip(head) {
+                if aligned && old[i] == paint[i] {
+                    continue;
+                }
                 let Some(b) = reach(p) else {
                     return Change::Full;
                 };
@@ -852,8 +881,8 @@ impl GpuRenderer {
     ) -> Result<(), Error> {
         let size = self.size;
         self.paths.tick();
-        // KONTRA patch: sweeping dead pixel owners is safe even on partial damage;
-        // unlike font aging, it does not evict any still-owned visible image.
+        // KONTRA: partial damage must release dead owners, but retain still-owned
+        // images omitted from this damage walk. Do not reset the GPU atlas.
         self.cache.sweep();
         // Backdrops first: each is a render of its own that the frame samples.
         let mut blurred = Vec::new();
@@ -880,15 +909,21 @@ impl GpuRenderer {
             self.backdrops.truncate(k);
         }
 
-        let (size, cull) = match part.map(|r| r.map(f64::from)) {
+        // A part renders its box alone, moved to the origin by whole
+        // pixels (and whole 16 px tiles): Vello's cost follows the target's
+        // extent, so a box near the far corner must not render the frame.
+        // At a fractional scale, moved f32 coordinates round apart from the
+        // frame's by an ulp: an edge may land a level or a few off.
+        let (size, cull, draw) = match part.map(|r| r.map(f64::from)) {
             Some([x, y, w, h]) => (
-                [(x + w) as u32, (y + h) as u32],
+                [w as u32, h as u32],
                 Some(
                     xf.inverse()
                         .transform_rect_bbox(Rect::new(x, y, x + w, y + h)),
                 ),
+                Affine::translate((-x, -y)) * xf,
             ),
-            None => (size, None),
+            None => (size, None, xf),
         };
         self.scene.reset();
         let mut canvas = Classic::new(&mut self.scene, &mut self.cache, &self.textures, size);
@@ -898,7 +933,7 @@ impl GpuRenderer {
         }
         let mut blurred = blurred.into_iter();
         for p in &resolved.paint {
-            canvas.set_transform(crate::placed(xf, p));
+            canvas.set_transform(crate::placed(draw, p));
             match p.layer {
                 Layer::External => {
                     let e = resolved
@@ -962,7 +997,7 @@ impl GpuRenderer {
                         continue;
                     }
                     if let Some(color) = crate::plain(p) {
-                        let at = crate::placed(xf, p);
+                        let at = crate::placed(draw, p);
                         let long = p.path.commands.len() >= super::REPLAYED;
                         let stroke = p.width > 0.0;
                         // A glyph run or an icon only moves: encoded once.

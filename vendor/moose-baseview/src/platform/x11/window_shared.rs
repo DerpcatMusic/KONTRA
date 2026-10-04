@@ -10,7 +10,7 @@ use crate::utils::SizingStrategy;
 use crate::{warn, MouseCursor, WindowHandler, WindowSettings, WindowSize};
 use calloop::LoopSignal;
 use raw_window_handle::{DisplayHandle, XlibWindowHandle};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use x11rb::protocol::xproto;
@@ -57,6 +57,8 @@ pub(crate) struct WindowInner {
     #[cfg(feature = "opengl")]
     gl_context: Option<super::gl::GlContext>,
 
+    pub(super) ime: RefCell<Option<super::ime::NativeIme>>,
+    pub(crate) ime_configuration: RefCell<Option<crate::ImeConfiguration>>,
     pub(crate) xcb_window: XcbWindow,
     pub(crate) connection: Rc<X11Connection>,
 
@@ -150,7 +152,10 @@ impl WindowInner {
             }
         };
 
+        let ime = super::ime::NativeIme::new(Arc::clone(&connection.conn), xcb_window.id().get());
         Ok(Rc::new(Self {
+            ime: RefCell::new(ime),
+            ime_configuration: RefCell::new(None),
             connection,
             xcb_window,
             visual_id: visual_info.visual_id,
@@ -239,6 +244,13 @@ impl WindowInner {
         // and notify the window handler about it
 
         Ok(())
+    }
+
+    pub fn set_ime_configuration(&self, configuration: Option<crate::ImeConfiguration>) {
+        *self.ime_configuration.borrow_mut() = configuration.clone();
+        if let Some(ime) = self.ime.borrow_mut().as_mut() {
+            ime.configure(configuration, self.is_focused.get());
+        }
     }
 
     pub fn set_keyboard_capture(&self, _capture: bool) {

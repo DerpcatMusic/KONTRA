@@ -1,6 +1,7 @@
 mod context;
 mod cursor;
 mod error;
+mod ime;
 mod keyboard;
 mod view;
 mod window;

@@ -767,6 +767,9 @@ pub struct Shared {
     pub(crate) snapshot_request: Mutex<Option<SnapshotRequest>>,
     /// The app's library folders and the scan of them.
     pub(crate) libraries: library::Scanner,
+    /// Dialog workers retire at plugin teardown, not while closing the GUI.
+    #[cfg(all(feature = "plugin", target_os = "linux"))]
+    pub(crate) dialog_runtime: Arc<crate::ui::picker::Runtime>,
     pub(crate) view: Mutex<View>,
     /// Voices sounding across the rack, reported by the audio thread.
     pub(crate) voices: AtomicU64,
@@ -1055,6 +1058,13 @@ pub(crate) struct View {
     /// When an editor last showed the rack (see [`Shared::watched`]).
     pub(crate) watched_at: Option<Instant>,
 }
+#[cfg(all(feature = "plugin", target_os = "linux"))]
+impl Drop for Shared {
+    fn drop(&mut self) {
+        self.dialog_runtime.shutdown();
+    }
+}
+
 impl Default for Shared {
     fn default() -> Self {
         let crash_session = crate::support::start_plugin_session();
@@ -1155,6 +1165,8 @@ impl Default for Shared {
             multi_request: Mutex::new(None),
             snapshot_request: Mutex::new(None),
             libraries: library::Scanner::default(),
+            #[cfg(all(feature = "plugin", target_os = "linux"))]
+            dialog_runtime: Arc::default(),
             voices: AtomicU64::new(0),
             #[cfg(feature = "uvi")]
             uvi_voices: AtomicU64::new(0),

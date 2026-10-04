@@ -5,7 +5,7 @@ use objc2::runtime::{AnyObject, Ivar};
 use objc2::{msg_send, Encoding, Message, RefEncode};
 use objc2_app_kit::{NSDragOperation, NSDraggingInfo, NSEvent, NSView, NSWindow};
 use objc2_core_foundation::CGRect;
-use objc2_foundation::{NSNotification, NSPoint};
+use objc2_foundation::{NSAttributedString, NSNotification, NSPoint, NSRange, NSRect};
 use raw_window_handle::{AppKitWindowHandle, WindowHandle};
 use std::ffi::{c_void, CStr};
 use std::marker::PhantomData;
@@ -186,6 +186,20 @@ pub trait ViewImpl: Sized {
     fn mouse_entered(this: ViewRef<Self>);
     fn mouse_exited(this: ViewRef<Self>);
     fn cursor_update(this: ViewRef<Self>, event: Option<&NSEvent>) -> bool;
+
+    fn has_marked_text(this: ViewRef<Self>) -> bool;
+    fn marked_range(this: ViewRef<Self>) -> NSRange;
+    fn selected_range(this: ViewRef<Self>) -> NSRange;
+    fn insert_text(this: ViewRef<Self>, text: &AnyObject, replacement: NSRange);
+    fn set_marked_text(
+        this: ViewRef<Self>, text: &AnyObject, selected: NSRange, replacement: NSRange,
+    );
+    fn unmark_text(this: ViewRef<Self>);
+    fn first_rect(this: ViewRef<Self>, range: NSRange, actual: *mut NSRange) -> NSRect;
+    fn attributed_substring(
+        this: ViewRef<Self>, range: NSRange, actual: *mut NSRange,
+    ) -> Option<Retained<NSAttributedString>>;
+    fn do_command(this: ViewRef<Self>, selector: objc2::runtime::Sel);
 
     fn key_down(this: ViewRef<Self>, event: &NSEvent);
     fn key_up(this: ViewRef<Self>, event: &NSEvent);

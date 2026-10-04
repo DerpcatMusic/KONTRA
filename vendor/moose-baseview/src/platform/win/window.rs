@@ -7,7 +7,7 @@ use windows_sys::Win32::{
 use crate::dpi::{PhysicalPosition, PhysicalSize, Size};
 use crate::platform::frame_rate::frame_interval;
 use crate::{warn, EventStatus, HandlerError, WindowHandler};
-use std::cell::{Cell, OnceCell};
+use std::cell::Cell;
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -21,10 +21,11 @@ pub(crate) const BV_WINDOW_MUST_CLOSE: u32 = WM_USER + 1;
 pub(crate) const BV_KEYBOARD_CAPTURE_FOCUS: u32 = WM_USER + 2;
 /// MOOSE: posted by the [`FramePacer`] thread once per compositor frame.
 const BV_FRAME: u32 = WM_USER + 3;
+pub(crate) const BV_IME_CONFIGURE: u32 = WM_USER + 4;
 
 use super::drop_target::DropTarget;
 use super::*;
-use crate::handler::WindowHandlerBuilder;
+use crate::handler::{ClosingHandler, WindowHandlerBuilder};
 use crate::host::Host;
 use crate::platform::win::window_state::{WindowSharedState, WindowState};
 use crate::platform::PlatformError;
@@ -263,9 +264,10 @@ impl Drop for WindowHandle {
         }
 
         if let Some(hwnd) = self.hwnd.take() {
-            let _guard = self.state.originate_host_destroy();
-            if let Err(e) = hwnd.destroy() {
-                warn!("Failed to destroy window: {}", e);
+            // Dispatch synchronously so normal host close releases graphics now.
+            // A callback in progress defers destruction until its outer message returns.
+            unsafe {
+                SendMessageW(hwnd.as_raw(), BV_WINDOW_MUST_CLOSE, 1, 0);
             }
         }
     }
@@ -277,7 +279,10 @@ pub struct BaseviewWindow {
     initial_size: Size,
 
     handler_builder: Cell<Option<WindowHandlerBuilder>>,
-    handler: OnceCell<Box<dyn WindowHandler>>,
+    handler: ClosingHandler<Box<dyn WindowHandler>>,
+    native_destroying: Cell<bool>,
+    destroy_started: Cell<bool>,
+    close_posted: Cell<bool>,
     host: Host,
 
     // Things not directly used, but kept so their Drop impl runs when the window is destroyed
@@ -317,7 +322,10 @@ impl BaseviewWindow {
                     window_state,
                     initial_size: init.settings.size,
                     handler_builder: Cell::new(Some(init.builder)),
-                    handler: OnceCell::new(),
+                    handler: ClosingHandler::new(),
+                    native_destroying: false.into(),
+                    destroy_started: false.into(),
+                    close_posted: false.into(),
                     shared_state,
                     host: init.host,
 
@@ -340,6 +348,23 @@ impl BaseviewWindow {
         Ok(window)
     }
 
+    fn finish_close(&self, window: HWnd) {
+        if !self.handler.is_closing() || self.destroy_started.replace(true) {
+            return;
+        }
+        if !self.handler.close(|handler| {
+            handler.on_event(Event::Window(WindowEvent::WillClose));
+        }) {
+            self.destroy_started.set(false);
+            return;
+        }
+        if !self.native_destroying.get() {
+            if let Err(e) = window.destroy() {
+                warn!("Failed to destroy window: {}", e);
+            }
+        }
+    }
+
     fn notify_destroyed_to_host(&self) {
         if self.shared_state.destroy_host_originated.get() {
             return;
@@ -359,20 +384,26 @@ impl BaseviewWindow {
     }
 
     pub(crate) fn handle_on_frame(&self) {
-        let Some(handler) = self.handler.get() else { return };
-
-        if let Err(e) = handler.on_frame() {
+        if let Some(Err(e)) = self.handler.with(|handler| handler.on_frame()) {
             warn!("Error while rendering frame: {}", e);
             self.window_state.request_close();
         }
     }
 
     pub(crate) fn handle_event(&self, event: Event) -> EventStatus {
-        let Some(handler) = self.handler.get() else {
-            return EventStatus::Ignored;
-        };
-
-        handler.on_event(event)
+        let status =
+            self.handler.with(|handler| handler.on_event(event)).unwrap_or(EventStatus::Ignored);
+        // COM drag/drop also invokes this outside a window message. Schedule its
+        // deferred close after the last callback returns, without pumping a
+        // repost loop while a nested callback is still active.
+        if self.handler.ready_to_close()
+            && !self.native_destroying.get()
+            && !self.destroy_started.get()
+            && !self.close_posted.replace(true)
+        {
+            self.window_state.request_close();
+        }
+        status
     }
 }
 
@@ -459,7 +490,7 @@ impl WindowImpl for BaseviewWindow {
 
             handler_builder.build(context)?
         };
-        let Ok(()) = self.handler.set(handler) else { unreachable!() };
+        self.handler.set(handler);
 
         let pacer = FramePacer::start(window.as_raw(), Arc::clone(&self.frame_pending))
             .map_err(windows_core::Error::from)?;
@@ -471,10 +502,19 @@ impl WindowImpl for BaseviewWindow {
     unsafe fn handle_message(
         &self, window: HWnd, msg: u32, wparam: WPARAM, lparam: LPARAM,
     ) -> Option<LRESULT> {
-        unsafe { wnd_proc_inner(window, msg, wparam, lparam, self) }
+        let result = unsafe { wnd_proc_inner(window, msg, wparam, lparam, self) };
+        self.finish_close(window);
+        result
     }
 
     fn before_destroy(&self, window: HWnd) {
+        // External parent/OS destruction cannot be deferred here. Normally no
+        // callback is active, so release native resources while HWND is valid.
+        // Forced external destruction during a reentrant callback remains the
+        // host's responsibility; cleanup follows as soon as that callback returns.
+        self.native_destroying.set(true);
+        self.handler.request_close();
+        self.finish_close(window);
         drop(self.frame_pacer.take());
         if let Some(drop_target) = self._drop_target.take() {
             let _ = window.revoke_drag_drop();
@@ -617,10 +657,49 @@ unsafe fn wnd_proc_inner(
             Some(0)
         }
         WM_CLOSE => {
-            window_bv.handle_event(Event::Window(WindowEvent::WillClose));
-
-            None
+            window_bv.handler.request_close();
+            Some(0)
         }
+        BV_IME_CONFIGURE => {
+            if let Some(event) = window_state.ime.apply(window.as_raw()) {
+                window_bv.handle_event(Event::Ime(event));
+            }
+            Some(0)
+        }
+        WM_IME_SETCONTEXT => {
+            // Draw preedit in MUI, keep the OS candidate window.
+            Some(unsafe {
+                DefWindowProcW(window.as_raw(), msg, wparam, lparam & !(0x80000000u32 as isize))
+            })
+        }
+        WM_IME_STARTCOMPOSITION => {
+            if window_state.ime.accepts(window.as_raw()) {
+                window_state.ime.composing.set(true);
+                window_state.ime.position(window.as_raw());
+            }
+            Some(0)
+        }
+        WM_IME_COMPOSITION => {
+            let events = window_state.ime.composition(window.as_raw(), lparam as u32);
+            for event in events {
+                window_bv.handle_event(Event::Ime(event));
+            }
+            Some(0)
+        }
+        WM_IME_ENDCOMPOSITION => {
+            window_state.ime.composing.set(false);
+            if window_state.ime.accepts(window.as_raw()) {
+                window_bv.handle_event(Event::Ime(crate::Ime::Preedit {
+                    text: String::new(),
+                    cursor: None,
+                }));
+            }
+            Some(0)
+        }
+        WM_IME_REQUEST if wparam as u32 == windows_sys::Win32::UI::Input::Ime::IMR_DOCUMENTFEED => {
+            window_state.ime.reconversion(window.as_raw(), lparam)
+        }
+        WM_IME_CHAR => Some(0),
         WM_CHAR | WM_SYSCHAR | WM_KEYDOWN | WM_SYSKEYDOWN | WM_KEYUP | WM_SYSKEYUP
         | WM_INPUTLANGCHANGE => {
             let opt_event = window_state.keyboard_state.borrow_mut().process_message(
@@ -630,7 +709,12 @@ unsafe fn wnd_proc_inner(
                 lparam,
             );
 
-            if let Some(event) = opt_event {
+            if let Some(mut event) = opt_event {
+                if window_state.ime.composing.get()
+                    && matches!(event.key, keyboard_types::Key::Character(_))
+                {
+                    event.key = keyboard_types::Key::Named(keyboard_types::NamedKey::Process);
+                }
                 window_bv.handle_event(Event::Keyboard(event));
             }
 
@@ -665,8 +749,7 @@ unsafe fn wnd_proc_inner(
             let previous = window_state.shared.current_size.replace(new_size);
             let new_size = WindowSize::from_physical(new_size, window_state.shared.scale_factor());
 
-            let handler = window_bv.handler.get()?;
-            if let Err(e) = handler.resized(new_size) {
+            if let Err(e) = window_bv.handler.with(|handler| handler.resized(new_size))? {
                 warn!("Window Handler failed to resize: {}", e);
                 window_state.shared.current_size.set(previous);
 
@@ -680,7 +763,7 @@ unsafe fn wnd_proc_inner(
             if let Err(e) = window_bv.request_resize_from_host(new_size) {
                 warn!("Resize request from Host failed: {}. Reverting to previous size.", e);
 
-                if let Err(e) = handler.resized(new_size) {
+                if let Some(Err(e)) = window_bv.handler.with(|handler| handler.resized(new_size)) {
                     warn!("Window Handler failed to resize to previous window size: {}", e);
                 }
 
@@ -728,11 +811,10 @@ unsafe fn wnd_proc_inner(
             let _ = window.set_nc_rect(suggested_nc_rect);
 
             if changed {
-                let handler = window_bv.handler.get()?;
                 let new_size =
                     WindowSize::from_physical(new_size, window_state.shared.scale_factor());
 
-                if let Err(e) = handler.resized(new_size) {
+                if let Some(Err(e)) = window_bv.handler.with(|handler| handler.resized(new_size)) {
                     warn!("Window Handler failed to resize: {}", e);
                     window_state.shared.current_size.set(previous_size);
 
@@ -744,7 +826,9 @@ unsafe fn wnd_proc_inner(
                 if let Err(e) = window_bv.request_resize_from_host(new_size) {
                     warn!("Resize request from Host failed: {}. Reverting to previous size.", e);
 
-                    if let Err(e) = handler.resized(new_size) {
+                    if let Some(Err(e)) =
+                        window_bv.handler.with(|handler| handler.resized(new_size))
+                    {
                         warn!("Window Handler failed to resize to previous window size: {}", e);
                     }
 
@@ -844,8 +928,8 @@ unsafe fn wnd_proc_inner(
 
             Some(0)
         }
-        // NOTE: `WM_NCDESTROY` is handled in the outer function because this deallocates the window
-        //        state
+        // WM_DESTROY is handled by the outer procedure, which invokes before_destroy
+        // and releases the window-owned state reference.
         BV_KEYBOARD_CAPTURE_FOCUS => {
             let focused = HWnd::get_focused_window() == window.as_raw();
             if wparam != 0 {
@@ -861,7 +945,11 @@ unsafe fn wnd_proc_inner(
             Some(0)
         }
         BV_WINDOW_MUST_CLOSE => {
-            let _ = window.destroy();
+            window_bv.close_posted.set(false);
+            if wparam != 0 {
+                window_bv.shared_state.mark_host_destroy();
+            }
+            window_bv.handler.request_close();
             Some(0)
         }
         _ => None,

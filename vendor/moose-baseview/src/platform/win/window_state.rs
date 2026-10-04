@@ -21,6 +21,7 @@ pub(crate) struct WindowState {
     /// The HWND belonging to this window.
     pub hwnd: HWnd,
     pub keyboard_state: RefCell<KeyboardState>,
+    pub(crate) ime: super::ime::NativeIme,
     pub mouse_button_counter: Cell<usize>,
     pub mouse_was_outside_window: Cell<bool>,
     pub cursor_icon: Cell<MouseCursor>,
@@ -39,6 +40,7 @@ impl WindowState {
         Self {
             hwnd,
             keyboard_state: RefCell::new(KeyboardState::new()),
+            ime: Default::default(),
             mouse_button_counter: Cell::new(0),
             mouse_was_outside_window: true.into(),
             cursor_icon: Cell::new(MouseCursor::Default),
@@ -101,6 +103,10 @@ impl WindowState {
     ) -> Result<(), super::PlatformError> {
         self.shared.scale_factor_override.set(scale_factor);
         Ok(())
+    }
+
+    pub fn set_ime_configuration(&self, configuration: Option<crate::ImeConfiguration>) {
+        self.ime.configure(self.hwnd.as_raw(), configuration);
     }
 
     pub fn set_keyboard_capture(&self, capture: bool) {
@@ -219,9 +225,10 @@ impl WindowSharedState {
         Guard(&self.resize_host_originated)
     }
 
-    pub fn originate_host_destroy(&self) -> impl Drop + use<'_> {
+    // A host close can wait for an active callback; its origin must survive
+    // that callback rather than being cleared by a synchronous scope guard.
+    pub fn mark_host_destroy(&self) {
         self.destroy_host_originated.set(true);
-        Guard(&self.destroy_host_originated)
     }
 }
 

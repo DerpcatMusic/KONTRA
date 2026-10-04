@@ -32,9 +32,6 @@ API:
   (KURV K23): Windows only; with capture off, keys stay in the host's pump.
 - `pin_current_image_for_detached_work()` (KURV K24/K27): pins the plugin
   binary so a detached render thread can never outlive its code.
-- `Window::close_bounded(timeout)` on Linux: opt-in X11 close for an editor
-  whose host state was already revoked. Detaches a stalled window thread only
-  after pinning its image; normal `close` still waits for the thread.
 
 Behaviour:
 
@@ -49,15 +46,14 @@ Behaviour:
 - X11: core auto-repeat pairs become one repeated key-down (MOOSE X01);
   ignored key events are forwarded to the embed parent, with synthesized
   key-ups on focus loss and close (KURV K26); `Xft.dpi` clamped to 0.5-4
-  (KURV K25); override and fallback scale honoured at creation. XDND limits
-  property sizes, verifies selection replies, and parses URI lines before
-  percent decoding.
+  (KURV K25); override and fallback scale honoured at creation.
 - macOS: the backing scale is re-read when the view moves into a window, so a
   view created before the host attached it gets its real scale.
 
 Not ported (upstream already covers it, or not needed): KURV's HWND parking on
 close (upstream destroys synchronously), the 4 ms Windows frame timer
-(upstream uses display refresh), X11 parent tracking and XDND (already upstream).
+(upstream keeps 15 ms), the bounded X11 close join (upstream joins), X11
+parent tracking and XDND (already upstream).
 
 `rustfmt.toml` carries upstream's formatting settings so the workspace
 `cargo fmt --check` leaves these sources in upstream style.

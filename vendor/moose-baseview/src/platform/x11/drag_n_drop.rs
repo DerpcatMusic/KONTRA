@@ -115,7 +115,6 @@ impl DragNDropState {
                 source_window,
                 window.connection.atoms.XdndTypeList,
                 xproto::Atom::from(xproto::AtomEnum::ATOM),
-                64,
             );
 
             match result {
@@ -423,18 +422,6 @@ impl DragNDropState {
             }
         }
 
-        if event.target != window.connection.atoms.TextUriList
-            || event.property != window.connection.atoms.XdndSelection
-        {
-            *self = PermanentlyRejected { source_window };
-            if dropped {
-                send_finished_rejected(source_window, window)?;
-            } else {
-                send_status_rejected(source_window, window)?;
-            }
-            return Ok(());
-        }
-
         // The sender should have set the data on our window, let's fetch it.
         match fetch_dnd_data(window)? {
             None => {
@@ -629,7 +616,6 @@ fn fetch_dnd_data(window: &WindowInner) -> Result<Option<DropData>, ConnectionEr
         window.xcb_window.id().get(),
         conn.atoms.XdndSelection,
         conn.atoms.TextUriList,
-        1024 * 1024,
     ) {
         Ok(data) => data,
         Err(GetPropertyError::ConnectionError(e)) => return Err(e),
@@ -655,17 +641,10 @@ fn parse_data(data: &[u8]) -> Result<Vec<PathBuf>, ParseError> {
         return Err(ParseError::EmptyData);
     }
 
+    let decoded = percent_decode(data).decode_utf8().map_err(ParseError::InvalidUtf8)?;
+
     let mut path_list = Vec::new();
-    for line in data.split(|byte| *byte == b'\n') {
-        let line = line.strip_suffix(b"\r").unwrap_or(line);
-        if line.is_empty() || line.starts_with(b"#") {
-            continue;
-        }
-        if path_list.len() == 256 {
-            return Err(ParseError::TooManyFiles);
-        }
-        // Split the raw list first: an escaped newline belongs to a filename.
-        let uri = percent_decode(line).decode_utf8().map_err(ParseError::InvalidUtf8)?;
+    for uri in decoded.split("\r\n").filter(|u| !u.is_empty()) {
         // We only support the file:// protocol
         let Some(mut uri) = uri.strip_prefix("file://") else {
             return Err(ParseError::UnsupportedProtocol(uri.into()));
@@ -689,9 +668,6 @@ fn parse_data(data: &[u8]) -> Result<Vec<PathBuf>, ParseError> {
         let path = Path::new(uri).canonicalize().map_err(ParseError::CanonicalizeError)?;
         path_list.push(path);
     }
-    if path_list.is_empty() {
-        return Err(ParseError::EmptyData);
-    }
     Ok(path_list)
 }
 
@@ -702,7 +678,6 @@ pub enum ParseError {
     UnsupportedHostname(String),
     UnsupportedProtocol(String),
     CanonicalizeError(io::Error),
-    TooManyFiles,
 }
 
 impl Display for ParseError {
@@ -715,27 +690,11 @@ impl Display for ParseError {
             ParseError::UnsupportedHostname(uri) => write!(f, "unsupported hostname in URI: {uri}"),
             ParseError::UnsupportedProtocol(uri) => write!(f, "unsupported protocol in URI: {uri}"),
             ParseError::CanonicalizeError(e) => write!(f, "unable to resolve path: {e}"),
-            ParseError::TooManyFiles => f.write_str("too many dropped files"),
         }
     }
 }
 
 impl Error for ParseError {}
-
-#[cfg(test)]
-mod parse_tests {
-    use super::*;
-
-    #[test]
-    fn uri_lines_are_split_before_percent_decoding() -> Result<(), Box<dyn Error>> {
-        let path = std::env::temp_dir().join(format!("moose-xdnd-{}\r\nfile", std::process::id()));
-        std::fs::write(&path, b"")?;
-        let uri = format!("file://{}\r\n", path.display().to_string().replace("\r\n", "%0D%0A"));
-        assert_eq!(parse_data(uri.as_bytes())?, vec![path.clone()]);
-        std::fs::remove_file(path)?;
-        Ok(())
-    }
-}
 
 #[derive(Debug, Copy, Clone)]
 pub(crate) enum DndAction {

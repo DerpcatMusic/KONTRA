@@ -1,12 +1,16 @@
 //! The system's file dialogs, for the library folder and for saving a multi.
-//! On Linux that is the XDG desktop portal (zenity when no portal answers).
-//! A dialog blocks whoever opens it, so it runs on a thread of its own; the
-//! editor picks the answer up on a later frame. Without a desktop to ask,
-//! the inline strips do the job instead.
+//! Linux polls the desktop portal without blocking the GUI and cancels jobs
+//! before their native parent closes. Windows/macOS retain their native rfd
+//! worker. Filesystem work stays off the GUI; plugin teardown joins workers.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub(crate) use linux::Runtime;
 
 /// What the editor asks for.
 pub enum Ask {
@@ -26,6 +30,7 @@ pub enum Ask {
 
 /// What came back.
 pub enum Picked {
+    DialogError(String),
     Revealed(Result<(), String>),
     ScriptFile { part: usize, epoch: u64, slot: usize, control: usize, result: Result<String, String> },
     Snapshot { slot: usize, source: (String, u32, String), path: PathBuf },
@@ -39,7 +44,10 @@ pub enum Picked {
 #[derive(Default)]
 pub struct Picker {
     answer: Arc<Answer>,
+    #[cfg(not(target_os = "linux"))]
     worker: Mutex<Option<std::thread::JoinHandle<()>>>,
+    #[cfg(target_os = "linux")]
+    linux: linux::State,
     /// The library folder of each row of the browser's upper pane, as last
     /// drawn: a picture dropped on a row becomes its cover.
     pub rows: Mutex<Vec<Option<PathBuf>>>,
@@ -49,15 +57,35 @@ pub struct Picker {
 struct Answer {
     open: AtomicBool,
     picked: Mutex<Option<Picked>>,
+    #[cfg(target_os = "linux")]
+    current: Mutex<Option<Arc<linux::Operation>>>,
 }
 
 impl Drop for Picker {
     fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        self.close();
+        #[cfg(not(target_os = "linux"))]
         if let Some(worker) = super::lock(&self.worker).take() { let _ = worker.join(); }
     }
 }
 
 impl Picker {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn with_runtime(runtime: Arc<Runtime>) -> Self {
+        Self { answer: Arc::default(), linux: linux::State::new(runtime), rows: Mutex::default() }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn native_window(&self, parent: Option<u32>) {
+        self.linux.parent(parent, &self.answer);
+    }
+
+    /// GUI close cancels; final plugin teardown owns worker joining.
+    pub fn close(&self) {
+        #[cfg(target_os = "linux")]
+        self.linux.close(&self.answer);
+    }
     /// Whether a dialog can be shown here at all.
     pub fn available() -> bool {
         if cfg!(test) {
@@ -69,10 +97,7 @@ impl Picker {
         let bus = std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some()
             || std::env::var_os("XDG_RUNTIME_DIR")
                 .is_some_and(|dir| PathBuf::from(dir).join("bus").exists());
-        let zenity = std::env::var_os("PATH").is_some_and(|path| {
-            std::env::split_paths(&path).any(|dir| dir.join("zenity").is_file())
-        });
-        bus || zenity
+        bus
     }
 
     /// Run a file operation on its owned worker. Unavailable dialogs return
@@ -85,6 +110,10 @@ impl Picker {
             // Reveal has no inline fallback: do not report a dropped request as started.
             return !matches!(ask, Ask::Reveal(_));
         }
+        #[cfg(target_os = "linux")]
+        return self.linux.start(ask, Arc::clone(&self.answer));
+        #[cfg(not(target_os = "linux"))]
+        {
         if let Some(worker) = super::lock(&self.worker).take() { let _ = worker.join(); }
         let answer = self.answer.clone();
         let spawned = std::thread::Builder::new()
@@ -99,19 +128,25 @@ impl Picker {
             Ok(worker) => { *super::lock(&self.worker) = Some(worker); true }
             Err(_) => { self.answer.open.store(false, Ordering::Release); false }
         }
+        }
     }
 
     /// The answer, once, when the dialog has closed with one.
     pub fn take(&self) -> Option<Picked> {
+        #[cfg(target_os = "linux")]
+        self.linux.poll(&self.answer);
         super::lock(&self.answer.picked).take()
     }
 
     /// An answer is waiting: the editor should build a frame to take it.
     pub fn ready(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        self.linux.poll(&self.answer);
         super::lock(&self.answer.picked).is_some()
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 fn show(ask: Ask) -> Option<Picked> {
     match ask {
         Ask::Reveal(path) => Some(Picked::Revealed(super::menu::reveal(&path))),
@@ -194,12 +229,15 @@ mod tests {
         assert!(!picker.ask(Ask::Reveal("/not-started".into())));
         picker.answer.open.store(false, Ordering::Release);
         let missing = std::env::temp_dir().join(format!("kontra-reveal-missing-{}", std::process::id()));
-        let answer = picker.answer.clone();
         assert!(picker.ask(Ask::Reveal(missing.clone())), "Reveal does not need a file-dialog backend");
-        drop(picker); // Joins the worker before the editor/plugin library can unload.
-        assert!(!answer.open.load(Ordering::Acquire));
-        let Some(Picked::Revealed(Err(error))) = super::super::lock(&answer.picked).take() else { panic!("missing-path result was not delivered") };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !picker.ready() && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(!picker.answer.open.load(Ordering::Acquire));
+        let Some(Picked::Revealed(Err(error))) = picker.take() else { panic!("missing-path result was not delivered") };
         assert!(error.contains(&missing.display().to_string()));
+        drop(picker);
     }
 
     #[test]

@@ -2,9 +2,11 @@ use super::*;
 use crate::wrappers::appkit::new_class_name;
 use objc2::__framework_prelude::{AnyClass, AnyObject, Bool, Sel};
 use objc2::ffi::objc_disposeClassPair;
+use objc2::rc::Retained;
 use objc2::runtime::ClassBuilder;
 use objc2::{msg_send, sel, ClassType};
 use objc2_app_kit::{NSEvent, NSView};
+use objc2_foundation::{NSArray, NSAttributedString, NSRange, NSRect};
 use std::ffi::c_void;
 
 /// # Safety
@@ -141,6 +143,44 @@ pub unsafe fn create_view_class<V: ViewImpl>() -> &'static AnyClass {
         class.add_method(sel!(mouseEntered:), mouse_entered::<V> as extern "C-unwind" fn(_, _, _));
         class.add_method(sel!(mouseExited:), mouse_exited::<V> as extern "C-unwind" fn(_, _, _));
 
+        class.add_method(
+            sel!(hasMarkedText),
+            has_marked_text::<V> as extern "C-unwind" fn(_, _) -> _,
+        );
+        class.add_method(sel!(markedRange), marked_range::<V> as extern "C-unwind" fn(_, _) -> _);
+        class.add_method(
+            sel!(selectedRange),
+            selected_range::<V> as extern "C-unwind" fn(_, _) -> _,
+        );
+        class.add_method(
+            sel!(insertText:replacementRange:),
+            insert_text::<V> as extern "C-unwind" fn(_, _, _, _),
+        );
+        class.add_method(
+            sel!(setMarkedText:selectedRange:replacementRange:),
+            set_marked_text::<V> as extern "C-unwind" fn(_, _, _, _, _),
+        );
+        class.add_method(sel!(unmarkText), unmark_text::<V> as extern "C-unwind" fn(_, _));
+        class.add_method(
+            sel!(firstRectForCharacterRange:actualRange:),
+            first_rect::<V> as extern "C-unwind" fn(_, _, _, _) -> _,
+        );
+        class.add_method(
+            sel!(attributedSubstringForProposedRange:actualRange:),
+            attributed_substring::<V> as extern "C-unwind" fn(_, _, _, _) -> _,
+        );
+        class.add_method(
+            sel!(validAttributesForMarkedText),
+            valid_attributes as extern "C-unwind" fn(_, _) -> _,
+        );
+        class.add_method(
+            sel!(characterIndexForPoint:),
+            character_index as extern "C-unwind" fn(_, _, _) -> _,
+        );
+        class.add_method(
+            sel!(doCommandBySelector:),
+            do_command::<V> as extern "C-unwind" fn(_, _, _),
+        );
         class.add_method(sel!(keyDown:), key_down::<V> as extern "C-unwind" fn(_, _, _));
         class.add_method(sel!(keyUp:), key_up::<V> as extern "C-unwind" fn(_, _, _));
         class.add_method(sel!(flagsChanged:), flags_changed::<V> as extern "C-unwind" fn(_, _, _));
@@ -153,6 +193,9 @@ pub unsafe fn create_view_class<V: ViewImpl>() -> &'static AnyClass {
         );
     }
 
+    if let Some(protocol) = objc2::runtime::AnyProtocol::get(c"NSTextInputClient") {
+        class.add_protocol(protocol);
+    }
     class.add_ivar::<*mut c_void>(BASEVIEW_STATE_IVAR);
 
     class.register()
@@ -367,4 +410,56 @@ extern "C-unwind" fn cursor_update<V: ViewImpl>(
 
     // SAFETY: Our superclass is NSView
     let _: () = unsafe { msg_send![super(this, NSView::class()), cursorUpdate: event] };
+}
+
+extern "C-unwind" fn has_marked_text<V: ViewImpl>(this: &View<V>, _: Sel) -> Bool {
+    Bool::new(this.inner_ref().is_some_and(V::has_marked_text))
+}
+extern "C-unwind" fn marked_range<V: ViewImpl>(this: &View<V>, _: Sel) -> NSRange {
+    this.inner_ref().map_or(NSRange::new(usize::MAX, 0), V::marked_range)
+}
+extern "C-unwind" fn selected_range<V: ViewImpl>(this: &View<V>, _: Sel) -> NSRange {
+    this.inner_ref().map_or(NSRange::new(usize::MAX, 0), V::selected_range)
+}
+extern "C-unwind" fn insert_text<V: ViewImpl>(
+    this: &View<V>, _: Sel, text: &AnyObject, replacement: NSRange,
+) {
+    if let Some(inner) = this.inner_ref() {
+        V::insert_text(inner, text, replacement);
+    }
+}
+extern "C-unwind" fn set_marked_text<V: ViewImpl>(
+    this: &View<V>, _: Sel, text: &AnyObject, selected: NSRange, replacement: NSRange,
+) {
+    if let Some(inner) = this.inner_ref() {
+        V::set_marked_text(inner, text, selected, replacement);
+    }
+}
+extern "C-unwind" fn unmark_text<V: ViewImpl>(this: &View<V>, _: Sel) {
+    if let Some(inner) = this.inner_ref() {
+        V::unmark_text(inner);
+    }
+}
+extern "C-unwind" fn first_rect<V: ViewImpl>(
+    this: &View<V>, _: Sel, range: NSRange, actual: *mut NSRange,
+) -> NSRect {
+    this.inner_ref().map_or(NSRect::ZERO, |inner| V::first_rect(inner, range, actual))
+}
+extern "C-unwind" fn attributed_substring<V: ViewImpl>(
+    this: &View<V>, _: Sel, range: NSRange, actual: *mut NSRange,
+) -> *mut NSAttributedString {
+    this.inner_ref()
+        .and_then(|inner| V::attributed_substring(inner, range, actual))
+        .map_or(core::ptr::null_mut(), |text| Retained::autorelease_ptr(text))
+}
+extern "C-unwind" fn valid_attributes(_: &AnyObject, _: Sel) -> *mut NSArray<AnyObject> {
+    Retained::autorelease_ptr(NSArray::new())
+}
+extern "C-unwind" fn character_index(_: &AnyObject, _: Sel, _: objc2_foundation::NSPoint) -> usize {
+    usize::MAX
+}
+extern "C-unwind" fn do_command<V: ViewImpl>(this: &View<V>, _: Sel, selector: Sel) {
+    if let Some(inner) = this.inner_ref() {
+        V::do_command(inner, selector);
+    }
 }
