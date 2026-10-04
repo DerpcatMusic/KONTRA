@@ -29,6 +29,47 @@ impl std::fmt::Display for UnsupportedSourceKind {
 }
 impl std::error::Error for UnsupportedSourceKind {}
 
+/// A known source node is rejected by an existing scalar admission gate.
+/// Private error identity only; no Program attributes or public report fields.
+#[derive(Debug)]
+pub(crate) struct UnsupportedSourceSetting {
+    pub(crate) node: NodeId,
+    pub(crate) source_kind: &'static str,
+    pub(crate) parameter: &'static str,
+    pub(crate) observed: f64,
+}
+impl UnsupportedSourceSetting {
+    /// Validate node/kind/parameter/scalar shape, not a cross-Program fingerprint.
+    /// Production binding comes from handling ModulationGraph::new(program)'s
+    /// error against that same Program in the same preflight invocation.
+    pub(crate) fn node_in(&self, program: &Program) -> Option<NodeId> {
+        let known_parameter = match self.source_kind {
+            "LFO" => matches!(self.parameter, "WaveFormType" | "Retrigger" | "Smooth"),
+            "StepEnvelope" => matches!(self.parameter, "SyncToHost" | "Retrigger" | "InterpolationMode" | "Smooth" | "Bipolar" | "Depth" | "ManualTrigger" | "Bypass"),
+            _ => false,
+        };
+        (known_parameter && self.observed.is_finite()
+            && program.nodes.get(self.node).is_some_and(|node| node.kind == self.source_kind))
+            .then_some(self.node)
+    }
+}
+impl std::fmt::Display for UnsupportedSourceSetting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Keep the original public error wording and first-cause identity.
+        match (self.source_kind, self.parameter) {
+            ("LFO", "WaveFormType") => write!(f, "Unverified UVI LFO waveform type at node {}", self.node),
+            ("LFO", "Retrigger") => write!(f, "Unverified UVI square LFO trigger mode at node {}", self.node),
+            ("LFO", "Smooth") => write!(f, "Unimplemented UVI deterministic LFO smoothing at node {}", self.node),
+            _ => write!(f, "Unverified UVI {} {} at node {}", self.source_kind, self.parameter, self.node),
+        }
+    }
+}
+impl std::error::Error for UnsupportedSourceSetting {}
+fn source_setting_gate(node: NodeId, source_kind: &'static str, parameter: &'static str, observed: f64, admitted: bool) -> Result<()> {
+    if admitted { Ok(()) }
+    else { Err(UnsupportedSourceSetting { node, source_kind, parameter, observed }.into()) }
+}
+
 pub type Parameter = (NodeId, String);
 type SourceStateKey = (NodeId, Option<u32>, Option<u64>);
 type BuiltinStateKey = (u8, Option<u32>, Option<u64>);
@@ -1632,7 +1673,8 @@ impl ModulationGraph {
                     let values: Vec<f64> = levels.split_whitespace().map(|v| v.replace(',', ".").parse()).collect::<std::result::Result<_, _>>()?;
                     ensure!(values.len() >= steps as usize && values.len() <= 128 && values.iter().all(|v| (-1. ..=1.).contains(v)), "Invalid UVI StepEnvelope Levels at node {id}");
                     for (name, expected) in [("SyncToHost", 1.), ("Retrigger", 0.), ("InterpolationMode", 0.), ("Smooth", 0.), ("Bipolar", 0.), ("Depth", 1.), ("ManualTrigger", 0.), ("Bypass", 0.)] {
-                        ensure!(number(&n.attributes, name, if name == "Depth" { 1. } else { 0. })? == expected, "Unverified UVI StepEnvelope {name} at node {id}");
+                        let observed = number(&n.attributes, name, if name == "Depth" { 1. } else { 0. })?;
+                        source_setting_gate(id, "StepEnvelope", name, observed, observed == expected)?;
                     }
                     graph.tables.insert(id, values);
                 }
@@ -1781,23 +1823,18 @@ impl ModulationGraph {
                     if program.nodes[id].kind == "LFO" {
                         let attributes = &program.nodes[id].attributes;
                         let wave = number(attributes, "WaveFormType", 0.)?;
-                        ensure!(
-                            [0., 1., 2., 6., 9.].contains(&wave),
-                            "Unverified UVI LFO waveform type at node {id}"
-                        );
-                        ensure!(
-                            wave != 1. || number(attributes, "Retrigger", 1.)? == 1.,
-                            "Unverified UVI square LFO trigger mode at node {id}"
-                        );
+                        source_setting_gate(id, "LFO", "WaveFormType", wave,
+                            [0., 1., 2., 6., 9.].contains(&wave))?;
+                        if wave == 1. {
+                            let retrigger = number(attributes, "Retrigger", 1.)?;
+                            source_setting_gate(id, "LFO", "Retrigger", retrigger, retrigger == 1.)?;
+                        }
                         let smooth = number(attributes, "Smooth", 0.)?;
                         ensure!(
                             (0. ..=1.).contains(&smooth),
                             "Invalid UVI LFO smoothing at node {id}"
                         );
-                        ensure!(
-                            wave == 6. || smooth == 0.,
-                            "Unimplemented UVI deterministic LFO smoothing at node {id}"
-                        );
+                        source_setting_gate(id, "LFO", "Smooth", smooth, wave == 6. || smooth == 0.)?;
                         if wave == 9. {
                             ensure!(
                                 graph.tables.contains_key(&id),
@@ -3248,10 +3285,8 @@ impl ModulationGraph {
             ("ManualTrigger", 0.),
             ("Bypass", 0.),
         ] {
-            ensure!(
-                self.setting(n, name, if name == "Depth" { 1. } else { 0. }, live)? == expected,
-                "Unverified UVI StepEnvelope {name} at node {n}"
-            );
+            let observed = self.setting(n, name, if name == "Depth" { 1. } else { 0. }, live)?;
+            source_setting_gate(n, "StepEnvelope", name, observed, observed == expected)?;
         }
         ensure!(
             self.node_targets[n].is_empty(),
@@ -4108,10 +4143,7 @@ impl ModulationGraph {
             let raw = self.random_lfo(n, input, freq, phase, smooth)?;
             return Ok((if bipolar { raw } else { (raw + 1.) * 0.5 }) * amplitude);
         }
-        ensure!(
-            smooth == 0.,
-            "Unimplemented UVI deterministic LFO smoothing at node {n}"
-        );
+        source_setting_gate(n, "LFO", "Smooth", smooth, smooth == 0.)?;
         if wave == 1. || wave == 2. {
             ensure!(
                 wave != 1. || retrigger == 1.,
@@ -6810,5 +6842,62 @@ mod registered_proof {
             .is_err()
         );
         assert_eq!(calls, 0);
+    }
+}
+
+#[cfg(test)]
+mod source_setting_identity_proof {
+    use super::*;
+    use crate::uvi::program::parse_program;
+    fn fixture(kind: &str, attributes: &str) -> Program {
+        parse_program(&format!(r#"<Program><ControlSignalSources><{kind} Name="S" {attributes}/></ControlSignalSources><Connections><SignalConnection Source="$Program/S" Destination="Gain" Ratio="1"/></Connections></Program>"#)).unwrap()
+    }
+    #[test]
+    fn typed_source_setting_keeps_exact_wording_value_and_first_gate() {
+        for (kind, attributes, parameter, observed, prefix) in [
+            ("LFO", "WaveFormType=\"3\" Smooth=\".1\"", "WaveFormType", 3., "Unverified UVI LFO waveform type"),
+            ("LFO", "WaveFormType=\"1\" Retrigger=\"0\" Smooth=\".1\"", "Retrigger", 0., "Unverified UVI square LFO trigger mode"),
+            ("LFO", "WaveFormType=\"0\" Smooth=\"5.2776863e-09\"", "Smooth", 5.2776863e-09, "Unimplemented UVI deterministic LFO smoothing"),
+            ("StepEnvelope", "NumSteps=\"2\" Levels=\"0 1\" SyncToHost=\"0\" Retrigger=\"1\" Smooth=\".1\"", "SyncToHost", 0., "Unverified UVI StepEnvelope SyncToHost"),
+            ("StepEnvelope", "NumSteps=\"2\" Levels=\"0 1\" SyncToHost=\"1\" Retrigger=\"0\" Smooth=\".1\"", "Smooth", 0.1, "Unverified UVI StepEnvelope Smooth"),
+        ] {
+            let program = fixture(kind, attributes);
+            let node = program.nodes.iter().position(|n| n.kind == kind).unwrap();
+            let error = ModulationGraph::new(&program).err().unwrap();
+            assert_eq!(error.to_string(), format!("{prefix} at node {node}"));
+            let setting = error.downcast_ref::<UnsupportedSourceSetting>().unwrap();
+            assert_eq!(setting.node_in(&program), Some(node));
+            assert_eq!(setting.parameter, parameter);
+            assert_eq!(setting.observed, observed);
+            assert!(setting.observed.is_finite());
+        }
+    }
+    #[test]
+    fn source_identity_requires_valid_node_kind_parameter_and_scalar() {
+        let program = fixture("LFO", "Smooth=\"0\"");
+        let node = program.nodes.iter().position(|n| n.kind == "LFO").unwrap();
+        for (node, source_kind, parameter, observed) in [
+            (program.nodes.len(), "LFO", "Smooth", 0.1),
+            (program.root, "LFO", "Smooth", 0.1),
+            (node, "StepEnvelope", "Smooth", 0.1),
+            (node, "LFO", "Levels", 0.1),
+            (node, "LFO", "Smooth", f64::NAN),
+        ] {
+            assert_eq!(UnsupportedSourceSetting { node, source_kind, parameter, observed }.node_in(&program), None);
+        }
+    }
+    #[test]
+    fn live_source_setting_failure_retains_the_same_scalar_identity() {
+        for (kind, attributes) in [
+            ("LFO", "WaveFormType=\"0\" Smooth=\"0\""),
+            ("StepEnvelope", "SyncToHost=\"1\" Retrigger=\"0\" NumSteps=\"2\" Levels=\"0 1\" Smooth=\"0\""),
+        ] {
+            let program = fixture(kind, attributes);
+            let node = program.nodes.iter().position(|n| n.kind == kind).unwrap();
+            let graph = ModulationGraph::new(&program).unwrap();
+            let error = graph.evaluate(&Inputs::default(), &HashMap::from([((node, "Smooth".into()), 0.1)])).unwrap_err();
+            let setting = error.downcast_ref::<UnsupportedSourceSetting>().unwrap();
+            assert_eq!((setting.node_in(&program), setting.parameter, setting.observed), (Some(node), "Smooth", 0.1));
+        }
     }
 }
