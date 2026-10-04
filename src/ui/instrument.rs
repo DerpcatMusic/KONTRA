@@ -329,10 +329,9 @@ pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
 
 #[cfg(feature = "uvi")]
 pub(super) fn native_panel(cx: &Cx, slot: usize) -> Option<(Arc<crate::plugin::uvi_ui::Published>, crate::uvi::worker::Stamp)> {
-    let source = cx.selection.parts.get(slot)?.uvi.as_ref()?;
     let view = cx.view.parts.get(slot)?;
     let published = view.uvi_ui.clone()?;
-    if !view.uvi_matches(source, published.stamp)
+    if !view.uvi_matches(cx.p, slot, &cx.selection, published.stamp)
         || published.stamp.epoch != cx.p.shared.uvi_activation_epoch() { return None; }
     let generation = cx.p.shared.part(slot)?.uvi_generation.load(std::sync::atomic::Ordering::Acquire);
     Some((published.clone(), crate::uvi::worker::Stamp { epoch: cx.p.shared.uvi_activation_epoch(), generation,

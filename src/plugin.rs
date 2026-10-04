@@ -934,8 +934,9 @@ impl PartView {
         }
     }
     #[cfg(feature = "uvi")]
-    pub(crate) fn uvi_matches(&self, source: &library::UviSource, stamp: crate::uvi::worker::Stamp) -> bool {
-        self.uvi_activation.as_ref().is_some_and(|a| a.source == *source
+    pub(crate) fn uvi_matches(&self, params: &SamplerParams, slot: usize,
+        selection: &Selection, stamp: crate::uvi::worker::Stamp) -> bool {
+        self.uvi_activation.as_ref().is_some_and(|a| a.context_matches(params, slot, selection)
             && (a.epoch, a.generation) == (stamp.epoch, stamp.generation))
     }
     /// Inspection follows the full loader context before and after audio
@@ -5598,6 +5599,60 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[cfg(feature = "uvi")]
+    #[test]
+    fn native_panel_context_rejects_same_source_restore_but_retains_failed_inspection() {
+        let params = SamplerParams::default();
+        params.shared.ensure_parts(1);
+        params.shared.rate.store(48000f64.to_bits(), Ordering::Release);
+        params.shared.uvi_max_host_frames.store(256, Ordering::Release);
+        let source = library::UviSource { bank: "panel-context.ufs".into(),
+            bank_uuid: [0; 16], member: "preset.uvip".into() };
+        let mut selection = Selection::default();
+        selection.parts = vec![Part { uvi: Some(source.clone()), uvi_state: vec![1].into(),
+            ..Default::default() }];
+        let atoms = params.shared.part(0).unwrap();
+        let activation = uvi_load::Activation { source, saved_state: vec![1].into(),
+            epoch: params.shared.uvi_epoch.load(Ordering::Acquire), generation: 7,
+            part_generation: atoms.generation.load(Ordering::Acquire), rate: 48000,
+            max_host_frames: 256, published: true };
+        let stamp = crate::uvi::worker::Stamp { epoch: activation.epoch,
+            generation: activation.generation, frame: 0 };
+        let view = PartView { uvi_activation: Some(activation.clone()), ..Default::default() };
+        atoms.uvi_generation.store(activation.generation, Ordering::Release);
+        atoms.uvi_part_generation.store(activation.part_generation, Ordering::Release);
+        assert!(view.uvi_matches(&params, 0, &selection, stamp));
+        // Inspection ownership does not require a playable endpoint.
+        atoms.uvi_generation.store(0, Ordering::Release);
+        assert!(view.uvi_matches(&params, 0, &selection, stamp));
+        atoms.uvi_generation.store(activation.generation, Ordering::Release);
+        atoms.uvi_failed.store(true, Ordering::Release);
+        assert!(view.uvi_matches(&params, 0, &selection, stamp));
+        selection.parts[0].uvi_state = vec![2].into();
+        assert!(!view.uvi_matches(&params, 0, &selection, stamp),
+            "same bank/member restore invalidates the old panel before replacement adoption");
+        selection.parts[0].uvi_state = activation.saved_state.clone();
+        atoms.generation.store(activation.part_generation + 1, Ordering::Release);
+        assert!(!view.uvi_matches(&params, 0, &selection, stamp));
+        atoms.generation.store(activation.part_generation, Ordering::Release);
+        params.shared.rate.store(44100f64.to_bits(), Ordering::Release);
+        assert!(!view.uvi_matches(&params, 0, &selection, stamp));
+        params.shared.rate.store(48000f64.to_bits(), Ordering::Release);
+        params.shared.uvi_max_host_frames.store(512, Ordering::Release);
+        assert!(!view.uvi_matches(&params, 0, &selection, stamp));
+        params.shared.uvi_max_host_frames.store(256, Ordering::Release);
+        params.shared.uvi_epoch.store(activation.epoch + 1, Ordering::Release);
+        assert!(!view.uvi_matches(&params, 0, &selection, stamp));
+        params.shared.uvi_epoch.store(activation.epoch, Ordering::Release);
+        assert!(!view.uvi_matches(&params, 0, &selection,
+            crate::uvi::worker::Stamp { generation: stamp.generation + 1, ..stamp }));
+        selection.parts[0].uvi.as_mut().unwrap().bank_uuid = [1; 16];
+        assert!(!view.uvi_matches(&params, 0, &selection, stamp));
+        selection.parts[0].uvi = Some(activation.source.clone());
+        assert!(view.uvi_matches(&params, 0, &selection, stamp));
+        assert!(!view.uvi_matches(&params, 1, &selection, stamp));
+    }
 
     #[cfg(feature = "uvi")]
     #[test]
