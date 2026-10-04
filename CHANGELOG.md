@@ -10,6 +10,9 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Local UVI interoperability follow-up
 
+- Validate Info worker observations against the current source, restore state and activation/context. Keep failed-owner inspection; render absent inventory counts as unknown, distinguish loader observations from endpoint/fault data, and deduplicate PCM separately from render timing so a failure before the first attempt retains its PCM census.
+- Reuse the existing per-Program Mode1 producer alpha32 in connection filtering under unchanged rate/block/error guards. No new cache state or fidelity admission. Fourteen focused checks preserve output/state bits and Info ownership; authored wide/compact/zero-attempt-failure captures pass independent visual review. No current-bank/DAW deadline or measured speedup claim.
+
 - Preserve validated positive exact CLAP/VST3 attacks at minimum velocity 1 in the current 7-bit adapter. Reject an unrepresentable exact-zero UVI attack by completing only its own root, keeping prior voices and canonical End/backpressure ownership, with a dedicated per-destination diagnostic. Mixed Kontakt/UVI destinations retain genuine Kontakt owners until Off. The separate float core is untouched.
 - Forward documented omitted/zero-channel script AfterTouch as one omni event through the existing Program/Layer scopes and broadcast at both consumers. Explicit channels, strict value/zero-coercion guards, external MIDI and MPE boundaries stay intact.
 - Twenty focused synthetic checks pass, including nine new authored cases, actual Worker/Slot PCM survival and zero audio-heap paths. Current UVI documentation is the AfterTouch semantic source; no new Workstation 4.0.9 oracle, paid-bank/DAW deadline or full Falcon-fidelity proof was performed. Historical RequestCapacity/modwheel failures are separate unresolved performance evidence.

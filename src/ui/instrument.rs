@@ -569,6 +569,7 @@ fn native_stage_name(phase: &str) -> &str {
         "restore_apply" => "Restoring settings",
         "player_finalize" => "Finishing player initialization",
         "serve" => "Rendering playback",
+        "packet_render" => "Rendering packet",
         _ => phase,
     }
 }
@@ -576,29 +577,32 @@ fn native_stage_name(phase: &str) -> &str {
 /// Formats only the worker's bounded scalar snapshot; never asks Lua or copies
 /// the graph. Initial resource totals deliberately exclude authored later loads.
 #[cfg(feature = "uvi")]
-fn native_activity_lines(activity: &crate::uvi::worker::WorkerLoadActivity, include_failure: bool) -> Vec<(String, bool)> {
+fn native_activity_lines(activity: &crate::uvi::worker::WorkerLoadActivity, include_failure: bool,
+    include_pcm: bool, include_render_timing: bool) -> Vec<(String, bool)> {
     use crate::uvi::worker::Status;
     let mut lines = Vec::new();
     let completed = activity.stages.iter().filter(|stage| stage.outcome == "finished").count();
     let state = match activity.status {
         Status::Starting => "Loading · partial, playback not ready",
-        Status::Ready => "Worker ready",
+        Status::Ready => "Worker ready at last loader observation",
         Status::Failed => "Worker failed",
         Status::Stopped => "Worker stopped",
     };
     lines.push((format!("{state} · {:.1} s initialization · {completed} completed stages", activity.elapsed.as_secs_f64()),
         activity.status == Status::Failed));
-    lines.push((format!("Current phase: {}", native_stage_name(activity.phase)), false));
+    let phase_label = if activity.status == Status::Starting { "Current loading phase" } else { "Observed phase" };
+    lines.push((format!("{phase_label}: {}", native_stage_name(activity.phase)), false));
     if let Some(nodes) = activity.nodes {
         lines.push((format!("Parsed: {nodes} graph nodes · {} sample zones · {} script processors",
-            activity.sample_zones.unwrap_or(0), activity.script_processors.unwrap_or(0)), false));
+            activity.sample_zones.map_or_else(|| "unknown".to_owned(), |n| n.to_string()),
+            activity.script_processors.map_or_else(|| "unknown".to_owned(), |n| n.to_string())), false));
     } else {
-        lines.push(("Program graph: not yet parsed".into(), false));
+        lines.push(("Program graph inventory: pending or unavailable".into(), false));
     }
     if let Some(rejected) = activity.static_rejected_nodes {
         lines.push((format!("Static playback check: {rejected} known rejected graph nodes"), rejected != 0));
     } else {
-        lines.push(("Static playback check: pending".into(), false));
+        lines.push(("Static playback check: pending or unavailable".into(), false));
     }
     if activity.status == Status::Starting {
         lines.push(("Counts show partial loading progress. Controls become available when audio setup is complete.".into(), false));
@@ -609,11 +613,12 @@ fn native_activity_lines(activity: &crate::uvi::worker::WorkerLoadActivity, incl
         lines.push((format!("Initial resources: {} / {total} paths loaded · {} unique decodes · {:.2} MiB decoded PCM{cache}",
             resources.loaded, resources.unique_decodes, resources.bytes as f64 / (1024. * 1024.)), false));
         if let Some(path) = &resources.current {
-            lines.push((format!("Current resource: {path}"), false));
+            let label = if activity.phase == "resources" { "Current resource" } else { "Last initial resource" };
+            lines.push((format!("{label}: {path}"), false));
         }
         lines.push(("Resource totals cover the initial program references; additional resources loaded by scripts are not counted here.".into(), false));
     } else {
-        lines.push(("Initial resources: waiting for program resource inventory".into(), false));
+        lines.push(("Initial resource inventory: pending or unavailable".into(), false));
     }
     for stage in &activity.stages {
         let outcome = match stage.outcome {
@@ -631,13 +636,39 @@ fn native_activity_lines(activity: &crate::uvi::worker::WorkerLoadActivity, incl
             native_stage_name(activity.phase), activity.frame), true));
     }
     let stats = activity.stats;
+    if include_pcm && let Some(bytes) = activity.owned_pcm_bytes {
+        lines.push((format!("Observed worker-owned PCM: {:.2} MiB · {} aliases · resource revision {} (includes script-loaded resources; excludes Lua/DSP/UI)",
+            bytes as f64 / 1_048_576., stats.resource_alias_count, stats.resource_revision), false));
+    }
+    if include_render_timing {
+        let wall = if stats.render_attempts > 0 {
+            format!("wall {:.3} ms mean / {:.3} ms max",
+                stats.render_ns as f64 / stats.render_attempts as f64 / 1e6, stats.max_render_ns as f64 / 1e6)
+        } else { "render wall timing unavailable".to_owned() };
+        let cpu = if stats.render_cpu_samples > 0 {
+            format!("CPU {:.3} ms mean / {:.3} ms max ({} measured attempts)",
+                stats.render_cpu_ns as f64 / stats.render_cpu_samples as f64 / 1e6,
+                stats.max_render_cpu_ns as f64 / 1e6, stats.render_cpu_samples)
+        } else { "render CPU timing unavailable".to_owned() };
+        lines.push((format!("Observed render attempts: {} · {wall} · {cpu}", stats.render_attempts), false));
+    }
     lines.push((format!("Playback: {} rendered packets · {} active voice instances · {} worker errors",
         stats.rendered_blocks, stats.active_voices, stats.errors), stats.errors != 0));
     lines.push((format!("Empty output polls: {} · queue backpressure: {} · stale packets: {} · omitted script prints: {}",
         stats.empty_output_polls, stats.backpressure, stats.stale_packets, stats.dropped_logs),
         stats.dropped_logs != 0));
-    lines.push(("Voice instances include held or releasing silent voices. Empty output polls include normal waits; audio shortages are counted separately.".into(), false));
+    lines.push(("Loader observations use a 250 ms snapshot cache; these are not endpoint readiness or exact fault-capture measurements. Render timings exclude queue waiting and UI snapshots. Voice instances include held or releasing silent voices; normal empty output polls are counted separately from audio shortages.".into(), false));
     lines
+}
+
+#[cfg(feature = "uvi")]
+fn native_activity_summary_visibility(report: Option<&serde_json::Value>) -> (bool, bool) {
+    let timing = report.map(|report| &report["terminal_failure"]["worker"]["timing"]);
+    let has_pcm = timing.and_then(|timing| timing["activity_summary"].as_str())
+        .is_some_and(|summary| !summary.is_empty());
+    // A zero-attempt capture still owns timing rows but has no PCM summary.
+    // Initialization PCM must remain visible independently of render timing.
+    (!has_pcm, !timing.is_some_and(|timing| !timing.is_null()))
 }
 
 /// What was loaded and what could not be.
@@ -678,12 +709,14 @@ pub fn info(ui: &mut Ui, cx: &mut Cx) -> El {
             }
         }
         #[cfg(feature = "uvi")]
-        if let Some(activity) = &v.uvi_activity {
+        if let Some(activity) = &v.uvi_activity
+            && v.uvi_matches(cx.p, cx.state.selected, &cx.selection, activity.stamp) {
             rows.push(section("Loading details"));
+            let (include_pcm, include_render_timing) = native_activity_summary_visibility(v.load_report.as_deref());
             for (index, (line, warning)) in native_activity_lines(activity, activity.failure.as_deref() != reported_failure
-                && activity.failure.as_deref() != reported_worker_failure).into_iter().enumerate() {
-                rows.push(body(line).text_size(TEXT).fill(if warning { Role::Warning.into() } else { secondary() })
-                    .lines(6).shrink(0).id(format!("uvi-load-detail-{index}")));
+                && activity.failure.as_deref() != reported_worker_failure, include_pcm, include_render_timing).into_iter().enumerate() {
+                rows.push(body(line.clone()).text_size(TEXT).fill(if warning { Role::Warning.into() } else { secondary() })
+                    .lines(6).shrink(0).named(line).id(format!("uvi-load-detail-{index}")));
             }
         }
         rows.push(logs_el);
@@ -791,6 +824,44 @@ pub fn info(ui: &mut Ui, cx: &mut Cx) -> El {
 #[cfg(test)]
 mod native_status_tests {
     use super::*;
+    #[cfg(feature = "uvi")]
+    #[test]
+    fn bounded_info_metrics_preserve_unknown_counts_and_valid_cpu_sample_scope() {
+        use crate::uvi::worker::{Stamp, Stats, Status, WorkerLoadActivity};
+        let mut activity = WorkerLoadActivity { stamp: Stamp { epoch: 7, generation: 11, frame: 256 },
+            mapping: None, status: Status::Ready, phase: "serve", frame: 256,
+            elapsed: std::time::Duration::ZERO, stages: vec![], nodes: Some(3),
+            static_rejected_nodes: Some(0), sample_zones: None, script_processors: None,
+            resources: Default::default(), owned_pcm_bytes: Some(8 * 1_048_576), failure: None,
+            stats: Stats { resource_alias_count: 2, resource_revision: 3,
+                render_attempts: 4, render_ns: 12_000_000, max_render_ns: 4_000_000,
+                render_cpu_samples: 2, render_cpu_ns: 2_000_000, max_render_cpu_ns: 1_500_000,
+                ..Default::default() } };
+        let lines = native_activity_lines(&activity, true, true, true);
+        assert!(lines.iter().any(|(line, _)| line == "Parsed: 3 graph nodes · unknown sample zones · unknown script processors"));
+        assert!(lines.iter().any(|(line, _)| line.contains("8.00 MiB · 2 aliases · resource revision 3")));
+        assert!(lines.iter().any(|(line, _)| line.contains("wall 3.000 ms mean / 4.000 ms max · CPU 1.000 ms mean / 1.500 ms max (2 measured attempts)")));
+        let failure_details = native_activity_lines(&activity, false, false, false);
+        assert!(!failure_details.iter().any(|(line, _)| line.starts_with("Observed render attempts:") || line.starts_with("Observed worker-owned PCM:")),
+            "canonical terminal details already own the captured timing/census");
+        // Genuine pre-first-packet census: no wall/CPU/render attempts occurred.
+        activity.stats = Stats { resource_alias_count: 2, resource_resident_pcm_bytes: 8 * 1_048_576,
+            resource_revision: 3, ..Default::default() };
+        let missing = native_activity_lines(&activity, true, true, true);
+        assert!(missing.iter().any(|(line, _)| line.contains("render wall timing unavailable · render CPU timing unavailable")));
+        assert!(!missing.iter().any(|(line, _)| line.contains("CPU 0.000")));
+        let report = serde_json::json!({"terminal_failure":{"worker":{"timing":{
+            "summary":"Recorded render wall time: unavailable", "activity_summary":null}}}});
+        let (pcm, timing) = native_activity_summary_visibility(Some(&report));
+        assert_eq!((pcm, timing), (true, false));
+        let zero_attempt_failure = native_activity_lines(&activity, false, pcm, timing);
+        assert!(zero_attempt_failure.iter().any(|(line, _)| line.contains("8.00 MiB · 2 aliases · resource revision 3")));
+        assert!(!zero_attempt_failure.iter().any(|(line, _)| line.starts_with("Observed render attempts:")));
+        let mut canonical = report;
+        canonical["terminal_failure"]["worker"]["timing"]["activity_summary"] = "Captured render observation: 8.00 MiB PCM".into();
+        assert_eq!(native_activity_summary_visibility(Some(&canonical)), (false, false));
+    }
+
     #[test]
     fn native_loader_failure_is_terminal_in_the_performance_view() {
         let status="UVI playback failed. Open Logs for the cause.";

@@ -2591,7 +2591,9 @@ impl ModulationGraph {
                 end >= first && (end - first) / 32 <= LIMIT as u64,
                 "UVI Mode1 control clock exceeds limit"
             );
-            let alpha = 1_f32 - 0.33_f32.powf(3200_f32 / input.sample_rate as f32);
+            let rate = clock.producer.rate;
+            let alpha = *clock.producer.alpha32.get_or_insert_with(||
+                1_f32 - 0.33_f32.powf(3200_f32 / rate as f32));
             for at in (first..=end).step_by(32) {
                 let value = clock.producer.advance(
                     at,
@@ -7523,6 +7525,107 @@ impl ReferenceConstantClock {
          ReferenceConstantClock { rate, block_frames, frame, integrated: frame,
             point_frame: frame / 32 * 32, current: target, point: target, target })
     }
+    #[test]
+    fn mode1_connection_reuses_coefficient_without_changing_publication_or_state() {
+        let xml = r#"<Program><ControlSignalSources>
+            <ConstantModulation Name="Src" Value="0"/>
+            <ConstantModulation Name="Target" Value="0"><Connections>
+            <SignalConnection Source="$Program/Src" Destination="Value" Ratio="1"
+                ConnectionMode="1" SignalConnectionVersion="1"/>
+            </Connections></ConstantModulation>
+            </ControlSignalSources></Program>"#;
+        let program = crate::uvi::program::parse_program(xml).unwrap();
+        let source = program.nodes.iter().position(|n| n.name.as_deref() == Some("Src")).unwrap();
+        let target = program.nodes.iter().position(|n| n.name.as_deref() == Some("Target")).unwrap();
+        for rate in [1000., 44100., 48000., 96000., 768000.] {
+            for block in [32, 256, 65536] {
+                let mut graph = ModulationGraph::new(&program).unwrap();
+                let (_, mut reference) = clocks(rate, block, 0, 0.);
+                let mut input = Inputs { sample_rate: rate, control_block_frames: block, ..Default::default() };
+                let mut live = HashMap::new();
+                let (mut filtered, mut published) = (0_f32, 0_f32);
+                for (index, value) in [0., 1., 0.25, -0., f32::from_bits(0x0040_0000), 0.875, 1., 0.]
+                    .into_iter().enumerate()
+                {
+                    let frame = index as u64 * u64::from(block);
+                    input.time_seconds = frame as f64 / rate;
+                    live.insert((source, "Value".into()), f64::from(value));
+                    // The pre-cache path recomputes this expression per block.
+                    let alpha = 1_f32 - 0.33_f32.powf(3200_f32 / rate as f32);
+                    let first = if frame == 0 { 0 } else { reference.point_frame + 32 };
+                    for at in (first..=frame + u64::from(block) - 32).step_by(32) {
+                        let target = if at < frame { reference.target } else { value };
+                        let point = reference.advance(at, target).unwrap() as f32;
+                        filtered += (point - filtered) * alpha;
+                        if at.is_multiple_of(u64::from(block)) && ((point - filtered) * alpha).abs() < 0.0000001 {
+                            filtered = point;
+                        }
+                    }
+                    let actual = graph.control_updates(&input, &live).unwrap();
+                    let expected: Vec<(Parameter, f64)> = if published == filtered { Vec::new() } else {
+                        published = filtered;
+                        vec![((target, "Value".into()), f64::from(filtered.clamp(0., 1.)))]
+                    };
+                    assert_eq!(actual.iter().map(|(p, v)| (p.clone(), v.to_bits())).collect::<Vec<_>>(),
+                        expected.iter().map(|(p, v)| (p.clone(), v.to_bits())).collect::<Vec<_>>());
+                    let clock = &graph.absolute_clocks[&source];
+                    states(&clock.producer, &reference);
+                    assert_eq!(clock.producer.alpha32.unwrap().to_bits(), alpha.to_bits());
+                    assert_eq!(clock.filtered.values().next().unwrap().to_bits(), filtered.to_bits());
+                    assert_eq!(clock.published.values().next().unwrap().to_bits(), published.to_bits());
+                    assert!(graph.control_updates(&input, &live).unwrap().is_empty());
+                    states(&graph.absolute_clocks[&source].producer, &reference);
+                }
+                input.sample_rate = if rate == 768000. { 44100. } else { 768000. };
+                input.time_seconds = 8. * f64::from(block) / input.sample_rate;
+                assert_eq!(graph.control_updates(&input, &live).unwrap_err().to_string(),
+                    "UVI Mode1 processing clock changed");
+                states(&graph.absolute_clocks[&source].producer, &reference);
+                input.sample_rate = rate;
+                input.control_block_frames = if block == 32 { 256 } else { 32 };
+                input.time_seconds = 8. * f64::from(block) / rate;
+                assert_eq!(graph.control_updates(&input, &live).unwrap_err().to_string(),
+                    "UVI Mode1 processing clock changed");
+                states(&graph.absolute_clocks[&source].producer, &reference);
+                input.sample_rate = f64::NAN;
+                assert_eq!(graph.control_updates(&input, &live).unwrap_err().to_string(),
+                    "Invalid UVI modulation clock");
+                states(&graph.absolute_clocks[&source].producer, &reference);
+            }
+        }
+        // Mode0 has a distinct Constant state map and never enters this seam.
+        let relative = crate::uvi::program::parse_program(&xml.replace(
+            "ConnectionMode=\"1\" SignalConnectionVersion=\"1\"", "ConnectionMode=\"0\""))
+            .unwrap();
+        let mut queried = ModulationGraph::new(&relative).unwrap();
+        let baseline = ModulationGraph::new(&relative).unwrap();
+        let mut live = HashMap::new();
+        let mut input = Inputs::default();
+        input.voice = Some(7);
+        for frame in 0..96 {
+            input.time_seconds = f64::from(frame) / input.sample_rate;
+            input.voice_time_seconds = input.time_seconds;
+            live.insert((source, "Value".into()), if frame < 17 { 0. } else { 0.875 });
+            assert!(queried.control_updates(&input, &live).unwrap().is_empty());
+            assert!(queried.absolute_clocks.is_empty());
+            let nodes = HashSet::from([target]);
+            let actual = queried.evaluate_nodes(&input, &live, &nodes).unwrap();
+            let expected = baseline.evaluate_nodes(&input, &live, &nodes).unwrap();
+            assert_eq!(actual[&(target, "Value".into())].to_bits(),
+                expected[&(target, "Value".into())].to_bits());
+            let a = queried.constant_clocks.borrow();
+            let b = baseline.constant_clocks.borrow();
+            assert_eq!(a.len(), b.len());
+            for (key, a) in a.iter() {
+                let b = &b[key];
+                assert_eq!((a.frame, a.integrated, a.point_frame),
+                    (b.frame, b.integrated, b.point_frame));
+                assert_eq!([a.current, a.point, a.target].map(f32::to_bits),
+                    [b.current, b.point, b.target].map(f32::to_bits));
+            }
+        }
+    }
+
     #[test]
     fn cached_constant_coefficients_keep_original_points_and_gates() {
         eprintln!("constant_clock_inline_bytes cached={} baseline={}",

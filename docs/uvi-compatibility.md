@@ -4,12 +4,13 @@ Status reviewed 2026-10-04. KONTRA's optional `uvi` path implements bounded UFS/
 
 ## Current status
 
-The last recorded installed standalone, CLAP and VST3 checkpoint (18:35 UTC
-on 2026-10-04) is **`1f7d77e`**,
+The last recorded installed standalone, CLAP and VST3 checkpoint (19:21 UTC
+on 2026-10-04) is **`cebaf80`**,
 documented in [the checkpoint report](UVI_TEST_CHECKPOINT.md#current-installed-checkpoint).
-Its 28 focused synthetic checks cover bank/cache ownership, safe panel-refresh
-diagnostics and exact ConstantClock recurrence. Historical Vectorized/Mapping
-checks belong to `a25fc2e`. Artifact manifests and
+Its 20 focused synthetic checks cover quiet exact attacks, canonical owner
+retirement and documented AfterTouch omni forwarding. The earlier 28 bank/cache,
+snapshot and ConstantClock checks belong to `1f7d77e`; Vectorized/Mapping checks
+belong to `a25fc2e`. Artifact manifests and
 installation receipts identify the verified package; historical full-suite and
 full-corpus counts do not describe a new run of the package or later source.
 Later package build-info and VERIFICATION files supersede that dated identity.
@@ -21,6 +22,13 @@ script AfterTouch omni validation, scopes and two-channel consumption. Current
 Kontakt tiny-positive quantization changes at the same older 7-bit adapter; the
 separate float core remains untouched. These passes are not a new native oracle,
 paid-bank/DAW deadline run, complete Mapping proof or universal overrun fix.
+
+A subsequent source follow-up has 14 focused synthetic passes for current-owner
+Info, unknown graph counts, independent PCM/timing deduplication and existing
+Mode1 coefficient reuse. Authored wide/compact/zero-attempt-failure Info captures
+are inspected; current paid-bank/DAW deadlines and throughput are unmeasured.
+[Evidence](UVI_INFO_MODE1_EVIDENCE.md) records the fixed floating-point assumption
+and separate native fidelity limits.
 
 | Area | Established scope | Exact remaining boundary |
 | --- | --- | --- |

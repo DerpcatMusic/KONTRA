@@ -8,20 +8,20 @@ Unsupported native graphs remain explicit failures. Starter coverage is still
 
 ## Current installed checkpoint
 
-At the recorded installation on 2026-10-04, 18:35 UTC, the standalone, CLAP
+At the recorded installation on 2026-10-04, 19:21 UTC, the standalone, CLAP
 and VST3 identify clean source
-`1f7d77e0fcf04d5b0b630ea09edb1e3ed2fc0436`, build hash `ee1a3497be03cfa9`,
+`cebaf809e85126fafb2f394ab0f985eedc23a68c`, build hash `fa461d02b85edcc0`,
 version 0.3.148, baseline Linux x86_64 and optimized `ci` profile. The package is
-`KONTRA-UVI-checkpoint-1f7d77e-linux-x86_64`. Factory enumeration and runtime
+`KONTRA-UVI-checkpoint-cebaf80-linux-x86_64`. Factory enumeration and runtime
 library resolution pass; all 28 configuration/access files were preserved.
 Running host instances retain their earlier binary until the user reloads them.
 For a later local package, its build-info and VERIFICATION files supersede this
 dated installation record.
 
-Since `a25fc2e`, the checkpoint adds opened-bank identity checks for direct reads
+Historical `1f7d77e`, following `a25fc2e`, adds opened-bank identity checks for direct reads
 and optional PCM-cache hashes, safe Ready-poll panel failures/recovery without
 settling unsuccessful control receipts, and immutable-rate ConstantClock coefficient
-reuse. All 28 new focused synthetic functional checks pass. ConstantClock grows
+reuse. Its 28 focused synthetic functional checks pass. ConstantClock grows
 from 48 to 64 bytes on this target; no new throughput measurement was made.
 Each retained bank pins one opened file and 320 header bytes. Unix replacements
 are rejected by device/inode checks; weaker non-Unix identity and hidden same-inode
@@ -36,7 +36,7 @@ remain historical evidence, rather than repeated checks of the current binary.
 Tickets prove initial callback dispatch or nonfatal rejection, not completion of
 a yielded callback or audible output. Buffering/polling latency remains.
 
-The later source follow-up corrects positive exact CLAP/VST3 velocity lowering
+Installed `cebaf80` corrects positive exact CLAP/VST3 velocity lowering
 and rejected exact-zero UVI ownership, and implements documented script AfterTouch
 omni forwarding/consumption. Twenty focused synthetic functional checks pass,
 including nine new authored cases: quiet exact PCM, prior Worker/Slot PCM survival,
@@ -47,6 +47,14 @@ AfterTouch semantics follow current documentation; native Workstation 4.0.9 orac
 coverage was not added. The exact package revision is recorded in its build-info,
 VERIFICATION and installation receipt. This follow-up does not establish universal
 resolution of historical Bridge(RequestCapacity)/modwheel CPU failures.
+
+The next source follow-up corrects Info observation ownership, unknown counts,
+PCM and timing scope/deduplication, and reuses the existing Mode1 producer alpha32
+for its connection coefficient. Fourteen focused synthetic checks pass. Authored
+1180×760, 900×640 and zero-attempt failed-owner Info captures were inspected and
+independently accepted. No new actual-bank, DAW, native oracle or speed measurement
+was performed. See [the exact evidence and limits](UVI_INFO_MODE1_EVIDENCE.md).
+The local package's build-info and VERIFICATION identify its resulting revision.
 
 Full Falcon parity, native modeling equivalence, complete bank coverage and current
 user-DAW deadlines remain unproved. Current Mapping shows initial sampled zones,
