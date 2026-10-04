@@ -3278,6 +3278,12 @@ impl ModulationGraph {
                 position.frame.is_multiple_of(32),
                 "Unverified unaligned UVI StepEnvelope transport snapshot at node {n}"
             );
+            // A Q32-aligned snapshot does not establish a fresh source generation.
+            // Native same-generation queries retain already-prepared block points.
+            ensure!(
+                position.frame.is_multiple_of(u64::from(input.control_block_frames)),
+                "Unverified midblock UVI StepEnvelope transport snapshot at node {n}"
+            );
         }
         let settings = (
             input.sample_rate,
@@ -3323,8 +3329,8 @@ impl ModulationGraph {
         };
         let tick = (frame - start) / 32;
         // Native consumes the supplied host beat at the block start, then
-        // advances double phase at each 32-frame point. A transport snapshot
-        // starts a fresh position projection rather than accruing a seek gap.
+        // advances double phase at each 32-frame point. Only a snapshot at a
+        // logical block boundary may start a fresh host-position projection.
         let mut phase = beat / frequency;
         let increment = 32.
             * (f64::from(input.host_tempo as f32) * (1. / 60.)

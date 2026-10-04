@@ -3230,10 +3230,46 @@ mod tests {
             .join(" ");
         let program = parse_program(&format!(r#"<Program Gain="1"><ControlSignalSources><StepEnvelope Name="Seq" SyncToHost="1" Retrigger="0" Freq=".25" NumSteps="16" Levels="{levels}"/></ControlSignalSources><Connections><SignalConnection Source="$Program/Seq" Destination="Gain" Ratio="1"/></Connections></Program>"#)).unwrap();
         let mut renderer = Renderer::new(&program, HashMap::new(), 48000).unwrap();
+        renderer
+            .render(
+                &[script::Command {
+                    frame: 0,
+                    action: script::Action::Transport {
+                        playing: true,
+                        beat: 8.625,
+                        tempo: 120.,
+                    },
+                }],
+                &[],
+                128,
+            )
+            .unwrap();
+        assert_eq!(
+            renderer.modulation.evaluate(&renderer.inputs(None), &HashMap::new()).unwrap()
+                [&(0, "Gain".into())],
+            0.578125
+        );
+        // Q32 alignment does not prove a new native preparation generation.
+        renderer
+            .apply_note(&script::Action::Transport {
+                playing: true,
+                beat: 1.5,
+                tempo: 120.,
+            })
+            .unwrap();
+        let inputs = renderer.inputs(None);
+        assert_eq!(inputs.host_position.unwrap().frame, 128);
+        assert_eq!(inputs.host_position.unwrap().beat, 1.5);
+        let failure = renderer.modulation.evaluate(&inputs, &HashMap::new()).unwrap_err();
+        assert!(failure.to_string().contains("midblock"), "{failure}");
+        // Rejecting Step evaluation keeps the authoritative snapshot intact.
+        assert!(renderer.inputs(None).host_position.unwrap().playing);
+
+        let mut renderer = Renderer::new(&program, HashMap::new(), 48000).unwrap();
         for (frame, beat, tempo, count, expected) in [
-            (0, 8.625, 120., 128, 0.578125),
-            (128, 1.5, 120., 128, 0.7265625),
-            (256, 32.2486, 137., 1, 0.009033203125),
+            (0, 8.625, 120., 256, 0.578125),
+            (256, 1.5, 120., 256, 0.7265625),
+            (512, 32.2486, 137., 1, 0.009033203125),
         ] {
             renderer
                 .render(
