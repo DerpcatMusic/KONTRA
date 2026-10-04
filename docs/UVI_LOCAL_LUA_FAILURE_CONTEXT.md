@@ -31,3 +31,15 @@ call, but the naive Rust handler turned it into a C-stack-overflow error. Nested
 module `.eval` had already unwound the module's frame, leaving only the real
 caller's require line for the outer observer. Initialization keeps its known
 entry and explicitly unavailable failing line; no line is inferred from messages.
+
+Instruction-budget failures have a narrower exception: the existing exhausted
+count-hook branch can retain its structured source before protected calls unwind.
+Its metadata says `existing_instruction_budget_hook`; it uses the same loaded
+source registry and local-only bounds. It adds no hook or success-path inspection.
+This does not supply a line for ordinary initialization errors.
+
+The instruction-budget first-cause cache and its first line belong to one fuel
+allocation. Every existing fuel reset clears both, including per-processor
+`onSave`: a save failure can be returned by a public Session without retiring it.
+A later callback must retain its own processor, frame, chunk, and line. The
+original returned error remains independent of subsequent resets.

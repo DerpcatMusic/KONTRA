@@ -1306,6 +1306,8 @@ struct Runtime {
     lua: Lua,
     state: Rc<RefCell<State>>,
     fuel: Rc<Cell<u32>>,
+    fuel_line: Rc<Cell<Option<usize>>>,
+    budget_failure: Rc<RefCell<Option<mlua::Error>>>,
     resumes: Rc<Cell<usize>>,
     depth: Rc<Cell<usize>>,
     host: Option<host::Host>,
@@ -1314,6 +1316,14 @@ struct Runtime {
 }
 
 impl Runtime {
+    fn reset_budget(&self) {
+        // onSave can fail without retiring a Session. First-cause context must
+        // live for exactly one fuel allocation, including its _check rethrows.
+        self.fuel_line.set(None);
+        *self.budget_failure.borrow_mut() = None;
+        self.fuel.set(FUEL);
+    }
+
     fn new_chain(
         program: &Program,
         modules: BTreeMap<String, Vec<u8>>,
@@ -1370,7 +1380,7 @@ impl Runtime {
         for (processor, source) in sources {
             let environment = rt.environments[&processor].clone();
             rt.scope(processor);
-            rt.fuel.set(FUEL);
+            rt.reset_budget();
             rt.lua
                 .load(source)
                 .set_name(format!("UVI ScriptProcessor node {processor}"))
@@ -1418,7 +1428,7 @@ impl Runtime {
                 }
             }
             rt.scope(processor);
-            rt.fuel.set(FUEL);
+            rt.reset_budget();
             if let Some((program, _)) = &restored {
                 host::restore_saved_widgets(&rt.lua, program, &environment)?;
             } else {
@@ -1610,6 +1620,15 @@ impl Runtime {
             LuaOptions::default(),
         )?;
         lua.set_memory_limit(32 << 20)?;
+        let state = Rc::new(RefCell::new(State {
+            tempo: TEMPO,
+            sample_rate,
+            program_layers: program.map(|p| p.layers.clone()),
+            ..State::default()
+        }));
+        let budget_failure = Rc::new(RefCell::new(None::<mlua::Error>));
+        let hook_failure = budget_failure.clone();
+        let hook_state = state.clone();
         let fuel = Rc::new(Cell::new(FUEL));
         let fuel_line = Rc::new(Cell::new(None));
         let hook_line = fuel_line.clone();
@@ -1623,21 +1642,27 @@ impl Runtime {
                     if hook_line.get().is_none() {
                         hook_line.set(debug.current_line());
                     }
-                    Err(mlua::Error::runtime(format!(
-                        "UVI instruction budget exceeded at Lua line {:?}",
-                        hook_line.get()
-                    )))
+                    // Keep this budget cycle's first structured cause when the
+                    // existing pcall/xpcall _check guard rethrows it.
+                    let mut retained = hook_failure.borrow_mut();
+                    let failure = retained.get_or_insert_with(|| {
+                        let cause = mlua::Error::runtime(format!(
+                            "UVI instruction budget exceeded at Lua line {:?}", hook_line.get(),
+                        ));
+                        match hook_state.try_borrow() {
+                            Ok(state) => super::lua_failure::budget(
+                                cause, debug, state.current_processor, state.now,
+                                state.module_sources.as_deref(),
+                            ),
+                            Err(_) => cause, // Keep the original error if scope cannot be read.
+                        }
+                    });
+                    Err(failure.clone())
                 } else {
                     Ok(VmState::Continue)
                 }
             },
         )?;
-        let state = Rc::new(RefCell::new(State {
-            tempo: TEMPO,
-            sample_rate,
-            program_layers: program.map(|p| p.layers.clone()),
-            ..State::default()
-        }));
         let resumes = Rc::new(Cell::new(0));
         let depth = Rc::new(Cell::new(0));
         let globals = lua.globals();
@@ -1671,14 +1696,16 @@ impl Runtime {
         )?;
         let check_fuel = fuel.clone();
         let check_line = fuel_line.clone();
+        let check_failure = budget_failure.clone();
         globals.set(
             "_check",
             lua.create_function(move |_, ()| {
                 if check_fuel.get() == 0 {
-                    Err(mlua::Error::runtime(format!(
-                        "UVI instruction budget exceeded at Lua line {:?}",
-                        check_line.get()
-                    )))
+                    Err(check_failure.borrow().clone().unwrap_or_else(|| {
+                        mlua::Error::runtime(format!(
+                            "UVI instruction budget exceeded at Lua line {:?}", check_line.get(),
+                        ))
+                    }))
                 } else {
                     Ok(())
                 }
@@ -2038,6 +2065,8 @@ impl Runtime {
             lua,
             state,
             fuel,
+            fuel_line,
+            budget_failure,
             resumes,
             depth,
             host: object_host,
@@ -2090,7 +2119,7 @@ impl Runtime {
                     rt.advance(0)?;
                 }
             }
-            rt.fuel.set(FUEL);
+            rt.reset_budget();
             host::restore_widgets(&rt.lua, program)?;
             ensure!(rt.fuel.get() > 0, "UVI instruction budget exceeded");
             rt.advance(0)?;
@@ -2148,7 +2177,7 @@ impl Runtime {
                     (Some(state.tasks.pop_first().unwrap().1), None)
                 }
             };
-            self.fuel.set(FUEL);
+            self.reset_budget();
             if let Some(task) = task {
                 let processor = task.processor;
                 let frame = self.state.borrow().now;
@@ -2989,7 +3018,7 @@ impl Session {
         let result = (|| {
             for processor in processors {
                 self.runtime.scope(processor);
-                self.runtime.fuel.set(FUEL);
+                self.runtime.reset_budget();
                 let document = host::save_state(&self.runtime.environments[&processor])?;
                 ensure!(
                     self.runtime.fuel.get() > 0,

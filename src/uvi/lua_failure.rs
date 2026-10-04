@@ -15,13 +15,14 @@ pub(crate) struct Context {
     pub excerpt: Option<serde_json::Value>,
     pub unavailable: &'static str,
     pub display: Arc<str>,
+    pub provenance: &'static str,
 }
 impl Context {
     /// Explicit metadata whitelist; local source bytes/display never serialize.
     pub(crate) fn metadata(&self) -> serde_json::Value {
         serde_json::json!({"source_kind":"lua","processor":self.processor,"frame":self.frame,
             "chunk":self.chunk,"line":self.line,"local_source_excerpt_available":self.excerpt.is_some(),
-            "source_provenance":if self.line.is_some(){"structured_coroutine_frame"}else if self.chunk!="unavailable"{"initialization_entry_chunk"}else{"unavailable"},
+            "source_provenance":self.provenance,
             "source_excerpt_unavailable":if self.excerpt.is_some(){None}else{Some(self.unavailable)}})
     }
 }
@@ -60,6 +61,9 @@ pub(crate) fn initialization(
     frame: u64,
     chunk: &str,
 ) -> mlua::Error {
+    if cause.downcast_ref::<Failure>().is_some() {
+        return cause;
+    }
     let chunk = if chunk.len() <= 512 {
         chunk
     } else {
@@ -75,6 +79,7 @@ pub(crate) fn initialization(
             excerpt: None,
             unavailable: "Initialization entry chunk is known; failing Lua source frame is unavailable",
             display: Arc::from(""),
+            provenance: "initialization_entry_chunk",
         },
     }))
 }
@@ -89,6 +94,9 @@ pub(crate) fn capture(
     frame: u64,
     modules: Option<&BTreeMap<String, Vec<u8>>>,
 ) -> mlua::Error {
+    if cause.downcast_ref::<Failure>().is_some() {
+        return cause;
+    }
     let mut context = Context {
         processor,
         frame,
@@ -97,6 +105,7 @@ pub(crate) fn capture(
         excerpt: None,
         unavailable: "Lua coroutine source/line is unavailable",
         display: Arc::from(""),
+        provenance: "unavailable",
     };
     if thread.is_error() {
         // SAFETY: Lua/Thread are owned by this worker (no send feature). Calls
@@ -121,44 +130,84 @@ pub(crate) fn capture(
                 let source = source
                     .filter(|source| source.len() <= 512)
                     .and_then(|source| std::str::from_utf8(source).ok());
-                match source {
-                    Some(source)
-                        if source
-                            .strip_prefix("UVI ScriptProcessor node ")
-                            .and_then(|n| n.parse::<NodeId>().ok())
-                            == processor
-                            && processor.is_some() =>
-                    {
-                        context.chunk = source.into();
-                        context.unavailable = "Loaded processor source is unavailable";
-                    }
-                    Some(source) if source.starts_with("embedded module ") => {
-                        let name = &source["embedded module ".len()..];
-                        if let Some(bytes) =
-                            modules.and_then(|modules| host::resolve_module(modules, name).ok())
-                        {
-                            context.chunk = source.into();
-                            context.excerpt = std::str::from_utf8(bytes)
-                                .ok()
-                                .and_then(|source| excerpt(source, debug.currentline as u32));
-                            context.unavailable =
-                                "Loaded module source or reported line is unavailable";
-                        } else {
-                            context.unavailable =
-                                "Lua module is not in the loaded approved registry";
-                        }
-                    }
-                    _ => {
-                        context.unavailable =
-                            "Lua chunk is not registered for this callback processor"
-                    }
-                }
+                context.provenance = "structured_coroutine_frame";
+                registered_source(&mut context, source, modules);
                 break;
             }
         }
     }
     mlua::Error::ExternalError(Arc::new(Failure { cause, context }))
 }
+fn registered_source(
+    context: &mut Context,
+    source: Option<&str>,
+    modules: Option<&BTreeMap<String, Vec<u8>>>,
+) {
+    match source {
+        Some(source)
+            if source
+                .strip_prefix("UVI ScriptProcessor node ")
+                .and_then(|n| n.parse::<NodeId>().ok())
+                == context.processor
+                && context.processor.is_some() =>
+        {
+            context.chunk = source.into();
+            context.unavailable = "Loaded processor source is unavailable";
+        }
+        Some(source) if source.starts_with("embedded module ") => {
+            let name = &source["embedded module ".len()..];
+            if let Some(bytes) =
+                modules.and_then(|modules| host::resolve_module(modules, name).ok())
+            {
+                context.chunk = source.into();
+                context.excerpt = std::str::from_utf8(bytes)
+                    .ok()
+                    .and_then(|source| excerpt(source, context.line.unwrap()));
+                context.unavailable = "Loaded module source or reported line is unavailable";
+            } else {
+                context.unavailable = "Lua module is not in the loaded approved registry";
+            }
+        }
+        _ => context.unavailable = "Lua chunk is not registered for this callback processor",
+    }
+}
+
+/// Called only in the existing count hook's exhausted-budget branch, before
+/// protected module calls unwind. Never executed for ordinary failures.
+pub(crate) fn budget(
+    cause: mlua::Error,
+    debug: &mlua::debug::Debug,
+    processor: Option<NodeId>,
+    frame: u64,
+    modules: Option<&BTreeMap<String, Vec<u8>>>,
+) -> mlua::Error {
+    let mut context = Context {
+        processor,
+        frame,
+        line: debug
+            .current_line()
+            .and_then(|line| u32::try_from(line).ok())
+            .filter(|line| *line > 0),
+        chunk: "unavailable".into(),
+        excerpt: None,
+        unavailable: "Instruction budget source/line is unavailable",
+        display: Arc::from(""),
+        provenance: "existing_instruction_budget_hook",
+    };
+    if context.line.is_some() {
+        let source = debug.source();
+        registered_source(
+            &mut context,
+            source
+                .source
+                .as_deref()
+                .filter(|source| source.len() <= 512),
+            modules,
+        );
+    }
+    mlua::Error::ExternalError(Arc::new(Failure { cause, context }))
+}
+
 pub(crate) fn from_error(error: &anyhow::Error, program: &Program) -> Option<Context> {
     let retained = error.chain().find_map(|cause| {
         cause.downcast_ref::<Failure>().or_else(|| {
@@ -181,6 +230,7 @@ pub(crate) fn from_error(error: &anyhow::Error, program: &Program) -> Option<Con
             excerpt: None,
             unavailable: "Lua initialization did not retain a coroutine source frame",
             display: Arc::from(""),
+            provenance: "unavailable",
         }
     } else {
         return None;
@@ -367,6 +417,79 @@ mod tests {
                 .contains("source-only-constructor-module-marker")
         );
         assert_eq!(format!("{error:#}").matches("runtime error:").count(), 1);
+    }
+    #[test]
+    fn save_budget_failure_does_not_leak_into_later_processors_budget() {
+        let save = "function onSave()\n for i=1,10000000 do local x=i+i end\nend\nfunction onNote(e) postEvent(e) end";
+        let later = "function onNote(e)\n if e.note==61 then\n  local x=0\n  for i=1,10000000 do x=x+i end\n end\n postEvent(e)\nend";
+        let program=crate::uvi::program::parse_program(&format!("<Program><EventProcessors><ScriptProcessor><script><![CDATA[{save}]]></script></ScriptProcessor><ScriptProcessor><script><![CDATA[{later}]]></script></ScriptProcessor></EventProcessors><Layers><Layer/></Layers></Program>")).unwrap();
+        let mut session=Session::new_program_chain(&program,BTreeMap::new(),None,48000).unwrap();
+        let save_error=session.saved_state(0).err().unwrap();
+        let first=from_error(&save_error,&program).unwrap();
+        assert_eq!((first.processor,first.frame,first.line),(Some(2),0,Some(2)));
+        assert_eq!(first.provenance,"existing_instruction_budget_hook");
+        assert!(format!("{save_error:#}").contains("Lua line Some(2)"));
+        let input=|frame,note| Input{frame,kind:InputKind::NoteOn{channel:0,note,velocity:100}};
+        let commands=session.process(&[input(128,60)],256).unwrap();
+        assert!(!commands.commands.is_empty(),"successful callback still forwards the note after a failed save");
+        let later_error=session.process(&[input(512,61)],768).unwrap_err();
+        let second=from_error(&later_error,&program).unwrap();
+        assert_eq!((second.processor,second.frame,second.line),(Some(4),512,Some(4)));
+        assert_eq!(second.chunk,"UVI ScriptProcessor node 4");
+        assert_eq!(second.provenance,"existing_instruction_budget_hook");
+        assert!(format!("{later_error:#}").contains("Lua line Some(4)"));
+        let text=second.excerpt.as_ref().unwrap()["text"].as_str().unwrap();
+        assert!(text.contains(">      4 |   for i=1,10000000"));
+        assert!(!text.contains("function onSave"));
+        // The original returned error remains owned by its caller and accurate.
+        let retained=from_error(&save_error,&program).unwrap();
+        assert_eq!((retained.processor,retained.frame,retained.line),(Some(2),0,Some(2)));
+    }
+
+    #[test]
+    fn initialization_budget_retains_exact_direct_or_caught_module_source() {
+        for module in [false, true] {
+            let source = if module {
+                "local module=require('_Folder/Budget')"
+            } else {
+                "local x=0\nfor i=1,10000000 do x=x+i end"
+            };
+            let program=crate::uvi::program::parse_program(&format!("<Program><EventProcessors><ScriptProcessor><script><![CDATA[{source}]]></script></ScriptProcessor></EventProcessors></Program>")).unwrap();
+            let modules = if module {
+                BTreeMap::from([("Scripts._Folder.Budget".into(),b"-- private-budget-module-source-marker\nlocal ok=pcall(function() for i=1,10000000 do local x=i+i end end)\nreturn {}".to_vec())])
+            } else {
+                BTreeMap::new()
+            };
+            let error = Session::new_program_chain(&program, modules, None, 48000)
+                .err()
+                .unwrap();
+            let context = from_error(&error, &program).unwrap();
+            assert_eq!(
+                (context.processor, context.frame, context.line),
+                (Some(2), 0, Some(2))
+            );
+            assert_eq!(context.provenance, "existing_instruction_budget_hook");
+            assert_eq!(
+                context.chunk,
+                if module {
+                    "embedded module _Folder/Budget"
+                } else {
+                    "UVI ScriptProcessor node 2"
+                }
+            );
+            let text = context.excerpt.as_ref().unwrap()["text"].as_str().unwrap();
+            assert!(text.contains(">      2 |") && text.contains("for i=1,10000000"));
+            assert!(
+                !context
+                    .metadata()
+                    .to_string()
+                    .contains("private-budget-module-source-marker")
+            );
+            assert!(
+                format!("{error:#}")
+                    .contains("UVI instruction budget exceeded at Lua line Some(2)")
+            );
+        }
     }
     #[test]
     fn original_exec_without_coroutine_has_explicit_unavailable_context() {

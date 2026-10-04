@@ -1965,6 +1965,24 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn initialization_budget_context_stays_local_after_worker_failure() {
+        let (config,_) = authored_bank_with_script("-- private-worker-budget-source-only-marker\nfor i=1,10000000 do local x=i+i end");
+        let path=config.bank.clone();
+        let worker=Worker::start(config,7,11).unwrap();
+        assert!(worker.wait_ready(Duration::from_secs(3)).is_err());
+        let local=worker.private_lua_failure().unwrap();
+        assert_eq!((local.processor,local.frame,local.line),(Some(2),0,Some(2)));
+        assert_eq!(local.provenance,"existing_instruction_budget_hook");
+        assert!(local.display.contains("private-worker-budget-source-only-marker"));
+        let report=worker.diagnostic_report();
+        assert!(!report.to_string().contains("private-worker-budget-source-only-marker"));
+        assert_eq!(report["lua_failure"]["source_provenance"],"existing_instruction_budget_hook");
+        assert!(worker.initialized_ui().is_none());
+        drop(worker);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn authored_initialization_failure_never_publishes_partial_ui() {
         let (config, _) = authored_bank_with_script(
             "function onInit()knob=Knob('partial',0.5,0,1);error('authored initialization failure')end");
