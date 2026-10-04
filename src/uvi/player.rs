@@ -269,6 +269,9 @@ impl<'a> Player<'a> {
             )?;
             super::sample::check_cancel(stop)?;
         }
+        // The saved prefix and authored initialization may temporarily disagree;
+        // admit only their final owned scalar state without draining fresh work.
+        session.validate_final_pan_laws()?;
         if saved.is_some()
             && let Some(publish) = initialized_ui.as_mut()
         {
@@ -370,6 +373,7 @@ impl<'a> Player<'a> {
                 self.hosted.then_some(processed.command_roots.as_slice()),
                 &processed.host_commands,
             )?;
+            self.session.validate_final_pan_laws()?;
             Ok(saved)
         })();
         // onSave can mutate Lua before an error. Never continue a partially
