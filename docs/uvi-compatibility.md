@@ -6,7 +6,7 @@ Status reviewed 2026-10-04. KONTRA's optional `uvi` path implements bounded UFS/
 
 The installed standalone, CLAP and VST3 checkpoint is **`817b03a`**,
 documented in [the checkpoint report](UVI_TEST_CHECKPOINT.md#checkpoint-validation).
-Later source through `2b13e77` is **not installed**. Artifact manifests and
+Later source through `4c62461` is **not installed**. Artifact manifests and
 installation receipts identify the verified package; historical full-suite and
 full-corpus counts do not describe a new run of the package or later source.
 
@@ -46,6 +46,14 @@ Table colors and parent-subtree order, and [immutable initial-admission reuse
 with phase cancellation](UVI_LOADING_ADMISSION_EVIDENCE.md). The measured 3.11%
 initialization-wall reduction is a paired source-helper result for one instrument;
 it is not complete UI startup, audio adoption, realtime or native-fidelity evidence.
+
+Subsequent source adds [bounded static shared CompExp processing](UVI_COMPEXP_STATIC_EVIDENCE.md):
+288 native comparisons admit 11 observed nodes in seven presets, while every
+whole preset retains other blockers. The [Brickwall cascade](UVI_BRICKWALL_CASCADE_EVIDENCE.md)
+has 1,380 scoped comparisons but its full callback stays unverified and unadmitted.
+Instruction-budget Lua failures retain their actual hook source before unwind;
+each fuel reset clears that first-cause cache so a later processor cannot inherit
+an earlier error location. Bounded source excerpts remain local to the editor.
 
 The [player ownership boundary](PLAYER_BACKEND_BOUNDARY.md) records the current
 internal integration and proposed shared API. The chronological records below
