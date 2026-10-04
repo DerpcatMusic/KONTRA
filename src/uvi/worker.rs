@@ -1625,13 +1625,20 @@ fn run(
         serde_json::to_string(&unsupported)?
     );
     initialization_stage(shared, trace, "uvi_resources");
-    let samples = library.samples_with_progress(&loaded, &mut |total, loaded, unique_decodes, bytes, current| {
+    let samples = match library.samples_with_progress_cancel(&loaded, &mut |total, loaded, unique_decodes, bytes, current| {
         let mut details = shared.details.lock().unwrap_or_else(|p| p.into_inner());
         details.resource_activity = ResourceActivity {
             total: Some(total), loaded, unique_decodes, bytes,
             current: current.map(|path| path.chars().take(256).collect()),
         };
-    })?;
+    }, Some(&shared.stop)) {
+        Ok(samples) => samples,
+        Err(error) if error.is::<super::sample::LoadCancelled>() => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if shared.stop.load(Ordering::Acquire) {
+        return Ok(());
+    }
     let resources = BankResources::new(library.clone(), &loaded.path, samples)?;
     let activation = shared
         .hosted
@@ -1639,6 +1646,9 @@ fn run(
         .map(|_| (shared.stamp.epoch, shared.stamp.generation));
     initialization_stage(shared, trace, "uvi_modules");
     let modules = library.modules()?;
+    if shared.stop.load(Ordering::Acquire) {
+        return Ok(());
+    }
     let mut player = Player::new_with_state_traced(
         &loaded.program,
         modules,

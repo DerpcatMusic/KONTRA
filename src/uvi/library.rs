@@ -11,7 +11,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::Path,
     rc::Rc,
-    sync::Arc,
+    sync::{Arc, atomic::AtomicBool},
 };
 
 pub(crate) const PCM_LIMIT: usize = 512 << 20;
@@ -222,15 +222,23 @@ impl Library {
     }
 
     fn audio_members(&self, members: &[&Member]) -> Result<Sample> {
+        self.audio_members_with_cancel(members, None)
+    }
+
+    fn audio_members_with_cancel(
+        &self, members: &[&Member], stop: Option<&AtomicBool>,
+    ) -> Result<Sample> {
         let mut operands = Vec::with_capacity(members.len());
         let mut assembly_error = None;
         for member in members {
+            sample::check_cancel(stop)?;
             let bytes = self.read(member)?;
+            sample::check_cancel(stop)?;
             ensure!(
                 !generator::image_signature(&bytes),
                 "Image wavetable resources cannot be loaded through audio callbacks"
             );
-            let decoded = sample::decode(&bytes)?;
+            let decoded = sample::decode_with_cancel(&bytes, stop)?;
             if assembly_error.is_none() {
                 operands.push(decoded);
                 if members.len() > 1
@@ -243,6 +251,7 @@ impl Library {
                 }
             }
         }
+        sample::check_cancel(stop)?;
         if let Some(error) = assembly_error {
             return Err(error);
         }
@@ -255,9 +264,12 @@ impl Library {
 
     /// Initial WaveTableOscillator resources may contain audio or measured images.
     /// The signature, rather than the filename suffix, selects image conversion.
-    fn wavetable_members(&self, members: &[&Member]) -> Result<Sample> {
+    fn wavetable_members(
+        &self, members: &[&Member], stop: Option<&AtomicBool>,
+    ) -> Result<Sample> {
+        sample::check_cancel(stop)?;
         if members.len() != 1 {
-            return self.audio_members(members);
+            return self.audio_members_with_cancel(members, stop);
         }
         let member = members[0];
         ensure!(
@@ -265,10 +277,11 @@ impl Library {
             "Wavetable resource exceeds 8 MiB source limit"
         );
         let bytes = self.read(member)?;
+        sample::check_cancel(stop)?;
         if generator::image_signature(&bytes) {
             generator::image_wavetable(&bytes)
         } else {
-            sample::decode(&bytes)
+            sample::decode_with_cancel(&bytes, stop)
         }
     }
 
@@ -355,6 +368,15 @@ impl Library {
         &self, loaded: &LoadedProgram,
         progress: &mut dyn FnMut(usize, usize, usize, usize, Option<&str>),
     ) -> Result<HashMap<String, Arc<Sample>>> {
+        self.samples_with_progress_cancel(loaded, progress, None)
+    }
+
+    pub(crate) fn samples_with_progress_cancel(
+        &self, loaded: &LoadedProgram,
+        progress: &mut dyn FnMut(usize, usize, usize, usize, Option<&str>),
+        stop: Option<&AtomicBool>,
+    ) -> Result<HashMap<String, Arc<Sample>>> {
+        sample::check_cancel(stop)?;
         let mut result = HashMap::<String, Arc<Sample>>::new();
         let mut cache = HashMap::<Vec<u64>, Arc<Sample>>::new();
         let mut total = 0usize;
@@ -383,6 +405,7 @@ impl Library {
         }
         let index = ResourceIndex::new(&self.directory);
         for (path, wavetable) in paths {
+            sample::check_cancel(stop)?;
             if let Some(sample) = result.get(path) {
                 ensure!(
                     wavetable || !sample.wavetable_image,
@@ -404,10 +427,11 @@ impl Library {
                 sample.clone()
             } else {
                 let decoded = if wavetable {
-                    self.wavetable_members(&members)?
+                    self.wavetable_members(&members, stop)?
                 } else {
-                    self.audio_members(&members)?
+                    self.audio_members_with_cancel(&members, stop)?
                 };
+                sample::check_cancel(stop)?;
                 total = total
                     .checked_add(decoded.interleaved.bytes())
                     .context("UVI sample memory overflow")?;
