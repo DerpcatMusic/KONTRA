@@ -531,6 +531,7 @@ mod tests {
             assert!(!assets.pictures.contains_key(&key(&reference)));
         }
         let snapshot = UiSnapshot {
+            paint_order: Vec::new(),
             processor: 0,
             root: super::super::host::UiRoot {
                 width: 100.,

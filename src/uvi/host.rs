@@ -228,6 +228,8 @@ pub struct UiSnapshot {
     pub root: UiRoot,
     /// Constructor order is also the stable, processor-local widget identity.
     pub widgets: Vec<UiWidget>,
+    /// Parent subtrees and authored child order, without changing edit identities.
+    pub paint_order: Vec<u32>,
 }
 
 #[derive(Clone, PartialEq, Serialize)]
@@ -475,6 +477,7 @@ pub fn snapshot_ui(processor: NodeId, environment: &Table) -> mlua::Result<UiSna
     let count = budget.sequence(&order, UI_WIDGET_LIMIT)?;
     let mut identities = HashMap::with_capacity(count);
     let mut parents = Vec::with_capacity(count);
+    let mut child_pointers = Vec::with_capacity(count);
     let mut widgets = Vec::with_capacity(count);
     for index in 1..=count {
         let widget = order.raw_get::<Table>(index)?;
@@ -490,6 +493,20 @@ pub fn snapshot_ui(processor: NodeId, environment: &Table) -> mlua::Result<UiSna
             Value::Table(t) => Some(t.to_pointer() as usize),
             _ => return Err(ui_error("Invalid UVI UI snapshot parent")),
         });
+        let mut children = Vec::new();
+        match state.raw_get::<Value>("children")? {
+            Value::Nil => {}
+            Value::Table(source) => {
+                for i in 1..=budget.sequence(&source, UI_WIDGET_LIMIT)? {
+                    let Value::Table(child) = source.raw_get::<Value>(i)? else {
+                        return Err(ui_error("Invalid UVI UI snapshot child reference"));
+                    };
+                    children.push(child.to_pointer() as usize);
+                }
+            }
+            _ => return Err(ui_error("Invalid UVI UI snapshot child list")),
+        }
+        child_pointers.push(children);
         let kind = match state.raw_get::<Value>("kind")? {
             Value::String(s) => match s.to_str()?.as_ref() {
                 "Panel" => UiKind::Panel,
@@ -696,10 +713,45 @@ pub fn snapshot_ui(processor: NodeId, environment: &Table) -> mlua::Result<UiSna
             visited[i] = 2;
         }
     }
+    let mut derived = vec![Vec::new(); count];
+    for widget in &widgets {
+        if let Some(parent) = widget.parent {
+            derived[parent as usize - 1].push(widget.id);
+        }
+    }
+    let mut children = Vec::with_capacity(count);
+    for (index, pointers) in child_pointers.into_iter().enumerate() {
+        let mut seen = HashSet::with_capacity(pointers.len());
+        let mut ordered = Vec::new();
+        for pointer in pointers {
+            let child = identities.get(&pointer).copied().ok_or_else(||
+                ui_error("UVI UI snapshot child is outside processor scope"))?;
+            if child as usize == index + 1 || !seen.insert(child) {
+                return Err(ui_error("Duplicate or self UVI UI snapshot child reference"));
+            }
+            // Manual reparenting can leave stale constructor child lists.
+            // The validated current parent is authoritative; retain the raw
+            // sibling order for references still belonging to this container.
+            if widgets[child as usize - 1].parent == Some(index as u32 + 1) {
+                ordered.push(child);
+            }
+        }
+        ordered.extend(derived[index].iter().copied().filter(|id| !seen.contains(id)));
+        children.push(ordered);
+    }
+    let mut pending: Vec<_> = widgets.iter().enumerate()
+        .filter_map(|(index, w)| w.parent.is_none().then_some(index)).rev().collect();
+    let mut paint_order = Vec::with_capacity(count);
+    while let Some(index) = pending.pop() {
+        paint_order.push(widgets[index].id);
+        pending.extend(children[index].iter().rev().map(|id| *id as usize - 1));
+    }
+    debug_assert_eq!(paint_order.len(), count);
     Ok(UiSnapshot {
         processor,
         root,
         widgets,
+        paint_order,
     })
 }
 
@@ -2737,6 +2789,41 @@ mod tests {
     }
 
     #[test]
+    fn ui_snapshot_paints_owned_child_order_and_reconciles_manual_reparenting() {
+        let lua = vm();
+        let environment = ui_environment(&lua);
+        lua.load(r#"
+          calls=0
+          a=Panel{name='a',x=5};b=Panel{name='b',x=100}
+          a1=a:Knob{name='a1',x=1,value=0.25,min=0,max=1}
+          b1=b:Table{'b1',4,0,0,1};a2=a:Knob{'a2',0,0,1}
+          a1.changed=function()calls=calls+1 end
+          setmetatable(a._state.children,{__index=function()error('child getter executed')end,
+            __pairs=function()error('child pairs callback executed')end})
+        "#).set_environment(environment.clone()).exec().unwrap();
+        let first = snapshot_ui(7, &environment).unwrap();
+        assert_eq!(first.paint_order, [1, 3, 5, 2, 4]);
+        assert_eq!(first.widgets.iter().map(|w|w.id).collect::<Vec<_>>(), [1, 2, 3, 4, 5]);
+        assert_eq!(environment.raw_get::<u32>("calls").unwrap(), 0);
+        lua.load("a.children={a2,a1}").set_environment(environment.clone()).exec().unwrap();
+        assert_eq!(snapshot_ui(7, &environment).unwrap().paint_order, [1, 5, 3, 2, 4]);
+        assert_eq!(first.paint_order, [1, 3, 5, 2, 4]);
+        lua.load("a1.parent=b").set_environment(environment.clone()).exec().unwrap();
+        let moved = snapshot_ui(7, &environment).unwrap();
+        assert_eq!(moved.paint_order, [1, 5, 2, 4, 3]);
+        assert_eq!(moved.widgets[2].parent, Some(2));
+        assert_eq!(moved.widgets[2].absolute_bounds.x, 101.);
+        let (setter, args) = prepare_ui_edit(&lua, &environment, &UiEdit {
+            processor: 7, widget: 3, value: UiEditValue::Number(0.75),
+            modifiers: UiModifiers::default(),
+        }).unwrap();
+        setter.call::<()>(args).unwrap();
+        assert_eq!(environment.raw_get::<u32>("calls").unwrap(), 1);
+        assert!(matches!(snapshot_ui(7, &environment).unwrap().widgets[2].value,
+            Some(UiValue::Number(v)) if v == 0.75));
+    }
+
+    #[test]
     fn ui_snapshot_traverses_a_deep_valid_parent_tree_iteratively() {
         let lua = vm();
         let environment = ui_environment(&lua);
@@ -2748,6 +2835,8 @@ mod tests {
         .unwrap();
         let snapshot = snapshot_ui(0, &environment).unwrap();
         assert!(snapshot.widgets.len() == 4096);
+        assert_eq!(snapshot.paint_order.len(), 4096);
+        assert_eq!(snapshot.paint_order.last(), Some(&4096));
         assert!(snapshot.widgets[4095].absolute_bounds.x == 4096.0);
         assert!(!snapshot.widgets[4095].effective_visible);
     }
@@ -2777,6 +2866,12 @@ mod tests {
             ("p=Table('p');p.drawInnerEdge='yes'", "Boolean"),
             ("p=Table('p');p.sliderColour=4", "text field"),
             ("p=Table('p');p.innerEdgeColour=4", "text field"),
+            ("p=Panel('p');c=p:Knob('c');p.children={c,c}", "child reference"),
+            ("p=Panel('p');p.children={p}", "child reference"),
+            ("p=Panel('p');p.children={{}}", "outside processor scope"),
+            ("p=Panel('p');p.children={false}", "child reference"),
+            ("p=Panel('p');p.children=4", "child list"),
+            ("p=Panel('p');p.children={};for i=1,4097 do p.children[i]=p end", "item limit"),
             (
                 "p=Menu('p',{});for i=1,300 do p._state.items[i]=string.rep('x',4096)end",
                 "text limit",
