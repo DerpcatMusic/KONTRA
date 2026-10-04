@@ -3453,7 +3453,7 @@ mod tests {
             assert!(format!("{error:#}").contains(&format!("{kind} node {node} parameter PanLaw=2")),
                 "retained2 on {target} identifies the original renderer owner");
         }
-        let program = super::super::program::parse_program(r#"<Program PanLaw="1"><Layers><Layer PanLaw="0"><Keygroups><Keygroup PanLaw="1"><Oscillators><SamplePlayer PanLaw="2"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let program = super::super::program::parse_program(r#"<Program PanLaw="1"><Layers><Layer PanLaw="0"><Keygroups><Keygroup PanLaw="1"><Oscillators><SamplePlayer SamplePath="authored.wav" PanLaw="2"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
         let session = Session::new_program_chain(&program, BTreeMap::new(), None, 48000).unwrap();
         session.validate_final_pan_laws().unwrap();
         let program = super::super::program::parse_program(r#"<Program PanLaw="private_pan_value_marker"/>"#).unwrap();

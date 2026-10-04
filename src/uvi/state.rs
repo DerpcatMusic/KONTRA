@@ -501,8 +501,26 @@ mod tests {
           end
           function onInit()if changed then Program:setParameter('PanLaw',0)end end
           function onSave()return {changed=Program:getParameter('PanLaw')==1}end
-        ]]></script></ScriptProcessor></EventProcessors><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        ]]></script></ScriptProcessor></EventProcessors><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="authored.wav"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let sample = std::sync::Arc::new(crate::uvi::sample::Sample {
+            rate: 48000,
+            channels: 1,
+            frames: 8,
+            interleaved: crate::uvi::storage::Storage::from_f32(vec![0.25; 8]).unwrap(),
+            loops: vec![],
+            unity_note: None,
+            wavetable_cycle_frames: None,
+            wavetable_image: false,
+            riff_metadata: vec![],
+        });
+        let samples = std::collections::HashMap::from([("authored.wav".into(), sample)]);
+        let missing = crate::uvi::playback::Renderer::new(
+            &program, std::collections::HashMap::new(), 48000,
+        ).err().unwrap();
+        assert!(missing.to_string().contains("Missing resolved UVI sample resource"));
+        let mut renderer = crate::uvi::playback::Renderer::new(&program, samples, 48000).unwrap();
         let mut session = Session::new_program_chain(&program, BTreeMap::new(), None, 48000).unwrap();
+        session.validate_final_pan_laws().unwrap();
         let initial = session.saved_state(0).unwrap();
         assert!(initial.0.parameters.is_empty());
         let initial = SavedState::decode(&initial.encode().unwrap()).unwrap();
@@ -519,9 +537,13 @@ mod tests {
         assert_eq!(saved.0.parameters.len(), 3);
         assert!(saved.0.parameters.iter().all(|(_,name,value)| name=="PanLaw" && *value==ParameterValue::Number(1.)));
         saved.validate(&program).unwrap();
+        saved.prepare_renderer(&mut renderer).unwrap();
         let mut restored = Session::new_program_chain_with_state(
             &program, BTreeMap::new(), None, 48000, Some(&saved),
         ).unwrap();
+        let processed = restored.drain().unwrap();
+        renderer.apply_boundary(&processed.commands, None, &processed.host_commands).unwrap();
+        restored.validate_final_pan_laws().unwrap();
         let after_init = restored.saved_state(0).unwrap();
         assert_eq!(after_init.0.parameters.len(), 2, "onInit still wins over the preloaded Program override");
         assert!(after_init.0.parameters.iter().all(|(node,name,value)| *node!=program.root && name=="PanLaw" && *value==ParameterValue::Number(1.)));
