@@ -388,7 +388,8 @@ fn local_lua_context(params:&SamplerParams,event:&LogEvent)->Option<Arc<crate::u
     if retained["processor"].as_u64()!=context.processor.map(|p|p as u64)
         || retained["frame"].as_u64()!=Some(context.frame)
         || retained["line"].as_u64()!=context.line.map(u64::from)
-        || retained["chunk"].as_str()!=Some(context.chunk.as_str()) {return None;}
+        || retained["chunk"].as_str()!=Some(context.chunk.as_str())
+        || retained["source_provenance"].as_str()!=Some(context.provenance) {return None;}
     Some(context)
 }
 
@@ -1594,7 +1595,7 @@ mod tests {
         let source=crate::library::UviSource {bank:"/owned/Authored bank.ufs".into(),bank_uuid:[0;16],member:"Authored.uvip".into()};
         let context=Arc::new(crate::uvi::lua_failure::Context {processor:Some(2),frame:256,line:Some(3),
             chunk:"UVI ScriptProcessor node 2".into(),excerpt:Some(json!({"text":">      3 | private_owned_source_marker()"})),
-            unavailable:"",display:"Local Lua source context (excluded from copy and export)\n>      3 | private_owned_source_marker()".into()});
+            unavailable:"",provenance:"structured_coroutine_frame",display:"Local Lua source context (excluded from copy and export)\n>      3 | private_owned_source_marker()".into()});
         let published=Arc::new(crate::plugin::uvi_ui::Published {stamp:crate::uvi::worker::Stamp {epoch,generation:11,frame:0},
             snapshots:Arc::default(),pictures:Arc::default(),fonts:Arc::default()});
         let mut part=crate::plugin::PartView::authored_uvi(source.clone(),published);
@@ -1611,7 +1612,7 @@ mod tests {
         }
         let mut stale=event.clone();stale.path=Some("/owned/Other bank.ufs".into());
         assert!(local_lua_context(&params,&stale).is_none());
-        for key in ["processor","frame","line","chunk"] {
+        for key in ["processor","frame","line","chunk","source_provenance"] {
             let mut stale=event.clone();stale.details["worker"]["lua_failure"][key]=json!("changed");
             assert!(local_lua_context(&params,&stale).is_none());
         }
