@@ -7,7 +7,7 @@ use crate::artwork::Picture;
 use crate::uvi::{
     host::{UiEdit, UiEditValue, UiKind, UiModifiers, UiSnapshot, UiValue, UiWidget},
     ui_assets::{key, strip_key},
-    worker::{Stamp, UiInput},
+    worker::Stamp,
 };
 use moose::mui::mui::{prelude::*, scene::Fit};
 use std::{collections::HashMap, sync::Arc};
@@ -335,7 +335,7 @@ fn send_edit(
     widget: &UiWidget,
     value: UiEditValue,
     mods: Mods,
-    send: &mut impl FnMut(Stamp, UiInput) -> bool,
+    send: &mut impl FnMut(Stamp, UiEdit) -> bool,
 ) {
     let edit = UiEdit {
         processor: snapshot.processor,
@@ -347,13 +347,7 @@ fn send_edit(
             shift_down: mods.shift,
         },
     };
-    if send(
-        stamp,
-        UiInput {
-            frame: stamp.frame,
-            edit,
-        },
-    ) {
+    if send(stamp, edit) {
         state.pending = Some((widget.id, value, stamp.frame));
     }
 }
@@ -404,7 +398,7 @@ pub fn view(
     snapshot: &UiSnapshot,
     pictures: &HashMap<String, Arc<Picture>>,
     fonts: &HashMap<String, Font>,
-    mut send: impl FnMut(Stamp, UiInput) -> bool,
+    mut send: impl FnMut(Stamp, UiEdit) -> bool,
 ) -> El {
     let admitted = state.adopt(current, captured, snapshot.processor);
     let initializing = current.epoch == captured.epoch && captured.generation > current.generation;
@@ -887,7 +881,7 @@ pub fn popup(
     captured: Stamp,
     snapshot: &UiSnapshot,
     window: Size,
-    mut send: impl FnMut(Stamp, UiInput) -> bool,
+    mut send: impl FnMut(Stamp, UiEdit) -> bool,
 ) -> Option<El> {
     if state.read_only || !state.adopt(current, captured, snapshot.processor) {
         return None;
@@ -1081,7 +1075,7 @@ mod tests {
         current: Stamp,
         captured: Stamp,
         input: Input,
-        edits: &mut Vec<(Stamp, UiInput)>,
+        edits: &mut Vec<(Stamp, UiEdit)>,
     ) {
         let panel = view(
             ui,
@@ -1223,7 +1217,7 @@ mod tests {
         }
         tick(&mut ui, &mut state, &snapshot, current, current, Input::default(), &mut edits);
         assert!(edits.iter().any(|(stamp, input)| same_activation(*stamp, current)
-            && input.edit.widget == 6 && input.edit.value == UiEditValue::Boolean(false)),
+            && input.widget == 6 && input.value == UiEditValue::Boolean(false)),
             "authored help does not intercept the existing input surface");
     }
 
@@ -1341,7 +1335,7 @@ mod tests {
             ..Input::default()
         }, &mut edits);
         tick(&mut ui, &mut state, &snapshot, current, current, Input::default(), &mut edits);
-        assert!(edits.iter().any(|(_, input)| matches!(input.edit.value,
+        assert!(edits.iter().any(|(_, input)| matches!(input.value,
             UiEditValue::Number(value) if (value - 0.385).abs() < 1e-12)));
         assert!(matches!(snapshot.widgets[1].value, Some(UiValue::Number(0.375))));
     }
@@ -1414,7 +1408,7 @@ mod tests {
                 assert!(ui.scene().unwrap().surface(&field).is_none());
                 if matches!(finish, "enter" | "blur") {
                     assert_eq!(edits.len(),1);
-                    assert!(matches!(edits[0].1.edit.value,UiEditValue::Number(v) if v==0.625));
+                    assert!(matches!(edits[0].1.value,UiEditValue::Number(v) if v==0.625));
                 } else {
                     assert!(edits.is_empty(), "unchanged, cancelled, or unit-suffixed text cannot edit");
                 }
@@ -1601,10 +1595,10 @@ mod tests {
             &mut edits,
         );
         assert!(edits.iter().any(|(s, e)| same_activation(*s, current)
-            && e.edit.processor == 7
-            && e.edit.widget == 6
-            && e.edit.value == UiEditValue::Boolean(false)
-            && e.edit.modifiers.shift_down));
+            && e.processor == 7
+            && e.widget == 6
+            && e.value == UiEditValue::Boolean(false)
+            && e.modifiers.shift_down));
         let before = edits.len();
         ui.focus(id(13));
         tick(
@@ -1734,7 +1728,7 @@ mod tests {
         assert!(
             edits
                 .iter()
-                .any(|(_, e)| e.edit.widget == 5 && e.edit.value == UiEditValue::Number(2.))
+                .any(|(_, e)| e.widget == 5 && e.value == UiEditValue::Number(2.))
         );
         let table = identity(0, current, &snapshot, 9);
         ui.focus(table);
@@ -1768,6 +1762,6 @@ mod tests {
             Input::default(),
             &mut edits,
         );
-        assert!(edits.iter().any(|(_,e)|e.edit.widget==9&&matches!(e.edit.value,UiEditValue::TableCell{index:2,value}if(value-0.31).abs()<1e-12)));
+        assert!(edits.iter().any(|(_,e)|e.widget==9&&matches!(e.value,UiEditValue::TableCell{index:2,value}if(value-0.31).abs()<1e-12)));
     }
 }
