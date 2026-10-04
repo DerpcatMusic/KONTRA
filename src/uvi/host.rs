@@ -2647,7 +2647,7 @@ mod tests {
 
     #[test]
     fn measured_missing_insert_bypass_default_preserves_types_and_saved_deltas() {
-        let program = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer/></Oscillators></Keygroup></Keygroups></Layer><Layer BypassInsertFX="1"><Keygroups><Keygroup BypassInsertFX="0"/></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let program = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="authored.wav"/></Oscillators></Keygroup></Keygroups></Layer><Layer BypassInsertFX="1"><Keygroups><Keygroup BypassInsertFX="0"/></Keygroups></Layer></Layers></Program>"#).unwrap();
         let lua = vm();
         let host = install(&lua, HostConfig {
             program: Some(&program), modules: BTreeMap::new(), now: Rc::new(|| 0),
@@ -2703,7 +2703,7 @@ mod tests {
 
     #[test]
     fn measured_missing_layer_mute_default_preserves_scope_type_and_state() {
-        let program = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer/></Oscillators></Keygroup></Keygroups></Layer><Layer Mute="1"/></Layers></Program>"#).unwrap();
+        let program = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="authored.wav"/></Oscillators></Keygroup></Keygroups></Layer><Layer Mute="1"/></Layers></Program>"#).unwrap();
         let lua = vm();
         let host = install(&lua, HostConfig {
             program: Some(&program), modules: BTreeMap::new(), now: Rc::new(|| 0),
@@ -2747,7 +2747,7 @@ mod tests {
 
     #[test]
     fn measured_missing_pan_law_defaults_preserve_retained_and_context_slots() {
-        let program = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer/></Oscillators></Keygroup></Keygroups></Layer><Layer PanLaw="1"/></Layers></Program>"#).unwrap();
+        let program = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="authored.wav"/></Oscillators></Keygroup></Keygroups></Layer><Layer PanLaw="1"/></Layers></Program>"#).unwrap();
         let lua = vm();
         let host = install(&lua, HostConfig {
             program: Some(&program), modules: BTreeMap::new(), now: Rc::new(|| 0),
