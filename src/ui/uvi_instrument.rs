@@ -10,13 +10,17 @@ use crate::uvi::{
     worker::Stamp,
 };
 use moose::mui::mui::{prelude::*, scene::Fit};
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 #[derive(Default)]
 pub struct State {
     activation: Option<(u64, u64, usize)>,
     pending: Option<(u32, UiEditValue, u64)>,
     menu: Option<u32>,
+    menu_path: Vec<String>,
     table_cell: Option<(u32, usize)>,
     read_only: bool,
 }
@@ -31,6 +35,7 @@ impl State {
         if self.read_only {
             self.pending = None;
             self.menu = None;
+            self.menu_path.clear();
             self.table_cell = None;
         }
     }
@@ -47,6 +52,7 @@ impl State {
         if !same_activation(current, captured) || captured.frame > current.frame {
             self.pending = None;
             self.menu = None;
+            self.menu_path.clear();
             return false;
         }
         if self
@@ -663,6 +669,7 @@ pub fn view(
                 // field padding/minimums squeeze narrow CC selections at bank size.
                 let el = el.min_w(0).pad(0);
                 if usable && hit {
+                    state.menu_path.clear();
                     state.menu = if state.menu == Some(widget.id) {
                         None
                     } else {
@@ -872,7 +879,64 @@ pub fn view(
         .id(format!("uvi-stage-{owner}"))
 }
 
-/// The open native menu, placed at editor-root level outside stage clipping.
+// Paths refer only to already-owned item strings. Keep the original leaf index
+// so choosing a category cannot change the authored callback's value domain.
+struct MenuEntry<'a> {
+    index: usize,
+    label: &'a str,
+    branch: bool,
+}
+
+fn menu_entries<'a>(
+    widget: &'a UiWidget,
+    path: &[String],
+    hierarchical: bool,
+) -> Vec<MenuEntry<'a>> {
+    let mut entries: Vec<MenuEntry<'a>> = Vec::new();
+    let mut groups = HashSet::new();
+    for (index, label) in widget.items.iter().enumerate() {
+        if !hierarchical {
+            entries.push(MenuEntry {
+                index,
+                label,
+                branch: false,
+            });
+            continue;
+        }
+        let mut parts = label.split('/');
+        if !path.iter().all(|part| parts.next() == Some(part.as_str())) {
+            continue;
+        }
+        let Some(label) = parts.next() else { continue };
+        let branch = parts.next().is_some();
+        if !branch || groups.insert(label) {
+            entries.push(MenuEntry {
+                index,
+                label,
+                branch,
+            });
+        }
+    }
+    entries
+}
+
+fn menu_hierarchical(widget: &UiWidget) -> bool {
+    widget.style.hierarchical == Some(true)
+        && widget.items.iter().all(|item| {
+            let parts = item.split('/');
+            parts.clone().count() <= 32 && parts.clone().all(|part| !part.is_empty())
+        })
+}
+
+fn menu_item_id(id: &str, depth: usize, entry: &MenuEntry<'_>) -> String {
+    if entry.branch {
+        format!("{id}-group-{depth}-{}", entry.index + 1)
+    } else {
+        format!("{id}-{}", entry.index + 1)
+    }
+}
+
+/// Open menus float at editor-root level outside the authored stage's clipping.
 pub fn popup(
     ui: &mut Ui,
     state: &mut State,
@@ -889,39 +953,37 @@ pub fn popup(
     let widget = snapshot.widgets.iter().find(|w| Some(w.id) == state.menu)?;
     if !widget.effective_visible || !enabled(snapshot, widget) {
         state.menu = None;
+        state.menu_path.clear();
         return None;
     }
     let anchor = identity(owner, current, snapshot, widget.id);
     let id = format!("{anchor}-menu");
-    if ui.dismissed(&[&id, &anchor]) {
-        state.menu = None;
-        return None;
+    // Unusual paths stay selectable as flat entries instead of losing content.
+    // The depth cap also bounds the number of simultaneously open panels.
+    let hierarchical = menu_hierarchical(widget);
+    if !hierarchical {
+        state.menu_path.clear();
     }
-    let mut rows = Vec::with_capacity(widget.items.len());
-    for (index, label) in widget.items.iter().enumerate() {
-        let item = format!("{id}-{}", index + 1);
-        let (hit, el) = action(
-            ui,
-            item.as_str(),
-            label,
-            numeric(state, widget) == (index + 1) as f64,
-        );
-        if hit {
-            send_edit(
-                state,
-                current,
-                snapshot,
-                widget,
-                UiEditValue::Number((index + 1) as f64),
-                ui.keys(item.as_str())
-                    .last()
-                    .map_or(ui.get(item.as_str()).mods, |key| key.mods),
-                &mut send,
-            );
-            state.menu = None;
-            return None;
-        }
-        rows.push(el.h(CONTROL).w(Len::Pct(100.)).shrink(0));
+    while !state.menu_path.is_empty()
+        && menu_entries(widget, &state.menu_path, hierarchical).is_empty()
+    {
+        state.menu_path.pop();
+    }
+    let panels: Vec<_> = (0..=state.menu_path.len())
+        .map(|depth| {
+            if depth == 0 {
+                id.clone()
+            } else {
+                format!("{id}-submenu-{depth}")
+            }
+        })
+        .collect();
+    let mut dismiss: Vec<_> = panels.iter().map(String::as_str).collect();
+    dismiss.push(&anchor);
+    if ui.dismissed(&dismiss) {
+        state.menu = None;
+        state.menu_path.clear();
+        return None;
     }
     let bounds = ui.scene()?.surface(&anchor)?.frame;
     let width = bounds
@@ -929,24 +991,133 @@ pub fn popup(
         .width
         .max(180.)
         .min((window.width - 2. * TIGHT).max(1.));
-    let height = (rows.len() as f64 * CONTROL).min((window.height - 2. * TIGHT).max(CONTROL));
-    let x = bounds.x.min(window.width - width - TIGHT).max(TIGHT);
-    let y = if bounds.bottom() + height > window.height {
-        (bounds.y - height).max(TIGHT)
-    } else {
-        bounds.bottom()
-    };
-    Some(stack![
-        block(window.width, window.height).id(format!("{id}-dismiss")),
-        col(rows)
-            .gap(0)
-            .w(width)
-            .max_size(Size::new(width, height))
-            .scroll()
-            .fill(Role::Raised)
-            .at(x, y)
-            .id(id)
-    ])
+    let mut layers = vec![block(window.width, window.height).id(format!("{id}-dismiss"))];
+    let mut at = Point::new(bounds.x, bounds.bottom());
+    let mut depth = 0;
+    let mut focus_next = None;
+    loop {
+        let entries = menu_entries(widget, &state.menu_path[..depth], hierarchical);
+        if entries.is_empty() {
+            break;
+        }
+        let panel_id = if depth == 0 {
+            id.clone()
+        } else {
+            format!("{id}-submenu-{depth}")
+        };
+        if depth == 0 && ui.focus_key() == Some(anchor.as_str()) {
+            focus_next = Some(menu_item_id(&id, depth, &entries[0]));
+        }
+        let mut rows = Vec::with_capacity(entries.len());
+        let mut opened = None;
+        for entry in &entries {
+            let item = menu_item_id(&id, depth, entry);
+            let keys = ui.keys(item.as_str());
+            if depth > 0 && keys.iter().any(|press| press.key == Key::Left) {
+                let parent = menu_entries(widget, &state.menu_path[..depth - 1], hierarchical)
+                    .into_iter()
+                    .find(|entry| entry.branch && entry.label == state.menu_path[depth - 1]);
+                let parent = parent.map(|entry| menu_item_id(&id, depth - 1, &entry));
+                state.menu_path.truncate(depth - 1);
+                let panel = popup(ui, state, owner, current, captured, snapshot, window, send);
+                if let Some(parent) = parent {
+                    ui.focus(parent);
+                }
+                return panel;
+            }
+            let right = keys.iter().any(|press| press.key == Key::Right);
+            let selected = if entry.branch {
+                state
+                    .menu_path
+                    .get(depth)
+                    .is_some_and(|part| part == entry.label)
+            } else {
+                numeric(state, widget) == (entry.index + 1) as f64
+            };
+            let (hit, mut el) = action(ui, item.as_str(), entry.label, selected);
+            if entry.branch {
+                el = el.justify(Justify::Start);
+                if let Some(label) = el.children_mut().first_mut() {
+                    *label = label.clone().flex(1);
+                }
+                el = el.push(glyph(Icon::Right, TEXT, secondary()));
+                if hit || right {
+                    opened = Some(entry.label.to_owned());
+                }
+            } else if hit {
+                send_edit(
+                    state,
+                    current,
+                    snapshot,
+                    widget,
+                    UiEditValue::Number((entry.index + 1) as f64),
+                    ui.keys(item.as_str())
+                        .last()
+                        .map_or(ui.get(item.as_str()).mods, |key| key.mods),
+                    &mut send,
+                );
+                state.menu = None;
+                state.menu_path.clear();
+                return None;
+            }
+            rows.push(el.h(CONTROL).w(Len::Pct(100.)).shrink(0));
+        }
+        if let Some(label) = opened {
+            state.menu_path.truncate(depth);
+            state.menu_path.push(label);
+            if let Some(first) = menu_entries(widget, &state.menu_path, hierarchical).first() {
+                focus_next = Some(menu_item_id(&id, depth + 1, first));
+            }
+        }
+        let height = (rows.len() as f64 * CONTROL).min((window.height - 2. * TIGHT).max(CONTROL));
+        let x = at.x.min(window.width - width - TIGHT).max(TIGHT);
+        let y = if depth == 0 && at.y + height > window.height {
+            (bounds.y - height).max(TIGHT)
+        } else {
+            at.y.min(window.height - height - TIGHT).max(TIGHT)
+        };
+        layers.push(
+            col(rows)
+                .gap(0)
+                .w(width)
+                .max_size(Size::new(width, height))
+                .scroll()
+                .fill(Role::Raised)
+                .at(x, y)
+                .id(panel_id.clone()),
+        );
+        if depth >= state.menu_path.len() {
+            break;
+        }
+        let Some(branch) = entries
+            .iter()
+            .find(|entry| entry.branch && entry.label == state.menu_path[depth])
+        else {
+            state.menu_path.truncate(depth);
+            break;
+        };
+        // Anchor to this frame's row grid. Reusing the prior row's absolute
+        // position introduces a one-frame jump when the popup is resized.
+        let scroll = ui.scene().and_then(|scene| {
+            let panel = scene.surface(&panel_id)?;
+            let first = scene.surface(&menu_item_id(&id, depth, &entries[0]))?;
+            Some((first.frame.y - panel.frame.y).min(0.))
+        }).unwrap_or(0.);
+        let row = entries.iter().position(|entry| entry.index == branch.index && entry.branch).unwrap();
+        at = Point::new(
+            if x + 2. * width + TIGHT <= window.width {
+                x + width
+            } else {
+                (x - width).max(TIGHT)
+            },
+            y + row as f64 * CONTROL + scroll,
+        );
+        depth += 1;
+    }
+    if let Some(id) = focus_next {
+        ui.focus(id);
+    }
+    Some(stack(layers))
 }
 
 #[cfg(test)]
@@ -1652,6 +1823,320 @@ mod tests {
         assert!(ui.scene().unwrap().surface(&fresh).is_some());
     }
 
+    #[test]
+    fn hierarchical_menu_pointer_and_keyboard_keep_original_leaf_indices() {
+        fn click(
+            ui: &mut Ui,
+            state: &mut State,
+            snapshot: &UiSnapshot,
+            stamp: Stamp,
+            key: &str,
+            edits: &mut Vec<(Stamp, UiEdit)>,
+        ) {
+            let frame = ui.scene().unwrap().surface(key).unwrap().frame;
+            let pos = Point::new(
+                frame.x + frame.size.width * 0.5,
+                frame.y + frame.size.height * 0.5,
+            );
+            for buttons in [Buttons::PRIMARY, Buttons::default()] {
+                tick(
+                    ui,
+                    state,
+                    snapshot,
+                    stamp,
+                    stamp,
+                    PointerInput {
+                        pos: Some(pos),
+                        buttons,
+                        ..PointerInput::default()
+                    }
+                    .into(),
+                    edits,
+                );
+            }
+            for _ in 0..2 {
+                tick(ui, state, snapshot, stamp, stamp, Input::default(), edits);
+            }
+        }
+        let mut snapshot = authored();
+        let widget = &mut snapshot.widgets[4];
+        widget.items = [
+            "Root",
+            "Woodwinds/Soft",
+            "Woodwinds/Bright",
+            "Brass/Muted",
+            "Woodwinds/Low/Bass",
+        ]
+        .map(str::to_owned)
+        .into();
+        widget.max = Some(5.);
+        widget.style.hierarchical = Some(true);
+        let stamp = stamp(4);
+        let anchor = identity(0, stamp, &snapshot, 5);
+        let menu = format!("{anchor}-menu");
+        let group = format!("{menu}-group-0-2");
+        let mut ui = super::super::theme::ui();
+        let mut state = State::default();
+        let mut edits = Vec::new();
+        for _ in 0..3 {
+            tick(
+                &mut ui,
+                &mut state,
+                &snapshot,
+                stamp,
+                stamp,
+                Input::default(),
+                &mut edits,
+            );
+        }
+        click(&mut ui, &mut state, &snapshot, stamp, &anchor, &mut edits);
+        assert!(ui.scene().unwrap().surface(&group).is_some());
+        assert!(ui.scene().unwrap().surface(&format!("{menu}-3")).is_none());
+        click(&mut ui, &mut state, &snapshot, stamp, &group, &mut edits);
+        assert!(
+            edits.is_empty(),
+            "opening a category cannot invoke the preset callback"
+        );
+        assert!(
+            ui.scene()
+                .unwrap()
+                .surface(&format!("{menu}-submenu-1"))
+                .is_some()
+        );
+        click(
+            &mut ui,
+            &mut state,
+            &snapshot,
+            stamp,
+            &format!("{menu}-3"),
+            &mut edits,
+        );
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].1.widget, 5);
+        assert!(edits[0].1.value == UiEditValue::Number(3.));
+        assert!(state.menu.is_none() && state.menu_path.is_empty());
+        edits.clear();
+        click(&mut ui, &mut state, &snapshot, stamp, &anchor, &mut edits);
+        click(&mut ui, &mut state, &snapshot, stamp, &group, &mut edits);
+        let nested = format!("{menu}-group-1-5");
+        click(&mut ui, &mut state, &snapshot, stamp, &nested, &mut edits);
+        assert!(
+            ui.scene()
+                .unwrap()
+                .surface(&format!("{menu}-submenu-2"))
+                .is_some()
+        );
+        let key = |key| Input {
+            keys: vec![KeyPress {
+                key,
+                mods: Mods::default(),
+            }],
+            ..Input::default()
+        };
+        tick(
+            &mut ui,
+            &mut state,
+            &snapshot,
+            stamp,
+            stamp,
+            key(Key::Left),
+            &mut edits,
+        );
+        tick(
+            &mut ui,
+            &mut state,
+            &snapshot,
+            stamp,
+            stamp,
+            Input::default(),
+            &mut edits,
+        );
+        assert_eq!(
+            state.menu_path,
+            ["Woodwinds"],
+            "Left closes exactly one nested category"
+        );
+        assert_eq!(ui.focus_key(), Some(nested.as_str()));
+        tick(
+            &mut ui,
+            &mut state,
+            &snapshot,
+            stamp,
+            stamp,
+            key(Key::Right),
+            &mut edits,
+        );
+        tick(
+            &mut ui,
+            &mut state,
+            &snapshot,
+            stamp,
+            stamp,
+            Input::default(),
+            &mut edits,
+        );
+        click(
+            &mut ui,
+            &mut state,
+            &snapshot,
+            stamp,
+            &format!("{menu}-5"),
+            &mut edits,
+        );
+        assert_eq!(edits.len(), 1);
+        assert!(edits[0].1.value == UiEditValue::Number(5.));
+        edits.clear();
+        click(&mut ui, &mut state, &snapshot, stamp, &anchor, &mut edits);
+        tick(
+            &mut ui,
+            &mut state,
+            &snapshot,
+            stamp,
+            stamp,
+            key(Key::Tab),
+            &mut edits,
+        );
+        tick(
+            &mut ui,
+            &mut state,
+            &snapshot,
+            stamp,
+            stamp,
+            Input::default(),
+            &mut edits,
+        );
+        assert_eq!(ui.focus_key(), Some(group.as_str()));
+        tick(
+            &mut ui,
+            &mut state,
+            &snapshot,
+            stamp,
+            stamp,
+            key(Key::Right),
+            &mut edits,
+        );
+        tick(
+            &mut ui,
+            &mut state,
+            &snapshot,
+            stamp,
+            stamp,
+            Input::default(),
+            &mut edits,
+        );
+        assert_eq!(state.menu_path, ["Woodwinds"]);
+        tick(
+            &mut ui,
+            &mut state,
+            &snapshot,
+            stamp,
+            stamp,
+            key(Key::Left),
+            &mut edits,
+        );
+        tick(
+            &mut ui,
+            &mut state,
+            &snapshot,
+            stamp,
+            stamp,
+            Input::default(),
+            &mut edits,
+        );
+        assert!(state.menu_path.is_empty());
+        assert_eq!(ui.focus_key(), Some(group.as_str()));
+        tick(
+            &mut ui,
+            &mut state,
+            &snapshot,
+            stamp,
+            stamp,
+            key(Key::Enter),
+            &mut edits,
+        );
+        tick(
+            &mut ui,
+            &mut state,
+            &snapshot,
+            stamp,
+            stamp,
+            Input::default(),
+            &mut edits,
+        );
+        tick(
+            &mut ui,
+            &mut state,
+            &snapshot,
+            stamp,
+            stamp,
+            key(Key::Enter),
+            &mut edits,
+        );
+        tick(
+            &mut ui,
+            &mut state,
+            &snapshot,
+            stamp,
+            stamp,
+            Input::default(),
+            &mut edits,
+        );
+        assert_eq!(edits.len(), 1);
+        assert!(edits[0].1.value == UiEditValue::Number(2.));
+        assert!(same_activation(edits[0].0, stamp));
+        assert!(matches!(
+            snapshot.widgets[4].value,
+            Some(UiValue::Number(1.))
+        ));
+        edits.clear();
+        click(&mut ui, &mut state, &snapshot, stamp, &anchor, &mut edits);
+        click(&mut ui, &mut state, &snapshot, stamp, &group, &mut edits);
+        let mut reload = stamp;
+        reload.epoch += 1;
+        tick(&mut ui, &mut state, &snapshot, reload, stamp, key(Key::Enter), &mut edits);
+        tick(&mut ui, &mut state, &snapshot, reload, stamp, Input::default(), &mut edits);
+        assert!(edits.is_empty(), "a stale popup cannot send its prior library's index");
+        assert!(state.menu.is_none() && state.menu_path.is_empty());
+        assert!(ui.scene().unwrap().surface(&menu).is_none());
+        tick(&mut ui, &mut state, &snapshot, reload, reload, Input::default(), &mut edits);
+        assert!(ui.scene().unwrap().surface(&identity(0,reload,&snapshot,5)).is_some());
+        assert!(ui.scene().unwrap().surface(&group).is_none());
+        assert!(edits.is_empty());
+
+    }
+
+    #[test]
+    fn menu_path_grouping_is_opt_in_and_unusual_paths_remain_selectable() {
+        let mut snapshot = authored();
+        let widget = &mut snapshot.widgets[4];
+        widget.items = ["Plain", "A/First", "A/Second", "A/B/Third"]
+            .map(str::to_owned)
+            .into();
+        let flat = menu_entries(widget, &[], false);
+        assert_eq!(flat.len(), 4);
+        assert!(!flat.iter().any(|entry| entry.branch));
+        let root = menu_entries(widget, &[], true);
+        assert_eq!(root.len(), 2);
+        assert_eq!(root[1].index, 1);
+        let children = menu_entries(widget, &["A".into()], true);
+        assert_eq!(
+            children.iter().map(|entry| entry.index).collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
+        assert!(children[2].branch);
+        let nested = menu_entries(widget, &["A".into(), "B".into()], true);
+        assert_eq!(nested[0].index, 3);
+        assert_eq!(nested[0].label, "Third");
+        widget.style.hierarchical = Some(true);
+        assert!(menu_hierarchical(widget));
+        widget.items.push("Malformed//Path".into());
+        assert!(!menu_hierarchical(widget));
+        assert_eq!(menu_entries(widget, &[], false).len(), 5);
+        widget.items.pop();
+        widget.items.push(vec!["deep"; 33].join("/"));
+        assert!(!menu_hierarchical(widget));
+        assert_eq!(menu_entries(widget, &[], false).len(), 5);
+    }
     #[test]
     fn authored_menu_and_table_use_native_one_based_indices() {
         let snapshot = authored();
