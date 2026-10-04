@@ -41,6 +41,14 @@ impl NIFileContainer {
 
         let _header_chunk = reader.read_bytes(600)?;
 
+        // Every table entry requires 8 + 16 + 600 + 8 + 8 bytes.
+        let records_start = reader.stream_position()?;
+        let stream_end = reader.seek(std::io::SeekFrom::End(0))?;
+        reader.seek(std::io::SeekFrom::Start(records_start))?;
+        if file_count > stream_end.saturating_sub(records_start) / 640 {
+            return Err(Error::Static("Invalid FileContainer file count"));
+        }
+
         let mut offset: u64 = 0;
         let mut items = Vec::new();
         for _ in 0..file_count {
@@ -198,6 +206,43 @@ mod tests {
                 assert_eq!(reader.position(), start as u64);
             }
         }
+    }
+
+    #[test]
+    fn impossible_file_counts_fail_before_reading_table_entries() {
+        for (ends, declared_count) in [
+            (Vec::<u64>::new(), 1),
+            (vec![4], 2),
+            (vec![4], u64::MAX),
+        ] {
+            let (mut bytes, _, _) = authored_container(&ends);
+            bytes[16 + 256..16 + 256 + 8].copy_from_slice(&declared_count.to_le_bytes());
+            let mut reader = std::io::Cursor::new(bytes);
+            assert!(matches!(NIFileContainer::read(&mut reader),
+                Err(Error::Static("Invalid FileContainer file count"))));
+            assert_eq!(reader.position(), 16 + 256 + 8 + 8 + 16 + 600);
+        }
+    }
+
+    #[test]
+    fn feasible_count_keeps_exact_record_boundary_read_error() {
+        let (mut bytes, records_end, _) = authored_container(&[4]);
+        bytes.truncate(records_end as usize);
+        let mut reader = std::io::Cursor::new(bytes);
+        assert!(matches!(NIFileContainer::read(&mut reader), Err(Error::IO(error))
+            if error.kind() == std::io::ErrorKind::UnexpectedEof));
+        assert_eq!(reader.position(), records_end);
+    }
+
+    #[test]
+    fn empty_file_table_preserves_metadata_and_payload_boundary() {
+        let (mut bytes, _, metadata_end) = authored_container(&[]);
+        bytes.extend([0; 4]);
+        let mut reader = std::io::Cursor::new(bytes);
+        let container = NIFileContainer::read(&mut reader).unwrap();
+        assert!(container.items.is_empty());
+        assert_eq!(container.file_section_offset, metadata_end);
+        assert_eq!(reader.position(), metadata_end);
     }
 
     #[test]
