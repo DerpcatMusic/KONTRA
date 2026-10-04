@@ -926,6 +926,7 @@ pub struct Renderer<'a> {
     source_channels: HashMap<NodeId, usize>,
     global_channels: usize,
     buses: HashMap<NodeId, Frame>,
+    layers: HashMap<NodeId, Frame>,
     routes: HashMap<NodeId, NodeId>,
     modulation: ModulationGraph,
     live: HashMap<Parameter, f64>,
@@ -1155,6 +1156,7 @@ impl<'a> Renderer<'a> {
             source_channels: HashMap::new(),
             global_channels: 2,
             buses: HashMap::new(),
+            layers: HashMap::new(),
             routes: HashMap::new(),
             modulation: ModulationGraph::new(program)?,
             live: HashMap::new(),
@@ -2968,7 +2970,8 @@ impl<'a> Renderer<'a> {
         }
         let mut processors = std::mem::take(&mut self.processors);
         let mut buses = std::mem::take(&mut self.buses);
-        let mut layers = HashMap::<NodeId, Frame>::new();
+        let mut layers = std::mem::take(&mut self.layers);
+        layers.clear();
         let mut released = HashSet::new();
         for voice in &mut voices {
             if voice.note_off.is_some()
@@ -3124,6 +3127,10 @@ impl<'a> Renderer<'a> {
         self.voices = voices;
         self.processors = processors;
         self.buses = buses;
+        // Preserve the old discard of any non-layer parent entries.
+        if layers.is_empty() {
+            self.layers = layers;
+        }
         self.frame += 1;
         Ok([output[0], output[1]])
     }
@@ -4197,6 +4204,28 @@ mod tests {
             output,
             vec![[1., 1.], [1., 1.], [2.5, 2.5], [1.5, 1.5], [0., 0.]]
         );
+    }
+    #[test]
+    fn layer_scratch_drops_unconsumed_parent_frames_without_changing_audio() {
+        // Existing structural admission permits this Keygroup under an AuxEffect.
+        // Its parent is not a Program layer, so the old per-frame map discarded it.
+        let program = parse_program(r#"<Program><Layers><Layer><Auxs><AuxEffect><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup></Keygroups></AuxEffect></Auxs></Layer></Layers></Program>"#).unwrap();
+        let mut source = sample(1);
+        source.interleaved = Storage::from_f32(vec![1.; source.interleaved.len()]).unwrap();
+        let mut renderer = Renderer::new(
+            &program,
+            HashMap::from([("a".into(), Arc::new(source))]),
+            48000,
+        ).unwrap();
+        let output = renderer.render(&[script::Command {
+            frame: 0,
+            action: script::Action::Start(note(1)),
+        }], &[], 4).unwrap();
+        assert_eq!(output, vec![[0., 0.]; 4]);
+        assert_eq!(renderer.active_voices(), 1);
+        assert_eq!(renderer.layers.capacity(), 0);
+        assert_eq!(renderer.render(&[], &[], 4).unwrap(), vec![[0., 0.]; 4]);
+        assert_eq!(renderer.layers.capacity(), 0);
     }
     #[test]
     fn mono_effects_and_matrix_keep_native_bus_width_before_hardware_upmix() {
