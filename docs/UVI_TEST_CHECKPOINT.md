@@ -119,7 +119,11 @@ compensation is retained only with matching already allocated delay storage.
 Actual Bitwig behavior still requires testing with the newly installed plugin.
 Worker load journals retain decoded graph details even when admission fails. Lua errors
 retain processor/chunk/line and resumed frame when available; DSP errors identify
-processor/node/frame at the instrumented boundaries. Missing source context is not
+processor/node/frame at the instrumented boundaries. Source changes after
+`1213001` add a [local Lua context panel](UVI_LOCAL_LUA_FAILURE_CONTEXT.md),
+using retained structured frames and already loaded approved source. Its bounded
+code excerpt is excluded from copied records, journals and support exports.
+Initialization failures retain a known entry without guessing their failing line. Missing source context is not
 invented. Authored print counts and drops are measured separately from errors.
 The JSON/journal contain names and failure messages, not full commercial scripts,
 program XML, samples, reader constants or access keys. Review private names before
