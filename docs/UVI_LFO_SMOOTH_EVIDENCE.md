@@ -68,3 +68,9 @@ The actual frozen `bb60218` Program parser and `ModulationGraph::deltas` were co
 `candidate-rust-native-corners-comparison-safe.json`: with the candidate, every first512-frame aligned control-point comparison is bit-exact. Mixed partial source-call comparisons retain at most5.960464477539063e-8 from the current graph's fixed-block interpolation; complete native source-call boundaries are not automatically the same as renderer/host boundaries. These remaining differences are reported, not hidden.
 
 The authored regression uses actual `ModulationGraph::deltas` at rate48k, Freq5.5014190673828125, Phase.499 and frame64. Original generator result is `0xbccf97c0`; baseline computes `0xbccf9800`. The regression fails baseline and passes the candidate. Deterministic Smooth admission, stochastic seed policy, StepEnvelope behavior and sine producer clocks remain unchanged.
+
+## Additional host-sync and transformed-control scope
+
+`native-generator-sync-safe.json` adds 36 configurations / 576 complete calls at tempo 84 with SyncToHost1, Wave 1/2, the three scalar beat periods and corner/wrap phases. The candidate actual graph matches all first 512 aligned control points bit-for-bit; mixed-partial error remains at most 5.960464477539063e-8. The native float32 tempo/60/beat-period law is measured in this caller context.
+
+A transformed full-generator attempt with Wave 2, Phase .499, Bipolar0 and Depth .37 reaches original helper `0x1416869b0`, then its unresolved retained indirect math dispatch at `0x1416869b9`. All legacy oracle vector/math adapters were removed for that attempt. No replacement was installed. Receipt `native-generator-transformed-boundary-safe.json` records the exact boundary. The completed generator scope is raw bipolar Depth1; no broader transform or normal-Smooth production admission follows.
