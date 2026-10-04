@@ -463,16 +463,27 @@ struct EventGroup {
 }
 
 fn cause(event: &LogEvent) -> String {
-    // The worker's original failure outranks the typed endpoint symptom.
-    [event.details.pointer("/worker/failure"), event.details.get("cause"),
+    // A later worker snapshot cannot replace an independent captured endpoint
+    // cause. Only these exact worker-origin symptoms use the legacy cause order.
+    let endpoint = event.details.pointer("/endpoint/error").filter(|value| !value.is_null());
+    endpoint.filter(|value| !matches!(value.as_str(),
+        Some("Bridge(Worker(Failed))" | "Bridge(Worker(Stopped))")))
+        .or_else(|| [event.details.pointer("/worker/failure"), event.details.get("cause"),
         event.details.get("failure"), event.details.get("worker_failure"),
         event.details.pointer("/endpoint/error"), event.details.get("error")]
-        .into_iter().flatten().find(|value| !value.is_null())
-        .map(|value| {
-            let value = stable_cause(value);
-            value.as_str().map(str::to_owned).unwrap_or_else(|| value.to_string())
-        })
+        .into_iter().flatten().find(|value| !value.is_null()))
+        .map(cause_text)
         .unwrap_or_else(|| event.reason.clone().unwrap_or_else(|| event.event.clone()))
+}
+
+fn cause_text(value: &serde_json::Value) -> String {
+    let value = stable_cause(value);
+    value.as_str().map(str::to_owned).unwrap_or_else(|| value.to_string())
+}
+
+fn supplementary_worker_failure(event: &LogEvent) -> Option<String> {
+    event.details.pointer("/worker/failure").filter(|value| !value.is_null())
+        .map(cause_text).filter(|failure| *failure != cause(event))
 }
 
 fn stable_cause(value: &serde_json::Value) -> serde_json::Value {
@@ -607,6 +618,7 @@ fn group_events(events: &[LogEvent], indices: &[usize]) -> Vec<EventGroup> {
             event.line,
             identity,
             cause(event),
+            supplementary_worker_failure(event),
             event.details.pointer("/endpoint/error_code"),
             event.details.pointer("/endpoint/stage"),
             event.details.pointer("/endpoint/source_file").or_else(|| event.details.pointer("/endpoint/source")),
@@ -740,6 +752,9 @@ fn group_details(events: &[LogEvent], group: &EventGroup) -> String {
             time(last),
             cause(event)
         );
+        if let Some(failure) = supplementary_worker_failure(event) {
+            let _ = writeln!(text, "Additional worker failure: {failure}");
+        }
         let source_data = &events[source].details;
         let source_context = if diagnostics::excerpt_text(source_data).is_some() { source_data }
             else if diagnostics::excerpt_text(&source_data["endpoint"]).is_some() || source_data["endpoint"]["source_excerpt_unavailable"].is_string() { &source_data["endpoint"] }
@@ -1849,20 +1864,95 @@ mod tests {
         let groups = group_events(&events,&[2,1,0]);
         assert_eq!((groups.len(),groups[0].members.len(),groups[0].children.len()),(1,3,2));
         assert_eq!(cause(&events[1]),"RequestCapacity");
-        assert_eq!(cause(&events[2]),"authored worker processing error");
+        assert_eq!(cause(&events[2]),"RequestCapacity");
         let text = group_details(&events,&groups[0]);
-        assert_eq!(text.matches("Cause: RequestCapacity").count(),1);
-        assert!(text.contains("authored worker processing error"));
+        assert_eq!(text.matches("Cause: RequestCapacity").count(),2);
+        assert_eq!(text.matches("authored worker processing error").count(),1);
+        assert!(text.contains("Additional worker failure: authored worker processing error"));
         assert!(text.contains("source: src/uvi/endpoint.rs") && text.contains("line: 81"));
         assert!(text.contains("authored_request_failure()"),"earlier real source excerpt survives later missing source");
         assert!(!text.contains("RequestCapacity at request (frame"),"volatile formatted reasons do not duplicate canonical causes");
-        assert_eq!(group_reason(&events,&groups[0]),"2 unique item/cause/location entries · select to inspect");
+        assert_eq!(group_reason(&events,&groups[0]),"RequestCapacity");
         let mut unavailable = events[1].clone();
         unavailable.details["endpoint"]["source_kind"] = json!("rust");
         unavailable.details["endpoint"]["source_excerpt_unavailable"] = json!("Native source differs from the source used to build this binary");
         let unavailable_events = vec![unavailable];
         let unavailable_text = group_details(&unavailable_events,&group_events(&unavailable_events,&[0])[0]);
         assert!(unavailable_text.contains("Rust source context unavailable: Native source differs from the source used to build this binary"));
+    }
+
+    #[test]
+    fn independent_endpoint_cause_retains_distinct_worker_evidence_without_frame_bloat() {
+        let event = |n: u64, endpoint: serde_json::Value, failure: serde_json::Value| -> LogEvent {
+            serde_json::from_value(json!({"schema_version":1,"sequence":n,"timestamp_ms":1000+n,
+                "monotonic_ms":n,"session_id":"independent-endpoint-fixture","level":"error","module":"uvi",
+                "event":"uvi_audio_endpoint_failed","code":"uvi_audio_endpoint_failed","reason":"combined stale reason",
+                "data":{"slot":0,"bank":"Bank.ufs","member":"Instrument.uvip",
+                    "worker":{"failure":failure,"status":"failed","stats":{"frame":n,"errors":n}},
+                    "endpoint":{"error":endpoint,"frame":n,"stage":"process","error_code":36,
+                        "source_file":"src/plugin/uvi.rs","line":42}}})).unwrap()
+        };
+        for endpoint in ["Bridge(RequestCapacity)", "InvalidInput", "Bridge(Worker(InvalidInput))",
+            "Bridge(Worker(Failed)) trailing", "Not Bridge(Worker(Stopped))"] {
+            let mut first = event(1,json!(endpoint),json!("later authored worker failure"));
+            first.details["endpoint"]["source_kind"] = json!("rust");
+            first.details["endpoint"]["source_excerpt"] = json!({"text":">     42 | authored_endpoint_failure()\n"});
+            let later = event(2,json!(endpoint),json!("later authored worker failure"));
+            let different = event(3,json!(endpoint),json!("distinct authored worker failure"));
+            let same = event(4,json!(endpoint),json!(endpoint));
+            let events = vec![first,later,different,same];
+            let before = events.iter().map(|event| serde_json::to_value(event).unwrap()).collect::<Vec<_>>();
+            let groups = group_events(&events,&[3,2,1,0]);
+            assert_eq!((groups.len(),groups[0].members.len(),groups[0].children.len()),(1,4,3));
+            assert!(groups[0].children.iter().any(|child| child == &[1,0]));
+            assert!(events.iter().all(|event| cause(event) == endpoint));
+            assert_eq!(group_reason(&events,&groups[0]),endpoint);
+            let text = group_details(&events,&groups[0]);
+            assert_eq!(text.matches("later authored worker failure").count(),1);
+            assert_eq!(text.matches("distinct authored worker failure").count(),1);
+            assert_eq!(text.matches("Additional worker failure:").count(),2);
+            assert!(text.contains("authored_endpoint_failure()"));
+            assert!(!text.contains("combined stale reason"));
+            assert_eq!(events.iter().map(|event| serde_json::to_value(event).unwrap()).collect::<Vec<_>>(),before);
+        }
+        // Structured legacy causes keep the existing stable identity rules.
+        let events = vec![event(1,json!("InvalidInput"),json!({"error":"owned structured cause","frame":1,"stats":{"errors":1}})),
+            event(2,json!("InvalidInput"),json!({"error":"owned structured cause","frame":2,"stats":{"errors":2}}))];
+        let groups = group_events(&events,&[1,0]);
+        assert_eq!(groups[0].children.len(),1);
+        assert_eq!(supplementary_worker_failure(&events[0]),Some("{\"error\":\"owned structured cause\"}".into()));
+    }
+
+    #[test]
+    fn exact_worker_symptoms_and_absent_endpoint_preserve_legacy_cause_order() {
+        let mut event: LogEvent = serde_json::from_value(json!({"schema_version":1,"sequence":1,"timestamp_ms":1000,
+            "monotonic_ms":1,"session_id":"worker-cause-fixture","level":"error","module":"uvi",
+            "event":"uvi_audio_endpoint_failed","reason":"reason fallback","data":{
+                "worker":{"failure":"owned worker cause"},"cause":"legacy cause","failure":"legacy failure",
+                "worker_failure":"legacy worker failure","error":"legacy error"}})).unwrap();
+        for endpoint in [serde_json::Value::Null,json!("Bridge(Worker(Failed))"),json!("Bridge(Worker(Stopped))")] {
+            event.details["endpoint"] = json!({"error":endpoint});
+            event.details["worker"]["failure"] = json!("owned worker cause");
+            assert_eq!(cause(&event),"owned worker cause");
+            assert!(supplementary_worker_failure(&event).is_none());
+            event.details["worker"]["failure"] = serde_json::Value::Null;
+            assert_eq!(cause(&event),"legacy cause");
+        }
+        for symptom in ["Bridge(Worker(Failed))", "Bridge(Worker(Stopped))"] {
+            event.details = json!({"endpoint":{"error":symptom}});
+            assert_eq!(cause(&event),symptom);
+            assert!(supplementary_worker_failure(&event).is_none());
+        }
+        event.details = json!({"failure":"legacy failure","worker_failure":"legacy worker failure","error":"legacy error"});
+        assert_eq!(cause(&event),"legacy failure");
+        event.details.as_object_mut().unwrap().remove("failure");
+        assert_eq!(cause(&event),"legacy worker failure");
+        event.details.as_object_mut().unwrap().remove("worker_failure");
+        assert_eq!(cause(&event),"legacy error");
+        event.details = json!({});
+        assert_eq!(cause(&event),"reason fallback");
+        event.reason = None;
+        assert_eq!(cause(&event),"uvi_audio_endpoint_failed");
     }
 
     #[test]
