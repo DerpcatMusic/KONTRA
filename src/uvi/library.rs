@@ -223,13 +223,28 @@ impl Library {
 
     fn audio_members(&self, members: &[&Member]) -> Result<Sample> {
         let mut operands = Vec::with_capacity(members.len());
+        let mut assembly_error = None;
         for member in members {
             let bytes = self.read(member)?;
             ensure!(
                 !generator::image_signature(&bytes),
                 "Image wavetable resources cannot be loaded through audio callbacks"
             );
-            operands.push(sample::decode(&bytes)?);
+            let decoded = sample::decode(&bytes)?;
+            if assembly_error.is_none() {
+                operands.push(decoded);
+                if members.len() > 1
+                    && let Err(error) = sample::validate_mono(&operands, members.len())
+                {
+                    assembly_error = Some(error);
+                    // Later members must still be read and decoded for identical
+                    // error precedence; their PCM no longer needs retaining.
+                    operands.clear();
+                }
+            }
+        }
+        if let Some(error) = assembly_error {
+            return Err(error);
         }
         if operands.len() == 1 {
             Ok(operands.pop().unwrap())
