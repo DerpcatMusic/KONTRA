@@ -4,13 +4,16 @@ use super::*;
 use crate::uvi::worker::Stamp;
 use std::time::Duration;
 
+fn endpoint_matches(params: &SamplerParams, slot: usize, activation: &uvi_load::Activation) -> bool {
+    params.shared.part(slot).is_some_and(|part| {
+        part.uvi_generation.load(Ordering::Acquire) == activation.generation
+            && part.uvi_part_generation.load(Ordering::Acquire) == activation.part_generation
+            && !part.uvi_failed.load(Ordering::Acquire)
+    })
+}
+
 fn installed(params: &SamplerParams, slot: usize, activation: &uvi_load::Activation) -> bool {
-    activation.current(params, slot)
-        && params.shared.part(slot).is_some_and(|part| {
-            part.uvi_generation.load(Ordering::Acquire) == activation.generation
-                && part.uvi_part_generation.load(Ordering::Acquire) == activation.part_generation
-                && !part.uvi_failed.load(Ordering::Acquire)
-        })
+    activation.current(params, slot) && endpoint_matches(params, slot, activation)
 }
 
 fn minimum(params: &SamplerParams, slot: usize, activation: &uvi_load::Activation) -> Stamp {
@@ -33,6 +36,7 @@ fn commit(params: &SamplerParams, values: &[(usize, uvi_load::Activation, Native
     let mut selection = params.selection.write().unwrap();
     if values.iter().any(|(slot, activation, _)| {
         !activation.context_matches(params, *slot, &selection)
+            || !endpoint_matches(params, *slot, activation)
             || !view
                 .parts
                 .get(*slot)
@@ -226,6 +230,44 @@ mod tests {
             published: true,
         };
         params.shared.view.lock().unwrap().parts[0].uvi_activation = Some(activation.clone());
+        let atoms = params.shared.part(0).unwrap();
+        for (generation, part_generation, failed) in [
+            (0, activation.part_generation, false),
+            (activation.generation + 1, activation.part_generation, false),
+            (activation.generation, activation.part_generation + 1, false),
+            (activation.generation, activation.part_generation, true),
+        ] {
+            atoms.uvi_generation.store(generation, Ordering::Release);
+            atoms.uvi_part_generation.store(part_generation, Ordering::Release);
+            atoms.uvi_failed.store(failed, Ordering::Release);
+            assert!(activation.current(&params, 0), "source context remains valid for inspection");
+            assert!(!commit(&params, &[(0, activation.clone(), vec![9].into())]),
+                "unadopted, replaced or failed endpoint cannot commit captured bytes");
+            assert_eq!(params.selection.read().unwrap().parts[0].uvi_state, activation.saved_state);
+            assert_eq!(params.shared.view.lock().unwrap().parts[0].uvi_activation.as_ref().unwrap().saved_state,
+                activation.saved_state);
+        }
+        atoms.uvi_generation.store(activation.generation, Ordering::Release);
+        atoms.uvi_part_generation.store(activation.part_generation, Ordering::Release);
+        atoms.uvi_failed.store(false, Ordering::Release);
+        // Every target must pass before either rack bytes or its baseline changes.
+        params.shared.ensure_parts(2);
+        let part = params.selection.read().unwrap().parts[0].clone();
+        params.selection.write().unwrap().parts.push(part);
+        let mut second = activation.clone();
+        let second_atoms = params.shared.part(1).unwrap();
+        second.part_generation = second_atoms.generation.load(Ordering::Acquire);
+        second_atoms.uvi_generation.store(second.generation, Ordering::Release);
+        second_atoms.uvi_part_generation.store(second.part_generation, Ordering::Release);
+        params.shared.view.lock().unwrap().parts[1].uvi_activation = Some(second.clone());
+        let mut foreign = second.clone();
+        foreign.source.member = "another-preset.uvip".into();
+        assert!(!commit(&params, &[(0, activation.clone(), vec![7].into()), (1, foreign, vec![8].into())]));
+        for (slot, current) in [(0, &activation), (1, &second)] {
+            assert_eq!(params.selection.read().unwrap().parts[slot].uvi_state, current.saved_state);
+            assert_eq!(params.shared.view.lock().unwrap().parts[slot].uvi_activation.as_ref().unwrap().saved_state,
+                current.saved_state);
+        }
         assert!(commit(&params, &[(0, activation.clone(), vec![2].into())]));
         let updated = params.shared.view.lock().unwrap().parts[0]
             .uvi_activation
