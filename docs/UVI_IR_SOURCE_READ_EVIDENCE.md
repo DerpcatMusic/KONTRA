@@ -21,8 +21,10 @@ throughput or polyphony claim. The worst Renderer CPU packet changes from
 37.63/38.42 ms to 20.63/21.43 ms.
 
 A separate paced baseline-10s/candidate-10s/candidate-20s/baseline-10s comparison
-finishes with finite audio, Ready status, no worker errors, endpoint failure or
-underrun. Startup packet CPU at frame zero changes from 36.87/37.98 ms to
+finishes with finite audio, Ready status, no worker errors or endpoint failure.
+Both candidates have zero Bridge underrun packets; the second baseline has 38
+despite the separate Worker underrun counter remaining zero. Startup packet CPU
+at frame zero changes from 36.87/37.98 ms to
 21.59/25.07 ms; frame 2304 changes from 37.68/36.51 ms to 18.62/18.14 ms.
 Backpressure submission attempts are 0/185 for the baseline and 0/0 for the
 candidate. These bounded runs do not establish sustainable operation on user
