@@ -139,10 +139,14 @@ fn directory<R: ReadBytesExt>(
     if count > 1_000_000 {
         return Err(invalid("Invalid NKX directory size"));
     }
+    let mut start = offset + 22;
+    // Every entry needs at least its 8-byte header, before any filename bytes.
+    if u64::from(count) > length.saturating_sub(start) / 8 {
+        return Err(invalid(&format!("Truncated NKX directory entries at {start:#x} ({prefix}): declared {count}, need at least {} bytes, available {}", u64::from(count) * 8, length.saturating_sub(start))));
+    }
     let mut children = Vec::with_capacity(count as usize);
     // Entries are contiguous after the 22-byte directory header: read them
     // all before any seek elsewhere, tracking the position without syscalls.
-    let mut start = offset + 22;
     for entry in 0..count {
         if start.checked_add(8).is_none_or(|n| n > length) {
             return Err(invalid(&format!("Truncated NKX directory entry {entry}/{count} at {start:#x} ({prefix}): need 8 bytes, available {}, file length {length}", length.saturating_sub(start))));
