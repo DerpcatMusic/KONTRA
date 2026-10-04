@@ -6,6 +6,53 @@ use mui::prelude::{El, Input, knob};
 
 #[cfg(target_os = "linux")]
 #[test]
+fn dialog_parent_closes_outside_model_lock_and_preserves_reopen() {
+    let mut old = handler((240, 200), 1.0);
+    let model = Arc::clone(&old.shared);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&seen);
+    old.requests.on_x11_window(Arc::new(Mutex::new(move |parent| {
+        assert!(model.try_lock().is_ok(), "native parent callbacks never hold the model");
+        observed.lock().unwrap().push(parent);
+    })));
+    assert_eq!(old.requests.x11_window(), None);
+    old.x11_window = 42;
+    old.requests.x11_window.store(42, Ordering::Release);
+    old.requests.notify_x11_window();
+    old.on_event_inner(&Event::Window(WindowEvent::WillClose));
+    assert_eq!(old.requests.x11_window(), None);
+    let requests = Arc::clone(&old.requests);
+    requests.x11_window.store(43, Ordering::Release);
+    drop(old);
+    assert_eq!(requests.x11_window(), Some(43));
+    let mut current = handler((240, 200), 1.0);
+    current.requests = Arc::clone(&requests);
+    current.x11_window = 43;
+    drop(current);
+    assert_eq!(requests.x11_window(), None);
+    assert_eq!(*seen.lock().unwrap(), [Some(42), None, None]);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn native_parent_hook_panic_cannot_unwind_creation_or_teardown() {
+    let mut h = handler((240, 200), 1.0);
+    let requests = Arc::clone(&h.requests);
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    let logged = Arc::clone(&lines);
+    requests.on_log(Arc::new(Mutex::new(move |line: &str| logged.lock().unwrap().push(line.to_owned()))));
+    requests.on_x11_window(Arc::new(Mutex::new(|_| panic!("parent hook probe"))));
+    h.x11_window = 42;
+    requests.x11_window.store(42, Ordering::Release);
+    requests.notify_x11_window();
+    drop(h);
+    assert_eq!(requests.x11_window(), None);
+    assert_eq!(lines.lock().unwrap().len(), 2);
+    assert!(lines.lock().unwrap().iter().all(|line| line.contains("parent hook probe")));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn native_window_attempt_is_logged_before_parent_conversion_panics() {
     use raw_window_handle::{HandleError, WindowHandle, XcbWindowHandle};
     struct Parent(Cell<bool>);

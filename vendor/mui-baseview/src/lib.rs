@@ -84,6 +84,11 @@ pub type LogHook = Arc<Mutex<dyn FnMut(&str) + Send>>;
 /// the key come up. Runs on the window's thread with the last frame's `Ui`.
 pub type KeyHook = Arc<Mutex<dyn FnMut(&mui::Ui, &KeyEvent) -> bool + Send>>;
 
+/// Observe the owned X11 identifier at creation and its cancellation edge
+/// before native teardown, outside the UI/model lock.
+#[cfg(target_os = "linux")]
+pub type X11WindowHook = Arc<Mutex<dyn FnMut(Option<u32>) + Send>>;
+
 /// Requests from the host's thread, applied by the window's next tick,
 /// which is the only place baseview's `WindowContext` can be touched.
 #[derive(Default)]
@@ -97,9 +102,48 @@ pub struct Requests {
     /// KONTAKTO patch: one bounded native capture, configured before open.
     timing: Mutex<Option<NativeTimingHook>>,
     log: Mutex<Option<LogHook>>,
+    #[cfg(target_os = "linux")]
+    x11_window: std::sync::atomic::AtomicU32,
+    #[cfg(target_os = "linux")]
+    x11_hook: Mutex<Option<X11WindowHook>>,
 }
 
 impl Requests {
+    /// The current editor XID; reading it does not retain the native window.
+    #[cfg(target_os = "linux")]
+    pub fn x11_window(&self) -> Option<u32> {
+        let window = self.x11_window.load(Ordering::Acquire);
+        (window != 0).then_some(window)
+    }
+
+    /// Observe creation/close on the native window thread; see [`X11WindowHook`].
+    #[cfg(target_os = "linux")]
+    pub fn on_x11_window(&self, hook: X11WindowHook) {
+        *self.x11_hook.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn notify_x11_window(&self) {
+        let hook = self.x11_hook.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        if let Some(hook) = hook {
+            if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                hook.lock().unwrap_or_else(std::sync::PoisonError::into_inner)(self.x11_window());
+            })) {
+                let line = format!("mui-baseview: panic in native X11 parent hook: {}", panic_message(payload.as_ref()));
+                eprintln!("{line}");
+                let log = self.log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+                if let Some(log) = log {
+                    let mut sink = match log.try_lock() {
+                        Ok(sink) => sink,
+                        Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+                        Err(std::sync::TryLockError::WouldBlock) => return,
+                    };
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink(&line)));
+                }
+            }
+        }
+    }
+
     /// Observe uncaptured GPU errors on a window tick without taking the UI/model lock.
     pub fn on_log(&self, hook: LogHook) {
         *self.log.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
@@ -245,6 +289,16 @@ fn build<V: View + Send + 'static>(
         let physical = (size.physical.width, size.physical.height);
         log(&shared, &format!("mui-baseview: native window init creating accessibility adapter; physical_size={physical:?} device_scale={}", size.scale_factor));
         let mut handler = Handler::new(shared, requests, physical, size.scale_factor);
+        #[cfg(target_os = "linux")]
+        {
+            handler.x11_window = cx.window_handle().ok().and_then(|handle| match handle.as_raw() {
+                raw_window_handle::RawWindowHandle::Xlib(h) => u32::try_from(h.window).ok(),
+                raw_window_handle::RawWindowHandle::Xcb(h) => Some(h.window.get()),
+                _ => None,
+            }).unwrap_or(0);
+            handler.requests.x11_window.store(handler.x11_window, Ordering::Release);
+            handler.requests.notify_x11_window();
+        }
         handler.a11y = cx
             .window_handle()
             .ok()
@@ -299,6 +353,25 @@ pub struct Handler<V> {
     /// The queue and the frame schedule.
     pub driver: Driver,
     timing: Option<timing::Capture>,
+    #[cfg(target_os = "linux")]
+    x11_window: u32,
+}
+
+#[cfg(target_os = "linux")]
+impl<V> Drop for Handler<V> {
+    fn drop(&mut self) {
+        self.clear_x11_window();
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl<V> Handler<V> {
+    fn clear_x11_window(&self) {
+        // A late old-handler drop must preserve a reopened window's parent.
+        if self.requests.x11_window.compare_exchange(self.x11_window, 0, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            self.requests.notify_x11_window();
+        }
+    }
 }
 
 impl<V: View> Handler<V> {
@@ -330,6 +403,8 @@ impl<V: View> Handler<V> {
             applied_ime: None,
             driver: Driver::new(size, scale, Box::new(Clipboard::default())),
             timing,
+            #[cfg(target_os = "linux")]
+            x11_window: 0,
         }
     }
 
@@ -580,6 +655,10 @@ impl<V: View> Handler<V> {
 
     /// One native event, as baseview delivers it.
     pub fn on_event_inner(&mut self, event: &Event) -> EventStatus {
+        #[cfg(target_os = "linux")]
+        if matches!(event, Event::Window(WindowEvent::WillClose)) {
+            self.clear_x11_window();
+        }
         if let Some(capture) = &mut self.timing {
             match event {
                 Event::Mouse(MouseEvent::ButtonPressed { button: MouseButton::Left, .. }) => capture.primary = true,
