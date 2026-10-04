@@ -16,7 +16,20 @@ Bounded instruction execution runs the unchanged loaded Lua bindings, integer co
 - With the authored `math.random(65536)` probe, native arithmetic permits only 32767 distinct integer results and its greatest result is 65534. Large-interval distribution therefore differs independently of seed.
 - Native seed conversion agrees with Linux for the tested seeds 1, 2, -1, 4294967297 and 1.9: integer truncation and low 32 bits give the same initial seed. These probes do not establish behavior for nonfinite, out-of-i64 or nonnumeric inputs.
 - The native binding consumes a random value before checking interval/argument-count errors. Invalid authored intervals and arity advance the state; this matches the vendored Lua source order.
-- Isolated Linux probes prove that reseeding a second VM, including on another thread, changes the first VM's next output. The native CRT uses an OS-context getter instead of a Lua-state field; its full VM/thread/fiber scheduling and seed lifecycle are not measured. Replacing either stream with an assumed per-VM seed would be a behavior change.
+- Isolated Linux probes prove that reseeding a second VM, including on another thread, changes the first VM's next output. The native CRT uses an OS-context getter instead of a Lua-state field; fresh-context initialization and reuse are measured below; actual VM/thread/fiber scheduling and activation seeding remain unmeasured. Replacing either stream with an assumed per-VM seed would be a behavior change.
+
+## Native CRT context and initialization evidence
+
+Additional bounded instruction fixtures execute the original CRT initializer (`0x141a01074`), the original context getter (`0x141a012c4`) on both lazy-allocation and reuse paths, and the original Lua bindings. Only OS FLS/TLS lookup/set, allocation, locale initialization and last-error plumbing are authored substitutes. The fixtures select their OS contexts; they do not observe Workstation's actual execution-thread or fiber assignment.
+
+- The initializer writes seed 1 to the CRT context's state field at offset `0x28`. A fresh context's first Lua result, without a `randomseed` call, is `41 / 32767`.
+- The getter initializes a missing context once and returns an existing context without reseeding it. Two authored OS contexts cause exactly two allocations and two original initializer invocations; returning to the first context continues its sequence.
+- Two authored Lua states receiving the same CRT context share the stream. The second state's first draw is `18467 / 32767` after the first state's `41 / 32767`; reseeding the second state changes the first state's next draw.
+- An unchanged non-Lua two-`rand` call block (`0x14114474e..0x14114476c`) receiving that same context consumes the next two raw values, 18467 and 6334. The following Lua draw is `26500 / 32767`. This proves sharing with that native caller block; its containing engine method, source identity and actual scheduling are not measured.
+
+The original UVI Lua-constructor math-registration block (`0x1413946ea..0x14139471a`) and its original math opener (`0x1416cf2c0`) were also executed with authored Lua stack/registry/closure plumbing. The registration table resolves the same `random` and `randomseed` bindings above. Installing the math library leaves an existing CRT seed of 12345 unchanged and invokes neither RNG binding nor CRT `rand`/`srand` in those measured blocks. Preceding and following constructor hooks, full VM creation and instrument activation were not executed.
+
+These results establish a default for a **fresh CRT OS context**, not for each instrument, session or Lua VM. An instrument may run on an existing context whose stream was seeded or advanced by another caller. Sharing applies to callers of this reader's measured CRT implementation with the same context; sharing across other native modules or different CRT instances is not established. A per-session seed-1 replacement would change the demonstrated reuse behavior and remains unsupported by this evidence.
 
 ## Owned program relevance and limits
 
@@ -26,4 +39,4 @@ No RNG override, default seed, activation seed, mutex, queue change or vendor-bi
 
 ## Private receipts
 
-The study artifacts are `owned-random-inventory-safe.json`, `native-random-safe.json`, `linux-random-safe.json`, and reproducible authored helper sources in `kontakto-uvi-random-audit-private`. They are separate from the unused named-collection allocation candidate. No full Cargo/plugin build was performed.
+The study artifacts are `owned-random-inventory-safe.json`, `native-random-safe.json`, `linux-random-safe.json`, `native-ownership-safe.json`, `native-context-getter-safe.json`, `native-math-open-safe.json`, and reproducible authored helper sources in `kontakto-uvi-random-audit-private`. They are separate from the unused named-collection allocation candidate. No full Cargo/plugin build was performed.
