@@ -706,24 +706,25 @@ impl Worker {
                         .initialization_ns
                         .store(nanos(initialized.elapsed()), Ordering::Relaxed);
                 }
-                worker_shared
-                    .details
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .initialization
-                    .finish(if failure.is_some() {
+                let (failure_phase, failure_frame) = {
+                    let mut details = worker_shared
+                        .details
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    details.initialization.finish(if failure.is_some() {
                         "failed"
                     } else {
                         "cancelled"
                     });
+                    (details.phase, details.phase_frame)
+                };
+                // Journal backpressure must not leave an exited worker Ready.
+                // Retain the original cause before any blocking trace event;
+                // the finalized report is installed after those events settle.
+                finish(&worker_shared, failure.clone());
                 if let Some(reason) = &failure {
-                    let details = worker_shared
-                        .details
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner());
-                    trace.detail("failure_phase", details.phase);
-                    trace.detail("failure_frame", details.phase_frame);
-                    drop(details);
+                    trace.detail("failure_phase", failure_phase);
+                    trace.detail("failure_frame", failure_frame);
                     trace.fail(reason.clone());
                 }
                 let report = trace.finish(if failure.is_some() {
@@ -736,7 +737,6 @@ impl Worker {
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .load_report = Some(report);
-                finish(&worker_shared, failure);
             })
             .context("Starting UVI playback worker")?;
         Ok(Self {
