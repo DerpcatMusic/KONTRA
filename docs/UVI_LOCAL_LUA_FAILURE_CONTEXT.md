@@ -23,3 +23,11 @@ The original pasted report's 179 inventory chunks produce two summaries, with
 as 26 rows: 146 chunks become one summary covering 9,457/9,457 rows and
 146/146 chunks, with all 22 stage transitions still separate. Complete available
 raw inventory remains in the journal/support export. No severity change is needed.
+
+The private initialization-handler experiment was rejected: replacing `.exec`
+with xpcall made successful authored constructors observe getfenv levels 0–5
+instead of 0–3. An authored mlua callback panic propagated under the existing
+call, but the naive Rust handler turned it into a C-stack-overflow error. Nested
+module `.eval` had already unwound the module's frame, leaving only the real
+caller's require line for the outer observer. Initialization keeps its known
+entry and explicitly unavailable failing line; no line is inferred from messages.
