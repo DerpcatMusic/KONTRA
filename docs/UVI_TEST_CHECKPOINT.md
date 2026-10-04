@@ -72,6 +72,16 @@ Use `--sample-rate` for the actual rate. Failed initialization still emits the
 available report on stdout and exits with an error. This command sends no notes:
 Ready means initialized, not that the musical behavior has been exercised.
 
+Add `--ui` for an explicit control-thread UI census. It requests initialized
+processor snapshots and decodes their authorized artwork, reporting panel sizes,
+widget/visible-widget/callback counts, picture counts, byte residency and failed
+or limited references. It emits no captions, widget values or artwork paths.
+Missing snapshots, artwork failures, limits and unavailable UI builds produce a
+partial/unavailable report and a nonzero exit after JSON output. Snapshot waiting
+and processor/reference/byte counts are bounded. This sends no notes or control
+edits and explicitly reports drawing, interaction and native comparison as false.
+The census is opt-in; ordinary diagnosis and playback do not perform this work.
+
 The report separates decoded node identity and preflight rejection reasons from
 worker evidence. Preflight admission is conditional on later resource/DSP/script
 validation; even a bypassed unknown processor is rejected because a script could
@@ -90,7 +100,12 @@ The editor's existing Logs and diagnostic export include UVI initialization
 stages and failures. Rack worker snapshots retain current status/counters; worker
 initialization durations remain available while a load is running. The rack
 shows the current loading activity and elapsed seconds, and terminal failures
-remain failures. Host latency admission survives engine resets while the native
+remain failures. Genuine initialized controls can be published after authored
+Lua initialization while fresh renderer preparation is still running; gestures
+remain disabled until matching audio adoption. Static sample decoding still
+precedes Lua. Saved-state restoration keeps its prevalidated renderer/resource
+and authored callback order. Failure, cancellation and stale activation cannot
+retain an initialized panel. Host latency admission survives engine resets while the native
 source remains selected, preventing a zero/loaded-latency restart cycle; physical
 compensation is retained only with matching already allocated delay storage.
 Actual Bitwig behavior still requires testing with the newly installed plugin.
@@ -123,13 +138,31 @@ does not prove its transition or timbre behavior.
 
 ## Checkpoint validation
 
-The combined `uvi,standalone` optimized CI test run passed 959 library checks,
+The combined `uvi,standalone` optimized CI test run passed 977 library checks,
 89 CLI/playback checks and four additional binary/integration checks. Thirty-five
 external-fixture checks were ignored and one screenshot check was excluded.
-The fresh native tests include root Choke ownership, state construction and
+The authored and retained native regressions include root Choke ownership, state construction and
 resource precedence, no periodic onSave, real two-part rack save/reopen exact PCM,
 UI scaling bounds, graph admission reporting and DSP/Lua error attribution.
 These checks are scoped regressions, not a count of compatible Falcon features.
+
+The installed `f4e2a17` CLI was also checked against all 40 catalog programs in
+25 paid banks: parsing/preflight, script checks, initialization-only diagnosis
+and short authored-note Worker renders passed. Each written WAV independently
+verified 72,000 finite stereo frames at 48 kHz and nonzero output. This scoped
+pass did not exercise the GUI, every articulation, typed-root host transport or
+native program comparison; the [evidence ledger](uvi-compatibility.md#current-evidence-ledger)
+retains those distinctions.
+
+Separate source-direct UI checks captured the original Clarinet's 273 widgets
+and 38 pictures, and V2's 285 widgets and 39 pictures, with zero failed/limited
+references and 720×480 roots. These initialized snapshots have frame zero and
+do not exercise controls. A real V2 loader/mailbox/renderer-source check published
+the panel and decoded artwork 160 ms before audio Ready; the initialized-snapshot
+boundary led Ready by 195 ms. Static resources still took about 2.84 seconds in
+that run. Cache/CPU variation prevents attributing total loading improvement to
+this change. These are controlled source-helper observations rather than a new
+Bitwig or official-reader screenshot comparison.
 
 The loading checkpoint also covers automatic private access preparation, catalog
 cache integrity/invalidation, stable host latency across resets and current load
@@ -142,3 +175,19 @@ bindings and 40 programs across 25 UVI banks. The full scan took 31.1 seconds;
 a fresh instance published its saved index in 11.6 ms and completed background
 verification/artwork in 188 ms. Settings remained byte-identical. This measures
 metadata publication, not complete UI startup or sample loading time.
+
+The current source also preserves exact paid PCM/command/state captures while
+compiling modulation targets to stable numeric slots. Paired Renderer thread CPU
+medians improved by 7.51% for the original Clarinet and 12.70% for V2; the V2
+capture still exceeded its audio duration, so this is not a realtime guarantee.
+A single-pass PCM validation change improved measured preload thread CPU by
+5.85% and 9.48% respectively. Neither measurement represents whole-load latency.
+The selected sample datasets made zero sample-decryption calls during preload.
+
+Audio-resource tasks now finish with their callback for both success and failure.
+Product callbacks run through the existing cooperative scheduler, can yield, and
+retain exact task errors. Failed reads or metadata validation retain the previous
+resource and create a bounded desktop warning; successful swaps affect new
+voices. Native background timing/interleaving remains unverified. Explicit
+`uvi-diagnose --ui` reports snapshot/artwork census without claiming drawing,
+interaction or native comparison.

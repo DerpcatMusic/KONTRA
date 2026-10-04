@@ -16,6 +16,7 @@ pub(super) struct Mailbox {
     activation: Stamp,
     processors: Vec<NodeId>,
     discovered: bool,
+    initialized: bool,
     next: usize,
     pending: Option<(u64, NodeId)>,
     snapshots: Vec<UiSnapshot>,
@@ -24,7 +25,7 @@ pub(super) struct Mailbox {
 
 impl Mailbox {
     pub fn new(activation: Stamp, assets: Option<UiAssets>) -> Self {
-        Self { activation, processors: Vec::new(), discovered: false, next: 0, pending: None,
+        Self { activation, processors: Vec::new(), discovered: false, initialized: false, next: 0, pending: None,
             snapshots: Vec::new(), assets }
     }
 
@@ -32,6 +33,16 @@ impl Mailbox {
     /// never becomes editor state. One processor is requested at a time so
     /// coalescing cannot permanently starve an earlier panel.
     pub fn poll(&mut self, worker: &Worker) -> Option<Arc<Published>> {
+        if !self.initialized
+            && let Some((stamp, snapshots)) = worker.initialized_ui()
+            && (stamp.epoch, stamp.generation) == (self.activation.epoch, self.activation.generation)
+        {
+            self.initialized = true;
+            self.snapshots = snapshots.as_ref().clone();
+            let pictures = self.assets.as_mut().map(|a| a.refresh(&self.snapshots)).unwrap_or_default();
+            if matches!(worker.status(), Status::Failed | Status::Stopped) { return None; }
+            return Some(Arc::new(Published { stamp, snapshots, pictures }));
+        }
         if worker.status() != Status::Ready { return None; }
         if !self.discovered {
             self.processors = worker.ui_processors();
@@ -68,5 +79,30 @@ impl Mailbox {
             }
         }
         published
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn initialized_mailbox_rejects_wrong_epoch_and_generation() {
+        let (config, _) = crate::uvi::worker::tests::authored_bank_with_script(
+            "function onInit()knob=Knob('initialized',0.5,0,1)end");
+        let path = config.bank.clone();
+        let mut worker = Worker::start(config, 7, 11).unwrap();
+        worker.wait_ready(std::time::Duration::from_secs(5)).unwrap();
+        for activation in [Stamp { epoch: 6, generation: 11, frame: 0 },
+                           Stamp { epoch: 7, generation: 10, frame: 0 }] {
+            let mut mailbox = Mailbox::new(activation, None);
+            assert!(mailbox.poll(&worker).is_none());
+        }
+        let mut mailbox = Mailbox::new(worker.activation_stamp(), None);
+        let published = mailbox.poll(&worker).unwrap();
+        assert_eq!(published.snapshots.len(), 1);
+        assert_eq!(published.snapshots[0].widgets.len(), 1);
+        worker.stop();
+        assert!(mailbox.poll(&worker).is_none());
+        std::fs::remove_file(path).unwrap();
     }
 }

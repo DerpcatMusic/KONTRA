@@ -400,7 +400,7 @@ pub(super) fn service(params: &SamplerParams) {
                     ui,
                 );
             }
-            Some(Status::Starting) => update(params, slot, &activation, &loading_status(progress), true, None),
+            Some(Status::Starting) => update(params, slot, &activation, &loading_status(progress), true, ui),
             _ => {
                 if failed {
                     crate::diagnostics::event(

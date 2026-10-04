@@ -106,7 +106,16 @@ impl<'a> Player<'a> {
         resources: BankResources,
         sample_rate: u32,
     ) -> Result<Self> {
-        Self::new_inner(program, modules, resources, sample_rate, None, None, None)
+        Self::new_inner(
+            program,
+            modules,
+            resources,
+            sample_rate,
+            None,
+            None,
+            None,
+            None,
+        )
     }
     pub fn new_hosted(
         program: &'a Program,
@@ -122,6 +131,7 @@ impl<'a> Player<'a> {
             resources,
             sample_rate,
             Some((epoch, generation)),
+            None,
             None,
             None,
         )
@@ -143,6 +153,7 @@ impl<'a> Player<'a> {
             activation,
             saved,
             None,
+            None,
         )
     }
     /// Initialization-only timing observer. Never retained by the player or
@@ -155,6 +166,7 @@ impl<'a> Player<'a> {
         activation: Option<(u64, u64)>,
         saved: Option<&super::state::SavedState>,
         stage: &mut dyn FnMut(&'static str),
+        initialized_ui: &mut dyn FnMut(&Session),
     ) -> Result<Self> {
         Self::new_inner(
             program,
@@ -164,6 +176,7 @@ impl<'a> Player<'a> {
             activation,
             saved,
             Some(stage),
+            Some(initialized_ui),
         )
     }
     fn new_inner(
@@ -174,6 +187,7 @@ impl<'a> Player<'a> {
         activation: Option<(u64, u64)>,
         saved: Option<&super::state::SavedState>,
         mut stage: Option<&mut dyn FnMut(&'static str)>,
+        mut initialized_ui: Option<&mut dyn FnMut(&Session)>,
     ) -> Result<Self> {
         let mut stage = |name| {
             if let Some(stage) = stage.as_deref_mut() {
@@ -218,6 +232,14 @@ impl<'a> Player<'a> {
         } else {
             Session::new_program_chain_with_state(program, modules, capability, sample_rate, saved)?
         };
+        // Fresh initialization has completed authored constructors and onInit.
+        // Restores remain private until their prevalidated renderer prefix and
+        // authored onLoad/changed/onInit commands have applied successfully.
+        if saved.is_none()
+            && let Some(publish) = initialized_ui.as_mut()
+        {
+            publish(&session);
+        }
         let mut renderer = match prepared {
             Some(renderer) => renderer,
             None => {
@@ -236,6 +258,11 @@ impl<'a> Player<'a> {
                 hosted.then_some(processed.command_roots.as_slice()),
                 &processed.host_commands,
             )?;
+        }
+        if saved.is_some()
+            && let Some(publish) = initialized_ui.as_mut()
+        {
+            publish(&session);
         }
         stage("uvi_player_finalize");
         let resource_revision = resources.revision();

@@ -81,3 +81,9 @@ data or key material.
 The scanner is a structural inspector and clear-member extractor. It does not
 decode index-node bodies, protected program payloads, or DSP/module semantics,
 and it is not a sampler runtime.
+
+### Image wavetable resampling boundary
+
+UVI's [custom wavetable documentation](https://support.uvi.net/hc/en-us/articles/360001260738-Falcon-Loading-Custom-Wavetables) defines one cycle per image row but leaves large-image resizing or cropping unspecified. Targeted inspection of the verified official Workstation 4.0.9 reader resolves that geometry: importer `0x141528b50` rescales the entire source image to 2048 columns and `min(source_height, 128)` rows. PNG and JPG extension branches share that importer. The shared rescaler `0x1409c5020` uses an affine scale in both dimensions with numeric quality argument 1. [JUCE's public enum](https://docs.juce.com/master/classjuce_1_1Graphics.html) names quality 1 medium resampling; this API correspondence is supporting evidence, not proof of the exact native interpolation or quantization.
+
+These static observations establish a resize rather than a crop. Existing authored native PNG comparisons establish conversion only for bounded images up to 2048 columns and 128 rows. The importer therefore rejects wider or taller images before pixel decoding with the exact missing resampling behavior named in the error. JPEG decoding remains gated. New authored 129/256-row fixtures were prepared privately, but no successful fresh native render was obtained: the official VST failed initialization with Windows error 1114 in the isolated Wine prefix. Its packaged support runtime first rejected the prefix's Windows 7 setting; retrying with Windows 10 did not establish a working reference host. No activation checks were modified, and no account state was copied. This is a remaining oracle limitation, not a completed numerical comparison.

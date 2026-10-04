@@ -40,6 +40,8 @@ kontakto uvi-play bank.ufs member.uvip output.wav --reader UVIWorkstationx64.exe
 ```
 
 Use `--events timeline.json` instead of `--notes` for a complete controller/note/transport timeline; its schema and bounds are described in the [compatibility report](docs/uvi-compatibility.md).
+Add `--ui` to `uvi-diagnose` for initialized control and artwork counts, including
+explicit failures; this does not draw the panel or exercise its controls.
 
 Recovery verifies every PNG chunk CRC before creating a new owner-only,
 bank-bound state file. Treat that file as private. Clear banks do not need it.

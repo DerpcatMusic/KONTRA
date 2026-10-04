@@ -25,9 +25,17 @@ pub(crate) fn image_signature(bytes: &[u8]) -> bool {
 }
 
 fn image_dimensions(width: usize, height: usize) -> Result<()> {
+    ensure!(width != 0 && height != 0, "Empty image wavetable");
+    // Official 4.0.9 importer 0x141528b50 scales the whole image to
+    // 2048 × min(height, 128), with resampling quality 1. The existing
+    // authored oracle covers horizontal upsampling only; retain both gates.
     ensure!(
-        (1..=IMAGE_FRAMES).contains(&width) && (1..=128).contains(&height),
-        "Image wavetables require 1..2048 columns and 1..128 rows; larger-image resampling/cropping is unverified"
+        width <= IMAGE_FRAMES,
+        "Image wavetable requires native resampling to 2048 columns; downsampling fidelity is unverified"
+    );
+    ensure!(
+        height <= 128,
+        "Image wavetable requires native resampling to 128 rows; vertical resampling fidelity is unverified"
     );
     Ok(())
 }
@@ -1006,8 +1014,8 @@ mod tests {
         );
         assert!(image_pixels(0, 1, 3, &[]).is_err());
         assert!(image_pixels(2049, 1, 3, &[]).is_err());
-        // Native authored 190-row PNGs are reduced to 128 slices; their
-        // normalization is still unverified, so preserve smaller images only.
+        // Larger images resize to 128 slices rather than cropping; exact
+        // vertical interpolation remains unverified.
         assert!(image_pixels(1, 129, 3, &vec![0; 129 * 3]).is_err());
         assert!(image_pixels(1, 257, 3, &[]).is_err());
         assert!(image_pixels(1, 1, 4, &[0, 0, 0, 128]).is_err());
@@ -1107,6 +1115,32 @@ mod tests {
                 assert!(decoded.is_err());
             }
         }
+    }
+
+    #[test]
+    fn image_resampling_boundary_is_explicit_before_pixel_decode() {
+        for (width, height, expected) in [
+            (2048, 129, "128 rows"),
+            (2048, 256, "128 rows"),
+            (2049, 128, "2048 columns"),
+        ] {
+            let mut encoded = Vec::new();
+            // The valid stream contains no pixels: geometry must fail before
+            // attempting to decode those missing pixels or allocate storage.
+            let mut writer = png::Encoder::new(&mut encoded, width, height)
+                .write_header()
+                .unwrap();
+            writer
+                .write_chunk(png::chunk::IDAT, &[0x78, 0x9c, 3, 0, 0, 0, 0, 1])
+                .unwrap();
+            writer.finish().unwrap();
+            let error = image_wavetable(&encoded).unwrap_err().to_string();
+            assert!(error.contains(expected), "{error}");
+            assert!(error.contains("fidelity is unverified"), "{error}");
+        }
+        assert!(image_dimensions(2048, 128).is_ok());
+        assert!(image_dimensions(2048, 0).is_err());
+        assert!(image_dimensions(0, 128).is_err());
     }
 
     #[test]

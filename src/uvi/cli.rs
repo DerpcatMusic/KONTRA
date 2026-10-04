@@ -99,6 +99,93 @@ fn processing_end(end: u64) -> Result<u64> {
         * 256)
 }
 
+/// An explicit control-thread census. Counts do not imply painted controls or
+/// exercised callbacks, and no captions, resource paths or Lua values are emitted.
+#[cfg(any(feature = "plugin", test))]
+fn ui_panel_report(snapshot: &host::UiSnapshot, stamp: worker::Stamp) -> serde_json::Value {
+    serde_json::json!({"processor":snapshot.processor,"outcome":"captured",
+        "stamp":{"epoch":stamp.epoch,"generation":stamp.generation,"frame":stamp.frame},
+        "width":snapshot.root.width,"height":snapshot.root.height,
+        "performance_view":snapshot.root.performance_view,"widgets":snapshot.widgets.len(),
+        "visible_widgets":snapshot.widgets.iter().filter(|w|w.effective_visible).count(),
+        "widgets_with_changed_callback":snapshot.widgets.iter().filter(|w|w.has_changed_callback).count()})
+}
+
+#[cfg(feature = "plugin")]
+fn diagnose_ui(
+    worker: &worker::Worker,
+    assets: Result<super::ui_assets::UiAssets>,
+) -> serde_json::Value {
+    use std::time::{Duration, Instant};
+    let processors = worker.ui_processors();
+    let total = processors.len();
+    // Bound snapshot waiting; artwork has its own byte/reference limits. The
+    // worker retains only one coalesced request/reply.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut panels = Vec::new();
+    let mut captured = 0usize;
+    let mut assets = assets;
+    for processor in processors.into_iter().take(64) {
+        if Instant::now() >= deadline {
+            break;
+        }
+        let request = match worker.request_ui_snapshot(processor) {
+            Ok(request) => request,
+            Err(error) => {
+                panels.push(
+                    serde_json::json!({"processor":processor,"outcome":"rejected",
+                    "reason":format!("{error:?}")}),
+                );
+                continue;
+            }
+        };
+        loop {
+            if let Some(reply) = worker.poll_ui_snapshot() {
+                if reply.request != request
+                    || reply.processor != processor
+                    || reply.stamp.epoch != 1
+                    || reply.stamp.generation != 1
+                {
+                    continue;
+                }
+                match reply.snapshot {
+                    Ok(snapshot) => {
+                        if let Ok(assets) = &mut assets {
+                            assets.refresh(std::slice::from_ref(&snapshot));
+                        }
+                        panels.push(ui_panel_report(&snapshot, reply.stamp));
+                        captured += 1;
+                    }
+                    Err(error) => panels.push(serde_json::json!({"processor":processor,
+                        "outcome":"unavailable","reason":format!("{error:?}")})),
+                }
+                break;
+            }
+            if Instant::now() >= deadline || worker.status() != worker::Status::Ready {
+                panels.push(serde_json::json!({"processor":processor,"outcome":"no_reply"}));
+                break;
+            }
+            std::thread::park_timeout(Duration::from_millis(1));
+        }
+    }
+    let artwork = match &mut assets {
+        Ok(assets) => {
+            let diagnostics = assets.diagnostics();
+            serde_json::json!({"outcome":if diagnostics.failed == 0 && diagnostics.limited == 0 {
+                "complete"
+            } else {"partial"},"pictures":assets.refresh(&[]).len(),
+                "failed_references":diagnostics.failed,"limited_references":diagnostics.limited,
+                "resident_bytes":assets.resident_bytes()})
+        }
+        Err(error) => serde_json::json!({"outcome":"open_failed","reason":error.to_string()}),
+    };
+    serde_json::json!({"outcome":if captured == total && artwork["outcome"] == "complete" {
+        "complete"
+    } else {"partial"},"requested_processors":total,"captured_processors":captured,
+        "unattempted_processors":total - panels.len(),"processor_limit":64,"panels":panels,
+        "artwork":artwork,"drawn":false,"interactions_exercised":false,"native_compared":false})
+}
+
 /// Exercises the same fixed packet API intended for the live audio handoff.
 /// Waiting, preparation and controller destruction here are explicitly offline.
 fn play_worker(
@@ -404,9 +491,17 @@ pub fn run(args: &[String]) -> Result<()> {
         "uvi-diagnose" => {
             ensure!(
                 args.len() >= 5,
-                "Usage: uvi-diagnose <bank.ufs> <member.uvip> --reader <official-exe> [--content-key-file <private-file>] [--sample-rate 48000]"
+                "Usage: uvi-diagnose <bank.ufs> <member.uvip> --reader <official-exe> [--content-key-file <private-file>] [--sample-rate 48000] [--ui]"
             );
             let mut args = args.to_vec();
+            let include_ui = if let Some(index) = args.iter().position(|arg| arg == "--ui") {
+                ensure!(index >= 3, "Misplaced --ui");
+                args.remove(index);
+                ensure!(!args.iter().any(|arg| arg == "--ui"), "Repeated --ui");
+                true
+            } else {
+                false
+            };
             let mut rate = 48000u32;
             if let Some(index) = args.iter().position(|arg| arg == "--sample-rate") {
                 ensure!(index >= 3, "Misplaced --sample-rate");
@@ -422,30 +517,47 @@ pub fn run(args: &[String]) -> Result<()> {
                 );
             }
             let (reader, state) = options(&args, 3)?;
-            let mut worker = worker::Worker::start(
-                worker::StartConfig {
-                    bank: PathBuf::from(&args[1]),
-                    expected_bank_uuid: None,
-                    member: args[2].clone(),
-                    metadata_namespace: reader.metadata,
-                    program_namespace: reader.program,
-                    content_key: state.as_ref().map(|state| state.key),
-                    content_bank: state.and_then(|state| state.bank),
-                    sample_rate: rate,
-                },
-                1,
-                1,
-            )?;
+            let config = worker::StartConfig {
+                bank: PathBuf::from(&args[1]),
+                expected_bank_uuid: None,
+                member: args[2].clone(),
+                metadata_namespace: reader.metadata,
+                program_namespace: reader.program,
+                content_key: state.as_ref().map(|state| state.key),
+                content_bank: state.and_then(|state| state.bank),
+                sample_rate: rate,
+            };
+            #[cfg(feature = "plugin")]
+            let assets = include_ui.then(|| super::ui_assets::UiAssets::open(&config));
+            let mut worker = worker::Worker::start(config, 1, 1)?;
             let ready = worker.wait_ready(std::time::Duration::from_secs(60));
-            println!(
-                "{}",
-                serde_json::to_string_pretty(
-                    &worker.runtime_diagnostic_report(std::time::Duration::from_millis(500))
-                )?
-            );
+            let mut report =
+                worker.runtime_diagnostic_report(std::time::Duration::from_millis(500));
+            if include_ui {
+                let ui = if ready.is_err() {
+                    serde_json::json!({"outcome":"initialization_unavailable",
+                        "drawn":false,"interactions_exercised":false,"native_compared":false})
+                } else {
+                    #[cfg(feature = "plugin")]
+                    {
+                        diagnose_ui(&worker, assets.unwrap())
+                    }
+                    #[cfg(not(feature = "plugin"))]
+                    {
+                        serde_json::json!({"outcome":"unavailable_in_build","reason":"UI assets require the plugin feature",
+                        "drawn":false,"interactions_exercised":false,"native_compared":false})
+                    }
+                };
+                report["ui_inspection"] = ui;
+            }
+            println!("{}", serde_json::to_string_pretty(&report)?);
             worker.stop();
             // Machine-readable stdout remains available on failed initialization.
             ready.context("UVI diagnosis found an initialization failure")?;
+            ensure!(
+                !include_ui || report["ui_inspection"]["outcome"] == "complete",
+                "UVI UI diagnosis is incomplete; see ui_inspection in stdout"
+            );
         }
         "uvi-bank" => {
             let (reader, _) = options(args, 2)?;
@@ -594,6 +706,43 @@ pub fn run(args: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ui_census_counts_initialized_controls_without_callbacks_or_private_values() {
+        let program = program::parse_program(
+            r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
+            function onInit()
+                visible=Knob{name='private-name',displayName='private-label',value=0.25}
+                visible.changed=function()error('census ran callback')end
+                hidden=Label('private-label');hidden.visible=false
+            end
+            function onSave()error('census ran onSave')end
+        ]]></script></ScriptProcessor></EventProcessors><Layers><Layer/></Layers></Program>"#,
+        )
+        .unwrap();
+        let session =
+            script::Session::new_program_chain(&program, BTreeMap::new(), None, 48000).unwrap();
+        let processor = program
+            .nodes
+            .iter()
+            .position(|node| node.kind == "ScriptProcessor")
+            .unwrap();
+        let snapshot = session.ui_snapshot(processor).unwrap();
+        let report = ui_panel_report(
+            &snapshot,
+            worker::Stamp {
+                epoch: 1,
+                generation: 1,
+                frame: 0,
+            },
+        );
+        assert_eq!(report["widgets"], 2);
+        assert_eq!(report["visible_widgets"], 1);
+        assert_eq!(report["widgets_with_changed_callback"], 1);
+        assert_eq!(report["stamp"]["frame"], 0);
+        let serialized = report.to_string();
+        assert!(!serialized.contains("private-name") && !serialized.contains("private-label"));
+        assert!(!serialized.contains("0.25"));
+    }
     #[test]
     fn recovered_png_requires_every_crc_and_complete_end() {
         let mut png = b"\x89PNG\r\n\x1a\n".to_vec();

@@ -6,7 +6,7 @@ The [format](FALCON_FORMAT_GROUNDWORK.md) and [runtime/UI](FALCON_RUNTIME_UI_GRO
 
 ## Current test checkpoint follow-up
 
-The latest source adds exact hosted-root choking without synthesizing release callbacks, transport updates without redundant per-callback play/stop callbacks, and bounded program-state capture. State retains native persistent widgets/onSave data, original-node typed parameter deltas and approved sample/impulse paths. A fresh replacement validates its graph fingerprint, processor set, resources and DSP overrides; constructor/onLoad/onInit precedence follows the retained native measurements. Voice state and transport are excluded. Missing Gain/Pan defaults in the Lua object API remain a compatibility gap. Ordinary playback and UI polling do not invoke onSave.
+The latest source adds exact hosted-root choking without synthesizing release callbacks, transport updates without redundant per-callback play/stop callbacks, and bounded program-state capture. State retains native persistent widgets/onSave data, original-node typed parameter deltas and approved sample/impulse paths. A fresh replacement validates its graph fingerprint, processor set, resources and DSP overrides; constructor/onLoad/onInit precedence follows the retained native measurements. Voice state and transport are excluded. Missing Gain/Pan defaults are scoped by the native measurements below; a complete property inventory remains unfinished. Ordinary playback and UI polling do not invoke onSave.
 
 Explicit rack Save requests a processed audio boundary and fails rather than accepting stale native controls. The framework's host pre-save hook cannot return a failure: a failed capture retains the previous successful bytes and writes a diagnostic. Resume processing and save again when a partial packet or queued edit has not settled. No file-write capability is granted to native scripts by this state transport.
 
@@ -24,7 +24,60 @@ Button and OnOffButton labels now default off, Knob labels/values default on, an
 
 Stationary 48-kHz stereo Exciter Modes0/1 at Oversampling0 and individually measured SparkVerb delay-layout tuples are admitted; Exciter coefficients remain fitted and carry a fidelity diagnostic. Static square LFO uses measured control points; unmeasured live waveform/connected-parameter changes remain gated. WaveTable scalar endpoint conversion groundwork does not enable its unverified moving control routes. **Starter coverage remains 1/50**: no additional original preset is advertised as fully playable from these leaf changes. Prior paid-worker measurements include missed render deadlines; realtime readiness remains unproven.
 
-Combined optimized CI validation with `uvi,standalone` passes **944 library tests, 89 CLI/playback tests and four additional binary/integration checks**, with 35 external-fixture tests ignored and one screenshot excluded. This includes the native two-part rack save/reopen PCM regression and new diagnostic failure cases. The older corpus and native-comparison measurements below remain separately scoped; they were not all rerun for this checkpoint.
+Combined optimized CI validation of the current frozen source with `uvi,standalone` passes **977 library tests, 89 CLI/playback tests and four additional binary/integration checks**, with 35 external-fixture tests ignored and one screenshot excluded. This includes the native two-part rack save/reopen PCM regression and new diagnostic failure cases. The older corpus and native-comparison measurements below remain separately scoped; they were not all rerun for this checkpoint.
+
+Current audio-resource completion checks cover successful and failed `loadSample`
+and `loadImpulse` tasks: callbacks run after return through the existing product
+scheduler and may yield. Failed reads/metadata retain the previous resource and
+record `uvi.host/resource_task_failed` warnings with bounded reasons; exact task
+errors remain available to Lua. Native background interleaving is unverified.
+Compiled numeric modulation target slots and single-pass PCM validation preserve
+paid PCM/command/state captures in focused comparisons. Renderer CPU medians
+improved 7.51%/12.70% and preload CPU medians 5.85%/9.48% for the original/V2
+Clarinet respectively; these separate captures do not establish overall loading
+latency or sustainable realtime performance. The selected preload datasets made
+zero sample-decryption calls.
+
+## Current evidence ledger
+
+The previous installed `f4e2a17f8c35def9bda97e652c61e708ea95893f` CLI (SHA-256
+`6a80a63eaf1e9c4091adf2000c80886f91fc1a48ea5faec0e064c8f8dc1d7c5b`)
+was audited with at most two concurrent workers against the exact 40 catalog
+programs in 25 local paid banks. Each passed parsing, static preflight, the
+CLI script check, initialization-only Worker diagnosis and a short authored-note
+Worker render. All 40 WAVs independently verified as 72,000 finite stereo frames
+at 48 kHz with nonzero output. This pass used rootless CLI inputs; it does not
+verify Bitwig adoption, the typed-root host transport, every articulation,
+controls/artwork, sustained deadlines or native musical fidelity. No native
+program comparison or full asset-decode repeat belongs to this pass.
+
+The short notes exercised 195 of the 14,208 declared SamplePlayer nodes. Of
+330,045 parsed nodes, 903 instrumented nodes recorded processing; uninstrumented
+containers, routing/control nodes and scripts remain unknown. Processing can
+include silence or release tails. The banks declare 8,335 PNG, 26 JPEG and 15 SVG
+members, but these directory counts are not image/UI decode coverage. No synthesis
+generator was exercised by this paid-corpus note pass. The retained 3,505 deadline
+misses in 11,280 blocks under two audit jobs do not establish sustainable realtime
+performance or a new controlled timing benchmark.
+
+Evidence is tracked separately rather than collapsed into a compatibility percentage:
+
+| Evidence | Meaning | Does not establish |
+| --- | --- | --- |
+| Parsed | Bounded container/program decoding completed | Any runtime behavior |
+| Preflight admitted | Known graph passed static gates | Resource or initialization success |
+| Ready | Resources, Lua and renderer initialized | Notes, controls or audible output |
+| Exercised | The stated events reached this renderer; output and counters were checked | Unexercised articulations or callbacks |
+| UI captured / artwork decoded | Initialized owned snapshots and approved images were obtained | Drawing, hit targets, interaction or native pixel fidelity |
+| Native compared | The stated fixture/settings were compared with the official reader | Other parameters, rates or complete instruments |
+
+UVI's [scripting reference](https://lua.uvi.net/) identifies Lua 5.1 and a
+specialized musical-event/engine/UI API. Language compatibility alone therefore
+does not establish host API parity. Primary documentation, authored checks,
+native observations and inferred behavior must remain distinguishable when
+expanding an admission gate. The current reader namespace binding is specifically
+verified against Workstation 4.0.9 x64; newer documentation is not evidence that
+this binary implements every newly documented API.
 
 ## Native ownership and boundaries
 
@@ -237,7 +290,7 @@ Original synthetic probes against official UVI hosts informed the implemented On
 
 Native probes now distinguish per-processor posting registrations, per-callback held state, and independent DSP launches sharing one opaque voice handle. Forwarded releases match the key and issuing layer and release the oldest matching launch; gain, tune and fades affect all matching live voices within their issuing scope. Delayed posts survive an early release, and controls before DSP start do not alter their future note. These scoped checks do not establish all native key-buffer or coroutine behavior.
 
-Current explicit limitations include unsupported wider Falcon generators/processors; unresolved volume aliases; protected UFS streaming; full asynchronous load/save/browse behavior; a painted UVI editor and plugin automation integration; and real-time execution of the allocating Lua host. Preflight or operation-specific errors must remain visible when a behavior is unavailable.
+Current explicit limitations include unsupported wider Falcon generators/processors; unresolved volume aliases; protected UFS streaming; full asynchronous load/save/browse behavior; complete editor fonts/units/advanced displays and plugin automation integration; and real-time execution of the allocating Lua host. Preflight or operation-specific errors must remain visible when a behavior is unavailable.
 
 Source corrections after the recorded audit implement per-voice relative controls, declaration-order Constant chains and source-ancestry scoping for Layer-issued ScriptModulation. Their authored/native checks remain separate from the immutable corpus results above.
 

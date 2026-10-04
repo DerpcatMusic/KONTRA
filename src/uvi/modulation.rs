@@ -1258,7 +1258,9 @@ pub struct ModulationGraph {
     parents: Vec<Option<NodeId>>,
     kinds: Vec<String>,
     bases: Vec<BTreeMap<String, String>>,
-    cached_parameters: Vec<BTreeMap<String, CachedParameter>>,
+    cached_parameters: Vec<BTreeMap<String, usize>>,
+    parameter_values: Vec<CachedParameter>,
+    node_target_slots: Vec<Vec<usize>>,
     connections: HashMap<Parameter, Vec<Connection>>,
     node_targets: Vec<Vec<Parameter>>,
     memo: RefCell<MemoScratch>,
@@ -1524,34 +1526,37 @@ impl ModulationGraph {
                     .and_modify(|target| *target = None).or_insert(Some(id));
             }
         }
+        let mut cached_parameters: Vec<BTreeMap<String, CachedParameter>> = program
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(id, node)| {
+                node.attributes
+                    .iter()
+                    .filter_map(|(name, text)| {
+                        text.parse::<f64>().ok().map(|number| {
+                            (
+                                name.clone(),
+                                CachedParameter {
+                                    key: (id, name.clone()),
+                                    number: number.is_finite().then_some(number),
+                                    override_value: None,
+                                    slot: 0,
+                                    edges: Vec::new(),
+                                },
+                            )
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
         let mut graph = Self {
             parents: program.nodes.iter().map(|node| node.parent).collect(),
             kinds: program.nodes.iter().map(|n| n.kind.clone()).collect(),
             bases: program.nodes.iter().map(|n| n.attributes.clone()).collect(),
-            cached_parameters: program
-                .nodes
-                .iter()
-                .enumerate()
-                .map(|(id, node)| {
-                    node.attributes
-                        .iter()
-                        .filter_map(|(name, text)| {
-                            text.parse::<f64>().ok().map(|number| {
-                                (
-                                    name.clone(),
-                                    CachedParameter {
-                                        key: (id, name.clone()),
-                                        number: number.is_finite().then_some(number),
-                                        override_value: None,
-                                        slot: 0,
-                                        edges: Vec::new(),
-                                    },
-                                )
-                            })
-                        })
-                        .collect()
-                })
-                .collect(),
+            cached_parameters: vec![BTreeMap::new(); program.nodes.len()],
+            parameter_values: Vec::new(),
+            node_target_slots: vec![Vec::new(); program.nodes.len()],
             connections: HashMap::new(),
             node_targets: vec![Vec::new(); program.nodes.len()],
             memo: RefCell::new(MemoScratch::new(0)),
@@ -1914,7 +1919,7 @@ impl ModulationGraph {
             }
         }
         for key in keys {
-            graph.cached_parameters[key.0]
+            cached_parameters[key.0]
                 .entry(key.1.clone())
                 .or_insert(CachedParameter {
                     key,
@@ -1924,19 +1929,28 @@ impl ModulationGraph {
                     edges: Vec::new(),
                 });
         }
-        let mut slots = 0;
-        for node in &mut graph.cached_parameters {
-            for cached in node.values_mut() {
-                cached.slot = slots;
+        // Named writes and recursive source settings retain the name index.
+        // Compiled targets borrow records by the memo's stable slot.
+        for (node, parameters) in cached_parameters.into_iter().enumerate() {
+            for (name, mut cached) in parameters {
+                let slot = graph.parameter_values.len();
+                cached.slot = slot;
                 cached.edges = graph
                     .connections
                     .get(&cached.key)
                     .cloned()
                     .unwrap_or_default();
-                slots += 1;
+                graph.cached_parameters[node].insert(name, slot);
+                graph.parameter_values.push(cached);
             }
         }
-        graph.memo = RefCell::new(MemoScratch::new(slots));
+        for (node, targets) in graph.node_targets.iter().enumerate() {
+            graph.node_target_slots[node] = targets
+                .iter()
+                .map(|p| graph.cached_parameters[p.0][&p.1])
+                .collect();
+        }
+        graph.memo = RefCell::new(MemoScratch::new(graph.parameter_values.len()));
         Ok(graph)
     }
     pub fn is_absolute_source_parameter(&self, node: NodeId, name: &str) -> bool {
@@ -2472,7 +2486,7 @@ impl ModulationGraph {
             .connections
             .keys()
             .map(|p| {
-                let slot = self.cached_parameters[p.0][&p.1].slot;
+                let slot = self.cached_parameters[p.0][&p.1];
                 (p.clone(), memo.get(slot).expect("evaluated target"))
             })
             .collect())
@@ -2513,23 +2527,21 @@ impl ModulationGraph {
             node < self.bases.len() && value.is_finite(),
             "Invalid UVI live parameter override"
         );
-        if let Some(cached) = self.cached_parameters[node].get_mut(name) {
-            cached.override_value = Some(value);
+        if let Some(&slot) = self.cached_parameters[node].get(name) {
+            self.parameter_values[slot].override_value = Some(value);
         } else {
             let memo = self.memo.get_mut();
             let slot = memo.values.len();
             memo.values.push(0.);
             memo.stamps.push(0);
-            self.cached_parameters[node].insert(
-                name.into(),
-                CachedParameter {
-                    key: (node, name.into()),
-                    number: None,
-                    override_value: Some(value),
-                    slot,
-                    edges: Vec::new(),
-                },
-            );
+            self.parameter_values.push(CachedParameter {
+                key: (node, name.into()),
+                number: None,
+                override_value: Some(value),
+                slot,
+                edges: Vec::new(),
+            });
+            self.cached_parameters[node].insert(name.into(), slot);
         }
         Ok(())
     }
@@ -2581,17 +2593,15 @@ impl ModulationGraph {
             }
         }
         for node in nodes {
-            for p in &self.node_targets[*node] {
-                self.value(p, input, live, &mut memo, 0)?;
+            for &slot in &self.node_target_slots[*node] {
+                let cached = &self.parameter_values[slot];
+                self.value_cached(&cached.key, Some(cached), input, live, &mut memo, 0)?;
             }
         }
         for node in nodes {
-            for p in &self.node_targets[*node] {
-                let cached = &self.cached_parameters[p.0][&p.1];
-                emit(
-                    &cached.key,
-                    memo.get(cached.slot).expect("evaluated target"),
-                );
+            for &slot in &self.node_target_slots[*node] {
+                let cached = &self.parameter_values[slot];
+                emit(&cached.key, memo.get(slot).expect("evaluated target"));
             }
         }
         Ok(())
@@ -2655,8 +2665,13 @@ impl ModulationGraph {
         }
         Ok(())
     }
+    fn cached_parameter(&self, node: NodeId, name: &str) -> Option<&CachedParameter> {
+        self.cached_parameters[node]
+            .get(name)
+            .map(|&slot| &self.parameter_values[slot])
+    }
     fn setting(&self, node: NodeId, name: &str, default: f64, live: Overrides<'_>) -> Result<f64> {
-        if let Some(cached) = self.cached_parameters[node].get(name) {
+        if let Some(cached) = self.cached_parameter(node, name) {
             let override_value = match live {
                 Overrides::External(live) => live.get(&cached.key).copied(),
                 Overrides::Registered => cached.override_value,
@@ -2697,7 +2712,8 @@ impl ModulationGraph {
             p,
             self.cached_parameters
                 .get(p.0)
-                .and_then(|node| node.get(&p.1)),
+                .and_then(|node| node.get(&p.1))
+                .map(|&slot| &self.parameter_values[slot]),
             live,
         )
     }
@@ -2771,7 +2787,7 @@ impl ModulationGraph {
         memo: &mut MemoScratch,
         depth: usize,
     ) -> Result<f64> {
-        if let Some(cached) = self.cached_parameters[node].get(name) {
+        if let Some(cached) = self.cached_parameter(node, name) {
             self.value_cached(&cached.key, Some(cached), input, live, memo, depth)
         } else {
             self.value(&(node, name.into()), input, live, memo, depth)
@@ -2791,7 +2807,7 @@ impl ModulationGraph {
         );
         self.value_cached(
             p,
-            self.cached_parameters[p.0].get(&p.1),
+            self.cached_parameter(p.0, &p.1),
             input,
             live,
             memo,
@@ -2932,8 +2948,7 @@ impl ModulationGraph {
         memo: &mut MemoScratch,
         depth: usize,
     ) -> Result<f64> {
-        let edges = self.cached_parameters[p.0]
-            .get(&p.1)
+        let edges = self.cached_parameter(p.0, &p.1)
             .map_or(&[][..], |cached| cached.edges.as_slice());
         self.delta_edges(edges, input, live, memo, depth)
     }
@@ -4222,6 +4237,44 @@ mod tests {
                 .is_err()
         );
     }
+    #[test]
+    fn compiled_targets_keep_keyed_results_across_rates_live_growth_and_scope_changes() {
+        let p = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="authored_a" Gain="0.8"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Gain" Ratio="0.6"><Connections><SignalConnection Source="@MIDI CC 2" Destination="Ratio" Ratio="0.3"/></Connections></SignalConnection></Connections></SamplePlayer></Oscillators></Keygroup><Keygroup><Oscillators><SamplePlayer SamplePath="authored_b" Gain="0.4"><Connections><SignalConnection Source="@MIDI CC 3" Destination="Gain" Ratio="-0.5"/></Connections></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let players = p.nodes.iter().enumerate().filter(|(_, n)| n.kind == "SamplePlayer").map(|(id, _)| id).collect::<Vec<_>>();
+        for rate in [1000., 8000., 22050., 44100., 48000., 88200., 96000., 176400., 192000., 384000., 768000.] {
+            let mut graph = ModulationGraph::new(&p).unwrap();
+            let slots = players.iter().map(|&node| graph.node_target_slots[node].clone()).collect::<Vec<_>>();
+            // Appended host-only fields force backing-record growth. Compiled
+            // targets must still observe subsequent writes to their original slots.
+            for index in 0..1024 {
+                graph.update_live_parameter(p.root, &format!("Authored{index}"), index as f64).unwrap();
+            }
+            for frame in [0, 1, 31, 32, 255, 256, 1023] {
+                let mut input = Inputs { sample_rate: rate, time_seconds: frame as f64 / rate, voice_time_seconds: frame as f64 / rate, voice: Some(7), instance: Some(2), ..Inputs::default() };
+                input.controllers[1] = (frame % 128) as u8;
+                input.controllers[2] = (127 - frame % 128) as u8;
+                input.controllers[3] = (frame * 3 % 128) as u8;
+                for (index, &node) in players.iter().enumerate() {
+                    graph.update_live_parameter(node, "Gain", 0.25 + index as f64 * 0.125).unwrap();
+                    assert_eq!(graph.node_target_slots[node], slots[index]);
+                    let nodes = HashSet::from([node]);
+                    let mut expected = BTreeMap::new();
+                    {
+                        let mut memo = graph.memo.borrow_mut();
+                        memo.begin();
+                        for target in &graph.node_targets[node] {
+                            let value = graph.value(target, &input, Overrides::Registered, &mut memo, 0).unwrap();
+                            expected.insert(target.clone(), value.to_bits());
+                        }
+                    }
+                    let mut actual = BTreeMap::new();
+                    graph.evaluate_registered_nodes_into(&input, &nodes, |target, value| { actual.insert(target.clone(), value.to_bits()); }).unwrap();
+                    assert_eq!(actual, expected);
+                }
+            }
+        }
+    }
+
     #[test]
     fn cached_helpers_preserve_eager_base_errors_depth_and_zero_emission() {
         let program = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"/></Oscillators><Inserts><OnePole Freq="NaN"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Freq" Ratio="1"/></Connections></OnePole></Inserts></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
@@ -6032,14 +6085,14 @@ mod registered_proof {
         a.update_live_parameter(unused, "CustomNumeric", 0.75)
             .unwrap();
         assert_eq!(a.memo.borrow().values.len(), n + 1);
-        let slot = a.cached_parameters[unused]["CustomNumeric"].slot;
+        let slot = a.cached_parameters[unused]["CustomNumeric"];
         let storage = a.memo.borrow().values.as_ptr();
         for value in [1., -0., 1e300] {
             a.update_live_parameter(unused, "CustomNumeric", value)
                 .unwrap();
             assert_eq!(a.memo.borrow().values.len(), n + 1);
             assert_eq!(a.memo.borrow().values.as_ptr(), storage);
-            assert_eq!(a.cached_parameters[unused]["CustomNumeric"].slot, slot);
+            assert_eq!(a.cached_parameters[unused]["CustomNumeric"], slot);
             assert_eq!(
                 a.setting(unused, "CustomNumeric", 0.25, Overrides::Registered)
                     .unwrap()
