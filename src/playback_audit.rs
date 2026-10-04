@@ -152,7 +152,7 @@ fn phase(
         elapsed += n as u64;
         frames -= n as u64;
     }
-    let mut out = snapshot(&rack.parts[0], name, meter, start_samples, start_square);
+    let mut out = snapshot(rack.parts[0].instrument().expect("audit loaded instrument"), name, meter, start_samples, start_square);
     out["last_block_rms"] = json!((left[..last_frames].iter().chain(&right[..last_frames])
         .map(|&x| f64::from(x).powi(2)).sum::<f64>() / (last_frames * 2).max(1) as f64).sqrt());
     out
@@ -171,7 +171,7 @@ pub fn run(path: &Path, program: u32, snapshot: Option<&Path>, realtime: bool) -
     let zone_skip_counts = bank.zone_skip_counts;
     let (sample_count, streamed_samples) = (bank.sample_count(), bank.streamed_samples());
     let mut rack = Rack::default();
-    let e = &mut rack.parts[0];
+    let e = rack.parts[0].instrument_mut().expect("audit instrument slot");
     e.blocking_streams = !realtime;
     e.set_fx(kontakto::engine::effects(
         &instrument,
@@ -231,7 +231,7 @@ pub fn run(path: &Path, program: u32, snapshot: Option<&Path>, realtime: bool) -
         };
         routers[0].set_route(Route::new(&path_text, &arts, &mpe));
         if !arts.articulations.is_empty() {
-            routers[0].select(0, 0, &mut rack.parts[0]);
+            routers[0].select(0, 0, rack.parts[0].instrument_mut().expect("audit instrument slot"));
         }
         let mut meter = Meter::default();
         let (underruns_before, dropped_before) =
@@ -493,11 +493,11 @@ pub fn run(path: &Path, program: u32, snapshot: Option<&Path>, realtime: bool) -
             &[In::NoteOff(0, note)],
             realtime,
         ));
-        let diagnostics = rack.parts[0]
+        let diagnostics = rack.parts[0].instrument().expect("audit instrument slot")
             .script()
             .map(|rt| rt.diagnostics())
             .unwrap_or_default();
-        let script_runtime = rack.parts[0].script().map(|rt|
+        let script_runtime = rack.parts[0].instrument().and_then(Engine::script).map(|rt|
             kontakto::diagnostics::script_runtime_report(rt, &instrument.scripts));
         cases.push(json!({
             "script_runtime":script_runtime,

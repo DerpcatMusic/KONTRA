@@ -30,8 +30,12 @@ impl BNISoundPreset {
     }
 
     pub fn encryption_item_with_key(&self, key: Option<&dyn crate::nis::LibraryKey>) -> Result<EncryptionItem, Error> {
+        self.encryption_item_with_key_bounded(key, usize::MAX)
+    }
+
+    pub fn encryption_item_with_key_bounded(&self, key: Option<&dyn crate::nis::LibraryKey>, max_expanded: usize) -> Result<EncryptionItem, Error> {
         let frame = self.0.find_data(&ItemType::EncryptionItem).ok_or(Error::Static("No EncryptionItem"))?;
-        EncryptionItem::read_with_key(frame, key)
+        EncryptionItem::read_with_key_bounded(frame, key, max_expanded)
     }
 
     pub fn patch(&self) -> Result<KontaktPatch, Error> {

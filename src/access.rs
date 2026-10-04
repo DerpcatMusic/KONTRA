@@ -129,14 +129,19 @@ impl Keystream {
         let mut counter = u128::from_be_bytes(iv);
         let mut stream = Box::new([0u8; 65536]);
         let mut seed = 0x608da0a2u32;
-        for chunk in stream.chunks_exact_mut(16) {
-            let mut block = counter.to_be_bytes().into();
-            cipher.encrypt_block(&mut block);
-            for (out, value) in chunk.iter_mut().zip(block) {
-                seed = seed.wrapping_mul(0x343fd).wrapping_add(0x269ec3);
-                *out = value ^ (seed >> 16) as u8;
+        let mut blocks = aes::Block8::default();
+        for run in stream.chunks_exact_mut(16 * blocks.len()) {
+            for block in &mut blocks {
+                *block = counter.to_be_bytes().into();
+                counter = counter.wrapping_add(1);
             }
-            counter = counter.wrapping_add(1);
+            cipher.encrypt_blocks(&mut blocks);
+            for (chunk, block) in run.chunks_exact_mut(16).zip(&blocks) {
+                for (out, value) in chunk.iter_mut().zip(block) {
+                    seed = seed.wrapping_mul(0x343fd).wrapping_add(0x269ec3);
+                    *out = *value ^ (seed >> 16) as u8;
+                }
+            }
         }
         Self { stream }
     }
@@ -166,6 +171,28 @@ mod tests {
     use super::*;
     use ni_file::nis::SubtreeItem;
     use std::io::Cursor;
+
+    #[test]
+    fn batched_counter_expansion_matches_scalar_across_counter_wrap() {
+        use aes::cipher::{BlockEncrypt, KeyInit};
+        for (key, iv) in [([0; 32], [0; 16]), ([3; 32], [5; 16]), ([0xff; 32], [0xff; 16])] {
+            let cipher = aes::Aes256::new((&key).into());
+            let mut counter = u128::from_be_bytes(iv);
+            let mut expected = vec![0u8; 65536];
+            let mut seed = 0x608da0a2u32;
+            for chunk in expected.chunks_exact_mut(16) {
+                let mut block = counter.to_be_bytes().into();
+                cipher.encrypt_block(&mut block);
+                for (out, value) in chunk.iter_mut().zip(block) {
+                    seed = seed.wrapping_mul(0x343fd).wrapping_add(0x269ec3);
+                    *out = value ^ (seed >> 16) as u8;
+                }
+                counter = counter.wrapping_add(1);
+            }
+            let actual = Keystream::new(key, iv);
+            assert!(actual.stream.as_slice() == expected.as_slice());
+        }
+    }
 
     #[test]
     fn resource_cipher_vector() {

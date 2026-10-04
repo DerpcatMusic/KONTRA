@@ -1,6 +1,8 @@
 # Falcon / UVI format groundwork
 
-This is metadata research, not Falcon playback compatibility. The host importer still accepts Kontakt NKI/NKM; UFS and UVIP are not added to its playable catalog.
+This document preserves the **2026-10-02 metadata-only audit**. Its statements about unknown archive directories, unavailable decryption and missing runtime support describe that checkpoint, before the subsequent native UVI implementation and corpus validation. See [current UVI capabilities and evidence](uvi-compatibility.md) for the 2026-10-03 status; the archive observations also continue in [observed UFS2 layout](uvi-format.md).
+
+The main host catalog still does not establish Falcon playback compatibility. The newer UVI entry points are bounded, offline tools; the historical findings below are retained as the record of what was known at this stage.
 
 ## Runnable artifact
 

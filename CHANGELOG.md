@@ -8,6 +8,27 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ## Unreleased
 
+### Dry Mapping preview source checkpoint — verification paused
+
+- Add a shared dry sample cursor with off-thread Kontakt/UVI source preparation,
+  exact selection/restore cancellation and off-audio PCM retirement. Add global
+  sample-zone selection and intrinsic inspector rows.
+- The pre-layout source passed 48 focused checks; UVI-disabled source passed 29
+  common checks. The stronger compact text-bounds test still fails after the first
+  layout correction. This source is not a verified release or newly installed
+  binary. See docs/UVI_IMPLEMENTATION_STATUS.md for implemented/partial/missing
+  features and docs/RAW_SAMPLE_PREVIEW_EVIDENCE.md for exact scope.
+
+### Local UVI interoperability follow-up
+
+- Validate Info worker observations against the current source, restore state and activation/context. Keep failed-owner inspection; render absent inventory counts as unknown, distinguish loader observations from endpoint/fault data, and deduplicate PCM separately from render timing so a failure before the first attempt retains its PCM census.
+- Reuse the existing per-Program Mode1 producer alpha32 in connection filtering under unchanged rate/block/error guards. No new cache state or fidelity admission. Fourteen focused checks preserve output/state bits and Info ownership; authored wide/compact/zero-attempt-failure captures pass independent visual review. No current-bank/DAW deadline or measured speedup claim.
+
+- Preserve validated positive exact CLAP/VST3 attacks at minimum velocity 1 in the current 7-bit adapter. Reject an unrepresentable exact-zero UVI attack by completing only its own root, keeping prior voices and canonical End/backpressure ownership, with a dedicated per-destination diagnostic. Mixed Kontakt/UVI destinations retain genuine Kontakt owners until Off. The separate float core is untouched.
+- Forward documented omitted/zero-channel script AfterTouch as one omni event through the existing Program/Layer scopes and broadcast at both consumers. Explicit channels, strict value/zero-coercion guards, external MIDI and MPE boundaries stay intact.
+- Twenty focused synthetic checks pass, including nine new authored cases, actual Worker/Slot PCM survival and zero audio-heap paths. Current UVI documentation is the AfterTouch semantic source; no new Workstation 4.0.9 oracle, paid-bank/DAW deadline or full Falcon-fidelity proof was performed. Historical RequestCapacity/modwheel failures are separate unresolved performance evidence.
+
+
 ### Accepted 0.3.148 — primary envelope processing and visible crash receipts
 
 Two reviewed logical fixes advance the accepted counter from 0.3.146.
@@ -102,6 +123,15 @@ Eight newly accepted logical fixes advance 0.3.115 to0.3.123; closing the alread
 - Live and restored bypass reaches admitted saved pitch LFO sources, preserving paused source phase/fade and removing only the selected contribution. Wider waves, free-running clocks and live frequency remain unsupported.
 - The native VST3 adapter now accepts negative optional note-length metadata. Real exported processing passes ten authored-tone cases covering anonymous/live note IDs, independent cents-frequency checks, sample offset 16 and explicit note-off. This closes the adapter gap disclosed in 0.3.115; the reported Mac keyboard/arranger payload has not been captured, so its cause remains unconfirmed.
 - Frozen coherent core cfef7b0 passes the locked all-targets/all-features check, optimized production build, 555 library regressions (30 ignored), 89 playback regressions (four ignored), and the real exported VST3 gate. These checks establish the listed behaviors, not full sonic parity or Mac DAW crash resolution.
+### Experimental UVI interoperability
+
+- Validate reopened UFS file identity for member reads and optional PCM cache hashing, retaining the original file owner. Authored same-header/size/time and byte-identical cache replacement fixtures reject stale metadata; FIFO replacement fails without blocking. Unix inode ownership is stronger than non-Unix checks; hidden same-inode writes remain outside the proof.
+- Report matching Ready-poll panel snapshot failures once per safe cause and processor, with real owned Rust validator locations and bounded recovery counts. Failed reads cannot settle successful control receipts; polling remains available beyond the diagnostic retention cap. Transient eager-initialization errors remain outside this scope.
+- Reuse ConstantClock's two immutable-rate coefficients while preserving original float arithmetic, clock cadence and error gates. Output/state bit comparisons and related native-clock/resource/UI ownership checks pass: 28 focused synthetic functional gates total. Inline clock size grows from 48 to 64 bytes on this target; no new throughput or full Falcon fidelity claim.
+- Add an optional `uvi` feature with bounded UFS2/v3 records and directory links, caller-supplied reader namespaces, verified known-plaintext content-state recovery, protected Program XML decoding, and private local extraction commands.
+- Add a separate Lua 5.1 Program host, timed musical commands, multichannel sample decoding and an offline renderer preserving UVI hierarchy, modulation and effect scope. Native primitive probes guide implementation; full instrument parity, plug-in integration and visual UVI controls remain incomplete. See `docs/uvi-compatibility.md` for measured coverage and limits.
+
+
 
 ### Verified processing and diagnostics follow-ups
 

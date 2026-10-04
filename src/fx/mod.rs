@@ -7,7 +7,7 @@
 //! allocates, locks or panics.
 
 pub(crate) mod blocks;
-mod convolution;
+pub(crate) mod convolution;
 mod kind;
 pub mod params;
 mod processor;

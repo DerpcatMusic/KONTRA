@@ -1462,8 +1462,8 @@ fn rack_frame(rack: &mut Rack, frames: usize) -> Frame {
 #[test]
 fn rack_routes_layers_mutes_solos_and_releases_after_channel_changes() {
     let mut rack = Rack::default();
-    rack.parts[0] = engine();
-    rack.parts[1] = engine();
+    rack.parts[0] = engine().into();
+    rack.parts[1] = engine().into();
     rack.controls[0].channel = 0;
     rack.controls[1].channel = 1;
     rack.note_on(0, 60, 127);
@@ -1508,7 +1508,7 @@ fn rack_part_tune_transposes_in_semitones_and_cents() {
             .unwrap()
     };
     let mut rack = Rack::default();
-    rack.parts[0] = engine_with(bank());
+    rack.parts[0] = engine_with(bank()).into();
     rack.controls[0].tune = 12.0;
     rack.note_on(0, 60, 127);
     assert!((rack_frame(&mut rack, 11)[0] - 0.02).abs() < 1e-6, "an octave up steps two frames");
@@ -1519,7 +1519,7 @@ fn rack_part_tune_transposes_in_semitones_and_cents() {
     assert!((after - before - 0.005).abs() < 1e-5, "{before} → {after}");
     // Cents: +7 st 2 ct is the fifth's ratio to within a cent.
     let mut rack = Rack::default();
-    rack.parts[0] = engine_with(bank());
+    rack.parts[0] = engine_with(bank()).into();
     rack.controls[0].tune = 7.02;
     rack.note_on(0, 60, 127);
     let at = rack_frame(&mut rack, 101)[0] * 1000.0;
@@ -1532,8 +1532,8 @@ fn rack_part_tune_transposes_in_semitones_and_cents() {
 #[test]
 fn rack_bus_faders_solos_sends_and_peaks() {
     let mut rack = Rack::default();
-    rack.parts[0] = engine();
-    rack.parts[1] = engine();
+    rack.parts[0] = engine().into();
+    rack.parts[1] = engine().into();
     rack.controls[1].output = 2;
     rack.controls[1].gain = 0.5;
     rack.controls[1].aux = 5;
@@ -1563,8 +1563,8 @@ fn rack_bus_faders_solos_sends_and_peaks() {
 #[test]
 fn rack_midi_ports_audio_buses_and_route_changes_are_isolated() {
     let mut rack = Rack::default();
-    rack.parts[0] = engine();
-    rack.parts[1] = engine();
+    rack.parts[0] = engine().into();
+    rack.parts[1] = engine().into();
     rack.controls[1].port = 1;
     rack.controls[1].output = 3;
     rack.note_on_port(1, 0, 60, 127);
@@ -2141,12 +2141,12 @@ fn following_child_freezes_preserve_start_and_release_budgets_without_allocating
     assert!(errors.iter().all(Option::is_none),"{errors:?}");
     let mut e = engine_with(layered(vec![Group::default()],&[0.1]));
     e.attack=0.0001; e.release=0.001; e.set_script(Some(Box::new(rt)));
-    let mut rack = Box::new(Rack::default()); rack.parts[0]=e;
+    let mut rack = Box::new(Rack::default()); rack.parts[0]=e.into();
     let mut routers: [Router; RACK_SLOTS] = std::array::from_fn(|_|Router::default());
     routers[0].set_route(Route::new("",&Articulate::default(),&Mpe { zone: Zone::Lower,..Mpe::default() }));
     for _ in 0..4 {
         for _ in 0..100 { dispatch_to(&mut rack,&mut routers,[0],In::NoteOn(1,60,100)); }
-        let (mut l,mut r)=([0.;128],[0.;128]); rack.parts[0].render(&mut l,&mut r);
+        let (mut l,mut r)=([0.;128],[0.;128]); rack.parts[0].instrument_mut().unwrap().render(&mut l,&mut r);
     }
     assert_eq!(rack.parts[0].active_voices(),400);
     let before=rack.parts[0].dropped_commands();
@@ -2159,11 +2159,11 @@ fn following_child_freezes_preserve_start_and_release_budgets_without_allocating
         let (mut l,mut r)=([0.;128],[0.;128]);
         // The old children's delayed Releases arrive into the full ordinary
         // quota in this render and must retain their separate reservation.
-        for _ in 0..20 { rack.parts[0].render(&mut l,&mut r); }
+        for _ in 0..20 { rack.parts[0].instrument_mut().unwrap().render(&mut l,&mut r); }
     }),0,"child snapshot scheduling allocated or freed on the audio thread");
     assert_eq!(rack.parts[0].dropped_commands(),before,"freezes consumed Start or Release capacity");
     assert_eq!(rack.parts[0].active_voices(),1,"all old children stop; the new child Start survives");
-    assert_eq!(rack.parts[0].voice_census()[0].note,73);
+    assert_eq!(rack.parts[0].instrument().unwrap().voice_census()[0].note,73);
 }
 
 #[test]
@@ -4055,7 +4055,7 @@ fn growing_the_rack_keeps_voices_held_notes_and_recorded_targets_without_audio_h
     use kontakto::timing::{Align, Holds, Timing};
 
     let mut rack = Box::new(Rack::default());
-    rack.parts[0] = engine();
+    rack.parts[0] = engine().into();
     rack.note_on(0, 60, 127);
     rack.render(32);
     assert_eq!(rack.parts[0].active_voices(), 1);
@@ -4068,7 +4068,7 @@ fn growing_the_rack_keeps_voices_held_notes_and_recorded_targets_without_audio_h
 
     // Prepared on the worker; slot 32 also crosses the former u32 target mask.
     let mut prepared = Box::new(Rack::with_slots(33));
-    prepared.parts[32] = engine();
+    prepared.parts[32] = engine().into();
     prepared.controls[32].port = 1;
     let mut schedulers = Align::with_slots(33);
     let mut new_routers: Vec<_> = (0..33).map(|_| Router::default()).collect();

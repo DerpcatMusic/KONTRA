@@ -13,7 +13,43 @@ use moose::mui::mui::{geometry::Path as DrawPath, scene::Fit};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+// The framework can move editor closures. Lua is created only on the drawing
+// thread and is never moved with the closure or exposed to another thread.
+thread_local! {
+    static RUNTIMES: std::cell::RefCell<HashMap<u64, (std::sync::Weak<()>, RuntimeState)>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+static NEXT_RUNTIME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 pub(super) struct State {
+    id: u64,
+    lease: Arc<()>,
+    epoch: u64,
+    package: Arc<Package>,
+    revision: u64,
+}
+impl State {
+    fn new(epoch: u64, package: Arc<Package>) -> Self {
+        Self {
+            id: NEXT_RUNTIME.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            lease: Arc::new(()),
+            epoch,
+            package,
+            revision: 0,
+        }
+    }
+}
+impl Drop for State {
+    fn drop(&mut self) {
+        let _ = RUNTIMES.try_with(|runtimes| {
+            if let Ok(mut runtimes) = runtimes.try_borrow_mut() {
+                runtimes.remove(&self.id);
+            }
+        });
+    }
+}
+
+struct RuntimeState {
     epoch: u64,
     controls: Arc<[crate::ksp::ExposedControl]>,
     package: Arc<Package>,
@@ -24,7 +60,7 @@ pub(super) struct State {
     revision: u64,
     text_drafts: HashMap<String, String>,
 }
-impl State {
+impl RuntimeState {
     fn new(
         epoch: u64,
         package: Arc<Package>,
@@ -62,151 +98,223 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, room: Size, vector: bo
             .lines(3)
             .pad(12);
     };
-    let state = cx.state.native_ui.entry(slot).or_insert_with(|| {
-        State::new(
-            part.script_epoch,
-            package.clone(),
-            entry,
-            part.exposed_controls.clone(),
-        )
-    });
-    if state.epoch != part.script_epoch || !state.package.same_sources(&package) {
-        *state = State::new(
-            part.script_epoch,
-            package.clone(),
-            entry,
-            part.exposed_controls.clone(),
-        );
+    let owner = cx
+        .state
+        .native_ui
+        .entry(slot)
+        .or_insert_with(|| State::new(part.script_epoch, package.clone()));
+    if owner.epoch != part.script_epoch || !owner.package.same_sources(&package) {
+        *owner = State::new(part.script_epoch, package.clone());
     }
-    state.package = package;
-    let Some(session) = &state.session else {
-        return caption(state.error.clone()).lines(5).pad(12);
-    };
-    cx.state
-        .meters
-        .animating
-        .store(true, std::sync::atomic::Ordering::Relaxed);
-    if !Arc::ptr_eq(&state.controls, &part.exposed_controls) {
-        state.controls = part.exposed_controls.clone();
-        session.update(state.controls.clone());
-    }
-    let authored = state
-        .graph
-        .as_ref()
-        .map(authored_size)
-        .unwrap_or(Size::new(970., 600.));
-    let scale = super::perf_view::scale_to_fit(room, authored, cx.settings.view_scale);
-    let result = (|| -> anyhow::Result<El> {
-        if let Some(graph) = &state.graph {
-            events(ui, graph, session, slot, scale, &mut state.hovered)?;
+    owner.package = package.clone();
+    let (id, lease) = (owner.id, owner.lease.clone());
+    let (epoch, controls, entry) = (
+        part.script_epoch,
+        part.exposed_controls.clone(),
+        entry.to_owned(),
+    );
+    let element = RUNTIMES.with(|runtimes| {
+        let mut runtimes = runtimes.borrow_mut();
+        runtimes.retain(|_, (lease, _)| lease.strong_count() != 0);
+        let (_, state) = runtimes.entry(id).or_insert_with(|| {
+            (
+                Arc::downgrade(&lease),
+                RuntimeState::new(epoch, package.clone(), &entry, controls.clone()),
+            )
+        });
+        state.package = package;
+        let Some(session) = &state.session else {
+            return caption(state.error.clone()).lines(5).pad(12);
+        };
+        cx.state
+            .meters
+            .animating
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        if !Arc::ptr_eq(&state.controls, &controls) {
+            state.controls = controls;
+            session.update(state.controls.clone());
         }
-        let graph = session.render()?;
-        let mut images = Vec::new();
-        image_demand(&graph, false, &state.package, vector, &mut images)?;
-        cx.p.request_visual_assets(slot, crate::plugin::VisualDemand { native_images: images, ..Default::default() });
-        let authored = authored_size(&graph);
+        let authored = state
+            .graph
+            .as_ref()
+            .map(authored_size)
+            .unwrap_or(Size::new(970., 600.));
         let scale = super::perf_view::scale_to_fit(room, authored, cx.settings.view_scale);
-        let el = draw(
-            ui,
-            &graph,
-            &state.package,
-            session,
-            slot,
-            scale,
-            Style { vector, ..Default::default() },
-            &mut state.text_drafts,
-        )?
-        .w(authored.width * scale)
-        .h(authored.height * scale)
-        .named(if vector { "Vectorized NativeUI performance view" } else { "NativeUI performance view" });
-        if session
-            .lua()
-            .globals()
-            .get::<bool>("__resign_focus")
-            .unwrap_or(false)
-        {
-            ui.blur();
-            session.lua().globals().set("__resign_focus", false)?;
-        }
-        state.graph = Some(graph);
-        for edit in session.take_edits() {
-            let queued = if let Some(active) = edit.midi_learn {
-                cx.p.shared.learn_native_control(slot, state.epoch, edit.slot, edit.control, edit.index, active)
-            } else { match &edit.text {
-                Some(text) => cx.p.shared.edit_native_text(
-                    slot,
-                    state.epoch,
-                    edit.slot,
-                    edit.control,
-                    edit.index,
-                    text,
-                ),
-                None => cx.p.shared.edit_native_control(
-                    slot,
-                    state.epoch,
-                    edit.slot,
-                    edit.control,
-                    edit.index,
-                    edit.value,
-                ),
-            }};
-            anyhow::ensure!(queued, "NativeUI control edit could not be queued");
-        }
-        let unavailable = session.unavailable_controls();
-        let view = row![el].justify(Justify::Center).w(Len::Pct(100.));
-        Ok(if unavailable.is_empty() {
-            view
-        } else {
-            col![
-                caption(format!(
-                    "NativeUI references unavailable KSP controls: {}",
-                    unavailable.join(", ")
-                ))
-                .lines(2)
-                .pad(4),
+        let result = (|| -> anyhow::Result<El> {
+            if let Some(graph) = &state.graph {
+                events(ui, graph, session, slot, scale, &mut state.hovered)?;
+            }
+            let graph = session.render()?;
+            let mut images = Vec::new();
+            image_demand(&graph, false, &state.package, vector, &mut images)?;
+            cx.p.request_visual_assets(
+                slot,
+                crate::plugin::VisualDemand {
+                    native_images: images,
+                    ..Default::default()
+                },
+            );
+            let authored = authored_size(&graph);
+            let scale = super::perf_view::scale_to_fit(room, authored, cx.settings.view_scale);
+            let el = draw(
+                ui,
+                &graph,
+                &state.package,
+                session,
+                slot,
+                scale,
+                Style {
+                    vector,
+                    ..Default::default()
+                },
+                &mut state.text_drafts,
+            )?
+            .w(authored.width * scale)
+            .h(authored.height * scale)
+            .named(if vector {
+                "Vectorized NativeUI performance view"
+            } else {
+                "NativeUI performance view"
+            });
+            if session
+                .lua()
+                .globals()
+                .get::<bool>("__resign_focus")
+                .unwrap_or(false)
+            {
+                ui.blur();
+                session.lua().globals().set("__resign_focus", false)?;
+            }
+            state.graph = Some(graph);
+            for edit in session.take_edits() {
+                let queued = if let Some(active) = edit.midi_learn {
+                    cx.p.shared.learn_native_control(
+                        slot,
+                        state.epoch,
+                        edit.slot,
+                        edit.control,
+                        edit.index,
+                        active,
+                    )
+                } else {
+                    match &edit.text {
+                        Some(text) => cx.p.shared.edit_native_text(
+                            slot,
+                            state.epoch,
+                            edit.slot,
+                            edit.control,
+                            edit.index,
+                            text,
+                        ),
+                        None => cx.p.shared.edit_native_control(
+                            slot,
+                            state.epoch,
+                            edit.slot,
+                            edit.control,
+                            edit.index,
+                            edit.value,
+                        ),
+                    }
+                };
+                anyhow::ensure!(queued, "NativeUI control edit could not be queued");
+            }
+            let unavailable = session.unavailable_controls();
+            let view = row![el].justify(Justify::Center).w(Len::Pct(100.));
+            Ok(if unavailable.is_empty() {
                 view
-            ]
-        })
-    })();
-    state.revision = state.revision.wrapping_add(1);
-    match result {
-        Ok(el) => el,
-        Err(e) => {
-            state.error = format!("NativeUI: {e:#}");
-            caption(state.error.clone()).lines(6).pad(12)
+            } else {
+                col![
+                    caption(format!(
+                        "NativeUI references unavailable KSP controls: {}",
+                        unavailable.join(", ")
+                    ))
+                    .lines(2)
+                    .pad(4),
+                    view
+                ]
+            })
+        })();
+        state.revision = state.revision.wrapping_add(1);
+        match result {
+            Ok(el) => el,
+            Err(e) => {
+                state.error = format!("NativeUI: {e:#}");
+                caption(state.error.clone()).lines(6).pad(12)
+            }
         }
+    });
+    if let Some(owner) = cx.state.native_ui.get_mut(&slot) {
+        owner.revision = owner.revision.wrapping_add(1);
     }
+    element
 }
 /// Refresh pixels independently of the Lua session and its focused controls.
 pub(super) fn refresh(cx: &mut Cx) {
     let visible = &cx.state.visual_visible;
     let parts = &cx.view.parts;
     cx.state.native_ui.retain(|slot, state| {
-        let Some(part) = parts.get(*slot) else { return false };
-        let Some(package) = &part.native_ui else { return false };
-        if state.epoch != part.script_epoch || !state.package.same_sources(package) { return false; }
+        let Some(part) = parts.get(*slot) else {
+            return false;
+        };
+        let Some(package) = &part.native_ui else {
+            return false;
+        };
+        if state.epoch != part.script_epoch || !state.package.same_sources(package) {
+            return false;
+        }
         if visible.contains(slot) || package.images.is_empty() && package.fonts.is_empty() {
             state.package = package.clone();
         } else if !state.package.images.is_empty() || !state.package.fonts.is_empty() {
             state.package = Arc::new(package.sources());
         }
+        RUNTIMES.with(|runtimes| {
+            if let Some((_, runtime)) = runtimes.borrow_mut().get_mut(&state.id) {
+                runtime.package = state.package.clone();
+            }
+        });
         true
+    });
+    RUNTIMES.with(|runtimes| {
+        runtimes
+            .borrow_mut()
+            .retain(|_, (lease, _)| lease.strong_count() != 0)
     });
 }
 
-fn image_demand(node: &Table, inherited_hidden: bool, package: &Package, vector: bool, images: &mut Vec<String>) -> mlua::Result<()> {
+fn image_demand(
+    node: &Table,
+    inherited_hidden: bool,
+    package: &Package,
+    vector: bool,
+    images: &mut Vec<String>,
+) -> mlua::Result<()> {
     let modifiers = tables(node, "modifiers")?;
-    let hidden = inherited_hidden || modifiers.iter().any(|m| string(m, "name") == "hidden" && boolean(&val(m, "value")));
-    if hidden { return Ok(()); }
+    let hidden = inherited_hidden
+        || modifiers
+            .iter()
+            .any(|m| string(m, "name") == "hidden" && boolean(&val(m, "value")));
+    if hidden {
+        return Ok(());
+    }
     if string(node, "kind") == "Image" && !(vector && vector_content(node, package)?.is_some()) {
         let props: Table = node.get("props")?;
         images.push(string(&props, "file").replace('\\', "/").to_lowercase());
     }
-    for child in tables(node, "children")? { image_demand(&child, hidden, package, vector, images)?; }
+    for child in tables(node, "children")? {
+        image_demand(&child, hidden, package, vector, images)?;
+    }
     for modifier in modifiers {
         match string(&modifier, "name").as_str() {
-            "background" | "overlay" => if let Value::Table(t) = val(&modifier, "value") { image_demand(&t, hidden, package, vector, images)?; },
-            "popover" => if let Value::Table(t) = val(&modifier, "value") { image_demand(&t.get::<Table>("content")?, hidden, package, vector, images)?; },
+            "background" | "overlay" => {
+                if let Value::Table(t) = val(&modifier, "value") {
+                    image_demand(&t, hidden, package, vector, images)?;
+                }
+            }
+            "popover" => {
+                if let Value::Table(t) = val(&modifier, "value") {
+                    image_demand(&t.get::<Table>("content")?, hidden, package, vector, images)?;
+                }
+            }
             _ => {}
         }
     }
@@ -218,33 +326,89 @@ fn image_demand(node: &Table, inherited_hidden: bool, package: &Package, vector:
 fn vector_content(node: &Table, package: &Package) -> mlua::Result<Option<Table>> {
     let props: Table = node.get("props")?;
     let file = string(&props, "file").replace('\\', "/").to_lowercase();
-    let Some(size) = package.image_metadata.get(&file).copied()
-        .or_else(|| package.images.get(&file).map(|image| [image.width, image.height])) else { return Ok(None); };
+    let Some(size) = package.image_metadata.get(&file).copied().or_else(|| {
+        package
+            .images
+            .get(&file)
+            .map(|image| [image.width, image.height])
+    }) else {
+        return Ok(None);
+    };
     for modifier in tables(node, "modifiers")? {
-        if string(&modifier, "name") != "vector_recipe" { continue; }
-        let Value::Table(recipe) = val(&modifier, "value") else { continue; };
+        if string(&modifier, "name") != "vector_recipe" {
+            continue;
+        }
+        let Value::Table(recipe) = val(&modifier, "value") else {
+            continue;
+        };
         if number(&recipe, "version") != Some(1.)
             || !matches!(string(&recipe, "role").as_str(), "slider" | "knob")
             || number(&recipe, "width") != Some(f64::from(size[0]))
-            || number(&recipe, "height") != Some(f64::from(size[1])) { continue; }
-        let Ok(content) = recipe.get::<Table>("content") else { continue; };
-        if vector_shapes(&content).unwrap_or(false) { return Ok(Some(content)); }
+            || number(&recipe, "height") != Some(f64::from(size[1]))
+        {
+            continue;
+        }
+        let Ok(content) = recipe.get::<Table>("content") else {
+            continue;
+        };
+        if vector_shapes(&content).unwrap_or(false) {
+            return Ok(Some(content));
+        }
     }
     Ok(None)
 }
 
 fn vector_shapes(node: &Table) -> mlua::Result<bool> {
-    let Ok(props) = node.get::<Table>("props") else { return Ok(false); };
-    if !matches!(string(node, "kind").as_str(), "Rectangle" | "Ring" | "Canvas" | "Text" | "Spacer" | "Group" | "HStack" | "VStack" | "ZStack") { return Ok(false); }
-    if string(node, "kind") == "Canvas" && props.get::<Function>("paint").is_err() { return Ok(false); }
-    for child in tables(node, "children")? { if !vector_shapes(&child)? { return Ok(false); } }
+    let Ok(props) = node.get::<Table>("props") else {
+        return Ok(false);
+    };
+    if !matches!(
+        string(node, "kind").as_str(),
+        "Rectangle"
+            | "Ring"
+            | "Canvas"
+            | "Text"
+            | "Spacer"
+            | "Group"
+            | "HStack"
+            | "VStack"
+            | "ZStack"
+    ) {
+        return Ok(false);
+    }
+    if string(node, "kind") == "Canvas" && props.get::<Function>("paint").is_err() {
+        return Ok(false);
+    }
+    for child in tables(node, "children")? {
+        if !vector_shapes(&child)? {
+            return Ok(false);
+        }
+    }
     for modifier in tables(node, "modifiers")? {
         match string(&modifier, "name").as_str() {
             "background" | "overlay" => {
-                let Value::Table(content) = val(&modifier, "value") else { return Ok(false); };
-                if !vector_shapes(&content)? { return Ok(false); }
+                let Value::Table(content) = val(&modifier, "value") else {
+                    return Ok(false);
+                };
+                if !vector_shapes(&content)? {
+                    return Ok(false);
+                }
             }
-            "position" | "frame" | "offset" | "align" | "padding" | "hidden" | "opacity" | "foreground_color" | "font_size" | "rotation" | "disabled" | "bold" | "multiline_text_alignment" | "line_limit" | "context" => {}
+            "position"
+            | "frame"
+            | "offset"
+            | "align"
+            | "padding"
+            | "hidden"
+            | "opacity"
+            | "foreground_color"
+            | "font_size"
+            | "rotation"
+            | "disabled"
+            | "bold"
+            | "multiline_text_alignment"
+            | "line_limit"
+            | "context" => {}
             _ => return Ok(false),
         }
     }
@@ -550,19 +714,49 @@ fn draw(
             let file = string(&props, "file").replace('\\', "/").to_lowercase();
             // Hidden subtrees are excluded from resource demand. Keep their
             // measured layout without retaining pixels or failing the visible UI.
-            let vector = if style.vector && !style.hidden { vector_content(node, package)? } else { None };
-            let image = package.images.get(&file).filter(|_| !style.hidden && vector.is_none()).cloned();
-            let [width, height] = image.as_ref().map(|image| [image.width, image.height])
+            let vector = if style.vector && !style.hidden {
+                vector_content(node, package)?
+            } else {
+                None
+            };
+            let image = package
+                .images
+                .get(&file)
+                .filter(|_| !style.hidden && vector.is_none())
+                .cloned();
+            let [width, height] = image
+                .as_ref()
+                .map(|image| [image.width, image.height])
                 .or_else(|| package.image_metadata.get(&file).copied())
                 .or_else(|| style.hidden.then_some([0, 0]))
                 .ok_or_else(|| anyhow::anyhow!("Missing NativeUI image {file:?}"))?;
             let resizable = boolean(&val(&props, "resizable"));
-            let width = if resizable { Len::Auto } else { Len::Px(f64::from(width) * s) };
-            let height = if resizable { Len::Auto } else { Len::Px(f64::from(height) * s) };
-            let el = if let Some(content) = vector {
-                draw(ui, &content, package, session, slot, s, style.clone(), drafts)?.w(width).h(height)
+            let width = if resizable {
+                Len::Auto
             } else {
-                block(width, height).fill(image.map_or(Fill::None, |image| Fill::Image(image, Fit::Fill)))
+                Len::Px(f64::from(width) * s)
+            };
+            let height = if resizable {
+                Len::Auto
+            } else {
+                Len::Px(f64::from(height) * s)
+            };
+            let el = if let Some(content) = vector {
+                draw(
+                    ui,
+                    &content,
+                    package,
+                    session,
+                    slot,
+                    s,
+                    style.clone(),
+                    drafts,
+                )?
+                .w(width)
+                .h(height)
+            } else {
+                block(width, height)
+                    .fill(image.map_or(Fill::None, |image| Fill::Image(image, Fit::Fill)))
             };
             if let Some(ink) = color(&val(&props, "color")) {
                 el.mask(ink)
@@ -631,8 +825,12 @@ fn draw(
                 if let Value::Table(t) = value {
                     let (x, y) = align(&string(&t, "alignment"));
                     if container {
-                        if !fixed.0 && number(&t, "width").is_some() { el = el.w(Len::Pct(100.)); }
-                        if !fixed.1 && number(&t, "height").is_some() { el = el.h(Len::Pct(100.)); }
+                        if !fixed.0 && number(&t, "width").is_some() {
+                            el = el.w(Len::Pct(100.));
+                        }
+                        if !fixed.1 && number(&t, "height").is_some() {
+                            el = el.h(Len::Pct(100.));
+                        }
                     }
                     fixed.0 |= number(&t, "width").is_some();
                     fixed.1 |= number(&t, "height").is_some();
@@ -659,9 +857,16 @@ fn draw(
                     } else if number(&t, "max_height").is_some_and(|n| n.is_infinite()) {
                         frame = frame.h(Len::Pct(100.)).grow(1.)
                     }
-                    let maximum = |key| number(&t, key).filter(|n| n.is_finite()).map_or(1e6, |n| (n.max(0.) * s).min(1e6));
-                    if number(&t, "max_width").is_some_and(f64::is_finite) || number(&t, "max_height").is_some_and(f64::is_finite) {
-                        frame = frame.max_size(Size::new(maximum("max_width"), maximum("max_height")));
+                    let maximum = |key| {
+                        number(&t, key)
+                            .filter(|n| n.is_finite())
+                            .map_or(1e6, |n| (n.max(0.) * s).min(1e6))
+                    };
+                    if number(&t, "max_width").is_some_and(f64::is_finite)
+                        || number(&t, "max_height").is_some_and(f64::is_finite)
+                    {
+                        frame =
+                            frame.max_size(Size::new(maximum("max_width"), maximum("max_height")));
                     }
                     if let Some(w) = number(&t, "max_width").filter(|n| n.is_finite()) {
                         frame = frame.w(w.max(0.) * s);
@@ -740,8 +945,11 @@ fn draw(
             "background" | "overlay" => {
                 if let Value::Table(t) = value {
                     let (x, y) = align(&string(&m, "alignment"));
-                    let mut background = draw(ui, &t, package, session, slot, s, style.clone(), drafts)?;
-                    if !string(&m, "alignment").is_empty() { background = background.anchor(x, y); }
+                    let mut background =
+                        draw(ui, &t, package, session, slot, s, style.clone(), drafts)?;
+                    if !string(&m, "alignment").is_empty() {
+                        background = background.anchor(x, y);
+                    }
                     background = if name == "background" {
                         background.underlay()
                     } else {

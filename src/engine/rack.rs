@@ -1,7 +1,7 @@
 //! Independently routed engines mixed onto sixteen stereo output
 //! buses (Kontakt's st.1…st.16), each with its own fader and host port.
 
-use super::{Engine, MAX_BLOCK, voice::balance};
+use super::{RackPart, MAX_BLOCK, voice::balance, SourceDelay};
 use crate::fx::OUTS;
 
 /// Initial rack storage for existing sessions; this is not a part-count limit.
@@ -123,7 +123,7 @@ impl PartControls {
 
 /// Rack storage is prepared outside rendering and adopted without allocating.
 pub struct Rack {
-    pub parts: Vec<Engine>,
+    pub parts: Vec<RackPart>,
     pub controls: Vec<PartControls>,
     pub bus_controls: [BusControls; BUSES],
     /// Accumulated by [`render`](Self::render); take them to publish.
@@ -133,6 +133,8 @@ pub struct Rack {
     pub tap: Option<usize>,
     pub tapped: [f32; MAX_BLOCK],
     part: Block,
+    // Prepared per-slot storage lets external renderers run once per host span.
+    external: Vec<Option<Block>>,
     buses: [Block; BUSES],
     /// Per bus, frames holding signal; beyond them it is all zeros.
     written: [usize; BUSES],
@@ -150,13 +152,14 @@ impl Rack {
     /// Allocate on the worker before handing this storage to audio.
     pub fn with_slots(slots: usize) -> Self {
         Self {
-            parts: (0..slots).map(|_| Engine::default()).collect(),
+            parts: (0..slots).map(|_| RackPart::default()).collect(),
             controls: vec![PartControls::default(); slots],
             bus_controls: std::array::from_fn(|n| BusControls::on(n as u8)),
             peaks: Peaks { parts: vec![[0.0; 2]; slots], buses: [[0.0; 2]; BUSES] },
             tap: None,
             tapped: [0.0; MAX_BLOCK],
             part: [[0.0; MAX_BLOCK]; 2],
+            external: vec![None; slots],
             buses: [[[0.0; MAX_BLOCK]; 2]; BUSES],
             written: [0; BUSES],
             now: 0,
@@ -180,11 +183,12 @@ impl Rack {
         std::mem::swap(&mut self.parts, &mut prepared.parts);
         std::mem::swap(&mut self.controls, &mut prepared.controls);
         std::mem::swap(&mut self.peaks.parts, &mut prepared.peaks.parts);
+        std::mem::swap(&mut self.external, &mut prepared.external);
     }
 
     /// Invoke one part with an immutable census of its peers at this DSP frame.
     /// Direct access through `parts` does not establish a Rack-wide KSP context.
-    pub(crate) fn with_part<R>(&mut self, slot: usize, f: impl FnOnce(&mut Engine) -> R) -> Option<R> {
+    pub(crate) fn with_part<R>(&mut self, slot: usize, f: impl FnOnce(&mut RackPart) -> R) -> Option<R> {
         let index = slot.min(self.parts.len());
         let (before, rest) = self.parts.split_at_mut(index);
         let (engine, after) = rest.split_first_mut()?;
@@ -193,8 +197,13 @@ impl Rack {
         Some(engine.with_peer_voices(peers, f))
     }
 
+    /// Instrument-only operations cannot mutate a bank's selected program.
+    pub(crate) fn with_instrument<R>(&mut self, slot: usize, f: impl FnOnce(&mut super::Engine) -> R) -> Option<R> {
+        self.with_part(slot, |part| part.instrument_mut().map(f)).flatten()
+    }
+
     // One census per ordered phase; each invocation may change only its own roster.
-    fn for_each_part(&mut self, mut f: impl FnMut(usize, &mut Engine)) {
+    fn for_each_part(&mut self, mut f: impl FnMut(usize, &mut RackPart)) {
         let mut total = self.parts.iter().fold(0usize, |sum, e| sum.saturating_add(e.active_voices()));
         for (slot, engine) in self.parts.iter_mut().enumerate() {
             let peers = total.saturating_sub(engine.active_voices());
@@ -214,6 +223,7 @@ impl Rack {
             let new = mix.parts.get(slot).copied().unwrap_or_default();
             let home = new.channel.clamp(0, 15) as u8;
             self.with_part(slot, |engine| {
+                if engine.is_instrument_bank() { return; }
                 if (old.port, old.channel) != (new.port, new.channel) {
                     let rate = engine.rate();
                     engine.reset_input(rate, home, old.port != new.port);
@@ -226,6 +236,18 @@ impl Rack {
     /// One host timing snapshot reaches every instrument before its MIDI input.
     pub fn set_transport(&mut self, playing: bool, tempo: f64, beats: f64, signature: (u8, u8)) {
         for slot in 0..self.parts.len() { self.with_part(slot, |e| e.set_transport(playing, tempo, beats, signature)); }
+    }
+
+    /// Program selection belongs only to banks listening at their saved address.
+    pub(crate) fn program_change_port(&mut self, port: u8, channel: u8, program: u8) -> bool {
+        let mut handled = false;
+        for part in &mut self.parts {
+            if let Some(bank) = part.program_bank_mut().filter(|b| b.matches_input(port, channel)) {
+                bank.midi1(port, &[0xc0 | channel, program]);
+                handled = true;
+            }
+        }
+        handled
     }
 
     pub fn note_on(&mut self, channel: u8, note: u8, velocity: u8) {
@@ -303,7 +325,27 @@ impl Rack {
     /// [`render`](Self::render), also saying which buses carry signal: the
     /// others are silent and need no copying out.
     pub fn render_live(&mut self, frames: usize) -> (&[Block; BUSES], [bool; BUSES]) {
+        self.render_live_with(frames, |_, _, _| false)
+    }
+
+    pub fn render_live_with(&mut self, frames: usize,
+        render_slot: impl FnMut(usize, &mut [f32], &mut [f32]) -> bool,
+    ) -> (&[Block; BUSES], [bool; BUSES]) {
+        self.render_live_with_delay(frames, render_slot, &mut [])
+    }
+
+    /// External sources render once; Kontakt sources retain ordered cross-part boundaries.
+    pub fn render_live_with_delay(&mut self, frames: usize,
+        mut render_slot: impl FnMut(usize, &mut [f32], &mut [f32]) -> bool,
+        delays: &mut [SourceDelay],
+    ) -> (&[Block; BUSES], [bool; BUSES]) {
         let n = frames.min(MAX_BLOCK);
+        for (slot, external) in self.external.iter_mut().enumerate() {
+            let [left, right] = &mut self.part;
+            left[..n].fill(0.0);
+            right[..n].fill(0.0);
+            *external = render_slot(slot, &mut left[..n], &mut right[..n]).then_some(self.part);
+        }
         for (bus, written) in self.buses.iter_mut().zip(&mut self.written) {
             bus[0][..*written].fill(0.0);
             bus[1][..*written].fill(0.0);
@@ -314,7 +356,7 @@ impl Rack {
         }
         let solo = self.controls.iter().any(|c| c.solo);
         let _ftz = super::FlushDenormals::new();
-        for (engine, c) in self.parts.iter_mut().zip(&self.controls) { engine.tune = c.tune; }
+        for (engine, c) in self.parts.iter_mut().zip(&self.controls) { engine.set_tune(c.tune); }
         self.for_each_part(|_, engine| engine.render_begin(n));
         let mut at = 0;
         loop {
@@ -327,7 +369,19 @@ impl Rack {
             for (slot, engine) in self.parts.iter_mut().enumerate() {
                 let fx_offset = engine.render_output_offset(at);
                 let [left, right] = &mut self.part;
-                engine.render_interval(at, &mut left[at..end], &mut right[at..end]);
+                let external = self.external[slot].as_ref();
+                if let Some([l, r]) = external {
+                    left[at..end].copy_from_slice(&l[at..end]);
+                    right[at..end].copy_from_slice(&r[at..end]);
+                } else {
+                    engine.render_interval(at, &mut left[at..end], &mut right[at..end]);
+                }
+                let delay = delays.get_mut(slot).filter(|d| external.is_none() && d.delay() != 0);
+                let delay = delay.map(|d| {
+                    d.process(&mut left[at..end], &mut right[at..end],
+                        engine.direct_outs_range(fx_offset..fx_offset + len));
+                    d
+                });
                 let (Some(c), Some(meter)) = (self.controls.get(slot), self.peaks.parts.get_mut(slot)) else { continue };
                 let (left, right) = (&mut left[at..end], &mut right[at..end]);
                 if c.mute || (solo && !c.solo) {
@@ -335,7 +389,10 @@ impl Rack {
                 }
                 let [gl, gr] = balance(c.gain, c.pan);
                 // Output channels past the instrument's own, after the part's fader.
-                for (out, l, r) in engine.fx().direct_outs_range(fx_offset..fx_offset + len) {
+                let direct = engine.direct_outs_range(fx_offset..fx_offset + len)
+                    .filter(|_| external.is_none() && delay.is_none())
+                    .chain(delay.as_deref().into_iter().flat_map(|d| d.direct_outs(len)));
+                for (out, l, r) in direct {
                     let bus = match c.outs[out] {
                         NO_AUX => c.output,
                         b => b,

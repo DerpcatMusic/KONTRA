@@ -1298,7 +1298,6 @@ impl Voice {
             declick,
             ..
         } = self.plan;
-        let stop = self.fade.dying().then_some(self.fade.left as usize);
         let group = &cx.settings[self.group as usize];
         let own = group.filter.as_ref().filter(|_| !bare);
         let native = self.native_cubic(cx);
@@ -1420,10 +1419,12 @@ impl Voice {
             }
         }
 
-        // A pre-amplifier insert still receives source at zero user gain,
-        // but a forced stop ends its source and insert/send processing exactly.
-        // Return effects retain their own tails in the program FX processor.
-        let n = stop.map_or(n, |stop| stop.min(n));
+        // Zero user gain still feeds pre-amplifier inserts, but an exclusive
+        // source/envelope/fade terminal stops voice-local processing exactly.
+        // Otherwise a long interval leaks pre-amp sends after NOTE_END while
+        // fragmented rendering removes the voice at that same terminal frame.
+        // Program return effects retain their independently owned tails.
+        let n = self.plan.terminal.map_or(n, |stop| stop.min(n));
         let amp = &amp[..n];
         let curve = curve.map(|curve| &curve[..n]);
         let mut underrun = false;
@@ -2203,7 +2204,7 @@ fn copy_run(span: &Span, run: &Run, out: &mut [Frame]) {
 
 /// 4-point, 3rd-order Hermite (Catmull-Rom) interpolation between `q[1]` and `q[2]`.
 #[inline(always)]
-pub(super) fn hermite(q: &[Frame; 4], t: f32) -> Frame {
+pub(crate) fn hermite(q: &[Frame; 4], t: f32) -> Frame {
     std::array::from_fn(|c| {
         let (xm1, x0, x1, x2) = (q[0][c], q[1][c], q[2][c], q[3][c]);
         let c1 = 0.5 * (x1 - xm1);
