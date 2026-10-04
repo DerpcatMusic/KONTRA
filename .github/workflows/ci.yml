@@ -90,7 +90,7 @@ jobs:
             build-essential pkg-config \
             libx11-dev libx11-xcb-dev libxcb1-dev libxcb-icccm4-dev libxcursor-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libxrandr-dev \
-            libgl1-mesa-dev libvulkan-dev mesa-vulkan-drivers \
+            libgl1-mesa-dev libgl1-mesa-dri libvulkan-dev mesa-vulkan-drivers xvfb \
             libasound2-dev libjack-jackd2-dev
       - name: VST3 native shim editor lifecycle
         run: |
@@ -111,7 +111,16 @@ jobs:
         run: cargo clippy --locked --profile "$CI_PROFILE" --all-targets
       - name: test
         # library-access is already a default feature; this includes access::*.
-        run: cargo test --locked --profile "$CI_PROFILE"
+        run: |
+          cargo test --locked --profile "$CI_PROFILE"
+          cargo test --locked --profile "$CI_PROFILE" -p kontra-native-host --lib
+      - name: Native host lifecycle and software-GL presentation
+        env:
+          WGPU_BACKEND: gl
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          xvfb-run -a cargo test --locked --profile "$CI_PROFILE" \
+            -p kontra-native-host --lib -- --ignored --test-threads=1
 
   windows:
     needs: changes

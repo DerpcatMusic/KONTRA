@@ -4,6 +4,44 @@ use keyboard_types::Code;
 use mui::Ui;
 use mui::prelude::{El, Input, knob};
 
+#[test]
+fn native_accessibility_stays_on_the_window_thread() {
+    static_assertions::assert_not_impl_any!(NativeAccessibility: Send, Sync);
+    static_assertions::assert_not_impl_any!(A11y: Send, Sync);
+    static_assertions::assert_impl_all!(AccessibilityUi: Send);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires an isolated X11 display; run under Xvfb"]
+fn native_accessibility_pre_show_close_and_reopen_release_the_model() {
+    let shared = Arc::clone(&handler((240, 200), 1.0).shared);
+    let requests = Arc::new(Requests::default());
+    let model = Arc::downgrade(&shared);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&seen);
+    requests.on_x11_window(Arc::new(Mutex::new(move |parent: Option<u32>| {
+        let model = model.upgrade().expect("test model is still alive");
+        assert!(model.try_lock().is_ok(), "native parent callbacks hold no model lock");
+        observed.lock().unwrap().push(parent.is_some());
+    })));
+    for _ in 0..2 {
+        let make = build(Arc::clone(&shared), Arc::clone(&requests), false);
+        let window = Window::create(settings("KONTRA native bridge lifecycle", (240, 200)), move |cx| {
+            let adapter = make(cx)?;
+            assert!(adapter.handler.borrow().a11y.is_some(), "attach the shared native provider before show");
+            Ok(adapter)
+        }).expect("native window creation");
+        assert!(requests.x11_window().is_some());
+        // Close before explicit show, then reuse the portable model/requests.
+        // Native callbacks may warm the renderer before mapping the window.
+        window.close();
+        assert_eq!(requests.x11_window(), None);
+        assert_eq!(Arc::strong_count(&shared), 1, "closed native endpoints retain no model");
+    }
+    assert_eq!(*seen.lock().unwrap(), [true, false, true, false]);
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn dialog_parent_closes_outside_model_lock_and_preserves_reopen() {

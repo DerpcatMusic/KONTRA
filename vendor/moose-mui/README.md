@@ -13,7 +13,8 @@ moose port of MUI's `mui-truce`; enable it through the facade with
 - `HostScale` / `ParentWindow` turn moose's scale calls and parent handle into
   what `mui-baseview` opens with. The last host scale survives a reopened
   editor (MUI#48).
-- `window` is `mui-baseview` re-exported, `mui` is the toolkit itself.
+- `window` re-exports KONTRA's `kontra-native-host` through the stable
+  `mui_baseview` dependency alias; `mui` is the toolkit itself.
 
 ```rust
 use moose::mui::MuiEditor;
@@ -35,9 +36,9 @@ works when the cdylib unwinds.
 
 ## Dependencies
 
-The MUI crates are git dependencies, so this crate is `publish = false`.
-`mui-baseview` opens its window with moose-baseview, a git dependency on
-this repository. Inside the moose workspace the root `Cargo.toml` patches that
-git source to `crates/moose-baseview`, so one baseview is linked. A plugin
-outside the workspace that takes both moose and MUI from git resolves the same
-`https://github.com/Matari-Audio/moose` source for both, so it unifies too.
+The MUI toolkit and public native bridges remain Git dependencies. This local
+moose adapter uses KONTRA's distinct custom host package rather than overriding
+upstream `mui-baseview`. The custom host retains KONTRA's wheel/pointer, dialog
+parent and diagnostic hooks while consuming the upstream accessibility/IME
+bridge. The root Cargo.lock pins MUI, and its MUI-source moose-baseview patch
+provides the same native window types to both hosts.
