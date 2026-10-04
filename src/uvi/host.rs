@@ -298,6 +298,9 @@ pub struct UiStyle {
     pub font_size: Option<f64>,
     pub text_colour: Option<String>,
     pub background_colour: Option<String>,
+    pub slider_colour: Option<String>,
+    pub draw_inner_edge: Option<bool>,
+    pub inner_edge_colour: Option<String>,
     pub show_label: Option<bool>,
     pub show_value: Option<bool>,
     pub show_popup_display: Option<bool>,
@@ -575,6 +578,9 @@ pub fn snapshot_ui(processor: NodeId, environment: &Table) -> mlua::Result<UiSna
             font_size,
             text_colour: budget.string(&state, "textColour")?,
             background_colour: budget.string(&state, "backgroundColour")?,
+            slider_colour: budget.string(&state, "sliderColour")?,
+            draw_inner_edge: ui_optional_bool(&state, "drawInnerEdge")?,
+            inner_edge_colour: budget.string(&state, "innerEdgeColour")?,
             show_label: ui_optional_bool(&state, "showLabel")?,
             show_value: ui_optional_bool(&state, "showValue")?,
             show_popup_display: ui_optional_bool(&state, "showPopupDisplay")?,
@@ -2576,6 +2582,7 @@ mod tests {
           n:setStripImage('/Textures/authored-strip.png',16,false)
           menu=Menu{name='choices',items={'First','Second'},selected=2};menu.hierarchical=true
           curve=Table{'curve',3,0,0,1};curve:setValue(2,0.5,false)
+          curve.sliderColour='#804080C0';curve.drawInnerEdge=false;curve.innerEdgeColour='#101010'
           setmetatable(n._state,{__index=function()calls=calls+1;error('getter executed')end})
           setmetatable(UVI_UI_STATE.root,{__index=function()calls=calls+1;error('root getter executed')end})
           setmetatable(UVI_UI_STATE.order,{__index=function()calls=calls+1;error('order getter executed')end})
@@ -2602,6 +2609,9 @@ mod tests {
         assert!(first.widgets[2].items == ["First", "Second"]);
         assert_eq!(first.widgets[2].style.hierarchical, Some(true));
         assert!(matches!(&first.widgets[3].value,Some(UiValue::Table(v)) if v==&[0.0,0.5,0.0]));
+        assert_eq!(first.widgets[3].style.slider_colour.as_deref(), Some("#804080C0"));
+        assert_eq!(first.widgets[3].style.draw_inner_edge, Some(false));
+        assert_eq!(first.widgets[3].style.inner_edge_colour.as_deref(), Some("#101010"));
         assert_eq!(knob.style.display_text.as_deref(), Some("Authored display override"));
         assert_eq!(knob.style.tooltip.as_deref(), Some("Authored help"));
         assert!(knob.style.strip_image.as_ref().unwrap().frames == 16);
@@ -2611,12 +2621,16 @@ mod tests {
         assert!(a.raw_get::<u32>("calls").unwrap() == 0);
         assert!(other.widgets[0].effective_visible);
         assert_eq!(other.widgets[0].style.tooltip.as_deref(), Some("same"));
-        lua.load("p.visible=true;n:setValue(0.75);n.tooltip='Updated help';menu.hierarchical=false")
+        lua.load("p.visible=true;n:setValue(0.75);n.tooltip='Updated help';menu.hierarchical=false;curve.sliderColour='#00FF00';curve.drawInnerEdge=true")
             .set_environment(a.clone())
             .exec()
             .unwrap();
         let updated = snapshot_ui(7, &a).unwrap();
         assert!(updated.widgets[1].effective_visible);
+        assert_eq!(updated.widgets[3].style.slider_colour.as_deref(), Some("#00FF00"));
+        assert_eq!(first.widgets[3].style.slider_colour.as_deref(), Some("#804080C0"));
+        assert_eq!(updated.widgets[3].style.draw_inner_edge, Some(true));
+        assert_eq!(first.widgets[3].style.draw_inner_edge, Some(false));
         assert_eq!(updated.widgets[2].style.hierarchical, Some(false));
         assert_eq!(first.widgets[2].style.hierarchical, Some(true));
         assert_eq!(updated.widgets[1].style.tooltip.as_deref(), Some("Updated help"));
@@ -2760,6 +2774,9 @@ mod tests {
             ("p=Knob('p');p.displayText=string.rep('x',4097)", "text limit"),
             ("p=Knob('p');p.tooltip=string.rep('x',4097)", "text limit"),
             ("p=Menu('p');p.hierarchical='yes'", "Boolean"),
+            ("p=Table('p');p.drawInnerEdge='yes'", "Boolean"),
+            ("p=Table('p');p.sliderColour=4", "text field"),
+            ("p=Table('p');p.innerEdgeColour=4", "text field"),
             (
                 "p=Menu('p',{});for i=1,300 do p._state.items[i]=string.rep('x',4096)end",
                 "text limit",
