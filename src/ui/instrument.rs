@@ -86,7 +86,7 @@ fn native_failure_lines(report: &serde_json::Value) -> Vec<(String, bool)> {
     }
     if let Some(stage) = endpoint["stage"].as_str() {
         let frame = endpoint["frame"].as_u64().map_or_else(|| "unavailable".into(), |n| n.to_string());
-        lines.push((format!("Endpoint location: {stage} · callback start frame {frame}"), false));
+        lines.push((format!("Endpoint location: {stage} · reported frame {frame}"), false));
     } else if let Some(code) = terminal["code"].as_str() {
         let location = match code {
             "uvi_worker_configuration_failed" => "Configuring the worker",
@@ -756,7 +756,7 @@ mod native_status_tests {
         assert_eq!(lines.iter().filter(|(s,_)| s.contains("mean 6.40 ms")).count(),1);
         assert!(!lines.iter().any(|(s,_)| s.contains("combined long timing text")));
         assert!(lines.iter().any(|(s,_)| s=="Endpoint error code: 36"));
-        assert!(lines.iter().any(|(s,_)| s.contains("process · callback start frame 8192")));
+        assert!(lines.iter().any(|(s,_)| s.contains("process · reported frame 8192")));
         assert!(lines.iter().any(|(s,_)| s.contains("src/plugin/uvi.rs:42")));
         assert!(lines.iter().any(|(s,_)| s=="CPU time is not measured."));
         assert_eq!(report,before);
