@@ -1325,6 +1325,25 @@ enum Overrides<'a> {
     External(&'a HashMap<Parameter, f64>),
     Registered,
 }
+// This caches the existing admitted fixed/global Step projection, not a native
+// host-generation policy. Tables are immutable for this graph owner. Every live
+// scalar gate still runs before querying the prepared points.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct StepProjectionKey {
+    start: u64,
+    block_start: u64,
+    beat: u64,
+    rate: u64,
+    tempo: u64,
+    frequency: u32,
+    count: usize,
+    position: Option<(u64, u64, bool)>,
+}
+struct StepProjection {
+    key: StepProjectionKey,
+    phases: [f64; 9],
+    points: [f32; 9],
+}
 pub struct ModulationGraph {
     parents: Vec<Option<NodeId>>,
     kinds: Vec<String>,
@@ -1344,6 +1363,7 @@ pub struct ModulationGraph {
     mappers: HashMap<NodeId, Mapper>,
     tables: HashMap<NodeId, Vec<f64>>,
     step_settings: RefCell<FxHashMap<NodeId, (f64, f64, f32, u32)>>,
+    step_projection: RefCell<FxHashMap<NodeId, StepProjection>>,
     ramps: HashMap<(u8, Option<NodeId>, Option<u32>), Ramp>,
     script_ranges: HashMap<u8, bool>,
     event_order: u64,
@@ -1641,6 +1661,7 @@ impl ModulationGraph {
             mappers: HashMap::new(),
             tables: HashMap::new(),
             step_settings: RefCell::new(FxHashMap::default()),
+            step_projection: RefCell::new(FxHashMap::default()),
             ramps: HashMap::new(),
             script_ranges: HashMap::new(),
             event_order: 0,
@@ -2629,6 +2650,9 @@ impl ModulationGraph {
             });
             self.cached_parameters[node].insert(name.into(), slot);
         }
+        if self.kinds[node] == "StepEnvelope" {
+            self.step_projection.get_mut().remove(&node);
+        }
         Ok(())
     }
     pub(crate) fn evaluate_registered_nodes_into(
@@ -3377,15 +3401,49 @@ impl ModulationGraph {
             * (f64::from(input.host_tempo as f32) * (1. / 60.)
                 / f64::from(input.sample_rate as f32))
             * (1. / frequency);
-        for _ in 0..tick {
-            phase += increment;
-        }
-        ensure!(
-            phase.is_finite() && phase >= 0. && phase + increment < f64::from(i32::MAX),
-            "UVI StepEnvelope phase overflow"
-        );
-        let left = values[(phase.floor() as u64 % count as u64) as usize] as f32;
-        let right = values[((phase + increment).floor() as u64 % count as u64) as usize] as f32;
+        let (left, right) = if block == 256 {
+            let key = StepProjectionKey {
+                start,
+                block_start,
+                beat: beat.to_bits(),
+                rate: input.sample_rate.to_bits(),
+                tempo: input.host_tempo.to_bits(),
+                frequency: (frequency as f32).to_bits(),
+                count,
+                position: input.host_position.map(|p| (p.frame, p.beat.to_bits(), p.playing)),
+            };
+            let mut prepared = self.step_projection.borrow_mut();
+            if let Some(points) = prepared.get(&n).filter(|points| points.key == key) {
+                phase = points.phases[tick as usize];
+                ensure!(phase.is_finite() && phase >= 0. && phase + increment < f64::from(i32::MAX),
+                    "UVI StepEnvelope phase overflow");
+                (points.points[tick as usize], points.points[tick as usize + 1])
+            } else {
+                let mut phases = [0.; 9];
+                phases[0] = phase;
+                for index in 1..9 {
+                    phases[index] = phases[index - 1] + increment;
+                }
+                phase = phases[tick as usize];
+                // Validate only the queried point pair, as before. Future phases
+                // do not make a currently valid query fail early near i32::MAX.
+                ensure!(phase.is_finite() && phase >= 0. && phase + increment < f64::from(i32::MAX),
+                    "UVI StepEnvelope phase overflow");
+                let points = phases.map(|phase|
+                    values[(phase.floor() as u64 % count as u64) as usize] as f32);
+                let pair = (points[tick as usize], points[tick as usize + 1]);
+                prepared.insert(n, StepProjection { key, phases, points });
+                pair
+            }
+        } else {
+            for _ in 0..tick {
+                phase += increment;
+            }
+            ensure!(phase.is_finite() && phase >= 0. && phase + increment < f64::from(i32::MAX),
+                "UVI StepEnvelope phase overflow");
+            (values[(phase.floor() as u64 % count as u64) as usize] as f32,
+                values[((phase + increment).floor() as u64 % count as u64) as usize] as f32)
+        };
         Ok(f64::from(
             left + (right - left) * ((frame - start - tick * 32) as f32 / 32.),
         ))
@@ -6903,4 +6961,139 @@ mod source_setting_identity_proof {
             assert_eq!((setting.node_in(&program), setting.parameter, setting.observed), (Some(node), "Smooth", 0.1));
         }
     }
+    fn step_projection_fixture() -> (ModulationGraph, NodeId, NodeId) {
+        let levels = (0..16).map(|i| ((i * 37 % 129) as f64 / 128.).to_string())
+            .collect::<Vec<_>>().join(" ");
+        let program = parse_program(&format!(r#"<Program><ControlSignalSources><StepEnvelope Name="Seq" SyncToHost="1" Retrigger="0" Freq=".25" NumSteps="16" Levels="{levels}"/></ControlSignalSources><Layers><Layer><Keygroups><Keygroup Gain="1"><Connections><SignalConnection Source="$Program/Seq" Destination="Gain" Ratio="1"/></Connections></Keygroup></Keygroups></Layer></Layers></Program>"#)).unwrap();
+        let source = program.nodes.iter().position(|n| n.kind == "StepEnvelope").unwrap();
+        let target = program.nodes.iter().position(|n| n.kind == "Keygroup").unwrap();
+        (ModulationGraph::new(&program).unwrap(), source, target)
+    }
+    #[test]
+    fn step_projection_reuses_prepared_native_points_across_queries_and_rewinds() {
+        let (graph, source, target) = step_projection_fixture();
+        // Existing authored native point/interpolation observations; no new native run.
+        for (frame, expected) in [(5999, 0.135498046875), (6000, 0.14453125),
+            (6001, 0.153564453125), (6015, 0.280029296875),
+            (11999, 0.569091796875), (6000, 0.14453125), (0, 0.)] {
+            for instance in [1, 2] {
+                let input = Inputs { time_seconds: frame as f64 / 48000.,
+                    voice: Some(instance as u32), instance: Some(instance), ..Default::default() };
+                assert_eq!(graph.evaluate(&input, &HashMap::new()).unwrap()[&(target, "Gain".into())], expected);
+                let cache = graph.step_projection.borrow();
+                assert_eq!(cache.len(), 1);
+                assert_eq!(cache[&source].key.start, frame / 256 * 256);
+            }
+        }
+    }
+    #[test]
+    fn step_projection_host_keys_and_numeric_writes_cannot_hide_source_gates() {
+        let (mut graph, source, target) = step_projection_fixture();
+        let mut input = Inputs { host_position: Some(HostPosition { frame: 0, beat: 2., playing: true }),
+            ..Default::default() };
+        graph.evaluate(&input, &HashMap::new()).unwrap();
+        let key = graph.step_projection.borrow()[&source].key;
+        input.host_position.as_mut().unwrap().beat = 3.;
+        graph.evaluate(&input, &HashMap::new()).unwrap();
+        assert!(graph.step_projection.borrow()[&source].key != key);
+        let key = graph.step_projection.borrow()[&source].key;
+        input.host_tempo = 137.;
+        graph.evaluate(&input, &HashMap::new()).unwrap();
+        assert!(graph.step_projection.borrow()[&source].key != key);
+        graph.update_live_parameter(source, "Depth", 0.5).unwrap();
+        assert!(graph.step_projection.borrow().is_empty());
+        let error = graph.evaluate_nodes_emit(&input, Overrides::Registered,
+            &HashSet::from([target]), |_, _| {}).unwrap_err();
+        assert!(error.to_string().contains("Unverified UVI StepEnvelope Depth"));
+        // External overrides also run the existing gates before a prepared hit.
+        assert!(graph.evaluate(&input, &HashMap::from([((source, "Smooth".into()), 0.1)])).is_err());
+    }
+    #[test]
+    fn step_projection_does_not_move_future_phase_failure_to_the_first_query() {
+        let (graph, source, _) = step_projection_fixture();
+        let increment = 32. * (120_f64 * (1. / 60.) / 48000.) * (1. / 0.25);
+        let beat = (f64::from(i32::MAX) - 2.5 * increment) * 0.25;
+        let mut input = Inputs { host_position: Some(HostPosition { frame: 0, beat, playing: true }),
+            ..Default::default() };
+        assert!(graph.evaluate(&input, &HashMap::new()).is_ok());
+        input.time_seconds = 32. / 48000.;
+        assert!(graph.evaluate(&input, &HashMap::new()).is_ok());
+        input.time_seconds = 64. / 48000.;
+        let error = graph.evaluate(&input, &HashMap::new()).unwrap_err();
+        assert_eq!(error.to_string(), "UVI StepEnvelope phase overflow");
+        assert_eq!(graph.step_projection.borrow().len(), 1);
+        // Non256 block widths retain the original uncached path.
+        let (other, _, _) = step_projection_fixture();
+        input.time_seconds = 0.;
+        input.control_block_frames = 64;
+        assert!(other.evaluate(&input, &HashMap::new()).is_ok());
+        assert!(other.step_projection.borrow().is_empty());
+        assert_eq!(graph.step_projection.borrow()[&source].key.count, 16);
+    }
+
+    // Explicit legacy scalar path for UNRUN cache-equivalence cases, not a native oracle.
+    fn legacy_step_projection(graph: &ModulationGraph, n: NodeId, input: &Inputs,
+        live: Overrides<'_>) -> Result<f64> {
+        let values = graph.tables.get(&n).context("UVI StepEnvelope Levels are missing")?;
+        let count = graph.setting(n, "NumSteps", 16., live)? as usize;
+        let frequency = f64::from(graph.setting(n, "Freq", 1., live)? as f32);
+        ensure!(input.time_seconds * input.sample_rate < (u64::MAX - 65536) as f64,
+            "UVI StepEnvelope clock overflow");
+        let frame = (input.time_seconds * input.sample_rate + 0.000001).floor() as u64;
+        let block = u64::from(input.control_block_frames);
+        let block_start = frame / block * block;
+        let (start, beat) = if let Some(position) = input.host_position {
+            let start = block_start.max(position.frame);
+            (start, position.beat + (start - position.frame) as f64 / input.sample_rate * input.host_tempo / 60.)
+        } else { (block_start, block_start as f64 / input.sample_rate * input.host_tempo / 60.) };
+        let tick = (frame - start) / 32;
+        let mut phase = beat / frequency;
+        let increment = 32. * (f64::from(input.host_tempo as f32) * (1. / 60.)
+            / f64::from(input.sample_rate as f32)) * (1. / frequency);
+        for _ in 0..tick { phase += increment; }
+        ensure!(phase.is_finite() && phase >= 0. && phase + increment < f64::from(i32::MAX),
+            "UVI StepEnvelope phase overflow");
+        let left = values[(phase.floor() as u64 % count as u64) as usize] as f32;
+        let right = values[((phase + increment).floor() as u64 % count as u64) as usize] as f32;
+        Ok(f64::from(left + (right - left) * ((frame - start - tick * 32) as f32 / 32.)))
+    }
+    #[test]
+    fn step_prepared_projection_matches_explicit_legacy_for_every_frame_and_boundary() {
+        for rate in [44100., 48000., 96000.] {
+            for hosted in [false, true] {
+                let (graph, source, _) = step_projection_fixture();
+                let mut input = Inputs { sample_rate: rate, host_tempo: 137., ..Default::default() };
+                for frame in 0..768 {
+                    input.time_seconds = frame as f64 / rate;
+                    if hosted && frame % 256 == 0 {
+                        input.host_position = Some(HostPosition { frame,
+                            beat: [0., 2.5, 0.125][frame as usize / 256], playing: true });
+                        input.host_tempo = [137., 90., 120.][frame as usize / 256];
+                    }
+                    graph.step_gate(source, &input, Overrides::External(&HashMap::new())).unwrap();
+                    let old = legacy_step_projection(&graph, source, &input, Overrides::External(&HashMap::new())).unwrap();
+                    let new = graph.step(source, &input, Overrides::External(&HashMap::new())).unwrap();
+                    assert_eq!(new.to_bits(), old.to_bits(), "frame={frame},rate={rate},hosted={hosted}");
+                }
+                // Rewind replaces the block, preserving the original global projection.
+                input.time_seconds = 0.;
+                input.host_position = hosted.then_some(HostPosition { frame: 0, beat: -0., playing: true });
+                assert_eq!(graph.step(source, &input, Overrides::External(&HashMap::new())).unwrap().to_bits(),
+                    legacy_step_projection(&graph, source, &input, Overrides::External(&HashMap::new())).unwrap().to_bits());
+            }
+        }
+        let (graph, source, _) = step_projection_fixture();
+        let increment = 32. * (120_f64 * (1. / 60.) / 48000.) * (1. / 0.25);
+        let mut input = Inputs { host_position: Some(HostPosition { frame: 0,
+            beat: (f64::from(i32::MAX) - 2.5 * increment) * 0.25, playing: true }), ..Default::default() };
+        for frame in 0..96 {
+            input.time_seconds = frame as f64 / 48000.;
+            let old = legacy_step_projection(&graph, source, &input, Overrides::External(&HashMap::new()))
+                .map(f64::to_bits).map_err(|e| e.to_string());
+            let new = graph.step(source, &input, Overrides::External(&HashMap::new()))
+                .map(f64::to_bits).map_err(|e| e.to_string());
+            assert_eq!(new, old, "near phase guard frame={frame}");
+        }
+    }
+
 }
