@@ -749,8 +749,23 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
 fn facts(cx: &Cx, slot: usize) -> String {
     let v = &cx.view.parts[slot];
     if let Some(source) = &cx.selection.parts[slot].uvi {
-        return format!("{} · {} · {}", source.bank.file_stem().map_or_else(|| "UVI".into(), |s| s.to_string_lossy()),
+        let mut facts = format!("{} · {} · {}", source.bank.file_stem().map_or_else(|| "UVI".into(), |s| s.to_string_lossy()),
             source.member, v.status);
+        #[cfg(feature = "uvi")]
+        if let Some((activity, adopted)) = v.uvi_metrics(cx.p, slot, &cx.selection) {
+            if let Some(bytes) = activity.owned_pcm_bytes {
+                facts.push_str(&format!(" · {} owned sample PCM (excludes Lua/DSP/UI)", megabytes(bytes)));
+            } else { facts.push_str(" · owned sample PCM pending or unavailable"); }
+            facts.push_str(match activity.resources.cache_hit {
+                Some(true) => " · preloaded PCM, verified disk-cache hit",
+                Some(false) => " · preloaded PCM, source decoded",
+                None => " · PCM preload; no disk-cache observation",
+            });
+            if adopted {
+                facts.push_str(&format!(" · {} worker voice instances (silent/releasing included; loader-polled observation)", activity.stats.active_voices));
+            } else { facts.push_str(" · worker voices pending or unavailable"); }
+        } else { facts.push_str(" · UVI memory/voice observation unavailable"); }
+        return facts;
     }
     let library = cx.library_of(Path::new(&cx.selection.parts[slot].path));
     // "Areia 1.2.0 [Audio Imperia]": the vendor in brackets goes.

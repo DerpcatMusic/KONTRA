@@ -246,6 +246,9 @@ pub struct UiRoot {
     pub performance_view: bool,
     pub background: Option<UiArtwork>,
     pub background_colour: Option<String>,
+    /// Owned authored colours, keyed by MIDI note. Ordinary colours are
+    /// highlights; only the documented transparent sentinels encode validity.
+    pub key_colours: Option<BTreeMap<u8, String>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Serialize)]
@@ -355,6 +358,7 @@ const UI_STRING_LIMIT: usize = 4096;
 const UI_TOTAL_STRING_LIMIT: usize = 1 << 20;
 const UI_EXTENT_LIMIT: f64 = 16_384.0;
 const UI_POSITION_LIMIT: f64 = 1_048_576.0;
+const UI_KEY_LIMIT: usize = 128;
 
 fn ui_error(message: &'static str) -> mlua::Error {
     mlua::Error::runtime(message)
@@ -473,7 +477,41 @@ fn read_ui_root(root: &Table, budget: &mut UiBudget) -> mlua::Result<UiRoot> {
         performance_view: ui_bool(root, "performanceView", false)?,
         background: budget.artwork(root, "background")?,
         background_colour: budget.string(root, "backgroundColour")?,
+        // Keyboard metadata belongs to full publication, not edit admission.
+        key_colours: None,
     })
+}
+
+/// setKeyColour/resetKeyColour retain a sparse MIDI map, not a Lua sequence.
+/// Publish literal strings: #00FFFFFF/#00000000 are documented validity
+/// sentinels, while named/RGB/ARGB colours alone do not establish playability.
+fn read_ui_key_colours(
+    root: &Table,
+    budget: &mut UiBudget,
+) -> mlua::Result<Option<BTreeMap<u8, String>>> {
+    let source = match root.raw_get::<Value>("keyColours")? {
+        Value::Nil => return Ok(None),
+        Value::Table(source) => source,
+        _ => return Err(ui_error("Invalid UVI UI keyboard colour map")),
+    };
+    let mut colours = BTreeMap::new();
+    for pair in source.pairs::<Value, Value>() {
+        let (key, _) = pair?;
+        if colours.len() >= UI_KEY_LIMIT || budget.items.saturating_add(1) > UI_ITEM_LIMIT {
+            return Err(ui_error("UVI UI keyboard colour limit exceeded"));
+        }
+        let note = match key {
+            Value::Integer(n) if (0..UI_KEY_LIMIT as i64).contains(&n) => n as u8,
+            Value::Number(n) if n.is_finite() && n.fract() == 0.0
+                && (0.0..UI_KEY_LIMIT as f64).contains(&n) => n as u8,
+            _ => return Err(ui_error("Invalid UVI UI keyboard note")),
+        };
+        let colour = budget.string(&source, note)?
+            .ok_or_else(|| ui_error("Invalid UVI UI keyboard colour"))?;
+        budget.items += 1;
+        colours.insert(note, colour);
+    }
+    Ok(Some(colours))
 }
 
 // Shared raw reader keeps edit admission and published widget validation aligned.
@@ -653,10 +691,11 @@ fn read_ui_widget(
 /// Snapshot limits bound owned allocations independently of the Lua heap cap.
 pub fn snapshot_ui(processor: NodeId, environment: &Table) -> mlua::Result<UiSnapshot> {
     let ui = environment.raw_get::<Table>("UVI_UI_STATE")?;
-    let root = ui.raw_get::<Table>("root")?;
+    let root_source = ui.raw_get::<Table>("root")?;
     let order = ui.raw_get::<Table>("order")?;
     let mut budget = UiBudget::default();
-    let root = read_ui_root(&root, &mut budget)?;
+    let mut root = read_ui_root(&root_source, &mut budget)?;
+    root.key_colours = read_ui_key_colours(&root_source, &mut budget)?;
     let count = budget.sequence(&order, UI_WIDGET_LIMIT)?;
     let mut identities = HashMap::with_capacity(count);
     let mut parents = Vec::with_capacity(count);
@@ -3105,6 +3144,89 @@ mod tests {
         .exec()
         .unwrap();
         assert!(prepare_ui_edit(&lua, &environment, &edit(7, UiEditValue::Number(0.5))).is_err());
+    }
+
+    #[test]
+    fn ui_keyboard_colours_are_owned_raw_metadata_and_reset_dynamically() {
+        let lua = vm();
+        let environment = ui_environment(&lua);
+        assert!(snapshot_ui(3, &environment).unwrap().root.key_colours.is_none());
+        lua.load(r#"
+          calls=0
+          setKeyColour(0,'#00FFFFFF');setKeyColour(127,'#00000000')
+          setKeyColour(60,'blue');setKeyColour(61,'#FF00CC')
+          setmetatable(UVI_UI_STATE.root.keyColours,{
+            __index=function()calls=calls+1;error('colour getter executed')end,
+            __pairs=function()calls=calls+1;error('colour pairs executed')end})
+        "#).set_environment(environment.clone()).exec().unwrap();
+        let first = snapshot_ui(3, &environment).unwrap();
+        assert!(first.root.key_colours.as_ref().unwrap() == &BTreeMap::from([
+            (0, "#00FFFFFF".into()), (127, "#00000000".into()),
+            (60, "blue".into()), (61, "#FF00CC".into()),
+        ]));
+        assert_eq!(environment.raw_get::<u32>("calls").unwrap(), 0);
+        lua.load("resetKeyColour(0);setKeyColour(60,'red')")
+            .set_environment(environment.clone()).exec().unwrap();
+        let next = snapshot_ui(3, &environment).unwrap();
+        assert!(!next.root.key_colours.as_ref().unwrap().contains_key(&0));
+        assert_eq!(next.root.key_colours.as_ref().unwrap()[&60], "red");
+        assert_eq!(first.root.key_colours.as_ref().unwrap()[&60], "blue");
+        assert_eq!(first.root.key_colours.as_ref().unwrap()[&0], "#00FFFFFF");
+        lua.load("resetKeyColour(60);resetKeyColour(61);resetKeyColour(127)")
+            .set_environment(environment.clone()).exec().unwrap();
+        assert!(snapshot_ui(3, &environment).unwrap().root.key_colours.as_ref().unwrap().is_empty());
+        assert_eq!(environment.raw_get::<u32>("calls").unwrap(), 0);
+        lua.load("for note=0,127 do setKeyColour(note,'#00FFFFFF') end")
+            .set_environment(environment.clone()).exec().unwrap();
+        let all = snapshot_ui(3, &environment).unwrap();
+        assert_eq!(all.root.key_colours.as_ref().unwrap().len(), UI_KEY_LIMIT);
+    }
+
+    #[test]
+    fn ui_keyboard_colours_reject_invalid_keys_types_and_text_budgets() {
+        for source in [
+            "UVI_UI_STATE.root.keyColours=false",
+            "setKeyColour(-1,'blue')", "setKeyColour(128,'blue')",
+            "setKeyColour(0.5,'blue')", "setKeyColour('60','blue')",
+            "setKeyColour(true,'blue')", "setKeyColour({},'blue')",
+            "setKeyColour(math.huge,'blue')", "setKeyColour(60,false)",
+            "setKeyColour(60,{})", "setKeyColour(60,string.rep('x',4097))",
+            "setKeyColour(60,string.char(255))", "setKeyColour(60,'a'..string.char(0)..'b')",
+            "for note=0,128 do setKeyColour(note,'blue') end",
+        ] {
+            let lua = vm();
+            let environment = ui_environment(&lua);
+            lua.load(source).set_environment(environment.clone()).exec().unwrap();
+            assert!(snapshot_ui(3, &environment).is_err(), "{source}");
+        }
+        let lua = vm();
+        let environment = ui_environment(&lua);
+        lua.load("setKeyColour(60,'blue')")
+            .set_environment(environment.clone()).exec().unwrap();
+        let root = environment.raw_get::<Table>("UVI_UI_STATE").unwrap()
+            .raw_get::<Table>("root").unwrap();
+        let mut items = UiBudget { strings: 0, items: UI_ITEM_LIMIT };
+        assert!(read_ui_key_colours(&root, &mut items).is_err());
+        let mut text = UiBudget { strings: UI_TOTAL_STRING_LIMIT - 1, items: 0 };
+        assert!(read_ui_key_colours(&root, &mut text).is_err());
+    }
+
+    #[test]
+    fn ui_keyboard_metadata_does_not_restore_full_publication_to_edit_admission() {
+        let lua = vm();
+        let environment = ui_environment(&lua);
+        lua.load("calls=0;n=Knob{'n',0.25,0,1};n.changed=function()calls=calls+1 end;UVI_UI_STATE.root.keyColours=false")
+            .set_environment(environment.clone()).exec().unwrap();
+        assert!(snapshot_ui(3, &environment).is_err());
+        let request = UiEdit {
+            processor: 3, widget: 1, value: UiEditValue::Number(0.75),
+            modifiers: UiModifiers::default(),
+        };
+        let (setter, args) = prepare_ui_edit(&lua, &environment, &request).unwrap();
+        assert_eq!(environment.raw_get::<u32>("calls").unwrap(), 0);
+        setter.call::<()>(args).unwrap();
+        assert_eq!(environment.raw_get::<u32>("calls").unwrap(), 1);
+        assert!(snapshot_ui(3, &environment).is_err());
     }
 
     #[test]

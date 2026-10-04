@@ -1,6 +1,7 @@
 //! A playable keyboard in Kontakt's manner: keys that play samples are plain,
 //! keys that don't are dimmed, and keys a script colored (keyswitches, usually)
-//! wear that color on their whole face. With a part selected it plays that
+//! wear that color on their whole face. UVI highlights authored sampled
+//! Keygroup ranges; scripted input/sounding ranges can differ. With a part selected it plays that
 //! part; with none, every part MIDI channel 1 reaches, and a thin strip in
 //! each part's color over the keys shows what each plays.
 
@@ -16,18 +17,106 @@ const OCTAVES: i16 = 7;
 /// Highest first octave that keeps the last key at or below MIDI 127.
 const MAX_OCTAVE: i16 = (128 / 12) - OCTAVES;
 
+/// The identity whose retained range last centered this editor-only keyboard.
+#[derive(PartialEq)]
+pub(super) enum Identity {
+    Kontakt(String, u32),
+    Uvi {
+        source: crate::library::UviSource,
+        #[cfg(feature = "uvi")]
+        stamp: Option<crate::uvi::worker::Stamp>,
+        #[cfg(feature = "uvi")]
+        centre_keys: [bool; 128],
+    },
+}
+
+fn identity(cx: &Cx, shown: &[usize]) -> Option<Identity> {
+    let slot = *shown.first()?;
+    let part = cx.selection.parts.get(slot)?;
+    if let Some(source) = &part.uvi {
+        return Some(Identity::Uvi {
+            source: source.clone(),
+            #[cfg(feature = "uvi")]
+            stamp: cx.view.parts.get(slot)?.uvi_mapping_inspection(cx.p, slot, &cx.selection)
+                .map(|(mapping, _)| mapping.stamp),
+            #[cfg(feature = "uvi")]
+            centre_keys: native_centre_keys(cx, slot),
+        });
+    }
+    Some(Identity::Kontakt(part.path.clone(), part.program))
+}
+
+const UVI_RANGE_HINT: &str = "Authored valid keys follow explicit script declarations; missing or conflicting declarations are unknown. Other colours are highlights only. Sample keys show parsed Keygroup ranges. Scripts can generate or reroute notes; sounding ranges may differ. Every displayed key still sends notes.";
+
+#[cfg(feature = "uvi")]
+fn native_key_colours(cx: &Cx, slot: usize) -> Option<Arc<crate::plugin::uvi_ui::KeyColours>> {
+    // Reuse the same source/state/rate/part-generation ownership fence as the panel.
+    super::instrument::native_panel(cx, slot).map(|(published, _)| published.key_colours.clone())
+}
+
+#[cfg(feature = "uvi")]
+fn native_valid_keys(colours: &crate::plugin::uvi_ui::KeyColours) -> [bool; 128] {
+    let mut keys = [false; 128];
+    for (&note, colour) in &colours.colours {
+        keys[usize::from(note)] = colour.eq_ignore_ascii_case("#00FFFFFF");
+    }
+    keys
+}
+
+fn key_span(keys: &[bool; 128]) -> Option<(u8, u8)> {
+    let low = keys.iter().position(|&key| key)?;
+    Some((low as u8, keys.iter().rposition(|&key| key).unwrap_or(low) as u8))
+}
+
+#[cfg(feature = "uvi")]
+fn native_centre_keys(cx: &Cx, slot: usize) -> [bool; 128] {
+    if let Some(keys) = native_key_colours(cx, slot).map(|colours| native_valid_keys(&colours))
+        && keys.iter().any(|&key| key) { return keys; }
+    cx.view.parts.get(slot).and_then(|view| view.uvi_mapping_inspection(cx.p, slot, &cx.selection))
+        .map_or([false; 128], |(mapping, _)| mapping.sample_keys)
+}
+
+fn native_range_label(cx: &Cx, slot: usize) -> String {
+    #[cfg(feature = "uvi")]
+    if let Some(colours) = native_key_colours(cx, slot)
+        && let Some((low, high)) = key_span(&native_valid_keys(&colours)) {
+        let range = format!("Authored valid keys {} – {} · sounding range may differ", note_name(low), note_name(high));
+        return if colours.conflicts > 0 { format!("{range} · {} conflicts unknown", colours.conflicts) } else { range };
+    }
+    #[cfg(feature = "uvi")]
+    if let Some((mapping, _)) = cx.view.parts.get(slot)
+        .and_then(|view| view.uvi_mapping_inspection(cx.p, slot, &cx.selection)) {
+        return native_sample_label(&mapping);
+    }
+    "Sample key ranges unavailable".into()
+}
+
+#[cfg(feature = "uvi")]
+fn native_sample_label(mapping: &crate::uvi::mapping::Inspection) -> String {
+    let range = mapping.key_span().map_or_else(|| "No authored sample keys".into(), |(low, high)|
+        format!("Sample keys {} – {}", note_name(low), note_name(high)));
+    if mapping.has_scripts { format!("{range} · script routing may differ") } else { range }
+}
+
 /// The keyboard dock: a title bar with the shown range, octave stepping and
 /// the collapse switch, then a range strip over the keys.
 pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
     let parts = shown_parts(cx);
     let looks = looks(cx, &parts);
     // Center the keys on a newly shown instrument's range.
-    let shown = parts.first().and_then(|&s| cx.selection.parts.get(s)).map(|p| (p.path.clone(), p.program));
-    let used = |l: &Look| !matches!(l, Look::Unmapped);
-    let span = looks
-        .iter()
-        .position(used)
-        .map(|low| (low, looks.iter().rposition(used).unwrap_or(low)));
+    let shown = identity(cx, &parts);
+    let mut centre = [false; 128];
+    for &slot in &parts {
+        #[cfg(feature = "uvi")]
+        if cx.selection.parts[slot].uvi.is_some() {
+            for (used, key) in centre.iter_mut().zip(native_centre_keys(cx, slot)) { *used |= key; }
+            continue;
+        }
+        for (used, look) in centre.iter_mut().zip(part_looks(cx, slot)) {
+            *used |= !matches!(look, Look::Unmapped);
+        }
+    }
+    let span = key_span(&centre);
     if shown != cx.state.keyboard_for && shown.is_some() {
         if let Some((low, high)) = span {
             let octaves = (high / 12 - low / 12) as i16 + 1;
@@ -75,8 +164,10 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
         note_name(first as u8),
         note_name((first + OCTAVES * 12 - 1) as u8)
     );
+    let native = parts.iter().any(|&slot| cx.selection.parts[slot].uvi.is_some());
     let plays = match playable(&looks) {
         _ if cx.state.chosen().is_none() => "Every part · the keys play channel 1 or Omni · click a part to focus it".to_owned(),
+        _ if native => native_range_label(cx, parts[0]),
         Some((low, high)) => format!("Plays {} – {}", note_name(low as u8), note_name(high as u8)),
         None => String::new(),
     };
@@ -95,10 +186,13 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
         [
             section("Keyboard"),
             caption(shown_range).text_size(SMALL).reserve("C#-2 – C#-2"),
-            caption(plays)
+            caption(plays.clone())
                 .text_size(SMALL)
                 .fill(secondary())
-                .lines(1)
+                .lines(if native { 2 } else { 1 })
+                .named(plays)
+                .when(native, |el| el.tip(UVI_RANGE_HINT))
+                .id("keyboard-range")
                 .flex(1)
                 .min_w(0),
         ]
@@ -164,6 +258,7 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
         0 | 1 => range_strip(looks, cx.state.octave),
         _ => part_strips(cx, &parts),
     };
+    let strip = strip.when(native && parts.len() <= 1, |el| el.tip(UVI_RANGE_HINT));
     let wheels = wheels(ui, cx.p, slot, &mut cx.state.modulation);
     col![
         bar,
@@ -339,6 +434,13 @@ fn shown_parts(cx: &Cx) -> Vec<usize> {
 /// The keys part `slot`'s instrument maps, walked once per instrument: tens
 /// of thousands of zones are too many to walk every frame.
 fn mapped(cx: &mut Cx, slot: usize) -> [bool; 128] {
+    if cx.selection.parts.get(slot).is_some_and(|part| part.uvi.is_some()) {
+        #[cfg(feature = "uvi")]
+        return cx.view.parts.get(slot).and_then(|view| view.uvi_mapping_inspection(cx.p, slot, &cx.selection))
+            .map_or([false; 128], |(mapping, _)| mapping.sample_keys);
+        #[cfg(not(feature = "uvi"))]
+        return [false; 128];
+    }
     let Some(i) = super::instrument::instrument_of(cx, slot).cloned() else {
         return [false; 128];
     };
@@ -358,14 +460,26 @@ fn part_strips(cx: &mut Cx, shown: &[usize]) -> El {
     let mut rows: Vec<Vec<(usize, usize, usize)>> = Vec::new();
     let mut tip = Vec::new();
     for &slot in shown {
-        let looks = part_looks(cx, slot);
-        let Some((low, high)) = playable(&looks) else { continue };
-        tip.push(format!("{}: {} – {}", super::rack::name(cx, slot), note_name(low as u8), note_name(high as u8)));
+        let span = if cx.selection.parts[slot].uvi.is_some() {
+            #[cfg(feature = "uvi")]
+            { key_span(&native_centre_keys(cx, slot)).map(|(low, high)| (usize::from(low), usize::from(high))) }
+            #[cfg(not(feature = "uvi"))]
+            { None }
+        } else { playable(&part_looks(cx, slot)) };
+        let Some((low, high)) = span else { continue };
+        let range = if cx.selection.parts[slot].uvi.is_some() { native_range_label(cx, slot) } else {
+            format!("Plays {} – {}", note_name(low as u8), note_name(high as u8))
+        };
+        tip.push(format!("{}: {range}", super::rack::name(cx, slot)));
         match rows.iter_mut().find(|r| r.iter().all(|&(_, l, h)| high < l || low > h)) {
             Some(r) => r.push((slot, low, high)),
             None => rows.push(vec![(slot, low, high)]),
         }
     }
+    let name = format!("Part key ranges · {}", tip.join(" · "));
+    let tip = if shown.iter().any(|&slot| cx.selection.parts[slot].uvi.is_some()) {
+        format!("{}\n{UVI_RANGE_HINT}", tip.join("\n"))
+    } else { tip.join("\n") };
     let (octave, count) = (cx.state.octave, rows.len().max(1));
     let (first, last) = ((octave * 12) as usize, ((octave + OCTAVES) * 12 - 1) as usize);
     canvas(move |s| {
@@ -383,8 +497,8 @@ fn part_strips(cx: &mut Cx, shown: &[usize]) -> El {
     .w(Len::Pct(100.))
     .h(count as f64 * (ROW + 1.) - 1.)
     .shrink(0)
-    .tip(tip.join("\n"))
-    .named("What each part plays")
+    .tip(tip)
+    .named(name)
     .id("part-ranges")
 }
 
@@ -459,6 +573,11 @@ fn part_looks(cx: &mut Cx, slot: usize) -> [Look; 128] {
             }
         }
     }
+    #[cfg(feature = "uvi")]
+    if cx.selection.parts[slot].uvi.is_some()
+        && let Some(colours) = native_key_colours(cx, slot) {
+        apply_native_key_colours(&mut looks, &colours, hue);
+    }
     let Some(a) = cx.selection.parts.get(slot).filter(|p| p.uvi.is_none() && !p.path.is_empty() && p.articulate.source == p.path).map(|p| &p.articulate) else {
         return looks;
     };
@@ -481,6 +600,32 @@ fn part_looks(cx: &mut Cx, slot: usize) -> [Look; 128] {
         }
     }
     looks
+}
+
+/// Validity is explicit; ordinary colours never become range evidence.
+#[cfg(feature = "uvi")]
+fn apply_native_key_colours(looks: &mut [Look; 128], colours: &crate::plugin::uvi_ui::KeyColours, hue: f32) {
+    if native_valid_keys(colours).iter().any(|&key| key) { looks.fill(Look::Unmapped); }
+    for (&note, colour) in &colours.colours {
+        let look = if colour.eq_ignore_ascii_case("#00FFFFFF") { Some(Look::Mapped(hue)) }
+            else if colour.eq_ignore_ascii_case("#00000000") { Some(Look::Unmapped) }
+            else { native_colour(colour).map(Look::Colored) };
+        if let Some(look) = look { looks[usize::from(note)] = look; }
+    }
+}
+
+#[cfg(feature = "uvi")]
+fn native_colour(text: &str) -> Option<Color> {
+    let named = match text.to_ascii_lowercase().as_str() {
+        "red" => Some(Color::srgb(1., 0., 0.)),
+        "green" => Some(Color::srgb(0., 0.5, 0.)),
+        "blue" => Some(Color::srgb(0., 0., 1.)),
+        "yellow" => Some(Color::srgb(1., 1., 0.)),
+        "cyan" => Some(Color::srgb(0., 1., 1.)),
+        "magenta" => Some(Color::srgb(1., 0., 1.)),
+        _ => None,
+    };
+    named.or_else(|| super::uvi_instrument::colour(Some(text)))
 }
 
 /// The shown parts' keys together.
@@ -696,5 +841,27 @@ mod tests {
         assert!(color("$KEY_COLOR_BLACK") == Some(Look::Mapped(0.)), "BLACK shows a key that plays");
         assert!(color("$KEY_COLOR_INACTIVE") == Some(Look::Unmapped), "INACTIVE is dim");
         const { assert!(MAX_OCTAVE * 12 + OCTAVES * 12 <= 128) };
+    }
+
+    #[cfg(feature = "uvi")]
+    #[test]
+    fn native_sentinels_are_validity_while_ordinary_colours_are_only_highlights() {
+        use crate::plugin::uvi_ui::KeyColours;
+        let colours = KeyColours { colours: (58..=99).map(|note| (note, "#00FFFFFF".into()))
+            .chain([(0, "#00000000".into()), (40, "#00000000".into()), (1, "red".into())]).collect(), conflicts: 0 };
+        let mut looks = [Look::Mapped(10.); 128];
+        apply_native_key_colours(&mut looks, &colours, 20.);
+        assert_eq!(key_span(&native_valid_keys(&colours)), Some((58, 99)));
+        assert!(looks[58..=99].iter().all(|&look| look == Look::Mapped(20.)));
+        assert!(looks[0] == Look::Unmapped && looks[40] == Look::Unmapped && looks[100] == Look::Unmapped);
+        assert!(matches!(looks[1], Look::Colored(_)));
+        assert_eq!(playable(&looks), Some((58, 99)), "an ordinary colour never expands validity");
+        let highlight = KeyColours { colours: [(0, "red".into()), (127, "#00FF00".into())].into(), conflicts: 0 };
+        assert_eq!(key_span(&native_valid_keys(&highlight)), None);
+        let mut looks = [Look::Unmapped; 128];
+        looks[60] = Look::Mapped(20.);
+        apply_native_key_colours(&mut looks, &highlight, 20.);
+        assert_eq!(playable(&looks), Some((60, 60)), "sample fallback remains independent from arbitrary colours");
+        assert!(native_colour("unrecognized authored colour").is_none());
     }
 }

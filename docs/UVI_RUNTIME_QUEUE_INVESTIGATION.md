@@ -109,7 +109,9 @@ completed eight seconds with finite nonzero PCM and no underrun or endpoint
 failure. Neither replay opens the DAW/editor or establishes sustained polyphonic
 performance.
 
-Installed binaries remain the clean `c3d3094` checkpoint at this writing. No
+That investigation began from the clean `c3d3094` checkpoint. The subsequent
+clean `aabd111` correction was verified and installed before the keyboard and
+owned-metrics work below. No
 queue enlargement, silent DSP bypass, polyphony clamp or new graph admission is
 part of this investigation.
 
@@ -149,3 +151,62 @@ short-circuiting for a first-byte rejection. That is not a whole-renderer speedu
 The integrated exhaustive parity and public/registered error-precedence tests
 passed. Two authored production plugin scenarios also passed for delayed rack
 adoption, keyboard/gain/pan/UI playback, and saving/reopening controls.
+
+## Keyboard declarations, owned metrics and immutable conversion dispatch
+
+The UVI dock previously queried only Kontakt key mappings, and the header RAM
+value queried only Kontakt's process-wide sample census. UVI PCM and authored
+keyboard declarations must cross their own worker publication boundary. Raw
+sample ranges are insufficient for scripted banks: retained Flute2 inspection
+includes auxiliary keygroups at MIDI 0 and 40 outside its primary sample range.
+
+Full UI snapshots now carry a bounded, owned map of script key colours. UVI's
+documented `#00FFFFFF` and `#00000000` declarations identify valid and invalid
+keys respectively; ordinary colours are highlights. Processor-local declarations
+cannot establish undocumented global write precedence, so conflicting declarations
+must remain ambiguous rather than selecting a processor by node order. Target
+edit admission does not traverse this map. Missing declarations do not restrict
+incoming MIDI; an initial sample-zone union is labelled as sample keys.
+
+Worker observations carry activation identity and a current owned PCM census,
+seeded after initialization before the first audio packet. The UI must reject
+observations from different sources, restored states or owner generations and
+distinguish prepared memory from adopted voice instances. Normal Ready/render
+phase changes do not invalidate the existing 250 ms control-side snapshot cache.
+PCM counts exclude Lua/DSP/UI allocations and are scoped per current rack worker;
+they are not whole-process RSS. Kontakt's shared sample census remains process-wide.
+
+A separate UVI read counter records successful application bytes from bank
+preparation and optional PCM-cache reads, including partial reads before failure.
+It includes OS-cache hits and is not physical disk utilization or UVI DFD.
+Kontakt's existing streaming-read counter retains its original contract. The
+editor combines these only for its displayed application throughput.
+
+Immutable target conversion laws are compiled once into numeric slots. Live
+physical values, Ratio, source cadence, connection/mapper order, pass ownership
+and error checks remain evaluated on the established path. This removes repeated
+string dispatch, without lowering modulation cadence or admitting new DSP routes.
+Authored functional and exact old/new result-bit verification accompanies this
+change; native bank sound equivalence remains a separate obligation.
+
+## VWinds performance-model fidelity boundary
+
+Acousticsamples describes VWinds as recorded samples combined with modeling
+using H.A.T.; this does not disclose physical bore/reed equations or establish a
+percentage of physical modeling. The matching reference is the same bank revision,
+preset, restored settings and performance in an identified official host.
+See the [official Flutes description](https://www.acousticsamples.net/Bundles/vwindsbundles/vwindsflutes).
+
+The retained Flute2 graph consumes layered SamplePlayer, OnePole, GainMatrix,
+LFO and Lua paths. Its script drives airflow remapping, smoothing, transitions,
+vibrato, noise/attack layers, scheduled kill fades and advanced resource remapping.
+Those mechanisms execute locally; successful parsing and finite audio do not
+prove their trajectories match Falcon or Workstation.
+
+The remaining reference comparisons must cover: dry airflow ramps versus direct
+Air edits; Real/Modeled/Smart legato pitch, phase and fade transitions; coupled
+pitch/volume/timbre vibrato and task clocks; note-off versus airflow-to-zero tails;
+and isolated microphone/IR/pan/delay paths. Native RNG context/interleaving,
+ordinary SamplePlayer backend binding and non-aligned block-control preparation
+remain explicitly unverified. Blanket lower-rate modulation or guessed physical
+model replacement is not a safe substitute for those comparisons.

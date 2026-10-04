@@ -209,7 +209,7 @@ fn value_text(widget: &UiWidget, value: f64) -> String {
 }
 
 
-fn colour(text: Option<&str>) -> Option<Color> {
+pub(super) fn colour(text: Option<&str>) -> Option<Color> {
     let text = text?.trim();
     match text.to_ascii_lowercase().as_str() {
         "white" => return Some(Color::srgb(1., 1., 1.)),
@@ -1272,6 +1272,7 @@ mod tests {
                 performance_view: true,
                 background: None,
                 background_colour: Some("#252525".into()),
+                key_colours: None,
             },
             paint_order: widgets.iter().map(|w| w.id).collect(),
             widgets,

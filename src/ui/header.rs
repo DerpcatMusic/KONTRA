@@ -8,6 +8,46 @@ use moose::mui::{Bridge, mui::prelude::*};
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
+#[derive(Default)]
+struct NativeReadouts {
+    parts: usize,
+    pcm_bytes: usize,
+    pending_pcm: usize,
+    voices: u64,
+    pending_voices: usize,
+    cpu_ns: u64,
+    cpu_samples: u64,
+    cpu_max_ns: u64,
+}
+
+fn native_readouts(cx: &Cx) -> NativeReadouts {
+    let mut metrics = NativeReadouts::default();
+    #[cfg(feature = "uvi")]
+    for (slot, part) in cx.selection.parts.iter().enumerate() {
+        if part.uvi.is_none() { continue; }
+        metrics.parts += 1;
+        let observation = cx.view.parts.get(slot)
+            .and_then(|v| v.uvi_metrics(cx.p, slot, &cx.selection));
+        let Some((activity, adopted)) = observation else {
+            metrics.pending_pcm += 1;
+            metrics.pending_voices += 1;
+            continue;
+        };
+        if let Some(bytes) = activity.owned_pcm_bytes {
+            metrics.pcm_bytes = metrics.pcm_bytes.saturating_add(bytes);
+        } else { metrics.pending_pcm += 1; }
+        if adopted {
+            metrics.voices = metrics.voices.saturating_add(activity.stats.active_voices);
+            if activity.stats.render_cpu_samples > 0 {
+                metrics.cpu_ns = metrics.cpu_ns.saturating_add(activity.stats.render_cpu_ns);
+                metrics.cpu_samples = metrics.cpu_samples.saturating_add(activity.stats.render_cpu_samples);
+                metrics.cpu_max_ns = metrics.cpu_max_ns.max(activity.stats.max_render_cpu_ns);
+            }
+        } else { metrics.pending_voices += 1; }
+    }
+    metrics
+}
+
 pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El {
     let p = cx.p;
     let cpu = f32::from_bits(cx.state.meters.cpu.load(Ordering::Relaxed));
@@ -18,13 +58,29 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
     let native_voices = p.shared.uvi_voices.load(Ordering::Relaxed);
     #[cfg(not(feature = "uvi"))]
     let native_voices = 0;
-    let voice_count = if native_voices != 0 { voices } else { audible };
-    let voice_tip = if native_voices != 0 {
-        format!("{voices} running, including {native_voices} UVI voices. UVI includes silent and releasing layers.")
-    } else { format!("{voices} running, {} muted by the script", voices.saturating_sub(audible)) };
-    // Samples in RAM for the whole process: parts and instances sharing them count once.
-    let memory = crate::engine::resident_bytes();
+    let native = native_readouts(cx);
+    // Kontakt's audible census excludes UVI. Replace the callback's native
+    // census with the scoped worker observation instead of adding it twice.
+    let voice_count = audible.saturating_add(native.voices);
+    let voice_text = partial_readout(voice_count.to_string(), voice_count == 0, native.pending_voices);
+    let voice_tip = format!("Kontakt: {audible} audible, {} running. UVI in this rack: {} worker voice instances; includes silent and releasing layers, sampled on loader polls with a 250 ms snapshot cache. {} UVI part observations pending or unavailable.",
+        voices.saturating_sub(native_voices), native.voices, native.pending_voices);
+    // Kontakt samples are process-wide; UVI workers own their PCM per rack.
+    let kontakt_memory = crate::engine::resident_bytes();
+    let memory = kontakt_memory.saturating_add(native.pcm_bytes);
+    let memory_text = partial_readout(megabytes(memory), memory == 0, native.pending_pcm);
     let freed: u64 = cx.view.parts.iter().map(|v| v.freed).sum();
+    let memory_tip = format!("Sample PCM: {} Kontakt process-wide (shared samples counted once) + {} UVI owned by current workers in this rack (shared aliases counted once per worker). {} UVI part observations pending or unavailable. Excludes Lua, DSP and UI allocations; {} Kontakt sample memory freed.",
+        megabytes(kontakt_memory), megabytes(native.pcm_bytes), native.pending_pcm, megabytes(freed as usize));
+    let mut cpu_tip = "Host audio callback wall-time load, including waiting; not worker CPU usage.".to_owned();
+    if native.cpu_samples > 0 {
+        cpu_tip.push_str(&format!(" UVI worker render CPU: {:.3} ms mean per measured attempt, {:.3} ms max across current rack workers ({} samples since activation); excludes waiting and UI snapshots.",
+            native.cpu_ns as f64 / native.cpu_samples as f64 / 1e6,
+            native.cpu_max_ns as f64 / 1e6, native.cpu_samples));
+    } else if native.parts > 0 { cpu_tip.push_str(" UVI worker render CPU measurement unavailable."); }
+    let disk_tip = if native.parts > 0 {
+        "Application read rate: Kontakt sample streaming plus UVI bank/cache reads, including OS-cached reads; not physical disk utilization. UVI samples are preloaded into owned PCM before playback; this is not a UVI DFD streaming meter."
+    } else { "Kontakt sample streaming application read rate, including OS-cached reads; not physical disk utilization." };
 
     let loading: Vec<_> = cx
         .view
@@ -133,17 +189,13 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
             .min_w(0)
             .when(!activity.is_empty(), |e| e.tip(activity))
             .id("activity"),
-        stat("CPU", format!("{:.0}%", cpu * 100.), "100%"),
-        // Heard voices; scripts start and mute crossfade layers and mic
-        // positions too, which cost next to nothing.
-        stat("Voices", voice_count.to_string(), "000").tip(voice_tip),
-        // Sample heads sized by use and idle stream rings handed back.
-        stat("RAM", megabytes(memory), "00000 MB").tip(format!(
-            "Smart memory: {} of samples resident, shared ones once · {} freed",
-            megabytes(memory),
-            megabytes(freed as usize)
-        )),
-        stat("Disk", format!("{disk:.1} MB/s"), "000.0 MB/s"),
+        stat("CPU", format!("{:.0}%", cpu * 100.), "100%").tip(cpu_tip),
+        // Kontakt audible voices plus current UVI worker voice instances.
+        stat("Voices", voice_text.clone(), "000").tip(voice_tip)
+            .named(format!("Voices {voice_text}")).id("readout-voices"),
+        stat("RAM", memory_text.clone(), "00000 MB").tip(memory_tip)
+            .named(format!("Sample PCM {memory_text}")).id("readout-ram"),
+        stat("Disk", format!("{disk:.1} MiB/s"), "000.0 MiB/s").tip(disk_tip),
         vrule().h(CONTROL - TIGHT),
         cluster(vec![section("Master"), master, meter_bar(level)]).gap(SPACE),
         vrule().h(CONTROL - TIGHT),
@@ -152,6 +204,25 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
     .gap(SPACE)
     .pad((SPACE, SPACE))
     .fill(Role::Surface)
+}
+
+fn partial_readout(known: String, zero: bool, pending: usize) -> String {
+    match (pending, zero) {
+        (0, _) => known,
+        (_, true) => "—".to_owned(),
+        (_, false) => format!("{known}+"),
+    }
+}
+
+#[cfg(test)]
+mod metric_tests {
+    #[test]
+    fn unavailable_native_observation_is_not_zero_ram_or_zero_voices() {
+        assert_eq!(super::partial_readout("0 MB".into(), true, 1), "—");
+        assert_eq!(super::partial_readout("304 MB".into(), false, 1), "304 MB+");
+        assert_eq!(super::partial_readout("0".into(), true, 0), "0");
+        assert_eq!(super::partial_readout("4".into(), false, 1), "4+");
+    }
 }
 
 /// The master output level: a thin bar in dB, neutral until it nears clipping.

@@ -90,7 +90,7 @@ fn bank_hash(path: &Path, stop: Option<&AtomicBool>) -> Result<[u8; 32]> {
     let mut bytes = 0u64;
     loop {
         sample::check_cancel(stop)?;
-        let n = file.read(&mut scratch)?;
+        let n = super::io::CountedRead::new(&mut file).read(&mut scratch)?;
         sample::check_cancel(stop)?;
         if n == 0 {
             break;
@@ -259,13 +259,14 @@ fn read(
     progress: &mut Progress<'_>,
 ) -> Result<Samples> {
     sample::check_cancel(stop)?;
-    let mut file = open_regular(path)?;
+    let file = open_regular(path)?;
     let extent = usize::try_from(file.metadata()?.len())?;
     ensure!(
         (80..=80 + META_LIMIT + library::PCM_LIMIT).contains(&extent),
         "Cache extent bound"
     );
     let mut prefix = [0; 80];
+    let mut file = super::io::CountedRead::new(file);
     file.read_exact(&mut prefix)?;
     sample::check_cancel(stop)?;
     ensure!(&prefix[..8] == MAGIC, "Cache version mismatch");

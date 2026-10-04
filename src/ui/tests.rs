@@ -3184,6 +3184,71 @@ fn authored_script_pages_show_footer_tabs_and_switch_the_visible_controls() {
     assert_eq!(view.parts[0].interface.as_ref().unwrap().controls[0].kind,"ui_knob");
 }
 
+// Authored data only; no bank, loader or audio callback.
+#[cfg(feature = "uvi")]
+#[test]
+fn authored_native_owned_pcm_voice_metrics_capture() {
+    use crate::uvi::{program::parse_program, script::Session,
+        worker::{Stamp, Stats, Status, WorkerLoadActivity}};
+    use std::collections::BTreeMap;
+    let program = parse_program(r#"<Program Name="Owned metrics"><EventProcessors><ScriptProcessor><script><![CDATA[
+        function onInit()
+          setSize(640,288); setBackgroundColour('#252525'); makePerformanceView()
+          Label{name='Authored PCM and voice observation',bounds={20,20,600,28}}
+        end
+    ]]></script></ScriptProcessor></EventProcessors></Program>"#).unwrap();
+    let processor = program.nodes.iter().position(|node| node.kind == "ScriptProcessor").unwrap();
+    let session = Session::new_program_chain(&program, BTreeMap::new(), None, 48000).unwrap();
+    let p = Arc::new(SamplerParams::new());
+    let source = crate::library::UviSource { bank: "/authored/metrics.ufs".into(),
+        bank_uuid: [0x35; 16], member: "Root/Owned metrics.uvip".into() };
+    p.selection.write().unwrap().parts.push(Part { uvi: Some(source.clone()), ..Default::default() });
+    p.selection.write().unwrap().order = vec![0];
+    p.shared.ensure_parts(1);
+    p.shared.rate.store(48000f64.to_bits(), Ordering::Release);
+    let atoms = p.shared.part(0).unwrap();
+    atoms.uvi_generation.store(77, Ordering::Release);
+    let stamp = Stamp { epoch: p.shared.uvi_activation_epoch(), generation: 77, frame: 256 };
+    let published = Arc::new(crate::plugin::uvi_ui::Published { stamp,
+        snapshots: Arc::new(vec![session.ui_snapshot(processor).unwrap()]),
+        key_colours: Arc::default(), pictures: Arc::default(), fonts: Arc::default() });
+    let activity = WorkerLoadActivity { stamp, mapping: None, status: Status::Ready,
+        phase: "serve", frame: 256, elapsed: Duration::ZERO, stages: vec![],
+        nodes: None, static_rejected_nodes: None, sample_zones: None, script_processors: None,
+        resources: crate::uvi::worker::ResourceActivity { cache_hit: Some(true), ..Default::default() },
+        owned_pcm_bytes: Some(8 * 1_048_576), failure: None,
+        stats: Stats { active_voices: 5, resource_resident_pcm_bytes: 8 * 1_048_576,
+            resource_alias_count: 2, render_cpu_ns: 4_000_000,
+            render_cpu_samples: 4, max_render_cpu_ns: 1_000_000, ..Default::default() } };
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.parts.resize_with(1, PartView::default);
+        view.parts[0] = PartView::authored_uvi(source, published);
+        view.parts[0].uvi_activity = Some(Arc::new(activity));
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    let label = |h: &Harness, id: &str| h.ui.scene().unwrap().surface(id).unwrap()
+        .semantics.as_ref().and_then(|s| s.label.as_deref()).unwrap_or_default().to_owned();
+    assert_eq!(label(&h, "readout-voices"), "Voices 5");
+    let memory = label(&h, "readout-ram");
+    let mb = memory.strip_prefix("Sample PCM ").unwrap().strip_suffix(" MB").unwrap().parse::<u64>().unwrap();
+    assert!(mb >= 8, "owned native PCM is present even without a host packet");
+    let output = std::path::Path::new("/tmp/kontakto-uvi-ui-leaf/authored-owned-metrics.png");
+    std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+    moose::core::screenshot::save_png(output, &pixels(&h.ui, 1180, 760), 1180, 760);
+    // Prepared owner still owns PCM; no current adopted voice observation.
+    atoms.uvi_generation.store(0, Ordering::Release);
+    h.idle(3);
+    assert_eq!(label(&h, "readout-voices"), "Voices —");
+    assert!(!label(&h, "readout-ram").ends_with('+'));
+    // Same selection owner cannot borrow an unrelated source's retained census.
+    p.selection.write().unwrap().parts[0].uvi.as_mut().unwrap().member = "Root/Replaced.uvip".into();
+    h.idle(3);
+    assert_eq!(label(&h, "readout-voices"), "Voices —");
+    let memory = label(&h, "readout-ram");
+    assert!(memory.ends_with('+') || memory == "Sample PCM —");
+}
+
 // Authored data only. No UFS/audio/image file is opened and no loader task runs.
 #[cfg(feature = "uvi")]
 #[test]
@@ -3263,7 +3328,7 @@ fn authored_native_full_editor_capture_and_terminal_failure() {
         let count = view.parts.len().max(1);
         view.parts.resize_with(count, PartView::default);
         let published = Arc::new(crate::plugin::uvi_ui::Published {
-            stamp, snapshots: Arc::new(vec![snapshot]), pictures: Arc::default(), fonts: Arc::default(),
+            stamp, snapshots: Arc::new(vec![snapshot]), key_colours: Arc::default(), pictures: Arc::default(), fonts: Arc::default(),
         });
         view.parts[0] = PartView::authored_uvi(source.clone(), published);
     }
@@ -3379,4 +3444,132 @@ fn authored_native_full_editor_capture_and_terminal_failure() {
     p.selection.write().unwrap().parts[0].uvi.as_mut().unwrap().bank = "/another/source.ufs".into();
     h.idle(3);
     assert!(!shows(&h,"uvi-stage-0"),"the retained panel never crosses a source change");
+}
+
+
+// Authored retained data only: no Lua/session, UFS, decoder, loader or audio job.
+#[cfg(feature = "uvi")]
+#[test]
+fn authored_native_keyboard_ranges_are_owned_truthful_and_never_block_notes() {
+    use crate::uvi::{mapping::Inspection, program::parse_program,
+        worker::{ResourceActivity, Stamp, Stats, Status, WorkerLoadActivity}};
+    use crate::plugin::uvi_ui::{KeyColours, Published};
+    use std::collections::BTreeMap;
+    let p = Arc::new(SamplerParams::new());
+    let source = crate::library::UviSource { bank: "/authored/first.ufs".into(),
+        bank_uuid: [0x11; 16], member: "Presets/First.uvip".into() };
+    {
+        let mut selection = p.selection.write().unwrap();
+        selection.parts.push(Part { uvi: Some(source.clone()), ..Default::default() });
+        selection.order = vec![0];
+    }
+    p.shared.ensure_parts(1);
+    let stamp = Stamp { epoch: p.shared.uvi_activation_epoch(), generation: 77, frame: 0 };
+    let install = |source: crate::library::UviSource, ranges: &[(u8, u8)], colours: BTreeMap<u8, String>, status: Status| {
+        let groups = ranges.iter().map(|(low, high)| format!(r#"<Keygroup LowKey="{low}" HighKey="{high}"><Oscillators><SamplePlayer SamplePath="authored.wav" BaseNote="60"/></Oscillators></Keygroup>"#)).collect::<String>();
+        let program = parse_program(&format!("<Program><EventProcessors><ScriptProcessor><script>function onNote(e) playNote(40, e.velocity) end</script></ScriptProcessor></EventProcessors><Layers><Layer><Keygroups>{groups}</Keygroups></Layer></Layers></Program>")).unwrap();
+        let mapping = Arc::new(Inspection::parsed(stamp, &program, Arc::new(serde_json::json!({"nodes":[],"preflight_admitted":true}))));
+        let published = Arc::new(Published { stamp, snapshots: Arc::default(),
+            key_colours: Arc::new(KeyColours { colours, conflicts: 0 }), pictures: Arc::default(), fonts: Arc::default() });
+        let mut view = PartView::authored_uvi(source, published);
+        view.loading = status == Status::Starting;
+        view.uvi_activity = Some(Arc::new(WorkerLoadActivity {
+            stamp, owned_pcm_bytes: None, mapping: Some(mapping), status, phase: "authored", frame: 0, elapsed: Duration::ZERO, stages: Vec::new(),
+            nodes: Some(program.nodes.len()), static_rejected_nodes: Some(0), sample_zones: Some(program.sample_zones.len()),
+            script_processors: Some(1), resources: ResourceActivity::default(), failure: None, stats: Stats::default(),
+        }));
+        p.shared.view.lock().unwrap().parts[0] = view;
+    };
+    let label = |h: &Harness, id: &str| h.ui.scene().unwrap().surface(id).unwrap().semantics.as_ref()
+        .and_then(|s| s.label.as_deref()).unwrap_or_default().to_owned();
+    let shows = |h: &Harness, id: &str| h.ui.scene().unwrap().surface(id).is_some();
+    install(source.clone(), &[(24, 36)], BTreeMap::new(), Status::Starting);
+    p.shared.focus_request.store(0, Ordering::Relaxed);
+    let mut h = Harness::new(&p, 1180., 760.);
+    assert!(shows(&h, "key-24") && !shows(&h, "key-108"));
+    assert!(label(&h, "keyboard-range").starts_with("Sample keys"));
+    assert!(label(&h, "keyboard-range").contains("script routing may differ"));
+    assert_eq!(p.shared.part(0).unwrap().uvi_generation.load(Ordering::Acquire), 0,
+        "initial inspection does not wait for endpoint adoption");
+    h.press("tab-mapping");
+    assert_eq!(label(&h, "uvi-mapping-sample-range"), format!("Authored sample keys {} – {}", note_name(24), note_name(36)));
+    // A failed current load retains read-only mapping too.
+    install(source.clone(), &[(24, 36)], BTreeMap::new(), Status::Failed);
+    h.idle(3);
+    assert!(shows(&h, "uvi-mapping-sample-range"));
+    // The native source identity includes bank/member; path/program are empty for both.
+    let next = crate::library::UviSource { bank: "/authored/second.ufs".into(),
+        bank_uuid: [0x22; 16], member: "Presets/Second.uvip".into() };
+    p.selection.write().unwrap().parts[0].uvi = Some(next.clone());
+    install(next.clone(), &[(96, 108)], BTreeMap::new(), Status::Starting);
+    h.idle(3);
+    assert!(shows(&h, "key-108") && !shows(&h, "key-24"), "a native source switch recenters the keyboard");
+    // The fixture follows Flute's auxiliary sample keys: 0/40 remain sampled,
+    // while explicit script validity marks the musical input range 58..99.
+    let colours: BTreeMap<_, _> = (58..=99).map(|key| (key, "#00FFFFFF".into()))
+        .chain([(0, "#00000000".into()), (40, "#00000000".into()), (1, "red".into())]).collect();
+    install(next.clone(), &[(0, 0), (40, 40), (58, 99)], colours, Status::Starting);
+    h.idle(3);
+    assert_eq!(label(&h, "keyboard-range"), format!("Authored valid keys {} – {} · sounding range may differ", note_name(58), note_name(99)));
+    assert_eq!(label(&h, "uvi-mapping-sample-range"), format!("Authored sample keys {} – {}", note_name(0), note_name(99)));
+    assert!(!shows(&h, "key-0") && shows(&h, "key-99"), "auxiliary sampled/coloured keys never center the declared valid range");
+    let output = std::path::Path::new("/tmp/kontakto-uvi-ui-leaf/authored-key-range.png");
+    std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+    moose::core::screenshot::save_png(output, &pixels(&h.ui, 1180, 760), 1180, 760);
+    while p.shared.keyboard.pop().is_some() {}
+    let outside = center(&h.ui, "key-48");
+    h.tick(pointer(outside, true)); h.idle(1);
+    assert!(std::iter::from_fn(|| p.shared.keyboard.pop()).any(|(_, play)| matches!(play, Play::Note(48, v) if v > 0)),
+        "display validity never restricts notes that scripts may route");
+    h.tick(pointer(outside, false)); h.idle(2);
+    // Full activation currentness fences both metadata and parsed ranges.
+    p.shared.rate.store(44100f64.to_bits(), Ordering::Release);
+    h.idle(3);
+    assert_eq!(label(&h, "keyboard-range"), "Sample key ranges unavailable");
+    assert!(!shows(&h, "uvi-mapping-sample-range"));
+    p.shared.rate.store(48000f64.to_bits(), Ordering::Release);
+    h.idle(3);
+    assert!(label(&h, "keyboard-range").starts_with("Authored valid keys"));
+    p.selection.write().unwrap().parts[0].uvi.as_mut().unwrap().member = "Presets/Superseded.uvip".into();
+    h.idle(3);
+    assert_eq!(label(&h, "keyboard-range"), "Sample key ranges unavailable");
+}
+
+
+#[cfg(feature = "uvi")]
+#[test]
+fn authored_three_native_part_strips_keep_sample_extents_when_every_sample_key_is_coloured() {
+    use crate::uvi::{mapping::Inspection, program::parse_program,
+        worker::{ResourceActivity, Stamp, Stats, Status, WorkerLoadActivity}};
+    use crate::plugin::uvi_ui::{KeyColours, Published};
+    let p = Arc::new(SamplerParams::new());
+    let stamp = Stamp { epoch: p.shared.uvi_activation_epoch(), generation: 77, frame: 0 };
+    p.shared.ensure_parts(3);
+    for (slot, (low, high)) in [(24, 36), (48, 60), (96, 108)].into_iter().enumerate() {
+        let source = crate::library::UviSource { bank: format!("/authored/{slot}.ufs").into(),
+            bank_uuid: [slot as u8; 16], member: format!("Presets/{slot}.uvip") };
+        p.selection.write().unwrap().parts.push(Part { name: format!("Native {slot}"), uvi: Some(source.clone()), ..Default::default() });
+        let program = parse_program(&format!(r#"<Program><Layers><Layer><Keygroups><Keygroup LowKey="{low}" HighKey="{high}"><Oscillators><SamplePlayer SamplePath="authored.wav"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#)).unwrap();
+        let mapping = Arc::new(Inspection::parsed(stamp, &program, Arc::new(serde_json::json!({"nodes":[]}))));
+        let colours = (low..=high).map(|note| (note, "red".into())).chain([(1, "blue".into())]).collect();
+        let published = Arc::new(Published { stamp, snapshots: Arc::default(), key_colours: Arc::new(KeyColours { colours, conflicts: 0 }),
+            pictures: Arc::default(), fonts: Arc::default() });
+        let mut view = PartView::authored_uvi(source, published);
+        view.uvi_activity = Some(Arc::new(WorkerLoadActivity { stamp, owned_pcm_bytes: None, mapping: Some(mapping),
+            status: Status::Starting, phase: "authored", frame: 0, elapsed: Duration::ZERO, stages: Vec::new(),
+            nodes: Some(program.nodes.len()), static_rejected_nodes: Some(0), sample_zones: Some(1), script_processors: Some(0),
+            resources: ResourceActivity::default(), failure: None, stats: Stats::default() }));
+        let mut views = p.shared.view.lock().unwrap();
+        views.parts.resize_with(3, PartView::default);
+        views.parts[slot] = view;
+    }
+    p.selection.write().unwrap().order = vec![0, 1, 2];
+    let h = Harness::new(&p, 1180., 760.);
+    let strip = h.ui.scene().unwrap().surface("part-ranges").unwrap();
+    let label = strip.semantics.as_ref().and_then(|s| s.label.as_deref()).unwrap_or_default();
+    for (slot, (low, high)) in [(24, 36), (48, 60), (96, 108)].into_iter().enumerate() {
+        assert!(label.contains(&format!("Native {slot}: Sample keys {} – {}", note_name(low), note_name(high))),
+            "ordinary colour overrides never erase the independent part-range strip: {label}");
+    }
+    assert!(!label.contains("Plays"));
 }

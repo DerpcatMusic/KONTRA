@@ -939,6 +939,27 @@ impl PartView {
         self.uvi_activation.as_ref().is_some_and(|a| a.context_matches(params, slot, selection)
             && (a.epoch, a.generation) == (stamp.epoch, stamp.generation))
     }
+    /// Owned loader observation for this exact source/restore/owner. A prepared
+    /// worker owns PCM before adoption, but its voices are not rack voices yet.
+    #[cfg(feature = "uvi")]
+    pub(crate) fn uvi_metrics(&self, params: &SamplerParams, slot: usize,
+        selection: &Selection) -> Option<(&crate::uvi::worker::WorkerLoadActivity, bool)> {
+        let activity = self.uvi_activity.as_deref()?;
+        if !self.uvi_matches(params, slot, selection, activity.stamp) { return None; }
+        let activation = self.uvi_activation.as_ref()?;
+        if self.load_report.as_ref().is_some_and(|report| {
+            let failure = &report["terminal_failure"];
+            failure["epoch"].as_u64() == Some(activation.epoch)
+                && failure["generation"].as_u64() == Some(activation.generation)
+        }) { return None; }
+        let atoms = params.shared.part(slot)?;
+        let installed = atoms.uvi_generation.load(Ordering::Acquire) == activation.generation
+            && atoms.uvi_part_generation.load(Ordering::Acquire) == activation.part_generation;
+        if installed && atoms.uvi_failed.load(Ordering::Acquire) { return None; }
+        let ready = installed && activation.published
+            && activity.status == crate::uvi::worker::Status::Ready;
+        Some((activity, ready))
+    }
     /// Inspection follows the full loader context before and after audio
     /// adoption. Endpoint ownership determines readiness, not visibility.
     #[cfg(feature = "uvi")]
@@ -5599,6 +5620,53 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[cfg(feature = "uvi")]
+    #[test]
+    fn native_metrics_require_current_owner_and_endpoint_adoption_for_voices() {
+        use crate::uvi::worker::{Status, Stats, Stamp, WorkerLoadActivity};
+        let params = SamplerParams::default();
+        params.shared.ensure_parts(1);
+        params.shared.rate.store(48000f64.to_bits(), Ordering::Release);
+        params.shared.uvi_max_host_frames.store(256, Ordering::Release);
+        let source = library::UviSource { bank: "metrics.ufs".into(),
+            bank_uuid: [0; 16], member: "preset.uvip".into() };
+        let mut selection = Selection::default();
+        selection.parts = vec![Part { uvi: Some(source.clone()), uvi_state: vec![1].into(),
+            ..Default::default() }];
+        let atoms = params.shared.part(0).unwrap();
+        let activation = uvi_load::Activation { source, saved_state: vec![1].into(),
+            epoch: params.shared.uvi_epoch.load(Ordering::Acquire), generation: 7,
+            part_generation: atoms.generation.load(Ordering::Acquire), rate: 48000,
+            max_host_frames: 256, published: true };
+        let activity = WorkerLoadActivity { stamp: Stamp { epoch: activation.epoch,
+            generation: activation.generation, frame: 256 }, mapping: None,
+            status: Status::Ready, phase: "serve", frame: 256, elapsed: std::time::Duration::ZERO,
+            stages: vec![], nodes: None, static_rejected_nodes: None, sample_zones: None,
+            script_processors: None, resources: Default::default(), owned_pcm_bytes: Some(8192),
+            failure: None, stats: Stats { active_voices: 4, ..Default::default() } };
+        let mut view = PartView { uvi_activation: Some(activation.clone()),
+            uvi_activity: Some(Arc::new(activity.clone())), ..Default::default() };
+        assert_eq!(view.uvi_metrics(&params, 0, &selection).unwrap().0.owned_pcm_bytes, Some(8192));
+        assert!(!view.uvi_metrics(&params, 0, &selection).unwrap().1);
+        atoms.uvi_generation.store(activation.generation, Ordering::Release);
+        atoms.uvi_part_generation.store(activation.part_generation, Ordering::Release);
+        assert!(view.uvi_metrics(&params, 0, &selection).unwrap().1);
+        atoms.uvi_failed.store(true, Ordering::Release);
+        assert!(view.uvi_metrics(&params, 0, &selection).is_none());
+        atoms.uvi_failed.store(false, Ordering::Release);
+        view.load_report = Some(Arc::new(serde_json::json!({"terminal_failure": {
+            "epoch": activation.epoch, "generation": activation.generation }})));
+        assert!(view.uvi_metrics(&params, 0, &selection).is_none(), "retained Ready activity is not live after cancellation");
+        view.load_report = None;
+        selection.parts[0].uvi_state = vec![2].into();
+        assert!(view.uvi_metrics(&params, 0, &selection).is_none());
+        selection.parts[0].uvi_state = activation.saved_state.clone();
+        let mut stale = activity;
+        stale.stamp.generation += 1;
+        view.uvi_activity = Some(Arc::new(stale));
+        assert!(view.uvi_metrics(&params, 0, &selection).is_none());
+    }
 
     #[cfg(feature = "uvi")]
     #[test]

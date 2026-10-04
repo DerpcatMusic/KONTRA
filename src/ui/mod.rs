@@ -161,8 +161,8 @@ struct Watch {
     /// When the readouts were last sampled, and the disk counter then.
     cpu_at: Option<Instant>,
     disk_read: u64,
-    /// The disk counter to watch: [`crate::audio::DISK_READ`] unless a test
-    /// gives its own.
+    /// Test override for the application read counter. Production combines
+    /// Kontakt streaming with UVI preparation/cache reads (including OS cache).
     disk_counter: Option<&'static AtomicU64>,
     poll_at: Option<Instant>,
     frame_at: Option<Instant>,
@@ -200,8 +200,15 @@ impl Watch {
             }
             meters.cpu.store(self.cpu.to_bits(), Ordering::Relaxed);
             // Disk throughput since the last look, eased; idle settles on 0.
-            let counter = self.disk_counter.unwrap_or(&crate::audio::DISK_READ);
-            let read = counter.load(Ordering::Relaxed);
+            let read = match self.disk_counter {
+                Some(counter) => counter.load(Ordering::Relaxed),
+                None => {
+                    let read = crate::audio::DISK_READ.load(Ordering::Relaxed);
+                    #[cfg(feature = "uvi")]
+                    let read = read.saturating_add(crate::uvi::io::READ_BYTES.load(Ordering::Relaxed));
+                    read
+                }
+            };
             let rate = if since > 0. {
                 read.saturating_sub(self.disk_read) as f32 / 1_048_576. / since
             } else {
@@ -414,7 +421,7 @@ struct EditorState {
     /// First octave on the keyboard.
     octave: i16,
     /// The part the keyboard was last centered on.
-    keyboard_for: Option<(String, u32)>,
+    keyboard_for: Option<keyboard::Identity>,
     /// The part the Mapping, Sound and Info views show, and the rack marks
     /// and the keyboard plays unless `unselected`: Esc or a click on the
     /// empty rack lets go, and the keyboard then plays every part MIDI would.
