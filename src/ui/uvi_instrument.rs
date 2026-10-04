@@ -449,7 +449,8 @@ pub fn view(
                 .at(0., 0.),
         );
     }
-    for widget in &snapshot.widgets {
+    for widget in snapshot.paint_order.iter().filter_map(|id|
+        id.checked_sub(1).and_then(|index| snapshot.widgets.get(index as usize))) {
         if !widget.effective_visible
             || widget.effective_alpha == 0.
             || widget.absolute_bounds.width <= 0.
@@ -1165,7 +1166,7 @@ mod tests {
             (UiKind::Panel, "Disabled panel", 505., 155., 95., 60.),
             (UiKind::NumBox, "Locked", 505., 174., 95., 28.),
         ];
-        let widgets = spec
+        let widgets: Vec<UiWidget> = spec
             .into_iter()
             .enumerate()
             .map(|(index, (kind, name, x, y, width, height))| {
@@ -1245,6 +1246,7 @@ mod tests {
                 background: None,
                 background_colour: Some("#252525".into()),
             },
+            paint_order: widgets.iter().map(|w| w.id).collect(),
             widgets,
         }
     }
@@ -1301,6 +1303,53 @@ mod tests {
             1. / 60.,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn later_panel_table_beats_an_earlier_panels_late_child_after_resize() {
+        let mut snapshot = authored();
+        let table_bounds = snapshot.widgets[8].absolute_bounds;
+        let mut late = snapshot.widgets[1].clone();
+        late.id = 14; late.parent = Some(10);
+        late.bounds = table_bounds; late.absolute_bounds = table_bounds;
+        snapshot.widgets.push(late);
+        for id in [10, 12] {
+            let panel = &mut snapshot.widgets[id - 1];
+            panel.bounds = UiBounds { x: 0., y: 0., width: 640., height: 288. };
+            panel.absolute_bounds = panel.bounds;
+            panel.visible = true; panel.effective_visible = true; panel.enabled = true;
+        }
+        snapshot.widgets[8].parent = Some(12);
+        snapshot.paint_order = vec![1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 14, 12, 9, 13];
+        let current = stamp(4);
+        let id = identity(0, current, &snapshot, 9);
+        let mut ui = super::super::theme::ui();
+        let mut state = State::default();
+        let mut edits = Vec::new();
+        for room in [320., 960., 640.] {
+            let mut render = |ui: &mut Ui, state: &mut State, input: Input| {
+                let panel = view(ui, state, 0, current, current, &snapshot,
+                    &HashMap::new(), &HashMap::new(), |stamp, edit| {
+                        edits.push((stamp, edit)); true
+                    });
+                ui.frame(col![panel].align(Align::Start).size(room, 288. * room / 640.).id("part-0"),
+                    Some(Size::new(room, 288. * room / 640.)), input, 1. / 60.).unwrap();
+            };
+            for _ in 0..3 { render(&mut ui, &mut state, Input::default()); }
+            let field = ui.scene().unwrap().surface(&id).unwrap().frame;
+            let at = Point::new(field.x + field.size.width * 4.5 / 8.,
+                                field.y + field.size.height * 0.25);
+            for buttons in [Buttons::PRIMARY, Buttons::default()] {
+                render(&mut ui, &mut state, PointerInput { pos: Some(at), buttons,
+                    ..PointerInput::default() }.into());
+            }
+            render(&mut ui, &mut state, Input::default());
+        }
+        assert!(!edits.is_empty());
+        assert!(edits.iter().all(|(stamp, e)| *stamp == current && e.widget == 9 &&
+            matches!(e.value, UiEditValue::TableCell { index: 5, value } if (value - 0.75).abs() < 1e-12)));
+        assert_eq!(snapshot.widgets[13].parent, Some(10));
+        assert!(snapshot.widgets[9].effective_visible && snapshot.widgets[11].effective_visible);
     }
 
     #[test]
