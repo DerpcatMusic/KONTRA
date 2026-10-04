@@ -208,6 +208,8 @@ pub fn preflight(program: &Program) -> Vec<Unsupported> {
                 super::ms20::FIDELITY_DIAGNOSTIC
             } else if node.kind == "Flanger" {
                 super::flanger::FIDELITY_DIAGNOSTIC
+            } else if node.kind == "Drive" {
+                super::drive::FIDELITY_DIAGNOSTIC
             } else {
                 MISSING_EXECUTION
             };
@@ -3270,6 +3272,14 @@ mod tests {
         assert_eq!(blocked.len(), 1);
         assert_eq!(blocked[0].kind, "CombFilter");
         assert_eq!(blocked[0].reason, super::super::comb::FIDELITY_DIAGNOSTIC);
+    }
+    #[test]
+    fn drive_scalar_evidence_keeps_unmeasured_element_lifecycle_gated() {
+        let program = parse_program(r#"<Program><Inserts><Drive Mode="0" Oversampling="0" DriveAmount=".37540978"/></Inserts></Program>"#).unwrap();
+        let blocked = preflight(&program);
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked[0].kind, "Drive");
+        assert_eq!(blocked[0].reason, super::super::drive::FIDELITY_DIAGNOSTIC);
     }
     #[test]
     fn sample_metadata_remains_checked_and_storage_rejects_nonfinite_pcm() {
