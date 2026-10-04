@@ -234,6 +234,48 @@ fn styled_text(widget: &UiWidget, said: &str, scale: f64, fallback: Justify) -> 
         .min_w(0)
 }
 
+
+// Keep MUI's text editor and caret intact; the resting numeric readout uses
+// the same authored typography as labels and menus, over its bank artwork.
+fn numbox_readout(
+    field: &mut El,
+    widget: &UiWidget,
+    value: f64,
+    pictures: &HashMap<String, Arc<Picture>>,
+    scale: f64,
+) {
+    let style = &widget.style;
+    if style.font_size.is_none() && style.align.is_none() && style.text_colour.is_none()
+        && style.background_image.is_none() && style.background_colour.is_none() {
+        return;
+    }
+    if field.payload().semantics.as_ref()
+        .is_some_and(|s| matches!(s.role, A11y::TextInput { .. })) {
+        return;
+    }
+    if let Some(child) = field.children_mut().first_mut() {
+        let mut readout = styled_text(widget, &value_text(widget, value), scale, Justify::Start)
+            .flex(1).w(Len::Pct(100.)).h(Len::Pct(100.));
+        if matches!(widget.style.align.as_deref(),
+            None | Some("centred" | "centre" | "center" | "left" | "right")) {
+            // Font leading can exceed the authored box; center the ink in
+            // that box rather than allowing the text's minimum height to grow it.
+            readout.children_mut()[0] = readout.children_mut()[0].clone()
+                .min_h(0).h(widget.absolute_bounds.height * scale);
+        }
+        *child = readout;
+    }
+    *field = field.clone().pad(0).radius(0.).align(Align::Stretch);
+    let image = widget.style.background_image.as_ref()
+        .and_then(|art| pictures.get(&key(art)))
+        .and_then(|picture| picture.frames.first()).cloned();
+    if let Some(image) = image {
+        *field = field.clone().fill(Fill::Image(image, Fit::Contain));
+    } else if let Some(colour) = colour(widget.style.background_colour.as_deref()) {
+        *field = field.clone().fill(colour);
+    }
+}
+
 fn shown_value(state: &State, widget: &UiWidget) -> Option<UiEditValue> {
     state
         .pending
@@ -422,6 +464,7 @@ pub fn view(
                             number_text(*range.start(), widget.integer),
                             number_text(*range.end(), widget.integer)));
                     scale_control(&mut field, ui, scale);
+                    numbox_readout(&mut field, widget, value, pictures, scale);
                     let mut content = if widget.style.show_label != Some(false) {
                         row![
                             caption(display_name).text_size(SMALL * scale).lines(1),
@@ -1295,6 +1338,61 @@ mod tests {
                 }
                 assert!(matches!(snapshot.widgets[3].value,Some(UiValue::Number(0.375))));
             }
+        }
+    }
+
+    #[test]
+    fn authored_numbox_readout_honors_skin_ink_size_and_alignment_at_each_scale() {
+        let mut snapshot = authored();
+        snapshot.root.width = 720.;
+        snapshot.root.height = 480.;
+        let widget = &mut snapshot.widgets[3];
+        widget.absolute_bounds = UiBounds {x:325.,y:315.,width:38.,height:12.};
+        widget.bounds = widget.absolute_bounds;
+        widget.value = Some(UiValue::Number(200.));
+        widget.min = Some(0.);
+        widget.max = Some(10000.);
+        widget.integer = false;
+        widget.style = UiStyle {
+            font:Some("authored-face.ttf".into()),font_size:Some(10.),
+            align:Some("centred".into()),text_colour:Some("#c8c9ca".into()),
+            background_colour:Some("#00000000".into()),show_label:Some(false),unit:Some(7.),
+            background_image:Some(crate::uvi::host::UiArtwork {
+                path:"authored-box.png".into(),bank_root:false,
+            }),..UiStyle::default()
+        };
+        let image = Arc::new(moose::mui::mui::scene::Image::rgba(38,12,vec![255;38*12*4]).unwrap());
+        let font = Font::new(NOTO_SANS).unwrap();
+        let fonts = HashMap::from([("authored-face.ttf".into(),font.clone())]);
+        let pictures = HashMap::from([("authored-box.png".into(),Arc::new(Picture {
+            frames:vec![image.clone()],stretch:[false;2],atlas:None,
+        }))]);
+        let current = stamp(4);
+        for scale in [0.5,1.,1.5] {
+            let mut ui = super::super::theme::ui();
+            let mut state = State::default();
+            for _ in 0..3 {
+                let panel = view(&mut ui,&mut state,0,current,current,&snapshot,&pictures,&fonts,
+                    |_,_|panic!("readout cannot submit edits"));
+                ui.frame(col![panel].size(720.*scale,480.*scale).id("part-0"),
+                    Some(Size::new(720.*scale,480.*scale)),Input::default(),1./60.).unwrap();
+            }
+            let scene = ui.scene().unwrap();
+            let field = scene.surface(&identity(0,current,&snapshot,4)).unwrap().frame;
+            assert!((field.x-325.*scale).abs()<0.01 && (field.y-315.*scale).abs()<0.01);
+            assert!((field.size.width-38.*scale).abs()<0.01 && (field.size.height-12.*scale).abs()<0.01);
+            let painted = scene.paint.iter().find(|p|p.text.as_ref()
+                .is_some_and(|t|t.fonts[0].id()==font.id())).unwrap();
+            let text = painted.text.as_ref().unwrap();
+            assert_eq!(text.glyphs.len(),6,"200 Hz stays on one line with all glyphs");
+            assert!((f64::from(text.size)-10.*scale).abs()<0.01);
+            assert_eq!(painted.paint,moose::mui::mui::scene::Paint::Solid(colour(Some("#c8c9ca")).unwrap()));
+            let ink = scene.surface(painted.key.as_str()).unwrap().frame;
+            assert!((ink.x+0.5*ink.size.width-field.x-0.5*field.size.width).abs()<0.01);
+            assert!((ink.y+0.5*ink.size.height-field.y-0.5*field.size.height).abs()<0.01);
+            assert!((ink.size.height-field.size.height).abs()<0.01);
+            assert!(scene.paint.iter().any(|p|matches!(&p.paint,
+                moose::mui::mui::scene::Paint::Image {image:owned,..} if owned==&image)));
         }
     }
 
