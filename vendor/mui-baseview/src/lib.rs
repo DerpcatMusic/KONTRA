@@ -25,9 +25,9 @@ use baseview::{
     ScrollDelta, Window, WindowContext, WindowEvent, WindowHandler, WindowSettings, WindowSize,
 };
 use keyboard_types::{Key as HostKey, KeyState, KeyboardEvent, Modifiers, NamedKey};
-use mui::host::{Driver, Modifier, NativeKey, Wheel};
-/// KONTAKTO patch: what a [`KeyHook`] is handed.
+/// What a [`KeyHook`] is handed.
 pub use mui::host::KeyEvent;
+use mui::host::{Driver, Modifier, NativeKey, Wheel};
 pub use mui::host::{Shared, View, lock};
 use mui::prelude::{Button, Cursor, Key, Mods, Point};
 use mui::vello::host::{Frame, Host, target_size};
@@ -69,18 +69,20 @@ pub fn resize_corner(on: bool) {
     CORNER.with(|c| c.set(on));
 }
 
-/// KONTAKTO patch: an app's look at every key event, down and up, before
-/// MUI routes it. `true` takes the key: MUI and the host never see it.
-pub type KeyHook = Arc<Mutex<dyn FnMut(&mui::Ui, &KeyEvent) -> bool + Send>>;
-
 /// KONTAKTO patch: asked every tick with the frame's `Ui`: whether the
 /// pointer hides now (a knob being dragged). When it stops, the pointer
 /// comes back where it hid.
 pub type PointerHook = Arc<Mutex<dyn FnMut(&mui::Ui) -> bool + Send>>;
 
-/// KONTAKTO patch: GPU callbacks may run synchronously or off the window
-/// thread. Share the diagnostic sink independently of the UI/model lock.
+/// KONTAKTO patch: observe native GPU diagnostics outside the UI/model lock.
+/// Host retains its callback; the window forwards errors on its next tick.
 pub type LogHook = Arc<Mutex<dyn FnMut(&str) + Send>>;
+
+/// An app's look at every key event, down and up, before MUI routes it:
+/// `true` takes the key, and neither MUI nor the host sees it. MUI hands a
+/// view key presses only; a computer keyboard that plays notes has to hear
+/// the key come up. Runs on the window's thread with the last frame's `Ui`.
+pub type KeyHook = Arc<Mutex<dyn FnMut(&mui::Ui, &KeyEvent) -> bool + Send>>;
 
 /// Requests from the host's thread, applied by the window's next tick,
 /// which is the only place baseview's `WindowContext` can be touched.
@@ -89,7 +91,6 @@ pub struct Requests {
     size: AtomicU64,
     scale: AtomicU64,
     redraw: AtomicBool,
-    /// KONTAKTO patch: see [`KeyHook`].
     keys: Mutex<Option<KeyHook>>,
     /// KONTAKTO patch: see [`PointerHook`].
     pointer: Mutex<Option<PointerHook>>,
@@ -99,16 +100,18 @@ pub struct Requests {
 }
 
 impl Requests {
-    /// Receive uncaptured GPU errors without taking the UI/model lock.
+    /// Observe uncaptured GPU errors on a window tick without taking the UI/model lock.
     pub fn on_log(&self, hook: LogHook) {
         *self.log.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
     }
 
-    /// KONTAKTO patch: hand every key event to `hook` first.
+    /// Hand every key event to `hook` first; see [`KeyHook`].
     pub fn on_key(&self, hook: KeyHook) {
-        *self.keys.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
+        *self
+            .keys
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
     }
-
     /// KONTAKTO patch: let `hook` hide the pointer; see [`PointerHook`].
     pub fn on_pointer(&self, hook: PointerHook) {
         *self.pointer.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
@@ -142,6 +145,8 @@ impl Requests {
 /// window's scale factor (the host's content scale); `None` follows the OS.
 /// `None` back when the parent handle is unusable or the window could not be
 /// made; the reason goes to [`View::log`]. Dropping the window closes it.
+/// `None` too when the process hosts editors headless
+/// ([`mui::host::headless`]): the view went there instead.
 pub fn open<V: View + Send + 'static>(
     parent: &impl HasWindowHandle,
     title: &str,
@@ -150,6 +155,10 @@ pub fn open<V: View + Send + 'static>(
     shared: Arc<Mutex<Shared<V>>>,
     requests: Arc<Requests>,
 ) -> Option<Window> {
+    // A headless host (mui-cut's adapter) takes the view instead.
+    if mui::host::headless::offer(&shared, size) {
+        return None;
+    }
     // baseview panics on a handle it cannot read.
     let handle = match parent.window_handle() {
         Ok(handle) => handle,
@@ -236,7 +245,13 @@ fn build<V: View + Send + 'static>(
         let physical = (size.physical.width, size.physical.height);
         log(&shared, &format!("mui-baseview: native window init creating accessibility adapter; physical_size={physical:?} device_scale={}", size.scale_factor));
         let mut handler = Handler::new(shared, requests, physical, size.scale_factor);
-        handler.a11y = Some(A11y::new());
+        handler.a11y = cx
+            .window_handle()
+            .ok()
+            .and_then(|handle| A11y::new(handle.as_raw()));
+        if let Some(a11y) = handler.a11y.as_mut() {
+            a11y.focus(cx.has_focus());
+        }
         handler.parented = parented;
         log(&handler.shared, "mui-baseview: native window ready; waiting for first frame");
         let timed = handler.timing.is_some();
@@ -260,6 +275,7 @@ pub struct Handler<V> {
     requests: Arc<Requests>,
     gpu: Option<Host>,
     gpu_log_generation: Option<u64>,
+    gpu_log_cursor: u64,
     gpu_retry_at: Instant,
     applied_cursor: Option<MouseCursor>,
     /// The current scene is not on screen yet: paint it.
@@ -278,6 +294,8 @@ pub struct Handler<V> {
     hidden_at: Option<PhysicalPosition<f64>>,
     /// KONTAKTO patch: the last wheel notch, and the fling it is part of.
     notch: (Option<Instant>, i32),
+    /// Last successful native text input configuration; changes preserve composition.
+    applied_ime: Option<Option<baseview::ImeConfiguration>>,
     /// The queue and the frame schedule.
     pub driver: Driver,
     timing: Option<timing::Capture>,
@@ -298,6 +316,7 @@ impl<V: View> Handler<V> {
             requests,
             gpu: None,
             gpu_log_generation: None,
+            gpu_log_cursor: 0,
             gpu_retry_at: Instant::now(),
             applied_cursor: None,
             unpainted: true,
@@ -308,6 +327,7 @@ impl<V: View> Handler<V> {
             pointer_at: None,
             hidden_at: None,
             notch: (None, 0),
+            applied_ime: None,
             driver: Driver::new(size, scale, Box::new(Clipboard::default())),
             timing,
         }
@@ -342,6 +362,10 @@ impl<V: View> Handler<V> {
             if let Some(s) = sample { s.outcome = NativeFrameOutcome::Hidden; }
             return;
         }
+        #[cfg(target_os = "linux")]
+        if let Some(a11y) = self.a11y.as_mut() {
+            a11y.update_bounds(window);
+        }
         // macOS: keep the child pinned to the parent's top as it resizes.
         // A top-level window's view is its content view: leave it be.
         if self.parented {
@@ -374,14 +398,15 @@ impl<V: View> Handler<V> {
             }
         }
         if let Some(gpu) = &self.gpu {
-            hook_gpu_errors(gpu, &self.requests, &mut self.gpu_log_generation);
+            observe_gpu_errors(gpu, &self.requests, &mut self.gpu_log_generation, &mut self.gpu_log_cursor);
         }
         // The lock covers the frame and a snapshot of its scene, not the
         // present: acquiring a surface texture can wait out a vsync, and a
         // host-thread close() or state load must not wait with it.
-        // ponytail: one scene clone per painted frame; have `Ui` hand out an
-        // `Arc<ResolvedScene>` if it shows in a profile.
         let mut hide = false;
+        let mut accessibility_update = None;
+        let ime_configuration;
+        let capture;
         let scene = {
             let lock_at = sample.as_ref().map(|_| Instant::now());
             let mut s = lock(&self.shared);
@@ -409,30 +434,43 @@ impl<V: View> Handler<V> {
                 let mut hook = hook.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 hide = hook(&s.ui);
             }
+            ime_configuration = self
+                .driver
+                .ime_configuration(&s.ui)
+                .map(|config| native_ime(config, self.driver.ui_scale()));
             // Keys typed into a field must not reach the host's shortcuts;
             // every other key does. Windows only; a no-op elsewhere, where an
             // ignored key already goes to the host. Only on a change: each
             // call also moves focus.
-            let capture = s.ui.focus_is_text();
-            if self.captured != Some(capture) {
-                window.set_keyboard_capture(capture);
-                self.captured = Some(capture);
-            }
+            capture = s.ui.focus_is_text();
             if let Some(a11y) = self.a11y.as_mut()
                 && (fresh || a11y.wants_tree())
             {
-                a11y.publish(&s.ui);
+                accessibility_update = a11y.prepare(&s.ui);
             }
             self.unpainted |= fresh;
             if self.unpainted && self.gpu.is_some() {
                 let scene_at = sample.as_ref().map(|_| Instant::now());
-                let scene = s.ui.scene().cloned();
+                let scene = s.ui.scene_snapshot();
                 if let Some(sample) = sample { sample.scene_ns = timing::elapsed(scene_at); }
                 scene
             } else {
                 None
             }
         };
+        // Capturing the keyboard may synchronously move native focus.
+        if self.captured != Some(capture) {
+            window.set_keyboard_capture(capture);
+            self.captured = Some(capture);
+        }
+        if let (Some(a11y), Some(update)) = (self.a11y.as_mut(), accessibility_update) {
+            a11y.publish(update);
+        }
+        // Native IME APIs may synchronously call the adapter. No model lock is held.
+        if self.applied_ime.as_ref() != Some(&ime_configuration) {
+            window.set_ime_configuration(ime_configuration.clone());
+            self.applied_ime = Some(ime_configuration);
+        }
         if self.gpu.is_none() {
             if let Some(sample) = sample { sample.outcome = NativeFrameOutcome::NoGpu; }
         }
@@ -445,10 +483,11 @@ impl<V: View> Handler<V> {
             }
             if let Some(sample) = sample { sample.resize_ns = timing::elapsed(resize_at); }
             let present_at = sample.as_ref().map(|_| Instant::now());
+            let draw_start = self.driver.profiler().map(|_| Instant::now());
             let presented = gpu.present(&scene, Affine::scale(self.driver.ui_scale()));
-            // Host rebuilds a lost device inside present. Its new callback
-            // must reach the same sink before the next frame is submitted.
-            hook_gpu_errors(gpu, &self.requests, &mut self.gpu_log_generation);
+            // Present may rebuild a lost device. Observe the new generation
+            // without replacing Host's own callback or entering the model lock.
+            observe_gpu_errors(gpu, &self.requests, &mut self.gpu_log_generation, &mut self.gpu_log_cursor);
             if let Some(sample) = sample {
                 sample.present_ns = timing::elapsed(present_at);
                 sample.outcome = if resize_failed { NativeFrameOutcome::Error } else { match &presented {
@@ -459,8 +498,22 @@ impl<V: View> Handler<V> {
                     Err(_) => NativeFrameOutcome::Error,
                 }};
             }
-            match presented {
-                Ok(Frame::Presented(_) | Frame::Current) => self.unpainted = false,
+            let frame = presented;
+            if let (Some(profiler), Some(start)) = (self.driver.profiler_mut(), draw_start) {
+                profiler.record_since(mui::profiling::Phase::BackendDraw, start);
+                if matches!(&frame, Ok(Frame::Presented(_))) {
+                    // CPU interval through host present return; never a scanout timestamp.
+                    profiler.record_since(mui::profiling::Phase::PresentCall, start);
+                }
+            }
+            match frame {
+                Ok(Frame::Presented(_)) => self.unpainted = false,
+                Ok(Frame::Current) => {
+                    self.unpainted = false;
+                    if let Some(profiler) = self.driver.profiler_mut() {
+                        profiler.discard_pending_presentation();
+                    }
+                }
                 Ok(Frame::Skipped) => {}
                 Ok(Frame::SurfaceLost) => {
                     // SAFETY: the surface comes from this window's live
@@ -540,12 +593,23 @@ impl<V: View> Handler<V> {
         let points = |p: PhysicalPosition<f64>| Point::new(p.x / scale, p.y / scale);
         let d = &mut self.driver;
         match event {
+            Event::Ime(event) => d.ime(match event {
+                baseview::Ime::Selection(range) => mui::prelude::Ime::Selection(range.clone()),
+                baseview::Ime::Enabled => mui::prelude::Ime::Enabled,
+                baseview::Ime::Preedit { text, cursor } => mui::prelude::Ime::Preedit {
+                    text: text.clone(),
+                    cursor: *cursor,
+                },
+                baseview::Ime::Commit(text) => mui::prelude::Ime::Commit(text.clone()),
+                baseview::Ime::Disabled => mui::prelude::Ime::Disabled,
+            }),
             Event::Keyboard(key) => {
-                // KONTAKTO patch: the app's hook first.
                 let event = key_event(key);
                 let hook = self.requests.keys.lock().ok().and_then(|h| h.clone());
                 if let Some(hook) = hook {
-                    let mut hook = hook.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut hook = hook
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     if hook(&lock(&self.shared).ui, &event) {
                         return EventStatus::Captured;
                     }
@@ -642,7 +706,12 @@ impl<V: View> Handler<V> {
                     a11y.focus(focused);
                 }
             }
-            Event::Window(WindowEvent::WillClose) => d.close(&mut lock(&self.shared)),
+            Event::Window(WindowEvent::WillClose) => {
+                // Drop retained native accessibility views before locking the model.
+                drop(self.a11y.take());
+                self.applied_ime = None;
+                d.close(&mut lock(&self.shared));
+            }
             // A scale change arrives as a resize too.
             _ => {}
         }
@@ -655,8 +724,9 @@ impl<V: View> Handler<V> {
 /// returns). A call that finds the handler busy is kept, the latest resize
 /// and every event, and delivered once the outer call returns.
 struct Adapter<V> {
-    cx: WindowContext,
+    // Drop graphics and native accessibility before their window context.
     handler: RefCell<Handler<V>>,
+    cx: WindowContext,
     pending_resize: Cell<Option<WindowSize>>,
     pending_events: RefCell<VecDeque<Event>>,
     timed: bool,
@@ -668,9 +738,18 @@ impl<V: View> Adapter<V> {
         if let Some(size) = self.pending_resize.take() {
             guard(h, |h| h.resized(size));
         }
-        while let Some(event) = self.pending_events.borrow_mut().pop_front() {
+        drain_events(&self.pending_events, |event| {
             guard(h, |h| h.on_event_inner(&event));
-        }
+        });
+    }
+}
+
+fn drain_events<T>(queue: &RefCell<VecDeque<T>>, mut deliver: impl FnMut(T)) {
+    loop {
+        // Release the queue borrow before invoking reentrant native code.
+        let event = queue.borrow_mut().pop_front();
+        let Some(event) = event else { break };
+        deliver(event);
     }
 }
 
@@ -692,6 +771,7 @@ impl<V: View + 'static> WindowHandler for Adapter<V> {
     fn on_frame(&self) -> Result<(), HandlerError> {
         if let Ok(mut h) = self.handler.try_borrow_mut() {
             let at = h.timing.as_ref().map(|_| Instant::now());
+            let wake_start = h.driver.profiler().map(|_| Instant::now());
             self.drain(&mut h);
             let mut sample = at.and_then(|at| h.timing.as_mut().and_then(|c| c.begin(at)));
             if sample.as_ref().is_some_and(|s| s.interval_ns == 0) { self.reentrant.set(0); }
@@ -703,6 +783,9 @@ impl<V: View + 'static> WindowHandler for Adapter<V> {
                 if let Some(capture) = &mut h.timing {
                     capture.record(sample, Instant::now(), self.reentrant.replace(0));
                 }
+            }
+            if let (Some(profiler), Some(start)) = (h.driver.profiler_mut(), wake_start) {
+                profiler.record_since(mui::profiling::Phase::NativeWake, start);
             }
         } else if self.timed {
             self.reentrant.set(self.reentrant.get().saturating_add(1));
@@ -729,6 +812,21 @@ impl<V: View + 'static> WindowHandler for Adapter<V> {
         let status = guard(&mut h, |h| h.on_event_inner(&event)).unwrap_or(EventStatus::Ignored);
         self.drain(&mut h);
         status
+    }
+}
+
+/// Scene geometry is in UI points; baseview's IME contract uses client pixels.
+fn native_ime(config: mui::host::ImeConfiguration, scale: f64) -> baseview::ImeConfiguration {
+    baseview::ImeConfiguration {
+        id: config.id,
+        position: PhysicalPosition::new(config.area.0.x * scale, config.area.0.y * scale),
+        size: baseview::dpi::PhysicalSize::new(
+            config.area.1.width * scale,
+            config.area.1.height * scale,
+        ),
+        text: config.text,
+        selection: config.selection,
+        marked: config.marked,
     }
 }
 
@@ -843,9 +941,8 @@ fn log<V: View>(shared: &Mutex<Shared<V>>, line: &str) {
 }
 
 fn report_gpu_error(hook: &LogHook, error: impl std::fmt::Display) {
-    // Retain mui-vello's stderr diagnostic as well as the app's persistent
-    // sink. Do not change its separate device-lost callback or recovery.
-    eprintln!("mui-vello: uncaptured GPU error: {error}");
+    // Host has already recorded and logged this error. Forward it without
+    // replacing its callback, consuming other observers or taking the model lock.
     let line = format!("mui-baseview: GPU failed (uncaptured error: {error})");
     let mut sink = match hook.try_lock() {
         Ok(sink) => sink,
@@ -859,13 +956,22 @@ fn report_gpu_error(hook: &LogHook, error: impl std::fmt::Display) {
     }
 }
 
-fn hook_gpu_errors(gpu: &Host, requests: &Requests, generation: &mut Option<u64>) {
-    if *generation == Some(gpu.generation()) { return; }
+fn observe_gpu_errors(gpu: &Host, requests: &Requests, generation: &mut Option<u64>, cursor: &mut u64) {
+    let error = observe_generation_error(generation, cursor, gpu.generation(), |cursor| gpu.observe_gpu_error(cursor));
     let hook = requests.log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-    if let Some(hook) = hook {
-        gpu.device().0.on_uncaptured_error(Arc::new(move |error| report_gpu_error(&hook, error)));
+    if let (Some(error), Some(hook)) = (error, hook) {
+        report_gpu_error(&hook, error);
     }
-    *generation = Some(gpu.generation());
+}
+
+// A replacement device starts a fresh error sequence; each app sink observes
+// once without consuming errors from MUI's own independent observers.
+fn observe_generation_error(generation: &mut Option<u64>, cursor: &mut u64, current: u64, observe: impl FnOnce(&mut u64) -> Option<String>) -> Option<String> {
+    if *generation != Some(current) {
+        *generation = Some(current);
+        *cursor = 0;
+    }
+    observe(cursor)
 }
 
 #[cfg(target_os = "linux")]
@@ -911,12 +1017,15 @@ fn open_gpu(window: &WindowContext, size: (u32, u32), mut report: impl FnMut(&st
         return Err(format!("requested backend {backends:?} is not enabled on this platform; unset WGPU_BACKEND to use the platform default"));
     }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+        let display = surface::Display::new(window).map_err(|e| e.to_string())?;
+        let mut descriptor = wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(display));
         descriptor.backends = backends;
         let instance = wgpu::Instance::new(descriptor);
         report("mui-baseview: GPU init creating native surface");
-        // SAFETY: the surface comes from this window's live native handle,
-        // and baseview drops the handler that owns it before the window.
+        // SAFETY: the surface uses this window's live native handle. Baseview's
+        // owned close paths drop the handler/renderer before destroying it.
+        // An embedding host must keep that handle alive during callbacks;
+        // forced external destruction cannot satisfy the surface lifetime.
         #[expect(unsafe_code, reason = "calls the unsafe surface constructor")]
         let surface = unsafe { surface::create(&instance, window) }?;
         report("mui-baseview: GPU init creating adapter, device and renderer");
