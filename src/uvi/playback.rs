@@ -160,6 +160,7 @@ pub fn preflight(program: &Program) -> Vec<Unsupported> {
             "ControlSignalMapper"
                 | "ScriptEventModulation"
                 | "ConstantModulation"
+                | "StepEnvelope"
                 | "LFO"
                 | "AnalogADSR"
                 | "DAHDSR"
@@ -841,6 +842,7 @@ pub struct Renderer<'a> {
     pressures: [f64; 16],
     poly_pressures: [[u8; 128]; 16],
     tempo: f64,
+    host_position: Option<modulation::HostPosition>,
 }
 
 #[derive(Default)]
@@ -1065,6 +1067,7 @@ impl<'a> Renderer<'a> {
             pressures: [0.; 16],
             poly_pressures: [[0; 128]; 16],
             tempo: 120.,
+            host_position: None,
         };
         for zone in &program.sample_zones {
             let sample = renderer
@@ -1533,6 +1536,7 @@ impl<'a> Renderer<'a> {
             sample_rate: self.rate,
             control_block_frames: 256,
             host_tempo: self.tempo,
+            host_position: self.host_position,
             key: voice.map_or(60, |v| v.note.note),
             tune_semitones: voice.map_or(0., |v| v.note.tune),
             velocity: voice.map_or(127, |v| v.note.velocity),
@@ -2252,12 +2256,14 @@ impl<'a> Renderer<'a> {
                 }
             }
             script::Action::Transport {
-                playing: _,
-                beat: _,
+                playing,
+                beat,
                 tempo,
             } => {
+                ensure!(beat.is_finite(), "Invalid UVI host beat");
                 ensure!(tempo.is_finite() && *tempo > 0., "Invalid UVI tempo");
                 self.tempo = *tempo;
+                self.host_position = Some(modulation::HostPosition {frame: self.frame, beat: *beat, playing: *playing});
                 for p in self.processors.values_mut() {
                     match p {
                         Processor::Delay(p) => p.set_tempo(*tempo)?,
@@ -3200,7 +3206,7 @@ mod tests {
     use crate::uvi::{program::parse_program, sample::SampleLoop, storage::Storage};
     #[test]
     fn unimplemented_sources_are_reported_once_at_the_source_node() {
-        for kind in ["StepEnvelope", "MultiLFO"] {
+        for kind in ["MultiLFO"] {
             let program = parse_program(&format!(r#"<Program><ControlSignalSources><{kind} Name="Steps"/></ControlSignalSources><Connections><SignalConnection Source="$Program/Steps" Destination="Gain" Ratio="1"/></Connections></Program>"#)).unwrap();
             let source = program.nodes.iter().position(|node| node.kind == kind).unwrap();
             let blocked = preflight(&program);
@@ -3209,6 +3215,76 @@ mod tests {
             assert_eq!(blocked[0].kind, kind);
             assert!(blocked[0].reason.contains("not executable"));
         }
+    }
+    #[test]
+    fn step_transport_keeps_authoritative_position_and_rejects_unmeasured_clock_cases() {
+        let levels = (0..16)
+            .map(|i| ((i * 37 % 129) as f64 / 128.).to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let program = parse_program(&format!(r#"<Program Gain="1"><ControlSignalSources><StepEnvelope Name="Seq" SyncToHost="1" Retrigger="0" Freq=".25" NumSteps="16" Levels="{levels}"/></ControlSignalSources><Connections><SignalConnection Source="$Program/Seq" Destination="Gain" Ratio="1"/></Connections></Program>"#)).unwrap();
+        let mut renderer = Renderer::new(&program, HashMap::new(), 48000).unwrap();
+        for (frame, beat, tempo, count, expected) in [
+            (0, 8.625, 120., 128, 0.578125),
+            (128, 1.5, 120., 128, 0.7265625),
+            (256, 32.2486, 137., 1, 0.009033203125),
+        ] {
+            renderer
+                .render(
+                    &[script::Command {
+                        frame,
+                        action: script::Action::Transport {
+                            playing: true,
+                            beat,
+                            tempo,
+                        },
+                    }],
+                    &[],
+                    count,
+                )
+                .unwrap();
+            let inputs = renderer.inputs(None);
+            let position = inputs.host_position.unwrap();
+            assert_eq!(position.frame, frame);
+            assert_eq!(position.beat, beat);
+            assert!(position.playing);
+            assert_eq!(inputs.host_tempo, tempo);
+            assert_eq!(
+                renderer
+                    .modulation
+                    .evaluate(&inputs, &HashMap::new())
+                    .unwrap()[&(0, "Gain".into())],
+                expected
+            );
+        }
+        for (playing, beat, error) in [
+            (false, 1., "stopped"),
+            (true, -1., "host position"),
+            (true, 1., "unaligned"),
+        ] {
+            renderer
+                .apply_note(&script::Action::Transport {
+                    playing,
+                    beat,
+                    tempo: 137.,
+                })
+                .unwrap();
+            let inputs = renderer.inputs(None);
+            assert_eq!(inputs.host_position.unwrap().playing, playing);
+            let failure = renderer
+                .modulation
+                .evaluate(&inputs, &HashMap::new())
+                .unwrap_err();
+            assert!(failure.to_string().contains(error), "{failure}");
+        }
+    }
+    #[test]
+    fn step_envelope_admission_keeps_unmeasured_settings_blocked() {
+        let xml = r#"<Program><ControlSignalSources><StepEnvelope Name="Seq" SyncToHost="1" Retrigger="0" NumSteps="2" Levels="0 1"/></ControlSignalSources><Connections><SignalConnection Source="$Program/Seq" Destination="Gain" Ratio="1"/></Connections></Program>"#;
+        let program = parse_program(xml).unwrap();
+        assert!(preflight(&program).is_empty());
+        let unmeasured = xml.replace("Retrigger=\"0\"", "Retrigger=\"1\"");
+        assert!(!preflight(&parse_program(&unmeasured).unwrap()).is_empty());
     }
     #[test]
     fn executable_effect_cannot_be_used_as_a_modulation_source() {

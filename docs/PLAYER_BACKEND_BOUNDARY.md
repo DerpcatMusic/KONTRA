@@ -4,6 +4,16 @@ This document describes optional UVI loading, live audio and instrument UI integ
 
 The user's concurrent core/MIDI refactor remains separately owned and unmerged. Its precision, protocol and lifecycle requirements inform this boundary; its dirty source is not an accepted API snapshot.
 
+The 2026-10-04 read-only main audit found a concrete porting requirement: current
+`In` carries `midi::Velocity`, newer release/controller forms and physical ports
+through `feed_on_port`/`dispatch_to_on_port`. This isolated adapter still accepts
+the earlier event vocabulary. Preserve main's precision, port routing and
+decode-once behavior when transplanting the native callback/delay hooks; project
+to UVI's narrower event format only at its owned packet boundary. Main's internal
+`engine/player.rs::Player` is not an exported neutral backend contract, and its
+rack lacks this branch's source/delay hooks. These findings are coordination
+requirements, not merged changes or a stable external ABI.
+
 ## Implemented loading and audio ownership
 
 Kontakt remains the immediate `Engine` player. UVI has a concrete optional per-part endpoint feeding the same Rack mixer; it is no longer only a staged CLI/controller. `Part.uvi` is an appended native bank/UUID/member identity, preserving older positional state fields (`src/plugin.rs:108`). Live diagnostics read installed generation/failure atomics (`src/plugin.rs:438`). Rack still stores Kontakt engines, with parallel optional native endpoints in Dsp; this is an implemented two-player adaptation, not yet a neutral backend enum/API.
@@ -101,7 +111,7 @@ Validation on 2026-10-03 at `510446d`: `cargo test --locked --profile ci --featu
 
 ## Native state follow-up
 
-`Part.uvi_state` retains opaque versioned native bytes even when the backend is disabled. `NativeState` shares its allocation across Selection/View clones and delegates to the existing byte-vector JSON/host codec; Debug exposes its length only. Backend state contains no container access keys. `uvi::state` validates the exact Program fingerprint, complete processor set, typed source-node overrides and approved resource targets before constructing a replacement. Existing absent-XML Gain/Pan parameter defaults remain unsupported.
+`Part.uvi_state` retains opaque versioned native bytes even when the backend is disabled. `NativeState` shares its allocation across Selection/View clones and delegates to the existing byte-vector JSON/host codec; Debug exposes its length only. Backend state contains no container access keys. `uvi::state` validates the exact Program fingerprint, complete processor set, typed source-node overrides and approved resource targets before constructing a replacement. Measured absent-XML defaults are limited to Program/Layer/Keygroup Gain1/Pan0 and SamplePlayer Gain1; a missing SamplePlayer Pan is not invented, and a complete property inventory remains unfinished.
 
 The loader/controller owns capture requests and replies. Audio publishes only an atomic minimum processed-packet frame. Commit checks source, activation epoch, worker and core generations, plus the currently saved baseline; captured bytes and baseline change together so a regular capture cannot cause a reload loop. Ordinary loader polling only drains explicit save replies and never invokes authored onSave. Native widget edits remain on the audio timeline.
 

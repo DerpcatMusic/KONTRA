@@ -59,8 +59,11 @@ Increasing queue capacity alone would not establish sustainable playback.
 
 Augmented Orchestra's Bartok member is a valid single-file ZIP wrapper. Bounded
 CRC-checked inflation parses its 97,046 retained graph nodes and 6,984 zones;
-the program still has 787 explicit preflight issues after removing a duplicate
-StepEnvelope rejection formerly attributed to the synthetic ControlGraph category.
+installed checkpoint `25105ae` reports 787 explicit preflight issues after removing
+a duplicate StepEnvelope rejection formerly attributed to ControlGraph. The next
+source pass implements the measured global StepEnvelope scope and reports 786
+issues: both Step source blockers disappear, while the first existing deterministic
+LFO smoothing blocker becomes visible. This does not admit the program.
 Dedicated CombFilter and
 MS20 scalar leaves match authored native helper comparisons but remain outside
 Program admission because the connected-control clock, startup and bypass
@@ -113,6 +116,22 @@ V2 source-worker capture included 52 partial resource updates and ended at
 Lua-requested resources. Genuine bank-font loading uses the existing UI font
 API and shared resource budget; native visual comparison and advanced display
 support remain incomplete.
+
+The next StepEnvelope source retains authoritative Transport beat/playing at
+the renderer frame rather than deriving every hosted beat from elapsed audio
+time. Its independent running-host projection has 108 native endpoint comparisons
+and 434 separately identified float32 consumer-model rows, plus five focused
+source checks. Nonzero starts, aligned positive seeks and aligned running tempo
+changes are covered; stops, negative positions, unaligned snapshots, connected
+Step parameters and frequency/rate/block-size changes remain explicit gates.
+The constructor/full host and whole native program audio remain unmeasured.
+
+The next authored NumBox readout uses bank fonts, alignment, ink and background
+resources within its original bounds. Fourteen focused UI checks preserve real
+numeric typing; 32 settled corpus readout checks cover geometry at 360/720 px.
+Native display precision remains uncalibrated: a long frequency can still
+ellipsize in its authored 38-pixel box. This is source-render evidence, not a
+native pixel comparison.
 
 The previous installed `f4e2a17f8c35def9bda97e652c61e708ea95893f` CLI (SHA-256
 `6a80a63eaf1e9c4091adf2000c80886f91fc1a48ea5faec0e064c8f8dc1d7c5b`)
