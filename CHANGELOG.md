@@ -8,6 +8,13 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ## Unreleased
 
+### Local UVI interoperability follow-up
+
+- Preserve validated positive exact CLAP/VST3 attacks at minimum velocity 1 in the current 7-bit adapter. Reject an unrepresentable exact-zero UVI attack by completing only its own root, keeping prior voices and canonical End/backpressure ownership, with a dedicated per-destination diagnostic. Mixed Kontakt/UVI destinations retain genuine Kontakt owners until Off. The separate float core is untouched.
+- Forward documented omitted/zero-channel script AfterTouch as one omni event through the existing Program/Layer scopes and broadcast at both consumers. Explicit channels, strict value/zero-coercion guards, external MIDI and MPE boundaries stay intact.
+- Twenty focused synthetic checks pass, including nine new authored cases, actual Worker/Slot PCM survival and zero audio-heap paths. Current UVI documentation is the AfterTouch semantic source; no new Workstation 4.0.9 oracle, paid-bank/DAW deadline or full Falcon-fidelity proof was performed. Historical RequestCapacity/modwheel failures are separate unresolved performance evidence.
+
+
 ### Accepted 0.3.148 — primary envelope processing and visible crash receipts
 
 Two reviewed logical fixes advance the accepted counter from 0.3.146.

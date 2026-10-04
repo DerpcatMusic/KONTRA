@@ -4,16 +4,28 @@ Status reviewed 2026-10-04. KONTRA's optional `uvi` path implements bounded UFS/
 
 ## Current status
 
-The installed standalone, CLAP and VST3 checkpoint is **`bb60218`**,
+The last recorded installed standalone, CLAP and VST3 checkpoint (18:35 UTC
+on 2026-10-04) is **`1f7d77e`**,
 documented in [the checkpoint report](UVI_TEST_CHECKPOINT.md#current-installed-checkpoint).
-It includes the source changes through `4c62461`. Artifact manifests and
+Its 28 focused synthetic checks cover bank/cache ownership, safe panel-refresh
+diagnostics and exact ConstantClock recurrence. Historical Vectorized/Mapping
+checks belong to `a25fc2e`. Artifact manifests and
 installation receipts identify the verified package; historical full-suite and
 full-corpus counts do not describe a new run of the package or later source.
+Later package build-info and VERIFICATION files supersede that dated identity.
+
+The later source follow-up has 20 focused synthetic functional passes (nine new
+cases) for quiet exact CLAP/VST3 projection, zero-UVI root rejection without
+stopping prior voices, genuine mixed-player Off/End ownership, and documented
+script AfterTouch omni validation, scopes and two-channel consumption. Current
+Kontakt tiny-positive quantization changes at the same older 7-bit adapter; the
+separate float core remains untouched. These passes are not a new native oracle,
+paid-bank/DAW deadline run, complete Mapping proof or universal overrun fix.
 
 | Area | Established scope | Exact remaining boundary |
 | --- | --- | --- |
 | Reader and access | Official Workstation 4.0.9 x64 layout/fingerprint checks, owned protected-bank access verification and private bank-bound records | Reader/bank inputs must remain available; unsupported protection/layouts and unresolved aliases fail explicitly. No universal reader or bank support. |
-| Catalog and program decode | Installed catalog: 26 UVI banks, **660 declarations** (620 Augmented Orchestra, 40 VWinds). Later frozen source `384ed21` decodes/parses **620/620 Augmented** with zero errors and **0/620 static admissions**; see the [census](UVI_AUGMENTED_PROGRAM_CENSUS.md). | External Starter's 50 presets are outside the normal installed catalog. Historical unique decode coverage is 710, but this census checks same-source static preflight only for the 620 Augmented programs. Historical 41 admissions elsewhere were not reevaluated here. Catalog/decode counts are not playable coverage. |
+| Catalog and program decode | Retained catalog audit: 26 UVI banks, **660 declarations** (620 Augmented Orchestra, 40 VWinds). Later frozen source `384ed21` decodes/parses **620/620 Augmented** with zero errors and **0/620 static admissions**; see the [census](UVI_AUGMENTED_PROGRAM_CENSUS.md). | External Starter's 50 presets are outside the normal installed catalog. Historical unique decode coverage is 710, but this census checks same-source static preflight only for the 620 Augmented programs. Historical 41 admissions elsewhere were not reevaluated here. Catalog/decode counts are not playable coverage. |
 | Samples and preload | Historical owned-corpus decode covers 48,440 audio assets. Recent actual V2 Clarinet preload retains 196 PCM resources / 317,220,848 bytes and exact scalar bits | Resident packed PCM only; protected-UFS streaming is absent. Decode success does not establish complete routing, DSP, Lua or instrument fidelity. Initial resources exclude later script-requested loads. |
 | Lua, events and resources | Original-script initialization/render observations, typed native objects, cooperative callbacks, scoped host-note ownership and success/failure audio-resource completion | Complete host/property inventory, synthetic Part/Synth setters, MPE/tuning/expression projection and native asynchronous interleaving remain incomplete. The allocating VM runs on the worker, off the audio callback. |
 | Instrument UI | Installed original/V2 Clarinet census: 273/285 widgets, 38/39 pictures, one font each, 720×480 roots, zero failed/limited references. Authored drawing/edit/scaling regressions exist | Census snapshots are frame zero and exercise no controls. Native pixel fidelity, calibrated precision/pan readouts, advanced displays and installed Bitwig interaction remain unverified. Later Table colors and parent-subtree ordering have separate [source interaction evidence](UVI_PANEL_ORDER_EVIDENCE.md). |
@@ -30,7 +42,7 @@ from 38,903 to 1,231. Requested allocation traffic is not peak memory, and no
 whole-load startup speed gain was demonstrated. Catalog hydration, sample
 preparation and renderer CPU measurements must remain separate.
 
-Installed `817b03a` includes [hierarchical preset menus](UVI_HIERARCHICAL_MENU_EVIDENCE.md):
+Earlier installed `817b03a` introduced [hierarchical preset menus](UVI_HIERARCHICAL_MENU_EVIDENCE.md):
 actual original/V2 source UI selection preserves authored item indices and
 invokes the hosted changed callback across tested sizes. Native menu placement
 and style remain unverified. A [bounded static BiquadFilter path](UVI_BIQUAD_STATIC_EVIDENCE.md)
@@ -40,14 +52,14 @@ nodes and **zero additional whole presets**. Changed/connected controls, broader
 filter modes/settings and whole-host fidelity remain gated. Their source proofs
 do not establish installed DAW interaction or native instrument parity.
 
-Installed `bb60218` adds bounded malformed Kontakt UTF-16 diagnostics,
+Earlier installed `bb60218` introduced bounded malformed Kontakt UTF-16 diagnostics,
 the [Linux dual-Lua ownership proof](PLAYER_LUA_RUNTIME_BOUNDARY.md), authored
 Table colors and parent-subtree order, and [immutable initial-admission reuse
 with phase cancellation](UVI_LOADING_ADMISSION_EVIDENCE.md). The measured 3.11%
 initialization-wall reduction is a paired source-helper result for one instrument;
 it is not complete UI startup, audio adoption, realtime or native-fidelity evidence.
 
-That checkpoint also adds [bounded static shared CompExp processing](UVI_COMPEXP_STATIC_EVIDENCE.md):
+That historical checkpoint also adds [bounded static shared CompExp processing](UVI_COMPEXP_STATIC_EVIDENCE.md):
 288 native comparisons admit 11 observed nodes in seven presets, while every
 whole preset retains other blockers. The [Brickwall cascade](UVI_BRICKWALL_CASCADE_EVIDENCE.md)
 has 1,380 scoped comparisons but its full callback stays unverified and unadmitted.

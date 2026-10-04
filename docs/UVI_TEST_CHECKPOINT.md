@@ -6,6 +6,56 @@ Unsupported native graphs remain explicit failures. Starter coverage is still
 1/50; the paid-library audit and native DSP comparisons have separate limits in
 [uvi-compatibility.md](uvi-compatibility.md).
 
+## Current installed checkpoint
+
+At the recorded installation on 2026-10-04, 18:35 UTC, the standalone, CLAP
+and VST3 identify clean source
+`1f7d77e0fcf04d5b0b630ea09edb1e3ed2fc0436`, build hash `ee1a3497be03cfa9`,
+version 0.3.148, baseline Linux x86_64 and optimized `ci` profile. The package is
+`KONTRA-UVI-checkpoint-1f7d77e-linux-x86_64`. Factory enumeration and runtime
+library resolution pass; all 28 configuration/access files were preserved.
+Running host instances retain their earlier binary until the user reloads them.
+For a later local package, its build-info and VERIFICATION files supersede this
+dated installation record.
+
+Since `a25fc2e`, the checkpoint adds opened-bank identity checks for direct reads
+and optional PCM-cache hashes, safe Ready-poll panel failures/recovery without
+settling unsuccessful control receipts, and immutable-rate ConstantClock coefficient
+reuse. All 28 new focused synthetic functional checks pass. ConstantClock grows
+from 48 to 64 bytes on this target; no new throughput measurement was made.
+Each retained bank pins one opened file and 320 header bytes. Unix replacements
+are rejected by device/inode checks; weaker non-Unix identity and hidden same-inode
+changes remain explicit limits. Transient eager-initialization panel failures
+are outside the Ready-poll diagnostics.
+
+The earlier `a25fc2e` checkpoint adds supported Vectorized controls, exact GUI
+FIFO tickets paired with processor snapshots, intrinsic Mapping row/column sizing
+and note/velocity/source inspection, plus unchanged-frequency OnePole coefficient
+reuse. Its 50 focused checks and authored compact Mapping/full-editor captures
+remain historical evidence, rather than repeated checks of the current binary.
+Tickets prove initial callback dispatch or nonfatal rejection, not completion of
+a yielded callback or audible output. Buffering/polling latency remains.
+
+The later source follow-up corrects positive exact CLAP/VST3 velocity lowering
+and rejected exact-zero UVI ownership, and implements documented script AfterTouch
+omni forwarding/consumption. Twenty focused synthetic functional checks pass,
+including nine new authored cases: quiet exact PCM, prior Worker/Slot PCM survival,
+End/backpressure and genuine mixed Kontakt/UVI Off ownership, unchanged input/MPE
+and tuning gates, plus AfterTouch validation/scoped forwarding and two active
+channels. The reference Engine helper proof is not full Mapping playback evidence.
+AfterTouch semantics follow current documentation; native Workstation 4.0.9 oracle
+coverage was not added. The exact package revision is recorded in its build-info,
+VERIFICATION and installation receipt. This follow-up does not establish universal
+resolution of historical Bridge(RequestCapacity)/modwheel CPU failures.
+
+Full Falcon parity, native modeling equivalence, complete bank coverage and current
+user-DAW deadlines remain unproved. Current Mapping shows initial sampled zones,
+not live RR/microphone classification; raw selected-sample audition is not installed.
+XY, WaveView and AudioMeter require native bindings and genuine owned data.
+Native library-cover identity is unresolved despite working sidecar publication.
+The older sections below retain their exact dated scope and do not supersede this
+installed revision.
+
 ## Start and load
 
 Build the CLI, plugin library and standalone with the `uvi,standalone` features.

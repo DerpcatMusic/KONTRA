@@ -2409,6 +2409,10 @@ impl<'a> Renderer<'a> {
                 ensure!(*channel < 16 && *value < 128, "Invalid UVI pressure");
                 self.pressures[*channel as usize] = f64::from(*value) / 127.;
             }
+            script::Action::AfterTouchAll { value } => {
+                ensure!(*value < 128, "Invalid UVI omnichannel pressure");
+                self.pressures.fill(f64::from(*value) / 127.);
+            }
             script::Action::PolyAfterTouch {
                 channel,
                 note,
@@ -6230,6 +6234,47 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn documented_aftertouch_omni_reaches_two_live_channels_without_reidentifying_notes() {
+        let p = parse_program(r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
+          function onInit()wait(1);afterTouch(127)end
+        ]]></script></ScriptProcessor></EventProcessors><Layers><Layer><Keygroups><Keygroup>
+        <Connections><SignalConnection Source="@ChanAfterTouch" Destination="Gain" Ratio="1"/></Connections>
+        <Oscillators><SamplePlayer SamplePath="a" NoteTracking="0"/></Oscillators>
+        </Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let processed = script::process_program_chain(&p, BTreeMap::new(), None, &[
+            script::Input { frame: 0, kind: script::InputKind::NoteOn { channel: 0, note: 60, velocity: 100 } },
+            script::Input { frame: 0, kind: script::InputKind::NoteOn { channel: 9, note: 61, velocity: 100 } },
+        ], 1024).unwrap();
+        assert_eq!(processed.commands.iter().filter(|c| matches!(c.action, script::Action::AfterTouchAll { value: 127 })).count(), 1);
+        let run = |commands: &[script::Command]| {
+            let mut source = sample(1);
+            source.interleaved = Storage::from_f32(vec![0.25; 8]).unwrap();
+            let mut renderer = Renderer::new(&p, HashMap::from([("a".into(), Arc::new(source))]), 48000).unwrap();
+            let output = renderer.render(commands, &processed.host_commands, 1024).unwrap();
+            let notes = renderer.voices.iter().map(|v| (v.note.id, v.note.channel)).collect::<Vec<_>>();
+            assert_eq!(notes.len(), 2);
+            assert!(notes.iter().any(|(_, c)| *c == 0) && notes.iter().any(|(_, c)| *c == 9));
+            let before = renderer.pressures;
+            assert!(renderer.apply_note(&script::Action::AfterTouchAll { value: 128 }).is_err());
+            assert_eq!(renderer.pressures, before);
+            (output, notes)
+        };
+        let replace = |channels: &[u8]| processed.commands.iter().flat_map(|c| {
+            if let script::Action::AfterTouchAll { value } = c.action {
+                channels.iter().map(|&channel| script::Command { frame: c.frame,
+                    action: script::Action::AfterTouch { channel, value } }).collect::<Vec<_>>()
+            } else { vec![c.clone()] }
+        }).collect::<Vec<_>>();
+        let (omni, notes) = run(&processed.commands);
+        let (explicit, explicit_notes) = run(&replace(&[0, 9]));
+        assert_eq!(notes, explicit_notes);
+        assert_eq!(omni, explicit);
+        let (targeted, targeted_notes) = run(&replace(&[0]));
+        assert_eq!(notes, targeted_notes);
+        assert!(omni.iter().zip(&targeted).any(|(all, one)| all[0] > one[0] + 1e-4));
+    }
+
     #[test]
     fn keygroup_scalar_pressure_gain_matches_native_control_points() {
         let p=parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Connections><SignalConnection Source="@ChanAfterTouch" Destination="Gain" Ratio="1"/></Connections><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();

@@ -733,6 +733,11 @@ impl Slot {
                 owner.held = false;
             }
             self.notes.complete(root);
+            if velocity == 0 && self.error.is_none() && !mpe && tune == 0. {
+                // Exact zero is unsupported by this Program's MIDI ingress.
+                // Complete only its root; no command or activation fault is sent.
+                return Ok(());
+            }
             let error = if mpe {
                 Error::UnsupportedMpe
             } else if tune != 0. {
@@ -958,6 +963,55 @@ mod tests {
         }
         audible
     }
+    #[test]
+    fn exact_zero_completes_only_its_root_and_keeps_actual_worker_playing() {
+        let (mut worker,mut slot,path,_) = authored_slot();
+        slot.feed(In::HostOn(note(10),100,0.),0,true,false).unwrap();
+        assert!(render_slot(&mut slot,4));
+        let room = slot.bridge.remaining_hosted_capacity();
+        assert_eq!(super::super::tests::allocations(|| {
+            slot.feed(In::HostOn(note(11),0,0.),0,true,false).unwrap();
+        }),0);
+        assert_eq!(slot.bridge.remaining_hosted_capacity(),room,"zero attack queued a command");
+        assert!(slot.has_host_note(note(11)),"identity must wait for canonical End acceptance");
+        assert!(!slot.host_note_pending(note(11)));
+        assert!(slot.host_note_pending(note(10)) && slot.host_key_held(2,60));
+        assert!(slot.error().is_none() && slot.bridge.failure().is_none());
+        assert!(render_slot(&mut slot,3),"zero attack stopped the held voice");
+        assert_eq!(worker.status(),crate::uvi::worker::Status::Ready);
+        slot.retire_host_note(note(11));
+        assert!(!slot.has_host_note(note(11)));
+        slot.feed(In::HostOn(note(11),1,0.),0,true,false).unwrap();
+        assert!(render_slot(&mut slot,3));
+        assert!(slot.host_note_pending(note(11)),"accepted End did not permit ID reuse");
+        // The MIDI zero convention releases a typed owner, not either exact ID.
+        slot.feed(In::NoteOn(2,64,100),0,true,false).unwrap();
+        assert!(render_slot(&mut slot,2));
+        let room = slot.bridge.remaining_hosted_capacity();
+        slot.feed(In::NoteOn(2,64,0),0,false,false).unwrap();
+        assert_eq!(slot.bridge.remaining_hosted_capacity(),room-1);
+        assert!(slot.notes.owners.iter().flatten().filter(|o| o.host.is_none() && o.key==64)
+            .all(|o| !o.held));
+        assert!(slot.host_note_pending(note(10)) && slot.host_note_pending(note(11)));
+        assert!(render_slot(&mut slot,3));
+        assert!(slot.error().is_none());
+        drop(slot); worker.stop(); std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn exact_zero_does_not_mask_mpe_or_initial_tuning_rejection() {
+        for (mpe,tune,expected) in [(true,0.,Error::UnsupportedMpe),
+            (false,0.5,Error::UnsupportedInitialTuning)] {
+            let (mut worker,mut slot,path,_) = authored_slot();
+            assert!(matches!(slot.feed(In::HostOn(note(10),0,tune),0,true,mpe),
+                Err(error) if error==expected));
+            assert_eq!(slot.error(),Some(expected));
+            assert!(!slot.host_note_pending(note(10)) && slot.has_host_note(note(10)));
+            assert!(slot.bridge.failure().is_some());
+            drop(slot); worker.stop(); std::fs::remove_file(path).unwrap();
+        }
+    }
+
     #[test]
     fn actual_worker_choke_keeps_activation_ui_and_consumed_end_fence() {
         let (mut worker, mut slot, path, processor) = authored_slot();

@@ -108,6 +108,10 @@ pub enum Action {
         channel: u8,
         value: u8,
     },
+    /// Omni channel pressure within the current Program.
+    AfterTouchAll {
+        value: u8,
+    },
     PolyAfterTouch {
         channel: u8,
         note: u8,
@@ -1111,19 +1115,21 @@ impl State {
                 Ok(None)
             }
             208 => {
-                let channel = event.get::<Option<u8>>("channel")?.unwrap_or(1);
+                let channel = event.get::<Option<u8>>("channel")?.unwrap_or(0);
                 let value = event.get::<u8>("value")?;
-                if !(1..=16).contains(&channel) || value > 127 {
+                // Preserve u8 coercion for explicit channels; only original
+                // numeric zero (or omission) may acquire the new omni meaning.
+                if channel > 16 || value > 127
+                    || (channel == 0 && event.get::<Option<f64>>("channel")?.is_some_and(|n| n != 0.))
+                {
                     return Err(mlua::Error::runtime("Invalid UVI aftertouch fields"));
                 }
-                self.emit_event(
-                    at,
-                    Action::AfterTouch {
-                        channel: channel - 1,
-                        value,
-                    },
-                    event,
-                )?;
+                let action = if channel == 0 {
+                    Action::AfterTouchAll { value }
+                } else {
+                    Action::AfterTouch { channel: channel - 1, value }
+                };
+                self.emit_event(at, action, event)?;
                 Ok(None)
             }
             kind => Err(mlua::Error::runtime(format!(
@@ -2259,6 +2265,16 @@ impl Runtime {
                     Action::ControllerAll { controller, value } => {
                         event.set("channel", Value::Nil)?;
                         event.set("controller", *controller)?;
+                        event.set("value", *value)?;
+                        None
+                    }
+                    Action::AfterTouch { channel, value } => {
+                        event.set("channel", *channel + 1)?;
+                        event.set("value", *value)?;
+                        None
+                    }
+                    Action::AfterTouchAll { value } => {
+                        event.set("channel", Value::Nil)?;
                         event.set("value", *value)?;
                         None
                     }
@@ -3432,6 +3448,75 @@ mod tests {
         } else {
             process(source, "authored-callback-selection", inputs, until)
         }
+    }
+
+    #[test]
+    fn documented_aftertouch_omni_helpers_posts_and_strict_values() {
+        for source in ["afterTouch(99)", "afterTouch(99,0)", "afterTouch(99,-0.0)",
+            "afterTouch(99,'0')", "postEvent{type=Event.AfterTouch,value=99}",
+            "postEvent{type=Event.AfterTouch,value=99,channel=0}"] {
+            let commands = process(source, "authored-aftertouch-omni", &[], 0).unwrap();
+            assert_eq!(commands.len(), 1);
+            assert!(matches!(commands[0].action, Action::AfterTouchAll { value: 99 }));
+        }
+        for (source, expected) in [("afterTouch(99,1)", 0), ("afterTouch(99,16)", 15),
+            ("postEvent{type=Event.AfterTouch,value=99,channel=3}", 2)] {
+            let commands = process(source, "authored-aftertouch-explicit", &[], 0).unwrap();
+            assert!(matches!(commands[0].action, Action::AfterTouch { channel, value: 99 } if channel == expected));
+        }
+        for source in ["afterTouch(128)", "afterTouch(-1)", "afterTouch(0/0)", "afterTouch(1/0)",
+            "afterTouch(nil)", "afterTouch(true)", "afterTouch(42,17)", "afterTouch(42,-1)",
+            "afterTouch(42,0.5)", "afterTouch(42,'0.5')", "afterTouch(42,1e-20)",
+            "afterTouch(42,-0.1)", "afterTouch(42,0/0)", "afterTouch(42,'oops')",
+            "afterTouch(42,0,0)", "postEvent{type=Event.AfterTouch,value=128,channel=0}"] {
+            assert!(process(source, "authored-aftertouch-invalid", &[], 0).is_err(), "{source}");
+        }
+        for channel in [0, 15] {
+            let commands = process("", "authored-external-pressure", &[Input { frame: 0,
+                kind: InputKind::AfterTouch { channel, value: 99 } }], 0).unwrap();
+            assert!(matches!(commands[0].action, Action::AfterTouch { channel: c, value: 99 } if c == channel));
+        }
+        for kind in [InputKind::AfterTouch { channel: 16, value: 99 },
+            InputKind::AfterTouch { channel: 0, value: 128 }] {
+            assert!(process("", "authored-external-invalid", &[Input { frame: 0, kind }], 0).is_err());
+        }
+    }
+
+    #[test]
+    fn aftertouch_omni_is_one_nil_channel_event_per_downstream_processor() {
+        let child = r#"local seen=0
+            function onAfterTouch(e)
+              seen=seen+1;assert(seen<=5)
+              if e.value<50 then assert(e.channel==nil) else assert(e.channel==16) end
+              postEvent(e)
+            end"#;
+        let p = parse_program(&format!(r#"<Program><EventProcessors>
+          <ScriptProcessor><script><![CDATA[function onInit()
+            afterTouch(11);afterTouch(22,0)
+            postEvent{{type=Event.AfterTouch,value=33}}
+            postEvent{{type=Event.AfterTouch,value=44,channel=0}}
+            afterTouch(55,16)
+          end]]></script></ScriptProcessor>
+          <ScriptProcessor><script><![CDATA[{child}]]></script></ScriptProcessor>
+          </EventProcessors><Layers>
+          <Layer><EventProcessors><ScriptProcessor><script><![CDATA[{child}]]></script></ScriptProcessor></EventProcessors></Layer>
+          <Layer><EventProcessors><ScriptProcessor><script><![CDATA[{child}]]></script></ScriptProcessor></EventProcessors></Layer>
+          </Layers></Program>"#)).unwrap();
+        let result = process_program_chain(&p, BTreeMap::new(), None, &[], 0).unwrap();
+        assert_eq!(result.commands.len(), 10); // Five logical events, two Layer leaves.
+        assert_eq!(result.commands.iter().filter(|c| matches!(c.action, Action::AfterTouchAll { .. })).count(), 8);
+        assert_eq!(result.commands.iter().filter(|c| matches!(c.action, Action::AfterTouch { channel: 15, value: 55 })).count(), 2);
+        let scoped = parse_program(r#"<Program><Layers><Layer><EventProcessors>
+          <ScriptProcessor><script><![CDATA[function onInit()afterTouch(66,0)end]]></script></ScriptProcessor>
+          <ScriptProcessor><script><![CDATA[function onAfterTouch(e)
+            assert(e.channel==nil and e.value==66);postEvent(e)
+          end]]></script></ScriptProcessor></EventProcessors></Layer>
+          <Layer><EventProcessors><ScriptProcessor><script><![CDATA[function onAfterTouch(e)
+            error('Layer sender escaped its downstream chain')
+          end]]></script></ScriptProcessor></EventProcessors></Layer></Layers></Program>"#).unwrap();
+        let scoped = process_program_chain(&scoped, BTreeMap::new(), None, &[], 0).unwrap();
+        assert_eq!(scoped.commands.len(), 1);
+        assert!(matches!(scoped.commands[0].action, Action::AfterTouchAll { value: 66 }));
     }
 
     #[test]
