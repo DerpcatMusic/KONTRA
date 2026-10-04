@@ -1,5 +1,7 @@
 pub mod ksp;
 pub mod build_info;
+#[cfg(test)]
+mod test_support;
 pub mod import;
 // Encrypted library content: the `library-access` feature (enabled by default).
 #[cfg_attr(feature = "library-access", path = "access.rs")]

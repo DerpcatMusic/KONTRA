@@ -380,7 +380,7 @@ mod tests {
         let mut expected = vec![0.; 12_083];
         let mut actual = vec![0.; expected.len()];
         whole.render(&mut expected);
-        let allocations = crate::plugin::tests::allocations(|| {
+        let allocations = crate::test_support::allocations(|| {
             let mut from = 0;
             while from < actual.len() {
                 let n = [17, 111][(from / 128) & 1].min(actual.len() - from);
@@ -468,7 +468,7 @@ mod tests {
         let (mut a, mut ar, mut b, mut br, mut envelope) =
             ([0.; 128], [0.; 128], [0.; 128], [0.; 128], [0.; 128]);
         let mut initial = [0.; 128];
-        let allocations = crate::plugin::tests::allocations(|| {
+        let allocations = crate::test_support::allocations(|| {
             for e in [&mut whole, &mut split] {
                 e.note_on(7, 60, 127);
             }

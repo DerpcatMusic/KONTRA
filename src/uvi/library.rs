@@ -153,9 +153,12 @@ impl Library {
 
     pub fn program(&self, name: &str, namespace: &[u8]) -> Result<LoadedProgram> {
         let member = resolve_member(&self.directory, name)?;
+        ensure!(
+            member.size <= crypto::PROGRAM_XML_LIMIT as u64,
+            "UVI Program member exceeds 32 MiB limit"
+        );
         let bytes = self.read(member)?;
-        let text = std::str::from_utf8(&bytes).context("Decoded UVI program is not UTF-8")?;
-        let text = crypto::decode_program(text, namespace)?;
+        let text = crypto::decode_program_bytes(&bytes, namespace)?;
         Ok(LoadedProgram {
             program: program::parse_program(&text)?,
             path: member
@@ -278,6 +281,15 @@ impl Library {
     /// Decode each referenced sample once, retaining every source channel.
     /// Bypassed oscillators still need their resources if Lua enables them.
     pub fn samples(&self, loaded: &LoadedProgram) -> Result<HashMap<String, Arc<Sample>>> {
+        self.samples_with_progress(loaded, &mut |_, _, _, _, _| {})
+    }
+
+    /// Worker-only scalar progress: unique paths, successful aliases/decodes,
+    /// resident PCM and the resource currently being resolved. No PCM copies.
+    pub(crate) fn samples_with_progress(
+        &self, loaded: &LoadedProgram,
+        progress: &mut dyn FnMut(usize, usize, usize, usize, Option<&str>),
+    ) -> Result<HashMap<String, Arc<Sample>>> {
         let mut result = HashMap::<String, Arc<Sample>>::new();
         let mut cache = HashMap::<Vec<u64>, Arc<Sample>>::new();
         let mut total = 0usize;
@@ -298,8 +310,10 @@ impl Library {
                         .map(|path| (path.as_str(), true)),
                     _ => None,
                 }
-            }));
-        for (path, wavetable) in paths.filter(|(p, _)| !p.is_empty()) {
+            })).filter(|(path, _)| !path.is_empty()).collect::<Vec<_>>();
+        let expected = paths.iter().map(|(path, _)| *path).collect::<HashSet<_>>().len();
+        progress(expected, 0, 0, 0, None);
+        for (path, wavetable) in paths {
             if let Some(sample) = result.get(path) {
                 ensure!(
                     wavetable || !sample.wavetable_image,
@@ -307,6 +321,7 @@ impl Library {
                 );
                 continue;
             }
+            progress(expected, result.len(), cache.len(), total, Some(path));
             let identity = self.audio_identity(&loaded.path, path)?;
             let sample = if let Some(sample) = cache.get(&identity) {
                 ensure!(
@@ -332,6 +347,7 @@ impl Library {
                 sample
             };
             result.insert(path.to_owned(), sample);
+            progress(expected, result.len(), cache.len(), total, None);
         }
         Ok(result)
     }
@@ -552,6 +568,19 @@ mod tests {
                 metadata_key: 0,
             },
         });
+        let loaded = LoadedProgram { path: "Programs/authored.uvip".into(),
+            program: program::parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators>
+                <SamplePlayer SamplePath="../Samples/authored.wav"/>
+                <SamplePlayer SamplePath="/Samples/authored.wav"/>
+                <SamplePlayer SamplePath="/Samples/missing.wav"/>
+            </Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap() };
+        let mut progress = Vec::new();
+        assert!(library.samples_with_progress(&loaded, &mut |total, loaded, unique, bytes, current|
+            progress.push((total, loaded, unique, bytes, current.map(str::to_owned)))).is_err());
+        let last = progress.last().unwrap();
+        assert_eq!((last.0, last.1, last.2, last.3), (3, 2, 1, 8));
+        assert_eq!(last.4.as_deref(), Some("/Samples/missing.wav"));
+        assert_eq!(progress[0], (3, 0, 0, 0, None));
         let resources =
             BankResources::new(library.clone(), "Programs/authored.uvip", HashMap::new()).unwrap();
         let read = resources.capability();

@@ -226,7 +226,7 @@ mod tests {
         let mut delay = SourceDelay::new(1024).unwrap();
         let bytes = delay.memory_bytes();
         assert_eq!(
-            crate::plugin::tests::allocations(|| {
+            crate::test_support::allocations(|| {
                 assert!(delay.set_delay(1024));
                 for _ in 0..16 {
                     delay.process(

@@ -625,7 +625,7 @@ mod tests {
         rack.controls[0].aux_gain = 0.25;
         rack.tap = Some(0);
         assert_eq!(
-            crate::plugin::tests::allocations(|| {
+            crate::test_support::allocations(|| {
                 for _ in 0..8 {
                     rack.render_live_with(MAX_BLOCK, |_, left, right| {
                         left.fill(0.5);
@@ -757,7 +757,7 @@ mod tests {
         let mut delays = [SourceDelay::new(513).unwrap()];
         assert!(delays[0].set_delay(513));
         assert_eq!(
-            crate::plugin::tests::allocations(|| {
+            crate::test_support::allocations(|| {
                 for _ in 0..16 {
                     rack.render_live_with_delay(MAX_BLOCK, |_, _, _| false, &mut delays);
                 }

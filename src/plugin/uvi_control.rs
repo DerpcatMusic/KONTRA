@@ -345,6 +345,14 @@ impl Registry {
         )
     }
 
+    /// Loader-only terminal evidence, captured before cancellation retires Lua.
+    pub fn failure_context(&self, epoch: u64, generation: u64) -> Option<serde_json::Value> {
+        let control = self.controls.get(&(epoch, generation))?;
+        let failure = control.worker.private_failure().map(|reason| reason.chars().take(4096).collect::<String>());
+        Some(serde_json::json!({"status":control.worker.status(),
+            "failure":failure, "stats":control.worker.stats()}))
+    }
+
     pub fn status(&self, epoch: u64, generation: u64) -> Option<Status> {
         self.controls
             .get(&(epoch, generation))
@@ -354,6 +362,11 @@ impl Registry {
     pub fn initialization_progress(&self, epoch: u64, generation: u64) -> Option<(&'static str, std::time::Duration)> {
         self.controls.get(&(epoch,generation)).filter(|control| !control.cancelled)
             .and_then(|control|control.worker.initialization_progress())
+    }
+
+    pub fn load_activity(&self, epoch: u64, generation: u64) -> Option<Arc<crate::uvi::worker::WorkerLoadActivity>> {
+        self.controls.get(&(epoch, generation)).filter(|control| !control.cancelled)
+            .map(|control| control.worker.load_activity())
     }
 
     /// Exactly one audio endpoint is extracted. None is normal while starting

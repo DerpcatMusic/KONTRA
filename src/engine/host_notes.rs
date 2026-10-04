@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn exact_roots_keep_finite_attacks_pedals_children_and_late_expressions_without_heap() {
         let mut e=engine(false);
-        assert_eq!(crate::plugin::tests::allocations(|| {
+        assert_eq!(crate::test_support::allocations(|| {
             assert!(e.host_note_on(note(10),7,48,100,0.)); render(&mut e,1);
             e.host_note_off(pattern(10));
             assert!(e.host_note_on(note(11),7,48,100,0.));
@@ -199,7 +199,7 @@ mod tests {
         }),0);
 
         let mut e=engine(true);
-        assert_eq!(crate::plugin::tests::allocations(|| {
+        assert_eq!(crate::test_support::allocations(|| {
             assert!(e.host_note_on(note(20),7,48,100,0.)); render(&mut e,8);
             assert_eq!(e.active_voices(),0); e.mark_host_notes(); assert!(e.host_note_pending(note(20)));
             e.cc(7,66,127); e.host_note_off(pattern(20));
@@ -216,7 +216,7 @@ mod tests {
         e.set_mpe_zone(Some((0,1<<1)));
         let first=HostNote { channel:1,..note(25) };
         let old=HostPattern { channel:1,..pattern(25) };
-        assert_eq!(crate::plugin::tests::allocations(|| {
+        assert_eq!(crate::test_support::allocations(|| {
             e.set_expression_on(1,48,Expression { tune:2.,..Default::default() });
             assert!(e.host_note_on(first,1,48,100,0.)); render(&mut e,1);
             e.host_note_off(old);
@@ -234,7 +234,7 @@ mod tests {
         let script="on note\nignore_event($EVENT_ID)\nplay_note($EVENT_NOTE+12,100,0,-1)\nwait(10000)\nplay_note($EVENT_NOTE+13,100,0,20000)\nend on\non release\nwait(5000)\nplay_note(72,100,0,0)\nend on";
         let (rt,errors)=crate::ksp::Runtime::with_scripts(&[script],&mut crate::ksp::LogEngine::default(),0,Vec::new());
         assert!(errors.iter().all(Option::is_none)); e.set_script(Some(Box::new(rt)));
-        assert_eq!(crate::plugin::tests::allocations(|| {
+        assert_eq!(crate::test_support::allocations(|| {
             assert!(e.host_note_on(note(30),7,48,100,0.)); render(&mut e,1);
             e.host_note_off(pattern(30));
             assert!(e.host_note_on(note(31),7,48,100,0.));
@@ -267,7 +267,7 @@ mod tests {
             let c=HostNote { key:64,..note(12) };
             assert!(e.host_note_on(note(10),7,48,100,0.)); assert!(e.host_note_on(b,7,50,100,0.)); render(&mut e,1);
             let spent=e.script().unwrap().env.spent;
-            assert_eq!(crate::plugin::tests::allocations(|| {
+            assert_eq!(crate::test_support::allocations(|| {
                 // Offline mode removes wall-clock variability; the fixed fuel
                 // forces A's release to yield inside its loop, before reads.
                 e.begin_audio_block(128,1,true);
@@ -285,7 +285,7 @@ mod tests {
             assert!(matches!(paused[0]["$i"],crate::ksp::Value::Int(i) if i>0 && i<2000));
             assert_eq!(paused[0]["$b"],crate::ksp::Value::Int(-1));
             assert_eq!(paused[0]["$c"],crate::ksp::Value::Int(-1));
-            assert_eq!(crate::plugin::tests::allocations(|| {
+            assert_eq!(crate::test_support::allocations(|| {
                 e.begin_audio_block(128,1,true); render(&mut e,4);
                 assert!(e.key_down(7,52));
             }),0);
@@ -301,7 +301,7 @@ mod tests {
         let (rt,errors)=crate::ksp::Runtime::with_scripts(&[script],&mut crate::ksp::LogEngine::default(),0,Vec::new());
         assert!(errors.iter().all(Option::is_none));
         let mut e=engine(false); e.set_script(Some(Box::new(rt)));
-        assert_eq!(crate::plugin::tests::allocations(|| {
+        assert_eq!(crate::test_support::allocations(|| {
             assert!(e.host_note_on(note(10),7,48,100,0.));
             assert!(e.host_note_on(HostNote { key:62,..note(11) },7,50,100,0.)); render(&mut e,1);
             e.host_note_choke(pattern(10));
@@ -314,7 +314,7 @@ mod tests {
         assert!(errors.iter().all(Option::is_none));
         let mut e=engine(false); e.set_script(Some(Box::new(rt)));
         let mut old=None;
-        assert_eq!(crate::plugin::tests::allocations(|| {
+        assert_eq!(crate::test_support::allocations(|| {
             assert!(e.host_note_on(note(20),7,48,100,0.)); render(&mut e,1);
             e.mark_host_notes(); assert!(e.host_note_pending(note(20)));
             old=e.set_bank(None);
@@ -336,7 +336,7 @@ mod tests {
                 let (rt,errors)=crate::ksp::Runtime::with_scripts(&["on note\nend on"],&mut crate::ksp::LogEngine::default(),0,Vec::new());
                 assert!(errors.iter().all(Option::is_none)); e.set_script(Some(Box::new(rt)));
             }
-            assert_eq!(crate::plugin::tests::allocations(|| {
+            assert_eq!(crate::test_support::allocations(|| {
                 assert!(e.host_note_on(note(10),7,48,100,0.));
                 assert!(e.host_note_on(note(11),7,48,100,0.));
                 e.note_on_from(7,4,48,100); render(&mut e,1);
@@ -366,7 +366,7 @@ mod tests {
         let first=owners.allocate(note(0),7,48,100,EventId(1),0).unwrap();
         assert!(owners.allocate(HostNote { channel:5,..note(0) },7,48,100,EventId(2),0).is_some(),"ID alone is not a complete host tuple");
         assert!(owners.allocate(note(0),7,48,100,EventId(3),0).is_none());
-        assert_eq!(crate::plugin::tests::allocations(|| {
+        assert_eq!(crate::test_support::allocations(|| {
             for id in 1..crate::ksp::EVENT_CAPACITY-1 { assert!(owners.allocate(note(id as i32),7,48,100,EventId(id as u32),0).is_some()); }
             assert!(owners.allocate(note(99999),7,48,100,EventId(4),0).is_none());
             assert_eq!(owners.dropped,2); assert_eq!(owners.get(first).unwrap().note,note(0));

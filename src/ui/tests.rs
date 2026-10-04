@@ -3263,7 +3263,7 @@ fn authored_native_full_editor_capture_and_terminal_failure() {
         let count = view.parts.len().max(1);
         view.parts.resize_with(count, PartView::default);
         let published = Arc::new(crate::plugin::uvi_ui::Published {
-            stamp, snapshots: Arc::new(vec![snapshot]), pictures: Arc::default(),
+            stamp, snapshots: Arc::new(vec![snapshot]), pictures: Arc::default(), fonts: Arc::default(),
         });
         view.parts[0] = PartView::authored_uvi(source.clone(), published);
     }
@@ -3361,16 +3361,22 @@ fn authored_native_full_editor_capture_and_terminal_failure() {
     assert_eq!(p.selection.read().unwrap().parts[0].channel, 2);
     h.press("tab-rack");
 
-    // A terminal native error clears the performance panel even if its old
-    // snapshot remains published, and cannot keep showing a loading placeholder.
+    // A runtime error preserves initialized controls for inspection. It closes
+    // menus and makes every native edit inert until a fresh activation.
     {
         let mut view = p.shared.view.lock().unwrap();
-        view.parts[0].status = "The UVI instrument could not be loaded.".into();
+        view.parts[0].status = "UVI playback failed. Open Logs for the cause.".into();
+        view.parts[0].load_report = Some(Arc::new(serde_json::json!({"failure":"RequestCapacity at process"})));
         view.parts[0].loading = false;
     }
     h.idle(3);
-    assert!(!shows(&h, "uvi-stage-0") && !shows(&h, &native_id(2)));
-    let failure = label(&h, "stage-0");
-    assert!(failure.contains("could not be loaded") && !failure.contains("Loading"));
+    assert!(shows(&h, "uvi-stage-0") && shows(&h, &native_id(2)));
+    for (widget,key) in [(2,Key::Up),(4,Key::Up),(5,Key::Enter),(6,Key::Space),(7,Key::Enter),(9,Key::Up)] {
+        step(&mut h,&native_id(widget),key);
+    }
+    assert!(!shows(&h,&native_choice),"a failed native panel cannot open a popup");
     assert_eq!(label(&h, "name-0"), "Authored UVI Controls");
+    p.selection.write().unwrap().parts[0].uvi.as_mut().unwrap().bank = "/another/source.ufs".into();
+    h.idle(3);
+    assert!(!shows(&h,"uvi-stage-0"),"the retained panel never crosses a source change");
 }

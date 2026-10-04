@@ -1734,7 +1734,7 @@ mod tests {
         let mut settings: Vec<_> = i.groups.iter().map(GroupSettings::from).collect();
         let addresses: [_; 2] = pars.map(|p| Address::resolve(p, &i.groups).unwrap());
         assert!(!settings[0].envelope.unwrap().ahd_only, "preset flags are not inferred");
-        assert_eq!(crate::plugin::tests::allocations(|| {
+        assert_eq!(crate::test_support::allocations(|| {
             for address in addresses {
                 assert!(write(&mut settings, address, address.decode(1)));
                 assert_eq!(address.encode(read(&settings, address).unwrap()), 1);
@@ -2046,7 +2046,7 @@ mod tests {
         native.prepare(legacy, par(id::INTMOD_INTENSITY, 1), legacy.encode(1.));
         assert_eq!(native.capacity().0, 1, "aliases share the physical target");
         let mut saved = native.snapshot();
-        assert_eq!(crate::plugin::tests::allocations(|| {
+        assert_eq!(crate::test_support::allocations(|| {
             for (raw, st) in [(0, -12.), (250_000, -1.5), (500_000, 0.),
                 (750_000, 1.5), (775_160, 2.), (1_000_000, 12.), (1_129_961, 24.), (1_221_125, 36.)] {
                 let physical = pitch.decode(raw);
@@ -2144,7 +2144,7 @@ mod tests {
             assert_eq!(ar, br);
             assert!(al.iter().chain(ar.iter()).all(|x| x.is_finite()));
         };
-        assert_eq!(crate::plugin::tests::allocations(|| {
+        assert_eq!(crate::test_support::allocations(|| {
             a.note_on(0, 60, 100); b.note_on(0, 60, 100);
             assert_eq!(a.player.voices[0].map, initial, "saved crossfade survives start modulation");
             assert_eq!(b.player.voices[0].map, initial);
@@ -2247,7 +2247,7 @@ mod tests {
             ([0.; 128], [0.; 128], [0.; 128], [0.; 128], [0.; 128], [0.; 128], [0.; 128], [0.; 128]);
         let equal = |a: &[f32], b: &[f32]| assert!(a.iter().zip(b)
             .all(|(a, b)| (a - b).abs() < 1e-7), "planner partition changed PCM");
-        assert_eq!(crate::plugin::tests::allocations(|| {
+        assert_eq!(crate::test_support::allocations(|| {
             for e in [&mut full, &mut split, &mut stream, &mut no_controls] { e.note_on(0, 60, 127); }
             full.render(&mut a, &mut ar);
             no_controls.render(&mut d, &mut dr);
@@ -2345,7 +2345,7 @@ mod tests {
         let (mut a, mut ar, mut b, mut br) = ([0.; 128], [0.; 128], [0.; 128], [0.; 128]);
         let equal = |a: &[f32], b: &[f32]| assert!(a.iter().zip(b)
             .all(|(a, b)| (a - b).abs() < 1e-7), "live depth write must preserve elapsed source phase");
-        assert_eq!(crate::plugin::tests::allocations(|| {
+        assert_eq!(crate::test_support::allocations(|| {
             live.note_on(0, 60, 127); reference.note_on(0, 60, 127);
             live.render(&mut a[..13], &mut ar[..13]); reference.render(&mut b[..13], &mut br[..13]);
             equal(&a[..13], &b[..13]);
@@ -2445,7 +2445,7 @@ mod tests {
             let mut snapshot = full.script().unwrap().native_state.snapshot();
             let (mut a, mut ar, mut b, mut br, mut c, mut cr) =
                 ([0.; 128], [0.; 128], [0.; 128], [0.; 128], [0.; 128], [0.; 128]);
-            assert_eq!(crate::plugin::tests::allocations(|| {
+            assert_eq!(crate::test_support::allocations(|| {
                 for engine in [&mut full, &mut split, &mut plain] { engine.note_on(0, 60, 127); }
                 full.render(&mut a, &mut ar); plain.render(&mut c, &mut cr);
                 split.render(&mut b[..17], &mut br[..17]); split.render(&mut b[17..], &mut br[17..]);
@@ -2531,7 +2531,7 @@ mod tests {
             let mut reference = group.clone(); reference.volume_lfos.clear(); reference.gain = 0.5;
             let mut actual = create(group); let mut expected = create(reference);
             let (mut a, mut ar, mut b, mut br) = ([0.; 128], [0.; 128], [0.; 128], [0.; 128]);
-            assert_eq!(crate::plugin::tests::allocations(|| {
+            assert_eq!(crate::test_support::allocations(|| {
                 actual.note_on(0, 60, 127); expected.note_on(0, 60, 127);
                 // Bipolar source0 at depth1 is exactly .5, so the independent
                 // reference places group gain.5 at the decoded Amplifier slot.
@@ -2599,7 +2599,7 @@ mod tests {
                 let mut engine = create(); engine.set_script(rt);
                 let mut snapshot = engine.script().unwrap().native_state.snapshot();
                 let (mut l, mut r) = ([0.; 128], [0.; 128]);
-                assert_eq!(crate::plugin::tests::allocations(|| {
+                assert_eq!(crate::test_support::allocations(|| {
                     engine.note_on(0, 60, 127);
                     let mut at = 0;
                     let mut fragment = 0;
@@ -2675,7 +2675,7 @@ mod tests {
                 "native restoration precedes init getters, without reviving a previous note clock");
             let mut expected = create(); expected.bank.as_mut().unwrap().settings[0].pitch_lfos[0].bypassed = true;
             let (mut a, mut ar, mut b, mut br) = ([0.; 128], [0.; 128], [0.; 128], [0.; 128]);
-            assert_eq!(crate::plugin::tests::allocations(|| {
+            assert_eq!(crate::test_support::allocations(|| {
                 replay.note_on(0, 60, 127); expected.note_on(0, 60, 127);
                 replay.render(&mut a, &mut ar); expected.render(&mut b, &mut br);
                 assert!(a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-7),
@@ -2721,7 +2721,7 @@ mod tests {
             engine.set_bank(Some(Box::new(bank)));
             engine.set_script(Some(Box::new(rt)));
             let (mut l, mut r) = ([0.; 2048], [0.; 2048]);
-            assert_eq!(crate::plugin::tests::allocations(|| {
+            assert_eq!(crate::test_support::allocations(|| {
                 engine.note_on(0, 60, 100);
                 engine.render(&mut l, &mut r);
             }), 0);

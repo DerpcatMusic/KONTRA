@@ -878,13 +878,19 @@ impl State {
                     self.id()?
                 };
                 let note = event.get::<u8>("note")?;
-                let velocity = event.get::<Option<u8>>("velocity")?.unwrap_or(100);
+                let velocity = match event.get::<Value>("velocity")? {
+                    Value::Nil => 100.,
+                    Value::Integer(value) => value as f64,
+                    Value::Number(value) => value,
+                    _ => return Err(mlua::Error::runtime("Invalid UVI note velocity")),
+                };
+                // Native NoteOn decoding truncates, narrows to signed 32 bits, then clamps.
+                let velocity = (velocity as i64 as i32).clamp(0, 127) as u8;
                 let channel = event.get::<Option<u8>>("channel")?.unwrap_or(1);
                 let volume = event.get::<Option<f32>>("vol")?.unwrap_or(1.);
                 let pan = event.get::<Option<f32>>("pan")?.unwrap_or(0.);
                 let tune = event.get::<Option<f64>>("tune")?.unwrap_or(0.);
                 if note > 127
-                    || !(1..=127).contains(&velocity)
                     || !(1..=16).contains(&channel)
                     || !volume.is_finite()
                     || volume < 0.
@@ -3316,6 +3322,25 @@ mod tests {
             epoch: 7,
             generation: 9,
             token,
+        }
+    }
+
+    #[test]
+    fn generated_velocity_uses_native_signed_integer_clamp() {
+        let velocities = "-1000,-1.9,0,.9,1.9,126.9,127.9,128,1000,-2147483649,-2147483648,2147483647,2147483648,4294967295,4294967296,4294967297,9007199254740991,9007199254740992,-9223372036854775808,9223372036854774784,9223372036854775808,0/0,math.huge,-math.huge";
+        let expected = [0,0,0,0,1,126,127,127,127,127,0,127,0,0,0,1,0,0,0,0,0,0,0,0];
+        for api in ["playNote(60,v,0)", "playNote{60,v,0}", "postEvent{type=Event.NoteOn,note=60,velocity=v}"] {
+            let source = format!("function onInit() for _,v in ipairs({{{velocities}}}) do {api} end end");
+            let out = process(&source, "authored-generated-velocity", &[], 0).unwrap();
+            let actual: Vec<_> = out.iter().filter_map(|c| match &c.action {
+                Action::Start(n) => Some(n.velocity),
+                _ => None,
+            }).collect();
+            assert_eq!(actual, expected, "{api}");
+        }
+        for value in ["true", "'64'", "{}", "function()end"] {
+            let source = format!("function onInit() playNote(60,{value},0) end");
+            assert!(process(&source, "authored-invalid-velocity", &[], 0).is_err());
         }
     }
 

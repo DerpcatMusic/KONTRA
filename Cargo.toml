@@ -23,7 +23,7 @@ library-access = ["dep:aes"]
 # `audit-ui --shots`: draws views with the CPU renderer (kept out of the plugin).
 shots = ["plugin", "dep:mui"]
 # Experimental UVI containers, programs and offline Lua 5.1 processing.
-uvi = ["dep:roxmltree", "dep:mlua", "dep:base64", "dep:crc32fast", "dep:png", "symphonia/flac"]
+uvi = ["dep:roxmltree", "dep:mlua", "dep:base64", "dep:crc32fast", "dep:png", "dep:flate2", "symphonia/flac"]
 
 [dependencies]
 rustc-hash = "=2.1.3"
@@ -53,6 +53,7 @@ roxmltree = { version = "=0.21.1", optional = true }
 mlua = { version = "=0.12.1", features = ["lua51", "vendored", "error-send"], optional = true }
 base64 = { version = "0.22", optional = true }
 crc32fast = { version = "1.5", optional = true }
+flate2 = { version = "1", optional = true }
 moose = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", default-features = false, features = ["mui"], optional = true }
 moose-clap = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", features = ["mpe-input"], optional = true }
 moose-vst3 = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", optional = true }
@@ -66,6 +67,9 @@ mui-text = { git = "https://github.com/Matari-Audio/MUI", optional = true }
 zune-jpeg = { version = "0.5", default-features = false, features = ["std"], optional = true }
 
 # Stream rings hand idle pages back (madvise).
+[build-dependencies]
+sha2 = "0.10.9"
+
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 libc = "0.2"
 

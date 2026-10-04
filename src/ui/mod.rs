@@ -348,7 +348,7 @@ fn fingerprint(view: &View, h: &mut DefaultHasher) {
         }
         (at(&v.instrument), at(&v.interface), at(&v.wallpaper)).hash(h);
         #[cfg(feature = "uvi")]
-        at(&v.uvi_ui).hash(h);
+        { at(&v.uvi_ui).hash(h); at(&v.uvi_activity).hash(h); }
         v.live_revisions.hash(h);
         for edit in v.edited_values() { edit.hash(h); }
         (Arc::as_ptr(&v.keys) as usize, Arc::as_ptr(&v.pictures) as usize).hash(h);
@@ -1053,7 +1053,9 @@ fn build(
         let native_menus: Vec<El> = (0..cx.selection.parts.len()).filter_map(|slot| {
             let (published, current) = instrument::native_panel(&cx, slot)?;
             let snapshot = published.snapshots.iter().rev().find(|s| s.root.performance_view)?;
+            let interactive = !instrument::failed(&cx, slot);
             let state = cx.state.uvi.get_mut(&slot)?;
+            state.set_interactive(interactive);
             uvi_instrument::popup(ui, state, slot, current, published.stamp, snapshot, window,
                 |stamp, input| cx.p.shared.edit_uvi(slot, stamp, input.edit))
         }).collect();
