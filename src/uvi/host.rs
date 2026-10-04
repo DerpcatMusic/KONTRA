@@ -112,6 +112,13 @@ pub enum ResourceResponse {
 
 pub type Resources = Rc<dyn Fn(&ResourceRequest) -> mlua::Result<ResourceResponse>>;
 
+/// Context objects belong to a host owner, not the authored Program graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExternalContextTarget {
+    Part,
+    Synth,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub enum Action {
     Parameter {
@@ -1085,6 +1092,7 @@ pub fn install(lua: &Lua, config: HostConfig<'_>) -> mlua::Result<Host> {
         let clock = now.clone();
         let ids = host.identities.clone();
         let types = host.types.clone();
+        let graph_nodes = host.baseline.len();
         methods.set(
             "setParameter",
             lua.create_function(move |_, (object, name, value): (Table, String, Value)| {
@@ -1107,6 +1115,17 @@ pub fn install(lua: &Lua, config: HostConfig<'_>) -> mlua::Result<Host> {
                 })?;
                 if std::mem::discriminant(old) != std::mem::discriminant(&value) {
                     return Ok(());
+                }
+                // install_context owns the two identities after the graph.
+                let context = match id.checked_sub(graph_nodes) {
+                    Some(0) => Some(ExternalContextTarget::Part),
+                    Some(1) => Some(ExternalContextTarget::Synth),
+                    _ => None,
+                };
+                if let Some(target) = context {
+                    return Err(mlua::Error::runtime(format!(
+                        "Unowned UVI {target:?} context parameter {name}: no host routing/audio owner is installed"
+                    )));
                 }
                 emit(
                     &commands,
@@ -3066,6 +3085,70 @@ mod tests {
           u.callback=function()count=count+10 end;u:trigger(0);assert(count==12)
         "#).exec().unwrap();
     }
+    #[test]
+    fn unowned_context_writes_fail_before_parameter_or_command_mutation() {
+        let program = parse_program(r#"<Program Name="P" Gain="0.8"/>"#).unwrap();
+        let lua = vm();
+        let host = install(
+            &lua,
+            HostConfig {
+                program: Some(&program),
+                modules: BTreeMap::new(),
+                now: Rc::new(|| 17),
+                resources: None,
+                valid_voice: None,
+                layer_scope: None,
+            },
+        )
+        .unwrap();
+        let before = host.parameters.borrow().clone();
+        let program_object: Table = lua.globals().get("Program").unwrap();
+        let part: Table = program_object.get("parent").unwrap();
+        let synth: Table = part.get("parent").unwrap();
+        assert_eq!(host.object_id(&part).unwrap(), program.nodes.len());
+        assert_eq!(host.object_id(&synth).unwrap(), program.nodes.len() + 1);
+        lua.load(r#"
+          local part=Program.parent
+          local synth=part.parent
+          -- Public fields do not grant or alter object ownership.
+          part._nodeId=0;part.type='Program'
+          local function rejected(object,owner,name,value)
+            local ok,err=pcall(function()object:setParameter(name,value)end)
+            assert(not ok)
+            assert(string.find(tostring(err),'Unowned UVI '..owner..' context parameter '..name,1,true))
+          end
+          -- Even unchanged defaults require a real owner to consume the write.
+          rejected(part,'Part','MidiChannel',-1)
+          rejected(part,'Part','MidiInput',-1)
+          rejected(part,'Part','Gain',0.5)
+          rejected(part,'Part','Pan',0.25)
+          rejected(part,'Part','Bypass',true)
+          rejected(synth,'Synth','Gain',0.5)
+          rejected(synth,'Synth','Pan',0.25)
+          rejected(synth,'Synth','Bypass',true)
+          -- Preserve measured mismatched-type handling.
+          part:setParameter('MidiChannel',false)
+          assert(part:getParameter('MidiChannel')==-1)
+        "#).exec().unwrap();
+        assert_eq!(*host.parameters.borrow(), before);
+        assert!(host.commands.borrow().is_empty());
+        lua.load(r#"
+          Program:setParameter('Gain',0.4)
+          assert(Program:getParameter('Gain')==0.4)
+          assert(not pcall(function()Program.setParameter({_nodeId=0},'Gain',0.2)end))
+          assert(not pcall(function()Program:setParameter('Unretained',1)end))
+        "#).exec().unwrap();
+        let commands = host.commands.borrow();
+        assert_eq!(commands.len(), 1);
+        assert!(matches!(
+            &commands[0].action,
+            Action::Parameter { node, parameter, value }
+                if *node == program.root && parameter == "Gain"
+                    && *value == ParameterValue::Number(0.4)
+        ));
+        assert_eq!(commands[0].frame, 17);
+    }
+
     #[test]
     fn host_graph_modules_units_controls_and_timed_mutations() {
         let program=parse_program(r#"<Program Name="P" Gain="0.8"><Layers><Layer Name="L" Gain="0.6"><Keygroups><Keygroup Name="K" Gain="0.4"><Oscillators><SamplePlayer Name="S" BaseNote="60" SamplePath="synthetic.wav"/></Oscillators><Connections><SignalConnection Name="C" Destination="Gain" Source="X" Ratio="0.2"/></Connections></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
