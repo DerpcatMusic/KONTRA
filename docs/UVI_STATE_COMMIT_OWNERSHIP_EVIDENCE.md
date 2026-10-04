@@ -1,0 +1,27 @@
+# Final saved-state endpoint admission
+
+The controller's final state commit previously checked matching inspection
+context and View identity, but did not recheck installed audio-endpoint ownership.
+Those inspection checks deliberately remain valid for some failed or unadopted
+contexts. If the endpoint failed or changed after the earlier caller check,
+captured bytes could replace the rack state and saved baseline despite that
+loss of ownership. This is a source-supported gap, not an observed attribution
+of the user's playback failure.
+
+The correction reuses the existing installed-endpoint predicate: matching UVI
+generation, matching part generation and no endpoint failure. The final commit
+checks it after source-context validity and before any target is written. Every
+target must pass before either rack bytes or saved baselines change. Existing
+`installed` callers retain their lazy context-then-endpoint order.
+
+The View then Selection lock order is unchanged. Context matching uses the
+already-held Selection guard; it does not recursively call `current` or
+`installed`. Endpoint lookup briefly uses the existing Shared.parts lock and
+retains an Arc, following the order already used by context matching.
+
+Independent static review checked the source and authored failure/replacement/
+unadopted rejection, whole-batch foreign-source rejection and successful-save
+expectations. Tests remain uncompiled and unrun under the CPU restriction.
+This is final admission at sampled atomics; it cannot guarantee that audio does
+not fail immediately afterward. MPE, parent ownership, runtime persistence and
+installed binaries are unchanged. Combined verification remains pending.
