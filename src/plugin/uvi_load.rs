@@ -394,6 +394,23 @@ fn capacity_context(worker: Option<&serde_json::Value>) -> String {
     format!("Pending native request queue filled{configured}. Worker observed {status}; {errors} recorded worker errors. {comparison} CPU time and scheduler delays are not distinguished; see Info.")
 }
 
+fn failure_reason(reason: String, endpoint: Option<uvi::Failure>, worker: Option<&serde_json::Value>) -> String {
+    use crate::uvi::{bridge::BridgeError, worker::PacketError};
+    let reason = endpoint.map_or(reason, |fault| format!("{:?} at {} (frame {})",
+        fault.error, fault.stage.as_str(), fault.frame));
+    let reason = if endpoint.is_some_and(|fault| matches!(fault.error,
+        uvi::Error::Bridge(BridgeError::RequestCapacity))) {
+        format!("{reason}. {}",capacity_context(worker))
+    } else { reason };
+    // A worker snapshot is observed after the audio fault. Its failure text
+    // explains a worker-origin failure, but cannot replace an independent
+    // captured endpoint cause (for example queue capacity or invalid input).
+    let worker_origin = endpoint.is_none_or(|fault| matches!(fault.error,
+        uvi::Error::Bridge(BridgeError::Worker(PacketError::Failed | PacketError::Stopped))));
+    worker.filter(|_| worker_origin).and_then(|report| report["failure"].as_str())
+        .unwrap_or(&reason).chars().take(4096).collect()
+}
+
 /// Preserve the first cause before cancelling its controller. A repeated poll
 /// of a failed audio atom must not evict that cause from the session journal.
 fn fail(
@@ -415,14 +432,7 @@ fn fail(
     };
     let endpoint = params.shared.part(slot)
         .and_then(|part| part.uvi_failure(activation.epoch, activation.generation));
-    let reason = endpoint.map_or(reason, |fault| format!("{:?} at {} (frame {})",
-        fault.error, fault.stage.as_str(), fault.frame));
-    let reason = if endpoint.is_some_and(|fault| matches!(fault.error,
-        uvi::Error::Bridge(crate::uvi::bridge::BridgeError::RequestCapacity))) {
-        format!("{reason}. {}",capacity_context(worker.as_ref()))
-    } else { reason };
-    let reason = worker.as_ref().and_then(|report| report["failure"].as_str())
-        .unwrap_or(&reason).chars().take(4096).collect::<String>();
+    let reason = failure_reason(reason, endpoint, worker.as_ref());
     let endpoint = endpoint.map(|fault| {
         let mut details = serde_json::json!({"error":format!("{:?}",fault.error),
             "error_code":fault.error.code(), "stage":fault.stage.as_str(), "frame":fault.frame,
@@ -774,6 +784,32 @@ pub(super) fn service(params: &SamplerParams) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn worker_snapshot_cannot_replace_an_independent_endpoint_cause() {
+        use crate::uvi::{bridge::BridgeError, worker::PacketError};
+        let worker = serde_json::json!({"failure":"later worker failure", "status":"failed",
+            "stats":{"errors":1}, "configured_pending_packets":27});
+        let mut endpoint = uvi::Failure {
+            error:uvi::Error::Bridge(BridgeError::RequestCapacity), frame:78464,
+            stage:uvi::FailureStage::Process, epoch:4, generation:2,
+            source:"src/plugin/uvi.rs", line:1,
+        };
+        let reason = failure_reason("fallback".into(),Some(endpoint),Some(&worker));
+        assert!(reason.starts_with("Bridge(RequestCapacity) at process (frame 78464)"));
+        assert!(reason.contains("27 packets configured"));
+        assert!(!reason.contains("later worker failure"));
+        endpoint.error = uvi::Error::InvalidInput;
+        assert_eq!(failure_reason("fallback".into(),Some(endpoint),Some(&worker)),
+            "InvalidInput at process (frame 78464)");
+        for error in [PacketError::Failed, PacketError::Stopped] {
+            endpoint.error = uvi::Error::Bridge(BridgeError::Worker(error));
+            assert_eq!(failure_reason("fallback".into(),Some(endpoint),Some(&worker)),"later worker failure");
+        }
+        assert_eq!(failure_reason("fallback".into(),None,Some(&worker)),"later worker failure");
+        assert_eq!(failure_reason("fallback".into(),None,None),"fallback");
+        assert_eq!(failure_reason("x".repeat(5000),None,None).len(),4096);
+    }
+
     #[test]
     fn full_request_queue_does_not_claim_cpu_overload_from_wall_time() {
         // Measured LFO v3 still filled the queue with mean wall time below budget.
