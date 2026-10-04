@@ -99,6 +99,17 @@ fn native_failure_lines(report: &serde_json::Value) -> Vec<(String, bool)> {
         };
         lines.push((format!("Failure location: {location}"), false));
     }
+    let frontier = &endpoint["bridge_frontier"];
+    if let (Some(pending), Some(capacity), Some(prefetched)) = (
+        frontier["pending_requests"].as_u64(), frontier["pending_capacity"].as_u64(),
+        frontier["prefetched_audio"].as_u64()) {
+        lines.push((format!("At bridge abort: {pending}/{capacity} pending requests · {prefetched} prefetched audio packets"), false));
+    }
+    if let (Some(frame), Some(partial), Some(submitted), Some(received)) = (
+        frontier["bridge_frame"].as_u64(), frontier["partial_packet_frame"].as_u64(),
+        frontier["submitted_frame"].as_u64(), frontier["received_frame"].as_u64()) {
+        lines.push((format!("Bridge frame {frame} · current input packet starts at {partial} · next frame to submit {submitted} · next frame to receive {received}"), false));
+    }
     if let Some(source) = endpoint["source_file"].as_str() {
         let line = endpoint["line"].as_u64().map_or_else(String::new, |n| format!(":{n}"));
         lines.push((format!("Endpoint source: {source}{line} · inspect context in Logs"), false));
@@ -760,6 +771,22 @@ mod native_status_tests {
         assert!(lines.iter().any(|(s,_)| s.contains("src/plugin/uvi.rs:42")));
         assert!(lines.iter().any(|(s,_)| s=="CPU time is not measured."));
         assert_eq!(report,before);
+    }
+
+    #[test]
+    fn bridge_abort_frontier_stays_separate_from_later_worker_observation() {
+        let report = serde_json::json!({"failure":"Bridge(RequestCapacity)",
+            "terminal_failure":{"endpoint":{"error":"Bridge(RequestCapacity)", "stage":"process", "frame":78464,
+                "bridge_frontier":{"bridge_frame":78592,"partial_packet_frame":78336,
+                    "submitted_frame":71424,"received_frame":69120,"pending_requests":27,
+                    "pending_capacity":27,"prefetched_audio":0}},
+                "worker":{"status":"ready","stats":{"errors":0,"rendered_blocks":278}}}});
+        let lines = native_failure_lines(&report);
+        assert!(lines.iter().any(|(s,_)|s=="At bridge abort: 27/27 pending requests · 0 prefetched audio packets"));
+        assert!(lines.iter().any(|(s,_)|s.contains("Bridge frame 78592 · current input packet starts at 78336")));
+        assert!(lines.iter().any(|(s,_)|s.contains("process · reported frame 78464")));
+        assert!(lines.iter().any(|(s,_)|s=="Worker observation: ready · 0 recorded worker errors"));
+        assert!(!native_failure_lines(&serde_json::json!({})).iter().any(|(s,_)|s.starts_with("At bridge abort:")));
     }
 
     #[test]
