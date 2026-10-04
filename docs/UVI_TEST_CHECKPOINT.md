@@ -43,6 +43,27 @@ size and preparation limits can affect admission.
 
 ## Current installed checkpoint
 
+At the user's request, `cc54c675706277a75de71b68029b08b5a473592a` now replaces
+the Linux standalone, CLAP and VST3. Build hash `c01b223593a9516e`, import hash
+`ed6c20adf8c20313`; clean source, baseline x86_64, optimized `ci` profile with
+UVI and standalone enabled. The cached build used two low-priority jobs and
+completed in 59.43 seconds. Both plugin factories enumerate one class, dynamic
+dependencies resolve, and installed file hashes and standalone build identity
+match the package. The 28 configuration/access files were unchanged across
+installation. The previous binaries and standalone link target are backed up
+under `20261004T115622Z-before-uvi-cc54c67`.
+
+This builds the source follow-ups described below, including browser folders,
+grouped failures, live Info, queue/fault handling and save-state ownership fixes.
+Their authored tests remain unrun; no audio replay, editor verification or DAW
+restart occurred. Earlier dated notes saying these production changes were
+uncompiled describe their original static-review checkpoint. Successful
+compilation does not establish that the live blackout is resolved or that full
+Falcon parity is achieved. Optional PCM caching remains disabled by default.
+Already loaded host instances retain their old binary until the host unloads it.
+
+## Previous installed checkpoint and historical verification
+
 Installed `bb60218e0226043ece56de9c3d66d20f655c748c` replaces the standalone,
 CLAP and VST3. Build hash is `8e95f13c778a73d1`, import hash
 `8322b33fd869e7d5`; clean source, baseline x86_64, optimized `ci` profile.
