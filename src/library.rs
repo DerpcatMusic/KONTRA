@@ -23,6 +23,7 @@
 use crate::import;
 
 mod kontakt;
+mod index;
 use moose::mui::mui::scene::Image;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -69,7 +70,7 @@ pub struct UviRequest {
     pub new: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct UviPreset {
     pub source: UviSource,
     pub name: String,
@@ -380,6 +381,12 @@ fn uvi_authority_dir(override_dir: Option<std::ffi::OsString>, config: Option<Pa
     override_dir.map(PathBuf::from).or_else(|| config.map(|path| path.join("uvi-access")))
 }
 
+/// Cache bindings follow the same configured/environment/discovered reader as playback.
+fn effective_uvi_reader(settings: &Settings) -> Option<PathBuf> {
+    #[cfg(feature = "uvi")] { crate::uvi::access::reader_path(settings.uvi_reader.as_deref()).ok() }
+    #[cfg(not(feature = "uvi"))] { let _ = settings; None }
+}
+
 /// The app's data folder: chosen artwork, and multis saved with no library
 /// folder to keep them in.
 pub fn data_dir() -> Option<PathBuf> {
@@ -390,7 +397,7 @@ pub fn data_dir() -> Option<PathBuf> {
 }
 
 /// One library found.
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct Library {
     pub dir: PathBuf,
     /// Its name, unique among the libraries.
@@ -405,7 +412,7 @@ pub struct Library {
 }
 
 /// Real snapshot files matched to the exact embedded base instrument name.
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Snapshots {
     pub instrument: String,
     pub paths: Vec<PathBuf>,
@@ -516,8 +523,8 @@ struct UviCatalog {
 impl UviCatalog {
     #[cfg(feature = "uvi")]
     fn authority(&mut self) -> Result<&crate::uvi::cli::ReaderNamespaces, &'static str> {
-        let path = self.reader_path.clone().or_else(|| std::env::var_os("KONTRA_UVI_READER").map(PathBuf::from))
-            .ok_or("Configure the local UVI reader and rescan.")?;
+        let path = crate::uvi::access::reader_path(self.reader_path.as_deref())
+            .map_err(|_| "No local UVI reader was found. Select a verified reader in settings.")?;
         let meta = std::fs::metadata(&path).map_err(|_| "The configured local UVI reader is unavailable.")?;
         if self.reader.as_ref().is_none_or(|r| r.0 != path || r.1 != meta.len() || r.2 != meta.modified().ok()) {
             let reader = crate::uvi::cli::ReaderNamespaces::open(&path)
@@ -621,14 +628,10 @@ impl UviCatalog {
         { let _ = source; Err("UVI playback requires a build with UVI support.") }
         #[cfg(feature = "uvi")]
         {
-            let reader = self.authority()?;
-            let library = crate::uvi::library::Library::open(&source.bank, &reader.metadata, None)
+            let config = self.worker_config(source, 48_000)?;
+            let library = crate::uvi::library::Library::open(&source.bank, &config.metadata_namespace, config.content_key)
                 .map_err(|_| "The selected UVI bank could not be opened.")?;
-            if library.bank.header.uuid != source.bank_uuid { return Err("The UVI bank changed. Rescan before selecting its programs."); }
-            let member = library.directory.files.iter().find(|m| m.path.as_deref() == Some(source.member.as_str()))
-                .ok_or("The selected UVI program is no longer in this bank. Rescan its library.")?;
-            if member.mode == 2 { return Err("Local access to this UVI program is not configured."); }
-            let loaded = library.program(&source.member, &reader.program)
+            let loaded = library.program(&source.member, &config.program_namespace)
                 .map_err(|_| "The selected UVI program could not be decoded.")?;
             if !crate::uvi::playback::preflight(&loaded.program).is_empty() {
                 return Err("This UVI program requires unsupported playback features.");
@@ -649,17 +652,16 @@ impl UviCatalog {
             return Err("The selected UVI program is no longer in this bank. Rescan its library.");
         }
         let state = if directory.files.iter().any(|member| member.mode == 2) {
-            let directory = uvi_authority_dir(std::env::var_os("KONTRA_UVI_AUTHORITY_DIR"), config_dir())
-                .ok_or("Local access to this UVI bank is not configured.")?;
-            let filename = source.bank_uuid.iter().map(|byte| format!("{byte:02x}")).collect::<String>() + ".json";
-            Some(crate::uvi::cli::ContentState::open(&PathBuf::from(directory).join(filename))
-                .map_err(|_| "Local access to this UVI bank is unavailable or invalid.")?)
+            let store = uvi_authority_dir(std::env::var_os("KONTRA_UVI_AUTHORITY_DIR"), config_dir())
+                .ok_or("The private UVI access store is unavailable.")?;
+            crate::uvi::access::ensure_content_state(&source.bank, &bank, &directory, &store)
+                .map_err(|error| {
+                    crate::diagnostics::event(crate::diagnostics::LogLevel::Error, "uvi", "uvi_local_access_failed",
+                        serde_json::json!({"path":source.bank, "member":source.member,
+                            "stage":"local_access", "reason":format!("{error:#}")}));
+                    "This UVI bank could not be prepared automatically. Open Logs for the cause."
+                })?
         } else { None };
-        if let Some(identity) = state.as_ref().and_then(|state| state.bank.as_ref())
-            && identity != &bank.header.bank_name
-            && std::fs::canonicalize(identity).ok() != std::fs::canonicalize(&source.bank).ok() {
-            return Err("Local access belongs to a different UVI bank.");
-        }
         Ok(crate::uvi::worker::StartConfig {
             bank: source.bank.clone(), expected_bank_uuid: Some(source.bank_uuid), member: source.member.clone(),
             metadata_namespace: reader.metadata.clone(), program_namespace: reader.program.clone(),
@@ -1095,6 +1097,9 @@ pub struct Scanner {
     sizes: Arc<Mutex<HashMap<PathBuf, Option<u64>>>>,
     /// Moves whenever something the editor shows arrives.
     stamp: Arc<AtomicU64>,
+    cache: Option<PathBuf>,
+    cache_read: AtomicBool,
+    force_scan: AtomicBool,
 }
 
 impl Default for Scanner {
@@ -1109,6 +1114,7 @@ impl Default for Scanner {
             done: Arc::default(),
             sizes: Arc::default(),
             stamp: Arc::default(),
+            cache: index::path(), cache_read: AtomicBool::new(false), force_scan: AtomicBool::new(false),
         }
     }
 }
@@ -1216,6 +1222,7 @@ impl Scanner {
 
     /// Ask for a new scan; the one running stops.
     pub fn rescan(&self) {
+        self.force_scan.store(true, Ordering::Release);
         self.wanted.fetch_add(1, Ordering::AcqRel);
         lock(&self.progress).cancel.store(true, Ordering::Relaxed);
     }
@@ -1266,10 +1273,18 @@ impl Scanner {
                 return Some(done);
             }
         }
-        if self.started.swap(want, Ordering::AcqRel) != want {
-            self.start(want);
-        }
-        None
+        let cached = if !self.cache_read.swap(true, Ordering::AcqRel) {
+            let settings = self.settings();
+            let reader = effective_uvi_reader(&settings);
+            let mut roots = settings.roots.clone();
+            if let Some(multis) = data_dir().map(|dir| dir.join("Multis")).filter(|dir| dir.is_dir()) {
+                roots.push(Root { path: multis.to_string_lossy().into_owned(), single: true });
+            }
+            self.cache.as_ref().and_then(|path| index::Index::load(path, &roots, reader.as_deref()))
+                .map(|index| (want.wrapping_sub(1), Some(index.scanned(true))))
+        } else { None };
+        if self.started.swap(want, Ordering::AcqRel) != want { self.start(want); }
+        cached
     }
 
     fn start(&self, generation: u64) {
@@ -1277,6 +1292,9 @@ impl Scanner {
         progress.running.store(true, Ordering::Relaxed);
         *lock(&self.progress) = progress.clone();
         let settings = self.settings();
+        let reader = effective_uvi_reader(&settings);
+        let cache = self.cache.clone();
+        let forced = self.force_scan.swap(false, Ordering::AcqRel);
         #[cfg(feature = "uvi")]
         let uvi = self.uvi.clone();
         let mut roots = settings.roots.clone();
@@ -1295,11 +1313,26 @@ impl Scanner {
                 if let Some(multis) = multis {
                     roots.push(Root { path: multis.to_string_lossy().into_owned(), single: true });
                 }
-                let scanned = scan(&roots, &progress).map(|(mut shelf, files)| {
+                let cached = (!forced && !import).then(|| cache.as_ref().and_then(|path|
+                    index::Index::load(path, &roots, reader.as_deref()))).flatten();
+                let valid = cached.as_ref().is_some_and(|index| index.current(&roots, reader.as_deref(), &progress))
+                    && {
+                        #[cfg(feature = "uvi")]
+                        { let mut catalog = lock(&uvi); catalog.reader_path = reader.clone();
+                            cached.as_ref().is_none_or(|index| !index.has_uvi()) || catalog.authority().is_ok() }
+                        #[cfg(not(feature = "uvi"))] { true }
+                    };
+                let before = (!valid && cache.is_some()).then(|| index::Fingerprint::read(&roots, reader.as_deref(), &progress)).flatten();
+                let scanned = if valid { cached.map(|index| {
+                    let mut scanned = index.scanned(false);
+                    let kontakt: Vec<_> = scanned.shelf.libraries.iter().filter(|library| !scanned.shelf.uvi.contains_key(&library.dir)).cloned().collect();
+                    scanned.artwork = crate::artwork::scan(&kontakt);
+                    scanned
+                }) } else { scan(&roots, &progress).map(|(mut shelf, files)| {
                     #[cfg(feature = "uvi")]
                     {
                         let mut catalog = lock(&uvi);
-                        catalog.reader_path = settings.uvi_reader.clone();
+                        catalog.reader_path = reader.clone();
                         catalog.scan(&roots, &mut shelf, &progress);
                     }
                     let kontakt: Vec<_> = shelf.libraries.iter().filter(|library| !shelf.uvi.contains_key(&library.dir)).cloned().collect();
@@ -1317,7 +1350,12 @@ impl Scanner {
                     shelf.snapshots = snapshots;
                     shelf.uvi = uvi;
                     Scanned { shelf: Arc::new(shelf), files: Arc::new(files), artwork, imported }
-                });
+                }) };
+                if let (Some(path), Some(before), Some(scanned)) = (&cache, before, &scanned)
+                    && index::Fingerprint::read(&roots, reader.as_deref(), &progress).as_ref() == Some(&before)
+                    && !progress.canceled() {
+                    index::Index::store(path, &roots, reader.as_deref(), before, scanned);
+                }
                 let scanned = scanned.filter(|_| !progress.canceled());
                 // A canceled scan finishing late never replaces a newer one.
                 let mut done = lock(&done);
@@ -1388,6 +1426,34 @@ pub(crate) mod tests {
         assert!(scanned.files.iter().any(|file| file == &root.join("Instrument.nki")));
         assert!(scanned.shelf.libraries.iter().all(|library| library.dir != root.join("Bank.ufs")));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scanner_publishes_previous_index_before_verification_and_manual_rescan_refreshes_it() {
+        let dir = tree("scanner-index", &[("Kontakt/Instruments/Piano.nki", "owned fixture")]);
+        let path = dir.with_extension("library-index");
+        let roots = vec![Root { path: dir.to_string_lossy().into_owned(), single: false }];
+        let (mut shelf, files) = scan(&roots, &Progress::default()).unwrap();
+        shelf.libraries[0].name = "Previous catalog".into();
+        let scanned = Scanned { shelf: Arc::new(shelf), files: Arc::new(files), artwork: HashMap::new(), imported: None };
+        let reader = cfg!(feature = "uvi").then(|| dir.join("reader"));
+        if let Some(reader) = &reader { std::fs::write(reader, "path-only reader fixture").unwrap(); }
+        index::Index::store(&path, &roots, reader.as_deref(), index::Fingerprint::read(&roots, reader.as_deref(), &Progress::default()).unwrap(), &scanned);
+        let scanner = Scanner { cache: Some(path.clone()), ..Scanner::default() };
+        scanner.edit(|settings| { settings.imported = true; settings.roots = roots.clone(); settings.uvi_reader = reader.clone(); });
+        let (generation, cached) = scanner.poll(0).expect("first poll returns the previous index immediately");
+        assert!(generation < scanner.wanted(), "cached listing does not mark background validation complete");
+        assert_eq!(cached.unwrap().shelf.libraries[0].name, "Previous catalog");
+        let started = std::time::Instant::now();
+        loop { if scanner.poll(generation).is_some() { break; }
+            assert!(started.elapsed().as_secs() < 10); std::thread::sleep(std::time::Duration::from_millis(1)); }
+        scanner.rescan();
+        let started = std::time::Instant::now();
+        let refreshed = loop { if let Some((_, Some(scan))) = scanner.poll(generation) { break scan; }
+            assert!(started.elapsed().as_secs() < 10); std::thread::sleep(std::time::Duration::from_millis(1)); };
+        assert_ne!(refreshed.shelf.libraries[0].name, "Previous catalog", "manual rescan forces real discovery even when stamps match");
+        assert_eq!(refreshed.shelf.libraries[0].instruments, 1);
+        let _ = std::fs::remove_file(path); let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1533,7 +1599,7 @@ pub(crate) mod tests {
     }
 
     /// A fresh folder under the temp dir with `files` made in it.
-    fn tree(name: &str, files: &[(&str, &str)]) -> PathBuf {
+    pub(super) fn tree(name: &str, files: &[(&str, &str)]) -> PathBuf {
         let root = std::env::temp_dir().join(format!("kontra-library-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         for (file, text) in files {

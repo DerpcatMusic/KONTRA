@@ -7,7 +7,7 @@
 //! https://lua.uvi.net/group___voice.html and https://lua.uvi.net/_elements.html.
 //! No preset tables, commercial scripts or executable code are included here.
 use super::{
-    playback::resolve_path,
+    playback::PathIndex,
     program::{NodeId, Program},
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -1346,9 +1346,15 @@ fn scope(program: &Program, id: NodeId) -> Option<NodeId> {
     }
     None
 }
-fn mapper_path(program: &Program, owner: NodeId, path: &str) -> Result<NodeId> {
+fn mapper_path(
+    program: &Program,
+    owner: NodeId,
+    path: &str,
+    paths: &PathIndex<'_>,
+    mappers: &HashMap<NodeId, HashMap<&str, Option<NodeId>>>,
+) -> Result<NodeId> {
     if path.contains('/') || path.starts_with('$') {
-        return resolve_path(program, owner, path);
+        return paths.resolve(owner, path);
     }
     let mut at = if matches!(
         program.nodes[owner].kind.as_str(),
@@ -1359,20 +1365,8 @@ fn mapper_path(program: &Program, owner: NodeId, path: &str) -> Result<NodeId> {
         scope(program, owner)
     };
     while let Some(id) = at {
-        let matches: Vec<_> = program
-            .nodes
-            .iter()
-            .enumerate()
-            .filter_map(|(n, node)| {
-                (node.kind == "ControlSignalMapper"
-                    && node.name.as_deref() == Some(path)
-                    && scope(program, n) == Some(id))
-                .then_some(n)
-            })
-            .collect();
-        ensure!(matches.len() <= 1, "Ambiguous UVI mapper in scope");
-        if let Some(n) = matches.first() {
-            return Ok(*n);
+        if let Some(target) = mappers.get(&id).and_then(|names| names.get(path)) {
+            return target.context("Ambiguous UVI mapper in scope");
         }
         at = scope(program, id);
     }
@@ -1520,6 +1514,16 @@ impl ModulationGraph {
             program.nodes.len() <= LIMIT && program.connections.len() <= LIMIT,
             "UVI modulation graph exceeds limit"
         );
+        let paths = PathIndex::new(program);
+        let mut mapper_names: HashMap<NodeId, HashMap<&str, Option<NodeId>>> = HashMap::new();
+        for (id, node) in program.nodes.iter().enumerate() {
+            if node.kind == "ControlSignalMapper"
+                && let (Some(owner), Some(name)) = (scope(program, id), node.name.as_deref())
+            {
+                mapper_names.entry(owner).or_default().entry(name)
+                    .and_modify(|target| *target = None).or_insert(Some(id));
+            }
+        }
         let mut graph = Self {
             parents: program.nodes.iter().map(|node| node.parent).collect(),
             kinds: program.nodes.iter().map(|n| n.kind.clone()).collect(),
@@ -1708,7 +1712,7 @@ impl ModulationGraph {
                     bail!("Unsupported UVI control source at node {}", c.node)
                 }
                 s => {
-                    let id = resolve_path(program, c.owner, s)?;
+                    let id = paths.resolve(c.owner, s)?;
                     ensure!(
                         matches!(
                             program.nodes[id].kind.as_str(),
@@ -1758,7 +1762,7 @@ impl ModulationGraph {
             let mapper = if c.mapper.is_empty() {
                 None
             } else {
-                Some(mapper_path(program, c.owner, &c.mapper)?)
+                Some(mapper_path(program, c.owner, &c.mapper, &paths, &mapper_names)?)
             };
             ensure!(
                 mapper.is_none_or(|id| graph.mappers.contains_key(&id)),
@@ -4081,6 +4085,16 @@ impl ModulationGraph {
 mod tests {
     use super::*;
     use crate::uvi::program::parse_program;
+    #[test]
+    fn indexed_mapper_names_preserve_nearest_scope_and_ambiguity() {
+        let mut p = parse_program(r#"<Program><Mappers><ControlSignalMapper Name="Curve">0 1</ControlSignalMapper><ControlSignalMapper Name="Curve">0 1</ControlSignalMapper></Mappers><Layers><Layer><Mappers><ControlSignalMapper Name="Curve">0 1</ControlSignalMapper></Mappers><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Pitch" Mapper="Curve" Ratio="1"/></Connections></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let local = p.nodes.iter().enumerate().find(|(id, node)| node.kind == "ControlSignalMapper" && scope(&p, *id).is_some_and(|owner| p.nodes[owner].kind == "Layer")).unwrap().0;
+        let graph = ModulationGraph::new(&p).unwrap();
+        assert_eq!(graph.connections[&(p.sample_zones[0].player, "Pitch".into())][0].mapper, Some(local));
+        p.nodes[local].name = Some("Other".into());
+        let error = ModulationGraph::new(&p).err().unwrap();
+        assert!(error.to_string().contains("Ambiguous UVI mapper in scope"));
+    }
     #[test]
     fn native_square_lfo_table_endpoints_and_wrap() {
         let xml = r#"<Program><ControlSignalSources><LFO Name="Osc" WaveFormType="1" Freq="2" Phase="0" Depth="1" Retrigger="1" Bipolar="0" Smooth="0"/></ControlSignalSources><Layers><Layer><Keygroups><Keygroup Gain="1"><Connections><SignalConnection Source="$Program/Osc" Destination="Gain" Ratio="1"/></Connections></Keygroup></Keygroups></Layer></Layers></Program>"#;

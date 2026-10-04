@@ -46,12 +46,16 @@ pub fn metadata_key(namespace: &[u8], bank_name: &str) -> u64 {
 /// Symmetric transform; nonce is the physical file offset for container members.
 pub fn transform(data: &mut [u8], key: u64, nonce: u64) {
     let mut state = (mix(nonce) ^ key).wrapping_mul(MIX);
-    for chunk in data.chunks_mut(4) {
+    let mut chunks = data.chunks_exact_mut(4);
+    for chunk in chunks.by_ref() {
         let word = (((state >> 22) ^ state) >> (22 + (state >> 61))) as u32;
-        for (byte, mask) in chunk.iter_mut().zip(word.to_le_bytes()) {
-            *byte ^= mask;
-        }
+        let value = u32::from_le_bytes(chunk.try_into().unwrap()) ^ word;
+        chunk.copy_from_slice(&value.to_le_bytes());
         state = state.wrapping_mul(STEP);
+    }
+    let word = (((state >> 22) ^ state) >> (22 + (state >> 61))) as u32;
+    for (byte, mask) in chunks.into_remainder().iter_mut().zip(word.to_le_bytes()) {
+        *byte ^= mask;
     }
 }
 
@@ -270,6 +274,43 @@ mod tests {
         assert!(decode_program(&wrapper, b"wrong namespace").is_err());
         assert!(decode_program("<Program Password=\"legacy\"/>", namespace).is_err());
     }
+    #[test]
+    fn wordwise_transform_preserves_bytes_tails_and_physical_block_restarts() {
+        fn reference(data: &mut [u8], key: u64, offset: u64) {
+            let mut state = (mix(offset) ^ key).wrapping_mul(MIX);
+            for (index, byte) in data.iter_mut().enumerate() {
+                let word = (((state >> 22) ^ state) >> (22 + (state >> 61))) as u32;
+                *byte ^= (word >> ((index % 4) * 8)) as u8;
+                if index % 4 == 3 {
+                    state = state.wrapping_mul(STEP);
+                }
+            }
+        }
+        for length in [0, 1, 2, 3, 4, 5, 7, 8, 15, 16, 511, 512, 513, 1023, 1024, 1031] {
+            for offset in [0, 1, 511, 512, 12345, u64::MAX - 513, u64::MAX] {
+                for key in [0, 0x1234_5678_9abc_def0, u64::MAX] {
+                    // Exercise unaligned input and protect both adjacent bytes.
+                    let plain: Vec<u8> = (0..length + 2).map(|index| index as u8).collect();
+                    let mut expected = plain.clone();
+                    let mut actual = plain.clone();
+                    reference(&mut expected[1..length + 1], key, offset);
+                    transform(&mut actual[1..length + 1], key, offset);
+                    assert_eq!(actual, expected);
+                    transform(&mut actual[1..length + 1], key, offset);
+                    assert_eq!(actual, plain);
+                    let mut expected = plain.clone();
+                    for (index, block) in expected[1..length + 1].chunks_mut(512).enumerate() {
+                        reference(block, key, offset.wrapping_add(index as u64 * 512));
+                    }
+                    transform_blocks(&mut actual[1..length + 1], key, offset);
+                    assert_eq!(actual, expected);
+                    transform_blocks(&mut actual[1..length + 1], key, offset);
+                    assert_eq!(actual, plain);
+                }
+            }
+        }
+    }
+
     #[test]
     fn authored_known_plaintext_recovers_key() {
         for (task, base, shift) in [

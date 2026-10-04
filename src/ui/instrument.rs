@@ -28,6 +28,7 @@ pub(super) fn native_name(cx: &Cx, slot: usize) -> Option<String> {
 
 fn native_problem(status: &str) -> bool {
     matches!(status, "The UVI instrument could not be loaded."
+        | "UVI playback failed. Open Logs for the cause."
         | "The current audio configuration is unsupported by UVI playback.")
 }
 
@@ -520,4 +521,21 @@ pub fn info(ui: &mut Ui, cx: &mut Cx) -> El {
         .min_h(0)
         .scroll()
         .id("details-scroll")
+}
+
+#[cfg(test)]
+mod native_status_tests {
+    use super::*;
+    #[test]
+    fn native_loader_failure_is_terminal_in_the_performance_view() {
+        let status="UVI playback failed. Open Logs for the cause.";
+        assert!(native_problem(status));
+        assert!(!native_problem("Preparing UVI playback…"));
+        if cfg!(feature="uvi") {
+            assert_eq!(native_wait(false,status),"Instrument could not be loaded. See the error above or Logs for details.");
+            assert!(!native_wait(false,status).contains("Waiting"));
+        } else {
+            assert_eq!(native_wait(false,status),"UVI support is disabled in this version.");
+        }
+    }
 }

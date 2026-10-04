@@ -351,6 +351,11 @@ impl Registry {
             .map(|control| control.worker.status())
     }
 
+    pub fn initialization_progress(&self, epoch: u64, generation: u64) -> Option<(&'static str, std::time::Duration)> {
+        self.controls.get(&(epoch,generation)).filter(|control| !control.cancelled)
+            .and_then(|control|control.worker.initialization_progress())
+    }
+
     /// Exactly one audio endpoint is extracted. None is normal while starting
     /// or after export; queue-full handoff retries retain the same Audio value.
     pub fn take_ready(&mut self, epoch: u64, generation: u64) -> Result<Option<Audio>, Error> {

@@ -608,6 +608,10 @@ pub struct Shared {
     uvi_delay_wanted: AtomicU64,
     #[cfg(feature = "uvi")]
     uvi_delay_installed: AtomicU64,
+    /// Admitted native buffering latency + maximum host frames, independent of
+    /// worker epoch. Host resets must not retract latency during replacement.
+    #[cfg(feature = "uvi")]
+    uvi_latency_admission: AtomicU64,
     #[cfg(feature = "uvi")]
     uvi_controls: Arc<Mutex<uvi_control::Registry>>,
     #[cfg(feature = "uvi")]
@@ -948,6 +952,8 @@ impl Default for Shared {
             uvi_delay_wanted: AtomicU64::new(0),
             #[cfg(feature = "uvi")]
             uvi_delay_installed: AtomicU64::new(0),
+            #[cfg(feature = "uvi")]
+            uvi_latency_admission: AtomicU64::new(0),
             #[cfg(feature = "uvi")]
             uvi_controls: Arc::default(),
             #[cfg(feature = "uvi")]
@@ -2287,6 +2293,14 @@ impl BackgroundTask for AudioDiagnosticsTask {
     fn run(self, params: &SamplerParams) { drain_audio_diagnostics(params); }
 }
 
+fn catalog_uvi_receipt(view: &mut View, requested: Option<&library::UviRequest>) {
+    if cfg!(feature = "uvi") && view.uvi_attempted.as_ref().is_some_and(|attempted| Some(attempted) == requested) {
+        return;
+    }
+    view.uvi_attempted = None;
+    view.uvi_status.clear();
+}
+
 pub struct Load;
 
 #[cfg(feature = "uvi")]
@@ -2396,7 +2410,12 @@ fn prepare_uvi(params: &SamplerParams, selection: &Selection) {
             (Some(worker), Some(ui)) => ui.poll(worker),
             _ => None,
         };
-        (p.status, failed, ui)
+        let display = if p.status == STARTING {
+            p.worker.as_ref().and_then(Worker::initialization_progress)
+                .map(|progress| format!("{}; the current instrument is still playing.", uvi_load::loading_status(Some(progress))))
+                .unwrap_or_else(|| p.status.to_owned())
+        } else { p.status.to_owned() };
+        (display, failed, ui)
     };
     if let Some(worker) = &failed {
         crate::diagnostics::event(crate::diagnostics::LogLevel::Error, "uvi", "uvi_staging_failed",
@@ -2411,7 +2430,7 @@ fn prepare_uvi(params: &SamplerParams, selection: &Selection) {
         if view.uvi_attempted.as_ref() != Some(&key.request) { view.uvi_ui = None; }
         view.uvi_attempted = Some(key.request);
         if let Some(ui) = ui { view.uvi_ui = Some(ui); }
-        if view.uvi_status != status { view.uvi_status = status.into(); }
+        if view.uvi_status != status { view.uvi_status = status; }
     }
 }
 
@@ -2436,7 +2455,8 @@ fn uvi_delay_ready(params: &SamplerParams) -> Result<bool, uvi_delay::Error> {
     let mut prepared = params.shared.uvi_delay_prepared.lock().unwrap();
     if let Some(previous) = prepared.as_ref()
         && previous.context == context {
-        let (_, ticket) = previous.outcome?;
+        let (latency, ticket) = previous.outcome?;
+        params.shared.uvi_latency_admission.store(((maximum as u64) << 32) | u64::from(latency), Ordering::Release);
         return Ok(params.shared.uvi_delay_installed.load(Ordering::Acquire) == ticket);
     }
     let allocated = crate::uvi::bridge::Bridge::buffering_latency(maximum, UVI_LEAD_PACKETS)
@@ -2453,11 +2473,29 @@ fn uvi_delay_ready(params: &SamplerParams) -> Result<bool, uvi_delay::Error> {
             return Err(error);
         }
     };
+    params.shared.uvi_latency_admission.store(((maximum as u64) << 32) | u64::from(latency), Ordering::Release);
     let ticket = params.shared.uvi_delay_wanted.fetch_add(1, Ordering::AcqRel) + 1;
     let next = UviDelayHandoff { epoch, ticket, storage: Box::new(storage) };
     let _ = params.shared.uvi_delays.force_push(next);
     *prepared = Some(UviDelayPreparation { context, outcome: Ok((latency, ticket)) });
     Ok(false)
+}
+
+/// Scalar-only host report. Actual mixer delays still follow live endpoints.
+#[cfg(feature = "uvi")]
+fn admitted_uvi_latency(shared: &Shared, maximum: usize) -> u32 {
+    let admitted = shared.uvi_latency_admission.load(Ordering::Acquire);
+    if admitted >> 32 == maximum as u64 { admitted as u32 } else { 0 }
+}
+
+/// Preserve physical compensation during replacement only when the already
+/// adopted storage can actually supply the retained host-reported delay.
+#[cfg(feature = "uvi")]
+fn physical_uvi_latency(s: &Dsp, live: u32) -> u32 {
+    if s.uvi_delays.as_ref().is_some_and(|delays|
+        delays.slots() == s.uvi.len() && delays.latency_frames() == s.uvi_reported_latency) {
+        live.max(s.uvi_reported_latency)
+    } else { live }
 }
 
 /// Commit the requested identity only after native initialization succeeded.
@@ -2671,8 +2709,7 @@ impl BackgroundTask for Load {
             view.scanned = generation;
             match scanned {
                 Some(scanned) => {
-                    view.uvi_attempted = None;
-                    view.uvi_status.clear();
+                    catalog_uvi_receipt(&mut view, params.selection.read().unwrap().uvi_requested.as_ref());
                     let presets = scanned.files.len() + scanned.shelf.uvi.values().map(|bank| bank.presets.len()).sum::<usize>();
                     view.status = format!("{} libraries · {presets} presets", scanned.shelf.libraries.len());
                     if let Some(imported) = &scanned.imported {
@@ -3622,6 +3659,8 @@ pub struct Dsp {
     #[cfg(feature = "uvi")]
     uvi_latency: u32,
     #[cfg(feature = "uvi")]
+    uvi_reported_latency: u32,
+    #[cfg(feature = "uvi")]
     uvi_underruns_retired: u64,
     #[cfg(feature = "uvi")]
     uvi_delays: Option<Box<uvi_delay::Prepared>>,
@@ -3676,6 +3715,8 @@ impl Default for Dsp {
             retiring_uvi: (0..64).map(|_| None).collect(),
             #[cfg(feature = "uvi")]
             uvi_latency: 0,
+            #[cfg(feature = "uvi")]
+            uvi_reported_latency: 0,
             #[cfg(feature = "uvi")]
             uvi_underruns_retired: 0,
             #[cfg(feature = "uvi")]
@@ -4117,7 +4158,10 @@ impl PluginLogic for Sampler {
             p.shared.uvi_max_host_frames.store(c.max_block_size, Ordering::Release);
             p.shared.uvi_epoch.fetch_add(1, Ordering::AcqRel);
             p.shared.uvi_delay_installed.store(0, Ordering::Release);
-            s.uvi_latency = 0;
+            s.uvi_reported_latency = if (8000. ..=192000.).contains(&c.sample_rate) && c.sample_rate.fract() == 0. {
+                admitted_uvi_latency(&p.shared, c.max_block_size)
+            } else { 0 };
+            s.uvi_latency = physical_uvi_latency(s, 0);
             s.uvi_end_fence.clear();
             if let Some(delays) = &mut s.uvi_delays { delays.clear(); }
             for (slot, audio) in s.uvi.iter_mut().enumerate() {
@@ -4339,8 +4383,10 @@ impl PluginLogic for Sampler {
         }
         #[cfg(feature = "uvi")]
         {
+            s.uvi_reported_latency = admitted_uvi_latency(&p.shared, p.shared.uvi_max_host_frames.load(Ordering::Acquire));
             let latency = s.uvi.iter().flatten().filter(|a| a.epoch() == p.shared.uvi_epoch.load(Ordering::Acquire))
                 .map(uvi_control::Audio::latency_frames).max().unwrap_or(0);
+            let latency = physical_uvi_latency(s, latency);
             if latency != s.uvi_latency {
                 s.uvi_latency = latency;
                 if let Some(delays) = &mut s.uvi_delays { delays.clear(); }
@@ -4815,7 +4861,7 @@ impl PluginLogic for Sampler {
     fn latency(s: &Dsp) -> u32 {
         let latency = s.align.plan.latency(s.rack.parts[0].rate());
         #[cfg(feature = "uvi")]
-        return latency.saturating_add(s.uvi_latency);
+        return latency.saturating_add(s.uvi_reported_latency);
         #[cfg(not(feature = "uvi"))]
         latency
     }
@@ -5707,6 +5753,51 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[cfg(feature = "uvi")]
+    #[test]
+    fn native_latency_admission_survives_host_resets_without_live_endpoints() {
+        let params = SamplerParams::new();
+        let mut dsp = Dsp::default();
+        let config = AudioConfig::new(48000., 256);
+        let latency = crate::uvi::bridge::Bridge::buffering_latency(256, UVI_LEAD_PACKETS).unwrap();
+        params.shared.uvi_latency_admission.store((256u64 << 32) | u64::from(latency), Ordering::Release);
+        let mut left = [0.; 256];
+        let mut right = [0.; 256];
+        let mut channels = [left.as_mut_slice(), right.as_mut_slice()];
+        let mut buffer = AudioBuffer::from_slices_checked(&[], &mut channels, 256);
+        let events = EventList::with_capacity(0);
+        let mut output = EventList::with_capacity(16);
+        let transport = TransportInfo::default();
+        let mut cx = ProcessContext::new(&transport, 48000., 256, &mut output);
+        // Model a host restarting whenever the report changes: epochs advance,
+        // no replacement endpoint is present yet, and reported latency holds.
+        for _ in 0..3 {
+            Sampler::reset(&mut dsp, &params, &config);
+            assert_eq!(dsp.uvi_latency, 0, "mixer has no current endpoint");
+            assert_eq!(Sampler::latency(&dsp), latency);
+            assert_eq!(allocations(|| { Sampler::process(&mut dsp, &params, &mut buffer, &events, &mut cx); }), 0);
+            assert_eq!(Sampler::latency(&dsp), latency);
+        }
+        let mut delays = uvi_delay::Prepared::new(dsp.uvi.len(), latency as usize).unwrap();
+        assert!(delays.set_all(latency));
+        dsp.uvi_delays = Some(Box::new(delays));
+        Sampler::reset(&mut dsp, &params, &config);
+        assert_eq!(dsp.uvi_latency, latency, "matching adopted storage preserves physical compensation during replacement");
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp, &params, &mut buffer, &events, &mut cx); }), 0);
+        assert_eq!(dsp.uvi_latency, latency);
+        Sampler::reset(&mut dsp, &params, &AudioConfig::new(48000., 512));
+        assert_eq!(dsp.uvi_latency, 0, "old delay storage cannot supply a changed configuration");
+        assert_eq!(Sampler::latency(&dsp), 0, "changed maximum requires matching delay admission");
+        Sampler::reset(&mut dsp, &params, &config);
+        assert_eq!(Sampler::latency(&dsp), latency);
+        // The ordinary loader observes that no native source remains selected.
+        uvi_load::service(&params);
+        Sampler::process(&mut dsp, &params, &mut buffer, &events, &mut cx);
+        assert_eq!(Sampler::latency(&dsp), 0);
+        assert_eq!(dsp.uvi_latency, 0);
+        assert_eq!(params.shared.uvi_latency_admission.load(Ordering::Acquire), 0);
+    }
 
     #[test]
     fn opaque_native_state_survives_json_and_host_codec_without_backend_types() {
@@ -7027,6 +7118,16 @@ end on"#,dir.display());
             }
         };
         let first = ready(&params);
+        {
+            let mut view=params.shared.view.lock().unwrap();
+            let before=view.uvi_status.clone();
+            catalog_uvi_receipt(&mut view,Some(&request));
+            assert_eq!(view.uvi_attempted.as_ref(),Some(&request));
+            assert_eq!(view.uvi_status,before,"matching metadata receipt retains staged status and panel identity");
+        }
+        prepare_uvi(&params,&params.selection.read().unwrap().clone());
+        assert_eq!(params.with_prepared_uvi_worker(|_,epoch,generation,_| (epoch,generation)),Some(first),
+            "catalog metadata receipt does not replace a matching initialized worker");
         assert!(params.shared.ready.is_empty(), "a staged controller never enters the Kontakt callback queue");
         assert!(params.selection.read().unwrap().parts == [part.clone()]);
         assert_eq!(params.shared.part(0).unwrap().generation.load(Ordering::Acquire), 9);

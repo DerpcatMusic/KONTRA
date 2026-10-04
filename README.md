@@ -23,7 +23,14 @@ and [observed container layout](docs/uvi-format.md).
 Build with `cargo build --locked --profile ci --no-default-features --features uvi`.
 Supply your own bank and the official UVI Workstation 4.0.9 x64 executable as
 `--reader`. The executable is read locally to derive format namespaces; it is
-not redistributed. For an encrypted bank with a suitable PNG resource:
+not redistributed.
+
+The desktop and plugins prepare supported encrypted banks automatically on
+selection, without running Falcon, logging into an account or manually creating
+an access file. Configure the local reader in library settings; an environment
+override or a reader in a supported installed location is also accepted. The
+following explicit CLI commands remain useful for offline diagnosis of an
+encrypted bank with a suitable PNG resource:
 
 ```sh
 kontakto uvi-key bank.ufs private-state.json --reader UVIWorkstationx64.exe
@@ -36,6 +43,9 @@ Use `--events timeline.json` instead of `--notes` for a complete controller/note
 
 Recovery verifies every PNG chunk CRC before creating a new owner-only,
 bank-bound state file. Treat that file as private. Clear banks do not need it.
+The browser restores its saved Kontakt/UVI index before verifying files in the
+background. Changed roots, readers and bank identities invalidate the index;
+Rescan forces discovery.
 Unknown graph behavior fails explicitly or appears in fidelity diagnostics;
 successful decoding alone does not establish matching playback.
 
@@ -98,7 +108,7 @@ The [compatibility implementation checklist](docs/COMPATIBILITY.md) groups the r
 | Release-event identity and timing | **Partial** | Script-transposed input notes and following-parent children retain physical ownership and live expression. Samples created in release callbacks inherit the parent's frozen expression. Following children freeze before delayed callbacks and retain that snapshot for release samples; freezing has independent command storage. Surviving attack events keep separate release-counter clocks; pedal-deferred samples retain duration at key-up. | Release-only/exhausted-voice clocks and pre-engine script delays remain under review. Libraries with pitch-indexed script state can still mix identical pitches from different articulation channels in one script instance. |
 | REAPER project migration | **Experimental** | Explicit SavedMulti mappings replace selected Kontakt instances in a copied RPP. An isolated REAPER check verified state through save/reopen and retained two tracks, MIDI and a send. | Opaque Kontakt state, parameter automation and nested containers are not translated. Other DAWs, host versions and sonic parity remain unverified. |
 | Kontakt parity | **Untested** | No compatibility guarantee is made. | A successful load or short render is not a reference comparison. |
-| UVI/Falcon | **Experimental offline playback** | The optional `uvi` feature decodes observed UFS2 members and protected programs, runs Lua 5.1 scripts, and renders supported native graphs. See the [measured coverage](docs/uvi-compatibility.md). | Plugin loading, visual UVI controls, wider Falcon modules and complete sound parity remain incomplete. |
+| UVI/Falcon | **Experimental native playback** | The optional `uvi` feature decodes observed UFS2 members and protected programs, runs Lua 5.1 scripts, and plays supported graphs in the rack with authored controls. See the [measured coverage](docs/uvi-compatibility.md). | Sustainable live deadlines, advanced controls, wider Falcon modules and complete sound parity remain incomplete. |
 | Other sampler formats | **Unsupported for playback** | No additional sampler runtime is implemented. | Other sampler formats are not playable. |
 
 Earlier Falcon groundwork is retained in the [format findings](docs/FALCON_FORMAT_GROUNDWORK.md) and [runtime/UI compatibility map](docs/FALCON_RUNTIME_UI_GROUNDWORK.md). The [current report](docs/uvi-compatibility.md) distinguishes implemented behavior from remaining gates. Run `python3 tools/inspect_uvi.py --self-test` to check the structural inspector; that check alone does not establish playback.

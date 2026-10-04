@@ -106,7 +106,7 @@ impl<'a> Player<'a> {
         resources: BankResources,
         sample_rate: u32,
     ) -> Result<Self> {
-        Self::new_inner(program, modules, resources, sample_rate, None, None)
+        Self::new_inner(program, modules, resources, sample_rate, None, None, None)
     }
     pub fn new_hosted(
         program: &'a Program,
@@ -123,6 +123,7 @@ impl<'a> Player<'a> {
             sample_rate,
             Some((epoch, generation)),
             None,
+            None,
         )
     }
     /// Prepare a fresh replacement; malformed state cannot mutate a live player.
@@ -134,7 +135,36 @@ impl<'a> Player<'a> {
         activation: Option<(u64, u64)>,
         saved: Option<&super::state::SavedState>,
     ) -> Result<Self> {
-        Self::new_inner(program, modules, resources, sample_rate, activation, saved)
+        Self::new_inner(
+            program,
+            modules,
+            resources,
+            sample_rate,
+            activation,
+            saved,
+            None,
+        )
+    }
+    /// Initialization-only timing observer. Never retained by the player or
+    /// called while rendering audio.
+    pub(crate) fn new_with_state_traced(
+        program: &'a Program,
+        modules: BTreeMap<String, Vec<u8>>,
+        resources: BankResources,
+        sample_rate: u32,
+        activation: Option<(u64, u64)>,
+        saved: Option<&super::state::SavedState>,
+        stage: &mut dyn FnMut(&'static str),
+    ) -> Result<Self> {
+        Self::new_inner(
+            program,
+            modules,
+            resources,
+            sample_rate,
+            activation,
+            saved,
+            Some(stage),
+        )
     }
     fn new_inner(
         program: &'a Program,
@@ -143,8 +173,15 @@ impl<'a> Player<'a> {
         sample_rate: u32,
         activation: Option<(u64, u64)>,
         saved: Option<&super::state::SavedState>,
+        mut stage: Option<&mut dyn FnMut(&'static str)>,
     ) -> Result<Self> {
+        let mut stage = |name| {
+            if let Some(stage) = stage.as_deref_mut() {
+                stage(name);
+            }
+        };
         let hosted = activation.is_some();
+        stage("uvi_player_preflight");
         let unsupported = super::playback::preflight(program);
         ensure!(
             unsupported.is_empty(),
@@ -153,18 +190,21 @@ impl<'a> Player<'a> {
         );
         let capability = Some(resources.capability());
         if let Some(saved) = saved {
+            stage("uvi_restore_validation_and_audio");
             saved.validate(program)?;
             saved.prepare_audio(capability.as_ref().unwrap())?;
         }
         // A fresh instrument may load aliases during authored initialization.
         // Only restoration has a complete captured override set to prevalidate.
         let prepared = if let Some(saved) = saved {
+            stage("uvi_restore_renderer_init");
             let mut renderer = Renderer::new(program, resources.samples(), sample_rate)?;
             saved.prepare_renderer(&mut renderer)?;
             Some(renderer)
         } else {
             None
         };
+        stage("uvi_lua_init");
         let mut session = if let Some((epoch, generation)) = activation {
             Session::new_hosted_program_chain_with_state(
                 program,
@@ -180,9 +220,13 @@ impl<'a> Player<'a> {
         };
         let mut renderer = match prepared {
             Some(renderer) => renderer,
-            None => Renderer::new(program, resources.samples(), sample_rate)?,
+            None => {
+                stage("uvi_renderer_init");
+                Renderer::new(program, resources.samples(), sample_rate)?
+            }
         };
         if saved.is_some() {
+            stage("uvi_restore_apply");
             let processed = session.drain()?;
             // The preload is the prefix; authored onLoad/changed/onInit commands
             // follow it and therefore retain final native initialization authority.
@@ -193,6 +237,7 @@ impl<'a> Player<'a> {
                 &processed.host_commands,
             )?;
         }
+        stage("uvi_player_finalize");
         let resource_revision = resources.revision();
         Ok(Self {
             program,

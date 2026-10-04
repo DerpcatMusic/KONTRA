@@ -716,7 +716,8 @@ mod tests {
         }
         ui.wallpaper = "absent.jpg".into();
         let missing = super::performance(&instrument, Some(&ui)).err().unwrap();
-        assert!(missing.contains("absent.jpg was not found"), "{missing}");
+        // A failed archive lookup quotes the name and also retains its cause.
+        assert!(missing.contains("absent.jpg") && missing.contains("was not found"), "{missing}");
         std::fs::write(folder.join("bad.jpg"), &jpeg[..20]).unwrap();
         std::fs::write(folder.join("bad.png"), &png[..12]).unwrap();
         for (name, kind) in [("bad.jpg", "JPEG header:"), ("bad.png", "PNG header:")] {

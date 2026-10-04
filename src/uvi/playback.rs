@@ -71,6 +71,47 @@ fn parent(program: &Program, node: NodeId) -> Option<NodeId> {
 /// Resolve a serialized element path through collection wrappers. Ambiguous
 /// names are errors; no basename/global-name guess may select the wrong bus.
 pub fn resolve_path(program: &Program, node: NodeId, path: &str) -> Result<NodeId> {
+    resolve_path_with(program, node, path, |at, part| {
+        let mut matches = program.nodes.iter().enumerate().filter_map(|(id, n)| {
+            (parent(program, id) == Some(at) && n.name.as_deref() == Some(part)).then_some(id)
+        });
+        let target = matches.next();
+        ensure!(target.is_some() && matches.next().is_none(),
+            "UVI graph path segment cannot be resolved uniquely");
+        Ok(target.unwrap())
+    })
+}
+
+/// One graph-construction lookup table; duplicate names stay ambiguous.
+/// Borrowed names retain the exact wrapper-skipping path identity.
+pub(super) struct PathIndex<'a> {
+    program: &'a Program,
+    children: HashMap<NodeId, HashMap<&'a str, Option<NodeId>>>,
+}
+impl<'a> PathIndex<'a> {
+    pub(super) fn new(program: &'a Program) -> Self {
+        let mut children: HashMap<NodeId, HashMap<&str, Option<NodeId>>> = HashMap::new();
+        for (id, node) in program.nodes.iter().enumerate() {
+            if let (Some(parent), Some(name)) = (parent(program, id), node.name.as_deref()) {
+                children.entry(parent).or_default().entry(name)
+                    .and_modify(|target| *target = None).or_insert(Some(id));
+            }
+        }
+        Self { program, children }
+    }
+    pub(super) fn resolve(&self, node: NodeId, path: &str) -> Result<NodeId> {
+        resolve_path_with(self.program, node, path, |at, part| {
+            self.children.get(&at).and_then(|names| names.get(part)).copied().flatten()
+                .context("UVI graph path segment cannot be resolved uniquely")
+        })
+    }
+}
+fn resolve_path_with(
+    program: &Program,
+    node: NodeId,
+    path: &str,
+    mut child: impl FnMut(NodeId, &str) -> Result<NodeId>,
+) -> Result<NodeId> {
     ensure!(node < program.nodes.len(), "Invalid UVI path owner");
     let mut at = node;
     let mut path = path;
@@ -104,19 +145,7 @@ pub fn resolve_path(program: &Program, node: NodeId, path: &str) -> Result<NodeI
             at = parent(program, at).context("UVI path ascends above Program")?;
             continue;
         }
-        let matches: Vec<_> = program
-            .nodes
-            .iter()
-            .enumerate()
-            .filter_map(|(id, n)| {
-                (parent(program, id) == Some(at) && n.name.as_deref() == Some(part)).then_some(id)
-            })
-            .collect();
-        ensure!(
-            matches.len() == 1,
-            "UVI graph path segment cannot be resolved uniquely"
-        );
-        at = matches[0];
+        at = child(at, part)?;
     }
     Ok(at)
 }
@@ -821,13 +850,14 @@ fn numeric(
     Ok(n)
 }
 fn validate_sample(sample: &Sample) -> Result<()> {
+    // Storage's private PCM is finite by construction; retain per-Sample metadata
+    // checks without decoding the same immutable PCM again for every zone alias.
     ensure!(
         sample.rate > 0
             && sample.frames > 0
             && sample.channels > 0
             && sample.channels <= 256
-            && sample.frames.checked_mul(sample.channels) == Some(sample.interleaved.len())
-            && sample.interleaved.iter().all(|value| value.is_finite()),
+            && sample.frames.checked_mul(sample.channels) == Some(sample.interleaved.len()),
         "Invalid UVI sample dimensions or values"
     );
     Ok(())
@@ -3166,6 +3196,29 @@ mod tests {
             riff_metadata: vec![b"riff".to_vec()],
         }
     }
+    #[test]
+    fn sample_metadata_remains_checked_and_storage_rejects_nonfinite_pcm() {
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(Storage::from_f32(vec![0., value, 1.]).is_err());
+        }
+        let valid = sample(2);
+        validate_sample(&valid).unwrap();
+        for field in 0..5 {
+            let mut invalid = sample(2);
+            match field {
+                0 => invalid.rate = 0,
+                1 => invalid.frames = 0,
+                2 => invalid.channels = 0,
+                3 => invalid.channels = 257,
+                _ => invalid.frames = usize::MAX,
+            }
+            assert!(validate_sample(&invalid).is_err());
+        }
+        let mut invalid = sample(2);
+        invalid.frames += 1;
+        assert!(validate_sample(&invalid).is_err());
+    }
+
     fn note(id: u32) -> script::Note {
         script::Note {
             id,
@@ -4946,6 +4999,18 @@ mod tests {
                 .iter()
                 .any(|entry| entry.reason.contains("moving Mode0"))
         );
+    }
+    #[test]
+    fn indexed_paths_preserve_scan_resolution_and_rejections() {
+        let p = parse_program(r#"<Program><ControlSignalSources><ConstantModulation Name="Env" Value="0.9"/><ConstantModulation Name="Dup"/><ConstantModulation Name="Dup"/></ControlSignalSources><Layers><Layer Name="L"><ControlSignalSources><ConstantModulation Name="Env" Value="0.6"/></ControlSignalSources><Keygroups><Keygroup Name="K"><ControlSignalSources><ConstantModulation Name="Env" Value="0.2"/></ControlSignalSources><Oscillators><SamplePlayer Name="S" SamplePath="a"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let index = PathIndex::new(&p);
+        for owner in 0..=p.nodes.len() {
+            for path in ["$Program/Env", "$Layer/Env", "$Keygroup/Env", "$Program/L/K/S", "/uvi/Part 0/Program/L/K/S", "$Program/Dup", "$Program/Missing", "$Keygroup", "Env", "../Env", "$ProgramInvalid/Env", "/Program/Env", "$Program/.."] {
+                let scan = resolve_path(&p, owner, path).map_err(|error| error.to_string());
+                let indexed = index.resolve(owner, path).map_err(|error| error.to_string());
+                assert_eq!(scan, indexed, "owner={owner}, path={path}");
+            }
+        }
     }
     #[test]
     fn typed_source_scopes_choose_nearest_ancestor_without_basename_fallback() {

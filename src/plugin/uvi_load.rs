@@ -8,6 +8,23 @@ const READY: &str = "UVI instrument";
 const FAILED: &str = "UVI playback failed. Open Logs for the cause.";
 const UNSUPPORTED: &str = "The current audio configuration is unsupported by UVI playback.";
 
+pub(super) fn loading_status(progress: Option<(&'static str, std::time::Duration)>) -> String {
+    let Some((phase,elapsed))=progress else { return STARTING.into(); };
+    let activity=match phase {
+        "bank_open" => "opening bank",
+        "program_decode" => "reading program",
+        "graph_diagnosis_and_preflight" | "preflight" | "player_preflight" => "checking playback",
+        "resources" | "restore_validation_and_audio" => "loading samples",
+        "modules" => "reading script modules",
+        "lua_init" => "initializing controls",
+        "renderer_init" | "restore_renderer_init" => "preparing sound",
+        "restore_apply" => "restoring settings",
+        "player_finalize" => "finishing initialization",
+        _ => "starting",
+    };
+    format!("Loading UVI instrument: {activity}… ({} s)",elapsed.as_secs())
+}
+
 #[derive(Clone)]
 pub(crate) struct Activation {
     pub(super) source: library::UviSource,
@@ -78,7 +95,7 @@ fn update(
     }) {
         return;
     }
-    part.status = status.into();
+    if part.status != status { part.status = status.into(); }
     part.loading = loading;
     if !loading && status != READY {
         part.uvi_ui = None;
@@ -105,6 +122,12 @@ pub(super) fn service(params: &SamplerParams) {
         && (8000. ..=192000.).contains(&rate)
         && rate.fract() == 0.
         && (1..=65_536).contains(&maximum);
+    // Admission remains valid across a host reset while native configuration
+    // remains selected. Retracting the report during loading triggers another
+    // reset in hosts that restart their engine when latency changes.
+    if !supported || !selection.parts.iter().any(|part| part.uvi.is_some()) {
+        params.shared.uvi_latency_admission.store(0, Ordering::Release);
+    }
     for slot in 0..count {
         let source = selection.parts.get(slot).and_then(|part| part.uvi.clone());
         let previous = params
@@ -283,7 +306,7 @@ pub(super) fn service(params: &SamplerParams) {
             update(params, slot, &activation, UNSUPPORTED, false, None);
             continue;
         }
-        let (status, ui, ready) = {
+        let (status, progress, ui, ready) = {
             let mut registry = params.shared.uvi_controls.lock().unwrap();
             if !registry.matches(
                 activation.epoch,
@@ -295,9 +318,10 @@ pub(super) fn service(params: &SamplerParams) {
                 activation.max_host_frames,
                 UVI_LEAD_PACKETS,
             ) {
-                (None, None, Ok(None))
+                (None, None, None, Ok(None))
             } else {
                 let status = registry.status(activation.epoch, activation.generation);
+                let progress = (status == Some(Status::Starting)).then(|| registry.initialization_progress(activation.epoch, activation.generation)).flatten();
                 let ui = registry.poll_ui(activation.epoch, activation.generation);
                 let ready = if delay_ready == Ok(true)
                     && !activation.published
@@ -307,7 +331,7 @@ pub(super) fn service(params: &SamplerParams) {
                 } else {
                     Ok(None)
                 };
-                (status, ui, ready)
+                (status, progress, ui, ready)
             }
         };
         if !activation.current(params, slot) {
@@ -376,7 +400,7 @@ pub(super) fn service(params: &SamplerParams) {
                     ui,
                 );
             }
-            Some(Status::Starting) => update(params, slot, &activation, STARTING, true, None),
+            Some(Status::Starting) => update(params, slot, &activation, &loading_status(progress), true, None),
             _ => {
                 if failed {
                     crate::diagnostics::event(
@@ -394,4 +418,19 @@ pub(super) fn service(params: &SamplerParams) {
     }
     super::uvi_state::poll(params);
     params.shared.uvi_controls.lock().unwrap().poll_retired();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn native_loading_progress_is_truthful_and_updates_in_whole_seconds() {
+        let samples=loading_status(Some(("resources",std::time::Duration::from_millis(1900))));
+        assert_eq!(samples,"Loading UVI instrument: loading samples… (1 s)");
+        assert_eq!(samples,loading_status(Some(("resources",std::time::Duration::from_millis(1100)))));
+        assert_ne!(samples,loading_status(Some(("resources",std::time::Duration::from_millis(2100)))));
+        assert_eq!(loading_status(Some(("lua_init",std::time::Duration::from_secs(3)))),"Loading UVI instrument: initializing controls… (3 s)");
+        assert!(!loading_status(Some(("renderer_init",std::time::Duration::ZERO))).contains("ready"));
+        assert_eq!(loading_status(None),STARTING);
+    }
 }

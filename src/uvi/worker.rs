@@ -391,8 +391,71 @@ struct Counters {
     cancelled_completions: AtomicU64,
 }
 
+/// A fixed startup sequence, sampled only by loader/control inspection.
+/// It excludes UI asset preparation and host adoption, which this worker does
+/// not own. Existing LoadTrace retains the corresponding journal timings.
+struct InitializationTiming {
+    started: Instant,
+    current: Option<(&'static str, Instant)>,
+    stages: Vec<(&'static str, Duration, &'static str)>,
+    finished: Option<(Duration, &'static str)>,
+}
+impl Default for InitializationTiming {
+    fn default() -> Self {
+        let now = Instant::now();
+        Self {
+            started: now,
+            current: Some(("starting", now)),
+            stages: Vec::with_capacity(16),
+            finished: None,
+        }
+    }
+}
+impl InitializationTiming {
+    fn stage(&mut self, name: &'static str) {
+        if self.finished.is_some() {
+            return;
+        }
+        if let Some((previous, started)) = self.current.take() {
+            self.stages.push((previous, started.elapsed(), "finished"));
+        }
+        self.current = Some((name, Instant::now()));
+    }
+    fn finish(&mut self, outcome: &'static str) {
+        if self.finished.is_some() {
+            return;
+        }
+        if let Some((name, started)) = self.current.take() {
+            self.stages.push((
+                name,
+                started.elapsed(),
+                if outcome == "ready" {
+                    "finished"
+                } else {
+                    outcome
+                },
+            ));
+        }
+        self.finished = Some((self.started.elapsed(), outcome));
+    }
+    fn report(&self) -> serde_json::Value {
+        let mut stages: Vec<_> = self.stages.iter().map(|(name, elapsed, outcome)|
+            serde_json::json!({"phase":name,"elapsed_ms":elapsed.as_secs_f64()*1000.,"outcome":outcome})).collect();
+        if let Some((name, started)) = self.current {
+            stages.push(serde_json::json!({"phase":name,"elapsed_ms":started.elapsed().as_secs_f64()*1000.,"outcome":"in_progress"}));
+        }
+        serde_json::json!({"outcome":self.finished.map_or("in_progress",|(_,outcome)|outcome),
+            "elapsed_ms":self.finished.map_or_else(||self.started.elapsed(),|(elapsed,_)|elapsed).as_secs_f64()*1000.,
+            "stages":stages,"scope":"worker_initialization_only",
+            "ui_assets_measured":false,"host_adoption_wait_measured":false,
+            "lua_time_includes_authored_resource_loads":true,
+            "renderer_time_includes_internal_preflight_and_sample_validation":true})
+    }
+}
+
 #[derive(Default)]
 struct Details {
+    initialization: InitializationTiming,
     failure: Option<String>,
     phase: &'static str,
     phase_frame: u64,
@@ -626,6 +689,16 @@ impl Worker {
                         .initialization_ns
                         .store(nanos(initialized.elapsed()), Ordering::Relaxed);
                 }
+                worker_shared
+                    .details
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .initialization
+                    .finish(if failure.is_some() {
+                        "failed"
+                    } else {
+                        "cancelled"
+                    });
                 if let Some(reason) = &failure {
                     let details = worker_shared
                         .details
@@ -692,6 +765,20 @@ impl Worker {
             .failure
             .clone()
     }
+    /// Loader-control progress only: two scalars, no graph or script data.
+    /// The player never retains this observer, and audio callbacks never use it.
+    pub fn initialization_progress(&self) -> Option<(&'static str, Duration)> {
+        let details = self
+            .shared
+            .details
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        details
+            .initialization
+            .current
+            .map(|(phase, _)| (phase, details.initialization.started.elapsed()))
+    }
+
     /// Private control-thread inspection. A parsed/admitted graph is not proof
     /// that any particular node executed or matched Falcon numerically.
     pub fn diagnostic_report(&self) -> serde_json::Value {
@@ -704,6 +791,7 @@ impl Worker {
             "status":self.status(), "phase":details.phase, "frame":details.phase_frame,
             "epoch":self.shared.stamp.epoch, "generation":self.shared.stamp.generation,
             "program":details.program_report, "stats":self.stats(),
+            "initialization":details.initialization.report(),
             "failure":details.failure, "load_trace":details.load_report.as_deref(),
             "runtime_evidence":"worker_lifecycle_completed_packets_and_optional_requested_node_snapshot",
             "runtime_snapshot":details.runtime_report.as_deref(),
@@ -1437,8 +1525,7 @@ fn run(
     if shared.stop.load(Ordering::Acquire) {
         return Ok(());
     }
-    phase(shared, "bank_open", 0);
-    trace.stage("uvi_bank_open");
+    initialization_stage(shared, trace, "uvi_bank_open");
     let library = Rc::new(Library::open(
         &config.bank,
         &config.metadata_namespace,
@@ -1461,9 +1548,9 @@ fn run(
     if shared.stop.load(Ordering::Acquire) {
         return Ok(());
     }
-    phase(shared, "program_decode", 0);
-    trace.stage("uvi_program_decode");
+    initialization_stage(shared, trace, "uvi_program_decode");
     let loaded = library.program(&config.member, &config.program_namespace)?;
+    initialization_stage(shared, trace, "uvi_graph_diagnosis_and_preflight");
     let report = serde_json::to_value(super::diagnostics::report(&loaded.program))?;
     trace.detail("native_program_graph", report.clone());
     shared
@@ -1471,31 +1558,29 @@ fn run(
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .program_report = Some(report);
-    phase(shared, "preflight", 0);
-    trace.stage("uvi_preflight");
+    initialization_stage(shared, trace, "uvi_preflight");
     let unsupported = super::playback::preflight(&loaded.program);
     ensure!(
         unsupported.is_empty(),
         "Native UVI graph preflight failed: {}",
         serde_json::to_string(&unsupported)?
     );
-    phase(shared, "resources", 0);
-    trace.stage("uvi_resources");
+    initialization_stage(shared, trace, "uvi_resources");
     let resources = BankResources::new(library.clone(), &loaded.path, library.samples(&loaded)?)?;
     let activation = shared
         .hosted
         .as_ref()
         .map(|_| (shared.stamp.epoch, shared.stamp.generation));
+    initialization_stage(shared, trace, "uvi_modules");
     let modules = library.modules()?;
-    phase(shared, "renderer_lua_init", 0);
-    trace.stage("uvi_renderer_lua_init");
-    let mut player = Player::new_with_state(
+    let mut player = Player::new_with_state_traced(
         &loaded.program,
         modules,
         resources,
         config.sample_rate,
         activation,
         saved,
+        &mut |name| initialization_stage(shared, trace, name),
     )?;
     {
         let mut details = shared
@@ -1518,10 +1603,31 @@ fn run(
     if shared.stop.load(Ordering::Acquire) {
         return Ok(());
     }
+    shared
+        .details
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .initialization
+        .finish("ready");
     phase(shared, "serve", 0);
     trace.stage("uvi_serve");
     shared.status.store(Status::Ready as u8, Ordering::Release);
     serve(&mut player, shared, config.sample_rate)
+}
+
+fn initialization_stage(
+    shared: &Shared,
+    trace: &mut crate::diagnostics::LoadTrace,
+    name: &'static str,
+) {
+    let phase = name.strip_prefix("uvi_").unwrap_or(name);
+    {
+        let mut details = shared.details.lock().unwrap_or_else(|p| p.into_inner());
+        details.phase = phase;
+        details.phase_frame = 0;
+        details.initialization.stage(phase);
+    }
+    trace.stage(name);
 }
 
 fn phase(shared: &Shared, name: &'static str, frame: u64) {
@@ -1678,6 +1784,115 @@ pub(crate) mod tests {
     use super::super::{crypto, program::parse_program};
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn compact_initialization_progress_does_not_enqueue_or_copy_graph_reports() {
+        let worker = Worker {
+            shared: Arc::new(Shared::new(1, 2)),
+            thread: None,
+            cursor: Some(PacketCursor::default()),
+        };
+        {
+            let mut details = worker.shared.details.lock().unwrap();
+            details.initialization.started = Instant::now() - Duration::from_secs(3);
+            details.initialization.stage("resources");
+        }
+        let (phase, elapsed) = worker.initialization_progress().unwrap();
+        assert_eq!(phase, "resources");
+        assert!(
+            elapsed >= Duration::from_secs(3),
+            "elapsed tracks complete initialization, not just current phase"
+        );
+        {
+            let details = worker.shared.details.lock().unwrap();
+            assert!(
+                details.ui_request.is_none()
+                    && details.state_request.is_none()
+                    && details.runtime_request.is_none()
+            );
+            assert!(details.program_report.is_none());
+        }
+        worker
+            .shared
+            .details
+            .lock()
+            .unwrap()
+            .initialization
+            .finish("ready");
+        assert!(worker.initialization_progress().is_none());
+    }
+
+    #[test]
+    fn initialization_timing_reports_live_stage_and_freezes_terminal_duration() {
+        let mut timing = InitializationTiming::default();
+        timing.stage("resources");
+        let loading = timing.report();
+        assert_eq!(loading["outcome"], "in_progress");
+        assert_eq!(loading["stages"][0]["phase"], "starting");
+        assert_eq!(loading["stages"][0]["outcome"], "finished");
+        assert_eq!(loading["stages"][1]["phase"], "resources");
+        assert_eq!(loading["stages"][1]["outcome"], "in_progress");
+        timing.finish("failed");
+        let terminal = timing.report();
+        timing.stage("serve");
+        timing.finish("cancelled");
+        assert_eq!(
+            timing.report(),
+            terminal,
+            "later stop/poll cannot inflate failed initialization time"
+        );
+        assert_eq!(terminal["outcome"], "failed");
+        assert_eq!(terminal["stages"][1]["outcome"], "failed");
+        assert_eq!(terminal["ui_assets_measured"], false);
+        assert_eq!(terminal["host_adoption_wait_measured"], false);
+    }
+
+    #[test]
+    fn initialization_timing_splits_player_and_preserves_failed_lua_phase() {
+        let (config, _) = authored_bank_with_script(
+            "function onInit()error('authored initialization failure')end",
+        );
+        let path = config.bank.clone();
+        let mut worker = Worker::start_hosted(config, 3, 4).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while worker.status() == Status::Starting && Instant::now() < deadline {
+            thread::sleep(POLL);
+        }
+        assert_eq!(worker.status(), Status::Failed);
+        let report = worker.diagnostic_report();
+        assert_eq!(report["phase"], "lua_init");
+        let timing = &report["initialization"];
+        assert_eq!(timing["outcome"], "failed");
+        let stages = timing["stages"].as_array().unwrap();
+        for name in [
+            "bank_open",
+            "program_decode",
+            "graph_diagnosis_and_preflight",
+            "preflight",
+            "resources",
+            "modules",
+            "player_preflight",
+        ] {
+            assert!(
+                stages
+                    .iter()
+                    .any(|stage| stage["phase"] == name && stage["outcome"] == "finished"),
+                "missing completed phase {name}"
+            );
+        }
+        assert_eq!(stages.last().unwrap()["phase"], "lua_init");
+        assert_eq!(stages.last().unwrap()["outcome"], "failed");
+        assert!(
+            report["failure"]
+                .as_str()
+                .unwrap()
+                .contains("authored initialization failure")
+        );
+        assert_eq!(report["load_trace"]["details"]["failure_phase"], "lua_init");
+        worker.stop();
+        assert_eq!(worker.diagnostic_report()["initialization"], *timing);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn diagnostic_report_retains_decoded_graph_when_unknown_node_fails_preflight() {
@@ -1925,21 +2140,37 @@ function onSave()error('runtime inspection must not run callbacks')end
 
     #[test]
     fn explicit_runtime_diagnostic_helper_preserves_stamped_success_and_unavailable_outcomes() {
-        let (config,_)=authored_bank_with_script("function onSave()error('inspection is read only')end");
-        let path=config.bank.clone();let mut worker=Worker::start(config,7,11).unwrap();
+        let (config, _) =
+            authored_bank_with_script("function onSave()error('inspection is read only')end");
+        let path = config.bank.clone();
+        let mut worker = Worker::start(config, 7, 11).unwrap();
         worker.wait_ready(Duration::from_secs(3)).unwrap();
-        let captured=worker.runtime_diagnostic_report(Duration::from_millis(500));
-        assert_eq!(captured["runtime_snapshot_request"]["outcome"],"captured");
-        assert_eq!(captured["runtime_snapshot"]["stamp"]["frame"],0);
-        assert_eq!(captured["stats"]["rendered_blocks"],0,"inspection cannot advance playback");
-        let latest=worker.shared.details.lock().unwrap().runtime_latest;
-        let skipped=worker.runtime_diagnostic_report(Duration::ZERO);
-        assert_eq!(skipped["runtime_snapshot_request"]["outcome"],"timeout");
-        assert_eq!(worker.shared.details.lock().unwrap().runtime_latest,latest,"an exhausted shared export budget does not enqueue another graph inspection");
-        worker.stop();let stopped=worker.runtime_diagnostic_report(Duration::from_millis(500));
-        assert_eq!(stopped["runtime_snapshot_request"]["outcome"],"unavailable");
-        assert_eq!(stopped["status"],"stopped");
-        assert_eq!(stopped["runtime_snapshot"]["stamp"]["frame"],0,"unavailable inspection preserves the earlier explicit capture stamp");
+        let captured = worker.runtime_diagnostic_report(Duration::from_millis(500));
+        assert_eq!(captured["runtime_snapshot_request"]["outcome"], "captured");
+        assert_eq!(captured["runtime_snapshot"]["stamp"]["frame"], 0);
+        assert_eq!(
+            captured["stats"]["rendered_blocks"], 0,
+            "inspection cannot advance playback"
+        );
+        let latest = worker.shared.details.lock().unwrap().runtime_latest;
+        let skipped = worker.runtime_diagnostic_report(Duration::ZERO);
+        assert_eq!(skipped["runtime_snapshot_request"]["outcome"], "timeout");
+        assert_eq!(
+            worker.shared.details.lock().unwrap().runtime_latest,
+            latest,
+            "an exhausted shared export budget does not enqueue another graph inspection"
+        );
+        worker.stop();
+        let stopped = worker.runtime_diagnostic_report(Duration::from_millis(500));
+        assert_eq!(
+            stopped["runtime_snapshot_request"]["outcome"],
+            "unavailable"
+        );
+        assert_eq!(stopped["status"], "stopped");
+        assert_eq!(
+            stopped["runtime_snapshot"]["stamp"]["frame"], 0,
+            "unavailable inspection preserves the earlier explicit capture stamp"
+        );
         std::fs::remove_file(path).unwrap();
     }
 

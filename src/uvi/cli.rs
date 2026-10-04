@@ -1,8 +1,7 @@
 //! Offline commands; reader constants and content state stay local.
 use super::*;
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::io::{Seek, SeekFrom, Write};
+use std::io::Write;
 use std::{collections::HashMap, rc::Rc};
 
 pub(crate) struct ReaderNamespaces {
@@ -29,37 +28,7 @@ impl ReaderNamespaces {
     }
 }
 
-#[derive(Deserialize)]
-pub(crate) struct ContentState {
-    pub(crate) key: u64,
-    #[serde(default)]
-    pub(crate) bank: Option<String>,
-}
-
-impl ContentState {
-    pub(crate) fn open(path: &Path) -> Result<Self> {
-        let file = File::open(path)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            ensure!(
-                file.metadata()?.permissions().mode() & 0o077 == 0,
-                "Content-state file must be private (chmod 600)"
-            );
-        }
-        let mut bytes = Vec::new();
-        file.take(4097).read_to_end(&mut bytes)?;
-        ensure!(bytes.len() <= 4096, "Content-state file exceeds limit");
-        if bytes.len() == 8 {
-            Ok(Self {
-                key: u64::from_le_bytes(bytes.try_into().unwrap()),
-                bank: None,
-            })
-        } else {
-            serde_json::from_slice(&bytes).context("Invalid local content-state file")
-        }
-    }
-}
+pub(crate) use super::access::ContentState;
 
 fn options(args: &[String], start: usize) -> Result<(ReaderNamespaces, Option<ContentState>)> {
     let (mut reader, mut state) = (None, None);
@@ -120,61 +89,6 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
         return Err(error.into());
     }
     Ok(())
-}
-
-/// Validate the complete PNG, rather than trusting a guessed cipher prefix.
-fn validate_png(bytes: &[u8]) -> Result<usize> {
-    ensure!(
-        bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
-        "Invalid PNG signature"
-    );
-    let mut offset = 8usize;
-    let (mut chunks, mut data) = (0usize, false);
-    while offset < bytes.len() {
-        let header = bytes
-            .get(offset..offset + 8)
-            .context("Truncated PNG chunk")?;
-        let size = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
-        let end = offset
-            .checked_add(12)
-            .and_then(|n| n.checked_add(size))
-            .context("PNG chunk overflow")?;
-        let chunk = bytes
-            .get(offset + 4..end)
-            .context("Truncated PNG chunk data")?;
-        let crc = u32::from_be_bytes(chunk[chunk.len() - 4..].try_into().unwrap());
-        ensure!(
-            crc32fast::hash(&chunk[..chunk.len() - 4]) == crc,
-            "PNG CRC mismatch"
-        );
-        let kind = &header[4..8];
-        if chunks == 0 {
-            ensure!(kind == b"IHDR" && size == 13, "PNG must start with IHDR");
-            let ihdr = &chunk[4..17];
-            ensure!(
-                u32::from_be_bytes(ihdr[..4].try_into().unwrap()) != 0
-                    && u32::from_be_bytes(ihdr[4..8].try_into().unwrap()) != 0,
-                "Invalid PNG dimensions"
-            );
-            ensure!(
-                ihdr[10] == 0 && ihdr[11] == 0 && ihdr[12] <= 1,
-                "Invalid PNG encoding"
-            );
-        } else {
-            ensure!(kind != b"IHDR", "Repeated PNG IHDR");
-        }
-        data |= kind == b"IDAT";
-        chunks += 1;
-        offset = end;
-        if kind == b"IEND" {
-            ensure!(
-                size == 0 && data && offset == bytes.len(),
-                "Invalid PNG end"
-            );
-            return Ok(chunks);
-        }
-    }
-    anyhow::bail!("PNG has no IEND")
 }
 
 fn processing_end(end: u64) -> Result<u64> {
@@ -293,43 +207,10 @@ pub fn run(args: &[String]) -> Result<()> {
             );
             let bank = ufs::Ufs::open(path)?;
             let directory = bank.decode_directory(&reader.metadata)?;
-            let mut candidates: Vec<_> = directory
-                .files
-                .iter()
-                .filter(|m| {
-                    m.mode == 2
-                        && m.size >= 45
-                        && m.size <= 16 << 20
-                        && m.name.to_ascii_lowercase().ends_with(".png")
-                })
-                .collect();
-            candidates.sort_by_key(|m| m.size);
-            ensure!(
-                !candidates.is_empty(),
-                "Bank has no bounded encrypted PNG suitable for known-plaintext recovery"
-            );
-            let mut verified = None;
-            for member in candidates {
-                let mut file = File::open(path)?;
-                file.seek(SeekFrom::Start(member.offset))?;
-                let mut bytes = vec![0; member.size as usize];
-                file.read_exact(&mut bytes)?;
-                let cipher: [u8; 16] = bytes[..16].try_into().unwrap();
-                let plain = *b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
-                if let Ok(key) = crypto::recover_key(&cipher, &plain, member.offset) {
-                    crypto::transform_blocks(&mut bytes, key, member.offset);
-                    if let Ok(chunks) = validate_png(&bytes) {
-                        verified = Some((key, chunks));
-                        break;
-                    }
-                }
-            }
-            let (key, chunks) =
-                verified.context("No recovered content state passed full PNG CRC verification")?;
-            let state = serde_json::json!({"key":key,"bank":std::fs::canonicalize(path)?.to_string_lossy()});
-            write_private(Path::new(&args[2]), &serde_json::to_vec(&state)?)?;
+            let state = super::access::recover_content_state(path, &bank, &directory)?;
+            super::access::save_content_state(Path::new(&args[2]), &bank, &state, false)?;
             println!(
-                "Saved a private bank-bound content state after verifying {chunks} PNG chunk CRCs"
+                "Saved a private UUID-bound content state after complete PNG CRC verification"
             );
         }
         "uvi-check" | "uvi-play" => {
@@ -728,12 +609,12 @@ mod tests {
         // Authored one-pixel grayscale PNG: uncompressed zlib filter byte + pixel.
         chunk(b"IDAT", &[0x78, 1, 1, 2, 0, 0xfd, 0xff, 0, 0, 0, 2, 0, 1]);
         chunk(b"IEND", &[]);
-        assert_eq!(validate_png(&png).unwrap(), 3);
+        assert_eq!(super::super::access::validate_png(&png).unwrap(), 3);
         let mut corrupt = png.clone();
         corrupt[45] ^= 1;
-        assert!(validate_png(&corrupt).is_err());
-        assert!(validate_png(&png[..png.len() - 1]).is_err());
+        assert!(super::super::access::validate_png(&corrupt).is_err());
+        assert!(super::super::access::validate_png(&png[..png.len() - 1]).is_err());
         png.push(0);
-        assert!(validate_png(&png).is_err());
+        assert!(super::super::access::validate_png(&png).is_err());
     }
 }
