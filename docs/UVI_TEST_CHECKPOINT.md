@@ -127,6 +127,12 @@ Kontakt monolith source also rejects descending offsets and malformed markers
 instead of overflowing or asserting. These latest diagnostic/parser changes
 remain uncompiled and unexecuted under the same CPU restriction.
 
+The [missing PanLaw default correction](UVI_PANLAW_DEFAULT_EVIDENCE.md) aligns
+the shared Lua/state baseline with retained native loaded-program getter values
+for Program/Layer/Keygroup. Explicit XML, synthetic parents, SamplePlayer and
+renderer gates are unchanged. It is source-reviewed and remains uncompiled;
+newly saved omitted-property deltas cannot restore in older implementations.
+
 ## Check the behavior
 
 1. Play from the keyboard, then from the DAW. Check release, overlap and sustain.

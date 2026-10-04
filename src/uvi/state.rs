@@ -490,6 +490,53 @@ mod tests {
     }
 
     #[test]
+    fn measured_missing_pan_law_defaults_save_deltas_and_restore_before_callbacks() {
+        let program = parse_program(r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
+          objects={Program,Program.layers[1],Program.layers[1].keygroups[1]}
+          captured={};for i,object in ipairs(objects)do captured[i]=object:getParameter('PanLaw')end
+          function onController(e)for _,object in ipairs(objects)do object:setParameter('PanLaw',1)end end
+          function onLoad(data)
+            for _,value in ipairs(captured)do assert(value==(data.changed and 1 or 0))end
+            changed=data.changed
+          end
+          function onInit()if changed then Program:setParameter('PanLaw',0)end end
+          function onSave()return {changed=Program:getParameter('PanLaw')==1}end
+        ]]></script></ScriptProcessor></EventProcessors><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let mut session = Session::new_program_chain(&program, BTreeMap::new(), None, 48000).unwrap();
+        let initial = session.saved_state(0).unwrap();
+        assert!(initial.0.parameters.is_empty());
+        let initial = SavedState::decode(&initial.encode().unwrap()).unwrap();
+        initial.validate(&program).unwrap();
+        let mut restored_initial = Session::new_program_chain_with_state(
+            &program, BTreeMap::new(), None, 48000, Some(&initial),
+        ).unwrap();
+        assert!(restored_initial.saved_state(0).unwrap().0.parameters.is_empty());
+        session.input(crate::uvi::script::Input {
+            frame: 0,
+            kind: crate::uvi::script::InputKind::Controller {channel: 0, controller: 1, value: 127},
+        }).unwrap();
+        let saved = SavedState::decode(&session.saved_state(0).unwrap().encode().unwrap()).unwrap();
+        assert_eq!(saved.0.parameters.len(), 3);
+        assert!(saved.0.parameters.iter().all(|(_,name,value)| name=="PanLaw" && *value==ParameterValue::Number(1.)));
+        saved.validate(&program).unwrap();
+        let mut restored = Session::new_program_chain_with_state(
+            &program, BTreeMap::new(), None, 48000, Some(&saved),
+        ).unwrap();
+        let after_init = restored.saved_state(0).unwrap();
+        assert_eq!(after_init.0.parameters.len(), 2, "onInit still wins over the preloaded Program override");
+        assert!(after_init.0.parameters.iter().all(|(node,name,value)| *node!=program.root && name=="PanLaw" && *value==ParameterValue::Number(1.)));
+        let mut wrong_type = saved.clone();
+        wrong_type.0.parameters[0].2 = ParameterValue::Boolean(true);
+        assert!(wrong_type.validate(&program).is_err());
+        let mut unowned = initial.clone();
+        let sample = program.nodes.iter().position(|n| n.kind=="SamplePlayer").unwrap();
+        unowned.0.parameters.push((sample,"PanLaw".into(),ParameterValue::Number(1.)));
+        assert!(unowned.validate(&program).is_err());
+        unowned.0.parameters[0].0 = program.nodes.len();
+        assert!(unowned.validate(&program).is_err(), "synthetic context remains outside saved parameter ownership");
+    }
+
+    #[test]
     fn measured_missing_gain_pan_defaults_support_setters_and_saved_deltas() {
         let program=parse_program(r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
           objects={Program,Program.layers[1],Program.layers[1].keygroups[1]}
