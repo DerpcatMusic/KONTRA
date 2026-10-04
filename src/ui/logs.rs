@@ -708,15 +708,15 @@ fn retained_excerpt(event: &LogEvent) -> Option<&str> {
         .or_else(|| diagnostics::excerpt_text(&event.details["worker"]))
 }
 
+fn common_cause(events: &[LogEvent], group: &EventGroup) -> Option<String> {
+    let first_cause = cause(&events[group.latest]);
+    group.children.iter().all(|child| cause(&events[child[0]]) == first_cause).then_some(first_cause)
+}
+
 fn group_reason(events: &[LogEvent], group: &EventGroup) -> String {
-    let latest = &events[group.latest];
-    if inventory(latest) { return inventory_summary(events, group); }
-    let first_cause = cause(latest);
-    if group.children.iter().all(|child| cause(&events[child[0]]) == first_cause) {
-        first_cause
-    } else {
-        format!("{} unique item/cause/location entries · select to inspect", group.children.len())
-    }
+    if inventory(&events[group.latest]) { return inventory_summary(events, group); }
+    common_cause(events, group).unwrap_or_else(||
+        format!("{} unique item/cause/location entries · select to inspect", group.children.len()))
 }
 
 fn group_details(events: &[LogEvent], group: &EventGroup) -> String {
@@ -736,6 +736,10 @@ fn group_details(events: &[LogEvent], group: &EventGroup) -> String {
         time(group.first_ms),
         time(group.last_ms)
     );
+    let shared_cause = common_cause(events, group);
+    if let Some(cause) = &shared_cause {
+        let _ = writeln!(text, "Cause: {cause}");
+    }
     for child in group.children.iter().take(64) {
         let latest = *child.iter().max_by_key(|&&n| events[n].sequence).unwrap();
         let source = child.iter().filter(|&&n| retained_excerpt(&events[n]).is_some())
@@ -745,13 +749,15 @@ fn group_details(events: &[LogEvent], group: &EventGroup) -> String {
         let last = child.iter().map(|&n| events[n].timestamp_ms).max().unwrap();
         let _ = writeln!(
             text,
-            "\n  {} — {} occurrences · {}–{}\nCause: {}",
+            "\n  {} — {} occurrences · {}–{}",
             item_label(event),
             child.len(),
             time(first),
-            time(last),
-            cause(event)
+            time(last)
         );
+        if shared_cause.is_none() {
+            let _ = writeln!(text, "Cause: {}", cause(event));
+        }
         if let Some(failure) = supplementary_worker_failure(event) {
             let _ = writeln!(text, "Additional worker failure: {failure}");
         }
@@ -777,6 +783,10 @@ fn group_details(events: &[LogEvent], group: &EventGroup) -> String {
             if let Some(object) = diagnostic[parent].as_object_mut() {
                 for &key in keys { object.remove(key); }
             }
+        }
+        if let Some(lua) = diagnostic.get_mut("worker").and_then(|worker| worker.get_mut("lua_failure"))
+            .and_then(serde_json::Value::as_object_mut) {
+            for key in ["processor", "chunk", "line", "source_provenance"] { lua.remove(key); }
         }
         let diagnostic = compact_context(&diagnostic, 0);
         if text.len() > 64 * 1024 {
@@ -1866,7 +1876,7 @@ mod tests {
         assert_eq!(cause(&events[1]),"RequestCapacity");
         assert_eq!(cause(&events[2]),"RequestCapacity");
         let text = group_details(&events,&groups[0]);
-        assert_eq!(text.matches("Cause: RequestCapacity").count(),2);
+        assert_eq!(text.matches("Cause: RequestCapacity").count(),1);
         assert_eq!(text.matches("authored worker processing error").count(),1);
         assert!(text.contains("Additional worker failure: authored worker processing error"));
         assert!(text.contains("source: src/uvi/endpoint.rs") && text.contains("line: 81"));
@@ -1908,6 +1918,7 @@ mod tests {
             assert!(events.iter().all(|event| cause(event) == endpoint));
             assert_eq!(group_reason(&events,&groups[0]),endpoint);
             let text = group_details(&events,&groups[0]);
+            assert_eq!(text.matches(&format!("Cause: {endpoint}")).count(),1);
             assert_eq!(text.matches("later authored worker failure").count(),1);
             assert_eq!(text.matches("distinct authored worker failure").count(),1);
             assert_eq!(text.matches("Additional worker failure:").count(),2);
@@ -1953,6 +1964,54 @@ mod tests {
         assert_eq!(cause(&event),"reason fallback");
         event.reason = None;
         assert_eq!(cause(&event),"uvi_audio_endpoint_failed");
+    }
+
+    #[test]
+    fn shared_primary_cause_is_parent_only_while_child_source_and_evidence_remain() {
+        let event = |n: u64, processor: u64, failure: &str, code: &str| -> LogEvent {
+            serde_json::from_value(json!({"schema_version":1,"sequence":n,"timestamp_ms":1000+n,
+                "monotonic_ms":n,"session_id":"shared-cause-fixture","level":"error","module":"uvi",
+                "event":"uvi_audio_endpoint_failed","code":"uvi_audio_endpoint_failed","reason":"duplicated combined reason",
+                "data":{"worker":{"failure":failure,"lua_failure":{"processor":processor,
+                    "chunk":format!("UVI ScriptProcessor node {processor}"),"line":7,"frame":n,
+                    "source_provenance":"structured_coroutine_frame","local_source_excerpt_available":true}},
+                    "endpoint":{"error":"InvalidInput","stage":"process","source_file":"src/plugin/uvi.rs",
+                        "line":42,"source_kind":"rust","source_excerpt":{"text":format!(">     42 | {code}\n")}}}})).unwrap()
+        };
+        let first = event(1,2,"supplement A","authored_code_A()");
+        let repeated = event(2,2,"supplement A","authored_code_A()");
+        let second = event(3,4,"supplement B","authored_code_B()");
+        let events = vec![first,repeated,second];
+        let before = events.iter().map(|event| serde_json::to_value(event).unwrap()).collect::<Vec<_>>();
+        let groups = group_events(&events,&[2,1,0]);
+        assert_eq!((groups.len(),groups[0].members.len(),groups[0].children.len()),(1,3,2));
+        let text = group_details(&events,&groups[0]);
+        assert_eq!(text.matches("Cause: InvalidInput").count(),1);
+        assert!(text.find("Cause: InvalidInput").unwrap() < text.find("Lua processor:").unwrap());
+        for (processor, failure, code) in [(2,"supplement A","authored_code_A()"),(4,"supplement B","authored_code_B()")] {
+            assert_eq!(text.matches(&format!("Lua processor: {processor}")).count(),1);
+            assert_eq!(text.matches(&format!("Lua chunk: UVI ScriptProcessor node {processor}")).count(),1);
+            assert_eq!(text.matches(&format!("Additional worker failure: {failure}")).count(),1);
+            assert_eq!(text.matches(code).count(),1);
+        }
+        assert_eq!(text.matches("Lua line: 7").count(),2);
+        assert_eq!(text.matches("Lua source_provenance: structured_coroutine_frame").count(),2);
+        assert!(text.contains("local_source_excerpt_available"));
+        for key in ["\"processor\":", "\"chunk\":", "\"line\":", "\"source_provenance\":"] {
+            assert!(!text.contains(key),"shown child identity is not repeated in JSON: {key}");
+        }
+        assert!(!text.contains("duplicated combined reason"));
+        assert_eq!(events.iter().map(|event| serde_json::to_value(event).unwrap()).collect::<Vec<_>>(),before);
+        let mut mixed = events.clone();
+        mixed[2].details["endpoint"]["error"] = json!("Bridge(RequestCapacity)");
+        let groups = group_events(&mixed,&[2,1,0]);
+        assert!(common_cause(&mixed,&groups[0]).is_none());
+        let mixed_text = group_details(&mixed,&groups[0]);
+        assert_eq!(mixed_text.matches("Cause:").count(),2);
+        assert_eq!(mixed_text.matches("Cause: InvalidInput").count(),1);
+        assert_eq!(mixed_text.matches("Cause: Bridge(RequestCapacity)").count(),1);
+        assert!(mixed_text.contains("supplement A") && mixed_text.contains("supplement B"));
+        assert!(mixed_text.contains("authored_code_A()") && mixed_text.contains("authored_code_B()"));
     }
 
     #[test]
