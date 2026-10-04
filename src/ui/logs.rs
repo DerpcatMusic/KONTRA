@@ -11,7 +11,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
-// One SMALL caption and one TEXT reason, including both 2 px insets.
+// Minimum for a short caption/reason. Long rows keep their native wrapped height.
 const ROW: f64 = 36.;
 static WAKE: AtomicU64 = AtomicU64::new(0);
 
@@ -32,6 +32,13 @@ struct Reader {
 struct ReportReceipt {
     status: String,
     issue_url: Option<String>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct RowText {
+    sequence: u64,
+    title: Arc<str>,
+    reason: Arc<str>,
 }
 
 pub struct State {
@@ -55,6 +62,10 @@ pub struct State {
     matches: Vec<usize>,
     groups: Vec<EventGroup>,
     matching_events: usize,
+    rows: Vec<RowText>,
+    row_heights: HashMap<RowText, f64>,
+    row_width: Option<f64>,
+    rendered_rows: HashMap<u64, RowText>,
     raw_details: bool,
     selected: Option<u64>,
     detail: Option<(u64, Arc<str>)>,
@@ -93,6 +104,10 @@ impl Default for State {
             matches: Vec::new(),
             groups: Vec::new(),
             matching_events: 0,
+            rows: Vec::new(),
+            row_heights: HashMap::new(),
+            row_width: None,
+            rendered_rows: HashMap::new(),
             raw_details: false,
             selected: None,
             detail: None,
@@ -287,6 +302,9 @@ impl State {
         self.matching_events = self.matches.len();
         self.groups = group_events(&snapshot.events, &self.matches);
         self.matches = self.groups.iter().map(|group| group.latest).collect();
+        self.rows = self.groups.iter().map(|group| row_text(&snapshot.events, group)).collect();
+        let current: HashSet<_> = self.rows.iter().cloned().collect();
+        self.row_heights.retain(|row, _| current.contains(row));
         self.detail = None;
         if let Some(selected) = self.selected {
             self.selected = self
@@ -319,7 +337,7 @@ impl State {
                 .iter()
                 .position(|&n| snapshot.events[n].sequence == seq)
         {
-            self.y = n as f64 * ROW + offset;
+            self.y = row_offsets(&self.rows, &self.row_heights)[n] + offset;
         }
         true
     }
@@ -506,6 +524,19 @@ fn inventory(event: &LogEvent) -> bool {
     event.code.as_deref() == Some("load_detail_inventory") || event.details["code"] == "load_detail_inventory"
 }
 
+fn load_failure_lifecycle(event: &LogEvent) -> bool {
+    event.level == LogLevel::Error
+        && event.load_id.as_deref().is_some_and(|id| !id.is_empty())
+        && event_stage(event).starts_with("uvi_")
+        && ((event.module == "uvi" && event.code.as_deref() == Some("uvi_staging_failed"))
+            || (event.module == "loader" && ((event.event == "issue" && event.code.as_deref() == Some("failed"))
+                || (event.event == "load_finished" && event.outcome.as_deref() == Some("failed")))))
+}
+
+fn group_code(event: &LogEvent) -> &str {
+    if load_failure_lifecycle(event) { "load failure" } else { event.code.as_deref().unwrap_or(&event.event) }
+}
+
 fn inventory_field(event: &LogEvent) -> String {
     event.details["field"].as_array().map(|field| field.iter().filter_map(|part| part.as_str()).collect::<Vec<_>>().join("."))
         .or_else(|| event.details["field"].as_str().map(str::to_owned)).unwrap_or_else(|| "unknown field".into())
@@ -550,6 +581,11 @@ fn group_events(events: &[LogEvent], indices: &[usize]) -> Vec<EventGroup> {
         let key = if inventory(event) && event.load_id.is_some() {
             format!("inventory:{}", json!([event.session_id, level_index(event.level), event.module,
                 event.load_id, event.details["field"], event.details["revision"]]))
+        } else if load_failure_lifecycle(event) {
+            // A genuine worker trace ID identifies this attempt; old abbreviated
+            // staging events without that ID cannot be associated by reason alone.
+            json!([event.session_id, level_index(event.level), "uvi_load_failure",
+                event.load_id, event.path, event_stage(event), cause(event)]).to_string()
         } else if matches!(event.level, LogLevel::Warning | LogLevel::Error) {
             json!([
                 event.session_id,
@@ -607,14 +643,15 @@ fn group_events(events: &[LogEvent], indices: &[usize]) -> Vec<EventGroup> {
             "worker_failure",
         ]
         .into_iter()
+        .filter(|key| !load_failure_lifecycle(event) || !matches!(*key, "slot" | "bank" | "member" | "preset"))
         .filter_map(|key| event.details.get(key).map(|value| (key, stable_cause(value))))
         .collect();
         let child_key = json!([
             event.path,
-            event.library,
-            event.program,
-            event.part,
-            event.script_slot,
+            if load_failure_lifecycle(event) { None } else { event.library.as_ref() },
+            if load_failure_lifecycle(event) { None } else { event.program },
+            if load_failure_lifecycle(event) { None } else { event.part },
+            if load_failure_lifecycle(event) { None } else { event.script_slot },
             event.line,
             identity,
             cause(event),
@@ -713,6 +750,31 @@ fn common_cause(events: &[LogEvent], group: &EventGroup) -> Option<String> {
     group.children.iter().all(|child| cause(&events[child[0]]) == first_cause).then_some(first_cause)
 }
 
+fn row_text(events: &[LogEvent], group: &EventGroup) -> RowText {
+    let event = &events[group.latest];
+    let stage = event_stage(event);
+    let code = group_code(event);
+    let patch = event.path.as_deref().map(filename).or(event.library.as_deref()).unwrap_or("Application");
+    let title = if inventory(event) {
+        format!("{} · {patch} · inventory {}", level_name(event.level), inventory_field(event))
+    } else if group.members.len() > 1 {
+        format!("{} ×{} · {} items/locations · {stage} / {code}",
+            level_name(event.level), group.members.len(), group.children.len())
+    } else {
+        format!("{} · {patch} · {stage} / {code}", level_name(event.level))
+    };
+    RowText { sequence:event.sequence, title:title.into(), reason:group_reason(events, group).into() }
+}
+
+fn row_offsets(rows: &[RowText], heights: &HashMap<RowText, f64>) -> Vec<f64> {
+    let mut offsets = Vec::with_capacity(rows.len() + 1);
+    offsets.push(0.);
+    for row in rows {
+        offsets.push(*offsets.last().unwrap() + heights.get(row).copied().unwrap_or(ROW).max(ROW));
+    }
+    offsets
+}
+
 fn group_reason(events: &[LogEvent], group: &EventGroup) -> String {
     if inventory(&events[group.latest]) { return inventory_summary(events, group); }
     common_cause(events, group).unwrap_or_else(||
@@ -730,7 +792,7 @@ fn group_details(events: &[LogEvent], group: &EventGroup) -> String {
     let mut text = format!(
         "{} / {} — {} occurrences, {} unique items or locations/causes\nFirst: {} · Last: {} (retained matching events)\n",
         event_stage(event),
-        event.code.as_deref().unwrap_or(&event.event),
+        group_code(event),
         group.members.len(),
         group.children.len(),
         time(group.first_ms),
@@ -739,6 +801,14 @@ fn group_details(events: &[LogEvent], group: &EventGroup) -> String {
     let shared_cause = common_cause(events, group);
     if let Some(cause) = &shared_cause {
         let _ = writeln!(text, "Cause: {cause}");
+    }
+    if load_failure_lifecycle(event) {
+        let mut records: Vec<_> = group.members.iter().map(|&n| {
+            let event = &events[n];
+            format!("{} / {}", event.module, event.code.as_deref().unwrap_or(&event.event))
+        }).collect();
+        records.sort(); records.dedup();
+        let _ = writeln!(text, "Load: {} · Retained lifecycle records: {}", event.load_id.as_deref().unwrap(), records.join(", "));
     }
     for child in group.children.iter().take(64) {
         let latest = *child.iter().max_by_key(|&&n| events[n].sequence).unwrap();
@@ -777,6 +847,9 @@ fn group_details(events: &[LogEvent], group: &EventGroup) -> String {
         if let Some(object) = diagnostic.as_object_mut() {
             for key in ["slot", "part", "bank", "member", "preset", "processor", "processor_id", "node_id",
                 "location", "file", "source_file", "source_line", "line", "column", "function"] { object.remove(key); }
+            if object.get("message").is_some_and(|message| cause_text(message) == cause(event)) {
+                object.remove("message");
+            }
         }
         for (parent, keys) in [("worker", &["failure", "source_excerpt"][..]),
             ("endpoint", &["error", "source_excerpt", "source", "source_file", "line", "stage", "error_code"][..])] {
@@ -1357,6 +1430,27 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
             .fill(secondary()).lines(2)].justify(Justify::Start).pad((INSET, TIGHT)).shrink(0));
     }
     content.push(rule());
+    // Cache native, uncapped row measurements at the resolved list width.
+    // Keys contain sequence and displayed title/reason (including group counts),
+    // so refresh/filter changes cannot reuse a different row's height.
+    let width = ui.scene().and_then(|s| s.surface("logs-list")).map(|s| s.frame.size.width);
+    let mut geometry_changed = state.row_width != width;
+    if geometry_changed { state.row_heights.clear(); state.row_width = width; }
+    for row in &state.rows {
+        if state.rendered_rows.get(&row.sequence) != Some(row) { continue; }
+        if let Some(height) = ui.scene().and_then(|s| s.surface(&format!("log-event-{}", row.sequence)))
+            .map(|s| s.frame.size.height).filter(|height| height.is_finite() && *height >= ROW)
+            && state.row_heights.get(row).is_none_or(|previous| (*previous - height).abs() > 0.5)
+        {
+            state.row_heights.insert(row.clone(), height);
+            geometry_changed = true;
+        }
+    }
+    let offsets = row_offsets(&state.rows, &state.row_heights);
+    if geometry_changed && state.y > 0.
+        && let Some((sequence, offset)) = state.anchor
+        && let Some(n) = state.rows.iter().position(|row| row.sequence == sequence)
+    { state.y = offsets[n] + offset; }
     let view_h = ui
         .scene()
         .and_then(|s| s.surface("logs-list"))
@@ -1373,14 +1467,15 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
     {
         for key in ui.shortcuts() {
             let last = state.matches.len().saturating_sub(1);
-            let page = (view_h / ROW).max(1.) as usize;
             at = match key.key {
                 Key::Down => Some(at.map_or(0, |n| (n + 1).min(last))),
                 Key::Up => Some(at.map_or(last, |n| n.saturating_sub(1))),
                 Key::Home => Some(0),
                 Key::End => Some(last),
-                Key::PageDown => Some(at.map_or(0, |n| (n + page).min(last))),
-                Key::PageUp => Some(at.map_or(0, |n| n.saturating_sub(page))),
+                Key::PageDown => Some(at.map_or(0, |n| offsets.partition_point(|&top| top <= offsets[n] + view_h)
+                    .saturating_sub(1).max(n.saturating_add(1)).min(last))),
+                Key::PageUp => Some(at.map_or(0, |n| offsets.partition_point(|&top| top < (offsets[n] - view_h).max(0.))
+                    .min(n.saturating_sub(1)).min(last))),
                 _ => continue,
             };
             if let Some(event) = at
@@ -1396,37 +1491,42 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
     if let Some(wheel) = ui.wheel("logs-list") {
         state.y += wheel.y;
     }
-    let total = state.matches.len() as f64 * ROW;
+    let total = *offsets.last().unwrap();
     bar_drag(ui, "logs-list-bar", &mut state.y, view_h, total);
     if state.reveal {
-        if let Some(at) = at {
-            let top = at as f64 * ROW;
-            if top < state.y {
+        if let Some(at) = at.filter(|&n| n < state.rows.len()) {
+            let top = offsets[at];
+            let bottom = offsets[at + 1];
+            if top < state.y || bottom - top > view_h {
                 state.y = top;
-            } else if top + ROW > state.y + view_h {
-                state.y = top + ROW - view_h;
+            } else if bottom > state.y + view_h {
+                state.y = bottom - view_h;
             }
+            // An End/Page jump may mount a long row for the first time. Re-run
+            // reveal after its native height replaces the minimum estimate.
+            state.reveal = !state.row_heights.contains_key(&state.rows[at]);
+        } else {
+            state.reveal = false;
         }
-        state.reveal = false;
     }
     state.y = state.y.clamp(0., (total - view_h).max(0.));
     let drawn = glide(
         ui,
         "logs-list",
         state.y,
-        fresh || leaps(from, state.y) || ui.get("logs-list-bar").held,
+        fresh || geometry_changed || leaps(from, state.y) || ui.get("logs-list-bar").held,
     );
-    let first = (drawn / ROW) as usize;
-    let last = ((drawn + view_h) / ROW).ceil() as usize;
+    let first = offsets.partition_point(|&top| top <= drawn).saturating_sub(1).min(state.rows.len());
+    let last = offsets.partition_point(|&top| top < drawn + view_h).min(state.rows.len());
     state.anchor = state
         .matches
         .get(first)
-        .map(|&n| (snapshot.events[n].sequence, drawn - first as f64 * ROW));
+        .map(|&n| (snapshot.events[n].sequence, drawn - offsets[first]));
     let range = first.min(state.matches.len())..last.min(state.matches.len());
-    let mut items = vec![block(1, range.start as f64 * ROW).shrink(0)];
+    let mut items = vec![block(1, offsets[range.start]).shrink(0)];
     for i in range.clone() {
-        let group = &state.groups[i];
         let event = &snapshot.events[state.matches[i]];
+        let row = &state.rows[i];
         let id = format!("log-event-{}", event.sequence);
         let title_id = format!("{id}-title");
         let reason_id = format!("{id}-reason");
@@ -1439,42 +1539,29 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
             state.selected = Some(event.sequence);
         }
         let selected = state.selected == Some(event.sequence);
-        let stage = event_stage(event);
-        let code = event.code.as_deref().unwrap_or(&event.event);
-        let patch = event.path.as_deref().map(filename)
-            .or(event.library.as_deref()).unwrap_or("Application");
-        let title = if inventory(event) {
-            format!("{} · {patch} · inventory {}", level_name(event.level), inventory_field(event))
-        } else if group.members.len() > 1 {
-            format!(
-                "{} ×{} · {} items/locations · {stage} / {code}",
-                level_name(event.level),
-                group.members.len(),
-                group.children.len()
-            )
-        } else {
-            format!("{} · {patch} · {stage} / {code}", level_name(event.level))
-        };
         items.push(interactive(
             col![
-                row![caption(title)
+                caption(row.title.clone())
                     .fill(if event.level == LogLevel::Error {
                         Fill::from(Role::Warning)
                     } else {
                         secondary()
                     })
-                    .lines(1)
+                    // Presence of a line allowance disables MUI's widest-word
+                    // minimum. This permits cluster-safe unbroken token wraps.
+                    .lines(usize::MAX).w(Len::Pct(100.))
                     .min_w(0)
-                    .id(title_id)].justify(Justify::Start).w(Len::Pct(100.)).min_w(0),
-                row![body(group_reason(&snapshot.events, group))
+                    .id(title_id),
+                body(row.reason.clone())
                     .text_size(TEXT)
-                    .lines(1)
+                    .lines(usize::MAX).w(Len::Pct(100.))
                     .min_w(0)
-                    .id(reason_id)].justify(Justify::Start).w(Len::Pct(100.)).min_w(0),
+                    .id(reason_id),
             ]
             .gap(0)
-            .align(Align::Start)
-            .h(ROW)
+            .align(Align::Stretch)
+            .w(Len::Pct(100.)).min_w(0)
+            .min_h(ROW)
             .pad((INSET, 2.))
             .clip()
             .shrink(0)
@@ -1494,7 +1581,8 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
             selected,
         ));
     }
-    items.push(block(1, (state.matches.len() - range.end) as f64 * ROW).shrink(0));
+    items.push(block(1, total - offsets[range.end]).shrink(0));
+    state.rendered_rows = state.rows[range.clone()].iter().cloned().map(|row| (row.sequence, row)).collect();
     if state.matches.is_empty() {
         items.push(
             body(if snapshot.events.is_empty() {
@@ -1570,17 +1658,14 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
                 copy_el,
             ],
         ));
-        let width = ui
-            .scene()
-            .and_then(|s| s.surface("logs-details"))
-            .map_or(550., |s| s.frame.size.width - 2. * INSET);
         content.push(
             col![
                 body(full)
                     .text_size(TEXT)
-                    .w(width.max(100.))
+                    .lines(usize::MAX).w(Len::Pct(100.)).min_w(0)
                     .shrink(0)
             ]
+            .w(Len::Pct(100.)).min_w(0).align(Align::Stretch)
             .pad(INSET)
             .h(if diagnostics::excerpt_text(&event.details).is_some() { 200. } else { 120. })
             .shrink(0)
@@ -1589,7 +1674,8 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
         );
         #[cfg(feature = "uvi")]
         if let Some(context)=local_context {
-            content.push(col![body(context.display.clone()).text_size(TEXT).w(width.max(100.)).shrink(0)]
+            content.push(col![body(context.display.clone()).text_size(TEXT).lines(usize::MAX).w(Len::Pct(100.)).min_w(0).shrink(0)]
+                .w(Len::Pct(100.)).min_w(0).align(Align::Stretch)
                 .pad(INSET).h(180.).shrink(0).scroll().id("logs-local-lua-context"));
         } else if event.details["worker"]["lua_failure"]["local_source_excerpt_available"] == true {
             content.push(body("Local source context is no longer retained for this activation.")
@@ -1697,6 +1783,143 @@ mod tests {
         );
         tick(ui, state, params, Input::default());
         tick(ui, state, params, Input::default());
+    }
+
+    #[test]
+    fn load_failure_lifecycle_requires_exact_attempt_stage_and_cause() {
+        let event = |n: u64, module: &str, kind: &str, code: Option<&str>, load: Option<&str>, stage: &str, reason: &str| -> LogEvent {
+            serde_json::from_value(json!({"schema_version":1,"sequence":n,"timestamp_ms":1000+n,
+                "monotonic_ms":n,"session_id":"load-lifecycle-fixture","level":"error","module":module,
+                "event":kind,"code":code,"load_id":load,"stage":stage,"outcome":"failed","reason":reason,
+                "path":"/owned/Bank.ufs","program":if module=="loader" {Some(0)} else {None},
+                "data":{"message":reason}})).unwrap()
+        };
+        let first = event(1,"loader","issue",Some("failed"),Some("actual-load-1"),"uvi_preflight","authored rejection");
+        let finished = event(2,"loader","load_finished",None,Some("actual-load-1"),"uvi_preflight","authored rejection");
+        let mut staging = event(3,"uvi","uvi_staging_failed",Some("uvi_staging_failed"),Some("actual-load-1"),"uvi_preflight","authored rejection");
+        staging.details = json!({"slot":0,"member":"Owned.uvip","epoch":3,"generation":1});
+        let events = vec![first,finished,staging];
+        let before = events.iter().map(|event| serde_json::to_value(event).unwrap()).collect::<Vec<_>>();
+        let groups = group_events(&events,&[2,1,0]);
+        assert_eq!((groups.len(),groups[0].members.len(),groups[0].children.len()),(1,3,1));
+        let detail = group_details(&events,&groups[0]);
+        assert_eq!(detail.matches("authored rejection").count(),1);
+        assert!(detail.contains("Load: actual-load-1") && detail.contains("loader / failed")
+            && detail.contains("loader / load_finished") && detail.contains("uvi / uvi_staging_failed"));
+        assert_eq!(events.iter().map(|event| serde_json::to_value(event).unwrap()).collect::<Vec<_>>(),before);
+        for variant in [
+            event(4,"loader","issue",Some("failed"),Some("actual-load-2"),"uvi_preflight","authored rejection"),
+            event(5,"loader","issue",Some("failed"),Some("actual-load-1"),"uvi_lua_init","authored rejection"),
+            event(6,"loader","issue",Some("failed"),Some("actual-load-1"),"uvi_preflight","distinct root cause"),
+            event(7,"uvi","uvi_staging_failed",Some("uvi_staging_failed"),None,"uvi_preflight","authored rejection"),
+            event(8,"uvi","unrelated failure",Some("independent"),Some("actual-load-1"),"uvi_preflight","authored rejection"),
+        ] {
+            let mut retained = events.clone(); retained.push(variant);
+            assert_eq!(group_events(&retained,&[3,2,1,0]).len(),2);
+        }
+        let mut unique = events.clone(); unique[2].details["processor"] = json!(42);
+        assert_eq!(group_events(&unique,&[2,1,0])[0].children.len(),2,"genuine unique failure locations stay distinct");
+        let mut other_session = events[0].clone(); other_session.session_id="another-session".into();
+        let retained = vec![events[0].clone(),other_session];
+        assert_eq!(group_events(&retained,&[1,0]).len(),2);
+    }
+
+    #[test]
+    fn row_offsets_use_content_keyed_heights_and_keep_short_row_minimum() {
+        let rows = vec![RowText{sequence:1,title:"Error ×2".into(),reason:"long retained reason".into()},
+            RowText{sequence:2,title:"Info".into(),reason:"short".into()}];
+        let heights=HashMap::from([(rows[0].clone(),120.),(rows[1].clone(),20.)]);
+        assert_eq!(row_offsets(&rows,&heights),vec![0.,120.,156.]);
+        let mut changed=rows.clone(); changed[0].title="Error ×3".into();
+        assert_eq!(row_offsets(&changed,&heights),vec![0.,36.,72.]);
+        changed[0]=rows[0].clone(); changed[0].reason="different retained reason".into();
+        assert_eq!(row_offsets(&changed,&heights),vec![0.,36.,72.]);
+        assert_eq!(row_offsets(&[],&heights),vec![0.]);
+    }
+
+    #[test]
+    fn retained_unbroken_text_wraps_rows_and_details_at_initial_and_resized_widths() {
+        let params = Arc::new(SamplerParams::new());
+        let reason = "RejectedProcessor_".repeat(180);
+        let path = format!("/owned/{}.ufs", "LongLibraryName".repeat(20));
+        let event: LogEvent=serde_json::from_value(json!({"schema_version":1,"sequence":1,"timestamp_ms":1000,
+            "monotonic_ms":1,"session_id":"wrap-fixture","level":"error","module":"uvi",
+            "event":"authored_failure","code":"authored_failure","path":path,"reason":reason,"data":{}})).unwrap();
+        let mut state = State::default();
+        state.snapshot=Some(Arc::new(DiagnosticSnapshot{revision:1,events:vec![event],status:Default::default(),build:json!({})}));
+        let mut ui=super::super::theme::ui();
+        let mut heights=Vec::new();
+        for width in [900.,740.,900.] {
+            for _ in 0..4 {
+                let root=draw(&mut ui,&mut state,&params).w(width).h(700.);
+                ui.frame(root,Some(Size::new(width,700.)),Input::default(),1./60.).unwrap();
+            }
+            let scene=ui.scene().unwrap();
+            let row=scene.surface("log-event-1").unwrap().frame;
+            let text=scene.surface("log-event-1-reason").unwrap().frame;
+            assert!(text.size.height>ROW && row.size.height>ROW);
+            assert!(text.x>=row.x+INSET-1. && text.x+text.size.width<=row.x+row.size.width-INSET+1.);
+            assert!(text.y+text.size.height<=row.y+row.size.height-2.+1.);
+            heights.push(row.size.height);
+            assert_eq!(state.rows[0].reason.as_ref(),reason);
+            assert!((row_offsets(&state.rows,&state.row_heights)[1]-row.size.height).abs()<1.);
+        }
+        assert!(heights[1]>heights[0] && (heights[2]-heights[0]).abs()<1.);
+        state.selected=Some(1);
+        for _ in 0..4 {tick(&mut ui,&mut state,&params,Input::default());}
+        assert!(state.detail.as_ref().unwrap().1.contains(&reason));
+        assert!(ui.scene().unwrap().surface("logs-details").unwrap().frame.size.width<=900.);
+        assert!(details(&state.snapshot.as_ref().unwrap().events[0]).contains(&reason));
+    }
+
+    #[test]
+    fn end_to_unmeasured_long_row_reveals_again_after_native_measurement() {
+        let params=Arc::new(SamplerParams::new());
+        let events=(1..=40).map(|n| serde_json::from_value(json!({"schema_version":1,
+            "sequence":n,"timestamp_ms":1000+n,"monotonic_ms":n,"session_id":"long-end-fixture",
+            "level":"error","module":"uvi","event":format!("distinct_{n}"),"code":format!("distinct_{n}"),
+            "reason":if n==1 {"UnbrokenFailure_".repeat(240)} else {format!("short {n}")},"data":{}})).unwrap()).collect();
+        let mut state=State::default();
+        state.snapshot=Some(Arc::new(DiagnosticSnapshot{revision:1,events,status:Default::default(),build:json!({})}));
+        let mut ui=super::super::theme::ui();
+        for _ in 0..3 {tick(&mut ui,&mut state,&params,Input::default());}
+        assert!(ui.scene().unwrap().surface("log-event-1").is_none());
+        ui.focus("logs-list");
+        tick(&mut ui,&mut state,&params,Input{keys:vec![KeyPress{key:Key::End,mods:Mods::default()}],..Default::default()});
+        tick(&mut ui,&mut state,&params,Input::default());
+        assert_eq!(state.selected,Some(1));
+        assert!(state.reveal,"minimum estimate must not finish revealing an unmeasured long row");
+        for _ in 0..4 {tick(&mut ui,&mut state,&params,Input::default());}
+        assert!(!state.reveal);
+        let offsets=row_offsets(&state.rows,&state.row_heights);
+        let at=state.rows.iter().position(|row|row.sequence==1).unwrap();
+        let scene=ui.scene().unwrap();
+        let list=scene.surface("logs-list").unwrap().frame;
+        let row=scene.surface("log-event-1").unwrap().frame;
+        assert!(row.size.height>list.size.height);
+        assert!((state.y-offsets[at]).abs()<1.,"oversized selected row reveals its beginning");
+        assert!((row.y-list.y).abs()<1.);
+    }
+
+    #[test]
+    fn empty_filter_clears_pending_reveal_when_navigation_has_no_row() {
+        let params=Arc::new(SamplerParams::new());
+        let event: LogEvent=serde_json::from_value(json!({"schema_version":1,"sequence":1,"timestamp_ms":1000,
+            "monotonic_ms":1,"session_id":"empty-reveal-fixture","level":"error","module":"uvi",
+            "event":"authored_failure","code":"authored_failure","reason":"authored failure","data":{}})).unwrap();
+        let mut state=State::default();
+        state.snapshot=Some(Arc::new(DiagnosticSnapshot{revision:1,events:vec![event],status:Default::default(),build:json!({})}));
+        let mut ui=super::super::theme::ui();
+        for _ in 0..3 {tick(&mut ui,&mut state,&params,Input::default());}
+        ui.focus("logs-list");
+        tick(&mut ui,&mut state,&params,Input{keys:vec![KeyPress{key:Key::End,mods:Mods::default()}],..Default::default()});
+        // Input is delivered by frame; the next draw processes End together
+        // with the now-empty filter and an unfinished measurement reveal.
+        state.levels=[false;4]; state.reveal=true;
+        tick(&mut ui,&mut state,&params,Input::default());
+        assert!(state.rows.is_empty() && state.matches.is_empty());
+        assert!(state.selected.is_none() && !state.reveal);
+        assert_eq!(row_offsets(&state.rows,&state.row_heights),vec![0.]);
     }
     fn type_into(
         ui: &mut Ui,
