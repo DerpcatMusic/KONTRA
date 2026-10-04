@@ -83,14 +83,53 @@ pub fn resolve_member<'a>(directory: &'a Directory, path: &str) -> Result<&'a Me
     Ok(named[0])
 }
 
+// One preparation borrows a fixed directory; duplicate exact paths stay ambiguous.
+struct ResourceIndex<'a> {
+    directory: &'a Directory,
+    paths: HashMap<&'a str, Option<&'a Member>>,
+}
+impl<'a> ResourceIndex<'a> {
+    fn new(directory: &'a Directory) -> Self {
+        let mut paths = HashMap::with_capacity(directory.files.len());
+        for member in &directory.files {
+            if let Some(path) = member.path.as_deref() {
+                paths
+                    .entry(path)
+                    .and_modify(|entry| *entry = None)
+                    .or_insert(Some(member));
+            }
+        }
+        Self { directory, paths }
+    }
+    fn resolve(&self, path: &str) -> Result<&'a Member> {
+        let path = normalize(path)?;
+        if let Some(member) = self.paths.get(path.as_str()) {
+            return member.context("Ambiguous UVI member path");
+        }
+        // Preserve unique bare-name fallback and its existing diagnostics.
+        resolve_member(self.directory, &path)
+    }
+    fn resources(&self, program_path: &str, path: &str) -> Result<Vec<&'a Member>> {
+        resources_with(program_path, path, |path| self.resolve(path))
+    }
+}
+
 fn resource<'a>(directory: &'a Directory, program_path: &str, path: &str) -> Result<&'a Member> {
+    resource_with(program_path, path, |path| resolve_member(directory, path))
+}
+
+fn resource_with<'a>(
+    program_path: &str,
+    path: &str,
+    resolve: impl Fn(&str) -> Result<&'a Member>,
+) -> Result<&'a Member> {
     let base = program_path.rsplit_once('/').map_or("", |(base, _)| base);
     let path = if path.starts_with('/') {
         normalize(path)?
     } else {
         normalize(&format!("{base}/{path}"))?
     };
-    resolve_member(directory, &path)
+    resolve(&path)
 }
 
 /// A starred filename is an ordered list of synchronized mono channels.
@@ -98,6 +137,14 @@ fn resources<'a>(
     directory: &'a Directory,
     program_path: &str,
     path: &str,
+) -> Result<Vec<&'a Member>> {
+    resources_with(program_path, path, |path| resolve_member(directory, path))
+}
+
+fn resources_with<'a>(
+    program_path: &str,
+    path: &str,
+    resolve: impl Fn(&str) -> Result<&'a Member>,
 ) -> Result<Vec<&'a Member>> {
     if let Some((base, names)) = path.split_once('*') {
         ensure!(
@@ -116,11 +163,11 @@ fn resources<'a>(
                     !name.is_empty() && !name.contains(['/', '\\']),
                     "Invalid UVI channel bundle member"
                 );
-                resource(directory, program_path, &format!("{base}{name}"))
+                resource_with(program_path, &format!("{base}{name}"), &resolve)
             })
             .collect()
     } else {
-        Ok(vec![resource(directory, program_path, path)?])
+        Ok(vec![resource_with(program_path, path, resolve)?])
     }
 }
 
@@ -171,6 +218,10 @@ impl Library {
     /// Resolve and decode an approved bank-local audio resource, including bundles.
     pub fn audio(&self, program_path: &str, path: &str) -> Result<Sample> {
         let members = resources(&self.directory, program_path, path)?;
+        self.audio_members(&members)
+    }
+
+    fn audio_members(&self, members: &[&Member]) -> Result<Sample> {
         let mut operands = Vec::with_capacity(members.len());
         for member in members {
             let bytes = self.read(member)?;
@@ -189,10 +240,9 @@ impl Library {
 
     /// Initial WaveTableOscillator resources may contain audio or measured images.
     /// The signature, rather than the filename suffix, selects image conversion.
-    fn wavetable(&self, program_path: &str, path: &str) -> Result<Sample> {
-        let members = resources(&self.directory, program_path, path)?;
+    fn wavetable_members(&self, members: &[&Member]) -> Result<Sample> {
         if members.len() != 1 {
-            return self.audio(program_path, path);
+            return self.audio_members(members);
         }
         let member = members[0];
         ensure!(
@@ -313,6 +363,10 @@ impl Library {
             })).filter(|(path, _)| !path.is_empty()).collect::<Vec<_>>();
         let expected = paths.iter().map(|(path, _)| *path).collect::<HashSet<_>>().len();
         progress(expected, 0, 0, 0, None);
+        if paths.is_empty() {
+            return Ok(result);
+        }
+        let index = ResourceIndex::new(&self.directory);
         for (path, wavetable) in paths {
             if let Some(sample) = result.get(path) {
                 ensure!(
@@ -322,7 +376,11 @@ impl Library {
                 continue;
             }
             progress(expected, result.len(), cache.len(), total, Some(path));
-            let identity = self.audio_identity(&loaded.path, path)?;
+            let members = index.resources(&loaded.path, path)?;
+            let identity = members
+                .iter()
+                .map(|member| member.record_offset)
+                .collect::<Vec<_>>();
             let sample = if let Some(sample) = cache.get(&identity) {
                 ensure!(
                     wavetable || !sample.wavetable_image,
@@ -331,9 +389,9 @@ impl Library {
                 sample.clone()
             } else {
                 let decoded = if wavetable {
-                    self.wavetable(&loaded.path, path)?
+                    self.wavetable_members(&members)?
                 } else {
-                    self.audio(&loaded.path, path)?
+                    self.audio_members(&members)?
                 };
                 total = total
                     .checked_add(decoded.interleaved.bytes())
@@ -855,6 +913,95 @@ mod tests {
         assert!(alias_bytes(0, &"x".repeat(4097)).is_err());
         assert!(alias_bytes(0, "bad\0name").is_err());
     }
+    #[test]
+    fn indexed_preparation_preserves_exact_priority_ambiguity_and_bundle_order() {
+        let member = |path: &str, record_offset| Member {
+            record_offset,
+            name: path.rsplit('/').next().unwrap().into(),
+            path: Some(path.into()),
+            parent: None,
+            size: 0,
+            offset: 0,
+            mode: 0,
+            footer: Vec::new(),
+        };
+        let mut directory = Directory {
+            files: vec![
+                member("Samples/a.wav", 1),
+                member("Other/a.wav", 2),
+                member("a.wav", 3),
+                member("Samples/音.wav", 4),
+            ],
+            directories: Vec::new(),
+            records: Vec::new(),
+            warnings: Vec::new(),
+            metadata_key: 0,
+        };
+        let mut legacy = member("legacy.wav", 5);
+        legacy.path = None;
+        directory.files.push(legacy);
+        let index = ResourceIndex::new(&directory);
+        for path in [
+            "a.wav",
+            "legacy.wav",
+            "Samples/a.wav",
+            "Samples/./a.wav",
+            "Samples\\a.wav",
+            "Samples/音.wav",
+            "samples/a.wav",
+            "Missing/a.wav",
+            "../a.wav",
+            "$Other/a.wav",
+            "C:/a.wav",
+            "bad\0path",
+        ] {
+            let ordinary = resolve_member(&directory, path)
+                .map(|member| member.record_offset)
+                .map_err(|error| error.to_string());
+            let indexed = index
+                .resolve(path)
+                .map(|member| member.record_offset)
+                .map_err(|error| error.to_string());
+            assert_eq!(ordinary, indexed, "{path:?}");
+        }
+        assert_eq!(index.resolve("a.wav").unwrap().record_offset, 3);
+        let bundle = index
+            .resources("Programs/p.uvip", "../Samples/*音.wav*a.wav*音.wav")
+            .unwrap();
+        assert_eq!(
+            bundle
+                .iter()
+                .map(|member| member.record_offset)
+                .collect::<Vec<_>>(),
+            [4, 1, 4]
+        );
+        for path in [
+            "../../a.wav",
+            "../Samples/*a.wav*",
+            "../Samples/*../Other/a.wav",
+            "../Samples/*a.wav*a.wav*a.wav*a.wav*a.wav*a.wav*a.wav*a.wav*a.wav*a.wav*a.wav*a.wav*a.wav",
+        ] {
+            assert!(index.resources("Programs/p.uvip", path).is_err());
+        }
+        drop(index);
+        directory.files.push(member("Samples/a.wav", 6));
+        let index = ResourceIndex::new(&directory);
+        assert_eq!(
+            index.resolve("Samples/a.wav").unwrap_err().to_string(),
+            "Ambiguous UVI member path"
+        );
+        assert_eq!(index.resolve("a.wav").unwrap().record_offset, 3);
+        drop(index);
+        directory
+            .files
+            .retain(|member| member.path.as_deref() != Some("a.wav"));
+        let index = ResourceIndex::new(&directory);
+        assert_eq!(
+            index.resolve("a.wav").unwrap_err().to_string(),
+            "UVI member name must identify exactly one record (found 3)"
+        );
+    }
+
     #[test]
     fn exact_resource_paths_and_ambiguous_names() {
         let member = |path: &str| Member {
