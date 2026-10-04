@@ -148,6 +148,9 @@ capacity. Optional bridge-owned failure frontiers are published with the first
 cause and shown separately from later worker observations. These additions are
 source-reviewed only; prepared queue/atomic/UI checks are uncompiled and unrun.
 They do not establish that the user's Piccolo playback failure is fixed.
+Separate native browser metadata in `TagLibrary.ufs` is now a documented cover
+discovery lead. It is absent from the checked locations and current catalog;
+the bank/product-to-image join remains unimplemented.
 
 ## Check the behavior
 
