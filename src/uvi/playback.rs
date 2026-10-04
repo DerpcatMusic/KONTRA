@@ -1040,6 +1040,33 @@ fn add(to: &mut Frame, from: Frame) {
         *to += from;
     }
 }
+fn pan_law_supported(value: f64) -> bool {
+    [0., 1.].contains(&value)
+}
+
+/// Check final owned scalar state, not a transient command or native setter law.
+/// Per-launch multichannel restrictions remain in downmix at the actual width.
+pub(crate) fn validate_final_pan_laws(host: &host::Host) -> Result<()> {
+    let parameters = host.parameters.borrow();
+    for (node, kind) in host.types.iter().take(host.baseline.len()).enumerate() {
+        if !matches!(kind.as_str(), "Program" | "Layer" | "Keygroup") {
+            continue;
+        }
+        let law = match parameters[node].get("PanLaw") {
+            None => 0.,
+            Some(ParameterValue::Number(value)) => *value,
+            Some(ParameterValue::Boolean(value)) => f64::from(u8::from(*value)),
+            Some(ParameterValue::Text(value)) => value.parse::<f64>()
+                .with_context(|| format!("Final UVI {kind} node {node} parameter PanLaw: invalid numeric value"))?,
+        };
+        ensure!(law.is_finite(), "Final UVI {kind} node {node} parameter PanLaw: nonfinite value");
+        let reason = if kind == "Keygroup" { "Invalid UVI pan law" }
+            else { "Invalid UVI stereo pan law" };
+        ensure!(pan_law_supported(law), "Final UVI {kind} node {node} parameter PanLaw={law}: {reason}");
+    }
+    Ok(())
+}
+
 fn balance(frame: &mut Frame, gain: f64, pan: f64) -> Result<()> {
     ensure!(
         gain >= 0. && gain.is_finite() && (-1. ..=1.).contains(&pan),
@@ -1068,7 +1095,7 @@ fn balance(frame: &mut Frame, gain: f64, pan: f64) -> Result<()> {
 /// Native KG output layouts measured with positive, channel-isolated authored
 /// impulses. Matrices retain the source width; this conversion happens after KG inserts.
 fn downmix(input: Frame, channels: usize, pan: f64, pan_law: f64) -> Result<Frame> {
-    ensure!([0., 1.].contains(&pan_law), "Invalid UVI pan law");
+    ensure!(pan_law_supported(pan_law), "Invalid UVI pan law");
     ensure!(
         [1, 2, 3, 4, 6, 8, 10, 11, 12].contains(&channels),
         "Unverified UVI output channel layout"
@@ -2754,7 +2781,7 @@ impl<'a> Renderer<'a> {
         }
         if self.program.nodes[node].kind != "Keygroup" {
             ensure!(
-                [0., 1.].contains(&self.number(node, "PanLaw", 0.)?),
+                pan_law_supported(self.number(node, "PanLaw", 0.)?),
                 "Invalid UVI stereo pan law"
             );
         }

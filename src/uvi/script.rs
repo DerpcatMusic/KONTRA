@@ -2991,6 +2991,14 @@ impl Session {
         self.runtime.state.borrow().now
     }
 
+    /// Read final original-node parameters without invoking Lua or draining
+    /// commands. Constructor and save admission belong to the owning Player.
+    pub(crate) fn validate_final_pan_laws(&self) -> Result<()> {
+        super::playback::validate_final_pan_laws(
+            self.runtime.host.as_ref().context("UVI Program host is unavailable")?,
+        )
+    }
+
     /// Allocating worker only. onSave may execute Lua; commands stay on the
     /// native frame boundary for the next normal Player drain/render.
     pub fn saved_state(&mut self, frame: u64) -> Result<super::state::SavedState> {
@@ -3351,6 +3359,59 @@ fn collect(mut rt: Runtime, inputs: &[Input], until: u64) -> Result<Processed> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn final_pan_law_admission_preserves_transient_repairs_and_restore_on_init() {
+        let program = super::super::program::parse_program(r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
+          function onInit()Program:setParameter('PanLaw',2);Program:setParameter('PanLaw',0)end
+          function onLoad(data)assert(Program:getParameter('PanLaw')==2)end
+          function onSave()Program:setParameter('PanLaw',2);return {}end
+        ]]></script></ScriptProcessor></EventProcessors></Program>"#).unwrap();
+        let mut session = Session::new_program_chain(&program, BTreeMap::new(), None, 48000).unwrap();
+        session.validate_final_pan_laws().unwrap();
+        let commands = session.drain().unwrap().host_commands;
+        let laws = commands.iter().filter_map(|command| match &command.action {
+            host::Action::Parameter { parameter, value: host::ParameterValue::Number(value), .. }
+                if parameter == "PanLaw" => Some(*value),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(laws, vec![2., 0.], "final inspection does not drain or reorder temporary writes");
+        let saved = session.saved_state(0).unwrap();
+        assert!(session.validate_final_pan_laws().is_err(), "retained final law2 is not renderer-admissible");
+        // Decode/type/fingerprint and restoration prefix still admit the payload;
+        // authored onLoad sees2 and onInit repairs it before final admission.
+        let saved = super::super::state::SavedState::decode(&saved.encode().unwrap()).unwrap();
+        let restored = Session::new_program_chain_with_state(
+            &program, BTreeMap::new(), None, 48000, Some(&saved),
+        ).unwrap();
+        restored.validate_final_pan_laws().unwrap();
+    }
+
+    #[test]
+    fn final_pan_law_admission_checks_only_original_renderer_owner_kinds() {
+        for target in ["Program", "Program.layers[1]", "Program.layers[1].keygroups[1]"] {
+            let xml = format!(r#"<Program><Layers><Layer><Keygroups><Keygroup/></Keygroups></Layer></Layers><EventProcessors><ScriptProcessor><script>{target}:setParameter('PanLaw',2)</script></ScriptProcessor></EventProcessors></Program>"#);
+            let program = super::super::program::parse_program(&xml).unwrap();
+            let session = Session::new_program_chain(&program, BTreeMap::new(), None, 48000).unwrap();
+            let kind = match target {
+                "Program" => "Program",
+                "Program.layers[1]" => "Layer",
+                _ => "Keygroup",
+            };
+            let node = program.nodes.iter().position(|node| node.kind == kind).unwrap();
+            let error = session.validate_final_pan_laws().unwrap_err();
+            assert!(format!("{error:#}").contains(&format!("{kind} node {node} parameter PanLaw=2")),
+                "retained2 on {target} identifies the original renderer owner");
+        }
+        let program = super::super::program::parse_program(r#"<Program PanLaw="1"><Layers><Layer PanLaw="0"><Keygroups><Keygroup PanLaw="1"><Oscillators><SamplePlayer PanLaw="2"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let session = Session::new_program_chain(&program, BTreeMap::new(), None, 48000).unwrap();
+        session.validate_final_pan_laws().unwrap();
+        let program = super::super::program::parse_program(r#"<Program PanLaw="private_pan_value_marker"/>"#).unwrap();
+        let session = Session::new_program_chain(&program, BTreeMap::new(), None, 48000).unwrap();
+        let error = format!("{:#}", session.validate_final_pan_laws().unwrap_err());
+        assert!(error.contains(&format!("Program node {} parameter PanLaw", program.root)));
+        assert!(!error.contains("private_pan_value_marker"), "numeric parse diagnostics do not publish retained text");
+    }
+
     use super::super::program::parse_program;
     use super::*;
 
