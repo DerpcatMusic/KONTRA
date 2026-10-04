@@ -841,7 +841,7 @@ impl Worker {
             .details
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        serde_json::json!({
+        let mut report = serde_json::json!({
             "status":self.status(), "phase":details.phase, "frame":details.phase_frame,
             "epoch":self.shared.stamp.epoch, "generation":self.shared.stamp.generation,
             "program":details.program_report.as_deref(), "stats":self.stats(),
@@ -854,7 +854,11 @@ impl Worker {
             "voice_census_semantics":"active_voices_cleared_on_stop_or_failure; last_completed_voices_historical_not_audibility",
             "lua_print_payloads_retained":false,
             "lua_print_counter_scope":"completed_render_packets_only",
-        })
+        });
+        if let Some(hit) = details.resource_activity.cache_hit {
+            report["static_pcm_cache"] = serde_json::json!({"hit":hit,"loaded_paths":details.resource_activity.loaded,"codec_decodes":details.resource_activity.unique_decodes});
+        }
+        report
     }
 
     /// Explicit support/CLI inspection only, off UI and audio threads. Keep a
@@ -1638,10 +1642,13 @@ fn run(
         return Ok(());
     }
     initialization_stage(shared, trace, "uvi_resources");
-    let samples = match library.samples_with_progress_cancel(&loaded, &mut |total, loaded, unique_decodes, bytes, current| {
+    // Experimental owned PCM cache; default/public/CLI loaders are unchanged.
+    let cache_path = (std::env::var_os("KONTRA_UVI_STATIC_PCM_CACHE").as_deref() == Some(std::ffi::OsStr::new("1")))
+        .then(crate::cache::dir).flatten().map(|dir| dir.join("uvi-static-pcm-v2.cache"));
+    let (samples, cache_hit) = match super::pcm_cache::load(&library, &loaded, &config.bank, cache_path.as_deref(), &mut |total, loaded, unique_decodes, bytes, current| {
         let mut details = shared.details.lock().unwrap_or_else(|p| p.into_inner());
         details.resource_activity = ResourceActivity {
-            total: Some(total), loaded, unique_decodes, bytes,
+            total: Some(total), loaded, unique_decodes, bytes, cache_hit: None,
             current: current.map(|path| path.chars().take(256).collect()),
         };
     }, Some(&shared.stop)) {
@@ -1654,6 +1661,7 @@ fn run(
     }
     {
         let mut details = shared.details.lock().unwrap_or_else(|p| p.into_inner());
+        details.resource_activity.cache_hit = cache_hit;
         details.mapping = details.mapping.as_ref().map(|mapping| Arc::new(mapping.decoded(&samples)));
         details.activity_cache = None;
     }
@@ -2089,7 +2097,7 @@ pub(crate) mod tests {
             details.program_report = Some(Arc::new(serde_json::json!({"counts":{"nodes":3,"static_rejected_nodes":1}})));
             details.initialization.stage("resources");
             details.resource_activity = ResourceActivity { total: Some(4), loaded: 2,
-                unique_decodes: 1, bytes: 4096, current: Some("Samples/test.wav".into()) };
+                unique_decodes: 1, bytes: 4096, cache_hit: None, current: Some("Samples/test.wav".into()) };
         }
         let loading = worker.load_activity();
         assert!(!Arc::ptr_eq(&first, &loading));

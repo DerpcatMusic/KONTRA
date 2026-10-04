@@ -16,6 +16,8 @@ pub struct ResourceActivity {
     pub total: Option<usize>,
     pub loaded: usize,
     pub unique_decodes: usize,
+    /// None when disabled; true for a verified hit, false for original decoding.
+    pub cache_hit: Option<bool>,
     /// Resident decoded PCM, shared aliases counted once.
     pub bytes: usize,
     pub current: Option<String>,

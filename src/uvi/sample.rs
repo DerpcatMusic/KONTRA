@@ -2,7 +2,7 @@
 
 use super::storage::Storage;
 use anyhow::{Context, Result, bail, ensure};
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use std::{
     io::{self, Cursor},
     sync::atomic::{AtomicBool, Ordering},
@@ -37,7 +37,7 @@ const MEMORY_LIMIT: usize = 256 << 20;
 const METADATA_LIMIT: usize = 2 << 20;
 const CHUNK_LIMIT: usize = 4096;
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SampleLoop {
     pub id: u32,
     pub kind: u32,

@@ -24,6 +24,7 @@ pub mod generator;
 pub mod host;
 pub mod library;
 pub mod mapping;
+mod pcm_cache;
 pub(crate) mod lua_failure;
 pub mod maximizer;
 pub mod modulation;

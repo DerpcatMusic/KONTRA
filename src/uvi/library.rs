@@ -18,7 +18,7 @@ pub(crate) const PCM_LIMIT: usize = 512 << 20;
 const MODULE_LIMIT: usize = 16 << 20;
 const ALIAS_LIMIT: usize = 16 << 20;
 
-fn alias_bytes(current: usize, path: &str) -> Result<usize> {
+pub(crate) fn alias_bytes(current: usize, path: &str) -> Result<usize> {
     ensure!(
         !path.is_empty() && path.len() <= 4096 && !path.contains('\0'),
         "Invalid UVI resource alias"
@@ -180,6 +180,30 @@ pub struct Library {
 pub struct LoadedProgram {
     pub program: Program,
     pub path: String,
+}
+
+/// Shared ordering for decoding and the optional static-cache alias plan.
+pub(crate) fn initial_paths(loaded: &LoadedProgram) -> Vec<(&str, bool)> {
+    loaded
+        .program
+        .sample_zones
+        .iter()
+        .map(|z| (z.sample_path.as_str(), false))
+        .chain(loaded.program.nodes.iter().filter_map(|n| {
+            match n.kind.as_str() {
+                "Convolver" | "SampledReverb" => n
+                    .attributes
+                    .get("SamplePath")
+                    .map(|path| (path.as_str(), false)),
+                "WaveTableOscillator" => n
+                    .attributes
+                    .get("WavetablePath")
+                    .map(|path| (path.as_str(), true)),
+                _ => None,
+            }
+        }))
+        .filter(|(path, _)| !path.is_empty())
+        .collect()
 }
 
 impl Library {
@@ -380,24 +404,7 @@ impl Library {
         let mut result = HashMap::<String, Arc<Sample>>::new();
         let mut cache = HashMap::<Vec<u64>, Arc<Sample>>::new();
         let mut total = 0usize;
-        let paths = loaded
-            .program
-            .sample_zones
-            .iter()
-            .map(|z| (z.sample_path.as_str(), false))
-            .chain(loaded.program.nodes.iter().filter_map(|n| {
-                match n.kind.as_str() {
-                    "Convolver" | "SampledReverb" => n
-                        .attributes
-                        .get("SamplePath")
-                        .map(|path| (path.as_str(), false)),
-                    "WaveTableOscillator" => n
-                        .attributes
-                        .get("WavetablePath")
-                        .map(|path| (path.as_str(), true)),
-                    _ => None,
-                }
-            })).filter(|(path, _)| !path.is_empty()).collect::<Vec<_>>();
+        let paths = initial_paths(loaded);
         let expected = paths.iter().map(|(path, _)| *path).collect::<HashSet<_>>().len();
         progress(expected, 0, 0, 0, None);
         if paths.is_empty() {
