@@ -386,7 +386,7 @@ pub struct Stats {
     /// Player calls reaching observation publication, including failed attempts.
     /// Wire/stamp validation failures before Player invocation are excluded.
     pub render_attempts: u64,
-    /// Latest attempt's owned alias count, resident PCM bytes and revision.
+    /// Initialization/ latest attempt's owned alias count, PCM bytes and revision.
     /// Distinct aliases may share PCM; bytes exclude Lua/DSP/UI allocations.
     pub resource_alias_count: u64,
     pub resource_resident_pcm_bytes: u64,
@@ -902,7 +902,7 @@ impl Worker {
         let status = self.status();
         if let Some((at, phase, previous_status, stages, snapshot)) = &details.activity_cache
             && at.elapsed() < Duration::from_millis(250)
-            && *phase == details.phase && *previous_status == status
+            && (status == Status::Ready || *phase == details.phase) && *previous_status == status
             && *stages == details.initialization.stages.len() {
             return snapshot.clone();
         }
@@ -915,14 +915,18 @@ impl Worker {
         let counts = details.program_report.as_ref().map(|report| &report["counts"]);
         let count = |key: &str| counts.and_then(|counts| counts[key].as_u64())
             .and_then(|n| usize::try_from(n).ok());
+        let stats = self.stats();
         let snapshot = Arc::new(WorkerLoadActivity {
+            stamp: Stamp { frame: details.phase_frame, ..self.shared.stamp },
             mapping: details.mapping.clone(),
             status, phase: details.phase, frame: details.phase_frame,
             elapsed: timing.finished.map_or_else(|| timing.started.elapsed(), |(elapsed, _)| elapsed),
             stages, nodes: count("nodes"), static_rejected_nodes: count("static_rejected_nodes"), sample_zones: count("sample_zones"),
             script_processors: count("script_processors"), resources: details.resource_activity.clone(),
             failure: details.failure.as_ref().map(|reason| reason.chars().take(4096).collect()),
-            stats: self.stats(),
+            owned_pcm_bytes: (status == Status::Ready).then(||
+                usize::try_from(stats.resource_resident_pcm_bytes).ok()).flatten(),
+            stats,
         });
         details.activity_cache = Some((Instant::now(), details.phase, status,
             details.initialization.stages.len(), snapshot.clone()));
@@ -1869,6 +1873,9 @@ fn run(
     if shared.stop.load(Ordering::Acquire) {
         return Ok(());
     }
+    // Census includes onInit resources and is available before the first host
+    // packet. This does not count as a render attempt or execute Lua again.
+    publish_resource_inventory(shared, player.packet_activity());
     shared
         .details
         .lock()
@@ -1921,9 +1928,7 @@ fn publish_packet_activity(shared: &Shared, phase: player::PacketActivity, scrip
     c.renderer_ns.fetch_add(phase.renderer_ns, Ordering::Relaxed);
     c.max_renderer_ns.fetch_max(phase.renderer_ns, Ordering::Relaxed);
     c.render_attempts.fetch_add(1, Ordering::Relaxed);
-    c.resource_alias_count.store(phase.resource_alias_count as u64, Ordering::Relaxed);
-    c.resource_resident_pcm_bytes.store(phase.resource_resident_pcm_bytes as u64, Ordering::Relaxed);
-    c.resource_revision.store(phase.resource_revision, Ordering::Relaxed);
+    publish_resource_inventory(shared, phase);
     c.script_emitted_starts.store(script.emitted_starts, Ordering::Relaxed);
     c.script_emitted_releases.store(script.emitted_releases, Ordering::Relaxed);
     c.script_emitted_kill_fades.store(script.emitted_kill_fades, Ordering::Relaxed);
@@ -1936,6 +1941,13 @@ fn publish_packet_activity(shared: &Shared, phase: player::PacketActivity, scrip
     c.script_gc_step_calls.store(script.gc_step_calls, Ordering::Relaxed);
     c.script_gc_step_ns.store(script.gc_step_ns, Ordering::Relaxed);
     c.script_gc_step_max_ns.store(script.gc_step_max_ns, Ordering::Relaxed);
+}
+
+fn publish_resource_inventory(shared: &Shared, phase: player::PacketActivity) {
+    let c = &shared.counters;
+    c.resource_alias_count.store(phase.resource_alias_count as u64, Ordering::Relaxed);
+    c.resource_resident_pcm_bytes.store(phase.resource_resident_pcm_bytes as u64, Ordering::Relaxed);
+    c.resource_revision.store(phase.resource_revision, Ordering::Relaxed);
 }
 
 #[cfg(target_os = "linux")]
@@ -2369,6 +2381,41 @@ pub(crate) mod tests {
         let elapsed = failed.elapsed;
         worker.shared.details.lock().unwrap().activity_cache = None;
         assert_eq!(worker.load_activity().elapsed, elapsed);
+    }
+
+    #[test]
+    fn ready_metrics_seed_pcm_before_first_packet_and_throttle_phase_churn() {
+        let worker = Worker { shared: Arc::new(Shared::new(7, 11)), thread: None,
+            cursor: Some(PacketCursor::default()) };
+        publish_resource_inventory(&worker.shared, player::PacketActivity {
+            resource_alias_count: 3, resource_resident_pcm_bytes: 8192,
+            resource_revision: 2, ..Default::default()
+        });
+        assert_eq!(worker.stats().render_attempts, 0);
+        worker.shared.status.store(Status::Ready as u8, Ordering::Release);
+        let first = worker.load_activity();
+        assert_eq!((first.stamp.epoch, first.stamp.generation), (7, 11));
+        assert_eq!(first.owned_pcm_bytes, Some(8192));
+        assert_eq!(first.stats.resource_alias_count, 3);
+        assert_eq!(first.stats.render_cpu_samples, 0);
+        {
+            let mut details = worker.shared.details.lock().unwrap();
+            details.phase = "packet_render";
+            details.phase_frame = 256;
+        }
+        worker.shared.counters.active_voices.store(4, Ordering::Relaxed);
+        assert!(Arc::ptr_eq(&first, &worker.load_activity()),
+            "normal Ready packet phase churn does not allocate UI snapshots");
+        // Deterministic expiry, without sleeping or changing render cadence.
+        worker.shared.details.lock().unwrap().activity_cache.as_mut().unwrap().0 =
+            Instant::now() - Duration::from_secs(1);
+        let updated = worker.load_activity();
+        assert!(!Arc::ptr_eq(&first, &updated));
+        assert_eq!(updated.stats.active_voices, 4);
+        worker.shared.status.store(Status::Stopped as u8, Ordering::Release);
+        let stopped = worker.load_activity();
+        assert!(!Arc::ptr_eq(&updated, &stopped));
+        assert_eq!(stopped.owned_pcm_bytes, None);
     }
 
     #[test]

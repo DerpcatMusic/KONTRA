@@ -100,7 +100,7 @@ fn text(bytes: &[u8]) -> Result<String> {
 fn read_at(file: &mut File, offset: u64, size: usize) -> Result<Vec<u8>> {
     file.seek(SeekFrom::Start(offset))?;
     let mut bytes = vec![0; size];
-    file.read_exact(&mut bytes)?;
+    super::io::CountedRead::new(file).read_exact(&mut bytes)?;
     Ok(bytes)
 }
 

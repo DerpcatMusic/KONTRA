@@ -539,6 +539,7 @@ mod tests {
                 performance_view: true,
                 background: Some(root),
                 background_colour: None,
+                key_colours: None,
             },
             widgets: Vec::new(),
         };

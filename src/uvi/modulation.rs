@@ -1306,10 +1306,60 @@ struct AbsoluteClock {
 }
 struct CachedParameter {
     key: Parameter,
+    law: TargetLaw,
     number: Option<f64>,
     override_value: Option<f64>,
     slot: usize,
     edges: Vec<Connection>,
+}
+// Only immutable target dispatch is compiled. Values, source clocks, connection
+// order and the evaluation pass remain owned by the existing paths below.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TargetLaw {
+    Unverified,
+    Add,
+    Factor,
+    MatrixFactor,
+    AnalogTime,
+    LfoFrequency,
+    FilterFrequency,
+    Unit,
+    Drive,
+    DelayTime,
+    Boolean,
+    ChorusSpeed,
+    ChorusCrossover,
+    ChorusDepth,
+    GainScale,
+}
+impl TargetLaw {
+    fn new(kind: &str, name: &str) -> Self {
+        if !supports_target(kind, name) && !wavetable_control(kind, name) {
+            return Self::Unverified;
+        }
+        if (matches!(name, "Gain" | "Volume" | "Ratio" | "Depth") && kind != "WhiteChorus")
+            || (kind == "GainMatrix" && name.starts_with("Gain_"))
+            || (kind == "DAHDSR" && matches!(name, "AttackTime" | "DecayTime"))
+        {
+            return if kind == "GainMatrix" { Self::MatrixFactor } else { Self::Factor };
+        }
+        match (kind, name) {
+            ("AnalogADSR", "AttackTime" | "DecayTime" | "ReleaseTime") => Self::AnalogTime,
+            ("LFO", "Freq") => Self::LfoFrequency,
+            ("OnePole" | "XpanderFilter", "Freq") => Self::FilterFrequency,
+            ("XpanderFilter", "Q" | "Fat") | ("DualDelay", "Feedback")
+            | ("WhiteChorus", "Mix") => Self::Unit,
+            ("XpanderFilter", "Drive") => Self::Drive,
+            ("DAHDSR", "DelayTime") => Self::DelayTime,
+            ("XpanderFilter", "Bypass") => Self::Boolean,
+            ("WhiteChorus", "Speed") => Self::ChorusSpeed,
+            ("WhiteChorus", "Crossover") => Self::ChorusCrossover,
+            ("WhiteChorus", "Depth") => Self::ChorusDepth,
+            ("DigitalEq", "GainScale") => Self::GainScale,
+            _ if wavetable_control(kind, name) => Self::Unit,
+            _ => Self::Add,
+        }
+    }
 }
 /// One bounded slot per compiled numeric parameter. An epoch invalidates all
 /// values without clearing or reallocating the buffer between voices/frames.
@@ -1655,6 +1705,7 @@ impl ModulationGraph {
                                 name.clone(),
                                 CachedParameter {
                                     key: (id, name.clone()),
+                                    law: TargetLaw::new(&node.kind, name),
                                     number: number.is_finite().then_some(number),
                                     override_value: None,
                                     slot: 0,
@@ -2049,6 +2100,7 @@ impl ModulationGraph {
             cached_parameters[key.0]
                 .entry(key.1.clone())
                 .or_insert(CachedParameter {
+                    law: TargetLaw::new(&graph.kinds[key.0], &key.1),
                     key,
                     number: None,
                     override_value: None,
@@ -2671,6 +2723,7 @@ impl ModulationGraph {
             memo.stamps.push(0);
             self.parameter_values.push(CachedParameter {
                 key: (node, name.into()),
+                law: TargetLaw::new(&self.kinds[node], name),
                 number: None,
                 override_value: Some(value),
                 slot,
@@ -2971,10 +3024,10 @@ impl ModulationGraph {
             return Ok(value);
         }
         let edges = cached.map_or(&[][..], |cached| cached.edges.as_slice());
+        let relative = edges.iter().any(|c| c.mode == 0);
+        let law = cached.map_or(TargetLaw::Unverified, |cached| cached.law);
         ensure!(
-            !edges.iter().any(|c| c.mode == 0)
-                || supports_target(&self.kinds[p.0], &p.1)
-                || wavetable_control(&self.kinds[p.0], &p.1),
+            !relative || law != TargetLaw::Unverified,
             "Unverified UVI modulation target conversion at node {} parameter {}",
             p.0,
             p.1
@@ -2984,96 +3037,98 @@ impl ModulationGraph {
             .get(p)
             .copied()
             .unwrap_or(self.base_cached(p, cached, live)?);
-        let value = if !edges.iter().any(|c| c.mode == 0) {
+        let value = if !relative {
             base
-        } else if (matches!(p.1.as_str(), "Gain" | "Volume" | "Ratio" | "Depth")
-            && self.kinds[p.0] != "WhiteChorus")
-            || (self.kinds[p.0] == "GainMatrix" && p.1.starts_with("Gain_"))
-            || (self.kinds[p.0] == "DAHDSR" && matches!(p.1.as_str(), "AttackTime" | "DecayTime"))
-        {
-            let mut factor = 1.;
-            for c in edges {
-                if c.mode != 0 {
-                    continue;
-                }
-                if self.boolean(c.node, "Bypass", false, live)? {
-                    continue;
-                }
-                let cached_ratio = &self.parameter_values[c.ratio_slot];
-                let ratio = self.value_cached(&cached_ratio.key, Some(cached_ratio), input, live, memo, depth + 1)?;
-                let (mut source, bipolar) = self.source(&c.source, input, live, memo, depth + 1)?;
-                if self.boolean(c.node, "Inverted", false, live)? {
-                    source = if bipolar { -source } else { 1. - source };
-                }
-                if let Some(id) = c.mapper {
-                    source = self.mappers[&id].apply(source, bipolar);
-                }
-                let source = if bipolar { (source + 1.) * 0.5 } else { source };
-                let ratio = ratio.clamp(-1., 1.);
-                factor *= 1. - ratio.max(0.) + ratio * source;
-            }
-            if self.kinds[p.0] == "GainMatrix" {
-                (base + 1.) * factor - 1.
-            } else {
-                base * factor
-            }
-        } else if self.kinds[p.0] == "AnalogADSR"
-            && matches!(p.1.as_str(), "AttackTime" | "DecayTime" | "ReleaseTime")
-        {
-            // Native logarithmic time converter has an offset; its physical
-            // range alone does not determine the modulation span.
-            let delta = self.delta_edges(edges, input, live, memo, depth + 1)?;
-            let offset = f64::from(0.001_f32);
-            let min = f64::from(0.0001_f32);
-            let max = 10.;
-            let span = ((max + offset) / (min + offset)).ln();
-            let shifted = ((base.clamp(min, max) + offset).ln() + delta * span).exp() as f32;
-            f64::from((shifted - offset as f32).clamp(min as f32, max as f32))
-        } else if p.1 == "Freq" && self.kinds[p.0] == "LFO" {
-            // Workstation original renders: base1 + ratio.1*source1 =>3Hz,
-            // ratio.25 =>6Hz; base2 + ratio.25*source.5 =>4.5Hz.
-            (base + 20. * self.delta_edges(edges, input, live, memo, depth + 1)?).clamp(0., 20.)
-        } else if p.1 == "Freq" && matches!(self.kinds[p.0].as_str(), "OnePole" | "XpanderFilter") {
-            ensure!(base > 0., "Invalid UVI filter frequency base");
-            let delta = self.delta_edges(edges, input, live, memo, depth + 1)?;
-            (base * 1000_f64.powf(delta)).clamp(20., 20000.)
-        } else if self.kinds[p.0] == "XpanderFilter" && matches!(p.1.as_str(), "Q" | "Fat") {
-            (base + self.delta_edges(edges, input, live, memo, depth + 1)?).clamp(0., 1.)
-        } else if self.kinds[p.0] == "XpanderFilter" && p.1 == "Drive" {
-            (base + 40. * self.delta_edges(edges, input, live, memo, depth + 1)?).clamp(-20., 20.)
-        } else if self.kinds[p.0] == "DAHDSR" && p.1 == "DelayTime" {
-            (base + 10. * self.delta_edges(edges, input, live, memo, depth + 1)?).clamp(0., 10.)
-        } else if self.kinds[p.0] == "XpanderFilter" && p.1 == "Bypass" {
-            f64::from(
-                (base + self.delta_edges(edges, input, live, memo, depth + 1)?).clamp(0., 1.)
-                    >= 0.5,
-            )
-        } else if wavetable_control(&self.kinds[p.0], &p.1) {
-            // Authored Workstation 4.0.9 fixtures prove this normalized endpoint
-            // law. A live route converts/clamps CURRENT and FUTURE separately,
-            // then interpolates; raw per-sample CC evaluation cannot admit it.
-            (base + self.delta_edges(edges, input, live, memo, depth + 1)?).clamp(0., 1.)
-        } else if matches!(self.kinds[p.0].as_str(), "DualDelay" | "DualDelayX") && p.1 == "Mix" {
-            // Native negative-ratio steps smooth the raw goal first. The
-            // consumer clamps its current Mix, rather than this target.
-            base + self.delta_edges(edges, input, live, memo, depth + 1)?
-        } else if self.kinds[p.0] == "DualDelay" && p.1 == "Feedback" {
-            (base + self.delta_edges(edges, input, live, memo, depth + 1)?).clamp(0., 1.)
-        } else if self.kinds[p.0] == "WhiteChorus" {
-            let delta = self.delta_edges(edges, input, live, memo, depth + 1)?;
-            // Authored original CC renders verify each physical converter;
-            // the processor owns its target smoothing, not this graph.
-            match p.1.as_str() {
-                "Mix" => (base + delta).clamp(0., 1.),
-                "Speed" => (base * 10_f64.powf(delta)).clamp(0.1, 1.),
-                "Crossover" => (base * 250_f64.powf(delta)).clamp(20., 5000.),
-                "Depth" => (base + 39. * delta).clamp(1., 40.),
-                _ => unreachable!("target support checked above"),
-            }
-        } else if self.kinds[p.0] == "DigitalEq" && p.1 == "GainScale" {
-            (base + 4. * self.delta_edges(edges, input, live, memo, depth + 1)?).clamp(-2., 2.)
         } else {
-            base + self.delta_edges(edges, input, live, memo, depth + 1)?
+            match law {
+                TargetLaw::Factor | TargetLaw::MatrixFactor => {
+                    let mut factor = 1.;
+                    for c in edges {
+                        if c.mode != 0 {
+                            continue;
+                        }
+                        if self.boolean(c.node, "Bypass", false, live)? {
+                            continue;
+                        }
+                        let cached_ratio = &self.parameter_values[c.ratio_slot];
+                        let ratio = self.value_cached(&cached_ratio.key, Some(cached_ratio), input, live, memo, depth + 1)?;
+                        let (mut source, bipolar) = self.source(&c.source, input, live, memo, depth + 1)?;
+                        if self.boolean(c.node, "Inverted", false, live)? {
+                            source = if bipolar { -source } else { 1. - source };
+                        }
+                        if let Some(id) = c.mapper {
+                            source = self.mappers[&id].apply(source, bipolar);
+                        }
+                        let source = if bipolar { (source + 1.) * 0.5 } else { source };
+                        let ratio = ratio.clamp(-1., 1.);
+                        factor *= 1. - ratio.max(0.) + ratio * source;
+                    }
+                    if law == TargetLaw::MatrixFactor {
+                        (base + 1.) * factor - 1.
+                    } else {
+                        base * factor
+                    }
+                }
+                TargetLaw::AnalogTime => {
+                    // Native logarithmic time converter has an offset; its physical
+                    // range alone does not determine the modulation span.
+                    let delta = self.delta_edges(edges, input, live, memo, depth + 1)?;
+                    let offset = f64::from(0.001_f32);
+                    let min = f64::from(0.0001_f32);
+                    let max = 10.;
+                    let span = ((max + offset) / (min + offset)).ln();
+                    let shifted = ((base.clamp(min, max) + offset).ln() + delta * span).exp() as f32;
+                    f64::from((shifted - offset as f32).clamp(min as f32, max as f32))
+                }
+                TargetLaw::LfoFrequency => {
+                    // Workstation original renders: base1 + ratio.1*source1 =>3Hz,
+                    // ratio.25 =>6Hz; base2 + ratio.25*source.5 =>4.5Hz.
+                    (base + 20. * self.delta_edges(edges, input, live, memo, depth + 1)?).clamp(0., 20.)
+                }
+                TargetLaw::FilterFrequency => {
+                    ensure!(base > 0., "Invalid UVI filter frequency base");
+                    let delta = self.delta_edges(edges, input, live, memo, depth + 1)?;
+                    (base * 1000_f64.powf(delta)).clamp(20., 20000.)
+                }
+                TargetLaw::Unit => {
+                    // WaveTable endpoint controls, feedback and chorus Mix share this
+                    // converter; their existing consumer/route gates are unchanged.
+                    (base + self.delta_edges(edges, input, live, memo, depth + 1)?).clamp(0., 1.)
+                }
+                TargetLaw::Drive => {
+                    (base + 40. * self.delta_edges(edges, input, live, memo, depth + 1)?).clamp(-20., 20.)
+                }
+                TargetLaw::DelayTime => {
+                    (base + 10. * self.delta_edges(edges, input, live, memo, depth + 1)?).clamp(0., 10.)
+                }
+                TargetLaw::Boolean => {
+                    f64::from(
+                        (base + self.delta_edges(edges, input, live, memo, depth + 1)?).clamp(0., 1.)
+                            >= 0.5,
+                    )
+                }
+                TargetLaw::ChorusSpeed => {
+                    let delta = self.delta_edges(edges, input, live, memo, depth + 1)?;
+                    (base * 10_f64.powf(delta)).clamp(0.1, 1.)
+                }
+                TargetLaw::ChorusCrossover => {
+                    let delta = self.delta_edges(edges, input, live, memo, depth + 1)?;
+                    (base * 250_f64.powf(delta)).clamp(20., 5000.)
+                }
+                TargetLaw::ChorusDepth => {
+                    let delta = self.delta_edges(edges, input, live, memo, depth + 1)?;
+                    (base + 39. * delta).clamp(1., 40.)
+                }
+                TargetLaw::GainScale => {
+                    (base + 4. * self.delta_edges(edges, input, live, memo, depth + 1)?).clamp(-2., 2.)
+                }
+                TargetLaw::Add => {
+                    // DualDelay Mix deliberately stays raw here: its consumer clamps
+                    // the smoothed current value. Other additive laws also stay raw.
+                    base + self.delta_edges(edges, input, live, memo, depth + 1)?
+                }
+                TargetLaw::Unverified => unreachable!("target support checked above"),
+            }
         };
         ensure!(value.is_finite(), "Nonfinite UVI modulation result");
         if let Some(cached) = cached {
@@ -4405,6 +4460,107 @@ impl ModulationGraph {
 
 #[cfg(test)]
 mod tests {
+    // Authored invariant cases, not new native-fidelity evidence. Central
+    // verification must run these and compare the retained old/new corpus.
+    #[test]
+    fn compiled_target_laws_preserve_physical_endpoints_and_live_writes() {
+        for (kind, name, base, ratio, cc, expected) in [
+            ("SamplePlayer", "Gain", 2., 0.5, 0, 1.),
+            ("SamplePlayer", "Gain", 2., -0.5, 127, 1.),
+            ("GainMatrix", "Gain_1_1", 0.5, 0.5, 0, -0.25),
+            ("GainMatrix", "Gain_2_1", 0.5, -0.5, 127, -0.25),
+            ("DAHDSR", "AttackTime", 2., 0.5, 0, 1.),
+            ("DAHDSR", "DecayTime", 2., -0.5, 127, 1.),
+            ("AnalogADSR", "AttackTime", 1., 1., 127, 10.),
+            ("AnalogADSR", "ReleaseTime", 1., -1., 127, f64::from(0.0001_f32)),
+            ("LFO", "Freq", 1., 0.25, 127, 6.),
+            ("OnePole", "Freq", 20., 1., 127, 20000.),
+            ("XpanderFilter", "Freq", 20000., -1., 127, 20.),
+            ("XpanderFilter", "Q", 0.25, 1., 127, 1.),
+            ("XpanderFilter", "Fat", 0.25, -0.5, 127, 0.),
+            ("DualDelay", "Feedback", 0.25, 1., 127, 1.),
+            ("WhiteChorus", "Mix", 0.25, -0.5, 127, 0.),
+            ("WaveTableOscillator", "PhaseDistortionAmount", 0.25, 1., 127, 1.),
+            ("WaveTableOscillator", "WaveIndex", 0.25, -0.5, 127, 0.),
+            ("XpanderFilter", "Drive", 0., 0.25, 127, 10.),
+            ("DAHDSR", "DelayTime", 1., 0.25, 127, 3.5),
+            ("XpanderFilter", "Bypass", 0., 0.5, 127, 1.),
+            ("XpanderFilter", "Bypass", 0., 0.499, 127, 0.),
+            ("WhiteChorus", "Speed", 0.1, 1., 127, 1.),
+            ("WhiteChorus", "Crossover", 20., 1., 127, 5000.),
+            ("WhiteChorus", "Depth", 1., 1., 127, 40.),
+            ("DigitalEq", "GainScale", 0., 0.5, 127, 2.),
+            ("DigitalEq", "GainScale", 0., -0.5, 127, -2.),
+            ("DualDelay", "Mix", 0.25, -1., 127, -0.75),
+            ("DualDelayX", "Mix", 0.25, 1., 127, 1.25),
+            ("SamplePlayer", "Pitch", 3., 2., 127, 5.),
+        ] {
+            let xml = format!(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><{kind} SamplePath="authored.wav" {name}="{base}"><Connections><SignalConnection Source="@MIDI CC 1" Destination="{name}" Ratio="{ratio}"/></Connections></{kind}></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#);
+            let program = parse_program(&xml).unwrap();
+            let mut graph = ModulationGraph::new(&program).unwrap();
+            let node = program.nodes.iter().position(|n| n.kind == kind).unwrap();
+            let connection = program.connections[0].node;
+            let key = (node, name.into());
+            let nodes = HashSet::from([node]);
+            let mut input = Inputs::default();
+            input.controllers[1] = cc;
+            let actual = graph.evaluate_nodes(&input, &HashMap::new(), &nodes).unwrap()[&key];
+            assert_eq!(actual.to_bits(), expected.to_bits(), "{kind}.{name}");
+            // Every pass must still read CURRENT physical values and Ratio;
+            // the immutable law must not freeze either at construction.
+            for (physical, strength) in [(base + 0.125, -ratio), (base, ratio)] {
+                graph.update_live_parameter(node, name, physical).unwrap();
+                graph.update_live_parameter(connection, "Ratio", strength).unwrap();
+                let live = HashMap::from([(key.clone(), physical), ((connection, "Ratio".into()), strength)]);
+                let external = graph.evaluate_nodes(&input, &live, &nodes).unwrap();
+                let mut registered = HashMap::new();
+                graph.evaluate_registered_nodes_into(&input, &nodes, |p, v| { registered.insert(p.clone(), v.to_bits()); }).unwrap();
+                assert_eq!(registered[&key], external[&key].to_bits(), "{kind}.{name}");
+            }
+        }
+    }
+    #[test]
+    fn compiled_target_laws_preserve_error_order_and_unconnected_dynamic_values() {
+        for (kind, name, base, ratio, expected) in [
+            ("OnePole", "Freq", "0", "1", "Invalid UVI filter frequency base"),
+            ("GainMatrix", "Gain_13_1", "NaN", "1", "Unverified UVI modulation target conversion"),
+            ("WhiteChorus", "Unknown", "NaN", "1", "Unverified UVI modulation target conversion"),
+        ] {
+            let program = parse_program(&format!(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><{kind} SamplePath="authored.wav" {name}="{base}"><Connections><SignalConnection Source="@MIDI CC 1" Destination="{name}" Ratio="{ratio}"/></Connections></{kind}></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#)).unwrap();
+            let graph = ModulationGraph::new(&program).unwrap();
+            let node = program.nodes.iter().position(|n| n.kind == kind).unwrap();
+            let cached = graph.cached_parameter(node, name).unwrap();
+            let live = HashMap::from([((program.connections[0].node, "Ratio".into()), f64::NAN)]);
+            let mut memo = graph.memo.borrow_mut();
+            memo.begin();
+            let error = graph.value_cached(&cached.key, Some(cached), &Inputs::default(), Overrides::External(&live), &mut memo, 0).unwrap_err();
+            assert!(error.to_string().starts_with(expected), "{error:#}");
+        }
+        for (kind, name, expected) in [("GainMatrix", "Gain_1_1", 1_f64), ("GainMatrix", "Gain_2_1", 0.), ("SamplePlayer", "Gain", 1.), ("LFO", "Freq", 20.)] {
+            let program = parse_program(&format!(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><{kind} SamplePath="authored.wav"><Connections><SignalConnection Source="@MIDI CC 1" Destination="{name}"/></Connections></{kind}></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#)).unwrap();
+            let graph = ModulationGraph::new(&program).unwrap();
+            let node = program.nodes.iter().position(|n| n.kind == kind).unwrap();
+            let mut input = Inputs::default();
+            input.controllers[1] = 127;
+            assert_eq!(graph.evaluate_nodes(&input, &HashMap::new(), &HashSet::from([node])).unwrap()[&(node, name.into())].to_bits(), expected.to_bits());
+        }
+        let program = parse_program("<Program/>").unwrap();
+        let mut graph = ModulationGraph::new(&program).unwrap();
+        let node = program.root;
+        // Dynamically registered, unconnected unsupported properties were
+        // legal numeric reads before this dispatch change and remain legal.
+        for value in [-0., 0.75] {
+            graph.update_live_parameter(node, "CustomNumeric", value).unwrap();
+            let cached = graph.cached_parameter(node, "CustomNumeric").unwrap();
+            let mut memo = graph.memo.borrow_mut();
+            memo.begin();
+            assert_eq!(graph.value_cached(&cached.key, Some(cached), &Inputs::default(), Overrides::Registered, &mut memo, 0).unwrap().to_bits(), value.to_bits());
+            // Depth admission still precedes a previously populated memo hit.
+            let error = graph.value_cached(&cached.key, Some(cached), &Inputs::default(), Overrides::Registered, &mut memo, DEPTH).unwrap_err();
+            assert_eq!(error.to_string(), "UVI modulation evaluation depth exceeds limit");
+        }
+    }
+
     #[test]
     fn native_step_envelope_global_points_and_unmeasured_modes_stay_gated() {
         let levels = (0..16)

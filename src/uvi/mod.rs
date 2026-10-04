@@ -22,6 +22,7 @@ pub mod filter;
 pub mod flanger;
 pub mod generator;
 pub mod host;
+pub(crate) mod io;
 pub mod library;
 pub mod mapping;
 mod pcm_cache;

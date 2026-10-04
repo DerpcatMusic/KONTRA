@@ -25,6 +25,8 @@ pub struct ResourceActivity {
 
 #[derive(Clone, Debug)]
 pub struct WorkerLoadActivity {
+    /// Owner identity; frame is an observation, not an endpoint fault boundary.
+    pub stamp: super::Stamp,
     /// Initial authored mapping only; sharing its Arc never clones zone data.
     pub mapping: Option<Arc<super::super::mapping::Inspection>>,
     pub status: Status,
@@ -37,6 +39,9 @@ pub struct WorkerLoadActivity {
     pub sample_zones: Option<usize>,
     pub script_processors: Option<usize>,
     pub resources: ResourceActivity,
+    /// Current worker-owned PCM after initialization, including authored Lua
+    /// resources. None before Ready or after failure/stop; excludes Lua/DSP/UI.
+    pub owned_pcm_bytes: Option<usize>,
     pub failure: Option<String>,
     pub stats: Stats,
 }

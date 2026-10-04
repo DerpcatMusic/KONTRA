@@ -87,6 +87,9 @@ pub(super) fn inspection(ui: &mut Ui, mapping: &Inspection, state: &mut State, r
     let mut details = vec![caption(status).lines(3).w(Len::Pct(100.)).min_w(0).shrink(0).id("uvi-mapping-readiness"),
         caption("Read-only initial mapping. Scripts may change samples or ranges during playback; this view does not track those changes.")
             .fill(secondary()).lines(4).w(Len::Pct(100.)).min_w(0).shrink(0)];
+    let sample_range = mapping.key_span().map_or_else(|| "No authored sample keys".into(), |(low, high)|
+        format!("Authored sample keys {} – {}", note_name(low), note_name(high)));
+    details.push(caption(sample_range.clone()).named(sample_range).lines(2).w(Len::Pct(100.)).min_w(0).shrink(0).id("uvi-mapping-sample-range"));
     if indices.is_empty() {
         details.push(body("No initial sampled zones. Generators and samples created by scripts are not shown.").lines(3)
             .w(Len::Pct(100.)).min_w(0).shrink(0));

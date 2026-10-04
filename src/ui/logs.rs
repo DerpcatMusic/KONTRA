@@ -1725,7 +1725,7 @@ mod tests {
             chunk:"UVI ScriptProcessor node 2".into(),excerpt:Some(json!({"text":">      3 | private_owned_source_marker()"})),
             unavailable:"",provenance:"structured_coroutine_frame",display:"Local Lua source context (excluded from copy and export)\n>      3 | private_owned_source_marker()".into()});
         let published=Arc::new(crate::plugin::uvi_ui::Published {stamp:crate::uvi::worker::Stamp {epoch,generation:11,frame:0},
-            snapshots:Arc::default(),pictures:Arc::default(),fonts:Arc::default()});
+            snapshots:Arc::default(),key_colours:Arc::default(),pictures:Arc::default(),fonts:Arc::default()});
         let mut part=crate::plugin::PartView::authored_uvi(source.clone(),published);
         part.uvi_lua_failure=Some(context.clone());
         params.shared.view.lock().unwrap().parts[0]=part;
