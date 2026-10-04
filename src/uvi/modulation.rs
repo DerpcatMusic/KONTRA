@@ -2359,7 +2359,10 @@ impl ModulationGraph {
         }
         let mut current_live = HashMap::new();
         let mut updates = Vec::new();
-        for node in self.absolute_order.clone() {
+        // The declaration order is immutable after construction. Copy one ID
+        // at a time instead of allocating a new order for every audio frame.
+        for index in 0..self.absolute_order.len() {
+            let node = self.absolute_order[index];
             ensure!(
                 !self
                     .connections
