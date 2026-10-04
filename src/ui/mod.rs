@@ -1057,7 +1057,7 @@ fn build(
             let state = cx.state.uvi.get_mut(&slot)?;
             state.set_interactive(interactive);
             uvi_instrument::popup(ui, state, slot, current, published.stamp, snapshot, window,
-                |stamp, input| cx.p.shared.edit_uvi(slot, stamp, input.edit))
+                |stamp, edit| cx.p.shared.edit_uvi(slot, stamp, edit))
         }).collect();
         let ghost = ghost(ui, &cx);
         cx.state.meters.logs_visible.store(cx.state.tab == Tab::Logs, Ordering::Relaxed);

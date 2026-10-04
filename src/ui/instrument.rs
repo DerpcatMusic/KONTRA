@@ -203,7 +203,7 @@ pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
                 state.set_interactive(!native_problem(&v.status));
                 return super::uvi_instrument::view(ui, state, slot,
                     current, published.stamp, snapshot, &published.pictures, &published.fonts,
-                    |stamp, input| shared.edit_uvi(slot, stamp, input.edit));
+                    |stamp, edit| shared.edit_uvi(slot, stamp, edit));
             }
             return caption("This instrument has no performance controls.").fill(secondary()).pad(INSET);
         }
