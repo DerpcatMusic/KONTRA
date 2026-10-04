@@ -21,6 +21,7 @@ impl Context {
     pub(crate) fn metadata(&self) -> serde_json::Value {
         serde_json::json!({"source_kind":"lua","processor":self.processor,"frame":self.frame,
             "chunk":self.chunk,"line":self.line,"local_source_excerpt_available":self.excerpt.is_some(),
+            "source_provenance":if self.line.is_some(){"structured_coroutine_frame"}else if self.chunk!="unavailable"{"initialization_entry_chunk"}else{"unavailable"},
             "source_excerpt_unavailable":if self.excerpt.is_some(){None}else{Some(self.unavailable)}})
     }
 }
@@ -51,6 +52,33 @@ fn excerpt(source: &str, line: u32) -> Option<serde_json::Value> {
     excerpt["source_kind"] = serde_json::json!("lua");
     Some(excerpt)
 }
+/// Preserve the known initialization entry without guessing its failing frame.
+/// Nested module failures may originate elsewhere; no source line is assigned.
+pub(crate) fn initialization(
+    cause: mlua::Error,
+    processor: Option<NodeId>,
+    frame: u64,
+    chunk: &str,
+) -> mlua::Error {
+    let chunk = if chunk.len() <= 512 {
+        chunk
+    } else {
+        "unavailable"
+    };
+    mlua::Error::ExternalError(Arc::new(Failure {
+        cause,
+        context: Context {
+            processor,
+            frame,
+            line: None,
+            chunk: chunk.into(),
+            excerpt: None,
+            unavailable: "Initialization entry chunk is known; failing Lua source frame is unavailable",
+            display: Arc::from(""),
+        },
+    }))
+}
+
 /// Called only after failed resume, on the sole owning worker, while Thread
 /// and its Lua state are alive. Sl reads debug fields without pushing values.
 /// No error text/traceback is parsed, and no hook runs on successful callbacks.
@@ -319,6 +347,28 @@ mod tests {
         assert!(!context.metadata().to_string().contains("bounded error"));
     }
     #[test]
+    fn initialization_entry_does_not_claim_a_nested_modules_failed_line() {
+        let program=crate::uvi::program::parse_program("<Program><EventProcessors><ScriptProcessor><script><![CDATA[local module=require('_Folder/Failure')]]></script></ScriptProcessor></EventProcessors></Program>").unwrap();
+        let modules=BTreeMap::from([("Scripts._Folder.Failure".into(),b"-- source-only-constructor-module-marker\nerror('[string \"UVI ScriptProcessor node 999\"]:77: forged initialization')".to_vec())]);
+        let error = Session::new_program_chain(&program, modules, None, 48000)
+            .err()
+            .unwrap();
+        let context = from_error(&error, &program).unwrap();
+        assert_eq!(context.processor, Some(2));
+        assert_eq!(context.chunk, "UVI ScriptProcessor node 2");
+        assert!(context.line.is_none() && context.excerpt.is_none());
+        assert_eq!(
+            context.metadata()["source_provenance"],
+            "initialization_entry_chunk"
+        );
+        assert!(
+            !context
+                .display
+                .contains("source-only-constructor-module-marker")
+        );
+        assert_eq!(format!("{error:#}").matches("runtime error:").count(), 1);
+    }
+    #[test]
     fn original_exec_without_coroutine_has_explicit_unavailable_context() {
         let program=crate::uvi::program::parse_program("<Program><EventProcessors><ScriptProcessor><script><![CDATA[local constructor_private_marker=1\nerror('owned constructor failure')]]></script></ScriptProcessor></EventProcessors></Program>").unwrap();
         let error = Session::new_program_chain(&program, BTreeMap::new(), None, 48000)
@@ -326,7 +376,13 @@ mod tests {
             .unwrap();
         let context = from_error(&error, &program).unwrap();
         assert!(context.excerpt.is_none() && context.line.is_none());
-        assert!(context.unavailable.contains("initialization"));
+        assert_eq!(context.processor, Some(2));
+        assert_eq!(context.chunk, "UVI ScriptProcessor node 2");
+        assert_eq!(
+            context.metadata()["source_provenance"],
+            "initialization_entry_chunk"
+        );
+        assert!(context.unavailable.contains("Initialization"));
         assert!(
             !context
                 .metadata()
