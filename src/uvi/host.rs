@@ -292,6 +292,7 @@ pub struct UiStrip {
 pub struct UiStyle {
     pub text: Option<String>,
     pub display_text: Option<String>,
+    pub tooltip: Option<String>,
     pub align: Option<String>,
     pub font: Option<String>,
     pub font_size: Option<f64>,
@@ -567,6 +568,7 @@ pub fn snapshot_ui(processor: NodeId, environment: &Table) -> mlua::Result<UiSna
         let style = UiStyle {
             text: budget.string(&state, "text")?,
             display_text: budget.string(&state, "displayText")?,
+            tooltip: budget.string(&state, "tooltip")?,
             align: budget.string(&state, "align")?,
             font: budget.string(&state, "font")?,
             font_size,
@@ -2561,6 +2563,7 @@ mod tests {
           n=p:Knob{name='gain',value=0.25,min=0,max=1,bounds={3,4,20,30},alpha=0.5}
           n.changed=function()calls=calls+1 end
           n.displayText='Authored display override'
+          n.tooltip='Authored help'
           n:setStripImage('/Textures/authored-strip.png',16,false)
           menu=Menu{name='choices',items={'First','Second'},selected=2}
           curve=Table{'curve',3,0,0,1};curve:setValue(2,0.5,false)
@@ -2590,18 +2593,22 @@ mod tests {
         assert!(first.widgets[2].items == ["First", "Second"]);
         assert!(matches!(&first.widgets[3].value,Some(UiValue::Table(v)) if v==&[0.0,0.5,0.0]));
         assert_eq!(knob.style.display_text.as_deref(), Some("Authored display override"));
+        assert_eq!(knob.style.tooltip.as_deref(), Some("Authored help"));
         assert!(knob.style.strip_image.as_ref().unwrap().frames == 16);
         assert!(knob.style.strip_image.as_ref().unwrap().artwork.bank_root);
         assert!(!first.root.background.as_ref().unwrap().bank_root);
         assert!(first == snapshot_ui(7, &a).unwrap());
         assert!(a.raw_get::<u32>("calls").unwrap() == 0);
         assert!(other.widgets[0].effective_visible);
-        lua.load("p.visible=true;n:setValue(0.75)")
+        assert_eq!(other.widgets[0].style.tooltip.as_deref(), Some("same"));
+        lua.load("p.visible=true;n:setValue(0.75);n.tooltip='Updated help'")
             .set_environment(a.clone())
             .exec()
             .unwrap();
         let updated = snapshot_ui(7, &a).unwrap();
         assert!(updated.widgets[1].effective_visible);
+        assert_eq!(updated.widgets[1].style.tooltip.as_deref(), Some("Updated help"));
+        assert_eq!(first.widgets[1].style.tooltip.as_deref(), Some("Authored help"));
         assert!(matches!(updated.widgets[1].value,Some(UiValue::Number(n)) if n==0.75));
         assert!(a.raw_get::<u32>("calls").unwrap() == 1);
     }
@@ -2739,6 +2746,7 @@ mod tests {
             ),
             ("p=Panel(string.rep('x',4097))", "text limit"),
             ("p=Knob('p');p.displayText=string.rep('x',4097)", "text limit"),
+            ("p=Knob('p');p.tooltip=string.rep('x',4097)", "text limit"),
             (
                 "p=Menu('p',{});for i=1,300 do p._state.items[i]=string.rep('x',4096)end",
                 "text limit",
