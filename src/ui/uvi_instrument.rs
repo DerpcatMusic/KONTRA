@@ -183,6 +183,26 @@ fn unit_text(value: f64, integer: bool, unit: Option<f64>) -> String {
     format!("{} {suffix}", number_text(value + 0., false))
 }
 
+// Integer controls need a representable keyboard step. Continuous range
+// fractions can round back to the same integer, making focused keys inert.
+fn integer_keys(ui: &Ui, id: &str, range: &std::ops::RangeInclusive<f64>, before: f64) -> Option<f64> {
+    let mut value = before;
+    let mut stepped = false;
+    for key in ui.keys(id) {
+        value = match key.key {
+            Key::Up | Key::Right => value + 1.,
+            Key::Down | Key::Left => value - 1.,
+            Key::PageUp => value + 10.,
+            Key::PageDown => value - 10.,
+            Key::Home => *range.start(),
+            Key::End => *range.end(),
+            _ => continue,
+        }.clamp(*range.start(), *range.end());
+        stepped = true;
+    }
+    stepped.then_some(value)
+}
+
 fn value_text(widget: &UiWidget, value: f64) -> String {
     widget.style.display_text.as_ref().filter(|s| !s.is_empty()).cloned()
         .unwrap_or_else(|| unit_text(value, widget.integer, widget.style.unit))
@@ -483,6 +503,9 @@ pub fn view(
                         value = before;
                     }
                     if widget.integer {
+                        if usable && let Some(stepped) = integer_keys(ui, &id, &range, before) {
+                            value = stepped;
+                        }
                         value = value.round();
                     }
                     if usable && before != value {
@@ -541,6 +564,9 @@ pub fn view(
                     );
                     value = value.clamp(*range.start(), *range.end());
                     if widget.integer {
+                        if let Some(stepped) = integer_keys(ui, &id, &range, before) {
+                            value = stepped;
+                        }
                         value = value.round().clamp(*range.start(), *range.end());
                     }
                     if before != value {
@@ -1704,6 +1730,90 @@ mod tests {
         assert!(edits.iter().any(|(_, input)| matches!(input.value,
             UiEditValue::Number(value) if (value - 0.02).abs() < 1e-12)));
         assert!(matches!(snapshot.widgets[1].value, Some(UiValue::Number(0.))));
+    }
+
+    #[test]
+    fn integer_controls_step_through_representable_values_without_changing_continuous_controls() {
+        for (kind, index) in [(UiKind::Knob, 1), (UiKind::Slider, 2), (UiKind::NumBox, 3)] {
+            for (key, expected) in [(Key::Up, 3.), (Key::Right, 3.), (Key::Down, 1.),
+                (Key::Left, 1.), (Key::PageUp, 12.), (Key::PageDown, 1.),
+                (Key::Home, 1.), (Key::End, 24.)] {
+                for shift in [false, true] {
+                    let mut snapshot = authored();
+                    let widget = &mut snapshot.widgets[index];
+                    widget.kind = kind;
+                    widget.integer = true;
+                    widget.min = Some(1.);
+                    widget.max = Some(24.);
+                    widget.value = Some(UiValue::Number(2.));
+                    widget.style.display_text = Some("Authored discrete readout".into());
+                    let current = stamp(4);
+                    let mut ui = super::super::theme::ui();
+                    let mut state = State::default();
+                    let mut edits = Vec::new();
+                    tick(&mut ui, &mut state, &snapshot, current, current, Input::default(), &mut edits);
+                    ui.focus(identity(0, current, &snapshot, (index + 1) as u32));
+                    tick(&mut ui, &mut state, &snapshot, current, current, Input {
+                        keys: vec![KeyPress {key, mods: Mods {shift, ..Mods::default()}}],
+                        ..Input::default()
+                    }, &mut edits);
+                    tick(&mut ui, &mut state, &snapshot, current, current, Input::default(), &mut edits);
+                    assert_eq!(edits.len(), 1, "widget {index} {key:?} Shift={shift}");
+                    assert!(matches!(edits[0].1.value, UiEditValue::Number(value) if value == expected));
+                    assert!(matches!(snapshot.widgets[index].value, Some(UiValue::Number(2.))));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn integer_numbox_keys_do_not_step_the_value_while_typing() {
+        for finish in [Key::Enter, Key::Escape] {
+            let mut snapshot = authored();
+            let widget = &mut snapshot.widgets[3];
+            widget.integer = true;
+            widget.min = Some(-12.);
+            widget.max = Some(12.);
+            widget.value = Some(UiValue::Number(2.));
+            widget.style.display_text = Some("Authored integer display".into());
+            let current = stamp(4);
+            let mut ui = super::super::theme::ui();
+            let mut state = State::default();
+            let mut edits = Vec::new();
+            for _ in 0..3 {
+                tick(&mut ui, &mut state, &snapshot, current, current, Input::default(), &mut edits);
+            }
+            let id = identity(0, current, &snapshot, 4);
+            let bounds = ui.scene().unwrap().surface(&id).unwrap().frame;
+            let pos = Point::new(bounds.x+bounds.size.width*0.5, bounds.y+bounds.size.height*0.5);
+            for down in [true, false, true, false] {
+                tick(&mut ui, &mut state, &snapshot, current, current, PointerInput {
+                    pos: Some(pos), buttons: if down {Buttons::PRIMARY} else {Buttons::default()},
+                    ..PointerInput::default()
+                }.into(), &mut edits);
+            }
+            tick(&mut ui, &mut state, &snapshot, current, current, Input::default(), &mut edits);
+            assert!(ui.focus_is_text());
+            let field = ui.focus_key().unwrap().to_owned();
+            tick(&mut ui, &mut state, &snapshot, current, current, Input {text:"7".into(), ..Input::default()}, &mut edits);
+            tick(&mut ui, &mut state, &snapshot, current, current, Input {
+                keys:vec![KeyPress {key:Key::Up, mods:Mods::default()}], ..Input::default()
+            }, &mut edits);
+            tick(&mut ui, &mut state, &snapshot, current, current, Input::default(), &mut edits);
+            assert!(edits.is_empty(), "typing-field arrows must not step the outer integer value");
+            assert!(matches!(&ui.scene().unwrap().surface(&field).unwrap().semantics.as_ref().unwrap().role,
+                A11y::TextInput {value,..} if value.as_ref()=="7"));
+            tick(&mut ui, &mut state, &snapshot, current, current, Input {
+                keys:vec![KeyPress {key:finish, mods:Mods::default()}], ..Input::default()
+            }, &mut edits);
+            for _ in 0..2 {
+                tick(&mut ui, &mut state, &snapshot, current, current, Input::default(), &mut edits);
+            }
+            if finish==Key::Enter {
+                assert_eq!(edits.len(), 1);
+                assert!(matches!(edits[0].1.value, UiEditValue::Number(value) if value==7.));
+            } else { assert!(edits.is_empty()); }
+        }
     }
 
     #[test]
