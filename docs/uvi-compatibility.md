@@ -4,11 +4,12 @@ Status reviewed 2026-10-04. KONTRA's optional `uvi` path implements bounded UFS/
 
 ## Current status
 
-The last recorded installed standalone, CLAP and VST3 checkpoint (19:21 UTC
-on 2026-10-04) is **`cebaf80`**,
+The last recorded installed standalone, CLAP and VST3 checkpoint (19:51 UTC
+on 2026-10-04) is **`8bae38c`**,
 documented in [the checkpoint report](UVI_TEST_CHECKPOINT.md#current-installed-checkpoint).
-Its 20 focused synthetic checks cover quiet exact attacks, canonical owner
-retirement and documented AfterTouch omni forwarding. The earlier 28 bank/cache,
+Its 14 focused synthetic checks cover owned Info observations and existing Mode1
+coefficient reuse. The prior `cebaf80` has 20 focused quiet-attack, canonical owner
+retirement and documented AfterTouch checks. The earlier 28 bank/cache,
 snapshot and ConstantClock checks belong to `1f7d77e`; Vectorized/Mapping checks
 belong to `a25fc2e`. Artifact manifests and
 installation receipts identify the verified package; historical full-suite and
@@ -29,6 +30,13 @@ Mode1 coefficient reuse. Authored wide/compact/zero-attempt-failure Info capture
 are inspected; current paid-bank/DAW deadlines and throughput are unmeasured.
 [Evidence](UVI_INFO_MODE1_EVIDENCE.md) records the fixed floating-point assumption
 and separate native fidelity limits.
+
+The next source change has 18 focused synthetic functional passes for compiled
+immutable relative-edge presence, existing target/source guards and actual
+Renderer fixtures. Candidate and legacy numeric records both occupy 104 bytes
+on this target. No modulation cadence or graph admission changes, actual-bank
+replay or measured speedup is claimed. [Evidence](UVI_IMMUTABLE_TOPOLOGY_EVIDENCE.md)
+distinguishes its scan-refresh reference from an independent old-player oracle.
 
 | Area | Established scope | Exact remaining boundary |
 | --- | --- | --- |

@@ -398,11 +398,14 @@ pub struct Stats {
     /// Historical census at processed_frame, retained after stop/failure.
     pub last_completed_voices: u64,
     pub initialization_ns: u64,
-    /// Player.render only: excludes initialization and queue waiting.
+    /// Packet validation and Player-render wall time for recorded attempts.
+    /// Excludes initialization, queue waiting, service snapshots and output
+    /// publication. Validation failures returning before recording are excluded.
     pub render_ns: u64,
     pub max_render_ns: u64,
-    /// Linux worker-thread CPU time during Player rendering, excluding waiting
-    /// and service snapshots. Zero samples means unavailable, not zero CPU use.
+    /// Linux worker-thread CPU interval includes hosted-packet validation and
+    /// Player rendering, after request/receipt validation; excludes waiting and
+    /// service snapshots. Zero samples means unavailable, not zero CPU use.
     pub render_cpu_ns: u64,
     pub max_render_cpu_ns: u64,
     pub render_cpu_samples: u64,
