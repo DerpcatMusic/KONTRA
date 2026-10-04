@@ -78,6 +78,47 @@ This checkpoint includes [Table styles and parent order](UVI_PANEL_ORDER_EVIDENC
 source locations. Detailed proofs retain their native/source boundaries; no
 complete Falcon, whole-program native fidelity or host deadline claim follows.
 
+## Later source: verification pending
+
+The installed checkpoint above remains unchanged. Following the user's CPU
+restriction, work continues through static decoding, source review and small
+metadata inspection. Builds, compiler checks, playback replays, native execution
+loops and broad bank audits are suspended. New source is not a new tested binary.
+The last combined all-target UVI check covered `3c8e5ae`; the default-feature check
+at that source also passed before the restriction. Neither validates subsequent
+integration.
+
+Later source includes initial parsed Mapping inspection with bounded pages,
+live resource dimensions, and existing activation-currentness checks; staged
+local Lua failure context; distinct grouped failure children; integer control
+keyboard steps; and [renderer scratch reuse](UVI_RENDERER_ALLOCATION_EVIDENCE.md).
+The scratch and earlier UI/context variants have focused completed evidence.
+The final Mapping currentness/index revision remains uncompiled and unexecuted.
+
+The narrow [EffectRack setter correction](UVI_EFFECTRACK_GAIN_COMPATIBILITY_EVIDENCE.md)
+has native registration evidence, but the final safe-lookup revision and actual
+Pan callback/PCM verification remain pending. Part/Synth writes now fail at their
+unowned host call before that parameter or DSP command changes; this source
+correction is also uncompiled. It does not supply parent ownership or MPE.
+
+The [initial owned PCM cache](UVI_STATIC_PCM_CACHE_EVIDENCE.md) is experimental and
+disabled by default. Completed earlier-candidate sample and timing evidence does
+not verify the final combined Worker/UI integration. Browser catalog caching
+remains separate and already exists in the installed checkpoint.
+
+The [dual-Lua C ABI playback proof](PLAYER_ABI_PLAYBACK_EVIDENCE.md) delivered
+audio and root completions in a private authored fixture. The production neutral
+backend integration and fixed audio marshaling are still pending. The user is
+independently refactoring the shared core; this branch does not claim integration
+with that separate work.
+
+All 620 owned Augmented declarations decode, but none of their complete graphs
+is admitted. The [measured Smooth inventory](UVI_LFO_SMOOTH_EVIDENCE.md#actual-augmented-scalar-inventory-and-remaining-production-state)
+contains only tiny positive Smooth defaults, so the unverified normal-Smooth
+draft would unlock no programs in that bank. The draft remains private and
+unadmitted. Decode, static admission, initialization, actual control behavior,
+finite playback, native fidelity and realtime deadlines remain separate claims.
+
 ## Check the behavior
 
 1. Play from the keyboard, then from the DAW. Check release, overlap and sustain.
