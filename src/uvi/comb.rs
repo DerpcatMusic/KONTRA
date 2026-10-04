@@ -3,11 +3,11 @@
 //! Plus/Minus topology: official Falcon manual, effect appendix, Comb Filter.
 //!
 //! This kernel is deliberately not admitted by playback preflight: native
-//! connected-source startup and matrix/control generation remain unverified.
+//! connected-source binding and broader matrix/control generation remain unverified.
 use super::dsp::{Frame, MAX_CHANNELS};
 use anyhow::{Result, ensure};
 
-pub const FIDELITY_DIAGNOSTIC: &str = "CombFilter audio and physical control-point dispatch are native-verified at 32/44.1/48/96 kHz; connected-source startup and matrix/control generation remain unverified";
+pub const FIDELITY_DIAGNOSTIC: &str = "CombFilter audio and physical control-point dispatch are native-verified at 32/44.1/48/96 kHz; connected-source binding and broader matrix/control generation remain unverified";
 
 /// The measured audio kernel and physical control-point dispatcher. This does not implement the
 /// surrounding Falcon control-variable lifecycle.
@@ -126,6 +126,152 @@ impl CombKernel {
     }
 }
 
+/// Measured desired-state input for unipolar ConstantModulation -> edition-mode Freq.
+/// This owns source and Freq RC stages. The upstream Value-property RC is excluded.
+/// Calls are bounded to the measured 4096-frame host block; graph binding is gated.
+/// Only Ratio=1, Offset=0, no inversion/mapper and the measured rates are covered.
+pub struct ConstantFrequencyControl {
+    alpha_sample: f32,
+    alpha32: f32,
+    source: f32,
+    normalized_freq: f32,
+    target_hz: f32,
+    cold: bool,
+}
+impl ConstantFrequencyControl {
+    pub fn new(rate: u32, source: f32, initial_hz: f32) -> Result<Self> {
+        let (alpha_sample, alpha32) = match rate {
+            32_000 => (0.003458559513092041_f32, 0.10494154691696167_f32),
+            44_100 => (0.00251084566116333_f32, 0.07729637622833252_f32),
+            48_000 => (0.0023070573806762695_f32, 0.07124549150466919_f32),
+            96_000 => (0.001154184341430664_f32, 0.036280930042266846_f32),
+            _ => anyhow::bail!("Unmeasured ConstantModulation frequency-control rate"),
+        };
+        ensure!(
+            source.is_finite() && (0. ..=1.).contains(&source),
+            "Invalid ConstantModulation Value"
+        );
+        ensure!(
+            initial_hz.is_finite() && (20. ..=20_000.).contains(&initial_hz),
+            "Invalid initial CombFilter Freq"
+        );
+        ensure!(
+            initial_hz.to_bits() == Self::physical(source).to_bits(),
+            "Unmeasured inconsistent ConstantModulation/CombFilter initialization"
+        );
+        Ok(Self {
+            alpha_sample,
+            alpha32,
+            source,
+            normalized_freq: Self::normalized(initial_hz),
+            target_hz: initial_hz,
+            cold: true,
+        })
+    }
+    /// Convenience study API; realtime callers can supply reusable storage below.
+    pub fn next_points(&mut self, value: f32, frames: usize) -> Result<Vec<f32>> {
+        self.validate(value, frames)?;
+        let mut points = vec![0.; frames.div_ceil(32)];
+        self.next_points_into(value, frames, &mut points)?;
+        Ok(points)
+    }
+    /// Fill caller-owned physical Freq points without allocating.
+    pub fn next_points_into(
+        &mut self,
+        value: f32,
+        frames: usize,
+        points: &mut [f32],
+    ) -> Result<()> {
+        self.validate(value, frames)?;
+        ensure!(
+            points.len() == frames.div_ceil(32),
+            "Invalid Comb control-point output length"
+        );
+        if frames == 0 {
+            return Ok(());
+        }
+        if self.cold {
+            self.source = value;
+            self.cold = false;
+        }
+        if self.source != value {
+            let lookahead = if ((value - self.source) * self.alpha32).abs() < 1e-7 {
+                self.source = value;
+                value
+            } else {
+                let (current, future) = self.ramp(self.source, value, frames, false, &mut []);
+                self.source = current;
+                future
+            };
+            self.target_hz = Self::physical(lookahead);
+        }
+        let target = Self::normalized(self.target_hz);
+        if self.normalized_freq == target {
+            points.fill(self.target_hz);
+            return Ok(());
+        }
+        let (current, _) = self.ramp(self.normalized_freq, target, frames, true, points);
+        self.normalized_freq = current;
+        for point in points {
+            *point = Self::physical(*point);
+        }
+        Ok(())
+    }
+    fn validate(&self, value: f32, frames: usize) -> Result<()> {
+        ensure!(
+            frames <= 4096,
+            "Unmeasured ConstantModulation control-block length"
+        );
+        ensure!(
+            value.is_finite() && (0. ..=1.).contains(&value),
+            "Invalid ConstantModulation Value"
+        );
+        if self.cold && frames != 0 {
+            ensure!(
+                value == self.source,
+                "Unmeasured cold ConstantModulation Value edit"
+            );
+        }
+        Ok(())
+    }
+    fn ramp(
+        &self,
+        mut current: f32,
+        target: f32,
+        frames: usize,
+        snap: bool,
+        points: &mut [f32],
+    ) -> (f32, f32) {
+        for (index, start) in (0..frames).step_by(32).enumerate() {
+            if let Some(point) = points.get_mut(index) {
+                *point = current;
+            }
+            let count = (frames - start).min(32);
+            if count == 32 {
+                current += (target - current) * self.alpha32;
+            } else {
+                for _ in 0..count {
+                    current += (target - current) * self.alpha_sample;
+                }
+            }
+        }
+        if snap && (target - current).abs() * self.alpha32 < 1e-6 {
+            current = target;
+        }
+        let mut lookahead = current;
+        for _ in 0..frames.wrapping_neg() & 31 {
+            lookahead += (target - lookahead) * self.alpha_sample;
+        }
+        (current, lookahead)
+    }
+    fn physical(value: f32) -> f32 {
+        (f64::from(value) * (20_000_f64.ln() - 20_f64.ln()) + 20_f64.ln()).exp() as f32
+    }
+    fn normalized(value: f32) -> f32 {
+        ((f64::from(value).ln() - 20_f64.ln()) / (20_000_f64.ln() - 20_f64.ln())) as f32
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,6 +347,43 @@ mod tests {
             assert_eq!(kernel.memory_bytes(), before);
         }
     }
+    #[test]
+    fn native_constant_edition_frequency_double_rc_and_partial_spans() {
+        for &(rate, expected) in CONSTANT_FIXTURES {
+            let mut control = ConstantFrequencyControl::new(rate, 0.1, 39.905247).unwrap();
+            assert_eq!(control.next_points(0.1, 32).unwrap(), vec![39.905247]);
+            let mut got = Vec::new();
+            for count in [256, 17, 65, 33] {
+                got.extend(
+                    control
+                        .next_points(0.5, count)
+                        .unwrap()
+                        .into_iter()
+                        .map(f32::to_bits),
+                );
+            }
+            assert_eq!(got, expected, "rate={rate}");
+            assert!(control.next_points(f32::NAN, 32).is_err());
+            assert!(control.next_points(1.1, 32).is_err());
+        }
+        assert!(ConstantFrequencyControl::new(88_200, 0.1, 39.905247).is_err());
+        assert!(ConstantFrequencyControl::new(48_000, 0.1, 1000.).is_err());
+        let mut cold = ConstantFrequencyControl::new(48_000, 0.1, 39.905247).unwrap();
+        assert!(cold.next_points(0.5, 32).is_err());
+        assert!(cold.next_points(0.5, usize::MAX).is_err());
+        let mut output = [0.; 1];
+        assert!(cold.next_points_into(0.1, 32, &mut []).is_err());
+        assert!(cold.next_points_into(0.5, usize::MAX, &mut output).is_err());
+        cold.next_points_into(0.1, 32, &mut output).unwrap();
+        assert_eq!(output, [39.905247]);
+    }
+    #[rustfmt::skip]
+    const CONSTANT_FIXTURES: &[(u32, &[u32])] = &[
+        (32000, &[0x421f9ef9, 0x423d4c67, 0x425c8318, 0x427cca82, 0x428ed5c8, 0x429f5ad8, 0x42afc14c, 0x42bfdc54, 0x42cf861a, 0x42d919cd, 0x42f0f186, 0x43043f8c, 0x43049cd2, 0x43116111]),
+        (44100, &[0x421f9ef9, 0x4230a61e, 0x4241f7b5, 0x42537339, 0x4264f9cc, 0x42766ebf, 0x4283dbf4, 0x428c5eef, 0x4294b60c, 0x4299c7d1, 0x42a65324, 0x42b2ce21, 0x42b33181, 0x42c0d341]),
+        (48000, &[0x421f9ef9, 0x422e484b, 0x423d1a55, 0x424bfe77, 0x425adf61, 0x4269a954, 0x42784a4f, 0x42835915, 0x428a6955, 0x428eb246, 0x4299464f, 0x42a3cce6, 0x42a420bf, 0x42af9ff2]),
+        (96000, &[0x421f9ef9, 0x4223c502, 0x4227dea0, 0x422beb04, 0x422fe973, 0x4233d942, 0x4237b9d6, 0x423b8aa6, 0x423f4b36, 0x42418a8d, 0x4246fee7, 0x424c65d1, 0x424c90ce, 0x42526c48]),
+    ];
     type DynamicFixture = (f64, u32, &'static [(usize, u32)]);
     #[rustfmt::skip]
     const DYNAMIC_FIXTURES: &[DynamicFixture] = &[
