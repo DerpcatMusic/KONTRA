@@ -1,0 +1,4 @@
+/target
+
+# This vendored library resolves through the application lockfile.
+/Cargo.lock
