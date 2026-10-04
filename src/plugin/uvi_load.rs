@@ -50,9 +50,9 @@ pub(super) fn uvi_load_key(params: &SamplerParams, selection: &Selection) -> Opt
 #[cfg(feature = "uvi")]
 pub(super) fn prepare_uvi(params: &SamplerParams, selection: &Selection) {
     use crate::uvi::worker::{Status, Worker};
-    const STARTING: &str = "Loading the UVI instrument; the current instrument is still playing.";
+    const STARTING: &str = "Loading UVI instrument…";
     const READY: &str = "Preparing the UVI player for the rack…";
-    const FAILED: &str = "The UVI instrument could not be loaded; the current instrument is still playing.";
+    const FAILED: &str = "The UVI instrument could not be loaded. Open Logs for the cause.";
     let key = uvi_load_key(params, selection);
     let retired = {
         let mut prepared = params.shared.uvi_prepared.lock().unwrap();
@@ -123,7 +123,7 @@ pub(super) fn prepare_uvi(params: &SamplerParams, selection: &Selection) {
         };
         let display = if p.status == STARTING {
             p.worker.as_ref().and_then(Worker::initialization_progress)
-                .map(|progress| format!("{}; the current instrument is still playing.", uvi_load::loading_status(Some(progress))))
+                .map(|progress| uvi_load::loading_status(Some(progress)))
                 .unwrap_or_else(|| p.status.to_owned())
         } else { p.status.to_owned() };
         (display, failed, p.generation, ui)
