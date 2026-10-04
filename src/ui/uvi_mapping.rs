@@ -154,9 +154,19 @@ fn sample_rows(ui: &mut Ui, mapping: &Inspection, state: &mut State, indices: &[
         let zone = &mapping.zones[index];
         let label = format!("Zone {} · {}\n{}–{} · velocity {}–{}", index + 1, zone.sample_path,
             note_name(zone.low_key), note_name(zone.high_key), zone.low_velocity, zone.high_velocity);
-        let (hit, el) = action(ui, format!("uvi-mapping-zone-{index}"), &label, state.selected == Some(index));
-        if hit { state.selected = Some(index); }
-        rows.push(el.lines(4).w(Len::Pct(100.)).min_w(0).shrink(0));
+        let id = format!("uvi-mapping-zone-{index}");
+        if ui.get(id.clone()).activated() { state.selected = Some(index); }
+        let selected = state.selected == Some(index);
+        let title = format!("Zone {} · {}", index + 1, zone.sample_path);
+        let range = format!("{}–{} · velocity {}–{}", note_name(zone.low_key), note_name(zone.high_key),
+            zone.low_velocity, zone.high_velocity);
+        // Source and range flow independently; the one-line toolbar button
+        // cannot size a wrapped sample row to its actual content.
+        rows.push(interactive(col![body(title).lines(3).min_w(0), caption(range).lines(2).min_w(0)]
+            .gap(TIGHT).pad(SPACE).align(Align::Start).min_h(CONTROL)
+            .when(selected, |el| el.fill(Role::Raised))
+            .focusable().a11y(A11y::Button).named(label).id(id), selected)
+            .w(Len::Pct(100.)).min_w(0).shrink(0));
     }
     if indices.is_empty() { rows.push(caption("No authored sampled zones match this inspection. Try another note, velocity or layer.").lines(4)); }
     col(rows).gap(1).align(Align::Stretch).flex(1).min_h(0).scroll().id("uvi-mapping-details")
@@ -185,7 +195,9 @@ fn sample_inspector(mapping: &Inspection, selected: Option<usize>) -> El {
             if zone.bypassed { "bypassed" } else { "not bypassed" }, if zone.reverse { "reverse" } else { "forward" })).lines(3),
         caption("Round-robin and microphone grouping are unknown in this initial zone view. Overlapping zones or duplicate paths do not establish either.")
             .fill(secondary()).lines(5)]
-        .gap(SPACE).align(Align::Start).w(Len::Pct(100.)).min_w(0).min_h(0).scroll().flex(1).id("uvi-mapping-selected")
+        // This shares a flex row with the list: percentage width overrides the
+        // flex basis in MUI and collapses the sibling list to zero width.
+        .gap(SPACE).align(Align::Start).min_w(0).min_h(0).scroll().flex(1).id("uvi-mapping-selected")
 }
 
 fn readiness(mapping: &Inspection, ready: bool) -> El {
@@ -261,6 +273,15 @@ mod tests {
     use crate::uvi::{program::parse_program, worker::Stamp};
     use std::sync::Arc;
 
+    #[cfg(feature = "plugin")]
+    fn capture(ui: &Ui, name: &str, width: u16, height: u16) {
+        let path = std::path::Path::new("/tmp/kontakto-uvi-ui-leaf").join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        moose::core::screenshot::save_png(&path, &super::super::tests::pixels(ui, width, height), u32::from(width), u32::from(height));
+    }
+    #[cfg(not(feature = "plugin"))]
+    fn capture(_: &Ui, _: &str, _: u16, _: u16) {}
+
     #[test]
     fn page_buttons_reach_last_layer_and_detail_then_reset_on_selection() {
         // Authored fixture: 129 layers, 25 zones in the first layer.
@@ -283,7 +304,9 @@ mod tests {
             ui.frame(el, Some(Size::new(900., 540.)), input, 1. / 60.).unwrap();
         };
         for _ in 0..3 { tick(&mut ui, &mut state, Input::default()); }
+        capture(&ui, "mapping-900x540.png", 900, 540);
         let press = |ui: &mut Ui, state: &mut State, id: &str| {
+            assert!(ui.scene().unwrap().surface(id).is_some(), "paging target must remain in the compact resolved scene: {id}");
             ui.focus(id);
             tick(ui, state, Input { keys: vec![KeyPress { key: Key::Enter, mods: Mods::default() }], ..Default::default() });
             for _ in 0..3 { tick(ui, state, Input::default()); }
@@ -387,6 +410,8 @@ mod tests {
         assert!(state.filter);
         assert_eq!(state.matches.as_slice(), &[0, 1, 2]);
         assert!(label(&ui, "uvi-mapping-query-count").contains("3 zone references / 2 sample paths"));
+        let sample_row = ui.scene().unwrap().surface("uvi-mapping-zone-2").expect("matching rows must remain keyboard reachable");
+        assert!(sample_row.frame.size.height > CONTROL, "sample source and range use intrinsic multiline height");
         ui.focus("uvi-mapping-zone-2");
         tick(&mut ui, &mut state, Input { keys: vec![KeyPress { key: Key::Enter, mods: Mods::default() }], ..Default::default() });
         settle(&mut ui, &mut state);
@@ -394,6 +419,7 @@ mod tests {
         assert_eq!(label(&ui, "uvi-mapping-selected-path"), "alternate.wav");
         assert!(label(&ui, "uvi-mapping-selected-range").contains("velocity 65–127"));
         assert!(label(&ui, "uvi-mapping-selected-resource").contains("unknown"));
+        capture(&ui, "mapping-selected-900x700.png", 900, 700);
         probe(&mut ui, &mut state, 60, 64);
         assert_eq!(state.matches.as_slice(), &[0]);
         assert_eq!(state.selected, Some(0));
