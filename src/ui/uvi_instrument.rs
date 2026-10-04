@@ -777,27 +777,44 @@ pub fn view(
                     *range.start(),
                     (range.end() - range.start()).max(f64::EPSILON),
                 );
+                let slider_ink = colour(widget.style.slider_colour.as_deref())
+                    .unwrap_or_else(|| value_ink(0.));
+                let edge_ink = colour(widget.style.inner_edge_colour.as_deref());
+                let edges = widget.style.draw_inner_edge.unwrap_or(true);
                 canvas(move |size| {
                     let columns = (size.width.ceil() as usize)
                         .clamp(1, 2048)
                         .min(values.len());
-                    (0..columns)
-                        .map(|column| {
-                            let start = column * values.len() / columns;
-                            let end = ((column + 1) * values.len() / columns).max(start + 1);
-                            let v = values[start..end].iter().copied().fold(lo, f64::max);
-                            let high = ((v - lo) / span).clamp(0., 1.) * size.height;
-                            Draw::fill(
-                                rect(
-                                    column as f64 * size.width / columns as f64,
-                                    size.height - high,
-                                    size.width / columns as f64,
-                                    high,
-                                ),
-                                value_ink(0.),
-                            )
-                        })
-                        .collect()
+                    let cell_width = size.width / columns.max(1) as f64;
+                    // Preserve cell boundaries when every authored cell fits.
+                    // Reduced dense tables remain a bounded peak display.
+                    let edge_width = if edges && columns == values.len() {
+                        scale.min(cell_width * 0.5)
+                    } else {
+                        0.
+                    };
+                    let mut draws = Vec::with_capacity(columns * 2);
+                    for column in 0..columns {
+                        let start = column * values.len() / columns;
+                        let end = ((column + 1) * values.len() / columns).max(start + 1);
+                        let v = values[start..end].iter().copied().fold(lo, f64::max);
+                        let high = ((v - lo) / span).clamp(0., 1.) * size.height;
+                        let has_edge = column + 1 < columns;
+                        let gap = if has_edge { edge_width } else { 0. };
+                        draws.push(Draw::fill(
+                            rect(column as f64 * cell_width, size.height - high,
+                                cell_width - gap, high),
+                            slider_ink,
+                        ));
+                        if gap > 0. && let Some(edge_ink) = edge_ink {
+                            draws.push(Draw::fill(
+                                rect((column + 1) as f64 * cell_width - gap, 0.,
+                                    gap, size.height),
+                                edge_ink,
+                            ));
+                        }
+                    }
+                    draws
                 })
                 .fill(Role::Field)
                 .focusable()
@@ -1284,6 +1301,95 @@ mod tests {
             1. / 60.,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn authored_table_ink_edges_scaling_and_cell_gestures_are_preserved() {
+        use moose::mui::mui::scene::{Layer, Paint};
+        fn bounds(path: &Path) -> (f64, f64, f64, f64) {
+            path.flatten(0.01, 64).unwrap().into_iter().flatten().fold(
+                (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY),
+                |(x0, y0, x1, y1), p| (x0.min(p.x), y0.min(p.y), x1.max(p.x), y1.max(p.y)))
+        }
+        fn render(ui: &mut Ui, state: &mut State, snapshot: &UiSnapshot,
+                  current: Stamp, room: f64, input: Input,
+                  edits: &mut Vec<(Stamp, UiEdit)>) {
+            let panel = view(ui, state, 0, current, current, snapshot,
+                &HashMap::new(), &HashMap::new(), |stamp, edit| {
+                    edits.push((stamp, edit)); true
+                });
+            ui.frame(col![panel].align(Align::Start)
+                .size(room, snapshot.root.height * room / snapshot.root.width).id("part-0"),
+                Some(Size::new(room, snapshot.root.height * room / snapshot.root.width)),
+                input, 1. / 60.).unwrap();
+        }
+        let mut snapshot = authored();
+        let table = snapshot.widgets.iter_mut().find(|w| w.kind == UiKind::Table).unwrap();
+        table.bounds = UiBounds { x: 20., y: 20., width: 120., height: 100. };
+        table.absolute_bounds = table.bounds;
+        table.value = Some(UiValue::Table(vec![1., 0.5, 0.25, 0.75]));
+        table.style.slider_colour = Some("#804080C0".into());
+        table.style.background_colour = Some("#00000000".into());
+        table.style.inner_edge_colour = Some("#FF102030".into());
+        let current = stamp(4);
+        let id = identity(0, current, &snapshot, 9);
+        let bar_ink = colour(Some("#804080C0")).unwrap();
+        let edge_ink = colour(Some("#FF102030")).unwrap();
+        let mut ui = super::super::theme::ui();
+        let mut state = State::default();
+        let mut edits = Vec::new();
+        for edge in [Some(false), Some(true), None] {
+            snapshot.widgets[8].style.draw_inner_edge = edge;
+            for room in [360., 1080., 720.] {
+                let scale = room / snapshot.root.width;
+                for _ in 0..3 {
+                    render(&mut ui, &mut state, &snapshot, current, room,
+                        Input::default(), &mut edits);
+                }
+                let scene = ui.scene().unwrap();
+                let field = scene.surface(&id).unwrap().frame;
+                assert!((field.size.width - 120. * scale).abs() < 0.01);
+                assert!((field.size.height - 100. * scale).abs() < 0.01);
+                let draws: Vec<_> = scene.paint.iter().filter(|p|
+                    p.key.as_str() == id && matches!(p.layer, Layer::Draw(_))).collect();
+                let bars: Vec<_> = draws.iter().filter(|p| p.paint == Paint::Solid(bar_ink)).collect();
+                let separators: Vec<_> = draws.iter().filter(|p| p.paint == Paint::Solid(edge_ink)).collect();
+                assert_eq!(bars.len(), 4);
+                assert_eq!(separators.len(), if edge == Some(false) { 0 } else { 3 });
+                for (cell, bar) in bars.iter().enumerate() {
+                    let bounds = bounds(&bar.path);
+                    assert!((bounds.0 - cell as f64 * 30. * scale).abs() < 0.01, "room={room} edge={edge:?} cell={cell} bounds={bounds:?} field={field:?}");
+                    let expected = if edge != Some(false) && cell < 3 { 29. } else { 30. };
+                    assert!((bounds.2 - bounds.0 - expected * scale).abs() < 0.01);
+                }
+                for separator in separators {
+                    let bounds = bounds(&separator.path);
+                    assert!((bounds.2 - bounds.0 - scale).abs() < 0.01);
+                    assert!((bounds.3 - bounds.1 - field.size.height).abs() < 0.01);
+                }
+            }
+        }
+        assert!(edits.is_empty(), "Style adoption and resize never emit edits");
+        let field = ui.scene().unwrap().surface(&id).unwrap().frame;
+        let at = Point::new(field.x + field.size.width * 0.375,
+                            field.y + field.size.height * 0.25);
+        render(&mut ui, &mut state, &snapshot, current, 720.,
+            PointerInput { pos: Some(at), buttons: Buttons::PRIMARY, ..PointerInput::default() }.into(), &mut edits);
+        render(&mut ui, &mut state, &snapshot, current, 720.,
+            PointerInput { pos: Some(at), buttons: Buttons::PRIMARY, ..PointerInput::default() }.into(), &mut edits);
+        render(&mut ui, &mut state, &snapshot, current, 720.,
+            PointerInput { pos: Some(at), ..PointerInput::default() }.into(), &mut edits);
+        assert!(edits.iter().any(|(stamp, e)| *stamp == current && e.widget == 9 &&
+            matches!(e.value, UiEditValue::TableCell { index: 2, value } if (value - 0.75).abs() < 1e-12)));
+        ui.focus(id);
+        render(&mut ui, &mut state, &snapshot, current, 720.,
+            Input { keys: vec![KeyPress { key: Key::Right, mods: Mods::default() },
+                               KeyPress { key: Key::Up, mods: Mods::default() }],
+                    ..Input::default() }, &mut edits);
+        render(&mut ui, &mut state, &snapshot, current, 720., Input::default(), &mut edits);
+        assert!(edits.iter().any(|(stamp, e)| *stamp == current && e.widget == 9 &&
+            matches!(e.value, UiEditValue::TableCell { index: 3, value } if (value - 0.26).abs() < 1e-12)));
+        assert!(matches!(&snapshot.widgets[8].value, Some(UiValue::Table(v)) if v == &[1., 0.5, 0.25, 0.75]));
     }
 
     #[test]
