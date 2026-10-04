@@ -11,12 +11,21 @@ use std::{
 
 /// Each library's own artwork, by library name: a `wallpaper.png`, else
 /// the product wallpaper in its `.nicnt`, else a panel-sized picture in a
-/// resource container (`.nkr`) beside it.
+/// resource container (`.nkr`) beside it. UFS banks use only an explicitly
+/// named PNG/JPEG sidecar with the same bank stem, never an instrument panel.
 pub fn scan(libraries: &[crate::library::Library]) -> HashMap<String, Arc<Image>> {
+    let (mut sidecar_bytes, mut sidecar_pixels) = (64usize << 20, 16usize << 20);
     libraries
         .iter()
         .filter_map(|library| {
             let (name, folder) = (library.name.clone(), &library.dir);
+            if !folder.is_dir() && folder.extension().is_some_and(|e| e.eq_ignore_ascii_case("ufs")) {
+                return ["png", "jpg", "jpeg"].into_iter().find_map(|ext| {
+                    let image = cover_file(&folder.with_extension(ext), &mut sidecar_bytes, sidecar_pixels)?;
+                    sidecar_pixels -= image.width as usize * image.height as usize;
+                    Some((name.clone(), Arc::new(image)))
+                });
+            }
             let mut candidates = vec![folder.join("wallpaper.png")];
             if let Ok(entries) = std::fs::read_dir(&folder) {
                 let mut containers: Vec<_> = entries
@@ -62,6 +71,26 @@ pub fn scan(libraries: &[crate::library::Library]) -> HashMap<String, Arc<Image>
         })
         .collect()
 }
+// Automatic sidecars are bounded independently of arbitrary performance assets.
+fn cover_file(path: &Path, remaining: &mut usize, max_pixels: usize) -> Option<Image> {
+    let encoded = (*remaining).min(32 << 20);
+    if encoded == 0 || max_pixels == 0 { return None; }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)] {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let mut file = options.open(path).ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() || metadata.len() > encoded as u64 { return None; }
+    let mut bytes = Vec::new();
+    let result = file.by_ref().take((encoded + 1) as u64).read_to_end(&mut bytes);
+    *remaining = (*remaining).saturating_sub(bytes.len());
+    if result.is_err() || bytes.len() > encoded { return None; }
+    decode_report_limited(&bytes, max_pixels).ok()
+}
+
 /// The dominant hue of a library's own pictures, for a library with no
 /// artwork: loose pictures in its `Resources` folders, else those in a
 /// resource container it can read. At most a dozen are looked at.
@@ -385,7 +414,10 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Image> {
     decode_report(bytes).ok()
 }
 fn decode_report(bytes: &[u8]) -> Result<Image, String> {
-    if bytes.starts_with(b"\x89PNG") { return decode_png_report(bytes); }
+    decode_report_limited(bytes, usize::MAX)
+}
+fn decode_report_limited(bytes: &[u8], max_pixels: usize) -> Result<Image, String> {
+    if bytes.starts_with(b"\x89PNG") { return decode_png_report(bytes, max_pixels); }
     if bytes.starts_with(&[0xff, 0xd8]) {
         use zune_jpeg::zune_core::{bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions};
         let options = DecoderOptions::default()
@@ -395,16 +427,22 @@ fn decode_report(bytes: &[u8]) -> Result<Image, String> {
         let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(bytes), options);
         decoder.decode_headers().map_err(|e| format!("JPEG header: {e}"))?;
         let info = decoder.info().ok_or("JPEG dimensions are missing")?;
+        if usize::from(info.width).checked_mul(usize::from(info.height)).is_none_or(|pixels| pixels > max_pixels) {
+            return Err("Cover image exceeds pixel limit".into());
+        }
         let rgba = decoder.decode().map_err(|e| format!("JPEG pixels: {e}"))?;
         return Image::rgba(u32::from(info.width), u32::from(info.height), rgba)
             .ok_or_else(|| "Invalid JPEG dimensions or RGBA length".into());
     }
     Err("Unsupported image format: expected PNG or JPEG".into())
 }
-fn decode_png_report(bytes: &[u8]) -> Result<Image, String> {
-    let mut decoder = png::Decoder::new_with_limits(Cursor::new(bytes), png::Limits { bytes: usize::MAX });
+fn decode_png_report(bytes: &[u8], max_pixels: usize) -> Result<Image, String> {
+    let mut decoder = png::Decoder::new_with_limits(Cursor::new(bytes), png::Limits { bytes: max_pixels.saturating_mul(4) });
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().map_err(|e| format!("PNG header: {e}"))?;
+    if (reader.info().width as usize).checked_mul(reader.info().height as usize).is_none_or(|pixels| pixels > max_pixels) {
+        return Err("Cover image exceeds pixel limit".into());
+    }
     let size = reader.output_buffer_size().ok_or("PNG dimensions overflow")?;
     let mut data = Vec::new();
     data.try_reserve_exact(size).map_err(|e| format!("PNG pixel allocation ({size} bytes): {e}"))?;
@@ -680,6 +718,72 @@ mod tests {
         assert!(super::decode(&bytes[..12]).is_none());
         assert!(super::decode(b"not an image").is_none());
         assert!(super::decode_report(b"not an image").err().unwrap().starts_with("Unsupported image format:"));
+    }
+
+    #[test]
+    fn exact_uvi_sidecars_keep_identity_fallback_and_bounds() {
+        let root = std::env::temp_dir().join(format!("kontra-uvi-sidecar-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let bank = root.join("Authored.ufs");
+        // Deliberately not a UFS: artwork must never read its body.
+        std::fs::write(&bank, b"not a bank").unwrap();
+        let other = root.join("Other.ufs");
+        std::fs::write(&other, b"not a bank either").unwrap();
+        let libraries = [
+            crate::library::Library { dir: bank.clone(), name: "Own".into(), ..Default::default() },
+            crate::library::Library { dir: other, name: "Other".into(), ..Default::default() },
+        ];
+        let mut png = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png, 2, 2);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.write_header().unwrap().write_image_data(&[24, 96, 176, 78].repeat(4)).unwrap();
+        }
+        let jpeg = include_bytes!("../tests/fixtures/wallpaper-solid.jpg");
+        std::fs::write(bank.with_extension("png"), &png).unwrap();
+        std::fs::write(bank.with_extension("jpg"), jpeg).unwrap();
+        std::fs::write(root.join("wallpaper.png"), &png).unwrap();
+        let images = super::scan(&libraries);
+        assert_eq!(images.len(), 1, "parent wallpaper must not leak across banks");
+        assert_eq!(images["Own"].rgba[3], 78, "exact PNG precedes JPEG");
+        std::fs::write(bank.with_extension("png"), b"invalid").unwrap();
+        assert_eq!(super::scan(&libraries)["Own"].rgba[3], 255, "invalid PNG falls back to JPEG");
+        std::fs::rename(bank.with_extension("jpg"), bank.with_extension("jpeg")).unwrap();
+        assert_eq!(super::scan(&libraries)["Own"].width, 2, "exact .jpeg is supported");
+        let mut remaining = png.len() - 1;
+        std::fs::write(bank.with_extension("png"), &png).unwrap();
+        assert!(super::cover_file(&bank.with_extension("png"), &mut remaining, 4).is_none());
+        let mut remaining = png.len();
+        assert!(super::cover_file(&bank.with_extension("png"), &mut remaining, 3).is_none());
+        assert_eq!(remaining, 0, "rejected decode still charges encoded traffic");
+        let mut remaining = jpeg.len();
+        assert!(super::cover_file(&bank.with_extension("jpeg"), &mut remaining, 3).is_none());
+        let mut remaining = png.len();
+        assert!(super::cover_file(&bank.with_extension("png"), &mut remaining, 4).is_some());
+        assert!(super::cover_file(&bank.with_extension("jpeg"), &mut remaining, 4).is_none());
+        let oversized = root.join("Oversized.png");
+        std::fs::File::create(&oversized).unwrap().set_len((32 << 20) + 1).unwrap();
+        let mut remaining = 64 << 20;
+        assert!(super::cover_file(&oversized, &mut remaining, 16 << 20).is_none());
+        // A Kontakt directory named .ufs still uses its own directory wallpaper.
+        let directory = root.join("Folder.ufs");
+        std::fs::create_dir(&directory).unwrap();
+        let mut wallpaper = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut wallpaper, 180, 60);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.write_header().unwrap().write_image_data(&[24, 96, 176, 255].repeat(180 * 60)).unwrap();
+        }
+        std::fs::write(directory.join("wallpaper.png"), wallpaper).unwrap();
+        assert!(super::scan(&[crate::library::Library { dir: directory, name: "Folder".into(), ..Default::default() }]).contains_key("Folder"));
+        #[cfg(unix)] {
+            use std::os::unix::ffi::OsStrExt;
+            let fifo = root.join("Fifo.png");
+            let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+            assert!(super::cover_file(&fifo, &mut remaining, 4).is_none());
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
