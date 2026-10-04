@@ -2115,6 +2115,44 @@ mod tests {
     }
 
     #[test]
+    fn safe_snapshot_fault_records_group_by_processor_and_owned_location() {
+        const REASON: &str = "Invalid UVI UI snapshot numeric field";
+        let event = |n: u64, processor: u64, line: u64| -> LogEvent {
+            serde_json::from_value(json!({"schema_version":1,"sequence":n,"timestamp_ms":1000+n,
+                "monotonic_ms":n,"session_id":"safe-ui-snapshot-fixture","level":"warning","module":"uvi",
+                "event":"uvi_ui_snapshot_failed","code":"uvi_ui_snapshot_failed","stage":"ui_snapshot",
+                "reason":REASON,"data":{"stage":"ui_snapshot","epoch":7,"generation":11,
+                    "processor":processor,"frame":n*256,"reason":REASON,"snapshot_fault":"host_validation",
+                    "source_file":"src/uvi/host.rs","source_line":line,"source_kind":"rust",
+                    "first_failure":{"kind":"host_validation","reason":REASON,"source_file":"src/uvi/host.rs","line":line},
+                    "failed_reads":n,"first_frame":256,"reported_causes":1,"cause_limit":8}})).unwrap()
+        };
+        // Synthetic retained repeats exercise the summarizer even though the
+        // producer suppresses repeated same-cause failures within one episode.
+        let mut events: Vec<_> = (1..=128).map(|n| event(n,3,100)).collect();
+        events.push(event(129,4,100));
+        events.push(event(130,3,200));
+        let before = events.iter().map(|event| serde_json::to_value(event).unwrap()).collect::<Vec<_>>();
+        let groups = group_events(&events,&(0..events.len()).rev().collect::<Vec<_>>());
+        assert_eq!((groups.len(),groups[0].members.len(),groups[0].children.len()),(1,130,3),
+            "changing frames/read counts do not invent unique failed items");
+        assert_eq!(group_reason(&events,&groups[0]),REASON);
+        let text = group_details(&events,&groups[0]);
+        assert_eq!(text.matches(&format!("Cause: {REASON}")).count(),1);
+        assert!(text.contains("processor: 3") && text.contains("processor: 4"));
+        assert!(text.contains("source_file: src/uvi/host.rs"));
+        assert!(text.contains("source_line: 100") && text.contains("source_line: 200"));
+        assert!(text.len()<6000,"summary remains bounded by unique items rather than retained repeats");
+        assert_eq!(events.iter().map(|event| serde_json::to_value(event).unwrap()).collect::<Vec<_>>(),before);
+        let report = support_text(DiagnosticSnapshot { revision:1,events,status:Default::default(),build:json!({}) },
+            json!({"source":"PRIVATE_LUA_MESSAGE_DO_NOT_EXPORT","script_source":"PRIVATE_LUA_SOURCE_DO_NOT_EXPORT"})).unwrap();
+        assert!(report.contains(REASON) && report.contains("130 occurrences") && report.contains("3 unique items"));
+        assert!(report.contains("source_line: 100") && report.contains("source_line: 200"));
+        assert!(!report.contains("PRIVATE_LUA_MESSAGE_DO_NOT_EXPORT") && !report.contains("PRIVATE_LUA_SOURCE_DO_NOT_EXPORT"));
+        assert!(report.len()<8000);
+    }
+
+    #[test]
     fn independent_endpoint_cause_retains_distinct_worker_evidence_without_frame_bloat() {
         let event = |n: u64, endpoint: serde_json::Value, failure: serde_json::Value| -> LogEvent {
             serde_json::from_value(json!({"schema_version":1,"sequence":n,"timestamp_ms":1000+n,

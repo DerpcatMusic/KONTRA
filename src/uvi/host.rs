@@ -360,8 +360,29 @@ const UI_EXTENT_LIMIT: f64 = 16_384.0;
 const UI_POSITION_LIMIT: f64 = 1_048_576.0;
 const UI_KEY_LIMIT: usize = 128;
 
+/// Owned validation literals only. No Lua message/value/source enters this type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SnapshotFault {
+    pub kind: &'static str,
+    pub reason: &'static str,
+    pub source_file: &'static str,
+    pub line: u32,
+}
+impl SnapshotFault {
+    #[track_caller]
+    pub(crate) fn new(kind: &'static str, reason: &'static str) -> Self {
+        let at = std::panic::Location::caller();
+        Self { kind, reason, source_file: at.file(), line: at.line() }
+    }
+}
+impl std::fmt::Display for SnapshotFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(self.reason) }
+}
+impl std::error::Error for SnapshotFault {}
+
+#[track_caller]
 fn ui_error(message: &'static str) -> mlua::Error {
-    mlua::Error::runtime(message)
+    mlua::Error::external(SnapshotFault::new("host_validation", message))
 }
 
 #[derive(Default)]

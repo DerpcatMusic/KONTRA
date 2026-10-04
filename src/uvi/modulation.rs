@@ -241,6 +241,8 @@ impl Ramp {
 #[derive(Clone)]
 struct ConstantClock {
     rate: f64,
+    alpha1: Option<f32>,
+    alpha32: Option<f32>,
     block_frames: u32,
     frame: u64,
     integrated: u64,
@@ -251,8 +253,9 @@ struct ConstantClock {
 }
 impl ConstantClock {
     fn integrate(&mut self, frames: u64) {
-        let alpha1 = 1_f32 - 0.33_f32.powf(100_f32 / self.rate as f32);
-        let alpha32 = 1_f32 - 0.33_f32.powf(3200_f32 / self.rate as f32);
+        let rate = self.rate;
+        let alpha1 = *self.alpha1.get_or_insert_with(|| 1_f32 - 0.33_f32.powf(100_f32 / rate as f32));
+        let alpha32 = *self.alpha32.get_or_insert_with(|| 1_f32 - 0.33_f32.powf(3200_f32 / rate as f32));
         if frames == 32 {
             self.current += (self.target - self.current) * alpha32;
         } else {
@@ -263,7 +266,8 @@ impl ConstantClock {
         self.integrated += frames;
     }
     fn snap(&mut self) {
-        let alpha32 = 1_f32 - 0.33_f32.powf(3200_f32 / self.rate as f32);
+        let rate = self.rate;
+        let alpha32 = *self.alpha32.get_or_insert_with(|| 1_f32 - 0.33_f32.powf(3200_f32 / rate as f32));
         if ((self.target - self.current) * alpha32).abs() < 0.0000001 {
             self.current = self.target;
             self.point = self.target;
@@ -2556,6 +2560,8 @@ impl ModulationGraph {
                 .or_insert_with(|| AbsoluteClock {
                     producer: ConstantClock {
                         rate: input.sample_rate,
+                        alpha1: None,
+                        alpha32: None,
                         block_frames: input.control_block_frames,
                         frame: 0,
                         integrated: 0,
@@ -3312,6 +3318,8 @@ impl ModulationGraph {
                             );
                             let state = clocks.entry(key).or_insert(ConstantClock {
                                 rate: input.sample_rate,
+                                alpha1: None,
+                                alpha32: None,
                                 block_frames: input.control_block_frames,
                                 frame,
                                 integrated: frame,
@@ -7432,4 +7440,139 @@ mod source_setting_identity_proof {
         }
     }
 
+}
+
+#[cfg(test)]
+mod constant_coefficient_cache_proof {
+    use super::*;
+#[derive(Clone)]
+struct ReferenceConstantClock {
+    rate: f64,
+    block_frames: u32,
+    frame: u64,
+    integrated: u64,
+    point_frame: u64,
+    current: f32,
+    point: f32,
+    target: f32,
+}
+impl ReferenceConstantClock {
+    fn integrate(&mut self, frames: u64) {
+        let alpha1 = 1_f32 - 0.33_f32.powf(100_f32 / self.rate as f32);
+        let alpha32 = 1_f32 - 0.33_f32.powf(3200_f32 / self.rate as f32);
+        if frames == 32 {
+            self.current += (self.target - self.current) * alpha32;
+        } else {
+            for _ in 0..frames {
+                self.current += (self.target - self.current) * alpha1;
+            }
+        }
+        self.integrated += frames;
+    }
+    fn snap(&mut self) {
+        let alpha32 = 1_f32 - 0.33_f32.powf(3200_f32 / self.rate as f32);
+        if ((self.target - self.current) * alpha32).abs() < 0.0000001 {
+            self.current = self.target;
+            self.point = self.target;
+        }
+    }
+    fn advance(&mut self, frame: u64, target: f32) -> Result<f64> {
+        ensure!(frame >= self.frame, "UVI Constant clock moved backwards");
+        // Split only at control boundaries or target changes. In particular,
+        // use one f32 alpha32 update for a full tick, not 32 rounded alpha1
+        // updates. MIDI events inside a tick leave a partial alpha1 segment.
+        let mut steps = 0;
+        while self.point_frame <= frame.saturating_sub(32) && frame >= 32 {
+            let next = self.point_frame + 32;
+            self.integrate(next - self.integrated);
+            self.point_frame = next;
+            self.point = self.current;
+            if next.is_multiple_of(u64::from(self.block_frames)) {
+                self.snap();
+            }
+            steps += 1;
+            if steps == 4096 {
+                ensure!(
+                    self.current == self.target,
+                    "UVI Constant clock cannot settle within resource limit"
+                );
+                self.point = self.current;
+                self.point_frame = frame / 32 * 32;
+                self.integrated = self.point_frame;
+            }
+        }
+        if target != self.target {
+            self.integrate(frame - self.integrated);
+            self.target = target;
+            self.snap();
+        }
+        self.frame = frame;
+        Ok(f64::from(self.point))
+    }
+}
+
+    fn states(actual: &ConstantClock, reference: &ReferenceConstantClock) {
+        assert_eq!((actual.frame, actual.integrated, actual.point_frame),
+            (reference.frame, reference.integrated, reference.point_frame));
+        assert_eq!([actual.current, actual.point, actual.target].map(f32::to_bits),
+            [reference.current, reference.point, reference.target].map(f32::to_bits));
+    }
+    fn clocks(rate: f64, block_frames: u32, frame: u64, target: f32) -> (ConstantClock, ReferenceConstantClock) {
+        (ConstantClock { rate, alpha1: None, alpha32: None, block_frames, frame,
+            integrated: frame, point_frame: frame / 32 * 32, current: target, point: target, target },
+         ReferenceConstantClock { rate, block_frames, frame, integrated: frame,
+            point_frame: frame / 32 * 32, current: target, point: target, target })
+    }
+    #[test]
+    fn cached_constant_coefficients_keep_original_points_and_gates() {
+        eprintln!("constant_clock_inline_bytes cached={} baseline={}",
+            std::mem::size_of::<ConstantClock>(), std::mem::size_of::<ReferenceConstantClock>());
+        for rate in [1000., 44100., 48000., 96000., 768000.] {
+            for block_frames in [32, 256, 65536] {
+                for origin in [0, 7, 31, 32] {
+                    let (mut actual, mut reference) = clocks(rate, block_frames, origin, -0.);
+                    assert!(actual.alpha1.is_none() && actual.alpha32.is_none());
+                    for offset in 0..=1024 {
+                        let target = match offset {
+                            0..=6 => -0., 7..=30 => 1., 31..=255 => 0.25,
+                            256..=511 => 0., 512..=767 => f32::from_bits(0x0040_0000),
+                            _ => 0.875,
+                        };
+                        let frame = origin + offset;
+                        let a = actual.advance(frame, target).unwrap();
+                        let b = reference.advance(frame, target).unwrap();
+                        assert_eq!(a.to_bits(), b.to_bits());
+                        states(&actual, &reference);
+                        // A same-frame duplicate and independent cloned owner
+                        // must preserve the exact current native control point.
+                        assert_eq!(actual.advance(frame, target).unwrap().to_bits(),
+                            reference.advance(frame, target).unwrap().to_bits());
+                        let mut a = actual.clone();
+                        let mut b = reference.clone();
+                        assert_eq!(a.advance(frame + 31, 0.5).unwrap().to_bits(),
+                            b.advance(frame + 31, 0.5).unwrap().to_bits());
+                        states(&a, &b);
+                    }
+                    let a = actual.advance(origin, 0.5).unwrap_err();
+                    let b = reference.advance(origin, 0.5).unwrap_err();
+                    assert_eq!(a.to_string(), b.to_string());
+                    assert_eq!(a.to_string(), "UVI Constant clock moved backwards");
+                    states(&actual, &reference);
+                }
+            }
+        }
+        // Reach the bounded long-jump path with admitted clocks/targets;
+        // settling and any first error must match rather than invent rejection.
+        let (mut actual, mut reference) = clocks(768000., 65536, 0, 0.);
+        actual.advance(0, 1.).unwrap();
+        reference.advance(0, 1.).unwrap();
+        let a = actual.advance(32 * 5000, 1.);
+        let b = reference.advance(32 * 5000, 1.);
+        match (a, b) {
+            (Ok(a), Ok(b)) => assert_eq!(a.to_bits(), b.to_bits()),
+            (Err(a), Err(b)) => assert_eq!(a.to_string(), b.to_string()),
+            _ => panic!("cached and original Constant long-jump outcomes differ"),
+        }
+        states(&actual, &reference);
+    }
 }

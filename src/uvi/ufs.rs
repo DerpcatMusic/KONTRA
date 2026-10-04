@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet},
-    fs::File,
+    fs::{File, Metadata, OpenOptions},
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
 };
@@ -78,6 +78,10 @@ pub struct Directory {
 pub struct Ufs {
     path: PathBuf,
     pub header: Header,
+    snapshot: Metadata,
+    header_bytes: Vec<u8>,
+    // Pin the original inode; operations always use independently opened cursors.
+    _snapshot_file: File,
 }
 
 fn u64_le(bytes: &[u8]) -> u64 {
@@ -95,6 +99,34 @@ fn text(bytes: &[u8]) -> Result<String> {
     std::str::from_utf8(&bytes[..end])
         .map(str::to_owned)
         .context("UFS name is not UTF-8; check metadata namespace")
+}
+
+fn open_regular(path: &Path) -> Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    ensure!(
+        file.metadata()?.file_type().is_file(),
+        "UFS input is not a regular file"
+    );
+    Ok(file)
+}
+
+fn same_file(before: &Metadata, after: &Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if before.dev() != after.dev() || before.ino() != after.ino() {
+            return false;
+        }
+    }
+    // Timestamps detect ordinary in-place writes, not adversarial content changes.
+    before.len() == after.len() && before.modified().ok() == after.modified().ok()
 }
 
 fn read_at(file: &mut File, offset: u64, size: usize) -> Result<Vec<u8>> {
@@ -135,11 +167,16 @@ fn member_path(
 impl Ufs {
     pub fn open(path: &Path) -> Result<Self> {
         let mut file =
-            File::open(path).with_context(|| format!("Opening UFS {}", path.display()))?;
-        let physical_size = file.metadata()?.len();
+            open_regular(path).with_context(|| format!("Opening UFS {}", path.display()))?;
+        let snapshot = file.metadata()?;
+        let physical_size = snapshot.len();
         ensure!(physical_size >= HEADER_SIZE, "UFS header is truncated");
         let bytes = read_at(&mut file, 0, HEADER_SIZE as usize)?;
         ensure!(&bytes[..4] == b"UFS2", "Expected UFS2 container");
+        ensure!(
+            same_file(&snapshot, &file.metadata()?),
+            "UFS bank changed while reading header"
+        );
         let version = u32_le(&bytes[4..8]);
         ensure!(version == 3, "Unsupported UFS version {version}");
         Ok(Self {
@@ -151,12 +188,35 @@ impl Ufs {
                 physical_size,
                 bank_name: text(&bytes[48..304])?,
             },
+            snapshot,
+            header_bytes: bytes,
+            _snapshot_file: file,
         })
+    }
+
+    pub(super) fn check_snapshot(&self, file: &File) -> Result<()> {
+        ensure!(
+            same_file(&self.snapshot, &file.metadata()?),
+            "UFS bank changed since header snapshot; reload bank"
+        );
+        Ok(())
+    }
+
+    // The returned private cursor is positioned after the validated header.
+    pub(super) fn open_snapshot(&self) -> Result<File> {
+        let mut file = open_regular(&self.path)?;
+        self.check_snapshot(&file)?;
+        ensure!(
+            read_at(&mut file, 0, HEADER_SIZE as usize)? == self.header_bytes,
+            "UFS bank header changed since snapshot; reload bank"
+        );
+        self.check_snapshot(&file)?;
+        Ok(file)
     }
 
     /// Walk the length-prefixed record chain without scanning opaque resource bytes.
     pub fn records(&self) -> Result<Vec<Record>> {
-        let mut file = File::open(&self.path)?;
+        let mut file = self.open_snapshot()?;
         let mut records = Vec::new();
         let mut offset = HEADER_SIZE;
         while offset < self.header.physical_size {
@@ -190,6 +250,7 @@ impl Ufs {
                 .checked_add(length)
                 .context("UFS record offset overflow")?;
         }
+        self.check_snapshot(&file)?;
         Ok(records)
     }
 
@@ -213,7 +274,7 @@ impl Ufs {
                 self.header.expected_size, self.header.physical_size
             ));
         }
-        let mut file = File::open(&self.path)?;
+        let mut file = self.open_snapshot()?;
         for record in &directory.records {
             if record.available < record.length {
                 directory.warnings.push(format!(
@@ -418,6 +479,7 @@ impl Ufs {
                 "{unresolved} member paths could not be linked to the container root"
             ));
         }
+        self.check_snapshot(&file)?;
         Ok(directory)
     }
 
@@ -447,9 +509,10 @@ impl Ufs {
             ),
             mode => bail!("Unsupported UFS member encryption mode {mode}"),
         };
-        let mut file = File::open(&self.path)?;
+        let mut file = self.open_snapshot()?;
         let size = usize::try_from(member.size).context("UFS member does not fit address space")?;
         let mut bytes = read_at(&mut file, member.offset, size)?;
+        self.check_snapshot(&file)?;
         if let Some(key) = key {
             crypto::transform_blocks(&mut bytes, key, member.offset);
         }
@@ -461,6 +524,62 @@ impl Ufs {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[cfg(unix)]
+    #[test]
+    fn same_header_size_and_mtime_replacement_cannot_supply_stale_member_bytes() {
+        struct Fixture(PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+        }
+        let fixture = Fixture(std::env::temp_dir().join(format!("uvi-reopened-bank-{}-{}",
+            std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos())));
+        std::fs::create_dir(&fixture.0).unwrap();
+        let path = fixture.0.join("bank.ufs");
+        let replacement = fixture.0.join("replacement.ufs");
+        let mut bytes = vec![0; HEADER_SIZE as usize];
+        bytes[..4].copy_from_slice(b"UFS2");
+        bytes[4..8].copy_from_slice(&3u32.to_le_bytes());
+        bytes[48..56].copy_from_slice(b"Authored");
+        bytes.extend_from_slice(&4u64.to_le_bytes());
+        bytes.extend_from_slice(b"AAAA");
+        let size = bytes.len() as u64;
+        bytes[32..40].copy_from_slice(&size.to_le_bytes());
+        std::fs::write(&path, &bytes).unwrap();
+        let ufs = Ufs::open(&path).unwrap();
+        let member = Member { record_offset: HEADER_SIZE, name: "authored.bin".into(),
+            path: Some("authored.bin".into()), parent: None, offset: HEADER_SIZE + 8,
+            size: 4, mode: 0, footer: Vec::new() };
+        assert_eq!(ufs.read_member(&member, 0, None).unwrap(), b"AAAA");
+        assert_eq!(ufs.records().unwrap().len(), 1);
+        assert!(ufs.decode_directory(b"authored namespace").is_ok());
+        bytes[HEADER_SIZE as usize + 8..].copy_from_slice(b"BBBB");
+        std::fs::write(&replacement, &bytes).unwrap();
+        let file = OpenOptions::new().write(true).open(&replacement).unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(ufs.snapshot.modified().unwrap())).unwrap();
+        drop(file);
+        std::fs::rename(&replacement, &path).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), ufs.snapshot.len());
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), ufs.snapshot.modified().unwrap());
+        for error in [ufs.records().unwrap_err(), ufs.decode_directory(b"authored namespace").unwrap_err(),
+            ufs.read_member(&member, 0, None).unwrap_err()] {
+            assert!(error.to_string().contains("changed since header snapshot"));
+        }
+        // The retained owner pins the original inode, without shared cursor reads.
+        use std::os::unix::fs::FileExt;
+        let mut original = [0; 4];
+        ufs._snapshot_file.read_exact_at(&mut original, HEADER_SIZE + 8).unwrap();
+        assert_eq!(&original, b"AAAA");
+        // A fresh owner is allowed to read the replacement bank.
+        assert_eq!(Ufs::open(&path).unwrap().read_member(&member, 0, None).unwrap(), b"BBBB");
+        std::fs::remove_file(&path).unwrap();
+        use std::os::unix::ffi::OsStrExt;
+        let fifo = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: an authored NUL-terminated temporary path; no vendor files.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert!(Ufs::open(&path).unwrap_err().to_string().contains("Opening UFS"));
+        assert!(ufs.read_member(&member, 0, None).unwrap_err().to_string().contains("not a regular file"));
+    }
 
     #[test]
     fn authored_records_member_and_missing_footer() {

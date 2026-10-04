@@ -318,9 +318,38 @@ pub enum StateSnapshotError {
     Execution,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UiSnapshotError {
-    Unavailable,
+/// Safe owned validator context or a fixed Lua read classification. Never format
+/// a VM error: its message/traceback can contain private instrument strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct UiSnapshotError {
+    pub kind: &'static str,
+    pub reason: &'static str,
+    pub source_file: Option<&'static str>,
+    pub line: Option<u32>,
+}
+impl UiSnapshotError {
+    fn from_error(error: &anyhow::Error) -> Self {
+        let owned = |fault: &super::host::SnapshotFault| Self { kind: fault.kind, reason: fault.reason,
+            source_file: Some(fault.source_file), line: Some(fault.line) };
+        let mut read = None;
+        for cause in error.chain() {
+            if let Some(fault) = cause.downcast_ref::<super::host::SnapshotFault>() { return owned(fault); }
+            if let Some(lua) = cause.downcast_ref::<mlua::Error>() {
+                // mlua's StdError::source skips the external object itself.
+                if let Some(fault) = lua.downcast_ref::<super::host::SnapshotFault>() { return owned(fault); }
+                let leaf = lua.chain().filter_map(|cause| cause.downcast_ref::<mlua::Error>()).last().unwrap_or(lua);
+                let (kind, reason) = match leaf {
+                    mlua::Error::FromLuaConversionError { .. } => ("invalid_lua_type", "UVI UI snapshot contains an invalid Lua value type"),
+                    mlua::Error::MemoryError(_) => ("lua_memory", "UVI UI snapshot could not be read within Lua memory limits"),
+                    mlua::Error::StackError => ("lua_stack", "UVI UI snapshot could not be read within Lua stack limits"),
+                    _ => ("lua_state_read", "UVI UI snapshot state could not be read"),
+                };
+                read = Some(Self { kind, reason, source_file: None, line: None });
+            }
+        }
+        read.unwrap_or(Self { kind: "unavailable", reason: "UVI UI snapshot is unavailable",
+            source_file: None, line: None })
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1488,7 +1517,7 @@ fn capture_ui(player: &Player<'_>, shared: &Shared, applied_ui_sequence: u64) {
         applied_ui_sequence,
         snapshot: player
             .ui_snapshot(request.processor)
-            .map_err(|_| UiSnapshotError::Unavailable),
+            .map_err(|error| UiSnapshotError::from_error(&error)),
     };
     let mut details = shared
         .details
@@ -1801,7 +1830,7 @@ fn run(
     // Experimental owned PCM cache; default/public/CLI loaders are unchanged.
     let cache_path = (std::env::var_os("KONTRA_UVI_STATIC_PCM_CACHE").as_deref() == Some(std::ffi::OsStr::new("1")))
         .then(crate::cache::dir).flatten().map(|dir| dir.join("uvi-static-pcm-v2.cache"));
-    let (samples, cache_hit) = match super::pcm_cache::load(&library, &loaded, &config.bank, cache_path.as_deref(), &mut |total, loaded, unique_decodes, bytes, current| {
+    let (samples, cache_hit) = match super::pcm_cache::load(&library, &loaded, cache_path.as_deref(), &mut |total, loaded, unique_decodes, bytes, current| {
         let mut details = shared.details.lock().unwrap_or_else(|p| p.into_inner());
         details.resource_activity = ResourceActivity {
             total: Some(total), loaded, unique_decodes, bytes, cache_hit: None,
@@ -2143,6 +2172,63 @@ fn serve(player: &mut Player<'_>, shared: &Shared, sample_rate: u32) -> Result<(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn snapshot_fault_preserves_owned_validator_location_without_private_values() {
+        let lua = mlua::Lua::new();
+        let environment = lua.create_table().unwrap();
+        let ui = lua.create_table().unwrap();
+        let root = lua.create_table().unwrap();
+        root.raw_set("width", "PRIVATE_UI_VALUE_DO_NOT_EXPORT").unwrap();
+        ui.raw_set("root", root.clone()).unwrap();
+        ui.raw_set("order", lua.create_table().unwrap()).unwrap();
+        environment.raw_set("UVI_UI_STATE", ui).unwrap();
+        let error: anyhow::Error = super::super::host::snapshot_ui(3, &environment).err().unwrap().into();
+        let fault = UiSnapshotError::from_error(&error);
+        assert_eq!(fault.kind, "host_validation");
+        assert_eq!(fault.reason, "Invalid UVI UI snapshot numeric field");
+        assert!(fault.source_file.unwrap().ends_with("uvi/host.rs"));
+        assert!(fault.line.unwrap() > 0);
+        let json = serde_json::to_string(&fault).unwrap();
+        assert!(!json.contains("PRIVATE_UI_VALUE_DO_NOT_EXPORT"));
+        // A second host-owned validator remains distinguishable and typed.
+        root.raw_set("width", 20000).unwrap();
+        let error: anyhow::Error = super::super::host::snapshot_ui(3, &environment).err().unwrap().into();
+        let bounds = UiSnapshotError::from_error(&error);
+        assert_eq!(bounds.reason, "UVI UI snapshot extent exceeds render bounds");
+        assert_ne!(fault.line, bounds.line);
+        root.raw_set("width", 720).unwrap();
+        assert!(super::super::host::snapshot_ui(3, &environment).is_ok());
+    }
+
+    #[test]
+    fn snapshot_fault_classification_never_formats_vm_messages_or_tracebacks() {
+        const PRIVATE: &str = "PRIVATE_LUA_TEXT_DO_NOT_EXPORT";
+        for (error, expected) in [
+            (mlua::Error::runtime(PRIVATE), "lua_state_read"),
+            (mlua::Error::MemoryError(PRIVATE.into()), "lua_memory"),
+            (mlua::Error::StackError, "lua_stack"),
+            (mlua::Error::FromLuaConversionError { from: "string", to: PRIVATE.into(),
+                message: Some(PRIVATE.into()) }, "invalid_lua_type"),
+        ] {
+            let wrapped = mlua::Error::CallbackError { traceback: PRIVATE.into(), cause: Arc::new(error) };
+            let error: anyhow::Error = wrapped.into();
+            let fault = UiSnapshotError::from_error(&error.context(PRIVATE));
+            assert_eq!(fault.kind, expected);
+            assert_eq!((fault.source_file, fault.line), (None, None), "VM classification cannot invent a source location");
+            assert!(!serde_json::to_string(&fault).unwrap().contains(PRIVATE));
+        }
+        let owned = super::super::host::SnapshotFault::new("host_validation", "Fixed owned reason");
+        let wrapped = mlua::Error::CallbackError { traceback: PRIVATE.into(),
+            cause: Arc::new(mlua::Error::external(owned)) };
+        let fault = UiSnapshotError::from_error(&anyhow::Error::from(wrapped).context(PRIVATE));
+        assert_eq!(fault.reason, owned.reason);
+        assert_eq!(fault.line, Some(owned.line));
+        assert!(!serde_json::to_string(&fault).unwrap().contains(PRIVATE));
+        let unknown = UiSnapshotError::from_error(&anyhow::anyhow!(PRIVATE));
+        assert_eq!(unknown.kind, "unavailable");
+        assert!(!serde_json::to_string(&unknown).unwrap().contains(PRIVATE));
+    }
+
     #[test]
     fn packet_activity_publication_retains_failed_attempt_observations() {
         let shared = Shared::new(3, 7);
@@ -3316,7 +3402,7 @@ function onSave()error('runtime inspection must not run callbacks')end
         let invalid = worker.request_ui_snapshot(usize::MAX).unwrap();
         let reply = receive_ui(&worker, invalid);
         assert_eq!(reply.stamp, stamp(0));
-        assert!(matches!(reply.snapshot, Err(UiSnapshotError::Unavailable)));
+        assert!(matches!(reply.snapshot, Err(error) if error.kind == "processor_unavailable"));
         assert_eq!(worker.status(), Status::Ready);
         assert_eq!(worker.stats().errors, 0);
         worker.stop();
@@ -3326,6 +3412,36 @@ function onSave()error('runtime inspection must not run callbacks')end
         );
         drop(worker);
         assert!(snapshot.widgets[0].name == "authored");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn matching_worker_snapshot_fault_is_safe_nonfatal_and_can_recover() {
+        let (config, _) = authored_bank_with_script(
+            "UVI_UI_STATE.root.width='PRIVATE_PANEL_VALUE_DO_NOT_EXPORT'; function onNote(e) UVI_UI_STATE.root.width=720 end");
+        let path = config.bank.clone();
+        let mut worker = Worker::start(config, 7, 11).unwrap();
+        worker.wait_ready(Duration::from_secs(5)).unwrap();
+        let processor = worker.ui_processors()[0];
+        let request = worker.request_ui_snapshot(processor).unwrap();
+        let failed = receive_ui(&worker, request);
+        assert_eq!(failed.stamp, stamp(0));
+        assert_eq!(failed.processor, processor);
+        assert_eq!(failed.applied_ui_sequence, 0);
+        let fault = failed.snapshot.err().unwrap();
+        assert_eq!(fault.kind, "host_validation");
+        assert_eq!(fault.reason, "Invalid UVI UI snapshot numeric field");
+        assert!(!serde_json::to_string(&fault).unwrap().contains("PRIVATE_PANEL_VALUE_DO_NOT_EXPORT"));
+        assert_eq!(worker.status(), Status::Ready);
+        assert_eq!(worker.stats().errors, 0);
+        worker.realtime().try_submit(Request::new(stamp(0), &[note(0)]).unwrap()).unwrap();
+        receive(&mut worker, stamp(0));
+        let request = worker.request_ui_snapshot(processor).unwrap();
+        let recovered = receive_ui(&worker, request);
+        assert_eq!(recovered.stamp, stamp(256));
+        assert_eq!(recovered.snapshot.unwrap().root.width, 720.);
+        assert_eq!(worker.status(), Status::Ready);
+        worker.stop();
         std::fs::remove_file(path).unwrap();
     }
 

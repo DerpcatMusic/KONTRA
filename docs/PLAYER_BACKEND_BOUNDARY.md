@@ -1,6 +1,6 @@
 # Player backend boundary
 
-This document describes optional UVI loading, live audio and instrument UI integration in the isolated `codex/uvi-latest-integration` working tree following `510446d`/`0a56891`, reviewed on 2026-10-04. The original integration audit and its line references below describe that checkpoint. Clean `0679223` is now installed as a local Linux checkpoint; installation does not establish a completed real-time performance proof. The broader common backend contract below remains proposed. No complete Falcon parity or support for unimplemented SFZ, Sine, Koda or other backends is claimed.
+This document describes optional UVI loading, live audio and instrument UI integration in the isolated `codex/uvi-latest-integration` working tree following `510446d`/`0a56891`, reviewed on 2026-10-04. The original integration audit and its line references below describe that checkpoint. Clean `a25fc2e` is now installed as a local Linux checkpoint; installation does not establish a completed real-time performance proof. The broader common backend contract below remains proposed. No complete Falcon parity or support for unimplemented SFZ, Sine, Koda or other backends is claimed.
 
 The user's concurrent core/MIDI refactor remains separately owned and unmerged. Its precision, protocol and lifecycle requirements inform this boundary; its dirty source is not an accepted API snapshot.
 
@@ -29,7 +29,7 @@ operation is not yet implemented here.
 
 ### Control feedback and presentation follow-up
 
-The follow-up source enables the existing Original/Vectorized selector for an
+The installed `a25fc2e` checkpoint enables the existing Original/Vectorized selector for an
 owned current UVI performance panel. Vectorized replaces supported interactive
 skins with theme controls while retaining authored layout, decorative artwork,
 visibility, ranges, units and native callbacks. Original and Kontra retain the
@@ -47,8 +47,8 @@ cannot fail. Callback order and the native scheduling clock remain unchanged.
 
 This corrects feedback ownership; it does not remove worker buffering latency
 or establish faster Lua/DSP processing. UI snapshot polling still uses the
-existing serialized loader cadence. Focused functional and visual verification
-must accompany adoption of this source follow-up.
+existing serialized loader cadence. At `a25fc2e`, 50 focused functional checks and authored compact Mapping/full-editor
+captures passed. User-DAW behavior and complete native fidelity remain unverified.
 
 The 2026-10-04 read-only main audit found a concrete porting requirement: current
 `In` carries `midi::Velocity`, newer release/controller forms and physical ports
@@ -65,6 +65,44 @@ features. A bounded Linux proof shows that separately built modules with local
 Lua symbols and a C ownership boundary can coexist. See
 [Player Lua runtime boundary](PLAYER_LUA_RUNTIME_BOUNDARY.md) for the measured
 scope, lifetime requirements and unproved production/platform integration.
+
+### Failed panel reads
+
+The source follow-up reports matching Ready-poll snapshot failures with a fixed
+safe classification, processor identity and genuine local Rust validator location
+where available. It never formats Lua error messages, traceback or panel values
+into diagnostics. A failed read retains the previous successful panel and cannot
+advance its dispatch receipt; only a matching successful read reports recovery.
+
+Failure episodes retain their first and latest safe causes and failed-read count.
+Repeated causes stay quiet, with at most eight cause records per processor and 64
+tracked failing processors. Overflow notices count omitted reads, not guessed
+unique failures, and do not reduce processor polling coverage. Transient errors
+inside the initialization eager batch remain outside this diagnostic scope.
+Focused transport, classification, mailbox and shared Logs/support summary tests
+pass within the 28-check synthetic functional gate. This is not a user-DAW proof.
+
+## Opened bank and coefficient ownership follow-up
+
+The next source candidate pins the opened UFS file and validates independently
+opened cursors against its identity, size, modification time and original header.
+Direct member reads and optional PCM cache hashing share that ownership check;
+a cache hit cannot use a replacement file with a stale parsed directory. Regular
+file checks use nonblocking opens on Unix so a replaced FIFO cannot stall loading.
+
+Each retained bank adds one file descriptor and its 320-byte header. Unix device
+and inode checks reject replacements; other platforms retain weaker size/time/header
+checks. Same-inode writes hidden by restored or unavailable timestamps are outside
+this proof. This does not change format admission, access authority or decoding.
+Authored replacement/cache-hit and FIFO fixtures pass within the focused gate.
+
+ConstantClock lazily retains two coefficients determined solely by its immutable
+rate, preserving the original float formulas, evaluation order and native clock.
+The authored comparison checks output and state bits against the previous recurrence,
+including retargets, independent clocks and error gates. All those checks pass.
+Inline state grows from 48 to 64 bytes on the checked Linux target; no throughput
+improvement is claimed before measurement.
+Exactness assumes the same fixed floating-point environment as the existing kernel.
 
 ## Implemented loading and audio ownership
 

@@ -78,8 +78,10 @@ fn contract() -> [u8; 32] {
     }
     h.finalize().into()
 }
-fn bank_hash(path: &Path, stop: Option<&AtomicBool>) -> Result<[u8; 32]> {
-    let mut file = open_regular(path)?;
+fn bank_hash(bank: &super::ufs::Ufs, stop: Option<&AtomicBool>) -> Result<[u8; 32]> {
+    sample::check_cancel(stop)?;
+    let mut file = bank.open_snapshot()?;
+    file.seek(SeekFrom::Start(0))?;
     let before = file.metadata()?;
     ensure!(
         before.len() <= BANK_LIMIT,
@@ -108,6 +110,7 @@ fn bank_hash(path: &Path, stop: Option<&AtomicBool>) -> Result<[u8; 32]> {
             && before.modified()? == after.modified()?,
         "Bank changed while fingerprinting"
     );
+    bank.check_snapshot(&file)?;
     Ok(hash.finalize().into())
 }
 /// Bind the opened Library snapshot's read parameters, not only the bytes
@@ -499,7 +502,6 @@ fn write(
 pub(crate) fn load(
     lib: &Library,
     loaded: &LoadedProgram,
-    bank_path: &Path,
     cache_path: Option<&Path>,
     progress: &mut Progress<'_>,
     stop: Option<&AtomicBool>,
@@ -509,7 +511,7 @@ pub(crate) fn load(
     let prepared = (|| -> Result<_> {
         let path = cache_path.context("Cache disabled")?;
         let aliases = plan(lib, loaded, stop)?;
-        let bank = bank_hash(bank_path, stop)?;
+        let bank = bank_hash(&lib.bank, stop)?;
         Ok((path, aliases, bank))
     })();
     let prepared = match prepared {
@@ -519,7 +521,7 @@ pub(crate) fn load(
     };
     if let Some((path, aliases, bank)) = &prepared {
         match read(path, lib, loaded, *bank, aliases, stop, progress) {
-            Ok(samples) => match bank_hash(bank_path, stop) {
+            Ok(samples) => match bank_hash(&lib.bank, stop) {
                 Ok(current) if current == *bank => return Ok((samples, Some(true))),
                 Err(e) if e.is::<sample::LoadCancelled>() => return Err(e),
                 _ => {} // Drop all cache PCM if the bank changed during its read.
@@ -532,7 +534,7 @@ pub(crate) fn load(
     if let Some((path, aliases, bank)) = prepared {
         let publish = (|| -> Result<()> {
             ensure!(
-                bank_hash(bank_path, stop)? == bank,
+                bank_hash(&lib.bank, stop)? == bank,
                 "Bank changed during static decode"
             );
             write(path, lib, loaded, bank, aliases, &samples, stop)
@@ -639,14 +641,15 @@ mod tests {
         let cancelled = plan(&lib, &loaded, Some(&stop)).err().expect("stopped valid plan");
         assert!(cancelled.is::<sample::LoadCancelled>());
 
-        let bank_digest = bank_hash(&bank_path, None).unwrap();
+        let bank_digest = bank_hash(&lib.bank, None).unwrap();
+        assert_eq!(bank_digest, hash(&bank)); // Full file, including the UFS header.
         let first = lib.samples(&loaded).unwrap();
         let first_bits = first["/Samples/tone.wav"].interleaved.iter().map(f32::to_bits).collect::<Vec<_>>();
         assert_eq!(first_bits[0], 0.25f32.to_bits());
         let first_plan = plan(&lib, &loaded, None).unwrap();
         write(&cache_path, &lib, &loaded, bank_digest, first_plan, &first, None).unwrap();
         assert!(cache_path.is_file());
-        let (_, initial_hit) = load(&lib, &loaded, &bank_path, Some(&cache_path), &mut |_,_,_,_,_|{}, None).unwrap();
+        let (_, initial_hit) = load(&lib, &loaded, Some(&cache_path), &mut |_,_,_,_,_|{}, None).unwrap();
         assert_eq!(initial_hit, Some(true));
 
         // Same path bytes, program, member ID, size/mode and frame geometry;
@@ -655,7 +658,7 @@ mod tests {
         let expected = lib.samples(&loaded).unwrap();
         let expected_bits = expected["/Samples/tone.wav"].interleaved.iter().map(f32::to_bits).collect::<Vec<_>>();
         assert_eq!(expected_bits[0], 0.75f32.to_bits());
-        let (changed, hit) = load(&lib, &loaded, &bank_path, Some(&cache_path), &mut |_,_,_,_,_|{}, None).unwrap();
+        let (changed, hit) = load(&lib, &loaded, Some(&cache_path), &mut |_,_,_,_,_|{}, None).unwrap();
         assert_eq!(hit, Some(false));
         assert_eq!(changed["/Samples/tone.wav"].interleaved.iter().map(f32::to_bits).collect::<Vec<_>>(), expected_bits);
 
@@ -664,20 +667,42 @@ mod tests {
         decoy.name = "decoy.wav".into(); decoy.path = Some("Samples/decoy.wav".into());
         decoy.offset = first_offset; decoy.mode = 1;
         lib.directory.files.insert(0, decoy);
-        let (_, selected_hit) = load(&lib, &loaded, &bank_path, Some(&cache_path), &mut |_,_,_,_,_|{}, None).unwrap();
+        let (_, selected_hit) = load(&lib, &loaded, Some(&cache_path), &mut |_,_,_,_,_|{}, None).unwrap();
         assert_eq!(selected_hit, Some(true));
 
         // Changed encoded size rejects the cache; its error cannot mask the real
         // original decoder failure. Physical-size bounds are likewise binding.
         lib.directory.files[1].size -= 1;
         let baseline = lib.samples(&loaded).unwrap_err();
-        let enabled = load(&lib, &loaded, &bank_path, Some(&cache_path), &mut |_,_,_,_,_|{}, None).unwrap_err();
+        let enabled = load(&lib, &loaded, Some(&cache_path), &mut |_,_,_,_,_|{}, None).unwrap_err();
         assert_eq!(format!("{enabled:#}"), format!("{baseline:#}"));
         lib.directory.files[1].size += 1;
         lib.bank.header.physical_size = second_offset;
         let baseline = lib.samples(&loaded).unwrap_err();
-        let enabled = load(&lib, &loaded, &bank_path, Some(&cache_path), &mut |_,_,_,_,_|{}, None).unwrap_err();
+        let enabled = load(&lib, &loaded, Some(&cache_path), &mut |_,_,_,_,_|{}, None).unwrap_err();
         assert_eq!(format!("{enabled:#}"), format!("{baseline:#}"));
+
+        // A byte-identical replacement would pass the full-bank/cache digest,
+        // header, size and mtime checks. It still is not this Library's opened fd.
+        lib.bank.header.physical_size = physical;
+        let replacement = fixture.0.join("replacement.ufs");
+        let modified = std::fs::metadata(&bank_path).unwrap().modified().unwrap();
+        std::fs::write(&replacement, &bank).unwrap();
+        let file = OpenOptions::new().write(true).open(&replacement).unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(modified)).unwrap();
+        drop(file);
+        std::fs::rename(&replacement, &bank_path).unwrap();
+        assert_eq!(std::fs::metadata(&bank_path).unwrap().modified().unwrap(), modified);
+        let baseline = lib.samples(&loaded).unwrap_err();
+        let enabled = load(&lib, &loaded, Some(&cache_path), &mut |_,_,_,_,_|{}, None).unwrap_err();
+        assert!(format!("{enabled:#}").contains("changed since header snapshot"));
+        assert_eq!(format!("{enabled:#}"), format!("{baseline:#}"));
+        // A new owner may use the same fully verified cache for the identical bytes.
+        let mut fresh = Library::open(&bank_path, b"authored namespace", None).unwrap();
+        fresh.directory.files = lib.directory.files.clone();
+        let (restored, hit) = load(&fresh, &loaded, Some(&cache_path), &mut |_,_,_,_,_|{}, None).unwrap();
+        assert_eq!(hit, Some(true));
+        assert_eq!(restored["/Samples/tone.wav"].interleaved.iter().map(f32::to_bits).collect::<Vec<_>>(), expected_bits);
     }
 
 }

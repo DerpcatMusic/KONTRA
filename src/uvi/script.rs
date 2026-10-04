@@ -3131,7 +3131,7 @@ impl Session {
             .runtime
             .environments
             .get(&processor)
-            .context("UVI script processor is not initialized")?;
+            .ok_or_else(|| host::SnapshotFault::new("processor_unavailable", "UVI script processor is not initialized"))?;
         Ok(host::snapshot_ui(processor, environment)?)
     }
 
