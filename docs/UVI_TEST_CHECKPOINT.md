@@ -146,7 +146,7 @@ does not prove its transition or timbre behavior.
 
 ## Checkpoint validation
 
-Installed checkpoint `25105ae` replaces the standalone, CLAP and VST3 binaries,
+Installed checkpoint `1213001` replaces the standalone, CLAP and VST3 binaries,
 with the previous files backed up and settings/access records unchanged. Both
 actual Clarinet UI diagnoses initialize with zero resource failures; each owns
 one bank font. The original four-second Clarinet render is byte-identical to
@@ -155,7 +155,7 @@ not establish native visual fidelity or exercise the installed Bitwig editor.
 
 The current catalog contains 11 Kontakt libraries and 26 UVI banks declaring
 660 programs (620 Augmented Orchestra and 40 VWinds). Immediate publication of
-this saved catalog measured 10.9 ms; a full scan measured 18.1 seconds. Catalog
+this saved catalog measured 12.9 ms; a full scan measured 21.3 seconds. Catalog
 declarations are distinct from the 98 decoded programs in the bounded audit
 (including 50 external Starter presets), and from its 41 static preflight
 admissions. Initialization, interaction, sustained playback and native musical
@@ -163,16 +163,31 @@ comparison remain separate evidence.
 
 This checkpoint uses focused functional verification and feature checks,
 including audio first-cause retention, actual generated-note velocity cases,
-UI resource loading and feature-disabled compilation. The measured lookup/source
-memo changes reduce actual Alto Flute corpus instructions by 26.67% with exact
-PCM/event/state captures. Paced Alto Flute playback still reaches request
-capacity; this is an unresolved realtime failure, not complete compatibility.
+UI resource loading and feature-disabled compilation. Authored `displayText`,
+eight documented numeric units, skins and bank fonts are included. Focused UI
+checks exercise double-click editing: raw values commit on Enter/blur, Escape
+cancels, and displayed units do not silently rescale engine values. Pan formatting
+and native display precision remain uncalibrated.
 
-The next source pass adds bounded authored `displayText` and eight documented
-unit readouts. Thirteen focused source checks include genuine double-click
-numeric editing: raw values commit on Enter/blur, Escape cancels, and displayed
-units do not silently rescale engine values. Pan formatting and native display
-precision remain uncalibrated. These source changes are not yet in `25105ae`.
+Earlier indexed lookup and source memo changes preserved exact Alto Flute
+PCM/event/state captures but still reached request capacity. The installed
+reverb source-read cache preserves those captures and reduces the measured cold
+renderer packets from roughly 38 ms to 21 ms. A fresh source-direct replay at
+`72c671e` ran for 10 and 20 seconds with finite nonzero output, no endpoint
+failures, no Bridge or Worker underruns and no backpressure. These private
+Worker/Bridge observations use disclosed unchanged SDK glue; they do not verify
+live Bitwig operation, sustained deadlines on every machine or native musical
+parity. The original reported blackout remains unclassified.
+
+Source changes after `1213001` are not yet installed. They restore authored
+help text, index preparation resource paths, avoid cloning completed full load
+reports and skip unused Lua collection tables. A conservative Step gate rejects
+transport snapshots inside a logical generation block; measured Diode circuit
+and DC/pre-gain leaves remain separate from complete program admission. A
+bounded audio conversion-buffer reuse preserves all 158,605,863 scalar bit patterns,
+resource metadata and progress events in the actual V2 Clarinet initial load.
+That load made zero sample-decryption calls; buffer allocation requests fell
+from 38,903 to 1,231 without a demonstrated total startup speed improvement.
 
 At installed checkpoint `75998c3`, the combined `uvi,standalone` optimized CI test run passed 977 library checks,
 89 CLI/playback checks and four additional binary/integration checks. Thirty-five
