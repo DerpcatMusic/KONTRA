@@ -1,7 +1,7 @@
 # Initial admission reuse and phase cancellation
 
-Reviewed 2026-10-04. These changes follow installed `817b03a` and remain later
-source evidence. They do not establish complete startup, live deadlines or native
+Reviewed 2026-10-04. These changes are included in installed `bb60218`;
+their scoped source evidence does not establish complete startup, live deadlines or native
 instrument fidelity.
 
 An immutable Program's exact static admission result is reused during its
