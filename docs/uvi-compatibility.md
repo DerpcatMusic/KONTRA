@@ -1,12 +1,45 @@
 # UVI capabilities and validation evidence
 
-Status reviewed 2026-10-04. KONTRA has a native, feature-gated UVI interoperability path for bounded archive inspection, protected-program decoding, graph preservation, multichannel sample loading and offline script/render experiments. The latest controlled paid-corpus audit rendered **40 of 40 programs** with their original scripts under both short-note and expressive timelines, producing finite, nonzero outputs. This is **not a claim that every Falcon program or the audited commercial libraries plays correctly**, and it does not establish complete Falcon catalog, editor or sound compatibility. Supported programs now have an optional per-part plugin player, shared rack mixing and native control panels; see the [player ownership boundary](PLAYER_BACKEND_BOUNDARY.md).
+Status reviewed 2026-10-04. KONTRA's optional `uvi` path implements bounded UFS/program decoding, resident multichannel samples, a worker-owned Lua/DSP runtime and per-part plugin integration. **Complete Falcon/UVI program, sound, editor and realtime compatibility remains unfinished.** Parsed, statically admitted, initialized, rendered and native-equivalent are separate evidence levels.
+
+## Current status
+
+The installed standalone, CLAP and VST3 checkpoint is **`1213001`**. Source
+follow-ups after that checkpoint are **not installed**. Installation and focused
+validation are recorded in [the checkpoint report](UVI_TEST_CHECKPOINT.md#checkpoint-validation);
+historical full-suite and full-corpus counts below do not describe a new run of
+either the installed package or the latest source.
+
+| Area | Established scope | Exact remaining boundary |
+| --- | --- | --- |
+| Reader and access | Official Workstation 4.0.9 x64 layout/fingerprint checks, owned protected-bank access verification and private bank-bound records | Reader/bank inputs must remain available; unsupported protection/layouts and unresolved aliases fail explicitly. No universal reader or bank support. |
+| Catalog and program decode | Current saved catalog: 26 UVI banks, **660 declarations** (620 Augmented Orchestra, 40 VWinds). Separate bounded frontier: 98 decoded, 41 static preflight admissions | The 98 include 50 external Starter presets, which are not installed in the normal catalog. Eight selected Augmented programs still fail admission; the other 612 declarations have no decode/admission result in this frontier. Catalog count is not playable coverage. |
+| Samples and preload | Historical owned-corpus decode covers 48,440 audio assets. Recent actual V2 Clarinet preload retains 196 PCM resources / 317,220,848 bytes and exact scalar bits | Resident packed PCM only; protected-UFS streaming is absent. Decode success does not establish complete routing, DSP, Lua or instrument fidelity. Initial resources exclude later script-requested loads. |
+| Lua, events and resources | Original-script initialization/render observations, typed native objects, cooperative callbacks, scoped host-note ownership and success/failure audio-resource completion | Complete host/property inventory, synthetic Part/Synth setters, MPE/tuning/expression projection and native asynchronous interleaving remain incomplete. The allocating VM runs on the worker, off the audio callback. |
+| Instrument UI | Installed original/V2 Clarinet census: 273/285 widgets, 38/39 pictures, one font each, 720×480 roots, zero failed/limited references. Authored drawing/edit/scaling regressions exist | Census snapshots are frame zero and exercise no controls. Native pixel fidelity, calibrated precision/pan readouts, advanced displays and installed Bitwig interaction remain unverified. Post-checkpoint help-text changes are source evidence only. |
+| DSP and musical behavior | Bounded native leaf comparisons and recorded 40/40 paid short/expressive renders on historical checkpoints; one external Starter FM render | These are finite/nonzero scoped outputs, not full instrument equivalence. Starter remains 1/50 scoped render coverage. Connected routes/lifecycle and broader settings still gate Augmented graphs; CombFilter/MS20/Flanger/Drive/Diode/MultiLFO leaf evidence does not admit their complete programs. |
+| Scheduling and host playback | Allocation-free callback transport/ownership regressions; separate source `72c671e` Alto Worker/Bridge replays run 10/20 seconds without endpoint failures, underruns or backpressure | Historical paid runs missed deadlines and earlier paced probes reached RequestCapacity. The successful source replay is not installed Bitwig validation or sustainable deadlines on every program/hardware configuration. The user's original blackout remains unclassified. |
+| Persistence and backend boundary | Authored two-part save/reopen controls and exact PCM; bounded native state and processed-boundary capture | Host pre-save cannot return capture failure and retains prior state with a diagnostic. Voices/transport are excluded. Kontakt remains part of the base build; independent backend feature isolation, a public neutral backend API and a stable external backend ABI remain unfinished. |
+
+The recent V2 Clarinet preload reads **1,231 mode-0 FLAC inputs totaling
+120,229,269 encoded bytes**, decoding 38,903 packets with **zero sample-decryption
+calls**. Decryption is therefore not the measured bottleneck for that load.
+The uninstalled conversion-buffer reuse preserves **158,605,863 scalar bit
+patterns**, metadata and progress while reducing buffer allocation requests
+from 38,903 to 1,231. Requested allocation traffic is not peak memory, and no
+whole-load startup speed gain was demonstrated. Catalog hydration, sample
+preparation and renderer CPU measurements must remain separate.
+
+The [player ownership boundary](PLAYER_BACKEND_BOUNDARY.md) records the current
+internal integration and proposed shared API. The chronological records below
+retain their original build/fixture scope; phrases such as “next source” refer
+to that point in the history. They cannot broaden the current status table.
 
 The [format](FALCON_FORMAT_GROUNDWORK.md) and [runtime/UI](FALCON_RUNTIME_UI_GROUNDWORK.md) groundwork reports retain the earlier 2026-10-02 audit. Their then-unknown format/runtime observations must not be read as the current implementation status. [Observed UFS2 layout](uvi-format.md) documents the separately scoped structural inspector.
 
-## Current test checkpoint follow-up
+## Retained checkpoint and source follow-ups
 
-The latest source adds exact hosted-root choking without synthesizing release callbacks, transport updates without redundant per-callback play/stop callbacks, and bounded program-state capture. State retains native persistent widgets/onSave data, original-node typed parameter deltas and approved sample/impulse paths. A fresh replacement validates its graph fingerprint, processor set, resources and DSP overrides; constructor/onLoad/onInit precedence follows the retained native measurements. Voice state and transport are excluded. Missing Gain/Pan defaults are scoped by the native measurements below; a complete property inventory remains unfinished. Ordinary playback and UI polling do not invoke onSave.
+The recorded source follow-up adds exact hosted-root choking without synthesizing release callbacks, transport updates without redundant per-callback play/stop callbacks, and bounded program-state capture. State retains native persistent widgets/onSave data, original-node typed parameter deltas and approved sample/impulse paths. A fresh replacement validates its graph fingerprint, processor set, resources and DSP overrides; constructor/onLoad/onInit precedence follows the retained native measurements. Voice state and transport are excluded. Missing Gain/Pan defaults are scoped by the native measurements below; a complete property inventory remains unfinished. Ordinary playback and UI polling do not invoke onSave.
 
 Explicit rack Save requests a processed audio boundary and fails rather than accepting stale native controls. The framework's host pre-save hook cannot return a failure: a failed capture retains the previous successful bytes and writes a diagnostic. Resume processing and save again when a partial packet or queued edit has not settled. No file-write capability is granted to native scripts by this state transport.
 
@@ -47,6 +80,10 @@ latency or sustainable realtime performance. The selected preload datasets made
 zero sample-decryption calls.
 
 ## Current evidence ledger
+
+These retained investigations span older installed checkpoints and later private
+source helpers. Their stated results apply only to those revisions and fixtures;
+the current installed/source split and remaining gaps are summarized above.
 
 An actual Alto Flute 2 hosted-worker/Bridge probe reproduced audible playback
 followed by `RequestCapacity`: the worker fell behind the bounded request queue
@@ -235,10 +272,10 @@ The `uvi` Cargo feature enables these modules. Archive, program, script and rend
 | [`maximizer`](../src/uvi/maximizer.rs) | Linked stereo lookahead and gain reduction | Measured bounded settings are admitted; attack, true-peak and alternate ceiling modes remain gated, with a slew-fidelity diagnostic. |
 | [`phasor`](../src/uvi/phasor.rs) | Measured allpass cascade, feedback, native control clock and bypass state | Bounded mono/stereo triangle/sine settings; stochastic shapes and unverified transition behavior remain gated or diagnosed. |
 | [`sparkverb`](../src/uvi/sparkverb.rs) | Stereo feedback network, diffusion and output filtering | Native comparisons cover bounded static layouts and moving modes 1/2. Moving mode 0, uncertain prime-delay boundaries and unmeasured shapes remain gated. Native moving comparisons use 256-frame blocks; smaller host spans have separate, unresolved native behavior. |
-| [`generator`](../src/uvi/generator.rs) | Per-voice Analog, external-wavetable and bounded four-operator FM oscillators | Measured unison, phase and modulation settings are admitted. PNG bitmap conversion is limited to 128 rows; larger native resampling and JPEG remain gated. Ambiguous bank wavetable cycle geometry is rejected; native random sequences and full anti-aliasing parity are unclaimed. |
-| [`worker`](../src/uvi/worker.rs) | Dedicated thread owning the VM, resources and renderer; bounded fixed event/PCM packets | Generation and activation epochs reject stale data. The exclusive callback-facing port allocates nothing; controller creation, private diagnostics, stop and both controller/owned-endpoint destruction belong off audio. CPU deadlines and plugin integration are separate work. |
+| [`generator`](../src/uvi/generator.rs) | Per-voice Analog, external-wavetable and bounded four-operator FM oscillators | Measured unison, phase and modulation settings are admitted. Bounded larger PNG conversion has scoped software-rescaler evidence; native FFT/harmonics, constant-input final output, JPEG, transparency and moving controls remain unverified or gated. Ambiguous bank wavetable cycle geometry is rejected; native random sequences and full anti-aliasing parity are unclaimed. |
+| [`worker`](../src/uvi/worker.rs) | Dedicated thread owning the VM, resources and renderer; bounded fixed event/PCM packets | Generation and activation epochs reject stale data. The exclusive callback-facing port allocates nothing; controller creation, private diagnostics, stop and both controller/owned-endpoint destruction belong off audio. Sustainable deadlines and actual installed host validation remain separate work. |
 | [`player`](../src/uvi/player.rs) | Persistent VM, prepared resource revisions and renderer clocks in one worker-owned session | Exclusive block boundaries retain future callbacks; validation precedes mutation, and execution failures require replacement. Allocating playback is not audio-callback safe. |
-| [`playback`](../src/uvi/playback.rs) | Offline native graph routing, voices, multichannel processing and rendering | Preflight rejects unsupported processors and nondefault behaviors, including initially bypassed modules that scripts might enable. |
+| [`playback`](../src/uvi/playback.rs) | Native graph routing, voices, multichannel processing and rendering | Preflight rejects unsupported processors and nondefault behaviors, including initially bypassed modules that scripts might enable. |
 | [`cli`](../src/uvi/cli.rs), [`uvi` entry points](../src/uvi/mod.rs) | Local inspection/check/decode/render commands and the separate open-mapping path | Offline commands do not establish plugin integration or real-time safety. |
 
 The open lowercase `layers/layer/zone` mapping format has a separate path into existing sample/engine primitives. It is not interchangeable with uppercase Program XML. Its current playback boundary is mono/stereo; native Program processing separately retains multichannel resources.
@@ -279,9 +316,9 @@ The `uvi-play` path owns one persistent Player across the file. Its optional `--
 
 The corresponding offline command surfaces include `uvi-bank`, `uvi-key`, `uvi-program`, `uvi-decode`, `uvi-check` and `uvi-play`. `uvi-check` runs more than a syntax check: it can initialize program scripts. The corpus syntax-only result below came from compiling Lua chunks into functions **without executing them**, not from running `uvi-check` on every commercial preset.
 
-## Privately owned corpus: established facts
+## Historical privately owned corpus audits
 
-The latest completed immutable audit is clean checkpoint `f02461696d295a19beae4e6ff70ed3036450174c` (0.3.148), executable SHA-256 `39b97d8026746a62332e01c5b085799bfefecaa21bee2603da7f3e705c4c0f24`, using the optimized CI profile without ThinLTO. **All 40 short, 40 expressive and four additional-rate paid renders pass**. All fifty Starter script checks pass; one complete Starter render is audible, and the other 49 fail at their explicit preflight gates. The 91 written WAVs from 140 actual render attempts, including four silent first-note attempts and two smoke tests, independently pass complete geometry and finite-value checks. The executable hash and private permissions are unchanged; full asset decoding was not repeated.
+The retained full short/expressive immutable audit is historical clean checkpoint `f02461696d295a19beae4e6ff70ed3036450174c` (0.3.148), executable SHA-256 `39b97d8026746a62332e01c5b085799bfefecaa21bee2603da7f3e705c4c0f24`, using the optimized CI profile without ThinLTO. **All 40 short, 40 expressive and four additional-rate paid renders pass**. All fifty Starter script checks pass; one complete Starter render is audible, and the other 49 fail at their explicit preflight gates. The 91 written WAVs from 140 actual render attempts, including four silent first-note attempts and two smoke tests, independently pass complete geometry and finite-value checks. The executable hash and private permissions are unchanged; full asset decoding was not repeated. These results are not a rerun at `1213001` or the later source.
 
 Against `191e481` in the same profile, 38/40 PCM outputs match in each paid batch and all four rate outputs match. All eighty paid timelines and four rate probes retain their event/host-command counts; all fifty Starter preflight lists and script-check counts match. Differences remain confined to the same two previously demonstrated stochastic cases. The retained repeat study below supplies their variability evidence; no new repeat study was needed. This audit exercises ordinary CLI rendering, not the newly rooted Worker transport, live plugin adoption, or vendor-paid native parity.
 
@@ -383,7 +420,7 @@ Bundle assembly consumes operands and caches the assembled result rather than re
 
 ## Lua, KSP and H.A.T.
 
-UVI specifies a sandboxed Lua 5.1 host with engine objects, callbacks, module restrictions and real-time memory constraints. KONTRA's interpreter is the matching Lua 5.1 language profile, but the present UVI scheduler/host is an **offline implementation that allocates**. Compiler acceptance does not validate initialization, callback behavior, asynchronous resources or audio-thread safety. [UVI Lua reference](https://lua.uvi.net/_lua_reference.html)
+UVI specifies a sandboxed Lua 5.1 host with engine objects, callbacks, module restrictions and real-time memory constraints. KONTRA's interpreter is the matching Lua 5.1 language profile; its scheduler/host **allocates and runs off the audio callback**, in offline commands or the dedicated plugin worker. Compiler acceptance does not validate initialization, callback behavior, asynchronous resources or audio-thread safety. [UVI Lua reference](https://lua.uvi.net/_lua_reference.html)
 
 A stock Lua VM does not automatically replace KSP. KSP syntax, Kontakt parameter addresses, voice ownership, persistence and host bindings remain part of the existing Kontakt runtime. UVI scripts need their own typed Program/Layer/Keygroup/Oscillator objects, event forwarding and cooperative timing. Reuse below those host contracts does not erase the distinction. UVI documents default forwarding and `onEvent` precedence explicitly. [UVI callbacks](https://lua.uvi.net/group___event_callbacks.html)
 
@@ -407,7 +444,7 @@ The interpreter validates timeline bounds, MIDI ranges and finite transport/bend
 
 `library::BankResources` owns the decoded audio cache and exposes a bank-only resource callback. Alias snapshots share PCM allocations; a revision changes only after a new alias resolves successfully. The cache charges unique packed PCM against 512 MiB and retained alias strings plus inline key/value sizes against 16 MiB; allocator and hash-table overhead are excluded. `Renderer::install_prepared_samples` validates additions before merging, rejects conflicting aliases, and updates processor resource maps without replacing active convolution state. Decoding and preparation must remain off the audio callback.
 
-## Reference comparisons and remaining gates
+## Historical reference comparisons and retained gates
 
 The checkpoint `6d6ecc1` audit used one retained optimized CLI binary for both paid and free checks, at most four concurrent processes, and a velocity-100 note from 0 to 500 ms followed by rendering through 1,500 ms. Its SHA-256 is `9bd3b12aed4d9c8bf072707da9f3e8b2803fd6bcc0c5a974f2f1ac5477e94585`; the executable embeds revision `6d6ecc14056e063f0e79e3f3a06b2dab1bb035ab`. Every paid program first received note 60; four completed but silent tests produced nonzero output when retried at a note selected from active keygroup ranges. Two further programs produced very quiet default-note output outside their serialized active sample ranges; earlier checkpoint supplemental in-range tests produced substantially stronger output and passed the same independent WAV checks. The current expressive timelines use valid notes for those programs. All 40 final short regression outputs passed the checks above, with no operation failures or logged/dropped messages. This establishes the tested timelines, not every note or expressive control.
 
@@ -419,7 +456,7 @@ Original synthetic probes against official UVI hosts informed the implemented On
 
 Native probes now distinguish per-processor posting registrations, per-callback held state, and independent DSP launches sharing one opaque voice handle. Forwarded releases match the key and issuing layer and release the oldest matching launch; gain, tune and fades affect all matching live voices within their issuing scope. Delayed posts survive an early release, and controls before DSP start do not alter their future note. These scoped checks do not establish all native key-buffer or coroutine behavior.
 
-Current explicit limitations include unsupported wider Falcon generators/processors; unresolved volume aliases; protected UFS streaming; full asynchronous load/save/browse behavior; complete editor fonts/units/advanced displays and plugin automation integration; and real-time execution of the allocating Lua host. Preflight or operation-specific errors must remain visible when a behavior is unavailable.
+Explicit remaining limitations include unsupported wider Falcon generators/processors; unresolved volume aliases; protected UFS streaming; full asynchronous load/save/browse behavior; complete editor font/unit fidelity, advanced displays and plugin automation integration; and sustainable deadlines for the worker-owned Lua/DSP path. Preflight or operation-specific errors must remain visible when a behavior is unavailable.
 
 Source corrections after the recorded audit implement per-voice relative controls, declaration-order Constant chains and source-ancestry scoping for Layer-issued ScriptModulation. Their authored/native checks remain separate from the immutable corpus results above.
 
