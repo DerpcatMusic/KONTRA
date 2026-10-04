@@ -211,6 +211,8 @@ pub fn preflight(program: &Program) -> Vec<Unsupported> {
                 super::flanger::FIDELITY_DIAGNOSTIC
             } else if node.kind == "Drive" {
                 super::drive::FIDELITY_DIAGNOSTIC
+            } else if node.kind == "DiodeClipper" {
+                super::diode::FIDELITY_DIAGNOSTIC
             } else {
                 MISSING_EXECUTION
             };
@@ -3356,6 +3358,14 @@ mod tests {
         assert_eq!(blocked.len(), 1);
         assert_eq!(blocked[0].kind, "Drive");
         assert_eq!(blocked[0].reason, super::super::drive::FIDELITY_DIAGNOSTIC);
+    }
+    #[test]
+    fn diode_circuit_evidence_keeps_unmeasured_callback_gated() {
+        let program = parse_program(r#"<Program><Inserts><DiodeClipper Drive="3" Tone="20000" HighPass="1" Asymmetry="0" OutputGain="-3" Bypass="1"/></Inserts></Program>"#).unwrap();
+        let blocked = preflight(&program);
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked[0].kind, "DiodeClipper");
+        assert_eq!(blocked[0].reason, super::super::diode::FIDELITY_DIAGNOSTIC);
     }
     #[test]
     fn sample_metadata_remains_checked_and_storage_rejects_nonfinite_pcm() {
