@@ -209,6 +209,8 @@ pub fn preflight(program: &Program) -> Vec<Unsupported> {
                 super::ms20::FIDELITY_DIAGNOSTIC
             } else if node.kind == "Flanger" {
                 super::flanger::FIDELITY_DIAGNOSTIC
+            } else if node.kind == "MultiLFO" {
+                super::multilfo::FIDELITY_DIAGNOSTIC
             } else if node.kind == "Drive" {
                 super::drive::FIDELITY_DIAGNOSTIC
             } else if node.kind == "DiodeClipper" {
@@ -451,7 +453,9 @@ pub fn preflight(program: &Program) -> Vec<Unsupported> {
             if let Some(source) = error.downcast_ref::<modulation::UnsupportedSourceKind>() {
                 // The same non-executable source was already rejected above.
                 if !unsupported.iter().any(|issue| {
-                    issue.node == source.node && issue.reason == MISSING_EXECUTION
+                    issue.node == source.node
+                        && (issue.reason == MISSING_EXECUTION
+                            || issue.reason == super::multilfo::FIDELITY_DIAGNOSTIC)
                 }) {
                     unsupported.push(Unsupported {
                         node: source.node,
