@@ -2065,34 +2065,6 @@ dependencies = [
 [[package]]
 name = "moose-baseview"
 version = "0.3.4-moose.1"
-source = "git+https://github.com/Matari-Audio/moose?rev=bffa4677d0b82119d38566ce7e932dc5c463d497#bffa4677d0b82119d38566ce7e932dc5c463d497"
-dependencies = [
- "block2 0.6.2",
- "bytemuck",
- "calloop",
- "dispatch2",
- "dpi",
- "keyboard-types",
- "libc",
- "objc2 0.6.4",
- "objc2-app-kit 0.3.2",
- "objc2-core-foundation",
- "objc2-foundation 0.3.2",
- "objc2-quartz-core 0.3.2",
- "percent-encoding",
- "raw-window-handle",
- "windows 0.62.2",
- "windows-core 0.62.2",
- "windows-sys 0.61.2",
- "x11-dl",
- "x11rb",
- "xkbcommon-dl",
-]
-
-[[package]]
-name = "moose-baseview"
-version = "0.3.4-moose.1"
-source = "git+https://github.com/Matari-Audio/MUI#822b1922ad1872aaee15b371a31410b0f3580b88"
 dependencies = [
  "block2 0.6.2",
  "bytemuck",
@@ -2115,6 +2087,33 @@ dependencies = [
  "x11rb",
  "xkbcommon-dl",
  "zed-xim",
+]
+
+[[package]]
+name = "moose-baseview"
+version = "0.3.4-moose.1"
+source = "git+https://github.com/Matari-Audio/moose?rev=bffa4677d0b82119d38566ce7e932dc5c463d497#bffa4677d0b82119d38566ce7e932dc5c463d497"
+dependencies = [
+ "block2 0.6.2",
+ "bytemuck",
+ "calloop",
+ "dispatch2",
+ "dpi",
+ "keyboard-types",
+ "libc",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+ "objc2-quartz-core 0.3.2",
+ "percent-encoding",
+ "raw-window-handle",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+ "windows-sys 0.61.2",
+ "x11-dl",
+ "x11rb",
+ "xkbcommon-dl",
 ]
 
 [[package]]
@@ -2375,7 +2374,7 @@ dependencies = [
  "accesskit_windows",
  "arboard",
  "keyboard-types",
- "moose-baseview 0.3.4-moose.1 (git+https://github.com/Matari-Audio/MUI)",
+ "moose-baseview 0.3.4-moose.1",
  "mui",
  "mui-access",
  "objc",
@@ -5451,7 +5450,6 @@ checksum = "163b33ed8786455e2fa5d72f554057ce3f3182425434f756cd39c99839d88e23"
 [[package]]
 name = "xim-ctext"
 version = "0.3.0"
-source = "git+https://github.com/Matari-Audio/MUI#822b1922ad1872aaee15b371a31410b0f3580b88"
 dependencies = [
  "encoding_rs",
 ]
@@ -5459,7 +5457,6 @@ dependencies = [
 [[package]]
 name = "xim-parser"
 version = "0.2.1"
-source = "git+https://github.com/Matari-Audio/MUI#822b1922ad1872aaee15b371a31410b0f3580b88"
 dependencies = [
  "bitflags 2.13.2",
 ]
@@ -5623,7 +5620,6 @@ dependencies = [
 [[package]]
 name = "zed-xim"
 version = "0.4.0-zed"
-source = "git+https://github.com/Matari-Audio/MUI#822b1922ad1872aaee15b371a31410b0f3580b88"
 dependencies = [
  "ahash",
  "hashbrown 0.14.5",

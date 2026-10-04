@@ -23,6 +23,9 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[path = "browser_geometry.rs"]
+mod geometry;
+
 /// What the lower pane lists.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Source {
@@ -1002,11 +1005,7 @@ fn slide(ui: &mut Ui, id: &str, y: &mut f64, content_h: f64, reveal: Option<(f64
     bar_drag(ui, &bar_id, y, view_h, content_h);
     let revealed = view_h > 0. && reveal.is_some();
     if let Some((top, bottom)) = reveal.filter(|_| view_h > 0.) {
-        if top < *y {
-            *y = top;
-        } else if bottom > *y + view_h {
-            *y = bottom - view_h;
-        }
+        *y = geometry::reveal_offset(*y, view_h, top, bottom);
     }
     *y = y.clamp(0., (content_h - view_h).max(0.));
     // The rows are built for where it is drawn, gliding to `y`.
