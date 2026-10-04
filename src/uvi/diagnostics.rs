@@ -60,6 +60,11 @@ pub fn fidelity_diagnostics() -> Vec<&'static str> {
 /// Does not open samples, construct a renderer, run scripts or inspect voices.
 /// Node IDs and parents are the retained parser graph, including XML wrappers.
 pub fn report(program: &Program) -> Report {
+    report_preflighted(&playback::ProgramPreflight::new(program))
+}
+
+pub(crate) fn report_preflighted(preflight: &playback::ProgramPreflight<'_>) -> Report {
+    let program = preflight.program();
     let mut nodes = program
         .nodes
         .iter()
@@ -83,13 +88,13 @@ pub fn report(program: &Program) -> Report {
             preflight_rejections: Vec::new(),
         })
         .collect::<Vec<_>>();
-    let rejected = playback::preflight(program);
+    let rejected = preflight.unsupported();
     let preflight_admitted = rejected.is_empty();
     for rejection in rejected {
         let node = &mut nodes[rejection.node];
         node.preflight_rejections
             .push(if rejection.kind == node.kind {
-                rejection.reason
+                rejection.reason.clone()
             } else {
                 format!("{}: {}", rejection.kind, rejection.reason)
             });

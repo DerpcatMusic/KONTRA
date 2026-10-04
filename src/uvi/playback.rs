@@ -43,6 +43,29 @@ pub struct Unsupported {
     pub reason: String,
 }
 
+/// Static admission tied to the exact immutable graph inspected. Runtime sample,
+/// rate and restored-parameter admission remain renderer checks.
+pub(crate) struct ProgramPreflight<'a> {
+    program: &'a Program,
+    unsupported: Vec<Unsupported>,
+}
+
+impl<'a> ProgramPreflight<'a> {
+    pub(crate) fn new(program: &'a Program) -> Self {
+        Self { program, unsupported: preflight(program) }
+    }
+    pub(crate) fn program(&self) -> &'a Program { self.program }
+    pub(crate) fn unsupported(&self) -> &[Unsupported] { &self.unsupported }
+    pub(crate) fn validate(&self) -> Result<()> {
+        ensure!(
+            self.unsupported.is_empty(),
+            "Native UVI graph preflight failed: {}",
+            serde_json::to_string(&self.unsupported)?
+        );
+        Ok(())
+    }
+}
+
 fn wrapper(kind: &str) -> bool {
     matches!(
         kind,
@@ -1026,12 +1049,16 @@ impl<'a> Renderer<'a> {
         rate: u32,
     ) -> Result<Self> {
         ensure!((8_000..=192_000).contains(&rate), "Invalid UVI render rate");
-        let unsupported = preflight(program);
-        ensure!(
-            unsupported.is_empty(),
-            "Native UVI graph preflight failed: {}",
-            serde_json::to_string(&unsupported)?
-        );
+        Self::new_preflighted(&ProgramPreflight::new(program), samples, rate)
+    }
+    pub(crate) fn new_preflighted(
+        preflight: &ProgramPreflight<'a>,
+        samples: HashMap<String, Arc<Sample>>,
+        rate: u32,
+    ) -> Result<Self> {
+        ensure!((8_000..=192_000).contains(&rate), "Invalid UVI render rate");
+        preflight.validate()?;
+        let program = preflight.program();
         let mut validated_samples = HashSet::new();
         let mut sample_bytes = 0usize;
         for sample in samples.values() {
@@ -3431,6 +3458,32 @@ mod tests {
         assert_eq!(blocked[0].kind, "ControlGraph");
         assert!(blocked[0].reason.contains("Unsupported UVI control source"));
     }
+    #[test]
+    fn reused_program_preflight_keeps_rejections_and_runtime_admission() {
+        let rejected = parse_program("<Program><Inserts><UnknownFX/></Inserts></Program>").unwrap();
+        let preflighted = ProgramPreflight::new(&rejected);
+        let expected = format!("Native UVI graph preflight failed: {}",
+            serde_json::to_string(&preflight(&rejected)).unwrap());
+        assert_eq!(preflighted.validate().unwrap_err().to_string(), expected);
+        assert_eq!(Renderer::new_preflighted(&preflighted, HashMap::new(), 48000)
+            .err().unwrap().to_string(), expected);
+        assert_eq!(Renderer::new(&rejected, HashMap::new(), 0)
+            .err().unwrap().to_string(), "Invalid UVI render rate");
+        assert_eq!(serde_json::to_value(super::super::diagnostics::report(&rejected)).unwrap(),
+            serde_json::to_value(super::super::diagnostics::report_preflighted(&preflighted)).unwrap());
+
+        let valid = parse_program("<Program/>").unwrap();
+        let preflighted = ProgramPreflight::new(&valid);
+        let mut samples = HashMap::new();
+        let mut invalid = sample(2);
+        invalid.frames += 1;
+        samples.insert("authored.wav".into(), Arc::new(invalid));
+        let expected = Renderer::new(&valid, samples.clone(), 48000).err().unwrap().to_string();
+        assert_eq!(Renderer::new_preflighted(&preflighted, samples, 48000)
+            .err().unwrap().to_string(), expected);
+        assert!(Renderer::new_preflighted(&preflighted, HashMap::new(), 48000).is_ok());
+    }
+
     fn sample(channels: usize) -> Sample {
         Sample {
             rate: 48000,
