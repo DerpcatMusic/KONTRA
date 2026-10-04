@@ -104,6 +104,42 @@ Inline state grows from 48 to 64 bytes on the checked Linux target; no throughpu
 improvement is claimed before measurement.
 Exactness assumes the same fixed floating-point environment as the existing kernel.
 
+## Exact velocity projection follow-up
+
+The existing isolated adapter lowers exact CLAP/VST3 normalized velocity into
+its older 7-bit engine input. Positive values could previously round to zero and
+fault the complete UVI endpoint. The source correction preserves positivity by
+using minimum 1 after validation; exact zero stays zero. This changes tiny-positive
+quantized velocity for the current Kontakt adapter too, without modifying the
+separate main core or introducing a precision guarantee.
+
+The UVI input cannot currently represent an exact-zero attack. Its correction
+completes only the newly allocated root without dispatching a script note, preserves
+prior voices and retains the tuple through canonical End acceptance/retry. A
+dedicated diagnostic counts rejections per reached native destination. Existing
+invalid input, duplicate/capacity, MPE, tuning and prior-failure guards remain.
+When porting to the newer float core, preserve the original velocity there and
+apply any necessary quantization only at the backend boundary. Five authored functional checks now pass, including quiet exact CLAP/VST3
+PCM, actual Worker/Slot prior-voice survival, zero audio heap, canonical End
+backpressure and a genuine mixed Kontakt/UVI owner retained until Off.
+
+## Documented AfterTouch omni scope
+
+The [current UVI callback API](https://lua.uvi.net/group___event_callbacks.html)
+defines omitted AfterTouch channels as omni and `postEvent` channel zero as
+omni. The isolated script host previously chose channel 1. The source correction
+retains one typed omni event through downstream processors with a nil channel;
+it broadcasts at the existing renderer/reference-consumer boundary. It does not
+invoke each downstream callback sixteen times or change the sender's Layer scope.
+Explicit channels 1–16 retain their original mapping. Invalid values, accidental
+fractional-to-zero coercion, external MIDI channels and MPE gates stay distinct.
+
+Four authored checks cover helper/post validation, downstream Program/Layer
+forwarding, two active Renderer channels with unchanged note identities and
+the consumed reference Engine helper. All four checks pass. The reference
+helper check is not a complete Mapping playback proof, and current documentation
+does not establish Workstation 4.0.9 native oracle equivalence.
+
 ## Implemented loading and audio ownership
 
 Kontakt remains the immediate `Engine` player. UVI has a concrete optional per-part endpoint feeding the same Rack mixer; it is no longer only a staged CLI/controller. `Part.uvi` is an appended native bank/UUID/member identity, preserving older positional state fields (`src/plugin.rs:108`). Live diagnostics read installed generation/failure atomics (`src/plugin.rs:438`). Rack still stores Kontakt engines, with parallel optional native endpoints in Dsp; this is an implemented two-player adaptation, not yet a neutral backend enum/API.

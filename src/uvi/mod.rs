@@ -329,6 +329,14 @@ impl Mapping {
     }
 }
 
+fn aftertouch_all(engine: &mut Engine, value: u8) -> Result<()> {
+    ensure!(value < 128, "Invalid UVI omnichannel pressure");
+    for channel in 0..16 {
+        engine.channel_pressure(channel, value);
+    }
+    Ok(())
+}
+
 pub fn render(
     mapping: &Mapping,
     commands: &[script::Command],
@@ -441,6 +449,7 @@ pub fn render(
                     engine.pitch_bend(*channel, value.round() as u16);
                 }
                 Action::AfterTouch { channel, value } => engine.channel_pressure(*channel, *value),
+                Action::AfterTouchAll { value } => aftertouch_all(&mut engine, *value)?,
                 Action::PolyAfterTouch {
                     channel,
                     note,
@@ -594,4 +603,46 @@ pub fn open_member(path: &Path, offset: u64, length: u64) -> Result<audio::Sampl
             false,
         )?
         .open()
+}
+
+#[cfg(test)]
+mod aftertouch_tests {
+    use super::*;
+    use crate::import::{ModAssignment, ModSource, ModTarget};
+
+    #[test]
+    fn reference_omni_consumer_updates_two_active_engine_channels() {
+        let run = |channels: Option<&[u8]>| {
+            let path = PathBuf::from("authored-pressure.wav");
+            let group = Group { mods: vec![ModAssignment { name: "pressure".into(),
+                source: ModSource::MonoAftertouch, target: ModTarget::Volume, intensity: 1.,
+                invert: false, lag_ms: 0, shaper: None }], ..Default::default() };
+            let bank = Bank::from_samples(vec![group], vec![Zone { sample: path.clone(),
+                available: true, ..Default::default() }], vec![(path, audio::Sample {
+                rate: 48000, frames: vec![[0.25; 2]; 2048] })]).unwrap();
+            let mut engine = Engine::default();
+            engine.attack = 0.;
+            engine.set_bank(Some(Box::new(bank)));
+            for (channel, pan) in [(0, -1.), (9, 1.)] {
+                let mut event = NoteEvent::new(channel, 60, 100);
+                event.pan = pan;
+                assert!(engine.start_event(&event).is_some());
+            }
+            let (mut left, mut right) = ([0.; 64], [0.; 64]);
+            engine.render(&mut left, &mut right);
+            assert_eq!(engine.active_voices(), 2);
+            assert!(aftertouch_all(&mut engine, 128).is_err());
+            if let Some(channels) = channels {
+                for &channel in channels { engine.channel_pressure(channel, 127); }
+            } else { aftertouch_all(&mut engine, 127).unwrap(); }
+            for _ in 0..8 { engine.render(&mut left, &mut right); }
+            assert_eq!(engine.active_voices(), 2);
+            [left[63], right[63]]
+        };
+        let omni = run(None);
+        assert_eq!(omni, run(Some(&[0, 9])));
+        let targeted = run(Some(&[0]));
+        assert!((omni[0] - targeted[0]).abs() < 1e-6);
+        assert!(omni[1] > targeted[1] + 1e-4);
+    }
 }

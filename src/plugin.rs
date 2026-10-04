@@ -568,6 +568,7 @@ struct AudioDiagnostics {
     parts: Vec<PartDiagnostics>,
     unsupported_note_brightness: u64,
     unsupported_host_expression: u64,
+    uvi_zero_velocity_rejections: u64,
     alignment_overflows: u64,
     host_note_end_rejections: u64,
 }
@@ -575,7 +576,7 @@ struct AudioDiagnostics {
 impl AudioDiagnostics {
     fn with_parts(count: usize) -> Self {
         Self { block: 0, sample_rate: 0.0, block_size: 0, output_channels: 0,
-            offline: false, output_buses: [(0, 0); BUSES], parts: vec![PartDiagnostics::default(); count], unsupported_note_brightness: 0, unsupported_host_expression: 0, alignment_overflows: 0, host_note_end_rejections: 0 }
+            offline: false, output_buses: [(0, 0); BUSES], parts: vec![PartDiagnostics::default(); count], unsupported_note_brightness: 0, unsupported_host_expression: 0, uvi_zero_velocity_rejections: 0, alignment_overflows: 0, host_note_end_rejections: 0 }
     }
 }
 
@@ -2225,6 +2226,16 @@ fn drain_audio_diagnostics(params: &SamplerParams) {
                 "reason":"Native note event or expression has an unsupported or invalid value law/address, or its exact provenance was lost to input-buffer overflow. It was not projected onto another note's key row.",
             }));
         }
+        let zero_rejections = audio.uvi_zero_velocity_rejections.saturating_sub(previous.as_ref()
+            .map_or(0, |old| old.uvi_zero_velocity_rejections));
+        if zero_rejections != 0 {
+            crate::diagnostics::event(crate::diagnostics::LogLevel::Warning, "midi", "uvi_zero_velocity_note_rejected", serde_json::json!({
+                "instance_id":params.shared.instance_id, "delta":zero_rejections,
+                "total":audio.uvi_zero_velocity_rejections,
+                "scope":"Each reached native destination; not a count of unique host notes.",
+                "reason":"An exact normalized-zero host attack cannot be represented by the current UVI note input. Only that attack completed; prior voices were retained.",
+            }));
+        }
         for (part, current) in audio.parts.iter().enumerate() {
             // Rack slots retain their Engine across instrument/script reloads;
             // these counters have Engine lifetime, not generation lifetime.
@@ -2298,6 +2309,7 @@ fn capture_audio_diagnostics(s: &mut Dsp, p: &SamplerParams, frames: usize, chan
     audio.block_size = frames; audio.output_channels = channels; audio.offline = offline;
     audio.unsupported_note_brightness = s.unsupported_note_brightness;
     audio.unsupported_host_expression = s.unsupported_host_expression;
+    audio.uvi_zero_velocity_rejections = s.uvi_zero_velocity_rejections;
     audio.alignment_overflows=s.align.overflows();
     audio.host_note_end_rejections=s.host_note_end_rejections;
     audio.output_buses = std::array::from_fn(|bus| cx.bus_routing.output(bus).map_or(if bus == 0 { (0, channels.min(2)) } else { (0, 0) }, |r| (r.channel_start(), r.channel_count())));
@@ -3301,7 +3313,10 @@ fn exact_host_input(exact: ExactEventRef<'_>) -> Option<ExactInput> {
             ExactNoteKind::On => {
                 let (Ok(port), Ok(channel), Ok(key)) = (u8::try_from(pattern.port), u8::try_from(pattern.channel), u8::try_from(pattern.key)) else { return ExactInput::Unsupported };
                 if channel >= 16 || key >= 128 || !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) || !tune.is_finite() { return ExactInput::Unsupported; }
-                ExactInput::Routed(In::HostOn(HostNote { port, channel, key, id:pattern.id, clap }, (velocity * 127.).round() as u8, tune), port)
+                // This branch still has a 7-bit engine input. Preserve a positive
+                // exact attack through lowering; exact zero keeps its identity.
+                let velocity = if velocity > 0. { ((velocity * 127.).round() as u8).max(1) } else { 0 };
+                ExactInput::Routed(In::HostOn(HostNote { port, channel, key, id:pattern.id, clap }, velocity, tune), port)
             }
             ExactNoteKind::Off => ExactInput::Routed(In::HostOff(pattern), 0),
             ExactNoteKind::Choke => ExactInput::Routed(In::HostChoke(pattern), 0),
@@ -3343,14 +3358,19 @@ fn input_offset(event: &LosslessEventRef<'_>) -> u32 {
 }
 
 #[cfg(feature = "uvi")]
-fn native_delivery<'a>(native: &'a mut [Option<uvi_control::Audio>], parts: &'a [Arc<PartShared>], shared: &'a Shared)
+fn native_delivery<'a>(native: &'a mut [Option<uvi_control::Audio>], parts: &'a [Arc<PartShared>], shared: &'a Shared, zero_rejections: &'a mut u64)
     -> impl FnMut(usize, u8, In, &Router, bool) -> bool + 'a {
     move |slot, port, ev, router, reached| {
         let Some(audio) = native.get_mut(slot).and_then(Option::as_mut) else { return false };
         let frame = audio.slot().frame();
-        if let Err(error) = audio.slot_mut().feed(ev, port, reached, router.mpe_enabled()) {
-            part_atoms(parts, shared, slot).unwrap()
-                .record_uvi_failure(audio, error, uvi::FailureStage::Feed, frame);
+        match audio.slot_mut().feed(ev, port, reached, router.mpe_enabled()) {
+            Err(error) => part_atoms(parts, shared, slot).unwrap()
+                .record_uvi_failure(audio, error, uvi::FailureStage::Feed, frame),
+            Ok(()) if reached && matches!(ev, In::HostOn(_,0,tune) if tune == 0.) => {
+                // Count each reached native destination, not unique host inputs.
+                *zero_rejections = zero_rejections.saturating_add(1);
+            }
+            Ok(()) => {}
         }
         if reached && !router.external_input_supported() {
             let error = audio.slot_mut().abort_unsupported_router();
@@ -3380,7 +3400,7 @@ fn feed_host_input(s: &mut Dsp, p: &SamplerParams, ev: In, port: u8, offset: u32
     }
     #[cfg(feature = "uvi")]
     {
-        let mut external = native_delivery(&mut s.uvi, &s.shared_parts, &p.shared);
+        let mut external = native_delivery(&mut s.uvi, &s.shared_parts, &p.shared, &mut s.uvi_zero_velocity_rejections);
         if holding {
             s.align.arrive_with(&mut s.rack, &mut s.routers, port, ev,
                 s.align.clock + u64::from(offset), rate, &s.native_slots, &mut external);
@@ -3554,6 +3574,7 @@ pub struct Dsp {
     diagnostic: AudioDiagnostics,
     unsupported_note_brightness: u64,
     unsupported_host_expression: u64,
+    uvi_zero_velocity_rejections: u64,
     host_note_end_rejections: u64,
     // Created off-thread with the rack, never acquired or replaced by reset/process.
     _diagnostics: crate::diagnostics::DiagnosticLease,
@@ -3587,7 +3608,7 @@ impl Default for Dsp {
             snapshot_seen: vec![(0, 0); RACK_SLOTS], routers: (0..RACK_SLOTS).map(|_| Router::default()).collect(),
             key_channels: KeyChannels::default(), key_slots: KeySlots::default(), load: 0.0,
             align: Align::default(), until_diagnostics: 0, shared_parts: Vec::new(),
-            diagnostic: AudioDiagnostics::with_parts(RACK_SLOTS), unsupported_note_brightness: 0, unsupported_host_expression: 0, host_note_end_rejections: 0, _diagnostics: crate::diagnostics::acquire(),
+            diagnostic: AudioDiagnostics::with_parts(RACK_SLOTS), unsupported_note_brightness: 0, unsupported_host_expression: 0, uvi_zero_velocity_rejections: 0, host_note_end_rejections: 0, _diagnostics: crate::diagnostics::acquire(),
             #[cfg(feature = "uvi")]
             _uvi_controllers: None,
         }
@@ -4322,7 +4343,7 @@ impl PluginLogic for Sampler {
         if !holding && s.align.next_due().is_some() {
             #[cfg(feature = "uvi")]
             s.align.flush_with(&mut s.rack, &mut s.routers,
-                &mut native_delivery(&mut s.uvi, &s.shared_parts, &p.shared));
+                &mut native_delivery(&mut s.uvi, &s.shared_parts, &p.shared, &mut s.uvi_zero_velocity_rejections));
             #[cfg(not(feature = "uvi"))]
             s.align.flush(&mut s.rack, &mut s.routers);
         }
@@ -4412,7 +4433,7 @@ impl PluginLogic for Sampler {
                 // As host MIDI on port A, channel 1 plays it.
                 let (rack, routers) = (&mut s.rack, &mut s.routers);
                 #[cfg(feature = "uvi")]
-                let mut external = native_delivery(&mut s.uvi, &s.shared_parts, &p.shared);
+                let mut external = native_delivery(&mut s.uvi, &s.shared_parts, &p.shared, &mut s.uvi_zero_velocity_rejections);
                 #[cfg(not(feature = "uvi"))]
                 let mut external = |_:usize, _:u8, _:In, _:&Router, _:bool| false;
                 match play {
@@ -4441,7 +4462,7 @@ impl PluginLogic for Sampler {
             };
             #[cfg(feature = "uvi")]
             articulate::play_with(&mut s.rack, &mut s.routers, slot, 0, ev,
-                &mut native_delivery(&mut s.uvi, &s.shared_parts, &p.shared));
+                &mut native_delivery(&mut s.uvi, &s.shared_parts, &p.shared, &mut s.uvi_zero_velocity_rejections));
             #[cfg(not(feature = "uvi"))]
             articulate::play(&mut s.rack, &mut s.routers, slot, ev);
         }
@@ -4524,7 +4545,7 @@ impl PluginLogic for Sampler {
             if holding {
                 #[cfg(feature = "uvi")]
                 s.align.release_with(now, &mut s.rack, &mut s.routers,
-                    &mut native_delivery(&mut s.uvi, &s.shared_parts, &p.shared));
+                    &mut native_delivery(&mut s.uvi, &s.shared_parts, &p.shared, &mut s.uvi_zero_velocity_rejections));
                 #[cfg(not(feature = "uvi"))]
                 s.align.release(now, &mut s.rack, &mut s.routers);
                 if let Some(held) = s.align.next_due() {
@@ -8657,6 +8678,179 @@ end on"#;
         overflow.push(brightness);
         assert!(overflow.exact_for_event(0).is_none());
         assert!(unsupported_host_brightness(&overflow,0));
+    }
+
+    #[test]
+    fn quiet_exact_clap_and_vst3_attacks_match_minimum_midi_velocity_without_heap() {
+        use crate::{audio::Sample, import::{Group, Zone}};
+        for clap in [true, false] { for quiet in [1e-9, 0.001] {
+            let setup = || {
+                let mut dsp = Dsp::default(); dsp.until_poll = usize::MAX;
+                dsp.rack.parts[0].reset(48000.);
+                let bank = Bank::from_samples(vec![Group::default()], vec![Zone::default()],
+                    vec![(PathBuf::new(), Sample { rate:48000, frames:vec![[0.2;2];4096] })]).unwrap();
+                dsp.rack.parts[0].set_bank(Some(Box::new(bank)));
+                dsp
+            };
+            let address = if clap { ExactNoteAddress::from_raw_signed(0,4,60,42) }
+                else { ExactNoteAddress::from_vst3_signed(0,4,60,42) };
+            let events = |kind, velocity:f64| {
+                let mut events = EventList::with_capacity(1);
+                let body = if clap { ExactEventBody::Note { kind, address, velocity } }
+                    else { ExactEventBody::DetailedNote { kind, address, velocity:velocity as f32,
+                        tuning:0., length:None } };
+                events.try_push_exact(ExactEvent::new(16,body)).unwrap();
+                events
+            };
+            let (params, reference_params) = (SamplerParams::new(), SamplerParams::new());
+            let (mut actual, mut reference) = (setup(), setup());
+            let (on, minimum, off) = (events(ExactNoteKind::On,quiet),
+                events(ExactNoteKind::On,1./127.), events(ExactNoteKind::Off,0.));
+            let render = |dsp:&mut Dsp, params:&SamplerParams, events:&EventList| {
+                let (mut left,mut right) = ([0.;128],[0.;128]);
+                let mut channels = [&mut left[..],&mut right[..]];
+                let mut buffer = AudioBuffer::from_slices_checked(&[],&mut channels,128);
+                let transport = TransportInfo::default();
+                let mut outgoing = EventList::with_capacity(16);
+                let mut cx = ProcessContext::new(&transport,48000.,128,&mut outgoing);
+                assert_eq!(allocations(|| { Sampler::process(dsp,params,&mut buffer,events,&mut cx); }),0);
+                (left,right)
+            };
+            let pcm = render(&mut actual,&params,&on);
+            assert_eq!(pcm,render(&mut reference,&reference_params,&minimum));
+            assert!(pcm.0[..16].iter().all(|v| *v==0.));
+            assert!(pcm.0[16..].iter().any(|v| *v!=0.),"positive quiet exact attack was lost");
+            assert!(actual.rack.parts[0].host_key_held(4,60));
+            assert!(actual.rack.parts[0].voice_census().iter().any(|v| !v.released));
+            assert_eq!(render(&mut actual,&params,&off),render(&mut reference,&reference_params,&off));
+            assert!(!actual.rack.parts[0].host_key_held(4,60),"explicit Off lost exact owner");
+            assert_eq!(actual.unsupported_host_expression,0);
+        } }
+    }
+
+    #[cfg(feature = "uvi")]
+    #[test]
+    fn native_exact_dispatch_counts_zero_drop_and_retires_only_after_accepted_end_without_heap() {
+        for clap in [true,false] {
+            let params = SamplerParams::new(); params.shared.ensure_parts(1);
+            let (mut config,_) = crate::uvi::worker::tests::authored_bank_with_script(
+                "function onNote(e)postEvent(e)end function onRelease(e)postEvent(e)end");
+            config.expected_bank_uuid = Some([0;16]);
+            let path = config.bank.clone();
+            let source = library::UviSource { bank:path.clone(),bank_uuid:[0;16],member:config.member.clone() };
+            let mut registry = uvi_control::Registry::default();
+            registry.prepare(config,source,7,9,0,0,256,1).unwrap();
+            let start = Instant::now();
+            let audio = loop {
+                if let Some(audio) = registry.take_ready(7,9).unwrap() { break audio; }
+                assert!(start.elapsed()<std::time::Duration::from_secs(5),"authored native worker not ready");
+                std::thread::yield_now();
+            };
+            let mut dsp = Dsp::default(); dsp.until_poll=usize::MAX;
+            // Default rack slots all hear port0. Isolate this native destination
+            // so empty Kontakt slots do not retain their own exact-zero gates.
+            for control in dsp.rack.controls.iter_mut().skip(1) { control.port=1; }
+            dsp.uvi[0]=Some(audio);
+            let atoms = params.shared.part(0).unwrap();
+            atoms.uvi_generation.store(9,Ordering::Release);
+            atoms.uvi_part_generation.store(0,Ordering::Release);
+            let address = |id| if clap { ExactNoteAddress::from_raw_signed(0,4,60,id) }
+                else { ExactNoteAddress::from_vst3_signed(0,4,60,id) };
+            let attack = |id,velocity:f64| {
+                let mut events = EventList::with_capacity(1);
+                let body = if clap { ExactEventBody::Note { kind:ExactNoteKind::On,address:address(id),velocity } }
+                    else { ExactEventBody::DetailedNote { kind:ExactNoteKind::On,address:address(id),
+                        velocity:velocity as f32,tuning:0.,length:None } };
+                events.try_push_exact(ExactEvent::new(0,body)).unwrap(); events
+            };
+            for (id,velocity) in [(42,0.001),(43,0.)] {
+                let events = attack(id,velocity);
+                let LosslessEventRef::Exact(event) = events.lossless_iter().next().unwrap() else { panic!("exact lane") };
+                let Some(ExactInput::Routed(input,port)) = exact_host_input(event) else { panic!("valid projection") };
+                assert_eq!(allocations(|| feed_host_input(&mut dsp,&params,input,port,0,false,48000.)),0);
+            }
+            let owner = |id| crate::engine::HostNote { port:0,channel:4,key:60,id,clap };
+            let slot = dsp.uvi[0].as_ref().unwrap().slot();
+            assert!(slot.host_note_pending(owner(42)) && slot.has_host_note(owner(43)));
+            assert!(!slot.host_note_pending(owner(43)) && slot.error().is_none());
+            assert!(dsp.rack.parts.iter().all(|e| !e.host_note_present(owner(42))
+                && !e.host_note_present(owner(43))),"native-only fixture routed into a Kontakt slot");
+            assert_eq!(dsp.uvi_zero_velocity_rejections,1);
+            assert_eq!(dsp.unsupported_host_expression,0);
+            assert!(!atoms.uvi_failed.load(Ordering::Acquire));
+            let transport = TransportInfo::default();
+            if clap {
+                let mut blocked = EventList::with_capacity(0);
+                let mut cx = ProcessContext::new(&transport,48000.,128,&mut blocked);
+                assert_eq!(allocations(|| finish_host_notes(&mut dsp,&mut cx,0)),0);
+                assert!(dsp.uvi[0].as_ref().unwrap().slot().has_host_note(owner(43)),
+                    "rejected canonical End lost exact-zero identity");
+                assert_eq!(dsp.host_note_end_rejections,1);
+            }
+            let mut outgoing = EventList::with_capacity(4);
+            let mut cx = ProcessContext::new(&transport,48000.,128,&mut outgoing);
+            assert_eq!(allocations(|| finish_host_notes(&mut dsp,&mut cx,0)),0);
+            assert!(!dsp.uvi[0].as_ref().unwrap().slot().has_host_note(owner(43)));
+            assert!(dsp.uvi[0].as_ref().unwrap().slot().host_note_pending(owner(42)));
+            if clap {
+                assert_eq!(cx.output_events.lossless_iter().filter(|e| matches!(e,
+                    LosslessEventRef::Exact(e) if matches!(e.body(),ExactEventBody::Note {
+                        kind:ExactNoteKind::End,address:a,.. } if *a==address(43)))).count(),1);
+            } else { assert_eq!(cx.output_events.lossless_iter().count(),0); }
+            // With a genuine second destination, the existing Kontakt zero
+            // owner keeps its physical gate until Off. Native completion must
+            // not bypass the shared all-destination End condition.
+            dsp.rack.controls[1].port=0;
+            let mixed = attack(44,0.);
+            let LosslessEventRef::Exact(event) = mixed.lossless_iter().next().unwrap() else { panic!("exact lane") };
+            let Some(ExactInput::Routed(input,port)) = exact_host_input(event) else { panic!("valid projection") };
+            assert_eq!(allocations(|| feed_host_input(&mut dsp,&params,input,port,0,false,48000.)),0);
+            assert!(dsp.rack.parts[1].host_key_held(4,60));
+            assert!(dsp.rack.parts[1].host_note_present(owner(44)));
+            assert!(!dsp.uvi[0].as_ref().unwrap().slot().host_note_pending(owner(44)));
+            assert_eq!(allocations(|| finish_host_notes(&mut dsp,&mut cx,0)),0);
+            assert!(dsp.uvi[0].as_ref().unwrap().slot().has_host_note(owner(44)),
+                "native completion bypassed the other destination's physical gate");
+            assert!(!cx.output_events.lossless_iter().any(|e| matches!(e,
+                LosslessEventRef::Exact(e) if matches!(e.body(),ExactEventBody::Note {
+                    kind:ExactNoteKind::End,address:a,.. } if *a==address(44)))));
+            let pattern = crate::engine::HostPattern { port:0,channel:4,key:60,id:44,clap };
+            assert_eq!(allocations(|| feed_host_input(&mut dsp,&params,In::HostOff(pattern),0,0,false,48000.)),0);
+            assert!(!dsp.rack.parts[1].host_key_held(4,60));
+            assert_eq!(allocations(|| finish_host_notes(&mut dsp,&mut cx,0)),0);
+            assert!(!dsp.uvi[0].as_ref().unwrap().slot().has_host_note(owner(44)));
+            assert!(!dsp.rack.parts[1].host_note_present(owner(44)));
+            assert!(dsp.uvi[0].as_ref().unwrap().slot().host_note_pending(owner(42)));
+            assert_eq!(dsp.uvi_zero_velocity_rejections,2);
+            if clap {
+                assert_eq!(cx.output_events.lossless_iter().filter(|e| matches!(e,
+                    LosslessEventRef::Exact(e) if matches!(e.body(),ExactEventBody::Note {
+                        kind:ExactNoteKind::End,address:a,.. } if *a==address(44)))).count(),1);
+            } else { assert_eq!(cx.output_events.lossless_iter().count(),0); }
+            drop(dsp); registry.shutdown(); std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn exact_velocity_lowering_preserves_zero_and_rejects_invalid_inputs() {
+        for clap in [true,false] { for velocity in [0.,-0.,-0.001,1.001,f64::NAN,f64::INFINITY] {
+            let address = ExactNoteAddress::from_raw_signed(0,4,60,42);
+            let mut events = EventList::with_capacity(1);
+            let body = if clap { ExactEventBody::Note { kind:ExactNoteKind::On,address,velocity } }
+                else { ExactEventBody::DetailedNote { kind:ExactNoteKind::On,address,
+                    velocity:velocity as f32,tuning:0.,length:None } };
+            events.try_push_exact(ExactEvent::new(0,body)).unwrap();
+            let LosslessEventRef::Exact(event) = events.lossless_iter().next().unwrap() else { panic!("exact lane") };
+            if velocity==0. {
+                assert!(matches!(exact_host_input(event),Some(ExactInput::Routed(In::HostOn(_,0,tune),0)) if tune==0.),
+                    "explicit exact zero became a positive attack");
+            } else {
+                assert!(matches!(exact_host_input(event),Some(ExactInput::Unsupported)),
+                    "invalid normalized attack became playable");
+            }
+        } }
+        assert!(matches!(In::from_event(&EventBody::NoteOn { group:0,channel:4,note:60,velocity:0 }),
+            Some(In::NoteOff(4,60))),"ordinary MIDI On0 remains Off");
     }
 
     #[test]
