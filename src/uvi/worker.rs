@@ -815,7 +815,7 @@ impl Worker {
         let snapshot = Arc::new(WorkerLoadActivity {
             status, phase: details.phase, frame: details.phase_frame,
             elapsed: timing.finished.map_or_else(|| timing.started.elapsed(), |(elapsed, _)| elapsed),
-            stages, nodes: count("nodes"), sample_zones: count("sample_zones"),
+            stages, nodes: count("nodes"), static_rejected_nodes: count("static_rejected_nodes"), sample_zones: count("sample_zones"),
             script_processors: count("script_processors"), resources: details.resource_activity.clone(),
             failure: details.failure.as_ref().map(|reason| reason.chars().take(4096).collect()),
             stats: self.stats(),
@@ -2065,9 +2065,11 @@ pub(crate) mod tests {
             cursor: Some(PacketCursor::default()) };
         let first = worker.load_activity();
         assert!(Arc::ptr_eq(&first, &worker.load_activity()));
+        assert_eq!(first.static_rejected_nodes, None);
         {
             let mut details = worker.shared.details.lock().unwrap();
             details.phase = "resources";
+            details.program_report = Some(serde_json::json!({"counts":{"nodes":3,"static_rejected_nodes":1}}));
             details.initialization.stage("resources");
             details.resource_activity = ResourceActivity { total: Some(4), loaded: 2,
                 unique_decodes: 1, bytes: 4096, current: Some("Samples/test.wav".into()) };
@@ -2076,6 +2078,7 @@ pub(crate) mod tests {
         assert!(!Arc::ptr_eq(&first, &loading));
         assert_eq!((loading.resources.total, loading.resources.loaded, loading.resources.bytes), (Some(4), 2, 4096));
         assert_eq!(loading.stages.last().unwrap().outcome, "in_progress");
+        assert_eq!(loading.static_rejected_nodes, Some(1));
         {
             let mut details = worker.shared.details.lock().unwrap();
             details.initialization.finish("failed");

@@ -9,6 +9,8 @@ use serde::Serialize;
 #[derive(Clone, Serialize)]
 pub struct Counts {
     pub nodes: usize,
+    /// Distinct parsed nodes with one or more static preflight rejections.
+    pub static_rejected_nodes: usize,
     pub sample_zones: usize,
     pub connections: usize,
     pub script_processors: usize,
@@ -100,11 +102,13 @@ pub(crate) fn report_preflighted(preflight: &playback::ProgramPreflight<'_>) -> 
                 format!("{}: {}", rejection.kind, rejection.reason)
             });
     }
+    let static_rejected_nodes = nodes.iter().filter(|node| !node.preflight_rejections.is_empty()).count();
     Report {
         parsed: true,
         preflight_admitted,
         counts: Counts {
             nodes: nodes.len(),
+            static_rejected_nodes,
             sample_zones: program.sample_zones.len(),
             connections: program.connections.len(),
             script_processors: program
@@ -130,6 +134,7 @@ mod tests {
             let program = parse_program(&format!("<Program><Inserts><UnknownFX Name=\"Unknown\" Bypass=\"{bypass}\"/></Inserts></Program>")).unwrap();
             let report = report(&program);
             assert!(report.parsed && !report.preflight_admitted);
+            assert_eq!(report.counts.static_rejected_nodes, 1);
             let node = report
                 .nodes
                 .iter()
@@ -151,6 +156,7 @@ mod tests {
         let program = parse_program(r#"<Program Name="Report"><EventProcessors><ScriptProcessor Name="Control"><script><![CDATA[private_authored_source='SECRET']]> </script></ScriptProcessor></EventProcessors><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="PRIVATE_ASSET.wav"/></Oscillators><Inserts><GainMatrix Gain_1_1="1"/></Inserts></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
         let report = report(&program);
         assert!(report.parsed && report.preflight_admitted);
+        assert_eq!(report.counts.static_rejected_nodes, 0);
         assert_eq!(report.runtime_evidence, "not_inspected");
         assert_eq!(
             (
