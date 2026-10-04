@@ -1004,6 +1004,13 @@ pub(crate) fn source_parameters(program: &Program) -> Vec<BTreeMap<String, Param
                     .entry("BypassInsertFX".into())
                     .or_insert(ParameterValue::Boolean(false));
             }
+            // Original authored Layer getter reports omitted Mute=false;
+            // Program/Keygroup/SamplePlayer do not expose this property.
+            if node.kind == "Layer" {
+                values
+                    .entry("Mute".into())
+                    .or_insert(ParameterValue::Boolean(false));
+            }
             if !wrappers.contains(&node.kind.as_str()) && node.kind != "Connections" {
                 values
                     .entry("Bypass".into())
@@ -2691,6 +2698,50 @@ mod tests {
           end
           assert(Program.layers[2].keygroups[1]:getParameter('BypassInsertFX')==false)
         "#).exec().unwrap();
+        assert_eq!(super::super::state::SavedState::new(fingerprint,BTreeMap::new(),&fresh_host).unwrap().encode().unwrap(),saved.encode().unwrap());
+    }
+
+    #[test]
+    fn measured_missing_layer_mute_default_preserves_scope_type_and_state() {
+        let program = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer/></Oscillators></Keygroup></Keygroups></Layer><Layer Mute="1"/></Layers></Program>"#).unwrap();
+        let lua = vm();
+        let host = install(&lua, HostConfig {
+            program: Some(&program), modules: BTreeMap::new(), now: Rc::new(|| 0),
+            resources: None, valid_voice: None, layer_scope: None,
+        }).unwrap();
+        lua.load(r#"
+          layer=Program.layers[1]
+          assert(layer:hasParameter('Mute') and layer:getParameter('Mute')==false)
+          assert(Program.layers[2]:getParameter('Mute')==true)
+          layer:setParameter('Mute',1)
+          assert(layer:getParameter('Mute')==false)
+          for _,object in ipairs{Program,layer.keygroups[1],layer.keygroups[1].oscillators[1],Program.parent,Program.parent.parent}do
+            assert(not object:hasParameter('Mute'))
+            assert(not pcall(function()return object:getParameter('Mute')end))
+            assert(not pcall(function()object:setParameter('Mute',true)end))
+          end
+        "#).exec().unwrap();
+        assert!(host.commands.borrow().is_empty());
+        let fingerprint = super::super::state::fingerprint(&program).unwrap();
+        let initial = super::super::state::SavedState::new(fingerprint,BTreeMap::new(),&host).unwrap().encode().unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&initial).unwrap();
+        assert!(payload["parameters"].as_array().unwrap().is_empty());
+        lua.load("layer:setParameter('Mute',true)").exec().unwrap();
+        assert_eq!(host.commands.borrow().len(),1);
+        assert!(matches!(&host.commands.borrow()[0].action,
+            Action::Parameter {parameter,value:ParameterValue::Boolean(true),..} if parameter=="Mute"));
+        let saved = super::super::state::SavedState::new(fingerprint,BTreeMap::new(),&host).unwrap().encode().unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+        assert_eq!(payload["parameters"].as_array().unwrap().len(),1);
+        let saved = super::super::state::SavedState::decode(&saved).unwrap();
+        saved.validate(&program).unwrap();
+        let fresh_lua = vm();
+        let fresh_host = install(&fresh_lua, HostConfig {
+            program: Some(&program), modules: BTreeMap::new(), now: Rc::new(|| 0),
+            resources: None, valid_voice: None, layer_scope: None,
+        }).unwrap();
+        saved.preload(&fresh_lua,&fresh_host).unwrap();
+        fresh_lua.load("assert(Program.layers[1]:getParameter('Mute')==true and Program.layers[2]:getParameter('Mute')==true)").exec().unwrap();
         assert_eq!(super::super::state::SavedState::new(fingerprint,BTreeMap::new(),&fresh_host).unwrap().encode().unwrap(),saved.encode().unwrap());
     }
 
