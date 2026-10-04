@@ -230,7 +230,7 @@ pub(super) fn inspection(ui: &mut Ui, mapping: &Inspection, state: &mut State, r
     }).collect();
     let selected = state.selected.and_then(|selected| indices[start..end].iter().position(|&index| index == selected));
     let grid = instrument::mapping_grid_selected(zones, "Initial UVI key and velocity mapping", selected,
-        state.filter.then_some((state.note, state.velocity))).min_h(CONTROL * 5.).focusable().a11y(A11y::Button).cursor(Cursor::Pointer).id(MAP_ID)
+        state.filter.then_some((state.note, state.velocity))).min_h(CONTROL * 5.).focusable().a11y(A11y::Button).cursor(Cursor::Hand).id(MAP_ID)
         .tip("Click a note and velocity to inspect every matching authored sampled zone in this layer. Enter inspects the current note and velocity. This does not play a note.");
     let count = format!("{} zones cover {} ({}) · {} zone references / {} sample paths match velocity {}",
         state.key_zones, note_name(state.note), state.note, matches.len(), state.sample_paths, state.velocity);

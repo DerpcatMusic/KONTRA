@@ -3552,8 +3552,8 @@ function onSave()error('runtime inspection must not run callbacks')end
         assert_eq!(captured.applied_ui_sequence, 5, "nonfatal rejected edit also settles its ticket");
         assert_eq!(captured.stamp, stamp(256));
         let snapshot = captured.snapshot.unwrap();
-        assert_eq!(snapshot.widgets[0].value, Some(UiValue::Number(0.75)));
-        assert_eq!(snapshot.widgets[1].value, Some(UiValue::Number(0.25)));
+        assert!(snapshot.widgets[0].value == Some(UiValue::Number(0.75)));
+        assert!(snapshot.widgets[1].value == Some(UiValue::Number(0.25)));
         assert!(worker.stats().script_activity.suspended_tasks > 0,
             "receipt acknowledges initial dispatch, without completing the yielded callback");
         worker.stop();
