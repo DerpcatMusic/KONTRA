@@ -468,7 +468,7 @@ struct Details {
     initialization: InitializationTiming,
     resource_activity: ResourceActivity,
     activity_cache: Option<(Instant, &'static str, Status, usize, Arc<WorkerLoadActivity>)>,
-    failure: Option<String>,
+    failure: Option<Arc<str>>,
     lua_failure: Option<Arc<super::lua_failure::Context>>,
     phase: &'static str,
     phase_frame: u64,
@@ -773,14 +773,15 @@ impl Worker {
     }
 
     /// Control thread only: private diagnostics may contain instrument paths or
-    /// script data and are copied under a mutex, never from an audio callback.
+    /// script data. Retain the handle under the mutex and copy its text afterward.
     pub fn private_failure(&self) -> Option<String> {
-        self.shared
+        let failure = self.shared
             .details
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .failure
-            .clone()
+            .clone();
+        failure.map(|reason| reason.to_string())
     }
     pub(crate) fn private_lua_failure(&self) -> Option<Arc<super::lua_failure::Context>> {
         self.shared.details.lock().unwrap_or_else(|p| p.into_inner()).lua_failure.clone()
@@ -836,27 +837,34 @@ impl Worker {
     /// Private control-thread inspection. A parsed/admitted graph is not proof
     /// that any particular node executed or matched Falcon numerically.
     pub fn diagnostic_report(&self) -> serde_json::Value {
-        let details = self
-            .shared
-            .details
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        // Retain immutable report/context owners; never traverse a graph or
+        // serialize Lua metadata while holding the worker's Details mutex.
+        let (status, phase, frame, program, stats, initialization, failure,
+            lua_failure, load_trace, runtime_snapshot, diagnostics, cache) = {
+            let details = self.shared.details.lock().unwrap_or_else(|p| p.into_inner());
+            (self.status(), details.phase, details.phase_frame,
+                details.program_report.clone(), self.stats(), details.initialization.report(),
+                details.failure.clone(), details.lua_failure.clone(), details.load_report.clone(),
+                details.runtime_report.clone(), details.diagnostics.clone(),
+                (details.resource_activity.cache_hit, details.resource_activity.loaded,
+                    details.resource_activity.unique_decodes))
+        };
         let mut report = serde_json::json!({
-            "status":self.status(), "phase":details.phase, "frame":details.phase_frame,
+            "status":status, "phase":phase, "frame":frame,
             "epoch":self.shared.stamp.epoch, "generation":self.shared.stamp.generation,
-            "program":details.program_report.as_deref(), "stats":self.stats(),
-            "initialization":details.initialization.report(),
-            "failure":details.failure, "lua_failure":details.lua_failure.as_ref().map(|context|context.metadata()), "load_trace":details.load_report.as_deref(),
+            "program":program.as_deref(), "stats":stats,
+            "initialization":initialization,
+            "failure":failure.as_deref(), "lua_failure":lua_failure.as_ref().map(|context|context.metadata()), "load_trace":load_trace.as_deref(),
             "runtime_evidence":"worker_lifecycle_completed_packets_and_optional_requested_node_snapshot",
-            "runtime_snapshot":details.runtime_report.as_deref(),
+            "runtime_snapshot":runtime_snapshot.as_deref(),
             "per_node_execution_proof":false, "falcon_fidelity_proof":false,
-            "renderer_fidelity_caveats":details.diagnostics,
+            "renderer_fidelity_caveats":diagnostics,
             "voice_census_semantics":"active_voices_cleared_on_stop_or_failure; last_completed_voices_historical_not_audibility",
             "lua_print_payloads_retained":false,
             "lua_print_counter_scope":"completed_render_packets_only",
         });
-        if let Some(hit) = details.resource_activity.cache_hit {
-            report["static_pcm_cache"] = serde_json::json!({"hit":hit,"loaded_paths":details.resource_activity.loaded,"codec_decodes":details.resource_activity.unique_decodes});
+        if let (Some(hit), loaded_paths, codec_decodes) = cache {
+            report["static_pcm_cache"] = serde_json::json!({"hit":hit,"loaded_paths":loaded_paths,"codec_decodes":codec_decodes});
         }
         report
     }
@@ -1453,6 +1461,7 @@ fn finish(shared: &Shared, failure: Option<String>) {
     shared.details.lock().unwrap_or_else(|p| p.into_inner()).initialized_ui = None;
     // Stats retain the census from the latest completed packet after failure/stop.
     if let Some(failure) = failure {
+        let failure: Arc<str> = failure.into();
         shared.counters.errors.fetch_add(1, Ordering::Relaxed);
         shared
             .details
@@ -2122,7 +2131,7 @@ pub(crate) mod tests {
         {
             let mut details = worker.shared.details.lock().unwrap();
             details.initialization.finish("failed");
-            details.failure = Some("authored error".repeat(1000));
+            details.failure = Some("authored error".repeat(1000).into());
             assert!(details.ui_request.is_none() && details.state_request.is_none() && details.runtime_request.is_none());
         }
         worker.shared.status.store(Status::Failed as u8, Ordering::Release);

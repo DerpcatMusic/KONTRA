@@ -29,3 +29,21 @@ real-journal backpressure and plugin playback verification remain pending under
 the CPU restriction. Blocking inside `run` or startup tracing, and waiting for
 journal completion when joining the worker, are outside this correction.
 Installed binaries remain unchanged.
+
+## Diagnostic report ownership
+
+The same Details mutex is used by worker phase and runtime-snapshot publication.
+Previously, control-thread `diagnostic_report` serialized the complete parsed
+graph and retained reports while holding it. Later source retains immutable
+Arc owners and scalar observations under the guard, then serializes graphs,
+Lua metadata and report JSON after releasing it. Failure text also has an Arc
+owner; the public `private_failure` API still returns the complete owned String,
+but makes that text copy outside the guard. Failure content is not truncated.
+
+The initialization summary and fixed diagnostic-string references remain under
+the guard; current production initialization has a fixed stage sequence. Report
+field names, optional cache fields and null behavior are preserved. Status and
+counters are concurrent observations sampled before serialization, not one
+transactional audio-frame snapshot. This is a source ownership correction,
+not a measured scheduling or playback improvement. Final combined compilation,
+schema comparisons and runtime inspection remain pending.
