@@ -10,6 +10,7 @@ pub mod crypto;
 pub mod bridge;
 pub mod diagnostics;
 pub mod dsp;
+pub mod drive;
 pub mod effects;
 pub mod exciter;
 pub mod filter;
