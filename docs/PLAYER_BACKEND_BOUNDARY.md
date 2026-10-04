@@ -1,6 +1,6 @@
 # Player backend boundary
 
-This document describes optional UVI loading, live audio and instrument UI integration in the isolated `codex/uvi-latest-integration` working tree following `510446d`/`0a56891`, reviewed on 2026-10-04. The original integration audit and its line references below describe that checkpoint. Clean `a25fc2e` is now installed as a local Linux checkpoint; installation does not establish a completed real-time performance proof. The broader common backend contract below remains proposed. No complete Falcon parity or support for unimplemented SFZ, Sine, Koda or other backends is claimed.
+This document describes optional UVI loading, live audio and instrument UI integration in the isolated `codex/uvi-latest-integration` working tree following `510446d`/`0a56891`, reviewed on 2026-10-04. The original integration audit and its line references below describe that checkpoint. The recorded `a25fc2e` installation is historical; later package build-info identifies the installed checkpoint. Installation does not establish a completed real-time performance proof. The broader common backend contract below remains proposed. No complete Falcon parity or support for unimplemented SFZ, Sine, Koda or other backends is claimed.
 
 The user's concurrent core/MIDI refactor remains separately owned and unmerged. Its precision, protocol and lifecycle requirements inform this boundary; its dirty source is not an accepted API snapshot.
 
@@ -19,13 +19,16 @@ audition request sends musical events through the selected instrument: it can
 advance its Lua state and round-robin selection. Reusing that operation for a
 button labelled sample preview would therefore be misleading.
 
-A production raw-sample preview needs its own prepared PCM owner and audition
-voice, with selection/source-generation checks, off-thread resource preparation,
-bounded audio handoff and acknowledged retirement. Both Kontakt and UVI should
-use this shared operation while keeping their native sample resolution and
-playback laws explicit. It must not invoke instrument scripts, advance musical
-round-robin state, or borrow the mutable native renderer. Such a shared audition
-operation is not yet implemented here.
+The current source implements a common dry cursor fed by backend-owned, off-thread
+Kontakt/UVI preparation. Exact source/selection tickets and accepted commit fences
+invalidate stale previews before replacement. Bounded handoff and reserved
+retirement keep final PCM destruction off audio; the cursor mixes into the main
+route through master gain. It does not invoke instrument scripts, advance musical
+round-robin state or borrow the mutable native renderer. Mono/stereo and initial
+zone inspection are the supported scope; cubic conversion is not native resampler
+equivalence. [Functional evidence and limits](RAW_SAMPLE_PREVIEW_EVIDENCE.md) identify
+the source API change and exact validation. This is a consumed internal shared
+operation, not the proposed public neutral backend API or stable ABI.
 
 ### Control feedback and presentation follow-up
 

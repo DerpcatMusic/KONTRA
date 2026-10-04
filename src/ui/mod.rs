@@ -41,6 +41,7 @@ mod perf_view;
 pub(crate) use perf_view::font_fallbacks;
 mod picker;
 mod rack;
+mod sample_preview;
 mod spectrum;
 #[cfg(test)]
 mod tests;
@@ -58,7 +59,7 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Mutex, MutexGuard, PoisonError, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 use theme::*;
 
@@ -67,7 +68,8 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let computer = Arc::new(computer::Computer::default());
     let picker = Arc::new(picker::Picker::default());
     let art = Arc::new(art::Art::default());
-    let build = build(&params, meters.clone(), computer.clone(), picker.clone(), art.clone());
+    let preview_receipt = Arc::new(AtomicU64::new(0));
+    let build = build_with_preview(&params, meters.clone(), computer.clone(), picker.clone(), art.clone(), preview_receipt.clone());
     let (drop_params, drop_picker) = (params.clone(), picker.clone());
     let (cancel_params, cancel_computer) = (params.clone(), computer.clone());
     let (key_params, key_computer) = (params.clone(), computer.clone());
@@ -76,6 +78,7 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let size = params.shared.libraries.settings().editor_size();
     let zoom_params = params.clone();
     let close_params = params.clone();
+    let cancel_preview = preview_receipt.clone();
     let last_size = AtomicU64::new(0);
     MuiEditor::new(params, theme::ui(), size, build)
         .on_log(|line| {
@@ -90,7 +93,10 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
             }
         })
         .on_files(move |ui, at, paths, dropped| native_files(&drop_params, &drop_picker, ui, at, paths, dropped))
-        .on_cancel(move |_| let_go(&cancel_params, &cancel_computer))
+        .on_cancel(move |_| {
+            let_go(&cancel_params, &cancel_computer);
+            sample_preview::cancel_receipt(&cancel_params, &cancel_preview);
+        })
         .on_key(move |ui, event| key_computer.key(ui, &key_params, event))
         .hide_pointer(theme::pointer_hidden)
         .native_timing(crate::diagnostics::native_timing_hook())
@@ -104,7 +110,10 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
             }
             zoom_params.shared.libraries.settings().editor_scale()
         })
-        .on_close(move || close_params.shared.libraries.flush_settings())
+        .on_close(move || {
+            sample_preview::close_receipt(&close_params, &preview_receipt);
+            close_params.shared.libraries.flush_settings();
+        })
         .resizable((900, 600))
         .into_editor()
 }
@@ -123,11 +132,11 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn read<T>(l: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+fn read(l: &crate::plugin::sample_preview::SelectionStore) -> RwLockReadGuard<'_, Selection> {
     l.read().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn write<T>(l: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+fn write(l: &crate::plugin::sample_preview::SelectionStore) -> RwLockWriteGuard<'_, Selection> {
     l.write().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -235,6 +244,7 @@ impl Watch {
             logs::wake().hash(&mut h);
         }
         p.shared.focus_request.load(Ordering::Relaxed).hash(&mut h);
+        p.selection.preview_control().status_key().hash(&mut h);
         #[cfg(feature = "uvi")]
         {
             p.shared.uvi_activation_epoch().hash(&mut h);
@@ -396,6 +406,8 @@ enum Tab {
 
 /// Editor-only state that outlives a frame but not the window.
 struct EditorState {
+    sample_preview: sample_preview::State,
+    sample_mapping: HashMap<usize, sample_preview::KontaktSelection>,
     #[cfg(feature = "uvi")]
     uvi: HashMap<usize, uvi_instrument::State>,
     #[cfg(feature = "uvi")]
@@ -917,6 +929,7 @@ fn native_files(p: &SamplerParams, picker: &picker::Picker, ui: &Ui, at: Point, 
             let path = path.to_string_lossy().into_owned();
             let slot = match target.filter(|_| n == 0) {
                 Some(slot) => {
+                    p.selection.preview_source_commit(slot);
                     replace_part(&mut selection.parts[slot], path);
                     slot
                 }
@@ -931,6 +944,8 @@ fn native_files(p: &SamplerParams, picker: &picker::Picker, ui: &Ui, at: Point, 
     true
 }
 
+// Existing audit/test adapters keep their own default window lease. Native
+// editors pass the lease shared with their explicit close/cancel callbacks.
 fn build(
     params: &Arc<SamplerParams>,
     meters: Arc<Meters>,
@@ -938,7 +953,20 @@ fn build(
     picker: Arc<picker::Picker>,
     art: Arc<art::Art>,
 ) -> impl FnMut(&mut Ui, &mut Bridge<SamplerParams>) -> El + Send + 'static + use<> {
+    build_with_preview(params, meters, computer, picker, art, Arc::default())
+}
+
+fn build_with_preview(
+    params: &Arc<SamplerParams>,
+    meters: Arc<Meters>,
+    computer: Arc<computer::Computer>,
+    picker: Arc<picker::Picker>,
+    art: Arc<art::Art>,
+    preview_receipt: Arc<AtomicU64>,
+) -> impl FnMut(&mut Ui, &mut Bridge<SamplerParams>) -> El + Send + 'static + use<> {
     let mut state = EditorState {
+        sample_preview: sample_preview::State::new(preview_receipt),
+        sample_mapping: HashMap::new(),
         #[cfg(feature = "uvi")]
         uvi: HashMap::new(),
         #[cfg(feature = "uvi")]
@@ -1077,6 +1105,13 @@ fn build(
         let ghost = ghost(ui, &cx);
         cx.state.meters.logs_visible.store(cx.state.tab == Tab::Logs, Ordering::Relaxed);
 
+        let mapping_slot = (cx.state.tab == Tab::Mapping && cx.part().is_some()).then(|| cx.state.chosen()).flatten();
+        cx.state.sample_preview.finish_frame(&p, mapping_slot);
+        if p.sample_preview_pending() {
+            if let Some(tasks) = bridge.context().and_then(|context| context.tasks::<crate::plugin::sample_preview::Prepare>()) {
+                tasks.spawn_coalescing(crate::plugin::sample_preview::Prepare);
+            }
+        }
         let ui_zoom = cx.settings.editor_scale();
         let Cx { mut selection, view, .. } = cx;
         if selection != before {
@@ -1100,6 +1135,7 @@ fn build(
                 before
             };
             if *current == before {
+                p.selection.preview_selection_commit(&current, &selection);
                 *current = selection;
                 p.shared.sync_overrides(&current);
                 let _ = p.shared.controls.force_push(mix(&current));

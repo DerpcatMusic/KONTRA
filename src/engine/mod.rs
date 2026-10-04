@@ -31,6 +31,8 @@ mod script;
 pub(crate) mod native_state;
 mod stream;
 mod voice;
+// Pure interpolation only; raw preview does not construct an engine voice.
+pub(crate) use voice::hermite;
 mod wavetable;
 pub(crate) mod zone;
 

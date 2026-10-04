@@ -920,6 +920,48 @@ impl Source {
         self.open_counted(false)
     }
 
+    /// Off-audio preview: pin a regular source and bound its physical byte window.
+    pub(crate) fn open_bounded(&self, limit: u64, frame_limit: u64) -> Result<SampleReader> {
+        ensure!(self.current(), "Sample source changed before preview");
+        let file = if let Some(file) = &self.handle { file.clone() } else {
+            let mut options = std::fs::OpenOptions::new();
+            options.read(true);
+            #[cfg(unix)] {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.custom_flags(libc::O_NONBLOCK);
+            }
+            Arc::new(options.open(&self.file)?)
+        };
+        let metadata = file.metadata()?;
+        ensure!(metadata.file_type().is_file(), "Sample preview source is not a regular file");
+        let version = metadata.modified().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|time| (metadata.len(), time.as_nanos()));
+        ensure!(version == self.version.0, "Sample source changed before preview");
+        let length = self.len.unwrap_or(metadata.len());
+        ensure!(length <= limit, "Sample preview encoded source exceeds limit");
+        ensure!(self.offset.checked_add(length).is_some_and(|end| end <= metadata.len()),
+            "Sample preview source range exceeds file");
+        let mut pinned = self.clone();
+        pinned.handle = Some(file);
+        pinned.len = Some(length); // Do not re-read a growing loose file's byte extent.
+        let reader = SampleReader::open_bounded(&pinned, false, Some(frame_limit))?;
+        ensure!(self.current(), "Sample source changed while opening preview");
+        Ok(reader)
+    }
+
+    /// Existing source/version policy: timestamp/length plus archive access metadata.
+    pub(crate) fn current(&self) -> bool {
+        if crate::cache::version(&self.file) != self.version.0 { return false; }
+        if self.len.is_none() { return self.version.1 == 0; }
+        use std::hash::{Hash, Hasher};
+        let mut access = std::collections::hash_map::DefaultHasher::new();
+        for path in crate::import::library_metadata(&self.file) {
+            path.hash(&mut access);
+            crate::cache::version(&path).hash(&mut access);
+        }
+        access.finish() == self.version.1
+    }
+
     /// The file holding the sample, its byte range there and whether it
     /// is encrypted: what [`Sources::rebuild`] takes back.
     pub fn parts(&self) -> (&Path, u64, Option<u64>, bool) {
@@ -1092,12 +1134,22 @@ struct PcmCodec {
     /// Decoded frames starting at sample frame `start`.
     buffer: Vec<Frame>,
     start: u64,
+    /// Only the private preview path imposes a packet scratch bound.
+    preview_frames: Option<u64>,
 }
 
 /// Forward gaps up to this many frames are decoded through instead of seeking.
 const SKIP_AHEAD: u64 = 16384;
 
 impl SampleReader {
+    /// Source-declared layout, when the codec exposes it; output is always stereo.
+    pub(crate) fn declared_channels(&self) -> Option<usize> {
+        match &self.codec {
+            Codec::Ncw(codec) => Some(codec.channels),
+            Codec::Pcm(codec) => codec.decoder.codec_params().channels.map(|channels| channels.count()),
+        }
+    }
+
     pub fn header(&self) -> Header {
         Header {
             rate: self.rate,
@@ -1107,15 +1159,19 @@ impl SampleReader {
     }
 
     fn open(source: &Source, counted: bool) -> Result<Self> {
+        Self::open_bounded(source, counted, None)
+    }
+
+    fn open_bounded(source: &Source, counted: bool, frame_limit: Option<u64>) -> Result<Self> {
         let bytes = source.bytes(counted)?;
         let ncw = source
             .path
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("ncw"));
         let reader = if ncw {
-            Self::ncw(bytes)?
+            Self::ncw(bytes, frame_limit)?
         } else {
-            Self::pcm(source, bytes)?
+            Self::pcm(source, bytes, frame_limit)?
         };
         ensure!(
             reader.rate > 0 && reader.frames > 0,
@@ -1124,7 +1180,18 @@ impl SampleReader {
         Ok(reader)
     }
 
-    fn ncw(bytes: Bytes) -> Result<Self> {
+    fn ncw(mut bytes: Bytes, frame_limit: Option<u64>) -> Result<Self> {
+        if let Some(limit) = frame_limit {
+            // Existing fixed-size parser, before NcwReader allocates its offset table.
+            let header = ncw::NcwHeader::read(&mut bytes)?;
+            ensure!((1..=2).contains(&header.channels), "Only mono/stereo samples are supported");
+            ensure!(u64::from(header.num_samples) <= limit, "Sample preview decoded source exceeds limit");
+            let table_bytes = header.data_offset.checked_sub(header.blocks_offset)
+                .context("Sample preview NCW table range is invalid")?;
+            ensure!(u64::from(table_bytes) <= (limit.div_ceil(512) + 1) * 4,
+                "Sample preview NCW offset table exceeds limit");
+            bytes.seek(SeekFrom::Start(0))?;
+        }
         let reader = ncw::NcwReader::read(BufReader::new(bytes))?;
         let header = &reader.header;
         ensure!(
@@ -1149,18 +1216,22 @@ impl SampleReader {
         })
     }
 
-    fn pcm(source: &Source, bytes: Bytes) -> Result<Self> {
+    fn pcm(source: &Source, bytes: Bytes, frame_limit: Option<u64>) -> Result<Self> {
         let mut hint = Hint::new();
         if let Some(extension) = source.path.extension().and_then(|s| s.to_str()) {
             hint.with_extension(extension);
         }
         let stream = MediaSourceStream::new(Box::new(bytes), Default::default());
+        let metadata_options = if frame_limit.is_some() {
+            MetadataOptions { limit_metadata_bytes: symphonia::core::meta::Limit::Maximum(2 << 20),
+                limit_visual_bytes: symphonia::core::meta::Limit::Maximum(2 << 20) }
+        } else { MetadataOptions::default() };
         let format = symphonia::default::get_probe()
             .format(
                 &hint,
                 stream,
                 &FormatOptions::default(),
-                &MetadataOptions::default(),
+                &metadata_options,
             )?
             .format;
         let track = format.default_track().context("No audio track")?;
@@ -1174,7 +1245,26 @@ impl SampleReader {
                 "Only mono/stereo samples are supported"
             );
         }
+        let preview_frames = frame_limit.map(|_| 65536u64);
+        if let Some(limit) = frame_limit {
+            ensure!(frames <= limit, "Sample preview decoded source exceeds limit");
+            // PCM constructors allocate from this value. FLAC's installed decoder
+            // derives a u16 block length and <=8 channels from its fixed STREAMINFO.
+            if params.codec != codecs::CODEC_TYPE_FLAC {
+                let packet_frames = params.max_frames_per_packet
+                    .context("Sample preview packet size is not declared")?;
+                ensure!(packet_frames <= 65536, "Sample preview codec packet exceeds limit");
+                ensure!(params.channels.is_some(), "Sample preview channel count is not declared");
+            }
+        }
         let decoder = symphonia::default::get_codecs().make(params, &DecoderOptions::default())?;
+        if preview_frames.is_some() {
+            let params = decoder.codec_params();
+            ensure!(params.channels.is_some_and(|channels| (1..=2).contains(&channels.count())),
+                "Only mono/stereo samples are supported");
+            ensure!(params.max_frames_per_packet.is_some_and(|frames| frames <= 65536),
+                "Sample preview codec packet exceeds limit");
+        }
         let track = track.id;
         let codec = PcmCodec {
             format,
@@ -1182,6 +1272,7 @@ impl SampleReader {
             track,
             buffer: Vec::new(),
             start: 0,
+            preview_frames,
         };
         Ok(Self {
             rate,
@@ -1365,7 +1456,13 @@ impl PcmCodec {
                 Err(e) => return Err(e.into()),
             }
         };
+        if let Some(limit) = self.preview_frames {
+            ensure!(packet.dur() <= limit, "Sample preview codec packet exceeds limit");
+        }
         let decoded = self.decoder.decode(&packet)?;
+        if let Some(limit) = self.preview_frames {
+            ensure!(decoded.capacity() as u64 <= limit, "Sample preview codec packet exceeds limit");
+        }
         let spec = *decoded.spec();
         let channels = spec.channels.count();
         ensure!(

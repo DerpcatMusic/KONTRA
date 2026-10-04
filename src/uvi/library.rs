@@ -245,6 +245,25 @@ impl Library {
         self.audio_members(&members)
     }
 
+    /// Off-audio final dependency check after raw preview conversion.
+    pub(crate) fn validate_preview_source(&self) -> Result<()> {
+        self.bank.open_snapshot()?;
+        Ok(())
+    }
+
+    /// Preview-only bounded initial audio; exact resource authority and decoder.
+    pub(crate) fn audio_preview(&self, program_path: &str, path: &str, encoded_limit: u64,
+        memory_limit: usize, canceled: &dyn Fn() -> bool) -> Result<Sample> {
+        sample::check_canceled(canceled)?;
+        let members = resources(&self.directory, program_path, path)?;
+        ensure!(members.len() <= 2, "Sample preview supports mono/stereo resources only");
+        let decoded = self.audio_members_with_canceled(&members, canceled, Some((encoded_limit, memory_limit)))?;
+        // Decode/conversion never authorizes a path whose original snapshot changed.
+        self.bank.open_snapshot()?;
+        sample::check_canceled(canceled)?;
+        Ok(decoded)
+    }
+
     fn audio_members(&self, members: &[&Member]) -> Result<Sample> {
         self.audio_members_with_cancel(members, None)
     }
@@ -252,17 +271,43 @@ impl Library {
     fn audio_members_with_cancel(
         &self, members: &[&Member], stop: Option<&AtomicBool>,
     ) -> Result<Sample> {
+        self.audio_members_with_canceled(members, &|| stop.is_some_and(|stop| stop.load(std::sync::atomic::Ordering::Acquire)), None)
+    }
+
+    fn audio_members_with_canceled(&self, members: &[&Member], canceled: &dyn Fn() -> bool,
+        limit: Option<(u64, usize)>) -> Result<Sample> {
+        let encoded = if let Some((encoded_limit, memory_limit)) = limit {
+            let encoded = members.iter().try_fold(0u64, |total, member| total.checked_add(member.size)
+                .context("UVI preview encoded size overflow"))?;
+            ensure!(encoded <= encoded_limit && encoded <= memory_limit as u64,
+                "UVI preview encoded sources exceed limit");
+            encoded
+        } else { 0 };
+        let mut remaining = limit.map(|(_, memory)| memory - encoded as usize);
         let mut operands = Vec::with_capacity(members.len());
         let mut assembly_error = None;
         for member in members {
-            sample::check_cancel(stop)?;
-            let bytes = self.read(member)?;
-            sample::check_cancel(stop)?;
+            sample::check_canceled(canceled)?;
+            let bytes = if let Some((encoded_limit, _)) = limit {
+                self.bank.read_member_bounded_canceled(member, self.directory.metadata_key,
+                    self.content_key, encoded_limit, canceled)?
+            } else { self.read(member)? };
+            sample::check_canceled(canceled)?;
             ensure!(
                 !generator::image_signature(&bytes),
                 "Image wavetable resources cannot be loaded through audio callbacks"
             );
-            let decoded = sample::decode_with_cancel(&bytes, stop)?;
+            let decoded = if let Some(remaining) = remaining {
+                sample::decode_bounded_canceled(&bytes, remaining + bytes.len(), canceled)?
+            } else {
+                sample::decode_bounded_canceled(&bytes, 256 << 20, canceled)?
+            };
+            if let Some(remaining) = &mut remaining {
+                let bytes = decoded.frames.checked_mul(decoded.channels)
+                    .and_then(|count| count.checked_mul(size_of::<f32>()))
+                    .context("UVI preview PCM size overflow")?;
+                *remaining = remaining.checked_sub(bytes).context("UVI preview PCM exceeds limit")?;
+            }
             if assembly_error.is_none() {
                 operands.push(decoded);
                 if members.len() > 1
@@ -275,7 +320,7 @@ impl Library {
                 }
             }
         }
-        sample::check_cancel(stop)?;
+        sample::check_canceled(canceled)?;
         if let Some(error) = assembly_error {
             return Err(error);
         }
@@ -1125,5 +1170,87 @@ mod tests {
                 .unwrap()
         );
         std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod raw_preview_decoder_proof {
+    use super::*;
+    use std::{cell::Cell, io::Cursor, sync::atomic::{AtomicU64, Ordering}};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    fn fixture() -> (Library, std::path::PathBuf, u64) {
+        let mut bytes = vec![0u8; 320];
+        bytes[..4].copy_from_slice(b"UFS2"); bytes[4..8].copy_from_slice(&3u32.to_le_bytes());
+        let mut files = Vec::new();
+        for (name, values) in [("left.wav", [16384i16, -32768]), ("right.wav", [-16384i16, 32767])] {
+            let mut wav = Vec::new();
+            let spec = hound::WavSpec { channels: 1, sample_rate: 48000, bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int };
+            let mut writer = hound::WavWriter::new(Cursor::new(&mut wav), spec).unwrap();
+            for value in values { writer.write_sample(value).unwrap(); } writer.finalize().unwrap();
+            let offset = bytes.len() as u64;
+            files.push(Member { record_offset: offset, name: name.into(), parent: None,
+                path: Some(format!("Samples/{name}")), size: wav.len() as u64,
+                offset, mode: 0, footer: Vec::new() });
+            bytes.extend(wav);
+        }
+        let encoded = files.iter().map(|m| m.size).sum();
+        let path = std::env::temp_dir().join(format!("kontra-raw-preview-uvi-{}-{}.ufs",
+            std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        std::fs::write(&path, bytes).unwrap();
+        let library = Library { bank: Ufs::open(&path).unwrap(), content_key: None,
+            directory: Directory { files, directories: Vec::new(), records: Vec::new(),
+                warnings: Vec::new(), metadata_key: 0 } };
+        (library, path, encoded)
+    }
+    #[test]
+    fn bounded_preview_uses_exact_bundle_order_and_default_pcm() {
+        let (library, path, encoded) = fixture();
+        let resource = "/Samples/*right.wav*left.wav";
+        let baseline = library.audio("Programs/authored.uvip", resource).unwrap();
+        let preview = library.audio_preview("Programs/authored.uvip", resource, encoded,
+            8192, &|| false).unwrap(); // Include the existing1152-frame PCM packet scratch.
+        assert_eq!((preview.rate, preview.channels, preview.frames), (48000, 2, 2));
+        assert_eq!(preview.interleaved.iter().map(f32::to_bits).collect::<Vec<_>>(),
+            baseline.interleaved.iter().map(f32::to_bits).collect::<Vec<_>>());
+        assert_eq!(preview.interleaved.iter().collect::<Vec<_>>(), vec![-0.5, 0.5, 32767. / 32768., -1.]);
+        let calls = Cell::new(0);
+        let error = library.audio_preview("Programs/authored.uvip", resource, encoded - 1,
+            1024, &|| { calls.set(calls.get() + 1); false }).unwrap_err();
+        assert!(error.to_string().contains("encoded sources exceed limit"));
+        assert_eq!(calls.get(), 1); // Admission rejected before any member reader.
+        let error = library.audio_preview("Programs/authored.uvip", resource, encoded,
+            encoded as usize + 15, &|| false).unwrap_err();
+        assert!(error.to_string().contains("memory limit"));
+        let error = library.audio_preview("Programs/authored.uvip", "/Missing.wav", encoded,
+            1024, &|| true).unwrap_err();
+        assert!(error.is::<sample::LoadCancelled>());
+        let prepared = crate::preview_prepare::prepare_uvi(&library, "Programs/authored.uvip",
+            resource, 48000, &|| false).unwrap();
+        assert_eq!(&*prepared.frames, &[[-0.5, 0.5], [32767. / 32768., -1.]]);
+        assert_eq!(prepared.source_channels, Some(2));
+        // Replacement changes the actual inode snapshot even if header remains valid.
+        let replacement = path.with_extension("new"); std::fs::copy(&path, &replacement).unwrap();
+        use std::io::Write;
+        std::fs::OpenOptions::new().append(true).open(&replacement).unwrap().write_all(&[0]).unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+        assert!(library.validate_preview_source().is_err());
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn bounded_member_read_can_cancel_between_real_chunks() {
+        let (library, path, _) = fixture();
+        let mut bytes = std::fs::read(&path).unwrap(); bytes.resize(320 + 131072, 1);
+        std::fs::write(&path, bytes).unwrap();
+        let bank = Ufs::open(&path).unwrap();
+        let member = Member { record_offset: 320, name: "raw".into(), path: None, parent: None,
+            offset: 320, size: 131072, mode: 0, footer: Vec::new() };
+        let calls = Cell::new(0);
+        let error = bank.read_member_bounded_canceled(&member, 0, None, 131072, &|| {
+            let count = calls.get() + 1; calls.set(count); count >= 3
+        }).unwrap_err();
+        assert!(error.is::<sample::LoadCancelled>());
+        assert_eq!(calls.get(), 3); // Entry, first chunk, then second chunk stop.
+        drop(library); std::fs::remove_file(path).unwrap();
     }
 }

@@ -27,9 +27,10 @@ impl std::fmt::Display for LoadCancelled {
 }
 impl std::error::Error for LoadCancelled {}
 pub(crate) fn check_cancel(stop: Option<&AtomicBool>) -> Result<()> {
-    if stop.is_some_and(|stop| stop.load(Ordering::Acquire)) {
-        return Err(LoadCancelled.into());
-    }
+    check_canceled(&|| stop.is_some_and(|stop| stop.load(Ordering::Acquire)))
+}
+pub(crate) fn check_canceled(canceled: &dyn Fn() -> bool) -> Result<()> {
+    if canceled() { return Err(LoadCancelled.into()); }
     Ok(())
 }
 
@@ -182,7 +183,7 @@ fn clm_cycle_frames(bytes: &[u8]) -> Option<u32> {
 
 // Original parser using Apple's CAF 1.0 field definitions and LPCM alignment:
 // https://developer.apple.com/library/archive/documentation/MusicAudio/Reference/CAFSpec/CAF_spec/CAF_spec.html
-fn decode_caf(bytes: &[u8], stop: Option<&AtomicBool>) -> Result<Sample> {
+fn decode_caf(bytes: &[u8], canceled: &dyn Fn() -> bool, memory_limit: usize) -> Result<Sample> {
     ensure!(
         bytes.get(..8) == Some(b"caff\0\x01\0\0"),
         "Unsupported or truncated CAF header"
@@ -193,7 +194,7 @@ fn decode_caf(bytes: &[u8], stop: Option<&AtomicBool>) -> Result<Sample> {
     let mut description = None;
     let mut pcm = None;
     while at < bytes.len() {
-        check_cancel(stop)?;
+        check_canceled(canceled)?;
         let header = bytes
             .get(at..at + 12)
             .context("Truncated CAF chunk header")?;
@@ -288,14 +289,14 @@ fn decode_caf(bytes: &[u8], stop: Option<&AtomicBool>) -> Result<Sample> {
         .checked_mul(channels)
         .context("CAF sample count overflow")?;
     ensure!(
-        count <= (MEMORY_LIMIT - bytes.len()) / size_of::<f32>(),
+        count <= (memory_limit - bytes.len()) / size_of::<f32>(),
         "Decoded CAF exceeds memory limit"
     );
     let mut interleaved = Vec::new();
     interleaved.try_reserve_exact(count)?;
     for (index, sample) in pcm.chunks_exact(width).enumerate() {
         if index.is_multiple_of(4096) {
-            check_cancel(stop)?;
+            check_canceled(canceled)?;
         }
         let word = if little {
             sample
@@ -496,13 +497,18 @@ pub fn decode(bytes: &[u8]) -> Result<Sample> {
 }
 
 pub(crate) fn decode_with_cancel(bytes: &[u8], stop: Option<&AtomicBool>) -> Result<Sample> {
-    check_cancel(stop)?;
+    decode_bounded_canceled(bytes, MEMORY_LIMIT, &|| stop.is_some_and(|stop| stop.load(Ordering::Acquire)))
+}
+
+pub(crate) fn decode_bounded_canceled(bytes: &[u8], memory_limit: usize, canceled: &dyn Fn() -> bool) -> Result<Sample> {
+    let memory_limit = memory_limit.min(MEMORY_LIMIT);
+    check_canceled(canceled)?;
     ensure!(
-        !bytes.is_empty() && bytes.len() <= MEMORY_LIMIT,
+        !bytes.is_empty() && bytes.len() <= memory_limit,
         "Audio input exceeds memory limit or is empty"
     );
     if bytes.starts_with(b"caff") {
-        return decode_caf(bytes, stop);
+        return decode_caf(bytes, canceled, memory_limit);
     }
     let metadata = metadata(bytes)?;
     let mut encoded = bytes.to_vec();
@@ -535,7 +541,7 @@ pub(crate) fn decode_with_cancel(bytes: &[u8], stop: Option<&AtomicBool>) -> Res
             "Many-channel WAV frame count mismatch"
         );
         ensure!(
-            count <= (MEMORY_LIMIT - bytes.len()) / size_of::<f32>(),
+            count <= (memory_limit - bytes.len()) / size_of::<f32>(),
             "Decoded audio exceeds memory limit"
         );
         let mut interleaved = Vec::new();
@@ -544,7 +550,7 @@ pub(crate) fn decode_with_cancel(bytes: &[u8], stop: Option<&AtomicBool>) -> Res
             hound::SampleFormat::Float => {
                 for (index, value) in reader.samples::<f32>().enumerate() {
                     if index.is_multiple_of(4096) {
-                        check_cancel(stop)?;
+                        check_canceled(canceled)?;
                     }
                     interleaved.push(value?);
                 }
@@ -557,7 +563,7 @@ pub(crate) fn decode_with_cancel(bytes: &[u8], stop: Option<&AtomicBool>) -> Res
                 let scale = 2f32.powi(i32::from(spec.bits_per_sample) - 1);
                 for (index, value) in reader.samples::<i32>().enumerate() {
                     if index.is_multiple_of(4096) {
-                        check_cancel(stop)?;
+                        check_canceled(canceled)?;
                     }
                     interleaved.push(value? as f32 / scale);
                 }
@@ -612,7 +618,7 @@ pub(crate) fn decode_with_cancel(bytes: &[u8], stop: Option<&AtomicBool>) -> Res
         .checked_mul(channels)
         .context("Audio sample count overflow")?;
     ensure!(
-        count <= (MEMORY_LIMIT - bytes.len()) / size_of::<f32>(),
+        count <= (memory_limit - bytes.len()) / size_of::<f32>(),
         "Decoded audio exceeds memory limit"
     );
     let mut decoder = symphonia::default::get_codecs()
@@ -622,7 +628,7 @@ pub(crate) fn decode_with_cancel(bytes: &[u8], stop: Option<&AtomicBool>) -> Res
     interleaved.try_reserve_exact(count)?;
     let mut buffer = None::<SampleBuffer<f32>>;
     loop {
-        check_cancel(stop)?;
+        check_canceled(canceled)?;
         let packet = match format.next_packet() {
             Ok(packet) => packet,
             Err(AudioError::IoError(error)) if error.kind() == io::ErrorKind::UnexpectedEof => {
@@ -640,7 +646,7 @@ pub(crate) fn decode_with_cancel(bytes: &[u8], stop: Option<&AtomicBool>) -> Res
             "Audio dimensions changed during decode"
         );
         ensure!(
-            decoded.capacity() <= MEMORY_LIMIT / channels / size_of::<f32>(),
+            decoded.capacity() <= memory_limit / channels / size_of::<f32>(),
             "Audio packet exceeds memory limit"
         );
         if channels == 1 && let AudioBufferRef::S32(samples) = &decoded {

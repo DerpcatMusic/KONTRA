@@ -212,6 +212,7 @@ pub(super) fn install_prepared_uvi(params: &SamplerParams) {
     part.tune = 0.;
     part.edits = Default::default(); part.script_state.clear(); part.ir_settings.clear();
     part.engine_state.clear(); part.delay_state.clear();
+    params.selection.preview_source_commit(slot);
     if slot == current.parts.len() { current.parts.push(part); } else { current.parts[slot] = part; }
     if !current.order.contains(&(slot as u32)) { current.order.push(slot as u32); }
     current.uvi_requested = None;
@@ -541,6 +542,7 @@ pub(super) fn service(params: &SamplerParams) {
                     part.status = UNSUPPORTED.into();
                     part.loading = false;
                 }
+                if part.uvi_activation.is_some() { params.selection.preview_source_commit(slot); }
                 part.uvi_activation.take()
             };
             if let Some(retired) = retired {
@@ -570,6 +572,7 @@ pub(super) fn service(params: &SamplerParams) {
             let Some(part) = view.parts.get_mut(slot) else {
                 continue;
             };
+            params.selection.preview_source_commit(slot);
             let activation = Activation {
                 saved_state: current.parts[slot].uvi_state.clone(),
                 source,

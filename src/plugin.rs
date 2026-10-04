@@ -22,11 +22,15 @@ use std::{
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
     sync::{
-        Mutex, RwLock,
+        Mutex,
         atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
     time::Instant,
 };
+
+pub(crate) mod preview;
+
+pub(crate) mod sample_preview;
 
 #[cfg(feature = "uvi")]
 pub(crate) mod uvi_ui;
@@ -413,7 +417,7 @@ pub struct SamplerParams {
     pub cutoff: FloatParam,
     // Raw MIDI stays port/channel-specific; VST3 supplies its own controller proxies.
     #[persist = "selection"]
-    pub selection: RwLock<Selection>,
+    pub selection: sample_preview::SelectionStore,
     #[skip]
     pub shared: Shared,
     #[meter]
@@ -643,6 +647,7 @@ pub struct Shared {
     ready: ArrayQueue<(usize, u64, Handoff)>,
     pending_ready: Mutex<std::collections::VecDeque<(usize, u64, Handoff)>>,
     discard: ArrayQueue<Retired>,
+    preview: preview::Mailbox,
     /// Loader-only staging. A Worker owns a blocking join, never a Dsp payload.
     #[cfg(feature = "uvi")]
     uvi_prepared: Mutex<Option<UviPrepared>>,
@@ -1048,6 +1053,7 @@ impl Default for Shared {
             ready: ArrayQueue::new(64),
             pending_ready: Mutex::default(),
             discard: ArrayQueue::new(64),
+            preview: preview::Mailbox::default(),
             #[cfg(feature = "uvi")]
             uvi_prepared: Mutex::default(),
             #[cfg(feature = "uvi")]
@@ -1397,6 +1403,7 @@ impl Handoff {
 #[expect(dead_code, reason = "held only to be dropped off the audio thread")]
 #[derive(Default)]
 struct Retired {
+    preview: Option<Box<preview::Prepared>>,
     #[cfg(feature = "uvi")]
     uvi: Option<uvi_control::Audio>,
     #[cfg(feature = "uvi")]
@@ -2386,6 +2393,7 @@ fn prepare_snapshot(params: &SamplerParams) -> Option<(usize, (String, u32, Stri
                 trace.finish("canceled");
                 return None;
             };
+            params.selection.preview_source_commit(request.slot);
             part.select_snapshot(request.path);
             let source = part.source();
             drop(pending);
@@ -2514,6 +2522,7 @@ impl BackgroundTask for Load {
                     let status = {
                         let mut current = params.selection.write().unwrap();
                         if *current == before {
+                            params.selection.preview_control().stop();
                             current.order = (0..parts.len() as u32).collect();
                             current.parts = parts;
                             current.multi = path;
@@ -2692,6 +2701,7 @@ impl BackgroundTask for Load {
                     trace.finish("canceled");
                     continue;
                 }
+                params.selection.preview_source_commit(slot);
                 let epoch = next_epoch(&mut view, slot, snapshot, live);
                 view.parts[slot].script_pages = pages;
                 if let Some(selected) = view.parts[slot].live.as_ref().map(|live| live.slot) { view.parts[slot].script_slot = selected; }
@@ -2738,6 +2748,12 @@ impl BackgroundTask for Load {
             }
             {
                 let mut view = params.shared.view.lock().unwrap();
+                let current = params.selection.read().unwrap();
+                if current.parts.get(slot).is_none_or(|p| !p.matches_source(&target)
+                    || p.streaming != part.streaming || p.streaming(current.streaming) != streaming) {
+                    continue;
+                }
+                params.selection.preview_source_commit(slot);
                 let v = &mut view.parts[slot];
                 (v.attempted, v.streaming) = (Some(target.clone()), streaming);
                 v.status = "Loading import…".into();
@@ -2850,6 +2866,7 @@ impl BackgroundTask for Load {
                 let art = {
                     let mut view = params.shared.view.lock().unwrap();
                     let v = &mut view.parts[slot];
+                    params.selection.preview_source_commit(slot);
                     v.instrument = Some(instrument.clone());
                     v.program = part.program;
                     parsed.map(|parsed| {
@@ -3544,6 +3561,7 @@ pub struct Dsp {
     uvi_end_fence: uvi_delay::Ends,
     #[cfg(feature = "uvi")]
     native_slots: Vec<bool>,
+    preview: preview::Cursor,
     until_poll: usize,
     audition_left: Vec<usize>,
     /// Epoch of each slot's installed runtime, returned with its persistence snapshots.
@@ -3602,6 +3620,7 @@ impl Default for Dsp {
             uvi_end_fence: uvi_delay::Ends::default(),
             #[cfg(feature = "uvi")]
             native_slots: vec![false; RACK_SLOTS],
+            preview: preview::Cursor::default(),
             until_poll: 0, audition_left: vec![0; RACK_SLOTS],
             script_epoch: vec![0; RACK_SLOTS], installed_generation: vec![0; RACK_SLOTS],
             live: None, snapshot: None, zone_completion: None, live_seen: vec![(0, 0); RACK_SLOTS],
@@ -3693,6 +3712,55 @@ const SNAPSHOT_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 const LIVE_WATCH: std::time::Duration = std::time::Duration::from_secs(2);
 const LIVE_BUDGET: usize = 512;
 pub struct Sampler;
+
+fn poll_sample_preview(s: &mut Dsp, p: &SamplerParams, rate: f64, cx: &ProcessContext) {
+    let progress = s.preview.poll(p.selection.preview_control(), &p.shared.preview, &p.shared.discard, rate);
+    if progress.retired && let Some(tasks) = cx.tasks::<Load>() { tasks.spawn_coalescing(Load); }
+    // A pending latest completion must be able to fill the newly free mailbox,
+    // including when the removed item was stale and changed no current status.
+    if progress.ready_taken && let Some(tasks) = cx.tasks::<sample_preview::Prepare>() {
+        tasks.spawn_coalescing(sample_preview::Prepare);
+    }
+}
+
+/// Add one dry chunk only if every routed sum and master-scope sample stays
+/// finite. A failure leaves all ordinary output/telemetry unchanged.
+fn mix_sample_preview(dry: &[crate::audio::Frame], gains: &[f32], b: &mut AudioBuffer,
+    at: usize, channels: usize, cx: &ProcessContext, peak: &mut [f32; 2],
+    mut scope: Option<&mut [f32]>) -> bool {
+    let (start, count) = cx.bus_routing.output(0)
+        .map(|r| (r.channel_start(), r.channel_count()))
+        .unwrap_or((0, channels.min(2)));
+    let sample = |i: usize, channel: usize| {
+        if count == 1 { dry[i][0] * 0.5 + dry[i][1] * 0.5 } else { dry[i][channel] }
+    };
+    for channel in (0..count.min(2)).filter(|c| start + c < channels) {
+        let out = &b.output(start + channel)[at..at + dry.len()];
+        for (i, (&o, &gain)) in out.iter().zip(gains).enumerate() {
+            let value = sample(i, channel) * gain;
+            if !value.is_finite() || !(o + value).is_finite() { return false; }
+        }
+    }
+    if let Some(mono) = &scope {
+        for (i, (&m, &gain)) in mono.iter().zip(gains).enumerate() {
+            let value = (dry[i][0] * 0.5 + dry[i][1] * 0.5) * gain;
+            if !value.is_finite() || !(m + value).is_finite() { return false; }
+        }
+    }
+    for channel in (0..count.min(2)).filter(|c| start + c < channels) {
+        let out = &mut b.output(start + channel)[at..at + dry.len()];
+        for (i, (o, gain)) in out.iter_mut().zip(gains).enumerate() {
+            *o += sample(i, channel) * gain;
+            peak[channel] = peak[channel].max(o.abs());
+        }
+    }
+    if let Some(mono) = &mut scope {
+        for (i, (m, &gain)) in mono.iter_mut().zip(gains).enumerate() {
+            *m += (dry[i][0] * 0.5 + dry[i][1] * 0.5) * gain;
+        }
+    }
+    true
+}
 
 /// Channel that makes the on-screen keyboard reach the part's first zone.
 fn preview_channel(e: &Engine) -> u8 {
@@ -4023,6 +4091,9 @@ impl PluginLogic for Sampler {
         ]
     }
     fn reset(s: &mut Dsp, p: &SamplerParams, c: &AudioConfig) {
+        // Same-rate host reset is still a new cancellation boundary. Retain
+        // the silent PCM owner until process can return it to the loader.
+        p.selection.preview_control().stop();
         s.rack.reset(c.sample_rate);
         p.shared
             .rate
@@ -4096,6 +4167,7 @@ impl PluginLogic for Sampler {
             }
         }
         let rate = s.rack.parts[0].rate();
+        poll_sample_preview(s, p, rate, cx);
         let frames = b.num_samples();
         // Offline, a render waits for the disk and keeps every tail; live,
         // tails go before the deadline does.
@@ -4401,6 +4473,7 @@ impl PluginLogic for Sampler {
             e.cutoff = p.cutoff.value() * r.cutoff_scale();
         }
         if p.shared.panic.swap(false, Ordering::AcqRel) {
+            p.selection.preview_control().stop();
             p.shared.reset_midi();
             for row in &mut s.key_slots.0 { row.fill(false); }
             s.align.clear();
@@ -4599,14 +4672,17 @@ impl PluginLogic for Sampler {
             };
             #[cfg(not(feature = "uvi"))]
             let (buses, live) = s.rack.render_live(len);
+            // Preview bypasses part voices, scripts, RR, FX and alignment.
+            // It is already prepared at host rate; one shared dry cursor.
+            let mut dry = [[0f32; 2]; MAX_BLOCK];
+            let preview_played = s.preview.render(p.selection.preview_control(), rate, &mut dry[..len]);
+            let mut mono = [0f32; MAX_BLOCK];
             if scope == SCOPE_MASTER {
-                let mut mono = [0f32; MAX_BLOCK];
                 for (_, x) in buses.iter().enumerate().filter(|(bus, _)| live[*bus]) {
                     for (i, (m, gain)) in mono[..len].iter_mut().zip(&gains[..len]).enumerate() {
                         *m += (x[0][i] + x[1][i]) * 0.5 * gain;
                     }
                 }
-                p.shared.scope.push(&mono[..len]);
             }
             for channel in 0..channels {
                 b.output(channel)[at..at + len].fill(0.0);
@@ -4635,11 +4711,17 @@ impl PluginLogic for Sampler {
                     }
                 }
             }
+            let master_scope = (scope == SCOPE_MASTER).then_some(&mut mono[..len]);
+            if preview_played && !mix_sample_preview(&dry[..len], &gains[..len], b, at, channels, cx, &mut peak, master_scope) {
+                s.preview.fail(p.selection.preview_control());
+            }
+            if scope == SCOPE_MASTER { p.shared.scope.push(&mono[..len]); }
             if s.rack.tap.is_some() {
                 p.shared.scope.push(&s.rack.tapped[..len]);
             }
             at += len;
         }
+        poll_sample_preview(s, p, rate, cx);
         finish_host_notes(s,cx,frames.saturating_sub(1) as u32);
         #[cfg(feature = "uvi")]
         for retired in &mut s.retiring_uvi {
@@ -4791,7 +4873,7 @@ pub(crate) struct ScriptView {
     pub(crate) keys: Arc<BTreeMap<u8, KeyState>>,
 }
 
-moose::plugin! { logic:Sampler, params:SamplerParams, tasks:[Load, AudioDiagnosticsTask] }
+moose::plugin! { logic:Sampler, params:SamplerParams, tasks:[Load, AudioDiagnosticsTask, sample_preview::Prepare] }
 
 /// This thread's CPU time in seconds (Linux), which a busy machine's
 /// preemption does not inflate the way wall time does; 0 elsewhere.
@@ -5656,6 +5738,137 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn dry_mapping_preview_adds_to_main_output_without_note_or_script_delivery() {
+        let setup = || {
+            let p = SamplerParams::new();
+            let mut dsp = Dsp::default();
+            Sampler::reset(&mut dsp, &p, &AudioConfig::new(48000., 64));
+            dsp.rack.parts[0].set_bank(Some(late_bank(&[(0, 127, 0)])));
+            let source = "on init\ndeclare $notes\ndeclare $controllers\nmake_persistent($notes)\nmake_persistent($controllers)\nend on\non note\ninc($notes)\nend on\non controller\ninc($controllers)\nend on";
+            let (rt, errors) = Runtime::with_scripts(&[source], &mut crate::ksp::LogEngine::default(), 0, Vec::new());
+            assert!(errors.iter().all(Option::is_none));
+            dsp.rack.parts[0].set_script(Some(Box::new(rt)));
+            dsp.rack.parts[0].note_on(0, 60, 100);
+            (p, dsp)
+        };
+        let (p, mut dsp) = setup();
+        let (reference_p, mut reference) = setup();
+        let id = { let _owner = p.selection.read().unwrap(); p.selection.preview_control().begin(0).unwrap() };
+        let pcm = vec![[0.25, 0.5]; 128].into_boxed_slice();
+        p.shared.preview.publish(p.selection.preview_control(), preview::Prepared::new(id, 48000, pcm).unwrap()).ok().unwrap();
+        let render = |dsp: &mut Dsp, params: &SamplerParams| {
+            let mut output = [[0.; 64]; 2];
+            let mut refs = output.each_mut().map(|c| c.as_mut_slice());
+            let mut buffer = AudioBuffer::from_slices_checked(&[], &mut refs, 64);
+            let transport = TransportInfo::default();
+            let none = EventList::with_capacity(0);
+            let mut midi = EventList::with_capacity(16);
+            let mut cx = ProcessContext::new(&transport, 48000., 64, &mut midi);
+            assert_eq!(allocations(|| { Sampler::process(dsp, params, &mut buffer, &none, &mut cx); }), 0);
+            assert_eq!(midi.len(), 0);
+            output
+        };
+        for _ in 0..2 {
+            let actual = render(&mut dsp, &p);
+            let ordinary = render(&mut reference, &reference_p);
+            let gain = db_to_linear(-12.);
+            for channel in 0..2 {
+                for i in 0..64 {
+                    assert!((actual[channel][i] - ordinary[channel][i] - [0.25, 0.5][channel] * gain).abs() < 1e-6);
+                }
+            }
+            assert!(dsp.rack.parts[0].key_down(0, 60));
+            assert_eq!(dsp.rack.parts[0].active_voices(), reference.rack.parts[0].active_voices());
+            assert_eq!(dsp.rack.parts[0].pending_work(), reference.rack.parts[0].pending_work());
+            let state = dsp.rack.parts[0].script().unwrap().persistence();
+            assert_eq!(state[0]["$notes"], crate::ksp::Value::Int(1));
+            assert_eq!(state[0]["$controllers"], crate::ksp::Value::Int(0));
+        }
+        assert_eq!(p.selection.preview_control().status(id), Some(preview::Status::Stopped));
+        assert_eq!(render(&mut dsp, &p), render(&mut reference, &reference_p));
+        assert!(p.shared.discard.pop().unwrap().preview.is_some()); // Loader disposes, off audio.
+    }
+
+    #[test]
+    fn preview_main_route_mono_and_finite_guard_preserve_ordinary_output() {
+        use moose::core::bus_routing::{BusActivation, BusRouting};
+        let transport = TransportInfo::default();
+        let mut midi = EventList::with_capacity(0);
+        let mut routing = BusRouting::new();
+        routing.push_output(1, BusActivation::Active);
+        let cx = ProcessContext::new(&transport, 48000., 2, &mut midi).with_bus_routing(routing);
+        let mut output = [0.125; 2];
+        let mut refs = [output.as_mut_slice()];
+        let mut buffer = AudioBuffer::from_slices_checked(&[], &mut refs, 2);
+        let (mut peak, mut mono) = ([0.125; 2], [0.125; 2]);
+        assert_eq!(allocations(|| {
+            assert!(mix_sample_preview(&[[0.25, 0.75]; 2], &[0.5; 2], &mut buffer, 0, 1, &cx, &mut peak, Some(&mut mono)));
+        }), 0);
+        assert_eq!(buffer.output(0), &[0.375; 2]);
+        assert_eq!(mono, [0.375; 2]);
+        assert_eq!(peak[0], 0.375);
+        let before = buffer.output(0).to_vec();
+        let (before_peak, before_mono) = (peak, mono);
+        // Valid finite source samples can overflow only after master gain.
+        assert_eq!(allocations(|| {
+            assert!(!mix_sample_preview(&[[0.25, 0.75], [f32::MAX; 2]], &[0.5, 2.], &mut buffer, 0, 1, &cx, &mut peak, Some(&mut mono)));
+        }), 0);
+        assert_eq!(buffer.output(0), before.as_slice());
+        assert_eq!(peak, before_peak);
+        assert_eq!(mono, before_mono);
+        buffer.output(0).fill(f32::MAX);
+        assert_eq!(allocations(|| {
+            assert!(!mix_sample_preview(&[[f32::MAX; 2]; 2], &[1.; 2], &mut buffer, 0, 1, &cx, &mut peak, None));
+        }), 0);
+        assert_eq!(buffer.output(0), &[f32::MAX; 2]);
+        let control = preview::Control::default();
+        let id = control.begin(0).unwrap();
+        let mailbox = preview::Mailbox::default();
+        let discard = ArrayQueue::new(1);
+        let mut cursor = preview::Cursor::default();
+        mailbox.publish(&control, preview::Prepared::new(id, 48000, vec![[f32::MAX; 2]; 2].into_boxed_slice()).unwrap()).ok().unwrap();
+        assert_eq!(allocations(|| {
+            cursor.poll(&control, &mailbox, &discard, 48000.);
+            cursor.fail(&control);
+            cursor.poll(&control, &mailbox, &discard, 48000.);
+        }), 0);
+        assert_eq!(control.status(id), Some(preview::Status::Failed));
+        assert!(discard.pop().unwrap().preview.is_some());
+    }
+
+    #[test]
+    fn preview_same_rate_reset_and_panic_keep_full_queue_payload_off_audio() {
+        for reset in [true, false] {
+            let p = SamplerParams::new();
+            let mut dsp = Dsp::default();
+            let config = AudioConfig::new(48000., 64);
+            Sampler::reset(&mut dsp, &p, &config);
+            let id = { let _owner = p.selection.read().unwrap(); p.selection.preview_control().begin(0).unwrap() };
+            p.shared.preview.publish(p.selection.preview_control(), preview::Prepared::new(id, 48000,
+                vec![[0.25, 0.5]; 1024].into_boxed_slice()).unwrap()).ok().unwrap();
+            let mut output = [[0.; 64]; 2];
+            let mut refs = output.each_mut().map(|c| c.as_mut_slice());
+            let mut buffer = AudioBuffer::from_slices_checked(&[], &mut refs, 64);
+            let transport = TransportInfo::default();
+            let none = EventList::with_capacity(0);
+            let mut midi = EventList::with_capacity(0);
+            let mut cx = ProcessContext::new(&transport, 48000., 64, &mut midi);
+            assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }), 0);
+            assert!(buffer.output(0).iter().any(|x| *x != 0.));
+            while p.shared.discard.push(Retired::default()).is_ok() {}
+            if reset { assert_eq!(allocations(|| Sampler::reset(&mut dsp, &p, &config)), 0); }
+            else { p.shared.panic.store(true, Ordering::Release); }
+            assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }), 0);
+            assert!(buffer.output(0).iter().all(|x| *x == 0.));
+            assert!(buffer.output(1).iter().all(|x| *x == 0.));
+            assert!(!p.selection.preview_control().current(id));
+            while p.shared.discard.pop().is_some() {} // Service frees existing owners.
+            assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }), 0);
+            assert_eq!(p.shared.discard.pop().unwrap().preview.unwrap().id, id);
+        }
+    }
 
     #[cfg(feature = "uvi")]
     #[test]
