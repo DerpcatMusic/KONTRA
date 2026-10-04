@@ -220,6 +220,8 @@ pub fn read(path: &Path) -> Result<Instrument> {
         .with_context(|| format!("Reading {}", path.display()))
 }
 
+const MAX_EXPANDED_INSTRUMENT: usize = 256 * 1024 * 1024;
+
 fn chunks(path: &Path) -> Result<KontaktChunks> {
     let file_bytes = path.metadata()?.len();
     ensure!(file_bytes <= 128 * 1024 * 1024, "Instrument container exceeds 128 MiB import limit");
@@ -233,24 +235,24 @@ fn chunks(path: &Path) -> Result<KontaktChunks> {
     );
     file.rewind()?;
     let bytes = match NIFile::read(&mut file).with_context(|| format!("NIS/NKS container {} ({file_bytes} bytes), decoder cursor {:?}", path.display(), file.stream_position().ok()))? {
-        NIFile::NKSContainer(n) => n.decompressed_preset().with_context(|| format!("NKS preset decompression in {}, compressed {} bytes", path.display(), n.compressed_data.len()))?,
+        NIFile::NKSContainer(n) => n.decompressed_preset_bounded(MAX_EXPANDED_INSTRUMENT).with_context(|| format!("NKS preset decompression in {}, compressed {} bytes", path.display(), n.compressed_data.len()))?,
         NIFile::NISoundContainer(n) => nis_payload(n,path,0).with_context(|| format!("NIS preset payload in {}", path.display()))?,
         _ => bail!("Unsupported instrument container; choose an NKI or NKM preset"),
     };
-    ensure!(bytes.len() <= 256 * 1024 * 1024, "Expanded instrument exceeds 256 MiB limit");
+    ensure!(bytes.len() <= MAX_EXPANDED_INSTRUMENT, "Expanded instrument exceeds 256 MiB limit");
     let expanded_bytes = bytes.len();
     KontaktChunks::read(Cursor::new(bytes)).with_context(|| format!("Kontakt chunks in {}, expanded payload {expanded_bytes} bytes", path.display()))
 }
 fn nis_payload(n:ni_file::nis::ItemContainer,path:&Path,depth:usize)->Result<Vec<u8>> {
     ensure!(depth<4,"Too many nested NIS wrappers");
     if let Some(data)=n.find_data(&ni_file::nis::ItemType::AppSpecific) {
-        let app=ni_file::nis::AppSpecificProperties::try_from(data)?;
+        let app=ni_file::nis::AppSpecificProperties::read_bounded(data, MAX_EXPANDED_INSTRUMENT)?;
         return nis_payload(app.subtree_item.item()?,path,depth+1);
     }
     Ok(match Repository::from(n).infer_schema() {
             NISObject::BNISoundPreset(p) => {
                 let key = if p.is_encrypted()? { Some(crate::access::require_library_key(path).context("NIS preset access lookup")?) } else { None };
-                let enc = p.encryption_item_with_key(key.as_deref()).context("NIS preset subtree")?;
+                let enc = p.encryption_item_with_key_bounded(key.as_deref(), MAX_EXPANDED_INSTRUMENT).context("NIS preset subtree")?;
                 ni_file::nis::schema::PresetChunkItem::from(enc.subtree.item()?).properties()?.0
             },
             _ => bail!("Unsupported NIS preset structure"),

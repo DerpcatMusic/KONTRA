@@ -32,19 +32,21 @@ impl ContentState {
     }
 }
 
-/// Validate the complete PNG, rather than trusting a guessed cipher prefix.
+/// Verify all PNG CRCs and critical chunk structure without decoding IDAT pixels.
 pub(crate) fn validate_png(bytes: &[u8]) -> Result<usize> {
     ensure!(
         bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
         "Invalid PNG signature"
     );
     let mut offset = 8usize;
-    let (mut chunks, mut data) = (0usize, false);
+    let (mut chunks, mut data, mut data_ended) = (0usize, false, false);
+    let (mut depth, mut color, mut palette) = (0u8, 0u8, 0usize);
     while offset < bytes.len() {
         let header = bytes
             .get(offset..offset + 8)
             .context("Truncated PNG chunk")?;
         let size = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+        ensure!(size <= i32::MAX as usize, "Invalid PNG chunk length");
         let end = offset
             .checked_add(12)
             .and_then(|n| n.checked_add(size))
@@ -58,22 +60,62 @@ pub(crate) fn validate_png(bytes: &[u8]) -> Result<usize> {
             "PNG CRC mismatch"
         );
         let kind = &header[4..8];
+        ensure!(
+            kind.iter().all(u8::is_ascii_alphabetic),
+            "Invalid PNG chunk type"
+        );
         if chunks == 0 {
             ensure!(kind == b"IHDR" && size == 13, "PNG must start with IHDR");
             let ihdr = &chunk[4..17];
             ensure!(
-                u32::from_be_bytes(ihdr[..4].try_into().unwrap()) != 0
-                    && u32::from_be_bytes(ihdr[4..8].try_into().unwrap()) != 0,
+                (1..=i32::MAX as u32)
+                    .contains(&u32::from_be_bytes(ihdr[..4].try_into().unwrap()))
+                    && (1..=i32::MAX as u32)
+                        .contains(&u32::from_be_bytes(ihdr[4..8].try_into().unwrap())),
                 "Invalid PNG dimensions"
+            );
+            ensure!(
+                match ihdr[9] {
+                    0 => matches!(ihdr[8], 1 | 2 | 4 | 8 | 16),
+                    2 | 4 | 6 => matches!(ihdr[8], 8 | 16),
+                    3 => matches!(ihdr[8], 1 | 2 | 4 | 8),
+                    _ => false,
+                },
+                "Invalid PNG pixel format"
             );
             ensure!(
                 ihdr[10] == 0 && ihdr[11] == 0 && ihdr[12] <= 1,
                 "Invalid PNG encoding"
             );
+            (depth, color) = (ihdr[8], ihdr[9]);
         } else {
-            ensure!(kind != b"IHDR", "Repeated PNG IHDR");
+            match kind {
+                b"IHDR" => anyhow::bail!("Repeated PNG IHDR"),
+                b"PLTE" => {
+                    ensure!(
+                        palette == 0 && !data && matches!(color, 2 | 3 | 6),
+                        "Invalid PNG palette order or color type"
+                    );
+                    ensure!(
+                        (3..=768).contains(&size) && size.is_multiple_of(3),
+                        "Invalid PNG palette size"
+                    );
+                    palette = size / 3;
+                    ensure!(
+                        color != 3 || palette <= 1usize << depth,
+                        "PNG palette exceeds bit depth"
+                    );
+                }
+                b"IDAT" => {
+                    ensure!(!data_ended, "Nonconsecutive PNG IDAT chunks");
+                    ensure!(color != 3 || palette > 0, "Indexed PNG lacks palette");
+                    data = true;
+                }
+                b"IEND" => {}
+                _ => ensure!(kind[0] & 0x20 != 0, "Unknown critical PNG chunk"),
+            }
         }
-        data |= kind == b"IDAT";
+        data_ended |= data && kind != b"IDAT";
         chunks += 1;
         offset = end;
         if kind == b"IEND" {
@@ -309,6 +351,7 @@ pub(crate) fn ensure_content_state(
                     && record.physical_size == bank.header.physical_size
                     && record.bank == bank.header.bank_name
                 {
+                    verify_key(bank, directory, record.key)?;
                     return Ok(Some(ContentState {
                         key: record.key,
                         bank: Some(bank.header.bank_name.clone()),
@@ -496,6 +539,13 @@ mod tests {
                 .key,
             key
         );
+        let mut corrupt_record = serde_json::from_slice::<serde_json::Value>(&stored).unwrap();
+        corrupt_record["key"] = (key ^ 1).into();
+        let corrupt_record = serde_json::to_vec(&corrupt_record).unwrap();
+        std::fs::write(&output, &corrupt_record).unwrap();
+        assert!(ensure_content_state(&path, &bank, &directory, &store).is_err());
+        assert_eq!(read_private(&output).unwrap(), corrupt_record);
+        std::fs::write(&output, &stored).unwrap();
         assert!(save_content_state(&output, &bank, &state, false).is_err());
         assert_eq!(read_private(&output).unwrap(), stored);
         #[cfg(unix)]
@@ -565,6 +615,12 @@ mod tests {
             std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o755)).unwrap();
             assert!(ensure_content_state(&path, &bank, &directory, &store).is_err());
             std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let linked_store = root.join("linked-store");
+            let before_link = read_private(&output).unwrap();
+            symlink(&store, &linked_store).unwrap();
+            assert!(ensure_content_state(&path, &bank, &directory, &linked_store).is_err());
+            assert_eq!(read_private(&output).unwrap(), before_link);
+            std::fs::remove_file(linked_store).unwrap();
             let outside = root.join("unrelated.json");
             std::fs::write(&outside, b"authored unrelated data").unwrap();
             std::fs::remove_file(&output).unwrap();
@@ -616,5 +672,147 @@ mod tests {
         let mut extra = png;
         extra.push(0);
         assert!(validate_png(&extra).is_err());
+    }
+    #[test]
+    fn complete_png_rejects_crc_correct_invalid_pixel_formats() {
+        for (depth, color) in [(7, 0), (8, 1), (4, 2), (16, 3), (1, 4), (4, 6)] {
+            let mut png = authored_png();
+            png[24] = depth;
+            png[25] = color;
+            let crc = crc32fast::hash(&png[12..29]);
+            png[29..33].copy_from_slice(&crc.to_be_bytes());
+            assert!(
+                validate_png(&png).is_err(),
+                "Accepted depth {depth}, color {color}"
+            );
+        }
+    }
+    #[test]
+    fn complete_png_requires_critical_chunk_structure() {
+        fn png(depth: u8, color: u8, chunks: &[(&[u8; 4], &[u8])]) -> Vec<u8> {
+            let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+            let mut append = |kind: &[u8; 4], data: &[u8]| {
+                png.extend_from_slice(&(data.len() as u32).to_be_bytes());
+                let start = png.len();
+                png.extend_from_slice(kind);
+                png.extend_from_slice(data);
+                let crc = crc32fast::hash(&png[start..]);
+                png.extend_from_slice(&crc.to_be_bytes());
+            };
+            append(b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, depth, color, 0, 0, 0]);
+            for &(kind, data) in chunks {
+                append(kind, data);
+            }
+            png
+        }
+        let palette = [0; 3];
+        for chunks in [
+            vec![(b"IDAT", &[][..]), (b"IEND", &[][..])],
+            vec![
+                (b"PLTE", &palette[..]),
+                (b"PLTE", &palette[..]),
+                (b"IDAT", &[][..]),
+                (b"IEND", &[][..]),
+            ],
+            vec![
+                (b"IDAT", &[][..]),
+                (b"PLTE", &palette[..]),
+                (b"IEND", &[][..]),
+            ],
+            vec![(b"PLTE", &[][..]), (b"IDAT", &[][..]), (b"IEND", &[][..])],
+            vec![
+                (b"PLTE", &[0; 4][..]),
+                (b"IDAT", &[][..]),
+                (b"IEND", &[][..]),
+            ],
+            vec![
+                (b"PLTE", &[0; 771][..]),
+                (b"IDAT", &[][..]),
+                (b"IEND", &[][..]),
+            ],
+        ] {
+            assert!(validate_png(&png(8, 3, &chunks)).is_err());
+        }
+        assert!(
+            validate_png(&png(
+                1,
+                3,
+                &[(b"PLTE", &[0; 9]), (b"IDAT", &[]), (b"IEND", &[])]
+            ))
+            .is_err()
+        );
+        for color in [0, 4] {
+            assert!(
+                validate_png(&png(
+                    8,
+                    color,
+                    &[(b"PLTE", &palette), (b"IDAT", &[]), (b"IEND", &[])]
+                ))
+                .is_err()
+            );
+        }
+        for kind in [b"IHDR", b"ABCD", b"x1XX"] {
+            assert!(validate_png(&png(8, 0, &[(kind, &[]), (b"IDAT", &[]), (b"IEND", &[])])).is_err());
+        }
+        assert!(
+            validate_png(&png(
+                8,
+                0,
+                &[
+                    (b"IDAT", &[]),
+                    (b"tEXt", &[]),
+                    (b"IDAT", &[]),
+                    (b"IEND", &[])
+                ]
+            ))
+            .is_err()
+        );
+        assert!(validate_png(&png(8, 0, &[(b"IEND", &[])])).is_err());
+        assert!(validate_png(&png(8, 0, &[(b"IDAT", &[]), (b"IEND", &[0])])).is_err());
+        assert!(
+            validate_png(&png(
+                8,
+                0,
+                &[(b"IDAT", &[]), (b"IEND", &[]), (b"IEND", &[])]
+            ))
+            .is_err()
+        );
+        for (depth, color) in [(1, 3), (8, 2), (16, 6)] {
+            assert_eq!(
+                validate_png(&png(
+                    depth,
+                    color,
+                    &[
+                        (b"PLTE", &palette),
+                        (b"IDAT", &[]),
+                        (b"IDAT", &[]),
+                        (b"IEND", &[])
+                    ]
+                ))
+                .unwrap(),
+                5
+            );
+        }
+        // Unknown ancillary and future reserved-bit chunks are ignored by decoder policy.
+        assert_eq!(
+            validate_png(&png(
+                8,
+                0,
+                &[
+                    (b"zzzz", &[]),
+                    (b"IDAT", &[]),
+                    (b"IDAT", &[]),
+                    (b"tEXt", &[]),
+                    (b"IEND", &[])
+                ]
+            ))
+            .unwrap(),
+            6
+        );
+        let mut oversized = png(8, 0, &[(b"IDAT", &[]), (b"IEND", &[])]);
+        oversized[16..20].copy_from_slice(&0x8000_0000u32.to_be_bytes());
+        let crc = crc32fast::hash(&oversized[12..29]);
+        oversized[29..33].copy_from_slice(&crc.to_be_bytes());
+        assert!(validate_png(&oversized).is_err());
     }
 }

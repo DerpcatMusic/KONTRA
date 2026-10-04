@@ -232,7 +232,11 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     ] {
         let (hit, el) = tab(ui, id, label, settings.browser_view == view);
         if hit { cx.p.shared.libraries.edit(|s| s.browser_view = view); }
-        views.push(el.tip("Library view: together, or grouped by Kontakt and UVI / Falcon"));
+        views.push(el.tip(if cfg!(feature = "uvi") {
+            "Library view: together, or grouped by Kontakt and UVI / Falcon"
+        } else {
+            "Library view: together, or grouped by player"
+        }));
     }
 
     // Where the focus goes, moved once every row has read this frame's keys
@@ -1029,9 +1033,11 @@ fn empty_state(ui: &mut Ui, cx: &mut Cx) -> El {
     }
     col![
         body("No libraries yet").text_size(TEXT).lines(1),
-        caption(
+        caption(if cfg!(feature = "uvi") {
             "Add a folder of Kontakt libraries or UVI soundbanks, or one library's own folder."
-        )
+        } else {
+            "Add a folder of Kontakt libraries, or one library's own folder."
+        })
         .fill(secondary())
         .lines(5),
         many_el,

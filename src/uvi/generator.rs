@@ -15,7 +15,7 @@ use std::{
     sync::Arc,
 };
 
-pub const FIDELITY_DIAGNOSTIC: &str = "Native authored fixtures cover Analog sine/PWM, Analog/Wavetable deterministic unison phase/detune/gain/stereo, filename/channel-based wavetable slices and index spread, bounded PNG image-wavetable conversion, wavetable phase-distortion modes 0/3 and tracked sine-FM ratio modes 0/1/2, and tracked four-operator FM topologies 0/5/6/7/10 with D feedback; numerical parity remains unverified for polynomial anti-aliasing, hard-sync edges, random phase/noise sequences, linear wavetable readout and FM clock precision";
+pub const FIDELITY_DIAGNOSTIC: &str = "Native authored fixtures cover Analog sine/PWM, Analog/Wavetable deterministic unison phase/detune/gain/stereo, filename/channel-based wavetable slices and index spread, bounded PNG software-image import, wavetable phase-distortion modes 0/3 and tracked sine-FM ratio modes 0/1/2, and tracked four-operator FM topologies 0/5/6/7/10 with D feedback; numerical parity remains unverified for polynomial anti-aliasing, hard-sync edges, random phase/noise sequences, linear wavetable readout, native image-table FFT/harmonic generation and FM clock precision";
 
 pub(crate) const IMAGE_BYTES_LIMIT: usize = 8 << 20;
 const IMAGE_FRAMES: usize = 2048;
@@ -26,16 +26,11 @@ pub(crate) fn image_signature(bytes: &[u8]) -> bool {
 
 fn image_dimensions(width: usize, height: usize) -> Result<()> {
     ensure!(width != 0 && height != 0, "Empty image wavetable");
-    // Official 4.0.9 importer 0x141528b50 scales the whole image to
-    // 2048 × min(height, 128), with resampling quality 1. The existing
-    // authored oracle covers horizontal upsampling only; retain both gates.
     ensure!(
-        width <= IMAGE_FRAMES,
-        "Image wavetable requires native resampling to 2048 columns; downsampling fidelity is unverified"
-    );
-    ensure!(
-        height <= 128,
-        "Image wavetable requires native resampling to 128 rows; vertical resampling fidelity is unverified"
+        width
+            .checked_mul(height)
+            .is_some_and(|pixels| pixels <= IMAGE_BYTES_LIMIT / 4),
+        "Image wavetable exceeds 2 MiPixel decoded limit"
     );
     Ok(())
 }
@@ -117,27 +112,62 @@ fn image_pixels(width: usize, height: usize, components: usize, pixels: &[u8]) -
             "Nonopaque image-wavetable alpha conversion is unverified"
         );
     }
-    let mut brightness = vec![0u8; IMAGE_FRAMES * height];
+    // Official 4.0.9 software-image helper: whole-image center sampling,
+    // eight-bit fixed-point weights, then a single rounded byte per color.
+    // This is raw import evidence; native FFT/harmonic generation follows it.
+    let rows = height.min(128);
+    let mut brightness = vec![0u8; IMAGE_FRAMES * rows];
     let colors = if components <= 2 { 1 } else { 3 };
+    let sx = IMAGE_FRAMES as f32 / width as f32;
+    let sy = rows as f32 / height as f32;
+    let determinant = sx * sy;
+    let (ix, iy) = (sy / determinant, sx / determinant);
+    let start = (0.5f32 * ix * 256.) as i32 - 128;
+    let end = ((IMAGE_FRAMES as f32 + 0.5) * ix * 256.) as i32 - 128;
+    let delta = end - start;
+    let (mut step, mut remainder) = (delta / IMAGE_FRAMES as i32, delta % IMAGE_FRAMES as i32);
+    if remainder == 0 {
+        step -= 1;
+        remainder = IMAGE_FRAMES as i32;
+    }
+    let mut position = start;
+    let mut error = remainder - IMAGE_FRAMES as i32;
     for x in 0..IMAGE_FRAMES {
-        let position = (x as f64 + 0.5) * width as f64 / IMAGE_FRAMES as f64 - 0.5;
-        let base = position.floor();
-        let left = (base as isize).clamp(0, width as isize - 1) as usize;
-        let right = (base as isize + 1).clamp(0, width as isize - 1) as usize;
-        let fraction = ((position - base) * 256.).round() / 256.;
-        for row in 0..height {
+        let base = position.div_euclid(256);
+        let fx = position.rem_euclid(256) as u32;
+        let left = base.clamp(0, width as i32 - 1) as usize;
+        let right = (base + 1).clamp(0, width as i32 - 1) as usize;
+        for row in 0..rows {
+            let y = ((row as f32 + 0.5) * iy * 256.) as i32 - 128;
+            let base = y.div_euclid(256);
+            let fy = y.rem_euclid(256) as u32;
+            let top = base.clamp(0, height as i32 - 1) as usize;
+            let bottom = (base + 1).clamp(0, height as i32 - 1) as usize;
+            let weights = [
+                (256 - fx) * (256 - fy),
+                fx * (256 - fy),
+                (256 - fx) * fy,
+                fx * fy,
+            ];
+            let positions = [(top, left), (top, right), (bottom, left), (bottom, right)];
             let mut value = 0;
             for color in 0..colors {
-                let a = pixels[(row * width + left) * components + color] as f64;
-                let b = pixels[(row * width + right) * components + color] as f64;
-                let normalized = ((a * (1. - fraction) + b * fraction) / 255.) as f32;
-                // Authored native PNGs establish 8-bit subpixel interpolation
-                // and truncation to ten fraction bits before byte rounding.
-                // This is a measured conversion law, not vendor implementation code.
-                let truncated = f32::from_bits(normalized.to_bits() & !0x1fff);
-                value = value.max((truncated * 255.).round() as u8);
+                let weighted: u32 = positions
+                    .into_iter()
+                    .zip(weights)
+                    .map(|((y, x), weight)| {
+                        u32::from(pixels[(y * width + x) * components + color]) * weight
+                    })
+                    .sum();
+                value = value.max(((weighted + 32768) >> 16) as u8);
             }
-            brightness[x * height + height - row - 1] = value;
+            brightness[x * rows + rows - row - 1] = value;
+        }
+        position += step;
+        error += remainder;
+        if error > 0 {
+            error -= IMAGE_FRAMES as i32;
+            position += 1;
         }
     }
     let flat = brightness.iter().all(|&value| value == brightness[0]);
@@ -145,23 +175,28 @@ fn image_pixels(width: usize, height: usize, components: usize, pixels: &[u8]) -
         .into_iter()
         .map(|value| value as f32 * (1f32 / 255f32) * 255f32)
         .collect();
-    // Fresh authored 96/128-row native PNGs establish this reciprocal
-    // roundtrip and sequential f32 sum in reversed row/planar order.
-    // Changing precision or traversal changes normalization at large totals.
+    // Sequential reversed-row f32 accumulation and one common reciprocal
+    // peak match the native helper before FFT/harmonic generation.
     let mut mean = 0f32;
-    for row in 0..height {
+    for row in 0..rows {
         for frame in 0..IMAGE_FRAMES {
-            mean += values[frame * height + row];
+            mean += values[frame * rows + row];
         }
     }
     mean /= values.len() as f32;
-    let peak = values.iter().copied().fold(f32::NEG_INFINITY, f32::max) - mean;
+    let peak = values
+        .iter()
+        .map(|value| *value - mean)
+        .fold(1e-20f32, f32::max);
+    let gain = 1f32 / peak;
     for value in &mut values {
-        *value = if flat { 0. } else { (*value - mean) / peak };
+        // Preserve the existing silence policy for constant input. Native raw
+        // f32 accumulation may otherwise retain a constant residual.
+        *value = if flat { 0. } else { (*value - mean) * gain };
     }
     Ok(Sample {
         rate: 48_000,
-        channels: height,
+        channels: rows,
         frames: IMAGE_FRAMES,
         interleaved: Storage::from_f32(values)?,
         loops: Vec::new(),
@@ -936,9 +971,9 @@ mod tests {
 
     #[test]
     fn authored_native_image_conversion_and_bounds() {
-        // Independently authored gray pairs were measured at exact StartPhase
-        // positions in official Workstation4.0.9. Values below are imported
-        // bytes inferred from constant black/white calibration rows.
+        // Independently authored gray pairs passed through the isolated
+        // official 4.0.9 software image helper. These bytes precede the native
+        // FFT/harmonic generation and oscillator readout.
         let pairs = [
             (128, 134),
             (140, 146),
@@ -969,8 +1004,8 @@ mod tests {
         let black = at(12, 0);
         let white = at(13, 0);
         let expected = [
-            [128, 128, 128, 129, 130, 131, 134],
-            [140, 140, 140, 141, 142, 144, 146],
+            [128, 128, 129, 129, 130, 132, 134],
+            [140, 140, 141, 141, 142, 144, 146],
             [146, 146, 147, 147, 148, 150, 152],
             [0, 0, 24, 40, 72, 151, 255],
             [255, 255, 231, 215, 183, 104, 0],
@@ -1014,9 +1049,11 @@ mod tests {
         );
         assert!(image_pixels(0, 1, 3, &[]).is_err());
         assert!(image_pixels(2049, 1, 3, &[]).is_err());
-        // Larger images resize to 128 slices rather than cropping; exact
-        // vertical interpolation remains unverified.
-        assert!(image_pixels(1, 129, 3, &vec![0; 129 * 3]).is_err());
+        // Whole-image resizing retains the measured 128-slice cap.
+        assert_eq!(
+            image_pixels(1, 129, 3, &vec![0; 129 * 3]).unwrap().channels,
+            128
+        );
         assert!(image_pixels(1, 257, 3, &[]).is_err());
         assert!(image_pixels(1, 1, 4, &[0, 0, 0, 128]).is_err());
         assert!(image_pixels(1, 1, 3, &[0, 0]).is_err());
@@ -1053,7 +1090,7 @@ mod tests {
                 png::BitDepth::Eight,
                 png::ColorType::Grayscale,
                 vec![0; 129],
-                false,
+                true,
             ),
             (
                 1,
@@ -1069,7 +1106,7 @@ mod tests {
                 png::BitDepth::Eight,
                 png::ColorType::Grayscale,
                 vec![0; 2049],
-                false,
+                true,
             ),
             (
                 1,
@@ -1077,7 +1114,7 @@ mod tests {
                 png::BitDepth::Eight,
                 png::ColorType::Grayscale,
                 vec![0; 257],
-                false,
+                true,
             ),
             (
                 1,
@@ -1118,15 +1155,10 @@ mod tests {
     }
 
     #[test]
-    fn image_resampling_boundary_is_explicit_before_pixel_decode() {
-        for (width, height, expected) in [
-            (2048, 129, "128 rows"),
-            (2048, 256, "128 rows"),
-            (2049, 128, "2048 columns"),
-        ] {
+    fn image_decoded_limit_is_checked_before_pixel_decode() {
+        for (width, height) in [(2048, 1025), (2049, 1024), (1, (2 << 20) + 1)] {
             let mut encoded = Vec::new();
-            // The valid stream contains no pixels: geometry must fail before
-            // attempting to decode those missing pixels or allocate storage.
+            // Geometry fails before missing pixel data can be decoded.
             let mut writer = png::Encoder::new(&mut encoded, width, height)
                 .write_header()
                 .unwrap();
@@ -1135,12 +1167,85 @@ mod tests {
                 .unwrap();
             writer.finish().unwrap();
             let error = image_wavetable(&encoded).unwrap_err().to_string();
-            assert!(error.contains(expected), "{error}");
-            assert!(error.contains("fidelity is unverified"), "{error}");
+            assert!(error.contains("2 MiPixel decoded limit"), "{error}");
         }
         assert!(image_dimensions(2048, 128).is_ok());
+        assert!(image_dimensions(2051, 129).is_ok());
+        assert!(image_dimensions(2048, 1024).is_ok());
         assert!(image_dimensions(2048, 0).is_err());
         assert!(image_dimensions(0, 128).is_err());
+        assert!(image_dimensions(usize::MAX, 2).is_err());
+    }
+
+    #[test]
+    fn authored_native_image_software_helper_vectors() {
+        // Authored RGB formula; gold fingerprints cover every normalized f32
+        // returned by the isolated official 4.0.9 software helper. They stop
+        // before its FFT/harmonic generation, so do not assert oscillator parity.
+        for (width, height, fingerprint) in [
+            (17usize, 129usize, 0xa7d0b3cb30162d18u64),
+            (13usize, 256usize, 0x830249263385d16bu64),
+            (2051usize, 129usize, 0xab521641fdbe5dfbu64),
+            (129usize, 17usize, 0xd6a310f857b8290bu64),
+            (2013usize, 127usize, 0xa9cf74d66780e6ddu64),
+            (2048usize, 129usize, 0x14b8774a8e29d275u64),
+            (4096usize, 255usize, 0xfa3ec0aee6f98a65u64),
+            (4097usize, 13usize, 0xde9fac24a44dc595u64),
+            (3usize, 4097usize, 0x3dcd1b3efeb0eeeeu64),
+            (1usize, 8192usize, 0x5c9bf527bf242325u64),
+        ] {
+            let pixels: Vec<u8> = (0..height)
+                .flat_map(|y| {
+                    (0..width).flat_map(move |x| {
+                        [
+                            ((17 * x + 29 * y + 11) % 256) as u8,
+                            ((43 * x + 7 * y + 59) % 256) as u8,
+                            ((3 * x + 61 * y + 101) % 256) as u8,
+                        ]
+                    })
+                })
+                .collect();
+            let table = image_pixels(width, height, 3, &pixels).unwrap();
+            let rows = height.min(128);
+            assert_eq!((table.frames, table.channels), (2048, rows));
+            let actual = table
+                .interleaved
+                .iter()
+                .flat_map(|value| value.to_bits().to_le_bytes())
+                .fold(0xcbf29ce484222325u64, |hash, byte| {
+                    (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+                });
+            assert_eq!(actual, fingerprint, "{width}x{height} raw helper");
+            let mut encoded = Vec::new();
+            let mut encoder = png::Encoder::new(&mut encoded, width as u32, height as u32);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&pixels)
+                .unwrap();
+            let decoded = image_wavetable(&encoded).unwrap();
+            assert!(
+                table
+                    .interleaved
+                    .iter()
+                    .zip(decoded.interleaved.iter())
+                    .all(|(a, b)| a.to_bits() == b.to_bits())
+            );
+            let rgba: Vec<u8> = pixels
+                .chunks_exact(3)
+                .flat_map(|pixel| pixel.iter().copied().chain([255]))
+                .collect();
+            let opaque = image_pixels(width, height, 4, &rgba).unwrap();
+            assert!(
+                table
+                    .interleaved
+                    .iter()
+                    .zip(opaque.interleaved.iter())
+                    .all(|(a, b)| a.to_bits() == b.to_bits())
+            );
+        }
     }
 
     #[test]

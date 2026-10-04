@@ -156,6 +156,35 @@ fn colour(text: Option<&str>) -> Option<Color> {
     ))
 }
 
+// UVI text boxes use nine authored anchor positions. Keep the inherited
+// face until bank fonts are loaded, but honor the supplied size and ink.
+fn styled_text(widget: &UiWidget, said: &str, scale: f64, fallback: Justify) -> El {
+    let (justify, align) = match widget.style.align.as_deref() {
+        Some("centred" | "centre" | "center") => (Justify::Center, Align::Center),
+        Some("left") => (Justify::Start, Align::Center),
+        Some("right") => (Justify::End, Align::Center),
+        Some("top") => (Justify::Center, Align::Start),
+        Some("bottom") => (Justify::Center, Align::End),
+        Some("topLeft") => (Justify::Start, Align::Start),
+        Some("topRight") => (Justify::End, Align::Start),
+        Some("bottomLeft") => (Justify::Start, Align::End),
+        Some("bottomRight") => (Justify::End, Align::End),
+        _ => (fallback, Align::Center),
+    };
+    row![text(said.to_owned())
+        .text_size(widget.style.font_size.unwrap_or(SMALL).max(1.) * scale)
+        .fill(colour(widget.style.text_colour.as_deref())
+            .map_or(Fill::from(Role::Ink), Fill::from))
+        .lines(if widget.kind == UiKind::Label {
+            (widget.absolute_bounds.height / (widget.style.font_size.unwrap_or(SMALL).max(1.) * 1.4))
+                .floor().max(1.) as usize
+        } else { 1 })
+        .min_w(0)]
+        .justify(justify)
+        .align(align)
+        .min_w(0)
+}
+
 fn shown_value(state: &State, widget: &UiWidget) -> Option<UiEditValue> {
     state
         .pending
@@ -497,6 +526,9 @@ pub fn view(
                     .map_or("Choose…", String::as_str);
                 let (hit, mut el) = dropdown(ui, id.as_str(), selected, label);
                 scale_control(&mut el, ui, scale);
+                if let Some(selected_text) = el.children_mut().first_mut() {
+                    *selected_text = styled_text(widget, selected, scale, Justify::Start).flex(1);
+                }
                 if let Some(caret) = el.children_mut().get_mut(1) {
                     *caret = glyph(Icon::Down, TEXT * scale, secondary());
                 }
@@ -639,26 +671,12 @@ pub fn view(
                 ))
                 .id(id.clone())
             }
-            UiKind::Label => {
-                let align = match widget.style.align.as_deref() {
-                    Some("centre" | "center") => Justify::Center,
-                    Some("right") => Justify::End,
-                    _ => Justify::Start,
-                };
-                row![
-                    text(widget.style.text.as_deref().unwrap_or(label).to_owned())
-                        .text_size(widget.style.font_size.unwrap_or(SMALL).max(1.) * scale)
-                        .fill(
-                            colour(widget.style.text_colour.as_deref())
-                                .map_or(Fill::from(Role::Ink), Fill::from)
-                        )
-                        .lines((h / (SMALL * scale * 1.4)).floor().max(1.) as usize)
-                        .min_w(0)
-                ]
-                .align(Align::Center)
-                .justify(align)
-                .named(label.to_owned())
-            }
+            UiKind::Label => styled_text(
+                widget,
+                widget.style.text.as_deref().unwrap_or(label),
+                scale,
+                Justify::Start,
+            ).named(label.to_owned()),
             UiKind::Panel | UiKind::Viewport | UiKind::Image => block(w, h),
             UiKind::XY | UiKind::WaveView | UiKind::AudioMeter => caption(label)
                 .text_size(SMALL * scale)
@@ -685,9 +703,7 @@ pub fn view(
                 let words = button_text(widget).to_owned();
                 stack![
                     image,
-                    row![caption(words).lines(1)]
-                        .justify(Justify::Center)
-                        .align(Align::Center)
+                    styled_text(widget, &words, scale, Justify::Center).size(w, h)
                 ]
                 .focusable()
                 .a11y(if widget.kind == UiKind::Button {
@@ -1067,6 +1083,43 @@ mod tests {
             assert!((knob.y - intrinsic.y * scale).abs() < 0.01);
             assert!((knob.size.width - intrinsic.width * scale).abs() < 0.01);
             assert!((knob.size.height - intrinsic.height * scale).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn authored_text_size_ink_and_nine_anchors_scale_together() {
+        let mut widget = authored().widgets[0].clone();
+        widget.style.font_size = Some(13.);
+        widget.style.text_colour = Some("#c8c9ca".into());
+        for scale in [0.5, 1., 1.5] {
+            let mut centers = Vec::new();
+            for anchor in ["centred", "left", "right", "top", "bottom",
+                "topLeft", "topRight", "bottomLeft", "bottomRight"] {
+                widget.style.align = Some(anchor.into());
+                let mut ui = super::super::theme::ui();
+                let mut box_el = styled_text(&widget, "Authored", scale, Justify::Start)
+                    .size(200. * scale, 80. * scale).id("authored-box");
+                box_el.children_mut()[0] = box_el.children_mut()[0].clone().id("authored-ink");
+                ui.frame(box_el, Some(Size::new(200. * scale, 80. * scale)),
+                    Input::default(), 1. / 60.).unwrap();
+                let scene = ui.scene().unwrap();
+                let frame = scene.surface("authored-ink").unwrap().frame;
+                centers.push((anchor, frame.x + frame.size.width / 2.,
+                    frame.y + frame.size.height / 2.));
+                let ink = scene.paint.iter().find(|p| p.key.as_str() == "authored-ink"
+                    && p.text.is_some()).unwrap();
+                assert!((f64::from(ink.text.as_ref().unwrap().size) - 13. * scale).abs() < 0.01);
+                assert_eq!(ink.paint, moose::mui::mui::scene::Paint::Solid(colour(Some("#c8c9ca")).unwrap()));
+            }
+            let (_, cx, cy) = centers[0];
+            assert!((cx - 100. * scale).abs() < 0.01);
+            assert!((cy - 40. * scale).abs() < 0.01);
+            for (anchor, x, y) in centers.into_iter().skip(1) {
+                if anchor.ends_with("Left") || anchor == "left" { assert!(x < cx); }
+                if anchor.ends_with("Right") || anchor == "right" { assert!(x > cx); }
+                if anchor.starts_with("top") { assert!(y < cy); }
+                if anchor.starts_with("bottom") { assert!(y > cy); }
+            }
         }
     }
 

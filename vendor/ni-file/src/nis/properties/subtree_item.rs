@@ -74,6 +74,15 @@ impl SubtreeItem {
         mut reader: R,
         key: Option<&dyn LibraryKey>,
     ) -> Result<Self, Error> {
+        Self::read_with_key_bounded(&mut reader, key, usize::MAX)
+    }
+
+    /// Read with a caller-selected maximum expanded byte length, before allocation.
+    pub fn read_with_key_bounded<R: ReadBytesExt>(
+        mut reader: R,
+        key: Option<&dyn LibraryKey>,
+        max_expanded: usize,
+    ) -> Result<Self, Error> {
         if reader.read_u32_le()? != 1 {
             return Err(Error::Static("Unsupported subtree version"));
         }
@@ -81,6 +90,9 @@ impl SubtreeItem {
             let expanded = reader.read_u32_le()? as usize;
             if expanded == 0 || i32::try_from(expanded).is_err() {
                 return Err(Error::Static("Invalid expanded subtree size"));
+            }
+            if expanded > max_expanded {
+                return Err(Error::Static("Expanded subtree exceeds decode limit"));
             }
             let compressed_size = reader.read_u32_le()? as usize;
             if i32::try_from(compressed_size).is_err() {
@@ -113,6 +125,9 @@ impl SubtreeItem {
                 return Err(Error::Static("Unsupported uncompressed encrypted subtree"));
             }
             let length = reader.read_u64_le()?;
+            if length > max_expanded as u64 {
+                return Err(Error::Static("Expanded subtree exceeds decode limit"));
+            }
             reader.seek(std::io::SeekFrom::Current(-8))?;
             reader.read_bytes(
                 usize::try_from(length).map_err(|_| Error::Static("Subtree too large"))?,
@@ -192,6 +207,26 @@ mod tests {
     use std::{fs::File, io::Read};
 
     use super::*;
+
+    #[test]
+    fn bounded_subtree_rejects_corrupt_expanded_header() {
+        let mut frame = 1u32.to_le_bytes().to_vec();
+        frame.push(1);
+        frame.extend((i32::MAX as u32).to_le_bytes());
+        frame.extend(5u32.to_le_bytes());
+        frame.extend([3, b't', b'e', b's', b't']);
+        assert!(matches!(SubtreeItem::read_with_key_bounded(Cursor::new(frame), None, 256 * 1024 * 1024),
+            Err(Error::Static("Expanded subtree exceeds decode limit"))));
+    }
+
+    #[test]
+    fn bounded_uncompressed_subtree_checks_header_before_body_read() {
+        let mut frame = 1u32.to_le_bytes().to_vec();
+        frame.push(0);
+        frame.extend(u64::MAX.to_le_bytes());
+        assert!(matches!(SubtreeItem::read_with_key_bounded(Cursor::new(frame), None, 256 * 1024 * 1024),
+            Err(Error::Static("Expanded subtree exceeds decode limit"))));
+    }
 
     #[test]
     fn test_read_subtree() -> Result<(), Error> {
