@@ -5,11 +5,36 @@ use super::{
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     fs::{File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
+
+pub(crate) struct ReaderNamespaces {
+    pub(crate) metadata: Vec<u8>,
+    pub(crate) program: Vec<u8>,
+}
+
+impl ReaderNamespaces {
+    pub(crate) fn open(path: &Path) -> Result<Self> {
+        let mut bytes = Vec::new();
+        File::open(path)?
+            .take((64 << 20) + 1)
+            .read_to_end(&mut bytes)?;
+        ensure!(bytes.len() <= 64 << 20, "UVI reader exceeds size limit");
+        let digest = format!("{:x}", Sha256::digest(&bytes));
+        ensure!(
+            digest == "78729e96b752aea746280275072ad24cb4399a053739c49a161ff1fcfbf85721",
+            "Reader namespace layout is verified only for official UVI Workstation 4.0.9 x64"
+        );
+        Ok(Self {
+            metadata: bytes[0x1ea4e58..0x1ea4e58 + 36].to_vec(),
+            program: bytes[31_586_936..31_586_936 + 39].to_vec(),
+        })
+    }
+}
 
 #[derive(Deserialize)]
 pub(crate) struct ContentState {

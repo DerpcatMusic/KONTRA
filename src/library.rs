@@ -1364,7 +1364,7 @@ pub(crate) mod tests {
         let meta = std::fs::metadata(&reader).unwrap();
         let scanner = Scanner { preferences: Preferences::new(None), ..Scanner::default() };
         scanner.edit(|settings| { settings.imported = true; settings.uvi_reader = Some(reader.clone()); });
-        lock(&scanner.uvi).reader = Some((reader, meta.len(), meta.modified().ok(), crate::uvi::cli::ReaderNamespaces {
+        lock(&scanner.uvi).reader = Some((reader, meta.len(), meta.modified().ok(), crate::uvi::access::ReaderNamespaces {
             metadata: b"authored catalog metadata".to_vec(), program: b"authored catalog program".to_vec(),
         }));
         scanner
@@ -1376,7 +1376,7 @@ pub(crate) mod tests {
         let dir = tree("uvi-catalog", &[("reader", "original test reader")]);
         let reader = dir.join("reader");
         let meta = std::fs::metadata(&reader).unwrap();
-        let mut catalog = UviCatalog { reader_path: Some(reader.clone()), reader: Some((reader, meta.len(), meta.modified().ok(), crate::uvi::cli::ReaderNamespaces {
+        let mut catalog = UviCatalog { reader_path: Some(reader.clone()), reader: Some((reader, meta.len(), meta.modified().ok(), crate::uvi::access::ReaderNamespaces {
             metadata: b"authored catalog metadata".to_vec(), program: b"authored catalog program".to_vec(),
         })), ..Default::default() };
         let a = dir.join("a.ufs"); let b = dir.join("b.ufs");

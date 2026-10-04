@@ -17,7 +17,7 @@ use std::{
 pub(super) struct UviCatalog {
     pub(super) reader_path: Option<PathBuf>,
     #[cfg(feature = "uvi")]
-    pub(super) reader: Option<(PathBuf, u64, Option<std::time::SystemTime>, crate::uvi::cli::ReaderNamespaces)>,
+    pub(super) reader: Option<(PathBuf, u64, Option<std::time::SystemTime>, crate::uvi::access::ReaderNamespaces)>,
     #[cfg(feature = "uvi")]
     pub(super) banks: BTreeMap<PathBuf, (u64, Option<std::time::SystemTime>, [u8; 16], String, Arc<UviBank>)>,
     #[cfg(feature = "uvi")]
@@ -26,12 +26,12 @@ pub(super) struct UviCatalog {
 
 impl UviCatalog {
     #[cfg(feature = "uvi")]
-    pub(super) fn authority(&mut self) -> Result<&crate::uvi::cli::ReaderNamespaces, &'static str> {
+    pub(super) fn authority(&mut self) -> Result<&crate::uvi::access::ReaderNamespaces, &'static str> {
         let path = crate::uvi::access::reader_path(self.reader_path.as_deref())
             .map_err(|_| "No local UVI reader was found. Select a verified reader in settings.")?;
         let meta = std::fs::metadata(&path).map_err(|_| "The configured local UVI reader is unavailable.")?;
         if self.reader.as_ref().is_none_or(|r| r.0 != path || r.1 != meta.len() || r.2 != meta.modified().ok()) {
-            let reader = crate::uvi::cli::ReaderNamespaces::open(&path)
+            let reader = crate::uvi::access::ReaderNamespaces::open(&path)
                 .map_err(|_| "The configured local UVI reader is unsupported.")?;
             self.reader = Some((path, meta.len(), meta.modified().ok(), reader));
             self.banks.clear();
