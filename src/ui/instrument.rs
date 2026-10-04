@@ -505,6 +505,12 @@ pub fn info(ui: &mut Ui, cx: &mut Cx) -> El {
             if let Some(reason) = report["failure"].as_str().or_else(|| report["failure"]["reason"].as_str()) {
                 rows.push(body(reason).fill(Role::Warning).lines(8).id("uvi-load-failure"));
             }
+            let worker = &report["terminal_failure"]["worker"];
+            for text in [worker["timing"]["summary"].as_str(), worker["timing"]["counter_summary"].as_str(),
+                         worker["observation"].as_str(), worker["timing"]["scope"].as_str(), worker["callback_counter_scope"].as_str()]
+                .into_iter().flatten() {
+                rows.push(caption(text.to_owned()).fill(secondary()).lines(6).shrink(0));
+            }
             let endpoint = &report["terminal_failure"]["endpoint"];
             if let Some(stage) = endpoint["stage"].as_str() {
                 rows.push(caption(format!("Audio endpoint: {stage} · frame {}", endpoint["frame"].as_u64().unwrap_or(0)))
