@@ -426,18 +426,27 @@ fn native_activity_lines(activity: &crate::uvi::worker::WorkerLoadActivity) -> V
     let mut lines = Vec::new();
     let completed = activity.stages.iter().filter(|stage| stage.outcome == "finished").count();
     let state = match activity.status {
-        Status::Starting => "In progress",
+        Status::Starting => "Loading · partial, playback not ready",
         Status::Ready => "Worker ready",
         Status::Failed => "Worker failed",
         Status::Stopped => "Worker stopped",
     };
     lines.push((format!("{state} · {:.1} s initialization · {completed} completed stages", activity.elapsed.as_secs_f64()),
         activity.status == Status::Failed));
+    lines.push((format!("Current phase: {}", native_stage_name(activity.phase)), false));
     if let Some(nodes) = activity.nodes {
         lines.push((format!("Parsed: {nodes} graph nodes · {} sample zones · {} script processors",
             activity.sample_zones.unwrap_or(0), activity.script_processors.unwrap_or(0)), false));
     } else {
         lines.push(("Program graph: not yet parsed".into(), false));
+    }
+    if let Some(rejected) = activity.static_rejected_nodes {
+        lines.push((format!("Static playback check: {rejected} rejected graph nodes"), rejected != 0));
+    } else {
+        lines.push(("Static playback check: pending".into(), false));
+    }
+    if activity.status == Status::Starting {
+        lines.push(("Counts show partial loading progress. Controls become available when audio setup is complete.".into(), false));
     }
     let resources = &activity.resources;
     if let Some(total) = resources.total {

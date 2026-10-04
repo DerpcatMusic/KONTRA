@@ -28,6 +28,7 @@ pub struct WorkerLoadActivity {
     pub elapsed: Duration,
     pub stages: Vec<LoadStage>,
     pub nodes: Option<usize>,
+    pub static_rejected_nodes: Option<usize>,
     pub sample_zones: Option<usize>,
     pub script_processors: Option<usize>,
     pub resources: ResourceActivity,
