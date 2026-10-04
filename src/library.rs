@@ -27,7 +27,7 @@ mod index;
 #[cfg_attr(feature = "uvi", path = "library/uvi.rs")]
 #[cfg_attr(not(feature = "uvi"), path = "library/no_uvi.rs")]
 mod uvi_catalog;
-use uvi_catalog::UviCatalog;
+use uvi_catalog::{UviCatalog, effective_uvi_reader};
 use moose::mui::mui::scene::Image;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -383,12 +383,6 @@ fn config_dir() -> Option<PathBuf> {
 /// An explicit environment location wins; normal DAWs use the app's private store.
 fn uvi_authority_dir(override_dir: Option<std::ffi::OsString>, config: Option<PathBuf>) -> Option<PathBuf> {
     override_dir.map(PathBuf::from).or_else(|| config.map(|path| path.join("uvi-access")))
-}
-
-/// Cache bindings follow the same configured/environment/discovered reader as playback.
-fn effective_uvi_reader(settings: &Settings) -> Option<PathBuf> {
-    #[cfg(feature = "uvi")] { crate::uvi::access::reader_path(settings.uvi_reader.as_deref()).ok() }
-    #[cfg(not(feature = "uvi"))] { let _ = settings; None }
 }
 
 /// The app's data folder: chosen artwork, and multis saved with no library
@@ -975,13 +969,6 @@ impl Scanner {
         let mut catalog = lock(&self.uvi);
         catalog.reader_path = self.settings().uvi_reader.clone();
         catalog.inspect(source)
-    }
-    /// Loader only: authority is transferred directly to the dedicated worker.
-    #[cfg(feature = "uvi")]
-    pub(crate) fn uvi_worker_config(&self, source: &UviSource, sample_rate: u32) -> Result<crate::uvi::worker::StartConfig, &'static str> {
-        let mut catalog = lock(&self.uvi);
-        catalog.reader_path = self.settings().uvi_reader.clone();
-        catalog.worker_config(source, sample_rate)
     }
     /// Global settings shared by plugin instances, loaded once per process.
     pub fn settings(&self) -> Arc<Settings> { self.preferences.settings() }
