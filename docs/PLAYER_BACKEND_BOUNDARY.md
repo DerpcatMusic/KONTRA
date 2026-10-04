@@ -14,6 +14,12 @@ to UVI's narrower event format only at its owned packet boundary. Main's interna
 rack lacks this branch's source/delay hooks. These findings are coordination
 requirements, not merged changes or a stable external ABI.
 
+Main's new Kontakt NativeUI and isolated UVI also request incompatible Lua VM
+features. A bounded Linux proof shows that separately built modules with local
+Lua symbols and a C ownership boundary can coexist. See
+[Player Lua runtime boundary](PLAYER_LUA_RUNTIME_BOUNDARY.md) for the measured
+scope, lifetime requirements and unproved production/platform integration.
+
 ## Implemented loading and audio ownership
 
 Kontakt remains the immediate `Engine` player. UVI has a concrete optional per-part endpoint feeding the same Rack mixer; it is no longer only a staged CLI/controller. `Part.uvi` is an appended native bank/UUID/member identity, preserving older positional state fields (`src/plugin.rs:108`). Live diagnostics read installed generation/failure atomics (`src/plugin.rs:438`). Rack still stores Kontakt engines, with parallel optional native endpoints in Dsp; this is an implemented two-player adaptation, not yet a neutral backend enum/API.
