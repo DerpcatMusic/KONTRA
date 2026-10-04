@@ -5,7 +5,7 @@ use super::{
     bank::{Bank, Span},
     filter::{FilterKey, LaneFilter, VoiceFilter},
     map::{FOREVER, LoopMap, PlayMap, Run},
-    params::{Inputs, VOICE_MODS, PITCH_ENVS},
+    params::{Inputs, PITCH_ENVS, VOICE_MODS},
     stream::Slot,
 };
 use crate::audio::Frame;
@@ -956,6 +956,7 @@ pub(crate) struct Plan {
 /// One playing zone. Plain data; the engine owns the storage.
 pub(crate) struct Voice {
     pub event: EventId,
+    pub script_mods: [i32; super::SCRIPT_MOD_SOURCES],
     pub host_note: Option<super::HostRef>,
     pub zone_id: u32,
     pub group: u32,
@@ -1067,10 +1068,17 @@ impl Context<'_> {
         let c = channel as usize & 15;
         let master = self.mpe_zone.filter(|(_, members)| members & (1 << c) != 0).map(|(master, _)| master as usize);
         Inputs {
+            script_mods: &[],
             cc: &self.cc[c],
-            cc74: expression.note_cc74.or_else(|| master.map(|m| expression.member_cc74.unwrap_or(self.cc[c][74]).saturating_add(self.cc[m][74]).min(127))),
+            cc74: expression.note_cc74.or_else(|| {
+                master.map(|m| {
+                    expression.member_cc74.unwrap_or(self.cc[c][74]).saturating_add(self.cc[m][74]).min(127)
+                })
+            }),
             bend: self.bend[c] + master.map_or(0., |m| self.bend[m]),
-            pressure: master.map_or(self.pressure[c], |m| expression.member_pressure.unwrap_or(self.pressure[c]).max(self.pressure[m])),
+            pressure: master.map_or(self.pressure[c], |m| {
+                expression.member_pressure.unwrap_or(self.pressure[c]).max(self.pressure[m])
+            }),
             note,
             velocity,
             // Fixed at the note start, never read live.
@@ -1159,10 +1167,18 @@ impl Voice {
         let key = self.owner.map_or(self.note, |(_, key)| key);
         let x = self.frozen_expression.unwrap_or(cx.expression[self.channel as usize & 15][key as usize & 127]);
         let x = cx.host_notes.overlay(self.host_note, x);
-        let inputs = cx.inputs(self.channel, self.note, self.velocity, x);
-        let master = cx.mpe_zone.filter(|(master, members)| *master == self.channel || members & (1 << self.channel) != 0)
-            .and_then(|(master, _)| cx.mpe_master_bend_range.map(|range| (master, cx.bend[master as usize], range)));
-        let bend_pitch = master.map(|(manager, ..)| if manager == self.channel { 0. } else { cx.bend[self.channel as usize] });
+        let mut inputs = cx.inputs(self.channel, self.note, self.velocity, x);
+        inputs.script_mods = &self.script_mods;
+        let master = cx.mpe_zone.filter(|(master, members)| {
+                *master == self.channel || members & (1 << self.channel) != 0
+            })
+            .and_then(|(master, _)| {
+                cx.mpe_master_bend_range.map(|range| (master, cx.bend[master as usize], range))
+            });
+        let bend_pitch = master.map(|(manager, ..)| {
+            if manager == self.channel { 0. } else { cx.bend[self.channel as usize]
+            }
+        });
         // Settled modulation (every controller at rest, as held ones soon
         // are) gives the same result until an input changes: the group's
         // table, a cache miss per voice, is not read.
@@ -1232,7 +1248,9 @@ impl Voice {
         let mut lane = None;
         // One gain all block, before any filter: the voice's frames can be
         // summed, weighted, with others resampled alike.
-        if let Some(class) = class.filter(|_| self.wavetable.is_none() && !curved_pitch && group.volume_lfos.is_empty() && !muted && !declick && self.gains == target && self.fade.steady()) {
+        if let Some(class) = class.filter(|_| {
+            self.wavetable.is_none() && !curved_pitch && group.volume_lfos.is_empty() && !muted && !declick && self.gains == target && self.fade.steady()
+        }) {
             let flex = match &self.flex {
                 Some(env) => env.shape(n),
                 None => Some(Shape::Flat(1.0)),

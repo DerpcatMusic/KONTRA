@@ -1012,6 +1012,12 @@ pub(crate) struct Block {
 }
 
 impl Block {
+    pub(crate) fn reduction(&self, channel: usize) -> Option<f32> {
+        match &self.dsp {
+            Dsp::Comp(c) => c.last.get(channel).copied(),
+            _ => None,
+        }
+    }
     /// `None` for effects without DSP here. Allocates.
     pub(crate) fn new(fx: &Effect, rate: f32) -> Option<Box<Self>> {
         let kind = fx.kind;

@@ -65,6 +65,7 @@ pub(crate) struct Resources {
     files: HashMap<String, PathBuf>,
     /// Containers to try in order, opened on first use.
     containers: Vec<PathBuf>,
+    roots: Vec<PathBuf>,
     failed_archives: Vec<String>,
     open: Vec<(File, ni_file::nkr::Archive, PathBuf)>,
     key: Option<Option<std::sync::Arc<dyn ni_file::nis::LibraryKey>>>,
@@ -77,6 +78,7 @@ impl Resources {
     pub(crate) fn of(instrument: &Path, folder_name: &'static str) -> Self {
         let mut files = HashMap::new();
         let mut containers = Vec::new();
+        let mut roots = Vec::new();
         let nkrs = |dir: &Path| {
             let mut found: Vec<_> = std::fs::read_dir(dir)
                 .into_iter()
@@ -95,6 +97,7 @@ impl Resources {
                 break;
             }
             for dir in resource_dirs(folder, folder_name) {
+                roots.push(dir.clone());
                 for e in std::fs::read_dir(dir)
                     .into_iter()
                     .flatten()
@@ -122,6 +125,7 @@ impl Resources {
         Self {
             files,
             containers,
+            roots,
             open: Vec::new(),
             failed_archives: Vec::new(),
             key: None,
@@ -130,8 +134,78 @@ impl Resources {
         }
     }
 
+    /// Relative package members, preserving namespaces and archive spelling.
+    pub(crate) fn names(&mut self) -> Vec<String> {
+        let mut names = std::collections::BTreeMap::new();
+        for root in &self.roots {
+            for e in walkdir::WalkDir::new(root)
+                .into_iter()
+                .flatten()
+                .filter(|e| e.file_type().is_file())
+            {
+                if let Ok(relative) = e.path().strip_prefix(root) {
+                    let name = relative.to_string_lossy().replace('\\', "/");
+                    names.entry(name.to_lowercase()).or_insert(name);
+                }
+            }
+        }
+        let prefix = format!("Resources/{}/", self.folder).to_lowercase();
+        for n in 0.. {
+            if !self.opened(n) {
+                break;
+            }
+        }
+        for (_, archive, _) in &self.open {
+            for e in archive.entries.values() {
+                if e.name.to_lowercase().starts_with(&prefix) {
+                    let name = &e.name[prefix.len()..];
+                    names
+                        .entry(name.to_lowercase())
+                        .or_insert_with(|| name.to_owned());
+                }
+            }
+        }
+        names.into_values().collect()
+    }
+
     /// The bytes of `<folder>/<file>`, if the library has it.
     pub(crate) fn read(&mut self, file: &str) -> Result<Option<Vec<u8>>, String> {
+        let normalized = file.replace('\\', "/");
+        let path = Path::new(&normalized);
+        if path.is_absolute()
+            || path
+                .components()
+                .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        {
+            return Err(format!("Invalid resource path {file:?}"));
+        }
+        let file = normalized.as_str();
+        // Loose resources override archive members, including nested module assets.
+        for root in &self.roots {
+            let mut candidate = root.clone();
+            for component in path.components() {
+                let wanted = component.as_os_str().to_string_lossy();
+                let exact = candidate.join(component);
+                candidate = if exact.exists() {
+                    exact
+                } else {
+                    let Some(found) = std::fs::read_dir(&candidate).ok().and_then(|entries| {
+                        entries.flatten().find(|e| {
+                            e.file_name()
+                                .to_string_lossy()
+                                .eq_ignore_ascii_case(&wanted)
+                        })
+                    }) else {
+                        candidate.clear();
+                        break;
+                    };
+                    found.path()
+                };
+            }
+            if candidate.is_file() {
+                return read_file(&candidate).map(Some);
+            }
+        }
         if let Some(path) = self.files.get(&file.to_lowercase()) {
             return read_file(path).map(Some);
         }

@@ -6,8 +6,9 @@ use crate::audio::{Frame, Pcm};
 
 pub(super) const CYCLE: usize = 2048;
 
-/// Until their native laws are proven, active phase forms, randomized starts
-/// and the modulation oscillator retain the importer's unsupported warning.
+/// Phase-only forms traced in the native switch are supported. Sample-domain
+/// forms, randomized starts and the modulation oscillator still need their
+/// separate native paths; preserve the importer's warning for those modes.
 pub(super) fn supported(source: &crate::import::Wavetable, tracking: bool) -> bool {
     tracking && form_supported(source.form1_type) && form_supported(source.form2_type)
         && source.inharmonic_mode == 0 && source.mod_type == 0
@@ -16,17 +17,81 @@ pub(super) fn supported(source: &crate::import::Wavetable, tracking: bool) -> bo
         && source.form1.is_finite() && source.form2.is_finite()
 }
 
-pub(super) fn form_supported(kind: i32) -> bool { matches!(kind, 0 | 16) }
+pub(super) fn form_supported(kind: i32) -> bool {
+    matches!(kind, 0 | 4..=17 | 28..=33)
+}
 
-/// ASYM2MP moves the cycle midpoint while keeping both endpoints fixed.
-/// Native shared phase-form routine: 140567aa0, switch16→140567e4d.
+/// Native shared phase-form routine 140567aa0. Constants and branch order
+/// follow the float operations in that switch, including mixed precision at
+/// the asymmetric midpoint and the quantizer's downward endpoint bias.
+/// Sync forms also enter this switch, but their separate readout modes have
+/// not been traced, so they are not admitted by form_supported.
 fn warp(phase: f32, amount: f32, kind: i32) -> f32 {
-    if kind != 16 { return phase; }
-    let offset = (amount.clamp(0., 1.) - 0.5) * 1.96;
-    if f64::from(phase) < 0.5 + f64::from(offset * 0.5) {
-        phase / (1. + offset)
-    } else {
-        (phase - 1.) / (1. - offset) + 1.
+    let amount = amount.clamp(0., 1.);
+    let bend_positive = || (1. - (phase * std::f32::consts::PI).cos()) * 0.5;
+    let bend_negative = || ((phase - 0.5) + phase - 0.5).asin() * std::f32::consts::FRAC_1_PI + 0.5;
+    let asymmetric = |offset: f32| {
+        if f64::from(phase) < 0.5 + f64::from(offset * 0.5) {
+            phase / (1. + offset)
+        } else {
+            (phase - 1.) / (1. - offset) + 1.
+        }
+    };
+    match kind {
+        4 => phase + (bend_positive() - phase) * amount,
+        5 => phase + (bend_negative() - phase) * amount,
+        6 => {
+            let target = if amount < 0.5 { bend_positive() } else { bend_negative() };
+            phase + (target - phase) * ((amount - 0.5) + amount - 0.5).abs()
+        }
+        7 => {
+            let value = phase / (1. - amount * 0.9375);
+            if value >= 1. { 0. } else { value }
+        }
+        8 => asymmetric(-amount * 0.9),
+        9 => asymmetric(amount * 0.9),
+        10 => asymmetric((amount - 0.5) * 1.8),
+        14 => asymmetric(-amount * 0.98),
+        15 => asymmetric(amount * 0.98),
+        16 => asymmetric((amount - 0.5) * 1.96),
+        11 => {
+            let flip = if amount < 0.5 {
+                phase < amount + amount
+            } else {
+                f64::from(phase) >= (f64::from(amount) - 0.5) + f64::from(amount) - 0.5
+            };
+            if flip { 1. - phase } else { phase }
+        }
+        12 => {
+            let folded = if phase > 0.5 { 1. - phase } else { phase };
+            let width = amount * 0.8182 + 0.08182;
+            if folded < width * 0.5 {
+                folded / width
+            } else {
+                (folded - 0.500001) / (1. - width) + 1.
+            }
+        }
+        13 => {
+            let levels = 2f64.powf(f64::from((1. - amount) * 15. + 1.)) as u64 as f32;
+            ((phase * levels).round() / levels - 0.00001).max(0.)
+        }
+        17 if amount == 0. => phase,
+        17 if amount == 1. => 1. - phase,
+        17 => {
+            let split = 1. - amount;
+            if phase < split { phase / split } else { (amount - (phase - split)) / amount }
+        }
+        28 => phase.powf(amount * 9. + 1.),
+        29 => 1. - (1. - phase).powf(amount * 9. + 1.),
+        30 if amount < 0.5 => 1. - (1. - phase).powf((0.5 - amount) * 18. + 1.),
+        30 => phase.powf((amount - 0.5) * 18. + 1.),
+        31..=33 => {
+            let bend = match kind { 31 => amount * -0.9, 32 => amount * 0.9,
+                _ => (amount - 0.5) * 1.8 };
+            let denominator = (phase - 0.5).abs() * (bend * 4.) - bend - 1.;
+            (0.5 / denominator) * ((phase + phase - 1.) * (bend - 1.)) + 0.5
+        }
+        _ => phase,
     }
 }
 
@@ -90,7 +155,8 @@ impl Table {
         let hi = self.first + hi * CYCLE;
         for frame in out {
             let read_phase = warp(warp((phase / CYCLE as f64) as f32,
-                source.form1, source.form1_type), source.form2, source.form2_type) as f64 * CYCLE as f64;
+                source.form1, source.form1_type), source.form2, source.form2_type) as f64;
+            let read_phase = read_phase.rem_euclid(1.) * CYCLE as f64;
             let a = Self::read(&read, lo, read_phase);
             let b = if lo == hi || blend == 0. {
                 a

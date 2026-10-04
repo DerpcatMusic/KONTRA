@@ -90,6 +90,7 @@ pub struct FxProcessor {
     /// A block ended ([`mix_buses`](Self::mix_buses)): the next write to a
     /// channel starts the next block, clearing them all first.
     outs_done: bool,
+    meter_main: [f32; 2],
 }
 
 /// When a chain may stop processing: its input has been silent (−120 dBFS)
@@ -188,6 +189,7 @@ struct Slot {
     dry_buffer: [Box<[f32]>; 2],
     ir_settings: Option<params::IrSettings>,
     ir_dirty: bool,
+    meter: [f32; 2],
 }
 
 /// An instrument bus: groups render into `input`; its chain, fader and pan
@@ -206,6 +208,7 @@ struct Bus {
     index: u8,
     /// Output channel (0..[`OUTS`]) past the instrument output, or -1.
     output: i8,
+    meter: [f32; 2],
 }
 
 enum Dsp {
@@ -303,6 +306,7 @@ impl ProgramFx {
                     sleep: Sleep::ASLEEP,
                     index: b.index as u8,
                     output: channel(b.output as f32),
+                    meter: [0.; 2],
                 }
             })
             .collect();
@@ -313,7 +317,9 @@ impl ProgramFx {
                 .map(|b| (Rack::Bus(b.index as u8), &b.chain)),
         );
         let types = racks
-            .flat_map(|(rack, chain)| chain.slots.iter().map(move |fx| (rack, fx.slot as u8, f32::from(fx.kind.ser_id()))))
+            .flat_map(|(rack, chain)| {
+                chain.slots.iter().map(move |fx| (rack, fx.slot as u8, f32::from(fx.kind.ser_id())))
+            })
             .collect();
         FxProcessor {
             insert,
@@ -330,6 +336,7 @@ impl ProgramFx {
             outs: (0..OUTS).map(|_| [zeros(max_block), zeros(max_block)]).collect(),
             out_fed: 0,
             outs_done: false,
+            meter_main: [0.; 2],
         }
     }
 }
@@ -462,6 +469,55 @@ impl FxProcessor {
     /// input frames (at most `max_block`), adds it to `left`/`right` through
     /// its fader and pan, and clears the inputs for the next block.
     /// A bus routed to an output channel plays there instead.
+    pub fn begin_meter_block(&mut self) {
+        self.meter_main = [0.; 2];
+        for stage in &mut self.insert {
+            if let Stage::Effect(slot) = stage {
+                slot.meter = [0.; 2];
+            }
+        }
+        for slot in &mut self.main {
+            slot.meter = [0.; 2];
+        }
+        for ret in &mut self.returns {
+            ret.slot.meter = [0.; 2];
+        }
+        for bus in &mut self.buses {
+            bus.meter = [0.; 2];
+            for slot in &mut bus.chain {
+                slot.meter = [0.; 2];
+            }
+        }
+    }
+    pub fn level_meter(&self, [group, index, channel, generic]: [i32; 4]) -> Option<f32> {
+        if group != -1 || !(0..2).contains(&channel) {
+            return None;
+        }
+        let channel = channel as usize;
+        if index < 0 {
+            return if generic >= 0 {
+                self.bus(Rack::Bus(generic as u8)).map(|b| b.meter[channel])
+            } else {
+                Some(self.meter_main[channel])
+            };
+        }
+        let rack = match generic {
+            -2 => Rack::Main,
+            -1 => Rack::Insert,
+            0..16 => Rack::Bus(generic as u8),
+            _ => return None,
+        };
+        let slot = self.slot(rack, index.try_into().ok()?)?;
+        if slot.bypass {
+            return Some(0.);
+        }
+        if let Dsp::Block(block) = &slot.dsp {
+            if let Some(gain) = block.reduction(channel) {
+                return Some(1. - gain);
+            }
+        }
+        Some(slot.meter[channel])
+    }
     pub fn mix_buses(&mut self, left: &mut [f32], right: &mut [f32]) {
         let n = left.len().min(right.len()).min(self.max_block);
         self.fresh_outs();
@@ -496,6 +552,8 @@ impl FxProcessor {
                 .enumerate()
             {
                 let i = i as f32;
+                bus.meter[0] = bus.meter[0].max((*x * (start[0] + step[0] * i)).abs());
+                bus.meter[1] = bus.meter[1].max((*y * (start[1] + step[1] * i)).abs());
                 *l += *x * (start[0] + step[0] * i);
                 *r += *y * (start[1] + step[1] * i);
                 (*x, *y) = (0.0, 0.0);
@@ -810,6 +868,10 @@ impl FxProcessor {
         for slot in &mut self.main {
             slot.process(left, right);
         }
+        self.meter_main[0] =
+            self.meter_main[0].max(left.iter().copied().map(f32::abs).fold(0., f32::max));
+        self.meter_main[1] =
+            self.meter_main[1].max(right.iter().copied().map(f32::abs).fold(0., f32::max));
     }
 }
 
@@ -842,6 +904,7 @@ impl Slot {
             dry_buffer: [zeros(max_block), zeros(max_block)],
             ir_settings: match &fx.params { Params::Convolution(p) => Some(params::IrSettings::from_convolution(p)), _ => None },
             ir_dirty: false,
+            meter: [0.; 2],
         })
     }
 
@@ -859,7 +922,7 @@ impl Slot {
         self.dsp.process(left, right);
         let (wet, dry) = (self.wet, self.dry);
         if keep_dry {
-            for (out, input) in [(left, &self.dry_buffer[0]), (right, &self.dry_buffer[1])] {
+            for (out, input) in [(&mut *left, &self.dry_buffer[0]), (&mut *right, &self.dry_buffer[1])] {
                 for (y, x) in out.iter_mut().zip(input.iter()) {
                     *y = *y * wet + *x * dry;
                 }
@@ -868,6 +931,8 @@ impl Slot {
             left.iter_mut().for_each(|y| *y *= wet);
             right.iter_mut().for_each(|y| *y *= wet);
         }
+        self.meter[0] = self.meter[0].max(left.iter().copied().map(f32::abs).fold(0., f32::max));
+        self.meter[1] = self.meter[1].max(right.iter().copied().map(f32::abs).fold(0., f32::max));
     }
 }
 

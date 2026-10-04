@@ -75,6 +75,7 @@ pub(crate) enum Source {
     Pressure,
     /// Release-trigger counter, fixed when the release voice starts.
     Counter,
+    Script(u16),
 }
 
 impl Source {
@@ -87,13 +88,17 @@ impl Source {
             ModSource::PitchBend => Self::Bend,
             ModSource::MonoAftertouch => Self::Pressure,
             ModSource::ReleaseTriggerCounter => Self::Counter,
+            ModSource::Script(index) if index < super::SCRIPT_MOD_SOURCES as u32 => {
+                Self::Script(index as u16)
+            }
             _ => return None,
         })
     }
 
     /// Changes while a voice plays (otherwise fixed at the note start).
     fn live(self) -> bool {
-        matches!(self, Self::Cc(_) | Self::Bend | Self::Pressure)
+        matches!(self, Self::Cc(_) | Self::Bend | Self::Pressure | Self::Script(_)
+        )
     }
 }
 
@@ -157,6 +162,9 @@ impl From<&ModAssignment> for Mod {
 impl Mod {
     /// Shaped source value; exact at MIDI steps, linear between them.
     pub(crate) fn shape(&self, x: f32) -> f32 {
+        if self.curve.is_none() && matches!(self.route, Some((Source::Script(_), _))) {
+            return x;
+        }
         let x = x.clamp(0.0, 1.0);
         let Some(curve) = &self.curve else {
             return x;
@@ -231,6 +239,7 @@ impl From<&Group> for ModTable {
 /// Performance state a voice's modulation reads.
 #[derive(Clone, Copy)]
 pub(crate) struct Inputs<'a> {
+    pub script_mods: &'a [i32],
     pub cc: &'a [u8; 128],
     /// Combined MPE CC74, preserving a released note's member value.
     pub cc74: Option<u8>,
@@ -281,6 +290,9 @@ impl Inputs<'_> {
             Source::Bend => (self.bend + 1.0) * 0.5,
             Source::Pressure => f32::from(self.pressure) / 127.0,
             Source::Counter => self.counter,
+            Source::Script(index) => {
+                self.script_mods.get(index as usize).copied().unwrap_or(0) as f32 / 1_000_000.
+            }
         }
     }
 }
@@ -392,6 +404,13 @@ impl ModTable {
         keys: std::ops::RangeInclusive<u8>,
         velocities: std::ops::RangeInclusive<u8>,
     ) -> (f32, f32) {
+        if self
+            .starts
+            .iter()
+            .any(|&i| matches!(self.mods[i as usize].route, Some((Source::Script(_), _))))
+        {
+            return (0., 1.);
+        }
         let reads = |source| {
             self.starts.iter().any(|&i| {
                 self.mods[i as usize]
@@ -415,6 +434,7 @@ impl ModTable {
                 for counter in counters.clone() {
                     let counter = f32::from(counter) / 127.0;
                     let input = Inputs {
+                        script_mods: &[],
                         cc74: None,
                         cc,
                         bend: 0.0,
@@ -1458,6 +1478,7 @@ mod tests {
         let cc = [0u8; 128];
         let at = |counter| {
             table.start_offset(&Inputs {
+                script_mods: &[],
                 cc74: None,
                 cc: &cc,
                 bend: 0.0,
@@ -1959,6 +1980,7 @@ mod tests {
         let mut cc = [0; 128];
         cc[11] = 127;
         let mut input = Inputs {
+            script_mods: &[],
             cc: &cc,
             cc74: None,
             bend: 0.0,
@@ -2002,6 +2024,7 @@ mod tests {
                 ..Ahdsr::UNITY
             };
             let input = Inputs {
+                script_mods: &[],
                 cc: &cc,
                 cc74: None,
                 bend: 0.0,

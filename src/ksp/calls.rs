@@ -1,12 +1,12 @@
 //! Builtin implementations. Arguments arrive on the typed stacks in call order;
 //! each builtin pops its own. Nothing here allocates on the event paths.
 
+use super::arrays::{nka, read_path, save_nka};
 use super::builtins::{self as b, Builtin, event_par as par};
 use super::compile::{Callback, Ty, VarId};
-use super::engine::{EnginePar, Fade, GroupMask, VoicePar, ZonePar, ZoneEdit};
+use super::engine::{EnginePar, Fade, GroupMask, VoicePar, ZoneEdit, ZonePar};
 use super::runtime::{read_value, refresh_value, write_value_rt};
 use super::ui::{MenuItem, Prop};
-use super::arrays::{read_path, nka, save_nka};
 use super::vm::{Exec, Fault, Kind, Machine, Step, append_text, put_text, put_variable_text};
 use super::{KeyState, Value};
 
@@ -601,9 +601,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                     continue;
                 };
                 match (f, e.voice) {
-                    (FadeIn, Some(v)) => {
-                        m.engine.fade_from(m.env.offset, e.channel, e.input_channel, v, Fade::In { duration_us: us })
-                    }
+                    (FadeIn, Some(v)) => m.engine.fade_from(m.env.offset, e.channel, e.input_channel, v, Fade::In { duration_us: us }),
                     (FadeIn, None) => e.fade_in_us = us,
                     (_, Some(v)) => m.engine.fade_from(
                         m.env.offset,
@@ -638,7 +636,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                             par::PAR_0..=par::PAR_3 => e.pars[p as usize] = value,
                             par::NOTE if !e.at_engine => e.note = value.clamp(0, 127),
                             par::VELOCITY if !e.at_engine => e.velocity = value.clamp(1, 127),
-                            par::MIDI_CHANNEL if !e.at_engine && (0..16).contains(&value) => e.channel = value as u8,
+                            par::MIDI_CHANNEL if !e.at_engine && (0..16).contains(&value) => {
+                                e.channel = value as u8
+                            }
                             _ => m.env.note("set_event_par: parameter not settable here"),
                         }
                     }
@@ -679,6 +679,33 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 }
                 return Ok(Step::Next);
             }
+            if matches!(p, par::MOD_VALUE_ID | par::MOD_VALUE_EX_ID) {
+                let source = usize::try_from(group)
+                    .ok()
+                    .filter(|&n| n < crate::engine::SCRIPT_MOD_SOURCES)
+                    .ok_or(Fault("Script modulation index outside 0..1000"))?;
+                let value = if p == par::MOD_VALUE_ID {
+                    value.clamp(-1_000_000, 1_000_000)
+                } else {
+                    value
+                };
+                for k in 0..targets(m, id) {
+                    if let Some(event) = m.env.events.get_mut(m.env.targets[k]) {
+                        event.script_mods[source] = value;
+                        if let Some(voice) = event.voice {
+                            m.engine.set_script_mod(
+                                m.env.offset,
+                                event.channel,
+                                event.input_channel,
+                                voice,
+                                source as u16,
+                                value,
+                            );
+                        }
+                    }
+                }
+                return Ok(Step::Next);
+            }
             if p != par::ALLOW_GROUP {
                 m.env
                     .note("set_event_par_arr: unsupported event array parameter");
@@ -695,6 +722,11 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         GetEventParArr => {
             let [id, p, group] = ints(m);
             let v = match (p, m.env.events.get(id)) {
+                (par::MOD_VALUE_ID | par::MOD_VALUE_EX_ID, Some(e)) => usize::try_from(group)
+                    .ok()
+                    .and_then(|i| e.script_mods.get(i))
+                    .copied()
+                    .unwrap_or(0),
                 (par::ALLOW_GROUP, Some(e)) => {
                     usize::try_from(group).is_ok_and(|g| e.groups.contains(g)) as i32
                 }
@@ -746,7 +778,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 .env
                 .events
                 .get(id)
-                .is_some_and(|e| e.live && !e.silenced && e.voice.is_none_or(|v| m.engine.voice_active(v)));
+                .is_some_and(|e| {
+                e.live && !e.silenced && e.voice.is_none_or(|v| m.engine.voice_active(v))
+            });
             push_int(m, live as i32)
         }
         GetEventIds => {
@@ -925,7 +959,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let name = m.stk.strs.pop();
             let groups = 0..m.engine.group_count();
             let found = groups.clone().find(|&g| m.engine.group_name(g) == name);
-            let near = |g| m.engine.group_name(g).trim().eq_ignore_ascii_case(name.trim());
+            let near = |g| {
+                m.engine.group_name(g).trim().eq_ignore_ascii_case(name.trim())
+            };
             if found.is_none() && groups.clone().any(near) {
                 m.env.note("find_group: group name matches only ignoring case or spaces; not found");
             }
@@ -1158,9 +1194,16 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 || !((-4..16).contains(&generic) || named_chain) {
                 return Err(Fault("Invalid level meter attachment"));
             }
-            // ponytail: no per-group/FX taps yet; preserve initialization and
-            // report the missing connection instead of showing fabricated levels.
-            m.env.note("KSP level meter attachments are unavailable");
+            let chain = match m.prog.symbol_name(generic) {
+                Some("$NI_LEVEL_METER_MAIN") => -2,
+                Some("$NI_LEVEL_METER_INSERT") => -1,
+                Some("$NI_LEVEL_METER_GROUP") => -3,
+                _ => generic,
+            };
+            m.slot.ui.controls[c].meter = Some([group, slot, channel, chain]);
+            if group >= 0 {
+                m.env.note("Group level-meter taps are unavailable");
+            }
             Ok(Step::Next)
         }
         SetControlPar => {
@@ -1220,7 +1263,10 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 let slot = control_value_slot(m, id, Some(index), Ty::Int)?;
                 m.slot.mem.ints[slot] = value;
             } else if p != b::CONTROL_PAR_NONE {
-                m.env.note("Indexed control metadata is unavailable");
+                let c = control(m, id)?;
+                m.slot.ui.controls[c]
+                    .set_indexed(p, index, Prop::Int(value))
+                    .map_err(Fault)?;
             }
             Ok(Step::Next)
         }
@@ -1231,7 +1277,24 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             if let Some(slot) = slot {
                 put_variable_text(&mut m.slot.mem.strs[slot], text, m.env.loading)?;
             } else if p != b::CONTROL_PAR_NONE {
-                m.env.note("Indexed control metadata is unavailable");
+                let c = m.slot.ui.control(id).ok_or(NO_CONTROL)?;
+                let control = &mut m.slot.ui.controls[c];
+                if control.frozen {
+                    let Some((_, _, Prop::Str(dst))) = control
+                        .indexed
+                        .iter_mut()
+                        .find(|(par, i, _)| *par == p && *i == index as usize)
+                    else {
+                        return Err(Fault("Indexed control property must be prepared during init",
+                        ));
+                    };
+                    put_variable_text(dst, text, false)?;
+                    control.revision = control.revision.wrapping_add(1);
+                } else {
+                    control
+                        .set_indexed(p, index, Prop::Str(text.to_owned()))
+                        .map_err(Fault)?;
+                }
             }
             Ok(Step::Next)
         }
@@ -1288,7 +1351,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             }
             if p == b::CONTROL_PAR_TYPE {
                 if !m.slot.ui.has_id(id) { return Err(NO_CONTROL); }
-                let kind = m.slot.ui.control(id).and_then(|c| m.prog.vars[m.slot.ui.controls[c].var as usize].ui.as_deref()).unwrap_or("");
+                let kind = m.slot.ui.control(id).and_then(|c| {
+                        m.prog.vars[m.slot.ui.controls[c].var as usize].ui.as_deref()
+                    }).unwrap_or("");
                 return push_int(m, b::control_type(kind));
             }
             if id == b::INST_WALLPAPER_ID && p == b::CONTROL_PAR_PICTURE_STATE { return push_int(m, m.slot.ui.wallpaper_state); }
@@ -1296,6 +1361,16 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 return push_int(m, 0);
             }
             let c = control(m, id)?;
+            if let Some(index) = index {
+                if index < 0 {
+                    return Err(Fault("Indexed control property index out of range"));
+                }
+                let value = match m.slot.ui.controls[c].indexed(p, index as usize) {
+                    Some(Prop::Int(n)) => *n,
+                    _ => 0,
+                };
+                return push_int(m, value);
+            }
             let v = if p == b::CONTROL_PAR_NUM_ITEMS {
                 m.slot.ui.controls[c].menu.len() as i32
             } else if p == b::CONTROL_PAR_SELECTED_ITEM_IDX
@@ -1336,6 +1411,17 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let c = control(m, id)?;
             let control = &m.slot.ui.controls[c];
             let var = &m.prog.vars[control.var as usize];
+            if let Some(index) = index {
+                if index < 0 {
+                    return Err(Fault("Indexed control property index out of range"));
+                }
+                let text = match control.indexed(p, index as usize) {
+                    Some(Prop::Str(s)) => s.as_str(),
+                    _ => "",
+                };
+                m.stk.strs.push_str(text)?;
+                return Ok(Step::Next);
+            }
             let text = match control.get(p) {
                 _ if p == b::CONTROL_PAR_IDENTIFIER => var.name.get(1..).unwrap_or(""),
                 Some(Prop::Str(s)) => s.as_str(),
@@ -1538,6 +1624,21 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         SetScriptTitle => {
             let text = m.stk.strs.pop();
             put_text(&mut m.slot.ui.title, text, m.env.loading)?;
+            Ok(Step::Next)
+        }
+        ExposeControls => {
+            if m.t.ctx.kind != Kind::Cb(Callback::Init) {
+                return Err(Fault("expose_controls is init-only"));
+            }
+            m.slot.ui.exposed = true;
+            Ok(Step::Next)
+        }
+        LoadNativeUi => {
+            let entry = m.stk.strs.pop();
+            if m.t.ctx.kind != Kind::Cb(Callback::Init) {
+                return Err(Fault("load_native_ui is init-only"));
+            }
+            put_text(&mut m.slot.ui.native_ui, entry, m.env.loading)?;
             Ok(Step::Next)
         }
         MakePerfview => {

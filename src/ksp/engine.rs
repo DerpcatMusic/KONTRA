@@ -21,6 +21,7 @@ pub enum NoteLength {
 pub struct NoteSpec<'a> {
     /// KSP event ID, for logging and correlation only.
     pub event: i32,
+    pub script_mods: &'a [i32; crate::engine::SCRIPT_MOD_SOURCES],
     pub channel: u8,
     /// A released parent's expression, inherited by generated release samples.
     pub frozen_expression: Option<Expression>,
@@ -109,6 +110,16 @@ pub trait KspEngine {
     }
     /// A controller that passed every slot: 0..127, 128 pitch bend (-8192..8191),
     /// 129 channel pressure.
+    fn set_script_mod(
+        &mut self,
+        _at: u32,
+        _channel: u8,
+        _input_channel: Option<u8>,
+        _voice: EventId,
+        _source: u16,
+        _value: i32,
+    ) {
+    }
     fn controller(&mut self, at: u32, cc: u8, value: i32);
     fn controller_on_channel(&mut self, at: u32, _channel: u8, cc: u8, value: i32) {
         self.controller(at, cc, value);

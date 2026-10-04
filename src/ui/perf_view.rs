@@ -187,7 +187,7 @@ pub fn scale(avail: f64, width: f64, setting: f32) -> f64 {
 }
 
 /// Automatic zoom fits the whole authored view; explicit zoom stays scrollable.
-fn scale_to_fit(room: Size, authored: Size, setting: f32) -> f64 {
+pub(super) fn scale_to_fit(room: Size, authored: Size, setting: f32) -> f64 {
     let width = if room.height > 0. && authored.height > 0. {
         room.width.min(room.height / authored.height * authored.width)
     } else { room.width };
@@ -259,8 +259,11 @@ pub fn layout(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -
 /// Whether `part`'s library has a performance view of its own to show:
 /// a script's view with authored pictures or a background color.
 pub fn available(v: &crate::plugin::PartView) -> bool {
-    v.interface.as_ref().is_some_and(|i| i.performance && !i.controls.is_empty()
-        && (i.background_color.is_some() || v.wallpaper.is_some() || !v.pictures.is_empty()))
+    v.interface.as_ref().is_some_and(|i| !i.native_ui.is_empty())
+        || v.interface.as_ref().is_some_and(|i| {
+            i.performance && !i.controls.is_empty()
+        && (i.background_color.is_some() || v.wallpaper.is_some() || !v.pictures.is_empty())
+        })
 }
 
 /// The mode a part showing `view` ([`crate::plugin::Part::view`]) is in,
@@ -348,6 +351,7 @@ pub fn deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
     let mut h = DefaultHasher::new();
     (room(ui, slot).round() as i64, room_height(ui, slot).round() as i64, cx.settings.view_scale.to_bits()).hash(&mut h);
     shows(cx, slot).hash(&mut h);
+    super::native_ui::revision(cx, slot).hash(&mut h);
     v.live_revisions.hash(&mut h);
     for edit in v.edited_values() { edit.hash(&mut h); }
     (Arc::as_ptr(&v.pictures) as usize, v.wallpaper.as_ref().map(|w| Arc::as_ptr(w) as usize)).hash(&mut h);
@@ -441,6 +445,18 @@ fn control_deps(cx: &Cx, slot: usize, interface: &Arc<Interface>, shown: &Shown,
 /// `slot`'s performance view as its library drew it, or vectorized: the
 /// same controls in the same places in KONTRA's own look.
 pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
+    if cx.view.parts[slot]
+        .interface
+        .as_ref()
+        .is_some_and(|i| !i.native_ui.is_empty())
+    {
+        return super::native_ui::view(
+            ui,
+            cx,
+            slot,
+            Size::new(room(ui, slot), room_height(ui, slot)),
+        );
+    }
     let vector = shows(cx, slot) == ViewMode::Vectorized;
     let v = &cx.view.parts[slot];
     let (Some(interface), pictures, wallpaper) = (v.interface.clone(), v.pictures.clone(), v.wallpaper.as_ref().and_then(|p| { let i = v.interface.as_ref()?; p.wallpaper(i.wallpaper_state, i.skin_offset) })) else {
@@ -489,21 +505,29 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         interface.fonts.hash(&mut h);
         h.finish()
     };
-    let background_luma = interface.background_color.map(|color|
+    let background_luma = interface.background_color.map(|color| {
         (0.2126 * ((color >> 16) & 255) as f32 + 0.7152 * ((color >> 8) & 255) as f32
-            + 0.0722 * (color & 255) as f32) / 255.);
+            + 0.0722 * (color & 255) as f32) / 255.
+    });
     for (n, (shown, _)) in drawn.iter().enumerate() {
         let c = &interface.controls[shown.control];
         let look = match plans.get(n) {
             Some(plan) if super::vector::native_control(shown, c)
-                || shown.kind == Kind::Label && plan.face == VFace::Clear => Look::Vector(plan),
+                || shown.kind == Kind::Label && plan.face == VFace::Clear =>
+            {
+                Look::Vector(plan)
+            }
             _ => {
                 // What its text sits on: its own picture, else what is under it.
                 let (cx_, cy) = (shown.x + shown.w / 2., shown.y + shown.h / 2.);
                 let under = [-0.25, 0., 0.25]
                     .iter()
-                    .filter_map(|dx| luma_under(&drawn[..=n], wallpaper.as_ref().map(|(image, origin)| (image.as_ref(), *origin)), cx_ + dx * shown.w, cy).or(background_luma))
-                    .fold(None, |m: Option<(f32, u32)>, l| Some(m.map_or((l, 1), |(t, k)| (t + l, k + 1))))
+                    .filter_map(|dx| {
+                        luma_under(&drawn[..=n], wallpaper.as_ref().map(|(image, origin)| (image.as_ref(), *origin)), cx_ + dx * shown.w, cy).or(background_luma)
+                    })
+                    .fold(None, |m: Option<(f32, u32)>, l| {
+                        Some(m.map_or((l, 1), |(t, k)| (t + l, k + 1)))
+                    })
                     .map(|(t, k)| t / k as f32);
                 Look::Original(under)
             }
@@ -515,14 +539,18 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
             // table publication can therefore keep every other control's
             // styled/layout/paint subtree without delaying the active drag.
             ui.memo(format!("kpv-memo-{slot}-{}", shown.control), deps,
-                |ui| control(ui, cx, slot, shown, c, s, look))
+                |ui| {
+                control(ui, cx, slot, shown, c, s, look)
+            })
         } else {
             control(ui, cx, slot, shown, c, s, look)
         };
         layers.push(el.at(px(shown.x * s), px(shown.y * s)));
     }
     // Over everything: the value a drag is setting, or a value being typed.
-    let find = |n: usize| drawn.iter().find(|(d, _)| d.control == n).map(|(d, _)| d.clone());
+    let find = |n: usize| {
+        drawn.iter().find(|(d, _)| d.control == n).map(|(d, _)| d.clone())
+    };
     if let Some((shown, v)) = cx.state.held.filter(|(p, ..)| *p == slot).and_then(|(_, n, v)| Some((find(n)?, v))) {
         let c = &interface.controls[shown.control];
         let label = prop(c, "$CONTROL_PAR_LABEL");

@@ -224,6 +224,8 @@ builtins! {
     SetUiWidthPx "set_ui_width_px" [I] 0 Void;
     SetScriptTitle "set_script_title" [S] 0 Void;
     MakePerfview "make_perfview" [] 0 Void;
+    ExposeControls "expose_controls" [] 0 Void;
+    LoadNativeUi "load_native_ui" [S] 0 Void;
     SetSnapshotType "set_snapshot_type" [I] 0 Void;
     ShowLibraryTab "show_library_tab" [] 0 Void;
     SetUiWfProperty "set_ui_wf_property" [V I I I] 0 Void;
@@ -445,6 +447,7 @@ pub mod event_par {
     pub const PLAY_POS: i32 = 12;
     pub const MIDI_CHANNEL: i32 = 13;
     pub const MOD_VALUE_ID: i32 = 14;
+    pub const MOD_VALUE_EX_ID: i32 = 17;
     pub const REL_VELOCITY: i32 = 15;
     pub const CUSTOM: i32 = 16;
 }
@@ -651,6 +654,7 @@ pub fn constant(name: &str) -> Option<i32> {
         "$EVENT_PAR_PLAY_POS" => event_par::PLAY_POS,
         "$EVENT_PAR_MIDI_CHANNEL" => event_par::MIDI_CHANNEL,
         "$EVENT_PAR_MOD_VALUE_ID" => event_par::MOD_VALUE_ID,
+        "$EVENT_PAR_MOD_VALUE_EX_ID" => event_par::MOD_VALUE_EX_ID,
         "$EVENT_PAR_REL_VELOCITY" => event_par::REL_VELOCITY,
         "$EVENT_PAR_CUSTOM" => event_par::CUSTOM,
         "$EVENT_STATUS_INACTIVE" => 0,

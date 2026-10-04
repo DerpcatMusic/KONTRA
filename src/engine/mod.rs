@@ -12,45 +12,46 @@
 //! MIDI input reaches voices only through it: its engine calls become
 //! time-stamped commands that [`Engine::render`] applies at their frame.
 
-mod audit;
 mod ahdsr;
+mod audit;
 mod bank;
 pub(crate) mod filter;
-mod map;
+mod host_notes;
 mod lfo;
 mod lfo_volume;
-mod host_notes;
-pub use host_notes::{HostNote, HostPattern, HostExpression, HostRef};
+mod map;
+pub use host_notes::{HostExpression, HostNote, HostPattern, HostRef};
+pub(crate) mod native_state;
 pub mod overrides;
 pub(crate) mod params;
 mod rack;
 mod residency;
 mod script;
-pub(crate) mod native_state;
 mod stream;
 mod voice;
 mod wavetable;
 pub(crate) mod zone;
-
-pub(crate) use bank::parallel;
 pub use audit::audit_dsp;
-pub use bank::{Bank, ZoneSkipCounts, GroupSettings, LOAD_DONE, MEMORY_LIMIT, PRELOAD_FRAMES, Streaming, memory_budget, resident_bytes};
+pub(crate) use bank::parallel;
+pub use bank::{Bank, GroupSettings, LOAD_DONE, MEMORY_LIMIT, PRELOAD_FRAMES, Streaming, ZoneSkipCounts, memory_budget, resident_bytes};
 pub use params::{Disp, MAX_WRITES, Mod, ModTable, VOICE_MODS, display as engine_par_display, id as engine_par};
-pub use residency::{Heads, Residency};
 pub use rack::{
     BUSES, Block, BusControls, Mix, NO_AUX, PartControls, Peaks, RACK_SLOTS, Rack, TUNE_RANGE,
 };
-pub use script::{IrRequest, MAX_COMMANDS, ScriptSetup, effects, load_scripts, load_scripts_with_ir, load_scripts_with_state, load_scripts_with_delay_state};
+pub use residency::{Heads, Residency};
+pub use script::{IrRequest, MAX_COMMANDS, ScriptSetup, effects, load_scripts, load_scripts_with_delay_state,
+    load_scripts_with_ir, load_scripts_with_state,
+};
 pub use voice::{Ahdsr, Flex, FlexPoint, Phase};
 
 use crate::fx::FxProcessor;
 use crate::ksp::Runtime;
+use filter::VoiceFilter;
 use map::FOREVER;
-use std::sync::atomic::Ordering;
 use params::{Address, GroupPar, Write};
 use script::{Command, Host};
+use std::sync::atomic::Ordering;
 use stream::Slot;
-use filter::VoiceFilter;
 use voice::{Context, Envelope, Fade, Scratch, Stream, Voice, balance};
 
 /// Voice storage per engine. Polyphony limits steal before this is reached;
@@ -122,8 +123,11 @@ impl std::fmt::Debug for GroupMask {
 }
 
 /// A note start with scripted parameters (KSP play_note and friends).
+pub const SCRIPT_MOD_SOURCES: usize = 1001;
+
 #[derive(Clone, Copy)]
 pub struct NoteEvent<'a> {
+    pub script_mods: &'a [i32],
     pub channel: u8,
     pub note: u8,
     pub velocity: u8,
@@ -157,6 +161,7 @@ impl NoteEvent<'_> {
             channel,
             note,
             velocity,
+            script_mods: &[],
             owner: None,
             input_channel: None,
             host_note: None,
@@ -197,6 +202,7 @@ impl Default for Expression {
 /// Absolute parameter changes for a running event.
 #[derive(Clone, Copy, Debug)]
 pub enum EventChange {
+    ScriptMod(u16, i32),
     /// Linear gain.
     Volume(f32),
     /// Semitones.
@@ -684,7 +690,8 @@ impl Engine {
     }
 
     fn release_host_note(&mut self, id: HostRef) {
-        let Some(owner) = self.player.host_notes.get(id).copied().filter(|o| o.held) else { return };
+        let Some(owner) = self.player.host_notes.get(id).copied().filter(|o| o.held) else { return;
+        };
         let o = self.player.host_notes.get_mut(id).unwrap();
         o.held = false; o.stop = Some(self.player.now);
         for v in self.player.voices.iter_mut().filter(|v| v.host_note == Some(id) && v.held && !v.release_trigger) {
@@ -715,11 +722,15 @@ impl Engine {
             let expression = self.player.release_expression(owner.event, owner.channel, owner.key);
             let allowed = self.player.allowed;
             self.player.trigger_release(bank, owner.event, (owner.channel, owner.key, owner.velocity),
-                &allowed, captured, expression, Some(owner.note.channel), Some(id), defaults);
+                &allowed, captured, expression, Some(owner.note.channel), Some(id),
+                None,
+                defaults);
         }
         let anonymous = self.player.input_keys.iter().filter(|r| r[owner.key as usize].0 == owner.channel)
             .map(|r| r[owner.key as usize].1).max().unwrap_or(0);
-        let scripted = self.script.as_deref().is_some_and(|rt| (0..16).any(|input| rt.key_down_from(input,owner.channel,owner.key)));
+        let scripted = self.script.as_deref().is_some_and(|rt| {
+            (0..16).any(|input| rt.key_down_from(input,owner.channel,owner.key))
+        });
         self.player.keys[owner.channel as usize][owner.key as usize] = remaining.max(anonymous).max(u8::from(scripted));
     }
 
@@ -1054,6 +1065,40 @@ impl Engine {
         self.scripted(channel).is_some_and(|(rt, mut host)| rt.ui_file_selection(&mut host, slot, control, path))
     }
 
+    pub fn native_control(
+        &mut self,
+        slot: usize,
+        control: usize,
+        index: usize,
+        value: f64,
+    ) -> bool {
+        let channel = self.service_channel();
+        if let Some((rt, mut host)) = self.scripted(channel) {
+            rt.native_control(&mut host, slot, control, index, value)
+        } else {
+            false
+        }
+    }
+
+    pub fn native_midi_learn(
+        &mut self,
+        slot: usize,
+        control: usize,
+        index: usize,
+        active: bool,
+    ) -> bool {
+        self.script
+            .as_deref_mut()
+            .is_some_and(|rt| rt.native_midi_learn(slot, control, index, active))
+    }
+    pub fn native_text(&mut self, slot: usize, control: usize, index: usize, text: &str) -> bool {
+        let channel = self.service_channel();
+        if let Some((rt, mut host)) = self.scripted(channel) {
+            rt.native_text(&mut host, slot, control, index, text)
+        } else {
+            false
+        }
+    }
     pub fn ui_control(&mut self, slot: usize, control: usize, value: i32) {
         let channel = self.service_channel();
         if let Some((rt, mut host)) = self.scripted(channel) {
@@ -1216,7 +1261,9 @@ impl Engine {
             let allowed = self.player.allowed;
             let key = (channel, note, velocity);
             let expression = self.player.release_expression(id, channel, note);
-            self.player.trigger_release(bank, id, key, &allowed, latched, expression, input_channel, None, defaults);
+            self.player.trigger_release(bank, id, key, &allowed, latched, expression, input_channel, None,
+                None,
+                defaults);
         }
     }
 
@@ -1356,6 +1403,7 @@ impl Engine {
         // block's load estimate carried over or decoding takes longer.
         if !self.blocking_streams { self.player.shed(self.load); }
         let defaults = self.defaults();
+        self.fx.begin_meter_block();
         let (mut next, mut written) = (0, 0);
         let block_size = MAX_BLOCK.min(self.fx.block_size());
         for (block, (l, r)) in left[..n]
@@ -1423,6 +1471,9 @@ impl Engine {
                 self.fx.clear();
                 self.player.tone = [0.0; 2];
             }
+        }
+        if let Some(rt) = self.script.as_deref_mut() {
+            rt.update_level_meters(|attachment| self.fx.level_meter(attachment));
         }
         // Only an empty render leaves changes behind: apply them now.
         for i in written..self.writes.len() {
@@ -1504,6 +1555,7 @@ pub struct VoiceInfo {
 /// its pedals let go. Prepared storage also covers events with no attack zones.
 #[derive(Clone, Copy)]
 struct PendingRelease {
+    script_mods: [i32; SCRIPT_MOD_SOURCES],
     host_note: Option<HostRef>,
     source: EventId,
     input_channel: Option<u8>,
@@ -1740,6 +1792,12 @@ impl Player {
     fn change_event(&mut self, id: EventId, change: EventChange) {
         for v in self.voices.iter_mut().filter(|v| v.event == id) {
             match change {
+                EventChange::ScriptMod(source, value) => {
+                    if let Some(target) = v.script_mods.get_mut(source as usize) {
+                        *target = value;
+                        v.settled = None;
+                    }
+                }
                 EventChange::Volume(gain) => v.volume = gain.max(0.0),
                 EventChange::Tune(semitones) => v.tune = 2f64.powf(semitones / 12.0),
                 EventChange::Pan(pan) => v.pan = pan,
@@ -1828,10 +1886,17 @@ impl Player {
         let expression = ev.frozen_expression.unwrap_or(self.expression[c][expression_key as usize & 127]);
         let expression = self.host_notes.overlay(ev.host_note, expression);
         let inputs = params::Inputs {
+            script_mods: ev.script_mods,
             cc: &self.cc[c],
-            cc74: expression.note_cc74.or_else(|| master.map(|m| expression.member_cc74.unwrap_or(self.cc[c][74]).saturating_add(self.cc[m][74]).min(127))),
+            cc74: expression.note_cc74.or_else(|| {
+                master.map(|m| {
+                    expression.member_cc74.unwrap_or(self.cc[c][74]).saturating_add(self.cc[m][74]).min(127)
+                })
+            }),
             bend: self.bend[c] + master.map_or(0., |m| self.bend[m]),
-            pressure: master.map_or(self.pressure[c], |m| expression.member_pressure.unwrap_or(self.pressure[c]).max(self.pressure[m])),
+            pressure: master.map_or(self.pressure[c], |m| {
+                expression.member_pressure.unwrap_or(self.pressure[c]).max(self.pressure[m])
+            }),
             note: ev.note,
             velocity: ev.velocity,
             counter: if release_trigger {
@@ -1840,9 +1905,13 @@ impl Player {
                 0.0
             },
         };
-        let bend_pitch = self.mpe_zone.and_then(|(manager, members)| self.mpe_master_bend_range
+        let bend_pitch = self.mpe_zone.and_then(|(manager, members)| {
+            self.mpe_master_bend_range
             .filter(|_| manager == ev.channel || members & (1 << c) != 0)
-            .map(|_| if manager == ev.channel { 0. } else { self.bend[c] }));
+            .map(|_| {
+                    if manager == ev.channel { 0. } else { self.bend[c] }
+                })
+        });
         let mods = settings.mods.start(&inputs, bend_pitch);
         let modulated = (settings.mods.start_offset(&inputs) * play.start_mod as f32) as u64;
         let offset = if play.wavetable.is_some() { 0 } else {
@@ -1918,6 +1987,12 @@ impl Player {
         settings.mods.scale_envelope(&mut envelope, &inputs);
         let mut voice = Voice {
             event,
+            script_mods: {
+                let mut values = [0; SCRIPT_MOD_SOURCES];
+                let n = ev.script_mods.len().min(values.len());
+                values[..n].copy_from_slice(&ev.script_mods[..n]);
+                values
+            },
             host_note: ev.host_note,
             zone_id: play.zone_id,
             group: zone.group as u32,
@@ -2069,20 +2144,24 @@ impl Player {
         // Layered voices share an event. Releasing that event clears held on
         // every layer, so each distinct physical retrigger fires exactly once.
         // ponytail: scan per event; index event voices if dense retrigger releases dominate.
-        while let Some(source) = self.voices.iter().find(|v| v.host_note.is_none() && v.channel == channel
-            && owner.map_or(v.note == note, |owner| v.owner.map_or(v.note == note, |input| input == (owner, note)))
-            && v.held && !v.released && !v.release_trigger).map(|v| v.event) {
+        while let Some(source) = self.voices.iter().find(|v| {
+                v.host_note.is_none() && v.channel == channel
+            && owner.map_or(v.note == note, |owner| {
+                        v.owner.map_or(v.note == note, |input| input == (owner, note))
+                    })
+            && v.held && !v.released && !v.release_trigger
+            }).map(|v| v.event) {
             if let Some((channel, note, velocity, false, captured, input_channel)) = self.release_voices(bank, source) {
                 found = true;
                 let expression = self.release_expression(source, channel, note);
-                self.trigger_release(bank, source, (channel, note, velocity), &allowed, captured, expression, input_channel, None, defaults);
+                self.trigger_release(bank, source, (channel, note, velocity), &allowed, captured, expression, input_channel, None, None, defaults);
             }
         }
         // Release-only instruments can have a key but no attack voice.
         if !found && velocity > 0 {
             let source = self.next_id();
             let expression = self.release_expression(source, channel, note);
-            self.trigger_release(bank, source, (channel, note, velocity), &allowed, false, expression, owner, None, defaults);
+            self.trigger_release(bank, source, (channel, note, velocity), &allowed, false, expression, owner, None, None, defaults);
         }
     }
 
@@ -2160,14 +2239,30 @@ impl Player {
         expression: Option<Expression>,
         input_channel: Option<u8>,
         root: Option<HostRef>,
+        script_values: Option<&[i32; SCRIPT_MOD_SOURCES]>,
         defaults: Ahdsr,
     ) {
         if !self.native_release_triggers { return; }
-        let host_note = root.or_else(|| self.voices.iter().find(|v| v.event == source).and_then(|v| v.host_note))
-            .or_else(|| self.host_notes.active.iter().copied().find(|r| self.host_notes.get(*r).is_some_and(|o| o.event == source)));
+        let script_mods = script_values
+            .copied()
+            .or_else(|| {
+                self.voices
+                    .iter()
+                    .find(|v| v.event == source)
+                    .map(|v| v.script_mods)
+            })
+            .unwrap_or([0; SCRIPT_MOD_SOURCES]);
+        let host_note = root.or_else(|| {
+                self.voices.iter().find(|v| v.event == source).and_then(|v| v.host_note)
+            })
+            .or_else(|| {
+                self.host_notes.active.iter().copied().find(|r| self.host_notes.get(*r).is_some_and(|o| o.event == source))
+            });
         let held_ms = host_note.and_then(|r| self.host_notes.get(r)).map_or_else(
             || self.event_held_ms(source, channel, note),
-            |o| o.stop.unwrap_or(self.now).saturating_sub(o.start) as f32 * 1000. / self.rate as f32,
+            |o| {
+                o.stop.unwrap_or(self.now).saturating_sub(o.start) as f32 * 1000. / self.rate as f32
+            },
         );
         if channel < 16 && note < 128 && (latched || self.sustain[channel as usize]) {
             if self.pending_releases.iter().any(|r| r.source == source) { return; }
@@ -2178,12 +2273,14 @@ impl Player {
                 return;
             }
             self.pending_releases.push(PendingRelease {
+                script_mods,
                 host_note, source, input_channel, channel, note, velocity, groups: *groups, captured: latched, expression, held_ms,
             });
             return;
         }
         let id = self.next_id();
         let event = NoteEvent {
+            script_mods: &script_mods,
             host_note,
             groups: Some(groups),
             frozen_expression: expression,
@@ -2297,7 +2394,8 @@ impl Player {
     /// A pedal let go: release voices whose own key and pedal holds are gone.
     fn pedal_up(&mut self, bank: &Bank, channel: u8, defaults: Ahdsr) {
         let c = channel as usize;
-        if self.sustain[c] { return }
+        if self.sustain[c] { return;
+        }
         for v in &mut self.voices {
             if v.channel == channel
                 && !v.sostenuto
@@ -2315,7 +2413,9 @@ impl Player {
             let r = self.pending_releases[i];
             if r.channel == channel && !r.captured {
                 let id = self.next_id();
-                let event = NoteEvent { host_note: r.host_note, input_channel: r.input_channel, groups: Some(&r.groups), frozen_expression: r.expression, release_held_ms: Some(r.held_ms), ..NoteEvent::new(r.channel, r.note, r.velocity) };
+                let event = NoteEvent {
+                    script_mods: &r.script_mods,
+                    host_note: r.host_note, input_channel: r.input_channel, groups: Some(&r.groups), frozen_expression: r.expression, release_held_ms: Some(r.held_ms), ..NoteEvent::new(r.channel, r.note, r.velocity) };
                 self.start(bank, &event, id, true, defaults);
             } else {
                 self.pending_releases[keep] = r;

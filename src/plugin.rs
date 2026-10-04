@@ -1,4 +1,6 @@
 use crate::articulate::{self, Articulate, In, Mpe, Route, Router};
+#[cfg(test)]
+use crate::engine::load_scripts;
 use crate::{artwork, library};
 use crate::{
     engine::{
@@ -7,17 +9,18 @@ use crate::{
         overrides::{Edits, Override, Probe},
     },
     fx::{DIRECT, FxProcessor, OUTS},
-    routing,
     import::{self, Instrument},
-    timing::{self, Align, Holds, Plan, Timing},
     ksp::{Interface, KeyState, Live, LiveFault, Persisted, Refresh, Runtime},
+    routing,
+    timing::{self, Align, Holds, Plan, Timing},
 };
 use crossbeam_queue::ArrayQueue;
-#[cfg(test)]
-use crate::engine::load_scripts;
+use moose::core::{
+    ExactAddress, ExactEvent, ExactEventBody, ExactEventRef, ExactNoteAddress, ExactNoteKind,
+    LosslessEventRef,
+};
 use moose::mui::mui::scene::Image;
 use moose::prelude::*;
-use moose::core::{ExactAddress, ExactEvent, ExactEventBody, ExactEventRef, ExactNoteAddress, ExactNoteKind, LosslessEventRef};
 use std::{
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
@@ -311,7 +314,10 @@ impl Selection {
 }
 
 #[derive(Params)]
-#[params(output_port_name = "port_name", output_port_names_revision = "port_names_revision")]
+#[params(
+    output_port_name = "port_name",
+    output_port_names_revision = "port_names_revision"
+)]
 pub struct SamplerParams {
     #[param(name="Volume",range="linear(-60, 6)",default=-12.0,unit="dB",smooth="exp(5)")]
     pub volume: FloatParam,
@@ -637,6 +643,8 @@ fn first_script_live(rt: &Runtime) -> Box<Live> {
 pub(crate) struct PartView {
     pub(crate) program: u32,
     pub(crate) interface: Option<Arc<crate::ksp::Interface>>,
+    pub(crate) exposed_controls: Arc<[crate::ksp::ExposedControl]>,
+    pub(crate) native_ui: Option<Arc<crate::native_ui::Package>>,
     pub(crate) interface_status: String,
     pub(crate) load_report: Option<Arc<serde_json::Value>>,
     pub(crate) runtime_status: String,
@@ -1014,6 +1022,16 @@ struct Edit {
     slot: usize,
     control: usize,
     value: i32,
+    native: Option<NativeUiEdit>,
+}
+enum NativeUiEdit {
+    Number(usize, f64),
+    Learn(usize, bool),
+    Text {
+        index: usize,
+        bytes: [u8; 1024],
+        len: usize,
+    },
 }
 /// Loader-built state for one rack slot, installed by the audio thread.
 struct IrHandoff {
@@ -1306,6 +1324,9 @@ fn next_epoch(
     v.script_epoch = view.script_epoch;
     v.snapshot = snapshot;
     v.snapshot_lent = None;
+    v.exposed_controls = live
+        .as_ref()
+        .map_or_else(Arc::default, |l| l.exposed_controls.clone().into());
     v.live = live;
     v.live_revisions = None;
     v.live_control_versions = Arc::default();
@@ -1326,9 +1347,10 @@ fn prepare_interface(live: &Live, previous: Option<&Interface>, versions: &[(u64
     let Some(source) = &live.interface else {
         return InterfaceUpdate { interface: None, rows: None, versions: next };
     };
-    let Some(previous) = previous.filter(|old|
+    let Some(previous) = previous.filter(|old| {
         old.controls.len() == source.controls.len() && versions.len() == source.controls.len()
-            && next.len() == source.controls.len()) else {
+            && next.len() == source.controls.len()
+    }) else {
         return InterfaceUpdate { interface: Some(source.clone()), rows: None, versions: next };
     };
     let rows = source.controls.iter().zip(&previous.controls).enumerate().filter_map(|(n, (new, old))| {
@@ -1337,6 +1359,7 @@ fn prepare_interface(live: &Live, previous: Option<&Interface>, versions: &[(u64
         (versions[n] != next[n] || old.menu != new.menu).then(|| (n, new.clone()))
     }).collect();
     let header = Interface {
+        native_ui: source.native_ui.clone(),
         performance: source.performance, width: source.width, height: source.height,
         title: source.title.clone(), wallpaper: source.wallpaper.clone(),
         wallpaper_state: source.wallpaper_state, skin_offset: source.skin_offset,
@@ -1351,7 +1374,8 @@ impl Shared {
     /// Publish visible script state on the editor thread, with a worker fallback
     /// after the editor closes. Neither caller may keep this guard while loading.
     pub(crate) fn publish_live(&self, editor: bool) {
-        let Ok(mut owner) = self.live_publish.try_lock() else { return };
+        let Ok(mut owner) = self.live_publish.try_lock() else { return;
+        };
         let now = Instant::now();
         if editor {
             owner.0 = Some(now);
@@ -1366,7 +1390,8 @@ impl Shared {
         // the view lock; keep retained reader snapshots immutable. Unseen
         // diagnostics may drain the bounded rack queue in one worker pass.
         for _ in 0..if editor { 1 } else { self.view.lock().unwrap().parts.len() } {
-            let Some((slot, epoch, live)) = self.lives.pop() else { break };
+            let Some((slot, epoch, live)) = self.lives.pop() else { break;
+            };
             let revisions = live.revisions();
             let (keys_changed, previous, previous_diagnostics) = {
                 let view = self.view.lock().unwrap();
@@ -1378,19 +1403,21 @@ impl Shared {
                 }
                 let changed = live.refresh_interface && v.live_revisions.is_none_or(|old| old.0 != revisions.0);
                 (live.refresh_interface && v.live_revisions.is_none_or(|old| old.1 != revisions.1),
-                    changed.then(|| (v.interface.clone(), if v.live_revisions.is_some() && v.script_slot == live.slot { v.live_control_versions.clone() } else { Arc::default() })), v.live_diagnostics.clone())
+                    changed.then(|| {
+                        (v.interface.clone(), if v.live_revisions.is_some() && v.script_slot == live.slot { v.live_control_versions.clone() } else { Arc::default() })
+                    }), v.live_diagnostics.clone())
             };
             // This temporary reader exists only during off-lock preparation;
             // release it before testing whether the published Arc is unique.
-            let mut interface = previous.map(|(old, versions)| {
-                prepare_interface(&live, old.as_deref(), &versions)
-            });
+            let mut interface = previous.map(|(old, versions)| prepare_interface(&live, old.as_deref(), &versions));
             let keys = keys_changed.then(|| Arc::new(live.keys.clone()));
-            let diagnostics = previous_diagnostics.filter(|old|
-                old.epoch == epoch && old.faults == live.faults && old.fault_occurrences_omitted == live.fault_occurrences_omitted && old.notes == live.notes
-            ).unwrap_or_else(|| Arc::new(LiveDiagnostics {
+            let diagnostics = previous_diagnostics.filter(|old| {
+                    old.epoch == epoch && old.faults == live.faults && old.fault_occurrences_omitted == live.fault_occurrences_omitted && old.notes == live.notes
+                }).unwrap_or_else(|| {
+                    Arc::new(LiveDiagnostics {
                 epoch, faults: live.faults.clone(), fault_occurrences_omitted: live.fault_occurrences_omitted, notes: live.notes.clone(),
-            }));
+            })
+                });
             #[cfg(test)]
             if let Some(gate) = self.publish_gate.lock().unwrap().take() {
                 gate.wait();
@@ -1449,6 +1476,9 @@ impl Shared {
                 retired_versions = Some(std::mem::replace(&mut view.parts[slot].live_control_versions, update.versions.clone()));
             }
             let v = &mut view.parts[slot];
+            if live.refresh_interface && v.live_revisions.is_none_or(|old| old.0 != revisions.0) {
+                v.exposed_controls = live.exposed_controls.clone().into();
+            }
             #[cfg(test)]
             if publication_rows.is_some() { v.publication_rows = publication_rows; }
             if live.refresh_interface {
@@ -1470,7 +1500,8 @@ impl Shared {
         let mut view = self.view.lock().unwrap();
         let shown = view.watched_at.is_some_and(|at| at.elapsed() < LIVE_WATCH);
         let count = view.parts.len().min(self.grown.load(Ordering::Acquire) as usize);
-        if count == 0 { return }
+        if count == 0 { return;
+        }
         let start = owner.1 % count;
         for step in 0..count {
             let slot = (start + step) % count;
@@ -1612,16 +1643,103 @@ impl Shared {
         self.file_selections.push(selected).is_ok()
     }
 
+    pub(crate) fn edit_native_control(
+        &self,
+        part: usize,
+        epoch: u64,
+        slot: usize,
+        control: usize,
+        index: usize,
+        value: f64,
+    ) -> bool {
+        if !value.is_finite() || part >= self.grown.load(Ordering::Acquire) as usize {
+            return false;
+        }
+        let view = self.view.lock().unwrap();
+        if view.parts.get(part).is_none_or(|v| v.script_epoch != epoch) {
+            return false;
+        }
+        self.edits
+            .push(Edit {
+                part,
+                epoch,
+                slot,
+                control,
+                value: 0,
+                native: Some(NativeUiEdit::Number(index, value)),
+            })
+            .is_ok()
+    }
+
+    pub(crate) fn learn_native_control(
+        &self,
+        part: usize,
+        epoch: u64,
+        slot: usize,
+        control: usize,
+        index: usize,
+        active: bool,
+    ) -> bool {
+        if epoch == 0 || self.part(part).is_none() || slot >= crate::ksp::MAX_SLOTS {
+            return false;
+        }
+        self.edits
+            .push(Edit {
+                part,
+                epoch,
+                slot,
+                control,
+                value: 0,
+                native: Some(NativeUiEdit::Learn(index, active)),
+            })
+            .is_ok()
+    }
+    pub(crate) fn edit_native_text(
+        &self,
+        part: usize,
+        epoch: u64,
+        slot: usize,
+        control: usize,
+        index: usize,
+        text: &str,
+    ) -> bool {
+        if text.len() > 1024 || part >= self.grown.load(Ordering::Acquire) as usize {
+            return false;
+        }
+        let view = self.view.lock().unwrap();
+        if view.parts.get(part).is_none_or(|v| v.script_epoch != epoch) {
+            return false;
+        }
+        let mut bytes = [0; 1024];
+        bytes[..text.len()].copy_from_slice(text.as_bytes());
+        self.edits
+            .push(Edit {
+                part,
+                epoch,
+                slot,
+                control,
+                value: 0,
+                native: Some(NativeUiEdit::Text {
+                    index,
+                    bytes,
+                    len: text.len(),
+                }),
+            }).is_ok()
+    }
+
     pub(crate) fn edit_control(&self, part: usize, control: usize, value: i32) {
-        if part >= self.grown.load(Ordering::Acquire) as usize { return }
+        if part >= self.grown.load(Ordering::Acquire) as usize { return;
+        }
         let mut view = self.view.lock().unwrap();
-        let Some(v) = view.parts.get_mut(part) else { return };
+        let Some(v) = view.parts.get_mut(part) else { return;
+        };
         let edit = Edit {
             part,
             epoch: v.script_epoch,
             slot: v.script_slot,
             control,
             value,
+            native: None,
         };
         if self.edits.push(edit).is_err() {
             return;
@@ -2050,14 +2168,18 @@ impl BackgroundTask for Load {
             if let Some((part,generation,epoch,mut bank)) = retired.zone_preload.take() {
                 let current = || {
                     let view=params.shared.view.lock().unwrap();
-                    view.parts.get(part).is_some_and(|v|v.script_epoch==epoch
+                    view.parts.get(part).is_some_and(|v| {
+                        v.script_epoch==epoch
                         && params.shared.part(part).is_some_and(|p|p.generation.load(Ordering::Acquire)==generation)
-                        && v.instrument.as_ref().is_some_and(|i|crate::cache::current(&i.dependencies)))
+                        && v.instrument.as_ref().is_some_and(|i|crate::cache::current(&i.dependencies))
+                    })
                 };
                 if current() {
                     let chains=params.shared.zone_chains.lock().unwrap();
-                    let latest=chains.iter().rev().find(|c|(c.part,c.generation,c.epoch)==(part,generation,epoch)
-                        && c.context.upgrade().is_some_and(|context|bank.zone_preload_matches(&context)));
+                    let latest=chains.iter().rev().find(|c| {
+                        (c.part,c.generation,c.epoch)==(part,generation,epoch)
+                        && c.context.upgrade().is_some_and(|context|bank.zone_preload_matches(&context))
+                    });
                     let result=latest.map_or(Ok(()),|chain| {
                         let context=chain.context.upgrade().unwrap();
                         bank.rebase_zone_preload(&context,chain.state.clone(),&||!current())
@@ -2213,9 +2335,11 @@ impl BackgroundTask for Load {
                             let mut view=params.shared.view.lock().unwrap();
                             let current=params.selection.read().unwrap();
                             let v=&mut view.parts[slot];
-                            let fresh=current.parts.get(slot).is_some_and(|p|p.matches_source(&target)
+                            let fresh=current.parts.get(slot).is_some_and(|p| {
+                                p.matches_source(&target)
                                 && p.script_state==part.script_state && p.ir_settings==part.ir_settings
-                                && p.engine_state==part.engine_state && p.delay_state==part.delay_state)
+                                && p.engine_state==part.engine_state && p.delay_state==part.delay_state
+                            })
                                 && atoms.generation.load(Ordering::Acquire)==generation
                                 && v.script_epoch==previous_epoch && v.attempted.as_ref()==Some(&target)
                                 && v.instrument.as_ref().is_some_and(|i|Arc::ptr_eq(i,&instrument));
@@ -2249,9 +2373,11 @@ impl BackgroundTask for Load {
                 // or editor settings, before giving old work a fresh epoch.
                 let current = params.selection.read().unwrap();
                 let v = &view.parts[slot];
-                let fresh = current.parts.get(slot).is_some_and(|p| p.matches_source(&target)
+                let fresh = current.parts.get(slot).is_some_and(|p| {
+                    p.matches_source(&target)
                     && p.script_state == part.script_state && p.ir_settings == part.ir_settings
-                    && p.engine_state == part.engine_state && p.delay_state == part.delay_state)
+                    && p.engine_state == part.engine_state && p.delay_state == part.delay_state
+                })
                     && atoms.generation.load(Ordering::Acquire) == generation
                     && v.script_epoch == previous_epoch && v.attempted.as_ref() == Some(&target)
                     && v.instrument.as_ref().is_some_and(|i| Arc::ptr_eq(i, &instrument));
@@ -2397,7 +2523,9 @@ impl BackgroundTask for Load {
                     let ir_settings = &part.ir_settings;
                     let engine_state = &part.engine_state;
                     let delay_state = &part.delay_state;
-                    let scripts = scope.spawn(move || scripts_with_delays(instrument, state, ir_settings, engine_state, delay_state, rate));
+                    let scripts = scope.spawn(move || {
+                        scripts_with_delays(instrument, state, ir_settings, engine_state, delay_state, rate)
+                    });
                     let bare = (!instrument.zones.is_empty()).then(|| Bank::load_bare_cancelable(instrument, &canceled));
                     let scripts = scripts.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
                     (scripts, bare)
@@ -2439,9 +2567,7 @@ impl BackgroundTask for Load {
                 if part.group == u32::MAX {
                     let group = instrument.first_playable_group().unwrap_or(0);
                     let mut current = params.selection.write().unwrap();
-                    if let Some(c) = current.parts.get_mut(slot).filter(|c| {
-                        c.matches_source(&target) && c.group == u32::MAX
-                    }) {
+                    if let Some(c) = current.parts.get_mut(slot).filter(|c| c.matches_source(&target) && c.group == u32::MAX) {
                         c.group = group as u32;
                     }
                 }
@@ -2474,13 +2600,30 @@ impl BackgroundTask for Load {
             // Keep both outside the editor's view lock, including controller patches.
             if result.is_ok() { set_stage(&mut trace, "effects"); }
             let result = result.map(|(instrument, bank, script, snapshot, preload, art)| {
+                let native_ui = if script
+                    .as_deref()
+                    .and_then(|rt| rt.native_ui_entry())
+                    .is_some()
+                {
+                    match crate::native_ui::Package::load(&instrument.path) {
+                        Ok(package) => Some(Arc::new(package)),
+                        Err(error) => {
+                            trace.issue("native_ui", "resource_load", format!("{error:#}"));
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
                 let live = script.as_deref().map(first_script_live);
                 let pages = script_pages(script.as_deref());
                 let rate = params.shared.rate();
                 let irs = script.as_deref().map_or(Vec::new(), |rt| rt.init_irs.clone());
                 trace_effects(&mut trace, &instrument);
                 let fx = crate::engine::effects(&instrument, script.as_deref(), rate as f32);
-                (instrument, bank, script, snapshot, preload, art, live, pages, fx, rate, irs)
+                (instrument, bank, script, snapshot, preload, art, live, pages, fx, rate, irs,
+                    native_ui,
+                )
             });
             if canceled() {
                 let report = trace.finish("canceled");
@@ -2490,7 +2633,7 @@ impl BackgroundTask for Load {
                 continue;
             }
             let status = match &result {
-                Ok((_, bank, _, _, _, _, _, _, _, _, _)) => {
+                Ok((_, bank, _, _, _, _, _, _, _, _, _, _)) => {
                     if let Some(b) = bank.as_deref() {
                         trace.detail("samples_loaded", b.sample_count());
                         trace.detail("samples_streamed", b.streamed_samples());
@@ -2515,7 +2658,9 @@ impl BackgroundTask for Load {
             view.parts[slot].runtime_status.clear();
             view.parts[slot].diagnostics_lent = None;
             match result {
-                Ok((instrument, bank, script, snapshot, preload, art, live, pages, fx, rate, irs)) => {
+                Ok((instrument, bank, script, snapshot, preload, art, live, pages, fx, rate, irs,
+                    native_ui,
+                )) => {
                     let epoch = if script.is_some() {
                         next_epoch(&mut view, slot, snapshot, live)
                     } else {
@@ -2532,6 +2677,7 @@ impl BackgroundTask for Load {
                     v.ir_settings = part.ir_settings.clone();
                     v.engine_state = part.engine_state.clone().into();
                     v.delay_state = part.delay_state.clone().into();
+                    v.native_ui = native_ui;
                     v.active = instrument.name.clone();
                     v.bytes = bank.as_ref().map(|b| b.bytes).unwrap_or(0);
                     v.freed = 0;
@@ -2596,7 +2742,8 @@ impl BackgroundTask for Load {
                     }
                     // The preload: the full bank takes over from the bare one,
                     // playing voices carrying on (`Engine::upgrade_bank`).
-                    let Some((budget, controllers,zone_epoch,zone_init)) = preload else { continue };
+                    let Some((budget, controllers,zone_epoch,zone_init)) = preload else { continue;
+                    };
                     let parent_id = params.shared.view.lock().unwrap().parts[slot].load_report.as_ref().map(|r| r["load_id"].clone());
                     let mut trace = crate::diagnostics::LoadTrace::new(&instrument.path, part.program, Some(slot));
                     trace.detail("instance_id", params.shared.instance_id);
@@ -2735,7 +2882,8 @@ impl BackgroundTask for Load {
                     .filter(|_| v.fx_rate != 0. && v.fx_rate != rate)
                     .map(|i| (i, v.irs.clone()))
             };
-            let Some((instrument, irs)) = stale else { continue };
+            let Some((instrument, irs)) = stale else { continue;
+            };
             let fx = instrument.fx.processor_for_groups(rate as f32, MAX_BLOCK, &irs, &instrument.groups);
             params.shared.view.lock().unwrap().parts[slot].fx_rate = rate;
             let _ = params.shared.publish_part((
@@ -2756,7 +2904,11 @@ impl BackgroundTask for Load {
             // the small requested parameter values in these prepared records.
             for value in &mut snapshot.ir {
                 if let Some(file) = v.irs.iter().rev().find_map(|l| match &l.load {
-                    crate::fx::Load::Ir { file, .. } if (l.rack, l.slot) == (value.rack, value.slot) => Some(file), _ => None,
+                    crate::fx::Load::Ir { file, .. } if (l.rack, l.slot) == (value.rack, value.slot) =>
+                    {
+                        Some(file)
+                    }
+                    _ => None,
                 }) && value.file.as_ref() != Some(file) {
                     value.file = Some(file.clone());
                     changed = true;
@@ -3535,7 +3687,7 @@ impl PluginLogic for Sampler {
                     } else {
                         Retired { zone_preload:Some((slot,generation,s.script_epoch[slot],bank)),..Retired::default() }
                     }
-                },
+                }
                 Handoff::Script { script, bank, epoch } if current => {
                     engine.reset(rate);
                     s.script_epoch[slot] = epoch;
@@ -3583,7 +3735,8 @@ impl PluginLogic for Sampler {
             let _ = p.shared.discard.push(retired);
         }
         while !p.shared.discard.is_full() {
-            let Some((slot, generation, IrHandoff { ir, epoch, rate: ir_rate, request })) = p.shared.ir_ready.pop() else { break };
+            let Some((slot, generation, IrHandoff { ir, epoch, rate: ir_rate, request })) = p.shared.ir_ready.pop() else { break;
+            };
             let engine = &mut s.rack.parts[slot];
             let current = generation == part_atoms(&s.shared_parts, &p.shared, slot).unwrap().generation.load(Ordering::Acquire) && epoch == s.script_epoch[slot];
             let settings_current = engine.fx().ir_settings(request.rack, request.slot).is_none_or(|s| s == request.settings);
@@ -3599,7 +3752,8 @@ impl PluginLogic for Sampler {
         }
         finish_zone_maps(s,p);
         while !p.shared.array_retired.is_full() {
-            let Some((slot, generation, epoch, request)) = p.shared.array_ready.pop() else { break };
+            let Some((slot, generation, epoch, request)) = p.shared.array_ready.pop() else { break;
+            };
             let current = generation == part_atoms(&s.shared_parts, &p.shared, slot).unwrap().generation.load(Ordering::Acquire)
                 && epoch == s.script_epoch[slot];
             let request = if current {
@@ -3634,7 +3788,20 @@ impl PluginLogic for Sampler {
         }
         while let Some(e) = p.shared.edits.pop() {
             if e.epoch != 0 && s.script_epoch.get(e.part) == Some(&e.epoch) {
-                s.rack.parts[e.part].ui_control(e.slot, e.control, e.value);
+                match e.native {
+                    Some(NativeUiEdit::Learn(index, active)) => {
+                        s.rack.parts[e.part].native_midi_learn(e.slot, e.control, index, active);
+                    }
+                    Some(NativeUiEdit::Number(index, value)) => {
+                        s.rack.parts[e.part].native_control(e.slot, e.control, index, value);
+                    }
+                    Some(NativeUiEdit::Text { index, bytes, len }) => {
+                        if let Ok(text) = std::str::from_utf8(&bytes[..len]) {
+                            s.rack.parts[e.part].native_text(e.slot, e.control, index, text);
+                        }
+                    }
+                    None => s.rack.parts[e.part].ui_control(e.slot, e.control, e.value),
+                }
                 s.routers[e.part].forget();
                 let picked = s.routers[e.part].articulation_of_control(e.slot, e.control);
                 s.align.picked(e.part, picked);
@@ -3648,7 +3815,9 @@ impl PluginLogic for Sampler {
         };
         if s.live.is_none() && !p.shared.lives.is_full() {
             s.live = (p.shared.live_requests.pop())
-                .map(|(slot, epoch, live)| (slot, (epoch, version(s, slot).1), live, Refresh::default()));
+                .map(|(slot, epoch, live)| {
+                (slot, (epoch, version(s, slot).1), live, Refresh::default())
+            });
         }
         if let Some((slot, seen, live, at)) = &mut s.live {
             let done = seen.0 != s.script_epoch[*slot]
@@ -3687,17 +3856,24 @@ impl PluginLogic for Sampler {
                 match play {
                     Play::Note(note, 0) => {
                         let targets = &mut s.key_slots.0[note as usize & 127];
-                        articulate::dispatch_to(rack, routers, targets.iter_mut().enumerate().filter_map(|(slot, reached)| std::mem::take(reached).then_some(slot)), In::NoteOff(0, note));
+                        articulate::dispatch_to(rack, routers, targets.iter_mut().enumerate().filter_map(|(slot, reached)| {
+                                    std::mem::take(reached).then_some(slot)
+                                }), In::NoteOff(0, note));
                     }
                     Play::Note(note, velocity) => {
                         articulate::dispatch_record(rack, routers, 0, In::NoteOn(0, note, velocity), &mut s.key_slots.0[note as usize & 127]);
                     }
-                    Play::Bend(value) => drop(articulate::dispatch(rack, routers, 0, In::Bend(0, value))),
-                    Play::Mod(value) => drop(articulate::dispatch(rack, routers, 0, In::Cc(0, 1, value))),
+                    Play::Bend(value) => {
+                        drop(articulate::dispatch(rack, routers, 0, In::Bend(0, value)))
+                    }
+                    Play::Mod(value) => {
+                        drop(articulate::dispatch(rack, routers, 0, In::Cc(0, 1, value)))
+                }
                 }
                 continue;
             }
-            let Some(engine) = s.rack.parts.get(slot) else { continue };
+            let Some(engine) = s.rack.parts.get(slot) else { continue;
+            };
             let channel = preview_channel(engine);
             let ev = match play {
                 Play::Note(note, 0) => In::NoteOff(s.key_channels.0[note as usize & 127], note),
@@ -3759,8 +3935,12 @@ impl PluginLogic for Sampler {
                                 })).is_err() { s.host_note_end_rejections=s.host_note_end_rejections.saturating_add(1); }
                             }
                         }
-                        Some(ExactInput::Brightness) => s.unsupported_note_brightness = s.unsupported_note_brightness.saturating_add(1),
-                        Some(ExactInput::Unsupported) => s.unsupported_host_expression = s.unsupported_host_expression.saturating_add(1),
+                        Some(ExactInput::Brightness) => {
+                            s.unsupported_note_brightness = s.unsupported_note_brightness.saturating_add(1)
+                        }
+                        Some(ExactInput::Unsupported) => {
+                            s.unsupported_host_expression = s.unsupported_host_expression.saturating_add(1)
+                        }
                         None => {
                             if let Some(e) = exact.fallback() { feed_typed_input(s,p,e,false,cx,thru,holding,rate); }
                             for e in exact.companions() { feed_typed_input(s,p,e,false,cx,thru,holding,rate); }
@@ -3840,14 +4020,18 @@ impl PluginLogic for Sampler {
         finish_host_notes(s,cx,frames.saturating_sub(1) as u32);
         if s.snapshot.is_none() && !p.shared.snapshots.is_full() {
             s.snapshot = (p.shared.snapshot_requests.pop())
-                .map(|(slot, epoch, saved)| (slot, (epoch, version(s, slot).1), saved, Refresh::default()));
+                .map(|(slot, epoch, saved)| {
+                (slot, (epoch, version(s, slot).1), saved, Refresh::default())
+            });
         }
         if let Some((slot, seen, saved, at)) = &mut s.snapshot {
             let done = seen.0 != s.script_epoch[*slot]
                 || *seen == s.snapshot_seen[*slot]
                 || (s.rack.parts[*slot].script())
-                    .is_none_or(|rt| rt.refresh_persistence_within(&mut saved.script, at, REFRESH_BUDGET)
-                        && rt.native_state.refresh(&mut saved.native, 256));
+                    .is_none_or(|rt| {
+                    rt.refresh_persistence_within(&mut saved.script, at, REFRESH_BUDGET)
+                        && rt.native_state.refresh(&mut saved.native, 256)
+                });
             if done && let Some((slot, seen, saved, at)) = s.snapshot.take() {
                 let mut saved = saved;
                 let mut changed = at.changed || saved.native.changed;
@@ -3866,22 +4050,26 @@ impl PluginLogic for Sampler {
         for (part, engine) in s.rack.parts.iter_mut().enumerate() {
             let generation = part_atoms(&s.shared_parts, &p.shared, part).unwrap().generation.load(Ordering::Acquire);
             while !p.shared.array_requests.is_full() {
-                let Some(request) = engine.pop_array_job() else { break };
+                let Some(request) = engine.pop_array_job() else { break;
+                };
                 p.shared.array_requests.push((part, generation, s.script_epoch[part], request)).ok().unwrap();
                 arrays_queued = true;
             }
             while !p.shared.array_retired.is_full() {
-                let Some(request) = engine.pop_retired_array_job() else { break };
+                let Some(request) = engine.pop_retired_array_job() else { break;
+                };
                 p.shared.array_retired.push((part, generation, s.script_epoch[part], request)).ok().unwrap();
                 arrays_queued = true;
             }
             while !p.shared.zone_requests.is_full() {
-                let Some(request) = engine.pop_zone_job() else { break };
+                let Some(request) = engine.pop_zone_job() else { break;
+                };
                 p.shared.zone_requests.push((part,generation,s.script_epoch[part],request)).ok().unwrap();
                 arrays_queued = true;
             }
             while !p.shared.ir_requests.is_full() {
-                let Some(request) = engine.pop_ir_request() else { break };
+                let Some(request) = engine.pop_ir_request() else { break;
+                };
                 let generation = part_atoms(&s.shared_parts, &p.shared, part).unwrap().generation.load(Ordering::Acquire);
                 let _ = p.shared.ir_requests.push((part, generation, s.script_epoch[part], request));
             }

@@ -180,6 +180,7 @@ pub(super) struct Command {
 #[derive(Clone, Copy)]
 pub(super) enum Kind {
     Start {
+        script_mods: [i32; super::SCRIPT_MOD_SOURCES],
         host_note: Option<super::HostRef>,
         note: u8,
         velocity: u8,
@@ -198,6 +199,7 @@ pub(super) enum Kind {
     /// Key release; `trigger` carries note, velocity and groups for release
     /// triggers unless the note already fired them.
     Release {
+        script_mods: [i32; super::SCRIPT_MOD_SOURCES],
         host_note: Option<super::HostRef>,
         trigger: Option<(u8, u8)>,
         groups: GroupMask,
@@ -323,6 +325,7 @@ impl KspEngine for Host<'_> {
         self.bank?;
         let id = self.player.next_id();
         let kind = Kind::Start {
+            script_mods: *n.script_mods,
             host_note: n.host_note,
             note: n.note,
             velocity: n.velocity,
@@ -351,13 +354,16 @@ impl KspEngine for Host<'_> {
 
     fn note_off(&mut self, at: u32, voice: EventId, n: &NoteSpec<'_>) {
         let kind = Kind::Release {
+            script_mods: *n.script_mods,
             host_note: n.host_note,
             trigger: (n.length != NoteLength::Sample).then_some((n.note, n.velocity)),
             groups: *n.groups,
-            expression: n.frozen_expression.or_else(|| self.commands.iter().find_map(|c| match c.kind {
+            expression: n.frozen_expression.or_else(|| {
+                    self.commands.iter().find_map(|c| match c.kind {
                 Kind::Start { expression, .. } if c.id == voice => expression,
                 _ => None,
-            })).or_else(|| self.player.release_expression(voice, n.channel, n.note)),
+            })
+                }).or_else(|| self.player.release_expression(voice, n.channel, n.note)),
         };
         self.push_from(at, n.channel, n.input_channel, voice, kind);
     }
@@ -424,6 +430,19 @@ impl KspEngine for Host<'_> {
         self.push_from(at, channel, input_channel, voice, Kind::Change(change));
     }
 
+    fn set_script_mod(&mut self, at: u32, channel: u8, input_channel: Option<u8>,
+        voice: EventId,
+        source: u16,
+        value: i32,
+    ) {
+        self.push_from(
+            at,
+            channel,
+            input_channel,
+            voice,
+            Kind::Change(EventChange::ScriptMod(source, value)),
+        );
+    }
     fn controller(&mut self, at: u32, cc: u8, value: i32) {
         self.controller_on_channel(at, self.channel, cc, value);
     }
@@ -581,6 +600,7 @@ impl Player {
         match &c.kind {
             &Kind::Start {
                 host_note,
+                ref script_mods,
                 note,
                 velocity,
                 owner,
@@ -594,6 +614,7 @@ impl Player {
                 ref groups,
             } => {
                 let event = NoteEvent {
+                    script_mods,
                     host_note,
                     channel,
                     note,
@@ -616,10 +637,13 @@ impl Player {
                     self.start(bank, &event, id, true, defaults);
                 }
             }
-            Kind::Release { trigger, groups, expression, host_note } => {
+            Kind::Release { trigger, groups, expression, host_note,
+                script_mods,
+            } => {
                 let latched = self.release_voices(bank, id).is_some_and(|event| event.4);
                 if let &Some((note, velocity)) = trigger {
-                    self.trigger_release(bank, id, (channel, note, velocity), groups, latched, *expression, c.input_channel, *host_note, defaults);
+                    self.trigger_release(bank, id, (channel, note, velocity), groups, latched, *expression, c.input_channel, *host_note,
+                        Some(script_mods), defaults);
                 }
             }
             &Kind::Freeze(expression) => {
@@ -657,7 +681,9 @@ impl Player {
             Kind::Controller { .. } => {}
             &Kind::ResetCounter(note) => {
                 self.key_on[channel as usize & 15][note as usize & 127] = self.now;
-                for v in self.voices.iter_mut().filter(|v| v.channel == channel && v.note == note && !v.release_trigger && v.counter_stop.is_none()) {
+                for v in self.voices.iter_mut().filter(|v| {
+                    v.channel == channel && v.note == note && !v.release_trigger && v.counter_stop.is_none()
+                }) {
                     v.counter_start = self.now;
                 }
             }

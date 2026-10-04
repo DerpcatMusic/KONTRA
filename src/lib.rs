@@ -1,4 +1,5 @@
 pub mod ksp;
+pub mod native_ui;
 pub mod build_info;
 pub mod import;
 // Encrypted library content: the `library-access` feature (enabled by default).

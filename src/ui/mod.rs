@@ -32,6 +32,7 @@ mod keyboard;
 mod logs;
 mod menu;
 mod mixer;
+mod native_ui;
 mod panel;
 mod perf_view;
 pub(crate) use perf_view::font_fallbacks;
@@ -44,12 +45,11 @@ mod theme;
 mod vector;
 mod viz;
 mod wave;
-
-pub(crate) use panel::{articulations, sections};
 use crate::import;
 use crate::plugin::{Load, Part, PartView, SamplerParams, Selection, View, mix};
-use moose::mui::{Bridge, MuiEditor, mui::prelude::*, mui::prelude::Color};
+use moose::mui::{Bridge, MuiEditor, mui::prelude::Color, mui::prelude::*};
 use moose::prelude::*;
+pub(crate) use panel::{articulations, sections};
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -450,6 +450,7 @@ struct EditorState {
     /// Each part's performance view as last read.
     panels: HashMap<usize, panel::Cache>,
     vector_assets: vector::Assets,
+    native_ui: HashMap<usize, native_ui::State>,
     /// Pictures the original views asked for, by instrument, read or not.
     perf_asked: std::collections::HashSet<(PathBuf, String)>,
     started: Instant,
@@ -933,6 +934,7 @@ fn build(
         ranges: HashMap::new(),
         panels: HashMap::new(),
         vector_assets: vector::Assets::default(),
+        native_ui: HashMap::new(),
         perf_asked: Default::default(),
         started: Instant::now(),
         computer,

@@ -163,12 +163,31 @@ fn vectorized(u: &Interface, shown: &[Shown], pictures: &HashMap<String, Arc<art
 /// `kontakto audit-ui [roots or presets] [--shots DIR] [--json out.json]`.
 pub fn run(args: &[String]) -> anyhow::Result<()> {
     let opt = |flag: &str| args.iter().position(|a| a == flag);
-    let (shots_at, json_at) = (opt("--shots"), opt("--json"));
+    let (shots_at, json_at, control_at) = (opt("--shots"), opt("--json"), opt("--native-control"));
+    let selection = control_at
+        .map(|at| -> anyhow::Result<(String, f64)> {
+            let name = args
+                .get(at + 1)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("--native-control requires an identifier and value")
+                })?
+                .clone();
+            let value: f64 = args
+                .get(at + 2)
+                .ok_or_else(|| anyhow::anyhow!("--native-control requires a value"))?
+                .parse()?;
+            anyhow::ensure!(value.is_finite(), "Control value must be finite");
+            Ok((name, value))
+        })
+        .transpose()?;
     let shots = shots_at.and_then(|i| args.get(i + 1)).map(PathBuf::from);
     let json = json_at.and_then(|i| args.get(i + 1));
     anyhow::ensure!(shots.is_none() || cfg!(feature = "shots"), "Screenshots require cargo build --release --features shots");
     let mut roots: Vec<PathBuf> = (args.iter().enumerate())
-        .filter(|&(i, a)| !a.starts_with("--") && [shots_at, json_at].iter().all(|o| o.is_none_or(|o| i != o + 1)))
+        .filter(|&(i, a)| {
+            !a.starts_with("--") && [shots_at, json_at].iter().all(|o| o.is_none_or(|o| i != o + 1))
+                && control_at.is_none_or(|o| i != o + 1 && i != o + 2)
+        })
         .map(|(_, a)| a.into())
         .collect();
     if roots.is_empty() {
@@ -233,7 +252,7 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
                 trace.detail("missing_samples", i.missing_samples.len());
                 for w in &i.warnings { trace.issue("import", crate::diagnostics::code(w), w); }
                 for sample in &i.missing_samples { trace.issue("samples", "missing", sample); }
-                let shown = audit_one(&i, &mut found, &mut trace);
+                let shown = audit_one_selected(&i, &mut found, &mut trace, selection.as_ref());
                 let has_view = shown.is_some();
                 trace.detail("performance_view", has_view);
                 let mut rendered = true;
@@ -283,6 +302,14 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
 /// Run `i`'s scripts as the player does, lay out its view and note what
 /// is wrong; the part to draw, if it has a view.
 fn audit_one(i: &Arc<import::Instrument>, found: &mut Found, trace: &mut crate::diagnostics::LoadTrace) -> Option<PartView> {
+    audit_one_selected(i, found, trace, None)
+}
+fn audit_one_selected(
+    i: &Arc<import::Instrument>,
+    found: &mut Found,
+    trace: &mut crate::diagnostics::LoadTrace,
+    selection: Option<&(String, f64)>,
+) -> Option<PartView> {
     trace.stage("scripts");
     let (rt, errors) = crate::engine::load_scripts(i, i.script_state.clone(), 48_000.);
     for e in &errors {
@@ -295,6 +322,15 @@ fn audit_one(i: &Arc<import::Instrument>, found: &mut Found, trace: &mut crate::
     trace.stage("script_callbacks");
     let mut engine = crate::engine::ScriptSetup::new(i, 48_000.0);
     (0..100).for_each(|_| rt.process(&mut engine, 480));
+    if let Some((name, value)) = selection {
+        let control = rt
+            .exposed_controls()
+            .into_iter()
+            .find(|c| c.identifier == *name)?;
+        if !rt.native_control(&mut engine, control.slot, control.control, 0, *value) {
+            return None;
+        }
+    }
     #[cfg(test)]
     tests::select_benchmark_page(&mut rt, i, false);
     let script = crate::plugin::script_interface(Some(&rt));
@@ -306,6 +342,37 @@ fn audit_one(i: &Arc<import::Instrument>, found: &mut Found, trace: &mut crate::
         found.problems.retain(|k, _| k.starts_with("script"));
         return None;
     };
+    if !u.native_ui.is_empty() {
+        let package = match crate::native_ui::Package::load(&i.path) {
+            Ok(package) => Arc::new(package),
+            Err(e) => {
+                trace.issue("native_ui", "resource_load", format!("{e:#}"));
+                found.add("NativeUI resources failed to load");
+                return None;
+            }
+        };
+        let controls: Arc<[crate::ksp::ExposedControl]> = Arc::from(rt.exposed_controls());
+        match crate::native_ui::Session::new(package.clone(), &u.native_ui, controls.clone())
+            .and_then(|session| session.render())
+        {
+            Ok(_) => {}
+            Err(e) => {
+                trace.issue("native_ui", "initialization_failed", format!("{e:#}"));
+                found.add("NativeUI initialization failed");
+            }
+        }
+        found.size = (u.width.max(0) as u32, u.height.max(0) as u32);
+        return Some(PartView {
+            native_ui: Some(package),
+            exposed_controls: controls,
+            script_epoch: 1,
+            interface: Some(u),
+            keys: script.keys,
+            instrument: Some(i.clone()),
+            active: i.name.clone(),
+            ..Default::default()
+        });
+    }
     for warning in perf_view::font_fallbacks(&u) { trace.issue("ui", "font_fallback", &warning); }
     found.size = (u.width.max(0) as u32, u.height.max(0) as u32);
     let names: Vec<_> = artwork::picture_names(&u).collect();

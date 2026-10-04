@@ -63,7 +63,7 @@ Baseline: NI's [Source Module and Sample Loop documentation][ni-classic] disting
 | Polyphony and voice stealing | ✓ | [Player](https://github.com/DerpcatMusic/KONTRA/blob/d36380bbf2761fdfa7e3c50e29c2acfacbcdfb73/src/engine/mod.rs#L1993) makes room for voices; [engine limits](https://github.com/DerpcatMusic/KONTRA/blob/d36380bbf2761fdfa7e3c50e29c2acfacbcdfb73/src/engine/mod.rs#L58) and load shedding bound capacity. Not a universal performance guarantee. |
 | Time / Tone / Beat Machine engines | ✗ | [Voice playback](https://github.com/DerpcatMusic/KONTRA/blob/d36380bbf2761fdfa7e3c50e29c2acfacbcdfb73/src/engine/voice.rs#L1156) changes traversal rate for pitch; independent stretch, granular formants and beat-slice engines are not implemented in this path. |
 | Time Machine Pro | ✗ | [KSP calls](https://github.com/DerpcatMusic/KONTRA/blob/d36380bbf2761fdfa7e3c50e29c2acfacbcdfb73/src/ksp/calls.rs#L1098) explicitly report unavailable stretch/voice allocation, separate from disk streaming. |
-| Kontakt wavetable playback | ◐ | [Admission](https://github.com/DerpcatMusic/KONTRA/blob/d36380bbf2761fdfa7e3c50e29c2acfacbcdfb73/src/engine/wavetable.rs#L11) allows tracked 2048-frame cycles and linear/ASYM2MP forms. Phase randomness, inharmonic/audio-rate modulation and other forms are rejected; quality/anti-aliasing parity is unverified. |
+| Kontakt wavetable playback | ◐ | [Admission](../src/engine/wavetable.rs) allows tracked 2048-frame cycles with linear, bend, asymmetric, PWM, flip, mirror, quantize, seesaw and exp/log phase forms traced in the native phase switch. Sync readout, sample-domain shapers, phase randomness and inharmonic/audio-rate modulation remain unsupported; quality/anti-aliasing and Kontakt output parity are unverified. |
 
 </details>
 

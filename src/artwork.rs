@@ -384,6 +384,57 @@ fn wallpaper(scripts: &[String]) -> Option<String> {
 pub(crate) fn decode(bytes: &[u8]) -> Option<Image> {
     decode_report(bytes).ok()
 }
+/// NativeUI assets are decoded on the loader, before a package reaches the editor.
+pub(crate) fn decode_native(bytes: &[u8]) -> Result<Image, String> {
+    if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        let mut decoder =
+            image_webp::WebPDecoder::new(Cursor::new(bytes)).map_err(|e| e.to_string())?;
+        decoder.set_memory_limit(128 * 1024 * 1024);
+        let (w, h) = decoder.dimensions();
+        let size = decoder
+            .output_buffer_size()
+            .ok_or("WebP dimensions overflow")?;
+        if size > 128 * 1024 * 1024 {
+            return Err("WebP exceeds the image budget".into());
+        }
+        let mut data = vec![0; size];
+        decoder.read_image(&mut data).map_err(|e| e.to_string())?;
+        if !decoder.has_alpha() {
+            data = data
+                .chunks_exact(3)
+                .flat_map(|p| [p[0], p[1], p[2], 255])
+                .collect();
+        }
+        return Image::rgba(w, h, data).ok_or_else(|| "Invalid WebP pixels".into());
+    }
+    if std::str::from_utf8(bytes).is_ok_and(|s| s.contains("<svg")) {
+        let tree = resvg::usvg::Tree::from_data(bytes, &resvg::usvg::Options::default())
+            .map_err(|e| e.to_string())?;
+        let size = tree.size().to_int_size();
+        if u64::from(size.width()) * u64::from(size.height()) > 32 * 1024 * 1024 {
+            return Err("SVG exceeds the image budget".into());
+        }
+        let mut pixels = resvg::tiny_skia::Pixmap::new(size.width(), size.height())
+            .ok_or("Invalid SVG dimensions")?;
+        resvg::render(
+            &tree,
+            resvg::tiny_skia::Transform::identity(),
+            &mut pixels.as_mut(),
+        );
+        // tiny-skia stores premultiplied pixels; MUI takes straight RGBA.
+        let data = pixels
+            .pixels()
+            .iter()
+            .flat_map(|p| {
+                let c = p.demultiply();
+                [c.red(), c.green(), c.blue(), c.alpha()]
+            })
+            .collect::<Vec<_>>();
+        return Image::rgba(size.width(), size.height(), data)
+            .ok_or_else(|| "Invalid SVG pixels".into());
+    }
+    decode_report(bytes)
+}
 fn decode_report(bytes: &[u8]) -> Result<Image, String> {
     if bytes.starts_with(b"\x89PNG") { return decode_png_report(bytes); }
     if bytes.starts_with(&[0xff, 0xd8]) {

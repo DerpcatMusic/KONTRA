@@ -222,10 +222,12 @@ pub struct Live {
     /// Script slot of `interface`; retained across allocation-free refreshes.
     pub slot: usize,
     pub interface: Option<Interface>,
+    pub exposed_controls: Vec<super::ExposedControl>,
     /// Every key; unset names and colors are empty.
     pub keys: BTreeMap<u8, KeyState>,
     /// Preallocated rows recycled when script menus change visibility.
     menu_spares: Vec<Vec<(String, i32)>>,
+    native_menu_spares: Vec<Vec<(String, i32)>>,
     control_revisions: Vec<u64>,
     control_value_revisions: Vec<u64>,
     interface_revision: u64,
@@ -255,6 +257,8 @@ impl PartialEq for Live {
             && self.interface == other.interface && self.keys == other.keys
             && self.menu_spares == other.menu_spares && self.control_revisions == other.control_revisions
             && self.control_value_revisions == other.control_value_revisions
+            && self.exposed_controls == other.exposed_controls
+            && self.native_menu_spares == other.native_menu_spares
     }
 }
 
@@ -270,6 +274,7 @@ pub struct Event {
     pub host_note: Option<crate::engine::HostRef>,
     pub frozen_expression: Option<crate::engine::Expression>,
     pub pars: [i32; 16],
+    pub script_mods: [i32; crate::engine::SCRIPT_MOD_SOURCES],
     pub volume: i32,
     pub tune: i32,
     pub pan: i32,
@@ -324,6 +329,7 @@ impl Event {
         host_note: None,
         frozen_expression: None,
         pars: [0; 16],
+        script_mods: [0; crate::engine::SCRIPT_MOD_SOURCES],
         volume: 0,
         tune: 0,
         pan: 0,
@@ -362,6 +368,7 @@ impl Event {
     fn spec(&self, id: i32) -> NoteSpec<'_> {
         NoteSpec {
             event: id,
+            script_mods: &self.script_mods,
             channel: self.channel,
             owner: self.owner,
             input_channel: self.input_channel,
@@ -1136,6 +1143,21 @@ impl Runtime {
                 let menu = dynamic_menu
                     && prog.vars[control.var as usize].ui.as_deref() == Some("ui_menu");
                 control.prepare(text_bytes, menu);
+                let var = &prog.vars[control.var as usize];
+                control.midi.resize(var.len.unwrap_or(1) as usize, None);
+                control.midi_key = format!("@KONTRA/MIDI/{}", var.name);
+                if let Some(Value::IntArray(values)) = self
+                    .env
+                    .persisted
+                    .get(state.index as usize)
+                    .and_then(|saved| saved.get(&control.midi_key))
+                {
+                    for (target, value) in control.midi.iter_mut().zip(values) {
+                        *target = (0..2048)
+                            .contains(value)
+                            .then(|| ((*value / 128) as u8, (*value % 128) as u8));
+                    }
+                }
                 if prog.vars[control.var as usize].ui.as_deref() == Some("ui_file_selector") {
                     for par in [b::CONTROL_PAR_FILEPATH, b::CONTROL_PAR_BASEPATH] {
                         let path = control.str_mut(par).unwrap();
@@ -1376,6 +1398,26 @@ impl Runtime {
                     .collect()
             })
             .collect();
+        for (state, values) in self.states.iter().zip(&mut saved) {
+            for control in &state.ui.controls {
+                if !control.midi_key.is_empty() {
+                    values.insert(
+                        control.midi_key.clone(),
+                        Value::IntArray(
+                            control
+                                .midi
+                                .iter()
+                                .map(|mapping| {
+                                    mapping.map_or(-1, |(channel, cc)| {
+                                        i32::from(channel) * 128 + i32::from(cc)
+                                    })
+                                })
+                                .collect(),
+                        ),
+                    );
+                }
+            }
+        }
         // Room for strings to grow before `refresh_persistence` must cut them.
         each_text(&mut saved, |t| t.reserve(t.len().max(SNAPSHOT_SLACK)));
         saved
@@ -1423,8 +1465,278 @@ impl Runtime {
                     (at.item, at.at) = (at.item + 1, 0);
                 }
             }
+            while let Some(control) = state.ui.controls.get(at.midi_item) {
+                if let Some(Value::IntArray(values)) = saved[at.slot].get_mut(&control.midi_key) {
+                    while at.midi_at < values.len().min(control.midi.len()) {
+                        if left == 0 {
+                            return false;
+                        }
+                        let value = control.midi[at.midi_at]
+                            .map_or(-1, |(channel, cc)| i32::from(channel) * 128 + i32::from(cc));
+                        at.changed |= std::mem::replace(&mut values[at.midi_at], value) != value;
+                        at.midi_at += 1;
+                        left -= 1;
+                    }
+                }
+                at.midi_at = 0;
+                at.midi_item += 1;
+            }
+            at.midi_item = 0;
             (at.slot, at.item) = (at.slot + 1, 0);
         }
+        true
+    }
+
+    /// Build the native parameter registry off-thread. First slot wins name collisions.
+    pub fn exposed_controls(&self) -> Vec<super::ExposedControl> {
+        if !self.states.iter().any(|s| s.ui.exposed) {
+            return Vec::new();
+        }
+        let mut seen = BTreeSet::new();
+        let mut out = Vec::new();
+        for (slot, state) in self.states.iter().enumerate() {
+            for (control, mut descriptor) in state
+                .ui
+                .interface(&self.programs[slot], &state.mem)
+                .controls
+                .into_iter()
+                .enumerate()
+            {
+                let identifier = descriptor.variable.chars().skip(1).collect::<String>();
+                if !seen.insert(identifier.clone()) {
+                    continue;
+                }
+                let c = &state.ui.controls[control];
+                let prog = &self.programs[slot];
+                for (par, source) in c.props.iter().chain(
+                    &c.spare_text
+                        .iter()
+                        .map(|(par, text)| (*par, super::ui::Prop::Str(text.clone())))
+                        .collect::<Vec<_>>(),
+                ) {
+                    if let Some(name) = prog.symbol_name(*par) {
+                        let target = descriptor.properties.entry(name.into()).or_insert_with(
+                            || match source {
+                                super::ui::Prop::Str(_) => Value::Text(String::new()),
+                                _ => Value::IntArray(Vec::new()),
+                            },
+                        );
+                        if let (Value::Text(t), super::ui::Prop::Str(source)) = (target, source) {
+                            t.reserve(source.capacity().saturating_sub(t.len()));
+                        }
+                    }
+                }
+                for name in [
+                    "$CONTROL_PAR_LABEL",
+                    "$CONTROL_PAR_TEXT",
+                    "$CONTROL_PAR_HELP",
+                ] {
+                    descriptor
+                        .properties
+                        .entry(name.into())
+                        .or_insert_with(|| Value::Text(String::with_capacity(1024)));
+                }
+                for value in descriptor.properties.values_mut() {
+                    each_text_in(value, &mut |text| {
+                        text.reserve(1024usize.saturating_sub(text.len()));
+                    });
+                }
+                descriptor.menu = c
+                    .menu
+                    .iter()
+                    .map(|item| (item.text.clone(), item.value))
+                    .collect();
+                let menu_visible = c.menu.iter().map(|item| item.visible).collect();
+                out.push(super::ExposedControl {
+                    slot,
+                    control,
+                    identifier,
+                    menu_visible,
+                    midi_learn: state
+                        .ui
+                        .learn
+                        .filter(|(c, _)| *c == control)
+                        .map(|(_, index)| index),
+                    descriptor,
+                });
+            }
+        }
+        out
+    }
+
+    pub fn update_level_meters(&mut self, read: impl Fn([i32; 4]) -> Option<f32>) {
+        for (state, program) in self.states.iter_mut().zip(&self.programs) {
+            for control in &state.ui.controls {
+                let Some(attachment) = control.meter else {
+                    continue;
+                };
+                let value = read(attachment).unwrap_or(0.);
+                let value = if value.is_finite() {
+                    (value.clamp(0., 2147.) * 1_000_000.).round() as i32
+                } else {
+                    0
+                };
+                let slot = program.vars[control.var as usize].slot as usize;
+                if state.mem.ints[slot] != value {
+                    state.mem.ints[slot] = value;
+                    self.changes += 1;
+                }
+            }
+        }
+    }
+    pub fn native_midi_learn(
+        &mut self,
+        slot: usize,
+        control: usize,
+        index: usize,
+        active: bool,
+    ) -> bool {
+        let Some(state) = self.states.get(slot) else {
+            return false;
+        };
+        let Some(c) = state.ui.controls.get(control) else {
+            return false;
+        };
+        if !self.states.iter().any(|s| s.ui.exposed)
+            || index >= c.midi.len()
+            || self.programs[slot].vars[c.var as usize].ty == Ty::Str
+        {
+            return false;
+        }
+        if active {
+            for state in &mut self.states {
+                state.ui.learn = None;
+            }
+            self.states[slot].ui.learn = Some((control, index));
+        } else if self.states[slot].ui.learn == Some((control, index)) {
+            self.states[slot].ui.learn = None;
+        }
+        self.changes += 1;
+        true
+    }
+    fn native_midi(&mut self, engine: &mut dyn KspEngine, cc: u8, value: u8) {
+        let Some(channel) = self.env.input.input_channel else {
+            return;
+        };
+        if cc >= 120 {
+            return;
+        }
+        let value = f64::from(value) / 127.;
+        for slot in 0..self.states.len() {
+            if let Some((control, index)) = self.states[slot].ui.learn.take() {
+                self.states[slot].ui.controls[control].midi[index] = Some((channel, cc));
+                self.changes += 1;
+            }
+            for control in 0..self.states[slot].ui.controls.len() {
+                let length = self.states[slot].ui.controls[control].midi.len();
+                for index in 0..length {
+                    let c = &self.states[slot].ui.controls[control];
+                    if c.midi[index] != Some((channel, cc)) {
+                        continue;
+                    }
+                    let number = if !c.menu.is_empty() {
+                        let count = c.menu.iter().filter(|item| item.visible).count();
+                        if count == 0 { continue; }
+                        let row = (value * count.saturating_sub(1) as f64).round() as usize;
+                        f64::from(c.menu.iter().filter(|item| item.visible).nth(row).unwrap().value)
+                    } else {
+                        let bound = |par, default| match c.get(par) {
+                            Some(super::ui::Prop::Int(n)) => f64::from(*n),
+                            _ => default,
+                        };
+                        let lo = bound(b::CONTROL_PAR_MIN_VALUE, 0.);
+                        lo + value * (bound(b::CONTROL_PAR_MAX_VALUE, 1.) - lo)
+                    };
+                    self.native_control(engine, slot, control, index, number);
+                }
+            }
+        }
+    }
+    pub fn native_ui_entry(&self) -> Option<&str> {
+        self.states
+            .iter()
+            .find(|s| !s.ui.native_ui.is_empty())
+            .map(|s| s.ui.native_ui.as_str())
+    }
+
+    /// Writes use prepared numeric bindings; they never look up a string on audio.
+    pub fn native_control(
+        &mut self,
+        engine: &mut dyn KspEngine,
+        slot: usize,
+        control: usize,
+        index: usize,
+        value: f64,
+    ) -> bool {
+        if !value.is_finite() || !self.states.iter().any(|s| s.ui.exposed) {
+            return false;
+        }
+        let Some(state) = self.states.get_mut(slot) else {
+            return false;
+        };
+        let Some(c) = state.ui.controls.get(control) else {
+            return false;
+        };
+        let v = c.var;
+        let prog = self.programs[slot].clone();
+        let var = &prog.vars[v as usize];
+        if index >= var.len.unwrap_or(1) as usize || var.poly {
+            return false;
+        }
+        let range = |p| match c.get(p) {
+            Some(super::ui::Prop::Int(n)) => Some(f64::from(*n)),
+            _ => None,
+        };
+        let value = match (
+            range(b::CONTROL_PAR_MIN_VALUE),
+            range(b::CONTROL_PAR_MAX_VALUE),
+        ) {
+            (Some(a), Some(z)) => value.clamp(a.min(z), a.max(z)),
+            _ => value,
+        };
+        match var.ty {
+            Ty::Int => {
+                state.mem.ints[var.slot as usize + index] =
+                    value.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32
+            }
+            Ty::Real => state.mem.reals[var.slot as usize + index] = value,
+            Ty::Str => return false,
+        }
+        self.changes += 1;
+        self.dispatch_ui_control(engine, slot, v);
+        true
+    }
+
+    pub fn native_text(
+        &mut self,
+        engine: &mut dyn KspEngine,
+        slot: usize,
+        control: usize,
+        index: usize,
+        text: &str,
+    ) -> bool {
+        if !self.states.iter().any(|s| s.ui.exposed) {
+            return false;
+        }
+        let Some(state) = self.states.get_mut(slot) else {
+            return false;
+        };
+        let Some(c) = state.ui.controls.get(control) else {
+            return false;
+        };
+        let v = c.var;
+        let var = &self.programs[slot].vars[v as usize];
+        if var.ty != Ty::Str || var.poly || index >= var.len.unwrap_or(1) as usize {
+            return false;
+        }
+        let target = &mut state.mem.strs[var.slot as usize + index];
+        if text.len() > target.capacity() {
+            return false;
+        }
+        target.clear();
+        target.push_str(text);
+        self.changes += 1;
+        self.dispatch_ui_control(engine, slot, v);
         true
     }
 
@@ -1514,10 +1826,42 @@ impl Runtime {
                 for (dst,_) in &mut out.menu { dst.reserve(bytes.saturating_sub(dst.len())); }
                 out.menu.reserve(total.saturating_sub(out.menu.len()));
                 let mut spare = Vec::with_capacity(total);
-                spare.resize_with(total.saturating_sub(out.menu.len()), || (String::with_capacity(bytes), 0));
+                spare.resize_with(total.saturating_sub(out.menu.len()), || {
+                        (String::with_capacity(bytes), 0)
+                    });
                 spare
             }).collect()
         });
+        let mut exposed_controls = self.exposed_controls();
+        let native_menu_spares = exposed_controls
+            .iter_mut()
+            .map(|binding| {
+                let c = &self.states[binding.slot].ui.controls[binding.control];
+                let total = c.menu.len() + c.spare_menu.len();
+                let bytes = c
+                    .menu
+                    .iter()
+                    .chain(&c.spare_menu)
+                    .map(|m| m.text.capacity())
+                    .max()
+                    .unwrap_or(1024);
+                for (text, _) in &mut binding.descriptor.menu {
+                    text.reserve(bytes.saturating_sub(text.len()));
+                }
+                binding
+                    .descriptor
+                    .menu
+                    .reserve(total.saturating_sub(binding.descriptor.menu.len()));
+                binding
+                    .menu_visible
+                    .reserve(total.saturating_sub(binding.menu_visible.len()));
+                let mut spare = Vec::with_capacity(total);
+                spare.resize_with(total.saturating_sub(binding.descriptor.menu.len()), || {
+                    (String::with_capacity(bytes), 0)
+                });
+                spare
+            })
+            .collect();
         let text = || String::with_capacity(SNAPSHOT_SLACK);
         let keys = (0..128)
             .map(|n| {
@@ -1541,9 +1885,13 @@ impl Runtime {
             interface_current: true,
             slot: slot.unwrap_or(0),
             interface,
+            exposed_controls,
+            native_menu_spares,
             keys,
             menu_spares,
-            control_revisions: slot.map_or_else(Vec::new, |s| self.states[s].ui.controls.iter().map(|c| c.revision).collect()),
+            control_revisions: slot.map_or_else(Vec::new, |s| {
+                self.states[s].ui.controls.iter().map(|c| c.revision).collect()
+            }),
             control_value_revisions: slot.map_or_else(Vec::new, |s| {
                 let mem = &self.states[s].mem;
                 self.states[s].ui.controls.iter().map(|c| {
@@ -1598,6 +1946,120 @@ impl Runtime {
             if at.item != usize::MAX {
                 return false;
             }
+        }
+        let mut left = budget;
+        while at.native_item < live.exposed_controls.len() {
+            if left == 0 {
+                return false;
+            }
+            let binding = &mut live.exposed_controls[at.native_item];
+            let state = &self.states[binding.slot];
+            let prog = &self.programs[binding.slot];
+            let c = &state.ui.controls[binding.control];
+            let learn = state
+                .ui
+                .learn
+                .filter(|(control, _)| *control == binding.control)
+                .map(|(_, index)| index);
+            if std::mem::replace(&mut binding.midi_learn, learn) != learn {
+                live.interface_revision = live.interface_revision.wrapping_add(1);
+                at.changed = true;
+            }
+            let var = &prog.vars[c.var as usize];
+            let len = var.len.unwrap_or(1) as usize;
+            let end = len.min(at.native_at.saturating_add(left));
+            if let Some(value) = binding.descriptor.properties.get_mut("$CONTROL_PAR_VALUE") {
+                if refresh_range(&state.mem, var, value, at.native_at..end) {
+                    live.interface_revision = live.interface_revision.wrapping_add(1);
+                    at.changed = true;
+                }
+            }
+            left = left.saturating_sub(end - at.native_at);
+            if end < len {
+                at.native_at = end;
+                return false;
+            }
+            at.native_at = 0;
+            for (par, source) in &c.props {
+                let Some(name) = prog.symbol_name(*par) else {
+                    continue;
+                };
+                let Some(target) = binding.descriptor.properties.get_mut(name) else {
+                    continue;
+                };
+                let changed = match (source, target) {
+                    (super::ui::Prop::Int(n), Value::Int(v)) => std::mem::replace(v, *n) != *n,
+                    (super::ui::Prop::Int(n), target) if matches!(&*target,Value::IntArray(values) if values.is_empty()) =>
+                    {
+                        *target = Value::Int(*n);
+                        true
+                    }
+                    (super::ui::Prop::Str(s), Value::Text(v)) => copy_text(v, s),
+                    _ => false,
+                };
+                if changed {
+                    live.interface_revision = live.interface_revision.wrapping_add(1);
+                    at.changed = true;
+                }
+            }
+            for (par, index, source) in &c.indexed {
+                // Keys were serialized off audio; matching numeric suffixes avoids formatting here.
+                let Some(name) = prog.symbol_name(*par) else {
+                    continue;
+                };
+                for (key, target) in &mut binding.descriptor.properties {
+                    if !key.starts_with(name) || key.as_bytes().get(name.len()) != Some(&b'[') {
+                        continue;
+                    }
+                    if key
+                        .get(name.len() + 1..key.len().saturating_sub(1))
+                        .and_then(|s| s.parse::<usize>().ok())
+                        != Some(*index)
+                    {
+                        continue;
+                    }
+                    let changed = match (source, target) {
+                        (super::ui::Prop::Int(n), Value::Int(dst)) => {
+                            std::mem::replace(dst, *n) != *n
+                        }
+                        (super::ui::Prop::Str(text), Value::Text(dst)) => copy_text(dst, text),
+                        _ => false,
+                    };
+                    if changed {
+                        live.interface_revision = live.interface_revision.wrapping_add(1);
+                        at.changed = true;
+                    }
+                    break;
+                }
+            }
+            let spare = &mut live.native_menu_spares[at.native_item];
+            let menu = &mut binding.descriptor.menu;
+            let mut changed = false;
+            while menu.len() > c.menu.len() {
+                let mut item = menu.pop().unwrap();
+                item.0.clear();
+                spare.push(item);
+                binding.menu_visible.pop();
+                changed = true;
+            }
+            while menu.len() < c.menu.len() && !spare.is_empty() {
+                menu.push(spare.pop().unwrap());
+                binding.menu_visible.push(false);
+                changed = true;
+            }
+            for ((target, visible), source) in
+                menu.iter_mut().zip(&mut binding.menu_visible).zip(&c.menu)
+            {
+                changed |= copy_text(&mut target.0, &source.text);
+                changed |= std::mem::replace(&mut target.1, source.value) != source.value;
+                changed |= std::mem::replace(visible, source.visible) != source.visible;
+            }
+            left = left.saturating_sub(c.menu.len() + c.props.len());
+            if changed {
+                live.interface_revision = live.interface_revision.wrapping_add(1);
+                at.changed = true;
+            }
+            at.native_item += 1;
         }
         let mut keys_changed = false;
         for (note, key) in &mut live.keys {
@@ -2057,6 +2519,9 @@ impl Runtime {
 
     fn cc(&mut self, engine: &mut dyn KspEngine, at: u32, cc: u8, value: i32) {
         self.advance(engine, at);
+        if cc < 120 {
+            self.native_midi(engine, cc, value.clamp(0, 127) as u8);
+        }
         self.env.input.cc[cc as usize] = value;
         self.env.queue(Work::Controller { channel: self.env.input.channel, input_channel: self.env.input.input_channel, cc, value, slot: 0 });
         self.settle(engine);
@@ -2158,8 +2623,18 @@ impl Runtime {
             state.mem.ints[var.slot as usize] = value;
             self.changes += 1;
         }
+        self.dispatch_ui_control(engine, slot, v);
+    }
+
+    fn dispatch_ui_control(
+        &mut self,
+        engine: &mut dyn KspEngine,
+        slot: usize,
+        v: super::compile::VarId,
+    ) {
+        let prog = &self.programs[slot];
         let entry = prog.ui_callbacks[v as usize];
-        let ui_id = state.ui.var_id(v);
+        let ui_id = self.states[slot].ui.var_id(v);
         let mut ctx = Ctx::new(slot as u8, Kind::Cb(Callback::UiControls));
         ctx.ui_id = ui_id;
         self.spawn_cb(engine, slot as u8, Callback::UiControls, ctx);
@@ -3105,7 +3580,11 @@ pub(super) fn refresh_range(
 /// Where an incremental refresh stands; start from the default.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Refresh {
+    midi_item: usize,
+    midi_at: usize,
     value_revision: u64,
+    native_item: usize,
+    native_at: usize,
     slot: usize,
     item: usize,
     at: usize,

@@ -29,6 +29,10 @@ pub struct MenuItem {
 #[derive(Clone, Debug)]
 pub struct ControlState {
     pub var: VarId,
+    pub meter: Option<[i32; 4]>,
+    pub midi: Vec<Option<(u8, u8)>>,
+    pub midi_key: String,
+    pub indexed: Vec<(i32, usize, Prop)>,
     pub props: Vec<(i32, Prop)>,
     /// Static metadata need not be recopied on every scalar value edit.
     pub revision: u64,
@@ -140,6 +144,46 @@ impl ControlState {
         Ok(s)
     }
 
+    pub fn indexed(&self, par: i32, index: usize) -> Option<&Prop> {
+        self.indexed
+            .iter()
+            .find(|(p, i, _)| *p == par && *i == index)
+            .map(|(_, _, value)| value)
+    }
+    pub fn set_indexed(&mut self, par: i32, index: i32, value: Prop) -> Result<(), &'static str> {
+        if !(0..4096).contains(&index) {
+            return Err("Indexed control property index out of range");
+        }
+        let index = index as usize;
+        if let Some((_, _, target)) = self
+            .indexed
+            .iter_mut()
+            .find(|(p, i, _)| *p == par && *i == index)
+        {
+            match (target, value) {
+                (Prop::Int(dst), Prop::Int(n)) => *dst = n,
+                (Prop::Str(dst), Prop::Str(text)) => {
+                    if self.frozen && text.len() > dst.capacity() {
+                        return Err("KSP property text capacity exhausted");
+                    }
+                    dst.clear();
+                    dst.push_str(&text);
+                }
+                _ => return Err("Indexed control property type mismatch"),
+            }
+        } else {
+            if self.frozen {
+                return Err("Indexed control property must be prepared during init");
+            }
+            if self.indexed.len() >= 4096 {
+                return Err("Indexed control property capacity exhausted");
+            }
+            self.indexed.push((par, index, value));
+        }
+        self.revision = self.revision.wrapping_add(1);
+        Ok(())
+    }
+
     pub fn prepare(&mut self, bytes: usize, menu: bool) {
         self.frozen = false;
         self.props.reserve(64);
@@ -179,6 +223,11 @@ impl ControlState {
             self.spare_text
                 .push((b::CONTROL_PAR_UNIT, String::with_capacity(bytes)));
         }
+        for (_, _, value) in &mut self.indexed {
+            if let Prop::Str(text) = value {
+                text.reserve(bytes.saturating_sub(text.len()));
+            }
+        }
         for item in &mut self.menu {
             item.text.reserve(bytes.saturating_sub(item.text.len()));
         }
@@ -208,6 +257,9 @@ pub struct Ui {
     pub controls: Vec<ControlState>,
     pub fonts: Vec<String>,
     pub performance: bool,
+    pub exposed: bool,
+    pub learn: Option<(usize, usize)>,
+    pub native_ui: String,
     pub width: i32,
     pub height: i32,
     pub title: String,
@@ -226,6 +278,9 @@ impl Ui {
             controls: Vec::new(),
             fonts: Vec::new(),
             performance: false,
+            exposed: false,
+            learn: None,
+            native_ui: String::new(),
             width: 632,
             height: 350,
             title: String::new(),
@@ -262,6 +317,10 @@ impl Ui {
         }
         let mut c = ControlState {
             var: v,
+            meter: None,
+            midi: Vec::new(),
+            midi_key: String::new(),
+            indexed: Vec::new(),
             props: Vec::with_capacity(8),
             revision: 0,
             menu: Vec::new(),
@@ -445,13 +504,29 @@ impl Ui {
                     };
                     properties.insert(name, value);
                 }
+                for (par, index, value) in &c.indexed {
+                    let name = prog
+                        .symbol_name(*par)
+                        .map_or_else(|| format!("#{par}"), str::to_owned);
+                    properties.insert(
+                        format!("{name}[{index}]"),
+                        match value {
+                            Prop::Int(n) => Value::Int(*n),
+                            Prop::Str(s) => Value::Text(s.clone()),
+                        },
+                    );
+                }
                 let slot = var.slot as usize;
                 let value = match (var.ty, var.len) {
                     (Ty::Int, None) => Value::Int(mem.ints[slot]),
                     (Ty::Real, None) => Value::Real(mem.reals[slot]),
                     (Ty::Str, None) => Value::Text(mem.strs[slot].clone()),
-                    (Ty::Int, Some(n)) => Value::IntArray(mem.ints[slot..slot + n as usize].to_vec()),
-                    (Ty::Real, Some(n)) => Value::RealArray(mem.reals[slot..slot + n as usize].to_vec()),
+                    (Ty::Int, Some(n)) => {
+                        Value::IntArray(mem.ints[slot..slot + n as usize].to_vec())
+                    }
+                    (Ty::Real, Some(n)) => {
+                        Value::RealArray(mem.reals[slot..slot + n as usize].to_vec())
+                    }
                     (Ty::Str, Some(n)) => Value::Array(
                         mem.strs[slot..slot + n as usize]
                             .iter()
@@ -486,6 +561,7 @@ impl Ui {
         );
         Interface {
             performance: self.performance,
+            native_ui: self.native_ui.clone(),
             width: self.width,
             height: self.height,
             title: self.title.clone(),
