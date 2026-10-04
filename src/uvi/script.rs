@@ -505,6 +505,7 @@ struct Voice {
 
 #[derive(Default)]
 struct State {
+    module_sources: Option<Rc<BTreeMap<String, Vec<u8>>>>,
     now: u64,
     sample_rate: u32,
     program_layers: Option<Vec<NodeId>>,
@@ -1215,7 +1216,12 @@ fn resume_task(
     state.borrow_mut().current_root = root;
     state.borrow_mut().current_processor = task.processor;
     state.borrow_mut().current_layer = task.layer;
-    let result = task.thread.resume::<MultiValue>(task.args);
+    let result = task.thread.resume::<MultiValue>(task.args).map_err(|cause| {
+        let state = state.borrow();
+        super::lua_failure::capture(
+            cause, &task.thread, task.processor, state.now, state.module_sources.as_deref(),
+        )
+    });
     state.borrow_mut().current = previous;
     state.borrow_mut().current_root = previous_root;
     state.borrow_mut().current_processor = previous_processor;
@@ -2021,6 +2027,9 @@ impl Runtime {
         } else {
             None
         };
+        if let Some(host) = &object_host {
+            state.borrow_mut().module_sources = Some(host.modules.clone());
+        }
         Ok(Self {
             lua,
             state,

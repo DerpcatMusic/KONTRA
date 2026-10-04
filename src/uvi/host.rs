@@ -162,7 +162,7 @@ pub struct Host {
     pub(crate) objects: Table,
     identities: Rc<RefCell<HashMap<usize, NodeId>>>,
     pub(crate) types: Rc<Vec<String>>,
-    modules: Rc<BTreeMap<String, Vec<u8>>>,
+    pub(crate) modules: Rc<BTreeMap<String, Vec<u8>>>,
     resources: Option<Resources>,
     now: Rc<dyn Fn() -> u64>,
     task_ids: Rc<Cell<u32>>,
@@ -1594,6 +1594,34 @@ impl UserData for AsyncUpdater {
     }
 }
 
+pub(crate) fn resolve_module<'a>(
+    modules: &'a BTreeMap<String, Vec<u8>>,
+    name: &str,
+) -> mlua::Result<&'a [u8]> {
+    Ok(if let Some(source) = modules.get(name) {
+        source.as_slice()
+    } else if name == "uvi.ChordRec" {
+        CHORD_REC.as_bytes()
+    } else {
+        // Embedded processors may omit their resource folder. Resolve only
+        // approved bank names, accepting duplicate aliases of the same bytes.
+        let relative = name.replace(['/', '\\'], ".");
+        let suffix = format!(".{relative}");
+        let mut matches = modules
+            .iter()
+            .filter(|(key, _)| key.as_str() == relative || key.ends_with(&suffix));
+        let (_, source) = matches.next().ok_or_else(|| {
+            mlua::Error::runtime(format!("UVI embedded module {name:?} is not approved"))
+        })?;
+        if matches.any(|(_, candidate)| candidate != source) {
+            return Err(mlua::Error::runtime(format!(
+                "UVI embedded module {name:?} is ambiguous"
+            )));
+        }
+        source.as_slice()
+    })
+}
+
 fn install_modules(
     lua: &Lua,
     modules: Rc<BTreeMap<String, Vec<u8>>>,
@@ -1634,28 +1662,7 @@ fn install_modules(
                 cache.set(name, true)?;
                 return Ok(Value::Boolean(true));
             }
-            let source = if let Some(source) = modules.get(&name) {
-                source.as_slice()
-            } else if name == "uvi.ChordRec" {
-                CHORD_REC.as_bytes()
-            } else {
-                // Embedded processors may omit their resource folder. Resolve only
-                // approved bank names, accepting duplicate aliases of the same bytes.
-                let relative = name.replace(['/', '\\'], ".");
-                let suffix = format!(".{relative}");
-                let mut matches = modules
-                    .iter()
-                    .filter(|(key, _)| key.as_str() == relative || key.ends_with(&suffix));
-                let (_, source) = matches.next().ok_or_else(|| {
-                    mlua::Error::runtime(format!("UVI embedded module {name:?} is not approved"))
-                })?;
-                if matches.any(|(_, candidate)| candidate != source) {
-                    return Err(mlua::Error::runtime(format!(
-                        "UVI embedded module {name:?} is ambiguous"
-                    )));
-                }
-                source.as_slice()
-            };
+            let source = resolve_module(&modules, &name)?;
             if !loading.borrow_mut().insert(name.clone()) {
                 return Err(mlua::Error::runtime(format!(
                     "UVI module load cycle at {name:?}"

@@ -374,6 +374,24 @@ fn filename(path: &str) -> &str {
     path.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
+#[cfg(feature = "uvi")]
+fn local_lua_context(params:&SamplerParams,event:&LogEvent)->Option<Arc<crate::uvi::lua_failure::Context>> {
+    let data=&event.details;
+    let slot=usize::try_from(data["slot"].as_u64()?).ok()?;
+    let epoch=data["epoch"].as_u64()?;let generation=data["generation"].as_u64()?;
+    if epoch!=params.shared.uvi_activation_epoch() {return None;}
+    let view=params.shared.view.lock().ok()?;
+    let part=view.parts.get(slot)?;
+    let context=part.local_lua_failure(std::path::Path::new(event.path.as_deref()?),
+        data["member"].as_str()?,epoch,generation)?;
+    let retained=&data["worker"]["lua_failure"];
+    if retained["processor"].as_u64()!=context.processor.map(|p|p as u64)
+        || retained["frame"].as_u64()!=Some(context.frame)
+        || retained["line"].as_u64()!=context.line.map(u64::from)
+        || retained["chunk"].as_str()!=Some(context.chunk.as_str()) {return None;}
+    Some(context)
+}
+
 fn script_context(data: &serde_json::Value, source_expected: bool) -> String {
     use std::fmt::Write;
     let mut text = String::new();
@@ -1490,6 +1508,9 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
         if raw { state.raw_details ^= true; }
         let full = if state.raw_details { Arc::<str>::from(details(event)) }
             else { state.detail.as_ref().unwrap().1.clone() };
+        #[cfg(feature = "uvi")]
+        let local_context=local_lua_context(params,event);
+
         if copy {
             ui.set_clipboard(full.to_string());
         }
@@ -1523,6 +1544,11 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
             .scroll()
             .id("logs-details"),
         );
+        #[cfg(feature = "uvi")]
+        if let Some(context)=local_context {
+            content.push(col![body(context.display.clone()).text_size(TEXT).w(width.max(100.)).shrink(0)]
+                .pad(INSET).h(180.).shrink(0).scroll().id("logs-local-lua-context"));
+        }
     } else {
         content.push(rule());
         content.push(section_bar("Event details", Vec::new()));
@@ -1556,6 +1582,52 @@ mod tests {
         fn set(&mut self, text: &str) { *super::super::lock(&self.0) = text.to_owned(); }
     }
 
+    #[cfg(feature = "uvi")]
+    #[test]
+    fn local_lua_code_panel_is_activation_bound_and_excluded_from_copy_export() {
+        let params=Arc::new(SamplerParams::new());
+        let epoch=params.shared.uvi_activation_epoch();
+        let source=crate::library::UviSource {bank:"/owned/Authored bank.ufs".into(),bank_uuid:[0;16],member:"Authored.uvip".into()};
+        let context=Arc::new(crate::uvi::lua_failure::Context {processor:Some(2),frame:256,line:Some(3),
+            chunk:"UVI ScriptProcessor node 2".into(),excerpt:Some(json!({"text":">      3 | private_owned_source_marker()"})),
+            unavailable:"",display:"Local Lua source context (excluded from copy and export)\n>      3 | private_owned_source_marker()".into()});
+        let published=Arc::new(crate::plugin::uvi_ui::Published {stamp:crate::uvi::worker::Stamp {epoch,generation:11,frame:0},
+            snapshots:Arc::default(),pictures:Arc::default(),fonts:Arc::default()});
+        let mut part=crate::plugin::PartView::authored_uvi(source.clone(),published);
+        part.uvi_lua_failure=Some(context.clone());
+        params.shared.view.lock().unwrap().parts[0]=part;
+        let event:LogEvent=serde_json::from_value(json!({"schema_version":1,"sequence":1,"timestamp_ms":1000,"monotonic_ms":0,
+            "session_id":"authored-local-code","level":"error","module":"uvi","event":"uvi_worker_failed","code":"uvi_worker_failed",
+            "path":source.bank,"reason":"Authored failure","data":{"slot":0,"epoch":epoch,"generation":11,"member":source.member,
+                "worker":{"lua_failure":context.metadata()}}})).unwrap();
+        assert!(local_lua_context(&params,&event).is_some());
+        for key in ["epoch","generation","member"] {
+            let mut stale=event.clone();stale.details[key]=json!("changed");
+            assert!(local_lua_context(&params,&stale).is_none());
+        }
+        let mut stale=event.clone();stale.path=Some("/owned/Other bank.ufs".into());
+        assert!(local_lua_context(&params,&stale).is_none());
+        for key in ["processor","frame","line","chunk"] {
+            let mut stale=event.clone();stale.details["worker"]["lua_failure"][key]=json!("changed");
+            assert!(local_lua_context(&params,&stale).is_none());
+        }
+        let snapshot=Arc::new(DiagnosticSnapshot {revision:1,events:vec![event],status:diagnostics::LogStatus::default(),build:json!({})});
+        let board=Arc::new(Mutex::new(String::new()));
+        let mut ui=super::super::theme::ui().clipboard(Board(board.clone()));
+        let mut state=State::default();state.snapshot=Some(snapshot.clone());
+        for _ in 0..3 {tick(&mut ui,&mut state,&params,Input::default());}
+        press(&mut ui,&mut state,&params,"log-event-1");
+        assert!(ui.scene().unwrap().surface("logs-local-lua-context").is_some());
+        press(&mut ui,&mut state,&params,"logs-copy");
+        assert!(!board.lock().unwrap().contains("private_owned_source_marker"));
+        press(&mut ui,&mut state,&params,"logs-raw-details");
+        press(&mut ui,&mut state,&params,"logs-copy");
+        assert!(!board.lock().unwrap().contains("private_owned_source_marker"));
+        assert!(!support_text((*snapshot).clone(),params.diagnostic_report()).unwrap().contains("private_owned_source_marker"));
+        params.shared.view.lock().unwrap().parts[0].uvi_lua_failure=None;
+        tick(&mut ui,&mut state,&params,Input::default());
+        assert!(ui.scene().unwrap().surface("logs-local-lua-context").is_none());
+    }
     fn tick(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>, input: Input) {
         let root = draw(ui, state, params).w(900.).h(700.);
         ui.frame(root, Some(Size::new(900., 700.)), input, 1. / 60.)
