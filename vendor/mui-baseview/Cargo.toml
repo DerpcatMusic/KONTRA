@@ -24,7 +24,7 @@ wgpu = { version = "30", default-features = false, features = ["wgsl", "vulkan",
 # already pulls it in there.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
-accesskit_macos = "0.26"
+accesskit_macos = { git = "https://github.com/Matari-Audio/MUI" }
 
 # baseview does not own an X11 selection; arboard keeps one alive.
 [target.'cfg(target_os = "linux")'.dependencies]
