@@ -32,6 +32,97 @@ fn native_problem(status: &str) -> bool {
         | "The current audio configuration is unsupported by UVI playback.")
 }
 
+/// UI presentation only: the machine report and its complete first cause stay intact.
+fn native_worker_is_cause(report: &serde_json::Value) -> bool {
+    matches!(report["terminal_failure"]["endpoint"]["error"].as_str(),
+        None | Some("Bridge(Worker(Failed))" | "Bridge(Worker(Stopped))"))
+}
+
+fn native_failure_cause(report: &serde_json::Value) -> Option<&str> {
+    if !native_worker_is_cause(report) {
+        // Independent callback errors remain primary even if the worker fails later.
+        return report["terminal_failure"]["endpoint"]["error"].as_str();
+    }
+    // The loader has already selected the original canonical cause.
+    report["failure"].as_str()
+        .or_else(|| report["failure"]["reason"].as_str())
+        .or_else(|| report["terminal_failure"]["reason"].as_str())
+        .or_else(|| report["terminal_failure"]["worker"]["failure"].as_str())
+        .or_else(|| report["terminal_failure"]["endpoint"]["error"].as_str())
+}
+
+fn native_failure_notice(report: Option<&serde_json::Value>, status: &str) -> String {
+    let cause = report.and_then(native_failure_cause).unwrap_or(status);
+    // Keep the exact first-line cause bounded here; Info/Logs retain the full text.
+    let cause = if cause == "Bridge(RequestCapacity)" { "Pending request queue filled (RequestCapacity)" } else { cause };
+    let first = cause.lines().next().unwrap_or(cause).trim();
+    let mut short = first.chars().take(112).collect::<String>();
+    if first.chars().count() > 112 { short.push('…'); }
+    format!("{short} · See Info and Logs.")
+}
+
+/// Format captured endpoint and worker fields once, without reprinting the
+/// loader's combined reason/summary paragraph or inferring a performance cause.
+fn native_failure_lines(report: &serde_json::Value) -> Vec<(String, bool)> {
+    let mut lines = Vec::new();
+    let terminal = &report["terminal_failure"];
+    let worker = &terminal["worker"];
+    let endpoint = &terminal["endpoint"];
+    if let Some(cause) = native_failure_cause(report) {
+        lines.push((format!("Cause: {cause}"), true));
+    }
+    if let Some(failure) = worker["failure"].as_str()
+        && Some(failure) != native_failure_cause(report)
+    {
+        lines.push((format!("Additional worker failure: {failure}"), true));
+    }
+    if native_worker_is_cause(report) && worker["failure"].as_str().is_some()
+        && let Some(symptom) = endpoint["error"].as_str()
+    {
+        lines.push((format!("Endpoint symptom: {symptom}"), false));
+    }
+    if let Some(code) = endpoint["error_code"].as_u64() {
+        lines.push((format!("Endpoint error code: {code}"), false));
+    }
+    if let Some(stage) = endpoint["stage"].as_str() {
+        let frame = endpoint["frame"].as_u64().map_or_else(|| "unavailable".into(), |n| n.to_string());
+        lines.push((format!("Endpoint location: {stage} · callback start frame {frame}"), false));
+    } else if let Some(code) = terminal["code"].as_str() {
+        let location = match code {
+            "uvi_worker_configuration_failed" => "Configuring the worker",
+            "uvi_worker_start_failed" => "Starting the worker",
+            "uvi_delay_admission_failed" => "Preparing host audio buffers",
+            "uvi_endpoint_failed" => "Connecting the audio endpoint",
+            "uvi_worker_failed" => "UVI playback worker",
+            "uvi_audio_endpoint_failed" => "Audio endpoint",
+            _ => code,
+        };
+        lines.push((format!("Failure location: {location}"), false));
+    }
+    if let Some(source) = endpoint["source_file"].as_str() {
+        let line = endpoint["line"].as_u64().map_or_else(String::new, |n| format!(":{n}"));
+        lines.push((format!("Endpoint source: {source}{line} · inspect context in Logs"), false));
+    }
+    let lua = &worker["lua_failure"];
+    if let Some(chunk) = lua["chunk"].as_str() {
+        let line = lua["line"].as_u64().map_or_else(String::new, |n| format!(":{n}"));
+        lines.push((format!("Lua source: {chunk}{line} · inspect context in Logs"), false));
+    }
+    if let Some(status) = worker["status"].as_str() {
+        let errors = worker["stats"]["errors"].as_u64().map_or_else(|| "unavailable".into(), |n| n.to_string());
+        lines.push((format!("Worker observation: {status} · {errors} recorded worker errors"), false));
+    }
+    if let Some(packets) = worker["configured_pending_packets"].as_u64() {
+        lines.push((format!("Configured pending packets: {packets}"), false));
+    }
+    for text in [worker["timing"]["summary"].as_str(), worker["timing"]["counter_summary"].as_str(),
+                 worker["timing"]["scope"].as_str(), worker["observation"].as_str(),
+                 worker["callback_counter_scope"].as_str()].into_iter().flatten() {
+        lines.push((text.to_owned(), false));
+    }
+    lines
+}
+
 /// Includes the native loader's terminal states, rather than only Kontakt imports.
 pub(super) fn failed(cx: &Cx, slot: usize) -> bool {
     cx.view.parts.get(slot).is_some_and(|v| {
@@ -97,13 +188,10 @@ pub fn notices(cx: &Cx, slot: usize) -> Option<El> {
     let mut out = Vec::new();
     if cx.selection.parts.get(slot).is_some_and(|p| p.uvi.is_some()) {
         if !v.loading && native_problem(&v.status) {
-            let reason = v.load_report.as_ref().and_then(|report| report["failure"].as_str())
-                .map(|reason| reason.chars().take(240).collect::<String>());
-            let message = reason.map_or_else(|| v.status.clone(), |reason|
-                format!("{} {reason} See Info for failure details.",v.status));
-            out.push(banner(Role::Danger, message));
+            out.push(banner(Role::Danger, native_failure_notice(v.load_report.as_deref(), &v.status))
+                .w(Len::Pct(100.)).min_w(0));
         }
-        return (!out.is_empty()).then(|| col(out).gap(TIGHT).pad((INSET, SPACE)).shrink(0));
+        return (!out.is_empty()).then(|| col(out).gap(TIGHT).pad((INSET, SPACE)).w(Len::Pct(100.)).min_w(0).shrink(0));
     }
     if v.status == "Loading snapshot…" {
         out.push(banner(Role::Ink, v.status.clone()));
@@ -429,7 +517,7 @@ fn native_stage_name(phase: &str) -> &str {
 /// Formats only the worker's bounded scalar snapshot; never asks Lua or copies
 /// the graph. Initial resource totals deliberately exclude authored later loads.
 #[cfg(feature = "uvi")]
-fn native_activity_lines(activity: &crate::uvi::worker::WorkerLoadActivity) -> Vec<(String, bool)> {
+fn native_activity_lines(activity: &crate::uvi::worker::WorkerLoadActivity, include_failure: bool) -> Vec<(String, bool)> {
     use crate::uvi::worker::Status;
     let mut lines = Vec::new();
     let completed = activity.stages.iter().filter(|stage| stage.outcome == "finished").count();
@@ -479,7 +567,7 @@ fn native_activity_lines(activity: &crate::uvi::worker::WorkerLoadActivity) -> V
         lines.push((format!("{outcome} · {} · {:.0} ms", native_stage_name(stage.phase),
             stage.elapsed.as_secs_f64() * 1000.), stage.outcome == "failed"));
     }
-    if let Some(reason) = &activity.failure {
+    if include_failure && let Some(reason) = &activity.failure {
         lines.push((format!("Worker error during {} at frame {}: {reason}",
             native_stage_name(activity.phase), activity.frame), true));
     }
@@ -519,37 +607,22 @@ pub fn info(ui: &mut Ui, cx: &mut Cx) -> El {
             body(status).lines(3).id("native-instrument-status"),
             caption("Playback and controls follow this UVI program. Mapping inspects its initial sample zones without editing; Sound editing is unavailable. Use the instrument’s Rack controls to change its sound.")
                 .fill(secondary()).lines(4)];
+        let reported_failure = v.load_report.as_deref().and_then(native_failure_cause);
+        let reported_worker_failure = v.load_report.as_ref()
+            .and_then(|report| report["terminal_failure"]["worker"]["failure"].as_str());
         if let Some(report) = &v.load_report {
-            if let Some(reason) = report["failure"].as_str().or_else(|| report["failure"]["reason"].as_str()) {
-                rows.push(body(reason).fill(Role::Warning).lines(8).id("uvi-load-failure"));
-            }
-            let worker = &report["terminal_failure"]["worker"];
-            for text in [worker["timing"]["summary"].as_str(), worker["timing"]["counter_summary"].as_str(),
-                         worker["observation"].as_str(), worker["timing"]["scope"].as_str(), worker["callback_counter_scope"].as_str()]
-                .into_iter().flatten() {
-                rows.push(caption(text.to_owned()).fill(secondary()).lines(6).shrink(0));
-            }
-            let endpoint = &report["terminal_failure"]["endpoint"];
-            if let Some(stage) = endpoint["stage"].as_str() {
-                rows.push(caption(format!("Audio endpoint: {stage} · frame {}", endpoint["frame"].as_u64().unwrap_or(0)))
-                    .fill(secondary()).lines(3));
-            } else if let Some(code) = report["terminal_failure"]["code"].as_str() {
-                let location = match code {
-                    "uvi_worker_configuration_failed" => "Configuring the worker",
-                    "uvi_worker_start_failed" => "Starting the worker",
-                    "uvi_delay_admission_failed" => "Preparing host audio buffers",
-                    "uvi_endpoint_failed" => "Connecting the audio endpoint",
-                    "uvi_worker_failed" => "UVI playback worker",
-                    "uvi_audio_endpoint_failed" => "Audio endpoint",
-                    _ => code,
-                };
-                rows.push(caption(format!("Failure location: {location}")).fill(secondary()).lines(3));
+            let details = native_failure_lines(report);
+            if !details.is_empty() { rows.push(section("Failure details")); }
+            for (index, (text, warning)) in details.into_iter().enumerate() {
+                rows.push(body(text).text_size(TEXT).fill(if warning { Role::Warning.into() } else { secondary() })
+                    .lines(8).shrink(0).id(format!("uvi-failure-detail-{index}")));
             }
         }
         #[cfg(feature = "uvi")]
         if let Some(activity) = &v.uvi_activity {
             rows.push(section("Loading details"));
-            for (index, (line, warning)) in native_activity_lines(activity).into_iter().enumerate() {
+            for (index, (line, warning)) in native_activity_lines(activity, activity.failure.as_deref() != reported_failure
+                && activity.failure.as_deref() != reported_worker_failure).into_iter().enumerate() {
                 rows.push(body(line).text_size(TEXT).fill(if warning { Role::Warning.into() } else { secondary() })
                     .lines(6).shrink(0).id(format!("uvi-load-detail-{index}")));
             }
@@ -671,4 +744,73 @@ mod native_status_tests {
             assert_eq!(native_wait(false,status),"UVI support is disabled in this version.");
         }
     }
+    #[test]
+    fn capacity_banner_uses_exact_endpoint_cause_and_info_shows_timing_once() {
+        let report = serde_json::json!({"failure":"Bridge(RequestCapacity). combined long timing text",
+            "terminal_failure":{"endpoint":{"error":"Bridge(RequestCapacity)","error_code":36,"stage":"process","frame":8192,"source_file":"src/plugin/uvi.rs","line":42},
+                "worker":{"status":"ready","failure":null,"configured_pending_packets":27,"stats":{"errors":0},
+                    "timing":{"summary":"Recorded render wall time: mean 6.40 ms · budget 5.33 ms", "counter_summary":"72 over-budget attempts", "scope":"CPU time is not measured."}}}});
+        let before = report.clone();
+        assert_eq!(native_failure_notice(Some(&report), "failed"), "Pending request queue filled (RequestCapacity) · See Info and Logs.");
+        let lines = native_failure_lines(&report);
+        assert_eq!(lines.iter().filter(|(s,_)| s.contains("mean 6.40 ms")).count(),1);
+        assert!(!lines.iter().any(|(s,_)| s.contains("combined long timing text")));
+        assert!(lines.iter().any(|(s,_)| s=="Endpoint error code: 36"));
+        assert!(lines.iter().any(|(s,_)| s.contains("process · callback start frame 8192")));
+        assert!(lines.iter().any(|(s,_)| s.contains("src/plugin/uvi.rs:42")));
+        assert!(lines.iter().any(|(s,_)| s=="CPU time is not measured."));
+        assert_eq!(report,before);
+    }
+
+    #[test]
+    fn canonical_worker_cause_outranks_worker_failed_symptom_and_preserves_lua_location() {
+        let report = serde_json::json!({"failure":"Authored callback failed",
+            "terminal_failure":{"worker":{"failure":"Authored callback failed","lua_failure":{"chunk":"authored fixture","line":7}},
+                "endpoint":{"error":"Bridge(Worker(Failed))","stage":"feed"}}});
+        assert_eq!(native_failure_cause(&report),Some("Authored callback failed"));
+        let lines = native_failure_lines(&report);
+        assert_eq!(lines.iter().filter(|(s,_)|s.contains("Authored callback failed")).count(),1);
+        assert!(lines.iter().any(|(s,_)|s=="Endpoint symptom: Bridge(Worker(Failed))"));
+        assert!(lines.iter().any(|(s,_)|s.contains("authored fixture:7")));
+        assert!(lines.iter().any(|(s,_)|s.contains("frame unavailable")));
+        assert!(!lines.iter().any(|(s,_)|s.contains("0 recorded worker errors")));
+    }
+
+    #[test]
+    fn non_endpoint_failure_keeps_complete_info_cause_and_bounds_only_banner() {
+        let reason = "authored parse failure ".repeat(12);
+        let report = serde_json::json!({"failure":{"reason":reason}});
+        let notice = native_failure_notice(Some(&report),"failed");
+        assert!(notice.chars().count()<=138);
+        assert!(notice.contains('…'));
+        assert_eq!(native_failure_lines(&report), vec![(format!("Cause: {reason}"),true)]);
+        assert_eq!(native_failure_notice(None,"UVI load failed"),"UVI load failed · See Info and Logs.");
+    }
+
+    #[test]
+    fn independent_endpoint_error_preserves_primary_cause_and_later_worker_evidence() {
+        for error in ["InvalidInput", "Bridge(RequestCapacity)"] {
+            let report = serde_json::json!({"failure":format!("{error} at process (frame 1024)"),
+                "terminal_failure":{"endpoint":{"error":error,"stage":"process","frame":1024},
+                    "worker":{"failure":"Later worker failure","status":"failed"}}});
+            let before = report.clone();
+            assert_eq!(native_failure_cause(&report),Some(error));
+            assert!(!native_failure_notice(Some(&report),"failed").contains("Later worker failure"));
+            let lines = native_failure_lines(&report);
+            assert!(lines.iter().any(|(s,_)|s==&format!("Cause: {error}")));
+            assert_eq!(lines.iter().filter(|(s,_)|s.contains("Later worker failure")).count(),1);
+            assert!(lines.iter().any(|(s,_)|s=="Additional worker failure: Later worker failure"));
+            assert!(!lines.iter().any(|(s,_)|s.starts_with("Endpoint symptom:")));
+            assert_eq!(report,before);
+        }
+    }
+
+    #[test]
+    fn endpoint_absent_keeps_canonical_report_cause() {
+        let report = serde_json::json!({"failure":"Original static failure",
+            "terminal_failure":{"worker":{"failure":"Additional captured failure"}}});
+        assert_eq!(native_failure_cause(&report),Some("Original static failure"));
+        assert!(native_failure_lines(&report).iter().any(|(s,_)|s.contains("Additional captured failure")));
+    }
+
 }
