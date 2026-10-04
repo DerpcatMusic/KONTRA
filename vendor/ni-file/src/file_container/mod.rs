@@ -23,21 +23,21 @@ impl NIFileContainer {
         // NI FC MTD
         // Native Instruments FileContainer MetaData
         let mtd_magic = reader.read_bytes(16)?;
-        debug_assert_eq!(
-            mtd_magic, FC_MTD_MARKER_START,
-            "Monolith header tag not found."
-        );
+        if mtd_magic != FC_MTD_MARKER_START {
+            return Err(Error::Static("Monolith header tag not found."));
+        }
 
         let _header_chunk = reader.read_bytes(256)?;
         let file_count = reader.read_u64_le()?;
-        let total_size = reader.read_u64_le()?;
-        dbg!(total_size);
+        let _total_size = reader.read_u64_le()?;
 
         // NI FC TOC
         // Native Instruments FileContainer Table Of Contents
         // Table 1
         let mtd_magic = reader.read_bytes(16)?;
-        debug_assert_eq!(mtd_magic, b"/\\ NI FC TOC  /\\");
+        if mtd_magic != b"/\\ NI FC TOC  /\\" {
+            return Err(Error::Static("FileContainer first table marker not found"));
+        }
 
         let _header_chunk = reader.read_bytes(600)?;
 
@@ -68,7 +68,9 @@ impl NIFileContainer {
         }
 
         let end_marker = reader.read_u64_le()?;
-        assert_eq!(end_marker, FC_TOC_MARKER_END);
+        if end_marker != FC_TOC_MARKER_END {
+            return Err(Error::Static("FileContainer table end marker not found"));
+        }
 
         let _pad = reader.read_bytes(16)?;
 
@@ -76,7 +78,9 @@ impl NIFileContainer {
         // Native Instruments FileContainer Table Of Contents
         // Table 2
         let mtd_magic = reader.read_bytes(16)?;
-        debug_assert_eq!(mtd_magic, b"/\\ NI FC TOC  /\\");
+        if mtd_magic != b"/\\ NI FC TOC  /\\" {
+            return Err(Error::Static("FileContainer second table marker not found"));
+        }
 
         let _header_chunk = reader.read_bytes(592)?;
 
@@ -149,6 +153,51 @@ mod tests {
         assert_eq!(container.items.iter().map(|item| item.file_size).collect::<Vec<_>>(),
             [0, 0, 8, 0, 4]);
         assert!(container.items.iter().all(|item| item.filename == "authored.ncw"));
+    }
+
+    #[test]
+    fn altered_container_markers_return_errors_at_the_marker_boundary() {
+        let (bytes, records_end, _) = authored_container(&[4]);
+        let markers = [
+            (0, 16, "Monolith header tag not found."),
+            (16 + 256 + 8 + 8, 16, "FileContainer first table marker not found"),
+            (records_end as usize, 8, "FileContainer table end marker not found"),
+            (records_end as usize + 8 + 16, 16, "FileContainer second table marker not found"),
+        ];
+        for (start, len, expected) in markers {
+            for byte in start..start + len {
+                let mut altered = bytes.clone();
+                altered[byte] ^= 1;
+                let mut reader = std::io::Cursor::new(altered);
+                assert!(matches!(NIFileContainer::read(&mut reader),
+                    Err(Error::Static(message)) if message == expected));
+                assert_eq!(reader.position(), (start + len) as u64);
+            }
+        }
+    }
+
+    #[test]
+    fn truncated_container_markers_preserve_read_errors() {
+        let (bytes, records_end, _) = authored_container(&[4]);
+        for (start, len) in [
+            (0, 16),
+            (16 + 256 + 8 + 8, 16),
+            (records_end as usize, 8),
+            (records_end as usize + 8 + 16, 16),
+        ] {
+            let mut reader = std::io::Cursor::new(bytes[..start + len - 1].to_vec());
+            let error = NIFileContainer::read(&mut reader).err().unwrap();
+            if len == 8 {
+                assert!(matches!(error, Error::IO(error)
+                    if error.kind() == std::io::ErrorKind::UnexpectedEof));
+                assert_eq!(reader.position(), (start + len - 1) as u64);
+            } else {
+                assert!(matches!(error,
+                    Error::ReadBytesError(crate::read_bytes::ReadBytesError::Generic(message))
+                    if message == format!("Read at offset {start}: declared {len} bytes, available {} bytes", len - 1)));
+                assert_eq!(reader.position(), start as u64);
+            }
+        }
     }
 
     #[test]
