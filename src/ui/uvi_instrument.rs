@@ -175,8 +175,9 @@ fn unit_text(value: f64, integer: bool, unit: Option<f64>) -> String {
         Some(9.) => (value, "dB"),
         Some(11.) if value <= 0. => return "-inf dB".into(),
         Some(11.) => (20. * value.log10(), "dB"),
+        Some(12.) if value == 0. => return "Center".into(),
         Some(14.) => (value, "st"),
-        // Pan's native text law and UVI filter formatting need calibration.
+        // Nonzero Pan rounding and UVI filter formatting need calibration.
         _ => return number_text(value, integer),
     };
     format!("{} {suffix}", number_text(value + 0., false))
@@ -1664,6 +1665,45 @@ mod tests {
         assert!(edits.iter().any(|(_, input)| matches!(input.value,
             UiEditValue::Number(value) if (value - 0.385).abs() < 1e-12)));
         assert!(matches!(snapshot.widgets[1].value, Some(UiValue::Number(0.375))));
+    }
+
+    #[test]
+    fn native_pan_center_preserves_raw_domain_and_authored_override() {
+        for zero in [0., -0.] {
+            assert_eq!(unit_text(zero, false, Some(12.)), "Center");
+        }
+        assert_eq!(unit_text(0., false, None), "0");
+        assert_eq!(unit_text(0., false, Some(1.)), "0 %");
+        assert_eq!(unit_text(0., false, Some(12.1)), "0");
+        assert_eq!(unit_text(0., true, Some(12.)), "Center");
+        for value in [-1., -0.375, -0.0001, 0.0001, 0.375, 1.] {
+            assert_eq!(unit_text(value, false, Some(12.)), number_text(value, false));
+        }
+        let mut snapshot = authored();
+        let widget = &mut snapshot.widgets[1];
+        widget.kind = UiKind::Slider;
+        widget.min = Some(-1.);
+        widget.max = Some(1.);
+        widget.value = Some(UiValue::Number(0.));
+        widget.style.unit = Some(12.);
+        assert_eq!(value_text(widget, 0.), "Center");
+        widget.style.display_text = Some("Authored pan readout".into());
+        assert_eq!(value_text(widget, 0.), "Authored pan readout");
+        widget.style.display_text = None;
+        let current = stamp(4);
+        let mut ui = super::super::theme::ui();
+        let mut state = State::default();
+        let mut edits = Vec::new();
+        tick(&mut ui, &mut state, &snapshot, current, current, Input::default(), &mut edits);
+        ui.focus(identity(0, current, &snapshot, 2));
+        tick(&mut ui, &mut state, &snapshot, current, current, Input {
+            keys: vec![KeyPress { key: Key::Up, mods: Mods::default() }],
+            ..Input::default()
+        }, &mut edits);
+        tick(&mut ui, &mut state, &snapshot, current, current, Input::default(), &mut edits);
+        assert!(edits.iter().any(|(_, input)| matches!(input.value,
+            UiEditValue::Number(value) if (value - 0.02).abs() < 1e-12)));
+        assert!(matches!(snapshot.widgets[1].value, Some(UiValue::Number(0.))));
     }
 
     #[test]
