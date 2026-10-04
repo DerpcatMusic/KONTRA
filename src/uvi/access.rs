@@ -400,9 +400,28 @@ pub(crate) fn reader_path(configured: Option<&Path>) -> Result<PathBuf> {
     )
 }
 
+/// JSON type errors can echo private field values; journal only their category.
+pub(crate) fn failure_reason(error: &anyhow::Error) -> String {
+    if error.chain().any(|cause| cause.is::<serde_json::Error>()) {
+        "Invalid private UVI access record".into()
+    } else {
+        error.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn access_failure_reason_does_not_echo_private_json_values() {
+        let error = serde_json::from_slice::<ContentState>(br#"{"key":"private-value-marker"}"#)
+            .err().unwrap();
+        let error = anyhow::Error::new(error).context("Invalid local content-state file");
+        assert_eq!(failure_reason(&error), "Invalid private UVI access record");
+        let error = anyhow::anyhow!("Content-state file must be private (chmod 600)");
+        assert_eq!(failure_reason(&error), error.to_string());
+    }
 
     fn authored_png() -> Vec<u8> {
         let mut png = b"\x89PNG\r\n\x1a\n".to_vec();

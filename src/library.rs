@@ -658,7 +658,7 @@ impl UviCatalog {
                 .map_err(|error| {
                     crate::diagnostics::event(crate::diagnostics::LogLevel::Error, "uvi", "uvi_local_access_failed",
                         serde_json::json!({"path":source.bank, "member":source.member,
-                            "stage":"local_access", "reason":format!("{error:#}")}));
+                            "stage":"local_access", "reason":crate::uvi::access::failure_reason(&error)}));
                     "This UVI bank could not be prepared automatically. Open Logs for the cause."
                 })?
         } else { None };
