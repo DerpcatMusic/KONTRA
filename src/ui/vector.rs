@@ -163,12 +163,15 @@ pub(super) fn native_control(s: &Shown, c: &Control) -> bool {
         Kind::Knob => true,
         Kind::Slider => {
             // Exclude compact value strips as well as long, skinny tracks.
-            let broad = s.picture.is_some() && !knob_like(prop(c, "$CONTROL_PAR_PICTURE"), s.w, s.h)
+            let broad = s.picture_metadata().is_some() && !knob_like(prop(c, "$CONTROL_PAR_PICTURE"), s.w, s.h)
                 && s.w.min(s.h) >= 3. * FONT && s.w.max(s.h) < 3. * s.w.min(s.h);
             let vertical = drags_vertically(s.kind, s.w, s.h, prop(c, "$CONTROL_PAR_PICTURE"),
                 int(c, "$CONTROL_PAR_MOUSE_BEHAVIOUR").unwrap_or(0));
             !(broad && vertical != (s.h > s.w))
         }
+        Kind::Switch | Kind::Button => !prop(c, "$CONTROL_PAR_TEXT").trim().is_empty()
+            || s.picture_metadata().is_none_or(|p| p.clear),
+        Kind::Menu | Kind::Value | Kind::TextEdit | Kind::FileSelector | Kind::Meter => true,
         _ => false,
     }
 }
@@ -180,7 +183,7 @@ pub fn plan(interface: &Interface, _pictures: &HashMap<String, Arc<Picture>>, dr
     let (vw, vh) = (f64::from(interface.width), f64::from(interface.height));
     let view = vw * vh;
     let names = names(interface, drawn);
-    let clear: Vec<bool> = drawn.iter().map(|(s, _)| s.picture.as_ref().is_some_and(|p| assets.clear(p))).collect();
+    let clear: Vec<bool> = drawn.iter().map(|(s, _)| s.picture_metadata.map_or_else(|| s.picture.as_ref().is_some_and(|p| assets.clear(p)), |p| p.clear)).collect();
     // Structural skin pairing: an otherwise empty animated label can draw
     // the face of a transparent control occupying the same rectangle. Hide
     // only a uniquely matched control. Coincident animated layers form one
@@ -193,7 +196,7 @@ pub fn plan(interface: &Interface, _pictures: &HashMap<String, Arc<Picture>>, dr
     for (n, (label, _)) in drawn.iter().enumerate() {
         let c = &interface.controls[label.control];
         if label.kind != Kind::Label || !prop(c, "$CONTROL_PAR_TEXT").trim().is_empty()
-            || !label.picture.as_ref().is_some_and(|p| p.frames.len() > 1 && p.stretch == [false; 2])
+            || !label.picture_metadata().is_some_and(|p| p.frames > 1 && p.stretch == [false; 2])
         { continue; }
         for &m in &controls {
             let control = &drawn[m].0;
@@ -211,7 +214,7 @@ pub fn plan(interface: &Interface, _pictures: &HashMap<String, Arc<Picture>>, dr
         let c = &interface.controls[face.control];
         let target = &interface.controls[drawn[control].0.control];
         let at = frame(value(target), f64::from(int(target, "$CONTROL_PAR_MIN_VALUE").unwrap_or(0)),
-            f64::from(int(target, "$CONTROL_PAR_MAX_VALUE").unwrap_or(1_000_000)), face.picture.as_ref().unwrap().frames.len());
+            f64::from(int(target, "$CONTROL_PAR_MAX_VALUE").unwrap_or(1_000_000)), face.picture_metadata().unwrap().frames);
         let phase = int(c, "$CONTROL_PAR_PICTURE_STATE").and_then(|v| usize::try_from(v).ok());
         // Integer KSP arithmetic may truncate where native sprites round.
         paired[label] = phase.is_some_and(|p| p == at || p.checked_add(1) == Some(at))
@@ -219,7 +222,7 @@ pub fn plan(interface: &Interface, _pictures: &HashMap<String, Arc<Picture>>, dr
             let sibling = &drawn[other].0;
             counts[other] == 1
                 && inside(face, sibling) >= 0.9 * (face.w * face.h).max(sibling.w * sibling.h)
-                && face.picture.as_ref().map(|p| p.frames.len()) == sibling.picture.as_ref().map(|p| p.frames.len())
+                && face.picture_metadata().map(|p| p.frames) == sibling.picture_metadata().map(|p| p.frames)
                 && int(c, "$CONTROL_PAR_PICTURE_STATE") == int(&interface.controls[sibling.control], "$CONTROL_PAR_PICTURE_STATE")
         });
     }
@@ -272,7 +275,7 @@ pub fn plan(interface: &Interface, _pictures: &HashMap<String, Arc<Picture>>, dr
         let face = faces[n];
         // Retained labels contribute text occlusion, but the renderer consumes
         // no Vectorized words for the other Original controls.
-        if !matches!(s.kind, Kind::Knob | Kind::Slider | Kind::Label) {
+        if s.kind != Kind::Label && !native_control(s, c) {
             out.push(Plan { face, words: Vec::new(), skin: false });
             continue;
         }
@@ -337,6 +340,9 @@ pub fn plan(interface: &Interface, _pictures: &HashMap<String, Arc<Picture>>, dr
                 if let Some(name) = names.get(&s.control) {
                     push(&mut words, name, (0., s.w + 4.), s.h, FONT * 1.4, 1);
                 }
+            }
+            (Kind::Switch | Kind::Button | Kind::Menu | Kind::Value | Kind::TextEdit | Kind::FileSelector, _) => {
+                push(&mut words, &said, spot(&said, align), top.unwrap_or(0.), s.h, align);
             }
             _ => {}
         }

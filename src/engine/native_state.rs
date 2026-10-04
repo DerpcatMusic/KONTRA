@@ -39,8 +39,12 @@ fn key(address: Address) -> Address {
             bipolar: false,
             cubic: None,
         },
-        Address::PitchLfoIntensity { group, slot, target, .. } =>
-            Address::PitchLfoIntensity { group, slot, target, bipolar: false },
+        Address::PitchSourceIntensity { group, slot, target, .. } =>
+            Address::PitchSourceIntensity { group, slot, target, bipolar: false },
+        // A signed volume write changes both magnitude and polarity; an
+        // unsigned write changes only magnitude. Retain both ordered writers
+        // so restoring a later unsigned edit cannot discard the saved sign.
+        Address::VolumeSourceIntensity { .. } => address,
         _ => address,
     }
 }
@@ -118,8 +122,17 @@ impl NativeState {
             return;
         }
         if let Some(&i) = self.index.get(&key(address)) {
+            // Repeating one representation after the other writer is a real
+            // ordered edit: the signed writer also replaced the magnitude.
+            let reordered = match address {
+                Address::VolumeSourceIntensity { group, slot, target, bipolar } => {
+                    let other = Address::VolumeSourceIntensity { group, slot, target, bipolar: !bipolar };
+                    self.index.get(&other).is_some_and(|&other| self.records[other].order > self.records[i].order)
+                }
+                _ => false,
+            };
             let record = &mut self.records[i];
-            if record.current == current
+            if !reordered && record.current == current
                 && (record.order == 0 || (record.par == par && record.value == value))
             {
                 return;

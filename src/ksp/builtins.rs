@@ -145,6 +145,7 @@ builtins! {
     GetEventIds "get_event_ids" [A] 0 Void;
     IgnoreController "ignore_controller" [] 0 Void;
     SetController "set_controller" [I I] 0 Void;
+    SetPolyAt "set_poly_at" [I I] 0 Void;
     SetNoteController "set_note_controller" [I I I] 0 Void;
     SetRpn "set_rpn" [I I] 0 Void;
     SetNrpn "set_nrpn" [I I] 0 Void;
@@ -224,6 +225,8 @@ builtins! {
     SetUiWidthPx "set_ui_width_px" [I] 0 Void;
     SetScriptTitle "set_script_title" [S] 0 Void;
     MakePerfview "make_perfview" [] 0 Void;
+    ExposeControls "expose_controls" [] 0 Void;
+    LoadNativeUi "load_native_ui" [S] 0 Void;
     SetSnapshotType "set_snapshot_type" [I] 0 Void;
     ShowLibraryTab "show_library_tab" [] 0 Void;
     SetUiWfProperty "set_ui_wf_property" [V I I I] 0 Void;
@@ -305,7 +308,8 @@ pub enum SysVar {
     Tempo,
     CurrentScriptSlot,
     UiId,
-    PlayedVoices,
+    PlayedVoicesInst,
+    PlayedVoicesTotal,
     DistanceBarStart,
     Date(u8),
     Time(u8),
@@ -348,7 +352,8 @@ pub fn sys_var(name: &str) -> Option<SysVar> {
         "$NI_BPM" | "$NI_TEMPO" => Tempo,
         "$CURRENT_SCRIPT_SLOT" => CurrentScriptSlot,
         "$NI_UI_ID" => UiId,
-        "$PLAYED_VOICES_TOTAL" | "$PLAYED_VOICES_INST" => PlayedVoices,
+        "$PLAYED_VOICES_INST" => PlayedVoicesInst,
+        "$PLAYED_VOICES_TOTAL" => PlayedVoicesTotal,
         "$DISTANCE_BAR_START" => DistanceBarStart,
         "$NI_DATE_YEAR" => Date(0),
         "$NI_DATE_MONTH" => Date(1),
@@ -371,6 +376,8 @@ pub enum SysArray {
     GroupsSelected,
     /// Held keys per pitch class, C first.
     KeyDownOct,
+    /// Per-key elapsed microseconds, frozen at the first release.
+    NoteDuration,
 }
 
 impl SysArray {
@@ -382,6 +389,7 @@ impl SysArray {
             "%POLY_AT" => Self::PolyAt,
             "%GROUPS_SELECTED" => Self::GroupsSelected,
             "%KEY_DOWN_OCT" => Self::KeyDownOct,
+            "%NOTE_DURATION" => Self::NoteDuration,
             _ => return None,
         })
     }
@@ -389,7 +397,7 @@ impl SysArray {
     pub fn len(self, groups: usize) -> u32 {
         match self {
             Self::GroupsSelected => groups.clamp(1, 4096) as u32,
-            Self::KeyDown | Self::PolyAt => 128,
+            Self::KeyDown | Self::PolyAt | Self::NoteDuration => 128,
             Self::Cc | Self::CcTouched => CC_SLOTS as u32,
             Self::KeyDownOct => 12,
         }
@@ -435,18 +443,19 @@ pub mod event_par {
     pub const PAR_0: i32 = 0;
     pub const PAR_3: i32 = 3;
     pub const VOLUME: i32 = 4;
-    pub const TUNE: i32 = 5;
-    pub const PAN: i32 = 6;
+    pub const PAN: i32 = 5;
+    pub const TUNE: i32 = 6;
     pub const NOTE: i32 = 7;
-    pub const VELOCITY: i32 = 8;
-    pub const ALLOW_GROUP: i32 = 9;
-    pub const ZONE_ID: i32 = 10;
-    pub const SOURCE: i32 = 11;
-    pub const PLAY_POS: i32 = 12;
-    pub const MIDI_CHANNEL: i32 = 13;
-    pub const MOD_VALUE_ID: i32 = 14;
-    pub const REL_VELOCITY: i32 = 15;
-    pub const CUSTOM: i32 = 16;
+    pub const SOURCE: i32 = 8;
+    pub const VELOCITY: i32 = 9;
+    pub const ALLOW_GROUP: i32 = 10;
+    pub const MIDI_CHANNEL: i32 = 11;
+    pub const REL_VELOCITY: i32 = 27;
+    pub const CUSTOM: i32 = 28;
+    pub const MOD_VALUE_ID: i32 = 30;
+    pub const MOD_VALUE_EX_ID: i32 = 34;
+    pub const PLAY_POS: i32 = 1026;
+    pub const ZONE_ID: i32 = 1027;
 }
 
 pub mod cb {
@@ -651,6 +660,7 @@ pub fn constant(name: &str) -> Option<i32> {
         "$EVENT_PAR_PLAY_POS" => event_par::PLAY_POS,
         "$EVENT_PAR_MIDI_CHANNEL" => event_par::MIDI_CHANNEL,
         "$EVENT_PAR_MOD_VALUE_ID" => event_par::MOD_VALUE_ID,
+        "$EVENT_PAR_MOD_VALUE_EX_ID" => event_par::MOD_VALUE_EX_ID,
         "$EVENT_PAR_REL_VELOCITY" => event_par::REL_VELOCITY,
         "$EVENT_PAR_CUSTOM" => event_par::CUSTOM,
         "$EVENT_STATUS_INACTIVE" => 0,

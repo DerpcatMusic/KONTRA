@@ -27,6 +27,13 @@ use std::sync::Arc;
 struct Head<'a> {
     dependencies: Cow<'a, [Dependency]>,
     name: Cow<'a, str>,
+    program: crate::import::ProgramControls,
+    sampling_profile: crate::import::SamplingProfile,
+    #[serde(default)]
+    native_program_private: Option<Cow<'a, ni_file::kontakt::objects::ProgramDataPrivateParams>>,
+    #[serde(default)]
+    default_key_switch: Option<i16>,
+    transpose: i8,
     groups: Cow<'a, [Group]>,
     warnings: Cow<'a, [String]>,
     scripts: Cow<'a, [String]>,
@@ -124,7 +131,8 @@ fn entry(dir: &Path, path: &Path, program: u32) -> PathBuf {
 fn stamp(path: &Path, program: u32) -> Option<Vec<u8>> {
     let meta = path.metadata().ok()?;
     let mtime = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
-    let mut out = b"KONTRA instrument ".to_vec();
+    // Reimport older NI caches: their source profile was inferred from MIDI.
+    let mut out = b"KONTRA instrument sampling-profile 1 ".to_vec();
     out.extend_from_slice(env!("KONTRA_IMPORT_HASH").as_bytes());
     out.extend_from_slice(&program.to_le_bytes());
     out.extend_from_slice(&meta.len().to_le_bytes());
@@ -139,6 +147,11 @@ fn encode(i: &Instrument, out: &mut Vec<u8>) -> serde_json::Result<()> {
     let head = serde_json::to_vec(&Head {
         dependencies: Cow::Borrowed(&i.dependencies),
         name: Cow::Borrowed(&i.name),
+        program: i.program,
+        sampling_profile: i.sampling_profile,
+        native_program_private: i.native_program_private.as_ref().map(Cow::Borrowed),
+        default_key_switch: i.default_key_switch,
+        transpose: i.transpose,
         groups: Cow::Borrowed(&i.groups),
         warnings: Cow::Borrowed(&i.warnings),
         scripts: Cow::Borrowed(&i.scripts),
@@ -197,6 +210,14 @@ fn encode(i: &Instrument, out: &mut Vec<u8>) -> serde_json::Result<()> {
                 w.u64(l.end as u64);
                 w.u64(l.crossfade as u64);
             }
+        }
+        w.u64(z.native_loops.len() as u64);
+        for l in &z.native_loops {
+            w.0.push(l.slot);
+            for v in [l.mode, l.start, l.length, l.count] { w.u32(v as u32); }
+            w.0.push(l.alternating as u8);
+            w.u32(l.tuning.to_bits());
+            w.u32(l.crossfade as u32);
         }
     }
 
@@ -278,12 +299,24 @@ fn decode(bytes: &[u8], path: &Path) -> Option<Instrument> {
                     }),
                     _ => return None,
                 },
+                native_loops: {
+                    let n = r.len(26)?;
+                    if n > 8 { return None; }
+                    (0..n).map(|_| Some(crate::import::NativeLoop {
+                        slot:r.array::<1>()?[0],
+                        mode:r.u32()? as i32, start:r.u32()? as i32, length:r.u32()? as i32,
+                        count:r.u32()? as i32, alternating:r.array::<1>()?[0] != 0,
+                        tuning:f32::from_bits(r.u32()?), crossfade:r.u32()? as i32,
+                    })).collect::<Option<Vec<_>>>()?
+                },
             })
         })
         .collect::<Option<Vec<_>>>()?;
     if zones.iter().any(|z| z.group >= head.groups.len()) {
         return None;
     }
+    if zones.iter().any(|z| z.native_loops.iter().any(|l| l.slot >= 8)
+        || z.native_loops.windows(2).any(|w| w[0].slot >= w[1].slot)) { return None; }
 
     let impulses = (0..r.len(12)?)
         .map(|_| {
@@ -315,6 +348,11 @@ fn decode(bytes: &[u8], path: &Path) -> Option<Instrument> {
         dependencies: head.dependencies.into_owned(),
         path: path.into(),
         name: head.name.into_owned(),
+        program: head.program,
+        sampling_profile: head.sampling_profile,
+        native_program_private: head.native_program_private.map(Cow::into_owned),
+        default_key_switch: head.default_key_switch,
+        transpose: head.transpose,
         groups: head.groups.into_owned(),
         zones,
         warnings: head.warnings.into_owned(),
@@ -518,6 +556,12 @@ mod tests {
         let instrument = Instrument {
             path: path.clone(),
             name: "A".into(),
+            program: crate::import::ProgramControls { gain: 0.0, pan: -0.75, tune: 7.0 },
+            native_program_private: Some(ni_file::kontakt::objects::ProgramDataPrivateParams {
+                version: 0x80, data: [2u32.to_le_bytes().as_slice(), &[0, 0],
+                    12i32.to_le_bytes().as_slice(), &[0xA5, 0, 0xFF]].concat() }),
+            default_key_switch: Some(24),
+            transpose: -12,
             groups: vec![Group::default()],
             zones: vec![
                 Zone { sample: "/x/1.wav".into(), start_mod: Some(7), end: -3, tune: 1.5, ..Default::default() },
@@ -537,6 +581,29 @@ mod tests {
         store(&dir, &path, 0, &instrument);
         let back = load(&dir, &path, 0).expect("a fresh entry hits");
         assert_eq!(format!("{back:?}"), format!("{instrument:?}"));
+        assert_eq!(back.native_program_private, instrument.native_program_private);
+        assert!(!back.native_program_private.as_ref().unwrap().controller_options()
+            .unwrap().unwrap().standard_volume_pan);
+        // Old entries baked program controls into their zones, so a missing
+        // state seed must force a reimport instead of silently assuming unity.
+        let mut encoded = Vec::new();
+        encode(&instrument, &mut encoded).unwrap();
+        let mut reader = Reader(&encoded);
+        let mut old_head: serde_json::Value = serde_json::from_slice(reader.bytes().unwrap()).unwrap();
+        old_head.as_object_mut().unwrap().remove("default_key_switch");
+        old_head.as_object_mut().unwrap().remove("native_program_private");
+        let mut legacy = Vec::new();
+        Writer(&mut legacy).bytes(&serde_json::to_vec(&old_head).unwrap());
+        legacy.extend_from_slice(reader.0);
+        let restored = decode(&legacy, &path).unwrap();
+        assert!(restored.default_key_switch.is_none(), "old metadata cannot invent a C0 latch");
+        assert!(restored.native_program_private.is_none());
+        old_head.as_object_mut().unwrap().remove("program");
+        old_head.as_object_mut().unwrap().remove("transpose");
+        let mut legacy = Vec::new();
+        Writer(&mut legacy).bytes(&serde_json::to_vec(&old_head).unwrap());
+        legacy.extend_from_slice(reader.0);
+        assert!(decode(&legacy, &path).is_none(), "baked program state cannot be recovered from old zones");
         let irs: Vec<_> = (back.fx.effects())
             .filter_map(|(_, fx)| match &fx.params {
                 Params::Convolution(c) => c.ir.as_ref().map(|Impulse(ir)| Arc::clone(ir)),

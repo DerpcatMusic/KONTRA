@@ -34,12 +34,15 @@ mod menu;
 mod mixer;
 mod panel;
 mod perf_view;
+mod native_ui;
 pub(crate) use perf_view::font_fallbacks;
 mod picker;
 mod rack;
 mod spectrum;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) use tests::asset_restoration_harness;
 mod theme;
 mod vector;
 mod viz;
@@ -450,8 +453,10 @@ struct EditorState {
     /// Each part's performance view as last read.
     panels: HashMap<usize, panel::Cache>,
     vector_assets: vector::Assets,
-    /// Pictures the original views asked for, by instrument, read or not.
-    perf_asked: std::collections::HashSet<(PathBuf, String)>,
+    native_ui: HashMap<usize, native_ui::State>,
+    /// Mounted performance stages, including a stage reused by its memo.
+    visual_visible: std::collections::HashSet<usize>,
+    visual_owner: Arc<SamplerParams>,
     started: Instant,
     /// The computer keyboard's octave, velocity and held keys.
     computer: Arc<computer::Computer>,
@@ -472,6 +477,16 @@ struct EditorState {
     scope: usize,
     /// The window's size when its resize corner was grabbed.
     corner: Option<Size>,
+}
+
+impl Drop for EditorState {
+    fn drop(&mut self) {
+        let parts = self.visual_owner.shared.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).parts.len();
+        for slot in 0..parts {
+            self.visual_owner.request_visual_assets(slot, Default::default());
+        }
+        self.native_ui.clear();
+    }
 }
 
 impl EditorState {
@@ -933,7 +948,9 @@ fn build(
         ranges: HashMap::new(),
         panels: HashMap::new(),
         vector_assets: vector::Assets::default(),
-        perf_asked: Default::default(),
+        native_ui: HashMap::new(),
+        visual_visible: Default::default(),
+        visual_owner: params.clone(),
         started: Instant::now(),
         computer,
         gliss: None,
@@ -1000,7 +1017,14 @@ fn build(
                 .clip()
         });
         let splitter = cx.state.browser.then(|| splitter(ui, &mut cx, browser_w));
+        cx.state.visual_visible.clear();
         let main = main_view(ui, &mut cx, bridge);
+        for slot in 0..cx.view.parts.len() {
+            if !cx.state.visual_visible.contains(&slot) {
+                cx.p.request_visual_assets(slot, Default::default());
+            }
+        }
+        native_ui::refresh(&mut cx);
         let keys = keyboard::dock(ui, &mut cx);
         let menu = menu::view(ui, &mut cx, window);
         let ghost = ghost(ui, &cx);

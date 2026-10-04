@@ -21,6 +21,7 @@ pub enum NoteLength {
 pub struct NoteSpec<'a> {
     /// KSP event ID, for logging and correlation only.
     pub event: i32,
+    pub script_mods: &'a [i32; crate::engine::SCRIPT_MOD_SOURCES],
     pub channel: u8,
     /// A released parent's expression, inherited by generated release samples.
     pub frozen_expression: Option<Expression>,
@@ -30,8 +31,17 @@ pub struct NoteSpec<'a> {
     pub input_channel: Option<u8>,
     /// Exact host root, inherited independently of generated-note duration.
     pub host_note: Option<crate::engine::HostRef>,
+    /// Physical input event; descendants retain provenance without this role.
+    pub input_root: bool,
+    /// Sostenuto captured this physical root at accepted controller delivery.
+    pub input_sostenuto: bool,
+    /// Native per-note input state, inherited by generated descendants.
+    pub per_note: Option<crate::engine::PerNoteInput>,
     pub note: u8,
+    /// Explicit legacy projection for script and zone selection.
     pub velocity: u8,
+    pub onset_velocity: crate::midi::Velocity,
+    pub release_velocity: Option<crate::midi::Velocity>,
     /// Sample start offset in microseconds.
     pub sample_offset_us: i64,
     pub length: NoteLength,
@@ -42,6 +52,11 @@ pub struct NoteSpec<'a> {
     /// Event pan, -1000 (left) to 1000 (right).
     pub pan: i32,
     pub groups: &'a GroupMask,
+    pub group_start_applied: bool,
+    /// Private native release-generator lineage, independent of public parameters.
+    pub native_release: bool,
+    /// Native event flag consumed only when constructing its source.
+    pub force_completion: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -60,6 +75,7 @@ pub enum VoicePar {
     VolumeMdb,
     TuneMc,
     Pan,
+    ReleaseVelocity,
 }
 
 /// `get/set_engine_par` address. `id` is from [`super::builtins::ENGINE_PARS`]
@@ -88,9 +104,15 @@ pub enum ZonePar { Group, LowKey, HighKey }
 pub struct ZoneEdit { pub zone: i32, pub par: ZonePar, pub value: i32, pub slot: u8, pub id: i32 }
 
 pub trait KspEngine {
+    /// First accepted note dispatch, before callbacks can change or ignore it.
+    fn observe_note(&mut self, _at: u32, _note: u8) {}
+    /// Final Group system slot, after surviving user note callbacks.
+    fn note_groups(&mut self, _channel: u8, _note: u8, groups: GroupMask) -> GroupMask { groups }
+    /// Original library receiver delivery, before ignore/wait/accepted DSP state.
+    fn receive_library_control(&mut self, _channel: u8, _control: crate::midi::Control) {}
     fn play_note(&mut self, at: u32, note: &NoteSpec<'_>) -> Option<EventId>;
     /// Freeze per-note controls before a release callback can wait or create notes.
-    fn release_expression(&self, _at: u32, _voice: Option<EventId>, _channel: u8, _note: u8) -> Option<Expression> { None }
+    fn release_expression(&self, _at: u32, _voice: Option<EventId>, _channel: u8, _input_channel: Option<u8>, _note: u8) -> Option<Expression> { None }
     /// Stop following member controls at this frame while a child callback waits.
     fn freeze_expression(&mut self, _at: u32, _voice: EventId, _expression: Expression) {}
     /// Release a voice. `event` is its note event now: release triggers use its
@@ -107,6 +129,8 @@ pub trait KspEngine {
     fn set_par_from(&mut self, at: u32, _channel: u8, _input_channel: Option<u8>, voice: EventId, par: VoicePar, value: i32) {
         self.set_par(at, voice, par, value);
     }
+    /// A per-event from-script source write, at the callback sample offset.
+    fn set_script_mod(&mut self, _at: u32, _channel: u8, _input_channel: Option<u8>, _voice: EventId, _source: u16, _value: i32) {}
     /// A controller that passed every slot: 0..127, 128 pitch bend (-8192..8191),
     /// 129 channel pressure.
     fn controller(&mut self, at: u32, cc: u8, value: i32);
@@ -116,6 +140,27 @@ pub trait KspEngine {
     fn controller_from(&mut self, at: u32, channel: u8, _input_channel: Option<u8>, cc: u8, value: i32) {
         self.controller_on_channel(at, channel, cc, value);
     }
+    /// Forward accepted controls without losing precision or physical scope.
+    fn performance_control_from(&mut self, at: u32, channel: u8, input_channel: Option<u8>,
+        _target: crate::midi::ControlTarget, control: crate::midi::Control, _native_standard_handled: bool) {
+        let (cc, value) = control.legacy();
+        self.controller_from(at, channel, input_channel, cc, value);
+    }
+    /// Forward CC66/121 and return physical capture and forced pedal-up masks.
+    /// The playing host includes preceding accepted commands at this frame.
+    fn pedal_root_control_from(&mut self, at: u32, channel: u8, input_channel: Option<u8>,
+        target: crate::midi::ControlTarget, control: crate::midi::Control) -> (u16, u16) {
+        self.performance_control_from(at, channel, input_channel, target, control, false);
+        (0, 0)
+    }
+    /// Apply an accepted exact pressure message to its retained host generation.
+    fn host_pressure(&mut self, _at: u32, _owner: crate::engine::HostRef, _value: crate::midi::ControlValue) {}
+    fn per_note_pressure(&mut self, _at: u32, _input: crate::engine::PerNoteInput, _value: crate::midi::ControlValue) {}
+    fn native_note_controller(&mut self, _at: u32, _input: crate::engine::PerNoteInput, _payload: crate::midi::NoteControl) {}
+    /// Record the frame at which a callback relinquishes an exact owner.
+    fn host_callback_finished(&mut self, _at: u32, _owner: crate::engine::HostRef) {}
+    /// Forward accepted or authored polyphonic pressure to its logical key.
+    fn poly_pressure_from(&mut self, _at: u32, _channel: u8, _input_channel: Option<u8>, _note: u8, _value: crate::midi::ControlValue) {}
     fn group_count(&self) -> usize;
     fn zone_count(&self) -> usize { 0 }
     /// Stable zero-based source identity, independent of loaded-zone compaction.
@@ -171,6 +216,13 @@ pub trait KspEngine {
     /// Highest zone identity among this event's sounding or queued voices;
     /// -1 when an accepted queued event matches no playable zone.
     fn voice_zone(&self, _voice: EventId) -> Option<i32> { None }
+    fn voice_play_pos(&self, _voice: EventId) -> Option<i32> { None }
+    /// Actual admitted sample voices in this instrument, including release tails.
+    /// Setup and logging adapters without sample DSP own no such voices.
+    fn played_voices(&self) -> usize { 0 }
+    /// Actual sample voices across a scoped instrument container.
+    /// Standalone/setup adapters have no peer owner and return unavailable.
+    fn played_voices_total(&self) -> Option<usize> { None }
     /// Whether a voice is still sounding; drives `event_status` for sample-length notes.
     fn voice_active(&self, _voice: EventId) -> bool {
         true

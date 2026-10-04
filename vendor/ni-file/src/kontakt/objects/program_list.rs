@@ -18,7 +18,8 @@ const CHUNK_ID: u16 = 0x36;
 /// KontaktIO:      ProgramList
 #[derive(Debug)]
 pub struct ProgramList {
-    pub programs: Vec<Program>,
+    /// Serialized inner slot, retained independently of the outer rack slot.
+    pub programs: Vec<(i16, Program)>,
 }
 
 impl ProgramList {
@@ -27,9 +28,9 @@ impl ProgramList {
         let mut programs = Vec::new();
 
         for _ in 0..num_programs {
-            let _ = reader.read_i16_le()?;
+            let slot = reader.read_i16_le()?;
             let so = Program(StructuredObject::read(&mut reader)?);
-            programs.push(so);
+            programs.push((slot, so));
         }
 
         Ok(Self { programs })

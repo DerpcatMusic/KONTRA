@@ -61,6 +61,8 @@ pub struct Ctx {
     pub slot: u8,
     pub kind: Kind,
     pub event: i32,
+    /// Native MIDI per-note source generation, independent of exact host identity.
+    pub per_note: Option<crate::engine::PerNoteInput>,
     pub callback_id: i32,
     /// Row in the slot's polyphonic storage.
     pub poly_row: u32,
@@ -71,6 +73,20 @@ pub struct Ctx {
     pub channel: u8,
     /// Physical MIDI input that owns this performance callback; services have none.
     pub input_channel: Option<u8>,
+    /// Accepted exact note pressure; retained through callback waits.
+    pub host_pressure: Option<(crate::engine::HostRef, crate::midi::ControlValue)>,
+    pub input_pressure: Option<(crate::engine::PerNoteInput, crate::midi::ControlValue)>,
+    /// Derived MPE callbacks notify scripts without replacing native pressure.
+    pub apply_poly_pressure: bool,
+    /// Canonical accepted control and independent mutation scope.
+    pub performance_control: Option<(crate::midi::ControlTarget, crate::midi::Control)>,
+    /// The native physical standard action already ran at original ingress.
+    pub native_standard_handled: bool,
+    /// Receiver ingress already happened, including authored scheduled controls.
+    pub raw_received: bool,
+    /// Native received parameter metadata; script scalars are only a projection.
+    pub native_parameter: Option<crate::midi::NativeParameter>,
+    pub native_note_control: Option<(crate::engine::PerNoteInput, crate::midi::NoteControl)>,
     pub ui_id: i32,
     pub signal: i32,
     pub async_id: i32,
@@ -91,6 +107,7 @@ impl Ctx {
             slot,
             kind,
             event: 0,
+            per_note: None,
             callback_id: 0,
             poly_row: 0,
             cc: 0,
@@ -98,6 +115,14 @@ impl Ctx {
             note: 0,
             channel: 0,
             input_channel: None,
+            host_pressure: None,
+            input_pressure: None,
+            apply_poly_pressure: true,
+            performance_control: None,
+            native_standard_handled: false,
+            raw_received: false,
+            native_parameter: None,
+            native_note_control: None,
             ui_id: 0,
             signal: 0,
             async_id: 0,
@@ -1030,7 +1055,7 @@ fn hot(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> {
                     ints[e] = value;
                 }
             }
-            Op::Sys(v) => s.push(sys_of(&t.ctx, env, slot, v)),
+            Op::Sys(v) => s.push(sys_of(&t.ctx, env, &*m.engine, slot, v)),
             Op::PopI => drop(pop!()),
             Op::IAdd => int2!(|a, b| a.wrapping_add(b)),
             Op::ISub => int2!(|a, b| a.wrapping_sub(b)),
@@ -1242,12 +1267,12 @@ fn hot(m: &mut Machine, pc: &mut usize, fuel: &mut u64) -> Exec<Option<Yield>> {
     result
 }
 
-fn sys(m: &Machine, v: SysVar) -> i32 {
-    sys_of(&m.t.ctx, m.env, m.slot.index, v)
+fn sys(m: &mut Machine, v: SysVar) -> i32 {
+    sys_of(&m.t.ctx, m.env, &*m.engine, m.slot.index, v)
 }
 
 #[inline(never)]
-fn sys_of(ctx: &Ctx, env: &Env, slot: u8, v: SysVar) -> i32 {
+fn sys_of(ctx: &Ctx, env: &mut Env, engine: &dyn KspEngine, slot: u8, v: SysVar) -> i32 {
     let event = || env.events.get(ctx.event);
     match v {
         SysVar::EventId => ctx.event,
@@ -1288,7 +1313,11 @@ fn sys_of(ctx: &Ctx, env: &Env, slot: u8, v: SysVar) -> i32 {
         SysVar::Tempo => env.tempo as i32,
         SysVar::CurrentScriptSlot => i32::from(slot),
         SysVar::UiId => ctx.ui_id,
-        SysVar::PlayedVoices => env.events.live_count() as i32,
+        SysVar::PlayedVoicesInst => engine.played_voices().min(i32::MAX as usize) as i32,
+        SysVar::PlayedVoicesTotal => engine.played_voices_total().map_or_else(|| {
+            env.note("PLAYED_VOICES_TOTAL unavailable: no multi-instrument voice-count owner");
+            0
+        }, |voices| voices.min(i32::MAX as usize) as i32),
         // No song position from the host yet, so every bar starts now.
         SysVar::DistanceBarStart => 0,
         SysVar::Date(i) => civil_now()[i as usize],

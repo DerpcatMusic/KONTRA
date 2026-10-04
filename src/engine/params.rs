@@ -14,7 +14,6 @@ use std::sync::Arc;
 
 /// Modulation values one voice tracks: its group's first volume and pitch
 /// assignments with a modelled source.
-pub const VOICE_MODS: usize = 8;
 
 pub(crate) use crate::modulation::PITCH_ENVS;
 
@@ -43,8 +42,11 @@ impl PitchEnvelope {
                     .map(|(i, m)| (i as u16, if m.invert { -1. } else { 1. }, Mod::from(m)))
                     .collect();
                 (!targets.is_empty()).then(|| Self {
-                    env: Ahdsr::from(&e.env),
-                    bypass: group.modulators.iter().find(|m| m.envelope == Some(index))
+                    env: { let mut p = Ahdsr::from(&e.env); p.ahd_only = e.native_ahd_only; p },
+                    bypass: group
+                        .modulators
+                        .iter()
+                        .find(|m| m.envelope == Some(index))
                         .is_some_and(|m| m.bypassed),
                     index: index as u8,
                     targets,
@@ -53,14 +55,28 @@ impl PitchEnvelope {
             .collect()
     }
 
-    /// Existing voice control rate, with the same AHDSR as amplitude/filter modulation.
-    pub(crate) fn pitch(&self, state: &mut Envelope, frames: usize, rate: f32) -> f32 {
-        state.skip(frames, None, rate);
-        if self.bypass { return 0.; }
+    fn level_pitch(&self, level: f32) -> f32 {
+        if self.bypass {
+            return 0.;
+        }
         self.targets
             .iter()
-            .map(|(_, sign, m)| 12. * sign * m.intensity * m.shape(state.level()))
+            .map(|(_, sign, m)| 12. * sign * m.intensity * m.shape(level))
             .sum()
+    }
+
+    /// Add pitch while the source is enabled; bypass preserves its clock.
+    pub(crate) fn render_add(&self, state: &mut Envelope, out: &mut [f32], rate: f32) {
+        if self.bypass { return; }
+        for pitch in out {
+            *pitch += self.level_pitch(state.pitch_frame(rate));
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pitch(&self, state: &mut Envelope, frames: usize, rate: f32) -> f32 {
+        if !self.bypass { state.skip(frames, None, rate); }
+        self.level_pitch(state.level())
     }
 }
 
@@ -68,9 +84,11 @@ impl PitchEnvelope {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Source {
     Velocity,
+    ReleaseVelocity,
     Key,
     Constant,
     Cc(u8),
+    Script(u16),
     Bend,
     Pressure,
     /// Release-trigger counter, fixed when the release voice starts.
@@ -81,19 +99,24 @@ impl Source {
     fn of(source: ModSource) -> Option<Self> {
         Some(match source {
             ModSource::Velocity => Self::Velocity,
+            ModSource::ReleaseVelocity => Self::ReleaseVelocity,
             ModSource::KeyPosition => Self::Key,
             ModSource::Constant => Self::Constant,
             ModSource::MidiCc(cc) if cc < 128 => Self::Cc(cc),
             ModSource::PitchBend => Self::Bend,
             ModSource::MonoAftertouch => Self::Pressure,
             ModSource::ReleaseTriggerCounter => Self::Counter,
+            ModSource::Script(n) if n < super::SCRIPT_MOD_SOURCES as u32 => Self::Script(n as u16),
             _ => return None,
         })
     }
 
     /// Changes while a voice plays (otherwise fixed at the note start).
     fn live(self) -> bool {
-        matches!(self, Self::Cc(_) | Self::Bend | Self::Pressure)
+        matches!(
+            self,
+            Self::Cc(_) | Self::Bend | Self::Pressure | Self::ReleaseVelocity | Self::Script(_)
+        )
     }
 }
 
@@ -117,6 +140,7 @@ pub struct Mod {
     /// `None` when playback does not model the source or target; the
     /// intensity is still kept for scripts.
     route: Option<(Source, Target)>,
+    cc_default: Option<i16>,
     /// Depth, -1..=1; negative inverts. Scripts change it.
     pub intensity: f32,
     /// Lag time constant in seconds.
@@ -135,15 +159,23 @@ impl From<&ModAssignment> for Mod {
             ModTarget::Attack => Some(Target::Attack),
             ModTarget::Release => Some(Target::Release),
             ModTarget::Module { .. } => Some(Target::Fx),
-            ModTarget::Group(ref p) if m.source == ModSource::Constant && m.lag_ms == 0 && m.shaper.is_none() && !m.invert => match p.as_str() {
-                "loopStart" => Some(Target::LoopStart),
-                "loopLength" => Some(Target::LoopLength),
-                _ => None,
-            },
+            ModTarget::Group(ref p)
+                if m.source == ModSource::Constant
+                    && m.lag_ms == 0
+                    && m.shaper.is_none()
+                    && !m.invert =>
+            {
+                match p.as_str() {
+                    "loopStart" => Some(Target::LoopStart),
+                    "loopLength" => Some(Target::LoopLength),
+                    _ => None,
+                }
+            }
             ModTarget::Group(_) => None,
         };
         Self {
             route: Source::of(m.source).zip(target),
+            cc_default: m.cc_default,
             intensity: m.intensity,
             lag: f32::from(m.lag_ms) / 1000.0,
             curve: m
@@ -157,6 +189,11 @@ impl From<&ModAssignment> for Mod {
 impl Mod {
     /// Shaped source value; exact at MIDI steps, linear between them.
     pub(crate) fn shape(&self, x: f32) -> f32 {
+        // From-script values are signed; the EX variant is deliberately unbounded.
+        // A missing shaper must preserve that value rather than clip it to a CC.
+        if self.curve.is_none() && self.route.is_some_and(|(source,_)|matches!(source,Source::Script(_))) {
+            return x;
+        }
         let x = x.clamp(0.0, 1.0);
         let Some(curve) = &self.curve else {
             return x;
@@ -168,23 +205,31 @@ impl Mod {
 }
 
 impl Mod {
-    /// Shaped value at note start; 0 for sources playback does not model.
-    pub(crate) fn start_value(&self, input: &Inputs) -> f32 {
-        self.route.map_or(0.0, |(source, _)| self.shape(input.read(source)))
+    /// Availability precedes shaping, lag and destination binding.
+    fn read_value(&self, input: &Inputs, bend_pitch: Option<f32>) -> Option<f32> {
+        let (source, target) = self.route?;
+        if let Source::Cc(cc) = source
+            && let Some(default) = self.cc_default
+            && !input.controller_received(cc) {
+            return (default >= 0).then(|| f32::from(default) / 127.);
+        }
+        Some(input.read_mod(source, target, bend_pitch))
     }
 
-    /// Advance a live source's lagged `value` over `frames`.
-    pub(crate) fn follow(&self, value: &mut f32, input: &Inputs, frames: usize, rate: f32) {
-        if let Some((source, _)) = self.route.filter(|(s, _)| s.live()) {
-            approach(
-                value,
-                self.shape(input.read(source)),
-                self.lag,
-                frames,
-                rate,
-            );
-        }
+    pub(crate) fn start_value(&self, input: &Inputs) -> Option<f32> {
+        self.read_value(input, None).map(|x| self.shape(x))
     }
+
+    /// Static sources retain their note-start capture across planning fragments.
+    pub(crate) fn live_value(&self, input: &Inputs) -> Option<Option<f32>> {
+        self.route.filter(|(source, _)| source.live())
+            .map(|_| self.start_value(input))
+    }
+
+    pub(crate) fn lag_step(&self, rate: f32) -> f64 {
+        lag_factor64(self.lag, 1, rate)
+    }
+
 }
 
 /// Group modulation assignments in import order (the KSP target addresses),
@@ -192,7 +237,8 @@ impl Mod {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ModTable {
     pub mods: Box<[Mod]>,
-    /// Volume and pitch assignments with a modelled source, at most [`VOICE_MODS`].
+    /// Volume and pitch assignments with a modelled source. Voice storage
+    /// is prepared from this roster; script setup retains every address.
     voiced: Box<[u16]>,
     /// Sample-start assignments with a modelled source.
     starts: Box<[u16]>,
@@ -204,20 +250,27 @@ pub struct ModTable {
 
 impl From<&Group> for ModTable {
     fn from(group: &Group) -> Self {
-        let mods: Box<[Mod]> = group.mods.iter().map(|m| {
-            let mut prepared = Mod::from(m);
-            if matches!(prepared.route, Some((_, Target::LoopStart | Target::LoopLength)))
-                && !loop_control_supported(group, m) { prepared.route = None; }
-            prepared
-        }).collect();
+        let mods: Box<[Mod]> = group
+            .mods
+            .iter()
+            .map(|m| {
+                let mut prepared = Mod::from(m);
+                if matches!(
+                    prepared.route,
+                    Some((_, Target::LoopStart | Target::LoopLength))
+                ) && !loop_control_supported(group, m)
+                {
+                    prepared.route = None;
+                }
+                prepared
+            })
+            .collect();
         let routed = |want: fn(Target) -> bool| {
             (0..mods.len() as u16)
                 .filter(|&i| mods[i as usize].route.is_some_and(|(_, t)| want(t)))
                 .collect::<Vec<_>>()
         };
-        let mut voiced = routed(|t| matches!(t, Target::Volume | Target::Pitch));
-        // ponytail: extra assignments are ignored; no local group has more than 8.
-        voiced.truncate(VOICE_MODS);
+        let voiced = routed(|t| matches!(t, Target::Volume | Target::Pitch));
         Self {
             voiced: voiced.into(),
             starts: routed(|t| t == Target::Start).into(),
@@ -228,18 +281,53 @@ impl From<&Group> for ModTable {
     }
 }
 
+/// Validate the fixed voice state before preparing or installing a bank.
+pub(crate) fn validate_modulation_capacity(group: &Group) -> anyhow::Result<()> {
+    anyhow::ensure!(group.volume_env.iter().chain(group.envelopes.iter().map(|source| &source.env))
+        .all(|source| [source.attack_curve, source.attack_ms, source.hold_ms, source.decay_ms,
+            source.sustain, source.release_ms].into_iter().all(f32::is_finite)),
+        "Authored AHDSR envelope source contains a nonfinite value");
+    anyhow::ensure!(
+        group.mods.len() <= u16::MAX as usize,
+        "modulation assignment count {} exceeds the 65535-address engine limit",
+        group.mods.len()
+    );
+    for (index, envelope) in group.envelopes.iter().enumerate() {
+        anyhow::ensure!(
+            envelope.targets.len() <= u16::MAX as usize,
+            "envelope {index} has {} targets, exceeding the 65535-address engine limit",
+            envelope.targets.len()
+        );
+    }
+    anyhow::ensure!(group.mods.iter().all(|m| m.cc_default.is_none_or(|value| value <= 127)),
+        "CC modulation defaults above127 are unsupported");
+    super::lfo::validate_sources(&group.pitch_lfos, &group.volume_lfos)?;
+    super::glide::validate_sources(&group.pitch_glides, &group.pitch_lfos, &group.volume_lfos)
+}
+
 /// Performance state a voice's modulation reads.
 #[derive(Clone, Copy)]
 pub(crate) struct Inputs<'a> {
-    pub cc: &'a [u8; 128],
+    pub cc: &'a [crate::midi::ControlValue; 128],
+    pub cc_received: Option<&'a [u64; 2]>,
+    /// Native registered controllers retained by this note's physical owner.
+    pub per_note_cc: Option<&'a [Option<crate::midi::ControlValue>; 128]>,
+    pub script_mods: &'a [i32],
     /// Combined MPE CC74, preserving a released note's member value.
-    pub cc74: Option<u8>,
+    pub cc74: Option<f32>,
+    /// The composed MPE source may have a frozen, unreceived member value.
+    pub cc74_received: Option<bool>,
     /// -1..=1.
     pub bend: f32,
-    pub pressure: u8,
+    /// Normalized pressure selected from physical and exact-note controls.
+    pub pressure: f32,
     pub note: u8,
-    pub velocity: u8,
-    /// Release-trigger counter, 0..=1 (see [`release_counter`]).
+    pub velocity: crate::midi::Velocity,
+    /// Captured key-up value; None remains an unreceived source.
+    pub release_velocity: Option<crate::midi::Velocity>,
+    /// Release-trigger counter. Compatibility is 0..=1; the raw Native
+    /// admission scalar can exceed unity after a negative span-offset reset.
+    /// Destination shaping still applies its established normalized range.
     pub counter: f32,
 }
 
@@ -255,32 +343,45 @@ pub(crate) fn release_counter(t_ms: i32, held_ms: f32) -> f32 {
     ((t - held_ms) / t).clamp(0.0, 1.0)
 }
 
+pub(crate) fn controller_received(received: &[u64; 2], cc: u8) -> bool {
+    received[cc as usize / 64] & (1 << (cc & 63)) != 0
+}
+
 impl Inputs<'_> {
+    fn controller_received(&self, cc: u8) -> bool {
+        if cc == 74 {
+            if self.cc74.is_some() && self.cc74_received.unwrap_or(true) { return true; }
+            if self.per_note_cc.and_then(|values| values[74]).is_some() { return true; }
+            if let Some(received) = self.cc74_received { return received; }
+        } else if self.per_note_cc.and_then(|values| values[cc as usize]).is_some() { return true; }
+        self.cc_received.is_none_or(|received| controller_received(received, cc))
+    }
+
     /// Negotiated MPE master pitch is added independently by the voice;
     /// other bend destinations still read the combined controller normally.
     fn read_mod(&self, source: Source, target: Target, bend_pitch: Option<f32>) -> f32 {
         if source == Source::Bend && target == Target::Pitch {
-            if let Some(bend) = bend_pitch { return (bend + 1.) * 0.5; }
+            if let Some(bend) = bend_pitch {
+                return (bend + 1.) * 0.5;
+            }
         }
         self.read(source)
     }
 
-    /// Unshaped source value, 0..=1.
+    /// Unshaped source value; Native RTC and script sources can exceed unity.
     fn read(&self, source: Source) -> f32 {
         match source {
-            Source::Velocity => f32::from(self.velocity) / 127.0,
+            Source::Velocity => self.velocity.dsp(),
+            Source::ReleaseVelocity => self.release_velocity.map_or(0., |v| v.dsp()),
             Source::Key => f32::from(self.note) / 127.0,
             Source::Constant => 1.0,
-            Source::Cc(cc) => {
-                f32::from(if cc == 74 {
-                    self.cc74.unwrap_or(self.cc[74])
-                } else {
-                    self.cc[cc as usize]
-                }) / 127.0
-            }
+            Source::Cc(cc) => (if cc == 74 { self.cc74 } else { None })
+                .or_else(|| self.per_note_cc.and_then(|values| values[cc as usize]).map(crate::midi::ControlValue::dsp))
+                .unwrap_or_else(|| self.cc[cc as usize].dsp()),
             Source::Bend => (self.bend + 1.0) * 0.5,
-            Source::Pressure => f32::from(self.pressure) / 127.0,
+            Source::Pressure => self.pressure,
             Source::Counter => self.counter,
+            Source::Script(n) => self.script_mods.get(n as usize).copied().unwrap_or(0) as f32 / 1_000_000.,
         }
     }
 }
@@ -288,13 +389,18 @@ impl Inputs<'_> {
 /// Native loop consumer is inactive when the sample has a preload-byte budget.
 /// Only the independently traced zero-budget mode and Constant source are enabled.
 pub(crate) fn loop_control_supported(group: &Group, m: &ModAssignment) -> bool {
-    group.source_mode == Some(0) && m.source == ModSource::Constant
-        && m.lag_ms == 0 && m.shaper.is_none() && !m.invert
+    group.source_mode == Some(0)
+        && m.source == ModSource::Constant
+        && m.lag_ms == 0
+        && m.shaper.is_none()
+        && !m.invert
         && matches!(&m.target, ModTarget::Group(p) if p == "loopStart" || p == "loopLength")
 }
 
 impl ModTable {
-    pub(crate) fn has_loop_controls(&self) -> bool { !self.loops.is_empty() }
+    pub(crate) fn has_loop_controls(&self) -> bool {
+        !self.loops.is_empty()
+    }
 
     pub(crate) fn loop_offsets(&self) -> [f32; 2] {
         let mut offsets = [0.; 2];
@@ -310,15 +416,22 @@ impl ModTable {
     }
 
     /// Initial per-voice values: every source at its current value, unlagged.
-    pub(crate) fn start(&self, input: &Inputs, bend_pitch: Option<f32>) -> [f32; VOICE_MODS] {
-        let mut values = [0.0; VOICE_MODS];
+    pub(crate) fn voiced_count(&self) -> usize { self.voiced.len() }
+
+    pub(super) fn same_routes(&self, other: &Self) -> bool {
+        self.voiced == other.voiced && self.starts == other.starts
+            && self.times == other.times && self.loops == other.loops
+            && self.mods.len() == other.mods.len()
+            && self.mods.iter().zip(&other.mods).all(|(a, b)| a.route == b.route && a.cc_default == b.cc_default)
+    }
+
+    pub(crate) fn start(&self, values: &mut [Option<f64>], input: &Inputs, bend_pitch: Option<f32>) {
+        assert!(values.len() >= self.voiced.len(), "prepared voiced modulation storage");
+        values.fill(None);
         for (value, &i) in values.iter_mut().zip(&self.voiced) {
             let m = &self.mods[i as usize];
-            if let Some((source, target)) = m.route {
-                *value = m.shape(input.read_mod(source, target, bend_pitch));
-            }
+            *value = m.read_value(input, bend_pitch).map(|x| f64::from(m.shape(x)));
         }
-        values
     }
 
     /// Advance live sources over `frames` at `rate` and return the volume
@@ -333,7 +446,7 @@ impl ModTable {
     /// or the table change, another call returns the same.
     pub(crate) fn modulate(
         &self,
-        values: &mut [f32; VOICE_MODS],
+        values: &mut [Option<f64>],
         input: &Inputs,
         frames: usize,
         rate: f32,
@@ -346,31 +459,144 @@ impl ModTable {
                 continue;
             };
             if source.live() {
-                let x = m.shape(input.read_mod(source, target, bend_pitch));
-                approach(value, x, m.lag, frames, rate);
-                settled &= *value == x;
+                let Some(x) = m.read_value(input, bend_pitch).map(|x| m.shape(x)) else {
+                    *value = None;
+                    continue;
+                };
+                let value = value.get_or_insert(0.);
+                approach64(value, f64::from(x), m.lag, frames, rate);
+                settled &= *value == f64::from(x);
             }
+            let Some(value) = *value else { continue; };
+            let value = value as f32;
             match target {
                 Target::Volume => {
                     let v = if m.intensity < 0.0 {
-                        1.0 - *value
+                        1.0 - value
                     } else {
-                        *value
+                        value
                     };
                     gain *= 1.0 - m.intensity.abs() * (1.0 - v);
                 }
                 Target::Pitch => {
                     let v = if source == Source::Bend {
-                        *value * 2.0 - 1.0
+                        value * 2.0 - 1.0
                     } else {
-                        *value
+                        value
                     };
                     semitones += 12.0 * m.intensity * v;
                 }
-                Target::Start | Target::Attack | Target::Release | Target::Fx | Target::LoopStart | Target::LoopLength => {}
+                Target::Start
+                | Target::Attack
+                | Target::Release
+                | Target::Fx
+                | Target::LoopStart
+                | Target::LoopLength => {}
             }
         }
         (gain.max(0.0), semitones, settled)
+    }
+
+    /// Shape targets at the control boundary; DSP retains only values.
+    pub(crate) fn targets(&self, targets: &mut [Option<f32>], input: &Inputs, bend_pitch: Option<f32>) {
+        assert!(targets.len() >= self.voiced.len(), "prepared voiced modulation targets");
+        for (value, &index) in targets.iter_mut().zip(&self.voiced) {
+            let modulation = &self.mods[index as usize];
+            *value = modulation.read_value(input, bend_pitch).map(|x| modulation.shape(x));
+        }
+    }
+
+    /// Unlagged edits retain the destination's existing declick law. Positive
+    /// lag routes advance only when their source samples are consumed.
+    pub(crate) fn prepare(&self, values: &mut [Option<f64>], targets: &[Option<f32>]) {
+        for ((value, target), &index) in values.iter_mut().zip(targets).zip(&self.voiced) {
+            let modulation = &self.mods[index as usize];
+            if modulation.route.is_some_and(|(source, _)| source.live()) {
+                if target.is_none() { *value = None; }
+                else if modulation.lag <= 0. { *value = target.map(f64::from); }
+                else if value.is_none() { *value = Some(0.); }
+            }
+        }
+    }
+
+    pub(crate) fn lagging(&self, values: &[Option<f64>], targets: &[Option<f32>]) -> bool {
+        self.voiced.iter().enumerate().any(|(voice, &index)| {
+            let modulation = &self.mods[index as usize];
+            modulation.lag > 0. && modulation.route.is_some_and(|(source, _)| source.live())
+                && values[voice] != targets[voice].map(f64::from)
+        })
+    }
+
+    /// Fixed routes feed the existing amplifier declick. Lagged live routes
+    /// are multiplied separately so they do not receive a second fade.
+    pub(crate) fn fixed(&self, values: &[Option<f64>]) -> (f32, f32) {
+        self.factors(values, false)
+    }
+
+    pub(crate) fn lagged(&self, values: &[Option<f64>]) -> (f32, f32) {
+        self.factors(values, true)
+    }
+
+    fn factors(&self, values: &[Option<f64>], lagged: bool) -> (f32, f32) {
+        let (mut gain, mut pitch) = (1., 0.);
+        for (&value, &index) in values.iter().zip(&self.voiced) {
+            let Some(value) = value else { continue; };
+            let modulation = &self.mods[index as usize];
+            let Some((source, target)) = modulation.route else { continue; };
+            if (modulation.lag > 0. && source.live()) != lagged { continue; }
+            let value = value as f32;
+            match target {
+                Target::Volume => {
+                    let shaped = if modulation.intensity < 0. { 1. - value } else { value };
+                    gain *= 1. - modulation.intensity.abs() * (1. - shaped);
+                }
+                Target::Pitch => {
+                    let shaped = if source == Source::Bend { value * 2. - 1. } else { value };
+                    pitch += 12. * modulation.intensity * shaped;
+                }
+                _ => {}
+            }
+        }
+        (gain, pitch)
+    }
+
+    /// Render only live positive-lag contributions into reused fixed scratch.
+    /// Preview uses a copy; only actual rendering advances saved values.
+    pub(crate) fn render(
+        &self, values: &mut [Option<f64>], targets: &[Option<f32>],
+        rate: f32, gain: &mut [f32], pitch: &mut [f32],
+    ) -> bool {
+        assert_eq!(gain.len(), pitch.len());
+        gain.fill(1.); pitch.fill(0.);
+        let mut settled = true;
+        for ((value, target), &index) in values.iter_mut().zip(targets).zip(&self.voiced) {
+            let modulation = &self.mods[index as usize];
+            let Some((source, destination)) = modulation.route else { continue; };
+            if modulation.lag <= 0. || !source.live() { continue; }
+            let Some(target) = *target else { *value = None; continue; };
+            // Keep the existing core first-event lag seed. Native first-event
+            // lag initialization is separate from source availability evidence.
+            let value = value.get_or_insert(0.);
+            let coefficient = modulation.lag_step(rate);
+            let target = f64::from(target);
+            for (gain, pitch) in gain.iter_mut().zip(pitch.iter_mut()) {
+                if *value != target { *value += (target - *value) * coefficient; }
+                let value = *value as f32;
+                match destination {
+                    Target::Volume => {
+                        let shaped = if modulation.intensity < 0. { 1. - value } else { value };
+                        *gain *= 1. - modulation.intensity.abs() * (1. - shaped);
+                    }
+                    Target::Pitch => {
+                        let shaped = if source == Source::Bend { value * 2. - 1. } else { value };
+                        *pitch += 12. * modulation.intensity * shaped;
+                    }
+                    _ => {}
+                }
+            }
+            settled &= *value == target;
+        }
+        settled
     }
 
     /// Sample-start offset as a fraction of the zone's start-mod range.
@@ -378,7 +604,7 @@ impl ModTable {
         self.starts
             .iter()
             .map(|&i| &self.mods[i as usize])
-            .filter_map(|m| Some(m.intensity.abs() * m.shape(input.read(m.route?.0))))
+            .filter_map(|m| m.start_value(input).map(|value| m.intensity.abs() * value))
             .sum::<f32>()
             .min(1.0)
     }
@@ -392,6 +618,15 @@ impl ModTable {
         keys: std::ops::RangeInclusive<u8>,
         velocities: std::ops::RangeInclusive<u8>,
     ) -> (f32, f32) {
+        // Script values can change at the note callback after preparation.
+        // Keep the entire legal start range resident for these zones.
+        if self.starts.iter().any(|&i|self.mods[i as usize].route.is_some_and(|(source,_)|matches!(source,Source::Script(_)))) {
+            return (0.,1.);
+        }
+        // Offline legacy preparation seeds are bytes; the DSP view has one
+        // canonical normalized representation.
+        let controls = cc.map(crate::midi::ControlValue::from_midi1);
+        let cc = &controls;
         let reads = |source| {
             self.starts.iter().any(|&i| {
                 self.mods[i as usize]
@@ -409,22 +644,56 @@ impl ModTable {
         };
         let velocities = one(velocities, Source::Velocity);
         let counters = one(0..=127, Source::Counter);
+        // Independent release velocity can arrive after zone preparation.
+        // Its additive start contribution needs its own range, without
+        // multiplying the key/attack/counter preparation sweep by 128.
+        let release = |x| {
+            self.starts
+                .iter()
+                .map(|&i| &self.mods[i as usize])
+                .filter(|m| m.route.is_some_and(|(s, _)| s == Source::ReleaseVelocity))
+                .map(|m| m.intensity.abs() * m.shape(x))
+                .sum::<f32>()
+        };
+        let (release_low, release_high) = (0..=127)
+            .map(|v| release(v as f32 / 127.))
+            .fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)));
         let (mut low, mut high) = (f32::MAX, f32::MIN);
         for note in one(keys, Source::Key) {
             for velocity in velocities.clone() {
                 for counter in counters.clone() {
                     let counter = f32::from(counter) / 127.0;
-                    let input = Inputs {
+                    let input = Inputs { cc_received: None, cc74_received: None, per_note_cc: None, script_mods: &[],
                         cc74: None,
                         cc,
                         bend: 0.0,
-                        pressure: 0,
+                        pressure: 0.,
                         note,
-                        velocity,
+                        velocity: crate::midi::Velocity::from_midi1(velocity),
+                        release_velocity: None,
                         counter,
                     };
-                    let x = self.start_offset(&input);
-                    (low, high) = (low.min(x), high.max(x));
+                    let base = self
+                        .starts
+                        .iter()
+                        .map(|&i| &self.mods[i as usize])
+                        .filter_map(|m| {
+                            let (source, _) = m.route?;
+                            (source != Source::ReleaseVelocity)
+                                .then(|| m.intensity.abs() * m.shape(input.read(source)))
+                        })
+                        .sum::<f32>();
+                    // A new instrument may start from its saved substitute
+                    // rather than this preparation seed. Cover both starts.
+                    let initial = Inputs { cc_received: Some(&[0; 2]), ..input };
+                    let initial_base = self.starts.iter().map(|&i| &self.mods[i as usize])
+                        .filter(|m| m.route.is_some_and(|(source, _)| source != Source::ReleaseVelocity))
+                        .filter_map(|m| m.start_value(&initial).map(|value| m.intensity.abs() * value))
+                        .sum::<f32>();
+                    (low, high) = (
+                        low.min((base.min(initial_base) + release_low).min(1.)),
+                        high.max((base.max(initial_base) + release_high).min(1.)),
+                    );
                 }
             }
         }
@@ -436,10 +705,10 @@ impl ModTable {
     /// (velocity 0 → 1, 127 → 0.59 on attack) read as time factors.
     pub(crate) fn scale_envelope(&self, env: &mut Ahdsr, input: &Inputs) {
         for m in self.times.iter().map(|&i| &self.mods[i as usize]) {
-            let Some((source, target)) = m.route else {
+            let Some((_, target)) = m.route else {
                 continue;
             };
-            let v = m.shape(input.read(source));
+            let Some(v) = m.start_value(input) else { continue; };
             let v = if m.intensity < 0.0 { 1.0 - v } else { v };
             let factor = (1.0 - m.intensity.abs() * (1.0 - v)).max(0.0);
             match target {
@@ -467,24 +736,17 @@ pub(crate) fn share_curves<'a>(tables: impl Iterator<Item = &'a mut ModTable>) {
     }
 }
 
-/// Move a lagged `value` toward `x` over `frames`. Settled (as a held
-/// controller soon is) it costs no exp: within 1e-6 it lands on `x`, which
-/// steps smaller than half a float's spacing would never reach.
-fn approach(value: &mut f32, x: f32, lag: f32, frames: usize, rate: f32) {
-    if (x - *value).abs() <= 1e-6 {
-        *value = x;
-    } else {
-        *value += (x - *value) * lag_factor(lag, frames, rate);
-    }
-}
 
 /// One-pole smoothing step over `frames`: the share of the distance covered.
-fn lag_factor(lag: f32, frames: usize, rate: f32) -> f32 {
-    if lag <= 0.0 {
-        1.0
-    } else {
-        1.0 - (-(frames as f32) / (lag * rate)).exp()
-    }
+
+fn lag_factor64(lag: f32, frames: usize, rate: f32) -> f64 {
+    if lag <= 0. { 1. }
+    else { (-(frames as f64) / (f64::from(lag) * f64::from(rate))).exp_m1() * -1. }
+}
+
+fn approach64(value: &mut f64, target: f64, lag: f32, frames: usize, rate: f32) {
+    if lag <= 0. { *value = target; }
+    else if *value != target { *value += (target - *value) * lag_factor64(lag, frames, rate); }
 }
 
 // ---- Engine parameters ------------------------------------------------------------
@@ -510,6 +772,7 @@ pub mod id {
     pub const MOD_TARGET_MP_INTENSITY: i32 = B + 17;
     pub const INTMOD_INTENSITY: i32 = B + 18;
     pub const INTMOD_BYPASS: i32 = B + 19;
+    pub const INTMOD_FREQUENCY: i32 = B + 168;
     pub const EFFECT_BYPASS: i32 = B + 22;
     pub const EFFECT_TYPE: i32 = B + 23;
     pub const EFFECT_SUBTYPE: i32 = B + 24;
@@ -559,7 +822,14 @@ pub(crate) enum GroupPar {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum WavePar { Position, Phase, Form, Form2, FormMode, Form2Mode }
+pub(crate) enum WavePar {
+    Position,
+    Phase,
+    Form,
+    Form2,
+    FormMode,
+    Form2Mode,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Stage {
@@ -575,7 +845,11 @@ pub(crate) enum Stage {
 
 /// Independently corroborated signed depth laws; only pitch allows >12 st.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum CubicDepth { Pitch, Cutoff, Loop }
+pub(crate) enum CubicDepth {
+    Pitch,
+    Cutoff,
+    Loop,
+}
 
 impl CubicDepth {
     fn target(target: &ModTarget) -> Option<Self> {
@@ -586,6 +860,17 @@ impl CubicDepth {
             _ => None,
         }
     }
+}
+
+/// Raw-address proof plus the narrow ordinary sampler/source baseline.
+pub(super) fn primary_bypass_slot(group: &Group) -> Option<u8> {
+    let slot = group.native_primary_bypass_slot?;
+    let source = group.modulators.get(usize::from(slot))?;
+    (group.source_mode == Some(0) && group.wavetable.is_none() && !group.reverse
+        && group.mods.is_empty() && group.volume_lfos.is_empty() && !source.bypassed
+        && ((group.native_volume_env && group.flex_env.is_none() && source.volume_env)
+            || ((group.native_flex_oneshot || group.native_flex_loop)
+                && group.volume_env.is_none() && source.primary_flex))).then_some(slot)
 }
 
 /// A modelled engine parameter.
@@ -617,11 +902,27 @@ pub(crate) enum Address {
         cubic: Option<CubicDepth>,
     },
     /// An admitted pitch LFO target; source and target use native slot indices.
-    PitchLfoIntensity { group: u16, slot: u8, target: u32, bipolar: bool },
+    PitchSourceIntensity {
+        group: u16,
+        slot: u8,
+        target: u32,
+        bipolar: bool,
+    },
+    /// An admitted volume LFO target: magnitude and source polarity are separate.
+    VolumeSourceIntensity {
+        group: u16,
+        slot: u8,
+        target: u32,
+        bipolar: bool,
+    },
     /// A prepared saved pitch LFO, addressed by its original source slot.
-    PitchLfoBypass(u16, u8),
+    PitchSourceBypass(u16, u8),
+    /// Original Digital source slot; value is its authored Hz or sync count.
+    LfoFrequency { group: u16, slot: u8, synchronized: bool },
     /// Explicit KSP bypass for an admitted pitch/filter envelope.
     InternalBypass(u16, u8),
+    /// Sole primary amplitude source, with separately validated sample lifetime.
+    PrimaryBypass(u16, u8),
     Fx(Rack, u8, FxParam),
     /// A group insert slot's filter/EQ knob (normalized), bypass, output
     /// gain or Stereo Modeller setting.
@@ -673,12 +974,24 @@ impl Address {
         };
         let filter = |knob| insert(knob, FxParam::Filter(knob));
         Some(match par.id {
-            _ if crate::ksp::engine_par_name(par.id) == Some("$ENGINE_PAR_WT_POSITION") => Self::Wavetable(wave()?, WavePar::Position),
-            _ if crate::ksp::engine_par_name(par.id) == Some("$ENGINE_PAR_WT_PHASE") => Self::Wavetable(wave()?, WavePar::Phase),
-            _ if crate::ksp::engine_par_name(par.id) == Some("$ENGINE_PAR_WT_FORM") => Self::Wavetable(wave()?, WavePar::Form),
-            _ if crate::ksp::engine_par_name(par.id) == Some("$ENGINE_PAR_WT_FORM2") => Self::Wavetable(wave()?, WavePar::Form2),
-            _ if crate::ksp::engine_par_name(par.id) == Some("$ENGINE_PAR_WT_FORM_MODE") => Self::Wavetable(wave()?, WavePar::FormMode),
-            _ if crate::ksp::engine_par_name(par.id) == Some("$ENGINE_PAR_WT_FORM2_MODE") => Self::Wavetable(wave()?, WavePar::Form2Mode),
+            _ if crate::ksp::engine_par_name(par.id) == Some("$ENGINE_PAR_WT_POSITION") => {
+                Self::Wavetable(wave()?, WavePar::Position)
+            }
+            _ if crate::ksp::engine_par_name(par.id) == Some("$ENGINE_PAR_WT_PHASE") => {
+                Self::Wavetable(wave()?, WavePar::Phase)
+            }
+            _ if crate::ksp::engine_par_name(par.id) == Some("$ENGINE_PAR_WT_FORM") => {
+                Self::Wavetable(wave()?, WavePar::Form)
+            }
+            _ if crate::ksp::engine_par_name(par.id) == Some("$ENGINE_PAR_WT_FORM2") => {
+                Self::Wavetable(wave()?, WavePar::Form2)
+            }
+            _ if crate::ksp::engine_par_name(par.id) == Some("$ENGINE_PAR_WT_FORM_MODE") => {
+                Self::Wavetable(wave()?, WavePar::FormMode)
+            }
+            _ if crate::ksp::engine_par_name(par.id) == Some("$ENGINE_PAR_WT_FORM2_MODE") => {
+                Self::Wavetable(wave()?, WavePar::Form2Mode)
+            }
             id::VOLUME | id::PAN | id::TUNE | id::OUTPUT_CHANNEL => {
                 let p = match par.id {
                     id::VOLUME => GroupPar::Volume,
@@ -700,7 +1013,13 @@ impl Address {
                     _ => return None,
                 }
             }
-            id::ATTACK | id::ATK_CURVE | id::DECAY | id::SUSTAIN | id::RELEASE | id::HOLD | id::ENV_AHD => {
+            id::ATTACK
+            | id::ATK_CURVE
+            | id::DECAY
+            | id::SUSTAIN
+            | id::RELEASE
+            | id::HOLD
+            | id::ENV_AHD => {
                 let g = group()?;
                 let m = modulator(g)?;
                 let stage = match par.id {
@@ -718,24 +1037,51 @@ impl Address {
                     _ => return None,
                 }
             }
+            id::INTMOD_FREQUENCY => {
+                let g = group()?;
+                let group = &groups[g as usize];
+                (par.generic == -1 && group.wavetable.is_none()
+                    && modulator(g)?.kind == "lfo").then_some(())?;
+                let slot = u8::try_from(par.slot).ok().filter(|&s| s < 16)?;
+                let source = group.pitch_lfos.iter()
+                    .chain(group.volume_lfos.iter().map(|l| &l.source))
+                    .find(|l| l.slot == slot)?;
+                super::lfo::validate_sources(&group.pitch_lfos, &group.volume_lfos).ok()?;
+                (source.digital.is_some() && (!source.shared
+                    || !source.extended_fade)).then_some(())?;
+                Self::LfoFrequency { group: g, slot, synchronized: source.note_value > 1e-9 }
+            }
             id::INTMOD_BYPASS => {
                 let g = group()?;
                 let m = modulator(g)?;
-                if m.kind == "lfo" {
+                if matches!(m.kind.as_str(), "lfo" | "glide") {
                     let slot = u8::try_from(par.slot).ok()?;
                     groups[g as usize].wavetable.is_none().then_some(())?;
                     let group = &groups[g as usize];
                     (group.pitch_lfos.iter().any(|l| l.slot == slot)
-                        || group.volume_lfos.iter().any(|l| l.source.slot == slot)).then_some(())?;
-                    return Some(Self::PitchLfoBypass(g, slot));
+                        || group.volume_lfos.iter().any(|l| l.source.slot == slot)
+                        || group.pitch_glides.iter().any(|l| l.slot == slot))
+                    .then_some(())?;
+                    return Some(Self::PitchSourceBypass(g, slot));
+                }
+                if primary_bypass_slot(&groups[g as usize]) == u8::try_from(par.slot).ok() {
+                    return Some(Self::PrimaryBypass(g, u8::try_from(par.slot).ok()?));
                 }
                 let e = m.envelope?;
-                groups[g as usize].envelopes.get(e)?.targets.iter()
+                groups[g as usize]
+                    .envelopes
+                    .get(e)?
+                    .targets
+                    .iter()
                     .any(|t| match &t.target {
                         ModTarget::Pitch => true,
-                        ModTarget::Module { param, .. } => Knob::parse(param).is_some() || super::filter::stage_knob(param).is_some(),
+                        ModTarget::Module { param, .. } => {
+                            Knob::parse(param).is_some()
+                                || super::filter::stage_knob(param).is_some()
+                        }
                         _ => false,
-                    }).then_some(())?;
+                    })
+                    .then_some(())?;
                 Self::InternalBypass(g, u8::try_from(e).ok()?)
             }
             id::MOD_TARGET_INTENSITY | id::MOD_TARGET_MP_INTENSITY | id::INTMOD_INTENSITY => {
@@ -748,42 +1094,70 @@ impl Address {
                 let bipolar = par.id != id::MOD_TARGET_INTENSITY;
                 match m.assignments {
                     Some(index) => {
-                        let cubic = CubicDepth::target(&groups[g as usize].mods.get(index + target)?.target);
-                        if par.id == id::INTMOD_INTENSITY && cubic.is_none() { return None; }
+                        let cubic = CubicDepth::target(
+                            &groups[g as usize].mods.get(index + target)?.target,
+                        );
+                        if par.id == id::INTMOD_INTENSITY && cubic.is_none() {
+                            return None;
+                        }
                         Self::Intensity {
                             group: g,
                             index: u16::try_from(index + target).ok()?,
                             bipolar,
                             cubic: if bipolar { cubic } else { None },
                         }
-                    },
+                    }
                     None => {
-                        if m.kind == "lfo" {
-                            // Prepared LFO playback currently exists only on
+                        if matches!(m.kind.as_str(), "lfo" | "glide") {
+                            // Prepared pitch-source playback currently exists only on
                             // ordinary sampler groups, not wavetable sources.
                             groups[g as usize].wavetable.is_none().then_some(())?;
                             let slot = u8::try_from(par.slot).ok()?;
                             let target = u32::try_from(target).ok()?;
-                            groups[g as usize].pitch_lfos.iter().find(|l| l.slot == slot)?
-                                .targets.iter().find(|t| t.0 == target)?;
-                            return Some(Self::PitchLfoIntensity { group: g, slot, target, bipolar });
+                            let group = &groups[g as usize];
+                            if m.kind == "lfo" && group.volume_lfos.iter()
+                                .any(|l| l.source.slot == slot && l.target == target) {
+                                return Some(Self::VolumeSourceIntensity { group: g, slot, target, bipolar });
+                            }
+                            group.pitch_lfos.iter().map(|l| (l.slot, &l.targets))
+                                .chain(group.pitch_glides.iter().map(|l| (l.slot, &l.targets)))
+                                .find(|l| l.0 == slot)?.1.iter().find(|t| t.0 == target)?;
+                            return Some(Self::PitchSourceIntensity {
+                                group: g,
+                                slot,
+                                target,
+                                bipolar,
+                            });
                         }
                         let envelope = m.envelope?;
                         let routed = &groups[g as usize]
                             .envelopes
                             .get(envelope)?
                             .targets
-                            .get(target)?.target;
+                            .get(target)?
+                            .target;
                         match routed {
-                            ModTarget::Pitch => {},
-                            ModTarget::Module { param, .. } if param == "filterCutoff"
-                                || (par.id != id::INTMOD_INTENSITY
-                                    && (Knob::parse(param).is_some() || super::filter::stage_knob(param).is_some())) => {},
+                            ModTarget::Pitch => {}
+                            ModTarget::Module { param, .. }
+                                if param == "filterCutoff"
+                                    || (par.id != id::INTMOD_INTENSITY
+                                        && (Knob::parse(param).is_some()
+                                            || super::filter::stage_knob(param).is_some())) => {}
                             _ => return None,
                         }
                         let envelope = u8::try_from(envelope).ok()?;
                         let target = u16::try_from(target).ok()?;
-                        Self::InternalIntensity { group: g, envelope, target, bipolar, cubic: if bipolar { CubicDepth::target(routed) } else { None } }
+                        Self::InternalIntensity {
+                            group: g,
+                            envelope,
+                            target,
+                            bipolar,
+                            cubic: if bipolar {
+                                CubicDepth::target(routed)
+                            } else {
+                                None
+                            },
+                        }
                     }
                 }
             }
@@ -826,7 +1200,11 @@ impl Address {
                 if par.group >= 0 {
                     Self::Filter(group()?, u8::try_from(par.slot).ok()?, Knob::SendLevel(n))
                 } else {
-                    let rack = if par.generic == 0 { Rack::Insert } else { rack()? };
+                    let rack = if par.generic == 0 {
+                        Rack::Insert
+                    } else {
+                        rack()?
+                    };
                     (par.group == -1).then_some(())?;
                     Self::Fx(rack, u8::try_from(par.slot).ok()?, FxParam::SendLevel(n))
                 }
@@ -861,7 +1239,22 @@ impl Address {
         let group = usize::try_from(par.group).ok().and_then(|g| groups.get(g));
         let slot = usize::try_from(par.slot).ok();
         stage
-            && group.zip(slot).is_some_and(|(g, m)| g.modulators.get(m).is_none_or(|m| m.flex))
+            && group
+                .zip(slot)
+                .is_some_and(|(g, m)| g.modulators.get(m).is_none_or(|m| m.flex))
+    }
+
+    pub(crate) fn group_index(self) -> Option<usize> {
+        match self {
+            Self::Group(g, _) | Self::Wavetable(g, _) | Self::Envelope(g, _)
+            | Self::ModEnvelope(g, _, _) | Self::PitchSourceBypass(g, _)
+            | Self::InternalBypass(g, _) | Self::PrimaryBypass(g, _) | Self::Filter(g, _, _)
+            | Self::GroupType(g, _) | Self::Intensity { group: g, .. }
+            | Self::InternalIntensity { group: g, .. } | Self::PitchSourceIntensity { group: g, .. }
+            | Self::VolumeSourceIntensity { group: g, .. }
+            | Self::LfoFrequency { group: g, .. } => Some(usize::from(g)),
+            Self::Instrument(_) | Self::Fx(..) => None,
+        }
     }
 
     /// Held by the bank's group settings.
@@ -873,9 +1266,12 @@ impl Address {
                 | Self::Envelope(..)
                 | Self::ModEnvelope(..)
                 | Self::InternalIntensity { .. }
-                | Self::PitchLfoIntensity { .. }
-                | Self::PitchLfoBypass(..)
+                | Self::PitchSourceIntensity { .. }
+                | Self::VolumeSourceIntensity { .. }
+                | Self::PitchSourceBypass(..)
+                | Self::LfoFrequency { .. }
                 | Self::InternalBypass(..)
+                | Self::PrimaryBypass(..)
                 | Self::Intensity { .. }
                 | Self::Filter(..)
         )
@@ -886,7 +1282,17 @@ impl Address {
     pub(crate) fn decode(self, value: i32) -> f32 {
         let x = (value as f32 / UNIT).clamp(0.0, 1.0);
         match self {
-            Self::Filter(_, _, Knob::FilterGain) | Self::Fx(_, _, FxParam::Filter(Knob::FilterGain)) => value as f32 / UNIT,
+            Self::LfoFrequency { synchronized, .. } => {
+                // Only the documented KSP slider range is admitted. The native
+                // synced adapter itself does not prove out-of-range clamping.
+                if !(0..=1_000_000).contains(&value) { return f32::NAN; }
+                // KSP first multiplies in double, then narrows the slider to f32.
+                let x = (f64::from(value) * 1e-6) as f32;
+                if synchronized { (12. - 11. * x).round() }
+                else { lfo_frequency(x) }
+            }
+            Self::Filter(_, _, Knob::FilterGain)
+            | Self::Fx(_, _, FxParam::Filter(Knob::FilterGain)) => value as f32 / UNIT,
             Self::Wavetable(_, WavePar::FormMode | WavePar::Form2Mode) => value as f32,
             Self::Wavetable(..) => x,
             // An instrument bus, or past the instrument output to output
@@ -902,7 +1308,9 @@ impl Address {
                 value as f32
             }
             // `$NI_REVERB2_TYPE_ROOM` (0) or `_HALL` (1).
-            Self::Fx(_, _, FxParam::Reverb(0 | 10) | FxParam::Convolution(3 | 4)) => f32::from(value != 0),
+            Self::Fx(_, _, FxParam::Reverb(0 | 10) | FxParam::Convolution(3 | 4)) => {
+                f32::from(value != 0)
+            }
             Self::Fx(_, _, FxParam::Reverb(_) | FxParam::Convolution(_) | FxParam::Field(..)) => x,
             Self::Group(_, p) | Self::Instrument(p) => match p {
                 GroupPar::Volume => volume(x),
@@ -919,14 +1327,32 @@ impl Address {
             },
             // Conflux's saved 2 st pitch target and raw507160 cutoff target
             // independently corroborate the cubic law. Cutoff stays normalized.
-            Self::Intensity { cubic: Some(CubicDepth::Pitch), .. }
-            | Self::InternalIntensity { cubic: Some(CubicDepth::Pitch), .. }
-            | Self::PitchLfoIntensity { bipolar: true, .. } => (2.0 * value as f32 / UNIT - 1.0).powi(3),
-            Self::Intensity { cubic: Some(CubicDepth::Cutoff | CubicDepth::Loop), .. }
-            | Self::InternalIntensity { cubic: Some(CubicDepth::Cutoff | CubicDepth::Loop), .. } => (2.0 * x - 1.0).powi(3),
+            Self::Intensity {
+                cubic: Some(CubicDepth::Pitch),
+                ..
+            }
+            | Self::InternalIntensity {
+                cubic: Some(CubicDepth::Pitch),
+                ..
+            }
+            | Self::PitchSourceIntensity { bipolar: true, .. }
+            | Self::VolumeSourceIntensity { bipolar: true, .. } => {
+                (2.0 * value as f32 / UNIT - 1.0).powi(3)
+            }
+            Self::Intensity {
+                cubic: Some(CubicDepth::Cutoff | CubicDepth::Loop),
+                ..
+            }
+            | Self::InternalIntensity {
+                cubic: Some(CubicDepth::Cutoff | CubicDepth::Loop),
+                ..
+            } => (2.0 * x - 1.0).powi(3),
             Self::Intensity { bipolar: true, .. }
             | Self::InternalIntensity { bipolar: true, .. } => 2.0 * x - 1.0,
-            Self::Filter(_, _, Knob::Bypass) | Self::PitchLfoBypass(..) | Self::InternalBypass(..) => f32::from(value != 0),
+            Self::Filter(_, _, Knob::Bypass)
+            | Self::PitchSourceBypass(..)
+            | Self::InternalBypass(..)
+            | Self::PrimaryBypass(..) => f32::from(value != 0),
             Self::Filter(_, _, Knob::Type) => value as f32,
             Self::Filter(_, _, Knob::Output) => effect_gain(x),
             Self::Filter(_, _, Knob::SendLevel(_)) => volume(x),
@@ -936,8 +1362,10 @@ impl Address {
             // Stored knobs are the KSP value / 1e6: Solo sets 1000000 and 0 where it stores 1 and 0.
             Self::Filter(..) | Self::Fx(_, _, FxParam::Filter(_)) => x,
             // Square law: Areia sets 704316 where its presets store 0.4961.
-            Self::Intensity { .. } | Self::InternalIntensity { .. }
-            | Self::PitchLfoIntensity { .. } => x * x,
+            Self::Intensity { .. }
+            | Self::InternalIntensity { .. }
+            | Self::PitchSourceIntensity { .. }
+            | Self::VolumeSourceIntensity { .. } => x * x,
             Self::Fx(_, _, FxParam::Bypass) => f32::from(value != 0),
             Self::Fx(_, _, FxParam::Pan) => 2.0 * x - 1.0,
             Self::Fx(_, _, FxParam::Wet | FxParam::Dry) => effect_gain(x),
@@ -948,7 +1376,15 @@ impl Address {
     /// Inverse of [`decode`](Self::decode), rounded.
     pub(crate) fn encode(self, v: f32) -> i32 {
         let x = match self {
-            Self::Filter(_, _, Knob::FilterGain) | Self::Fx(_, _, FxParam::Filter(Knob::FilterGain)) => return (v * UNIT).round() as i32,
+            Self::LfoFrequency { synchronized, .. } => {
+                let x = if synchronized { (12. - v) * f32::from_bits(0x3dba2e8c) }
+                    else { lfo_frequency_value(v) };
+                return (x.clamp(0., 1.) * UNIT + 0.5) as i32;
+            }
+            Self::Filter(_, _, Knob::FilterGain)
+            | Self::Fx(_, _, FxParam::Filter(Knob::FilterGain)) => {
+                return (v * UNIT).round() as i32;
+            }
             Self::Wavetable(_, WavePar::FormMode | WavePar::Form2Mode) => return v as i32,
             Self::Wavetable(..) => v,
             Self::Group(_, GroupPar::Output) => {
@@ -962,10 +1398,16 @@ impl Address {
             Self::Fx(_, _, FxParam::Type | FxParam::Filter(Knob::Type)) | Self::GroupType(..) => {
                 return v as i32;
             }
-            Self::Fx(_, _, FxParam::Reverb(0 | 10) | FxParam::Convolution(3 | 4)) => return i32::from(v >= 0.5),
+            Self::Fx(_, _, FxParam::Reverb(0 | 10) | FxParam::Convolution(3 | 4)) => {
+                return i32::from(v >= 0.5);
+            }
             Self::Fx(_, _, FxParam::Reverb(_) | FxParam::Convolution(_) | FxParam::Field(..)) => v,
             Self::Filter(_, _, Knob::Type) => return v as i32,
-            Self::Fx(_, _, FxParam::Bypass) | Self::Filter(_, _, Knob::Bypass) | Self::PitchLfoBypass(..) | Self::InternalBypass(..) => {
+            Self::Fx(_, _, FxParam::Bypass)
+            | Self::Filter(_, _, Knob::Bypass)
+            | Self::PitchSourceBypass(..)
+            | Self::InternalBypass(..)
+            | Self::PrimaryBypass(..) => {
                 return i32::from(v != 0.0);
             }
             Self::Group(_, p) | Self::Instrument(p) => match p {
@@ -980,18 +1422,35 @@ impl Address {
                 Stage::Attack | Stage::Hold => time_value(v, SHORT),
                 Stage::Decay | Stage::Release => time_value(v, LONG),
             },
-            Self::Intensity { cubic: Some(CubicDepth::Pitch), .. }
-            | Self::InternalIntensity { cubic: Some(CubicDepth::Pitch), .. }
-            | Self::PitchLfoIntensity { bipolar: true, .. } => return ((v.cbrt() + 1.0) * 0.5 * UNIT).round() as i32,
-            Self::Intensity { cubic: Some(CubicDepth::Cutoff | CubicDepth::Loop), .. }
-            | Self::InternalIntensity { cubic: Some(CubicDepth::Cutoff | CubicDepth::Loop), .. } => (v.cbrt() + 1.0) * 0.5,
+            Self::Intensity {
+                cubic: Some(CubicDepth::Pitch),
+                ..
+            }
+            | Self::InternalIntensity {
+                cubic: Some(CubicDepth::Pitch),
+                ..
+            }
+            | Self::PitchSourceIntensity { bipolar: true, .. }
+            | Self::VolumeSourceIntensity { bipolar: true, .. } => {
+                return ((v.cbrt() + 1.0) * 0.5 * UNIT).round() as i32;
+            }
+            Self::Intensity {
+                cubic: Some(CubicDepth::Cutoff | CubicDepth::Loop),
+                ..
+            }
+            | Self::InternalIntensity {
+                cubic: Some(CubicDepth::Cutoff | CubicDepth::Loop),
+                ..
+            } => (v.cbrt() + 1.0) * 0.5,
             Self::Intensity { bipolar: true, .. }
             | Self::InternalIntensity { bipolar: true, .. }
             | Self::Fx(_, _, FxParam::Pan)
             | Self::Filter(_, _, Knob::Spread | Knob::Pan)
             | Self::Fx(_, _, FxParam::Filter(Knob::Spread | Knob::Pan)) => (v + 1.0) * 0.5,
-            Self::Intensity { .. } | Self::InternalIntensity { .. }
-            | Self::PitchLfoIntensity { .. } => v.abs().sqrt(),
+            Self::Intensity { .. }
+            | Self::InternalIntensity { .. }
+            | Self::PitchSourceIntensity { .. }
+            | Self::VolumeSourceIntensity { .. } => v.abs().sqrt(),
             Self::Filter(_, _, Knob::Output) | Self::Fx(_, _, FxParam::Wet | FxParam::Dry) => {
                 (v.max(0.0) / EFFECT_MAX_GAIN).cbrt()
             }
@@ -1004,6 +1463,23 @@ impl Address {
 }
 
 pub(super) const UNIT: f32 = 1_000_000.0;
+
+// Native parameter713's legacy exponential approximation. Keep every f32
+// boundary; its slider endpoints differ from the saved frequency bounds.
+fn lfo_frequency(x: f32) -> f32 {
+    let y = x.clamp(0., 1.) * f32::from_bits(0x41650ef6) - f32::from_bits(0x40d2b2b7);
+    let fraction = y - y.floor();
+    let correction = (fraction - fraction * fraction) * f32::from_bits(0x3eadee78);
+    f32::from_bits(((y + 127. - correction) * 8_388_608.) as u32)
+}
+
+fn lfo_frequency_value(hz: f32) -> f32 {
+    let y = hz.to_bits() as i32 as f32 * f32::from_bits(0x34000000) - 127.;
+    let fraction = y - y.floor();
+    let correction = (fraction - fraction * fraction) * f32::from_bits(0x3eb17679);
+    (((y + correction) * f32::from_bits(0x3f317218) - f32::from_bits(0xc0922ab7))
+        * f32::from_bits(0x3dce2772)).clamp(0., 1.)
+}
 /// +12 dB, Kontakt's volume maximum.
 const MAX_GAIN: f32 = 3.981_071_7;
 /// Group and instrument tune span ±36 semitones.
@@ -1017,6 +1493,53 @@ const TIME_BASE: f32 = 0.002;
 /// Kontakt's volume law: 630859 is 0 dB, 1000000 is +12 dB (cubic in amplitude).
 fn volume(x: f32) -> f32 {
     MAX_GAIN * x * x * x
+}
+
+/// Native `_set_engine_par(VOLUME, value, ...)`: double normalization,
+/// one float conversion, then the verified float cubic converter (8.13.1).
+pub(super) fn native_volume(value: f64) -> f32 {
+    let x = (value * 0.000_001) as f32;
+    (x * x * x).clamp(0.0, 1.0) * 4.0
+}
+
+/// Native getter inverse: float clamp(gain/4), CRT powf with float 1/3,
+/// then float million-unit rounding. Host/Windows CRT bit parity is unproved.
+pub(super) fn native_volume_value(gain: f32) -> i32 {
+    let x = (gain * 0.25).clamp(0.0, 1.0).powf(1.0 / 3.0);
+    (x * UNIT + 0.5) as i32
+}
+
+/// The native standard CC7 script multiplies `%CC[7]` by these integers.
+/// MIDI1 follows that byte law. Higher resolutions extend it continuously;
+/// this precision policy is not a claim about Kontakt's MIDI2 implementation.
+pub(super) fn native_cc7(value: crate::midi::ControlValue, maximum_db: i32) -> f32 {
+    let multiplier = match maximum_db {
+        -12 => 3113,
+        -6 => 3937,
+        6 => 6243,
+        12 => 7874,
+        _ => 4956,
+    };
+    native_volume(value.normalized() * f64::from(127 * multiplier))
+}
+
+/// Native instrument PAN: double normalization, float bipolar conversion,
+/// clamp and the row converter's float unipolar/bipolar round trip.
+pub(super) fn native_pan(value: f64) -> f32 {
+    let x = (value * 0.000_001) as f32;
+    let z = (x * 2.0 - 1.0).clamp(-1.0, 1.0);
+    (z * 0.5 + 0.5) * 2.0 - 1.0
+}
+
+pub(super) fn native_pan_value(pan: f32) -> i32 {
+    let x = (pan.clamp(-1.0, 1.0) + 1.0) * 0.5;
+    (x * UNIT + 0.5) as i32
+}
+
+/// MIDI1 coefficient recovered from the system script; higher resolutions
+/// extend that mapping continuously without claiming Kontakt MIDI2 parity.
+pub(super) fn native_cc10(value: crate::midi::ControlValue) -> f32 {
+    native_pan(value.normalized() * f64::from(127 * 7874))
 }
 
 /// +24 dB, the effect output gain and dry level maximum.
@@ -1091,12 +1614,14 @@ pub fn display(id: i32, value: i32) -> Option<Disp> {
         id::RV2_TIME => Disp::Num(crate::fx::params::Reverb::time_seconds(x) * 1000., 1),
         _ => match crate::ksp::engine_par_name(id)? {
             "$ENGINE_PAR_GAIN" => Disp::Num(12.0 * value as f32 / UNIT, 1),
-            "$ENGINE_PAR_SEQ_LF_GAIN" | "$ENGINE_PAR_SEQ_LMF_GAIN"
-                | "$ENGINE_PAR_SEQ_HMF_GAIN" | "$ENGINE_PAR_SEQ_HF_GAIN" => {
-                Disp::Num(super::filter::geq_gain_db(x), 1)
-            }
-            name @ ("$ENGINE_PAR_COMP_ATTACK" | "$ENGINE_PAR_COMP_DECAY"
-                | "$ENGINE_PAR_LIM_RELEASE" | "$ENGINE_PAR_DL_TIME") => {
+            "$ENGINE_PAR_SEQ_LF_GAIN"
+            | "$ENGINE_PAR_SEQ_LMF_GAIN"
+            | "$ENGINE_PAR_SEQ_HMF_GAIN"
+            | "$ENGINE_PAR_SEQ_HF_GAIN" => Disp::Num(super::filter::geq_gain_db(x), 1),
+            name @ ("$ENGINE_PAR_COMP_ATTACK"
+            | "$ENGINE_PAR_COMP_DECAY"
+            | "$ENGINE_PAR_LIM_RELEASE"
+            | "$ENGINE_PAR_DL_TIME") => {
                 // These fields are stored in milliseconds. Reuse the DSP's
                 // conversion, including the limiter's current approximation.
                 let (kind, field) = crate::fx::blocks::engine_par(name)?;
@@ -1118,16 +1643,26 @@ pub fn display(id: i32, value: i32) -> Option<Disp> {
 pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32) -> bool {
     match address {
         Address::Wavetable(g, p) => {
-            let Some(source) = settings.get_mut(g as usize).and_then(|g| g.wavetable.as_mut()) else { return false; };
+            let Some(source) = settings
+                .get_mut(g as usize)
+                .and_then(|g| g.wavetable.as_mut())
+            else {
+                return false;
+            };
             match p {
                 WavePar::Position => source.position = value.clamp(0., 1.),
                 WavePar::Phase => source.phase = value.clamp(0., 1.),
                 WavePar::Form => source.form1 = value.clamp(0., 1.),
                 WavePar::Form2 => source.form2 = value.clamp(0., 1.),
                 WavePar::FormMode | WavePar::Form2Mode => {
-                    if !super::wavetable::form_supported(value as i32) { return false; }
-                    if matches!(p, WavePar::FormMode) { source.form1_type = value as i32; }
-                    else { source.form2_type = value as i32; }
+                    if !super::wavetable::form_supported(value as i32) {
+                        return false;
+                    }
+                    if matches!(p, WavePar::FormMode) {
+                        source.form1_type = value as i32;
+                    } else {
+                        source.form2_type = value as i32;
+                    }
                 }
             }
         }
@@ -1167,64 +1702,162 @@ pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32
                 }
             }
         }
-        Address::Intensity { group, index, cubic, .. } => {
-            if cubic.is_some() && !value.is_finite() { return false; }
+        Address::Intensity {
+            group,
+            index,
+            cubic,
+            ..
+        } => {
+            if cubic.is_some() && !value.is_finite() {
+                return false;
+            }
             let m = settings
                 .get_mut(group as usize)
                 .and_then(|s| s.mods.mods.get_mut(index as usize));
             let Some(m) = m else {
                 return false;
             };
-            m.intensity = if cubic == Some(CubicDepth::Pitch) { value } else { value.clamp(-1.0, 1.0) };
-        }
-        Address::InternalIntensity { group, envelope, target, .. } => {
-            if !value.is_finite() { return false; }
-            let value = if matches!(address, Address::InternalIntensity { cubic: Some(CubicDepth::Pitch), .. }) {
+            m.intensity = if cubic == Some(CubicDepth::Pitch) {
                 value
-            } else { value.clamp(-1., 1.) };
-            let Some(settings) = settings.get_mut(group as usize) else { return false; };
+            } else {
+                value.clamp(-1.0, 1.0)
+            };
+        }
+        Address::InternalIntensity {
+            group,
+            envelope,
+            target,
+            ..
+        } => {
+            if !value.is_finite() {
+                return false;
+            }
+            let value = if matches!(
+                address,
+                Address::InternalIntensity {
+                    cubic: Some(CubicDepth::Pitch),
+                    ..
+                }
+            ) {
+                value
+            } else {
+                value.clamp(-1., 1.)
+            };
+            let Some(settings) = settings.get_mut(group as usize) else {
+                return false;
+            };
             let mut applied = false;
-            if let Some(m) = settings.pitch_envelopes.iter_mut().find(|e| e.index == envelope)
-                .and_then(|e| e.targets.iter_mut().find(|t| t.0 == target)) {
+            if let Some(m) = settings
+                .pitch_envelopes
+                .iter_mut()
+                .find(|e| e.index == envelope)
+                .and_then(|e| e.targets.iter_mut().find(|t| t.0 == target))
+            {
                 m.2.intensity = value;
                 applied = true;
             }
-            if let Some(m) = settings.filter.as_mut().and_then(|f| f.envelope_mod(envelope, target)) {
+            if let Some(m) = settings
+                .filter
+                .as_mut()
+                .and_then(|f| f.envelope_mod(envelope, target))
+            {
                 m.intensity = value;
                 applied = true;
             }
             return applied;
         }
-        Address::PitchLfoIntensity { group, slot, target, .. } => {
+        Address::PitchSourceIntensity {
+            group,
+            slot,
+            target,
+            ..
+        } => {
+            if !value.is_finite() {
+                return false;
+            }
+            let Some(group) = settings.get_mut(group as usize) else { return false; };
+            let Some((_, depth, targets)) = group.pitch_lfos.iter_mut()
+                .map(|l| (l.slot, &mut l.depth, &mut l.targets))
+                .chain(group.pitch_glides.iter_mut().map(|l| (l.slot, &mut l.depth, &mut l.targets)))
+                .find(|l| l.0 == slot) else { return false; };
+            let Some(index) = targets.iter().position(|t| t.0 == target) else {
+                return false;
+            };
+            let next: f32 = targets.iter().enumerate()
+                .map(|(i, t)| if i == index { value } else { t.1 }).sum();
+            if !next.is_finite() { return false; }
+            targets[index].1 = value;
+            *depth = next;
+        }
+        Address::VolumeSourceIntensity { group, slot, target, bipolar } => {
             if !value.is_finite() { return false; }
             let Some(lfo) = settings.get_mut(group as usize)
-                .and_then(|g| g.pitch_lfos.iter_mut().find(|l| l.slot == slot)) else { return false; };
-            let Some(index) = lfo.targets.iter().position(|t| t.0 == target) else { return false; };
-            let depth: f32 = lfo.targets.iter().enumerate()
-                .map(|(i, t)| if i == index { value } else { t.1 }).sum();
-            if !depth.is_finite() { return false; }
-            lfo.targets[index].1 = value;
-            lfo.depth = depth;
+                .and_then(|g| g.volume_lfos.iter_mut()
+                    .find(|l| l.source.slot == slot && l.target == target)) else { return false; };
+            lfo.intensity = value.abs();
+            if bipolar { lfo.negative = value < 0.; }
         }
-        Address::PitchLfoBypass(g, slot) => {
+        Address::LfoFrequency { group: g, slot, synchronized } => {
+            if !value.is_finite() || (!synchronized && value <= 0.) { return false; }
             let Some(group) = settings.get_mut(g as usize) else { return false; };
+            if super::lfo::validate_sources(&group.pitch_lfos, &group.volume_lfos).is_err() { return false; }
+            let mut sources = group.pitch_lfos.iter()
+                .chain(group.volume_lfos.iter().map(|l| &l.source)).filter(|l| l.slot == slot);
+            let supported = |l: &crate::import::PitchLfo| l.digital.is_some()
+                && (l.note_value > 1e-9) == synchronized
+                && (!l.shared || (!l.extended_fade && (!synchronized || (1. ..=12.).contains(&value))));
+            if !sources.next().is_some_and(supported) || !sources.all(supported) { return false; }
+            for source in group.pitch_lfos.iter_mut()
+                .chain(group.volume_lfos.iter_mut().map(|l| &mut l.source)).filter(|l| l.slot == slot) {
+                source.count = value;
+            }
+        }
+        Address::PitchSourceBypass(g, slot) => {
+            let Some(group) = settings.get_mut(g as usize) else {
+                return false;
+            };
             let mut applied = false;
             for lfo in group.pitch_lfos.iter_mut().filter(|l| l.slot == slot) {
-                lfo.bypassed = value != 0.; applied = true;
+                lfo.bypassed = value != 0.;
+                applied = true;
             }
-            for lfo in group.volume_lfos.iter_mut().filter(|l| l.source.slot == slot) {
-                lfo.source.bypassed = value != 0.; applied = true;
+            for lfo in group
+                .volume_lfos
+                .iter_mut()
+                .filter(|l| l.source.slot == slot)
+            {
+                lfo.source.bypassed = value != 0.;
+                applied = true;
+            }
+            for glide in group.pitch_glides.iter_mut().filter(|l| l.slot == slot) {
+                glide.bypassed = value != 0.;
+                applied = true;
             }
             return applied;
         }
+        Address::PrimaryBypass(g, slot) => {
+            let Some(control) = settings.get_mut(g as usize).and_then(|g| g.primary_bypass.as_mut())
+                .filter(|control| control.0 == slot) else { return false; };
+            control.1 = value != 0.;
+        }
         Address::InternalBypass(g, index) => {
-            let Some(settings) = settings.get_mut(g as usize) else { return false; };
+            let Some(settings) = settings.get_mut(g as usize) else {
+                return false;
+            };
             let mut applied = false;
-            if let Some(envelope) = settings.pitch_envelopes.iter_mut().find(|e| e.index == index) {
+            if let Some(envelope) = settings
+                .pitch_envelopes
+                .iter_mut()
+                .find(|e| e.index == index)
+            {
                 envelope.bypass = value != 0.;
                 applied = true;
             }
-            if let Some(bypass) = settings.filter.as_mut().and_then(|f| f.envelope_bypass(index)) {
+            if let Some(bypass) = settings
+                .filter
+                .as_mut()
+                .and_then(|f| f.envelope_bypass(index))
+            {
                 *bypass = value != 0.;
                 applied = true;
             }
@@ -1264,9 +1897,14 @@ pub(crate) fn read(settings: &[GroupSettings], address: Address) -> Option<f32> 
     match address {
         Address::Wavetable(g, p) => {
             let source = settings.get(g as usize)?.wavetable.as_ref()?;
-            Some(match p { WavePar::Position => source.position, WavePar::Phase => source.phase,
-                WavePar::Form => source.form1, WavePar::Form2 => source.form2,
-                WavePar::FormMode => source.form1_type as f32, WavePar::Form2Mode => source.form2_type as f32 })
+            Some(match p {
+                WavePar::Position => source.position,
+                WavePar::Phase => source.phase,
+                WavePar::Form => source.form1,
+                WavePar::Form2 => source.form2,
+                WavePar::FormMode => source.form1_type as f32,
+                WavePar::Form2Mode => source.form2_type as f32,
+            })
         }
         Address::Group(g, p) => {
             let group = settings.get(g as usize)?;
@@ -1306,24 +1944,83 @@ pub(crate) fn read(settings: &[GroupSettings], address: Address) -> Option<f32> 
             .mods
             .get(index as usize)
             .map(|m| m.intensity),
-        Address::InternalIntensity { group, envelope, target, .. } => {
+        Address::InternalIntensity {
+            group,
+            envelope,
+            target,
+            ..
+        } => {
             let settings = settings.get(group as usize)?;
-            settings.pitch_envelopes.iter().find(|e| e.index == envelope)
-                .and_then(|e| e.targets.iter().find(|t| t.0 == target)).map(|t| t.2.intensity)
-                .or_else(|| settings.filter.as_ref()?.envelope_mod_at(envelope, target).map(|m| m.intensity))
+            settings
+                .pitch_envelopes
+                .iter()
+                .find(|e| e.index == envelope)
+                .and_then(|e| e.targets.iter().find(|t| t.0 == target))
+                .map(|t| t.2.intensity)
+                .or_else(|| {
+                    settings
+                        .filter
+                        .as_ref()?
+                        .envelope_mod_at(envelope, target)
+                        .map(|m| m.intensity)
+                })
+        }
+        Address::PitchSourceIntensity {
+            group,
+            slot,
+            target,
+            ..
+        } => {
+            let group = settings.get(group as usize)?;
+            group.pitch_lfos.iter().map(|l| (l.slot, &l.targets))
+                .chain(group.pitch_glides.iter().map(|l| (l.slot, &l.targets)))
+                .find(|l| l.0 == slot)?.1.iter().find(|t| t.0 == target).map(|t| t.1)
         },
-        Address::PitchLfoIntensity { group, slot, target, .. } => settings.get(group as usize)?
-            .pitch_lfos.iter().find(|l| l.slot == slot)?.targets.iter().find(|t| t.0 == target).map(|t| t.1),
-        Address::PitchLfoBypass(g, slot) => {
+        Address::VolumeSourceIntensity { group, slot, target, bipolar } => {
+            let lfo = settings.get(group as usize)?.volume_lfos.iter()
+                .find(|l| l.source.slot == slot && l.target == target)?;
+            Some(if bipolar && lfo.negative { -lfo.intensity } else { lfo.intensity })
+        }
+        Address::LfoFrequency { group: g, slot, .. } => {
             let group = settings.get(g as usize)?;
-            group.pitch_lfos.iter().find(|l| l.slot == slot).map(|l| f32::from(l.bypassed))
-                .or_else(|| group.volume_lfos.iter().find(|l| l.source.slot == slot).map(|l| f32::from(l.source.bypassed)))
-        },
+            group.pitch_lfos.iter().chain(group.volume_lfos.iter().map(|l| &l.source))
+                .find(|l| l.slot == slot).map(|l| l.count)
+        }
+        Address::PitchSourceBypass(g, slot) => {
+            let group = settings.get(g as usize)?;
+            group
+                .pitch_lfos
+                .iter()
+                .find(|l| l.slot == slot)
+                .map(|l| f32::from(l.bypassed))
+                .or_else(|| {
+                    group
+                        .volume_lfos
+                        .iter()
+                        .find(|l| l.source.slot == slot)
+                        .map(|l| f32::from(l.source.bypassed))
+                }).or_else(|| group.pitch_glides.iter().find(|l| l.slot == slot)
+                    .map(|l| f32::from(l.bypassed)))
+        }
+        Address::PrimaryBypass(g, slot) => {
+            let control = settings.get(g as usize)?.primary_bypass.filter(|p| p.0 == slot)?;
+            Some(f32::from(control.1))
+        }
         Address::InternalBypass(g, index) => {
             let settings = settings.get(g as usize)?;
-            settings.pitch_envelopes.iter().find(|e| e.index == index).map(|e| f32::from(e.bypass))
-                .or_else(|| settings.filter.as_ref()?.envelope_bypass_at(index).map(f32::from))
-        },
+            settings
+                .pitch_envelopes
+                .iter()
+                .find(|e| e.index == index)
+                .map(|e| f32::from(e.bypass))
+                .or_else(|| {
+                    settings
+                        .filter
+                        .as_ref()?
+                        .envelope_bypass_at(index)
+                        .map(f32::from)
+                })
+        }
         Address::Filter(g, slot, knob) => {
             settings.get(g as usize)?.filter.as_ref()?.knob(slot, knob)
         }
@@ -1339,6 +2036,12 @@ pub(super) struct Write {
     pub at: u32,
     pub address: Address,
     pub value: f32,
+    /// Same-sample standard commands preceding this native scalar write.
+    pub standard_controls_before: usize,
+    /// A physical native scalar action, retaining the canonical wire precision.
+    pub standard_physical: Option<crate::midi::ControlValue>,
+    /// A coalesced physical action may also retain an earlier authored baseline.
+    pub standard_authored: bool,
 }
 
 /// Engine parameter changes one render can hold; later ones are dropped and counted.
@@ -1347,13 +2050,21 @@ pub const MAX_WRITES: usize = 4096;
 /// `$EFFECT_TYPE_*` of group `g`'s insert `slot`, 0 when it is empty.
 pub(crate) fn group_type(groups: &[Group], g: u16, slot: u8) -> Option<f32> {
     let fx = &groups.get(g as usize)?.fx;
-    let kind = fx.slots.iter().find(|fx| fx.slot == slot as usize).map(|fx| fx.kind.ser_id());
+    let kind = fx
+        .slots
+        .iter()
+        .find(|fx| fx.slot == slot as usize)
+        .map(|fx| fx.kind.ser_id());
     Some(f32::from(kind.unwrap_or(0)))
 }
 
 /// `find_mod`: position in `Group::modulators` of the first name `is` accepts.
 pub(crate) fn find_mod(groups: &[Group], group: usize, is: &dyn Fn(&str) -> bool) -> Option<usize> {
-    groups.get(group)?.modulators.iter().position(|m| m.kind != "undecoded" && is(&m.name))
+    groups
+        .get(group)?
+        .modulators
+        .iter()
+        .position(|m| m.kind != "undecoded" && is(&m.name))
 }
 
 /// `find_target`: position among the modulator's targets.
@@ -1373,1483 +2084,4 @@ pub(crate) fn find_target(
 }
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn solid_geq_callback_captions_show_signed_dsp_gain() {
-        use crate::ksp::{KspEngine, LogEngine, Runtime, Value};
-        for name in ["$ENGINE_PAR_SEQ_LF_GAIN", "$ENGINE_PAR_SEQ_LMF_GAIN",
-            "$ENGINE_PAR_SEQ_HMF_GAIN", "$ENGINE_PAR_SEQ_HF_GAIN"] {
-            let source = format!("on init\nmake_perfview\ndeclare ui_slider $gain(0,1000000)\ndeclare ui_label $caption(1,1)\nend on\non ui_control($gain)\nset_engine_par({name},$gain,-1,2,$NI_BUS_OFFSET)\nset_control_par_str(get_ui_id($gain),$CONTROL_PAR_LABEL,get_engine_par_disp({name},-1,2,$NI_BUS_OFFSET) & \" dB\")\nset_text($caption,get_engine_par_disp_ext({name},$gain,-1,2,$NI_BUS_OFFSET) & \" dB\")\nend on");
-            let mut host = LogEngine::new(Vec::new(), 48000.);
-            let (mut rt, errors) = Runtime::with_scripts(&[&source], &mut host, 8, Vec::new());
-            assert!(errors.iter().all(Option::is_none), "{errors:?}");
-            let id = (ENGINE_PAR_BASE..ENGINE_PAR_BASE + 512).find(|&id| crate::ksp::engine_par_name(id) == Some(name)).unwrap();
-            for (value, caption) in [(0, "-15.0 dB"), (500000, "0.0 dB"),
-                (750000, "7.5 dB"), (1000000, "15.0 dB")] {
-                rt.ui_control(&mut host, 0, 0, value);
-                let ui = rt.interface(0);
-                assert_eq!(ui.controls[0].properties["$CONTROL_PAR_LABEL"], Value::Text(caption.into()), "{name}");
-                assert_eq!(ui.controls[1].properties["$CONTROL_PAR_TEXT"], Value::Text(caption.into()), "{name}");
-                assert_eq!(host.engine_par(EnginePar { id, group: -1, slot: 2, generic: 1000 }), Some(value));
-            }
-        }
-    }
-
-    #[test]
-    fn reverb_time_callback_displays_the_effective_decay_in_milliseconds() {
-        let ui = crate::ksp::initialize("on init\nmake_perfview\ndeclare ui_slider $time(0,127)\ndeclare ui_label $caption(1,1)\nset_engine_par($ENGINE_PAR_RV2_TIME,370078,-1,0,0)\nset_control_par_str(get_ui_id($time),$CONTROL_PAR_LABEL,get_engine_par_disp($ENGINE_PAR_RV2_TIME,-1,0,0) & \" ms\")\nset_text($caption,get_engine_par_disp($ENGINE_PAR_RV2_TIME,-1,0,0) & \" ms\")\nend on", 0, 8).unwrap();
-        assert_eq!(ui.controls[0].properties["$CONTROL_PAR_LABEL"], crate::ksp::Value::Text("1099.5 ms".into()));
-        assert_eq!(ui.controls[1].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text("1099.5 ms".into()));
-        for (value, milliseconds) in [(0,200.), (500000,2000.), (1000000,20000.)] {
-            let Some(Disp::Num(shown, _)) = display(id::RV2_TIME, value) else { panic!("RV2_TIME display absent") };
-            assert_eq!(shown, milliseconds);
-        }
-    }
-
-    #[test]
-    fn effect_time_callback_labels_use_dsp_milliseconds() {
-        let ui = crate::ksp::initialize("on init\nmake_perfview\ndeclare ui_slider $release(0,1000000)\n$release := 230000\nset_control_par_str(get_ui_id($release),$CONTROL_PAR_LABEL,get_engine_par_disp_ext($ENGINE_PAR_LIM_RELEASE,$release,-1,4,0) & \" ms\")\nend on", 0, 0).unwrap();
-        assert_eq!(ui.controls[0].properties["$CONTROL_PAR_LABEL"], crate::ksp::Value::Text("28.8 ms".into()));
-        for name in ["$ENGINE_PAR_COMP_ATTACK", "$ENGINE_PAR_COMP_DECAY", "$ENGINE_PAR_LIM_RELEASE", "$ENGINE_PAR_DL_TIME"] {
-            let id = (ENGINE_PAR_BASE..ENGINE_PAR_BASE + 512).find(|&id| crate::ksp::engine_par_name(id) == Some(name)).unwrap();
-            let (kind, field) = crate::fx::blocks::engine_par(name).unwrap();
-            for value in [0, 230000, 1000000] {
-                let Some(Disp::Num(shown, _)) = display(id, value) else { panic!("{name}") };
-                assert_eq!(shown, crate::fx::blocks::stored(kind, field, value as f32 / 1e6));
-            }
-        }
-    }
-
-    use super::*;
-    use crate::import::{Modulator, ShaperCurve};
-
-    #[test]
-    fn equal_curves_share_one_copy() {
-        let mut other = group();
-        other.mods[0].shaper = Some(ShaperCurve::Table(vec![0.5; 128]));
-        let mut tables = [&group(), &group(), &other].map(ModTable::from);
-        share_curves(tables.iter_mut());
-        let curve = |t: &ModTable| t.mods[0].curve.clone().unwrap();
-        assert!(Arc::ptr_eq(&curve(&tables[0]), &curve(&tables[1])));
-        assert!(!Arc::ptr_eq(&curve(&tables[0]), &curve(&tables[2])));
-        assert_eq!(tables[0], ModTable::from(&group()), "sharing changes no value");
-    }
-
-    #[test]
-    fn release_counter_moves_the_release_sample_start() {
-        // Pacific's RTC_PITCH: counter -> sample start at 0.5, shaped from 1
-        // (counter 0) down to 0.42 (counter 1). Dropping the route plays the
-        // release's loud onset, about 4 dB over the whole audit render.
-        let group = Group {
-            mods: vec![ModAssignment {
-                name: "RTC_PITCH".into(),
-                source: ModSource::ReleaseTriggerCounter,
-                target: ModTarget::SampleStart,
-                intensity: 0.5,
-                invert: false,
-                lag_ms: 0,
-                shaper: Some(ShaperCurve::Table(
-                    (0..128).map(|i| 1.0 - 0.58 * i as f32 / 127.0).collect(),
-                )),
-            }],
-            ..Group::default()
-        };
-        let table = ModTable::from(&group);
-        let cc = [0u8; 128];
-        let at = |counter| {
-            table.start_offset(&Inputs {
-                cc74: None,
-                cc: &cc,
-                bend: 0.0,
-                pressure: 0,
-                note: 60,
-                velocity: 100,
-                counter,
-            })
-        };
-        // A 700 ms note under T = 1500 ms leaves 0.53 of the counter.
-        let x = release_counter(1500, 700.0);
-        assert!((x - 0.533).abs() < 1e-3);
-        assert!((at(x) - 0.5 * (1.0 - 0.58 * x)).abs() < 1e-2, "{}", at(x));
-        let (low, high) = table.start_offset_range(&cc, 60..=60, 100..=100);
-        assert!(
-            (low - 0.21).abs() < 1e-2 && (high - 0.5).abs() < 1e-3,
-            "{low}..{high}"
-        );
-    }
-
-    #[test]
-    fn lagged_values_settle_exactly() {
-        // A long lag over short blocks steps less than half the float
-        // spacing near the target: without the snap it never arrives.
-        let mut value = 0.2f32;
-        for _ in 0..2000 {
-            approach(&mut value, 0.7, 0.01, 128, 48000.0);
-        }
-        assert_eq!(value, 0.7);
-    }
-
-    #[test]
-    fn ids_match_the_runtime_table() {
-        use crate::ksp::engine_par_name as name;
-        for (id, expected) in [
-            (id::VOLUME, "VOLUME"),
-            (id::PAN, "PAN"),
-            (id::TUNE, "TUNE"),
-            (id::OUTPUT_CHANNEL, "OUTPUT_CHANNEL"),
-            (id::ATTACK, "ATTACK"),
-            (id::DECAY, "DECAY"),
-            (id::SUSTAIN, "SUSTAIN"),
-            (id::RELEASE, "RELEASE"),
-            (id::HOLD, "HOLD"),
-            (id::ATK_CURVE, "ATK_CURVE"),
-            (id::MOD_TARGET_INTENSITY, "MOD_TARGET_INTENSITY"),
-            (id::MOD_TARGET_MP_INTENSITY, "MOD_TARGET_MP_INTENSITY"),
-            (id::INTMOD_INTENSITY, "INTMOD_INTENSITY"),
-            (id::INTMOD_BYPASS, "INTMOD_BYPASS"),
-            (id::EFFECT_BYPASS, "EFFECT_BYPASS"),
-            (id::EFFECT_TYPE, "EFFECT_TYPE"),
-            (id::EFFECT_SUBTYPE, "EFFECT_SUBTYPE"),
-            (id::SEND_EFFECT_TYPE, "SEND_EFFECT_TYPE"),
-            (id::RV2_PREDELAY, "RV2_PREDELAY"),
-            (id::RV2_TIME, "RV2_TIME"),
-            (id::RV2_TYPE, "RV2_TYPE"),
-            (id::RV2_SIZE, "RV2_SIZE"),
-            (id::RV2_DAMPING, "RV2_DAMPING"),
-            (id::RV2_DIFF, "RV2_DIFF"),
-            (id::RV2_MOD, "RV2_MOD"),
-            (id::RV2_STEREO, "RV2_STEREO"),
-            (id::RV2_FREEZE, "RV2_FREEZE"),
-            (id::RV2_EQ_LOW_FREQ, "RV2_EQ_LOW_FREQ"),
-            (id::RV2_EQ_LOW_GAIN, "RV2_EQ_LOW_GAIN"),
-            (id::RV2_EQ_HIGH_FREQ, "RV2_EQ_HIGH_FREQ"),
-            (id::RV2_EQ_HIGH_GAIN, "RV2_EQ_HIGH_GAIN"),
-            (id::SEND_EFFECT_BYPASS, "SEND_EFFECT_BYPASS"),
-            (id::SEND_EFFECT_DRY_LEVEL, "SEND_EFFECT_DRY_LEVEL"),
-            (id::SEND_EFFECT_OUTPUT_GAIN, "SEND_EFFECT_OUTPUT_GAIN"),
-            (id::INSERT_EFFECT_OUTPUT_GAIN, "INSERT_EFFECT_OUTPUT_GAIN"),
-            (id::SENDLEVEL_0, "SENDLEVEL_0"),
-            (id::SENDLEVEL_7, "SENDLEVEL_7"),
-            (id::STEREO, "STEREO"),
-            (id::STEREO_PAN, "STEREO_PAN"),
-            (id::FREQ1, "FREQ1"),
-            (id::FREQ3, "FREQ3"),
-            (id::BW1, "BW1"),
-            (id::BW3, "BW3"),
-            (id::GAIN1, "GAIN1"),
-            (id::GAIN3, "GAIN3"),
-        ] {
-            assert_eq!(name(id), Some(format!("$ENGINE_PAR_{expected}").as_str()));
-        }
-    }
-
-    #[test]
-    fn value_laws_match_reference_points() {
-        let volume = Address::Instrument(GroupPar::Volume);
-        assert!((volume.decode(630_859) - 1.0).abs() < 1e-3, "0 dB");
-        // The cube law is Kontakt's to within 0.005 dB, not bit-exact.
-        assert!((volume.encode(1.0) - 630_859).abs() < 200);
-        // Areia sets 704316 where its presets store intensity 0.4961.
-        let intensity = Address::Intensity {
-            group: 0,
-            index: 0,
-            bipolar: false,
-            cubic: None,
-        };
-        assert!((intensity.decode(704_316) - 0.4961).abs() < 1e-3);
-        // Areia sets these at init; its saved envelopes hold the same times.
-        let attack = Address::Envelope(0, Stage::Attack);
-        let release = Address::Envelope(0, Stage::Release);
-        assert!((attack.decode(465_229) - 0.125_013).abs() < 1e-4);
-        assert!((release.decode(512_668) - 0.250_001).abs() < 1e-4);
-        // Afflatus sets these on a group insert and its send; the presets store the gains.
-        let output = Address::Filter(0, 1, Knob::Output);
-        assert!((output.decode(396_851) - 1.000_005_6).abs() < 1e-4);
-        assert!((Address::Fx(Rack::Send, 0, FxParam::Wet).decode(125_919) - 0.031_944).abs() < 1e-5);
-        assert!((output.encode(1.0) - 396_851).abs() < 2);
-        let spread = Address::Filter(0, 0, Knob::Spread);
-        assert!((spread.decode(434_210) + 0.131_58).abs() < 1e-4);
-        assert!((release.decode(1_000_000) - 25.000_04).abs() < 1e-3);
-        // Solo sets these where its presets store attack curves 0.5 and -0.33.
-        let curve = Address::Envelope(0, Stage::Curve);
-        assert_eq!(curve.decode(750_000), 0.5);
-        assert!((curve.decode(333_333) + 0.333_33).abs() < 1e-5);
-        assert_eq!(curve.encode(1.0), 1_000_000);
-        assert_eq!(release.encode(0.250_001), 512_668);
-        // Areia's send level, stored as 0.25 (−12 dB).
-        let send = Address::Fx(Rack::Insert, 7, FxParam::SendLevel(0));
-        assert!((send.decode(396_820) - 0.25).abs() < 2e-3);
-        let output = Address::Group(0, GroupPar::Output);
-        assert_eq!(output.decode(1003), 3.0);
-        assert_eq!(output.encode(output.decode(-1)), -1);
-        // Past the instrument output: channel 1 ("Out 2"), both ways.
-        assert_eq!(output.decode(1), f32::from(DIRECT) + 1.0);
-        assert_eq!(output.encode(output.decode(1)), 1);
-        let bus_out = Address::Fx(Rack::Bus(2), 0, FxParam::Output);
-        assert_eq!((bus_out.decode(3), bus_out.decode(-1), bus_out.encode(3.0)), (3.0, -1.0, 3));
-    }
-
-    fn group() -> Group {
-        let assignment = |source, lag_ms, shaper| ModAssignment {
-            name: String::new(),
-            source,
-            target: ModTarget::Volume,
-            intensity: 1.0,
-            invert: false,
-            lag_ms,
-            shaper,
-        };
-        Group {
-            mods: vec![
-                // Velocity squared by a table shaper.
-                assignment(
-                    ModSource::Velocity,
-                    0,
-                    Some(ShaperCurve::Table(
-                        (0..128).map(|i| (i as f32 / 127.0).powi(2)).collect(),
-                    )),
-                ),
-                assignment(ModSource::MidiCc(11), 100, None),
-            ],
-            modulators: vec![
-                Modulator {
-                    name: "ENV_AHDSR".into(),
-                    targets: vec!["ENV_AHDSR_VOLUME".into()],
-                    assignments: None,
-                    volume_env: true,
-                    bypassed: false,
-                    flex: false,
-                    envelope: None,
-                    kind: String::new(),
-                },
-                Modulator {
-                    name: "VEL_VOLUME".into(),
-                    targets: vec![String::new()],
-                    assignments: Some(0),
-                    volume_env: false,
-                    bypassed: false,
-                    flex: false,
-                    envelope: None,
-                    kind: String::new(),
-                },
-                Modulator {
-                    name: "CC_VOLUME".into(),
-                    targets: vec![String::new()],
-                    assignments: Some(1),
-                    volume_env: false,
-                    bypassed: false,
-                    flex: false,
-                    envelope: None,
-                    kind: String::new(),
-                },
-            ],
-            ..Group::default()
-        }
-    }
-
-    #[test]
-    fn group_insert_types_and_reverb_eq_freeze_resolve() {
-        use crate::fx::{Effect, Kind, Params};
-        let mut g = group();
-        g.fx.slots.push(Effect {
-            slot: 2,
-            kind: Kind::StereoModeller,
-            version: 0,
-            bypass: false,
-            output_gain: 1.0,
-            dry_level: 0.0,
-            params: Params::Opaque { bytes: 0 },
-        });
-        let groups = [g];
-        let par = |id, group, slot, generic| EnginePar {
-            id,
-            group,
-            slot,
-            generic,
-        };
-        let ty = |slot| Address::resolve(par(id::EFFECT_TYPE, 0, slot, -1), &groups);
-        assert_eq!((ty(2), ty(8)), (Some(Address::GroupType(0, 2)), None));
-        assert_eq!(
-            (group_type(&groups, 0, 2), group_type(&groups, 0, 1)),
-            (Some(31.0), Some(0.0))
-        );
-        // A filter's type is its subtype; it decodes as the raw type id.
-        let sub = Address::resolve(par(id::EFFECT_SUBTYPE, 0, 1, -1), &groups);
-        assert_eq!(sub, Some(Address::Filter(0, 1, Knob::Type)));
-        assert_eq!(
-            (
-                Address::Filter(0, 1, Knob::Type).decode(106),
-                Address::Filter(0, 1, Knob::Type).encode(106.0)
-            ),
-            (106.0, 106)
-        );
-        // Reverb: the stored EQ values are the cut amounts; freeze is a switch.
-        let rv = |id| {
-            Address::resolve(par(id, -1, 0, 0), &[]).map(|a| match a {
-                Address::Fx(_, _, FxParam::Reverb(n)) => n,
-                _ => u8::MAX,
-            })
-        };
-        let unresolved = |id| Address::resolve(par(id, -1, 0, 0), &[]).is_none();
-        assert_eq!(
-            [id::RV2_EQ_HIGH_GAIN, id::RV2_EQ_LOW_GAIN, id::RV2_FREEZE].map(rv),
-            [Some(7), Some(8), Some(10)]
-        );
-        assert!(unresolved(id::RV2_EQ_LOW_FREQ) && unresolved(id::RV2_EQ_HIGH_FREQ));
-        let freeze = Address::Fx(Rack::Send, 0, FxParam::Reverb(10));
-        assert_eq!(
-            (
-                freeze.decode(1_000_000),
-                freeze.decode(0),
-                freeze.encode(1.0)
-            ),
-            (1.0, 0.0, 1)
-        );
-    }
-
-    #[test]
-    fn scripted_ahd_only_ignores_early_release_and_finishes_without_heap() {
-        use crate::{engine::ScriptSetup, import::Instrument, ksp::{KspEngine, Runtime, Value}};
-        let imported = crate::import::Ahdsr { attack_curve: 0., attack_ms: 7., hold_ms: 3.,
-            decay_ms: 40., sustain: 0.8, release_ms: 1., unknown_flag: 0, unknown_tail: Vec::new() };
-        let mut volume = group();
-        volume.volume_env = Some(imported.clone());
-        let mut pitch = volume.clone();
-        pitch.volume_env = None;
-        pitch.modulators[0].volume_env = false;
-        pitch.modulators[0].envelope = Some(0);
-        pitch.envelopes = vec![crate::modulation::ModEnvelope { env: imported, targets: vec![ModAssignment {
-            name: "Envelope".into(), source: ModSource::Unassigned, target: ModTarget::Pitch,
-            intensity: 1., invert: false, lag_ms: 0, shaper: None,
-        }] }];
-        let i = Instrument { groups: vec![volume, pitch], ..Default::default() };
-        assert_eq!(crate::ksp::engine_par_name(id::ENV_AHD), Some("$ENGINE_PAR_ENV_AHD"));
-        let mut setup = ScriptSetup::new(&i, 1000.);
-        let source = "on init\nset_engine_par($ENGINE_PAR_ENV_AHD,1,0,0,-1)\nset_engine_par($ENGINE_PAR_ENV_AHD,1,1,0,-1)\ndeclare $saved := get_engine_par($ENGINE_PAR_ENV_AHD,0,0,-1)\nmake_persistent($saved)\nend on";
-        let (rt, errors) = Runtime::with_scripts(&[source], &mut setup, 0, Vec::new());
-        assert!(errors.iter().all(Option::is_none));
-        assert_eq!(rt.persistence()[0]["$saved"], Value::Int(1));
-        let pars: [_; 2] = std::array::from_fn(|g| EnginePar { id: id::ENV_AHD, group: g as i32, slot: 0, generic: -1 });
-        for par in pars { assert_eq!(setup.engine_par(par), Some(1)); }
-        let mut settings: Vec<_> = i.groups.iter().map(GroupSettings::from).collect();
-        let addresses: [_; 2] = pars.map(|p| Address::resolve(p, &i.groups).unwrap());
-        assert!(!settings[0].envelope.unwrap().ahd_only, "preset flags are not inferred");
-        assert_eq!(crate::plugin::tests::allocations(|| {
-            for address in addresses {
-                assert!(write(&mut settings, address, address.decode(1)));
-                assert_eq!(address.encode(read(&settings, address).unwrap()), 1);
-            }
-            assert!(settings[0].envelope.unwrap().ahd_only);
-            assert!(settings[1].pitch_envelopes[0].env.ahd_only);
-            for curve in [-0.8, 0., 0.8] {
-                for zero_times in [false, true] {
-                    let mut p = settings[0].envelope.unwrap();
-                    p.curve = curve;
-                    if zero_times { p.attack = 0.; p.hold = 0.; p.decay = 0.; }
-                    let mut held = Envelope::new(&p, 1000.);
-                    let mut released = held;
-                    let mut skipped = held;
-                    let mut scalar = held;
-                    released.release(None);
-                    skipped.release(None);
-                    scalar.release(None);
-                    for block in 0..32 {
-                        let (mut h, mut r, mut q) = ([0.; 13], [0.; 13], [0.; 13]);
-                        held.render(&mut h, None, 1000.);
-                        released.render(&mut r, None, 1000.);
-                        for x in &mut q { scalar.render(std::slice::from_mut(x), None, 1000.); }
-                        skipped.skip(13, None, 1000.);
-                        assert_eq!(h, r, "AHD is one-shot even when released during attack");
-                        assert!(h.iter().all(|v| v.is_finite()));
-                        for (a,b) in h.into_iter().zip(q) { assert!((a-b).abs() < 0.00002); }
-                        assert!((held.level() - skipped.level()).abs() < 0.00002);
-                        assert_eq!(held.phase(), skipped.phase());
-                        if block == 1 { released.release(None); skipped.release(None); scalar.release(None); }
-                    }
-                    assert!(held.done() && released.done() && skipped.done() && scalar.done());
-                    assert_eq!(held.level(), 0.);
-                }
-            }
-            // Turning it off restores the stored sustain/release behavior.
-            let address = addresses[0];
-            assert!(write(&mut settings, address, address.decode(0)));
-            assert_eq!(address.encode(read(&settings, address).unwrap()), 0);
-            let p = settings[0].envelope.unwrap();
-            assert_eq!(p.sustain, 0.8);
-            let mut ordinary = Envelope::new(&p, 1000.);
-            ordinary.skip(300, None, 1000.);
-            assert!(!ordinary.done());
-            assert_eq!(ordinary.level(), 0.8);
-            ordinary.release(None);
-            ordinary.skip(20, None, 1000.);
-            assert!(ordinary.done());
-        }), 0);
-    }
-
-    #[test]
-    fn pitch_envelope_uses_ahdsr_and_script_addresses() {
-        use crate::modulation::{Ahdsr as ImportedAhdsr, ModEnvelope};
-        let env = ImportedAhdsr {
-            attack_curve: 0.,
-            attack_ms: 10.,
-            hold_ms: 0.,
-            decay_ms: 10.,
-            sustain: 0.25,
-            release_ms: 10.,
-            unknown_flag: 0,
-            unknown_tail: Vec::new(),
-        };
-        let mut pitch = group().mods.remove(0);
-        pitch.source = ModSource::Unassigned;
-        pitch.target = ModTarget::Pitch;
-        pitch.intensity = 0.5;
-        pitch.shaper = None;
-        let g = Group {
-            envelopes: vec![ModEnvelope {
-                env,
-                targets: vec![pitch],
-            }],
-            modulators: vec![Modulator {
-                name: "Pitch".into(),
-                targets: vec!["Depth".into()],
-                assignments: None,
-                volume_env: false,
-                bypassed: false,
-                flex: false,
-                envelope: Some(0),
-                kind: "ahdsr".into(),
-            }],
-            ..Group::default()
-        };
-        let mut settings = vec![GroupSettings::from(&g)];
-        let p = &settings[0].pitch_envelopes[0];
-        let mut state = Envelope::new(&p.env, 48_000.);
-        assert!((p.pitch(&mut state, 480, 48_000.) - 6.).abs() < 1e-4);
-        let peak = p.pitch(&mut state, 1, 48_000.);
-        assert!((peak - 6.).abs() < 1e-4);
-        let sustain = p.pitch(&mut state, 20_000, 48_000.);
-        assert!((sustain - 1.5).abs() < 1e-4);
-        state.release(None);
-        assert!(p.pitch(&mut state, 480, 48_000.) < sustain);
-        assert_eq!(p.pitch(&mut state, 20_000, 48_000.), 0.);
-        let groups = [g];
-        let address = Address::resolve(
-            EnginePar {
-                id: id::MOD_TARGET_MP_INTENSITY,
-                group: 0,
-                slot: 0,
-                generic: 0,
-            },
-            &groups,
-        )
-        .unwrap();
-        assert!(write(&mut settings, address, address.decode(250_000)));
-        assert_eq!(read(&settings, address), Some(-0.125));
-        assert_eq!(address.encode(read(&settings, address).unwrap()), 250_000);
-        let attack = Address::resolve(
-            EnginePar {
-                id: id::ATTACK,
-                group: 0,
-                slot: 0,
-                generic: -1,
-            },
-            &groups,
-        )
-        .unwrap();
-        assert!(write(&mut settings, attack, 0.02));
-        assert_eq!(read(&settings, attack), Some(0.02));
-        let p = &settings[0].pitch_envelopes[0];
-        let mut state = Envelope::new(&p.env, 48_000.);
-        assert!((p.pitch(&mut state, 480, 48_000.) + 0.75).abs() < 1e-4);
-
-        // A held +6 semitone pitch envelope must reach the actual resampler.
-        let legacy = Address::resolve(EnginePar { id: id::INTMOD_INTENSITY, group: 0, slot: 0, generic: 0 }, &groups).unwrap();
-        assert_eq!(legacy, address, "internal pitch aliases share the same law and target");
-        for (value, semitones) in [(0, -12.), (250_000, -1.5), (500_000, 0.), (750_000, 1.5),
-            (1_000_000, 12.), (1_129_961, 24.), (1_221_125, 36.), (1_293_701, 48.), (2_000_000, 324.)] {
-            let depth = legacy.decode(value);
-            assert!((12. * depth - semitones).abs() < 1e-3);
-            assert!((legacy.encode(depth) - value).abs() <= 1);
-            assert!(write(&mut settings, legacy, depth));
-            assert_eq!(read(&settings, legacy), Some(depth));
-        }
-        assert_eq!(address.decode(750_000), 0.125); // Both signed pitch APIs use the cubic law.
-        assert!(!write(&mut settings, legacy, f32::NAN));
-        assert!(write(&mut settings, legacy, -0.5));
-        let bypass = Address::resolve(EnginePar { id: id::INTMOD_BYPASS, group: 0, slot: 0, generic: -1 }, &groups).unwrap();
-        assert!(write(&mut settings, bypass, bypass.decode(1)));
-        assert_eq!(bypass.encode(read(&settings, bypass).unwrap()), 1);
-        let p = &settings[0].pitch_envelopes[0];
-        let mut bypassed = Envelope::new(&p.env, 48_000.);
-        assert_eq!(p.pitch(&mut bypassed, 480, 48_000.), 0.);
-        assert!((bypassed.level() - 0.5).abs() < 1e-4);
-        assert!(write(&mut settings, bypass, bypass.decode(0)));
-        assert!((settings[0].pitch_envelopes[0].pitch(&mut bypassed, 0, 48_000.) + 3.).abs() < 1e-4);
-        let mut full = groups[0].clone();
-        full.envelopes = vec![full.envelopes[0].clone(); PITCH_ENVS];
-        let prepared = PitchEnvelope::from_group(&full);
-        assert_eq!(prepared.len(), 16);
-        assert_eq!(prepared.last().unwrap().index, 15);
-
-        let mut pitched = groups[0].clone();
-        let env = &mut pitched.envelopes[0];
-        (env.env.attack_ms, env.env.sustain) = (0., 1.);
-        let reference = Group { tune: 2f64.powf(0.5), ..Group::default() };
-        let render = |group| {
-            let sample = crate::audio::Sample { rate: 48_000, frames: (0..4096)
-                .map(|i| [(i as f32 * 0.08).sin() * 0.25; 2]).collect() };
-            let bank = super::super::Bank::from_samples(vec![group], vec![crate::import::Zone::default()],
-                vec![(std::path::PathBuf::new(), sample)]).unwrap();
-            let mut engine = super::super::Engine::default();
-            engine.set_bank(Some(Box::new(bank)));
-            engine.note_on(0, 60, 100);
-            let (mut l, mut r) = ([0.; 1024], [0.; 1024]);
-            engine.render(&mut l, &mut r);
-            l
-        };
-        for e in &mut full.envelopes {
-            (e.env.attack_ms, e.env.sustain) = (0., 1.);
-            e.targets[0].intensity = 0.5 / PITCH_ENVS as f32;
-        }
-        let all_slots = render(full.clone());
-        let (pitched, reference) = (render(pitched), render(reference));
-        assert!(reference.iter().any(|x| x.abs() > 0.01));
-        assert!(pitched.iter().zip(reference).all(|(a, b)| (a - b).abs() < 1e-6));
-        assert!(all_slots.iter().zip(reference).all(|(a, b)| (a - b).abs() < 1e-6));
-        for (raw, st) in [(1_129_961, 24.), (1_221_125, 36.)] {
-            let mut pitched = groups[0].clone();
-            let env = &mut pitched.envelopes[0];
-            (env.env.attack_ms, env.env.sustain) = (0., 1.);
-            env.targets[0].intensity = address.decode(raw);
-            let pitched = render(pitched);
-            let ratio = 2f64.powf(f64::from(address.decode(raw)));
-            assert!((ratio - 2f64.powf(f64::from(st) / 12.)).abs() < 1e-4);
-            let reference = render(Group { tune: ratio, ..Group::default() });
-            assert!(pitched.iter().zip(reference).all(|(a,b)| (a-b).abs() < 1e-4),
-                "modern signed depth must reach the actual resampler at {st} semitones");
-        }
-        full.envelopes.push(full.envelopes[0].clone());
-        assert!(super::super::Bank::from_samples(vec![full], Vec::new(), Vec::new()).is_err());
-    }
-
-    #[test]
-    #[ignore = "requires the user's installed library; only aggregate modulation facts are printed"]
-    fn analog_strings_pitch_envelopes_are_routed() {
-        let path = std::env::var_os("KONTRA_ANALOG_NKI").expect("set KONTRA_ANALOG_NKI");
-        let i = crate::import::read(std::path::Path::new(&path)).unwrap();
-        let mut count = 0;
-        for g in &i.groups {
-            let settings = GroupSettings::from(g);
-            count += settings.pitch_envelopes.len();
-            for m in &g.modulators {
-                if m.name == "Pitch_Envelope" {
-                    let e = &g.envelopes[m.envelope.unwrap()];
-                    assert!(e.targets.iter().any(|t| t.target == ModTarget::Pitch));
-                    assert!(!settings.pitch_envelopes.is_empty());
-                }
-            }
-        }
-        println!("groups={} pitch_envelopes={count}", i.groups.len());
-        assert_eq!(count, 483);
-    }
-
-    #[test]
-    fn velocity_shaper_and_lagged_cc_volume() {
-        let table = ModTable::from(&group());
-        let mut cc = [0; 128];
-        cc[11] = 127;
-        let mut input = Inputs {
-            cc: &cc,
-            cc74: None,
-            bend: 0.0,
-            pressure: 0,
-            note: 60,
-            velocity: 64,
-            counter: 0.0,
-        };
-        let mut values = table.start(&input, None);
-        let (gain, ..) = table.modulate(&mut values, &input, 128, 48000.0, None);
-        let expected = (64.0f32 / 127.0).powi(2);
-        assert!((gain - expected).abs() < 1e-5, "{gain} vs {expected}");
-
-        // CC11 drops to 0: after one lag time constant 63% of the way down.
-        let quiet = [0; 128];
-        input.cc = &quiet;
-        let (gain, ..) = table.modulate(&mut values, &input, 4800, 48000.0, None);
-        assert!((gain / expected - (-1.0f32).exp()).abs() < 1e-4, "{gain}");
-    }
-
-    #[test]
-    fn velocity_scales_envelope_attack_at_note_start() {
-        let group = Group {
-            mods: vec![ModAssignment {
-                name: "VEL_ATTACK".into(),
-                source: ModSource::Velocity,
-                target: ModTarget::Attack,
-                intensity: 1.0,
-                invert: false,
-                lag_ms: 0,
-                // Pacific's stored shaper: soft notes keep the attack, hard ones shorten it.
-                shaper: Some(ShaperCurve::Table(vec![1.0, 0.59])),
-            }],
-            ..Group::default()
-        };
-        let table = ModTable::from(&group);
-        let cc = [0; 128];
-        let attack = |velocity| {
-            let mut env = Ahdsr {
-                attack: 0.9,
-                ..Ahdsr::UNITY
-            };
-            let input = Inputs {
-                cc: &cc,
-                cc74: None,
-                bend: 0.0,
-                pressure: 0,
-                note: 60,
-                velocity,
-                counter: 0.0,
-            };
-            table.scale_envelope(&mut env, &input);
-            (env.attack, env.release)
-        };
-        assert_eq!(attack(0), (0.9, f32::INFINITY));
-        assert!((attack(127).0 - 0.9 * 0.59).abs() < 1e-5);
-        // Envelope times are not per-block voice modulation.
-        assert!(table.voiced.is_empty());
-    }
-
-    #[test]
-    #[cfg(feature = "plugin")]
-    fn modern_signed_pitch_depth_matches_native_writer_without_heap() {
-        let mut g = group();
-        g.mods[1].target = ModTarget::Pitch;
-        g.modulators[1].targets = vec!["Volume".into(), "Pitch".into()];
-        g.modulators.truncate(2);
-        let groups = [g];
-        let mut settings = [GroupSettings::from(&groups[0])];
-        let par = |id, generic| EnginePar { id, group: 0, slot: 1, generic };
-        let pitch = Address::resolve(par(id::MOD_TARGET_MP_INTENSITY, 1), &groups).unwrap();
-        let legacy = Address::resolve(par(id::INTMOD_INTENSITY, 1), &groups).unwrap();
-        assert_eq!(legacy, pitch, "native parameter449 aliases resolve to the same exact target");
-        assert!(Address::resolve(par(id::INTMOD_INTENSITY, 0), &groups).is_none(),
-            "unverified external volume law remains unsupported for the legacy alias");
-        let volume = Address::resolve(par(id::MOD_TARGET_MP_INTENSITY, 0), &groups).unwrap();
-        let unipolar = Address::resolve(par(id::MOD_TARGET_INTENSITY, 1), &groups).unwrap();
-        assert_eq!(volume.decode(750_000), 0.5, "unverified non-pitch law remains unchanged");
-        assert_eq!(Address::resolve(par(id::MOD_TARGET_MP_INTENSITY, 2), &groups), None);
-        // Actual Conflux PB->PITCH UP target: raw775160 and saved depth .16666558385.
-        assert!((pitch.decode(775_160) - 0.16666558385).abs() < 1e-7);
-        let mut native = super::super::native_state::NativeState::default();
-        native.prepare(pitch, par(id::MOD_TARGET_MP_INTENSITY, 1), pitch.encode(1.));
-        native.prepare(unipolar, par(id::MOD_TARGET_INTENSITY, 1), unipolar.encode(1.));
-        native.prepare(legacy, par(id::INTMOD_INTENSITY, 1), legacy.encode(1.));
-        assert_eq!(native.capacity().0, 1, "aliases share the physical target");
-        let mut saved = native.snapshot();
-        assert_eq!(crate::plugin::tests::allocations(|| {
-            for (raw, st) in [(0, -12.), (250_000, -1.5), (500_000, 0.),
-                (750_000, 1.5), (775_160, 2.), (1_000_000, 12.), (1_129_961, 24.), (1_221_125, 36.)] {
-                let physical = pitch.decode(raw);
-                assert_eq!(legacy.decode(raw), physical);
-                assert_eq!(legacy.encode(physical), pitch.encode(physical));
-                assert!((physical * 12. - st).abs() < 1e-3);
-                assert!((pitch.encode(physical) - raw).abs() <= 1);
-                assert!(write(&mut settings, pitch, physical));
-                assert_eq!(read(&settings, pitch), Some(physical));
-                assert_eq!(read(&settings, unipolar), Some(physical));
-                assert_eq!(settings[0].mods.mods[0].intensity, 1., "adjacent volume target is unchanged");
-                native.capture(pitch, par(id::MOD_TARGET_MP_INTENSITY, 1), raw, physical);
-            }
-            assert!(!write(&mut settings, pitch, f32::NAN));
-            assert!(!write(&mut settings, pitch, f32::INFINITY));
-            while !native.refresh(&mut saved, 1) {}
-        }), 0);
-        let edits = saved.saved();
-        assert_eq!(edits.len(), 1);
-        assert_eq!((edits[0].par, edits[0].value), (par(id::MOD_TARGET_MP_INTENSITY, 1), 1_221_125));
-    }
-
-    #[test]
-    fn constant_loop_controls_preserve_physical_cursor_stream_seams_and_clock_without_heap() {
-        use crate::{audio::Sample, engine::{Bank, Engine}, import::{Instrument, Loop, Zone}};
-        use super::super::map::{FOREVER, LoopMap, PlayMap};
-        let assignment = |param: &str, intensity| ModAssignment { name: "Constant".into(),
-            source: ModSource::Constant, target: ModTarget::Group(param.into()), intensity,
-            invert: false, lag_ms: 0, shaper: None };
-        let group = Group { mods: vec![assignment("pan", 0.25),
-            assignment("loopStart", 0.1266360729932785),
-            assignment("loopLength", -0.9170099496841431)],
-            modulators: vec![Modulator { name: "Constant".into(), targets: vec!["Pan".into(),
-                "Loop_Start".into(), "Loop_Length".into()], assignments: Some(0), volume_env: false,
-                bypassed: false, flex: false, envelope: None, kind: "external".into() }],
-            ..Group::default() };
-        let par = |id, index| EnginePar { id, group: 0, slot: 0, generic: index };
-        let start = Address::resolve(par(id::INTMOD_INTENSITY, 1), std::slice::from_ref(&group)).unwrap();
-        let length = Address::resolve(par(id::MOD_TARGET_MP_INTENSITY, 2), std::slice::from_ref(&group)).unwrap();
-        assert_eq!(start, Address::resolve(par(id::MOD_TARGET_MP_INTENSITY, 1), std::slice::from_ref(&group)).unwrap());
-        assert_eq!(length, Address::resolve(par(id::INTMOD_INTENSITY, 2), std::slice::from_ref(&group)).unwrap());
-        // Independent actual stored UI/timing + original inverse lookup produces
-        // these normalized writes, not values fitted from the saved depths.
-        assert!((start.decode(751_086) - 0.1266360729932785).abs() < 1e-7);
-        assert!((length.decode(14_233) + 0.9170099496841431).abs() < 1e-7);
-        assert!((start.encode(0.1266360729932785) - 751_086).abs() <= 1);
-        assert!((length.encode(-0.9170099496841431) - 14_233).abs() <= 1);
-        let saved = PlayMap { start: 0, end: 4096, reverse: false,
-            looped: Some(LoopMap { start: 0, end: 4096, xfade: 32, until_release: true, alternating: false }) };
-        let initial = saved.controlled_loop([0.1266360729932785, -0.9170099496841431], 4096).unwrap();
-        assert_eq!(initial.looped.unwrap(), LoopMap { start: 518, end: 858, xfade: 32,
-            until_release: true, alternating: false });
-        for (offsets, bounds) in [([-0.125, -0.125], (0, 3584)), ([0.125, 0.125], (0, 4096)),
-            ([0., -1.], (0, 4)), ([0.5, -1.], (2048, 2052))] {
-            let l = saved.controlled_loop(offsets, 4096).unwrap().looped.unwrap();
-            assert_eq!((l.start, l.end), bounds);
-            assert!(l.xfade <= l.start && l.xfade < l.end - l.start);
-        }
-        assert!((PlayMap { reverse: true, ..saved }).controlled_loop([0.; 2], 4096).is_none());
-        assert!((PlayMap { start: 1, ..saved }).controlled_loop([0.; 2], 4096).is_none());
-        let alternate = PlayMap { looped: Some(LoopMap { alternating: true, ..saved.looped.unwrap() }), ..saved };
-        assert!(alternate.controlled_loop([0.; 2], 4096).is_none());
-        assert!(saved.controlled_loop([f32::MAX, 0.], 4096).is_none());
-        assert!(saved.controlled_loop([f32::NAN, 0.], 4096).is_none());
-        let mut unsupported = group.clone(); unsupported.source_mode = Some(3);
-        assert!(!ModTable::from(&unsupported).has_loop_controls());
-        unsupported.source_mode = None;
-        assert!(!ModTable::from(&unsupported).has_loop_controls(), "old cache must not invent a source mode");
-        let frames: Vec<_> = (0..4096).map(|n| [(n as f32 * 0.031).sin() * 0.2; 2]).collect();
-        let path = std::env::temp_dir().join(format!("kontakto-loop-controls-{}.wav", std::process::id()));
-        let mut wav = b"RIFF".to_vec(); wav.extend((36u32 + 4096 * 8).to_le_bytes());
-        wav.extend(b"WAVEfmt "); wav.extend(16u32.to_le_bytes()); wav.extend(3u16.to_le_bytes());
-        wav.extend(2u16.to_le_bytes()); wav.extend(48_000u32.to_le_bytes()); wav.extend(384_000u32.to_le_bytes());
-        wav.extend(8u16.to_le_bytes()); wav.extend(32u16.to_le_bytes()); wav.extend(b"data");
-        wav.extend((4096u32 * 8).to_le_bytes());
-        for frame in &frames { for channel in frame { wav.extend(channel.to_le_bytes()); } }
-        std::fs::write(&path, wav).unwrap();
-        let zone = Zone { sample: path.clone(), tune: 1.37,
-            loop_range: Some(Loop { start: 0, end: 4096, crossfade: 32, until_release: true, alternating: false }),
-            ..Zone::default() };
-        let instrument = Instrument { groups: vec![group.clone()], zones: vec![zone.clone()], ..Default::default() };
-        let bare = Bank::load_bare(&instrument).unwrap();
-        assert_eq!(bare.samples[0].frames, 4096);
-        assert_eq!(bare.samples[0].spans[0].data.len(), 0);
-        let ram = Bank::from_samples(vec![group], vec![zone], vec![(path.clone(), Sample { rate: 48_000, frames })]).unwrap();
-        let create = |bank| {
-            let mut e = Engine::default(); e.attack = 0.; e.release = 1.; e.blocking_streams = true;
-            e.set_bank(Some(Box::new(bank))); e
-        };
-        let (mut a, mut b) = (create(ram), create(bare));
-        let (mut al, mut ar, mut bl, mut br) = ([0.; 128], [0.; 128], [0.; 128], [0.; 128]);
-        let render = |a: &mut Engine, b: &mut Engine, al: &mut [f32], ar: &mut [f32], bl: &mut [f32], br: &mut [f32]| {
-            a.render(al, ar); b.render(bl, br);
-            assert_eq!(al, bl, "stream configuration shares the resident physical path");
-            assert_eq!(ar, br);
-            assert!(al.iter().chain(ar.iter()).all(|x| x.is_finite()));
-        };
-        assert_eq!(crate::plugin::tests::allocations(|| {
-            a.note_on(0, 60, 100); b.note_on(0, 60, 100);
-            assert_eq!(a.player.voices[0].map, initial, "saved crossfade survives start modulation");
-            assert_eq!(b.player.voices[0].map, initial);
-            for _ in 0..10 { render(&mut a, &mut b, &mut al, &mut ar, &mut bl, &mut br); }
-            render(&mut a, &mut b, &mut al[..13], &mut ar[..13], &mut bl[..13], &mut br[..13]);
-            for e in [&mut a, &mut b] {
-                let settings = &mut e.bank.as_mut().unwrap().settings;
-                assert!(write(settings, start, 0.125)); assert!(write(settings, length, -0.875));
-                assert_eq!(read(settings, length), Some(-0.875));
-                assert_eq!(settings[0].mods.mods[0].intensity, 0.25, "adjacent target stays unchanged");
-                e.player.touch();
-            }
-            render(&mut a, &mut b, &mut al[..19], &mut ar[..19], &mut bl[..19], &mut br[..19]);
-            assert_eq!(a.player.voices[0].map, initial, "fragment beginning at tick13 must finish the old step");
-            let v = &a.player.voices[0];
-            let physical = v.map.run(v.pos as u64, v.wraps).unwrap().frame as f64 + v.pos.fract();
-            render(&mut a, &mut b, &mut al, &mut ar, &mut bl, &mut br);
-            let v = &a.player.voices[0];
-            assert_eq!(v.map.looped.unwrap().start, 512);
-            assert_eq!(v.map.looped.unwrap().end, 1024);
-            assert!((v.pos - physical - 128. * v.plan.step as f64 / 4294967296.).abs() < 1e-8,
-                "a boundary edit preserves physical position and its fraction");
-            // The shortened-behind-cursor seam is explicitly deferred once,
-            // then retried when the old loop returns to an eligible position.
-            for e in [&mut a, &mut b] { assert!(write(&mut e.bank.as_mut().unwrap().settings, length, -0.9)); }
-            render(&mut a, &mut b, &mut al, &mut ar, &mut bl, &mut br);
-            for _ in 0..8 { render(&mut a, &mut b, &mut al, &mut ar, &mut bl, &mut br); }
-            assert_eq!(a.player.voices[0].loop_deferred_edits, 1);
-            assert!(a.player.voices[0].loop_deferred.is_none(), "eligible control tick retries without a new write");
-            let map = a.player.voices[0].map;
-            a.note_off(0, 60); b.note_off(0, 60);
-            assert_ne!(a.player.voices[0].wraps, FOREVER);
-            for e in [&mut a, &mut b] { assert!(write(&mut e.bank.as_mut().unwrap().settings, start, -0.5)); }
-            render(&mut a, &mut b, &mut al, &mut ar, &mut bl, &mut br);
-            assert_eq!(a.player.voices[0].map, map, "release keeps the final seam and tail");
-            for _ in 0..30 { render(&mut a, &mut b, &mut al, &mut ar, &mut bl, &mut br); }
-            assert_eq!(a.active_voices(), 0); assert_eq!(b.active_voices(), 0);
-        }), 0);
-        assert_eq!(b.underruns(), 0);
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn saved_pitch_lfo_and_constant_loop_are_partition_invariant_in_ram_and_stream() {
-        use crate::{audio::Sample, engine::{Bank, Engine}, import::{Instrument, Loop, PitchLfo, Zone}};
-        let mut group = Group { pitch_lfos: vec![PitchLfo { start_phase: 0., slot: 7, count: 1.,
-            note_value: 1. / 24., sine: 0.5, fade_ms: 0., depth: 0.5, targets: vec![], bypassed: false }],
-            mods: ["loopStart", "loopLength"].into_iter().map(|param| ModAssignment {
-                name: "Constant".into(), source: ModSource::Constant,
-                target: ModTarget::Group(param.into()), intensity: 0., invert: false,
-                lag_ms: 0, shaper: None }).collect(),
-            modulators: vec![Modulator { name: "Constant".into(),
-                targets: vec!["Loop_Start".into(), "Loop_Length".into()], assignments: Some(0),
-                volume_env: false, bypassed: false, flex: false, envelope: None,
-                kind: "external".into() }], ..Group::default() };
-        let length = Address::resolve(EnginePar { id: id::INTMOD_INTENSITY,
-            group: 0, slot: 0, generic: 1 }, std::slice::from_ref(&group)).unwrap();
-        // The saved oscillator is audible, but live LFO target writes remain
-        // unsupported. Do not accept a write into metadata while leaving its
-        // prepared depth unchanged; both Host and ScriptSetup use this gate.
-        group.modulators.resize_with(8, || Modulator { name: String::new(), targets: vec![],
-            assignments: None, volume_env: false, bypassed: false, flex: false,
-            envelope: None, kind: "unsupported".into() });
-        group.modulators[7] = Modulator { name: "LFO_Pitch_Retrigger".into(),
-            targets: vec!["Pitch".into()], assignments: None, volume_env: false,
-            bypassed: false, flex: false, envelope: None, kind: "lfo".into() };
-        for id in [id::INTMOD_INTENSITY, id::MOD_TARGET_MP_INTENSITY, id::MOD_TARGET_INTENSITY] {
-            let par = EnginePar { id, group: 0, slot: 7, generic: 0 };
-            assert!(Address::resolve(par, std::slice::from_ref(&group)).is_none());
-            assert!(!Address::inert(par, std::slice::from_ref(&group)));
-        }
-        let frames: Vec<_> = (0..4096).map(|n| [(n as f32 * 0.031).sin() * 0.2; 2]).collect();
-        let path = std::env::temp_dir().join(format!("kontakto-loop-lfo-{}.wav", std::process::id()));
-        let mut wav = b"RIFF".to_vec(); wav.extend((36u32 + 4096 * 8).to_le_bytes());
-        wav.extend(b"WAVEfmt "); wav.extend(16u32.to_le_bytes()); wav.extend(3u16.to_le_bytes());
-        wav.extend(2u16.to_le_bytes()); wav.extend(48_000u32.to_le_bytes()); wav.extend(384_000u32.to_le_bytes());
-        wav.extend(8u16.to_le_bytes()); wav.extend(32u16.to_le_bytes()); wav.extend(b"data");
-        wav.extend((4096u32 * 8).to_le_bytes());
-        for frame in &frames { for channel in frame { wav.extend(channel.to_le_bytes()); } }
-        std::fs::write(&path, wav).unwrap();
-        let zone = Zone { sample: path.clone(), tune: 1.37,
-            loop_range: Some(Loop { start: 0, end: 4096, crossfade: 32,
-                until_release: true, alternating: false }), ..Zone::default() };
-        let create = |bank| {
-            let mut e = Engine::default(); e.attack = 0.; e.release = 0.001;
-            e.blocking_streams = true; e.set_transport(false, 120., 0., (4, 4));
-            e.set_bank(Some(Box::new(bank))); e
-        };
-        let ram = |group: Group| Bank::from_samples(vec![group], vec![zone.clone()],
-            vec![(path.clone(), Sample { rate: 48_000, frames: frames.clone() })]).unwrap();
-        let mut full = create(ram(group.clone()));
-        let mut split = create(ram(group.clone()));
-        let mut stream = create(Bank::load_bare(&Instrument { groups: vec![group.clone()],
-            zones: vec![zone.clone()], ..Default::default() }).unwrap());
-        group.mods.clear(); group.modulators.clear();
-        let mut no_controls = create(ram(group));
-        assert!(full.bank().unwrap().has_native_controls());
-        assert!(!no_controls.bank().unwrap().has_native_controls());
-        let (mut a, mut ar, mut b, mut br, mut c, mut cr, mut d, mut dr) =
-            ([0.; 128], [0.; 128], [0.; 128], [0.; 128], [0.; 128], [0.; 128], [0.; 128], [0.; 128]);
-        let equal = |a: &[f32], b: &[f32]| assert!(a.iter().zip(b)
-            .all(|(a, b)| (a - b).abs() < 1e-7), "planner partition changed PCM");
-        assert_eq!(crate::plugin::tests::allocations(|| {
-            for e in [&mut full, &mut split, &mut stream, &mut no_controls] { e.note_on(0, 60, 127); }
-            full.render(&mut a, &mut ar);
-            no_controls.render(&mut d, &mut dr);
-            for (from, to) in [(0, 17), (17, 128)] {
-                split.render(&mut b[from..to], &mut br[from..to]);
-                stream.render(&mut c[from..to], &mut cr[from..to]);
-            }
-            equal(&a, &b); equal(&ar, &br); equal(&a, &c); equal(&ar, &cr);
-            equal(&a, &d); equal(&ar, &dr);
-            assert!(full.player.voices[0].pos < 4096., "loop has not been reached");
-            // Same command at note frame141; only fragment boundaries differ.
-            for (e, l, r) in [(&mut full, &mut a, &mut ar), (&mut split, &mut b, &mut br),
-                (&mut stream, &mut c, &mut cr)] { e.render(&mut l[..13], &mut r[..13]); }
-            let old = full.player.voices[0].map;
-            for e in [&mut full, &mut split, &mut stream] {
-                assert!(write(&mut e.bank.as_mut().unwrap().settings, length, -0.5));
-                assert_eq!(read(&e.bank().unwrap().settings, length), Some(-0.5));
-                e.player.touch();
-            }
-            full.render(&mut a[13..], &mut ar[13..]);
-            for (from, to) in [(13, 32), (32, 128)] {
-                split.render(&mut b[from..to], &mut br[from..to]);
-                stream.render(&mut c[from..to], &mut cr[from..to]);
-                if to == 32 {
-                    assert_eq!(split.player.voices[0].map, old, "edit waits for native tick160");
-                }
-            }
-            equal(&a, &b); equal(&ar, &br); equal(&a, &c); equal(&ar, &cr);
-            for e in [&mut full, &mut split, &mut stream] {
-                assert_eq!(e.player.voices[0].map.looped.unwrap().end, 2048);
-                e.note_off(0, 60);
-            }
-            for _ in 0..16 {
-                full.render(&mut a, &mut ar); split.render(&mut b, &mut br); stream.render(&mut c, &mut cr);
-                equal(&a, &b); equal(&ar, &br); equal(&a, &c); equal(&ar, &cr);
-            }
-            assert_eq!(full.active_voices(), 0); assert_eq!(split.active_voices(), 0);
-            assert_eq!(stream.active_voices(), 0, "source clock cannot extend release lifetime");
-        }), 0);
-        assert_eq!(stream.underruns(), 0);
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn live_saved_pitch_lfo_targets_preserve_native_identity_phase_and_persistence_without_heap() {
-        use crate::{audio::Sample, engine::{Bank, Engine, load_scripts, load_scripts_with_state},
-            import::{Instrument, PitchLfo, Zone}, ksp::Value};
-        let mut group = Group { pitch_lfos: vec![
-            PitchLfo { start_phase: 0., slot: 7, count: 1., note_value: 1. / 24., sine: 0.5, fade_ms: 0.,
-                depth: 0.2, targets: vec![(1, 0.25), (3, -0.05)], bypassed: false },
-            PitchLfo { start_phase: 0., slot: 3, count: 2., note_value: 1. / 24., sine: 0.1, fade_ms: 0.,
-                depth: 0.1, targets: vec![(1, 0.1)], bypassed: false }], ..Group::default() };
-        group.modulators.resize_with(8, || Modulator { name: String::new(), targets: vec![],
-            assignments: None, volume_env: false, bypassed: false, flex: false,
-            envelope: None, kind: "unsupported".into() });
-        for slot in [3, 7] { group.modulators[slot] = Modulator { name: format!("LFO{slot}"),
-            targets: vec!["Cutoff".into(), "PitchA".into(), "Volume".into(), "PitchB".into()],
-            assignments: None, volume_env: false, bypassed: false, flex: false,
-            envelope: None, kind: "lfo".into() }; }
-        let par = |id, slot, target| EnginePar { id, group: 0, slot, generic: target };
-        let address = |id, slot, target| Address::resolve(par(id, slot, target), std::slice::from_ref(&group)).unwrap();
-        for id in [id::INTMOD_INTENSITY, id::MOD_TARGET_MP_INTENSITY, id::MOD_TARGET_INTENSITY] {
-            assert!(Address::resolve(par(id, 7, 0), std::slice::from_ref(&group)).is_none(), "adjacent cutoff remains unsupported");
-            assert!(Address::resolve(par(id, 3, 3), std::slice::from_ref(&group)).is_none(), "target indices belong to their own source");
-        }
-        let source = "on init
-            declare $initial := get_engine_par($ENGINE_PAR_INTMOD_INTENSITY,0,7,1)
-            make_persistent($initial)
-            declare $after := 0
-            make_persistent($after)
-            end on
-            on controller
-            if (%CC[1] > 0)
-                set_engine_par($ENGINE_PAR_MOD_TARGET_INTENSITY,250000,0,7,1)
-                set_engine_par($ENGINE_PAR_INTMOD_INTENSITY,750000,0,7,1)
-                set_engine_par($ENGINE_PAR_MOD_TARGET_MP_INTENSITY,775160,0,7,1)
-                set_engine_par($ENGINE_PAR_INTMOD_INTENSITY,250000,0,7,3)
-                set_engine_par($ENGINE_PAR_MOD_TARGET_INTENSITY,250000,0,3,1)
-                $after := get_engine_par($ENGINE_PAR_INTMOD_INTENSITY,0,7,1)
-            end if
-            end on";
-        let instrument = Instrument { groups: vec![group.clone()], scripts: vec![source.into()], ..Default::default() };
-        let create = || {
-            let sample = Sample { rate: 48_000,
-                frames: (0..4096).map(|n| [(n as f32 * 0.031).sin() * 0.2; 2]).collect() };
-            let mut e = Engine::default(); e.attack = 0.; e.release = 0.001;
-            e.set_transport(false, 120., 0., (4, 4));
-            e.set_bank(Some(Box::new(Bank::from_samples(vec![group.clone()], vec![Zone::default()],
-                vec![(std::path::PathBuf::new(), sample)]).unwrap()))); e
-        };
-        let (runtime, errors) = load_scripts(&instrument, vec![], 48_000.);
-        assert!(errors.is_empty(), "{errors:?}");
-        let (mut live, mut reference) = (create(), create()); live.set_script(runtime);
-        let mut snapshot = live.script().unwrap().native_state.snapshot();
-        let (mut a, mut ar, mut b, mut br) = ([0.; 128], [0.; 128], [0.; 128], [0.; 128]);
-        let equal = |a: &[f32], b: &[f32]| assert!(a.iter().zip(b)
-            .all(|(a, b)| (a - b).abs() < 1e-7), "live depth write must preserve elapsed source phase");
-        assert_eq!(crate::plugin::tests::allocations(|| {
-            live.note_on(0, 60, 127); reference.note_on(0, 60, 127);
-            live.render(&mut a[..13], &mut ar[..13]); reference.render(&mut b[..13], &mut br[..13]);
-            equal(&a[..13], &b[..13]);
-            live.cc(0, 1, 127);
-            // Independent physical-depth reference, without setters or source reset.
-            let lfos = &mut reference.bank.as_mut().unwrap().settings[0].pitch_lfos;
-            lfos[0].targets[0].1 = 0.16666558385; lfos[0].targets[1].1 = -0.125;
-            lfos[0].depth = 0.16666558385 - 0.125;
-            lfos[1].targets[0].1 = 0.0625; lfos[1].depth = 0.0625;
-            for _ in 0..8 {
-                live.render(&mut a, &mut ar); reference.render(&mut b, &mut br);
-                equal(&a, &b); equal(&ar, &br);
-            }
-            let settings = &live.bank().unwrap().settings;
-            assert_eq!(read(settings, address(id::INTMOD_INTENSITY, 7, 3)), Some(-0.125));
-            assert_eq!(read(settings, address(id::MOD_TARGET_INTENSITY, 3, 1)), Some(0.0625));
-            assert!((settings[0].pitch_lfos[0].depth - (0.16666558385 - 0.125)).abs() < 1e-7);
-            assert!(!write(&mut live.bank.as_mut().unwrap().settings, address(id::INTMOD_INTENSITY, 7, 1), f32::NAN));
-            while !live.script().unwrap().native_state.refresh(&mut snapshot, 1) {}
-            live.note_off(0, 60); reference.note_off(0, 60);
-            for _ in 0..16 { live.render(&mut a, &mut ar); reference.render(&mut b, &mut br); }
-            assert_eq!(live.active_voices(), 0); assert_eq!(reference.active_voices(), 0);
-        }), 0);
-        let rt = live.script().unwrap();
-        for (id, slot, target) in [(id::MOD_TARGET_INTENSITY, 7, 1),
-            (id::INTMOD_INTENSITY, 7, 1), (id::MOD_TARGET_MP_INTENSITY, 7, 1),
-            (id::INTMOD_INTENSITY, 7, 3), (id::MOD_TARGET_INTENSITY, 3, 1)] {
-            assert!(rt.env.engine_par(par(id, slot, target)).is_none(),
-                "accepted aliases must not use the unsupported stored-value fallback");
-        }
-        let Value::Int(after) = rt.persistence()[0]["$after"] else { panic!("missing readback"); };
-        assert!((after - 775160).abs() <= 1);
-        let edits = snapshot.saved();
-        assert_eq!(edits.len(), 3, "aliases share a physical source/target record");
-        assert!(edits.iter().any(|e| e.par == par(id::MOD_TARGET_MP_INTENSITY, 7, 1) && e.value == 775160));
-        assert!(edits.iter().any(|e| e.par == par(id::INTMOD_INTENSITY, 7, 3) && e.value == 250000));
-        assert!(edits.iter().any(|e| e.par == par(id::MOD_TARGET_INTENSITY, 3, 1) && e.value == 250000));
-        let (restored, errors) = load_scripts_with_state(&instrument, vec![], 48_000., &[], &edits);
-        assert!(errors.is_empty(), "{errors:?}");
-        let mut replay = create(); replay.set_script(restored);
-        assert_eq!(replay.bank().unwrap().settings[0].pitch_lfos[0].targets, live.bank().unwrap().settings[0].pitch_lfos[0].targets);
-        assert_eq!(replay.bank().unwrap().settings[0].pitch_lfos[1].targets, live.bank().unwrap().settings[0].pitch_lfos[1].targets);
-        let Value::Int(initial) = replay.script().unwrap().persistence()[0]["$initial"] else { panic!("missing seeded readback"); };
-        assert!((initial - 775160).abs() <= 1, "restoration seeds init getters before callbacks");
-    }
-
-    #[test]
-    fn saved_sine_volume_reaches_amplifier_and_retains_shared_bypass_without_heap() {
-        for start_phase in [0., 0.25, 0.4990234375, 0.5, 0.75, 1.] {
-            saved_sine_volume_reaches_amplifier_and_retains_shared_bypass_without_heap_at_phase(start_phase);
-        }
-    }
-
-    fn saved_sine_volume_reaches_amplifier_and_retains_shared_bypass_without_heap_at_phase(start_phase: f32) {
-        use crate::{audio::Sample, engine::{Bank, Engine, load_scripts, load_scripts_with_state},
-            import::{Instrument, PitchLfo, VolumeLfo, Zone}};
-        for mixed in [false, true] {
-            let source = PitchLfo { start_phase, slot: 7, count: 16., note_value: 1. / 24., sine: 1.,
-                fade_ms: 0., depth: 0.25, targets: vec![(2, 0.25)], bypassed: false };
-            let mut group = Group { volume_lfos: vec![VolumeLfo { source: source.clone(), target: 4,
-                intensity: 1., negative: false, lag_ms: 15 }], ..Group::default() };
-            if mixed { group.pitch_lfos.push(source); }
-            group.modulators.resize_with(8, || Modulator { name: String::new(), targets: vec![],
-                assignments: None, volume_env: false, bypassed: false, flex: false,
-                envelope: None, kind: "lfo".into() });
-            group.modulators[7].targets = vec!["Other0".into(), "Other1".into(), "Pitch".into(),
-                "Other3".into(), "Volume".into()];
-            let par = EnginePar { id: id::INTMOD_BYPASS, group: 0, slot: 7, generic: -1 };
-            let bypass = Address::resolve(par, std::slice::from_ref(&group)).unwrap();
-            for id in [id::INTMOD_INTENSITY, id::MOD_TARGET_MP_INTENSITY, id::MOD_TARGET_INTENSITY] {
-                assert!(Address::resolve(EnginePar { id, generic: 4, ..par }, std::slice::from_ref(&group)).is_none(),
-                    "destination formula cannot invent normalized live volume intensity aliases");
-            }
-            if mixed {
-                assert!(Address::resolve(EnginePar { id: id::MOD_TARGET_MP_INTENSITY, generic: 2, ..par },
-                    std::slice::from_ref(&group)).is_some(), "the existing pitch sibling remains writable");
-            }
-            let script = "on init\ndeclare ui_button $pause\ndeclare $seed := get_engine_par($ENGINE_PAR_INTMOD_BYPASS,0,7,-1)\nmake_persistent($seed)\nend on\non ui_control($pause)\nset_engine_par($ENGINE_PAR_INTMOD_BYPASS,$pause,0,7,-1)\nend on";
-            let instrument = Instrument { groups: vec![group.clone()], scripts: vec![script.into()], ..Default::default() };
-            let create = |group: Group| {
-                let mut e = Engine::default(); e.attack = 0.0001; e.release = 0.001;
-                e.set_transport(false, 120., 0., (4, 4));
-                e.set_bank(Some(Box::new(Bank::from_samples(vec![group], vec![Zone::default()],
-                    vec![(std::path::PathBuf::new(), Sample { rate: 48_000, frames: vec![[0.25; 2]; 4096] })]).unwrap())));
-                e
-            };
-            let mut full = create(group.clone());
-            let mut split = create(group.clone());
-            for engine in [&mut full, &mut split] {
-                let (rt, errors) = load_scripts(&instrument, vec![], 48_000.);
-                assert!(errors.is_empty(), "{errors:?}"); engine.set_script(rt);
-            }
-            assert_eq!(full.bank().unwrap().settings[0].volume_lfos[0].source.start_phase.to_bits(), start_phase.to_bits(),
-                "the public imported source phase survives Bank preparation exactly");
-            let mut plain_group = group.clone(); plain_group.volume_lfos.clear();
-            let mut plain = create(plain_group);
-            let mut snapshot = full.script().unwrap().native_state.snapshot();
-            let (mut a, mut ar, mut b, mut br, mut c, mut cr) =
-                ([0.; 128], [0.; 128], [0.; 128], [0.; 128], [0.; 128], [0.; 128]);
-            assert_eq!(crate::plugin::tests::allocations(|| {
-                for engine in [&mut full, &mut split, &mut plain] { engine.note_on(0, 60, 127); }
-                full.render(&mut a, &mut ar); plain.render(&mut c, &mut cr);
-                split.render(&mut b[..17], &mut br[..17]); split.render(&mut b[17..], &mut br[17..]);
-                assert!(a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-7));
-                let initial = (1. - (std::f64::consts::TAU * f64::from(start_phase)).sin() as f32) * 0.5;
-                let signal = -(std::f64::consts::TAU * (f64::from(start_phase) + 3. * 32. / 48_000.)).sin() as f32;
-                let expected = initial + ((signal + 1.) * 0.5 - initial) * 0.18508725;
-                assert!(c[64] > 0.01);
-                assert!((a[64] / c[64] - expected).abs() < 1e-6,
-                    "native control-point gain reaches actual resident sample output");
-                let note_start = a;
-                // Mid-interval bypass and resume, including all-source bypass
-                // for the shared pitch+volume source. No clock reset on either.
-                for (n, paused) in [(13, true), (39, false), (128, true), (77, false)] {
-                    for engine in [&mut full, &mut split] {
-                        engine.ui_control(0, 0, i32::from(paused));
-                    }
-                    full.render(&mut a[..n], &mut ar[..n]);
-                    let first = 17.min(n);
-                    split.render(&mut b[..first], &mut br[..first]);
-                    if n > first { split.render(&mut b[first..n], &mut br[first..n]); }
-                    assert!(a[..n].iter().zip(&b[..n]).all(|(a, b)| (a - b).abs() < 1e-7));
-                    // Script writes are accepted into the fixed command queue;
-                    // the audio render applies them at their exact sample.
-                    for engine in [&full, &split] {
-                        assert_eq!(read(&engine.bank().unwrap().settings, bypass), Some(f32::from(paused)));
-                        if mixed { assert_eq!(engine.bank().unwrap().settings[0].pitch_lfos[0].bypassed, paused); }
-                        assert_eq!(engine.bank().unwrap().settings[0].volume_lfos[0].source.bypassed, paused);
-                    }
-                }
-                full.ui_control(0, 0, 1);
-                full.render(&mut a, &mut ar);
-                while !full.script().unwrap().native_state.refresh(&mut snapshot, 1) {}
-                for engine in [&mut full, &mut split, &mut plain] { engine.note_off(0, 60); }
-                for _ in 0..40 {
-                    full.render(&mut a, &mut ar); split.render(&mut b, &mut br); plain.render(&mut c, &mut cr);
-                }
-                assert_eq!((full.active_voices(), split.active_voices(), plain.active_voices()), (0, 0, 0));
-                for engine in [&mut full, &mut split] {
-                    engine.ui_control(0, 0, 0); engine.note_on(0, 60, 127);
-                }
-                full.render(&mut a, &mut ar);
-                split.render(&mut b[..17], &mut br[..17]); split.render(&mut b[17..], &mut br[17..]);
-                assert!(a.iter().zip(note_start).all(|(a, initial)| (a - initial).abs() < 1e-7),
-                    "a new note retriggers the saved phase and target lag");
-                assert!(a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-7));
-            }), 0);
-            let edits = snapshot.saved();
-            assert!(edits.iter().any(|edit| edit.par == par && edit.value == 1));
-            let (rt, errors) = load_scripts_with_state(&instrument, vec![], 48_000., &[], &edits);
-            assert!(errors.is_empty(), "{errors:?}");
-            let mut restored = create(group); restored.set_script(rt);
-            assert_eq!(read(&restored.bank().unwrap().settings, bypass), Some(1.));
-            assert!(restored.bank().unwrap().settings[0].volume_lfos[0].source.bypassed);
-            assert_eq!(restored.script().unwrap().persistence()[0]["$seed"], crate::ksp::Value::Int(1),
-                "restored native source bypass is visible to the authored init getter");
-            assert_eq!(full.dropped_commands(), 0); assert_eq!(split.dropped_commands(), 0);
-        }
-    }
-
-    #[test]
-    fn saved_sine_volume_uses_decoded_nonlinear_amplifier_split_without_heap() {
-        use crate::{audio::Sample, engine::{Bank, Engine}, import::{PitchLfo, VolumeLfo, Zone},
-            fx::{Chain, Effect, Kind, Params, params::{Field, Value}}};
-        let source = PitchLfo { start_phase: 0., slot: 7, count: 16., note_value: 1. / 24., sine: 0.,
-            fade_ms: 0., depth: 0., targets: vec![], bypassed: false };
-        let effect = Effect { slot: 0, kind: Kind::SurroundPanner, version: 0, bypass: false,
-            output_gain: 1., dry_level: 0., params: Params::Fields(
-                crate::fx::params::layout_names(Kind::SurroundPanner).unwrap().iter().zip([1., 0.])
-                    .map(|(&name, value)| Field { name, value: Value::Number(value) }).collect()) };
-        let create = |group| {
-            let mut engine = Engine::default(); engine.attack = 0.0001;
-            engine.set_transport(false, 120., 0., (4, 4));
-            engine.set_bank(Some(Box::new(Bank::from_samples(vec![group], vec![Zone::default()],
-                vec![(std::path::PathBuf::new(), Sample { rate: 48_000, frames: vec![[0.25; 2]; 4096] })]).unwrap())));
-            engine
-        };
-        let mut endpoints = [0.; 2];
-        for split in [0, 1] {
-            let group = Group { amp_split_slot: Some(split), fx: Chain { slots: vec![effect.clone()] },
-                volume_lfos: vec![VolumeLfo { source: source.clone(), target: 0, intensity: 1.,
-                    negative: false, lag_ms: 0 }], ..Group::default() };
-            let mut reference = group.clone(); reference.volume_lfos.clear(); reference.gain = 0.5;
-            let mut actual = create(group); let mut expected = create(reference);
-            let (mut a, mut ar, mut b, mut br) = ([0.; 128], [0.; 128], [0.; 128], [0.; 128]);
-            assert_eq!(crate::plugin::tests::allocations(|| {
-                actual.note_on(0, 60, 127); expected.note_on(0, 60, 127);
-                // Bipolar source0 at depth1 is exactly .5, so the independent
-                // reference places group gain.5 at the decoded Amplifier slot.
-                for _ in 0..4 {
-                    actual.render(&mut a, &mut ar); expected.render(&mut b, &mut br);
-                    assert!(a.iter().chain(&ar).zip(b.iter().chain(&br)).all(|(a,b)| (a-b).abs() < 1e-7));
-                    assert!(a.iter().chain(&ar).all(|x| x.is_finite()));
-                }
-            }), 0);
-            endpoints[usize::from(split)] = a[127];
-        }
-        assert!((endpoints[0] - endpoints[1]).abs() > 0.02,
-            "nonlinear pre/post-Amp paths must not accidentally collapse: {endpoints:?}");
-    }
-
-    #[test]
-    fn live_saved_pitch_lfo_bypass_preserves_clock_fade_pcm_and_restore_without_heap() {
-        use crate::{audio::Sample, engine::{Bank, Engine, load_scripts, load_scripts_with_state},
-            import::{Instrument, PitchLfo, Zone}, ksp::Value};
-        for mixed in [false, true] {
-            let mut group = Group { pitch_lfos: vec![PitchLfo { start_phase: 0., slot: 7, count: 1.,
-                note_value: 1. / 24., sine: 0.5, fade_ms: 6., depth: 0.4,
-                targets: vec![(0, 0.4)], bypassed: false }], ..Group::default() };
-            if mixed { group.pitch_lfos.push(PitchLfo { start_phase: 0., slot: 3, count: 2.,
-                note_value: 1. / 24., sine: 0.3, fade_ms: 0., depth: 0.13,
-                targets: vec![(0, 0.13)], bypassed: false }); }
-            group.modulators.resize_with(8, || Modulator { name: String::new(), targets: vec![],
-                assignments: None, volume_env: false, bypassed: false, flex: false,
-                envelope: None, kind: "lfo".into() });
-            let par = |slot| EnginePar { id: id::INTMOD_BYPASS, group: 0, slot, generic: -1 };
-            assert!(Address::resolve(par(6), std::slice::from_ref(&group)).is_none(),
-                "a free-running or otherwise unprepared LFO remains unsupported");
-            let mut other_kind = group.clone(); other_kind.modulators[7].kind = "step".into();
-            assert!(Address::resolve(par(7), std::slice::from_ref(&other_kind)).is_none(),
-                "a same-slot non-LFO source must not claim prepared pitch-LFO storage");
-            let source = "on init
-                declare $seed := get_engine_par($ENGINE_PAR_INTMOD_BYPASS,0,7,-1)
-                make_persistent($seed)
-                declare $after := 0
-                make_persistent($after)
-                end on
-                on controller
-                if ($CC_NUM = 16)
-                    set_engine_par($ENGINE_PAR_INTMOD_BYPASS,%CC[16],0,7,-1)
-                    $after := get_engine_par($ENGINE_PAR_INTMOD_BYPASS,0,7,-1)
-                end if
-                if ($CC_NUM = 17)
-                    set_engine_par($ENGINE_PAR_INTMOD_BYPASS,%CC[17],0,3,-1)
-                end if
-                end on";
-            let instrument = Instrument { groups: vec![group.clone()], scripts: vec![source.into()], ..Default::default() };
-            let create = || {
-                let sample = Sample { rate: 48_000,
-                    frames: (0..4096).map(|n| [n as f32 / 8192.; 2]).collect() };
-                let mut engine = Engine::default(); engine.attack = 0.0001; engine.release = 0.001;
-                engine.set_transport(false, 120., 0., (4, 4));
-                engine.set_bank(Some(Box::new(Bank::from_samples(vec![group.clone()], vec![Zone::default()],
-                    vec![(std::path::PathBuf::new(), sample)]).unwrap()))); engine
-            };
-            let mut captures = [[0.; 689]; 2];
-            let mut saved = None;
-            for (partition, capture) in captures.iter_mut().enumerate() {
-                let (rt, errors) = load_scripts(&instrument, vec![], 48_000.);
-                assert!(errors.is_empty(), "{errors:?}");
-                let mut engine = create(); engine.set_script(rt);
-                let mut snapshot = engine.script().unwrap().native_state.snapshot();
-                let (mut l, mut r) = ([0.; 128], [0.; 128]);
-                assert_eq!(crate::plugin::tests::allocations(|| {
-                    engine.note_on(0, 60, 127);
-                    let mut at = 0;
-                    let mut fragment = 0;
-                    // Mid-control-tick removal, resumption, all-source bypass,
-                    // then removal of only one source from the mixed sum.
-                    for (end, bypass) in [(141, None), (205, Some(true)), (333, Some(false)),
-                        (401, Some(true)), (561, Some(false)), (689, Some(true))] {
-                        if let Some(bypass) = bypass {
-                            engine.cc(0, 16, u8::from(bypass));
-                            if mixed && matches!(at, 333 | 401) { engine.cc(0, 17, u8::from(bypass)); }
-                        }
-                        while at < end {
-                            let size = if partition == 0 { 128 } else { [13, 19][fragment & 1] };
-                            let n = size.min(end - at);
-                            engine.render(&mut l[..n], &mut r[..n]);
-                            assert!(l[..n].iter().zip(&r[..n]).all(|(l, r)| l == r));
-                            capture[at..at + n].copy_from_slice(&l[..n]); at += n; fragment += 1;
-                        }
-                    }
-                    let bypass = Address::resolve(par(7), std::slice::from_ref(&group)).unwrap();
-                    assert_eq!(read(&engine.bank().unwrap().settings, bypass), Some(1.));
-                    while !engine.script().unwrap().native_state.refresh(&mut snapshot, 1) {}
-                    engine.note_off(0, 60);
-                    for _ in 0..16 { engine.render(&mut l, &mut r); }
-                    assert_eq!(engine.active_voices(), 0, "bypass cannot extend the note lifetime");
-                }), 0);
-                let rt = engine.script().unwrap();
-                assert!(rt.env.engine_par(par(7)).is_none(), "accepted bypass has real prepared storage");
-                assert_eq!(rt.persistence()[0]["$after"], Value::Int(1));
-                assert_eq!(rt.persistence()[0]["$seed"], Value::Int(0));
-                saved = Some(snapshot.saved());
-            }
-            assert!(captures[0].iter().zip(&captures[1]).all(|(a, b)| (a - b).abs() < 1e-7),
-                "commands and native source ticks must be invariant to 13/19 versus128 planner fragments");
-            // Independent physical reference uses elapsed ACTIVE audio frames
-            // for phase, source-point count for fade, and the native32 grid for
-            // the shared interpolator. It neither calls Clock nor setters.
-            let (mut cursor, mut previous, mut current) = (0f64, 0f64, 0f64);
-            let mut active_frames = [0usize; 2];
-            let mut fade_points = 0;
-            for (frame, &actual) in captures[0].iter().enumerate() {
-                let main = frame < 141 || (205..333).contains(&frame) || (401..561).contains(&frame);
-                let second = mixed && !(333..401).contains(&frame);
-                let pitch = if main || second {
-                    if frame & 31 == 0 {
-                        previous = current; current = 0.;
-                        if main {
-                            let start = f64::from(0.3f32);
-                            let fade = if fade_points < 9 {
-                                (start * (1. + 1. / start).powf(fade_points as f64 / 9.)).min(1.) - start
-                            } else { 1. };
-                            current -= 2.4 * fade * (active_frames[0] as f64 * 48. / 48000.
-                                * std::f64::consts::TAU).sin();
-                            fade_points += 1;
-                        }
-                        if second { current -= 0.468 * (active_frames[1] as f64 * 24. / 48000.
-                            * std::f64::consts::TAU).sin(); }
-                    }
-                    previous + (current - previous) * (frame & 31) as f64 / 32.
-                } else { 0. };
-                if frame >= 64 { assert!((actual - cursor as f32 / 8192.).abs() < 2e-6,
-                    "mixed={mixed}, frame{frame}: PCM{actual} versus source cursor{cursor}"); }
-                cursor += 2f64.powf(pitch / 12.);
-                active_frames[0] += usize::from(main); active_frames[1] += usize::from(second);
-            }
-            let edits = saved.unwrap();
-            assert!(edits.iter().any(|e| e.par == par(7) && e.value == 1));
-            let (restored, errors) = load_scripts_with_state(&instrument, vec![], 48_000., &[], &edits);
-            assert!(errors.is_empty(), "{errors:?}");
-            let mut replay = create(); replay.set_script(restored);
-            assert!(replay.bank().unwrap().settings[0].pitch_lfos[0].bypassed);
-            assert_eq!(replay.script().unwrap().persistence()[0]["$seed"], Value::Int(1),
-                "native restoration precedes init getters, without reviving a previous note clock");
-            let mut expected = create(); expected.bank.as_mut().unwrap().settings[0].pitch_lfos[0].bypassed = true;
-            let (mut a, mut ar, mut b, mut br) = ([0.; 128], [0.; 128], [0.; 128], [0.; 128]);
-            assert_eq!(crate::plugin::tests::allocations(|| {
-                replay.note_on(0, 60, 127); expected.note_on(0, 60, 127);
-                replay.render(&mut a, &mut ar); expected.render(&mut b, &mut br);
-                assert!(a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-7),
-                    "restoration preserves controls, not an earlier note's phase/fade");
-            }), 0);
-            let mut fresh = create(); let (rt, _) = load_scripts(&instrument, vec![], 48_000.); fresh.set_script(rt);
-            assert!(!fresh.bank().unwrap().settings[0].pitch_lfos[0].bypassed, "fresh load must not inherit prior edits");
-        }
-    }
-
-    #[test]
-    fn signed_intensity_aliases_reach_external_pitch_and_cutoff_pcm_without_heap() {
-        use crate::{audio::Sample, engine::{Bank, Engine, ScriptSetup}, import::{Instrument, Zone},
-            ksp::{Runtime, Value}};
-        let assignment = |target, intensity| ModAssignment { name: "Constant".into(),
-            source: ModSource::Constant, target, intensity, invert: false, lag_ms: 0, shaper: None };
-        let group = Group {
-            mods: vec![assignment(ModTarget::Volume, 1.), assignment(ModTarget::Pitch, 0.),
-                assignment(ModTarget::Module { param: "filterCutoff".into(), slot: 0 }, 0.)],
-            modulators: vec![Modulator { name: "Constant".into(), targets: vec!["Volume".into(),
-                "Pitch".into(), "Cutoff".into()], assignments: Some(0), volume_env: false,
-                bypassed: false, flex: false, envelope: None, kind: "external".into() }],
-            fx: crate::fx::Chain { slots: vec![crate::fx::Effect { slot: 0, kind: crate::fx::Kind::Filter,
-                version: 0, bypass: false, output_gain: 1., dry_level: 1.,
-                params: crate::fx::params::Params::Filter(crate::fx::params::Filter {
-                    filter_type: 2, cutoff: 0.3, resonance: 0., extra: [0.; 3], native_flag: None }) }] },
-            ..Group::default()
-        };
-        let render = |group: Group, source: &str, pitch_raw: i32, cutoff_raw: i32| {
-            let instrument = Instrument { groups: vec![group.clone()], ..Default::default() };
-            let mut setup = ScriptSetup::new(&instrument, 48_000.);
-            let (rt, errors) = Runtime::with_scripts(&[source], &mut setup, 0, Vec::new());
-            assert!(errors.iter().all(Option::is_none), "{errors:?}");
-            for (name, expected) in [("$p", pitch_raw), ("$c", cutoff_raw)] {
-                let Value::Int(raw) = rt.persistence()[0][name] else { panic!("missing readback"); };
-                assert!((raw - expected).abs() <= 1, "{name}: {raw} != {expected}");
-            }
-            let sample = Sample { rate: 48_000, frames: (0..8192).map(|n|
-                [(std::f32::consts::TAU * 2000. * n as f32 / 48_000.).sin() * 0.25; 2]).collect() };
-            let bank = Bank::from_samples(vec![group], vec![Zone::default()],
-                vec![(std::path::PathBuf::new(), sample)]).unwrap();
-            let mut engine = Engine::default();
-            engine.set_bank(Some(Box::new(bank)));
-            engine.set_script(Some(Box::new(rt)));
-            let (mut l, mut r) = ([0.; 2048], [0.; 2048]);
-            assert_eq!(crate::plugin::tests::allocations(|| {
-                engine.note_on(0, 60, 100);
-                engine.render(&mut l, &mut r);
-            }), 0);
-            assert!(l.iter().chain(&r).all(|x| x.is_finite()));
-            l
-        };
-        let mut power = [0.; 4];
-        for (i, (pitch_raw, cutoff_raw)) in [(224_840, 250_000), (224_840, 750_000),
-            (775_160, 250_000), (775_160, 750_000)].into_iter().enumerate() {
-            // Independently saved Conflux 2 st target; signed midpoint probes
-            // also exercise an audible cutoff change rather than readback alone.
-            let readback = "declare $p := get_engine_par($ENGINE_PAR_MOD_TARGET_MP_INTENSITY,0,0,1)\nmake_persistent($p)\ndeclare $c := get_engine_par($ENGINE_PAR_INTMOD_INTENSITY,0,0,2)\nmake_persistent($c)\nend on";
-            let source = |name| format!("on init\nset_engine_par({name},{pitch_raw},0,0,1)\nset_engine_par({name},{cutoff_raw},0,0,2)\n{readback}\non note\nset_engine_par({name},{pitch_raw},0,0,1)\nset_engine_par({name},{cutoff_raw},0,0,2)\nend on");
-            let legacy = render(group.clone(), &source("$ENGINE_PAR_INTMOD_INTENSITY"), pitch_raw, cutoff_raw);
-            let modern = render(group.clone(), &source("$ENGINE_PAR_MOD_TARGET_MP_INTENSITY"), pitch_raw, cutoff_raw);
-            let mut reference = group.clone();
-            reference.mods[1].intensity = if pitch_raw < 500_000 { -0.16666558385 } else { 0.16666558385 };
-            reference.mods[2].intensity = if cutoff_raw < 500_000 { -0.125 } else { 0.125 };
-            let reference = render(reference, &format!("on init\n{readback}"), pitch_raw, cutoff_raw);
-            // Authored serialized target records exercise the import path too:
-            // magnitudes are positive; the negative cutoff is target flag0x02,
-            // independently of the serialized invert button (left false).
-            use ni_file::kontakt::{Chunk, StructuredObject};
-            let name = |out: &mut Vec<u8>, text: &str| {
-                out.extend((text.len() as u32).to_le_bytes()); out.extend(text.as_bytes());
-            };
-            let object = |id, version: u16, private: &[u8], public: &[u8]| {
-                let mut data = vec![1]; data.extend(version.to_le_bytes());
-                for part in [private, public, &[]] {
-                    data.extend((part.len() as u32).to_le_bytes()); data.extend(part);
-                }
-                Chunk { id, data }
-            };
-            let mut private = 3u32.to_le_bytes().to_vec();
-            for (param, label, slot, depth, flags) in [
-                ("volume", "Volume", None, 1.0f32, 0x10),
-                ("pitch", "Pitch", None, 0.16666558385, if pitch_raw < 500_000 { 0x12 } else { 0x10 }),
-                ("filterCutoff", "Cutoff", Some(0), 0.125, if cutoff_raw < 500_000 { 0x12 } else { 0x10 })] {
-                name(&mut private, param); private.extend(depth.to_le_bytes());
-                private.extend((-1i16).to_le_bytes()); private.push(flags); private.extend(0u16.to_le_bytes());
-                name(&mut private, label); private.extend(slot); private.push(0);
-            }
-            private.extend([0; 3]); name(&mut private, "Constant");
-            private.extend(1u32.to_le_bytes()); private.extend(9u32.to_le_bytes());
-            private.extend([0; 4]); private.extend(0u32.to_le_bytes());
-            let mut public = vec![1]; object(0x0c, 0x102, &private, &[]).write(&mut public).unwrap();
-            public.extend([0; 31]);
-            let raw = ni_file::kontakt::objects::Group(StructuredObject { version: 0x95,
-                public_data: vec![], private_data: vec![], children: vec![object(0x3c, 0x10, &[], &public)] });
-            let imported = crate::modulation::read_group(&raw).unwrap();
-            let mut saved = group.clone(); saved.mods = imported.mods; saved.modulators = imported.modulators;
-            let saved = render(saved, &format!("on init\n{readback}"), pitch_raw, cutoff_raw);
-            assert_eq!(legacy, modern, "aliases must produce identical PCM");
-            assert_eq!(saved, reference, "saved signed targets must match the physical-depth reference");
-            assert!(legacy.iter().zip(reference).all(|(a,b)| (a-b).abs() < 1e-6),
-                "signed setters must match independently supplied physical depths");
-            power[i] = legacy.iter().map(|&x| f64::from(x).powi(2)).sum::<f64>();
-        }
-        assert!(power[1] > power[0] * 4. && power[3] > power[2] * 4.,
-            "cutoff depth changes the real filter response at both pitch directions: {power:?}");
-    }
-
-    #[test]
-    fn addresses_resolve_by_decoded_names() {
-        let groups = [group()];
-        assert_eq!(find_mod(&groups, 0, &|n| n == "CC_VOLUME"), Some(2));
-        assert_eq!(
-            find_target(&groups, 0, 0, &|n| n == "ENV_AHDSR_VOLUME"),
-            Some(0)
-        );
-        let par = |id, slot, generic| EnginePar {
-            id,
-            group: 0,
-            slot,
-            generic,
-        };
-        assert_eq!(
-            Address::resolve(par(id::MOD_TARGET_INTENSITY, 2, -1), &groups),
-            Some(Address::Intensity {
-                group: 0,
-                index: 1,
-                bipolar: false,
-                cubic: None,
-            })
-        );
-        assert_eq!(
-            Address::resolve(par(id::ATTACK, 0, -1), &groups),
-            Some(Address::Envelope(0, Stage::Attack))
-        );
-        assert_eq!(Address::resolve(par(id::ATTACK, 1, -1), &groups), None);
-        // A flex envelope (slot 1 here) has no AHDSR stages, nor has a
-        // missing slot: Kontakt ignores those; an external modulator's are
-        // left unmapped.
-        let mut flex = group();
-        flex.modulators.insert(
-            1,
-            Modulator {
-                name: "ENV_FLEX".into(),
-                targets: Vec::new(),
-                assignments: None,
-                volume_env: false,
-                bypassed: false,
-                flex: true,
-                envelope: None,
-                kind: "flex".into(),
-            },
-        );
-        let flex = [flex];
-        assert!(Address::inert(par(id::ATTACK, 1, -1), &flex));
-        assert!(Address::inert(par(id::RELEASE, 9, -1), &flex));
-        assert!(!Address::inert(par(id::ATTACK, 2, -1), &flex));
-        assert!(!Address::inert(par(id::VOLUME, 1, -1), &flex));
-        // A filter envelope is addressed by its `Group::envelopes` index.
-        let mut filter = group();
-        filter.modulators[1].envelope = Some(3);
-        assert_eq!(
-            Address::resolve(par(id::DECAY, 1, -1), &[filter]),
-            Some(Address::ModEnvelope(0, 3, Stage::Decay))
-        );
-        let bus = EnginePar {
-            id: id::VOLUME,
-            group: -1,
-            slot: -1,
-            generic: 1002,
-        };
-        assert_eq!(
-            Address::resolve(bus, &groups),
-            Some(Address::Fx(Rack::Bus(2), 0, FxParam::Volume))
-        );
-    }
-}
+mod tests;

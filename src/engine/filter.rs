@@ -29,9 +29,7 @@ const MAX_UNITS: usize = 8;
 /// Eight four-band EQs are the largest supported native insert chain.
 const MAX_SECTIONS: usize = MAX_UNITS * 4;
 /// Module envelopes and external assignments a voice follows.
-const MAX_ENVS: usize = 4;
-const MAX_EXT: usize = 8;
-/// Knobs per unit: cutoff and resonance, or frequency, bandwidth and gain per band.
+const MAX_ENVS: usize = super::params::PITCH_ENVS;
 const KNOBS: usize = 12;
 
 /// Legacy and state-variable filter cutoff: `43.6 Hz · 2^(8.96 x)`, 43.6 Hz
@@ -256,6 +254,18 @@ pub(crate) struct Unit {
 }
 
 impl Unit {
+    fn processed_keys_finite(&self) -> bool {
+        let width = match self.shape {
+            Shape::Model(models::Model::Phaser) => 1,
+            Shape::Filter(_) | Shape::Model(models::Model::Ladder { .. }) => 2,
+            Shape::Ladder | Shape::Model(models::Model::Formant)
+                | Shape::Eq | Shape::Geq => 3,
+        };
+        (0..usize::from(self.sections)).all(|band| {
+            self.key(&self.knobs, band).0[..width].iter().all(|v| v.is_finite())
+        })
+    }
+
     /// Section `b`'s knobs (bounded except direct Ladder Gain), and whether
     /// it is a flat EQ band (an identity).
     fn key(&self, knobs: &[f32; KNOBS], b: usize) -> ([f32; 3], bool) {
@@ -451,14 +461,17 @@ type Matrix = [f32; 4];
 const IDENTITY: Matrix = [1.0, 0.0, 0.0, 1.0];
 
 #[derive(Clone, Copy)]
-struct Amplifier<'a> { amp: &'a [f32], gains: [f32; 2], delta: [f32; 2] }
+struct Amplifier<'a> { amp: &'a [f32], gains: [f32; 2], delta: [f32; 2], curve: Option<&'a [[f32; 2]]> }
 impl Amplifier<'_> {
     fn apply(self, start: usize, left: &mut [f32], right: &mut [f32]) {
         for (i, (l, r)) in left.iter_mut().zip(right).enumerate() {
             let frame = start + i;
             let a = self.amp[frame];
-            *l *= a * (self.gains[0] + self.delta[0] * frame as f32);
-            *r *= a * (self.gains[1] + self.delta[1] * frame as f32);
+            let gains = self.curve.map_or_else(
+                || std::array::from_fn(|c| self.gains[c] + self.delta[c] * frame as f32),
+                |curve| curve[frame]);
+            *l *= a * gains[0];
+            *r *= a * gains[1];
         }
     }
 }
@@ -675,7 +688,7 @@ impl GroupFilter {
         let envs = (group.envelopes.iter().enumerate())
             .filter_map(|(i, e)| {
                 let routes: Box<[_]> = e.targets.iter().enumerate().filter_map(|(t, m)| Some((route(m, t as u16)?, Mod::from(m)))).collect();
-                (!routes.is_empty()).then(|| (Ahdsr::from(&e.env), routes, i as u8,
+                (!routes.is_empty()).then(|| ({ let mut p = Ahdsr::from(&e.env); p.ahd_only = e.native_ahd_only; p }, routes, i as u8,
                     group.modulators.iter().find(|m| m.envelope == Some(i))
                         .is_some_and(|m| m.bypassed)))
             })
@@ -686,7 +699,6 @@ impl GroupFilter {
             .iter()
             .enumerate()
             .filter_map(|(i, m)| Some((route(m, 0)?, i as u16)))
-            .take(MAX_EXT)
             .collect();
         let mut out = Box::new(Self {
             units: units.into(),
@@ -785,6 +797,13 @@ impl GroupFilter {
     }
 
     /// Filters and EQs, in slot order.
+    pub(crate) fn external_count(&self) -> usize { self.ext.len() }
+
+    pub(super) fn same_external_routes(&self, other: &Self) -> bool {
+        self.ext.len() == other.ext.len() && self.ext.iter().zip(&other.ext).all(|((a, ai), (b, bi))|
+            ai == bi && a.unit == b.unit && a.knob == b.knob && a.sign == b.sign && a.target == b.target)
+    }
+
     pub(crate) fn units(&self) -> &[Unit] {
         &self.units
     }
@@ -848,6 +867,31 @@ impl GroupFilter {
         self.envs.iter_mut().find(|e| e.2 == i).map(|e| &mut e.0)
     }
 
+    pub(super) fn envelopes_prepared_valid(&self) -> bool {
+        self.envs.iter().all(|e| e.0.prepared_valid())
+    }
+
+    pub(super) fn processed_fields_finite(&self) -> bool {
+        self.units.iter().all(|unit| unit.gain.is_finite() && unit.processed_keys_finite())
+            && self.mixers.iter().all(|mixer| mixer.gain.is_finite()
+                && mixer.stereo.is_none_or(|values| values.into_iter().all(f32::is_finite)))
+            && self.stages.iter().all(|stage| {
+                let fields: &[usize] = match stage.kind {
+                    Kind::SurroundPanner | Kind::Limiter => &[0, 1],
+                    Kind::Distortion | Kind::TapeSaturator => &[0, 1, 2],
+                    Kind::LoFi => &[0, 1, 2, 4],
+                    Kind::Skreamer => &[0, 1, 2, 3, 4],
+                    Kind::Compressor => &[1, 2, 3, 4, 5],
+                    Kind::SolidBusComp => &[0, 1, 2, 3, 4, 5, 6],
+                    Kind::FeedbackCompressor => &[0, 1, 2, 3, 4, 5, 8],
+                    Kind::TransientMaster => &[0, 1, 2, 3],
+                    _ => &[],
+                };
+                stage.gain.is_finite() && fields.iter().all(|&i| stage.fields[i].is_finite())
+            }) && self.taps.iter().all(|tap| tap.gain.is_finite()
+                && tap.levels.iter().all(|v| v.is_finite()))
+    }
+
     pub(crate) fn envelope_at(&self, i: u8) -> Option<&Ahdsr> {
         self.envs.iter().find(|e| e.2 == i).map(|e| &e.0)
     }
@@ -880,6 +924,8 @@ impl GroupFilter {
         };
         match filter_type(kind) {
             Some((shape, sections)) if total - u.sections as usize + sections as usize <= MAX_SECTIONS => {
+                let prospective = Unit { shape, sections, kind, ..u.clone() };
+                if !prospective.processed_keys_finite() { return false; }
                 (u.shape, u.sections, u.kind) = (shape, sections, kind);
                 self.type_revision = self.type_revision.wrapping_add(1);
                 let mut section = 0;
@@ -1242,20 +1288,70 @@ fn apply(from: Matrix, m: Matrix, left: &mut [f32], right: &mut [f32]) {
     }
 }
 
+/// Live insert matrices use the core's five-ms receiver smoothing policy.
+/// This retained audio-frame clock does not claim Kontakt's native smoothing law.
+#[derive(Clone, Copy, Debug)]
+struct MatrixRamp {
+    value: Matrix,
+    start: Matrix,
+    target: Matrix,
+    left: u32,
+    frames: u32,
+}
+
+impl MatrixRamp {
+    fn steady(value: Matrix) -> Self {
+        Self { value, start: value, target: value, left: 0, frames: 1 }
+    }
+
+    fn apply(&mut self, target: Matrix, rate: f32, left: &mut [f32], right: &mut [f32]) {
+        if target != self.target {
+            self.start = self.value;
+            self.target = target;
+            self.frames = (rate * 0.005).round().max(1.) as u32;
+            self.left = self.frames;
+        }
+        let moving = left.len().min(self.left as usize);
+        for (l, r) in left[..moving].iter_mut().zip(&mut right[..moving]) {
+            self.left -= 1;
+            self.value = if self.left == 0 { self.target } else {
+                let t = (self.frames - self.left) as f32 / self.frames as f32;
+                std::array::from_fn(|i| self.start[i] + (self.target[i] - self.start[i]) * t)
+            };
+            let m = self.value;
+            (*l, *r) = (m[0] * *l + m[1] * *r, m[2] * *l + m[3] * *r);
+        }
+        if moving < left.len() && self.value != IDENTITY {
+            apply(self.value, self.value, &mut left[moving..], &mut right[moving..]);
+        }
+    }
+}
+
 /// A voice's filter state: its module envelopes, lagged external sources,
 /// sections, the knobs each section is tuned for and the stereo matrix
 /// reached. Empty (no work) for voices of groups without filters.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct ExternalState {
+    active: bool,
+    value: f64,
+    target: f64,
+    step: f64,
+    level: f32,
+}
+
 pub(crate) struct VoiceFilter {
     envs: [Envelope; MAX_ENVS],
-    ext: [f32; MAX_EXT],
+    /// Modulation control phase belongs to the voice, not host fragments.
+    control_offset: u8,
+    env_levels: [f32; MAX_ENVS],
+    pub(super) ext: Box<[ExternalState]>,
     sections: [Section; MAX_SECTIONS],
     ladders: [ladder::Ladder; MAX_UNITS],
     /// Knobs of each section's last coefficients (NaN: none yet), so static
     /// settings cost no coefficient math.
     tuned: [[f32; 3]; MAX_SECTIONS],
     drives: [VoiceEffect; MAX_STAGES],
-    slot_matrices: [Matrix; 8],
+    slot_matrices: [MatrixRamp; 8],
     type_revision: u32,
     /// The values each drive is tuned for (NaN: none yet).
     drive_fields: [Fields; MAX_STAGES],
@@ -1266,15 +1362,25 @@ pub(crate) struct VoiceFilter {
 }
 
 impl VoiceFilter {
+    #[cfg(test)]
     pub fn new(filter: Option<&GroupFilter>, table: &ModTable, input: &Inputs, rate: f32) -> Self {
+        let ext = vec![ExternalState::default(); filter.map_or(0, GroupFilter::external_count)].into_boxed_slice();
+        Self::new_prepared(filter, table, input, rate, ext)
+    }
+
+    pub(super) fn new_prepared(filter: Option<&GroupFilter>, table: &ModTable, input: &Inputs, rate: f32, mut ext: Box<[ExternalState]>) -> Self {
+        assert!(ext.len() >= filter.map_or(0, GroupFilter::external_count), "prepared external modulation storage");
+        ext.fill(ExternalState::default());
         let mut out = Self {
             envs: [Envelope::new(&Ahdsr::UNITY, rate); MAX_ENVS],
-            ext: [0.0; MAX_EXT],
+            control_offset: 0,
+            env_levels: [0.; MAX_ENVS],
+            ext,
             sections: [Section::default(); MAX_SECTIONS],
             ladders: [ladder::Ladder::default(); MAX_UNITS],
             tuned: [[f32::NAN; 3]; MAX_SECTIONS],
             drives: [VoiceEffect::default(); MAX_STAGES],
-            slot_matrices: [IDENTITY; 8],
+            slot_matrices: [MatrixRamp::steady(IDENTITY); 8],
             type_revision: 0,
             drive_fields: [[f32::NAN; blocks::FIELDS]; MAX_STAGES],
             held: FilterKey::default(),
@@ -1284,10 +1390,14 @@ impl VoiceFilter {
             for (env, (params, ..)) in out.envs.iter_mut().zip(&f.envs) {
                 *env = Envelope::new(params, rate);
             }
-            for (value, (_, i)) in out.ext.iter_mut().zip(&f.ext) {
-                *value = table.mods[*i as usize].start_value(input);
+            for (index, (_, i)) in f.ext.iter().enumerate() {
+                let m = &table.mods[*i as usize];
+                let value = m.start_value(input);
+                out.ext[index] = ExternalState { active: value.is_some(),
+                    value: f64::from(value.unwrap_or(0.)), target: f64::from(value.unwrap_or(0.)),
+                    step: m.lag_step(rate), level: value.unwrap_or(0.) };
             }
-            out.slot_matrices = f.slot_matrices;
+            out.slot_matrices = f.slot_matrices.map(MatrixRamp::steady);
             out.type_revision = f.type_revision;
         }
         out
@@ -1301,11 +1411,37 @@ impl VoiceFilter {
         }
     }
 
-    /// Move external sources over `n` frames before [`process_amplified`](Self::process_amplified).
+    /// Capture accepted source targets; rendering advances lag on voice time.
     #[inline(always)]
-    pub fn follow(&mut self, f: &GroupFilter, table: &ModTable, input: &Inputs, n: usize, rate: f32) {
-        for (value, (_, i)) in self.ext.iter_mut().zip(&f.ext) {
-            table.mods[*i as usize].follow(value, input, n, rate);
+    pub fn follow(&mut self, f: &GroupFilter, table: &ModTable, input: &Inputs, _n: usize, rate: f32) {
+        for (index, (_, i)) in f.ext.iter().enumerate() {
+            let m = &table.mods[*i as usize];
+            let Some(target) = m.live_value(input) else { continue; };
+            let state = &mut self.ext[index];
+            let Some(target) = target else { *state = ExternalState::default(); continue; };
+            state.active = true;
+            state.target = f64::from(target);
+            state.step = m.lag_step(rate);
+            // Zero lag remains immediate at an accepted event, even between
+            // control ticks. Positive lag does not move during preparation.
+            if state.step == 1. {
+                state.value = f64::from(target);
+                state.level = target;
+            }
+        }
+    }
+
+    fn advance_external(&mut self, index: usize, frames: usize) {
+        let state = &mut self.ext[index];
+        if !state.active { return; }
+        let (target, step) = (state.target, state.step);
+        let value = &mut state.value;
+        for _ in 0..frames {
+            let previous = *value;
+            *value += (target - *value) * step;
+            // Equality proves every further recurrence with this target is
+            // identical; no amplitude threshold changes the authored lag.
+            if *value == previous { break; }
         }
     }
 
@@ -1323,13 +1459,21 @@ impl VoiceFilter {
         // Drives are nonlinear: voices cannot share them.
         if f.pre_active || f.matrix_interleaved || f.taps.iter().any(|t| !t.bypass)
             || f.units.iter().any(|u| !u.bypass && u.shape == Shape::Ladder)
-            || !f.envs.is_empty() || self.slot_matrices != f.slot_matrices || f.stages.iter().any(|s| !s.bypass) {
+            || !f.envs.is_empty() || self.slot_matrices.iter().zip(&f.slot_matrices)
+                .any(|(ramp, target)| ramp.left != 0 || ramp.value != *target)
+            || f.stages.iter().any(|s| !s.bypass)
+            || f.ext.iter().enumerate().any(|(index, _)| {
+                let state = &self.ext[index];
+                state.active && (state.value != state.value + (state.target - state.value) * state.step
+                    || state.level != state.value as f32)
+            }) {
             return None;
         }
         let mut knobs: [[f32; KNOBS]; ROWS] =
             std::array::from_fn(|u| f.units.get(u).map_or([0.0; KNOBS], |unit| unit.knobs));
-        for ((r, i), value) in f.ext.iter().zip(&self.ext) {
-            knobs[r.unit as usize][r.knob as usize] += r.sign * table.mods[*i as usize].intensity * value;
+        for ((r, i), state) in f.ext.iter().zip(&self.ext) {
+            if !state.active { continue; }
+            knobs[r.unit as usize][r.knob as usize] += r.sign * table.mods[*i as usize].intensity * state.level;
         }
         let key = &mut self.held;
         key.matrix = f.matrix;
@@ -1399,8 +1543,8 @@ impl VoiceFilter {
 
     /// Process native insert slots with the Amplifier at its stored split.
     #[allow(clippy::too_many_arguments)]
-    pub fn process_amplified(&mut self, f: &GroupFilter, table: &ModTable, ctl: &mut [f32; MAX_BLOCK], left: &mut [f32], right: &mut [f32], rate: f32, amp: &[f32], gains: [f32; 2], delta: [f32; 2], sends: Option<&mut crate::fx::SendInputs<'_>>) {
-        self.process_chain(f, table, ctl, left, right, rate, Some(Amplifier { amp, gains, delta }), sends);
+    pub fn process_amplified(&mut self, f: &GroupFilter, table: &ModTable, ctl: &mut [f32; MAX_BLOCK], left: &mut [f32], right: &mut [f32], rate: f32, amp: &[f32], gains: [f32; 2], delta: [f32; 2], curve: Option<&[[f32; 2]]>, sends: Option<&mut crate::fx::SendInputs<'_>>) {
+        self.process_chain(f, table, ctl, left, right, rate, Some(Amplifier { amp, gains, delta, curve }), sends);
     }
 
     /// Filter one block (at most [`MAX_BLOCK`] frames) in place; `ctl` is scratch.
@@ -1419,28 +1563,37 @@ impl VoiceFilter {
         let n = left.len();
         if n == 0 { return; }
         self.check_type_revision(f);
-        // Envelope levels at each control tick. External sources move once
-        // a block, so knobs change within one only while an envelope moves.
-        let mut levels = [[0.0; MAX_BLOCK / CONTROL]; MAX_ENVS];
-        let mut moving = false;
-        for (env, ticks) in self.envs.iter_mut().zip(&mut levels).take(f.envs.len()) {
-            if matches!(env.phase(), Phase::Sustain | Phase::Done) {
-                // Held: one level all block, and no pass over its frames.
-                env.skip(n, None, rate);
-                ticks.fill(env.level());
-                continue;
+        let mut start = 0;
+        while start < n {
+            let offset = self.control_offset as usize;
+            let end = if f.envs.is_empty() && f.ext.is_empty() { n } else { (start + CONTROL - offset).min(n) };
+            for ((env, level), (_, _, _, bypass)) in self.envs.iter_mut().zip(&mut self.env_levels).zip(&f.envs) {
+                if *bypass { continue; }
+                let mut frames = end - start;
+                if offset == 0 {
+                    env.render(&mut ctl[..1], None, rate);
+                    *level = ctl[0];
+                    frames -= 1;
+                }
+                // Moving coefficients sample one consistent recurrence at
+                // voice frames 0/32/etc. Held states need no per-frame work.
+                if matches!(env.phase(), Phase::Sustain | Phase::Done) {
+                    env.skip(frames, None, rate);
+                } else {
+                    for _ in 0..frames { env.render(&mut ctl[..1], None, rate); }
+                }
             }
-            moving = true;
-            env.render(&mut ctl[..n], None, rate);
-            for (t, level) in ticks.iter_mut().enumerate().take(n.div_ceil(CONTROL)) {
-                *level = ctl[t * CONTROL];
+            for index in 0..f.ext.len() {
+                let mut frames = end - start;
+                if offset == 0 {
+                    self.advance_external(index, 1);
+                    self.ext[index].level = self.ext[index].value as f32;
+                    frames -= 1;
+                }
+                // A scalar recurrence fixes rounding as well as elapsed time;
+                // the same coefficients hold between physical control ticks.
+                self.advance_external(index, frames);
             }
-        }
-        // Held knobs filter the block in one pass: the same frames pair up
-        // (CONTROL is even), so the output is the same as tick by tick.
-        let step = if moving { CONTROL } else { n };
-        for (t, start) in (0..n).step_by(step).enumerate() {
-            let end = (start + step).min(n);
             // Units' knobs, then each drive stage's modulation (normalized).
             let mut rows: [[f32; KNOBS]; ROWS] = std::array::from_fn(|u| {
                 f.units.get(u).map_or([0.0; KNOBS], |unit| unit.knobs)
@@ -1449,16 +1602,17 @@ impl VoiceFilter {
             let mut ladder_modulated = 0_u8;
             for (e, (_, routes, _, bypass)) in f.envs.iter().enumerate() {
                 // Bypass disconnects every target, including nonzero shaper
-                // intercepts. The envelope above still advances while bypassed.
+                // intercepts, and preserves the source state above.
                 if *bypass { continue; }
                 for (r, m) in routes.iter() {
-                    rows[r.unit as usize][r.knob as usize] += r.sign * m.intensity * m.shape(levels[e][t]);
+                    rows[r.unit as usize][r.knob as usize] += r.sign * m.intensity * m.shape(self.env_levels[e]);
                     if r.knob < 3 && (r.unit as usize) < MAX_UNITS { ladder_modulated |= 1 << r.unit; }
                     if r.knob == 2 && (r.unit as usize) < MAX_UNITS { gain_modulated |= 1 << r.unit; }
                 }
             }
-            for ((r, i), value) in f.ext.iter().zip(&self.ext) {
-                rows[r.unit as usize][r.knob as usize] += r.sign * table.mods[*i as usize].intensity * value;
+            for ((r, i), state) in f.ext.iter().zip(&self.ext) {
+                if !state.active { continue; }
+                rows[r.unit as usize][r.knob as usize] += r.sign * table.mods[*i as usize].intensity * state.level;
                 if r.knob < 3 && (r.unit as usize) < MAX_UNITS { ladder_modulated |= 1 << r.unit; }
                 if r.knob == 2 && (r.unit as usize) < MAX_UNITS { gain_modulated |= 1 << r.unit; }
             }
@@ -1517,15 +1671,12 @@ impl VoiceFilter {
                     }
                 }
                 let slot = insert.slot as usize;
-                let (from, to) = (self.slot_matrices[slot], f.slot_matrices[slot]);
-                if from != IDENTITY || to != IDENTITY {
-                    let at = |frame: usize| std::array::from_fn(|i| from[i] + (to[i] - from[i]) * (frame as f32 / n as f32));
-                    apply(at(start), at(end), l, r);
-                }
+                self.slot_matrices[slot].apply(f.slot_matrices[slot], rate, l, r);
             }
             if !amplified { amplifier.unwrap().apply(start, l, r); }
+            self.control_offset = ((offset + end - start) % CONTROL) as u8;
+            start = end;
         }
-        self.slot_matrices = f.slot_matrices;
     }
 }
 
@@ -1677,23 +1828,23 @@ impl LaneFilter {
     /// The kernel for a lane reading `count` source frames from `base` by
     /// `step` (32.32) with envelope curve `amp`: each source frame's share
     /// of the end state, through the cubic's taps as `mix` weighs them.
-    pub fn kernel(&mut self, amp: &[f32], base: u64, step: u64, count: usize) {
+    pub fn kernel(&mut self, amp: &[f32], base: u64, step: u64, count: usize, native: bool) {
         #[cfg(target_arch = "x86_64")]
         if std::arch::is_x86_feature_detected!("avx2") {
             // SAFETY: the running CPU supports AVX2.
-            return unsafe { self.kernel_avx2(amp, base, step, count) };
+            return unsafe { self.kernel_avx2(amp, base, step, count, native) };
         }
-        self.kernel_body(amp, base, step, count);
+        self.kernel_body(amp, base, step, count, native);
     }
 
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2")]
-    fn kernel_avx2(&mut self, amp: &[f32], base: u64, step: u64, count: usize) {
-        self.kernel_body(amp, base, step, count);
+    fn kernel_avx2(&mut self, amp: &[f32], base: u64, step: u64, count: usize, native: bool) {
+        self.kernel_body(amp, base, step, count, native);
     }
 
     #[inline(always)]
-    fn kernel_body(&mut self, amp: &[f32], base: u64, step: u64, count: usize) {
+    fn kernel_body(&mut self, amp: &[f32], base: u64, step: u64, count: usize, native: bool) {
         let g = &mut self.g[..count];
         g.fill([0.0; LANE_STATES]);
         let k = &self.tunings[self.tuning].k;
@@ -1717,12 +1868,21 @@ impl LaneFilter {
             }
             let t = ((p as u32) >> 8) as f32 * (1.0 / (1 << 24) as f32);
             let (t2, t3) = (t * t, t * t * t);
-            let w = [
-                -0.5 * t + t2 - 0.5 * t3,
-                1.0 - 2.5 * t2 + 1.5 * t3,
-                0.5 * t + 2.0 * t2 - 1.5 * t3,
-                -0.5 * t2 + 0.5 * t3,
-            ];
+            let w = if native {
+                let a = t + 1.;
+                let b = a - 1.;
+                let c = b - 1.;
+                let d = c - 1.;
+                [-b * c * d / 6., a * c * d * 0.5,
+                    -a * b * d * 0.5, a * b * c / 6.]
+            } else {
+                [
+                    -0.5 * t + t2 - 0.5 * t3,
+                    1.0 - 2.5 * t2 + 1.5 * t3,
+                    0.5 * t + 2.0 * t2 - 1.5 * t3,
+                    -0.5 * t2 + 0.5 * t3,
+                ]
+            };
             for (g, w) in taps.iter_mut().zip(w) {
                 add(g, a * w, k);
             }
@@ -1821,6 +1981,8 @@ impl LaneFilter {
     /// Move the voice's state on by the block, its dotted input weighted
     /// `weights`.
     pub fn end(&mut self, voice: &mut VoiceFilter, weights: [f32; 2]) {
+        // Settled modulation can share a lane without losing its voice clock.
+        voice.control_offset = ((usize::from(voice.control_offset) + self.tunings[self.tuning].n) % CONTROL) as u8;
         let dim = 2 * self.active;
         let m = &self.tunings[self.tuning].m;
         let slots = voice.slots;
@@ -1871,6 +2033,221 @@ mod tests {
     const RATE: f32 = 48_000.0;
 
     #[test]
+    fn live_insert_matrices_keep_complete_pcm_on_five_ms_voice_clocks_without_heap() {
+        use crate::{audio::Sample, engine::{Bank, Engine, Expression}, fx::{Effect, params::StereoModeller}, import::Zone};
+        const FRAMES: usize = 2560;
+        // Physical knobs, indexed by native insert slots3 and7. A public NI
+        // Stereo Modeller controls width and balance; five-ms live smoothing
+        // is the core's receiver policy, not a claimed native timing law.
+        // https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/effect-reference
+        let initial = [[0.8, 0., 0., 0.], [1., -0.25, 0.25, 0.]];
+        let targets = |controls: [[f32; 4]; 2]| controls.map(|[gain, spread, pan, bypass]| {
+            if bypass != 0. { return IDENTITY; }
+            // Evaluate unit stereo basis vectors through the scalar physical
+            // mid/side law, independently of GroupFilter's matrix compilation.
+            let stereo = |l: f64, r: f64| {
+                let mid = (l + r) * 0.5;
+                let side = (l - r) * 0.5 * (1. + f64::from(spread));
+                [((mid + side) * (1. - f64::from(pan)).clamp(0., 1.) * f64::from(gain)) as f32,
+                    ((mid - side) * (1. + f64::from(pan)).clamp(0., 1.) * f64::from(gain)) as f32]
+            };
+            let (left, right) = (stereo(1., 0.), stereo(0., 1.));
+            [left[0], right[0], left[1], right[1]]
+        });
+        // Retarget inside unfinished ramps, bypass each sparse slot, change a
+        // stereo target behind zero gain, and reuse a retired voice's storage.
+        let timeline = [(0, 2, 0, 0.), (257, 0, 0, 0.2), (311, 1, 2, -0.5),
+            (399, 0, 0, 1.25), (433, 1, 1, 0.5), (511, 0, 3, 1.), (577, 0, 3, 0.),
+            (616, 4, 0, 0.), (701, 1, 2, 0.75), (769, 1, 3, 1.), (882, 4, 0, 1.),
+            (901, 2, 1, 0.), (947, 1, 3, 0.), (1087, 0, 0, 0.), (1151, 1, 2, -1.),
+            (1447, 1, 1, -0.5), (1523, 0, 0, 0.6), (1901, 3, 0, 0.),
+            (2017, 2, 0, 0.), (FRAMES, 5, 0, 0.)];
+        let create = |shared| {
+            let group = Group { amp_split_slot: Some(0), volume_env: Some(crate::import::Ahdsr {
+                attack_curve: 0., attack_ms: 0., hold_ms: 0., decay_ms: 0., sustain: 1.,
+                release_ms: 0., unknown_flag: 0, unknown_tail: Vec::new(),
+            }), fx: Chain { slots: [3, 7].into_iter().zip(initial).map(|(slot, [gain, spread, pan, _])|
+                Effect { slot, kind: Kind::StereoModeller, version: 0, bypass: false,
+                    output_gain: gain, dry_level: 0., params: Params::StereoModeller(StereoModeller {
+                        spread, pan, pseudo_stereo: false,
+                    }) }).collect() }, ..Default::default() };
+            let mut engine = Engine::default();
+            engine.reset(f64::from(RATE));
+            engine.player.shared = shared;
+            engine.set_bank(Some(Box::new(Bank::from_samples(vec![group], vec![Zone::default()],
+                vec![(Default::default(), Sample { rate: RATE as u32, frames: vec![[0.25, -0.125]; 8192] })]).unwrap())));
+            engine
+        };
+        let mut engines = [create(true), create(true), create(false), create(false)];
+        let mut pcm = [[[0.; FRAMES]; 2]; 4];
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            for event in timeline.windows(2) {
+                let [(at, lane, knob, value), (end, ..)] = event else { unreachable!() };
+                for (index, engine) in engines.iter_mut().enumerate() {
+                    if *lane < 2 {
+                        let knob = [Knob::Output, Knob::Spread, Knob::Pan, Knob::Bypass][*knob];
+                        assert!(engine.state.settings[0].filter.as_mut().unwrap()
+                            .set_knob([3, 7][*lane], knob, *value));
+                    } else if *lane == 2 { engine.note_on(*knob as u8, 60, 127); }
+                    else if *lane == 3 { engine.note_off(0, 60); engine.note_off(1, 60); }
+                    else if *lane == 4 { engine.player.midi.set_expression(*knob as u8, 60,
+                        Expression { gain: *value, ..Default::default() }); }
+                    // Zero host frames cannot retarget or advance any voice clock.
+                    engine.render_checked(&mut [], &mut []).unwrap();
+                    let sizes: &[usize] = if index % 2 == 0 { &[128] } else { &[1, 7, 31, 128] };
+                    let (mut frame, mut fragment) = (*at, 0);
+                    while frame < *end {
+                        let n = sizes[fragment % sizes.len()].min(*end - frame);
+                        let [left, right] = &mut pcm[index];
+                        engine.render_checked(&mut left[frame..frame + n], &mut right[frame..frame + n]).unwrap();
+                        frame += n; fragment += 1;
+                    }
+                }
+            }
+        }), 0);
+        let mut reference = [[0.; FRAMES]; 2];
+        let mut controls = initial;
+        let mut current = [targets(initial); 2];
+        let mut starts = current;
+        let mut desired = current;
+        let mut elapsed = [[240usize; 2]; 2];
+        let mut active = [false; 2];
+        let (mut gain, mut gain_start, mut gain_target, mut gain_elapsed) =
+            ([1.; 2], [1.; 2], [1.; 2], [240usize; 2]);
+        for event in timeline.windows(2) {
+            let [(at, lane, knob, value), (end, ..)] = event else { unreachable!() };
+            if *lane < 2 {
+                controls[*lane][*knob] = *value;
+                let next = targets(controls);
+                for voice in 0..2 {
+                    if !active[voice] || desired[voice][*lane] == next[*lane] { continue; }
+                    starts[voice][*lane] = current[voice][*lane];
+                    desired[voice][*lane] = next[*lane];
+                    elapsed[voice][*lane] = 0;
+                }
+            } else if *lane == 2 {
+                active[*knob] = true;
+                current[*knob] = targets(controls);
+                starts[*knob] = current[*knob]; desired[*knob] = current[*knob]; elapsed[*knob] = [240; 2];
+            } else if *lane == 3 { active.fill(false); }
+            else if *lane == 4 { gain_start[*knob] = gain[*knob]; gain_target[*knob] = *value; gain_elapsed[*knob] = 0; }
+            for frame in *at..*end {
+                for voice in 0..2 {
+                    if !active[voice] { continue; }
+                    let mut input = [0.25 * gain[voice], -0.125 * gain[voice]];
+                    for slot in 0..2 {
+                        elapsed[voice][slot] = (elapsed[voice][slot] + 1).min(240);
+                        let t = elapsed[voice][slot] as f32 / 240.;
+                        let m: Matrix = if elapsed[voice][slot] == 240 { desired[voice][slot] } else {
+                            std::array::from_fn(|i| starts[voice][slot][i]
+                                + (desired[voice][slot][i] - starts[voice][slot][i]) * t)
+                        };
+                        current[voice][slot] = m;
+                        input = [m[0] * input[0] + m[1] * input[1], m[2] * input[0] + m[3] * input[1]];
+                    }
+                    for ch in 0..2 { reference[ch][frame] += input[ch]; }
+                    gain_elapsed[voice] = (gain_elapsed[voice] + 1).min(240);
+                    gain[voice] = if gain_elapsed[voice] == 240 { gain_target[voice] } else {
+                        gain_start[voice] + (gain_target[voice] - gain_start[voice]) * (gain_elapsed[voice] as f32 / 240.)
+                    };
+                }
+            }
+        }
+        for (index, output) in pcm.iter().enumerate() {
+            let error = output.iter().flatten().zip(reference.iter().flatten())
+                .map(|(actual, expected)| (actual - expected).abs()).fold(0., f32::max);
+            assert!(error < 2e-6, "complete insert matrix PCM engine{index}: {error}");
+            assert!(output.iter().all(|ch| ch[1901..2017].iter().all(|x| *x == 0.)));
+            assert!(output.iter().all(|ch| ch[856..882].iter().all(|x| *x == 0.)),
+                "muted filtered voice must retain its matrix clock before unmute");
+            assert_eq!(engines[index].active_voices(), 1, "replacement voice must use steady prepared matrices");
+        }
+    }
+
+    #[test]
+    fn fifth_and_sixteenth_filter_envelopes_keep_routed_pcm_and_original_controls_without_heap() {
+        use crate::{audio::Sample, engine::{Bank, Engine}, fx::{Effect, params::Filter},
+            import::{ModSource, Modulator, Zone}, modulation::{Ahdsr as ImportedAhdsr, ModEnvelope}};
+        const FRAMES: usize = 3501;
+        let envelope = ImportedAhdsr { attack_curve: 0., attack_ms: 25., hold_ms: 0., decay_ms: 12.,
+            sustain: 0.4, release_ms: 70., unknown_flag: 0, unknown_tail: Vec::new() };
+        let empty = Group { envelopes: vec![ModEnvelope { native_ahd_only: false, env: envelope.clone(), targets: vec![] }], ..Default::default() };
+        assert!(GroupFilter::new(&empty).is_none(), "zero-target envelopes create no group filter");
+        for (active, param, depth) in [(4, "filterCutoff", 0.7), (15, "filterGain", 0.8)] {
+            let target = |source, depth| ModAssignment { cc_default: None, name: "Native envelope target".into(), source,
+                target: ModTarget::Module { param: param.into(), slot: 3 }, intensity: depth,
+                invert: false, lag_ms: 0, shaper: None };
+            let create = |packed: bool, disabled: bool| {
+                let count = if packed { MAX_ENVS } else { 1 };
+                let index = if packed { active } else { 0 };
+                let group = Group { amp_split_slot: Some(0),
+                    envelopes: (0..count).map(|source| ModEnvelope { native_ahd_only: false, env: envelope.clone(),
+                        targets: vec![target(ModSource::Unassigned,
+                            if source == index && !disabled { depth } else { 0. })] }).collect(),
+                    modulators: (0..count).map(|source| Modulator { name: format!("Envelope{source}"),
+                        targets: vec!["Module".into()], assignments: None, volume_env: false,
+                        bypassed: false, flex: false, primary_flex: false, envelope: Some(source), kind: "ahdsr".into() }).collect(),
+                    // A zero-depth external assignment retains the same native
+                    // repeated-control law even while the only reference
+                    // envelope is bypassed. It contributes no modulation.
+                    mods: vec![target(ModSource::MidiCc(1), 0.)],
+                    fx: Chain { slots: vec![Effect { slot: 3, kind: Kind::Filter, version: 0x92,
+                        bypass: false, output_gain: 1., dry_level: 0., params: Params::Filter(Filter {
+                            filter_type: 33, cutoff: 0.15, resonance: 0.1, extra: [0.; 3], native_flag: Some(0),
+                        }) }] }, ..Default::default() };
+                let frames = (0..8192).map(|frame| [0.012 * (frame as f32 * TAU * 1300. / RATE).sin()
+                    + 0.006 * (frame as f32 * TAU * 270. / RATE).cos(); 2]).collect();
+                let bank = Bank::from_samples(vec![group], vec![Zone::default()],
+                    vec![(Default::default(), Sample { rate: RATE as u32, frames })]).unwrap();
+                let mut engine = Engine::default(); engine.reset(f64::from(RATE));
+                engine.attack = 0.; engine.release = 0.2;
+                engine.set_bank(Some(Box::new(bank)));
+                assert_eq!(engine.state.settings[0].filter.as_ref().unwrap().envs.len(), count);
+                assert!(engine.state.settings[0].filter.as_ref().unwrap().envelope_at(index as u8).is_some(),
+                    "prepared source index must remain native source{index}");
+                engine
+            };
+            let mut engines = [create(true, false), create(true, false), create(false, false), create(false, true)];
+            let mut pcm = [[[0.; FRAMES]; 2]; 4];
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                for engine in &mut engines { engine.note_on(0, 60, 127); }
+                for (stage, range) in [0..229, 229..617, 617..941, 941..1753, 1753..FRAMES]
+                    .into_iter().enumerate() {
+                    for (index, engine) in engines.iter_mut().enumerate() {
+                        let source = if index < 2 { active as u8 } else { 0 };
+                        let filter = engine.state.settings[0].filter.as_mut().unwrap();
+                        if matches!(stage, 1 | 2) {
+                            *filter.envelope_bypass(source).expect("original source bypass") = stage == 1;
+                            assert_eq!(filter.envelope_bypass_at(source), Some(stage == 1));
+                        }
+                        if stage == 3 && index < 3 {
+                            filter.envelope_mod(source, 0).expect("original target index").intensity = depth * 0.5;
+                            assert_eq!(filter.envelope_mod_at(source, 0).unwrap().intensity, depth * 0.5);
+                        }
+                        if stage == 4 { engine.note_off(0, 60); }
+                        let sizes: &[usize] = if index == 1 { &[1, 7, 31, 128] } else { &[128] };
+                        let (mut at, mut fragment) = (range.start, 0);
+                        while at < range.end {
+                            let n = sizes[fragment % sizes.len()].min(range.end - at);
+                            let [left, right] = &mut pcm[index];
+                            engine.render_checked(&mut left[at..at + n], &mut right[at..at + n]).unwrap();
+                            at += n; fragment += 1;
+                        }
+                    }
+                }
+            }), 0);
+            for index in [0, 1] {
+                let error = pcm[index].iter().flatten().zip(pcm[2].iter().flatten())
+                    .map(|(actual, reference)| (actual - reference).abs()).fold(0., f32::max);
+                assert!(error < 1e-6, "source{active} {param}: one-envelope PCM error={error}, engine={index}");
+            }
+            let effect = pcm[0].iter().flatten().zip(pcm[3].iter().flatten())
+                .map(|(active, silent)| (active - silent).abs()).fold(0., f32::max);
+            assert!(effect > 1e-5, "source{active} {param} must alter actual audio: {effect}");
+        }
+    }
+
+    #[test]
     fn native_ladder_record_gain_order_and_type_switch_reach_dsp_without_heap() {
         use crate::{engine::{GroupSettings, params::{self, Address}}, fx::Effect, ksp::EnginePar};
         // Authored version0x92 record: leading Gain, cutoff, resonance, HQ0.
@@ -1890,8 +2267,8 @@ mod tests {
         assert_eq!(params::display(gain_id,-250_000).unwrap().to_string(),"-3.0");
         assert_eq!(params::display(gain_id,0).unwrap().to_string(),"0.0");
         assert_eq!(params::display(gain_id,1_000_000).unwrap().to_string(),"12.0");
-        let table=ModTable::default(); let cc=[0;128];
-        let input=Inputs {cc:&cc,cc74:None,bend:0.0,pressure:0,note:60,velocity:100,counter:0.0};
+        let table=ModTable::default(); let cc=[crate::midi::ControlValue::ZERO;128];
+        let input=Inputs { cc_received: None, cc74_received: None, per_note_cc: None, script_mods: &[],cc:&cc,cc74:None,bend:0.0,pressure:0.,note:60,velocity: crate::midi::Velocity::from_midi1(100), release_velocity: None,counter:0.0};
         let mut energies=[[0_f64;4];2];
         for (order,split) in [0,8].into_iter().enumerate() {
             let groups=[Group {fx:Chain {slots:vec![effect.clone()]},amp_split_slot:Some(split),..Default::default()}];
@@ -1923,13 +2300,13 @@ mod tests {
                         let mut r=l.map(|x| -0.6*x);
                         let (mut expected_l,mut expected_r)=(l,r);
                         let amp=[0.35;128];
-                        let amplifier=Amplifier {amp:&amp,gains:[0.7,0.5],delta:[0.0;2]};
+                        let amplifier=Amplifier {amp:&amp,gains:[0.7,0.5],delta:[0.0;2],curve:None};
                         if split==0 {amplifier.apply(0,&mut expected_l,&mut expected_r);}
                         rack.process(&mut expected_l,&mut expected_r);
                         for sample in expected_l.iter_mut().chain(&mut expected_r) {*sample*=0.8;}
                         if split==8 {amplifier.apply(0,&mut expected_l,&mut expected_r);}
                         voice.process_amplified(f,&table,&mut [0.0;MAX_BLOCK],&mut l,&mut r,RATE,
-                            &amp,[0.7,0.5],[0.0;2],None);
+                            &amp,[0.7,0.5],[0.0;2],None,None);
                         assert!(l.iter().chain(&r).all(|x|x.is_finite()));
                         assert!(l.iter().zip(&expected_l).chain(r.iter().zip(&expected_r))
                             .all(|(a,b)|(a-b).abs()<0.000001));
@@ -1963,7 +2340,7 @@ mod tests {
             let mut group=Group {fx:Chain {slots:vec![effect.clone()]},amp_split_slot:Some(0),..Default::default()};
             let Params::Filter(filter)=&mut group.fx.slots[0].params else { unreachable!() };
             filter.extra[0]=base;
-            group.mods.push(ModAssignment {name:"GAIN_CC".into(),source:crate::modulation::ModSource::MidiCc(1),
+            group.mods.push(ModAssignment { cc_default: None,name:"GAIN_CC".into(),source:crate::modulation::ModSource::MidiCc(1),
                 target:ModTarget::Module {param:"filterGain".into(),slot:0}, intensity:0.0,
                 invert:false,lag_ms:0,shaper:None});
             let f=GroupFilter::new(&group).unwrap();
@@ -2016,14 +2393,14 @@ mod tests {
     #[test]
     fn native_ladder_zero_depth_routes_keep_control_cadence_without_heap() {
         use crate::{fx::Effect, modulation::{ModSource, ModTarget}};
-        let cc=[0;128];
-        let input=Inputs {cc:&cc,cc74:None,bend:0.0,pressure:0,note:60,velocity:100,counter:0.0};
+        let cc=[crate::midi::ControlValue::ZERO;128];
+        let input=Inputs { cc_received: None, cc74_received: None, per_note_cc: None, script_mods: &[],cc:&cc,cc74:None,bend:0.0,pressure:0.,note:60,velocity: crate::midi::Velocity::from_midi1(100), release_velocity: None,counter:0.0};
         for rate in [32_000.0,44_100.0,48_000.0,96_000.0] {
             let effect=Effect {slot:0,kind:Kind::Filter,version:0x92,bypass:false,output_gain:1.0,dry_level:1.0,
                 params:Params::Filter(crate::fx::params::Filter {filter_type:33,cutoff:1.0,resonance:0.0,
                     extra:[0.0;3],native_flag:Some(0)})};
             let group=Group {fx:Chain {slots:vec![effect]},amp_split_slot:Some(0),mods:vec![
-                ModAssignment {name:"ZERO_GAIN".into(),source:ModSource::MidiCc(1),
+                ModAssignment { cc_default: None,name:"ZERO_GAIN".into(),source:ModSource::MidiCc(1),
                     target:ModTarget::Module {param:"filterGain".into(),slot:0},intensity:0.0,
                     invert:false,lag_ms:0,shaper:None}],..Default::default()};
             let mut f=GroupFilter::new(&group).unwrap();
@@ -2091,8 +2468,8 @@ mod tests {
             })))
         };
         let table = ModTable::default();
-        let cc = [0; 128];
-        let input = Inputs { cc: &cc, cc74: None, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
+        let cc = [crate::midi::ControlValue::ZERO; 128];
+        let input = Inputs { cc_received: None, cc74_received: None, per_note_cc: None, script_mods: &[], cc: &cc, cc74: None, bend: 0.0, pressure: 0., note: 60, velocity: crate::midi::Velocity::from_midi1(100), release_velocity: None, counter: 0.0 };
         let mut energies = [[0.0f64; 2]; 2];
         for instrument_tap in [false, true] {
             let fx = ProgramFx {
@@ -2145,7 +2522,7 @@ mod tests {
                                     let (_, mut sends) = processor.voice_inputs(None, begin..end);
                                     voices[g].process_amplified(filters[g], &table, &mut [0.0; MAX_BLOCK],
                                         &mut l[..end - begin], &mut r[..end - begin], RATE,
-                                        &amp[..end - begin], gains, [0.0; 2], Some(&mut sends));
+                                        &amp[..end - begin], gains, [0.0; 2], None, Some(&mut sends));
                                     for i in 0..end - begin {
                                         out_l[begin + i] += l[i]; out_r[begin + i] += r[i];
                                     }
@@ -2230,8 +2607,8 @@ mod tests {
             effect(7, Kind::SurroundPanner, &[1.0, 0.0], 0.7),
         ] };
         let table = ModTable::default();
-        let cc = [0; 128];
-        let input = Inputs { cc: &cc, cc74: None, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
+        let cc = [crate::midi::ControlValue::ZERO; 128];
+        let input = Inputs { cc_received: None, cc74_received: None, per_note_cc: None, script_mods: &[], cc: &cc, cc74: None, bend: 0.0, pressure: 0., note: 60, velocity: crate::midi::Velocity::from_midi1(100), release_velocity: None, counter: 0.0 };
         let mut energies = [0.0f64; 3];
         for (case, split) in [0, 6, 8].into_iter().enumerate() {
             let groups = [Group { fx: chain.clone(), amp_split_slot: Some(split), ..Group::default() }];
@@ -2255,7 +2632,8 @@ mod tests {
                     let source: [f32; 128] = std::array::from_fn(|i| 0.8 * (TAU * 1000.0 * (block * 128 + i) as f32 / RATE).sin());
                     let (mut l, mut r, mut expected_l, mut expected_r) = (source, source, source, source);
                     let amp: [f32; 128] = std::array::from_fn(|i| 0.6 + 0.4 * i as f32 / 128.0);
-                    let amplifier = Amplifier { amp: &amp, gains: [0.1, 0.2], delta: [-0.02 / 128.0, 0.01 / 128.0] };
+                    let curve: [[f32; 2]; 128] = std::array::from_fn(|i| [0.1 + 0.1 * (i as f32 / 128.).powi(2), 0.2 - 0.1 * i as f32 / 128.]);
+                    let amplifier = Amplifier { amp: &amp, gains: [0.1, 0.2], delta: [0.; 2], curve: Some(&curve) };
                     let mut applied = false;
                     for (fx, dsp) in chain.slots.iter().zip(&mut reference) {
                         if !applied && fx.slot >= split as usize {
@@ -2267,7 +2645,7 @@ mod tests {
                     }
                     if !applied { amplifier.apply(0, &mut expected_l, &mut expected_r); }
                     voice.process_amplified(f, &table, &mut [0.0; MAX_BLOCK], &mut l, &mut r, RATE,
-                        &amp, amplifier.gains, amplifier.delta, None);
+                        &amp, amplifier.gains, amplifier.delta, amplifier.curve, None);
                     assert!(l.iter().chain(&r).all(|x| x.is_finite()));
                     assert!(l.iter().zip(&expected_l).chain(r.iter().zip(&expected_r)).all(|(a,b)| (a-b).abs() < 2e-6));
                     energies[case] += l.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>();
@@ -2302,8 +2680,8 @@ mod tests {
                 .zip(&values).map(|(&name, &value)| Field { name, value: Value::Number(value) }).collect()),
         }).collect() };
         let table = ModTable::default();
-        let cc = [0; 128];
-        let input = Inputs { cc: &cc, cc74: None, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
+        let cc = [crate::midi::ControlValue::ZERO; 128];
+        let input = Inputs { cc_received: None, cc74_received: None, per_note_cc: None, script_mods: &[], cc: &cc, cc74: None, bend: 0.0, pressure: 0., note: 60, velocity: crate::midi::Velocity::from_midi1(100), release_velocity: None, counter: 0.0 };
         let name = "$ENGINE_PAR_SEQ_HF_GAIN";
         let id = (crate::ksp::ENGINE_PAR_BASE..crate::ksp::ENGINE_PAR_BASE + 512)
             .find(|&id| crate::ksp::engine_par_name(id) == Some(name)).unwrap();
@@ -2337,14 +2715,14 @@ mod tests {
                         });
                         let (mut r, mut expected_l, mut expected_r) = (l, l, l);
                         let amp = [0.7; 128];
-                        let amplifier = Amplifier { amp: &amp, gains: [0.4, 0.6], delta: [0.0; 2] };
+                        let amplifier = Amplifier { amp: &amp, gains: [0.4, 0.6], delta: [0.0; 2], curve: None };
                         for (slot, dsp) in reference.iter_mut().enumerate() {
                             if slot == split as usize { amplifier.apply(0, &mut expected_l, &mut expected_r); }
                             dsp.process(&mut expected_l, &mut expected_r);
                         }
                         if split == 8 { amplifier.apply(0, &mut expected_l, &mut expected_r); }
                         voice.process_amplified(f, &table, &mut [0.0; MAX_BLOCK], &mut l, &mut r, RATE,
-                            &amp, amplifier.gains, amplifier.delta, None);
+                            &amp, amplifier.gains, amplifier.delta, None, None);
                         assert!(l.iter().chain(&r).all(|x| x.is_finite()));
                         assert!(l.iter().zip(&expected_l).chain(r.iter().zip(&expected_r))
                             .all(|(a,b)| (a-b).abs() < 2e-6), "split{split}, phase{phase}");
@@ -2371,8 +2749,8 @@ mod tests {
     fn check_group_dynamics(cases: &[(Kind, &str, i32)]) {
         use crate::{fx::{Effect, params::Field}, engine::{GroupSettings, params::{self, Address}}, ksp::EnginePar};
         let table = ModTable::default();
-        let cc = [0; 128];
-        let input = Inputs { cc: &cc, cc74: None, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
+        let cc = [crate::midi::ControlValue::ZERO; 128];
+        let input = Inputs { cc_received: None, cc74_received: None, per_note_cc: None, script_mods: &[], cc: &cc, cc74: None, bend: 0.0, pressure: 0., note: 60, velocity: crate::midi::Velocity::from_midi1(100), release_velocity: None, counter: 0.0 };
         for &(kind, name, native) in cases {
             let fx = Effect { slot: 3, kind, version: 0, bypass: false, output_gain: 0.8, dry_level: 0.0,
                 params: Params::Fields(crate::fx::params::layout_names(kind).unwrap().iter()
@@ -2415,13 +2793,13 @@ mod tests {
                             let mut l: [f32; 128] = std::array::from_fn(|i| level * (TAU * 1000.0 * (block * 128 + i) as f32 / RATE).sin());
                             let (mut r, mut expected_l, mut expected_r) = (l, l, l);
                             let amp = [0.7; 128];
-                            let amplifier = Amplifier { amp: &amp, gains: [0.4, 0.6], delta: [0.0; 2] };
+                            let amplifier = Amplifier { amp: &amp, gains: [0.4, 0.6], delta: [0.0; 2], curve: None };
                             if split == 0 { amplifier.apply(0, &mut expected_l, &mut expected_r); }
                             reference.process(&mut expected_l, &mut expected_r);
                             expected_l.iter_mut().chain(&mut expected_r).for_each(|x| *x *= fx.output_gain);
                             if split == 8 { amplifier.apply(0, &mut expected_l, &mut expected_r); }
                             voice.process_amplified(f, &table, &mut [0.0; MAX_BLOCK], &mut l, &mut r, RATE,
-                                &amp, amplifier.gains, amplifier.delta, None);
+                                &amp, amplifier.gains, amplifier.delta, None, None);
                             assert!(l.iter().chain(&r).all(|x| x.is_finite()));
                             assert!(l.iter().zip(&expected_l).chain(r.iter().zip(&expected_r))
                                 .all(|(a,b)| (a-b).abs() < 2e-6), "{kind:?}, split{split}, phase{phase}");
@@ -2446,8 +2824,8 @@ mod tests {
         }
         let mut f = GroupFilter::new(&group).unwrap();
         let table = ModTable::default();
-        let cc = [0; 128];
-        let input = Inputs { cc: &cc, cc74: None, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
+        let cc = [crate::midi::ControlValue::ZERO; 128];
+        let input = Inputs { cc_received: None, cc74_received: None, per_note_cc: None, script_mods: &[], cc: &cc, cc74: None, bend: 0.0, pressure: 0., note: 60, velocity: crate::midi::Velocity::from_midi1(100), release_velocity: None, counter: 0.0 };
         let mut voice = VoiceFilter::new(Some(&f), &table, &input, RATE);
         assert!(voice.hold(&f, &table, RATE).is_some());
         assert_eq!(crate::plugin::tests::allocations(|| {
@@ -2479,8 +2857,8 @@ mod tests {
         }] }, ..Group::default() };
         let mut f = GroupFilter::new(&group).unwrap();
         let table = ModTable::default();
-        let cc = [0; 128];
-        let input = Inputs { cc: &cc, cc74: None, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
+        let cc = [crate::midi::ControlValue::ZERO; 128];
+        let input = Inputs { cc_received: None, cc74_received: None, per_note_cc: None, script_mods: &[], cc: &cc, cc74: None, bend: 0.0, pressure: 0., note: 60, velocity: crate::midi::Velocity::from_midi1(100), release_velocity: None, counter: 0.0 };
         let mut voice = VoiceFilter::new(Some(&f), &table, &input, RATE);
         let mut energy = [0.0f64; 2];
         assert_eq!(crate::plugin::tests::allocations(|| {
@@ -2498,10 +2876,337 @@ mod tests {
     }
 
     #[test]
+    fn filter_envelope_pcm_follows_voice_clock_across_fragments_mute_and_bypass_without_heap() {
+        use crate::{audio::Sample, engine::{Bank, Engine, Expression}, import::{Zone, Modulator, ModSource},
+            modulation::{Ahdsr as ImportedAhdsr, ModEnvelope}};
+        let envelope = ImportedAhdsr { attack_curve: 0.3, attack_ms: 37.3, hold_ms: 0.9,
+            decay_ms: 31.1, sustain: 0.27, release_ms: 29., unknown_flag: 0, unknown_tail: vec![] };
+        let create = |filter_type, split, manual| {
+            let target = |param: &str, intensity| ModAssignment { cc_default: None, name: "Envelope".into(),
+                source: ModSource::Unassigned, target: ModTarget::Module { param: param.into(), slot: 0 },
+                intensity, invert: false, lag_ms: 0, shaper: None };
+            let mut group = Group { amp_split_slot: Some(split), envelopes: vec![ModEnvelope { native_ahd_only: false,
+                env: envelope.clone(),
+                targets: vec![target("filterCutoff", 0.61), target("filterQ", 0.12),
+                    ModAssignment { target: ModTarget::Pitch, ..target("filterCutoff", 0.5) }] }],
+                modulators: vec![Modulator { name: "Envelope".into(), targets: vec!["Cutoff".into(), "Resonance".into(), "Pitch".into()],
+                    assignments: None, volume_env: false, bypassed: false, flex: false, primary_flex: false, envelope: Some(0), kind: "ahdsr".into() }],
+                fx: Chain { slots: vec![crate::fx::Effect { slot: 0, kind: Kind::Filter, version: 0x92,
+                    bypass: false, output_gain: 1., dry_level: 0., params: Params::Filter(crate::fx::params::Filter {
+                        filter_type, cutoff: 0.12, resonance: 0.15, extra: [0.; 3], native_flag: Some(0) }) }] },
+                ..Default::default() };
+            if manual {
+                group.envelopes.clear(); group.modulators.clear();
+                // Zero-depth external routes retain the independently verified
+                // native "modulated" law; this reference has no filter envelope.
+                group.mods = ["filterCutoff", "filterQ"].map(|param| ModAssignment { cc_default: None,
+                    source: ModSource::MidiCc(1), ..target(param, 0.) }).into();
+            }
+            let frames = (0..8192).map(|i| [0.01 * (i as f32 * TAU * 1300. / RATE).sin()
+                + 0.004 * (i as f32 * TAU * 270. / RATE).cos(); 2]).collect();
+            let bank = Bank::from_samples(vec![group], vec![Zone::default()],
+                vec![(Default::default(), Sample { rate: 48_000, frames })]).unwrap();
+            let mut engine = Engine::default(); engine.reset(48_000.); engine.attack = 0.; engine.release = 0.02;
+            engine.player.shared = false;
+            engine.set_bank(Some(Box::new(bank))); engine.note_on(0, 60, 127); engine
+        };
+        let mut errors = [[0_f32; 2]; 2];
+        for (kind, filter_type) in [2, 33].into_iter().enumerate() {
+            for (placement, split) in [0, 1].into_iter().enumerate() {
+                let (mut whole, mut irregular) = (create(filter_type, split, false), create(filter_type, split, false));
+                let mut manual = create(filter_type, split, true);
+                let mut disconnected = Box::default();
+                let mut clock = Envelope::new(&Ahdsr::from(&envelope), RATE);
+                let mut held = 0_f32;
+                let mut oracle = [[0.; 2]; 3501];
+                let (mut expected, mut actual) = ([[0.; 2]; 3501], [[0.; 2]; 3501]);
+                // Each control occurs between native ticks, including a short
+                // mute while the source moves, and bypass while it is paused.
+                for (stage, (start, end)) in [(0,229), (229,617), (617,941), (941,1003), (1003,1107), (1107,3501)].into_iter().enumerate() {
+                    for engine in [&mut whole, &mut irregular, &mut manual] {
+                        match stage {
+                            1 => engine.player.midi.set_expression(0,60,Expression { gain:0., ..Default::default() }),
+                            2 => engine.player.midi.set_expression(0,60,Expression::default()),
+                            3 | 5 => {
+                                if !engine.state.settings[0].pitch_envelopes.is_empty() {
+                                    assert!(engine.write(super::super::params::Address::InternalBypass(0, 0),
+                                        if stage == 3 { 1. } else { 0. }));
+                                }
+                            }
+                            4 => engine.note_off(0,60),
+                            _ => {},
+                        }
+                    }
+                    if matches!(stage, 3 | 5) {
+                        // Bypassing the saved envelope disconnects its routes,
+                        // including the native repeated-control law. Mirror
+                        // that admission without borrowing its envelope clock.
+                        let filter = manual.state.settings[0].filter.as_mut().unwrap();
+                        assert_eq!(crate::plugin::tests::allocations(|| {
+                            std::mem::swap(&mut filter.ext, &mut disconnected);
+                        }), 0);
+                    }
+                    if stage == 4 {
+                        let before = clock.level();
+                        clock.release(None);
+                        assert_eq!(clock.level(), before, "off during bypass captures the paused level");
+                    }
+                    assert_eq!(crate::plugin::tests::allocations(|| {
+                        for at in start..end {
+                            let bypassed = (941..1107).contains(&at);
+                            let mut level = [0.];
+                            if !bypassed {
+                                clock.render(&mut level, None, RATE);
+                                if at % CONTROL == 0 { held = level[0]; }
+                            }
+                            // The reference has no internal source: explicit
+                            // base pitch and knobs consume the scalar outputs.
+                            manual.state.settings[0].tune = 6. * level[0];
+                            let depth = if bypassed { 0. } else { held };
+                            let filter = manual.state.settings[0].filter.as_mut().unwrap();
+                            filter.set_knob(0, Knob::Cutoff, 0.12 + 0.61 * depth);
+                            filter.set_knob(0, Knob::Resonance, 0.15 + 0.12 * depth);
+                            let (mut l,mut r) = ([0.],[0.]); manual.render(&mut l,&mut r);
+                            oracle[at] = [l[0],r[0]];
+                        }
+                    }),0);
+                    for (engine, pcm, sizes) in [(&mut whole,&mut expected,&[128][..]),
+                        (&mut irregular,&mut actual,&[1,7,31,128][..])] {
+                        let (mut at, mut block) = (start,0);
+                        assert_eq!(crate::plugin::tests::allocations(|| {
+                            while at < end {
+                                let n = sizes[block % sizes.len()].min(end-at);
+                                let (mut l,mut r) = ([0.;128],[0.;128]);
+                                engine.render(&mut l[..n],&mut r[..n]);
+                                for i in 0..n { pcm[at+i] = [l[i],r[i]]; }
+                                at += n; block += 1;
+                            }
+                        }),0);
+                    }
+                }
+                let max = actual.iter().flatten().zip(expected.iter().flatten())
+                    .map(|(a,b)| (a-b).abs()).fold(0.,f32::max);
+                let (reference_frame, reference_error) = expected.iter().zip(&oracle).enumerate()
+                    .map(|(i,(a,b))| (i,(a[0]-b[0]).abs().max((a[1]-b[1]).abs())))
+                    .max_by(|a,b| a.1.total_cmp(&b.1)).unwrap();
+                errors[kind][placement] = max.max(reference_error);
+                assert!(expected.iter().flatten().any(|x| x.abs()>0.001),"fixture must render audible filtered PCM");
+                assert!(expected[3400..].iter().all(|frame| *frame == [0.; 2]),
+                    "physical amplitude release owns the complete mixed-source tail");
+                assert_eq!(whole.active_voices(), 0);
+                assert_eq!(irregular.active_voices(), 0);
+                assert_eq!(manual.active_voices(), 0);
+                eprintln!("filter_type={filter_type} amplifier_split={split} whole/irregular PCM error={max}, independent scalar tick PCM error={reference_error} at frame {reference_frame}");
+            }
+        }
+        assert!(errors.iter().flatten().all(|&x| x < 1e-6),"filter envelope cadence changed PCM with host partition: {errors:?}");
+    }
+
+    #[test]
+    fn external_filter_lag_keeps_received_controls_on_voice_time_without_heap() {
+        use crate::{audio::Sample, engine::{Bank, Engine, Expression}, import::{Zone, ModSource}};
+        let create = |filter_type, manual| {
+            let route = |source, param: &str, depth, lag_ms| ModAssignment { cc_default: None,
+                name: "Received control".into(), source,
+                target: ModTarget::Module { param: param.into(), slot: 0 },
+                intensity: depth, invert: false, lag_ms, shaper: None };
+            let group = Group { amp_split_slot: Some(0), mods: (0..8).flat_map(|_| [
+                route(ModSource::MidiCc(1), "filterCutoff", if manual { 0. } else { 0.61 / 8. }, if manual { 0 } else { 7 }),
+                route(ModSource::MonoAftertouch, "filterQ", if manual { 0. } else { 0.12 / 8. }, if manual { 0 } else { 13 })]).collect(),
+                fx: Chain { slots: vec![crate::fx::Effect { slot: 0, kind: Kind::Filter, version: 0x92,
+                    bypass: false, output_gain: 1., dry_level: 0., params: Params::Filter(crate::fx::params::Filter {
+                        filter_type, cutoff: 0.12, resonance: 0.15, extra: [0.; 3], native_flag: Some(0) }) }] },
+                ..Default::default() };
+            let frames = (0..8192).map(|i| [0.01 * (i as f32 * TAU * 1300. / RATE).sin()
+                + 0.004 * (i as f32 * TAU * 270. / RATE).cos(); 2]).collect();
+            let bank = Bank::from_samples(vec![group], vec![Zone::default()],
+                vec![(Default::default(), Sample { rate: 48_000, frames })]).unwrap();
+            let mut engine = Engine::default(); engine.reset(48_000.); engine.attack = 0.; engine.release = 0.2;
+            engine.player.shared = false; engine.set_bank(Some(Box::new(bank))); engine.note_on(0, 60, 127);
+            assert_eq!(engine.player.voices[0].filter.ext.len(),16); engine
+        };
+        for (filter_type, shared) in [(2,false), (2,true), (33,false), (33,true)] {
+            let (mut whole, mut irregular, mut manual) = (create(filter_type, false), create(filter_type, false), create(filter_type, true));
+            whole.player.shared = shared; irregular.player.shared = shared;
+            let (mut expected, mut actual, mut oracle) = ([[0.;2];3501], [[0.;2];3501], [[0.;2];3501]);
+            // Mathematical one-poles evaluated in double precision, sampled
+            // on voice frames 0/32/etc. Neither Mod::follow nor filter state
+            // supplies this independent coefficient reference.
+            let factors = [1. - (-1. / (0.007_f64 * f64::from(RATE))).exp(),
+                1. - (-1. / (0.013_f64 * f64::from(RATE))).exp()];
+            let (mut levels, mut held, mut targets) = ([0_f64;2], [0_f64;2], [0_f64;2]);
+            for (stage, (start,end)) in [(0,229), (229,617), (617,941), (941,1107), (1107,1753), (1753,3501)].into_iter().enumerate() {
+                assert_eq!(crate::plugin::tests::allocations(|| {
+                    for engine in [&mut whole, &mut irregular, &mut manual] {
+                        match stage {
+                            1 => { engine.cc(0,1,127); engine.channel_pressure(0,71); },
+                            2 => { engine.cc(0,1,33); engine.channel_pressure(0,127); },
+                            3 => engine.player.midi.set_expression(0,60,Expression { gain:0., ..Default::default() }),
+                            4 => engine.player.midi.set_expression(0,60,Expression::default()),
+                            5 => { engine.cc(0,1,92); engine.channel_pressure(0,11); },
+                            _ => {},
+                        }
+                    }
+                    match stage {
+                        1 => targets = [1.,71./127.],
+                        2 => targets = [33./127.,1.],
+                        5 => targets = [92./127.,11./127.],
+                        _ => {},
+                    }
+                    for at in start..end {
+                        for i in 0..2 { levels[i] += (targets[i]-levels[i])*factors[i]; }
+                        if at % CONTROL == 0 { held = levels; }
+                        let filter = manual.state.settings[0].filter.as_mut().unwrap();
+                        filter.set_knob(0,Knob::Cutoff,0.12 + 0.61 * held[0] as f32);
+                        filter.set_knob(0,Knob::Resonance,0.15 + 0.12 * held[1] as f32);
+                        let (mut l,mut r) = ([0.],[0.]); manual.render(&mut l,&mut r); oracle[at] = [l[0],r[0]];
+                    }
+                    for (engine,pcm,sizes) in [(&mut whole,&mut expected,&[128][..]),
+                        (&mut irregular,&mut actual,&[1,7,31,128][..])] {
+                        let (mut at,mut block) = (start,0);
+                        while at<end {
+                            let n = sizes[block%sizes.len()].min(end-at);
+                            let (mut l,mut r) = ([0.;128],[0.;128]); engine.render(&mut l[..n],&mut r[..n]);
+                            for i in 0..n { pcm[at+i] = [l[i],r[i]]; } at+=n; block+=1;
+                        }
+                    }
+                }),0);
+            }
+            let difference = |a: &[[f32;2]],b: &[[f32;2]]| a.iter().flatten().zip(b.iter().flatten())
+                .map(|(a,b)| (a-b).abs()).fold(0_f32,f32::max);
+            let (partition,reference) = (difference(&expected,&actual),difference(&expected,&oracle));
+            assert!(oracle.iter().flatten().any(|x| x.abs()>0.001),"reference must be audible");
+            eprintln!("external filter lag type={filter_type} shared={shared}: whole/irregular={partition}, independent one-pole={reference}");
+            assert!(partition<1e-6 && reference<1e-6,"received control lag changed PCM: type={filter_type}, shared={shared}, partition={partition}, reference={reference}");
+        }
+    }
+
+    #[test]
+    fn prepared_external_routes_size_only_resolved_module_addresses() {
+        use crate::{engine::Bank, import::ModSource};
+        let assignment = ModAssignment { cc_default: None, name:"CC1".into(), source:ModSource::MidiCc(1),
+            target:ModTarget::Module { param:"filterCutoff".into(), slot:0 }, intensity:0.1,
+            invert:false, lag_ms:10, shaper:None };
+        let mut group = Group { mods:vec![assignment.clone();16],
+            fx:Chain { slots:vec![crate::fx::Effect { slot:0, kind:Kind::Filter, version:0,
+                bypass:false, output_gain:1., dry_level:0., params:Params::Filter(crate::fx::params::Filter {
+                    filter_type:2, cutoff:0.12, resonance:0.15, extra:[0.;3], native_flag:None }) }] },
+            ..Default::default() };
+        assert!(Bank::from_samples(vec![group.clone()],Vec::new(),Vec::new()).is_ok(),"every resolved route must be admitted");
+        // Missing module addresses do not consume prepared voice storage.
+        let mut unresolved=assignment.clone(); unresolved.target=ModTarget::Module { param:"filterCutoff".into(), slot:7 };
+        group.mods.extend(vec![unresolved;32]);
+        group.mods.push(assignment);
+        assert_eq!(GroupFilter::new(&group).unwrap().ext.len(),17,"preparation must retain all resolved addresses");
+        let bank=Bank::from_samples(vec![group],Vec::new(),Vec::new()).unwrap();
+        assert_eq!(bank.route_spares.len(), super::super::MAX_VOICES);
+        assert!(bank.route_spares.iter().all(|row| row.external.len()==17 && row.values.is_empty()),
+            "unresolved addresses retain script identity without reserving DSP rows");
+    }
+
+    #[test]
+    fn maximum_external_filter_lag_keeps_boosted_pcm_on_sample_time() {
+        use crate::{audio::Sample,engine::{Bank,Engine},import::{Zone,ModSource}};
+        let create=|filter_type,manual| {
+            let group=Group { gain:128., mods:vec![ModAssignment { cc_default: None, name:"Long lag".into(), source:ModSource::MidiCc(1),
+                target:ModTarget::Module { param:"filterCutoff".into(),slot:0 }, intensity:if manual {0.} else {0.61},
+                invert:false, lag_ms:if manual {0} else {u16::MAX}, shaper:None }],
+                fx:Chain { slots:vec![crate::fx::Effect { slot:0,kind:Kind::Filter,version:0x92,
+                    bypass:false,output_gain:1.,dry_level:0.,params:Params::Filter(crate::fx::params::Filter {
+                        filter_type,cutoff:0.2,resonance:0.15,extra:[0.;3],native_flag:Some(0) }) }] },
+                ..Default::default() };
+            let frames=(0..8192).map(|i| [0.01*(i as f32*TAU*1300./RATE).sin()
+                +0.004*(i as f32*TAU*270./RATE).cos();2]).collect();
+            let bank=Bank::from_samples(vec![group],vec![Zone::default()],vec![(Default::default(),Sample {rate:48_000,frames})]).unwrap();
+            let mut e=Engine::default();e.reset(48_000.);e.attack=0.;e.player.shared=false;
+            e.set_bank(Some(Box::new(bank)));e.note_on(0,60,127);e
+        };
+        // Preserve the saved f32 seconds conversion, then evaluate its exact
+        // exponential step response independently of the retained DSP state.
+        let seconds=f32::from(u16::MAX)/1000.;
+        let tau=f64::from(seconds)*f64::from(RATE);
+        let old_step=1_f32-(-1_f32/(seconds*RATE)).exp();
+        for (filter_type,shared) in [(2,false),(2,true),(33,false),(33,true)] {
+            let (mut whole,mut split,mut manual,mut rounded)=(create(filter_type,false),create(filter_type,false),create(filter_type,true),create(filter_type,true));
+            whole.player.shared=shared;split.player.shared=shared;
+            let (mut actual,mut fragmented,mut oracle,mut flawed)=([[0.;2];3501],[[0.;2];3501],[[0.;2];3501],[[0.;2];3501]);
+            let (mut held,mut old_held)=(0_f64,0_f64);
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                for (start,end) in [(0_usize,229),(229,3501)] {
+                    if start==229 { for e in [&mut whole,&mut split,&mut manual,&mut rounded] { e.cc(0,1,127); } }
+                    for at in start..end {
+                        if at%CONTROL==0 {
+                            let elapsed=at.saturating_sub(228) as f64;
+                            held=-(-elapsed/tau).exp_m1();
+                            old_held=1.-(1.-f64::from(old_step)).powf(elapsed);
+                        }
+                        for (e,pcm,level) in [(&mut manual,&mut oracle,held),(&mut rounded,&mut flawed,old_held)] {
+                            e.state.settings[0].filter.as_mut().unwrap().set_knob(0,Knob::Cutoff,0.2+0.61*level as f32);
+                            let (mut l,mut r)=([0.],[0.]);e.render(&mut l,&mut r);pcm[at]=[l[0],r[0]];
+                        }
+                    }
+                    for (e,pcm,sizes) in [(&mut whole,&mut actual,&[128][..]),(&mut split,&mut fragmented,&[1,7,31,128][..])] {
+                        let (mut at,mut block)=(start,0);
+                        while at<end {
+                            let n=sizes[block%sizes.len()].min(end-at);let (mut l,mut r)=([0.;128],[0.;128]);
+                            e.render(&mut l[..n],&mut r[..n]);for i in 0..n {pcm[at+i]=[l[i],r[i]];}at+=n;block+=1;
+                        }
+                    }
+                }
+            }),0);
+            let difference=|a:&[[f32;2]],b:&[[f32;2]]| a.iter().flatten().zip(b.iter().flatten()).map(|(a,b)|(a-b).abs()).fold(0_f32,f32::max);
+            let (partition,reference,old_error)=(difference(&actual,&fragmented),difference(&actual,&oracle),difference(&flawed,&oracle));
+            eprintln!("maximum filter lag type={filter_type} shared={shared}: partition={partition}, oracle={reference}, old rounded coefficient={old_error}");
+            assert!(old_error>1e-6,"boosted fixture must expose the inaccurate one-frame coefficient");
+            assert!(partition<1e-6 && reference<1e-6,"full-range external lag PCM changed: type={filter_type}, shared={shared}, partition={partition}, oracle={reference}");
+        }
+    }
+
+    #[test]
+    fn external_filter_preparation_preserves_captured_release_counter_pcm() {
+        use crate::{audio::Sample, engine::{Bank,Engine}, import::{Zone,ModSource}};
+        let create = |source, intensity| {
+            let group = Group { release_trigger:true, release_counter_ms:1000,
+                mods:vec![ModAssignment { cc_default: None, name:"Captured counter".into(), source,
+                    target:ModTarget::Module { param:"filterCutoff".into(), slot:0 },
+                    intensity, invert:false, lag_ms:100, shaper:None }],
+                fx:Chain { slots:vec![crate::fx::Effect { slot:0, kind:Kind::Filter, version:0,
+                    bypass:false, output_gain:1., dry_level:0., params:Params::Filter(crate::fx::params::Filter {
+                        filter_type:2, cutoff:0.12, resonance:0.15, extra:[0.;3], native_flag:None }) }] },
+                ..Default::default() };
+            let frames = (0..8192).map(|i| [0.01*(i as f32*TAU*1300./RATE).sin();2]).collect();
+            let bank = Bank::from_samples(vec![group],vec![Zone::default()],
+                vec![(Default::default(),Sample { rate:48_000,frames })]).unwrap();
+            let mut e=Engine::default(); e.reset(48_000.); e.attack=0.; e.player.shared=false;
+            e.set_bank(Some(Box::new(bank))); e.note_on(0,60,127); e
+        };
+        // Key held for half T captures counter .5 for its release sample.
+        // The equivalent constant route is an independent PCM reference.
+        let (mut counter,mut reference) = (create(ModSource::ReleaseTriggerCounter,0.61),create(ModSource::Constant,0.305));
+        let (mut a,mut ar,mut b,mut br)=([0.;128],[0.;128],[0.;128],[0.;128]);
+        let (mut error,mut peak)=(0_f32,0_f32);
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            for e in [&mut counter,&mut reference] {
+                for _ in 0..187 { e.render(&mut a,&mut ar); }
+                e.render(&mut a[..64],&mut ar[..64]);
+                assert_eq!(e.active_voices(),0,"release-only group must wait for key-up");
+                e.note_off(0,60);
+            }
+            for _ in 0..24 {
+                counter.render(&mut a,&mut ar); reference.render(&mut b,&mut br);
+                error=error.max(a.iter().chain(&ar).zip(b.iter().chain(&br)).map(|(a,b)| (a-b).abs()).fold(0.,f32::max));
+                peak=peak.max(b.iter().chain(&br).map(|x| x.abs()).fold(0.,f32::max));
+            }
+        }),0);
+        assert!(peak>0.001,"reference must render an audible release sample");
+        assert!(error<1e-6,"external preparation replaced the captured release counter: PCM error={error}");
+    }
+
+    #[test]
     fn module_envelope_controls_preserve_targets_and_elapsed_clock_without_heap() {
         use crate::{engine::{GroupSettings, params::{self, Address, id}}, import::{ModSource, Modulator},
             modulation::{Ahdsr as ImportedAhdsr, ModEnvelope}, ksp::EnginePar};
-        let target = |target, shaper| ModAssignment { name: "Envelope".into(), source: ModSource::Unassigned,
+        let target = |target, shaper| ModAssignment { cc_default: None, name: "Envelope".into(), source: ModSource::Unassigned,
             target, intensity: 0.5, invert: false, lag_ms: 0, shaper };
         let env = ImportedAhdsr { attack_curve: 0., attack_ms: 100., hold_ms: 0., decay_ms: 0.,
             sustain: 1., release_ms: 100., unknown_flag: 0, unknown_tail: Vec::new() };
@@ -2510,7 +3215,7 @@ mod tests {
                 target(ModTarget::Module { param: "filterCutoff".into(), slot: 0 }, None),
                 target(ModTarget::Module { param: "filterQ".into(), slot: 0 }, None),
             ],
-            envelopes: vec![ModEnvelope { env: env.clone(), targets: vec![] }, ModEnvelope { env, targets: vec![
+            envelopes: vec![ModEnvelope { native_ahd_only: false, env: env.clone(), targets: vec![] }, ModEnvelope { native_ahd_only: false, env, targets: vec![
                 target(ModTarget::Group("loopLength".into()), None),
                 target(ModTarget::Pitch, None),
                 target(ModTarget::Module { param: "filterCutoff".into(), slot: 0 },
@@ -2518,9 +3223,9 @@ mod tests {
                 target(ModTarget::Module { param: "filterQ".into(), slot: 0 }, None),
             ] }],
             modulators: vec![Modulator { name: "Envelope".into(), targets: vec![String::new(); 4],
-                assignments: None, volume_env: false, bypassed: true, flex: false, envelope: Some(1), kind: "ahdsr".into() },
+                assignments: None, volume_env: false, bypassed: true, flex: false, primary_flex: false, envelope: Some(1), kind: "ahdsr".into() },
                 Modulator { name: "External".into(), targets: vec![String::new(); 2],
-                    assignments: Some(0), volume_env: false, bypassed: false, flex: false, envelope: None, kind: "external".into() }],
+                    assignments: Some(0), volume_env: false, bypassed: false, flex: false, primary_flex: false, envelope: None, kind: "external".into() }],
             fx: Chain { slots: vec![crate::fx::Effect { slot: 0, kind: Kind::Filter, version: 0,
                 bypass: false, output_gain: 1., dry_level: 1., params: Params::Filter(crate::fx::params::Filter {
                     filter_type: 2, cutoff: 0.3, resonance: 0., extra: [0.; 3], native_flag: None }) }] },
@@ -2555,8 +3260,8 @@ mod tests {
         assert!(address(id::INTMOD_INTENSITY, 3).is_none(), "other legacy module laws are not inferred");
         assert!(address(id::INTMOD_INTENSITY, 0).is_none(), "unsupported target does not alias cutoff");
         assert!(address(id::MOD_TARGET_MP_INTENSITY, 0).is_none(), "unsupported target does not alias a routed one");
-        let cc = [0; 128];
-        let input = Inputs { cc: &cc, cc74: None, bend: 0., pressure: 0, note: 60, velocity: 100, counter: 0. };
+        let cc = [crate::midi::ControlValue::ZERO; 128];
+        let input = Inputs { cc_received: None, cc74_received: None, per_note_cc: None, script_mods: &[], cc: &cc, cc74: None, bend: 0., pressure: 0., note: 60, velocity: crate::midi::Velocity::from_midi1(100), release_velocity: None, counter: 0. };
         let f = settings[0].filter.as_ref().unwrap();
         let mut dry = f.clone();
         dry.envs = [].into();
@@ -2624,12 +3329,16 @@ mod tests {
                 }
                 voice.process(settings[0].filter.as_ref().unwrap(), &settings[0].mods, &mut ctl, &mut l, &mut r, RATE);
                 reference.process(&dry, &settings[0].mods, &mut ctl, &mut dl, &mut dr, RATE);
-                clock.skip(128, None, RATE);
-                let semitones = settings[0].pitch_envelopes[0].pitch(&mut pitch_clock, 128, RATE);
+                if block >= 24 {
+                    for _ in 0..128 { clock.render(&mut ctl[..1], None, RATE); }
+                }
+                let mut pitch = [0.; 128];
+                settings[0].pitch_envelopes[0].render_add(&mut pitch_clock, &mut pitch, RATE);
+                let semitones = pitch[127];
                 assert_eq!(pitch_clock.level(), clock.level(), "saved pitch bypass preserves the same clock");
                 if block < 24 { assert_eq!(semitones, 0.); }
                 else { assert!((semitones - 6. * clock.level()).abs() < 1e-6); }
-                assert_eq!(voice.envs[0].level(), clock.level(), "bypass does not restart or freeze the clock");
+                assert_eq!(voice.envs[0].level(), clock.level(), "bypass preserves the source until it is enabled");
                 assert!(l.iter().chain(&r).all(|x| x.is_finite()));
                 let power = l.iter().map(|&x| f64::from(x).powi(2)).sum::<f64>();
                 if (28..32).contains(&block) { legacy_energy[0] += power; }
@@ -2641,10 +3350,10 @@ mod tests {
             clock.release(None);
             let (mut l, mut r) = ([0.; 128], [0.; 128]);
             voice.process(settings[0].filter.as_ref().unwrap(), &settings[0].mods, &mut ctl, &mut l, &mut r, RATE);
-            clock.skip(128, None, RATE);
+            for _ in 0..128 { clock.render(&mut ctl[..1], None, RATE); }
             assert_eq!(voice.envs[0].level(), clock.level());
         }), 0);
-        assert!(difference > 1., "resuming the elapsed envelope changes actual PCM: {difference}");
+        assert!(difference > 1., "resuming the paused envelope changes actual PCM: {difference}");
         assert!(legacy_energy[0] > legacy_energy[1] * 4.,
             "negative modern cutoff depth must lower the low-pass response: {legacy_energy:?}");
     }
@@ -2902,8 +3611,8 @@ mod tests {
             ("Vista Harp (LP, envelope)", "Performance Samples Vista/Instruments/Bonus/Vista - Harp.nki", ""),
             ("Solo Pads (2 filters, stereo modeller)", "Solo/Instruments/03 Sound Design/Solo - 01 Pads.nki", ""),
         ];
-        let cc = [64u8; 128];
-        let input = Inputs { cc74: None, cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
+        let cc = [crate::midi::ControlValue::from_midi1(64); 128];
+        let input = Inputs { cc_received: None, cc74_received: None, per_note_cc: None, script_mods: &[], cc74: None, cc: &cc, bend: 0.0, pressure: 0., note: 60, velocity: crate::midi::Velocity::from_midi1(100), release_velocity: None, counter: 0.0 };
         for (name, path, group) in cases {
             let instrument = read(&std::path::Path::new(LIBRARY_ROOT).join(path)).unwrap();
             let g = instrument
@@ -2959,8 +3668,8 @@ mod tests {
         };
         f.compile_inserts();
         let table = ModTable::default();
-        let cc = [0u8; 128];
-        let input = Inputs { cc74: None, cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
+        let cc = [crate::midi::ControlValue::ZERO; 128];
+        let input = Inputs { cc_received: None, cc74_received: None, per_note_cc: None, script_mods: &[], cc74: None, cc: &cc, bend: 0.0, pressure: 0., note: 60, velocity: crate::midi::Velocity::from_midi1(100), release_velocity: None, counter: 0.0 };
         let mut voice = VoiceFilter::new(Some(&f), &table, &input, RATE);
         let mut ctl = [0.0; MAX_BLOCK];
         let mut run = |f: &GroupFilter| {
@@ -2989,8 +3698,8 @@ mod tests {
         let mut f = GroupFilter { units: [unit].into(), mixers: [].into(), stages: [].into(), taps: [].into(), inserts: [].into(), amp_split: None, slot_matrices: [IDENTITY; 8], type_revision: 0, pre_active: false, pre_sends: false, matrix_interleaved: false, matrix: IDENTITY, envs: [].into(), ext: [].into() };
         f.compile_inserts();
         let table = ModTable::default();
-        let cc = [0u8; 128];
-        let input = Inputs { cc74: None, cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
+        let cc = [crate::midi::ControlValue::ZERO; 128];
+        let input = Inputs { cc_received: None, cc74_received: None, per_note_cc: None, script_mods: &[], cc74: None, cc: &cc, bend: 0.0, pressure: 0., note: 60, velocity: crate::midi::Velocity::from_midi1(100), release_velocity: None, counter: 0.0 };
         let mut ctl = [0.0; MAX_BLOCK];
         for kind in [13, 70, 71, 90, 100, 101, 102, 103, 104, 105, SV_NOTCH4] {
             assert!(f.set_knob(0, Knob::Type, kind as f32), "{kind}");
@@ -3026,8 +3735,8 @@ mod tests {
         let mut f = GroupFilter { units: [unit].into(), mixers: [].into(), stages: [stage].into(), taps: [].into(), inserts: [].into(), amp_split: None, slot_matrices: [IDENTITY; 8], type_revision: 0, pre_active: false, pre_sends: false, matrix_interleaved: false, matrix: IDENTITY, envs: [].into(), ext: [].into() };
         f.compile_inserts();
         let table = ModTable::default();
-        let cc = [0u8; 128];
-        let input = Inputs { cc74: None, cc: &cc, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
+        let cc = [crate::midi::ControlValue::ZERO; 128];
+        let input = Inputs { cc_received: None, cc74_received: None, per_note_cc: None, script_mods: &[], cc74: None, cc: &cc, bend: 0.0, pressure: 0., note: 60, velocity: crate::midi::Velocity::from_midi1(100), release_velocity: None, counter: 0.0 };
         let mut ctl = [0.0; MAX_BLOCK];
         let mut voice = VoiceFilter::new(Some(&f), &table, &input, RATE);
         assert_eq!(voice.hold(&f, &table, RATE), None, "nonlinear voices are not shared");
@@ -3072,8 +3781,8 @@ mod tests {
         let drive_id = (crate::ksp::ENGINE_PAR_BASE..crate::ksp::ENGINE_PAR_BASE + 512)
             .find(|&id| crate::ksp::engine_par_name(id) == Some("$ENGINE_PAR_DRIVE")).unwrap();
         let table = ModTable::default();
-        let cc = [0; 128];
-        let input = Inputs { cc: &cc, cc74: None, bend: 0.0, pressure: 0, note: 60, velocity: 100, counter: 0.0 };
+        let cc = [crate::midi::ControlValue::ZERO; 128];
+        let input = Inputs { cc_received: None, cc74_received: None, per_note_cc: None, script_mods: &[], cc: &cc, cc74: None, bend: 0.0, pressure: 0., note: 60, velocity: crate::midi::Velocity::from_midi1(100), release_velocity: None, counter: 0.0 };
         for (mode, split) in [(0.0, 0), (0.0, 8), (1.0, 0), (1.0, 8)] {
             let effect = Effect {
                 slot: 6, kind: Kind::Distortion, version: 0, bypass: false,
@@ -3087,7 +3796,7 @@ mod tests {
             let mut voice = VoiceFilter::new(settings[0].filter.as_deref(), &table, &input, RATE);
             let mut rack = blocks::Block::new(&effect, RATE).unwrap();
             let amp = [0.5; 128];
-            let amplifier = Amplifier { amp: &amp, gains: [0.4, 0.8], delta: [0.0; 2] };
+            let amplifier = Amplifier { amp: &amp, gains: [0.4, 0.8], delta: [0.0; 2], curve: None };
             for value in [0, 1_000_000, 250_000] {
                 let pattern = [-4.0, -0.25, -0.01, 0.0, 0.01, 0.25, 4.0];
                 let source: [f32; 128] = std::array::from_fn(|i| pattern[i % pattern.len()]);
@@ -3102,7 +3811,7 @@ mod tests {
                     if split == 8 { amplifier.apply(0, &mut expected_l, &mut expected_r); }
                     let filter = settings[0].filter.as_ref().unwrap();
                     voice.process_amplified(filter, &table, &mut [0.0; MAX_BLOCK], &mut l, &mut r,
-                        RATE, &amp, amplifier.gains, amplifier.delta, None);
+                        RATE, &amp, amplifier.gains, amplifier.delta, None, None);
                     assert!(l.iter().zip(&expected_l).chain(r.iter().zip(&expected_r)).all(|(a,b)| (a-b).abs() < 2e-6));
                 }), 0);
                 if value == 0 {
@@ -3149,9 +3858,9 @@ mod tests {
         assert!(filter.set_knob(7, Knob::Bypass, 0.0));
         assert_eq!(filter.knob(7, Knob::Field(Kind::SurroundPanner, 0)), Some(1.0));
         let table = ModTable::default();
-        let cc = [0; 128];
-        let input = Inputs { cc74: None, cc: &cc, bend: 0.0, pressure: 0,
-            note: 60, velocity: 100, counter: 0.0 };
+        let cc = [crate::midi::ControlValue::ZERO; 128];
+        let input = Inputs { cc_received: None, cc74_received: None, per_note_cc: None, script_mods: &[], cc74: None, cc: &cc, bend: 0.0, pressure: 0.,
+            note: 60, velocity: crate::midi::Velocity::from_midi1(100), release_velocity: None, counter: 0.0 };
         let mut voice = VoiceFilter::new(Some(&filter), &table, &input, RATE);
         let dry: [f32; 128] = std::array::from_fn(|i| (TAU * 1000.0 * i as f32 / RATE).sin());
         let (mut left, mut right) = (dry, dry);

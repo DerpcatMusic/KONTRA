@@ -388,7 +388,8 @@ fn render(args: &[String]) -> Result<()> {
         let len = until(input.get(next).map(|e| e.0))
             .min(until(ccs.get(next_cc).map(|e| e.0)))
             .min(MAX_BLOCK as u64) as usize;
-        engine.render(&mut left[..len], &mut right[..len]);
+        engine.render_checked(&mut left[..len], &mut right[..len])
+            .context("Offline streaming failed")?;
         let mut block_peak = 0f32;
         for (i, (l, r)) in left[..len].iter().zip(&right[..len]).enumerate() {
             let pair = [l * 0.25, r * 0.25];

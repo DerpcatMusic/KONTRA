@@ -62,9 +62,8 @@ fn made_lock() -> std::sync::MutexGuard<'static, Made> {
 /// Whether a picture was made since last asked: the editor redraws.
 pub fn ready() -> bool {
     let ready = READY.swap(false, Ordering::AcqRel);
-    if ready {
-        made_lock().retain(|_, (source, _)| source.strong_count() > 0);
-    }
+    // A view removal has no worker completion to wake this cleanup.
+    made_lock().retain(|_, (source, _)| source.strong_count() > 0);
     ready
 }
 

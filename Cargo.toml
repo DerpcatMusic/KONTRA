@@ -12,7 +12,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [features]
 default = ["plugin", "clap", "vst3", "library-access"]
-plugin = ["dep:moose", "dep:png", "dep:rfd", "dep:mui-text", "dep:zune-jpeg"]
+plugin = ["dep:moose", "dep:png", "dep:rfd", "dep:mui-text", "dep:zune-jpeg", "dep:image-webp", "dep:resvg"]
 clap = ["plugin", "dep:moose-clap", "dep:clap-sys"]
 vst3 = ["plugin", "dep:moose-vst3"]
 standalone = ["plugin", "dep:moose-standalone"]
@@ -23,6 +23,9 @@ shots = ["plugin", "dep:mui"]
 
 [dependencies]
 rustc-hash = "=2.1.3"
+mlua = { version = "=0.12.1", features = ["lua54", "vendored", "send"] }
+image-webp = { version = "=0.2.4", optional = true }
+resvg = { version = "=0.45.1", default-features = false, optional = true }
 anyhow = "1"
 aes = { version = "0.8", optional = true }
 png = { version = "0.18", optional = true }
@@ -122,6 +125,7 @@ mui = { git = "https://github.com/Matari-Audio/MUI", features = ["cpu"] }
 moose-test = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497" }
 
 [patch."https://github.com/Matari-Audio/moose"]
+moose-core = { path = "vendor/moose-core" }
 moose-mui = { path = "vendor/moose-mui" }
 # Host output port names that follow the routing; see vendor/MOOSE-PATCHES.md.
 moose-params = { path = "vendor/moose-params" }
@@ -134,12 +138,14 @@ moose-vst3 = { path = "vendor/moose-vst3" }
 vello = { path = "vendor/vello" }
 # mui-baseview with a raw key hook (key ups for the computer keyboard); see its Cargo.toml.
 mui-baseview = { path = "vendor/mui-baseview" }
+# Release obsolete image copies even when the next frame draws only vectors.
+mui-vello = { path = "vendor/mui-vello" }
 
 [patch.crates-io]
 symphonia-format-riff = { path = "vendor/symphonia-format-riff" }
 
 [workspace]
-members = [".", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3"]
+members = [".", "vendor/moose-core", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3", "vendor/mui-vello"]
 exclude = ["vendor/ni-file", "vendor/ncw", "vendor/vello", "vendor/mui-baseview", "vendor/symphonia-format-riff", "vendor/derpcat-flight-recorder", "vendor/buffr-durable-file"]
 resolver = "3"
 

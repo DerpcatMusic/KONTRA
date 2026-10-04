@@ -7,16 +7,16 @@ use crate::{
 };
 
 use super::{
-    EnvelopeAhdsr, EnvelopeFlex, Lfo, ModTarget,
+    EnvelopeAhdsr, EnvelopeFlex, Glide, Lfo, ModTarget,
     modulation::{ensure_consumed, read_name, read_targets},
 };
 
 const CHUNK_ID: u16 = 0x0D;
 const ENVELOPE_ID: u16 = 0x07;
 /// Category stored after the name: 2 wraps the modulator in an 0x07
-/// envelope wrapper; 1 stores it directly (an 0x08 LFO object in ANALOG
-/// STRINGS). External assignments store 1 or 2 there too.
-const CATEGORIES: [u32; 2] = [1, 2];
+/// envelope wrapper; 1 stores an 0x08 LFO directly and5 stores an0x0B Glide.
+/// Native BParInternalMod category5 is independent of the envelope discriminator.
+const CATEGORIES: [u32; 3] = [1, 2, 5];
 
 /// # InternalMod
 ///
@@ -50,6 +50,7 @@ pub enum Modulator {
     Ahdsr(EnvelopeAhdsr),
     Flex(EnvelopeFlex),
     Lfo(Lfo),
+    Glide(Glide),
     /// Undecoded modulator, identified by its chunk id.
     Other {
         chunk_id: u16,
@@ -106,6 +107,7 @@ impl InternalMod {
         Ok(match inner.id {
             0x3F => Modulator::Ahdsr(EnvelopeAhdsr::try_from(inner)?),
             0x40 => Modulator::Flex(EnvelopeFlex::try_from(inner)?),
+            0x0B => Modulator::Glide(Glide::try_from(inner)?),
             0x08 => match Lfo::read_supported(inner)? {
                 Some(lfo) => Modulator::Lfo(lfo),
                 None => Modulator::Other { chunk_id: inner.id },

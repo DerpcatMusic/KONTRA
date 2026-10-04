@@ -16,6 +16,7 @@ const SOURCES: &[&str] = &[
     "src/audio.rs",
     "src/fx",
     "src/ksp/mod.rs",
+    "src/ksp/builtins.rs",
     "src/engine/filter.rs",
     "vendor/ni-file/src",
 ];
