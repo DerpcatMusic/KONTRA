@@ -578,6 +578,7 @@ pub fn decode(bytes: &[u8]) -> Result<Sample> {
     let track_id = track.id;
     let mut interleaved = Vec::new();
     interleaved.try_reserve_exact(count)?;
+    let mut buffer = None::<SampleBuffer<f32>>;
     loop {
         let packet = match format.next_packet() {
             Ok(packet) => packet,
@@ -599,7 +600,13 @@ pub fn decode(bytes: &[u8]) -> Result<Sample> {
             decoded.capacity() <= MEMORY_LIMIT / channels / size_of::<f32>(),
             "Audio packet exceeds memory limit"
         );
-        let mut buffer = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
+        // SampleBuffer capacity is measured in interleaved scalars. The
+        // dimensions and packet bound above also bound every replacement.
+        let buffer = buffer
+            .get_or_insert_with(|| SampleBuffer::<f32>::new(decoded.capacity() as u64, spec));
+        if buffer.capacity() < decoded.capacity() * channels {
+            *buffer = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
+        }
         buffer.copy_interleaved_ref(decoded);
         let samples = buffer.samples();
         ensure!(
@@ -612,6 +619,7 @@ pub fn decode(bytes: &[u8]) -> Result<Sample> {
         );
         interleaved.extend_from_slice(samples);
     }
+    drop(buffer);
     ensure!(
         interleaved.len() == count,
         "Truncated audio: decoded {} of {frames} frames",
@@ -957,6 +965,60 @@ mod tests {
                 .to_string()
                 .contains("memory limit")
         );
+    }
+
+    #[test]
+    fn multi_packet_pcm_preserves_channel_order_and_rejects_late_nonfinite() {
+        for channels in [2u16, 6] {
+            let mut output = Cursor::new(Vec::new());
+            let mut expected = Vec::new();
+            {
+                let mut writer = hound::WavWriter::new(
+                    &mut output,
+                    hound::WavSpec {
+                        channels,
+                        sample_rate: 48000,
+                        bits_per_sample: 32,
+                        sample_format: hound::SampleFormat::Float,
+                    },
+                )
+                .unwrap();
+                for frame in 0..7001 {
+                    for channel in 0..channels {
+                        let value = if frame == 0 && channel == 0 {
+                            -0.0
+                        } else {
+                            ((frame * 7 + usize::from(channel)) % 503) as f32 / 1024.0
+                        };
+                        expected.push(value);
+                        writer.write_sample(value).unwrap();
+                    }
+                }
+                writer.finalize().unwrap();
+            }
+            let bytes = output.into_inner();
+            let decoded = decode(&bytes).unwrap();
+            assert_eq!(
+                (decoded.rate, decoded.channels, decoded.frames),
+                (48000, usize::from(channels), 7001)
+            );
+            assert!(
+                decoded
+                    .interleaved
+                    .iter()
+                    .zip(&expected)
+                    .all(|(a, b)| a.to_bits() == b.to_bits())
+            );
+            assert_eq!(decoded.interleaved.len(), expected.len());
+            assert!(decode(&bytes[..bytes.len() - 1]).is_err());
+            let mut nonfinite = bytes.clone();
+            let last = nonfinite.len() - 4;
+            nonfinite[last..].copy_from_slice(&f32::NAN.to_le_bytes());
+            assert_eq!(
+                decode(&nonfinite).unwrap_err().to_string(),
+                "Nonfinite audio sample"
+            );
+        }
     }
 
     #[test]
