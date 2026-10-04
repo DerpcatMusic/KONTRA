@@ -15,6 +15,25 @@ fixture executes Value edit/prepare/RC, source, Freq and audio; Rust consumes th
 observed upstream held Value points. This verifies the adapter boundary rather
 than the complete property manager or graph lifecycle.
 
+The subsequent `CombEditionValueProperty` generator supplies those upstream
+points and their per-block static flag for this same bounded route. It shares
+the adapter's measured RC arithmetic; the separate `ConstantClock` models a
+source clock with different snap and ownership rules. This closes the measured
+three-RC composition without duplicating that source clock. Native comparisons
+cover 160 scalar cases, 16 constructor cases and 64 consumed Value → edition →
+Freq/Comb point/audio cases, including cold edits, fragmented blocks, bypass and
+signed zero. Authored static initial negative zero retains its bits; computed
+zero after a dynamic ramp is canonical positive zero.
+
+The generator and adapter require one call per source owner's host block.
+Native serial/offset coverage can avoid advancing shared sources twice, and
+unaligned overlapping extensions are not equivalent to one whole-block call.
+That coverage cache remains above these leaves. Caller-owned output is bounded
+to 4096 frames; invalid inputs preserve state and output. Five focused checks
+cover retained native vectors and these boundaries. This is a leaf-composition
+proof, not integration of the native XML loader, graph ownership or active
+FeedbackMachine audio.
+
 The active Bartok Comb belongs to Aux3's FeedbackMachine, while its source macro
 belongs to the same container. Graph binding, voice cloning/cache behavior and
 broader dynamic connection mixing remain unverified. Program admission stays
