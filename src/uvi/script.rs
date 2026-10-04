@@ -1590,6 +1590,11 @@ impl Runtime {
         sample_rate: u32,
     ) -> Result<Self> {
         validate_sample_rate(sample_rate)?;
+        // Lua 5.1 math.random/randomseed use the platform CRT, including its
+        // shared seed state. Linux fixed-seed replays establish local regression
+        // parity only: the native MSVC stream differs and its full context/
+        // seeding lifecycle remains unmeasured.
+        // See docs/UVI_LUA_RANDOM_EVIDENCE.md before changing RNG or seeding.
         let lua = Lua::new_with(
             StdLib::TABLE | StdLib::STRING | StdLib::MATH,
             LuaOptions::default(),
