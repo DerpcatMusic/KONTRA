@@ -124,14 +124,24 @@ checks inspect nodes individually, but control-graph construction stops at its
 first failure; the report records that scope explicitly. The count is not a
 complete census of every unsupported setting in a rejected program. Later
 Kontakt monolith source also rejects descending offsets and malformed markers
-instead of overflowing or asserting. These latest diagnostic/parser changes
-remain uncompiled and unexecuted under the same CPU restriction.
+instead of overflowing or asserting. It now rejects a declared table count that
+cannot fit the remaining stream's 640-byte records before interpreting entries.
+That is a necessary count bound, not a payload-extent validator; no owned
+FileContainer success comparison or recursion-depth claim follows. These latest
+diagnostic/parser changes remain uncompiled and unexecuted under the same CPU
+restriction.
 
 The [missing PanLaw default correction](UVI_PANLAW_DEFAULT_EVIDENCE.md) aligns
 the shared Lua/state baseline with retained native loaded-program getter values
 for Program/Layer/Keygroup. Explicit XML, synthetic parents, SamplePlayer and
 renderer gates are unchanged. It is source-reviewed and remains uncompiled;
 newly saved omitted-property deltas cannot restore in older implementations.
+
+The [missing insert-bypass default](UVI_INSERT_BYPASS_DEFAULT_EVIDENCE.md)
+likewise supplies the retained native Boolean `false` baseline for omitted
+Program/Layer/Keygroup properties. It preserves explicit XML and renderer gates.
+Both cached Clarinet banks already serialize the property, so no actual-bank
+failure correction is claimed. Its shared state/host checks remain unrun.
 
 The [browser presentation changes](UVI_BROWSER_PRESENTATION.md) retain authored
 UVI preset folders and enable exact bank-stem image sidecars on both artwork
@@ -148,6 +158,14 @@ capacity. Optional bridge-owned failure frontiers are published with the first
 cause and shown separately from later worker observations. These additions are
 source-reviewed only; prepared queue/atomic/UI checks are uncompiled and unrun.
 They do not establish that the user's Piccolo playback failure is fixed.
+Grouped Logs now preserve the same captured endpoint cause as Info and the
+loader; a distinct later worker cause is supplementary and part of stable child
+identity. Raw events and real source excerpts retain their existing ownership.
+The [terminal publication correction](UVI_WORKER_TERMINAL_PUBLICATION_EVIDENCE.md)
+publishes an exited worker's status and original failure before potentially
+blocking terminal journal calls. This source-order bug is independently reviewed;
+it is not measured attribution of the user's failure. Compilation and real-journal
+backpressure/playback verification remain pending.
 Separate native browser metadata in `TagLibrary.ufs` is now a documented cover
 discovery lead. It is absent from the checked locations and current catalog;
 the bank/product-to-image join remains unimplemented.

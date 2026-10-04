@@ -49,3 +49,22 @@ positive times and unmeasured rates/layouts remain gated. One .001 ms native
 preparation reached an unresolved CRT/IAT underflow path; it was not substituted
 or retried. Existing-object rate/layout changes and populated-state clone
 lifetime are not established. No speed or deadline claim follows.
+
+## Keygroup lifetime frontier
+
+Later bounded static review reused the original Many Faces node 127 evidence:
+its fixed controls already matched the native leaf across the twelve measured
+rate/layout cases. The remaining rejection is placement and voice ownership,
+not an unmeasured static control set. Current renderer note-off/retirement can
+stop a voice before a delayed processor has emitted its remaining frames.
+Cold/reset/split leaf comparisons do not establish how the native owner handles
+that boundary.
+
+Retained native disassembly identifies a common metadata audio scheduler calling
+the CompExp wrapper. Its DSP-state interface contains deletion, preparation,
+clearing and cloning; this does not identify the voice-retirement owner. A
+descriptor-bit-controlled scheduler counter was also found, but its meaning
+is unproved. It must not be described as note-off, silence detection or a tail
+policy. The Keygroup gate stays closed pending ownership and timed-release
+evidence. This static review ran no native playback or compilation under the
+CPU restriction.
