@@ -257,7 +257,7 @@ fn play_worker(
     println!(
         "{}",
         serde_json::to_string_pretty(
-            &serde_json::json!({"frames":end,"processed_frames":padded_end,"sample_rate":rate,"block_frames":worker::BLOCK_FRAMES,"worker":true,"runtime_report":runtime_report,"peak":peak,"event_commands":commands,"host_commands":host_commands,"diagnostics":diagnostics,"private_log_messages":logs,"dropped_logs":dropped_logs,"worker_initialization_ns":stats.initialization_ns,"worker_render_ns":stats.render_ns,"worker_max_render_ns":stats.max_render_ns,"worker_render_deadline_misses":stats.render_deadline_misses,"worker_backpressure":stats.backpressure,"worker_packet_polls":stats.underruns,"worker_errors":stats.errors})
+            &serde_json::json!({"frames":end,"processed_frames":padded_end,"sample_rate":rate,"block_frames":worker::BLOCK_FRAMES,"worker":true,"runtime_report":runtime_report,"peak":peak,"event_commands":commands,"host_commands":host_commands,"diagnostics":diagnostics,"private_log_messages":logs,"dropped_logs":dropped_logs,"worker_initialization_ns":stats.initialization_ns,"worker_render_ns":stats.render_ns,"worker_max_render_ns":stats.max_render_ns,"worker_render_deadline_misses":stats.render_deadline_misses,"worker_backpressure":stats.backpressure,"worker_empty_output_polls":stats.empty_output_polls,"worker_packet_polls":stats.empty_output_polls,"worker_errors":stats.errors})
         )?
     );
     Ok(())

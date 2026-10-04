@@ -477,10 +477,10 @@ fn native_activity_lines(activity: &crate::uvi::worker::WorkerLoadActivity) -> V
     let stats = activity.stats;
     lines.push((format!("Playback: {} rendered packets · {} active voice instances · {} worker errors",
         stats.rendered_blocks, stats.active_voices, stats.errors), stats.errors != 0));
-    lines.push((format!("Packet reads unavailable: {} · queue backpressure: {} · stale packets: {} · omitted script prints: {}",
-        stats.underruns, stats.backpressure, stats.stale_packets, stats.dropped_logs),
-        stats.underruns != 0 || stats.dropped_logs != 0));
-    lines.push(("Voice instances include held or releasing silent voices. Packet counters do not measure audio-driver dropouts.".into(), false));
+    lines.push((format!("Empty output polls: {} · queue backpressure: {} · stale packets: {} · omitted script prints: {}",
+        stats.empty_output_polls, stats.backpressure, stats.stale_packets, stats.dropped_logs),
+        stats.dropped_logs != 0));
+    lines.push(("Voice instances include held or releasing silent voices. Empty output polls include normal waits; audio shortages are counted separately.".into(), false));
     lines
 }
 

@@ -343,7 +343,11 @@ pub use activity::{LoadStage, ResourceActivity, WorkerLoadActivity};
 pub struct Stats {
     /// Rejected submissions (excluding Full) and fatal worker failures.
     pub errors: u64,
-    /// Unsuccessful packet reads, not a hardware/audio-driver counter.
+    /// `try_receive` calls with no output available at the requested stamp.
+    /// Includes empty or future output; prefetch peeks are not counted.
+    /// This is a polling counter, not an audible or audio-driver shortage.
+    pub empty_output_polls: u64,
+    /// Legacy alias of `empty_output_polls`, retained for API/report compatibility.
     pub underruns: u64,
     pub backpressure: u64,
     pub stale_packets: u64,
@@ -377,7 +381,7 @@ pub struct Stats {
 #[derive(Default)]
 struct Counters {
     errors: AtomicU64,
-    underruns: AtomicU64,
+    empty_output_polls: AtomicU64,
     backpressure: AtomicU64,
     stale_packets: AtomicU64,
     rendered_blocks: AtomicU64,
@@ -547,9 +551,11 @@ impl Shared {
 
     fn stats(&self) -> Stats {
         let c = &self.counters;
+        let empty_output_polls = c.empty_output_polls.load(Ordering::Relaxed);
         Stats {
             errors: c.errors.load(Ordering::Relaxed),
-            underruns: c.underruns.load(Ordering::Relaxed),
+            empty_output_polls,
+            underruns: empty_output_polls,
             backpressure: c.backpressure.load(Ordering::Relaxed),
             stale_packets: c.stale_packets.load(Ordering::Relaxed),
             rendered_blocks: c.rendered_blocks.load(Ordering::Relaxed),
@@ -1201,14 +1207,16 @@ impl Realtime<'_> {
 
     /// The caller supplies its current audio time. Late/stale packets are removed
     /// in at most capacity+1 steps; an early packet stays inline for a later call.
-    /// Underrun never substitutes old audio or silently changes the input cursor.
+    /// Unavailable output increments `empty_output_polls` and returns the legacy
+    /// `Underrun` error; the caller determines whether audio was actually due.
+    /// Never substitutes old audio or silently changes the input cursor.
     pub fn try_receive(&mut self, expected: Stamp) -> std::result::Result<Output, PacketError> {
         if let Some(output) = self.try_receive_available(expected)? {
             return Ok(output);
         }
         self.shared
             .counters
-            .underruns
+            .empty_output_polls
             .fetch_add(1, Ordering::Relaxed);
         Err(PacketError::Underrun)
     }

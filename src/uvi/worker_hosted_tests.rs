@@ -1307,11 +1307,13 @@ fn pcm_prefetch_empty_future_and_stale_packets_share_cursor_without_underrun_cou
         shared.outputs.push(output(1024)).unwrap();
         assert!(rt.try_receive_available(stamp(768)).unwrap().is_none());
         assert_eq!(rt.stats().stale_packets, 2);
+        assert_eq!(rt.stats().empty_output_polls, 0);
         assert_eq!(rt.stats().underruns, 0);
         assert_eq!(
             rt.try_receive(stamp(768)).unwrap_err(),
             PacketError::Underrun
         );
+        assert_eq!(rt.stats().empty_output_polls, 1);
         assert_eq!(rt.stats().underruns, 1);
         assert_eq!(
             rt.try_receive_available(stamp(1024))
@@ -1320,8 +1322,21 @@ fn pcm_prefetch_empty_future_and_stale_packets_share_cursor_without_underrun_cou
                 .stamp,
             stamp(1024)
         );
+        assert_eq!(rt.stats().empty_output_polls, 1);
         assert_eq!(rt.stats().underruns, 1);
     });
+}
+
+#[test]
+fn empty_output_poll_report_keeps_legacy_alias_and_distinct_label() {
+    let shared = Shared::new(7, 9);
+    shared.counters.empty_output_polls.store(7129, Ordering::Relaxed);
+    let stats = shared.stats();
+    assert_eq!(stats.empty_output_polls, 7129);
+    assert_eq!(stats.underruns, stats.empty_output_polls);
+    let report = serde_json::to_value(stats).unwrap();
+    assert_eq!(report["empty_output_polls"], 7129);
+    assert_eq!(report["underruns"], report["empty_output_polls"]);
 }
 
 #[test]
