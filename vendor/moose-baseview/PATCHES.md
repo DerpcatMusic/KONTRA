@@ -9,11 +9,12 @@ the newer MUI display/accessibility integration:
 - `remove_after_window` retains the reparented window, removes its old parent.
 - Reparenting to the X11 root refreshes mapping/visibility before returning.
 
-The original native X11 regression is retained in `tests/x11_visibility.rs`.
+The original native X11 regression is retained in `tests/x11_visibility.rs` and
+mirrored into the custom host integration tests so CI uses the application lock.
 Run against an isolated server:
 
 ```sh
-xvfb-run -a cargo test --manifest-path vendor/moose-baseview/Cargo.toml \
+xvfb-run -a cargo test --locked -p kontra-native-host \
   --test x11_visibility -- --ignored --test-threads=1
 ```
 
