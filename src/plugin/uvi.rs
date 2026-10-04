@@ -4,7 +4,7 @@ use crate::{
     articulate::In,
     engine::{HostNote, HostPattern},
     uvi::{
-        bridge::{Bridge, BridgeError},
+        bridge::{Bridge, BridgeError, FailureFrontier},
         host::UiEdit,
         player::UiInput,
         script::{HOST_ROOT_CAPACITY, HostRoot, HostedInput, Input, InputKind},
@@ -148,6 +148,7 @@ pub(crate) struct Failure {
     pub(crate) generation: u64,
     pub(crate) source: &'static str,
     pub(crate) line: u32,
+    pub(crate) bridge_frontier: Option<FailureFrontier>,
 }
 
 /// One audio writer; the loader only takes snapshots. Claim before metadata,
@@ -159,6 +160,8 @@ pub(crate) struct FailureAtoms {
     origin: std::sync::atomic::AtomicU64,
     epoch: std::sync::atomic::AtomicU64,
     generation: std::sync::atomic::AtomicU64,
+    bridge_present: std::sync::atomic::AtomicBool,
+    bridge_frontier: [std::sync::atomic::AtomicU64; 11],
 }
 impl FailureAtoms {
     pub(crate) fn record(&self, failure: Failure) -> bool {
@@ -171,6 +174,12 @@ impl FailureAtoms {
             | (u64::from(failure.source == "src/plugin/uvi.rs") << 40), Ordering::Relaxed);
         self.epoch.store(failure.epoch, Ordering::Relaxed);
         self.generation.store(failure.generation, Ordering::Relaxed);
+        if let Some(frontier) = failure.bridge_frontier {
+            for (atom, value) in self.bridge_frontier.iter().zip(frontier.words()) {
+                atom.store(value, Ordering::Relaxed);
+            }
+        }
+        self.bridge_present.store(failure.bridge_frontier.is_some(), Ordering::Relaxed);
         self.code.store(failure.error.code(), Ordering::Release);
         true
     }
@@ -191,6 +200,9 @@ impl FailureAtoms {
             generation: self.generation.load(Ordering::Relaxed),
             source: if origin & (1 << 40) != 0 { "src/plugin/uvi.rs" } else { "src/plugin.rs" },
             line: origin as u32,
+            bridge_frontier: self.bridge_present.load(Ordering::Relaxed).then(||
+                FailureFrontier::from_words(std::array::from_fn(|i|
+                    self.bridge_frontier[i].load(Ordering::Relaxed)))),
         };
         (failure.epoch == epoch && failure.generation == generation
             && self.code.load(Ordering::Acquire) == code
@@ -424,6 +436,9 @@ impl Slot {
     }
     pub(crate) fn error_origin(&self) -> Option<(Error, u64, u32)> {
         self.error.map(|error| (error, self.error_frame, self.error_line))
+    }
+    pub(crate) fn failure_frontier(&self) -> Option<FailureFrontier> {
+        self.bridge.failure_frontier()
     }
     pub(crate) fn active_voices(&self) -> u64 {
         self.active_voices
@@ -1402,5 +1417,46 @@ mod tests {
         drop(slot);
         worker.stop();
         std::fs::remove_file(bank).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod bridge_frontier_first_failure_proof {
+    use super::*;
+    fn captured() -> Failure {
+        Failure { error: Error::Bridge(BridgeError::RequestCapacity), frame: 78464,
+            stage: FailureStage::Process, epoch: 7, generation: 9, source: "src/plugin/uvi.rs", line: 123,
+            bridge_frontier: Some(FailureFrontier { bridge_frame: 78592, partial_packet_frame: 78336,
+                submitted_frame: 71424, received_frame: 69120, discard_before_frame: 73984,
+                consumed_host_frame: 77952, latency_frames: 4608, pending_requests: 27,
+                pending_capacity: 27, prefetched_audio: 0, active_packet_frame: Some(73728) }) }
+    }
+    #[test]
+    fn first_process_failure_keeps_exact_frontier_and_stage_after_later_fault() {
+        let atoms = FailureAtoms::default();
+        let first = captured();
+        assert_eq!(crate::test_support::allocations(|| assert!(atoms.record(first))), 0);
+        let later = Failure { error: Error::Bridge(BridgeError::Worker(PacketError::Failed)),
+            frame: 90000, stage: FailureStage::Completions, bridge_frontier: None, ..first };
+        assert!(!atoms.record(later));
+        assert_eq!(atoms.snapshot(7, 9), Some(first));
+        let decoded = atoms.snapshot(7, 9).unwrap();
+        assert_eq!(decoded.stage, FailureStage::Process);
+        assert_ne!(decoded.frame, decoded.bridge_frontier.unwrap().bridge_frame);
+    }
+    #[test]
+    fn reset_and_stale_identity_do_not_publish_previous_frontier() {
+        let atoms = FailureAtoms::default();
+        assert!(atoms.record(captured()));
+        assert_eq!(atoms.snapshot(8, 9), None);
+        assert_eq!(atoms.snapshot(7, 10), None);
+        atoms.reset();
+        assert_eq!(atoms.snapshot(7, 9), None);
+        let next = Failure { error: Error::InvalidInput, generation: 10,
+            stage: FailureStage::Feed, bridge_frontier: None, ..captured() };
+        assert!(atoms.record(next));
+        assert_eq!(atoms.snapshot(7, 9), None);
+        assert_eq!(atoms.snapshot(7, 10), Some(next));
+        assert_eq!(atoms.snapshot(7, 10).unwrap().bridge_frontier, None);
     }
 }
