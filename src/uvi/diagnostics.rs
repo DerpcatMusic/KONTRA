@@ -9,7 +9,8 @@ use serde::Serialize;
 #[derive(Clone, Serialize)]
 pub struct Counts {
     pub nodes: usize,
-    /// Distinct parsed nodes with one or more static preflight rejections.
+    /// Known distinct rejected nodes. Control construction stops at its first
+    /// failure, so this is not an exhaustive unsupported-setting census.
     pub static_rejected_nodes: usize,
     pub sample_zones: usize,
     pub connections: usize,
@@ -35,6 +36,7 @@ pub struct Report {
     pub preflight_admitted: bool,
     pub counts: Counts,
     pub nodes: Vec<NodeReport>,
+    pub static_rejection_scope: &'static str,
     pub runtime_evidence: &'static str,
     /// Renderer-wide limitations, not a claim that these families were used.
     pub renderer_fidelity_caveats: Vec<&'static str>,
@@ -118,6 +120,7 @@ pub(crate) fn report_preflighted(preflight: &playback::ProgramPreflight<'_>) -> 
                 .count(),
         },
         nodes,
+        static_rejection_scope: "per_node_checks_and_first_control_graph_construction_failure",
         runtime_evidence: "not_inspected",
         renderer_fidelity_caveats: fidelity_diagnostics(),
     }
