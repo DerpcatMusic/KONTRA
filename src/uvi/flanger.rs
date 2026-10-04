@@ -59,6 +59,11 @@ impl Flanger {
                 .all(|f| f[..channels].iter().all(|v| v.is_finite())),
             "Nonfinite Flanger input frame"
         );
+        self.process_validated_frames(frames)
+    }
+
+    fn process_validated_frames(&mut self, frames: &mut [Frame]) -> Result<()> {
+        let channels = self.lines.len();
         for chunk in frames.chunks_mut(32) {
             let mut planar = [[0.; 32]; MAX_CHANNELS];
             for (i, frame) in chunk.iter().enumerate() {
@@ -114,12 +119,19 @@ impl Flanger {
             }
             return Ok(());
         }
+        let channels = self.lines.len();
+        ensure!(
+            frames
+                .iter()
+                .all(|f| f[..channels].iter().all(|v| v.is_finite())),
+            "Nonfinite Flanger input frame"
+        );
         for (chunk, point) in frames.chunks_mut(32).zip(points) {
             self.set_controls(*point)?;
             if sync {
                 self.controls[0] = (0.016666667f32 / point[0]) * tempo;
             }
-            let result = self.process_frames(chunk);
+            let result = self.process_validated_frames(chunk);
             self.controls = *point;
             result?;
         }
@@ -191,6 +203,41 @@ impl Flanger {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn flanger_rejects_nonfinite_active_input_before_mutation() {
+        let controls = [0.39889875, 0.39999998, 0.2, 0.50335938, 1.];
+        for invalid_at in [0, 64] {
+            let mut fx = Flanger::new(48000, 1, controls).unwrap();
+            let mut baseline = Flanger::new(48000, 1, controls).unwrap();
+            let mut warm = vec![[0.; MAX_CHANNELS]; 512];
+            warm[0][0] = 1.;
+            let mut baseline_warm = warm.clone();
+            fx.process_frames(&mut warm).unwrap();
+            baseline.process_frames(&mut baseline_warm).unwrap();
+
+            let mut invalid = vec![[0.25; MAX_CHANNELS]; 65];
+            invalid[invalid_at][0] = f32::NAN;
+            let before = invalid.clone();
+            let points = [[0.8, 0.7, 0.1, 0.8, 0.6]; 3];
+            assert!(
+                fx.process_control_points(&mut invalid, &points, false, 120., false)
+                    .is_err()
+            );
+            for (actual, expected) in invalid.iter().zip(&before) {
+                for (actual, expected) in actual.iter().zip(expected) {
+                    assert_eq!(actual.to_bits(), expected.to_bits());
+                }
+            }
+
+            let mut continuation = vec![[0.; MAX_CHANNELS]; 4096];
+            continuation[0][0] = 0.5;
+            let mut expected = continuation.clone();
+            fx.process_frames(&mut continuation).unwrap();
+            baseline.process_frames(&mut expected).unwrap();
+            assert_eq!(continuation, expected);
+        }
+    }
+
     #[test]
     fn flanger_native_impulse_split_reset_and_validation() {
         let mut fx = Flanger::new(48000, 1, [0.8, 0., 0.2, 0., 1.]).unwrap();
