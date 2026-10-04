@@ -1094,7 +1094,9 @@ pub fn install(lua: &Lua, config: HostConfig<'_>) -> mlua::Result<Host> {
                     continue;
                 }
                 let list = lua.create_table()?;
-                let named = lua.create_table()?;
+                // Only modulations expose a separate named collection. Other
+                // fields expose their ordered list, so no unused table is needed.
+                let named = (field == "modulations").then(|| lua.create_table()).transpose()?;
                 let mut index = 0;
                 for &wrapper_id in children_by_node[id].iter().filter(|&&child| {
                     program.nodes[child].kind == wrapper
@@ -1108,7 +1110,7 @@ pub fn install(lua: &Lua, config: HostConfig<'_>) -> mlua::Result<Host> {
                         list.set(index, objects.raw_get::<Table>(child_id + 1)?)?;
                         if let Some(name) = &child.name {
                             children.set(name.as_str(), objects.raw_get::<Table>(child_id + 1)?)?;
-                            if field == "modulations" {
+                            if let Some(named) = &named {
                                 named
                                     .set(name.as_str(), objects.raw_get::<Table>(child_id + 1)?)?;
                             }
@@ -1120,7 +1122,7 @@ pub fn install(lua: &Lua, config: HostConfig<'_>) -> mlua::Result<Host> {
                         }
                     }
                 }
-                if field == "modulations" {
+                if let Some(named) = named {
                     object.set("mods", list.clone())?;
                     object.set(field, named)?;
                 } else {
