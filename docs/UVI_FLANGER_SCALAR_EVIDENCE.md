@@ -88,3 +88,19 @@ they do not establish this preset's connected graph or its control timing.
 Connected modulation, full host lifecycle, larger channel counts through the
 outer wrapper, other rates/tempos and whole-program audio remain unverified.
 All four actual Bartok Flanger inserts therefore remain preflight blockers.
+## Active-input validation follow-up
+
+Later source validates the complete active frame input before selecting controls
+or processing a control-point batch. Previously a nonfinite value in a later
+chunk could reject the call after earlier PCM, controls and delay/oscillator
+state had changed. A private validated frame adapter preserves finite processing
+order and avoids adding a second frame scan. Bypass and inactive-channel handling
+retain their existing behavior.
+
+The prepared regression compares rejected PCM bits and subsequent valid output
+against an independently warmed untouched instance. It remains uncompiled and
+unexecuted under the CPU restriction. This is a public-helper validation fix,
+not native invalid-input parity or a transaction for output overflow. Current
+Program playback still does not admit this leaf; production references only its
+fidelity diagnostic. Earlier native finite-input comparisons do not verify this
+source revision.
