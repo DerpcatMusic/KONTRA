@@ -46,6 +46,8 @@ const PART_FIELDS: &[&str] = &[
     "snapshot",
     "engine_state",
     "delay_state",
+    "uvi",
+    "uvi_state",
 ];
 const REQUIRED_ROUTE_FIELDS: &[&str] = &[
     "channel",
@@ -190,6 +192,7 @@ fn selection_differences(expected: &Selection, readback: &Selection) -> Vec<Stri
         root, order, midi_thru, multi, favorites, recent, qwerty, browser_width,
         browser_split, appearance, sharp_artwork, sticky_off, buses, streaming,
         auto_align, align_transport_only, outputs,
+        uvi_favorites, uvi_recent, uvi_requested,
     );
     if expected.parts.len() != readback.parts.len() {
         differences.push("parts.length".to_owned());
@@ -200,7 +203,7 @@ fn selection_differences(expected: &Selection, readback: &Selection) -> Vec<Stri
             path, group, port, output, channel, gain, pan, tune, mute, solo, program,
             script_state, ir_settings, name, collapsed, height, aux, aux_gain,
             articulate, mpe, streaming, edits, timing, output_manual, mic_buses,
-            mic_names, view, snapshot, engine_state, delay_state,
+            mic_names, view, snapshot, engine_state, delay_state, uvi, uvi_state,
         );
         for field in &mut differences[start..] {
             *field = format!("parts[{index}].{field}");
@@ -392,6 +395,10 @@ fn validate_part(part: &Part, index: usize) -> Result<ImportedPartReport> {
         part.name.as_str()
     };
     ensure!(
+        part.uvi.is_none() && part.uvi_state.is_empty(),
+        "part {index} ({label}) contains native UVI source or state; Kontakt mapping export cannot migrate it"
+    );
+    ensure!(
         !part.path.is_empty(),
         "part {index} ({label}) has no instrument path"
     );
@@ -578,6 +585,96 @@ mod tests {
         assert!(!report.matches.whole_blob);
         assert!(report.selection_differences.is_empty());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn current_saved_multi_keeps_inert_native_fields_and_legacy_defaults() {
+        let selection = Selection {
+            parts: vec![Part {
+                path: "Piano.nki".into(),
+                ..Default::default()
+            }],
+            order: vec![0],
+            ..Default::default()
+        };
+        let saved = SavedMulti::of("Compatibility", &selection);
+        let json = serde_json::to_value(&saved).unwrap();
+        assert_eq!(json["parts"][0]["uvi"], serde_json::Value::Null);
+        assert_eq!(json["parts"][0]["uvi_state"], serde_json::json!([]));
+        validate_shape(&json).unwrap();
+        let round_trip: SavedMulti = serde_json::from_value(json.clone()).unwrap();
+        assert!(round_trip.parts == saved.parts);
+        let path = std::env::temp_dir().join(format!(
+            "kontra-migration-native-fields-{}.kontra-multi",
+            std::process::id()
+        ));
+        saved.save(&path).unwrap();
+        let from_disk = SavedMulti::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(from_disk.parts == saved.parts);
+        validate_shape(&serde_json::to_value(&from_disk).unwrap()).unwrap();
+        let mut legacy = json.clone();
+        let part = legacy["parts"][0].as_object_mut().unwrap();
+        part.remove("uvi");
+        part.remove("uvi_state");
+        validate_shape(&legacy).unwrap();
+        let legacy: SavedMulti = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.parts == saved.parts);
+        let mut unknown = json;
+        unknown["parts"][0]["unknown_backend"] = serde_json::json!({});
+        assert!(validate_shape(&unknown).is_err());
+    }
+
+    #[test]
+    fn kontakt_export_rejects_native_identity_or_state_before_import() {
+        let source = crate::library::UviSource {
+            bank: "unused.ufs".into(),
+            bank_uuid: [7; 16],
+            member: "Piano.uvip".into(),
+        };
+        for (uvi, uvi_state) in [(Some(source), Vec::new()), (None, vec![1, 2, 3])] {
+            let part = Part {
+                path: "unused.nki".into(),
+                uvi,
+                uvi_state: uvi_state.into(),
+                ..Default::default()
+            };
+            let error = validate_part(&part, 0).err().unwrap().to_string();
+            assert!(error.contains("native UVI source or state"), "{error}");
+        }
+    }
+
+    #[test]
+    fn selection_difference_report_identifies_native_persistence_and_cursor() {
+        let expected = Selection {
+            parts: vec![Part::default()],
+            ..Default::default()
+        };
+        let source = crate::library::UviSource {
+            bank: "unused.ufs".into(),
+            bank_uuid: [7; 16],
+            member: "Piano.uvip".into(),
+        };
+        let mut readback = expected.clone();
+        readback.parts[0].uvi = Some(source.clone());
+        readback.parts[0].uvi_state = vec![1, 2, 3].into();
+        readback.uvi_favorites.push(source.clone());
+        readback.uvi_recent.push(source.clone());
+        readback.uvi_requested = Some(crate::library::UviRequest {
+            source,
+            slot: Some(0),
+            new: false,
+        });
+        assert_eq!(
+            selection_differences(&expected, &readback),
+            [
+                "uvi_favorites",
+                "uvi_recent",
+                "uvi_requested",
+                "parts[0].uvi",
+                "parts[0].uvi_state",
+            ]
+        );
     }
 
     #[test]
