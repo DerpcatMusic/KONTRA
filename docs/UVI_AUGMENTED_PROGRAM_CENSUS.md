@@ -26,6 +26,22 @@ There are 21 distinct current-source diagnostic strings. The ControlGraph issue 
 
 Four bounded representative LFO inspections found serialized `Smooth=5.2776863e-09` with `WaveFormType=0`. The existing gate treats that finite nonzero value as unsupported deterministic smoothing. No epsilon, default substitution or admission change was introduced. This is a concrete next native-control behavior to investigate.
 
+## Subsequent source attribution, verification pending
+
+Later source preserves the same scalar gate order and error wording while
+retaining a private typed identity for known LFO and StepEnvelope setting
+failures. Preflight attaches those failures to the actual source node in the
+existing three-field rejection record. The node-local report and Mapping index
+can therefore identify the source instead of assigning it to the root
+`ControlGraph`. Unknown or malformed construction errors retain the root fallback.
+
+Index, kind, parameter and finite scalar checks validate the error's shape;
+the immediate preflight invocation supplies its Program ownership. This is not
+a cross-program fingerprint or an admission change. Compilation and the prepared
+source, preflight, report and Mapping cases are unexecuted under the CPU
+restriction. The census counts above belong to their original completed run;
+no new corpus run or newly playable program is claimed.
+
 The private receipt also classifies 43 route categories associated with rejected nodes. Repeated CombFilter/MS20 `Freq` and `Q` routes include StepEnvelope, LFO, MultiLFO, MIDI CC and voice velocity sources, generally Mode 0 with no mapper in these categories. Association with a rejected owner is not independent evidence that every route is unsupported. Representative program identities, scalar context and individual issue digests remain in private receipts; no vendor XML, scripts, curves or bank payloads are included in this document.
 
 ## Method and limits

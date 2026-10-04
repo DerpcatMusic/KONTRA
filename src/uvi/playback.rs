@@ -531,6 +531,15 @@ pub fn preflight(program: &Program) -> Vec<Unsupported> {
                         reason: error.to_string(),
                     });
                 }
+            } else if let Some(node) = error
+                .downcast_ref::<modulation::UnsupportedSourceSetting>()
+                .and_then(|setting| setting.node_in(program))
+            {
+                unsupported.push(Unsupported {
+                    node,
+                    kind: program.nodes[node].kind.clone(),
+                    reason: error.to_string(),
+                });
             } else {
                 unsupported.push(Unsupported {
                     node: program.root,
@@ -6500,5 +6509,46 @@ mod tests {
                 .is_err()
         );
         assert_eq!(rooted.current_frame(), frame);
+    }
+}
+
+#[cfg(test)]
+mod source_setting_attribution_proof {
+    use super::*;
+    use crate::uvi::{diagnostics, mapping, program::parse_program, worker::Stamp};
+    #[test]
+    fn existing_rejection_schema_and_mapping_point_at_the_exact_source() {
+        for (kind, attributes, prefix) in [
+            ("LFO", "WaveFormType=\"0\" Smooth=\"5.2776863e-09\"", "Unimplemented UVI deterministic LFO smoothing"),
+            ("StepEnvelope", "SyncToHost=\"1\" Retrigger=\"0\" Smooth=\".1\" NumSteps=\"2\" Levels=\"0 1\"", "Unverified UVI StepEnvelope Smooth"),
+        ] {
+            let program = parse_program(&format!(r#"<Program><ControlSignalSources><{kind} Name="S" {attributes}/></ControlSignalSources><Connections><SignalConnection Source="$Program/S" Destination="Gain" Ratio="1"/></Connections></Program>"#)).unwrap();
+            let source = program.nodes.iter().position(|n| n.kind == kind).unwrap();
+            let rejected = preflight(&program);
+            assert_eq!(rejected.len(), 1);
+            assert_eq!((rejected[0].node, rejected[0].kind.as_str()), (source, kind));
+            assert_eq!(rejected[0].reason, format!("{prefix} at node {source}"));
+            let schema = serde_json::to_value(&rejected[0]).unwrap();
+            assert_eq!(schema.as_object().unwrap().len(), 3);
+            assert!(schema.get("node").is_some() && schema.get("kind").is_some() && schema.get("reason").is_some());
+            let report = diagnostics::report(&program);
+            assert!(!report.preflight_admitted);
+            assert!(report.nodes[program.root].preflight_rejections.is_empty());
+            assert_eq!(report.nodes[source].preflight_rejections, vec![rejected[0].reason.clone()]);
+            let mapping = mapping::Inspection::parsed(Stamp { epoch: 2, generation: 3, frame: 0 }, &program, Arc::new(serde_json::to_value(report).unwrap()));
+            assert_eq!(mapping.rejections.as_slice(), &[(source, 0)]);
+        }
+    }
+    #[test]
+    fn unattributed_parse_and_unknown_source_errors_keep_control_graph_fallback() {
+        for xml in [
+            r#"<Program><ControlSignalSources><StepEnvelope Name="S" SyncToHost="1" NumSteps="2" Levels="bad"/></ControlSignalSources></Program>"#,
+            r#"<Program><Connections><SignalConnection Source="@UnknownSource" Destination="Gain" Ratio="1"/></Connections></Program>"#,
+        ] {
+            let program = parse_program(xml).unwrap();
+            let rejected = preflight(&program);
+            assert_eq!(rejected.len(), 1);
+            assert_eq!((rejected[0].node, rejected[0].kind.as_str()), (program.root, "ControlGraph"));
+        }
     }
 }
