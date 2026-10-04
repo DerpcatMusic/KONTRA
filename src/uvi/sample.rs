@@ -3,7 +3,10 @@
 use super::storage::Storage;
 use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
-use std::io::{self, Cursor};
+use std::{
+    io::{self, Cursor},
+    sync::atomic::{AtomicBool, Ordering},
+};
 use symphonia::core::{
     audio::{AudioBufferRef, SampleBuffer, Signal},
     conv::FromSample,
@@ -14,6 +17,21 @@ use symphonia::core::{
     meta::{Limit, MetadataOptions},
     probe::Hint,
 };
+
+#[derive(Debug)]
+pub(crate) struct LoadCancelled;
+impl std::fmt::Display for LoadCancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("UVI sample load cancelled")
+    }
+}
+impl std::error::Error for LoadCancelled {}
+pub(crate) fn check_cancel(stop: Option<&AtomicBool>) -> Result<()> {
+    if stop.is_some_and(|stop| stop.load(Ordering::Acquire)) {
+        return Err(LoadCancelled.into());
+    }
+    Ok(())
+}
 
 const MEMORY_LIMIT: usize = 256 << 20;
 const METADATA_LIMIT: usize = 2 << 20;
@@ -164,7 +182,7 @@ fn clm_cycle_frames(bytes: &[u8]) -> Option<u32> {
 
 // Original parser using Apple's CAF 1.0 field definitions and LPCM alignment:
 // https://developer.apple.com/library/archive/documentation/MusicAudio/Reference/CAFSpec/CAF_spec/CAF_spec.html
-fn decode_caf(bytes: &[u8]) -> Result<Sample> {
+fn decode_caf(bytes: &[u8], stop: Option<&AtomicBool>) -> Result<Sample> {
     ensure!(
         bytes.get(..8) == Some(b"caff\0\x01\0\0"),
         "Unsupported or truncated CAF header"
@@ -175,6 +193,7 @@ fn decode_caf(bytes: &[u8]) -> Result<Sample> {
     let mut description = None;
     let mut pcm = None;
     while at < bytes.len() {
+        check_cancel(stop)?;
         let header = bytes
             .get(at..at + 12)
             .context("Truncated CAF chunk header")?;
@@ -274,7 +293,10 @@ fn decode_caf(bytes: &[u8]) -> Result<Sample> {
     );
     let mut interleaved = Vec::new();
     interleaved.try_reserve_exact(count)?;
-    for sample in pcm.chunks_exact(width) {
+    for (index, sample) in pcm.chunks_exact(width).enumerate() {
+        if index.is_multiple_of(4096) {
+            check_cancel(stop)?;
+        }
         let word = if little {
             sample
                 .iter()
@@ -470,12 +492,17 @@ fn metadata(bytes: &[u8]) -> Result<Metadata> {
 /// 256 MiB; metadata is limited to 2 MiB and 4096 chunks. Callers must also bound
 /// the total across assets. Undeclared lengths and partial decodes are rejected.
 pub fn decode(bytes: &[u8]) -> Result<Sample> {
+    decode_with_cancel(bytes, None)
+}
+
+pub(crate) fn decode_with_cancel(bytes: &[u8], stop: Option<&AtomicBool>) -> Result<Sample> {
+    check_cancel(stop)?;
     ensure!(
         !bytes.is_empty() && bytes.len() <= MEMORY_LIMIT,
         "Audio input exceeds memory limit or is empty"
     );
     if bytes.starts_with(b"caff") {
-        return decode_caf(bytes);
+        return decode_caf(bytes, stop);
     }
     let metadata = metadata(bytes)?;
     let mut encoded = bytes.to_vec();
@@ -515,7 +542,10 @@ pub fn decode(bytes: &[u8]) -> Result<Sample> {
         interleaved.try_reserve_exact(count)?;
         match spec.sample_format {
             hound::SampleFormat::Float => {
-                for value in reader.samples::<f32>() {
+                for (index, value) in reader.samples::<f32>().enumerate() {
+                    if index.is_multiple_of(4096) {
+                        check_cancel(stop)?;
+                    }
                     interleaved.push(value?);
                 }
             }
@@ -525,7 +555,10 @@ pub fn decode(bytes: &[u8]) -> Result<Sample> {
                     "Unsupported many-channel WAV integer depth"
                 );
                 let scale = 2f32.powi(i32::from(spec.bits_per_sample) - 1);
-                for value in reader.samples::<i32>() {
+                for (index, value) in reader.samples::<i32>().enumerate() {
+                    if index.is_multiple_of(4096) {
+                        check_cancel(stop)?;
+                    }
                     interleaved.push(value? as f32 / scale);
                 }
             }
@@ -589,6 +622,7 @@ pub fn decode(bytes: &[u8]) -> Result<Sample> {
     interleaved.try_reserve_exact(count)?;
     let mut buffer = None::<SampleBuffer<f32>>;
     loop {
+        check_cancel(stop)?;
         let packet = match format.next_packet() {
             Ok(packet) => packet,
             Err(AudioError::IoError(error)) if error.kind() == io::ErrorKind::UnexpectedEof => {
@@ -895,6 +929,18 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn cancellation_cause_does_not_reclassify_audio_errors() {
+        let stop = AtomicBool::new(false);
+        let error = decode_with_cancel(b"invalid", Some(&stop)).unwrap_err();
+        let default_error = decode(b"invalid").unwrap_err();
+        assert_eq!(error.to_string(), default_error.to_string());
+        stop.store(true, Ordering::Release);
+        assert!(!error.is::<LoadCancelled>());
+        assert!(decode_with_cancel(b"invalid", Some(&stop)).unwrap_err().is::<LoadCancelled>());
+        assert_eq!(decode(b"invalid").unwrap_err().to_string(), default_error.to_string());
     }
 
     #[test]
