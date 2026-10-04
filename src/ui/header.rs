@@ -407,8 +407,19 @@ pub fn root(cx: &Cx) -> String {
 pub fn save_multi_as(cx: &mut Cx, path: &std::path::Path) -> anyhow::Result<()> {
     let name = stem(&path.to_string_lossy());
     #[cfg(feature = "uvi")]
-    cx.p.capture_uvi_state(&mut cx.selection)?;
-    crate::plugin::SavedMulti::of(&name, &cx.selection).save(path)?;
+    let captured = if cx.selection.parts.iter().any(|part| part.uvi.is_some()) {
+        // Save the accepted snapshot without changing this frame's native bytes.
+        // Its normal merge can then retain a newer controller publication.
+        let mut selection = cx.selection.clone();
+        cx.p.capture_uvi_state(&mut selection)?;
+        Some(selection)
+    } else {
+        None
+    };
+    let selection = &cx.selection;
+    #[cfg(feature = "uvi")]
+    let selection = captured.as_ref().unwrap_or(selection);
+    crate::plugin::SavedMulti::of(&name, selection).save(path)?;
     cx.selection.multi = path.to_string_lossy().into_owned();
     cx.p.shared.libraries.rescan();
     Ok(())
