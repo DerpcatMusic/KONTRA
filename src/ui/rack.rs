@@ -593,7 +593,7 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     }
     // Which performance view shows, when the library has one of its own:
     // its original, that vectorized, or KONTRA's.
-    let view_el = super::perf_view::available(&cx.view.parts[slot]).then(|| {
+    let view_el = super::perf_view::available_for(cx, slot).then(|| {
         let mode = super::perf_view::shows(cx, slot);
         let id = format!("view-{slot}");
         let tip = format!("Performance view: {}", mode.label());

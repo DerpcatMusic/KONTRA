@@ -189,6 +189,24 @@ string dispatch, without lowering modulation cadence or admitting new DSP routes
 Authored functional and exact old/new result-bit verification accompanies this
 change; native bank sound equivalence remains a separate obligation.
 
+The original comparison contains 9,855 identical old/new outcomes: 9,846
+successful evaluations and nine admission errors. Four intended no-relative
+baseline witnesses omitted the explicit connection version and instead reached
+the existing legacy-connection rejection gate. They count as matching errors,
+not successful baseline reads. A corrected four-row supplement linked to the
+installed `0679223` production library supplies that version and passes exact
+physical Gain checks for `-0`, `0`, `0.8` and `2`. It does not call
+`control_updates`, compare a prior version or establish native scheduling.
+
+An authored connected Wave9 fixture also completed sixteen bounded calls to the
+original bipolar generator with static frequency and unit Depth. Its maximum
+raw control-point difference from the current production graph was approximately
+`3.1233e-7`. This is an isolated static control-point comparison. Non-unit Depth
+and unipolar arrays dispatch through separate original kernels that this fixture
+does not execute. Dynamic property/source-owner invalidation, native random
+context and the actual bank's complete modeled behavior remain unverified;
+this result does not justify changing global modulation cadence or Depth laws.
+
 ## VWinds performance-model fidelity boundary
 
 Acousticsamples describes VWinds as recorded samples combined with modeling

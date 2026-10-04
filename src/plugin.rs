@@ -668,7 +668,9 @@ pub struct Shared {
     #[cfg(feature = "uvi")]
     uvi_state_capture: Mutex<()>,
     #[cfg(feature = "uvi")]
-    uvi_edits: ArrayQueue<(usize, crate::uvi::worker::Stamp, crate::uvi::host::UiEdit)>,
+    uvi_edits: ArrayQueue<(usize, crate::uvi::worker::Stamp, u64, crate::uvi::host::UiEdit)>,
+    #[cfg(feature = "uvi")]
+    uvi_edit_sequence: Mutex<u64>,
     /// Persistence snapshots: the loader lends one per scripted slot, the audio thread fills it in place and returns it.
     snapshot_requests: ArrayQueue<(usize, u64, Box<PersistenceSnapshot>)>,
     /// Refreshed snapshots, and whether any value in them changed.
@@ -1069,6 +1071,8 @@ impl Default for Shared {
             uvi_state_capture: Mutex::new(()),
             #[cfg(feature = "uvi")]
             uvi_edits: ArrayQueue::new(256),
+            #[cfg(feature = "uvi")]
+            uvi_edit_sequence: Mutex::new(0),
             snapshot_requests: ArrayQueue::new(2 * RACK_SLOTS),
             snapshots: ArrayQueue::new(2 * RACK_SLOTS),
             live_requests: ArrayQueue::new(2 * RACK_SLOTS),
@@ -1700,14 +1704,25 @@ impl Shared {
         self.uvi_epoch.load(Ordering::Acquire)
     }
     #[cfg(feature = "uvi")]
-    pub(crate) fn edit_uvi(&self, slot: usize, stamp: crate::uvi::worker::Stamp, edit: crate::uvi::host::UiEdit) -> bool {
+    pub(crate) fn edit_uvi(&self, slot: usize, stamp: crate::uvi::worker::Stamp, edit: crate::uvi::host::UiEdit) -> Option<u64> {
         if stamp.epoch != self.uvi_epoch.load(Ordering::Acquire)
             || self.part(slot).is_none_or(|p| p.uvi_generation.load(Ordering::Acquire) != stamp.generation
                 || p.uvi_failed.load(Ordering::Acquire)
                 || p.uvi_part_generation.load(Ordering::Acquire) != p.generation.load(Ordering::Acquire)) {
-            return false;
+            return None;
         }
-        self.uvi_edits.push((slot, stamp, edit)).is_ok()
+        // GUI-only admission. The audio consumer never locks this mutex.
+        // Serialize ticket assignment with push so receipts follow actual FIFO
+        // order even if two editor callers interleave.
+        let mut sequence = self.uvi_edit_sequence.lock().unwrap_or_else(|p| p.into_inner());
+        let next = sequence.checked_add(1)?;
+        self.uvi_edits.push((slot, stamp, next, edit)).ok()?;
+        *sequence = next;
+        Some(next)
+    }
+    #[cfg(feature = "uvi")]
+    pub(crate) fn admitted_uvi_edit_sequence(&self) -> u64 {
+        *self.uvi_edit_sequence.lock().unwrap_or_else(|p| p.into_inner())
     }
     /// Publish visible script state on the editor thread, with a worker fallback
     /// after the editor closes. Neither caller may keep this guard while loading.
@@ -4291,13 +4306,13 @@ impl PluginLogic for Sampler {
                     }
                 }
             }
-            while let Some((slot, stamp, edit)) = p.shared.uvi_edits.pop() {
+            while let Some((slot, stamp, sequence, edit)) = p.shared.uvi_edits.pop() {
                 if let Some(audio) = s.uvi.get_mut(slot).and_then(Option::as_mut)
                     && (audio.epoch(), audio.generation()) == (stamp.epoch, stamp.generation)
                     && stamp.epoch == p.shared.uvi_epoch.load(Ordering::Acquire)
                     && audio.part_generation() == part_atoms(&s.shared_parts, &p.shared, slot).unwrap().generation.load(Ordering::Acquire) {
                     let frame = audio.slot().frame();
-                    if let Err(error) = audio.slot_mut().push_ui(edit) {
+                    if let Err(error) = audio.slot_mut().push_ui_tracked(edit, sequence) {
                         part_atoms(&s.shared_parts, &p.shared, slot).unwrap()
                             .record_uvi_failure(audio, error, uvi::FailureStage::UiEdit, frame);
                     }

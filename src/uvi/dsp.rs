@@ -179,6 +179,7 @@ pub struct OnePole {
     channels: usize,
     rate: f64,
     frequency: f64,
+    coefficient: Option<(u64, f32)>,
     highpass: bool,
     bypass: bool,
     lowpass: [f32; MAX_CHANNELS],
@@ -190,6 +191,7 @@ impl OnePole {
             channels: channels(channel_count)?,
             rate: rate(sample_rate)?,
             frequency: 1000.,
+            coefficient: None,
             highpass: false,
             bypass: false,
             lowpass: [0.; MAX_CHANNELS],
@@ -228,7 +230,18 @@ impl OnePole {
         if self.bypass {
             return Ok(());
         }
-        let a = 1. - (-std::f32::consts::TAU * self.frequency as f32 / self.rate as f32).exp();
+        // Rate is immutable per instance. Repeated control writes may retain
+        // the exact frequency; prepare its coefficient at the original call site.
+        let frequency = self.frequency.to_bits();
+        let a = if let Some((prepared, a)) = self.coefficient
+            && prepared == frequency
+        {
+            a
+        } else {
+            let a = 1. - (-std::f32::consts::TAU * self.frequency as f32 / self.rate as f32).exp();
+            self.coefficient = Some((frequency, a));
+            a
+        };
         for frame in frames {
             for (channel, sample) in frame[..self.channels].iter_mut().enumerate() {
                 let x = *sample;
@@ -352,6 +365,136 @@ impl TrackDelay {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Original per-call coefficient evaluation, independent of the cache.
+    fn onepole_reference_process(pole: &mut OnePole, frames: &mut [Frame]) {
+        if pole.bypass { return; }
+        let a = 1. - (-std::f32::consts::TAU * pole.frequency as f32 / pole.rate as f32).exp();
+        for frame in frames {
+            for (channel, sample) in frame[..pole.channels].iter_mut().enumerate() {
+                let x = *sample;
+                pole.lowpass[channel] += a * (x - pole.lowpass[channel]);
+                *sample = if pole.highpass { x - pole.lowpass[channel] } else { pole.lowpass[channel] };
+            }
+        }
+    }
+    fn onepole_assert_bits(actual: &[Frame], expected: &[Frame]) {
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
+        }
+    }
+    #[test]
+    fn onepole_cached_coefficient_matches_original_full_and_fragmented_bits() {
+        for rate in [8000., 44100., 48000., 96000., 192000.] {
+            for channels in [1, 2, 6, 12] {
+                let mut full = OnePole::new(channels, rate).unwrap();
+                let mut split = OnePole::new(channels, rate).unwrap();
+                let mut reference = OnePole::new(channels, rate).unwrap();
+                for (step, frequency) in [20., 1000., 1000., 20000., 1234.56789, 1234.56790, 1000.]
+                    .into_iter().enumerate()
+                {
+                    for pole in [&mut full, &mut split, &mut reference] {
+                        pole.set_parameter("Freq", frequency).unwrap();
+                        pole.set_parameter("Mode", (step % 2) as f64).unwrap();
+                        if step == 4 { pole.clear(); }
+                    }
+                    let source: [Frame; 33] = std::array::from_fn(|frame| {
+                        std::array::from_fn(|channel| match (frame + channel) % 6 {
+                            0 => 1., 1 => -0.5, 2 => 0., 3 => -0.,
+                            4 => f32::from_bits(1), _ => -f32::from_bits(1),
+                        })
+                    });
+                    let mut a = source;
+                    let mut b = source;
+                    let mut expected = source;
+                    full.process(&mut a).unwrap();
+                    for chunk in b.chunks_mut(if step % 2 == 0 { 1 } else { 7 }) {
+                        split.process(chunk).unwrap();
+                    }
+                    for chunk in expected.chunks_mut(1) {
+                        onepole_reference_process(&mut reference, chunk);
+                    }
+                    onepole_assert_bits(&a, &expected);
+                    onepole_assert_bits(&b, &expected);
+                    assert_eq!(full.lowpass.map(f32::to_bits), reference.lowpass.map(f32::to_bits));
+                    assert_eq!(split.lowpass.map(f32::to_bits), reference.lowpass.map(f32::to_bits));
+                    assert_eq!(full.coefficient.unwrap().0, frequency.to_bits());
+                }
+                for pole in [&mut full, &mut split, &mut reference] {
+                    pole.clear();
+                    pole.set_parameter("Mode", 0.).unwrap();
+                    pole.set_parameter("Freq", 20.).unwrap();
+                }
+                let source: [Frame; 33] = std::array::from_fn(|_| {
+                    std::array::from_fn(|channel| if channel % 2 == 0 {
+                        f32::from_bits(0x0040_0000)
+                    } else { -f32::from_bits(0x0040_0000) })
+                });
+                let mut a = source;
+                let mut b = source;
+                let mut expected = source;
+                full.process(&mut a).unwrap();
+                for frame in &mut b { split.process(std::slice::from_mut(frame)).unwrap(); }
+                for frame in &mut expected { onepole_reference_process(&mut reference, std::slice::from_mut(frame)); }
+                onepole_assert_bits(&a, &expected);
+                onepole_assert_bits(&b, &expected);
+                assert_eq!(full.lowpass.map(f32::to_bits), reference.lowpass.map(f32::to_bits));
+                assert_eq!(split.lowpass.map(f32::to_bits), reference.lowpass.map(f32::to_bits));
+            }
+        }
+    }
+    #[test]
+    fn onepole_coefficient_keeps_bypass_clear_empty_and_rejected_write_behavior() {
+        let mut actual = OnePole::new(6, 48000.).unwrap();
+        let mut reference = OnePole::new(6, 48000.).unwrap();
+        actual.set_parameter("Bypass", 1.).unwrap();
+        reference.set_parameter("Bypass", 1.).unwrap();
+        actual.process(&mut []).unwrap();
+        assert!(actual.coefficient.is_none());
+        for pole in [&mut actual, &mut reference] {
+            pole.set_parameter("Freq", 20.).unwrap();
+        }
+        let mut a = [[-0.; MAX_CHANNELS]];
+        let mut b = a;
+        actual.process(&mut a).unwrap();
+        onepole_reference_process(&mut reference, &mut b);
+        onepole_assert_bits(&a, &b);
+        assert!(actual.coefficient.is_none());
+        for pole in [&mut actual, &mut reference] { pole.set_parameter("Bypass", 0.).unwrap(); }
+        actual.process(&mut []).unwrap();
+        let prepared = actual.coefficient.unwrap();
+        assert_eq!(prepared.0, 20f64.to_bits());
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0., 0., 19.999, 20000.001] {
+            let a = actual.set_parameter("Freq", value).unwrap_err();
+            let b = reference.set_parameter("Freq", value).unwrap_err();
+            assert_eq!(a.to_string(), b.to_string());
+            assert_eq!(actual.parameter("Freq").unwrap().to_bits(), 20f64.to_bits());
+            assert_eq!(actual.coefficient.unwrap().0, prepared.0);
+            assert_eq!(actual.coefficient.unwrap().1.to_bits(), prepared.1.to_bits());
+        }
+        for (step, (frequency, bypass, clear)) in [
+            (20., 0., false), (20., 0., false), (20000., 1., false),
+            (1000., 1., true), (1000., 0., false), (1000., 0., true),
+        ].into_iter().enumerate() {
+            for pole in [&mut actual, &mut reference] {
+                pole.set_parameter("Freq", frequency).unwrap();
+                pole.set_parameter("Bypass", bypass).unwrap();
+                pole.set_parameter("Mode", (step % 2) as f64).unwrap();
+                if clear { pole.clear(); }
+            }
+            let before = actual.coefficient;
+            let mut a = [[if step == 0 { 1. } else { -0. }; MAX_CHANNELS]];
+            let mut b = a;
+            actual.process(&mut a).unwrap();
+            onepole_reference_process(&mut reference, &mut b);
+            onepole_assert_bits(&a, &b);
+            assert_eq!(actual.lowpass.map(f32::to_bits), reference.lowpass.map(f32::to_bits));
+            if bypass == 1. { assert_eq!(actual.coefficient, before); }
+            else { assert_eq!(actual.coefficient.unwrap().0, frequency.to_bits()); }
+        }
+    }
+
 
     #[test]
     fn gain_accepts_the_full_serialized_twelve_db_endpoint() {

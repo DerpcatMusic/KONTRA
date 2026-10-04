@@ -37,9 +37,21 @@ impl KeyColours {
 pub(crate) struct Published {
     pub stamp: Stamp,
     pub snapshots: Arc<Vec<UiSnapshot>>,
+    pub snapshot_boundaries: Arc<HashMap<NodeId, (u64, u64)>>,
     pub key_colours: Arc<KeyColours>,
     pub pictures: Arc<HashMap<String, Arc<Picture>>>,
     pub fonts: Arc<HashMap<String, moose::mui::mui::prelude::Font>>,
+}
+
+impl Published {
+    /// The actual snapshot boundary for this processor; another panel cannot
+    /// settle its optimistic edits. This is not a per-edit execution receipt.
+    pub(crate) fn snapshot_stamp(&self, processor: NodeId) -> Option<Stamp> {
+        self.snapshot_boundaries.get(&processor).map(|&(frame, _)| Stamp { frame, ..self.stamp })
+    }
+    pub(crate) fn snapshot_sequence(&self, processor: NodeId) -> Option<u64> {
+        self.snapshot_boundaries.get(&processor).map(|&(_, sequence)| sequence)
+    }
 }
 
 pub(super) struct Mailbox {
@@ -50,6 +62,7 @@ pub(super) struct Mailbox {
     next: usize,
     pending: Option<(u64, NodeId)>,
     snapshots: Arc<Vec<UiSnapshot>>,
+    snapshot_boundaries: Arc<HashMap<NodeId, (u64, u64)>>,
     key_colours: Arc<KeyColours>,
     pictures: Arc<HashMap<String, Arc<Picture>>>,
     fonts: Arc<HashMap<String, moose::mui::mui::prelude::Font>>,
@@ -60,14 +73,19 @@ pub(super) struct Mailbox {
 impl Mailbox {
     pub fn new(activation: Stamp, assets: Option<UiAssets>) -> Self {
         Self { activation, processors: Vec::new(), discovered: false, initialized: false, next: 0, pending: None,
-            snapshots: Arc::default(), key_colours: Arc::default(), pictures: Arc::default(), fonts: Arc::default(),
+            snapshots: Arc::default(), snapshot_boundaries: Arc::default(), key_colours: Arc::default(), pictures: Arc::default(), fonts: Arc::default(),
             published_frame: activation.frame, assets }
     }
 
-    /// Reuse immutable owned data on an unchanged reply, while advancing its
-    /// acknowledgement frame: the editor needs that frame to settle an edit
-    /// whose callback rejected or restored the same visible value.
-    fn accept(&mut self, stamp: Stamp, snapshot: UiSnapshot) -> Option<Arc<Published>> {
+    /// Retain the frame and dispatched-edit receipt with this exact panel.
+    /// An unchanged reply can settle a rejected/reverted edit; neither another
+    /// panel's receipt nor frame advancement alone can settle this panel.
+    fn accept(&mut self, stamp: Stamp, snapshot: UiSnapshot, applied_ui_sequence: u64) -> Option<Arc<Published>> {
+        let processor = snapshot.processor;
+        if self.snapshot_boundaries.get(&processor)
+            .is_some_and(|&(frame, sequence)| stamp.frame < frame || applied_ui_sequence < sequence) { return None; }
+        let boundary_changed = self.snapshot_boundaries.get(&processor)
+            .is_none_or(|&old| old != (stamp.frame, applied_ui_sequence));
         let position = self.snapshots.iter().position(|s| s.processor == snapshot.processor);
         let changed = position.is_none_or(|index| self.snapshots[index] != snapshot);
         if changed {
@@ -81,9 +99,11 @@ impl Mailbox {
             self.pictures = self.assets.as_mut().map(|a| a.refresh(&self.snapshots)).unwrap_or_default();
             self.fonts = self.assets.as_ref().map(UiAssets::fonts).unwrap_or_default();
         }
-        if !changed && stamp.frame <= self.published_frame { return None; }
-        self.published_frame = stamp.frame;
-        Some(Arc::new(Published { stamp, snapshots: self.snapshots.clone(), key_colours: self.key_colours.clone(),
+        if !changed && !boundary_changed { return None; }
+        if boundary_changed { Arc::make_mut(&mut self.snapshot_boundaries).insert(processor, (stamp.frame, applied_ui_sequence)); }
+        self.published_frame = self.published_frame.max(stamp.frame);
+        Some(Arc::new(Published { stamp: Stamp { frame: self.published_frame, ..stamp },
+            snapshots: self.snapshots.clone(), snapshot_boundaries: self.snapshot_boundaries.clone(), key_colours: self.key_colours.clone(),
             pictures: self.pictures.clone(), fonts: self.fonts.clone() }))
     }
 
@@ -97,12 +117,13 @@ impl Mailbox {
         {
             self.initialized = true;
             self.snapshots = snapshots.clone();
+            self.snapshot_boundaries = Arc::new(snapshots.iter().map(|s| (s.processor, (stamp.frame, 0))).collect());
             self.key_colours = Arc::new(KeyColours::merge(&self.snapshots));
             self.pictures = self.assets.as_mut().map(|a| a.refresh(&self.snapshots)).unwrap_or_default();
             if matches!(worker.status(), Status::Failed | Status::Stopped) { return None; }
             self.fonts = self.assets.as_ref().map(UiAssets::fonts).unwrap_or_default();
             self.published_frame = stamp.frame;
-            return Some(Arc::new(Published { stamp, snapshots, key_colours: self.key_colours.clone(), pictures: self.pictures.clone(), fonts: self.fonts.clone() }));
+            return Some(Arc::new(Published { stamp, snapshots, snapshot_boundaries: self.snapshot_boundaries.clone(), key_colours: self.key_colours.clone(), pictures: self.pictures.clone(), fonts: self.fonts.clone() }));
         }
         if worker.status() != Status::Ready { return None; }
         if !self.discovered {
@@ -110,7 +131,7 @@ impl Mailbox {
             self.discovered = true;
             if self.processors.is_empty() {
                 return Some(Arc::new(Published { stamp: self.activation,
-                    snapshots: Arc::default(), key_colours: Arc::default(), pictures: Arc::default(), fonts: Arc::default() }));
+                    snapshots: Arc::default(), snapshot_boundaries: Arc::default(), key_colours: Arc::default(), pictures: Arc::default(), fonts: Arc::default() }));
             }
         }
         let mut published = None;
@@ -121,7 +142,7 @@ impl Mailbox {
                 && reply.stamp.generation == self.activation.generation
                 && let Ok(snapshot) = reply.snapshot
             {
-                published = self.accept(reply.stamp, snapshot);
+                published = self.accept(reply.stamp, snapshot, reply.applied_ui_sequence);
             }
         }
         if self.pending.is_none() && !self.processors.is_empty() {
@@ -146,19 +167,64 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_replies_share_data_but_keep_fresh_edit_acknowledgements() {
+    fn unchanged_replies_share_data_but_keep_fresh_processor_frames() {
         let activation = Stamp { epoch: 7, generation: 11, frame: 0 };
         let mut mailbox = Mailbox::new(activation, None);
         mailbox.processors = vec![3];
-        let first = mailbox.accept(activation, snapshot(3, 720.)).unwrap();
+        let first = mailbox.accept(activation, snapshot(3, 720.), 0).unwrap();
         let next = Stamp { frame: 256, ..activation };
-        let acknowledged = mailbox.accept(next, snapshot(3, 720.)).unwrap();
-        assert_eq!(acknowledged.stamp, next, "A reverted/unchanged edit must still settle");
+        let acknowledged = mailbox.accept(next, snapshot(3, 720.), 0).unwrap();
+        assert_eq!(acknowledged.stamp, next, "An unchanged reply retains its fresh panel frame; receipt0 does not settle an edit");
         assert!(Arc::ptr_eq(&first.snapshots, &acknowledged.snapshots));
         assert!(Arc::ptr_eq(&first.key_colours, &acknowledged.key_colours));
         assert!(Arc::ptr_eq(&first.pictures, &acknowledged.pictures));
         assert!(Arc::ptr_eq(&first.fonts, &acknowledged.fonts));
-        assert!(mailbox.accept(next, snapshot(3, 720.)).is_none());
+        assert!(mailbox.accept(next, snapshot(3, 720.), 0).is_none());
+    }
+
+    #[test]
+    fn panel_boundaries_advance_independently_even_at_the_same_global_frame() {
+        let activation = Stamp { epoch: 7, generation: 11, frame: 0 };
+        let mut mailbox = Mailbox::new(activation, None);
+        mailbox.processors = vec![3, 4];
+        mailbox.accept(activation, snapshot(3, 720.), 0).unwrap();
+        let original = mailbox.accept(activation, snapshot(4, 720.), 0).unwrap();
+        let next = Stamp { frame: 256, ..activation };
+        let other_panel = mailbox.accept(next, snapshot(4, 720.), 0).unwrap();
+        assert_eq!(other_panel.stamp, next);
+        assert_eq!(other_panel.snapshot_stamp(3), Some(activation));
+        assert_eq!(other_panel.snapshot_stamp(4), Some(next));
+        assert_eq!(other_panel.snapshot_stamp(99), None);
+        let selected_panel = mailbox.accept(next, snapshot(3, 720.), 0).unwrap();
+        assert_eq!(selected_panel.snapshot_stamp(3), Some(next),
+            "unchanged panel refresh still publishes at an already-seen global frame");
+        assert!(Arc::ptr_eq(&original.snapshots, &selected_panel.snapshots));
+        assert_eq!(original.snapshot_stamp(3), Some(activation), "old readers stay immutable");
+        assert_eq!(other_panel.snapshot_stamp(3), Some(activation));
+        assert!(mailbox.accept(next, snapshot(3, 720.), 0).is_none());
+        assert!(mailbox.accept(activation, snapshot(3, 360.), 0).is_none(), "older panel cannot replace newer content");
+        assert_eq!(mailbox.snapshots[0].root.width, 720.);
+    }
+
+    #[test]
+    fn dispatched_receipts_stay_with_the_exact_snapshot_even_when_values_revert() {
+        let activation = Stamp { epoch: 7, generation: 11, frame: 0 };
+        let mut mailbox = Mailbox::new(activation, None);
+        mailbox.processors = vec![3, 4];
+        mailbox.accept(activation, snapshot(3, 720.), 0).unwrap();
+        let initial = mailbox.accept(activation, snapshot(4, 720.), 0).unwrap();
+        let later = Stamp { frame: 256, ..activation };
+        let other = mailbox.accept(later, snapshot(4, 720.), 8).unwrap();
+        assert_eq!(other.snapshot_sequence(3), Some(0));
+        assert_eq!(other.snapshot_sequence(4), Some(8));
+        let dispatched = mailbox.accept(later, snapshot(3, 720.), 8).unwrap();
+        assert_eq!(dispatched.snapshot_sequence(3), Some(8));
+        assert_eq!(initial.snapshot_sequence(3), Some(0));
+        assert_eq!(other.snapshot_sequence(3), Some(0));
+        assert!(Arc::ptr_eq(&initial.snapshots, &dispatched.snapshots));
+        assert!(mailbox.accept(Stamp { frame: 512, ..activation }, snapshot(3, 360.), 7).is_none(),
+            "a backwards receipt cannot replace a newer panel even at a newer frame");
+        assert_eq!(mailbox.snapshots[0].root.width, 720.);
     }
 
     #[test]
@@ -166,12 +232,12 @@ mod tests {
         let activation = Stamp { epoch: 7, generation: 11, frame: 0 };
         let mut mailbox = Mailbox::new(activation, None);
         mailbox.processors = vec![3, 4];
-        let first = mailbox.accept(activation, snapshot(3, 720.)).unwrap();
-        let changed = mailbox.accept(activation, snapshot(3, 360.)).unwrap();
+        let first = mailbox.accept(activation, snapshot(3, 720.), 0).unwrap();
+        let changed = mailbox.accept(activation, snapshot(3, 360.), 0).unwrap();
         assert!(!Arc::ptr_eq(&first.snapshots, &changed.snapshots));
         assert_eq!(first.snapshots[0].root.width, 720.);
         assert_eq!(changed.snapshots[0].root.width, 360.);
-        assert!(mailbox.accept(activation, snapshot(4, 720.)).is_some());
+        assert!(mailbox.accept(activation, snapshot(4, 720.), 0).is_some());
         assert_eq!(mailbox.snapshots.iter().map(|s| s.processor).collect::<Vec<_>>(), [3, 4]);
     }
 
@@ -198,14 +264,14 @@ mod tests {
         let activation = Stamp { epoch: 7, generation: 11, frame: 0 };
         let mut mailbox = Mailbox::new(activation, None);
         mailbox.processors = vec![3, 4];
-        let old = mailbox.accept(activation, keys(3, &[(58, "#00FFFFFF"), (0, "red")])).unwrap();
-        let conflict = mailbox.accept(activation, keys(4, &[(58, "#00000000")])).unwrap();
+        let old = mailbox.accept(activation, keys(3, &[(58, "#00FFFFFF"), (0, "red")]), 0).unwrap();
+        let conflict = mailbox.accept(activation, keys(4, &[(58, "#00000000")]), 0).unwrap();
         assert_eq!(conflict.key_colours.conflicts, 1);
         assert!(!conflict.key_colours.colours.contains_key(&58));
-        let reset = mailbox.accept(activation, keys(4, &[])).unwrap();
+        let reset = mailbox.accept(activation, keys(4, &[]), 0).unwrap();
         assert_eq!(reset.key_colours.conflicts, 0);
         assert_eq!(reset.key_colours.colours[&58], "#00FFFFFF");
-        let cleared = mailbox.accept(activation, keys(3, &[])).unwrap();
+        let cleared = mailbox.accept(activation, keys(3, &[]), 0).unwrap();
         assert!(cleared.key_colours.colours.is_empty());
         assert_eq!(old.key_colours.colours[&0], "red", "an owned old publication stays immutable");
         assert_eq!(old.key_colours.colours[&58], "#00FFFFFF");
@@ -229,6 +295,7 @@ mod tests {
         let published = mailbox.poll(&worker).unwrap();
         assert_eq!(published.snapshots.len(), 1);
         assert_eq!(published.snapshots[0].widgets.len(), 1);
+        assert_eq!(published.snapshot_stamp(published.snapshots[0].processor), Some(worker.activation_stamp()));
         worker.stop();
         assert!(mailbox.poll(&worker).is_none());
         std::fs::remove_file(path).unwrap();

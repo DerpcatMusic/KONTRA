@@ -4,6 +4,7 @@
 //! are not emulated here. Typed numeric edits still use the raw value domain.
 use super::theme::*;
 use crate::artwork::Picture;
+use crate::library::ViewMode;
 use crate::uvi::{
     host::{UiEdit, UiEditValue, UiKind, UiModifiers, UiSnapshot, UiValue, UiWidget},
     ui_assets::{key, strip_key},
@@ -18,7 +19,10 @@ use std::{
 #[derive(Default)]
 pub struct State {
     activation: Option<(u64, u64, usize)>,
-    pending: Option<(u32, UiEditValue, u64)>,
+    // One latest local value per authored widget (host snapshot limit: 4096).
+    // The u64 is the exact admitted queue ticket, not a guessed frame.
+    // All accepted callbacks remain in their original ordered queue.
+    pending: HashMap<u32, (UiEditValue, u64)>,
     menu: Option<u32>,
     menu_path: Vec<String>,
     table_cell: Option<(u32, usize)>,
@@ -33,14 +37,15 @@ impl State {
     pub fn set_interactive(&mut self, interactive: bool) {
         self.read_only = !interactive;
         if self.read_only {
-            self.pending = None;
+            self.pending.clear();
             self.menu = None;
             self.menu_path.clear();
             self.table_cell = None;
         }
     }
 
-    fn adopt(&mut self, current: Stamp, captured: Stamp, processor: usize) -> bool {
+    fn adopt(&mut self, current: Stamp, captured: Stamp, processor: usize,
+        (admitted_sequence, applied_sequence): (u64, u64)) -> bool {
         let activation = Some((current.epoch, current.generation, processor));
         if self.activation != activation {
             *self = Self {
@@ -49,18 +54,16 @@ impl State {
                 ..Self::default()
             };
         }
-        if !same_activation(current, captured) || captured.frame > current.frame {
-            self.pending = None;
+        if !same_activation(current, captured) || captured.frame > current.frame
+            || applied_sequence > admitted_sequence {
+            self.pending.clear();
             self.menu = None;
             self.menu_path.clear();
             return false;
         }
-        if self
-            .pending
-            .is_some_and(|(_, _, frame)| captured.frame > frame)
-        {
-            self.pending = None;
-        }
+        // This receipt was captured with this processor's actual snapshot,
+        // after initial dispatch or nonfatal rejection of the admitted edit.
+        self.pending.retain(|_, (_, sequence)| applied_sequence < *sequence);
         true
     }
 }
@@ -270,10 +273,11 @@ fn numbox_readout(
     value: f64,
     pictures: &HashMap<String, Arc<Picture>>,
     scale: f64,
+    vector: bool,
 ) {
     let style = &widget.style;
     if style.font_size.is_none() && style.align.is_none() && style.text_colour.is_none()
-        && style.background_image.is_none() && style.background_colour.is_none() {
+        && style.background_image.is_none() && style.background_colour.is_none() && !vector {
         return;
     }
     if field.payload().semantics.as_ref()
@@ -281,9 +285,13 @@ fn numbox_readout(
         return;
     }
     if let Some(child) = field.children_mut().first_mut() {
-        let mut readout = styled_text(widget, &value_text(widget, value), scale, Justify::Start)
-            .flex(1).w(Len::Pct(100.)).h(Len::Pct(100.));
-        if matches!(widget.style.align.as_deref(),
+        let mut readout = if vector {
+            row![caption(value_text(widget, value)).text_size(TEXT * scale).fill(Role::Ink).lines(1).min_w(0)]
+                .align(Align::Center).min_w(0)
+        } else {
+            styled_text(widget, &value_text(widget, value), scale, Justify::Start)
+        }.flex(1).w(Len::Pct(100.)).h(Len::Pct(100.));
+        if vector || matches!(widget.style.align.as_deref(),
             None | Some("centred" | "centre" | "center" | "left" | "right")) {
             // Font leading can exceed the authored box; center the ink in
             // that box rather than allowing the text's minimum height to grow it.
@@ -293,6 +301,10 @@ fn numbox_readout(
         *child = readout;
     }
     *field = field.clone().pad(0).radius(0.).align(Align::Stretch);
+    if vector {
+        *field = field.clone().fill(Role::Field);
+        return;
+    }
     let image = widget.style.background_image.as_ref()
         .and_then(|art| pictures.get(&key(art)))
         .and_then(|picture| picture.frames.first()).cloned();
@@ -339,10 +351,7 @@ fn widget_tooltip(el: &mut El, widget: &UiWidget) {
 }
 
 fn shown_value(state: &State, widget: &UiWidget) -> Option<UiEditValue> {
-    state
-        .pending
-        .filter(|(id, ..)| *id == widget.id)
-        .map(|(_, value, _)| value)
+    state.pending.get(&widget.id).map(|&(value, _)| value)
 }
 
 fn numeric(state: &State, widget: &UiWidget) -> f64 {
@@ -362,7 +371,7 @@ fn send_edit(
     widget: &UiWidget,
     value: UiEditValue,
     mods: Mods,
-    send: &mut impl FnMut(Stamp, UiEdit) -> bool,
+    send: &mut impl FnMut(Stamp, UiEdit) -> Option<u64>,
 ) {
     let edit = UiEdit {
         processor: snapshot.processor,
@@ -374,8 +383,8 @@ fn send_edit(
             shift_down: mods.shift,
         },
     };
-    if send(stamp, edit) {
-        state.pending = Some((widget.id, value, stamp.frame));
+    if let Some(sequence) = send(stamp, edit).filter(|&sequence| sequence != 0) {
+        state.pending.insert(widget.id, (value, sequence));
     }
 }
 
@@ -422,12 +431,15 @@ pub fn view(
     owner: usize,
     current: Stamp,
     captured: Stamp,
+    receipts: (u64, u64),
     snapshot: &UiSnapshot,
     pictures: &HashMap<String, Arc<Picture>>,
     fonts: &HashMap<String, Font>,
-    mut send: impl FnMut(Stamp, UiEdit) -> bool,
+    mode: ViewMode,
+    mut send: impl FnMut(Stamp, UiEdit) -> Option<u64>,
 ) -> El {
-    let admitted = state.adopt(current, captured, snapshot.processor);
+    let vector = mode == ViewMode::Vectorized;
+    let admitted = state.adopt(current, captured, snapshot.processor, receipts);
     let initializing = current.epoch == captured.epoch && captured.generation > current.generation;
     if (!admitted && !initializing) || snapshot.widgets.len() > 4096 {
         return caption("Loading instrument controls…")
@@ -524,7 +536,7 @@ pub fn view(
                             number_text(*range.start(), widget.integer),
                             number_text(*range.end(), widget.integer)));
                     scale_control(&mut field, ui, scale);
-                    numbox_readout(&mut field, widget, value, pictures, scale);
+                    numbox_readout(&mut field, widget, value, pictures, scale, vector);
                     widget_tooltip(&mut field, widget);
                     let mut content = if widget.style.show_label != Some(false) {
                         row![
@@ -536,7 +548,7 @@ pub fn view(
                     } else {
                         field
                     };
-                    widget_font(&mut content, widget, fonts);
+                    if !vector { widget_font(&mut content, widget, fonts); }
                     layers.push(
                         content
                             .size(w, h)
@@ -586,7 +598,9 @@ pub fn view(
                 } else {
                     (value - range.start()) / (range.end() - range.start())
                 };
-                let image = picture(widget, pictures, value, response.held, response.hovered);
+                let image = if vector { None } else {
+                    picture(widget, pictures, value, response.held, response.hovered)
+                };
                 let skinned = image.is_some();
                 let face = if let Some(image) = image {
                     block(w, h).fill(Fill::Image(image, Fit::Contain))
@@ -652,14 +666,19 @@ pub fn view(
                     .id(id.clone())
             }
             UiKind::Button | UiKind::OnOffButton => {
+                // An image-only button loses its legend with its skin. Use the
+                // existing authored accessible name in the native button face.
+                let words = if vector && button_text(widget).is_empty() {
+                    label
+                } else { button_text(widget) };
                 let on = match shown_value(state, widget) {
                     Some(UiEditValue::Boolean(on)) => on,
                     _ => matches!(widget.value, Some(UiValue::Boolean(true))),
                 };
                 let (hit, mut el) = if widget.kind == UiKind::Button {
-                    action(ui, id.as_str(), button_text(widget), false)
+                    action(ui, id.as_str(), words, false)
                 } else {
-                    latch(ui, id.as_str(), button_text(widget), label, on)
+                    latch(ui, id.as_str(), words, label, on)
                 };
                 scale_control(&mut el, ui, scale);
                 if usable && hit {
@@ -688,7 +707,11 @@ pub fn view(
                 let (hit, mut el) = dropdown(ui, id.as_str(), selected, label);
                 scale_control(&mut el, ui, scale);
                 if let Some(selected_text) = el.children_mut().first_mut() {
-                    *selected_text = styled_text(widget, selected, scale, Justify::Start).flex(1);
+                    *selected_text = if vector {
+                        caption(selected).text_size(TEXT * scale).fill(Role::Ink).lines(1).min_w(0)
+                    } else {
+                        styled_text(widget, selected, scale, Justify::Start)
+                    }.flex(1);
                 }
                 if let Some(caret) = el.children_mut().get_mut(1) {
                     *caret = glyph(Icon::Down, TEXT * scale, secondary());
@@ -805,9 +828,12 @@ pub fn view(
                     *range.start(),
                     (range.end() - range.start()).max(f64::EPSILON),
                 );
-                let slider_ink = colour(widget.style.slider_colour.as_deref())
-                    .unwrap_or_else(|| value_ink(0.));
-                let edge_ink = colour(widget.style.inner_edge_colour.as_deref());
+                let slider_ink = if vector { value_ink(0.) } else {
+                    colour(widget.style.slider_colour.as_deref()).unwrap_or_else(|| value_ink(0.))
+                };
+                let edge_ink = if vector { Some(accent().with_alpha(0.2)) } else {
+                    colour(widget.style.inner_edge_colour.as_deref())
+                };
                 let edges = widget.style.draw_inner_edge.unwrap_or(true);
                 canvas(move |size| {
                     let columns = (size.width.ceil() as usize)
@@ -864,7 +890,10 @@ pub fn view(
                 .tip("This display is unavailable.")
                 .lines(1),
         };
-        if !matches!(widget.kind, UiKind::Knob | UiKind::Slider)
+        let native = vector && matches!(widget.kind,
+            UiKind::Knob | UiKind::Slider | UiKind::NumBox | UiKind::Menu |
+            UiKind::Button | UiKind::OnOffButton | UiKind::Table);
+        if !native && !matches!(widget.kind, UiKind::Knob | UiKind::Slider)
             && let Some(image) = picture(
                 widget,
                 pictures,
@@ -899,11 +928,11 @@ pub fn view(
             } else {
                 stack![image, control.size(w, h)]
             };
-        } else if let Some(fill) = colour(widget.style.background_colour.as_deref()) {
+        } else if !native && let Some(fill) = colour(widget.style.background_colour.as_deref()) {
             control = control.fill(fill);
         }
         widget_tooltip(&mut control, widget);
-        widget_font(&mut control, widget, fonts);
+        if !native { widget_font(&mut control, widget, fonts); }
         layers.push(
             control
                 .size(w, h)
@@ -920,7 +949,7 @@ pub fn view(
             colour(snapshot.root.background_colour.as_deref())
                 .map_or(Fill::from(Role::Surface), Fill::from),
         )
-        .named("Instrument controls")
+        .named(if vector { "Vectorized instrument controls" } else { "Instrument controls" })
         .id(format!("uvi-stage-{owner}"))
 }
 
@@ -988,11 +1017,12 @@ pub fn popup(
     owner: usize,
     current: Stamp,
     captured: Stamp,
+    receipts: (u64, u64),
     snapshot: &UiSnapshot,
     window: Size,
-    mut send: impl FnMut(Stamp, UiEdit) -> bool,
+    mut send: impl FnMut(Stamp, UiEdit) -> Option<u64>,
 ) -> Option<El> {
-    if state.read_only || !state.adopt(current, captured, snapshot.processor) {
+    if state.read_only || !state.adopt(current, captured, snapshot.processor, receipts) {
         return None;
     }
     let widget = snapshot.widgets.iter().find(|w| Some(w.id) == state.menu)?;
@@ -1064,7 +1094,7 @@ pub fn popup(
                     .find(|entry| entry.branch && entry.label == state.menu_path[depth - 1]);
                 let parent = parent.map(|entry| menu_item_id(&id, depth - 1, &entry));
                 state.menu_path.truncate(depth - 1);
-                let panel = popup(ui, state, owner, current, captured, snapshot, window, send);
+                let panel = popup(ui, state, owner, current, captured, receipts, snapshot, window, send);
                 if let Some(parent) = parent {
                     ui.focus(parent);
                 }
@@ -1295,18 +1325,32 @@ mod tests {
         input: Input,
         edits: &mut Vec<(Stamp, UiEdit)>,
     ) {
+        tick_mode(ui, state, snapshot, current, captured, input, ViewMode::Original, edits);
+    }
+    fn tick_mode(
+        ui: &mut Ui,
+        state: &mut State,
+        snapshot: &UiSnapshot,
+        current: Stamp,
+        captured: Stamp,
+        input: Input,
+        mode: ViewMode,
+        edits: &mut Vec<(Stamp, UiEdit)>,
+    ) {
         let panel = view(
             ui,
             state,
             0,
             current,
             captured,
+            (u64::MAX, 0),
             snapshot,
             &HashMap::new(),
             &HashMap::new(),
+            mode,
             |s, e| {
                 edits.push((s, e));
-                true
+                Some(edits.len() as u64)
             },
         );
         let overlay = popup(
@@ -1315,11 +1359,12 @@ mod tests {
             0,
             current,
             captured,
+            (u64::MAX, 0),
             snapshot,
             Size::new(680., 340.),
             |s, e| {
                 edits.push((s, e));
-                true
+                Some(edits.len() as u64)
             },
         );
         let mut layers = vec![panel.at(20., 20.)];
@@ -1356,9 +1401,9 @@ mod tests {
         let mut edits = Vec::new();
         for room in [320., 960., 640.] {
             let mut render = |ui: &mut Ui, state: &mut State, input: Input| {
-                let panel = view(ui, state, 0, current, current, &snapshot,
-                    &HashMap::new(), &HashMap::new(), |stamp, edit| {
-                        edits.push((stamp, edit)); true
+                let panel = view(ui, state, 0, current, current, (u64::MAX, 0), &snapshot,
+                    &HashMap::new(), &HashMap::new(), ViewMode::Original, |stamp, edit| {
+                        edits.push((stamp, edit)); Some(edits.len() as u64)
                     });
                 ui.frame(col![panel].align(Align::Start).size(room, 288. * room / 640.).id("part-0"),
                     Some(Size::new(room, 288. * room / 640.)), input, 1. / 60.).unwrap();
@@ -1391,9 +1436,9 @@ mod tests {
         fn render(ui: &mut Ui, state: &mut State, snapshot: &UiSnapshot,
                   current: Stamp, room: f64, input: Input,
                   edits: &mut Vec<(Stamp, UiEdit)>) {
-            let panel = view(ui, state, 0, current, current, snapshot,
-                &HashMap::new(), &HashMap::new(), |stamp, edit| {
-                    edits.push((stamp, edit)); true
+            let panel = view(ui, state, 0, current, current, (u64::MAX, 0), snapshot,
+                &HashMap::new(), &HashMap::new(), ViewMode::Original, |stamp, edit| {
+                    edits.push((stamp, edit)); Some(edits.len() as u64)
                 });
             ui.frame(col![panel].align(Align::Start)
                 .size(room, snapshot.root.height * room / snapshot.root.width).id("part-0"),
@@ -1488,13 +1533,123 @@ mod tests {
             Input { keys: vec![KeyPress { key: Key::Space, mods: Mods::default() }], ..Input::default() },
             &mut edits);
         assert!(edits.is_empty());
-        assert!(state.pending.is_none() && state.menu.is_none());
+        assert!(state.pending.is_empty() && state.menu.is_none());
         let mut stale = captured;
         stale.epoch -= 1;
         tick(&mut ui, &mut state, &snapshot, current, stale, Input::default(), &mut edits);
         assert!(ui.scene().unwrap().surface("uvi-stage-0").is_none());
         tick(&mut ui, &mut state, &snapshot, captured, captured, Input::default(), &mut edits);
         assert!(ui.scene().unwrap().surface("uvi-stage-0").is_some());
+    }
+
+    #[test]
+    fn admitted_edits_keep_each_widgets_feedback_without_coalescing_callbacks() {
+        let snapshot = authored();
+        let a = &snapshot.widgets[1];
+        let b = &snapshot.widgets[2];
+        let initial = stamp(4);
+        let mut state = State::default();
+        assert!(state.adopt(initial, initial, snapshot.processor, (3, 0)));
+        let mut calls = Vec::new();
+        let mut send = |at, edit| { calls.push((at, edit)); Some(calls.len() as u64) };
+        send_edit(&mut state, initial, &snapshot, a, UiEditValue::Number(0.8), Mods::default(), &mut send);
+        let later = Stamp { frame: 256, ..initial };
+        send_edit(&mut state, later, &snapshot, b, UiEditValue::Number(0.6), Mods::default(), &mut send);
+        send_edit(&mut state, later, &snapshot, a, UiEditValue::Number(0.9), Mods::default(), &mut send);
+        assert_eq!(calls.len(), 3, "local latest values do not replace native callbacks");
+        assert_eq!(calls.iter().map(|(_, e)| e.widget).collect::<Vec<_>>(), [a.id, b.id, a.id]);
+        assert_eq!(numeric(&state, a), 0.9);
+        assert_eq!(numeric(&state, b), 0.6, "another accepted widget keeps its local value");
+        send_edit(&mut state, later, &snapshot, a, UiEditValue::Number(0.1), Mods::default(), &mut |_, _| None);
+        assert_eq!(numeric(&state, a), 0.9, "rejected admission cannot replace local feedback");
+        // A different panel can advance the global frontier while this panel
+        // retains its earlier snapshot. Stage and popup pass the local frame.
+        let frontier = Stamp { frame: 512, ..initial };
+        assert!(state.adopt(frontier, initial, snapshot.processor, (3, 0)));
+        assert_eq!(numeric(&state, a), 0.9);
+        assert_eq!(numeric(&state, b), 0.6);
+        assert!(state.adopt(frontier, later, snapshot.processor, (3, 0)));
+        assert_eq!(state.pending.len(), 2, "a snapshot without the dispatched ticket cannot settle a value");
+        assert!(state.adopt(frontier, frontier, snapshot.processor, (3, 3)));
+        assert!(state.pending.is_empty(), "captured dispatch receipts resume native values");
+    }
+
+    #[test]
+    fn future_frames_cannot_settle_edits_without_their_captured_dispatch_receipt() {
+        let snapshot = authored();
+        let widget = &snapshot.widgets[1];
+        let initial = stamp(4);
+        let mut state = State::default();
+        assert!(state.adopt(initial, initial, snapshot.processor, (9, 0)));
+        send_edit(&mut state, initial, &snapshot, widget, UiEditValue::Number(0.8), Mods::default(), &mut |_, _| Some(9));
+        let later = Stamp { frame: 512, ..initial };
+        assert!(state.adopt(later, later, snapshot.processor, (9, 0)));
+        assert_eq!(numeric(&state, widget), 0.8, "capture before queued packet cannot flick the control back");
+        assert!(state.adopt(later, later, snapshot.processor, (9, 8)));
+        assert_eq!(numeric(&state, widget), 0.8);
+        send_edit(&mut state, later, &snapshot, widget, UiEditValue::Number(0.2), Mods::default(), &mut |_, _| Some(0));
+        assert_eq!(numeric(&state, widget), 0.8, "zero is not an admitted GUI receipt");
+        assert!(state.adopt(later, later, snapshot.processor, (9, 9)));
+        assert!(state.pending.is_empty());
+        send_edit(&mut state, later, &snapshot, widget, UiEditValue::Number(0.6), Mods::default(), &mut |_, _| Some(10));
+        assert!(state.adopt(later, later, snapshot.processor, (10, 9)));
+        assert_eq!(numeric(&state, widget), 0.6, "previous edit receipt cannot settle a newer gesture");
+        assert!(!state.adopt(later, later, snapshot.processor, (10, 11)), "future receipt is invalid");
+        assert!(state.pending.is_empty());
+    }
+
+    #[test]
+    fn stable_panel_memo_keeps_keyboard_feedback_before_worker_dispatch() {
+        let snapshot = authored();
+        let current = stamp(4);
+        let mut ui = super::super::theme::ui();
+        let mut state = State::default();
+        let mut calls = Vec::new();
+        let render = |ui: &mut Ui, state: &mut State, calls: &mut Vec<UiEdit>, input: Input| {
+            let panel = ui.memo("receipt-panel", 0u64, |ui| view(ui, state, 0, current, current,
+                (u64::MAX, 0), &snapshot, &HashMap::new(), &HashMap::new(), ViewMode::Vectorized,
+                |_, edit| { calls.push(edit); Some(calls.len() as u64) }));
+            ui.frame(col![panel].size(680., 340.).id("part-0"), Some(Size::new(680., 340.)), input, 1./60.).unwrap();
+        };
+        for _ in 0..3 { render(&mut ui, &mut state, &mut calls, Input::default()); }
+        ui.focus(identity(0, current, &snapshot, 2));
+        for _ in 0..2 {
+            render(&mut ui, &mut state, &mut calls, Input {keys: vec![KeyPress {key: Key::Up, mods: Mods::default()}], ..Input::default()});
+            render(&mut ui, &mut state, &mut calls, Input::default());
+        }
+        assert_eq!(calls.len(), 2, "MUI input dirtiness rebuilds the stable memo for each gesture");
+        let (UiEditValue::Number(a), UiEditValue::Number(b)) = (calls[0].value, calls[1].value) else { panic!("numeric gestures") };
+        assert!(b > a, "second gesture builds on local feedback while receipt remains zero");
+        assert_eq!(numeric(&state, &snapshot.widgets[1]), b);
+    }
+
+    #[test]
+    fn panel_local_feedback_is_cleared_on_retirement_and_activation_changes() {
+        let snapshot = authored();
+        let initial = stamp(4);
+        let mut state = State::default();
+        assert!(state.adopt(initial, initial, snapshot.processor, (3, 0)));
+        let widget = &snapshot.widgets[1];
+        let edit = |state: &mut State| send_edit(state, initial, &snapshot, widget,
+            UiEditValue::Number(0.8), Mods::default(), &mut |_, _| Some(1));
+        edit(&mut state);
+        state.set_interactive(false);
+        assert!(state.pending.is_empty());
+        state.set_interactive(true);
+        edit(&mut state);
+        let replaced = Stamp { generation: initial.generation + 1, ..initial };
+        assert!(!state.adopt(replaced, initial, snapshot.processor, (3, 0)));
+        assert!(state.pending.is_empty());
+        assert!(state.adopt(replaced, replaced, snapshot.processor, (3, 0)));
+        state.pending.insert(widget.id, (UiEditValue::Number(0.8), 0));
+        assert!(state.adopt(replaced, replaced, snapshot.processor + 1, (3, 0)));
+        assert!(state.pending.is_empty(), "same widget id in another processor cannot inherit a value");
+        state.pending.insert(widget.id, (UiEditValue::Number(0.8), 0));
+        let future = Stamp { frame: 1, ..replaced };
+        assert!(!state.adopt(replaced, future, snapshot.processor + 1, (3, 0)));
+        assert!(state.pending.is_empty());
+        let new_epoch = Stamp { epoch: replaced.epoch + 1, ..replaced };
+        assert!(!state.adopt(new_epoch, replaced, snapshot.processor + 1, (3, 0)));
     }
 
     #[test]
@@ -1508,7 +1663,7 @@ mod tests {
             tick(&mut ui,&mut state,&snapshot,current,current,Input::default(),&mut edits);
         }
         state.menu = Some(5);
-        state.pending = Some((2,UiEditValue::Number(0.8),0));
+        state.pending.insert(2, (UiEditValue::Number(0.8),0));
         state.table_cell = Some((9,2));
         state.set_interactive(false);
         for (widget,key) in [(2,Key::Up),(3,Key::Right),(4,Key::Up),(5,Key::Enter),
@@ -1521,7 +1676,7 @@ mod tests {
             assert!(ui.scene().unwrap().surface(&id).is_some());
         }
         assert!(ui.scene().unwrap().surface("uvi-stage-0").is_some());
-        assert!(state.pending.is_none() && state.menu.is_none() && state.table_cell.is_none());
+        assert!(state.pending.is_empty() && state.menu.is_none() && state.table_cell.is_none());
         assert!(edits.is_empty(),"owned retained controls cannot submit even when send accepts");
         let mut reset=current; reset.epoch+=1;
         tick(&mut ui,&mut state,&snapshot,reset,current,Input::default(),&mut edits);
@@ -1576,6 +1731,130 @@ mod tests {
     }
 
     #[test]
+    fn vectorized_controls_drop_skins_but_keep_geometry_artwork_and_gestures() {
+        use crate::uvi::host::{UiArtwork, UiStrip};
+        use moose::mui::mui::scene::{Layer, Paint};
+        let mut snapshot = authored();
+        let skin = Arc::new(moose::mui::mui::scene::Image::rgba(
+            2, 2, [220, 30, 40, 255].repeat(4)).unwrap());
+        let decoration = Arc::new(moose::mui::mui::scene::Image::rgba(
+            2, 2, [30, 40, 50, 255].repeat(4)).unwrap());
+        let skin_art = UiArtwork { path: "skin.png".into(), bank_root: false };
+        let decor_art = UiArtwork { path: "decor.png".into(), bank_root: false };
+        let strip = UiStrip { artwork: skin_art.clone(), frames: 2, horizontal: false };
+        let picture = |frames| Arc::new(Picture { frames, stretch: [false; 2], atlas: None });
+        let pictures = HashMap::from([
+            (key(&skin_art), picture(vec![skin.clone()])),
+            (strip_key(&strip), picture(vec![skin.clone(), skin.clone()])),
+            (key(&decor_art), picture(vec![decoration.clone()])),
+        ]);
+        snapshot.root.background = Some(decor_art.clone());
+        snapshot.widgets[0].style.background_image = Some(decor_art);
+        for widget in &mut snapshot.widgets {
+            if matches!(widget.kind, UiKind::Knob | UiKind::Slider | UiKind::NumBox |
+                UiKind::Menu | UiKind::Button | UiKind::OnOffButton | UiKind::Table) {
+                widget.style.normal_image = Some(skin_art.clone());
+                widget.style.background_image = Some(skin_art.clone());
+                widget.style.font = Some("bank-face.ttf".into());
+                widget.style.show_label = Some(false);
+            }
+        }
+        snapshot.widgets[1].style.strip_image = Some(strip);
+        snapshot.widgets[8].style.slider_colour = Some("#000000".into());
+        snapshot.widgets[8].style.inner_edge_colour = Some("#000000".into());
+        let fonts = HashMap::from([("bank-face.ttf".into(), Font::new(NOTO_SANS).unwrap())]);
+        let current = stamp(4);
+        fn render(ui: &mut Ui, state: &mut State, snapshot: &UiSnapshot, current: Stamp,
+            mode: ViewMode, room: f64, pictures: &HashMap<String, Arc<Picture>>,
+            fonts: &HashMap<String, Font>, input: Input, edits: &mut Vec<(Stamp, UiEdit)>) {
+            let window = Size::new(room, room * 0.75);
+            let panel = view(ui, state, 0, current, current, (u64::MAX, 0), snapshot, pictures, fonts, mode,
+                |stamp, edit| { edits.push((stamp, edit)); Some(edits.len() as u64) });
+            let overlay = popup(ui, state, 0, current, current, (u64::MAX, 0), snapshot, window,
+                |stamp, edit| { edits.push((stamp, edit)); Some(edits.len() as u64) });
+            let mut layers = vec![col![panel].w(room).id("part-0")];
+            layers.extend(overlay);
+            ui.frame(stack(layers).size(window.width, window.height), Some(window), input, 1./60.).unwrap();
+        }
+        for mode in [ViewMode::Original, ViewMode::Vectorized, ViewMode::Kontra] {
+            let mut ui = super::super::theme::ui();
+            let mut state = State::default();
+            let mut edits = Vec::new();
+            for room in [320., 960., 640.] {
+                for _ in 0..3 { render(&mut ui, &mut state, &snapshot, current, mode, room,
+                    &pictures, &fonts, Input::default(), &mut edits); }
+                let scene = ui.scene().unwrap();
+                let painted = |image: &Arc<moose::mui::mui::scene::Image>| scene.paint.iter().any(|p|
+                    matches!(&p.paint, Paint::Image { image: owned, .. } if owned == image));
+                assert_eq!(painted(&skin), mode != ViewMode::Vectorized);
+                assert!(painted(&decoration), "decorative authored art remains in every mode");
+                let table = identity(0, current, &snapshot, 9);
+                let black = colour(Some("#000000")).unwrap();
+                assert_eq!(scene.paint.iter().any(|p| p.key.as_str() == table
+                    && matches!(p.layer, Layer::Draw(_)) && p.paint == Paint::Solid(black)),
+                    mode != ViewMode::Vectorized, "native table ink ignores author black-on-white skin ink");
+                let scale = room / snapshot.root.width;
+                for id in [2, 3, 4, 5, 6, 7, 9, 13] {
+                    let field = scene.surface(&identity(0, current, &snapshot, id)).unwrap().frame;
+                    let bounds = snapshot.widgets[id as usize - 1].absolute_bounds;
+                    assert!((field.x - bounds.x * scale).abs() < 0.01);
+                    assert!((field.y - bounds.y * scale).abs() < 0.01);
+                    assert!((field.size.width - bounds.width * scale).abs() < 0.01);
+                    assert!((field.size.height - bounds.height * scale).abs() < 0.01);
+                }
+                assert!(scene.surface(&identity(0, current, &snapshot, 11)).is_none());
+            }
+            assert!(edits.is_empty(), "mode/resize changes never submit edits");
+            let knob = identity(0, current, &snapshot, 2);
+            ui.focus(knob);
+            for input in [Input { keys: vec![KeyPress { key: Key::Up, mods: Mods::default() }],
+                ..Input::default() }, Input::default()] {
+                render(&mut ui, &mut state, &snapshot, current, mode, 640.,
+                    &pictures, &fonts, input, &mut edits);
+            }
+            assert!(edits.iter().any(|(stamp, edit)| *stamp == current && edit.widget == 2 &&
+                matches!(edit.value, UiEditValue::Number(value) if value > 0.375 && value <= 1.)));
+            let button = identity(0, current, &snapshot, 7);
+            let field = ui.scene().unwrap().surface(&button).unwrap().frame;
+            let at = Point::new(field.x + field.size.width / 2., field.y + field.size.height / 2.);
+            for input in [PointerInput { pos: Some(at), buttons: Buttons::PRIMARY,
+                ..PointerInput::default() }.into(), PointerInput { pos: Some(at),
+                ..PointerInput::default() }.into(), Input::default()] {
+                render(&mut ui, &mut state, &snapshot, current, mode, 640.,
+                    &pictures, &fonts, input, &mut edits);
+            }
+            assert!(edits.iter().any(|(stamp, edit)| *stamp == current && edit.widget == 7 &&
+                matches!(edit.value, UiEditValue::Push)));
+            let menu = identity(0, current, &snapshot, 5);
+            ui.focus(menu.clone());
+            for input in [Input { keys: vec![KeyPress { key: Key::Enter, mods: Mods::default() }],
+                ..Input::default() }, Input::default(), Input::default()] {
+                render(&mut ui, &mut state, &snapshot, current, mode, 640.,
+                    &pictures, &fonts, input, &mut edits);
+            }
+            let choice = format!("{menu}-menu-3");
+            ui.focus(choice);
+            for input in [Input { keys: vec![KeyPress { key: Key::Enter, mods: Mods::default() }],
+                ..Input::default() }, Input::default()] {
+                render(&mut ui, &mut state, &snapshot, current, mode, 640.,
+                    &pictures, &fonts, input, &mut edits);
+            }
+            assert!(edits.iter().any(|(stamp, edit)| *stamp == current && edit.widget == 5 &&
+                matches!(edit.value, UiEditValue::Number(3.))));
+            let before = edits.len();
+            state.set_interactive(false);
+            ui.focus(identity(0, current, &snapshot, 2));
+            for input in [Input { keys: vec![KeyPress { key: Key::Up, mods: Mods::default() }],
+                ..Input::default() }, Input::default()] {
+                render(&mut ui, &mut state, &snapshot, current, mode, 640.,
+                    &pictures, &fonts, input, &mut edits);
+            }
+            assert_eq!(edits.len(), before, "read-only admission is independent of view mode");
+        }
+        assert!(matches!(snapshot.widgets[1].value, Some(UiValue::Number(0.375))));
+    }
+
+    #[test]
     fn authored_panel_scales_up_and_down_without_changing_coordinates() {
         let mut snapshot = authored();
         let menu = &mut snapshot.widgets[4];
@@ -1614,10 +1893,12 @@ mod tests {
                     0,
                     current,
                     current,
+                    (u64::MAX, 0),
                     &snapshot,
                     &pictures,
                     &fonts,
-                    |_, _| false,
+                    ViewMode::Original,
+                    |_, _| None,
                 );
                 ui.frame(
                     col![panel]
@@ -1819,77 +2100,79 @@ mod tests {
 
     #[test]
     fn numbox_double_click_types_raw_values_and_commits_or_cancels() {
-        for display in [None, Some("Authored display override")] {
-            for finish in ["unchanged", "enter", "blur", "escape", "unit_text"] {
-                let mut snapshot = authored();
-                let widget = &mut snapshot.widgets[3];
-                widget.value = Some(UiValue::Number(0.375));
-                widget.min = Some(0.);
-                widget.max = Some(1.);
-                widget.integer = false;
-                widget.style.show_label = Some(false);
-                widget.style.unit = Some(2.);
-                widget.style.display_text = display.map(str::to_owned);
-                widget.style.tooltip = Some("Authored numeric help".into());
-                let current = stamp(4);
-                let id = identity(0, current, &snapshot, 4);
-                let mut ui = super::super::theme::ui();
-                let mut state = State::default();
-                let mut edits = Vec::new();
-                for _ in 0..3 {
-                    tick(&mut ui,&mut state,&snapshot,current,current,Input::default(),&mut edits);
+        for mode in [ViewMode::Original, ViewMode::Vectorized] {
+            for display in [None, Some("Authored display override")] {
+                for finish in ["unchanged", "enter", "blur", "escape", "unit_text"] {
+                    let mut snapshot = authored();
+                    let widget = &mut snapshot.widgets[3];
+                    widget.value = Some(UiValue::Number(0.375));
+                    widget.min = Some(0.);
+                    widget.max = Some(1.);
+                    widget.integer = false;
+                    widget.style.show_label = Some(false);
+                    widget.style.unit = Some(2.);
+                    widget.style.display_text = display.map(str::to_owned);
+                    widget.style.tooltip = Some("Authored numeric help".into());
+                    let current = stamp(4);
+                    let id = identity(0, current, &snapshot, 4);
+                    let mut ui = super::super::theme::ui();
+                    let mut state = State::default();
+                    let mut edits = Vec::new();
+                    for _ in 0..3 {
+                        tick_mode(&mut ui,&mut state,&snapshot,current,current,Input::default(),mode,&mut edits);
+                    }
+                    let bounds = ui.scene().unwrap().surface(&id).unwrap().frame;
+                    assert_eq!(ui.scene().unwrap().surface(&id).unwrap().tip.as_deref(),
+                        Some("Authored numeric help — Enter a number from 0 to 1."));
+                    let pos = Point::new(bounds.x+0.5*bounds.size.width,
+                        bounds.y+0.5*bounds.size.height);
+                    let mut double_clicked = false;
+                    for down in [true,false,true,false] {
+                        let pointer = PointerInput {pos:Some(pos),
+                            buttons:if down {Buttons::PRIMARY} else {Buttons::default()},
+                            ..PointerInput::default()};
+                        tick_mode(&mut ui,&mut state,&snapshot,current,current,pointer.into(),mode,&mut edits);
+                        double_clicked |= ui.get(&id).double_clicked;
+                    }
+                    tick_mode(&mut ui,&mut state,&snapshot,current,current,Input::default(),mode,&mut edits);
+                    assert!(double_clicked, "a genuine double click opened the field");
+                    assert!(ui.focus_is_text());
+                    let field = ui.focus_key().unwrap().to_owned();
+                    let field_value = |ui:&Ui| match &ui.scene().unwrap().surface(&field)
+                        .unwrap().semantics.as_ref().unwrap().role {
+                        A11y::TextInput {value,..} => value.to_string(),
+                        _ => panic!("editing the actual numeric text field"),
+                    };
+                    assert_eq!(field_value(&ui), "0.375", "display override cannot seed typed input");
+                    assert!(edits.is_empty());
+                    if finish != "unchanged" {
+                        let input = Input {text:if finish == "unit_text" {"37.5 %"} else {"0.625"}.into(),
+                            ..Input::default()};
+                        tick_mode(&mut ui,&mut state,&snapshot,current,current,input,mode,&mut edits);
+                        tick_mode(&mut ui,&mut state,&snapshot,current,current,Input::default(),mode,&mut edits);
+                        assert_eq!(field_value(&ui), if finish == "unit_text" {"37.5 %"} else {"0.625"});
+                    }
+                    let input = if finish == "blur" {
+                        PointerInput {pos:Some(Point::new(10.,10.)),buttons:Buttons::PRIMARY,
+                            ..PointerInput::default()}.into()
+                    } else {
+                        Input {keys:vec![KeyPress {key:if finish == "escape" {Key::Escape} else {Key::Enter},
+                            mods:Mods::default()}],..Input::default()}
+                    };
+                    tick_mode(&mut ui,&mut state,&snapshot,current,current,input,mode,&mut edits);
+                    for _ in 0..2 {
+                        tick_mode(&mut ui,&mut state,&snapshot,current,current,Input::default(),mode,&mut edits);
+                    }
+                    assert!(!ui.focus_is_text());
+                    assert!(ui.scene().unwrap().surface(&field).is_none());
+                    if matches!(finish, "enter" | "blur") {
+                        assert_eq!(edits.len(),1);
+                        assert!(matches!(edits[0].1.value,UiEditValue::Number(v) if v==0.625));
+                    } else {
+                        assert!(edits.is_empty(), "unchanged, cancelled, or unit-suffixed text cannot edit");
+                    }
+                    assert!(matches!(snapshot.widgets[3].value,Some(UiValue::Number(0.375))));
                 }
-                let bounds = ui.scene().unwrap().surface(&id).unwrap().frame;
-                assert_eq!(ui.scene().unwrap().surface(&id).unwrap().tip.as_deref(),
-                    Some("Authored numeric help — Enter a number from 0 to 1."));
-                let pos = Point::new(bounds.x+0.5*bounds.size.width,
-                    bounds.y+0.5*bounds.size.height);
-                let mut double_clicked = false;
-                for down in [true,false,true,false] {
-                    let pointer = PointerInput {pos:Some(pos),
-                        buttons:if down {Buttons::PRIMARY} else {Buttons::default()},
-                        ..PointerInput::default()};
-                    tick(&mut ui,&mut state,&snapshot,current,current,pointer.into(),&mut edits);
-                    double_clicked |= ui.get(&id).double_clicked;
-                }
-                tick(&mut ui,&mut state,&snapshot,current,current,Input::default(),&mut edits);
-                assert!(double_clicked, "a genuine double click opened the field");
-                assert!(ui.focus_is_text());
-                let field = ui.focus_key().unwrap().to_owned();
-                let field_value = |ui:&Ui| match &ui.scene().unwrap().surface(&field)
-                    .unwrap().semantics.as_ref().unwrap().role {
-                    A11y::TextInput {value,..} => value.to_string(),
-                    _ => panic!("editing the actual numeric text field"),
-                };
-                assert_eq!(field_value(&ui), "0.375", "display override cannot seed typed input");
-                assert!(edits.is_empty());
-                if finish != "unchanged" {
-                    let input = Input {text:if finish == "unit_text" {"37.5 %"} else {"0.625"}.into(),
-                        ..Input::default()};
-                    tick(&mut ui,&mut state,&snapshot,current,current,input,&mut edits);
-                    tick(&mut ui,&mut state,&snapshot,current,current,Input::default(),&mut edits);
-                    assert_eq!(field_value(&ui), if finish == "unit_text" {"37.5 %"} else {"0.625"});
-                }
-                let input = if finish == "blur" {
-                    PointerInput {pos:Some(Point::new(10.,10.)),buttons:Buttons::PRIMARY,
-                        ..PointerInput::default()}.into()
-                } else {
-                    Input {keys:vec![KeyPress {key:if finish == "escape" {Key::Escape} else {Key::Enter},
-                        mods:Mods::default()}],..Input::default()}
-                };
-                tick(&mut ui,&mut state,&snapshot,current,current,input,&mut edits);
-                for _ in 0..2 {
-                    tick(&mut ui,&mut state,&snapshot,current,current,Input::default(),&mut edits);
-                }
-                assert!(!ui.focus_is_text());
-                assert!(ui.scene().unwrap().surface(&field).is_none());
-                if matches!(finish, "enter" | "blur") {
-                    assert_eq!(edits.len(),1);
-                    assert!(matches!(edits[0].1.value,UiEditValue::Number(v) if v==0.625));
-                } else {
-                    assert!(edits.is_empty(), "unchanged, cancelled, or unit-suffixed text cannot edit");
-                }
-                assert!(matches!(snapshot.widgets[3].value,Some(UiValue::Number(0.375))));
             }
         }
     }
@@ -1925,8 +2208,8 @@ mod tests {
             let mut ui = super::super::theme::ui();
             let mut state = State::default();
             for _ in 0..3 {
-                let panel = view(&mut ui,&mut state,0,current,current,&snapshot,&pictures,&fonts,
-                    |_,_|panic!("readout cannot submit edits"));
+                let panel = view(&mut ui,&mut state,0,current,current,(u64::MAX,0),&snapshot,&pictures,&fonts,
+                    ViewMode::Original, |_,_|panic!("readout cannot submit edits"));
                 ui.frame(col![panel].size(720.*scale,480.*scale).id("part-0"),
                     Some(Size::new(720.*scale,480.*scale)),Input::default(),1./60.).unwrap();
             }
@@ -2113,7 +2396,7 @@ mod tests {
             Input::default(),
             &mut edits,
         );
-        assert!(state.pending.is_none() && state.menu.is_none());
+        assert!(state.pending.is_empty() && state.menu.is_none());
         assert!(ui.scene().unwrap().surface(&id(6)).is_none());
         assert_eq!(edits.len(), before);
         tick(

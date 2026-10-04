@@ -1,8 +1,54 @@
 # Player backend boundary
 
-This document describes optional UVI loading, live audio and instrument UI integration in the isolated `codex/uvi-latest-integration` working tree following `510446d`/`0a56891`, reviewed on 2026-10-04. The current integration is a source candidate, not a released binary or a completed real-time performance proof. The broader common backend contract below remains proposed. No complete Falcon parity or support for unimplemented SFZ, Sine, Koda or other backends is claimed.
+This document describes optional UVI loading, live audio and instrument UI integration in the isolated `codex/uvi-latest-integration` working tree following `510446d`/`0a56891`, reviewed on 2026-10-04. The original integration audit and its line references below describe that checkpoint. Clean `0679223` is now installed as a local Linux checkpoint; installation does not establish a completed real-time performance proof. The broader common backend contract below remains proposed. No complete Falcon parity or support for unimplemented SFZ, Sine, Koda or other backends is claimed.
 
 The user's concurrent core/MIDI refactor remains separately owned and unmerged. Its precision, protocol and lifecycle requirements inform this boundary; its dirty source is not an accepted API snapshot.
+
+## Current inspection and sample preview boundary
+
+At `0679223`, UVI publishes an immutable initial sample mapping and source-owned
+script key declarations, with activation/source fences. These support authored
+key ranges, layer inspection and scoped PCM/voice readouts. They do not establish
+live script-mutated mapping, round-robin roles, signal roles or sounding ranges.
+Identical key/velocity extents and duplicated sample paths are insufficient to
+infer any of those roles.
+
+The Mapping design prototype has a separate synthetic sample preview. It is not
+the installed plugin's sample audition implementation. The existing plugin
+audition request sends musical events through the selected instrument: it can
+advance its Lua state and round-robin selection. Reusing that operation for a
+button labelled sample preview would therefore be misleading.
+
+A production raw-sample preview needs its own prepared PCM owner and audition
+voice, with selection/source-generation checks, off-thread resource preparation,
+bounded audio handoff and acknowledged retirement. Both Kontakt and UVI should
+use this shared operation while keeping their native sample resolution and
+playback laws explicit. It must not invoke instrument scripts, advance musical
+round-robin state, or borrow the mutable native renderer. Such a shared audition
+operation is not yet implemented here.
+
+### Control feedback and presentation follow-up
+
+The follow-up source enables the existing Original/Vectorized selector for an
+owned current UVI performance panel. Vectorized replaces supported interactive
+skins with theme controls while retaining authored layout, decorative artwork,
+visibility, ranges, units and native callbacks. Original and Kontra retain the
+previous UVI renderer; this is not a separate rebuilt Kontra panel. Unsupported
+XY, waveform and meter displays remain explicit.
+
+GUI queue admission now returns a checked FIFO ticket. Only GUI callers lock
+ticket assignment and queue insertion together; the audio callback carries a
+scalar in its fixed packet. The worker publishes a processed ticket with the
+exact processor snapshot. Optimistic values settle from that snapshot's ticket,
+not from a newer audio frame or another processor's refresh. Receipt means the
+setter/initial callback dispatch returned or was nonfatally rejected. It does
+not mean a yielded callback finished, PCM became audible, or later worker work
+cannot fail. Callback order and the native scheduling clock remain unchanged.
+
+This corrects feedback ownership; it does not remove worker buffering latency
+or establish faster Lua/DSP processing. UI snapshot polling still uses the
+existing serialized loader cadence. Focused functional and visual verification
+must accompany adoption of this source follow-up.
 
 The 2026-10-04 read-only main audit found a concrete porting requirement: current
 `In` carries `midi::Velocity`, newer release/controller forms and physical ports

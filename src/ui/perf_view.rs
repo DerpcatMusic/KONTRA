@@ -263,6 +263,20 @@ pub fn available(v: &crate::plugin::PartView) -> bool {
         && (i.background_color.is_some() || v.wallpaper.is_some() || !v.pictures.is_empty()))
 }
 
+/// The selected source's authored view, fenced by the UVI activation owner.
+/// Keep Kontakt availability unchanged; stale native snapshots are not a view
+/// for a different bank, restored state, sample rate or part generation.
+pub fn available_for(cx: &Cx, slot: usize) -> bool {
+    #[cfg(feature = "uvi")]
+    if cx.selection.parts.get(slot).is_some_and(|p| p.uvi.is_some()) {
+        return super::instrument::native_panel(cx, slot).is_some_and(|(published, _)|
+            published.snapshots.iter().rev().find(|snapshot| snapshot.root.performance_view)
+                .is_some_and(|snapshot| snapshot.root.width > 0. && snapshot.root.height > 0.
+                    && !snapshot.widgets.is_empty()));
+    }
+    cx.view.parts.get(slot).is_some_and(available)
+}
+
 /// The mode a part showing `view` ([`crate::plugin::Part::view`]) is in,
 /// given the app's default and whether the library has a view of its own.
 pub fn mode(view: u8, default: ViewMode, available: bool) -> ViewMode {
@@ -291,7 +305,7 @@ pub fn code(mode: Option<ViewMode>) -> u8 {
 /// The mode `slot` shows now.
 pub fn shows(cx: &Cx, slot: usize) -> ViewMode {
     let view = cx.selection.parts.get(slot).map_or(0, |p| p.view);
-    mode(view, cx.settings.view_mode, available(&cx.view.parts[slot]))
+    mode(view, cx.settings.view_mode, available_for(cx, slot))
 }
 
 /// The width `slot`'s view has, as last laid out.
