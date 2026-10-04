@@ -7,7 +7,7 @@
 use super::dsp::{Frame, MAX_CHANNELS};
 use anyhow::{Result, ensure};
 
-pub const FIDELITY_DIAGNOSTIC: &str = "CombFilter audio and physical control-point dispatch are native-verified at 32/44.1/48/96 kHz; connected-source binding and broader matrix/control generation remain unverified";
+pub const FIDELITY_DIAGNOSTIC: &str = "CombFilter audio, physical control-point dispatch and bounded ConstantModulation held-Value adapter are native-verified at 32/44.1/48/96 kHz; graph/property lifecycle and broader matrix/control generation remain unverified";
 
 /// The measured audio kernel and physical control-point dispatcher. This does not implement the
 /// surrounding Falcon control-variable lifecycle.
@@ -205,17 +205,72 @@ impl ConstantFrequencyControl {
             };
             self.target_hz = Self::physical(lookahead);
         }
+        self.write_freq_points(frames, points);
+        Ok(())
+    }
+    /// Consume held physical Value points from an upstream property manager.
+    /// The upstream manager owns its RC state; this leaf owns source and Freq RC.
+    /// Dynamic Value dispatch invokes the native source law at every 32-frame span.
+    pub fn next_value_points_into(
+        &mut self,
+        values: &[f32],
+        frames: usize,
+        value_is_static: bool,
+        points: &mut [f32],
+    ) -> Result<()> {
+        ensure!(
+            frames <= 4096,
+            "Unmeasured ConstantModulation control-block length"
+        );
+        ensure!(
+            values.len() == frames.div_ceil(32) && points.len() == values.len(),
+            "Invalid held Value/Freq point lengths"
+        );
+        if frames == 0 {
+            return Ok(());
+        }
+        for &value in values {
+            ensure!(
+                value.is_finite() && (0. ..=1.).contains(&value),
+                "Invalid held ConstantModulation Value"
+            );
+        }
+        self.validate(values[0], frames)?;
+        if value_is_static {
+            ensure!(
+                values.iter().all(|&v| v == values[0]),
+                "Inconsistent static Value points"
+            );
+            return self.next_points_into(values[0], frames, points);
+        }
+        self.cold = false;
+        let mut future = self.source;
+        for (&value, start) in values.iter().zip((0..frames).step_by(32)) {
+            if ((value - self.source) * self.alpha32).abs() < 1e-7 {
+                self.source = value;
+                future = value;
+            } else {
+                let (current, next) =
+                    self.ramp(self.source, value, (frames - start).min(32), false, &mut []);
+                self.source = current;
+                future = next;
+            }
+        }
+        self.target_hz = Self::physical(future);
+        self.write_freq_points(frames, points);
+        Ok(())
+    }
+    fn write_freq_points(&mut self, frames: usize, points: &mut [f32]) {
         let target = Self::normalized(self.target_hz);
         if self.normalized_freq == target {
             points.fill(self.target_hz);
-            return Ok(());
+            return;
         }
         let (current, _) = self.ramp(self.normalized_freq, target, frames, true, points);
         self.normalized_freq = current;
         for point in points {
             *point = Self::physical(*point);
         }
-        Ok(())
     }
     fn validate(&self, value: f32, frames: usize) -> Result<()> {
         ensure!(
@@ -377,6 +432,51 @@ mod tests {
         cold.next_points_into(0.1, 32, &mut output).unwrap();
         assert_eq!(output, [39.905247]);
     }
+    #[test]
+    fn native_value_property_held_points_feed_source_and_frequency_rc() {
+        for &(rate, blocks) in VALUE_FIXTURES {
+            let mut control = ConstantFrequencyControl::new(rate, 0.1, 39.905247).unwrap();
+            let mut output = [0.; 128];
+            control
+                .next_value_points_into(&[0.1; 96], 3072, true, &mut output[..96])
+                .unwrap();
+            for &(frames, values, expected) in blocks {
+                let held: Vec<_> = values.iter().map(|&v| f32::from_bits(v)).collect();
+                control
+                    .next_value_points_into(&held, frames, false, &mut output[..expected.len()])
+                    .unwrap();
+                for (&got, &bits) in output.iter().zip(expected) {
+                    assert_eq!(got.to_bits(), bits, "rate={rate},frames={frames}");
+                }
+            }
+        }
+        let mut cold = ConstantFrequencyControl::new(48_000, 0.1, 39.905247).unwrap();
+        let mut point = [123.];
+        assert!(
+            cold.next_value_points_into(&[0.1, f32::NAN], 64, false, &mut [0.; 2])
+                .is_err()
+        );
+        assert!(
+            cold.next_value_points_into(&[0.1], usize::MAX, false, &mut point)
+                .is_err()
+        );
+        assert!(
+            cold.next_value_points_into(&[0.1, 0.2], 64, true, &mut [0.; 2])
+                .is_err()
+        );
+        assert_eq!(point, [123.]);
+        cold.next_value_points_into(&[0.1], 32, true, &mut point)
+            .unwrap();
+        assert_eq!(point, [39.905247]);
+    }
+    type ValueBlock = (usize, &'static [u32], &'static [u32]);
+    #[rustfmt::skip]
+    const VALUE_FIXTURES: &[(u32, &[ValueBlock])] = &[
+        (32000, &[(17, &[0x3dcccccd], &[0x421f9ef9]), (65, &[0x3dfba7c9, 0x3e265a6d, 0x3e4aa03d], &[0x421f9ef9, 0x4221b97f, 0x4223a185]), (33, &[0x3e4bb228, 0x3e6c0cc2], &[0x4223b001, 0x4226decd])]),
+        (44100, &[(17, &[0x3dcccccd], &[0x421f9ef9]), (65, &[0x3def12ca, 0x3e15df69, 0x3e31dd24], &[0x421f9ef9, 0x42207c07, 0x4221490f]), (33, &[0x3e32b3ea, 0x3e4c7728], &[0x42214f38, 0x4222ab13])]),
+        (48000, &[(17, &[0x3dcccccd], &[0x421f9ef9]), (65, &[0x3dec57c0, 0x3e123adb, 0x3e2c4a14], &[0x421f9ef9, 0x42204d20, 0x4220ef89]), (33, &[0x3e2d12b7, 0x3e45385a], &[0x4220f46e, 0x42220913])]),
+        (96000, &[(17, &[0x3dcccccd], &[0x421f9ef9]), (65, &[0x3ddcb9df, 0x3df9de9d, 0x3e0afa56], &[0x421f9ef9, 0x421fb6d1, 0x421fcdce]), (33, &[0x3e0b688e, 0x3e18ed28], &[0x421fce83, 0x421ff6b1])]),
+    ];
     #[rustfmt::skip]
     const CONSTANT_FIXTURES: &[(u32, &[u32])] = &[
         (32000, &[0x421f9ef9, 0x423d4c67, 0x425c8318, 0x427cca82, 0x428ed5c8, 0x429f5ad8, 0x42afc14c, 0x42bfdc54, 0x42cf861a, 0x42d919cd, 0x42f0f186, 0x43043f8c, 0x43049cd2, 0x43116111]),
