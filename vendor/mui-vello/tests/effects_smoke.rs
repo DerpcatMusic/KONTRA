@@ -418,16 +418,28 @@ fn damaged_at(
 }
 
 fn same_pixels(part: &[u8], whole: &[u8]) {
-    let off = part.iter().zip(whole).filter(|(a, b)| a != b).count();
-    let worst = part
-        .iter()
-        .zip(whole)
-        .map(|(a, b)| a.abs_diff(*b))
-        .max()
-        .unwrap_or(0);
-    assert_eq!(
-        off, 0,
-        "{off} channels differ from a whole render, by up to {worst}"
+    near_pixels(part, whole, 0, "");
+}
+
+/// No channel of `part` more than `within` levels from `whole`; a failure
+/// says where the differing pixels are.
+fn near_pixels(part: &[u8], whole: &[u8], within: u8, what: &str) {
+    let mut off = 0;
+    let mut worst = 0;
+    let [mut x0, mut y0, mut x1, mut y1] = [u32::MAX, u32::MAX, 0, 0];
+    for (i, (a, b)) in part.iter().zip(whole).enumerate() {
+        if a != b {
+            let px = (i / 4) as u32;
+            let (x, y) = (px % SIZE[0], px / SIZE[0]);
+            [x0, y0, x1, y1] = [x0.min(x), y0.min(y), x1.max(x), y1.max(y)];
+            off += 1;
+            worst = worst.max(a.abs_diff(*b));
+        }
+    }
+    assert!(
+        worst <= within,
+        "{what}{off} channels differ from a whole render, by up to {worst}, \
+         in pixels {x0}..={x1} x {y0}..={y1}"
     );
 }
 
@@ -452,8 +464,56 @@ fn a_hover_renders_only_its_box_and_matches_a_whole_render() {
             "{}",
             stats.rendered_pixels
         );
-        same_pixels(&part, &whole);
+        // A part is drawn moved by whole tiles. At a fractional scale its
+        // f32 coordinates round apart from the whole frame's by an ulp, and
+        // the device's rasterizer turns that into a level or a few: Metal
+        // lands 96 channels 1 off, llvmpipe 106 channels up to 9 off, on
+        // the buttons' straight edges. At identity the move is exact. A box
+        // that misses what changed shows the change itself, Primary against
+        // Danger, far past this.
+        near_pixels(
+            &part,
+            &whole,
+            if xf == Affine::IDENTITY { 0 } else { 16 },
+            &format!("at {xf:?}: "),
+        );
     }
+}
+
+/// Two changes with an unchanged entry painted between them: the box covers
+/// the two, not the one far away that sits between them in paint order.
+#[test]
+fn an_unchanged_entry_between_two_changes_is_not_damage() {
+    let scene = |hot: bool| {
+        let chip = |x: f64, id: &str| {
+            block(20., 20.)
+                .fill(if hot { Role::Danger } else { Role::Primary })
+                .offset(x, 10.)
+                .float()
+                .id(id)
+        };
+        let far = block(100., 40.)
+            .fill(Role::Warning)
+            .offset(200., 150.)
+            .float()
+            .id("far");
+        let spec = SceneSpec::new(
+            stack([chip(10., "a"), far, chip(40., "c")])
+                .fill(Role::Background)
+                .id("root"),
+        )
+        .offered(Size::new(320., 200.));
+        resolve(&spec).unwrap()
+    };
+    let Some((part, whole, stats)) = damaged(&scene(false), &scene(true)) else {
+        return;
+    };
+    assert!(
+        stats.rendered_pixels <= 64 * 48,
+        "{}",
+        stats.rendered_pixels
+    );
+    same_pixels(&part, &whole);
 }
 
 /// A float appended to the list, and taken away again, is damage too.
@@ -589,4 +649,75 @@ fn a_change_under_a_backdrop_renders_everything() {
     };
     assert_eq!(stats.rendered_pixels, AREA);
     same_pixels(&part, &whole);
+}
+
+/// The present writes premultiplied alpha by default and straight alpha
+/// for a surface that composites it (`PostMultiplied`): half-clear red is
+/// `[128, 0, 0, 128]` one way and `[255, 0, 0, 128]` the other.
+#[test]
+fn the_present_writes_premultiplied_or_straight_alpha() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let out = readable(&device);
+    let view = out.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut r = pollster::block_on(hybrid(&device, &queue));
+    let root = block(320., 200.).fill(Fill::Color(Color::srgba(1., 0., 0., 0.5)));
+    let scene = resolve(&SceneSpec::new(root).offered(Size::new(320., 200.))).unwrap();
+    // Vello keeps straight alpha in 8 bits: un-premultiplying rounds.
+    let near = |a: [u8; 4], b: [u8; 4]| a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= 3);
+    r.render(&scene, Affine::IDENTITY, &view).unwrap();
+    let premultiplied = at(&pixels(&device, &queue, &out), 160, 100);
+    assert!(near(premultiplied, [128, 0, 0, 128]), "{premultiplied:?}");
+    r.set_straight_alpha(true);
+    r.render(&scene, Affine::IDENTITY, &view).unwrap();
+    let straight = at(&pixels(&device, &queue, &out), 160, 100);
+    assert!(near(straight, [255, 0, 0, 128]), "{straight:?}");
+}
+
+/// Past the frame, the present writes clear. The renderer's texture only
+/// grows, so a window dragged smaller once showed the larger frame's
+/// pixels there, wherever the swapchain is larger than the frame (Linux
+/// steps it) and the window is translucent.
+#[test]
+fn past_the_frame_the_present_writes_clear() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let out = readable(&device);
+    let view = out.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut r = pollster::block_on(hybrid(&device, &queue));
+    let root = block(320., 200.).fill(Fill::Color(Color::srgb(1., 0., 0.)));
+    let scene = resolve(&SceneSpec::new(root).offered(Size::new(320., 200.))).unwrap();
+    r.render(&scene, Affine::IDENTITY, &view).unwrap();
+    r.resize([100, 80]).unwrap();
+    r.render(&scene, Affine::IDENTITY, &view).unwrap();
+    let p = pixels(&device, &queue, &out);
+    assert_eq!(at(&p, 50, 40), [255, 0, 0, 255], "the frame");
+    assert_eq!(at(&p, 200, 150), [0, 0, 0, 0], "past the frame");
+    assert_eq!(at(&p, 50, 150), [0, 0, 0, 0], "below the frame");
+}
+
+/// A frosted fill over nothing keeps its alpha: the backdrop blurs clear
+/// into clear, so a translucent window shows the desktop through it rather
+/// than black or a darkened tint.
+#[test]
+fn a_backdrop_over_nothing_stays_translucent() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let out = readable(&device);
+    let view = out.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut r = pollster::block_on(hybrid(&device, &queue));
+    let root = block(320., 200.)
+        .fill(Fill::Color(Color::srgba(0., 0., 1., 0.5)))
+        .backdrop_blur(8.)
+        .id("glass");
+    let scene = resolve(&SceneSpec::new(root).offered(Size::new(320., 200.))).unwrap();
+    r.render(&scene, Affine::IDENTITY, &view).unwrap();
+    let px = at(&pixels(&device, &queue, &out), 160, 100);
+    assert!(
+        px[0] == 0 && px[1] == 0 && px[2].abs_diff(128) <= 1 && px[3].abs_diff(128) <= 1,
+        "{px:?}"
+    );
 }

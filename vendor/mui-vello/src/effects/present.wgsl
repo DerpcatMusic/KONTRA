@@ -1,6 +1,7 @@
 // The two fragment passes around Vello's compute output: a separable Gaussian
 // for backdrops, and the present that puts the frame on the surface. Vello
-// stores straight alpha; everything that leaves here is premultiplied.
+// stores straight alpha; what leaves here is premultiplied unless the surface
+// composites straight alpha.
 
 struct Blur {
     dir: vec2<i32>,
@@ -8,6 +9,8 @@ struct Blur {
     sigma: f32,
     // Nonzero: the source is Vello's straight alpha.
     premultiply: u32,
+    // The present's: the frame's size in the source, which only grows.
+    frame: vec2<u32>,
 }
 
 @group(0) @binding(0) var src: texture_2d<f32>;
@@ -44,7 +47,25 @@ fn fs_blur(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
     return sum / weight;
 }
 
+// The frame's pixel under `p`, straight alpha, or clear past its edge: a
+// retained source may be larger than the frame, and past it the
+// source holds an older, larger frame, or nothing, which a translucent
+// window would show.
+fn frame(p: vec4<f32>) -> vec4<f32> {
+    let at = vec2<u32>(p.xy);
+    if any(at >= min(blur.frame, textureDimensions(src))) {
+        return vec4<f32>(0.0);
+    }
+    return textureLoad(src, at, 0);
+}
+
 @fragment
 fn fs_present(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
-    return premul(textureLoad(src, vec2<i32>(p.xy), 0));
+    return premul(frame(p));
+}
+
+// For a surface that composites straight alpha (`PostMultiplied`).
+@fragment
+fn fs_present_straight(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    return frame(p);
 }

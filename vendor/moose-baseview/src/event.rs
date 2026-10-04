@@ -129,6 +129,8 @@ pub enum WindowEvent {
 pub enum Event {
     Mouse(MouseEvent),
     Keyboard(KeyboardEvent),
+    /// Native text input. Keyboard events never duplicate these commits.
+    Ime(crate::Ime),
     Window(WindowEvent),
 }
 

@@ -105,9 +105,8 @@ impl X11Connection {
 
     pub fn get_property<T: bytemuck::Pod>(
         &self, window: xproto::Window, property: xproto::Atom, property_type: xproto::Atom,
-        max_items: usize,
     ) -> core::result::Result<Vec<T>, GetPropertyError> {
-        get_property::get_property(window, property, property_type, &self.conn, max_items)
+        get_property::get_property(window, property, property_type, &self.conn)
     }
 
     pub fn register_tree_structure_events(

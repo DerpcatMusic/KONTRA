@@ -17,12 +17,13 @@ publish = false
 moose-core = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497" }
 moose-params = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497" }
 mui = { git = "https://github.com/Matari-Audio/MUI", features = ["gpu-effects"] }
-mui-baseview = { git = "https://github.com/Matari-Audio/MUI" }
+# Keep the Rust import alias stable while separating the custom host package
+# from upstream mui-baseview, whose public native bridges it now consumes.
+mui-baseview = { package = "kontra-native-host", path = "../mui-baseview" }
 # baseview's parent handle is raw-window-handle 0.6.
 raw-window-handle = "0.6"
 
 [dev-dependencies]
 moose = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", default-features = false }
 keyboard-types = { version = "0.8", default-features = false }
-
 
