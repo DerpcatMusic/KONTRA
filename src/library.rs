@@ -124,6 +124,8 @@ pub struct Settings {
     pub window_size: Option<(u32, u32)>,
     /// How the browser lists the libraries.
     pub sort: Sort,
+    /// Show every library together, or separate Kontakt and UVI/Falcon banks.
+    pub browser_view: BrowserView,
     /// The player's own order of the libraries, by folder: set by dragging one.
     pub order: Vec<String>,
     /// Libraries pinned above the rest, by folder.
@@ -142,6 +144,14 @@ pub struct Settings {
     /// The output bus new parts play through: `None` routes them as the
     /// rack's Outputs choice says, else that bus, held as if picked by hand.
     pub new_output: Option<u8>,
+}
+
+/// Library grouping, independent of the selected source and the preset search.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum BrowserView {
+    #[default]
+    Unified,
+    ByPlayer,
 }
 
 /// How a part shows its library's performance view.
@@ -365,6 +375,11 @@ fn config_dir() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("kontra"))
 }
 
+/// An explicit environment location wins; normal DAWs use the app's private store.
+fn uvi_authority_dir(override_dir: Option<std::ffi::OsString>, config: Option<PathBuf>) -> Option<PathBuf> {
+    override_dir.map(PathBuf::from).or_else(|| config.map(|path| path.join("uvi-access")))
+}
+
 /// The app's data folder: chosen artwork, and multis saved with no library
 /// folder to keep them in.
 pub fn data_dir() -> Option<PathBuf> {
@@ -445,6 +460,20 @@ impl Shelf {
             }
         }
         None
+    }
+
+    /// The bank inventory determines the family; names and extensions do not.
+    pub fn player(&self, library: &Library) -> &'static str {
+        if self.uvi.contains_key(&library.dir) { "UVI / Falcon" } else { "Kontakt" }
+    }
+
+    /// Preserve the chosen ordering within each player group.
+    pub fn arranged<'a>(&self, settings: &Settings, libraries: impl IntoIterator<Item = &'a Library>) -> Vec<&'a Library> {
+        let mut libraries = settings.arrange(libraries);
+        if settings.browser_view == BrowserView::ByPlayer {
+            libraries.sort_by_key(|library| self.uvi.contains_key(&library.dir));
+        }
+        libraries
     }
 
     pub fn named(&self, name: &str) -> Option<&Library> {
@@ -620,7 +649,7 @@ impl UviCatalog {
             return Err("The selected UVI program is no longer in this bank. Rescan its library.");
         }
         let state = if directory.files.iter().any(|member| member.mode == 2) {
-            let directory = std::env::var_os("KONTRA_UVI_AUTHORITY_DIR")
+            let directory = uvi_authority_dir(std::env::var_os("KONTRA_UVI_AUTHORITY_DIR"), config_dir())
                 .ok_or("Local access to this UVI bank is not configured.")?;
             let filename = source.bank_uuid.iter().map(|byte| format!("{byte:02x}")).collect::<String>() + ".json";
             Some(crate::uvi::cli::ContentState::open(&PathBuf::from(directory).join(filename))
@@ -1631,6 +1660,46 @@ pub(crate) mod tests {
         assert!(!std::fs::read_to_string(&path).unwrap().contains("vector_view"), "the old switch is not written");
         assert_eq!(Settings::load(&path), Some(s));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn browser_grouping_persists_without_changing_sources_or_sort_order() {
+        let mut settings: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.browser_view, BrowserView::Unified, "existing settings retain their unified catalog");
+        let mut shelf = Shelf::new(vec![
+            Library { dir: "/banks/first.ufs".into(), name: "Piano".into(), ..Default::default() },
+            Library { dir: "/kontakt/Piano".into(), name: "Piano".into(), ..Default::default() },
+            Library { dir: "/kontakt/Strings".into(), name: "Strings".into(), ..Default::default() },
+        ]);
+        let source = UviSource { bank: "/banks/first.ufs".into(), bank_uuid: [3; 16], member: "Piano.uvip".into() };
+        let mut bank = UviBank::default();
+        bank.presets.push(Arc::new(UviPreset { source: source.clone(), name: "Piano".into(), folder: String::new(), search: "piano".into() }));
+        shelf.uvi.insert(source.bank.clone(), Arc::new(bank));
+        settings.sort = Sort::Custom;
+        settings.order = vec!["/kontakt/Strings".into(), "/banks/first.ufs".into(), "/kontakt/Piano".into()];
+        let unified = shelf.arranged(&settings, shelf.libraries.iter()).iter().map(|l| l.dir.clone()).collect::<Vec<_>>();
+        assert_eq!(unified, settings.order.iter().map(PathBuf::from).collect::<Vec<_>>());
+        settings.browser_view = BrowserView::ByPlayer;
+        let dir = tree("browser-grouping", &[]); let path = dir.join("settings.json");
+        settings.save(&path).unwrap();
+        let restored = Settings::load(&path).unwrap();
+        assert_eq!(restored.browser_view, BrowserView::ByPlayer);
+        let grouped = shelf.arranged(&restored, shelf.libraries.iter());
+        assert_eq!(grouped.iter().map(|l| shelf.player(l)).collect::<Vec<_>>(), ["Kontakt", "Kontakt", "UVI / Falcon"]);
+        assert_eq!(grouped[0].dir, PathBuf::from("/kontakt/Strings"));
+        assert_eq!(grouped.len(), unified.len());
+        assert_eq!(shelf.uvi[&source.bank].presets[0].source, source);
+        assert_ne!(grouped[1].name, grouped[2].name, "same names retain separate library identities");
+        assert_eq!(restored.order, settings.order);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn private_uvi_access_store_defaults_to_config_and_allows_an_override() {
+        assert_eq!(uvi_authority_dir(None, Some("/config/kontra".into())), Some("/config/kontra/uvi-access".into()));
+        assert_eq!(uvi_authority_dir(Some("/private/override".into()), Some("/config/kontra".into())), Some("/private/override".into()));
+        assert_eq!(uvi_authority_dir(None, None), None);
+        assert_eq!(uvi_authority_dir(Some("/private/override".into()), None), Some("/private/override".into()));
     }
 
     #[test]

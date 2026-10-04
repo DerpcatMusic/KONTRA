@@ -262,12 +262,17 @@ fn play_worker(
         }
         Ok(())
     })?;
+    let mut runtime_report = worker.runtime_diagnostic_report(Duration::from_millis(500));
     worker.stop();
     let stats = worker.stats();
+    // The retained node snapshot precedes stop; these aggregate fields show
+    // the worker's current lifecycle after the endpoint has been destroyed.
+    runtime_report["status"] = serde_json::to_value(worker.status())?;
+    runtime_report["stats"] = serde_json::to_value(stats)?;
     println!(
         "{}",
         serde_json::to_string_pretty(
-            &serde_json::json!({"frames":end,"processed_frames":padded_end,"sample_rate":rate,"block_frames":worker::BLOCK_FRAMES,"worker":true,"runtime_report":worker.diagnostic_report(),"peak":peak,"event_commands":commands,"host_commands":host_commands,"diagnostics":diagnostics,"private_log_messages":logs,"dropped_logs":dropped_logs,"worker_initialization_ns":stats.initialization_ns,"worker_render_ns":stats.render_ns,"worker_max_render_ns":stats.max_render_ns,"worker_render_deadline_misses":stats.render_deadline_misses,"worker_backpressure":stats.backpressure,"worker_packet_polls":stats.underruns,"worker_errors":stats.errors})
+            &serde_json::json!({"frames":end,"processed_frames":padded_end,"sample_rate":rate,"block_frames":worker::BLOCK_FRAMES,"worker":true,"runtime_report":runtime_report,"peak":peak,"event_commands":commands,"host_commands":host_commands,"diagnostics":diagnostics,"private_log_messages":logs,"dropped_logs":dropped_logs,"worker_initialization_ns":stats.initialization_ns,"worker_render_ns":stats.render_ns,"worker_max_render_ns":stats.max_render_ns,"worker_render_deadline_misses":stats.render_deadline_misses,"worker_backpressure":stats.backpressure,"worker_packet_polls":stats.underruns,"worker_errors":stats.errors})
         )?
     );
     Ok(())
@@ -553,7 +558,9 @@ pub fn run(args: &[String]) -> Result<()> {
             let ready = worker.wait_ready(std::time::Duration::from_secs(60));
             println!(
                 "{}",
-                serde_json::to_string_pretty(&worker.diagnostic_report())?
+                serde_json::to_string_pretty(
+                    &worker.runtime_diagnostic_report(std::time::Duration::from_millis(500))
+                )?
             );
             worker.stop();
             // Machine-readable stdout remains available on failed initialization.

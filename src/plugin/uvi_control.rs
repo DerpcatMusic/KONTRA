@@ -314,6 +314,16 @@ impl Registry {
     /// Control/editor thread only. Includes measured packet counters, never a
     /// claim that every decoded node has executed or matches Falcon.
     pub fn diagnostic_report(&self) -> serde_json::Value {
+        self.report(None)
+    }
+
+    /// Explicit support export only. One deadline bounds all rack workers.
+    pub fn runtime_diagnostic_report(&self, timeout: std::time::Duration) -> serde_json::Value {
+        self.report(Some(timeout))
+    }
+
+    fn report(&self, timeout: Option<std::time::Duration>) -> serde_json::Value {
+        let started = std::time::Instant::now();
         let mut controls: Vec<_> = self.controls.iter().collect();
         controls.sort_by_key(|(identity, _)| **identity);
         serde_json::json!(
@@ -326,7 +336,9 @@ impl Registry {
                         "max_host_frames":control.maximum, "lead_packets":control.lead,
                         "endpoint_exported":control.exported, "cancelled":control.cancelled,
                         "endpoint_retired":control.retired.load(Ordering::Acquire),
-                        "worker":control.worker.diagnostic_report(),
+                        "worker":if let Some(timeout)=timeout.filter(|_|!control.cancelled && !control.retired.load(Ordering::Acquire)) {
+                            control.worker.runtime_diagnostic_report(timeout.saturating_sub(started.elapsed()))
+                        } else {control.worker.diagnostic_report()},
                     })
                 })
                 .collect::<Vec<_>>()
@@ -466,6 +478,82 @@ impl Registry {
         self.controls.is_empty()
     }
 }
+/// Support exports have a finite context budget. Keep aggregate evidence and
+/// full worker-owned snapshots, while explicitly reporting any omitted rows in
+/// this export copy. Processing, rejection and bypass evidence is retained first.
+pub(super) fn bound_node_reports(report: &mut serde_json::Value, maximum_bytes: usize) {
+    fn rows(value: &serde_json::Value) -> usize {
+        match value {
+            serde_json::Value::Object(fields) => fields
+                .iter()
+                .map(|(key, value)| {
+                    if key == "nodes" {
+                        value.as_array().map_or(0, Vec::len)
+                    } else {
+                        rows(value)
+                    }
+                })
+                .sum(),
+            serde_json::Value::Array(values) => values.iter().map(rows).sum(),
+            _ => 0,
+        }
+    }
+    fn trim(value: &mut serde_json::Value) -> usize {
+        match value {
+            serde_json::Value::Object(fields) => {
+                let previous_total = fields
+                    .get("node_coverage")
+                    .and_then(|v| v["total_rows"].as_u64());
+                let mut removed = 0;
+                if let Some(nodes) = fields
+                    .get_mut("nodes")
+                    .and_then(serde_json::Value::as_array_mut)
+                {
+                    let total = previous_total.unwrap_or(nodes.len() as u64);
+                    nodes.sort_by_key(|node| {
+                        !(node["processed_blocks"].as_u64().is_some_and(|n| n > 0)
+                            || node["retained_voice_instances"]
+                                .as_u64()
+                                .is_some_and(|n| n > 0)
+                            || node["currently_bypassed"].as_bool() == Some(true)
+                            || node["preflight_rejections"]
+                                .as_array()
+                                .is_some_and(|rejections| !rejections.is_empty()))
+                    });
+                    let keep = nodes.len() / 2;
+                    removed = nodes.len() - keep;
+                    nodes.truncate(keep);
+                    fields.insert("node_coverage".into(),serde_json::json!({"total_rows":total,
+                        "included_rows":keep,"omitted_rows":total-keep as u64,"complete":total==keep as u64,
+                        "reason":"support_context_size_limit","order":"processing_bypass_or_rejection_evidence_first"}));
+                }
+                removed
+                    + fields
+                        .iter_mut()
+                        .filter(|(key, _)| key.as_str() != "nodes")
+                        .map(|(_, value)| trim(value))
+                        .sum::<usize>()
+            }
+            serde_json::Value::Array(values) => values.iter_mut().map(trim).sum(),
+            _ => 0,
+        }
+    }
+    let total = rows(report);
+    loop {
+        let included = rows(report);
+        report["node_report_coverage"] = serde_json::json!({"included_rows":included,
+            "omitted_rows":total-included,"complete":total==included,"maximum_bytes":maximum_bytes,
+            "size_limit_met":true,"full_node_reports":"uvi-diagnose or uvi-play --worker"});
+        if serde_json::to_vec(&*report).is_ok_and(|bytes| bytes.len() <= maximum_bytes) {
+            break;
+        }
+        if trim(report) == 0 {
+            report["node_report_coverage"]["size_limit_met"] = serde_json::json!(false);
+            break;
+        }
+    }
+}
+
 impl Drop for Registry {
     fn drop(&mut self) {
         // The plugin's final Arc lease is structurally ordered after endpoints.
@@ -707,5 +795,67 @@ mod tests {
         }
         registry.cancel(10, 21);
         std::fs::remove_file(source.bank).unwrap();
+    }
+    #[test]
+    fn support_context_bounds_two_large_workers_and_declares_omitted_rows() {
+        let workers: Vec<_> = (0..2)
+            .map(|slot| {
+                let program_nodes: Vec<_> = (0..4000)
+                    .map(|node| {
+                        serde_json::json!({"id":node,
+                "kind":"MinBlepGenerator","name":"bounded authored name",
+                "parent":0,"initially_bypassed":false,
+                "preflight_rejections":if node==3998 {vec!["authored rejection"]} else {vec![]}})
+                    })
+                    .collect();
+                let runtime_nodes: Vec<_> = (0..4000)
+                    .map(|node| {
+                        serde_json::json!({"node":node,
+                "kind":"MinBlepGenerator","processed_blocks":if node==3999 {7}else{0},
+                "currently_bypassed":false,"retained_voice_instances":if node==3999 {2}else{0},
+                "evidence_source":"renderer_native_dispatch"})
+                    })
+                    .collect();
+                serde_json::json!({"slot":slot,"worker":{"stats":{"rendered_blocks":7},
+                "program":{"parsed":true,"counts":{"nodes":4000},"nodes":program_nodes},
+                "runtime_snapshot":{"stamp":{"frame":1792},"evidence":{"nodes":runtime_nodes,
+                    "audibility_verified":false,"falcon_numerical_fidelity_verified":false}}}})
+            })
+            .collect();
+        let mut report = serde_json::json!({"rack_workers":workers});
+        bound_node_reports(&mut report, 64 * 1024);
+        assert!(serde_json::to_vec(&report).unwrap().len() <= 64 * 1024);
+        assert_eq!(report["node_report_coverage"]["complete"], false);
+        assert!(
+            report["node_report_coverage"]["omitted_rows"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        for control in report["rack_workers"].as_array().unwrap() {
+            let worker = &control["worker"];
+            assert_eq!(worker["stats"]["rendered_blocks"], 7);
+            assert_eq!(worker["program"]["counts"]["nodes"], 4000);
+            assert_eq!(worker["program"]["node_coverage"]["complete"], false);
+            assert!(
+                worker["program"]["nodes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|node| node["id"] == 3998)
+            );
+            assert_eq!(worker["runtime_snapshot"]["stamp"]["frame"], 1792);
+            let evidence = &worker["runtime_snapshot"]["evidence"];
+            assert_eq!(evidence["node_coverage"]["complete"], false);
+            assert!(
+                evidence["nodes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|node| node["node"] == 3999),
+                "processed/retained nodes survive truncation ahead of unknown or unused rows"
+            );
+            assert_eq!(evidence["falcon_numerical_fidelity_verified"], false);
+        }
     }
 }

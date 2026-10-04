@@ -742,6 +742,37 @@ mod tests {
             expected.audio
         );
 
+        // Measured omitted original-node Gain/Pan defaults remain writable and
+        // round-trip as deltas without changing an initialized sample's PCM.
+        let defaults = program::parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="../Samples/authored.wav" BaseNote="60" Interpolation="0"/></Oscillators></Keygroup></Keygroups></Layer></Layers><EventProcessors><ScriptProcessor><script><![CDATA[
+          loaded=false;owners={Program,Program.layers[1],Program.layers[1].keygroups[1]}
+          gain=Program:getParameter('Gain')
+          function onLoad(state)assert(state.marker and gain==0.625);loaded=true end
+          function onInit()
+            if not loaded then
+              for _,object in ipairs(owners)do assert(object:getParameter('Gain')==1 and object:getParameter('Pan')==0);object:setParameter('Gain',0.625);object:setParameter('Pan',0.25)end
+              local sample=owners[3].oscillators[1];assert(sample:getParameter('Gain')==1);sample:setParameter('Gain',0.625)
+            end
+          end
+          function onSave()return {marker=true}end
+        ]]></script></ScriptProcessor></EventProcessors></Program>"#).unwrap();
+        let mut initial =
+            super::super::player::Player::new(&defaults, BTreeMap::new(), make_resources(), 48000)
+                .unwrap();
+        let saved = initial.saved_state().unwrap();
+        let expected = initial.render(&[note(0)], 8).unwrap().audio;
+        assert!(expected.iter().flatten().any(|value| *value != 0.));
+        let mut restored = super::super::player::Player::new_with_state(
+            &defaults,
+            BTreeMap::new(),
+            make_resources(),
+            48000,
+            None,
+            Some(&saved),
+        )
+        .unwrap();
+        assert_eq!(restored.render(&[note(0)], 8).unwrap().audio, expected);
+
         // A global planned source must keep its clock through silent blocks.
         let planned = program::parse_program(r#"<Program><ControlSignalSources><StdRandom Name="Src" Rate="300" Depth=".7" Bipolar="1" TriggerMode="0"/></ControlSignalSources><Layers><Layer><Keygroups><Keygroup><Connections><SignalConnection Source="$Program/Src" Destination="Gain" Ratio="1"/></Connections><Oscillators><SamplePlayer SamplePath="../Samples/authored.wav" BaseNote="60"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
         let mut whole =

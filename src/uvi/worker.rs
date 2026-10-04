@@ -289,6 +289,19 @@ pub struct UiSnapshotReply {
     pub snapshot: std::result::Result<UiSnapshot, UiSnapshotError>,
 }
 
+/// Requested control-only runtime inspection. No Lua callbacks, asset paths or
+/// source payloads are part of this snapshot. Shared ownership keeps report
+/// readers from copying the graph while the worker prepares a newer request.
+pub struct RuntimeSnapshotReply {
+    pub request: u64,
+    pub stamp: Stamp,
+    pub snapshot: std::result::Result<Arc<serde_json::Value>, RuntimeSnapshotError>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeSnapshotError {
+    Unavailable,
+}
+
 /// Control-only, all processors at one native boundary; private data, no Debug.
 pub struct StateSnapshotReply {
     pub request: u64,
@@ -393,6 +406,10 @@ struct Details {
     state_latest: u64,
     state_request: Option<(u64, u64)>,
     state_reply: Option<StateSnapshotReply>,
+    runtime_latest: u64,
+    runtime_request: Option<(u64, u64)>,
+    runtime_reply: Option<RuntimeSnapshotReply>,
+    runtime_report: Option<Arc<serde_json::Value>>,
 }
 
 struct Shared {
@@ -406,6 +423,7 @@ struct Shared {
     details: Mutex<Details>,
     ui_pending: AtomicBool,
     state_pending: AtomicBool,
+    runtime_pending: AtomicBool,
 }
 
 struct HostedTransport {
@@ -441,6 +459,7 @@ impl Shared {
             }),
             ui_pending: AtomicBool::new(false),
             state_pending: AtomicBool::new(false),
+            runtime_pending: AtomicBool::new(false),
         }
     }
 
@@ -686,13 +705,72 @@ impl Worker {
             "epoch":self.shared.stamp.epoch, "generation":self.shared.stamp.generation,
             "program":details.program_report, "stats":self.stats(),
             "failure":details.failure, "load_trace":details.load_report.as_deref(),
-            "runtime_evidence":"worker_lifecycle_and_completed_packets_only",
+            "runtime_evidence":"worker_lifecycle_completed_packets_and_optional_requested_node_snapshot",
+            "runtime_snapshot":details.runtime_report.as_deref(),
             "per_node_execution_proof":false, "falcon_fidelity_proof":false,
             "renderer_fidelity_caveats":details.diagnostics,
             "voice_census_semantics":"active_voices_cleared_on_stop_or_failure; last_completed_voices_historical_not_audibility",
             "lua_print_payloads_retained":false,
             "lua_print_counter_scope":"completed_render_packets_only",
         })
+    }
+
+    /// Explicit support/CLI inspection only, off UI and audio threads. Keep a
+    /// stamped outcome if the request cannot settle; old cached evidence keeps
+    /// its original capture stamp and is never presented as a fresh result.
+    pub fn runtime_diagnostic_report(&self, timeout: Duration) -> serde_json::Value {
+        let minimum = Stamp {
+            frame: self.stats().processed_frame,
+            ..self.shared.stamp
+        };
+        let mut request = None;
+        let outcome = if timeout.is_zero() {
+            "timeout"
+        } else {
+            match self.request_runtime_snapshot(minimum) {
+                Err(_) => "unavailable",
+                Ok(id) => {
+                    request = Some(id);
+                    let started = Instant::now();
+                    loop {
+                        if let Some(reply) = self.poll_runtime_snapshot() {
+                            if reply.request == id
+                                && reply.stamp.epoch == minimum.epoch
+                                && reply.stamp.generation == minimum.generation
+                                && reply.stamp.frame >= minimum.frame
+                            {
+                                break if reply.snapshot.is_ok() {
+                                    "captured"
+                                } else {
+                                    "unavailable"
+                                };
+                            }
+                        }
+                        if self.status() != Status::Ready {
+                            break "unavailable";
+                        }
+                        if self
+                            .shared
+                            .details
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .runtime_latest
+                            != id
+                        {
+                            break "superseded";
+                        }
+                        if started.elapsed() >= timeout {
+                            break "timeout";
+                        }
+                        thread::sleep(POLL.min(timeout.saturating_sub(started.elapsed())));
+                    }
+                }
+            }
+        };
+        let mut report = self.diagnostic_report();
+        report["runtime_snapshot_request"] = serde_json::json!({"request":request,"outcome":outcome,
+            "minimum_stamp":{"epoch":minimum.epoch,"generation":minimum.generation,"frame":minimum.frame}});
+        report
     }
 
     pub fn diagnostics(&self) -> Vec<&'static str> {
@@ -781,6 +859,42 @@ impl Worker {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .state_reply
+            .take()
+    }
+
+    /// Control thread only. Requests a graph inspection at a real processed
+    /// boundary; it never renders ahead or invokes authored callbacks.
+    pub fn request_runtime_snapshot(
+        &self,
+        expected: Stamp,
+    ) -> std::result::Result<u64, PacketError> {
+        self.shared.activation(expected)?;
+        let mut details = self
+            .shared
+            .details
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let id = details
+            .runtime_latest
+            .checked_add(1)
+            .ok_or(PacketError::Full)?;
+        details.runtime_latest = id;
+        details.runtime_request = Some((id, expected.frame));
+        details.runtime_reply = None;
+        drop(details);
+        self.shared.runtime_pending.store(true, Ordering::Release);
+        if let Some(handle) = &self.thread {
+            handle.thread().unpark();
+        }
+        Ok(id)
+    }
+
+    pub fn poll_runtime_snapshot(&self) -> Option<RuntimeSnapshotReply> {
+        self.shared
+            .details
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .runtime_reply
             .take()
     }
 
@@ -1130,6 +1244,46 @@ fn capture_state(player: &mut Player<'_>, shared: &Shared) -> Result<()> {
     Ok(())
 }
 
+fn capture_runtime(player: &Player<'_>, shared: &Shared) {
+    if !shared.runtime_pending.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    let request = {
+        let mut details = shared.details.lock().unwrap_or_else(|p| p.into_inner());
+        let Some((request, minimum)) = details.runtime_request else {
+            return;
+        };
+        if player.current_frame() < minimum {
+            shared.runtime_pending.store(true, Ordering::Release);
+            return;
+        }
+        details.runtime_request = None;
+        request
+    };
+    let stamp = Stamp {
+        frame: player.current_frame(),
+        ..shared.stamp
+    };
+    phase(shared, "runtime_snapshot", stamp.frame);
+    let snapshot = serde_json::to_value(player.runtime_evidence())
+        .map(|evidence| {
+            Arc::new(serde_json::json!({"stamp":{"epoch":stamp.epoch,
+            "generation":stamp.generation,"frame":stamp.frame},"evidence":evidence}))
+        })
+        .map_err(|_| RuntimeSnapshotError::Unavailable);
+    let mut details = shared.details.lock().unwrap_or_else(|p| p.into_inner());
+    if details.runtime_latest == request && !shared.stop.load(Ordering::Acquire) {
+        if let Ok(report) = &snapshot {
+            details.runtime_report = Some(report.clone());
+        }
+        details.runtime_reply = Some(RuntimeSnapshotReply {
+            request,
+            stamp,
+            snapshot,
+        });
+    }
+}
+
 /// Controller observes an activation abort, not successful ends for discarded
 /// roots. A future adapter must retire canonical owners through its lifecycle.
 fn finish(shared: &Shared, failure: Option<String>) {
@@ -1391,6 +1545,7 @@ fn serve(player: &mut Player<'_>, shared: &Shared, sample_rate: u32) -> Result<(
         }
         capture_ui(&player, shared);
         capture_state(player, shared)?;
+        capture_runtime(player, shared);
         phase(shared, "serve", player.current_frame());
         let packet = if let Some(hosted) = &shared.hosted {
             hosted
@@ -1505,6 +1660,7 @@ fn serve(player: &mut Player<'_>, shared: &Shared, sample_rate: u32) -> Result<(
             }
             capture_ui(&player, shared);
             capture_state(player, shared)?;
+            capture_runtime(player, shared);
             phase(shared, "serve", player.current_frame());
             match shared.outputs.push(output) {
                 Ok(()) => break,
@@ -1660,6 +1816,130 @@ pub(crate) mod tests {
         );
         assert_eq!(report["stats"]["rendered_blocks"], 1);
         assert_eq!(report["stats"]["processed_frame"], 256);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn requested_runtime_snapshot_waits_for_boundary_tracks_silent_voices_and_keeps_unknown_nodes_honest()
+     {
+        let (config, _) = authored_bank_with_program(
+            r#"<Program Gain="0"><EventProcessors><ScriptProcessor><script><![CDATA[
+function onNote(e)postEvent(e)end
+function onSave()error('runtime inspection must not run callbacks')end
+]]></script></ScriptProcessor></EventProcessors><Inserts><Gain Bypass="1" Volume="0.5"/><Gain Volume="0.5"/></Inserts><Layers><Layer><Keygroups><Keygroup><Oscillators><MinBlepGenerator Waveform="4" StartPhase="0.25" BaseNote="60"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#,
+        );
+        let path = config.bank.clone();
+        let mut worker = Worker::start(config, 7, 11).unwrap();
+        worker.wait_ready(Duration::from_secs(3)).unwrap();
+        assert!(
+            worker.diagnostic_report()["runtime_snapshot"].is_null(),
+            "ordinary initialization does not traverse runtime evidence"
+        );
+        let first = worker.request_runtime_snapshot(stamp(0)).unwrap();
+        let latest = worker.request_runtime_snapshot(stamp(256)).unwrap();
+        assert!(latest > first);
+        assert!(
+            worker
+                .request_runtime_snapshot(Stamp {
+                    generation: 12,
+                    ..stamp(0)
+                })
+                .is_err()
+        );
+        thread::sleep(Duration::from_millis(10));
+        assert!(
+            worker.poll_runtime_snapshot().is_none(),
+            "inspection never advances the native clock"
+        );
+        worker
+            .realtime()
+            .try_submit(Request::new(stamp(0), &[note(0)]).unwrap())
+            .unwrap();
+        let output = receive(&mut worker, stamp(0));
+        assert!(
+            output.audio.iter().all(|frame| *frame == [0.; 2]),
+            "fixture executes nodes while remaining silent"
+        );
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let reply = loop {
+            if let Some(reply) = worker.poll_runtime_snapshot() {
+                break reply;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        };
+        assert_eq!(reply.request, latest);
+        assert_eq!(reply.stamp.frame, 256);
+        let snapshot = reply.snapshot.unwrap();
+        assert!(
+            Arc::ptr_eq(
+                &snapshot,
+                worker
+                    .shared
+                    .details
+                    .lock()
+                    .unwrap()
+                    .runtime_report
+                    .as_ref()
+                    .unwrap()
+            ),
+            "reply and cached report share one graph allocation"
+        );
+        let evidence = &snapshot["evidence"];
+        assert_eq!(evidence["frame"], 256);
+        assert_eq!(evidence["audibility_verified"], false);
+        assert_eq!(evidence["falcon_numerical_fidelity_verified"], false);
+        let nodes = evidence["nodes"].as_array().unwrap();
+        let oscillator = nodes
+            .iter()
+            .find(|node| node["kind"] == "MinBlepGenerator")
+            .unwrap();
+        assert!(oscillator["processed_blocks"].as_u64().unwrap() > 0);
+        assert!(oscillator["retained_voice_instances"].as_u64().unwrap() > 0);
+        let gains: Vec<_> = nodes.iter().filter(|node| node["kind"] == "Gain").collect();
+        assert_eq!(gains[0]["currently_bypassed"], true);
+        assert_eq!(gains[0]["processed_blocks"], 0);
+        assert_eq!(gains[1]["currently_bypassed"], false);
+        assert!(gains[1]["processed_blocks"].as_u64().unwrap() > 0);
+        let script = nodes
+            .iter()
+            .find(|node| node["kind"] == "ScriptProcessor")
+            .unwrap();
+        assert!(script["processed_blocks"].is_null());
+        assert_eq!(script["evidence_source"], "not_instrumented");
+        worker
+            .realtime()
+            .try_submit(Request::new(stamp(256), &[]).unwrap())
+            .unwrap();
+        receive(&mut worker, stamp(256));
+        assert_eq!(
+            worker.diagnostic_report()["runtime_snapshot"]["stamp"]["frame"],
+            256,
+            "cached snapshots preserve their actual capture boundary"
+        );
+        assert_eq!(worker.stats().processed_frame, 512);
+        worker.stop();
+        assert!(worker.request_runtime_snapshot(stamp(512)).is_err());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn explicit_runtime_diagnostic_helper_preserves_stamped_success_and_unavailable_outcomes() {
+        let (config,_)=authored_bank_with_script("function onSave()error('inspection is read only')end");
+        let path=config.bank.clone();let mut worker=Worker::start(config,7,11).unwrap();
+        worker.wait_ready(Duration::from_secs(3)).unwrap();
+        let captured=worker.runtime_diagnostic_report(Duration::from_millis(500));
+        assert_eq!(captured["runtime_snapshot_request"]["outcome"],"captured");
+        assert_eq!(captured["runtime_snapshot"]["stamp"]["frame"],0);
+        assert_eq!(captured["stats"]["rendered_blocks"],0,"inspection cannot advance playback");
+        let latest=worker.shared.details.lock().unwrap().runtime_latest;
+        let skipped=worker.runtime_diagnostic_report(Duration::ZERO);
+        assert_eq!(skipped["runtime_snapshot_request"]["outcome"],"timeout");
+        assert_eq!(worker.shared.details.lock().unwrap().runtime_latest,latest,"an exhausted shared export budget does not enqueue another graph inspection");
+        worker.stop();let stopped=worker.runtime_diagnostic_report(Duration::from_millis(500));
+        assert_eq!(stopped["runtime_snapshot_request"]["outcome"],"unavailable");
+        assert_eq!(stopped["status"],"stopped");
+        assert_eq!(stopped["runtime_snapshot"]["stamp"]["frame"],0,"unavailable inspection preserves the earlier explicit capture stamp");
         std::fs::remove_file(path).unwrap();
     }
 
@@ -1841,6 +2121,13 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn authored_bank_with_script(script: &str) -> (StartConfig, String) {
+        let source = format!(
+            r#"<Program Gain="0.5"><EventProcessors><ScriptProcessor><script><![CDATA[{script}]]></script></ScriptProcessor></EventProcessors><Layers><Layer><Keygroups><Keygroup><Oscillators><MinBlepGenerator Waveform="4" StartPhase="0.25" BaseNote="60"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#
+        );
+        authored_bank_with_program(&source)
+    }
+
+    fn authored_bank_with_program(source: &str) -> (StartConfig, String) {
         fn append(bytes: &mut Vec<u8>, payload: &[u8]) -> u64 {
             let pointer = bytes.len() as u64 + 8;
             bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
@@ -1862,9 +2149,6 @@ pub(crate) mod tests {
         bytes[48..62].copy_from_slice(b"WorkerAuthored");
         let root = named(&mut bytes, 0x2fba_3632, "Root", 272, key);
         let member = named(&mut bytes, 0x6758_50e4, "authored.uvip", 289, key);
-        let source = format!(
-            r#"<Program Gain="0.5"><EventProcessors><ScriptProcessor><script><![CDATA[{script}]]></script></ScriptProcessor></EventProcessors><Layers><Layer><Keygroups><Keygroup><Oscillators><MinBlepGenerator Waveform="4" StartPhase="0.25" BaseNote="60"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#
-        );
         let data = append(&mut bytes, source.as_bytes());
         bytes[member as usize + 260..member as usize + 268]
             .copy_from_slice(&(source.len() as u64).to_le_bytes());
@@ -1906,7 +2190,7 @@ pub(crate) mod tests {
                 content_bank: Some("WorkerAuthored".into()),
                 sample_rate: 48000,
             },
-            source,
+            source.to_owned(),
         )
     }
 

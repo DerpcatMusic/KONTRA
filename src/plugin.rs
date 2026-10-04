@@ -492,6 +492,8 @@ impl SamplerParams {
         let mut context = context;
         #[cfg(feature = "uvi")]
         {
+            let runtime_started=Instant::now();
+            let runtime_budget=std::time::Duration::from_millis(500);
             let prepared = self.shared.uvi_prepared.lock().unwrap();
             context["uvi"] = serde_json::json!({
                 "requested":selection.uvi_requested, "live_installed":self.shared.with_parts(|parts|
@@ -499,13 +501,17 @@ impl SamplerParams {
                 "prepared":prepared.as_ref().map(|p| serde_json::json!({
                     "source":p.key.request.source, "slot":p.key.request.slot, "new":p.key.request.new,
                     "epoch":p.key.epoch, "generation":p.generation, "sample_rate":f64::from_bits(p.key.rate),
-                    "worker":p.worker.as_ref().map(|worker| worker.diagnostic_report()),
+                    "worker":p.worker.as_ref().map(|worker| worker.runtime_diagnostic_report(runtime_budget.saturating_sub(runtime_started.elapsed()))),
                     "status":p.status, "initialized":Some(&p.key) == uvi_load_key(self, &selection).as_ref()
                         && p.worker.as_ref().is_some_and(|worker| worker.status() == crate::uvi::worker::Status::Ready),
                 })),
-                "rack_workers":self.shared.uvi_controls.lock().unwrap().diagnostic_report(),
+                "rack_workers":self.shared.uvi_controls.lock().unwrap().runtime_diagnostic_report(runtime_budget.saturating_sub(runtime_started.elapsed())),
                 "block_frames":crate::uvi::worker::BLOCK_FRAMES, "queue_capacity":crate::uvi::worker::QUEUE_CAPACITY,
             });
+            drop(prepared);
+            // Leave room in the existing 4MiB support context for host/Kontakt
+            // reports. The full stamped node snapshot remains on each worker.
+            uvi_control::bound_node_reports(&mut context["uvi"], 2 * 1024 * 1024);
         }
         context["log_flush_error"] = serde_json::json!(crate::diagnostics::flush(std::time::Duration::from_secs(2)).err());
         context

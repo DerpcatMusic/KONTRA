@@ -13,14 +13,20 @@ The test package identifies its exact source and enabled features in its manifes
 It contains no vendor executable, bank, sample, script or access state.
 
 Configure the local official Workstation reader with `KONTRA_UVI_READER`.
-For protected banks, `KONTRA_UVI_AUTHORITY_DIR` points to private bank-bound JSON
-files named by the bank UUID (32 lowercase hexadecimal characters plus `.json`).
+For protected banks, the normal desktop/DAW access store is
+`$XDG_CONFIG_HOME/kontra/uvi-access` (usually `~/.config/kontra/uvi-access`).
+`KONTRA_UVI_AUTHORITY_DIR` overrides that directory. Private bank-bound JSON
+files are named by the bank UUID (32 lowercase hexadecimal characters plus `.json`).
 These are local resource access inputs, separate from saved instrument controls.
 The reader and bank files must remain present. The CLI setup commands are in the
 [README](../README.md#experimental-uvi-interoperability).
 
 Add the folder containing the banks in KONTRA's library settings and rescan.
-UVI and Kontakt entries appear in the same browser. Select a supported UVI
+The browser saves its **Unified / By player** choice. Unified keeps one catalog;
+By player gives Kontakt and UVI / Falcon separate headings with both available.
+Library and preset rows identify their player; favorites, recent items and search
+retain native bank identities. Existing settings default to Unified.
+Select a supported UVI
 program and wait for its controls before playing. Actual sample rate, host block
 size and preparation limits can affect admission.
 
@@ -60,8 +66,14 @@ worker evidence. Preflight admission is conditional on later resource/DSP/script
 validation; even a bypassed unknown processor is rejected because a script could
 enable it. Packet counters and retained voice instances describe this renderer,
 not Falcon equivalence or audible voices. A zero error count with zero rendered
-packets proves no playback. Per-node execution tracing remains unimplemented and
-is explicitly labeled unverified.
+packets proves no playback. Explicit diagnoses request a stamped worker snapshot
+at a processed boundary. Instrumented oscillators and inserts report processed block counts, current
+bypass state and retained oscillator voice instances. Silent processing still
+counts; containers, control-source nodes and scripts without probes remain unknown. A cached snapshot keeps its original frame when playback advances.
+These counters do not prove audibility, script callback coverage or vendor fidelity.
+Support exports keep a bounded UVI context and label omitted node rows with exact
+included/omitted coverage. CLI diagnoses and each worker cache retain full rows.
+No full-graph snapshot runs during ordinary packet or UI polling.
 
 The editor's existing Logs and diagnostic export include UVI initialization
 stages and failures. Rack worker snapshots retain current status/counters; worker
@@ -78,12 +90,12 @@ sharing. Journals and exports have their existing retention and truncation limit
 | Area | Established evidence | Remaining work |
 | --- | --- | --- |
 | UFS/program/sample access | Owned-corpus directory and decode checks; native identities retained | Unsupported protection/layouts remain failures; no universal-bank claim |
-| Lua and MIDI | Authored initialization, timed commands, control edits, transport and rooted note tests | Complete host API, MPE/tuning/expression and every library interaction |
+| Lua and MIDI | Authored initialization, measured original-node Gain/Pan defaults, timed commands, control edits, transport and rooted note tests | Complete host API, MPE/tuning/expression and every library interaction |
 | Native DSP | Scoped native comparisons and explicitly bounded admitted settings | Unsupported oscillators/routes/modes and broader live/rate fidelity |
 | VWinds controls | Original-source panel with uniform intrinsic 720×480 scaling; 273 widgets/38 images retained | Native fonts/units, advanced displays and full interaction/audio comparison |
 | Rack persistence | Real two-part save/reopen control and exact PCM regression | Host save failures cannot be returned through the framework hook |
 | Playback scheduling | Allocation-free callback transport and bounded packet ownership tests | Sustainable deadlines on user hardware; prior paid-worker misses remain |
-| Compatibility accounting | Parsed/admitted/rejected graph plus measured worker lifecycle/counters | Per-node execution tracing and native end-to-end musical parity |
+| Compatibility accounting | Parsed/admitted/rejected graph, worker lifecycle and explicitly requested instrumented node counters | Uninstrumented nodes, script callback coverage and native end-to-end musical parity |
 
 VWinds is a hybrid sample/modelling product. Its publisher describes harmonic
 alignment, airflow/vibrato and recorded or modelled transitions in the
@@ -94,7 +106,7 @@ does not prove its transition or timbre behavior.
 
 ## Checkpoint validation
 
-The combined `uvi,standalone` optimized CI test run passed 934 library checks,
+The combined `uvi,standalone` optimized CI test run passed 944 library checks,
 89 CLI/playback checks and four additional binary/integration checks. Thirty-five
 external-fixture checks were ignored and one screenshot check was excluded.
 The fresh native tests include root Choke ownership, state construction and

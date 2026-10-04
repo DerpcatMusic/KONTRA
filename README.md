@@ -13,7 +13,8 @@ KONTRA supplies no commercial Kontakt instrument libraries. You supply your own 
 The optional `uvi` feature adds local UFS2/v3 directory and member decoding,
 protected Program XML decoding, a Lua 5.1 host, multichannel sample loading,
 and native per-part playback through the shared rack mixer. UVI banks and
-Kontakt libraries share the browser; supported UVI programs expose their
+Kontakt libraries share the browser, with a saved Unified / By player view;
+supported UVI programs expose their
 authored controls and bank artwork. This remains experimental, and full Falcon
 compatibility is not established. See the [current evidence and limits](docs/uvi-compatibility.md)
 and [player ownership boundary](docs/PLAYER_BACKEND_BOUNDARY.md)

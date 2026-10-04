@@ -62,10 +62,34 @@ pub struct Rendered {
     pub rejected_ui: u64,
 }
 
+/// Counts describe native dispatch, including processing silence. Retained
+/// voice membership includes releasing and silent voices; neither is an
+/// audibility or reference-engine fidelity measurement.
+#[derive(serde::Serialize)]
+pub struct RuntimeNodeEvidence {
+    pub node: super::program::NodeId,
+    pub kind: String,
+    pub processed_blocks: Option<u64>,
+    pub currently_bypassed: Option<bool>,
+    pub retained_voice_instances: Option<usize>,
+    pub evidence_source: &'static str,
+}
+
+#[derive(serde::Serialize)]
+pub struct RuntimeEvidence {
+    pub frame: u64,
+    pub retained_voice_instances: usize,
+    pub nodes: Vec<RuntimeNodeEvidence>,
+    pub processing_semantics: &'static str,
+    pub audibility_verified: bool,
+    pub falcon_numerical_fidelity_verified: bool,
+}
+
 /// Owns the VM and resource cache alongside the native graph renderer.
 /// Disk reads, Lua, preparation and rendering allocate. Keep this object on
 /// one worker thread, including destruction; never use it in an audio callback.
 pub struct Player<'a> {
+    program: &'a Program,
     session: Session,
     renderer: Renderer<'a>,
     resources: BankResources,
@@ -171,6 +195,7 @@ impl<'a> Player<'a> {
         }
         let resource_revision = resources.revision();
         Ok(Self {
+            program,
             session,
             renderer,
             resources,
@@ -199,6 +224,42 @@ impl<'a> Player<'a> {
     }
     pub fn diagnostics(&self) -> Vec<&'static str> {
         self.renderer.diagnostics()
+    }
+
+    /// Explicit owning-worker inspection only. Unknown/unsupported evidence is
+    /// represented by None, never inferred from successful graph admission.
+    /// This traverses the graph only when a controller requests a snapshot.
+    pub fn runtime_evidence(&self) -> RuntimeEvidence {
+        let mut nodes: Vec<_> = self
+            .program
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(node, source)| RuntimeNodeEvidence {
+                node,
+                kind: source.kind.clone(),
+                processed_blocks: None,
+                currently_bypassed: None,
+                retained_voice_instances: None,
+                evidence_source: "not_instrumented",
+            })
+            .collect();
+        for evidence in self.renderer.runtime_evidence() {
+            if let Some(node) = nodes.get_mut(evidence.node) {
+                node.processed_blocks = Some(evidence.processed_blocks);
+                node.currently_bypassed = evidence.currently_bypassed;
+                node.retained_voice_instances = Some(evidence.retained_voice_instances);
+                node.evidence_source = "renderer_native_dispatch";
+            }
+        }
+        RuntimeEvidence {
+            frame: self.frame,
+            retained_voice_instances: self.active_voices(),
+            nodes,
+            processing_semantics: "native 256-frame intervals containing successful processing past known bypass gates; silence and retained/releasing voices are included; uninstrumented nodes are unknown",
+            audibility_verified: false,
+            falcon_numerical_fidelity_verified: false,
+        }
     }
 
     /// Read initialized controls on this player's owning thread without running

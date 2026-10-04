@@ -117,3 +117,11 @@ to the host audio callback. Graph admission and completed packets are different
 evidence; individual node execution and vendor fidelity are not inferred.
 `active_voices` keeps its cleanup contract. `last_completed_voices` is historical
 and survives failure/stop, explicitly separate from current audibility.
+
+Explicit runtime evidence uses a coalescing worker request/reply lane. The renderer
+owns preallocated processing counters; the player maps them to parsed identities
+only on request. Cached immutable reports carry their original activation and
+processed frame. Containers and scripts without probes remain unknown. This lane
+does not invoke onSave or change the render horizon, and does not infer audibility
+or numerical Falcon fidelity. Browser grouping is shared catalog presentation;
+UVI access defaults to the private app-config store with an environment override.

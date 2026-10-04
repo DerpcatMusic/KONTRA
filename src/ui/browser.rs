@@ -175,7 +175,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     let grouped = grouped.clone();
     let settings = cx.settings.clone();
     // The libraries as listed: pinned ones, then by the sort chosen.
-    let arranged: Vec<&Library> = settings.arrange(grouped.keys().filter_map(|name| catalog.named(name)));
+    let arranged: Vec<&Library> = catalog.arranged(&settings, grouped.keys().filter_map(|name| catalog.named(name)));
     let dirs: Vec<String> = arranged.iter().map(|l| l.dir.to_string_lossy().into_owned()).collect();
     // Favorites and recents of the kind picked.
     let kind = |paths: &[String]| -> Vec<PathBuf> {
@@ -223,6 +223,16 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             cx.state.multis = multi;
         }
         kinds.push(el);
+    }
+
+    let mut views = Vec::new();
+    for (view, label, id) in [
+        (crate::library::BrowserView::Unified, "Unified", "browser-view-unified"),
+        (crate::library::BrowserView::ByPlayer, "By player", "browser-view-by-player"),
+    ] {
+        let (hit, el) = tab(ui, id, label, settings.browser_view == view);
+        if hit { cx.p.shared.libraries.edit(|s| s.browser_view = view); }
+        views.push(el.tip("Library view: together, or grouped by Kontakt and UVI / Falcon"));
     }
 
     // Where the focus goes, moved once every row has read this frame's keys
@@ -310,7 +320,21 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     let (mut top, mut chosen_at) = (TIGHT, None);
     let pinned = |dir: &str| settings.pinned.iter().any(|p| p == dir);
     let dragging = ui.dragging::<LibraryDrag>().map(|d| d.0.clone());
+    let mut previous_player = None;
     for (n, (id, source)) in sources.iter().enumerate() {
+        let player = match source {
+            Source::Library(name) => catalog.named(name).map(|library| catalog.player(library)),
+            _ => None,
+        };
+        if settings.browser_view == crate::library::BrowserView::ByPlayer
+            && let Some(player) = player.filter(|player| Some(*player) != previous_player)
+        {
+            rows.push(body(player).text_size(TEXT).lines(1)
+                .pad(edges(SPACE, INSET, TIGHT, INSET)).h(CONTROL + SPACE).shrink(0)
+                .named(format!("{player} libraries")).id(if player == "Kontakt" { "browser-group-kontakt" } else { "browser-group-uvi" }));
+            top += CONTROL + SPACE;
+            previous_player = Some(player);
+        }
         let r = ui.get(id.as_str());
         let editing = matches!(source, Source::Library(name) if catalog.named(name).is_some_and(|l| cx.state.browse.renaming.as_ref().is_some_and(|(dir, _)| Path::new(dir) == l.dir)));
         if !editing && r.clicked_with(Button::Primary) {
@@ -353,11 +377,11 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             over = r.drop_target && dragging.as_ref().is_some_and(|from| from != dir);
         }
         let (label, count, thumb) = match source {
-            Source::Favorites => ("Favorites".to_owned(), favorites.len(), symbol(Icon::Star)),
-            Source::Recent => ("Recent".to_owned(), recent.len(), symbol(Icon::Recent)),
+            Source::Favorites => ("Favorites".to_owned(), favorites.len() + if multis { 0 } else { cx.selection.uvi_favorites.len() }, symbol(Icon::Star)),
+            Source::Recent => ("Recent".to_owned(), recent.len() + if multis { 0 } else { cx.selection.uvi_recent.len() }, symbol(Icon::Recent)),
             Source::Library(name) => (
                 catalog.named(name).map_or_else(|| library_label(name), |l| settings.library_name(l)),
-                grouped[name].len(),
+                grouped[name].len() + if multis { 0 } else { catalog.named(name).and_then(|library| catalog.uvi.get(&library.dir)).map_or(0, |bank| bank.presets.len()) },
                 match cx.looks(name).and_then(|l| l.thumb.clone()) {
                     Some(image) => block(THUMB.0, THUMB.1)
                         .fill(Fill::Image(image, Fit::Cover))
@@ -379,7 +403,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             _ => None,
         };
         let edit = dir.as_deref().and_then(|dir| library_name(ui, cx, dir));
-        let el = source_row(id, label, count, thumb, chosen, progress, about, edit);
+        let el = source_row(id, label, count, thumb, chosen, progress, about, edit, player);
         rows.push(if over {
             stack![el, block(Len::Pct(100.), 2).fill(accent()).anchor(Align::Start, Align::Start)].shrink(0)
         } else {
@@ -594,6 +618,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             vec![counted, add_el, hide_el]
         ),
         row(kinds).gap(INSET + TIGHT).pad(edges(0., INSET, 0., INSET)).shrink(0),
+        row(views).gap(INSET + TIGHT).pad(edges(0., INSET, 0., INSET)).shrink(0).named("Library view"),
         scan_line,
         row![filter.flex(1).min_w(0), sort_el.shrink(0)]
             .gap(TIGHT)
@@ -837,13 +862,22 @@ fn source_row(
     loading: Option<f64>,
     about: Option<String>,
     edit: Option<El>,
+    player: Option<&str>,
 ) -> El {
     let name = edit.unwrap_or_else(|| body(label.clone())
         .text_size(TEXT)
         .fill(if chosen || loading.is_some() { Fill::from(Role::Ink) } else { secondary() })
         .lines(1)
         .min_w(0));
-    let named = format!("{label}, {count} presets");
+    let named = match player {
+        Some(player) => format!("{label}, {player}, {count} presets"),
+        None => format!("{label}, {count} presets"),
+    };
+    let name = match player {
+        Some(player) => col![name, caption(player.to_owned()).fill(secondary()).lines(1)]
+            .gap(1).align(Align::Start).min_w(0),
+        None => name,
+    };
     let (name, count) = match loading {
         Some(done) => (
             col![name, progress_bar(done)].gap(3).align(Align::Start).flex(1).min_w(0),
@@ -1311,6 +1345,7 @@ fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &Path, depth: usize, under: 
     let el = row![
         block(1, TEXT).fill(if loaded { Fill::from(accent()) } else { Role::Ink.alpha(0.) }),
         name,
+        caption(if crate::creator::is_instrument(path) { "Native" } else { "Kontakt" }).fill(secondary()).shrink(0),
         match loading {
             Some(done) => super::rack::load_chip(done, false),
             None => star,
@@ -1364,7 +1399,7 @@ fn uvi_preset(ui: &mut Ui, cx: &mut Cx, n: usize, preset: &crate::library::UviPr
         col![name, caption(under.to_owned()).fill(secondary()).lines(1).min_w(0)]
             .gap(1).align(Align::Start).flex(1).min_w(0)
     };
-    interactive(row![name, caption("UVI").fill(secondary()).shrink(0), star]
+    interactive(row![name, caption("UVI / Falcon").fill(secondary()).shrink(0), star]
         .gap(INSET - 1.).align(Align::Center).pad(edges(0., SPACE, 0., SPACE))
         .h(if under.is_empty() { ROW } else { ROW2 }).when(cursor, |e| e.fill(Role::Raised))
         .focusable().a11y(A11y::Button).named(format!("{}, UVI program", preset.name))
@@ -1388,6 +1423,59 @@ fn stem(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn player_grouping_keeps_both_families_searchable_and_favoritable() {
+        use crate::{library, plugin::SamplerParams};
+        let p = Arc::new(SamplerParams::new());
+        let path = "/kontakt/Piano/Instruments/Piano.nki";
+        let source = library::UviSource { bank: "/banks/Piano.ufs".into(), bank_uuid: [4; 16], member: "Keys/Piano.uvip".into() };
+        let mut bank = library::UviBank::default();
+        bank.presets.push(Arc::new(library::UviPreset { source: source.clone(), name: "Piano".into(), folder: "Keys".into(), search: "piano keys uvi".into() }));
+        let mut shelf = library::Shelf::new(vec![
+            Library { dir: "/kontakt/Piano".into(), name: "Piano".into(), instruments: 1, ..Default::default() },
+            Library { dir: source.bank.clone(), name: "Piano".into(), instruments: 1, ..Default::default() },
+        ]);
+        shelf.uvi.insert(source.bank.clone(), Arc::new(bank));
+        { let mut view = p.shared.view.lock().unwrap(); view.shelf = Arc::new(shelf); view.files = Arc::new(vec![path.into()]); }
+        { let mut selection = p.selection.write().unwrap(); selection.favorites = vec![path.into()]; selection.uvi_favorites = vec![source.clone()]; selection.uvi_recent = vec![source.clone()]; }
+        let mut draw = super::super::build(&p, Arc::default(), Arc::default(), Arc::default(), Arc::default());
+        let mut bridge = moose::mui::Bridge::new(p.clone());
+        let mut ui = super::super::theme::ui();
+        let frame = |ui: &mut Ui, draw: &mut dyn FnMut(&mut Ui, &mut moose::mui::Bridge<SamplerParams>) -> El, bridge: &mut moose::mui::Bridge<SamplerParams>, input| {
+            let root = draw(ui, bridge); ui.frame(root, Some(Size::new(1180., 900.)), input, 1. / 60.).unwrap();
+        };
+        for _ in 0..3 { frame(&mut ui, &mut draw, &mut bridge, Input::default()); }
+        assert!(ui.scene().unwrap().surface("browser-group-uvi").is_none());
+        let press = |ui: &mut Ui, draw: &mut dyn FnMut(&mut Ui, &mut moose::mui::Bridge<SamplerParams>) -> El, bridge: &mut moose::mui::Bridge<SamplerParams>, id| {
+            ui.focus(id); frame(ui, draw, bridge, Input { keys: vec![KeyPress { key: Key::Enter, mods: Mods::default() }], ..Default::default() });
+            for _ in 0..3 { frame(ui, draw, bridge, Input::default()); }
+        };
+        press(&mut ui, &mut draw, &mut bridge, "browser-view-by-player");
+        assert_eq!(p.shared.libraries.settings().browser_view, library::BrowserView::ByPlayer);
+        let scene = ui.scene().unwrap();
+        assert!(scene.surface("browser-group-kontakt").is_some() && scene.surface("browser-group-uvi").is_some());
+        for id in ["library-0", "library-1"] {
+            let name = scene.surface(id).unwrap().semantics.as_ref().unwrap().label.as_ref().unwrap();
+            assert!(name.ends_with("1 presets"), "{name}");
+        }
+        let favorites = scene.surface("source-favorites").unwrap().semantics.as_ref().unwrap().label.as_ref().unwrap();
+        assert_eq!(favorites.as_ref(), "Favorites, 2 presets");
+        press(&mut ui, &mut draw, &mut bridge, "source-favorites");
+        assert!(ui.scene().unwrap().surface("instrument-0").is_some() && ui.scene().unwrap().surface("instrument-1").is_some());
+        ui.focus("search"); frame(&mut ui, &mut draw, &mut bridge, Input { text: "piano".into(), ..Default::default() });
+        for _ in 0..3 { frame(&mut ui, &mut draw, &mut bridge, Input::default()); }
+        assert_eq!(ui.scene().unwrap().surface("browser-count").unwrap().text_value.as_deref(), Some("2"));
+        press(&mut ui, &mut draw, &mut bridge, "star-1");
+        assert!(p.selection.read().unwrap().uvi_favorites.is_empty());
+        assert_eq!(p.selection.read().unwrap().favorites, [path]);
+        press(&mut ui, &mut draw, &mut bridge, "browser-view-unified");
+        assert!(ui.scene().unwrap().surface("browser-group-kontakt").is_none() && ui.scene().unwrap().surface("browser-group-uvi").is_none());
+        assert!(ui.scene().unwrap().surface("library-0").is_some() && ui.scene().unwrap().surface("library-1").is_some());
+        press(&mut ui, &mut draw, &mut bridge, "source-recent");
+        assert!(ui.scene().unwrap().surface("instrument-0").is_some() && ui.scene().unwrap().surface("instrument-1").is_none());
+        assert_eq!(p.selection.read().unwrap().uvi_recent, [source]);
+    }
 
     #[test]
     fn selecting_a_real_uvi_row_preserves_the_playing_kontakt_part() {

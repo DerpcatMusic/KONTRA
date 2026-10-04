@@ -490,6 +490,92 @@ mod tests {
     }
 
     #[test]
+    fn measured_missing_gain_pan_defaults_support_setters_and_saved_deltas() {
+        let program=parse_program(r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
+          objects={Program,Program.layers[1],Program.layers[1].keygroups[1]}
+          original={};for i,object in ipairs(objects)do original[i]={object:getParameter('Gain'),object:getParameter('Pan')};assert(object:hasParameter('Gain') and object:hasParameter('Pan'))end
+          sample=objects[3].oscillators[1];sampleGain=sample:getParameter('Gain');assert(sample:hasParameter('Gain') and not sample:hasParameter('Pan'))
+          function onController(e)
+            for _,object in ipairs(objects)do
+              object:setParameter('Gain',-0.5);assert(object:getParameter('Gain')==-0.5)
+              object:setParameter('Gain',2.5);assert(object:getParameter('Gain')==2.5)
+              object:setParameter('Pan',-1.5);assert(object:getParameter('Pan')==-1.5)
+              object:setParameter('Pan',1.5);assert(object:getParameter('Pan')==1.5)
+              object:setParameter('Gain',0.625);object:setParameter('Pan',0.25)
+            end
+            sample:setParameter('Gain',-0.5);assert(sample:getParameter('Gain')==-0.5)
+            sample:setParameter('Gain',2.5);assert(sample:getParameter('Gain')==2.5)
+            sample:setParameter('Gain',0.625)
+          end
+          function onLoad(data)
+            assert(data.marker and sampleGain==0.625)
+            for _,value in ipairs(original)do assert(value[1]==0.625 and value[2]==0.25)end
+          end
+          function onSave()return {marker=true}end
+        ]]></script></ScriptProcessor></EventProcessors><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="authored.wav"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let baseline = crate::uvi::host::source_parameters(&program);
+        for (node, values) in program.nodes.iter().zip(&baseline) {
+            if matches!(
+                node.kind.as_str(),
+                "Program" | "Layer" | "Keygroup" | "SamplePlayer"
+            ) {
+                assert!(values["Gain"] == ParameterValue::Number(1.));
+                assert!(!node.attributes.contains_key("Gain"));
+            }
+            if matches!(node.kind.as_str(), "Program" | "Layer" | "Keygroup") {
+                assert!(values["Pan"] == ParameterValue::Number(0.));
+                assert!(!node.attributes.contains_key("Pan"));
+            }
+        }
+        let mut session =
+            Session::new_program_chain(&program, BTreeMap::new(), None, 48000).unwrap();
+        let initial = session.saved_state(0).unwrap();
+        assert!(
+            initial.0.parameters.is_empty(),
+            "default maps are not persisted as overrides"
+        );
+        session
+            .input(crate::uvi::script::Input {
+                frame: 0,
+                kind: crate::uvi::script::InputKind::Controller {
+                    channel: 0,
+                    controller: 1,
+                    value: 127,
+                },
+            })
+            .unwrap();
+        let saved = session.saved_state(0).unwrap();
+        assert_eq!(saved.0.parameters.len(), 7);
+        let saved = SavedState::decode(&saved.encode().unwrap()).unwrap();
+        let mut restored = Session::new_program_chain_with_state(
+            &program,
+            BTreeMap::new(),
+            None,
+            48000,
+            Some(&saved),
+        )
+        .unwrap();
+        assert_eq!(
+            restored.saved_state(0).unwrap().encode().unwrap(),
+            saved.encode().unwrap()
+        );
+        let mut rejected = saved.clone();
+        let sample = program.sample_zones[0].player;
+        rejected
+            .0
+            .parameters
+            .push((sample, "Pan".into(), ParameterValue::Number(0.25)));
+        rejected
+            .0
+            .parameters
+            .sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+        assert!(
+            rejected.validate(&program).is_err(),
+            "unmeasured SamplePlayer Pan is not admitted as a default property"
+        );
+    }
+
+    #[test]
     fn native_bundle_preloads_deltas_resources_before_callbacks_and_on_init_wins() {
         let program = parse_program(r#"<Program Gain="1"><EventProcessors><ScriptProcessor><script><![CDATA[
           loadData('constructor.json');seenGain=Program:getParameter('Gain');loaded=false

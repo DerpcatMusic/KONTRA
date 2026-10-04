@@ -897,6 +897,22 @@ pub(crate) fn source_parameters(program: &Program) -> Vec<BTreeMap<String, Param
                 .iter()
                 .map(|(name, value)| (name.clone(), attribute(name, value)))
                 .collect();
+            // Original Workstation 4.0.9 authored missing-attribute probes:
+            // these getters are linear Gain=1 and Pan=0. SamplePlayer has
+            // Gain, but native hasParameter('Pan') is false (getter is nil).
+            if matches!(
+                node.kind.as_str(),
+                "Program" | "Layer" | "Keygroup" | "SamplePlayer"
+            ) {
+                values
+                    .entry("Gain".into())
+                    .or_insert(ParameterValue::Number(1.));
+            }
+            if matches!(node.kind.as_str(), "Program" | "Layer" | "Keygroup") {
+                values
+                    .entry("Pan".into())
+                    .or_insert(ParameterValue::Number(0.));
+            }
             if !wrappers.contains(&node.kind.as_str()) && node.kind != "Connections" {
                 values
                     .entry("Bypass".into())

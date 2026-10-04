@@ -23,6 +23,7 @@ use super::{
 use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
 use std::{
+    cell::Cell,
     collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
 };
@@ -570,6 +571,26 @@ impl Processor {
         );
         Ok(())
     }
+    fn bypassed(&self) -> Result<bool> {
+        let value = match self {
+            Self::Matrix(p) => return Ok(p.parameter("Bypass")? != 0.),
+            Self::Gain(p) => return Ok(p.parameter("Bypass")? != 0.),
+            Self::Pole(p) => return Ok(p.parameter("Bypass")? != 0.),
+            Self::Delay(p) => return Ok(p.parameter("Bypass")? != 0.),
+            Self::Effect(p) => p.parameter("Bypass")?,
+            Self::Filter(p) => p.parameter("Bypass")?,
+            Self::Time(p) => p.parameter("Bypass")?,
+            Self::Wave(p) => p.parameter("Bypass")?,
+            Self::Max(p) => p.parameter("Bypass")?,
+            Self::Spark(p) => p.parameter("Bypass")?,
+            Self::Phasor(p) => p.parameter("Bypass")?,
+        };
+        match value {
+            ParameterValue::Boolean(value) => Ok(value),
+            ParameterValue::Number(value) => Ok(value != 0.),
+            _ => bail!("Invalid UVI processor bypass state"),
+        }
+    }
     fn process(&mut self, frame: &mut Frame) -> Result<()> {
         match self {
             Self::Matrix(p) => {
@@ -715,8 +736,26 @@ struct Voice {
     processors: HashMap<NodeId, Processor>,
 }
 
+/// Worker-owned observations, read only at an explicit diagnostic request.
+#[derive(Serialize)]
+pub struct NodeRuntimeEvidence {
+    pub node: NodeId,
+    /// Native 256-frame intervals with at least one successful source/insert call
+    /// past the node's bypass gate, including calls starting mid-interval.
+    /// This is execution evidence, not an audibility or fidelity measurement.
+    pub processed_blocks: u64,
+    /// Current authored/live base Bypass; ancestor and modulation gates differ.
+    pub currently_bypassed: Option<bool>,
+    /// Membership in retained voices, including silent/releasing/done sources.
+    pub retained_voice_instances: usize,
+}
 pub struct Renderer<'a> {
     program: &'a Program,
+    processed_blocks: Vec<Cell<u64>>,
+    last_processed_block: Vec<Cell<u64>>,
+    // Existing successful setters keep this in sync with the insert bypass gate.
+    insert_bypassed: Vec<Cell<bool>>,
+    runtime_nodes: Vec<NodeId>,
     parameters: Vec<BTreeMap<String, String>>,
     numbers: Vec<BTreeMap<String, usize>>,
     number_slots: Vec<CachedNumber>,
@@ -936,6 +975,10 @@ impl<'a> Renderer<'a> {
             .collect();
         let mut renderer = Self {
             program,
+            processed_blocks: (0..program.nodes.len()).map(|_| Cell::new(0)).collect(),
+            last_processed_block: (0..program.nodes.len()).map(|_| Cell::new(u64::MAX)).collect(),
+            insert_bypassed: (0..program.nodes.len()).map(|_| Cell::new(false)).collect(),
+            runtime_nodes: Vec::new(),
             parameters,
             numbers,
             number_slots,
@@ -1037,6 +1080,15 @@ impl<'a> Renderer<'a> {
                 }
             }
         }
+        renderer.runtime_nodes = program.nodes.iter().enumerate().filter_map(|(id, node)| {
+            (node.kind == "SamplePlayer" || generator::supports(&node.kind)
+                || effects::supports(&node.kind) || filter::supports(&node.kind)
+                || time_effects::supports(&node.kind) || waveshaper::supports(&node.kind)
+                || maximizer::supports(&node.kind) || sparkverb::supports(&node.kind)
+                || phasor::supports(&node.kind)
+                || matches!(node.kind.as_str(), "GainMatrix" | "Gain" | "OnePole" | "TrackDelay"))
+                .then_some(id)
+        }).collect();
         ensure!(
             renderer.delay_bytes(None) <= PROCESSOR_MEMORY_LIMIT,
             "Native UVI delay state exceeds memory budget"
@@ -1131,6 +1183,26 @@ impl<'a> Renderer<'a> {
     /// Absolute output position of the next rendered frame.
     pub fn current_frame(&self) -> u64 {
         self.frame
+    }
+    fn record_processing(&self, node: NodeId) {
+        let block = self.frame / 256;
+        if self.last_processed_block[node].get() != block {
+            self.last_processed_block[node].set(block);
+            let blocks = &self.processed_blocks[node];
+            blocks.set(blocks.get().saturating_add(1));
+        }
+    }
+    pub fn runtime_evidence(&self) -> Vec<NodeRuntimeEvidence> {
+        self.runtime_nodes.iter().map(|&node| NodeRuntimeEvidence {
+            node,
+            processed_blocks: self.processed_blocks[node].get(),
+            currently_bypassed: self.base_number(node, "Bypass", 0.).ok().and_then(|value| {
+                if value == 0. { Some(false) } else if value == 1. { Some(true) } else { None }
+            }),
+            retained_voice_instances: self.voices.iter().filter(|voice| {
+                voice.processors.contains_key(&node) || voice.oscillators.iter().any(|osc| osc.player == node)
+            }).count(),
+        }).collect()
     }
     /// Planned native sources need complete musical-event lookahead within
     /// fixed 256-frame blocks, independent of the requested output length.
@@ -1455,6 +1527,9 @@ impl<'a> Renderer<'a> {
                         )
                     })?;
                 }
+                if name == "Bypass" {
+                    self.insert_bypassed[*id].set(*value >= 0.5);
+                }
             }
         }
         Ok(())
@@ -1555,6 +1630,7 @@ impl<'a> Renderer<'a> {
                     bytes <= PROCESSOR_MEMORY_LIMIT,
                     "UVI processing buffers exceed memory budget"
                 );
+                self.insert_bypassed[id].set(p.bypassed()?);
                 result.insert(id, p);
             }
         }
@@ -2245,6 +2321,9 @@ impl<'a> Renderer<'a> {
                                 self.frame
                             )
                         })?;
+                    if parameter == "Bypass" {
+                        self.insert_bypassed[*node].set(p.bypassed()?);
+                    }
                 }
                 for v in &mut self.voices {
                     if let Some(p) = v.processors.get_mut(node) {
@@ -2255,6 +2334,9 @@ impl<'a> Renderer<'a> {
                                     self.frame
                                 )
                             })?;
+                        if parameter == "Bypass" {
+                            self.insert_bypassed[*node].set(p.bypassed()?);
+                        }
                     }
                 }
                 if self.program.nodes[*node].kind == "BusRouter" && parameter == "Destination" {
@@ -2407,6 +2489,9 @@ impl<'a> Renderer<'a> {
                             self.program.nodes[id].kind, self.frame
                         )
                     })?;
+                if !self.insert_bypassed[id].get() {
+                    self.record_processing(id);
+                }
             }
         }
         Ok(())
@@ -2539,6 +2624,7 @@ impl<'a> Renderer<'a> {
                 self.number(player, "Gain", 1.)?,
                 self.number(player, "Pan", 0.)?,
             )?;
+            self.record_processing(osc.player);
             return Ok(frame);
         }
         let sample = &self.samples[&osc.path];
@@ -2685,6 +2771,7 @@ impl<'a> Renderer<'a> {
             )
         };
         balance(&mut frame, gain, self.number(osc.player, "Pan", 0.)?)?;
+        self.record_processing(osc.player);
         Ok(frame)
     }
     fn next_frame(&mut self) -> Result<[f32; 2]> {
@@ -3093,6 +3180,67 @@ mod tests {
             pan: 0.,
             tune: 0.,
             offset_us: 0,
+        }
+    }
+    #[test]
+    fn runtime_evidence_counts_executed_leaves_and_preserves_passive_snapshots() {
+        let program = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer Name="Active" SamplePath="a" NoteTracking="0"/><SamplePlayer Name="Bypassed" SamplePath="a" Bypass="1"/></Oscillators><Inserts><Gain Name="ActiveInsert"/><Gain Name="BypassedInsert" Bypass="1"/></Inserts></Keygroup><Keygroup LowKey="100"><Oscillators><SamplePlayer Name="Unvisited" SamplePath="a"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let id = |name: &str| program.nodes.iter().position(|n| n.name.as_deref() == Some(name)).unwrap();
+        let mut renderer = Renderer::new(&program, HashMap::from([("a".into(), Arc::new(sample(1)))]), 48000).unwrap();
+        assert!(renderer.runtime_evidence().iter().all(|row| row.processed_blocks == 0));
+        renderer.render(&[script::Command { frame: 0, action: script::Action::Start(note(7)) }], &[], 8).unwrap();
+        let evidence = renderer.runtime_evidence();
+        let row = |name| evidence.iter().find(|row| row.node == id(name)).unwrap();
+        assert_eq!(row("Active").processed_blocks, 1);
+        assert_eq!(row("ActiveInsert").processed_blocks, 1);
+        assert_eq!(row("Active").retained_voice_instances, 1);
+        assert_eq!(row("Bypassed").processed_blocks, 0);
+        assert_eq!(row("BypassedInsert").processed_blocks, 0);
+        assert_eq!(row("BypassedInsert").currently_bypassed, Some(true));
+        assert_eq!(row("Unvisited").processed_blocks, 0);
+        assert_eq!(row("Unvisited").retained_voice_instances, 0);
+        assert_eq!(renderer.current_frame(), 8);
+        let before = serde_json::to_value(&evidence).unwrap();
+        assert_eq!(serde_json::to_value(renderer.runtime_evidence()).unwrap(), before);
+        assert_eq!(renderer.current_frame(), 8);
+        renderer.render(&[], &[], 248).unwrap();
+        assert_eq!(renderer.runtime_evidence().iter().find(|row| row.node == id("Active")).unwrap().processed_blocks, 1);
+        renderer.render(&[], &[], 1).unwrap();
+        assert_eq!(renderer.runtime_evidence().iter().find(|row| row.node == id("Active")).unwrap().processed_blocks, 2);
+    }
+    #[test]
+    fn runtime_evidence_counts_mid_interval_start_and_enable_only_after_execution() {
+        let program = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer Name="Source" SamplePath="a" NoteTracking="0"/></Oscillators><Inserts><Gain Name="Insert" Bypass="1"/></Inserts></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let id = |name: &str| program.nodes.iter().position(|n| n.name.as_deref() == Some(name)).unwrap();
+        let mut renderer = Renderer::new(&program, HashMap::from([("a".into(), Arc::new(sample(1)))]), 48000).unwrap();
+        renderer.render(&[script::Command { frame: 17, action: script::Action::Start(note(7)) }], &[], 32).unwrap();
+        let evidence = renderer.runtime_evidence();
+        assert_eq!(evidence.iter().find(|row| row.node == id("Source")).unwrap().processed_blocks, 1);
+        assert_eq!(evidence.iter().find(|row| row.node == id("Insert")).unwrap().processed_blocks, 0);
+        renderer.render(&[], &[host::Command { frame: 32, action: host::Action::Parameter { node: id("Insert"), parameter: "Bypass".into(), value: ParameterValue::Number(0.) } }], 1).unwrap();
+        assert_eq!(renderer.runtime_evidence().iter().find(|row| row.node == id("Insert")).unwrap().processed_blocks, 1);
+    }
+    #[test]
+    fn runtime_evidence_uses_each_voice_effective_bypass_gate() {
+        let program = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" NoteTracking="0"/></Oscillators><Inserts><XpanderFilter Name="Insert" Algorithm="1" Oversampling="0"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Bypass" Ratio="1"/></Connections></XpanderFilter></Inserts></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let insert = program.nodes.iter().position(|n| n.name.as_deref() == Some("Insert")).unwrap();
+        for enabled_first in [false, true] {
+            let mut renderer = Renderer::new(&program, HashMap::from([("a".into(), Arc::new(sample(1)))]), 48000).unwrap();
+            let mut first = note(7);
+            first.channel = u8::from(enabled_first);
+            let mut second = note(8);
+            second.channel = u8::from(!enabled_first);
+            let bypass = script::Command { frame: 0, action: script::Action::Controller { channel: 0, controller: 1, value: 127 } };
+            renderer.render(&[bypass, script::Command { frame: 0, action: script::Action::Start(first) }], &[], 256).unwrap();
+            let count = |renderer: &Renderer| renderer.runtime_evidence().iter().find(|row| row.node == insert).unwrap().processed_blocks;
+            assert_eq!(count(&renderer), u64::from(enabled_first));
+            renderer.render(&[script::Command { frame: 256, action: script::Action::Start(second) }], &[], 256).unwrap();
+            assert_eq!(count(&renderer), u64::from(enabled_first) + 1);
+            assert_eq!(renderer.runtime_evidence().iter().find(|row| row.node == insert).unwrap().retained_voice_instances, 2);
+            assert_eq!(renderer.voices[0].processors[&insert].bypassed().unwrap(), !enabled_first);
+            assert_eq!(renderer.voices[1].processors[&insert].bypassed().unwrap(), enabled_first);
+            renderer.render(&[], &[], 256).unwrap();
+            assert_eq!(count(&renderer), u64::from(enabled_first) + 2);
         }
     }
     #[test]

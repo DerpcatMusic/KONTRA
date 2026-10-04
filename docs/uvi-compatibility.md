@@ -10,13 +10,21 @@ The latest source adds exact hosted-root choking without synthesizing release ca
 
 Explicit rack Save requests a processed audio boundary and fails rather than accepting stale native controls. The framework's host pre-save hook cannot return a failure: a failed capture retains the previous successful bytes and writes a diagnostic. Resume processing and save again when a partial packet or queued edit has not settled. No file-write capability is granted to native scripts by this state transport.
 
-The new per-preset diagnosis distinguishes decoded graph nodes, static preflight admission/rejection, initialization phases and actual packet/voice counters. It does not claim per-node execution tracing or Falcon equivalence. Worker load details survive preflight failure and enter the existing bounded Logs/export journal. Resource, Lua and DSP errors preserve their actual causes; the instrumented execution boundaries add processor IDs and frames. See [testing and diagnosis](UVI_TEST_CHECKPOINT.md).
+Missing original-node Gain/Pan defaults are admitted only where fresh official
+Workstation probes establish them: Program/Layer/Keygroup expose Gain1 and Pan0,
+SamplePlayer exposes Gain1 with no invented Pan property. Native setters accept
+out-of-range Lua values despite advisory metadata ranges; existing audio-domain
+validation remains separate. Saved deltas and restored PCM have authored checks.
+Synthetic Part/Synth audio setters and a complete missing-property inventory remain
+unsupported.
+
+The new per-preset diagnosis distinguishes decoded graph nodes, static preflight admission/rejection, initialization phases and actual packet/voice counters. Explicit worker snapshots additionally expose instrumented per-node processed block counts and their captured frame; uninstrumented nodes remain unknown. This does not establish audibility or Falcon equivalence. Worker load details survive preflight failure and enter the existing bounded Logs/export journal. Resource, Lua and DSP errors preserve their actual causes; the instrumented execution boundaries add processor IDs and frames. See [testing and diagnosis](UVI_TEST_CHECKPOINT.md).
 
 Button and OnOffButton labels now default off, Knob labels/values default on, and empty native captions remain empty. Custom artwork does not change these defaults. A genuine initialized VWinds source-helper capture retains 273 widgets and 38 authorized images. The intrinsic 720×480 stage now scales uniformly up and down, with captions overlaid on full knob frames and authored small menus retaining their bounds. Placement/hit-target checks at 480 and 1080 pixels wide pass. This is a rendered panel from actual source and resources, not a complete native window screenshot or pixel-parity proof.
 
 Stationary 48-kHz stereo Exciter Modes0/1 at Oversampling0 and individually measured SparkVerb delay-layout tuples are admitted; Exciter coefficients remain fitted and carry a fidelity diagnostic. Static square LFO uses measured control points; unmeasured live waveform/connected-parameter changes remain gated. WaveTable scalar endpoint conversion groundwork does not enable its unverified moving control routes. **Starter coverage remains 1/50**: no additional original preset is advertised as fully playable from these leaf changes. Prior paid-worker measurements include missed render deadlines; realtime readiness remains unproven.
 
-Combined optimized CI validation with `uvi,standalone` passes **934 library tests, 89 CLI/playback tests and four additional binary/integration checks**, with 35 external-fixture tests ignored and one screenshot excluded. This includes the native two-part rack save/reopen PCM regression and new diagnostic failure cases. The older corpus and native-comparison measurements below remain separately scoped; they were not all rerun for this checkpoint.
+Combined optimized CI validation with `uvi,standalone` passes **944 library tests, 89 CLI/playback tests and four additional binary/integration checks**, with 35 external-fixture tests ignored and one screenshot excluded. This includes the native two-part rack save/reopen PCM regression and new diagnostic failure cases. The older corpus and native-comparison measurements below remain separately scoped; they were not all rerun for this checkpoint.
 
 ## Native ownership and boundaries
 
@@ -256,6 +264,15 @@ The subsequent clean integration `191e48118c95dc38da80a56f23a6152356cac229` pres
 A subsequent isolated source comparison swaps only the prior graph lookup implementation against the accepted `9d69ae0`/`191e481` implementation, using the same actual Renderer and preserved 0.3.148 SDK dependencies. Three alternating timing pairs plus one separate allocation pair preserve complete paid and authored PCM/command hashes and counts. Median Renderer thread CPU for the 4.4-second paid expressive fixture falls from **4.204 to 3.768 seconds (10.37%)**; contiguous packet CPU falls from 4.375 to 3.934 seconds. Renderer allocation traffic remains identical: 220,326 allocations, 900 reallocations and 89,252,656 requested bytes. Every latest timing run still has **342 of 825 Renderer wall-time deadline misses**, with about 72.7 ms first-block CPU. The coordinated window retained the user's desktop/DAW background processes. These bounded workstation observations establish a CPU improvement, not sustained real-time playback or native-program parity.
 
 The later catalog entry-point correction prevents UVI-disabled builds from scanning and advertising UFS banks, while preserving typed saved references. The actual UVI-disabled Scanner regression and existing UVI-enabled inventory/cache UUID replacement regression both pass. Complete Kontakt disablement and the common live backend dispatch remain planned work in [the player boundary contract](PLAYER_BACKEND_BOUNDARY.md).
+
+The browser/diagnostic follow-up uses block-level instrumented evidence counters,
+with explicit unknown rows for uninstrumented nodes. Four alternating baseline
+and final-counter captures of the same 4-second paid Clarinet fixture preserve
+complete PCM and event/host-command hashes. Packet thread CPU was 2463/2604 ms
+for baseline and 2458/2447 ms with final counters on this machine. These short,
+scoped pairs show no measured regression; they establish neither a speedup nor
+sustained real-time readiness. An attempted scope-plan optimization was omitted
+because its earlier alternating timing results did not establish a reliable gain.
 
 ## Provenance and reproducibility
 
