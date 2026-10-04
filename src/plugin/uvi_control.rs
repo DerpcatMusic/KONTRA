@@ -346,11 +346,16 @@ impl Registry {
     }
 
     /// Loader-only terminal evidence, captured before cancellation retires Lua.
+    pub(crate) fn private_lua_failure(&self, epoch:u64, generation:u64) -> Option<Arc<crate::uvi::lua_failure::Context>> {
+        self.controls.get(&(epoch,generation))?.worker.private_lua_failure()
+    }
+
     pub fn failure_context(&self, epoch: u64, generation: u64) -> Option<serde_json::Value> {
         let control = self.controls.get(&(epoch, generation))?;
         let failure = control.worker.private_failure().map(|reason| reason.chars().take(4096).collect::<String>());
         let stats = serde_json::json!(control.worker.stats());
         Some(serde_json::json!({"status":control.worker.status(), "failure":failure,
+            "lua_failure":control.worker.private_lua_failure().map(|context|context.metadata()),
             "timing":failure_timing(&stats, control.rate), "stats":stats,
             "configured_pending_packets":control.maximum.div_ceil(crate::uvi::worker::BLOCK_FRAMES)
                 + control.lead + crate::uvi::worker::QUEUE_CAPACITY + 1,

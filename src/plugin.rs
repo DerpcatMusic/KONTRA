@@ -838,6 +838,9 @@ fn first_script_live(rt: &Runtime) -> Box<Live> {
 
 #[derive(Default, Clone)]
 pub(crate) struct PartView {
+    /// Local-only code inspection; deliberately absent from diagnostic reports.
+    #[cfg(feature = "uvi")]
+    pub(crate) uvi_lua_failure: Option<Arc<crate::uvi::lua_failure::Context>>,
     #[cfg(feature = "uvi")]
     pub(crate) uvi_ui: Option<Arc<uvi_ui::Published>>,
     #[cfg(feature = "uvi")]
@@ -916,6 +919,17 @@ impl PartView {
     pub(crate) fn uvi_matches(&self, source: &library::UviSource, stamp: crate::uvi::worker::Stamp) -> bool {
         self.uvi_activation.as_ref().is_some_and(|a| a.source == *source
             && (a.epoch, a.generation) == (stamp.epoch, stamp.generation))
+    }
+    #[cfg(feature = "uvi")]
+    pub(crate) fn local_lua_failure(
+        &self, bank: &Path, member: &str, epoch: u64, generation: u64,
+    ) -> Option<Arc<crate::uvi::lua_failure::Context>> {
+        let activation = self.uvi_activation.as_ref()?;
+        if (epoch, generation) != (activation.epoch, activation.generation)
+            || bank != activation.source.bank || member != activation.source.member {
+            return None;
+        }
+        self.uvi_lua_failure.clone()
     }
     /// Pending scalar values affect drawing without copying or mutating the
     /// callback-derived interface retained by readers.

@@ -19,6 +19,7 @@ pub mod flanger;
 pub mod generator;
 pub mod host;
 pub mod library;
+pub(crate) mod lua_failure;
 pub mod maximizer;
 pub mod modulation;
 pub mod multilfo;

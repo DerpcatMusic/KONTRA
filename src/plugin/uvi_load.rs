@@ -400,8 +400,11 @@ fn fail(
         .is_some_and(|part| terminal(part, activation)) {
         return;
     }
-    let worker = params.shared.uvi_controls.lock().unwrap()
-        .failure_context(activation.epoch, activation.generation);
+    let (worker,lua_failure) = {
+        let controls=params.shared.uvi_controls.lock().unwrap();
+        (controls.failure_context(activation.epoch,activation.generation),
+            controls.private_lua_failure(activation.epoch,activation.generation))
+    };
     let endpoint = params.shared.part(slot)
         .and_then(|part| part.uvi_failure(activation.epoch, activation.generation));
     let reason = endpoint.map_or(reason, |fault| format!("{:?} at {} (frame {})",
@@ -439,6 +442,7 @@ fn fail(
         report["status"] = serde_json::json!("failed");
         report["failure"] = serde_json::json!(reason);
         report["terminal_failure"] = failure.clone();
+        part.uvi_lua_failure = lua_failure;
         part.status = status.into();
         part.loading = false;
         // Keep the adopted, owned panel for inspection after runtime failure.

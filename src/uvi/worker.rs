@@ -463,6 +463,7 @@ struct Details {
     resource_activity: ResourceActivity,
     activity_cache: Option<(Instant, &'static str, Status, usize, Arc<WorkerLoadActivity>)>,
     failure: Option<String>,
+    lua_failure: Option<Arc<super::lua_failure::Context>>,
     phase: &'static str,
     phase_frame: u64,
     program_report: Option<serde_json::Value>,
@@ -772,6 +773,9 @@ impl Worker {
             .failure
             .clone()
     }
+    pub(crate) fn private_lua_failure(&self) -> Option<Arc<super::lua_failure::Context>> {
+        self.shared.details.lock().unwrap_or_else(|p| p.into_inner()).lua_failure.clone()
+    }
     /// Loader-control progress only: two scalars, no graph or script data.
     /// The player never retains this observer, and audio callbacks never use it.
     pub fn initialization_progress(&self) -> Option<(&'static str, Duration)> {
@@ -832,7 +836,7 @@ impl Worker {
             "epoch":self.shared.stamp.epoch, "generation":self.shared.stamp.generation,
             "program":details.program_report, "stats":self.stats(),
             "initialization":details.initialization.report(),
-            "failure":details.failure, "load_trace":details.load_report.as_deref(),
+            "failure":details.failure, "lua_failure":details.lua_failure.as_ref().map(|context|context.metadata()), "load_trace":details.load_report.as_deref(),
             "runtime_evidence":"worker_lifecycle_completed_packets_and_optional_requested_node_snapshot",
             "runtime_snapshot":details.runtime_report.as_deref(),
             "per_node_execution_proof":false, "falcon_fidelity_proof":false,
@@ -1666,7 +1670,7 @@ fn run(
                 details.initialized_ui = Some(Arc::new(snapshots));
             }
         },
-    )?;
+    ).map_err(|error| retain_lua_failure(shared, error, &loaded.program))?;
     {
         let mut details = shared
             .details
@@ -1698,6 +1702,14 @@ fn run(
     trace.stage("uvi_serve");
     shared.status.store(Status::Ready as u8, Ordering::Release);
     serve(&mut player, shared, config.sample_rate)
+        .map_err(|error| retain_lua_failure(shared, error, &loaded.program))
+}
+
+fn retain_lua_failure(shared: &Shared, error: anyhow::Error, program: &super::program::Program) -> anyhow::Error {
+    if let Some(context) = super::lua_failure::from_error(&error, program) {
+        shared.details.lock().unwrap_or_else(|p| p.into_inner()).lua_failure = Some(Arc::new(context));
+    }
+    error
 }
 
 fn initialization_stage(
@@ -2206,6 +2218,12 @@ pub(crate) mod tests {
                 .contains("private-print-marker")
         );
         assert_eq!(report["load_trace"]["details"]["failure_frame"], 256);
+        let local=worker.private_lua_failure().unwrap();
+        assert_eq!((local.processor,local.frame,local.line),(Some(2),256,Some(3)));
+        assert!(local.display.contains("if counter==1 then error("));
+        assert!(!report.to_string().contains("if counter==1 then error("),"commercial code remains absent from serialized report/export context");
+        assert_eq!(report["lua_failure"]["local_source_excerpt_available"],true);
+
         drop(worker);
         std::fs::remove_file(path).unwrap();
     }
