@@ -237,7 +237,7 @@ fn handler(size: (u32, u32), scale: f64) -> Handler<Knob> {
 }
 
 /// Run with an X11 display and compute-capable EGL driver:
-/// `WGPU_BACKEND=gl cargo test -p mui-baseview native_surface_presents_and_reopens -- --ignored`
+/// `WGPU_BACKEND=gl cargo test -p kontra-native-host native_surface_presents_and_reopens -- --ignored`
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires a live X11 display and graphics driver"]
