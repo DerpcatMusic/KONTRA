@@ -103,6 +103,18 @@ pub(super) fn reconstruct_channel(sample: &Sample, channel: usize, rate: f64) ->
         *coefficient *= normalization;
     }
     let delay = (800. / down as f64).round() as u64;
+    // Adjacent FIR windows reread immutable source PCM. Cache only decoded
+    // values within this call; every first read retains its original checks.
+    let mut cached_sources = [usize::MAX; 2048];
+    let mut cached_values = [0.; 2048];
+    let mut cached_at = |source: usize| -> Result<f64> {
+        let slot = source & 2047;
+        if cached_sources[slot] != source {
+            cached_values[slot] = at(source)?;
+            cached_sources[slot] = source;
+        }
+        Ok(cached_values[slot])
+    };
     for frame in 0..frames {
         let position = (frame as u64 + delay)
             .checked_mul(down)
@@ -113,7 +125,7 @@ pub(super) fn reconstruct_channel(sample: &Sample, channel: usize, rate: f64) ->
         if source_frames > 0 && first <= end {
             for source in first..=end {
                 let index = (position - source * up) as usize;
-                value += at(source as usize)? * coefficients[index];
+                value += cached_at(source as usize)? * coefficients[index];
             }
         }
         let value = value as f32;
@@ -168,6 +180,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn source_read_cache_wrap_keeps_shifted_impulse_amplitude() {
+        let mut source = sample(96000, 1, 16001);
+        let mut values = vec![0.; source.frames];
+        // These positions share a cache slot but carry different values.
+        values[1024] = 0.5;
+        values[3072] = -0.25;
+        source.interleaved = Storage::from_f32(values).unwrap();
+        let output = reconstruct_channel(&source, 0, 48000.).unwrap();
+        let mut observed = 0;
+        for frame in 112..913 {
+            if output[frame] != 0. {
+                observed += 1;
+                assert_eq!(output[frame + 1024].to_bits(), (-0.5 * output[frame]).to_bits());
+            }
+        }
+        assert!(observed > 700);
+    }
     #[test]
     fn authored_native_ir_reconstruction() {
         // Native mono capture divided by the independently measured input .125.
