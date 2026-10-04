@@ -80,14 +80,18 @@ impl Archive {
         if !e.valid {
             return Err(invalid(e.issue.unwrap_or("Invalid archive member")));
         }
-        reader.seek(SeekFrom::Start(e.offset))?;
-        let mut bytes = reader.read_bytes(e.size as usize)?;
-        if e.encoded && e.key_index != 0xff {
+        let key = if e.encoded && e.key_index != 0xff {
             if e.key_index != 0x100 {
                 return Err(invalid("Unsupported legacy NKX cipher"));
             }
-            key.ok_or_else(|| invalid("Encrypted archive member needs local library access data"))?
-                .apply(&mut bytes);
+            Some(key.ok_or_else(|| invalid("Encrypted archive member needs local library access data"))?)
+        } else {
+            None
+        };
+        reader.seek(SeekFrom::Start(e.offset))?;
+        let mut bytes = reader.read_bytes(e.size as usize)?;
+        if let Some(key) = key {
+            key.apply(&mut bytes);
         }
         Ok(bytes)
     }
@@ -253,4 +257,74 @@ fn check<R: Read + Seek>(r: &mut R, e: &mut Entry, length: u64) -> Result<(), Er
     };
     e.valid = e.issue.is_none();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{self, Cursor};
+
+    struct Counted {
+        reader: Cursor<Vec<u8>>,
+        read_bytes: usize,
+    }
+    impl Read for Counted {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            let n = self.reader.read(bytes)?;
+            self.read_bytes += n;
+            Ok(n)
+        }
+    }
+    impl Seek for Counted {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            self.reader.seek(position)
+        }
+    }
+    fn fixture(key_index: u32) -> (Archive, Counted) {
+        let mut bytes = vec![0u8; 31];
+        bytes[..4].copy_from_slice(&0x16ccf80au32.to_le_bytes());
+        bytes[4..6].copy_from_slice(&0x110u16.to_le_bytes());
+        bytes[10..14].copy_from_slice(&key_index.to_le_bytes());
+        bytes[19..23].copy_from_slice(&32u32.to_le_bytes());
+        bytes.extend([0x5a; 32]);
+        let archive = Archive {
+            entries: HashMap::from([("authored".into(), Entry {
+                name: "authored".into(), header_offset: 0, issue: None,
+                offset: 0, size: 0, encoded: false, key_index: 0xff,
+                valid: false, checked: false,
+            })]),
+            length: bytes.len() as u64,
+            issues: Vec::new(),
+        };
+        (archive, Counted { reader: Cursor::new(bytes), read_bytes: 0 })
+    }
+
+    #[test]
+    fn denied_decryption_reads_header_without_consuming_payload() {
+        for (key_index, error) in [
+            (0x100, "Encrypted archive member needs local library access data"),
+            (0x101, "Unsupported legacy NKX cipher"),
+        ] {
+            let (archive, mut reader) = fixture(key_index);
+            assert!(archive.read_entry_with_key(&mut reader, "authored", None)
+                .unwrap_err().to_string().contains(error));
+            assert_eq!(reader.read_bytes, 31, "denied access read the member payload");
+        }
+    }
+
+    #[test]
+    fn authorized_and_keyless_member_reads_preserve_bytes() {
+        struct Key;
+        impl crate::nis::LibraryKey for Key {
+            fn apply_at(&self, _: u64, bytes: &mut [u8]) {
+                for byte in bytes { *byte ^= 0x5a; }
+            }
+        }
+        let (archive, mut reader) = fixture(0x100);
+        assert_eq!(archive.read_entry_with_key(&mut reader, "authored", Some(&Key)).unwrap(), [0; 32]);
+        assert_eq!(reader.read_bytes, 63);
+        let (archive, mut reader) = fixture(0xff);
+        assert_eq!(archive.read_entry_with_key(&mut reader, "authored", None).unwrap(), [0x5a; 32]);
+        assert_eq!(reader.read_bytes, 63);
+    }
 }
