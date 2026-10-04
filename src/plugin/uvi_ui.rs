@@ -2,7 +2,7 @@
 //! in the editor or audio callback.
 
 use crate::{artwork::Picture, uvi::{host::UiSnapshot, program::NodeId,
-    ui_assets::UiAssets, worker::{Stamp, Status, Worker}}};
+    ui_assets::UiAssets, worker::{Stamp, Status, Worker, UiSnapshotReply, UiSnapshotError}}};
 use std::{collections::{BTreeMap, HashMap}, sync::Arc};
 
 /// Conservative processor-local declarations; native global write order is
@@ -54,6 +54,20 @@ impl Published {
     }
 }
 
+const FAILED_PROCESSOR_LIMIT: usize = 64;
+const FAILURE_CAUSE_LIMIT: usize = 8;
+
+struct SnapshotFailure {
+    first: UiSnapshotError,
+    last: UiSnapshotError,
+    first_frame: u64,
+    last_frame: u64,
+    last_sequence: u64,
+    reads: u64,
+    seen: Vec<UiSnapshotError>,
+    unreported_reads: u64,
+}
+
 pub(super) struct Mailbox {
     activation: Stamp,
     processors: Vec<NodeId>,
@@ -61,6 +75,8 @@ pub(super) struct Mailbox {
     initialized: bool,
     next: usize,
     pending: Option<(u64, NodeId)>,
+    failures: HashMap<NodeId, SnapshotFailure>,
+    omitted_failed_reads: u64,
     snapshots: Arc<Vec<UiSnapshot>>,
     snapshot_boundaries: Arc<HashMap<NodeId, (u64, u64)>>,
     key_colours: Arc<KeyColours>,
@@ -73,6 +89,7 @@ pub(super) struct Mailbox {
 impl Mailbox {
     pub fn new(activation: Stamp, assets: Option<UiAssets>) -> Self {
         Self { activation, processors: Vec::new(), discovered: false, initialized: false, next: 0, pending: None,
+            failures: HashMap::new(), omitted_failed_reads: 0,
             snapshots: Arc::default(), snapshot_boundaries: Arc::default(), key_colours: Arc::default(), pictures: Arc::default(), fonts: Arc::default(),
             published_frame: activation.frame, assets }
     }
@@ -107,6 +124,78 @@ impl Mailbox {
             pictures: self.pictures.clone(), fonts: self.fonts.clone() }))
     }
 
+    /// Consume only the outstanding registered processor's matching activation.
+    /// Failure observations never advance a retained successful panel's receipt.
+    fn receive(&mut self, reply: UiSnapshotReply,
+        mut report: impl FnMut(crate::diagnostics::LogLevel, &'static str, serde_json::Value)) -> Option<Arc<Published>> {
+        let expected = self.pending.take();
+        if expected != Some((reply.request, reply.processor))
+            || (reply.stamp.epoch, reply.stamp.generation) != (self.activation.epoch, self.activation.generation)
+            || !self.processors.contains(&reply.processor) { return None; }
+        let backwards = |frame, sequence| reply.stamp.frame < frame || reply.applied_ui_sequence < sequence;
+        if self.snapshot_boundaries.get(&reply.processor).is_some_and(|&(frame, sequence)| backwards(frame, sequence))
+            || self.failures.get(&reply.processor).is_some_and(|failure| backwards(failure.last_frame, failure.last_sequence)) {
+            return None;
+        }
+        match reply.snapshot {
+            Ok(snapshot) => {
+                if snapshot.processor != reply.processor { return None; }
+                if let Some(failure) = self.failures.remove(&reply.processor) {
+                    report(crate::diagnostics::LogLevel::Info, "uvi_ui_snapshot_recovered", serde_json::json!({
+                        "stage":"ui_snapshot", "reason":"UVI UI snapshot recovered", "epoch":reply.stamp.epoch,
+                        "generation":reply.stamp.generation, "processor":reply.processor, "frame":reply.stamp.frame,
+                        "failed_reads":failure.reads, "first_frame":failure.first_frame, "last_failure_frame":failure.last_frame,
+                        "first_failure":failure.first, "last_failure":failure.last,
+                        "reported_causes":failure.seen.len(), "unreported_reads":failure.unreported_reads,
+                        "other_failed_reads_not_tracked":self.omitted_failed_reads,
+                    }));
+                }
+                self.accept(reply.stamp, snapshot, reply.applied_ui_sequence)
+            }
+            Err(error) => {
+                if !self.failures.contains_key(&reply.processor) && self.failures.len() >= FAILED_PROCESSOR_LIMIT {
+                    let previous = self.omitted_failed_reads;
+                    self.omitted_failed_reads = previous.saturating_add(1);
+                    // At most 64 aggregate notices per activation, never one for
+                    // every untracked reply. Polling still covers ALL processors.
+                    if self.omitted_failed_reads != previous && self.omitted_failed_reads.is_power_of_two() {
+                        report(crate::diagnostics::LogLevel::Warning, "uvi_ui_snapshot_diagnostics_limited", serde_json::json!({
+                            "stage":"ui_snapshot", "reason":"Additional UI snapshot failures exceed the retained diagnostic owner limit",
+                            "epoch":reply.stamp.epoch, "generation":reply.stamp.generation,
+                            "tracked_failed_processors":self.failures.len(), "owner_limit":FAILED_PROCESSOR_LIMIT,
+                            "failed_reads_not_tracked":self.omitted_failed_reads,
+                        }));
+                    }
+                    return None;
+                }
+                let failure = self.failures.entry(reply.processor).or_insert_with(|| SnapshotFailure {
+                    first:error, last:error, first_frame:reply.stamp.frame, last_frame:reply.stamp.frame,
+                    last_sequence:reply.applied_ui_sequence, reads:0, seen:Vec::new(), unreported_reads:0,
+                });
+                failure.reads = failure.reads.saturating_add(1);
+                failure.last = error;
+                failure.last_frame = reply.stamp.frame;
+                failure.last_sequence = reply.applied_ui_sequence;
+                if !failure.seen.contains(&error) {
+                    if failure.seen.len() >= FAILURE_CAUSE_LIMIT {
+                        failure.unreported_reads = failure.unreported_reads.saturating_add(1);
+                    } else {
+                        failure.seen.push(error);
+                        report(crate::diagnostics::LogLevel::Warning, "uvi_ui_snapshot_failed", serde_json::json!({
+                            "stage":"ui_snapshot", "epoch":reply.stamp.epoch, "generation":reply.stamp.generation,
+                            "processor":reply.processor, "frame":reply.stamp.frame, "reason":error.reason,
+                            "snapshot_fault":error.kind, "source_file":error.source_file, "source_line":error.line,
+                            "source_kind":error.source_file.map(|_| "rust"), "first_failure":failure.first,
+                            "failed_reads":failure.reads, "first_frame":failure.first_frame,
+                            "reported_causes":failure.seen.len(), "cause_limit":FAILURE_CAUSE_LIMIT,
+                        }));
+                    }
+                }
+                None
+            }
+        }
+    }
+
     /// Called by the serialized loader. A reply from a superseded activation
     /// never becomes editor state. One processor is requested at a time so
     /// coalescing cannot permanently starve an earlier panel.
@@ -136,14 +225,7 @@ impl Mailbox {
         }
         let mut published = None;
         if let Some(reply) = worker.poll_ui_snapshot() {
-            let expected = self.pending.take();
-            if expected == Some((reply.request, reply.processor))
-                && reply.stamp.epoch == self.activation.epoch
-                && reply.stamp.generation == self.activation.generation
-                && let Ok(snapshot) = reply.snapshot
-            {
-                published = self.accept(reply.stamp, snapshot, reply.applied_ui_sequence);
-            }
+            published = self.receive(reply, |level, code, details| crate::diagnostics::event(level, "uvi", code, details));
         }
         if self.pending.is_none() && !self.processors.is_empty() {
             let processor = self.processors[self.next % self.processors.len()];
@@ -164,6 +246,113 @@ mod tests {
             width, height: 480., performance_view: true, background: None, background_colour: None,
             key_colours: None,
         }, widgets: Vec::new(), paint_order: Vec::new() }
+    }
+
+    fn fault(line: u32) -> UiSnapshotError {
+        UiSnapshotError { kind: "host_validation", reason: "Fixed owned test validation",
+            source_file: Some("src/uvi/host.rs"), line: Some(line) }
+    }
+
+    fn reply(processor: NodeId, frame: u64, sequence: u64,
+        result: Result<UiSnapshot, UiSnapshotError>) -> UiSnapshotReply {
+        UiSnapshotReply { request: 1, stamp: Stamp { epoch: 7, generation: 11, frame },
+            processor, applied_ui_sequence: sequence, snapshot: result }
+    }
+
+    fn receive(mailbox: &mut Mailbox, reply: UiSnapshotReply,
+        notices: &mut Vec<(&'static str, serde_json::Value)>) -> Option<Arc<Published>> {
+        mailbox.pending = Some((1, reply.processor));
+        mailbox.receive(reply, |_, code, details| notices.push((code, details)))
+    }
+
+    #[test]
+    fn snapshot_failure_episode_keeps_first_cause_and_success_receipts_separate() {
+        let activation = Stamp { epoch: 7, generation: 11, frame: 0 };
+        let mut mailbox = Mailbox::new(activation, None);
+        mailbox.processors = vec![3];
+        let initial = mailbox.accept(activation, snapshot(3, 720.), 0).unwrap();
+        let mut notices = Vec::new();
+        assert!(receive(&mut mailbox, reply(3, 256, 8, Err(fault(10))), &mut notices).is_none());
+        assert!(receive(&mut mailbox, reply(3, 512, 9, Err(fault(10))), &mut notices).is_none());
+        assert_eq!(notices.len(), 1, "repeated cause does not emit one record per poll");
+        assert_eq!(mailbox.snapshot_boundaries[&3], (0, 0), "failed reads cannot settle edits");
+        assert_eq!(mailbox.published_frame, 0);
+        assert!(Arc::ptr_eq(&initial.snapshots, &mailbox.snapshots));
+        receive(&mut mailbox, reply(3, 768, 10, Err(fault(20))), &mut notices);
+        assert_eq!(notices.len(), 2);
+        assert_eq!(notices[1].1["first_failure"]["line"], 10);
+        // Older successes and backwards receipts cannot recover a newer failure.
+        assert!(receive(&mut mailbox, reply(3, 512, 10, Ok(snapshot(3, 360.))), &mut notices).is_none());
+        assert!(receive(&mut mailbox, reply(3, 1024, 9, Ok(snapshot(3, 360.))), &mut notices).is_none());
+        assert_eq!(mailbox.failures[&3].reads, 3);
+        let recovered = receive(&mut mailbox, reply(3, 1024, 10, Ok(snapshot(3, 360.))), &mut notices).unwrap();
+        assert_eq!(recovered.snapshot_sequence(3), Some(10));
+        assert_eq!(initial.snapshot_sequence(3), Some(0), "old reader remains immutable");
+        assert!(mailbox.failures.is_empty());
+        let (code, data) = &notices[2];
+        assert_eq!(*code, "uvi_ui_snapshot_recovered");
+        assert_eq!(data["failed_reads"], 3);
+        assert_eq!(data["first_failure"]["line"], 10);
+        assert_eq!(data["last_failure"]["line"], 20);
+        receive(&mut mailbox, reply(3, 1280, 10, Err(fault(10))), &mut notices);
+        assert_eq!(notices.len(), 4, "recovery starts a fresh failure episode");
+    }
+
+    #[test]
+    fn snapshot_failure_notices_require_exact_request_activation_and_processor() {
+        let activation = Stamp { epoch: 7, generation: 11, frame: 0 };
+        let mut mailbox = Mailbox::new(activation, None);
+        mailbox.processors = vec![3];
+        let mut notices = Vec::new();
+        for invalid in [
+            UiSnapshotReply { request: 2, ..reply(3, 0, 0, Err(fault(10))) },
+            UiSnapshotReply { stamp: Stamp { epoch: 6, ..activation }, ..reply(3, 0, 0, Err(fault(10))) },
+            UiSnapshotReply { stamp: Stamp { generation: 10, ..activation }, ..reply(3, 0, 0, Err(fault(10))) },
+            reply(4, 0, 0, Err(fault(10))),
+        ] {
+            mailbox.pending = Some((1, 3));
+            assert!(mailbox.receive(invalid, |_, code, data| notices.push((code, data))).is_none());
+        }
+        assert!(notices.is_empty());
+        assert!(mailbox.failures.is_empty());
+        receive(&mut mailbox, reply(3, 256, 8, Err(fault(10))), &mut notices);
+        assert!(receive(&mut mailbox, reply(3, 512, 8, Ok(snapshot(4, 720.))), &mut notices).is_none());
+        assert_eq!(notices.len(), 1, "wrong snapshot owner cannot recover a failure");
+        assert!(mailbox.snapshots.is_empty());
+    }
+
+    #[test]
+    fn snapshot_failure_retention_limits_do_not_cap_processor_polling() {
+        let activation = Stamp { epoch: 7, generation: 11, frame: 0 };
+        let mut mailbox = Mailbox::new(activation, None);
+        mailbox.processors = (0..70).collect();
+        let mut notices = Vec::new();
+        for processor in 0..64 {
+            receive(&mut mailbox, reply(processor, 0, 0, Err(fault(10))), &mut notices);
+        }
+        for _ in 0..8 {
+            receive(&mut mailbox, reply(69, 0, 0, Err(fault(10))), &mut notices);
+        }
+        assert_eq!(mailbox.failures.len(), FAILED_PROCESSOR_LIMIT);
+        assert_eq!(mailbox.processors.len(), 70);
+        assert_eq!(mailbox.omitted_failed_reads, 8);
+        let aggregates: Vec<_> = notices.iter().filter(|(code, _)| *code == "uvi_ui_snapshot_diagnostics_limited")
+            .map(|(_, data)| data["failed_reads_not_tracked"].as_u64().unwrap()).collect();
+        assert_eq!(aggregates, [1, 2, 4, 8]);
+        assert!(receive(&mut mailbox, reply(69, 256, 0, Ok(snapshot(69, 720.))), &mut notices).is_some(),
+            "processors beyond the failure-owner limit still publish successful panels");
+        receive(&mut mailbox, reply(0, 256, 0, Ok(snapshot(0, 720.))), &mut notices);
+        receive(&mut mailbox, reply(69, 512, 0, Err(fault(20))), &mut notices);
+        assert!(mailbox.failures.contains_key(&69), "recovery releases a retained failure owner");
+        for line in 21..31 {
+            receive(&mut mailbox, reply(69, 512, 0, Err(fault(line))), &mut notices);
+        }
+        let failure = &mailbox.failures[&69];
+        assert_eq!(failure.seen.len(), FAILURE_CAUSE_LIMIT);
+        assert_eq!(failure.reads, 11);
+        assert_eq!(failure.unreported_reads, 3);
+        receive(&mut mailbox, reply(69, 768, 0, Ok(snapshot(69, 720.))), &mut notices);
+        assert_eq!(notices.last().unwrap().1["unreported_reads"], 3);
     }
 
     #[test]

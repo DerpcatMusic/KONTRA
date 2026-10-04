@@ -375,7 +375,9 @@ impl<'a> Player<'a> {
         &self,
         processor: super::program::NodeId,
     ) -> Result<super::host::UiSnapshot> {
-        ensure!(!self.failed, "UVI player must be replaced after a failure");
+        if self.failed {
+            return Err(super::host::SnapshotFault::new("player_failed", "UVI player must be replaced after a failure").into());
+        }
         self.session.ui_snapshot(processor)
     }
 
