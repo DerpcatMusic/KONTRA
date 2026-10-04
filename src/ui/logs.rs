@@ -377,13 +377,19 @@ fn filename(path: &str) -> &str {
 #[cfg(feature = "uvi")]
 fn local_lua_context(params:&SamplerParams,event:&LogEvent)->Option<Arc<crate::uvi::lua_failure::Context>> {
     let data=&event.details;
-    let slot=usize::try_from(data["slot"].as_u64()?).ok()?;
+    let slot=match &data["slot"] {
+        serde_json::Value::Null=>None,
+        value=>Some(u32::try_from(value.as_u64()?).ok()?),
+    };
     let epoch=data["epoch"].as_u64()?;let generation=data["generation"].as_u64()?;
     if epoch!=params.shared.uvi_activation_epoch() {return None;}
-    let view=params.shared.view.lock().ok()?;
-    let part=view.parts.get(slot)?;
-    let context=part.local_lua_failure(std::path::Path::new(event.path.as_deref()?),
-        data["member"].as_str()?,epoch,generation)?;
+    let bank=std::path::Path::new(event.path.as_deref()?);let member=data["member"].as_str()?;
+    // Release View before reading staged ownership; adoption takes Selection
+    // and Prepared before publishing View, and these locks must not invert.
+    let active=slot.and_then(|slot| params.shared.view.lock().ok()?.parts.get(slot as usize)?
+        .local_lua_failure(bank,member,epoch,generation));
+    let context=active.or_else(|| (event.code.as_deref()==Some("uvi_staging_failed")).then(||
+        params.local_prepared_lua_failure(bank,member,slot,epoch,generation)).flatten())?;
     let retained=&data["worker"]["lua_failure"];
     if retained["processor"].as_u64()!=context.processor.map(|p|p as u64)
         || retained["frame"].as_u64()!=Some(context.frame)
@@ -604,7 +610,11 @@ fn group_events(events: &[LogEvent], indices: &[usize]) -> Vec<EventGroup> {
             event.details.pointer("/endpoint/error_code"),
             event.details.pointer("/endpoint/stage"),
             event.details.pointer("/endpoint/source_file").or_else(|| event.details.pointer("/endpoint/source")),
-            event.details.pointer("/endpoint/line")
+            event.details.pointer("/endpoint/line"),
+            event.details.pointer("/worker/lua_failure/processor"),
+            event.details.pointer("/worker/lua_failure/chunk"),
+            event.details.pointer("/worker/lua_failure/line"),
+            event.details.pointer("/worker/lua_failure/source_provenance")
         ])
         .to_string();
         let child = *children[at].entry(child_key).or_insert_with(|| {
@@ -651,6 +661,13 @@ fn item_label(event: &LogEvent) -> String {
         for key in ["source_file", "source", "line", "stage", "error_code"] {
             if let Some(value) = endpoint.get(key).filter(|value| !value.is_null()) {
                 labels.push(format!("{key}: {}", value.as_str().map(str::to_owned).unwrap_or_else(|| value.to_string())));
+            }
+        }
+    }
+    if let Some(lua) = event.details.pointer("/worker/lua_failure") {
+        for key in ["processor", "chunk", "line", "source_provenance"] {
+            if let Some(value) = lua.get(key).filter(|value| !value.is_null()) {
+                labels.push(format!("Lua {key}: {}", value.as_str().map(str::to_owned).unwrap_or_else(|| value.to_string())));
             }
         }
     }
@@ -1846,6 +1863,35 @@ mod tests {
         let unavailable_events = vec![unavailable];
         let unavailable_text = group_details(&unavailable_events,&group_events(&unavailable_events,&[0])[0]);
         assert!(unavailable_text.contains("Rust source context unavailable: Native source differs from the source used to build this binary"));
+    }
+
+    #[test]
+    fn typed_lua_sources_have_unique_children_while_frames_and_source_text_aggregate() {
+        let event = |n: u64, frame, processor, chunk: &str, line, provenance: &str| -> LogEvent {
+            serde_json::from_value(json!({"schema_version":1,"sequence":n,"timestamp_ms":1000+n,
+                "monotonic_ms":n,"session_id":"typed-lua-fixture","level":"error","module":"uvi",
+                "event":"uvi_staging_failed","code":"uvi_staging_failed","reason":"authored failure",
+                "path":"/owned/Bank.ufs","data":{"member":"Instrument.uvip","epoch":n,"generation":n,
+                    "invocation_id":n,"worker":{"failure":"authored failure","lua_failure":{
+                        "processor":processor,"frame":frame,"chunk":chunk,"line":line,"source_provenance":provenance,
+                        "source_excerpt":{"text":format!("authored changing fixture source {n}")}}}}})).unwrap()
+        };
+        let events = vec![
+            event(1,0,2,"UVI ScriptProcessor node 2",2,"existing_instruction_budget_hook"),
+            event(2,512,2,"UVI ScriptProcessor node 2",2,"existing_instruction_budget_hook"),
+            event(3,1024,4,"UVI ScriptProcessor node 4",2,"existing_instruction_budget_hook"),
+            event(4,1536,2,"embedded module _Folder/Actual",2,"existing_instruction_budget_hook"),
+            event(5,2048,2,"UVI ScriptProcessor node 2",9,"existing_instruction_budget_hook"),
+            event(6,2560,2,"UVI ScriptProcessor node 2",2,"structured_coroutine_frame"),
+        ];
+        let groups = group_events(&events,&[5,4,3,2,1,0]);
+        assert_eq!((groups.len(),groups[0].members.len(),groups[0].children.len()),(1,6,5));
+        assert!(groups[0].children.iter().any(|child| child == &[1,0]),
+            "same source location aggregates different frames, invocation IDs and source text");
+        let label = item_label(&events[2]);
+        assert!(label.contains("Lua processor: 4") && label.contains("Lua chunk: UVI ScriptProcessor node 4")
+            && label.contains("Lua line: 2") && label.contains("Lua source_provenance: existing_instruction_budget_hook"));
+        assert!(!label.contains("changing fixture source"));
     }
 
     #[test]

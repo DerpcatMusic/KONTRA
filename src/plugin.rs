@@ -449,6 +449,23 @@ impl SamplerParams {
         let worker = prepared.worker.as_mut().filter(|worker| worker.status() == crate::uvi::worker::Status::Ready)?;
         Some(use_worker(&key.request, key.epoch, prepared.generation, worker))
     }
+    /// Local Logs only. A failed staged load has no adopted PartView; retain
+    /// its bounded source only while the exact requested load remains current.
+    #[cfg(feature = "uvi")]
+    pub(crate) fn local_prepared_lua_failure(
+        &self, bank: &Path, member: &str, slot: Option<u32>, epoch: u64, generation: u64,
+    ) -> Option<Arc<crate::uvi::lua_failure::Context>> {
+        let key = uvi_load_key(self, &*self.selection.read().ok()?)?;
+        let prepared = self.shared.uvi_prepared.lock().ok()?;
+        let prepared = prepared.as_ref().filter(|prepared| prepared.key == key)?;
+        if (epoch, generation) != (key.epoch, prepared.generation)
+            || bank != key.request.source.bank || member != key.request.source.member
+            || slot != key.request.slot {
+            return None;
+        }
+        prepared.failed_lua.clone()
+    }
+
     /// Host output port `index`'s name, as last published (`routing.rs`).
     fn port_name(&self, index: u32) -> Option<String> {
         let names = self.shared.port_names.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -6957,6 +6974,83 @@ end on"#,dir.display());
         assert!(params.selection.read().unwrap().parts == [part]);
         assert!(params.shared.ready.is_empty());
         assert!(!params.shared.view.lock().unwrap().uvi_status.contains("original authored initialization failure"), "raw private failures stay out of public status");
+        let epoch = params.shared.uvi_epoch.load(Ordering::Acquire);
+        let context = params.local_prepared_lua_failure(&source.bank,&source.member,Some(0),epoch,generation).unwrap();
+        assert_eq!((context.processor,context.line),(Some(2),None));
+        assert_eq!(context.provenance,"initialization_entry_chunk");
+        assert!(context.excerpt.is_none(),"ordinary exec failure does not guess a source line");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "uvi")]
+    fn staged_budget_source_is_local_load_bound_and_released_on_replacement() {
+        let dir = std::env::temp_dir().join(format!("kontra-uvi-staged-budget-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bank = dir.join("authored.ufs");
+        const MARKER: &str = "private-staged-budget-source-marker";
+        crate::library::tests::authored_uvi_bank_with_source(&bank, 6, br#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[-- private-staged-budget-source-marker
+for i=1,10000000 do local x=i+i end]]></script></ScriptProcessor></EventProcessors><Layers><Layer/></Layers></Program>"#);
+        for slot in [None, Some(0)] {
+            let mut params = SamplerParams::new();
+            params.shared.libraries = crate::library::tests::authored_uvi_scanner(&dir);
+            let part = Part { path: "/playing/original.nki".into(), ..Default::default() };
+            let source = library::UviSource { bank: bank.clone(), bank_uuid: [6;16], member: "Piano.uvip".into() };
+            let request = library::UviRequest { source: source.clone(), slot, new: slot.is_none() };
+            *params.selection.write().unwrap() = Selection { parts: vec![part.clone()], uvi_requested: Some(request.clone()), ..Default::default() };
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                prepare_uvi(&params, &params.selection.read().unwrap().clone());
+                if params.shared.uvi_prepared.lock().unwrap().as_ref().is_some_and(|p| p.worker.is_none()) { break; }
+                assert!(Instant::now() < deadline, "authored staged worker did not fail");
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let (epoch,generation) = {
+                let prepared = params.shared.uvi_prepared.lock().unwrap();
+                let prepared = prepared.as_ref().unwrap();
+                assert!(prepared.worker.is_none(), "the worker is retired before context lookup");
+                (prepared.key.epoch,prepared.generation)
+            };
+            let get = |bank: &Path, member: &str, target, epoch, generation|
+                params.local_prepared_lua_failure(bank,member,target,epoch,generation);
+            let context = get(&bank,&source.member,slot,epoch,generation).unwrap();
+            assert_eq!((context.processor,context.frame,context.line),(Some(2),0,Some(2)));
+            assert_eq!(context.provenance,"existing_instruction_budget_hook");
+            assert!(context.display.contains(MARKER));
+            assert!(!context.metadata().to_string().contains(MARKER));
+            assert!(!params.diagnostic_report().to_string().contains(MARKER));
+            assert!(params.selection.read().unwrap().parts == [part]);
+            assert!(params.shared.view.lock().unwrap().parts[0].uvi_activation.is_none());
+            assert!(get(&dir.join("other.ufs"),&source.member,slot,epoch,generation).is_none());
+            assert!(get(&bank,"Other.uvip",slot,epoch,generation).is_none());
+            assert!(get(&bank,&source.member,if slot.is_some(){None}else{Some(0)},epoch,generation).is_none());
+            assert!(get(&bank,&source.member,slot,epoch+1,generation).is_none());
+            assert!(get(&bank,&source.member,slot,epoch,generation+1).is_none());
+            params.selection.write().unwrap().uvi_requested.as_mut().unwrap().source.bank_uuid = [7;16];
+            assert!(get(&bank,&source.member,slot,epoch,generation).is_none());
+            params.selection.write().unwrap().uvi_requested = Some(request);
+            let rate = params.shared.rate.swap(96000f64.to_bits(), Ordering::AcqRel);
+            assert!(get(&bank,&source.member,slot,epoch,generation).is_none());
+            params.shared.rate.store(rate,Ordering::Release);
+            params.shared.uvi_epoch.store(epoch+1,Ordering::Release);
+            assert!(get(&bank,&source.member,slot,epoch,generation).is_none());
+            params.shared.uvi_epoch.store(epoch,Ordering::Release);
+            if let Some(slot) = slot {
+                let atoms = params.shared.part(slot as usize).unwrap();
+                let previous = atoms.generation.fetch_add(1,Ordering::AcqRel);
+                assert!(get(&bank,&source.member,Some(slot),epoch,generation).is_none());
+                atoms.generation.store(previous,Ordering::Release);
+            }
+            assert!(get(&bank,&source.member,slot,epoch,generation).is_some());
+            params.shared.libraries.edit(|settings| settings.roots.push(library::Root {path:"/authored/replaced-catalog".into(),single:false}));
+            assert!(get(&bank,&source.member,slot,epoch,generation).is_none());
+            let weak = Arc::downgrade(&context);
+            drop(context);
+            params.selection.write().unwrap().uvi_requested = None;
+            prepare_uvi(&params,&params.selection.read().unwrap().clone());
+            assert!(params.shared.uvi_prepared.lock().unwrap().is_none());
+            assert!(weak.upgrade().is_none(),"replacement releases the bounded private context");
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 
