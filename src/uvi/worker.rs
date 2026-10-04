@@ -453,7 +453,9 @@ impl InitializationTiming {
             "stages":stages,"scope":"worker_initialization_only",
             "ui_assets_measured":false,"host_adoption_wait_measured":false,
             "lua_time_includes_authored_resource_loads":true,
-            "renderer_time_includes_internal_preflight_and_sample_validation":true})
+            "renderer_time_includes_internal_preflight_and_sample_validation":false,
+            "static_preflight_reused_for_initial_player_and_renderer":true,
+            "renderer_time_includes_runtime_rate_sample_and_graph_validation":true})
     }
 }
 
@@ -1610,7 +1612,8 @@ fn run(
     initialization_stage(shared, trace, "uvi_program_decode");
     let loaded = library.program(&config.member, &config.program_namespace)?;
     initialization_stage(shared, trace, "uvi_graph_diagnosis_and_preflight");
-    let report = serde_json::to_value(super::diagnostics::report(&loaded.program))?;
+    let preflight = super::playback::ProgramPreflight::new(&loaded.program);
+    let report = serde_json::to_value(super::diagnostics::report_preflighted(&preflight))?;
     trace.detail("native_program_graph", report.clone());
     shared
         .details
@@ -1618,12 +1621,7 @@ fn run(
         .unwrap_or_else(|p| p.into_inner())
         .program_report = Some(report);
     initialization_stage(shared, trace, "uvi_preflight");
-    let unsupported = super::playback::preflight(&loaded.program);
-    ensure!(
-        unsupported.is_empty(),
-        "Native UVI graph preflight failed: {}",
-        serde_json::to_string(&unsupported)?
-    );
+    preflight.validate()?;
     initialization_stage(shared, trace, "uvi_resources");
     let samples = match library.samples_with_progress_cancel(&loaded, &mut |total, loaded, unique_decodes, bytes, current| {
         let mut details = shared.details.lock().unwrap_or_else(|p| p.into_inner());
@@ -1650,7 +1648,7 @@ fn run(
         return Ok(());
     }
     let mut player = Player::new_with_state_traced(
-        &loaded.program,
+        &preflight,
         modules,
         resources,
         config.sample_rate,
@@ -1940,7 +1938,7 @@ pub(crate) mod tests {
         let library = Rc::new(Library::open(&path, &config.metadata_namespace, None).unwrap());
         let loaded = library.program(&config.member, &config.program_namespace).unwrap();
         let published = std::cell::Cell::new(false);
-        let result = Player::new_with_state_traced(&loaded.program, BTreeMap::new(),
+        let result = Player::new_with_state_traced(&super::super::playback::ProgramPreflight::new(&loaded.program), BTreeMap::new(),
             BankResources::new(library, &loaded.path, Default::default()).unwrap(),
             48000, None, None, &mut |_| {}, &mut |_| published.set(true));
         assert!(published.get());
@@ -1968,7 +1966,7 @@ pub(crate) mod tests {
         let processor = loaded.program.nodes.iter().position(|n| n.kind == "ScriptProcessor").unwrap();
         let phase = std::cell::Cell::new("");
         let seen = std::cell::RefCell::new(Vec::new());
-        let mut fresh = Player::new_with_state_traced(&loaded.program, BTreeMap::new(),
+        let mut fresh = Player::new_with_state_traced(&super::super::playback::ProgramPreflight::new(&loaded.program), BTreeMap::new(),
             BankResources::new(library.clone(), &loaded.path, Default::default()).unwrap(),
             48000, Some((7,11)), None, &mut |name|phase.set(name), &mut |session| {
                 seen.borrow_mut().push(phase.get());
@@ -1978,7 +1976,7 @@ pub(crate) mod tests {
         assert_eq!(*seen.borrow(), vec!["uvi_lua_init"]);
         let saved = fresh.saved_state().unwrap();
         seen.borrow_mut().clear();
-        let mut restored = Player::new_with_state_traced(&loaded.program, BTreeMap::new(),
+        let mut restored = Player::new_with_state_traced(&super::super::playback::ProgramPreflight::new(&loaded.program), BTreeMap::new(),
             BankResources::new(library, &loaded.path, Default::default()).unwrap(),
             48000, Some((7,12)), Some(&saved), &mut |name|phase.set(name), &mut |session| {
                 seen.borrow_mut().push(phase.get());

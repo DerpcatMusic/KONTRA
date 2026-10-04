@@ -1,7 +1,7 @@
 //! Persistent native Program playback on an allocating worker thread.
 use super::{
     library::BankResources,
-    playback::Renderer,
+    playback::{ProgramPreflight, Renderer},
     program::Program,
     script::{self, Session},
 };
@@ -107,7 +107,7 @@ impl<'a> Player<'a> {
         sample_rate: u32,
     ) -> Result<Self> {
         Self::new_inner(
-            program,
+            &ProgramPreflight::new(program),
             modules,
             resources,
             sample_rate,
@@ -126,7 +126,7 @@ impl<'a> Player<'a> {
         generation: u64,
     ) -> Result<Self> {
         Self::new_inner(
-            program,
+            &ProgramPreflight::new(program),
             modules,
             resources,
             sample_rate,
@@ -146,7 +146,7 @@ impl<'a> Player<'a> {
         saved: Option<&super::state::SavedState>,
     ) -> Result<Self> {
         Self::new_inner(
-            program,
+            &ProgramPreflight::new(program),
             modules,
             resources,
             sample_rate,
@@ -159,7 +159,7 @@ impl<'a> Player<'a> {
     /// Initialization-only timing observer. Never retained by the player or
     /// called while rendering audio.
     pub(crate) fn new_with_state_traced(
-        program: &'a Program,
+        preflight: &ProgramPreflight<'a>,
         modules: BTreeMap<String, Vec<u8>>,
         resources: BankResources,
         sample_rate: u32,
@@ -169,7 +169,7 @@ impl<'a> Player<'a> {
         initialized_ui: &mut dyn FnMut(&Session),
     ) -> Result<Self> {
         Self::new_inner(
-            program,
+            preflight,
             modules,
             resources,
             sample_rate,
@@ -180,7 +180,7 @@ impl<'a> Player<'a> {
         )
     }
     fn new_inner(
-        program: &'a Program,
+        preflight: &ProgramPreflight<'a>,
         modules: BTreeMap<String, Vec<u8>>,
         resources: BankResources,
         sample_rate: u32,
@@ -196,12 +196,8 @@ impl<'a> Player<'a> {
         };
         let hosted = activation.is_some();
         stage("uvi_player_preflight");
-        let unsupported = super::playback::preflight(program);
-        ensure!(
-            unsupported.is_empty(),
-            "Native UVI graph preflight failed: {}",
-            serde_json::to_string(&unsupported)?
-        );
+        preflight.validate()?;
+        let program = preflight.program();
         let capability = Some(resources.capability());
         if let Some(saved) = saved {
             stage("uvi_restore_validation_and_audio");
@@ -212,7 +208,7 @@ impl<'a> Player<'a> {
         // Only restoration has a complete captured override set to prevalidate.
         let prepared = if let Some(saved) = saved {
             stage("uvi_restore_renderer_init");
-            let mut renderer = Renderer::new(program, resources.samples(), sample_rate)?;
+            let mut renderer = Renderer::new_preflighted(preflight, resources.samples(), sample_rate)?;
             saved.prepare_renderer(&mut renderer)?;
             Some(renderer)
         } else {
@@ -244,7 +240,7 @@ impl<'a> Player<'a> {
             Some(renderer) => renderer,
             None => {
                 stage("uvi_renderer_init");
-                Renderer::new(program, resources.samples(), sample_rate)?
+                Renderer::new_preflighted(preflight, resources.samples(), sample_rate)?
             }
         };
         if saved.is_some() {
