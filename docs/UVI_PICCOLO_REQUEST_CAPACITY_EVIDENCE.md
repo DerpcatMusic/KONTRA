@@ -33,6 +33,14 @@ still used when the endpoint reports worker failure/stoppage, or when no
 endpoint cause was captured. Full worker evidence remains in the report.
 The prepared regression is uncompiled and unexecuted.
 
+Grouped Logs follow the same precedence as the loader and Info. A different
+worker failure is retained once per unique child as supplementary evidence;
+volatile frame and statistics fields do not create duplicate children. Exact
+`Bridge(Worker(Failed))` and `Bridge(Worker(Stopped))` symptoms still use the
+original worker cause when available. These source changes do not rewrite raw
+records or prove that a later worker observation caused the captured endpoint
+fault. Prepared grouping/source-context regressions remain unrun.
+
 The bridge also makes one bounded service retry when its pending ring is full
 at packet sealing. This permits room that became available after the earlier
 service poll to be used, preserving FIFO order, the completed packet and the
