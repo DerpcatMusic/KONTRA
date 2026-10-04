@@ -234,6 +234,12 @@ The installed program must be examined individually: implementing a generic
 physical model does not establish its compatibility, and decoding its full graph
 does not prove its transition or timbre behavior.
 
+The [V2 performance matrix](UVI_VWINDS_PERFORMANCE_EVIDENCE.md) records nine
+bounded instrumented Player tapes and an exact eight-control MPE-off restore
+completed before the CPU restriction. Controller and transition paths produced
+finite PCM; native modeled-transition fidelity, frontend gestures and realtime
+host integration remain unverified. MPE setup failed before its tape began.
+
 ## Checkpoint validation
 
 The following section retains the preceding `817b03a` installation and the
