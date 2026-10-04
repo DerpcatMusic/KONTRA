@@ -20,14 +20,40 @@ pub(super) struct Mailbox {
     initialized: bool,
     next: usize,
     pending: Option<(u64, NodeId)>,
-    snapshots: Vec<UiSnapshot>,
+    snapshots: Arc<Vec<UiSnapshot>>,
+    pictures: Arc<HashMap<String, Arc<Picture>>>,
+    fonts: Arc<HashMap<String, moose::mui::mui::prelude::Font>>,
+    published_frame: u64,
     assets: Option<UiAssets>,
 }
 
 impl Mailbox {
     pub fn new(activation: Stamp, assets: Option<UiAssets>) -> Self {
         Self { activation, processors: Vec::new(), discovered: false, initialized: false, next: 0, pending: None,
-            snapshots: Vec::new(), assets }
+            snapshots: Arc::default(), pictures: Arc::default(), fonts: Arc::default(),
+            published_frame: activation.frame, assets }
+    }
+
+    /// Reuse immutable owned data on an unchanged reply, while advancing its
+    /// acknowledgement frame: the editor needs that frame to settle an edit
+    /// whose callback rejected or restored the same visible value.
+    fn accept(&mut self, stamp: Stamp, snapshot: UiSnapshot) -> Option<Arc<Published>> {
+        let position = self.snapshots.iter().position(|s| s.processor == snapshot.processor);
+        let changed = position.is_none_or(|index| self.snapshots[index] != snapshot);
+        if changed {
+            let snapshots = Arc::make_mut(&mut self.snapshots);
+            if let Some(index) = position { snapshots[index] = snapshot; }
+            else {
+                snapshots.push(snapshot);
+                snapshots.sort_by_key(|s| self.processors.iter().position(|p| *p == s.processor));
+            }
+            self.pictures = self.assets.as_mut().map(|a| a.refresh(&self.snapshots)).unwrap_or_default();
+            self.fonts = self.assets.as_ref().map(UiAssets::fonts).unwrap_or_default();
+        }
+        if !changed && stamp.frame <= self.published_frame { return None; }
+        self.published_frame = stamp.frame;
+        Some(Arc::new(Published { stamp, snapshots: self.snapshots.clone(),
+            pictures: self.pictures.clone(), fonts: self.fonts.clone() }))
     }
 
     /// Called by the serialized loader. A reply from a superseded activation
@@ -39,11 +65,12 @@ impl Mailbox {
             && (stamp.epoch, stamp.generation) == (self.activation.epoch, self.activation.generation)
         {
             self.initialized = true;
-            self.snapshots = snapshots.as_ref().clone();
-            let pictures = self.assets.as_mut().map(|a| a.refresh(&self.snapshots)).unwrap_or_default();
+            self.snapshots = snapshots.clone();
+            self.pictures = self.assets.as_mut().map(|a| a.refresh(&self.snapshots)).unwrap_or_default();
             if matches!(worker.status(), Status::Failed | Status::Stopped) { return None; }
-            let fonts = self.assets.as_ref().map(UiAssets::fonts).unwrap_or_default();
-            return Some(Arc::new(Published { stamp, snapshots, pictures, fonts }));
+            self.fonts = self.assets.as_ref().map(UiAssets::fonts).unwrap_or_default();
+            self.published_frame = stamp.frame;
+            return Some(Arc::new(Published { stamp, snapshots, pictures: self.pictures.clone(), fonts: self.fonts.clone() }));
         }
         if worker.status() != Status::Ready { return None; }
         if !self.discovered {
@@ -62,16 +89,7 @@ impl Mailbox {
                 && reply.stamp.generation == self.activation.generation
                 && let Ok(snapshot) = reply.snapshot
             {
-                if let Some(previous) = self.snapshots.iter_mut().find(|s| s.processor == snapshot.processor) {
-                    *previous = snapshot;
-                } else {
-                    self.snapshots.push(snapshot);
-                    self.snapshots.sort_by_key(|s| self.processors.iter().position(|p| *p == s.processor));
-                }
-                let pictures = self.assets.as_mut().map(|a| a.refresh(&self.snapshots)).unwrap_or_default();
-                let fonts = self.assets.as_ref().map(UiAssets::fonts).unwrap_or_default();
-                published = Some(Arc::new(Published { stamp: reply.stamp,
-                    snapshots: Arc::new(self.snapshots.clone()), pictures, fonts }));
+                published = self.accept(reply.stamp, snapshot);
             }
         }
         if self.pending.is_none() && !self.processors.is_empty() {
@@ -88,6 +106,41 @@ impl Mailbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn snapshot(processor: NodeId, width: f64) -> UiSnapshot {
+        UiSnapshot { processor, root: crate::uvi::host::UiRoot {
+            width, height: 480., performance_view: true, background: None, background_colour: None,
+        }, widgets: Vec::new(), paint_order: Vec::new() }
+    }
+
+    #[test]
+    fn unchanged_replies_share_data_but_keep_fresh_edit_acknowledgements() {
+        let activation = Stamp { epoch: 7, generation: 11, frame: 0 };
+        let mut mailbox = Mailbox::new(activation, None);
+        mailbox.processors = vec![3];
+        let first = mailbox.accept(activation, snapshot(3, 720.)).unwrap();
+        let next = Stamp { frame: 256, ..activation };
+        let acknowledged = mailbox.accept(next, snapshot(3, 720.)).unwrap();
+        assert_eq!(acknowledged.stamp, next, "A reverted/unchanged edit must still settle");
+        assert!(Arc::ptr_eq(&first.snapshots, &acknowledged.snapshots));
+        assert!(Arc::ptr_eq(&first.pictures, &acknowledged.pictures));
+        assert!(Arc::ptr_eq(&first.fonts, &acknowledged.fonts));
+        assert!(mailbox.accept(next, snapshot(3, 720.)).is_none());
+    }
+
+    #[test]
+    fn changed_replies_replace_owned_data_without_mutating_the_old_reader() {
+        let activation = Stamp { epoch: 7, generation: 11, frame: 0 };
+        let mut mailbox = Mailbox::new(activation, None);
+        mailbox.processors = vec![3, 4];
+        let first = mailbox.accept(activation, snapshot(3, 720.)).unwrap();
+        let changed = mailbox.accept(activation, snapshot(3, 360.)).unwrap();
+        assert!(!Arc::ptr_eq(&first.snapshots, &changed.snapshots));
+        assert_eq!(first.snapshots[0].root.width, 720.);
+        assert_eq!(changed.snapshots[0].root.width, 360.);
+        assert!(mailbox.accept(activation, snapshot(4, 720.)).is_some());
+        assert_eq!(mailbox.snapshots.iter().map(|s| s.processor).collect::<Vec<_>>(), [3, 4]);
+    }
+
     #[test]
     fn initialized_mailbox_rejects_wrong_epoch_and_generation() {
         let (config, _) = crate::uvi::worker::tests::authored_bank_with_script(

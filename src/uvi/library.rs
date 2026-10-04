@@ -463,6 +463,7 @@ pub struct BankResources {
     samples: Rc<RefCell<HashMap<String, Arc<Sample>>>>,
     capability: host::Resources,
     revision: Rc<Cell<u64>>,
+    resident: Rc<Cell<usize>>,
 }
 
 impl BankResources {
@@ -501,6 +502,7 @@ impl BankResources {
         let capability: host::Resources = {
             let library = library.clone();
             let cache = samples.clone();
+            let resident = resident.clone();
             let program_path = program_path.to_owned();
             let audio_cache = RefCell::new(audio_cache);
             let revision = revision.clone();
@@ -580,6 +582,7 @@ impl BankResources {
             samples,
             capability,
             revision,
+            resident,
         })
     }
 
@@ -590,6 +593,11 @@ impl BankResources {
     /// Changes only when a newly resolved alias becomes available.
     pub fn revision(&self) -> u64 {
         self.revision.get()
+    }
+
+    /// Worker-owned decoded PCM and alias census; excludes Lua, DSP and UI memory.
+    pub(crate) fn activity(&self) -> (usize, usize, u64) {
+        (self.samples.borrow().len(), self.resident.get(), self.revision.get())
     }
 
     /// Snapshot aliases while sharing the decoded PCM allocations.

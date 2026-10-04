@@ -432,6 +432,15 @@ impl Registry {
         }
     }
 
+    /// Terminal failure only, after capturing its cause. Stop execution while
+    /// retaining an exported controller until the ordinary endpoint receipt.
+    pub fn abort(&mut self, epoch: u64, generation: u64) {
+        if let Some(control) = self.controls.get(&(epoch, generation)) {
+            control.worker.request_stop();
+        }
+        self.cancel(epoch, generation);
+    }
+
     /// Loader only: removing a Control stops/joins Worker and releases artwork.
     pub fn poll_retired(&mut self) -> usize {
         let before = self.controls.len();
@@ -501,26 +510,67 @@ impl Registry {
     pub fn shutdown(&mut self) -> bool {
         self.controls.retain(|_, control| {
             control.cancelled = true;
+            control.worker.request_stop();
             !control.removable()
         });
         self.controls.is_empty()
     }
 }
-/// These existing counters measure elapsed wall time in the worker's render
-/// call, not thread CPU usage or arrival deadlines. All formatting stays on Load.
+/// Approximate concurrent worker observations, formatted only on Load.
+/// CPU means use successful clock samples; wall/phase means use observed attempts.
 fn failure_timing(stats: &serde_json::Value, rate: u32) -> serde_json::Value {
-    let packets = stats["rendered_blocks"].as_u64().unwrap_or(0);
-    let average = (packets != 0).then(|| stats["render_ns"].as_u64().unwrap_or(0) / packets);
+    let count = |key: &str| stats[key].as_u64();
+    let packets = count("rendered_blocks");
+    let attempts = count("render_attempts");
+    let mean = |total: Option<u64>, samples: Option<u64>| total.zip(samples)
+        .filter(|&(_, n)| n != 0).map(|(total, n)| total / n);
+    let legacy_average = mean(count("render_ns"), packets);
+    let attempt_average = mean(count("render_ns"), attempts);
+    // Old reports have no attempt census; retain their explicitly labelled ratio.
+    let (average, basis) = if attempts.is_some() { (attempt_average, "render attempt") }
+        else { (legacy_average, "completed packet (legacy counters)") };
     let budget = (rate != 0).then(|| crate::uvi::worker::BLOCK_FRAMES as u64 * 1_000_000_000 / u64::from(rate));
-    let maximum = stats["max_render_ns"].as_u64().unwrap_or(0);
     let ms = |value: Option<u64>| value.map_or_else(|| "unavailable".into(), |ns| format!("{:.2} ms",ns as f64 / 1_000_000.));
+    let number = |value: Option<u64>| value.map_or_else(|| "unavailable".into(), |n| n.to_string());
+    let cpu_samples = count("render_cpu_samples");
+    let cpu_average = mean(count("render_cpu_ns"), cpu_samples);
+    let cpu_available = cpu_average.is_some();
+    let cpu_summary = if cpu_available {
+        format!("Worker render CPU (Linux): mean {} · maximum {} · {} samples",
+            ms(cpu_average), ms(count("max_render_cpu_ns")), number(cpu_samples))
+    } else { "Worker render CPU: unavailable in this capture".into() };
+    let phase_summary = attempts.filter(|&n| n != 0).and_then(|n|
+        count("session_ns").zip(count("renderer_ns")).map(|(session, renderer)|
+            format!("Phase wall time per render attempt: Session mean {} / max {} · Renderer mean {} / max {}",
+                ms(Some(session / n)), ms(count("max_session_ns")), ms(Some(renderer / n)), ms(count("max_renderer_ns")))));
+    let script = &stats["script_activity"];
+    let activity_summary = if attempts.is_some_and(|n| n != 0) {
+        match (count("resource_alias_count"), count("resource_resident_pcm_bytes"), count("resource_revision"),
+            script["retained_voice_metadata"].as_u64(), script["suspended_tasks"].as_u64(),
+            script["emitted_starts"].as_u64(), script["emitted_releases"].as_u64(), script["emitted_kill_fades"].as_u64()) {
+            (Some(aliases), Some(bytes), Some(revision), Some(metadata), Some(tasks), Some(starts), Some(releases), Some(kills)) =>
+                Some(format!("Captured render observation: {:.2} MiB PCM · {aliases} aliases · revision {revision}; script metadata {metadata} · tasks {tasks}; emitted requests: {starts} starts · {releases} releases · {kills} kill fades", bytes as f64 / (1024. * 1024.))),
+            _ => None,
+        }
+    } else { None };
+    let ui_summary = count("ui_snapshot_calls").filter(|&n| n != 0).zip(count("ui_snapshot_ns"))
+        .map(|(calls, ns)| format!("UI snapshot service (outside render): {calls} calls · {} total wall time · {} maximum",
+            ms(Some(ns)), ms(count("max_ui_snapshot_ns"))));
+    let cpu_scope = if cpu_available {
+        "Linux CPU covers clock-sampled render attempts, with its own sample denominator."
+    } else { "Render CPU timing is unavailable in this capture." };
     serde_json::json!({"native_packet_frames":crate::uvi::worker::BLOCK_FRAMES,
-        "packet_budget_ns":budget, "mean_recorded_render_ns_per_completed_packet":average,
-        "summary":format!("Packet render wall time: mean {} · maximum {} · budget {} per {} frames",
-            ms(average),ms(Some(maximum)),ms(budget),crate::uvi::worker::BLOCK_FRAMES),
-        "counter_summary":format!("{} over-budget render attempts · {} blocked submission attempts · {packets} completed packets",
-            stats["render_deadline_misses"].as_u64().unwrap_or(0),stats["backpressure"].as_u64().unwrap_or(0)),
-        "scope":"Approximate cumulative concurrent counters: wall time includes scheduler delays and render validation, but excludes queue waiting and output publication. Failed render durations may be included. CPU time is not measured."})
+        "packet_budget_ns":budget,
+        "mean_recorded_render_ns_per_completed_packet":legacy_average,
+        "mean_recorded_render_ns_per_attempt":attempt_average, "render_attempts":attempts,
+        "mean_render_cpu_ns_per_sample":cpu_average, "render_cpu_available":cpu_available,
+        "render_cpu_samples":cpu_samples, "cpu_summary":cpu_summary,
+        "phase_summary":phase_summary, "activity_summary":activity_summary, "ui_summary":ui_summary,
+        "summary":format!("Recorded render wall time per {basis}: mean {} · maximum {} · budget {} per {} frames",
+            ms(average),ms(count("max_render_ns")),ms(budget),crate::uvi::worker::BLOCK_FRAMES),
+        "counter_summary":format!("{} over-budget render attempts · {} blocked submission attempts · {} completed packets",
+            number(count("render_deadline_misses")),number(count("backpressure")),number(packets)),
+        "scope":format!("Later concurrent observations, not fault-instant counters. Render wall includes validation/scheduler delay; excludes queue waiting, output publication and UI snapshots. Phase wall totals include partial failures. {cpu_scope}")})
 }
 
 /// Support exports have a finite context budget. Keep aggregate evidence and
@@ -636,7 +686,7 @@ mod tests {
         assert_eq!(timing["mean_recorded_render_ns_per_completed_packet"],6402644);
         assert!(timing["summary"].as_str().unwrap().contains("mean 6.40 ms"));
         assert!(timing["counter_summary"].as_str().unwrap().contains("72 over-budget"));
-        assert!(timing["scope"].as_str().unwrap().contains("CPU time is not measured"));
+        assert!(timing["scope"].as_str().unwrap().contains("Render CPU timing is unavailable"));
         assert!(timing["scope"].as_str().unwrap().contains("excludes queue waiting"));
         let empty = failure_timing(&serde_json::json!({"rendered_blocks":0,"render_ns":500}),0);
         assert!(empty["packet_budget_ns"].is_null());
@@ -660,7 +710,7 @@ mod tests {
             .worker
             .wait_ready(Duration::from_secs(5))
             .unwrap();
-        let audio = registry.take_ready(1, 2).unwrap().unwrap();
+        let mut audio = registry.take_ready(1, 2).unwrap().unwrap();
         assert_eq!(
             (
                 audio.epoch(),
@@ -678,8 +728,32 @@ mod tests {
         assert_eq!(registry.status(1, 2), Some(Status::Ready));
         assert!(registry.poll_ui(1, 2).is_none());
         assert_eq!(registry.poll_retired(), 0);
-        assert!(!registry.shutdown());
+        // Generic cancellation keeps the old endpoint playing while a new
+        // selection is prepared. It only suppresses controller UI/adoption.
+        audio.slot_mut().feed(crate::articulate::In::NoteOn(0, 60, 100), 0, true, false).unwrap();
+        let mut left = [0.; 256]; let mut right = [0.; 256];
+        for _ in 0..6 {
+            audio.slot_mut().process_mode(&mut left, &mut right, true).unwrap();
+        }
+        assert!(left.iter().chain(&right).any(|sample| sample.abs() > 1e-5));
+        assert!(registry.controls[&(1, 2)].worker.stats().active_voices > 0);
         assert_eq!(registry.status(1, 2), Some(Status::Ready));
+        // A terminal endpoint fault stops execution independently of receipt.
+        audio.slot_mut().abort_unsupported_router();
+        registry.abort(1, 2);
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while registry.status(1, 2) != Some(Status::Stopped) {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let stopped = registry.controls[&(1, 2)].worker.stats();
+        assert_eq!((stopped.active_voices, stopped.errors), (0, 0));
+        assert!(stopped.last_completed_voices > 0);
+        assert!(!receipt.load(Ordering::Acquire));
+        assert_eq!(registry.poll_retired(), 0);
+        assert!(!registry.shutdown());
+        assert_eq!(registry.status(1, 2), Some(Status::Stopped));
+        assert_eq!(registry.controls[&(1, 2)].worker.stats().rendered_blocks, stopped.rendered_blocks);
         drop(audio); // actual Slot and AudioPort destruction, off callback
         assert!(receipt.load(Ordering::Acquire));
         assert_eq!(registry.poll_retired(), 1);
@@ -920,4 +994,40 @@ mod tests {
             assert_eq!(evidence["falcon_numerical_fidelity_verified"], false);
         }
     }
+    #[test]
+    fn failure_timing_uses_attempt_mean_and_valid_cpu_samples() {
+        let stats = serde_json::json!({"rendered_blocks":1,"render_attempts":2,"render_ns":20000000,"max_render_ns":12000000,
+            "render_cpu_ns":14000000,"max_render_cpu_ns":9000000,"render_cpu_samples":2,
+            "session_ns":8000000,"max_session_ns":5000000,"renderer_ns":12000000,"max_renderer_ns":7000000,
+            "resource_alias_count":3,"resource_resident_pcm_bytes":1048576,"resource_revision":4,
+            "script_activity":{"retained_voice_metadata":8,"suspended_tasks":6,"emitted_starts":9,"emitted_releases":7,"emitted_kill_fades":4},
+            "ui_snapshot_calls":3,"ui_snapshot_ns":6000000,"max_ui_snapshot_ns":3000000});
+        let timing = failure_timing(&stats,48000);
+        assert_eq!(timing["mean_recorded_render_ns_per_attempt"],10000000);
+        assert_eq!(timing["mean_recorded_render_ns_per_completed_packet"],20000000);
+        assert_eq!(timing["mean_render_cpu_ns_per_sample"],7000000);
+        assert_eq!(timing["render_cpu_available"],true);
+        assert!(timing["summary"].as_str().unwrap().contains("per render attempt: mean 10.00 ms"));
+        assert!(timing["cpu_summary"].as_str().unwrap().contains("mean 7.00 ms"));
+        assert!(timing["phase_summary"].as_str().unwrap().contains("Session mean 4.00 ms"));
+        assert!(timing["activity_summary"].as_str().unwrap().contains("1.00 MiB PCM"));
+        assert!(timing["activity_summary"].as_str().unwrap().contains("9 starts · 7 releases · 4 kill fades"));
+        assert!(timing["ui_summary"].as_str().unwrap().contains("outside render"));
+        assert!(!timing["scope"].as_str().unwrap().contains("CPU time is not measured"));
+    }
+
+    #[test]
+    fn absent_or_zero_cpu_samples_are_unavailable_and_no_render_activity_is_invented() {
+        for stats in [serde_json::json!({}), serde_json::json!({"render_cpu_samples":0,"render_cpu_ns":0,"render_attempts":0}),
+            serde_json::json!({"render_cpu_samples":2})] {
+            let timing = failure_timing(&stats,0);
+            assert_eq!(timing["render_cpu_available"],false);
+            assert!(timing["mean_render_cpu_ns_per_sample"].is_null());
+            assert!(timing["cpu_summary"].as_str().unwrap().contains("unavailable"));
+            assert!(timing["activity_summary"].is_null());
+            assert!(timing["phase_summary"].is_null());
+            assert!(timing["ui_summary"].is_null());
+        }
+    }
+
 }

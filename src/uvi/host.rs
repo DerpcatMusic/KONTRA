@@ -466,6 +466,188 @@ fn ui_position(table: &Table, key: &str) -> mlua::Result<f64> {
     Ok(n)
 }
 
+fn read_ui_root(root: &Table, budget: &mut UiBudget) -> mlua::Result<UiRoot> {
+    Ok(UiRoot {
+        width: ui_extent(root, "width")?,
+        height: ui_extent(root, "height")?,
+        performance_view: ui_bool(root, "performanceView", false)?,
+        background: budget.artwork(root, "background")?,
+        background_colour: budget.string(root, "backgroundColour")?,
+    })
+}
+
+// Shared raw reader keeps edit admission and published widget validation aligned.
+// Only snapshot_ui reads every widget; admission reads the target ancestry.
+fn read_ui_widget(
+    widget: &Table,
+    index: u32,
+    budget: &mut UiBudget,
+) -> mlua::Result<(UiWidget, Option<usize>, Vec<usize>)> {
+    let state = widget.raw_get::<Table>("_state")?;
+    let parent = match state.raw_get::<Value>("parent")? {
+        Value::Nil => None,
+        Value::Table(t) => Some(t.to_pointer() as usize),
+        _ => return Err(ui_error("Invalid UVI UI snapshot parent")),
+    };
+    let mut children = Vec::new();
+    match state.raw_get::<Value>("children")? {
+        Value::Nil => {}
+        Value::Table(source) => {
+            for i in 1..=budget.sequence(&source, UI_WIDGET_LIMIT)? {
+                let Value::Table(child) = source.raw_get::<Value>(i)? else {
+                    return Err(ui_error("Invalid UVI UI snapshot child reference"));
+                };
+                children.push(child.to_pointer() as usize);
+            }
+        }
+        _ => return Err(ui_error("Invalid UVI UI snapshot child list")),
+    }
+    let kind = match state.raw_get::<Value>("kind")? {
+        Value::String(s) => match s.to_str()?.as_ref() {
+            "Panel" => UiKind::Panel,
+            "Viewport" => UiKind::Viewport,
+            "Label" => UiKind::Label,
+            "Image" => UiKind::Image,
+            "WaveView" => UiKind::WaveView,
+            "AudioMeter" => UiKind::AudioMeter,
+            "XY" => UiKind::XY,
+            "Menu" => UiKind::Menu,
+            "Table" => UiKind::Table,
+            "Slider" => UiKind::Slider,
+            "Knob" => UiKind::Knob,
+            "NumBox" => UiKind::NumBox,
+            "Button" => UiKind::Button,
+            "OnOffButton" => UiKind::OnOffButton,
+            _ => return Err(ui_error("Unsupported UVI UI snapshot widget kind")),
+        },
+        _ => return Err(ui_error("Invalid UVI UI snapshot widget kind")),
+    };
+    let mut items = Vec::new();
+    if kind == UiKind::Menu {
+        let source = state.raw_get::<Table>("items")?;
+        for i in 1..=budget.sequence(&source, UI_WIDGET_LIMIT)? {
+            // Reuse the bounded string reader without accessing metamethods.
+            items.push(
+                budget
+                    .string(&source, i)?
+                    .ok_or_else(|| ui_error("Invalid UVI UI menu item"))?,
+            );
+        }
+    }
+    let value = if kind == UiKind::Table {
+        let source = state.raw_get::<Table>("values")?;
+        let mut values = Vec::new();
+        for i in 1..=budget.sequence(&source, 65_536)? {
+            values.push(
+                ui_number(&source, i)?.ok_or_else(|| ui_error("Invalid UVI UI Table value"))?,
+            );
+        }
+        Some(UiValue::Table(values))
+    } else {
+        match state.raw_get::<Value>("value")? {
+            Value::Nil => None,
+            Value::Boolean(b) => Some(UiValue::Boolean(b)),
+            Value::Number(n) if n.is_finite() => Some(UiValue::Number(n)),
+            Value::Integer(n) => Some(UiValue::Number(n as f64)),
+            _ => return Err(ui_error("Invalid UVI UI snapshot control value")),
+        }
+    };
+    let strip_image = match state.raw_get::<Value>("stripImage")? {
+        Value::Nil => None,
+        Value::Table(strip) => {
+            budget.sequence(&strip, 3)?;
+            let artwork = budget
+                .artwork(&strip, 1)?
+                .ok_or_else(|| ui_error("Missing UVI UI sprite artwork"))?;
+            let frames =
+                ui_number(&strip, 2)?.ok_or_else(|| ui_error("Missing UVI UI sprite count"))?;
+            if frames.fract() != 0.0 || !(1.0..=4096.0).contains(&frames) {
+                return Err(ui_error("Invalid UVI UI sprite count"));
+            }
+            let horizontal = match strip.raw_get::<Value>(3)? {
+                Value::Nil => false,
+                Value::Boolean(b) => b,
+                _ => return Err(ui_error("Invalid UVI UI sprite orientation")),
+            };
+            Some(UiStrip {
+                artwork,
+                frames: frames as u32,
+                horizontal,
+            })
+        }
+        _ => return Err(ui_error("Invalid UVI UI sprite strip")),
+    };
+    let font_size = ui_number(&state, "fontSize")?;
+    if font_size.is_some_and(|size| !(0.0..=512.0).contains(&size)) {
+        return Err(ui_error("UVI UI snapshot font size exceeds render bounds"));
+    }
+    let style = UiStyle {
+        text: budget.string(&state, "text")?,
+        display_text: budget.string(&state, "displayText")?,
+        tooltip: budget.string(&state, "tooltip")?,
+        align: budget.string(&state, "align")?,
+        font: budget.string(&state, "font")?,
+        font_size,
+        text_colour: budget.string(&state, "textColour")?,
+        background_colour: budget.string(&state, "backgroundColour")?,
+        slider_colour: budget.string(&state, "sliderColour")?,
+        draw_inner_edge: ui_optional_bool(&state, "drawInnerEdge")?,
+        inner_edge_colour: budget.string(&state, "innerEdgeColour")?,
+        show_label: ui_optional_bool(&state, "showLabel")?,
+        show_value: ui_optional_bool(&state, "showValue")?,
+        show_popup_display: ui_optional_bool(&state, "showPopupDisplay")?,
+        unit: ui_number(&state, "unit")?,
+        mapper: ui_number(&state, "mapper")?,
+        hierarchical: ui_optional_bool(&state, "hierarchical")?,
+        background_image: budget.artwork(&state, "backgroundImage")?,
+        image: budget.artwork(&state, "image")?,
+        normal_image: budget.artwork(&state, "normalImage")?,
+        pressed_image: budget.artwork(&state, "pressedImage")?,
+        over_image: budget.artwork(&state, "overImage")?,
+        strip_image,
+    };
+    let alpha = ui_number(&state, "alpha")?.unwrap_or(1.0);
+    if !(0.0..=1.0).contains(&alpha) {
+        return Err(ui_error("Invalid UVI UI snapshot opacity"));
+    }
+    let value = UiWidget {
+        id: index,
+        parent: None,
+        kind,
+        name: budget
+            .string(&state, "name")?
+            .ok_or_else(|| ui_error("Missing UVI UI widget name"))?,
+        display_name: budget.string(&state, "displayName")?,
+        bounds: UiBounds {
+            x: ui_position(&state, "x")?,
+            y: ui_position(&state, "y")?,
+            width: ui_extent(&state, "width")?,
+            height: ui_extent(&state, "height")?,
+        },
+        absolute_bounds: UiBounds {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+        },
+        visible: ui_bool(&state, "visible", true)?,
+        effective_visible: false,
+        enabled: ui_bool(&state, "enabled", true)?,
+        alpha,
+        effective_alpha: 0.0,
+        value,
+        min: ui_number(&state, "min")?,
+        max: ui_number(&state, "max")?,
+        integer: ui_bool(&state, "integer", false)?,
+        items,
+        param_x: budget.string(&state, "paramX")?,
+        param_y: budget.string(&state, "paramY")?,
+        has_changed_callback: matches!(state.raw_get::<Value>("changed")?, Value::Function(_)),
+        style,
+    };
+    Ok((value, parent, children))
+}
+
 /// Read raw host state only: no widget getter, metamethod, callback, or script is
 /// invoked. Errors contain fixed diagnostics rather than instrument strings.
 /// Snapshot limits bound owned allocations independently of the Lua heap cap.
@@ -474,13 +656,7 @@ pub fn snapshot_ui(processor: NodeId, environment: &Table) -> mlua::Result<UiSna
     let root = ui.raw_get::<Table>("root")?;
     let order = ui.raw_get::<Table>("order")?;
     let mut budget = UiBudget::default();
-    let root = UiRoot {
-        width: ui_extent(&root, "width")?,
-        height: ui_extent(&root, "height")?,
-        performance_view: ui_bool(&root, "performanceView", false)?,
-        background: budget.artwork(&root, "background")?,
-        background_colour: budget.string(&root, "backgroundColour")?,
-    };
+    let root = read_ui_root(&root, &mut budget)?;
     let count = budget.sequence(&order, UI_WIDGET_LIMIT)?;
     let mut identities = HashMap::with_capacity(count);
     let mut parents = Vec::with_capacity(count);
@@ -494,169 +670,10 @@ pub fn snapshot_ui(processor: NodeId, environment: &Table) -> mlua::Result<UiSna
         {
             return Err(ui_error("Duplicate UVI UI snapshot widget identity"));
         }
-        let state = widget.raw_get::<Table>("_state")?;
-        parents.push(match state.raw_get::<Value>("parent")? {
-            Value::Nil => None,
-            Value::Table(t) => Some(t.to_pointer() as usize),
-            _ => return Err(ui_error("Invalid UVI UI snapshot parent")),
-        });
-        let mut children = Vec::new();
-        match state.raw_get::<Value>("children")? {
-            Value::Nil => {}
-            Value::Table(source) => {
-                for i in 1..=budget.sequence(&source, UI_WIDGET_LIMIT)? {
-                    let Value::Table(child) = source.raw_get::<Value>(i)? else {
-                        return Err(ui_error("Invalid UVI UI snapshot child reference"));
-                    };
-                    children.push(child.to_pointer() as usize);
-                }
-            }
-            _ => return Err(ui_error("Invalid UVI UI snapshot child list")),
-        }
+        let (value, parent, children) = read_ui_widget(&widget, index as u32, &mut budget)?;
+        widgets.push(value);
+        parents.push(parent);
         child_pointers.push(children);
-        let kind = match state.raw_get::<Value>("kind")? {
-            Value::String(s) => match s.to_str()?.as_ref() {
-                "Panel" => UiKind::Panel,
-                "Viewport" => UiKind::Viewport,
-                "Label" => UiKind::Label,
-                "Image" => UiKind::Image,
-                "WaveView" => UiKind::WaveView,
-                "AudioMeter" => UiKind::AudioMeter,
-                "XY" => UiKind::XY,
-                "Menu" => UiKind::Menu,
-                "Table" => UiKind::Table,
-                "Slider" => UiKind::Slider,
-                "Knob" => UiKind::Knob,
-                "NumBox" => UiKind::NumBox,
-                "Button" => UiKind::Button,
-                "OnOffButton" => UiKind::OnOffButton,
-                _ => return Err(ui_error("Unsupported UVI UI snapshot widget kind")),
-            },
-            _ => return Err(ui_error("Invalid UVI UI snapshot widget kind")),
-        };
-        let mut items = Vec::new();
-        if kind == UiKind::Menu {
-            let source = state.raw_get::<Table>("items")?;
-            for i in 1..=budget.sequence(&source, UI_WIDGET_LIMIT)? {
-                // Reuse the bounded string reader without accessing metamethods.
-                items.push(
-                    budget
-                        .string(&source, i)?
-                        .ok_or_else(|| ui_error("Invalid UVI UI menu item"))?,
-                );
-            }
-        }
-        let value = if kind == UiKind::Table {
-            let source = state.raw_get::<Table>("values")?;
-            let mut values = Vec::new();
-            for i in 1..=budget.sequence(&source, 65_536)? {
-                values.push(
-                    ui_number(&source, i)?.ok_or_else(|| ui_error("Invalid UVI UI Table value"))?,
-                );
-            }
-            Some(UiValue::Table(values))
-        } else {
-            match state.raw_get::<Value>("value")? {
-                Value::Nil => None,
-                Value::Boolean(b) => Some(UiValue::Boolean(b)),
-                Value::Number(n) if n.is_finite() => Some(UiValue::Number(n)),
-                Value::Integer(n) => Some(UiValue::Number(n as f64)),
-                _ => return Err(ui_error("Invalid UVI UI snapshot control value")),
-            }
-        };
-        let strip_image = match state.raw_get::<Value>("stripImage")? {
-            Value::Nil => None,
-            Value::Table(strip) => {
-                budget.sequence(&strip, 3)?;
-                let artwork = budget
-                    .artwork(&strip, 1)?
-                    .ok_or_else(|| ui_error("Missing UVI UI sprite artwork"))?;
-                let frames =
-                    ui_number(&strip, 2)?.ok_or_else(|| ui_error("Missing UVI UI sprite count"))?;
-                if frames.fract() != 0.0 || !(1.0..=4096.0).contains(&frames) {
-                    return Err(ui_error("Invalid UVI UI sprite count"));
-                }
-                let horizontal = match strip.raw_get::<Value>(3)? {
-                    Value::Nil => false,
-                    Value::Boolean(b) => b,
-                    _ => return Err(ui_error("Invalid UVI UI sprite orientation")),
-                };
-                Some(UiStrip {
-                    artwork,
-                    frames: frames as u32,
-                    horizontal,
-                })
-            }
-            _ => return Err(ui_error("Invalid UVI UI sprite strip")),
-        };
-        let font_size = ui_number(&state, "fontSize")?;
-        if font_size.is_some_and(|size| !(0.0..=512.0).contains(&size)) {
-            return Err(ui_error("UVI UI snapshot font size exceeds render bounds"));
-        }
-        let style = UiStyle {
-            text: budget.string(&state, "text")?,
-            display_text: budget.string(&state, "displayText")?,
-            tooltip: budget.string(&state, "tooltip")?,
-            align: budget.string(&state, "align")?,
-            font: budget.string(&state, "font")?,
-            font_size,
-            text_colour: budget.string(&state, "textColour")?,
-            background_colour: budget.string(&state, "backgroundColour")?,
-            slider_colour: budget.string(&state, "sliderColour")?,
-            draw_inner_edge: ui_optional_bool(&state, "drawInnerEdge")?,
-            inner_edge_colour: budget.string(&state, "innerEdgeColour")?,
-            show_label: ui_optional_bool(&state, "showLabel")?,
-            show_value: ui_optional_bool(&state, "showValue")?,
-            show_popup_display: ui_optional_bool(&state, "showPopupDisplay")?,
-            unit: ui_number(&state, "unit")?,
-            mapper: ui_number(&state, "mapper")?,
-            hierarchical: ui_optional_bool(&state, "hierarchical")?,
-            background_image: budget.artwork(&state, "backgroundImage")?,
-            image: budget.artwork(&state, "image")?,
-            normal_image: budget.artwork(&state, "normalImage")?,
-            pressed_image: budget.artwork(&state, "pressedImage")?,
-            over_image: budget.artwork(&state, "overImage")?,
-            strip_image,
-        };
-        let alpha = ui_number(&state, "alpha")?.unwrap_or(1.0);
-        if !(0.0..=1.0).contains(&alpha) {
-            return Err(ui_error("Invalid UVI UI snapshot opacity"));
-        }
-        widgets.push(UiWidget {
-            id: index as u32,
-            parent: None,
-            kind,
-            name: budget
-                .string(&state, "name")?
-                .ok_or_else(|| ui_error("Missing UVI UI widget name"))?,
-            display_name: budget.string(&state, "displayName")?,
-            bounds: UiBounds {
-                x: ui_position(&state, "x")?,
-                y: ui_position(&state, "y")?,
-                width: ui_extent(&state, "width")?,
-                height: ui_extent(&state, "height")?,
-            },
-            absolute_bounds: UiBounds {
-                x: 0.0,
-                y: 0.0,
-                width: 0.0,
-                height: 0.0,
-            },
-            visible: ui_bool(&state, "visible", true)?,
-            effective_visible: false,
-            enabled: ui_bool(&state, "enabled", true)?,
-            alpha,
-            effective_alpha: 0.0,
-            value,
-            min: ui_number(&state, "min")?,
-            max: ui_number(&state, "max")?,
-            integer: ui_bool(&state, "integer", false)?,
-            items,
-            param_x: budget.string(&state, "paramX")?,
-            param_y: budget.string(&state, "paramY")?,
-            has_changed_callback: matches!(state.raw_get::<Value>("changed")?, Value::Function(_)),
-            style,
-        });
     }
     for (widget, parent) in widgets.iter_mut().zip(parents) {
         widget.parent = parent
@@ -798,6 +815,80 @@ impl UserData for UiModifiers {
 
 const UI_SETTERS: &str = "kontra.uvi.private-ui-setters";
 
+/// Admission validates the target ancestry, not unrelated widget contents.
+/// Published snapshots still validate the complete tree with its global budget.
+/// Raw identity reads retain the widget-count, sequence and ownership boundary;
+/// no getter, callback or mutation revision is used to skip revalidation.
+fn read_ui_edit_target(environment: &Table, id: u32) -> mlua::Result<(Table, UiWidget)> {
+    let ui = environment.raw_get::<Table>("UVI_UI_STATE")?;
+    let root = ui.raw_get::<Table>("root")?;
+    let order = ui.raw_get::<Table>("order")?;
+    let mut budget = UiBudget::default();
+    read_ui_root(&root, &mut budget)?;
+    let count = budget.sequence(&order, UI_WIDGET_LIMIT)?;
+    if id == 0 || id as usize > count {
+        return Err(ui_error("Invalid UVI UI widget identity"));
+    }
+    let mut identities = HashMap::with_capacity(count);
+    for index in 1..=count {
+        let widget = order.raw_get::<Table>(index)?;
+        if identities.insert(widget.to_pointer() as usize, index as u32).is_some() {
+            return Err(ui_error("Duplicate UVI UI snapshot widget identity"));
+        }
+    }
+    let object = order.raw_get::<Table>(id)?;
+    let mut seen = HashSet::new();
+    let mut chain = Vec::new();
+    let mut next = Some(id);
+    while let Some(index) = next {
+        if !seen.insert(index) {
+            return Err(ui_error("Cyclic UVI UI snapshot parent tree"));
+        }
+        let source = order.raw_get::<Table>(index)?;
+        let (mut widget, parent, children) = read_ui_widget(&source, index, &mut budget)?;
+        widget.parent = parent.map(|pointer| {
+            identities.get(&pointer).copied()
+                .ok_or_else(|| ui_error("UVI UI snapshot parent is outside processor scope"))
+        }).transpose()?;
+        let mut child_ids = HashSet::with_capacity(children.len());
+        for pointer in children {
+            let child = identities.get(&pointer).copied()
+                .ok_or_else(|| ui_error("UVI UI snapshot child is outside processor scope"))?;
+            if child == index || !child_ids.insert(child) {
+                return Err(ui_error("Duplicate or self UVI UI snapshot child reference"));
+            }
+        }
+        next = widget.parent;
+        chain.push(widget);
+    }
+    // Match snapshot_ui's root-to-leaf accumulation, including intermediate
+    // position limits. Opacity zero is legal and does not imply hidden state.
+    let (mut x, mut y, mut alpha) = (0.0, 0.0, 1.0);
+    let (mut visible, mut enabled) = (true, true);
+    for widget in chain.iter_mut().rev() {
+        x += widget.bounds.x;
+        y += widget.bounds.y;
+        if x.abs() > UI_POSITION_LIMIT || y.abs() > UI_POSITION_LIMIT {
+            return Err(ui_error("UVI UI snapshot ancestor position exceeds render bounds"));
+        }
+        alpha *= widget.alpha;
+        visible &= widget.visible;
+        enabled &= widget.enabled;
+        widget.absolute_bounds = UiBounds { x, y, ..widget.bounds };
+        widget.effective_visible = visible;
+        widget.effective_alpha = alpha;
+    }
+    if !visible {
+        return Err(ui_error("UVI UI widget is hidden"));
+    }
+    if !enabled {
+        return Err(ui_error("UVI UI widget is disabled"));
+    }
+    let widget = chain.into_iter().next()
+        .ok_or_else(|| ui_error("Invalid UVI UI widget identity"))?;
+    Ok((object, widget))
+}
+
 /// Validate without changing values, time, or outputs. The returned trusted
 /// setter must run on the VM's scheduler: changed callbacks can yield.
 /// Revalidate after advancing pending work, since callbacks can alter the UI.
@@ -806,25 +897,7 @@ pub fn prepare_ui_edit(
     environment: &Table,
     edit: &UiEdit,
 ) -> mlua::Result<(Function, MultiValue)> {
-    let snapshot = snapshot_ui(edit.processor, environment)?;
-    let index = edit
-        .widget
-        .checked_sub(1)
-        .ok_or_else(|| ui_error("Invalid UVI UI widget identity"))? as usize;
-    let widget = snapshot
-        .widgets
-        .get(index)
-        .ok_or_else(|| ui_error("Invalid UVI UI widget identity"))?;
-    if !widget.effective_visible {
-        return Err(ui_error("UVI UI widget is hidden"));
-    }
-    let mut ancestor = Some(widget);
-    while let Some(w) = ancestor {
-        if !w.enabled {
-            return Err(ui_error("UVI UI widget is disabled"));
-        }
-        ancestor = w.parent.map(|id| &snapshot.widgets[id as usize - 1]);
-    }
+    let (object, widget) = read_ui_edit_target(environment, edit.widget)?;
     let number = |value: f64| -> mlua::Result<()> {
         if !value.is_finite()
             || !(value as f32).is_finite()
@@ -868,9 +941,6 @@ pub fn prepare_ui_edit(
     };
     let setters = lua.named_registry_value::<Table>(UI_SETTERS)?;
     let setter = setters.raw_get::<Function>(environment.clone())?;
-    let ui = environment.raw_get::<Table>("UVI_UI_STATE")?;
-    let order = ui.raw_get::<Table>("order")?;
-    let object = order.raw_get::<Table>(edit.widget)?;
     Ok((
         setter,
         MultiValue::from_vec(vec![
@@ -3035,6 +3105,121 @@ mod tests {
         .exec()
         .unwrap();
         assert!(prepare_ui_edit(&lua, &environment, &edit(7, UiEditValue::Number(0.5))).is_err());
+    }
+
+    #[test]
+    fn ui_edit_target_matches_snapshot_and_does_not_read_unrelated_contents() {
+        let lua = vm();
+        let environment = ui_environment(&lua);
+        lua.load(r#"
+          calls=0
+          p=Panel{name='p',x=10,y=20,alpha=0}
+          n=p:Knob{name='n',x=3,y=4,value=0.25,min=0,max=1}
+          n.changed=function()calls=calls+1 end
+          unrelated=Table{'unrelated',3,0,0,1}
+        "#).set_environment(environment.clone()).exec().unwrap();
+        let snapshot = snapshot_ui(3, &environment).unwrap();
+        let (_, target) = read_ui_edit_target(&environment, 2).unwrap();
+        assert!(target == snapshot.widgets[1]);
+        // Corrupt only unrelated contents. Full publication must still reject;
+        // target admission must not traverse or serialize the unrelated table.
+        lua.load(r#"
+          unrelated._state.values={unrelated}
+          setmetatable(n._state,{__index=function()error('state getter executed')end})
+          setmetatable(UVI_UI_STATE.root,{__index=function()error('root getter executed')end})
+          setmetatable(UVI_UI_STATE.order,{__index=function()error('order getter executed')end,
+            __pairs=function()error('order pairs callback executed')end})
+          setmetatable(p._state.children,{__index=function()error('child getter executed')end,
+            __pairs=function()error('child pairs callback executed')end})
+        "#).set_environment(environment.clone()).exec().unwrap();
+        assert!(snapshot_ui(3, &environment).is_err());
+        let request = UiEdit {
+            processor: 3, widget: 2, value: UiEditValue::Number(0.75),
+            modifiers: UiModifiers::default(),
+        };
+        let (setter, args) = prepare_ui_edit(&lua, &environment, &request).unwrap();
+        assert_eq!(environment.raw_get::<u32>("calls").unwrap(), 0);
+        setter.call::<()>(args).unwrap();
+        assert_eq!(environment.raw_get::<u32>("calls").unwrap(), 1);
+        assert!(snapshot_ui(3, &environment).is_err());
+        let (_, target) = read_ui_edit_target(&environment, 2).unwrap();
+        assert!(target.effective_visible && target.effective_alpha == 0.0);
+        assert!(matches!(target.value, Some(UiValue::Number(n)) if n == 0.75));
+    }
+
+    #[test]
+    fn ui_edit_target_rejects_malformed_ancestry_and_identity_boundaries() {
+        for mutation in [
+            "n.visible=false", "p.visible=false", "n.enabled=false", "p.enabled=false",
+            "n._state.enabled='yes'", "p._state.visible=1", "p.alpha=1.01",
+            "n._state.alpha=0/0", "n.parent={}", "p.parent=n", "n.parent=n",
+            "p.children={n,n}", "p.children={p}", "p.children={{}}",
+            "p._state.children='invalid'", "p.children={[2]=n}",
+            "UVI_UI_STATE.order={p,n,n}", "UVI_UI_STATE.order={[1]=p,[3]=n}",
+            "UVI_UI_STATE.order={p,n,42}",
+            "for i=3,4097 do UVI_UI_STATE.order[i]=p end",
+            "UVI_UI_STATE.root.width=16385", "n.width=-1", "p.x=1048577",
+            "p.x=800000;n.x=400000", "n.fontSize=513",
+            "n.tooltip=string.rep('x',4097)", "n.image='file:///foreign.png'",
+            "n._state.min='invalid'", "n._state.value=0/0",
+        ] {
+            let lua = vm();
+            let environment = ui_environment(&lua);
+            lua.load("calls=0;p=Panel('p');n=p:Knob{'n',0.25,0,1};n.changed=function()calls=calls+1 end")
+                .set_environment(environment.clone()).exec().unwrap();
+            lua.load(mutation).set_environment(environment.clone()).exec().unwrap();
+            let request = UiEdit {
+                processor: 3, widget: 2, value: UiEditValue::Number(0.75),
+                modifiers: UiModifiers::default(),
+            };
+            assert!(prepare_ui_edit(&lua, &environment, &request).is_err(), "{mutation}");
+            assert_eq!(environment.raw_get::<u32>("calls").unwrap(), 0);
+        }
+        // Validate intermediate ancestor bounds, even if the final coordinate
+        // comes back inside bounds, and retain valid manual reparenting.
+        let lua = vm();
+        let environment = ui_environment(&lua);
+        lua.load("g=Panel{name='g',x=800000};p=g:Panel{name='p',x=800000};n=p:Knob{name='n',x=-800000,value=0.25,min=0,max=1}")
+            .set_environment(environment.clone()).exec().unwrap();
+        assert!(read_ui_edit_target(&environment, 3).is_err());
+        lua.load("p.x=0;n.parent=g").set_environment(environment.clone()).exec().unwrap();
+        let snapshot = snapshot_ui(3, &environment).unwrap();
+        let (_, target) = read_ui_edit_target(&environment, 3).unwrap();
+        assert!(target == snapshot.widgets[2]);
+    }
+
+    #[test]
+    fn ui_edit_target_keeps_menu_table_and_ancestry_budgets() {
+        for (setup, mutation, value) in [
+            ("n=Menu{'n',{'One','Two'}}", "n._state.items={[1]='One',[3]='Three'}", UiEditValue::Number(1.0)),
+            ("n=Menu{'n',{'One','Two'}}", "n._state.items={'One',42}", UiEditValue::Number(1.0)),
+            ("n=Menu{'n',{'One','Two'}}", "n._state.items={string.rep('x',4097)}", UiEditValue::Number(1.0)),
+            ("n=Menu{'n',{'One','Two'}}", "for i=3,4097 do n._state.items[i]='x' end", UiEditValue::Number(1.0)),
+            ("n=Table{'n',3,0,0,1}", "n._state.values={0,0/0,0}", UiEditValue::TableCell { index: 1, value: 0.5 }),
+            ("n=Table{'n',3,0,0,1}", "n._state.values={[1]=0,[3]=0}", UiEditValue::TableCell { index: 1, value: 0.5 }),
+            ("n=Table{'n',3,0,0,1}", "for i=4,65537 do n._state.values[i]=0 end", UiEditValue::TableCell { index: 1, value: 0.5 }),
+        ] {
+            let lua = vm();
+            let environment = ui_environment(&lua);
+            lua.load(setup).set_environment(environment.clone()).exec().unwrap();
+            lua.load(mutation).set_environment(environment.clone()).exec().unwrap();
+            let request = UiEdit { processor: 3, widget: 1, value, modifiers: UiModifiers::default() };
+            assert!(prepare_ui_edit(&lua, &environment, &request).is_err(), "{mutation}");
+        }
+        for (setup, id) in [
+            // Every individual string is legal; the selected ancestry total is not.
+            ("p=Panel('p');for i=1,260 do p=p:Panel{name='p',text=string.rep('x',4096)} end;n=p:Knob{'n',0.25,0,1}", 262),
+            // Every individual sequence is legal; the ancestry item total is not.
+            ("parents={Panel('p')};for i=2,34 do parents[i]=parents[i-1]:Panel('p') end;n=parents[34]:Knob{'n',0.25,0,1};children={};for i=1,4000 do children[i]=Button('b') end;for i=1,34 do parents[i]._state.children=children end", 35),
+        ] {
+            let lua = vm();
+            let environment = ui_environment(&lua);
+            lua.load(setup).set_environment(environment.clone()).exec().unwrap();
+            let ui = environment.raw_get::<Table>("UVI_UI_STATE").unwrap();
+            let order = ui.raw_get::<Table>("order").unwrap();
+            assert!(order.raw_len() <= UI_WIDGET_LIMIT);
+            assert!(read_ui_edit_target(&environment, id).is_err());
+        }
     }
 
     #[test]

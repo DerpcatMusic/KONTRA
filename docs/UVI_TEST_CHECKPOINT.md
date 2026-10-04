@@ -41,53 +41,50 @@ Select a supported UVI
 program and wait for its controls before playing. Actual sample rate, host block
 size and preparation limits can affect admission.
 
-## Current installed checkpoint
+## Installed checkpoint before the runtime correction
 
-At the user's request, `cc54c675706277a75de71b68029b08b5a473592a` now replaces
-the Linux standalone, CLAP and VST3. Build hash `c01b223593a9516e`, import hash
-`ed6c20adf8c20313`; clean source, baseline x86_64, optimized `ci` profile with
-UVI and standalone enabled. The cached build used two low-priority jobs and
-completed in 59.43 seconds. Both plugin factories enumerate one class, dynamic
-dependencies resolve, and installed file hashes and standalone build identity
-match the package. The 28 configuration/access files were unchanged across
-installation. The previous binaries and standalone link target are backed up
-under `20261004T115622Z-before-uvi-cc54c67`.
+The Linux standalone, CLAP and VST3 installed on 2026-10-04 identify clean source
+`c3d3094f17055fc775a3440137b0b8b4ed028d1e`, build hash `fafc282ce3819581`, import
+hash `ed6c20adf8c20313`, version 0.3.148, baseline x86_64, optimized `ci` with UVI
+and standalone enabled. The package is `KONTRA-UVI-checkpoint-c3d3094-linux-x86_64`.
+Compilation used two low-priority jobs restricted to two logical CPUs. Both
+plugin factories enumerate one class and dynamic dependencies resolve. Installed
+file hashes and standalone identity match the package. All 28 configuration and
+access files stayed byte-identical. Previous installed binaries are backed up
+under `20261004T135536Z-before-uvi-c3d3094`. No DAW restart occurred; loaded host
+instances retain the old inode until unloaded.
 
-This builds the source follow-ups described below, including browser folders,
-grouped failures, live Info, queue/fault handling and save-state ownership fixes.
-Their authored tests remain unrun; no audio replay, editor verification or DAW
-restart occurred. Earlier dated notes saying these production changes were
-uncompiled describe their original static-review checkpoint. Successful
-compilation does not establish that the live blackout is resolved or that full
-Falcon parity is achieved. Optional PCM caching remains disabled by default.
-Already loaded host instances retain their old binary until the host unloads it.
+This includes the callback-selection correction, per-frame control-order clone
+removal, admitted Step projection cache, final PanLaw admission, panel/context
+ownership, concise preflight errors and wrapped/grouped Logs described below.
+The six Bridge functional tests passed, including bounded retry after output
+progress, persistent overload, offline error handling and real-worker host-block
+PCM equivalence. Authored master/fallback callback cases passed. Four PanLaw
+fixture/restore tests passed after fixing their missing sample resources. Tests
+for grouped text wrapping and fixed Step projection also passed. A 3-second
+single-note Oboe Worker+Bridge smoke produced finite nonzero PCM with no underrun
+or endpoint error; it did not cover controller gestures, full DAW/editor use or
+native musical fidelity.
 
-The subsequent [live failure investigation](UVI_LIVE_LOAD_FAILURE_2026_10_04.md)
-identifies an Augmented Orchestra preflight rejection and a separate Oboe
-request-capacity failure in this installed build. Source follow-ups remove the
-unconditional still-playing claim, bound preflight summaries without losing
-typed node causes, retain exact load identity/stage in staging failures, and
-wrap/group Logs with measured visible row heights. They have independent static
-review where noted; compilation, functional and visual verification are pending.
-These follow-ups have not replaced the installed binary or implemented the
-missing Augmented Orchestra execution paths.
-
-Further static source work fences retained panels against same-source state
-replacement, releases displaced snapshot owners outside the worker phase mutex,
-removes per-frame control-order cloning, caches the admitted fixed Step Envelope
-projection, and validates final owned PanLaw scalars at initialization/save.
-Each has independent static review; new authored tests and runtime checks remain
-pending. No timing gain, Oboe backlog resolution, new Augmented Orchestra
-admission or native host-generation fidelity is established. These source
-changes are not installed in the current `cc54c67` binary.
+The user's subsequent sessions confirm RequestCapacity failures across several
+VWinds instruments, including Flute2 during controls. Focused Flute2 held-note
+and CC1-sweep replays both reproduced failure, retaining five renderer voices
+in the sampled intervals. This does not establish unlimited voice/sample growth.
+The current [runtime investigation](UVI_RUNTIME_QUEUE_INVESTIGATION.md) records
+source, profiler and functional-test evidence. Post-fault execution cleanup,
+CPU/script/resource/phase observations, bound Ratio slots and scoped control
+admission passed focused verification in the current integration source. The
+actual Flute2 and Oboe Air-drag tapes each completed eight seconds without
+underruns or endpoint failure. These source changes passed their scoped runtime checks. The subsequent runtime
+correction package carries its own build identity and installation record;
+this does not claim complete VWinds/Falcon fidelity.
 
 [The engine foundations review](UVI_ENGINE_FOUNDATIONS.md) maps the official
-Falcon/Workstation manuals, current Lua reference and retained 4.0.9 reader to
-source ownership and remaining contracts. It also records a statically reviewed
-master-callback selection correction: unused specialized handlers are no longer
-looked up when `onEvent` wins. Its authored dispatch tests remain uncompiled and
-unrun; this correction is not installed and does not resolve the live DSP or
-audio-delivery failures.
+manuals, current Lua reference and retained 4.0.9 reader to source ownership and
+remaining contracts. Augmented Orchestra's unsupported graph is not fixed by
+these changes. Optional PCM caching remains disabled by default. Earlier dated
+notes that a change was uncompiled or uninstalled describe its original review
+checkpoint; this section identifies the current installed and tested scope.
 
 ## Previous installed checkpoint and historical verification
 

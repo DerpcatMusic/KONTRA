@@ -148,8 +148,10 @@ At minimum, retain failure stage and original node identity alongside any
 unsupported setting. Complete parsing, visible panels and finite output are
 different milestones from native behavior and reliable live playback.
 
-The callback change passed independent static review. Authored isolated/scoped
-dispatch tests cover master selection, fallback errors, automatic forwarding and
-delayed note/controller ordering; they remain **uncompiled/unrun**. Installed
-binaries remain `cc54c67`. Augmented Orchestra's rejected graph and Oboe's audio
-delivery backlog are not established fixed by this research or source change.
+The callback change passed independent static review and focused authored
+master/fallback dispatch tests, and is included in installed `c3d3094`. The
+[checkpoint](UVI_TEST_CHECKPOINT.md) records the bounded build and playback
+verification. Augmented Orchestra's rejected graph remains unsupported, and
+subsequent real VWinds sessions still report delivery backlog. The
+[runtime investigation](UVI_RUNTIME_QUEUE_INVESTIGATION.md) separates post-fault
+cleanup, CPU/control costs and voice/resource ownership evidence.

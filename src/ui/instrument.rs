@@ -126,7 +126,9 @@ fn native_failure_lines(report: &serde_json::Value) -> Vec<(String, bool)> {
     if let Some(packets) = worker["configured_pending_packets"].as_u64() {
         lines.push((format!("Configured pending packets: {packets}"), false));
     }
-    for text in [worker["timing"]["summary"].as_str(), worker["timing"]["counter_summary"].as_str(),
+    for text in [worker["timing"]["summary"].as_str(), worker["timing"]["cpu_summary"].as_str(),
+                 worker["timing"]["phase_summary"].as_str(), worker["timing"]["activity_summary"].as_str(),
+                 worker["timing"]["ui_summary"].as_str(), worker["timing"]["counter_summary"].as_str(),
                  worker["timing"]["scope"].as_str(), worker["observation"].as_str(),
                  worker["callback_counter_scope"].as_str()].into_iter().flatten() {
         lines.push((text.to_owned(), false));
