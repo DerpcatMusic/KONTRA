@@ -81,6 +81,14 @@ pending. No timing gain, Oboe backlog resolution, new Augmented Orchestra
 admission or native host-generation fidelity is established. These source
 changes are not installed in the current `cc54c67` binary.
 
+[The engine foundations review](UVI_ENGINE_FOUNDATIONS.md) maps the official
+Falcon/Workstation manuals, current Lua reference and retained 4.0.9 reader to
+source ownership and remaining contracts. It also records a statically reviewed
+master-callback selection correction: unused specialized handlers are no longer
+looked up when `onEvent` wins. Its authored dispatch tests remain uncompiled and
+unrun; this correction is not installed and does not resolve the live DSP or
+audio-delivery failures.
+
 ## Previous installed checkpoint and historical verification
 
 Installed `bb60218e0226043ece56de9c3d66d20f655c748c` replaces the standalone,
