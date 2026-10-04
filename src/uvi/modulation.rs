@@ -1210,14 +1210,17 @@ struct TriangleLfoClock {
     block_frames: u32,
 }
 fn triangle_lfo_value(phase: u32) -> f32 {
-    let position = phase as f32 * (1_f32 / 4294967296.);
-    if position < 0.25 {
-        4. * position
-    } else if position < 0.75 {
-        2. - 4. * position
-    } else {
-        4. * position - 4.
-    }
+    // Original table constructor stores i/64 quarter segments. Preserve the
+    // source generator's two weighted float32 products and final addition.
+    let point = |index: u32| {
+        let position = index as f32 * (1_f32 / 64.);
+        if index < 64 { position }
+        else if index < 192 { 2. - position }
+        else { position - 4. }
+    };
+    let index = phase >> 24;
+    let fraction = (phase & 0x00ff_ffff) as f32 * (1_f32 / 16777216.);
+    point(index) * (1. - fraction) + point(index + 1) * fraction
 }
 // Native built-in square uses a 256-entry +/-1 table, interpolates
 // index127 to128, and holds the final entry until uint32 phase wraps.
@@ -4383,6 +4386,16 @@ mod tests {
     }
     use super::*;
     use crate::uvi::program::parse_program;
+    #[test]
+    fn native_triangle_lfo_weighted_table_rounding() {
+        let program = parse_program(r#"<Program><ControlSignalSources><LFO Name="Osc" WaveFormType="2" Freq="5.5014190673828125" Phase=".499" Depth="1" Bipolar="1" Retrigger="1" Smooth="0"/></ControlSignalSources><Layers><Layer><Keygroups><Keygroup Gain="1"><Connections><SignalConnection Source="$Program/Osc" Destination="Gain" Ratio="1"/></Connections></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let graph = ModulationGraph::new(&program).unwrap();
+        let target = program.nodes.iter().position(|node| node.kind == "Keygroup").unwrap();
+        let input = Inputs { time_seconds: 64. / 48000., voice_time_seconds: 64. / 48000., voice: Some(1), instance: Some(1), ..Inputs::default() };
+        let actual = graph.deltas(&input, &HashMap::new()).unwrap()[&(target, "Gain".into())] as f32;
+        // Authored original generator: rate48k, phase.499, block256, frame64.
+        assert_eq!(actual.to_bits(), 0xbccf97c0);
+    }
     #[test]
     fn indexed_mapper_names_preserve_nearest_scope_and_ambiguity() {
         let mut p = parse_program(r#"<Program><Mappers><ControlSignalMapper Name="Curve">0 1</ControlSignalMapper><ControlSignalMapper Name="Curve">0 1</ControlSignalMapper></Mappers><Layers><Layer><Mappers><ControlSignalMapper Name="Curve">0 1</ControlSignalMapper></Mappers><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Pitch" Mapper="Curve" Ratio="1"/></Connections></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
