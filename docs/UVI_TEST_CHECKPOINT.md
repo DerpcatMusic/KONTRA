@@ -41,6 +41,43 @@ Select a supported UVI
 program and wait for its controls before playing. Actual sample rate, host block
 size and preparation limits can affect admission.
 
+## Current installed checkpoint
+
+Installed `bb60218e0226043ece56de9c3d66d20f655c748c` replaces the standalone,
+CLAP and VST3. Build hash is `8e95f13c778a73d1`, import hash
+`8322b33fd869e7d5`; clean source, baseline x86_64, optimized `ci` profile.
+Previous binaries are backed up; settings and all 26 access records are
+byte-identical. Installed file hashes, standalone link and build information
+match the package. Both plugin factories and dynamic dependencies pass.
+
+Combined all-target compiler checks pass at `0cd0415`, and the optional-UVI-disabled
+check passes at `4c62461`; differences after those checks are documentation only.
+Exact-source package build passed in 75 seconds. An independent current-source
+review passed 17 focused compressor, Lua failure-context, worker privacy and
+memory-accounting checks. Native comparison matrices were reviewed, not rerun
+in that review; no broad-suite repeat is claimed.
+
+Actual original/V2 Clarinet CLI inventories are Ready with zero resource/font
+failures, one bank font each, 273/285 widgets, 38/39 pictures and 720×480 roots.
+These frame-zero inventories do not exercise drawing or interactions. The
+four-second original render retains 192,000 frames, zero worker errors and WAV
+SHA-256 `a35808f0ffca715cd85d8682aaa79387c2c2a402c912df12d361dcf6a2815aa0`.
+It recorded seven deadline misses under concurrent work; sustained realtime
+playback and live Bitwig behavior remain unverified.
+
+Fresh catalog validation finds 37 libraries: 11 Kontakt and 26 UVI banks,
+660 UVI declarations and zero unavailable banks. Saved-cache hydration takes
+11.437 ms and preserves identities; scan timing, playable coverage and instrument
+initialization remain separate. Dependency notices and exact modified MPL
+source archives are included and verified against the source/cache.
+
+This checkpoint includes [Table styles and parent order](UVI_PANEL_ORDER_EVIDENCE.md),
+[admission reuse and phase cancellation](UVI_LOADING_ADMISSION_EVIDENCE.md),
+[bounded shared CompExp](UVI_COMPEXP_STATIC_EVIDENCE.md), the unadmitted
+[Brickwall cascade](UVI_BRICKWALL_CASCADE_EVIDENCE.md), and per-fuel instruction-budget
+source locations. Detailed proofs retain their native/source boundaries; no
+complete Falcon, whole-program native fidelity or host deadline claim follows.
+
 ## Check the behavior
 
 1. Play from the keyboard, then from the DAW. Check release, overlap and sustain.
@@ -149,6 +186,10 @@ physical model does not establish its compatibility, and decoding its full graph
 does not prove its transition or timbre behavior.
 
 ## Checkpoint validation
+
+The following section retains the preceding `817b03a` installation and the
+source follow-ups observed before `bb60218` was installed. Current installation
+evidence is [above](#current-installed-checkpoint).
 
 Installed checkpoint `817b03a` replaces `1213001` for the standalone, CLAP and
 VST3, with previous files backed up, settings unchanged and all 26 private access

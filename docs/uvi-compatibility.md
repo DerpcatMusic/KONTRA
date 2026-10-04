@@ -4,9 +4,9 @@ Status reviewed 2026-10-04. KONTRA's optional `uvi` path implements bounded UFS/
 
 ## Current status
 
-The installed standalone, CLAP and VST3 checkpoint is **`817b03a`**,
-documented in [the checkpoint report](UVI_TEST_CHECKPOINT.md#checkpoint-validation).
-Later source through `4c62461` is **not installed**. Artifact manifests and
+The installed standalone, CLAP and VST3 checkpoint is **`bb60218`**,
+documented in [the checkpoint report](UVI_TEST_CHECKPOINT.md#current-installed-checkpoint).
+It includes the source changes through `4c62461`. Artifact manifests and
 installation receipts identify the verified package; historical full-suite and
 full-corpus counts do not describe a new run of the package or later source.
 
@@ -40,14 +40,14 @@ nodes and **zero additional whole presets**. Changed/connected controls, broader
 filter modes/settings and whole-host fidelity remain gated. Their source proofs
 do not establish installed DAW interaction or native instrument parity.
 
-Later uninstalled source adds bounded malformed Kontakt UTF-16 diagnostics,
+Installed `bb60218` adds bounded malformed Kontakt UTF-16 diagnostics,
 the [Linux dual-Lua ownership proof](PLAYER_LUA_RUNTIME_BOUNDARY.md), authored
 Table colors and parent-subtree order, and [immutable initial-admission reuse
 with phase cancellation](UVI_LOADING_ADMISSION_EVIDENCE.md). The measured 3.11%
 initialization-wall reduction is a paired source-helper result for one instrument;
 it is not complete UI startup, audio adoption, realtime or native-fidelity evidence.
 
-Subsequent source adds [bounded static shared CompExp processing](UVI_COMPEXP_STATIC_EVIDENCE.md):
+That checkpoint also adds [bounded static shared CompExp processing](UVI_COMPEXP_STATIC_EVIDENCE.md):
 288 native comparisons admit 11 observed nodes in seven presets, while every
 whole preset retains other blockers. The [Brickwall cascade](UVI_BRICKWALL_CASCADE_EVIDENCE.md)
 has 1,380 scoped comparisons but its full callback stays unverified and unadmitted.

@@ -1,8 +1,8 @@
 # Authored Table styles and parent-subtree order
 
-Reviewed 2026-10-04. These changes follow installed `817b03a` and remain source
-UI/hosted-callback evidence. No native compositor or installed DAW comparison is
-claimed.
+Reviewed 2026-10-04. These changes are included in installed `bb60218`;
+their source UI/hosted-callback evidence does not establish native compositor
+or installed DAW comparison.
 
 UVI's [Table API](https://lua.uvi.net/class_table.html) documents `sliderColour`,
 `drawInnerEdge` and `innerEdgeColour`. Each owned Clarinet bank authors five
