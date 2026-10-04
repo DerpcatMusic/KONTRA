@@ -6,6 +6,7 @@ pub(crate) mod cli;
 pub use cli::run as cli;
 
 pub mod biquad;
+pub mod bitcrusher;
 pub mod brickwall;
 pub mod compexp;
 pub mod comb;
