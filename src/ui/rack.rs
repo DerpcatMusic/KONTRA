@@ -303,6 +303,9 @@ fn part(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool, near: bool, shape: &
     let room = height.map(|h| h - SLIM);
     if room.is_none_or(|r| r >= 0.5) {
         let body = if near {
+            if super::perf_view::shows(cx, slot) != crate::library::ViewMode::Kontra {
+                cx.state.visual_visible.insert(slot);
+            }
             let mut body: Vec<El> = snapshot_row(ui, cx, slot).into_iter().collect();
             body.extend(instrument::notices(cx, slot));
             // Kept as drawn while nothing it shows moves: meters and keys

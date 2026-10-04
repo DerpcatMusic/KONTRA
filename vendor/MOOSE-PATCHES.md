@@ -1,11 +1,27 @@
 # MOOSE patches
 
-`moose-params`, `moose-derive`, `moose-clap` and `moose-vst3` are vendored
+`moose-core`, `moose-params`, `moose-derive`, `moose-clap` and `moose-vst3` are vendored
 from moose `bffa467` (the rev in `Cargo.toml`) and patched in through
 `[patch."https://github.com/Matari-Audio/moose"]`. Their `Cargo.toml`s
 spell out what the moose workspace used to inherit; the sources differ only
 by the patches below. `moose-mui` is vendored for its own reasons (see its
 README).
+
+## Explicit process failure
+
+`moose-core::ProcessStatus::Error` reports a failed audio block. The shared
+chunker stops at the first failed sub-block and discards the block's output
+events. CLAP returns `CLAP_PROCESS_ERROR`, clears channel borrows, and zeros
+host outputs through its existing failure guard. VST3 preserves failure
+through the Rust callback and returns `kResultFalse` from the C++ shim;
+its existing output guard also zeros the failed host block.
+
+This follows the [CLAP process contract](https://github.com/free-audio/clap/blob/1.2.2/include/clap/process.h)
+and the [VST3 processor result interface](https://github.com/steinbergmedia/vst3_pluginterfaces/blob/master/vst/ivstaudioprocessor.h).
+It does not guarantee that a host stops rendering after receiving failure.
+The upstream standalone live-audio adapter currently ignores process status;
+this patch adds no standalone error UI or offline-driver behavior. The
+no-default-features KONTRA engine does not depend on these plugin adapters.
 
 ## Output port names that follow the plugin
 

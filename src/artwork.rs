@@ -164,6 +164,28 @@ fn picture_name(name: &str) -> Option<String> {
     })
 }
 
+/// Compact control geometry retained after decoded animation frames are released.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PictureMetadata {
+    pub size: [u32; 2],
+    pub stretch: [bool; 2],
+    pub frames: usize,
+    pub clear: bool,
+}
+
+impl PictureMetadata {
+    pub fn of(picture: &Picture) -> Option<Self> {
+        let frame = picture.frames.first()?;
+        Some(Self { size: picture.atlas.unwrap_or([frame.width, frame.height]),
+            stretch: picture.stretch, frames: picture.frames.len(),
+            clear: picture.frames.iter().all(|f| f.rgba.chunks_exact(4).all(|pixel| pixel[3] == 0)) })
+    }
+    pub fn size(&self, w: f64, h: f64) -> (f64, f64) {
+        (if self.stretch[0] { w } else { f64::from(self.size[0]) },
+         if self.stretch[1] { h } else { f64::from(self.size[1]) })
+    }
+}
+
 /// A control picture, cut into its animation frames.
 #[derive(Debug)]
 pub struct Picture {
@@ -292,6 +314,46 @@ pub fn pictures_report<'a>(
     (out, errors)
 }
 
+/// Probe geometry without retaining pixels or allocating cropped filmstrip frames.
+pub fn picture_metadata_report<'a>(path: &Path, names: impl IntoIterator<Item = &'a str>)
+    -> (HashMap<String, PictureMetadata>, Vec<String>) {
+    let mut source = Pictures::of(path, "pictures");
+    let mut out = HashMap::new();
+    let mut errors = Vec::new();
+    for name in names {
+        if name.is_empty() || out.contains_key(name) { continue; }
+        let result = (|| -> Result<PictureMetadata, String> {
+            let font = name.strip_prefix("@font/");
+            let file = picture_name(font.unwrap_or(name)).ok_or_else(|| format!("Picture {name:?}: invalid resource name"))?;
+            let bytes = source.read(&file)?.ok_or_else(|| format!("Picture {file:?}: not found in the library resources or archives"))?;
+            let image = decode_report(&bytes).map_err(|e| format!("Picture {file:?}: {e}"))?;
+            let sidecar = format!("{}.txt", file.rsplit_once('.').unwrap().0);
+            let text = source.read(&sidecar)?;
+            if font.is_some() && text.is_none() { return Err(format!("Bitmap font {file:?}: required {sidecar:?} is missing")); }
+            let layout = Layout::parse(&String::from_utf8_lossy(&text.unwrap_or_default()));
+            let (mut fw, mut fh) = layout.frame_size(&image);
+            if fw == 0 || fh == 0 { return Err(format!("Picture {file:?}: invalid frame dimensions in {sidecar:?}")); }
+            if font.is_some() && layout.frames != 1 { return Err(format!("Bitmap font {file:?}: animated font strips are unsupported")); }
+            if font.is_some() {
+                if image.height < 2 { return Err("bitmap font has no glyph rows".into()); }
+                let starts: Vec<_> = (0..image.width).filter(|&x| {
+                    let at = x as usize * 4; image.rgba[at..at + 3] == [255, 0, 0]
+                }).collect();
+                if starts.len() != 256 || starts[0] != 0 {
+                    return Err(format!("bitmap font needs 256 red glyph markers starting at x=0; found {}", starts.len()));
+                }
+                fw = starts[1]; fh = image.height - 1;
+            }
+            // Conservatively classify only entirely transparent pictures as clear.
+            let clear = image.rgba.chunks_exact(4).all(|pixel| pixel[3] == 0);
+            Ok(PictureMetadata { size: [fw, fh], stretch: layout.stretch,
+                frames: if font.is_some() { 256 } else { layout.frames as usize }, clear })
+        })();
+        match result { Ok(meta) => { out.insert(name.to_owned(), meta); }, Err(e) => errors.push(format!("{name}: {e}")) }
+    }
+    (out, errors)
+}
+
 /// A copy of the `w` by `h` pixels at `x`, `y`; `None` when empty.
 pub fn crop(image: &Image, x: u32, y: u32, w: u32, h: u32) -> Option<Arc<Image>> {
     if w == 0 || h == 0 || x.checked_add(w)? > image.width || y.checked_add(h)? > image.height {
@@ -383,6 +445,72 @@ fn wallpaper(scripts: &[String]) -> Option<String> {
 }
 pub(crate) fn decode(bytes: &[u8]) -> Option<Image> {
     decode_report(bytes).ok()
+}
+/// NativeUI assets are decoded on the loader, before a package reaches the editor.
+/// Header geometry without allocating decoded pixels.
+pub(crate) fn native_dimensions(bytes: &[u8]) -> Result<[u32; 2], String> {
+    if bytes.starts_with(b"\x89PNG") {
+        let decoder = png::Decoder::new_with_limits(Cursor::new(bytes), png::Limits { bytes: usize::MAX });
+        let reader = decoder.read_info().map_err(|e| e.to_string())?;
+        return Ok([reader.info().width, reader.info().height]);
+    }
+    if bytes.starts_with(&[0xff, 0xd8]) {
+        use zune_jpeg::zune_core::bytestream::ZCursor;
+        let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(bytes),
+            zune_jpeg::zune_core::options::DecoderOptions::default().set_max_width(usize::MAX).set_max_height(usize::MAX));
+        decoder.decode_headers().map_err(|e| e.to_string())?;
+        let info = decoder.info().ok_or("JPEG dimensions are missing")?;
+        return Ok([u32::from(info.width), u32::from(info.height)]);
+    }
+    if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        let decoder = image_webp::WebPDecoder::new(Cursor::new(bytes)).map_err(|e| e.to_string())?;
+        let (w, h) = decoder.dimensions();
+        return Ok([w, h]);
+    }
+    let tree = resvg::usvg::Tree::from_data(bytes, &resvg::usvg::Options::default()).map_err(|e| e.to_string())?;
+    let size = tree.size().to_int_size();
+    Ok([size.width(), size.height()])
+}
+
+pub(crate) fn decode_native(bytes: &[u8]) -> Result<Image, String> {
+    if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        let mut decoder = image_webp::WebPDecoder::new(Cursor::new(bytes)).map_err(|e| e.to_string())?;
+        decoder.set_memory_limit(128 * 1024 * 1024);
+        let (w, h) = decoder.dimensions();
+        let size = decoder.output_buffer_size().ok_or("WebP dimensions overflow")?;
+        let rgba_size = usize::try_from(u64::from(w) * u64::from(h) * 4)
+            .map_err(|_| "WebP RGBA dimensions overflow")?;
+        if rgba_size > 128 * 1024 * 1024 { return Err("WebP exceeds the image budget".into()); }
+        let mut data = Vec::new();
+        data.try_reserve_exact(rgba_size).map_err(|e| format!("WebP pixel allocation ({rgba_size} bytes): {e}"))?;
+        data.resize(rgba_size, 0);
+        decoder.read_image(&mut data[..size]).map_err(|e| e.to_string())?;
+        if !decoder.has_alpha() {
+            // Decode RGB into the final allocation, then expand backwards.
+            for i in (0..size / 3).rev() {
+                let at = i * 3;
+                let pixel = [data[at], data[at + 1], data[at + 2], 255];
+                data[i * 4..i * 4 + 4].copy_from_slice(&pixel);
+            }
+        }
+        return Image::rgba(w, h, data).ok_or_else(|| "Invalid WebP pixels".into());
+    }
+    if std::str::from_utf8(bytes).is_ok_and(|s| s.contains("<svg")) {
+        let tree = resvg::usvg::Tree::from_data(bytes, &resvg::usvg::Options::default()).map_err(|e| e.to_string())?;
+        let size = tree.size().to_int_size();
+        if u64::from(size.width()) * u64::from(size.height()) > 32 * 1024 * 1024 { return Err("SVG exceeds the image budget".into()); }
+        let mut pixels = resvg::tiny_skia::Pixmap::new(size.width(), size.height()).ok_or("Invalid SVG dimensions")?;
+        resvg::render(&tree, resvg::tiny_skia::Transform::identity(), &mut pixels.as_mut());
+        // tiny-skia stores premultiplied pixels; MUI takes straight RGBA.
+        let mut data = pixels.take();
+        for pixel in data.chunks_exact_mut(4) {
+            let c = resvg::tiny_skia::PremultipliedColorU8::from_rgba(pixel[0], pixel[1], pixel[2], pixel[3])
+                .ok_or("Invalid SVG premultiplied pixels")?.demultiply();
+            pixel.copy_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+        }
+        return Image::rgba(size.width(), size.height(), data).ok_or_else(|| "Invalid SVG pixels".into());
+    }
+    decode_report(bytes)
 }
 fn decode_report(bytes: &[u8]) -> Result<Image, String> {
     if bytes.starts_with(b"\x89PNG") { return decode_png_report(bytes); }
@@ -680,6 +808,26 @@ mod tests {
         assert!(super::decode(&bytes[..12]).is_none());
         assert!(super::decode(b"not an image").is_none());
         assert!(super::decode_report(b"not an image").err().unwrap().starts_with("Unsupported image format:"));
+    }
+
+    #[test]
+    fn native_webp_and_svg_decode_keep_complete_pixels_after_in_place_conversion() {
+        let rgb = [12, 34, 56, 200, 100, 50, 1, 2, 3].repeat(2);
+        let rgba = [12, 34, 56, 255, 200, 100, 50, 128, 1, 2, 3, 64].repeat(2);
+        for (pixels, color) in [(&rgb, image_webp::ColorType::Rgb8), (&rgba, image_webp::ColorType::Rgba8)] {
+            let mut bytes = Vec::new();
+            image_webp::WebPEncoder::new(&mut bytes).encode(pixels, 3, 2, color).unwrap();
+            let decoded = super::decode_native(&bytes).unwrap();
+            assert_eq!((decoded.width, decoded.height), (3, 2));
+            let expected = if color == image_webp::ColorType::Rgb8 {
+                vec![12, 34, 56, 255, 200, 100, 50, 255, 1, 2, 3, 255].repeat(2)
+            } else { rgba.clone() };
+            assert_eq!(decoded.rgba.as_ref(), expected);
+        }
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="3" height="2"><rect width="1" height="2" fill="red"/><rect x="1" width="1" height="2" fill="lime" opacity="0.5"/></svg>"#;
+        let decoded = super::decode_native(svg).unwrap();
+        assert_eq!((decoded.width, decoded.height), (3, 2));
+        assert_eq!(decoded.rgba.as_ref(), [255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 0, 0].repeat(2));
     }
 
     #[test]

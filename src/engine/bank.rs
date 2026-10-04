@@ -1,4 +1,4 @@
-//! Immutable instrument data prepared for playback.
+//! Prepared sample/mapping assets and an off-thread instrument-state handoff.
 
 use super::{
     map::{LoopMap, PlayMap},
@@ -12,7 +12,7 @@ use crate::{
     audio::{self, Frame, Header, Pcm, Sample, SampleReader, Source},
     import::{Group, Instrument, VoiceLimit, Zone},
 };
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use std::{
     collections::HashMap,
     num::NonZero,
@@ -29,12 +29,10 @@ use std::{
 /// streaming until the bank fits.
 pub const MEMORY_LIMIT: usize = 1 << 30;
 /// Frames of every sample kept in RAM past the furthest start offset
-/// (Kontakt's DFD preload). The first render block must be resident even
-/// at the maximum admitted source consumption: a note cannot wait for a
-/// cold stream worker within that same callback. The cubic's last tap is
-/// inside this bound because MAX_STEP exceeds its three extra taps.
+/// (Kontakt's DFD preload). This is a memory policy, not a pitch limit;
+/// onset admission checks the actual trajectory against ready source data.
 /// Shrinks toward [`MIN_PRELOAD`] to fit the budget.
-pub const PRELOAD_FRAMES: u64 = (super::MAX_BLOCK as f64 * super::voice::MAX_STEP) as u64;
+pub const PRELOAD_FRAMES: u64 = 4096;
 /// Smallest preload the budget forces before start-offset ranges start to
 /// stream: ≈21 ms at 48 kHz.
 pub const MIN_PRELOAD: u64 = 1024;
@@ -67,6 +65,9 @@ pub struct GroupSettings {
     /// Amplitude envelope; `None` uses the engine's attack/release defaults.
     pub envelope: Option<Ahdsr>,
     pub native_volume_env: bool,
+    pub(crate) native_shared_volume_slot: Option<u8>,
+    /// Validated original primary source slot and mutable live bypass switch.
+    pub(crate) primary_bypass: Option<(u8, bool)>,
     /// Flex amplitude envelope, multiplied with `envelope`.
     pub flex: Option<Flex>,
     /// Linear group volume.
@@ -84,14 +85,25 @@ pub struct GroupSettings {
     pub pitch_lfos: Box<[crate::modulation::PitchLfo]>,
     /// Saved retriggered sine sources driving amplitude at the native32-frame clock.
     pub volume_lfos: Box<[crate::modulation::VolumeLfo]>,
+    pub pitch_glides: Box<[crate::modulation::PitchGlide]>,
     /// Insert filters and EQs; `None` costs voices nothing.
     pub filter: Option<Box<GroupFilter>>,
-    /// Kontakt interpolation quality; every setting currently uses 4-point Hermite.
+    /// Saved Kontakt quality: Native ordinary Sampler zero selects Lagrange;
+    /// Compatibility and the unproved native table qualities retain Hermite.
     pub interp_quality: i32,
     /// Native wavetable controls; complete source cycles are kept resident.
     pub wavetable: Option<crate::import::Wavetable>,
     /// Index into the instrument's voice groups.
     pub voice_group: Option<u16>,
+}
+
+/// Zone geometry is immutable proof, shared by script preparation and banks.
+pub(super) fn gate_primary_bypass(settings: &mut [GroupSettings], zones: &[Zone]) {
+    for zone in zones {
+        if zone.loop_range.is_some() || zone.native_loops.iter().any(|row| row.mode != 0) {
+            if let Some(group) = settings.get_mut(zone.group) { group.primary_bypass = None; }
+        }
+    }
 }
 
 impl From<&Group> for GroupSettings {
@@ -100,7 +112,7 @@ impl From<&Group> for GroupSettings {
     fn from(group: &Group) -> Self {
         Self {
             envelope: group.volume_env.as_ref().map(|e| { let mut p = Ahdsr::from(e);
-                if group.native_volume_env {
+                if group.native_volume_env || group.native_shared_volume_slot.is_some() {
                     // Native physical setter multiplies milliseconds by the
                     // f32 .001 before truncating at sourceRate, not division.
                     p.attack = e.attack_ms * 0.001; p.hold = e.hold_ms * 0.001;
@@ -108,7 +120,14 @@ impl From<&Group> for GroupSettings {
                     p.ahd_only = e.unknown_flag != 0;
                 } p }),
             native_volume_env: group.native_volume_env,
-            flex: group.flex_env.as_ref().map(Flex::from),
+            native_shared_volume_slot: group.native_shared_volume_slot,
+            primary_bypass: super::params::primary_bypass_slot(group).map(|slot| (slot, false)),
+            flex: group.flex_env.as_ref().map(|env| {
+                let mut flex = Flex::from(env);
+                flex.one_shot = group.native_flex_oneshot;
+                flex.loop_start = group.native_flex_loop.then_some(env.unknown_index as usize);
+                flex
+            }),
             gain: group.gain,
             pan: group.pan,
             tune: 12.0 * group.tune.log2() as f32,
@@ -117,6 +136,7 @@ impl From<&Group> for GroupSettings {
             pitch_envelopes: super::params::PitchEnvelope::from_group(group),
             pitch_lfos: if group.wavetable.is_none() { group.pitch_lfos.clone().into_boxed_slice() } else { Box::new([]) },
             volume_lfos: if group.wavetable.is_none() { group.volume_lfos.clone().into_boxed_slice() } else { Box::new([]) },
+            pitch_glides: if group.wavetable.is_none() { group.pitch_glides.clone().into_boxed_slice() } else { Box::new([]) },
             filter: GroupFilter::new(group),
             interp_quality: group.interp_quality,
             wavetable: group.wavetable,
@@ -162,6 +182,8 @@ impl From<&crate::import::FlexEnvelope> for Flex {
         Self {
             points,
             sustain: env.sustain as usize,
+            one_shot: false,
+            loop_start: None,
         }
     }
 }
@@ -313,6 +335,20 @@ pub fn memory_budget() -> usize {
 }
 
 impl SampleData {
+    /// Coverage of a physical kernel interval. Padding outside the complete
+    /// source needs no resident span, even when playback itself is cropped.
+    pub(super) fn resident_window(&self, first: i64, count: usize) -> bool {
+        let Ok(count) = i64::try_from(count) else { return false; };
+        let Some(end) = first.checked_add(count) else { return false; };
+        let end = (end.max(0) as u64).min(self.frames);
+        let mut at = (first.max(0) as u64).min(self.frames);
+        while at < end {
+            let Some(index) = self.span_at(at) else { return false; };
+            at = self.spans[index as usize].end();
+        }
+        true
+    }
+
     /// One span covering the complete prepared wavetable window.
     pub(crate) fn wavetable_span(&self, table: super::wavetable::Table) -> Option<u32> {
         let first = table.first as u64;
@@ -343,9 +379,12 @@ pub(crate) struct ZonePlay {
     /// Zero-based source identity, preserved when other zones fail to load.
     pub zone_id: u32,
     pub map: PlayMap,
+    /// Physical source coverage needed before declaring the asset nonstreamed.
+    pub read_end: u64,
     /// Maximum start offset in frames.
     pub start_mod: u64,
     pub wavetable: Option<super::wavetable::Table>,
+    pub counted: Option<u32>,
 }
 
 pub(crate) struct VoiceGroup {
@@ -354,6 +393,18 @@ pub(crate) struct VoiceGroup {
     pub prefer_released: bool,
     pub fade: f32,
     pub exclusion: i32,
+}
+
+impl Default for VoiceGroup {
+    fn default() -> Self {
+        Self {
+            max_voices: DEFAULT_POLYPHONY,
+            kill_mode: 1,
+            prefer_released: true,
+            fade: super::STEAL_FADE,
+            exclusion: -1,
+        }
+    }
 }
 
 impl From<&VoiceLimit> for VoiceGroup {
@@ -418,25 +469,31 @@ pub struct Bank {
     pub(super) zone_parent: Option<Arc<super::zone::State>>,
     pub(super) zone_state: Option<Arc<super::zone::State>>,
     pub(super) zone_spares: std::collections::VecDeque<crate::ksp::engine::ZoneEdit>,
-    /// What voices play: [`Bank::base`] with the player's overrides on top.
-    pub settings: Vec<GroupSettings>,
-    /// The library's values as its scripts have set them, under the
-    /// player's overrides (see `overrides.rs`).
-    pub base: Vec<GroupSettings>,
-    pub(crate) plays: Arc<[ZonePlay]>,
+    /// Moved into the engine on install; retired state returns here for disposal.
+    pub(super) initial_state: Option<super::instrument::InstrumentState>,
+    /// An explicit effective seed edit requests installation, not residency reuse.
+    pub(super) prepared_settings_edited: bool,
+    /// Prepared free route rows; replaced player storage returns here off-thread.
+    pub(super) route_spares: Vec<super::voice::VoiceRoutes>,
+    /// Fixed transposition, independent of the live instrument Tune control.
+    pub(super) transpose: i8,
+    pub(super) plays: Arc<[ZonePlay]>,
+    pub(super) counted_loops: Arc<[super::counted_loop::Rows]>,
     /// Per group: not muted and, when any group is soloed, soloed.
-    pub(crate) playable: Vec<bool>,
+    playable: Vec<bool>,
     /// Prepared once: normal attacks need a tail scan only for Note Mono releases.
-    pub(crate) note_mono_releases: bool,
+    pub(super) note_mono_releases: bool,
     /// Prepared native controls whose sample geometry updates every 32 frames.
     pub(super) native_controls: bool,
+    /// Native Group slot rows and shared clock geometry prepared off-thread.
+    pub(super) group_start: super::group_start::Prepared,
     /// Zones mapped to key `k` are `key_zones[key_start[k]..key_start[k + 1]]`.
     pub(super) key_start: [u32; 129],
     pub(super) key_zones: Arc<[u32]>,
-    pub(crate) samples: Vec<SampleData>,
-    pub(crate) voice_groups: Vec<Option<VoiceGroup>>,
-    pub(crate) polyphony: usize,
-    pub(crate) streamer: Option<Streamer>,
+    pub(super) samples: Vec<SampleData>,
+    pub(super) voice_groups: Vec<Option<VoiceGroup>>,
+    pub(super) polyphony: VoiceGroup,
+    pub(super) streamer: Option<Streamer>,
     /// Resident sample and stream-buffer bytes.
     pub bytes: usize,
     /// Preload frames per sample the memory budget allowed.
@@ -455,7 +512,7 @@ pub struct Bank {
     /// First few reasons for skipped zones.
     pub issues: Vec<String>,
     /// Note starts per sample, counted by the audio thread for [`Residency`].
-    pub(crate) usage: Arc<[AtomicU32]>,
+    pub(super) usage: Arc<[AtomicU32]>,
     /// Smart memory for this bank's streamed samples, for the loader to take
     /// ([`Bank::take_residency`]).
     residency: Option<Box<Residency>>,
@@ -571,9 +628,10 @@ impl Bank {
         trace.mark("open");
         let (zones, zone_samples, source_ids) = keep_zones(instrument, &zone_ids, &opened, &mut issues);
         let info = readers.iter().map(|(_, r, _)| (r.rate, r.frames)).collect();
+        let program_controllers = Builder::controllers(instrument, &mut issues);
         let mut builder =
-            Builder::new(instrument.groups.clone(), zones, zone_samples, source_ids, info, issues)?;
-        builder.limits(instrument);
+            Builder::new(instrument.groups.clone(), zones, zone_samples, source_ids, info, program_controllers, instrument.sampling_profile, issues)?;
+        builder.configure(instrument);
 
         let frame_bytes: Vec<_> = readers
             .iter()
@@ -720,7 +778,7 @@ impl Bank {
     /// A bank that plays at once: nothing resident, every sample streams
     /// from its first frame. With the header cache current (`cache::headers`)
     /// it opens no sample at all; voices hold their start until the disk
-    /// delivers (see `voice::START_HOLD`). A full load then takes over
+    /// delivers. A full load then takes over
     /// through [`super::Engine::upgrade_bank`], playing voices carrying on.
     pub fn load_bare(instrument: &Instrument) -> Result<Self> {
         Self::load_bare_cancelable(instrument, &|| false)
@@ -768,8 +826,9 @@ impl Bank {
             .collect();
         let (zones, zone_samples, source_ids) = keep_zones(instrument, &zone_ids, &opened, &mut issues);
         let info = kept.iter().map(|(_, h, _)| (h.rate, h.frames)).collect();
-        let mut builder = Builder::new(instrument.groups.clone(), zones, zone_samples, source_ids, info, issues)?;
-        builder.limits(instrument);
+        let program_controllers = Builder::controllers(instrument, &mut issues);
+        let mut builder = Builder::new(instrument.groups.clone(), zones, zone_samples, source_ids, info, program_controllers, instrument.sampling_profile, issues)?;
+        builder.configure(instrument);
         let empty = Frames::new(Pcm::pack(&[], false));
         let mut samples = Vec::with_capacity(kept.len());
         let mut streamed = Vec::with_capacity(kept.len());
@@ -824,6 +883,25 @@ impl Bank {
         zones: Vec<Zone>,
         samples: Vec<(PathBuf, Sample)>,
     ) -> Result<Self> {
+        Self::from_samples_with_profile(groups, zones, samples, crate::import::SamplingProfile::Compatibility)
+    }
+
+    /// A resident supplied bank with an explicit sampling arithmetic profile.
+    /// MIDI/controller policy remains independent of this source choice.
+    pub fn from_samples_with_profile(
+        groups: Vec<Group>,
+        zones: Vec<Zone>,
+        samples: Vec<(PathBuf, Sample)>,
+        sampling_profile: crate::import::SamplingProfile,
+    ) -> Result<Self> {
+        for (path, sample) in &samples {
+            anyhow::ensure!(sample.rate > 0, "Invalid sample rate in {}", path.display());
+            for (frame, channels) in sample.frames.iter().enumerate() {
+                if let Some(channel) = channels.iter().position(|value| !value.is_finite()) {
+                    anyhow::bail!("Nonfinite PCM in {} at frame {frame}, channel {channel}", path.display());
+                }
+            }
+        }
         let index: HashMap<_, _> = samples
             .iter()
             .enumerate()
@@ -843,7 +921,8 @@ impl Bank {
             .collect();
         let source = zones.clone();
         let source_ids = (0..zones.len() as u32).collect();
-        let builder = Builder::new(groups, zones, zone_samples, source_ids, info, Issues::default())?;
+        let mut builder = Builder::new(groups, zones, zone_samples, source_ids, info, Default::default(), sampling_profile, Issues::default())?;
+        builder.prepare_sampling();
         let samples: Vec<_> = samples
             .into_iter()
             .map(|(_, s)| SampleData {
@@ -869,6 +948,57 @@ impl Bank {
 
     pub fn groups(&self) -> &[Group] {
         &self.groups
+    }
+
+    /// Edit the effective preparation seed off-thread, then seal route storage
+    /// for installation. The authored base is unchanged. Passing this edited
+    /// bank to `Engine::upgrade_bank` installs it as a replacement, even for a
+    /// no-op edit; later unedited residency fills can retain this live seed.
+    pub fn with_prepared_settings(mut self, edit: impl FnOnce(&mut [GroupSettings])) -> Result<Self> {
+        let state = self.initial_state.as_mut().expect("bank state is installed");
+        edit(&mut state.settings);
+        for (edited, base) in state.settings.iter().zip(&state.base) {
+            anyhow::ensure!(edited.primary_bypass.map(|p| p.0) == base.primary_bypass.map(|p| p.0),
+                "Prepared primary amplitude bypass cannot change native source ownership");
+            if edited.primary_bypass.is_some() {
+                anyhow::ensure!(edited.native_volume_env == base.native_volume_env
+                    && edited.envelope.is_some() == base.envelope.is_some()
+                    && edited.flex == base.flex && edited.volume_lfos.is_empty()
+                    && edited.wavetable.is_none() && edited.mods.same_routes(&base.mods),
+                    "Prepared primary amplitude bypass requires its admitted source geometry");
+            }
+        }
+        if state.sampling_profile == crate::import::SamplingProfile::Kontakt {
+            for (index, edited) in state.settings.iter().enumerate() {
+                let group = &self.groups[index];
+                if !matches!(group.source_mode, Some(0 | 3)) || group.wavetable.is_some() { continue; }
+                anyhow::ensure!(matches!(edited.interp_quality, 0 | 1 | 2),
+                    "Unsupported Kontakt ordinary source interpolation quality {} (group {index})", edited.interp_quality);
+                for (play, _) in self.plays.iter().zip(self.zones.iter()).filter(|(_, zone)| zone.group == index) {
+                    let sample = &self.samples[play.sample as usize];
+                    let hq = edited.interp_quality != 0;
+                    if !hq && group.reverse { continue; }
+                    if hq {
+                        anyhow::ensure!(play.map.looped.is_none(),
+                            "Native High/Ultra looping needs prepared physical loop domains; reload bank at requested interpolation quality (group {index})");
+                    }
+                    let required = if hq { sample.frames }
+                        else { play.map.end.saturating_add(2).min(sample.frames) };
+                    let complete = usize::try_from(required).ok()
+                        .is_some_and(|frames| sample.resident_window(0, frames));
+                    anyhow::ensure!(sample.streamed || complete,
+                        "Native interpolation needs its physical sample support resident or streamed; reload bank at requested interpolation quality (group {index}, sample {})", play.sample);
+                }
+            }
+        }
+        for (group, settings) in self.groups.iter().zip(&state.settings) {
+            super::ahdsr_shared::validate_group(group, settings).map_err(anyhow::Error::msg)?;
+        }
+        state.shared_ahdsr = super::ahdsr_shared::Range::new(&state.settings);
+        self.route_spares = super::voice::VoiceRoutes::prepare(&state.settings)?;
+        state.shared_lfos = super::lfo::Shared::new(&state.settings);
+        self.prepared_settings_edited = true;
+        Ok(self)
     }
 
     pub fn zones(&self) -> &[Zone] {
@@ -909,7 +1039,7 @@ impl Bank {
 
     /// Set the polyphony limit (clamped to the engine's voice storage).
     pub fn set_polyphony(&mut self, voices: usize) {
-        self.polyphony = voices.clamp(1, super::MAX_VOICES);
+        self.polyphony.max_voices = voices.clamp(1, super::MAX_VOICES);
     }
 }
 
@@ -972,35 +1102,80 @@ struct Layout {
 /// Shared validation and indexing for loaded and in-memory banks.
 struct Builder {
     groups: Vec<Group>,
+    info: Vec<(u32, u64)>,
     zones: Vec<Zone>,
     source_zone_count: usize,
     plays: Vec<ZonePlay>,
+    counted_loops: Vec<super::counted_loop::Rows>,
     settings: Vec<GroupSettings>,
+    controls: crate::import::ProgramControls,
+    controller_options: ni_file::kontakt::objects::ProgramControllerOptions,
+    controller_policy: super::instrument::ControllerPolicy,
+    sampling_profile: crate::import::SamplingProfile,
+    default_key_switch: Option<i16>,
+    native_program: bool,
+    transpose: i8,
     voice_groups: Vec<Option<VoiceGroup>>,
-    polyphony: usize,
+    polyphony: VoiceGroup,
     issues: Issues,
 }
 
 impl Builder {
+    fn controllers(instrument: &Instrument, issues: &mut Issues) ->
+        (ni_file::kontakt::objects::ProgramControllerOptions, super::instrument::ControllerPolicy) {
+        if let Some(record) = &instrument.native_program_private {
+            match record.controller_options() {
+                Ok(Some(options)) => return (options, super::instrument::ControllerPolicy::Native),
+                Ok(None) => issues.note(format_args!("Native controller options for program version {:#x} are opaque; compatibility defaults remain active", record.version)),
+                Err(error) => issues.note(format_args!("Invalid native controller options: {error}; compatibility defaults remain active")),
+            }
+        }
+        Default::default()
+    }
+
     fn new(
         groups: Vec<Group>,
         zones: Vec<Zone>,
         samples: Vec<u32>,
         source_ids: Vec<u32>,
         info: Vec<(u32, u64)>,
+        controllers: (ni_file::kontakt::objects::ProgramControllerOptions, super::instrument::ControllerPolicy),
+        sampling_profile: crate::import::SamplingProfile,
         mut issues: Issues,
     ) -> Result<Self> {
+        let (controller_options, controller_policy) = controllers;
+        for (index, group) in groups.iter().enumerate() {
+            super::params::validate_modulation_capacity(group)
+                .with_context(|| format!("Group {index} {:?}", group.name))?;
+        }
         // `info[sample]` is `(rate, frames)`.
         let total = zones.len();
         let source_zone_count = total + issues.skipped;
         let mut kept = Vec::with_capacity(total);
         let mut plays = Vec::with_capacity(total);
+        let mut counted_loops = Vec::new();
         for ((zone, sample), zone_id) in zones.into_iter().zip(samples).zip(source_ids) {
             let (_, frames) = info[sample as usize];
             let Some(group) = groups.get(zone.group) else {
                 issues.skip(ZoneSkipCause::InvalidGroup, format_args!("zone refers to missing group {}", zone.group));
                 continue;
             };
+            if !source_identity_supported(group, sampling_profile) {
+                issues.skip(ZoneSkipCause::UnsupportedSource, format_args!(
+                    "unsupported Kontakt source identity: mode {:?}, decoded wavetable {}, interpolation quality {}; zone excluded (zone ID {zone_id}, group {}, sample {})",
+                    group.source_mode, group.wavetable.is_some(), group.interp_quality, zone.group, zone.sample.display()));
+                continue;
+            }
+            if let Some((slot, source)) = group.modulators.iter().enumerate()
+                .find(|(_, source)| source.bypassed && (source.volume_env || source.primary_flex)) {
+                // Retain the saved source and group, but never run an enabled
+                // generic envelope in place of a bypassed native amplitude owner.
+                issues.skip(ZoneSkipCause::UnsupportedSource, format_args!(
+                    "saved bypassed primary {} source slot {slot} {:?}: amplitude bypass and native release scheduling are unsupported; zone excluded (zone ID {zone_id}, group {}, sample {})",
+                    if source.primary_flex { "Flex" } else { "AHDSR" }, source.name,
+                    zone.group, zone.sample.display()));
+                continue;
+            }
             if let Some(source) = group.wavetable.as_ref()
                 && !super::wavetable::supported(source, group.key_tracking) {
                 issues.skip(ZoneSkipCause::UnsupportedSource, format_args!(
@@ -1009,8 +1184,39 @@ impl Builder {
                     group.key_tracking, source.phase_random, source.inharmonic_mode, source.mod_type));
                 continue;
             }
+            if sampling_profile == crate::import::SamplingProfile::Kontakt
+                && group.source_mode == Some(3) && group.interp_quality == 0
+                && (group.reverse
+                    || zone.native_loops.iter().any(|row| row.mode != 0 && (row.alternating || row.crossfade > 0))
+                    || zone.loop_range.as_ref().is_some_and(|row| row.alternating || row.crossfade > 0)) {
+                issues.skip(ZoneSkipCause::UnsupportedSource, format_args!(
+                    "Native DFD Normal reverse, alternating or crossfaded source is unsupported (zone ID {zone_id}, sample {}); zone excluded", zone.sample.display()));
+                continue;
+            }
             match play_map(&zone, group, frames) {
-                Ok((map, clamped)) => {
+                Ok((mut map, clamped)) => {
+                    let active: Vec<_> = zone.native_loops.iter().filter(|l| l.mode != 0).collect();
+                    let needs_cursor = active.len() > 1 || active.first().is_some_and(|l|
+                        l.count != 0 || l.tuning != 1. || !matches!(l.mode, 1 | 2)
+                        || l.crossfade != 0 && !l.alternating);
+                    let counted = if needs_cursor {
+                        let native_dfd = sampling_profile == crate::import::SamplingProfile::Kontakt
+                            && group.source_mode == Some(3) && matches!(group.interp_quality, 0 | 1 | 2);
+                        let prepared = if group.reverse { Err("reverse counted or ordered sampling") }
+                            else if group.wavetable.is_some() || group.source_mode.is_some_and(|mode| mode != 0 && !native_dfd) {
+                                Err("counted or ordered loops outside ordinary sampler source")
+                            } else if group.mods.iter().any(|m| super::params::loop_control_supported(group, m)) {
+                                Err("counted or ordered loop geometry modulation")
+                            } else { super::counted_loop::Rows::prepare(&zone.native_loops, frames, map.end,
+                                nonreflecting_single_pass_alternating(group, sampling_profile)) };
+                        // Preserve finite fallback on unsupported active metadata;
+                        // neither the first nor a later loop silently substitutes.
+                        map.looped = None;
+                        match prepared {
+                            Ok(rows) => { let id = counted_loops.len() as u32; counted_loops.push(rows); Some(id) }
+                            Err(reason) => { issues.note(format_args!("Native sample loops unsupported: {reason}; finite sample playback (zone ID {zone_id})")); None }
+                        }
+                    } else { None };
                     let wavetable = if group.wavetable.as_ref().is_some_and(|source| super::wavetable::supported(source, group.key_tracking)) {
                         let Some(table) = super::wavetable::Table::new(map.start as usize, map.end as usize) else {
                             issues.skip(ZoneSkipCause::InvalidSampleBounds, format_args!("wavetable needs complete 2048-frame cycles: {} (zone ID {zone_id}, start {}, end {})", zone.sample.display(), map.start, map.end));
@@ -1037,8 +1243,10 @@ impl Builder {
                         sample,
                         zone_id,
                         map,
+                        read_end: map.end,
                         start_mod,
                         wavetable,
+                        counted,
                     });
                     kept.push(zone);
                 }
@@ -1062,24 +1270,39 @@ impl Builder {
         super::params::share_curves(settings.iter_mut().map(|s| &mut s.mods));
         Ok(Self {
             groups,
+            info,
             zones: kept,
             source_zone_count,
             plays,
+            counted_loops,
             settings,
+            controls: Default::default(),
+            controller_options,
+            controller_policy,
+            sampling_profile,
+            default_key_switch: None,
+            native_program: false,
+            transpose: 0,
             voice_groups: Vec::new(),
-            polyphony: DEFAULT_POLYPHONY,
+            polyphony: VoiceGroup::default(),
             issues,
         })
     }
 
-    fn limits(&mut self, instrument: &Instrument) {
+    fn configure(&mut self, instrument: &Instrument) {
+        self.default_key_switch = instrument.default_key_switch;
+        self.native_program = instrument.native_program_private.is_some() || instrument.default_key_switch.is_some();
+        self.controls = instrument.program;
+        self.transpose = instrument.transpose;
+        self.prepare_sampling();
         self.voice_groups = instrument
             .voice_groups
             .iter()
             .map(|v| v.as_ref().map(VoiceGroup::from))
             .collect();
         if let Some(limit) = &instrument.voice_limit {
-            self.polyphony = (limit.max_voices as usize).clamp(1, super::MAX_VOICES);
+            self.polyphony = VoiceGroup::from(limit);
+            self.polyphony.max_voices = self.polyphony.max_voices.min(super::MAX_VOICES);
         }
         for (settings, group) in self.settings.iter_mut().zip(&self.groups) {
             settings.voice_group = group
@@ -1090,6 +1313,48 @@ impl Builder {
                         .get(v as usize)
                         .is_some_and(Option::is_some)
                 });
+        }
+    }
+
+    fn prepare_sampling(&mut self) {
+        for (play, zone) in self.plays.iter_mut().zip(&self.zones) {
+            let group = &self.groups[zone.group];
+            if self.sampling_profile == crate::import::SamplingProfile::Kontakt
+                && matches!(group.source_mode, Some(0 | 3)) && group.wavetable.is_none() {
+                let frames = self.info[play.sample as usize].1;
+                let hq = matches!(group.interp_quality, 1 | 2);
+                let normal = group.interp_quality == 0;
+                if hq { play.read_end = frames; }
+                else if normal && !group.reverse {
+                    // The playback crop stops whole points, not the physical
+                    // Normal quartet's right support. Existing quota/residency
+                    // planning owns the additional two physical frames.
+                    play.read_end = play.map.end.saturating_add(2).min(frames);
+                }
+                let plain_crop = normal && play.map.looped.is_none()
+                    && !zone.native_loops.iter().any(|row| row.mode != 0)
+                    && (play.map.start != 0 || play.map.end != frames || frames < 4);
+                // UntilRelease must retain the pending physical overshoot;
+                // virtual modulo would wrap it before release can finish the
+                // current pass, extending a short loop's tail at wide steps.
+                let native_loop = (hq || normal && (group.source_mode == Some(3)
+                    || play.map.looped.is_some_and(|row| row.until_release)))
+                    && play.map.looped.is_some_and(|row| !row.alternating && row.xfade == 0);
+                if play.counted.is_none() && !group.reverse && (plain_crop || native_loop)
+                    && !group.mods.iter().any(|m| super::params::loop_control_supported(group, m)) {
+                    match super::counted_loop::Rows::prepare(&zone.native_loops, frames, play.map.end,
+                        nonreflecting_single_pass_alternating(group, self.sampling_profile)) {
+                        Ok(rows) if plain_crop || !zone.native_loops.is_empty() => {
+                            play.counted = Some(self.counted_loops.len() as u32);
+                            self.counted_loops.push(rows);
+                            play.map.looped = None;
+                        },
+                        Err(reason) => self.issues.note(format_args!(
+                            "Native interpolation physical domain unsupported: {reason} (zone ID {})", play.zone_id)),
+                        _ => {},
+                    }
+                }
+            }
         }
     }
 
@@ -1205,7 +1470,7 @@ impl Builder {
         let mut extent = vec![(0, false); frame_bytes.len()];
         for play in &self.plays {
             let e = &mut extent[play.sample as usize];
-            *e = (e.0.max(play.map.end), e.1 | play.map.looped.is_some());
+            *e = (e.0.max(play.read_end), e.1 | play.map.looped.is_some());
         }
         let size = |i: usize| frame_bytes[i] * extent[i].0 as usize;
         let resident = |plan: &Plan| plan.0.iter().map(|r| r.end - r.start).sum::<u64>() as usize;
@@ -1273,7 +1538,7 @@ impl Builder {
     }
 
     fn finish(
-        self,
+        mut self,
         samples: Vec<SampleData>,
         streamer: Option<Streamer>,
         bytes: usize,
@@ -1285,6 +1550,8 @@ impl Builder {
                 self.issues.notes.join("; ")
             );
         }
+        let group_start = super::group_start::Prepared::new(&self.groups, self.default_key_switch, self.native_program,
+            |index, reason| self.issues.note(format_args!("Native group-start condition in group {index} {:?} is unsupported: {reason}; group is disallowed while Group Start is enabled", self.groups[index].name)));
         let plays = self.plays;
         // Samples are resolved: a playing bank never reads zones' paths,
         // and 93k of them (Areia) are 14 MiB a part.
@@ -1313,15 +1580,36 @@ impl Builder {
             self.settings[z.group].mods.has_loop_controls()
                 && z.loop_range.as_ref().is_some_and(|l| !l.alternating)
                 && p.map.controlled_loop([0.; 2], samples[p.sample as usize].frames).is_some());
+        gate_primary_bypass(&mut self.settings, &zones);
+        for (group, settings) in self.groups.iter().zip(&self.settings) {
+            super::ahdsr_shared::validate_group(group, settings).map_err(anyhow::Error::msg)?;
+        }
+        for (play, zone) in plays.iter().zip(&zones) {
+            if self.settings[zone.group].native_shared_volume_slot.is_none() { continue; }
+            let sample = &samples[play.sample as usize];
+            anyhow::ensure!(play.map.looped.is_none() && !play.map.reverse && play.counted.is_none()
+                && play.wavetable.is_none() && !sample.streamed
+                && usize::try_from(sample.frames).ok().is_some_and(|frames| sample.resident_window(0,frames)),
+                "Shared AHDSR requires an unlooped fully resident ordinary Sampler source");
+        }
+        let route_spares = super::voice::VoiceRoutes::prepare(&self.settings)?;
+        let mut initial_state = super::instrument::InstrumentState::new(self.controls, self.settings);
+        initial_state.controller_options = self.controller_options;
+        initial_state.controller_policy = self.controller_policy;
+        initial_state.sampling_profile = self.sampling_profile;
         Ok(Bank {
             groups: self.groups,
             zones: intern(&ZONES, zones),
             source_zone_count: self.source_zone_count,
             zone_context: None, zone_init_epoch:0, zone_parent: None, zone_state: None, zone_spares: Default::default(),
-            base: self.settings.clone(),
+            initial_state: Some(initial_state),
+            prepared_settings_edited: false,
+            route_spares,
+            transpose: self.transpose,
             native_controls,
-            settings: self.settings,
+            group_start,
             plays: intern(&PLAYS, plays),
+            counted_loops: self.counted_loops.into(),
             playable,
             note_mono_releases,
             key_start,
@@ -1344,9 +1632,28 @@ impl Builder {
     }
 }
 
+// Only this saved Sampler identity has a completed non-reflecting row proof.
+fn nonreflecting_single_pass_alternating(group: &Group, profile: crate::import::SamplingProfile) -> bool {
+    profile == crate::import::SamplingProfile::Kontakt && group.source_mode == Some(0)
+        && group.wavetable.is_none() && matches!(group.interp_quality, 0 | 1 | 2)
+}
+
+/// Kontakt sources require their decoded mode-specific playback owner.
+pub(super) fn source_identity_supported(group: &Group, profile: crate::import::SamplingProfile) -> bool {
+    profile == crate::import::SamplingProfile::Compatibility
+        || match (group.source_mode, group.wavetable.is_some()) {
+            (Some(0 | 3), false) => matches!(group.interp_quality, 0 | 1 | 2),
+            (Some(9), true) => true,
+            _ => false,
+        }
+}
+
 /// Validate a zone against its sample and build its playback path. The flag
 /// reports a loop crossfade shortened to fit before the loop start.
 pub(super) fn play_map(zone: &Zone, group: &Group, frames: u64) -> Result<(PlayMap, bool), (ZoneSkipCause, &'static str)> {
+    if group.modulators.iter().any(|source| source.bypassed && (source.volume_env || source.primary_flex)) {
+        return Err((ZoneSkipCause::UnsupportedSource, "saved bypassed primary amplitude source; native bypass and release scheduling unsupported"));
+    }
     let start = zone.start as u64;
     let end = frames
         .checked_add_signed(i64::from(zone.end))
@@ -1401,7 +1708,7 @@ pub(super) fn spans(plays: &[(&ZonePlay, (u64, u64))], preload: u64, cover: u64)
     let mut ranges = Vec::with_capacity(plays.len());
     for &(play, (lo, hi)) in plays {
         let map = &play.map;
-        frames = frames.max(map.end);
+        frames = frames.max(play.read_end);
         if play.wavetable.is_some() {
             // Arbitrary table position reads any cycle; streaming a prefix
             // cannot provide an oscillator's resident data. Uncompressed PCM

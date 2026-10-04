@@ -80,7 +80,6 @@ pub struct FxProcessor {
     types: Box<[(Rack, u8, f32)]>,
     max_block: usize,
     tempo: f32,
-    sleep: Sleep,
     /// Group taps have filled the current block's return inputs.
     group_inputs: bool,
     /// Output channels, `max_block` each; empty for the default processor.
@@ -90,51 +89,7 @@ pub struct FxProcessor {
     /// A block ended ([`mix_buses`](Self::mix_buses)): the next write to a
     /// channel starts the next block, clearing them all first.
     outs_done: bool,
-}
-
-/// When a chain may stop processing: its input has been silent (−120 dBFS)
-/// for longer than its effects ring on the loudest input since it last
-/// slept, to below −120 dBFS. A quiet part's reverb sleeps sooner than a
-/// loud one's; the next input wakes it.
-#[derive(Clone, Copy, Default)]
-struct Sleep {
-    /// Consecutive frames of silent input.
-    silent: usize,
-    /// Frames the current tail rings for.
-    tail: usize,
-    /// Loudest input since the chain last slept.
-    peak: f32,
-}
-
-impl Sleep {
-    /// Nothing rings.
-    const ASLEEP: Self = Self { silent: 1, tail: 0, peak: 0.0 };
-
-    fn sleeping(&self) -> bool {
-        self.silent > self.tail
-    }
-
-    /// Count one input block; `tail(peak)` is how long the chain rings on
-    /// input that loud. True while the chain must process.
-    fn feed(&mut self, left: &[f32], right: &[f32], tail: impl Fn(f32) -> usize) -> bool {
-        let peak = left.iter().chain(right).fold(0f32, |m, x| m.max(x.abs()));
-        self.feed_peak(left.len(), peak, tail)
-    }
-
-    fn feed_peak(&mut self, n: usize, peak: f32, tail: impl Fn(f32) -> usize) -> bool {
-        if peak > SILENCE {
-            (self.silent, self.peak) = (0, self.peak.max(peak));
-        } else {
-            if self.silent == 0 {
-                self.tail = tail(self.peak);
-            }
-            self.silent = self.silent.saturating_add(n);
-            if self.sleeping() {
-                self.peak = 0.0;
-            }
-        }
-        !self.sleeping()
-    }
+    meter_main: [f32; 2],
 }
 
 enum Stage {
@@ -153,7 +108,9 @@ struct Tap {
 
 struct Return {
     slot: Slot,
+    main: bool,
     buffer: [Box<[f32]>; 2],
+    fed: bool,
 }
 
 /// Borrowed inputs to the existing instrument send returns. A group tap adds
@@ -169,6 +126,7 @@ impl SendInputs<'_> {
         for ret in self.returns.iter_mut().filter(|r| !r.slot.bypass) {
             let level = levels.get(ret.slot.index as usize).copied().unwrap_or(0.0) * gain;
             if level == 0.0 { continue; }
+            ret.fed |= !left.is_empty() || !right.is_empty();
             let [l, r] = &mut ret.buffer;
             mix(&mut l[at..at + left.len()], left, level);
             mix(&mut r[at..at + right.len()], right, level);
@@ -188,6 +146,7 @@ struct Slot {
     dry_buffer: [Box<[f32]>; 2],
     ir_settings: Option<params::IrSettings>,
     ir_dirty: bool,
+    meter: [f32; 2],
 }
 
 /// An instrument bus: groups render into `input`; its chain, fader and pan
@@ -197,15 +156,16 @@ struct Bus {
     input: [Box<[f32]>; 2],
     volume: f32,
     pan: f32,
-    /// Channel gains reached at the end of the last block.
+    /// Channel gains reached after the last processed frame.
     gains: [f32; 2],
-    /// A voice rendered into `input` this block.
-    fed: bool,
-    sleep: Sleep,
+    gain_start: [f32; 2],
+    gain_target: [f32; 2],
+    gain_remaining: usize,
     /// Kontakt bus index.
     index: u8,
     /// Output channel (0..[`OUTS`]) past the instrument output, or -1.
     output: i8,
+    meter: [f32; 2],
 }
 
 enum Dsp {
@@ -280,8 +240,11 @@ impl ProgramFx {
         let returns = sends
             .into_iter()
             .map(|slot| Return {
+                main: self.send_outputs.iter().find(|output| output.slot == slot.index as usize)
+                    .is_none_or(|output| output.channel == -1),
                 slot,
                 buffer: [zeros(max_block), zeros(max_block)],
+                fed: false,
             })
             .collect();
         let mut bus_of = [NO_BUS; BUSES];
@@ -299,10 +262,12 @@ impl ProgramFx {
                     volume: b.volume,
                     pan: b.pan.clamp(-1.0, 1.0),
                     gains: balance(b.volume, b.pan),
-                    fed: false,
-                    sleep: Sleep::ASLEEP,
+                    gain_start: balance(b.volume, b.pan),
+                    gain_target: balance(b.volume, b.pan),
+                    gain_remaining: 0,
                     index: b.index as u8,
                     output: channel(b.output as f32),
+                    meter: [0.; 2],
                 }
             })
             .collect();
@@ -324,12 +289,11 @@ impl ProgramFx {
             bus_of,
             max_block,
             tempo: 120.0,
-            // Nothing rings yet.
-            sleep: Sleep::ASLEEP,
             group_inputs: false,
             outs: (0..OUTS).map(|_| [zeros(max_block), zeros(max_block)]).collect(),
             out_fed: 0,
             outs_done: false,
+            meter_main: [0.; 2],
         }
     }
 }
@@ -349,9 +313,9 @@ impl FxProcessor {
         }
     }
 
-    /// Whether processing leaves audio unchanged.
+    /// Whether the processor has no program or bus processing to advance.
     pub fn is_empty(&self) -> bool {
-        self.insert.is_empty() && self.returns.is_empty() && self.main.is_empty()
+        self.insert.is_empty() && self.returns.is_empty() && self.main.is_empty() && self.buses.is_empty()
     }
 
     /// Silences every tail without allocating.
@@ -370,17 +334,15 @@ impl FxProcessor {
             .for_each(Dsp::clear);
         for bus in &mut self.buses {
             bus.input.iter_mut().for_each(|b| b.fill(0.0));
-            bus.sleep = Sleep::ASLEEP;
         }
-        self.sleep = Sleep::ASLEEP;
         self.group_inputs = false;
+        self.returns.iter_mut().for_each(|r| r.fed = false);
         self.returns.iter_mut().flat_map(|r| &mut r.buffer).for_each(|b| b.fill(0.0));
         self.outs.iter_mut().flatten().for_each(|b| b.fill(0.0));
         self.out_fed = 0;
     }
 
-    /// Processes the program output in place. Once the input has been silent
-    /// for longer than every tail, blocks pass through untouched.
+    /// Processes the program output in place, including quiet input and tails.
     pub fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
         let group_inputs = std::mem::take(&mut self.group_inputs);
         if self.is_empty() {
@@ -388,24 +350,11 @@ impl FxProcessor {
         }
         let n = left.len().min(right.len());
         let (left, right) = (&mut left[..n], &mut right[..n]);
-        let mut sleep = self.sleep;
-        // Include summed group feeds: a pre-Amplifier tap may feed the
-        // returns while the instrument's dry signal is completely silent.
-        let group_peak = if group_inputs {
-            self.returns.iter().filter(|r| !r.slot.bypass).flat_map(|r| &r.buffer)
-                .flat_map(|b| &b[..n]).fold(0.0f32, |p, x| p.max(x.abs()))
-        } else { 0.0 };
-        let peak = left.iter().chain(right.iter()).fold(group_peak, |p, x| p.max(x.abs()));
-        let awake = sleep.feed_peak(n, peak, |peak| tail(self.slots(), peak));
-        self.sleep = sleep;
-        if !awake {
-            return;
-        }
         for (l, r) in left
             .chunks_mut(self.max_block)
             .zip(right.chunks_mut(self.max_block))
         {
-            self.process_block(l, r, group_inputs);
+            self.process_block(l, r, group_inputs, 0, true);
         }
     }
 
@@ -414,12 +363,39 @@ impl FxProcessor {
         if self.max_block == 0 { usize::MAX } else { self.max_block }
     }
 
-    /// Clear the fixed return inputs once, before all voice segments in a block.
+    /// Clear fixed return and direct-output inputs before a render block.
     pub(crate) fn begin_group_sends(&mut self, n: usize) {
+        self.fresh_outs();
         for ret in &mut self.returns {
             ret.buffer.iter_mut().for_each(|b| b[..n].fill(0.0));
+            ret.fed = false;
         }
         self.group_inputs = true;
+    }
+
+    /// Process one event interval without consuming the other intervals' sends.
+    pub(crate) fn process_group_segment(&mut self, left: &mut [f32], right: &mut [f32], offset: usize, input_work: bool) -> bool {
+        if !self.is_empty() {
+            self.process_block(left, right, true, offset, input_work)
+        } else {
+            input_work
+        }
+    }
+
+    /// Mirror voice_inputs/mix_buses fallback routing without touching buffers.
+    pub(crate) fn feeds_program(&self, bus: Option<u8>) -> bool {
+        match bus {
+            None => true,
+            Some(b) if b >= DIRECT => usize::from(b - DIRECT) >= self.outs.len(),
+            Some(b) => self.bus(Rack::Bus(b)).is_none_or(|bus|
+                bus.output < 0 || bus.output as usize >= self.outs.len()),
+        }
+    }
+
+    /// Keep all direct-output intervals readable until the next render block.
+    pub(crate) fn end_group_sends(&mut self) {
+        self.group_inputs = false;
+        self.outs_done = true;
     }
 
     /// Disjoint output and send-input borrows for a voice's current segment.
@@ -435,9 +411,7 @@ impl FxProcessor {
             } else {
                 let bus = self.buses.get_mut(*self.bus_of.get(b as usize)? as usize)?;
                 let [l, r] = &mut bus.input;
-                let input = (l.get_mut(frames.clone())?, r.get_mut(frames.clone())?);
-                bus.fed = true;
-                Some(input)
+                Some((l.get_mut(frames.clone())?, r.get_mut(frames.clone())?))
             }
         });
         (input, SendInputs { returns: &mut self.returns, offset: frames.start })
@@ -448,7 +422,8 @@ impl FxProcessor {
     /// block. Voices can mix straight to the output through them, the same sum.
     pub fn bus_gains(&self, bus: u8) -> Option<[f32; 2]> {
         let bus = self.buses.get(*self.bus_of.get(bus as usize)? as usize)?;
-        (bus.output < 0 && bus.chain.is_empty() && bus.gains == balance(bus.volume, bus.pan)).then_some(bus.gains)
+        (bus.output < 0 && bus.chain.is_empty() && bus.gain_remaining == 0
+            && bus.gains == balance(bus.volume, bus.pan)).then_some(bus.gains)
     }
 
     /// `frames` of Kontakt bus `bus`'s input for the current block (within
@@ -458,51 +433,88 @@ impl FxProcessor {
         self.voice_inputs(Some(bus), frames).0
     }
 
-    /// Runs every bus that was fed or still rings on its first `left.len()`
+    /// Runs every bus on its first `left.len()`
     /// input frames (at most `max_block`), adds it to `left`/`right` through
     /// its fader and pan, and clears the inputs for the next block.
     /// A bus routed to an output channel plays there instead.
+    pub fn begin_meter_block(&mut self) {
+        self.meter_main = [0.; 2];
+        for stage in &mut self.insert { if let Stage::Effect(slot) = stage { slot.meter = [0.; 2]; } }
+        for slot in &mut self.main { slot.meter = [0.; 2]; }
+        for ret in &mut self.returns { ret.slot.meter = [0.; 2]; }
+        for bus in &mut self.buses { bus.meter = [0.; 2]; for slot in &mut bus.chain { slot.meter = [0.; 2]; } }
+    }
+    pub fn level_meter(&self, [group, index, channel, generic]: [i32; 4]) -> Option<f32> {
+        if group != -1 || !(0..2).contains(&channel) { return None; }
+        let channel = channel as usize;
+        if index < 0 {
+            return if generic >= 0 { self.bus(Rack::Bus(generic as u8)).map(|b| b.meter[channel]) } else { Some(self.meter_main[channel]) };
+        }
+        let rack = match generic { -2 => Rack::Main, -1 => Rack::Insert, 0..16 => Rack::Bus(generic as u8), _ => return None };
+        let slot = self.slot(rack, index.try_into().ok()?)?;
+        if slot.bypass { return Some(0.); }
+        if let Dsp::Block(block) = &slot.dsp { if let Some(gain) = block.reduction(channel) { return Some(1. - gain); } }
+        Some(slot.meter[channel])
+    }
     pub fn mix_buses(&mut self, left: &mut [f32], right: &mut [f32]) {
-        let n = left.len().min(right.len()).min(self.max_block);
+        self.mix_buses_segment(left, right, 0);
+        self.outs_done = true;
+    }
+
+    pub(crate) fn mix_buses_segment(&mut self, left: &mut [f32], right: &mut [f32], offset: usize) -> bool {
+        let n = left.len().min(right.len()).min(self.max_block.saturating_sub(offset));
+        if n == 0 { return false; }
         self.fresh_outs();
+        let mut work = false;
         for bus in &mut self.buses {
-            if !bus.fed && bus.sleep.sleeping() {
-                continue;
+            if bus.output < 0 || bus.output as usize >= self.outs.len() {
+                work |= bus.chain.iter().any(|slot| slot.work(false));
             }
-            bus.fed = false;
             let [il, ir] = &mut bus.input;
-            let (il, ir) = (&mut il[..n], &mut ir[..n]);
-            bus.sleep.feed(il, ir, |peak| tail(bus.chain.iter(), peak));
+            let (il, ir) = (&mut il[offset..offset + n], &mut ir[offset..offset + n]);
             for slot in &mut bus.chain {
                 slot.process(il, ir);
             }
             let target = balance(bus.volume, bus.pan);
-            let start = bus.gains;
+            if target != bus.gain_target {
+                bus.gain_start = bus.gains;
+                bus.gain_target = target;
+                // Retain the established full prepared-block linear ramp.
+                // Engine prepares 128 frames; this local receiver policy is
+                // independent of incoming fragments and claims no native law.
+                bus.gain_remaining = self.max_block;
+            }
+            let start = bus.gain_start;
             let step = [
-                (target[0] - start[0]) / n as f32,
-                (target[1] - start[1]) / n as f32,
+                (target[0] - start[0]) / self.max_block as f32,
+                (target[1] - start[1]) / self.max_block as f32,
             ];
             let (to_l, to_r) = match self.outs.get_mut(bus.output as usize) {
                 Some([ol, or]) if bus.output >= 0 => {
                     self.out_fed |= 1 << bus.output;
-                    (&mut ol[..n], &mut or[..n])
+                    (&mut ol[offset..offset + n], &mut or[offset..offset + n])
                 }
                 _ => (&mut left[..n], &mut right[..n]),
             };
-            for (i, ((l, r), (x, y))) in to_l
+            for ((l, r), (x, y)) in to_l
                 .iter_mut()
                 .zip(to_r.iter_mut())
                 .zip(il.iter_mut().zip(ir.iter_mut()))
-                .enumerate()
             {
-                let i = i as f32;
-                *l += *x * (start[0] + step[0] * i);
-                *r += *y * (start[1] + step[1] * i);
+                bus.meter[0] = bus.meter[0].max((*x * bus.gains[0]).abs());
+                bus.meter[1] = bus.meter[1].max((*y * bus.gains[1]).abs());
+                *l += *x * bus.gains[0];
+                *r += *y * bus.gains[1];
                 (*x, *y) = (0.0, 0.0);
+                if bus.gain_remaining > 0 {
+                    bus.gain_remaining -= 1;
+                    let elapsed = (self.max_block - bus.gain_remaining) as f32;
+                    bus.gains = if bus.gain_remaining == 0 { target }
+                        else { [start[0] + step[0] * elapsed, start[1] + step[1] * elapsed] };
+                }
             }
-            bus.gains = target;
         }
-        self.outs_done = true;
+        work
     }
 
     /// Clear the output channels once a new block writes to them.
@@ -523,6 +535,13 @@ impl FxProcessor {
         let out = (l.get_mut(frames.clone())?, r.get_mut(frames)?);
         self.out_fed |= 1 << c;
         Some(out)
+    }
+
+    /// Read only the just-rendered interval, without resetting the outer FX block.
+    pub(crate) fn direct_outs_range(&self, frames: Range<usize>) -> impl Iterator<Item = (usize, &[f32], &[f32])> {
+        (self.outs.iter().enumerate())
+            .filter(move |(c, _)| self.out_fed & 1 << c != 0)
+            .map(move |(c, [l, r])| (c, &l[frames.clone()], &r[frames.clone()]))
     }
 
     /// What the last block played to each output channel past the
@@ -763,36 +782,32 @@ impl FxProcessor {
         }
     }
 
-    fn slots(&self) -> impl Iterator<Item = &Slot> {
-        let insert = self.insert.iter().filter_map(|stage| match stage {
-            Stage::Effect(slot) => Some(slot),
-            Stage::Tap(_) => None,
-        });
-        insert
-            .chain(self.returns.iter().map(|r| &r.slot))
-            .chain(&self.main)
-    }
-
     /// `left.len() == right.len() <= max_block`.
-    fn process_block(&mut self, left: &mut [f32], right: &mut [f32], group_inputs: bool) {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32], group_inputs: bool, offset: usize, mut work: bool) -> bool {
         let n = left.len();
+        let frames = offset..offset + n;
         if !group_inputs {
             for ret in &mut self.returns {
+                ret.fed = false;
                 for buffer in &mut ret.buffer {
-                    buffer[..n].fill(0.0);
+                    buffer[frames.clone()].fill(0.0);
                 }
             }
         }
         for stage in &mut self.insert {
             match stage {
-                Stage::Effect(slot) => slot.process(left, right),
+                Stage::Effect(slot) => {
+                    slot.process(left, right);
+                    work = slot.work(work);
+                }
                 Stage::Tap(tap) if !tap.bypass => {
                     for (ret, &level) in self.returns.iter_mut().zip(tap.levels.iter()) {
                         let level = level * tap.gain;
                         if level != 0.0 {
+                            ret.fed |= work && n != 0;
                             let [bl, br] = &mut ret.buffer;
-                            mix(&mut bl[..n], left, level);
-                            mix(&mut br[..n], right, level);
+                            mix(&mut bl[frames.clone()], left, level);
+                            mix(&mut br[frames.clone()], right, level);
                         }
                     }
                 }
@@ -800,16 +815,25 @@ impl FxProcessor {
             }
         }
         // Bypassed send slots return nothing (audits/EFFECTS.md).
-        for ret in self.returns.iter_mut().filter(|r| !r.slot.bypass) {
+        for ret in &mut self.returns {
+            let fed = std::mem::take(&mut ret.fed);
+            if ret.slot.bypass { continue; }
             let [bl, br] = &mut ret.buffer;
-            let (bl, br) = (&mut bl[..n], &mut br[..n]);
+            let (bl, br) = (&mut bl[frames.clone()], &mut br[frames.clone()]);
             ret.slot.process(bl, br);
-            mix(left, bl, 1.0);
-            mix(right, br, 1.0);
+            if ret.main {
+                work |= ret.slot.work(fed);
+                mix(left, bl, 1.0);
+                mix(right, br, 1.0);
+            }
         }
         for slot in &mut self.main {
             slot.process(left, right);
+            work = slot.work(work);
         }
+        self.meter_main[0] = self.meter_main[0].max(left.iter().copied().map(f32::abs).fold(0., f32::max));
+        self.meter_main[1] = self.meter_main[1].max(right.iter().copied().map(f32::abs).fold(0., f32::max));
+        work
     }
 }
 
@@ -826,6 +850,12 @@ fn balance(gain: f32, pan: f32) -> [f32; 2] {
 }
 
 impl Slot {
+    /// Input receipts include quiet buffers. Gainer and the plain stereo matrix
+    /// have no independent work; other enabled DSP retain conservative tails.
+    fn work(&self, input: bool) -> bool {
+        input || (!self.bypass && !matches!(self.dsp, Dsp::Gain(_) | Dsp::Stereo { .. }))
+    }
+
     fn new(fx: &Effect, sample_rate: f32, max_block: usize) -> Option<Self> {
         let dsp = Dsp::new(&fx.params, sample_rate, max_block).or_else(|| Block::new(fx, sample_rate).map(Dsp::Block))?;
         // A filter or EQ storing both levels at 0 would mute the rack;
@@ -842,6 +872,7 @@ impl Slot {
             dry_buffer: [zeros(max_block), zeros(max_block)],
             ir_settings: match &fx.params { Params::Convolution(p) => Some(params::IrSettings::from_convolution(p)), _ => None },
             ir_dirty: false,
+            meter: [0.; 2],
         })
     }
 
@@ -859,7 +890,7 @@ impl Slot {
         self.dsp.process(left, right);
         let (wet, dry) = (self.wet, self.dry);
         if keep_dry {
-            for (out, input) in [(left, &self.dry_buffer[0]), (right, &self.dry_buffer[1])] {
+            for (out, input) in [(&mut *left, &self.dry_buffer[0]), (&mut *right, &self.dry_buffer[1])] {
                 for (y, x) in out.iter_mut().zip(input.iter()) {
                     *y = *y * wet + *x * dry;
                 }
@@ -868,6 +899,8 @@ impl Slot {
             left.iter_mut().for_each(|y| *y *= wet);
             right.iter_mut().for_each(|y| *y *= wet);
         }
+        self.meter[0] = self.meter[0].max(left.iter().copied().map(f32::abs).fold(0., f32::max));
+        self.meter[1] = self.meter[1].max(right.iter().copied().map(f32::abs).fold(0., f32::max));
     }
 }
 
@@ -897,16 +930,6 @@ impl Dsp {
         }
     }
 
-    /// Frames of output above −120 dBFS after input at most `peak` falls silent.
-    fn tail(&self, peak: f32) -> usize {
-        match self {
-            Dsp::Gain(_) | Dsp::Stereo { .. } => 0,
-            Dsp::Reverb(rv, _) => rv.tail(peak),
-            Dsp::Convolution(conv) => conv[0].tail(peak).max(conv[1].tail(peak)),
-            Dsp::Block(b) => b.tail(peak),
-        }
-    }
-
     fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
         match self {
             Dsp::Gain(g) => {
@@ -929,14 +952,6 @@ impl Dsp {
             }
         }
     }
-}
-
-/// Frames a chain of `slots` rings after input at most `peak`: series
-/// stages add their tails; summing the parallel sends too keeps this an
-/// upper bound. Slot gains are not followed, so the peak is taken 12 dB
-/// louder.
-fn tail<'a>(slots: impl Iterator<Item = &'a Slot>, peak: f32) -> usize {
-    slots.map(|s| s.dsp.tail(peak * 4.0)).sum()
 }
 
 fn zeros(len: usize) -> Box<[f32]> {
@@ -1040,4 +1055,138 @@ fn split_ir(ir: &mut [Vec<f32>; 2], p: &params::Convolution, rate: f32) {
 /// An output channel, 0..[`OUTS`], or -1 for the instrument output.
 fn channel(value: f32) -> i8 {
     if (0.0..OUTS as f32).contains(&value) { value as i8 } else { -1 }
+}
+
+#[cfg(test)]
+mod bus_clock_tests {
+    use super::*;
+    use crate::{audio::Sample, engine::{Ahdsr, Bank, Engine, MAX_BLOCK}, import::{Group, Zone}};
+    use std::sync::Arc;
+
+    #[test]
+    fn bus_faders_retarget_mute_and_ring_after_bank_removal_on_frame_clocks_without_heap() {
+        const FRAMES: usize = 2304;
+        const SOURCE: usize = 1280;
+        // A processor's prepared128-frame receiver ramp is the existing core
+        // policy, not an asserted Kontakt timing law or negotiated host size.
+        let timeline = [(0, 1., 0.), (257, 0.2, 0.), (311, 0.8, -0.5),
+            (399, 0.8, 0.75), (511, 0., 0.75), (769, 1., 0.75),
+            (1151, 1., 0.), (1407, 0., 0.), (1601, 1., 0.), (FRAMES, 1., 0.)];
+        let bank = |routed: bool| Box::new(Bank::from_samples(vec![Group::default()], vec![Zone::default()],
+            vec![(Default::default(), Sample { rate: 48_000, frames: vec![[0.25, -0.125]; SOURCE] })]).unwrap()
+            .with_prepared_settings(|settings| {
+                settings[0].envelope = Some(Ahdsr::UNITY);
+                settings[0].bus = routed.then_some(0);
+            }).unwrap());
+        let echo = || {
+            let mut bytes: Vec<_> = [-1_f32, 0., 0., 1., 20., 24_000., 1., 20., 24_000., -1.]
+                .into_iter().flat_map(f32::to_le_bytes).collect();
+            bytes.extend([0, 0, 1, 1, 0]); bytes.extend([0; 8]); bytes.extend(0_i32.to_le_bytes());
+            let mut parameters = params::parse(Kind::Convolution, &bytes);
+            let Params::Convolution(p) = &mut parameters else { unreachable!() };
+            let mut impulse = vec![[0.; 2]; 513]; impulse[0] = [1.; 2]; impulse[512] = [0.5; 2];
+            p.ir = Some(params::Impulse(Arc::new(Sample { rate: 48_000, frames: impulse })));
+            Effect { slot: 0, kind: Kind::Convolution, version: 0, bypass: false,
+                output_gain: 1., dry_level: 0., params: parameters }
+        };
+        let mut source = Engine::default(); source.reset(48_000.); source.attack = 0.;
+        source.set_bank(Some(bank(false))); source.note_on(0, 60, 127);
+        let mut source_pcm = [[0.; FRAMES]; 2];
+        let [left, right] = &mut source_pcm;
+        assert_eq!(crate::plugin::tests::allocations(|| source.render(left, right)), 0);
+        assert!(source_pcm[0][64..SOURCE - 64].iter().all(|x| (*x - 0.25).abs() < 1e-6));
+        assert!(source_pcm[1][64..SOURCE - 64].iter().all(|x| (*x + 0.125).abs() < 1e-6));
+        assert!(source_pcm.iter().all(|channel| channel[SOURCE..].iter().all(|x| *x == 0.)));
+
+        for output in [-1, 2] { for tail in [false, true] {
+            let create = || {
+                let mut engine = Engine::default(); engine.reset(48_000.); engine.attack = 0.;
+                engine.set_bank(Some(bank(true)));
+                engine.set_fx(ProgramFx { buses: vec![super::super::Bus {
+                    index: 0, name: String::new(), volume: 1., pan: 0., output,
+                    chain: super::super::Chain { slots: if tail { vec![echo()] } else { Vec::new() } },
+                }], ..Default::default() }.processor(48_000., MAX_BLOCK));
+                engine
+            };
+            let mut pcm = [[[0.; FRAMES]; 2]; 2];
+            for (mode, result) in pcm.iter_mut().enumerate() {
+                let mut engine = create();
+                let mut retired = None;
+                assert!(!engine.fx().is_empty(), "bus clocks and tails are processor work");
+                assert_eq!(crate::plugin::tests::allocations(|| {
+                    engine.note_on(0, 60, 127);
+                    for changes in timeline.windows(2) {
+                        let [(at, volume, pan), (end, ..)] = changes else { unreachable!() };
+                        // Move the existing processor for scalar edits; retain
+                        // every DSP buffer and ramp, with no clone or disposal.
+                        let mut fx = engine.set_fx(FxProcessor::default());
+                        assert!(fx.set_param(Rack::Bus(0), 0, FxParam::Volume, *volume));
+                        assert!(fx.set_param(Rack::Bus(0), 0, FxParam::Pan, *pan));
+                        let before = (fx.buses[0].gains, fx.buses[0].gain_remaining);
+                        fx.mix_buses_segment(&mut [], &mut [], 0);
+                        assert_eq!(before, (fx.buses[0].gains, fx.buses[0].gain_remaining));
+                        engine.set_fx(fx);
+                        if *at == 1407 {
+                            assert_eq!(engine.active_voices(), 0);
+                            retired = engine.set_bank(None);
+                            assert!(engine.bank().is_none() && engine.script().is_none());
+                        }
+                        engine.render(&mut [], &mut []);
+                        let sizes: &[usize] = if mode == 0 { &[128] } else { &[1, 7, 31, 128] };
+                        let (mut frame, mut block) = (*at, 0);
+                        while frame < *end {
+                            let n = sizes[block % sizes.len()].min(*end - frame);
+                            let (mut left, mut right) = ([0.; MAX_BLOCK], [0.; MAX_BLOCK]);
+                            engine.render_checked(&mut left[..n], &mut right[..n]).unwrap();
+                            if output < 0 {
+                                result[0][frame..frame + n].copy_from_slice(&left[..n]);
+                                result[1][frame..frame + n].copy_from_slice(&right[..n]);
+                            } else {
+                                assert!(left[..n].iter().chain(&right[..n]).all(|x| *x == 0.));
+                                let (_, left, right) = engine.fx().direct_outs(n).find(|(channel, ..)| *channel == output as usize).unwrap();
+                                result[0][frame..frame + n].copy_from_slice(left);
+                                result[1][frame..frame + n].copy_from_slice(right);
+                            }
+                            frame += n; block += 1;
+                        }
+                    }
+                }), 0);
+                assert_eq!(engine.fx().buses[0].gain_remaining, 0);
+                assert_eq!(engine.fx().buses[0].gains, [1.; 2]);
+                assert_eq!(engine.underruns(), 0);
+                drop(retired); // Worker-side retired-bank disposal.
+            }
+            // Independent linear frame-domain oracle, using the independently
+            // measured source only for its existing onset/EOF declick policy.
+            let (mut current, mut start, mut target) = ([1_f32; 2], [1_f32; 2], [1_f32; 2]);
+            let (mut elapsed, mut event) = (MAX_BLOCK, 0);
+            for frame in 0..FRAMES {
+                if frame == timeline[event].0 {
+                    let (_, volume, pan) = timeline[event];
+                    let next = [volume * (1. - pan.max(0.)), volume * (1. + pan.min(0.))];
+                    if next != target { start = current; target = next; elapsed = 0; }
+                    event += 1;
+                }
+                for channel in 0..2 {
+                    let input = source_pcm[channel][frame] + if tail && frame >= 512 { 0.5 * source_pcm[channel][frame - 512] } else { 0. };
+                    let expected = input * current[channel];
+                    for actual in &pcm {
+                        assert!((actual[channel][frame] - expected).abs() < 2e-6,
+                            "route{output} tail{tail} channel{channel} frame{frame}: {} vs {expected}", actual[channel][frame]);
+                    }
+                }
+                if elapsed < MAX_BLOCK {
+                    elapsed += 1;
+                    current = if elapsed == MAX_BLOCK { target } else {
+                        std::array::from_fn(|channel| start[channel]
+                            + (target[channel] - start[channel]) / MAX_BLOCK as f32 * elapsed as f32)
+                    };
+                }
+            }
+            assert!(pcm[0].iter().flatten().zip(pcm[1].iter().flatten()).all(|(a, b)| (a - b).abs() < 1e-6));
+            assert!(pcm[0].iter().all(|channel| channel[640..769].iter().all(|x| *x == 0.)), "settled mute remains exact zero");
+            if tail { assert!(pcm[0].iter().any(|channel| channel[1696..1760].iter().any(|x| x.abs() > 0.01)),
+                "bus-only tail must advance and unmute after bank removal"); }
+        }}
+    }
 }

@@ -209,7 +209,7 @@ fn every_group_layers_with_mute_solo_and_allow_mask() {
 
 #[test]
 fn release_triggers_fire_on_release_including_after_the_pedal() {
-    let velocity_volume = ModAssignment {
+    let velocity_volume = ModAssignment { cc_default: None,
         name: "VEL_VOLUME".into(),
         source: ModSource::Velocity,
         target: ModTarget::Volume,
@@ -261,7 +261,7 @@ fn counted_release() -> Group {
     Group {
         release_trigger: true,
         release_counter_ms: 1000,
-        mods: vec![ModAssignment {
+        mods: vec![ModAssignment { cc_default: None,
             name: "RTC_VOLUME".into(),
             source: ModSource::ReleaseTriggerCounter,
             target: ModTarget::Volume,
@@ -305,7 +305,7 @@ fn release_trigger_counter_scales_release_volume_by_held_time() {
 fn release_counter_keeps_each_same_pitch_events_duration() {
     let setup = |scripted: bool| {
         let mut release = counted_release();
-        release.mods.push(ModAssignment { name: "RTC_START".into(), source: ModSource::ReleaseTriggerCounter,
+        release.mods.push(ModAssignment { cc_default: None, name: "RTC_START".into(), source: ModSource::ReleaseTriggerCounter,
             target: ModTarget::SampleStart, intensity: 1., invert: false, lag_ms: 0, shaper: None });
         let groups = vec![Group::default(), release];
         let zones = vec![Zone { sample: PathBuf::from("attack"), loop_range: Some(Loop {
@@ -593,6 +593,60 @@ fn voice_groups_limit_and_choke_their_members() {
 }
 
 #[test]
+fn program_voice_policy_keeps_authored_victim_preference_and_fade() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("policy.wav");
+    write_wav(&path, 1000);
+    let zone = Zone {
+        sample: path,
+        loop_range: Some(Loop {
+            start: 0,
+            end: 1000,
+            alternating: false,
+            until_release: false,
+            crossfade: 0,
+        }),
+        ..Zone::default()
+    };
+    let mut patch = instrument(vec![Group::default()], vec![zone]);
+    for (mode, prefer_released, release_first, expected) in [
+        (1, false, false, vec![62, 64]),
+        (2, false, false, vec![60, 64]),
+        (3, false, false, vec![60, 64]),
+        (4, false, false, vec![62, 64]),
+        (2, false, true, vec![60, 64]),
+        (2, true, true, vec![62, 64]),
+    ] {
+        patch.voice_limit = Some(VoiceLimit {
+            max_voices: 1,
+            kill_mode: mode,
+            prefer_released,
+            fade_ms: 20,
+            exclusion_group: -1,
+        });
+        let mut bank = Bank::load(&patch).unwrap();
+        // Changing the maximum must retain the authored victim/fade policy.
+        bank.set_polyphony(2);
+        let mut e = engine_with(bank);
+        e.release = 1.0;
+        e.note_on(0, 60, 127);
+        e.note_on(0, 62, 127);
+        render(&mut e, 128);
+        if release_first {
+            e.note_off(0, 60);
+        }
+        e.note_on(0, 64, 127);
+        let half_fade = (e.rate() * 0.010) as usize;
+        render(&mut e, half_fade);
+        assert_eq!(e.active_voices(), 3, "authored fade must last beyond 10 ms");
+        render(&mut e, half_fade + 2);
+        let mut notes: Vec<_> = e.voice_census().iter().map(|voice| voice.note).collect();
+        notes.sort_unstable();
+        assert_eq!(notes, expected, "mode {mode}, released preference {prefer_released}");
+    }
+}
+
+#[test]
 fn envelope_follows_group_ahdsr() {
     let mut bank = Bank::from_samples(
         vec![Group::default()],
@@ -609,7 +663,7 @@ fn envelope_follows_group_ahdsr() {
         vec![(PathBuf::new(), constant([1.0; 2], 100))],
     )
     .unwrap();
-    bank.settings[0].envelope = Some(Ahdsr {
+    bank = bank.with_prepared_settings(|settings| settings[0].envelope = Some(Ahdsr {
         attack: 0.01,
         curve: 0.0,
         hold: 0.0,
@@ -617,7 +671,7 @@ fn envelope_follows_group_ahdsr() {
         sustain: 0.5,
         release: 0.05,
         ahd_only: false,
-    });
+    })).unwrap();
     let mut e = engine_with(bank);
     e.note_on(0, 60, 127);
     let out = render(&mut e, 4800 + 240);
@@ -754,7 +808,7 @@ fn instrument_volume_pan_and_bend_range() {
         frames: (0..48000).map(|i| [i as f32 / 48000.0; 2]).collect(),
     };
     // Intensity 1.0 bends an octave.
-    let bend = ModAssignment {
+    let bend = ModAssignment { cc_default: None,
         name: "PB_PITCH".into(),
         source: ModSource::PitchBend,
         target: ModTarget::Pitch,
@@ -1095,7 +1149,7 @@ fn unsupported_wavetable_forms_are_counted_without_substituting_sample_playback(
     let path = PathBuf::from("authored-rejected-wave-form");
     let groups = vec![Group { wavetable: Some(Wavetable { form1_type: 16, form1: 0.5,
         ..Default::default() }), ..Group::default() },
-        Group { wavetable: Some(Wavetable { form1_type: 17,
+        Group { wavetable: Some(Wavetable { form1_type: 24,
             ..Default::default() }), ..Group::default() }];
     let bank = Bank::from_samples(groups, vec![Zone { sample:path.clone(), ..Zone::default() },
         Zone { sample:path.clone(), group:1, ..Zone::default() }],
@@ -1103,7 +1157,7 @@ fn unsupported_wavetable_forms_are_counted_without_substituting_sample_playback(
     assert_eq!(bank.skipped_zones,1);
     assert_eq!(bank.zone_skip_counts.unsupported_source,1);
     assert_eq!(bank.zone_skip_counts.invalid_sample_bounds,0);
-    assert!(bank.issues.iter().any(|issue| issue.contains("group 1, forms 17/0") && issue.contains("zone excluded")));
+    assert!(bank.issues.iter().any(|issue| issue.contains("group 1, forms 24/0") && issue.contains("zone excluded")));
     let mut e = engine_with(bank);
     e.note_on(0,69,100);
     assert_eq!(e.active_voices(),1,"rejected form must not become an ordinary sample voice");
@@ -1860,8 +1914,8 @@ fn ksp_zone_ids_follow_real_mapping_before_and_after_render_and_survive_missing_
         e.panic();
         e.note_on(channel, note, velocity);
         // Before wait the MIDI event has not reached the playback host.
-        if note != 65 { assert_eq!(e.script().unwrap().last_message(), "0"); }
-        // The callback resumes before queued Start commands are applied.
+        if note != 65 { assert_eq!(e.script().unwrap().last_message(), "-1"); }
+        // The callback resumes after the preceding DSP admits the actual voices.
         let (mut left, mut right) = ([0.0; 64], [0.0; 64]);
         assert_eq!(allocations(|| e.render(&mut left, &mut right)), 0);
         let message = format!("{expected}:8:2");
@@ -2332,7 +2386,7 @@ fn oversized_callback_control_text_faults_without_allocating() {
 
 /// Volume modulation of `source` at full intensity, without a shaper.
 fn volume_mod(source: ModSource, lag_ms: u16) -> ModAssignment {
-    ModAssignment {
+    ModAssignment { cc_default: None,
         name: String::new(),
         source,
         target: ModTarget::Volume,
@@ -2373,7 +2427,7 @@ fn modulated_groups() -> Instrument {
             assignments: Some(0),
             volume_env: false,
             bypassed: false,
-            flex: false,
+            flex: false, primary_flex: false,
             envelope: None,
             kind: String::new(),
         }],
@@ -2564,6 +2618,82 @@ fn init_rpn_reaches_initialized_later_slots_and_replays_authored_native_settings
     assert_eq!(last.interface(0).controls.len(),1, "a last-slot message is valid without a receiver");
     assert!(last.init_controllers.is_empty(), "internal RPN must not synthesize native CC messages");
     assert!(last.diagnostics().is_empty());
+}
+
+#[test]
+fn received_parameters_keep_channels_values_and_script_forwarding_without_heap() {
+    let first = "on controller\nif ($CC_NUM = 6)\nignore_controller\nend if\nend on\non rpn\nif ($RPN_ADDRESS = 7)\nignore_controller\nend if\nend on";
+    let receiver = "on init\nmake_perfview\ndeclare ui_slider $r(0,16383)\ndeclare ui_slider $n(0,16383)\ndeclare ui_slider $rc(0,100)\ndeclare ui_slider $nc(0,100)\ndeclare ui_slider $channel(0,15)\nend on\non rpn\n$r := $RPN_VALUE\ninc($rc)\n$channel := $MIDI_CHANNEL\nend on\non nrpn\n$n := $RPN_VALUE\ninc($nc)\n$channel := $MIDI_CHANNEL\nend on";
+    let mut i = instrument(vec![Group::default()], Vec::new());
+    i.scripts = vec![first.into(), receiver.into()];
+    let (rt, errors) = load_scripts(&i, Vec::new(), 48000.0);
+    assert!(errors.is_empty(), "{errors:?}");
+    let mut e = engine_with(layered(i.groups, &[0.5]));
+    e.set_script(rt);
+    assert_eq!(allocations(|| {
+        e.begin_audio_block(128, 1, true);
+        e.cc(2, 101, 0);
+        e.cc(5, 99, 2);
+        e.cc(2, 100, 0);
+        e.cc(5, 98, 3);
+        e.cc(2, 6, 5);
+        e.cc(5, 6, 6);
+        e.cc(2, 38, 9);
+        // Ignore a decoded parameter in the first script independently of raw CC.
+        e.cc(2, 100, 7);
+        e.cc(2, 6, 8);
+        e.cc(2, 101, 127);
+        e.cc(2, 100, 127);
+        e.cc(2, 6, 9);
+        // Changing only the coarse data byte must clear the previous fine byte.
+        e.cc(5, 38, 17);
+        e.cc(5, 6, 7);
+        e.render(&mut [0.; 128], &mut [0.; 128]);
+    }), 0);
+    let ui = e.script().unwrap().interface(1);
+    let values = ui.controls.iter().map(|c| &c.properties["$CONTROL_PAR_VALUE"]).collect::<Vec<_>>();
+    assert_eq!(values, vec![&Value::Int(649), &Value::Int(896), &Value::Int(2), &Value::Int(3), &Value::Int(5)]);
+    assert_eq!(e.cc_state()[2][6], 0, "raw CC ignore does not erase the separately decoded parameter");
+    assert_eq!(e.cc_state()[2][38], 9, "ordinary forwarded CC reaches native state after queued commands apply");
+    assert!(e.script().unwrap().diagnostics().is_empty());
+}
+
+#[test]
+fn received_parameter_reset_cancels_waits_on_only_the_selected_channel() {
+    let script = "on init\nmake_perfview\ndeclare ui_slider $count(0,100)\ndeclare ui_slider $channel(0,15)\nend on\non rpn\nwait(1000)\ninc($count)\n$channel := $MIDI_CHANNEL\nset_controller(74,99)\nend on";
+    let mut i = instrument(vec![Group::default()], Vec::new());
+    i.scripts = vec![script.into()];
+    let (rt, errors) = load_scripts(&i, Vec::new(), 48000.0);
+    assert!(errors.is_empty(), "{errors:?}");
+    let mut e = engine_with(layered(i.groups, &[0.5]));
+    e.set_script(rt);
+    assert_eq!(allocations(|| {
+        e.begin_audio_block(128, 1, true);
+        for channel in [2, 5] {
+            e.cc(channel, 101, 0);
+            e.cc(channel, 100, 0);
+            e.cc(channel, 6, 2);
+        }
+        e.cc(2, 121, 0);
+        e.cc(2, 38, 17);
+        e.render(&mut [0.; 128], &mut [0.; 128]);
+    }), 0);
+    let ui = e.script().unwrap().interface(0);
+    assert_eq!(ui.controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(1));
+    assert_eq!(ui.controls[1].properties["$CONTROL_PAR_VALUE"], Value::Int(5));
+    // Only physical channel 5's callback survived. Its authored controller is
+    // instrument-wide, independently of the callback's cleanup provenance.
+    assert!(e.cc_state().iter().all(|row| row[74] == 99));
+    // Panic and host reset both discard incomplete wire selections and waits.
+    for reset in [false, true] {
+        e.cc(5, 6, 3);
+        assert_eq!(allocations(|| {
+            if reset { e.reset(48000.0); } else { e.panic(); }
+            e.cc(5, 6, 4);
+            e.render(&mut [0.; 128], &mut [0.; 128]);
+        }), 0);
+        assert_eq!(e.script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_VALUE"], Value::Int(1));
+    }
 }
 
 #[test]
@@ -2853,7 +2983,7 @@ fn tight_budgets_keep_the_scripted_start_offset_resident() {
     let (path, frames) = (dir.join("offset.wav"), 60_000);
     write_wav_bits(&path, frames, 24);
     let group = Group {
-        mods: vec![ModAssignment {
+        mods: vec![ModAssignment { cc_default: None,
             name: "CC_START".into(),
             source: ModSource::MidiCc(113),
             target: ModTarget::SampleStart,
@@ -3097,7 +3227,7 @@ fn deferred_release_samples_keep_distinct_same_pitch_event_velocities() {
 fn same_pitch_sostenuto_release_samples_keep_their_own_key_velocity() {
     let groups = vec![Group::default(), Group {
         release_trigger: true,
-        mods: vec![ModAssignment { name: "VEL_VOLUME".into(), source: ModSource::Velocity, target: ModTarget::Volume,
+        mods: vec![ModAssignment { cc_default: None, name: "VEL_VOLUME".into(), source: ModSource::Velocity, target: ModTarget::Volume,
             intensity: 1., invert: false, lag_ms: 0, shaper: None }],
         ..Group::default()
     }];
@@ -3412,7 +3542,7 @@ fn decaying_tails_flush_denormals_to_zero() {
 }
 
 #[test]
-fn offline_overload_preserves_release_tails_and_live_shedding_still_works() {
+fn reported_cpu_load_preserves_release_tails_in_live_and_offline_rendering() {
     let setup = || engine_with(layered(vec![Group::default()], &[0.5]));
     let (mut reference, mut overloaded) = (setup(), setup());
     for (e, load) in [(&mut reference, 0.0), (&mut overloaded, 1.0)] {
@@ -3427,37 +3557,38 @@ fn offline_overload_preserves_release_tails_and_live_shedding_still_works() {
         "an offline release must not depend on wall-clock or carried-over live load");
     assert_eq!(overloaded.active_voices(), 1);
     overloaded.blocking_streams = false;
-    render(&mut overloaded, 480);
-    assert_eq!(overloaded.active_voices(), 0, "live overload protection still fades the released voice");
+    reference.blocking_streams = false;
+    assert_eq!(render(&mut overloaded, 480), render(&mut reference, 480),
+        "switching to live mode must retain the same release, regardless of CPU load");
+    assert_eq!(overloaded.active_voices(), 1);
     assert_eq!(reference.active_voices(), 1);
 }
 
 #[test]
-fn overload_fades_released_voices_quietest_first() {
+fn reported_cpu_load_preserves_quiet_and_audible_release_layers() {
     // Every key plays a loud group and one at −70 dB; releases ring on.
     let quiet = Group {
         gain: 3e-4,
         ..Group::default()
     };
-    let mut e = engine_with(layered(vec![Group::default(), quiet], &[0.5, 0.5]));
-    e.release = 10.0;
-    e.note_on(0, 60, 127);
-    e.note_on(0, 62, 127);
-    render(&mut e, 480);
-    e.note_off(0, 60);
-    render(&mut e, 480);
-    assert_eq!(e.active_voices(), 4, "no load: releases ring");
-    e.load = 0.85;
-    render(&mut e, 64);
-    assert_eq!(e.active_voices(), 4, "fading, not cut");
-    render(&mut e, 480);
-    assert_eq!(e.active_voices(), 3, "the inaudible release ended");
-    e.load = 1.0;
-    render(&mut e, 480);
-    assert_eq!(e.active_voices(), 2, "near the deadline the quietest release goes too");
-    e.load = 0.0;
-    render(&mut e, 4800);
-    assert_eq!(e.active_voices(), 2, "held notes are never shed");
+    let setup = || engine_with(layered(vec![Group::default(), quiet.clone()], &[0.5, 0.5]));
+    let (mut reference, mut loaded) = (setup(), setup());
+    for e in [&mut reference, &mut loaded] {
+        e.release = 10.0;
+        e.note_on(0, 60, 127);
+        e.note_on(0, 62, 127);
+        render(e, 480);
+        e.note_off(0, 60);
+    }
+    // Retain both the audible and quiet released layer as load crosses the
+    // previous thresholds; held notes and the complete tail must match too.
+    for (load, frames) in [(0.69, 64), (0.85, 480), (1.0, 480), (2.0, 4800), (0.0, 480)] {
+        loaded.load = load;
+        assert_eq!(render(&mut loaded, frames), render(&mut reference, frames),
+            "reported CPU load {load} changed the instrument's audio");
+        assert_eq!(loaded.active_voices(), 4, "CPU load must not retire a layer");
+        assert_eq!(loaded.active_voices(), reference.active_voices());
+    }
 }
 
 /// Voices that resample alike (same step and position fraction) sum in one
@@ -3553,7 +3684,7 @@ fn shared_filters_match_voices_filtered_alone_within_120_db() {
     let band = |freq_hz, gain_db| params::EqBand { freq_hz, bandwidth_oct: 1.0, gain_db };
     let eq = |bands| Params::Eq(params::Eq { bands });
     let low = |cutoff| Params::Filter(params::Filter { filter_type: 5, cutoff, resonance: 0.3, extra: [0.0; 3], native_flag: None });
-    let knob = |source, param: &str, slot| ModAssignment {
+    let knob = |source, param: &str, slot| ModAssignment { cc_default: None,
         name: String::new(),
         source,
         target: ModTarget::Module { param: param.into(), slot },
@@ -3980,7 +4111,7 @@ fn growing_the_rack_keeps_voices_held_notes_and_recorded_targets_without_audio_h
 fn saved_sine_multi_pitch_uses_native_clock_and_audio_interpolation() {
     use kontakto::import::PitchLfo;
     let make = |fade_ms| {
-        let group = Group { pitch_lfos: vec![PitchLfo { start_phase: 0., slot: 7, count: 1.,
+        let group = Group { pitch_lfos: vec![PitchLfo { extended_fade: false, fade_sync: None, shared: false, digital: None, start_phase: 0., slot: 7, count: 1.,
             note_value: 1. / 24., sine: 0.5, fade_ms, depth: 0.5, targets: vec![], bypassed: false }], ..Group::default() };
         let sample = Sample { rate: 48000,
             frames: (0..4096).map(|i| [i as f32 / 8192.; 2]).collect() };
@@ -3990,8 +4121,8 @@ fn saved_sine_multi_pitch_uses_native_clock_and_audio_interpolation() {
     // Actual-shaped sub-tick and short fades plus a substantial authored fade.
     for fade_ms in [0., 0.21523452, 2.3047996, 1.9533157, 40.] {
         let mut e = make(fade_ms);
-        assert_eq!(e.bank().unwrap().settings[0].pitch_lfos[0].slot, 7);
-        assert!(!e.bank().unwrap().settings[0].pitch_lfos[0].bypassed);
+        assert_eq!(e.settings().unwrap()[0].pitch_lfos[0].slot, 7);
+        assert!(!e.settings().unwrap()[0].pitch_lfos[0].bypassed);
         e.set_transport(false, 120., 0., (4, 4));
         let mut left = [0.; MAX_BLOCK];
         let mut right = [0.; MAX_BLOCK];

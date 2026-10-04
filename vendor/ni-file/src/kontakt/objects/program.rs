@@ -110,6 +110,10 @@ impl Program {
         // }
     }
 
+    pub fn private_params(&self) -> ProgramDataPrivateParams {
+        ProgramDataPrivateParams { version: self.0.version, data: self.0.private_data.clone() }
+    }
+
     pub fn zone_list(&self) -> Option<Result<ZoneList, Error>> {
         self.0
             .find_first(0x34)
@@ -140,78 +144,113 @@ impl std::convert::TryFrom<&Chunk> for Program {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct ProgramDataPrivateParams {}
+/// Verified BProgram private-prefix settings; the rest of the record stays opaque.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum SustainPedalMode {
+    SustainPlusController,
+    SustainWithoutController,
+    ControllerOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ProgramControllerOptions {
+    pub sustain_mode: SustainPedalMode,
+    pub standard_volume_pan: bool,
+    pub standard_note_modes: bool,
+    pub cc7_max_db: i32,
+}
+
+impl Default for ProgramControllerOptions {
+    fn default() -> Self {
+        Self { sustain_mode: SustainPedalMode::SustainPlusController,
+            standard_volume_pan: true, standard_note_modes: true, cc7_max_db: 0 }
+    }
+}
+
+/// Original bounded private record, including unsupported versions and fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ProgramDataPrivateParams {
+    pub version: u16,
+    pub data: Vec<u8>,
+}
 
 impl ProgramDataPrivateParams {
     pub fn read<R: ReadBytesExt>(mut reader: R, version: u16) -> Result<Self, Error> {
-        if version != 0x80 {
-            panic!("unsupported version: {version}");
+        let mut data = Vec::new();
+        reader.read_to_end(&mut data)?;
+        Ok(Self { version, data })
+    }
+
+    pub fn controller_options(&self) -> Result<Option<ProgramControllerOptions>, Error> {
+        // Kontakt 8.13.1 BProgram::doReadPrivPars, 0x140d0a2c0. Each listed
+        // archive branch shares this prefix; unknown versions remain opaque.
+        if !matches!(self.version, 0x80 | 0x82 | 0x90..=0x92 | 0xa0..=0xb5) {
+            return Ok(None);
         }
-        // assume v80 for now
+        let mut reader = Cursor::new(&self.data);
+        let sustain_mode = match reader.read_u32_le()? {
+            0 => SustainPedalMode::SustainPlusController,
+            1 => SustainPedalMode::SustainWithoutController,
+            2 => SustainPedalMode::ControllerOnly,
+            _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+                "Invalid BProgram sustain-pedal mode").into()),
+        };
+        Ok(Some(ProgramControllerOptions { sustain_mode,
+            standard_volume_pan: reader.read_u8()? != 0,
+            standard_note_modes: reader.read_u8()? != 0, cc7_max_db: reader.read_i32_le()? }))
+    }
 
-        let version = reader.read_u32_le()?;
-        println!("version {:?}", version);
-        assert!(
-            version < 2,
-            "ProgramPrivateParams unsupported version: {version}"
-        );
+    pub fn write<W: std::io::Write>(&self, mut writer: W) -> Result<(), Error> {
+        writer.write_all(&self.data)?;
+        Ok(())
+    }
+}
 
-        println!("{:?}", reader.read_bool()?);
-        println!("{:?}", reader.read_bool()?);
-        println!("{:?}", reader.read_i32_le()?);
-        println!("{:?}", reader.read_bool()?);
-        println!("{:?}", reader.read_i32_le()?);
-        println!("{:?}", reader.read_i32_le()?);
-        println!("{:?}", reader.read_bool()?);
-        println!("{:?}", reader.read_i32_le()?);
-        println!("{:?}", reader.read_bool()?);
-        println!("{:?}", reader.read_bool()?);
-        println!("{:?}", reader.read_bool()?);
-        println!("{:?}", reader.read_i32_le()?);
-        println!("{:?}", reader.read_bool()?);
-        println!("{:?}", reader.read_bool()?);
-        println!("{:?}", reader.read_bool()?);
-        println!("{:?}", reader.read_bool()?);
-        println!("{:?}", reader.read_bool()?);
-        println!("{:?}", reader.read_bool()?);
-        println!("{:?}", reader.read_bool()?);
-        println!("{:?}", reader.read_bool()?);
-        println!("{:?}", reader.read_bool()?);
-        println!("{:?}", reader.read_bool()?);
-        println!("{:?}", reader.read_bool()?);
-        println!("{:?}", reader.read_bool()?);
-        println!("{:?}", reader.read_bool()?);
-        println!("{:?}", reader.read_i32_le()?);
-        println!("{:?}", reader.read_i32_le()?);
-        println!("{:?}", reader.read_i32_le()?);
-        println!("{:?}", reader.read_bool()?);
-        println!("{:?}", reader.read_bool()?);
-        println!("{:?}", reader.read_i16_le()?);
-        println!("{:?}", reader.read_bool()?);
+#[cfg(test)]
+mod controller_option_tests {
+    use super::*;
 
-        // BFileName - SER::ReadBFNTrns
-        // should be -1
-        let filename = reader.read_i32_le()?;
-        if filename > 0 {
-            panic!("Unsupported: SER::ReadBFNTrns");
+    #[test]
+    fn private_prefix_modes_flags_and_unknown_tail_roundtrip() {
+        for (raw, mode) in [(0u32, SustainPedalMode::SustainPlusController),
+            (1, SustainPedalMode::SustainWithoutController), (2, SustainPedalMode::ControllerOnly)] {
+            let mut bytes = raw.to_le_bytes().to_vec();
+            bytes.extend([0, 0xff]); // Native action flags use nonzero, not == 1.
+            bytes.extend((-6i32).to_le_bytes());
+            bytes.extend([0xde, 0xad, 0, 0xff]);
+            for version in [0x80, 0x82, 0x90, 0x92, 0xa0, 0xae, 0xb5] {
+                let record = ProgramDataPrivateParams::read(Cursor::new(&bytes), version).unwrap();
+                assert_eq!(record.controller_options().unwrap(), Some(ProgramControllerOptions {
+                    sustain_mode: mode, standard_volume_pan: false,
+                    standard_note_modes: true, cc7_max_db: -6 }));
+                let mut written = Vec::new();
+                record.write(&mut written).unwrap();
+                assert_eq!(written, bytes);
+                assert_eq!(record.version, version);
+            }
         }
+    }
 
-        // 5 x SER::Read(stream,(BSerializable *)&this[0xcb].field_0x12d, ctx);
-
-        // SER::ReadBHeapArr<>
-
-        // SER::ARRAY::ReadInsert<>
-        // SER::ARRAY::ReadInsert<>
-
-        let filename = reader.read_i32_le()?;
-        if filename > 0 {
-            panic!("Unsupported: SER::ReadBFNTrns");
+    #[test]
+    fn unknown_versions_and_malformed_prefixes_stay_opaque_without_panics() {
+        let record = ProgramDataPrivateParams::read(Cursor::new([0xff, 0]), 0x81).unwrap();
+        assert_eq!(record.controller_options().unwrap(), None);
+        let mut written = Vec::new(); record.write(&mut written).unwrap();
+        assert_eq!(written, [0xff, 0]);
+        let mut valid = 0u32.to_le_bytes().to_vec(); valid.extend([1, 1]);
+        valid.extend(0i32.to_le_bytes());
+        for len in 0..valid.len() {
+            let record = ProgramDataPrivateParams::read(Cursor::new(&valid[..len]), 0x80).unwrap();
+            assert!(record.controller_options().is_err());
+            let mut written = Vec::new(); record.write(&mut written).unwrap();
+            assert_eq!(written, valid[..len]);
         }
-
-        // another BFileName
-
-        Ok(Self {})
+        valid[..4].copy_from_slice(&3u32.to_le_bytes());
+        let record = ProgramDataPrivateParams::read(Cursor::new(valid), 0x80).unwrap();
+        assert!(record.controller_options().is_err());
     }
 }
 

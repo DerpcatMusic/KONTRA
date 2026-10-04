@@ -9,7 +9,7 @@ use super::menu::{self, Target};
 use super::vector::{Face as VFace, Plan};
 use super::wave::Peaks;
 use super::{Cx, fitted, theme::*};
-use crate::artwork::Picture;
+use crate::artwork::{Picture, PictureMetadata};
 use crate::ksp::{Control, Interface, Value};
 use crate::library::ViewMode;
 use moose::mui::mui::geometry::Path as DrawPath;
@@ -94,6 +94,16 @@ pub struct Shown {
     pub h: f64,
     pub z: i32,
     pub picture: Option<Arc<Picture>>,
+    pub(crate) picture_metadata: Option<PictureMetadata>,
+}
+impl Shown {
+    pub(super) fn picture_metadata(&self) -> Option<PictureMetadata> {
+        self.picture_metadata.or_else(|| {
+            let p = self.picture.as_ref()?;
+            let image = p.frames.first()?;
+            Some(PictureMetadata { size: [image.width, image.height], stretch: p.stretch, frames: p.frames.len(), clear: false })
+        })
+    }
 }
 
 fn int(c: &Control, name: &str) -> Option<i32> {
@@ -187,7 +197,7 @@ pub fn scale(avail: f64, width: f64, setting: f32) -> f64 {
 }
 
 /// Automatic zoom fits the whole authored view; explicit zoom stays scrollable.
-fn scale_to_fit(room: Size, authored: Size, setting: f32) -> f64 {
+pub(super) fn scale_to_fit(room: Size, authored: Size, setting: f32) -> f64 {
     let width = if room.height > 0. && authored.height > 0. {
         room.width.min(room.height / authored.height * authored.width)
     } else { room.width };
@@ -222,6 +232,10 @@ pub(super) fn placed(interface: &Interface, n: usize) -> (f64, f64, bool) {
 /// declared. Kontakt sizes a control to a picture that does not stretch.
 /// A panel only places and hides what is in it.
 pub fn layout(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -> Vec<Shown> {
+    layout_with_metadata(interface, pictures, &HashMap::new())
+}
+
+fn layout_with_metadata(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>, metadata: &HashMap<String, PictureMetadata>) -> Vec<Shown> {
     let mut out: Vec<Shown> = (interface.controls.iter().enumerate())
         .filter(|(_, c)| c.kind != "ui_panel")
         .filter_map(|(n, c)| {
@@ -230,11 +244,13 @@ pub fn layout(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -
                 return None;
             }
             let picture = pictures.get(prop(c, "$CONTROL_PAR_PICTURE")).filter(|p| !p.frames.is_empty()).cloned();
+            let picture_metadata = metadata.get(prop(c, "$CONTROL_PAR_PICTURE")).copied();
             let size = |k: &str, or: i32| f64::from(int(c, k).unwrap_or(or));
             let kind = Kind::of(&c.kind);
-            let (w, h) = match &picture {
+            let (w, h) = match picture_metadata {
                 Some(p) => p.size(size("$CONTROL_PAR_WIDTH", 85), size("$CONTROL_PAR_HEIGHT", 18)),
                 // Kontakt's own knob has room for its name and value.
+                None if picture.is_some() => picture.as_ref().unwrap().size(size("$CONTROL_PAR_WIDTH", 85), size("$CONTROL_PAR_HEIGHT", 18)),
                 None if kind == Kind::Knob => (size("$CONTROL_PAR_WIDTH", 85), size("$CONTROL_PAR_HEIGHT", 52).max(52.)),
                 _ => (size("$CONTROL_PAR_WIDTH", 85), size("$CONTROL_PAR_HEIGHT", 18)),
             };
@@ -247,6 +263,7 @@ pub fn layout(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -
                 h,
                 z: int(c, "$CONTROL_PAR_Z_LAYER").unwrap_or(0),
                 picture,
+                picture_metadata,
             })
         })
         .filter(|s| s.w > 0. && s.h > 0. && s.x < f64::from(interface.width) && s.y < f64::from(interface.height))
@@ -259,8 +276,8 @@ pub fn layout(interface: &Interface, pictures: &HashMap<String, Arc<Picture>>) -
 /// Whether `part`'s library has a performance view of its own to show:
 /// a script's view with authored pictures or a background color.
 pub fn available(v: &crate::plugin::PartView) -> bool {
-    v.interface.as_ref().is_some_and(|i| i.performance && !i.controls.is_empty()
-        && (i.background_color.is_some() || v.wallpaper.is_some() || !v.pictures.is_empty()))
+    v.interface.as_ref().is_some_and(|i| !i.native_ui.is_empty()) || v.interface.as_ref().is_some_and(|i| i.performance && !i.controls.is_empty()
+        && (i.background_color.is_some() || v.wallpaper.is_some() || !v.pictures.is_empty() || !v.picture_metadata.is_empty() || !i.wallpaper.is_empty() || crate::artwork::picture_names(i).next().is_some()))
 }
 
 /// The mode a part showing `view` ([`crate::plugin::Part::view`]) is in,
@@ -348,9 +365,10 @@ pub fn deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
     let mut h = DefaultHasher::new();
     (room(ui, slot).round() as i64, room_height(ui, slot).round() as i64, cx.settings.view_scale.to_bits()).hash(&mut h);
     shows(cx, slot).hash(&mut h);
+    super::native_ui::revision(cx, slot).hash(&mut h);
     v.live_revisions.hash(&mut h);
     for edit in v.edited_values() { edit.hash(&mut h); }
-    (Arc::as_ptr(&v.pictures) as usize, v.wallpaper.as_ref().map(|w| Arc::as_ptr(w) as usize)).hash(&mut h);
+    (Arc::as_ptr(&v.pictures) as usize, Arc::as_ptr(&v.picture_metadata) as usize, v.native_ui.as_ref().map(|p| Arc::as_ptr(p) as usize), v.wallpaper.as_ref().map(|w| Arc::as_ptr(w) as usize)).hash(&mut h);
     if let Some(i) = &v.interface {
         (Arc::as_ptr(i) as usize, i.width, i.height, i.wallpaper_state, i.skin_offset).hash(&mut h);
         // Published interfaces are immutable; source revisions and pending
@@ -364,53 +382,6 @@ pub fn deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
     }
     cx.state.typing.as_ref().filter(|(p, ..)| *p == slot).hash(&mut h);
     h.finish()
-}
-
-/// Ask once for pictures the script names that were not read when the
-/// part loaded (a page the script switched to), read off the frame.
-fn fetch(cx: &mut Cx, slot: usize, interface: &Interface) {
-    let v = &cx.view.parts[slot];
-    let Some(path) = v.instrument.as_ref().map(|i| i.path.clone()) else { return };
-    let names: Vec<String> = crate::artwork::picture_names(interface)
-        .filter(|name| !v.pictures.contains_key(name.as_ref()))
-        .filter(|name| cx.state.perf_asked.insert((path.clone(), name.to_string())))
-        .map(std::borrow::Cow::into_owned)
-        .collect();
-    if names.is_empty() {
-        return;
-    }
-    let p = cx.p.clone();
-    let program = v.program;
-    let Some(shared) = p.shared.part(slot) else { return };
-    let generation = shared.generation.load(std::sync::atomic::Ordering::Acquire);
-    let _ = std::thread::Builder::new().name("kontakto-pictures".into()).spawn(move || {
-        let mut trace = crate::diagnostics::LoadTrace::new(&path, program, Some(slot));
-        trace.detail("operation", "control_pictures");
-        trace.stage("artwork");
-        let (found, errors) = crate::artwork::pictures_report(&path, names.iter().map(String::as_str));
-        for e in &errors { trace.issue("artwork", crate::diagnostics::code(e), e); }
-        trace.detail("pictures_loaded", found.len());
-        let report = trace.finish("loaded");
-        let mut view = p.shared.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let v = &mut view.parts[slot];
-        if v.instrument.as_ref().is_some_and(|i| i.path == path) && v.program == program
-            && shared.generation.load(std::sync::atomic::Ordering::Acquire) == generation
-        {
-            if !found.is_empty() {
-                let mut all = (*v.pictures).clone();
-                all.extend(found);
-                v.pictures = Arc::new(all);
-            }
-            if !errors.is_empty() && let Some(load) = &mut v.load_report {
-                let load = Arc::make_mut(load);
-                if load["status"] == "loaded" { load["status"] = "partial".into(); }
-                for issue in report["issues"].as_array().into_iter().flatten() {
-                    let issues = load["issues"].as_array_mut().unwrap();
-                    if !issues.contains(issue) { issues.push(issue.clone()); }
-                }
-            }
-        }
-    });
 }
 
 /// A published row's stamps cover its properties, menu and dense value. The
@@ -442,12 +413,15 @@ fn control_deps(cx: &Cx, slot: usize, interface: &Arc<Interface>, shown: &Shown,
 /// same controls in the same places in KONTRA's own look.
 pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     let vector = shows(cx, slot) == ViewMode::Vectorized;
+    if cx.view.parts[slot].interface.as_ref().is_some_and(|i| !i.native_ui.is_empty()) {
+        return super::native_ui::view(ui, cx, slot, Size::new(room(ui, slot), room_height(ui, slot)), vector);
+    }
     let v = &cx.view.parts[slot];
     let (Some(interface), pictures, wallpaper) = (v.interface.clone(), v.pictures.clone(), v.wallpaper.as_ref().and_then(|p| { let i = v.interface.as_ref()?; p.wallpaper(i.wallpaper_state, i.skin_offset) })) else {
         return block(0, 0);
     };
     let frame_width = v.wallpaper.as_ref().and_then(|p| p.atlas.map(|a| a[0]));
-    fetch(cx, slot, &interface);
+    let metadata = v.picture_metadata.clone();
     let (w, h) = (f64::from(interface.width), f64::from(interface.height));
     let s = scale_to_fit(Size::new(room(ui, slot), room_height(ui, slot)), Size::new(w,h), cx.settings.view_scale);
     // Control placement lands on whole device pixels. Wallpaper windows retain
@@ -470,7 +444,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     }
     // In the original's order either way: what covered a control there
     // covers it here.
-    let drawn: Vec<(Shown, Option<Arc<Image>>)> = layout(&interface, &pictures)
+    let drawn: Vec<(Shown, Option<Arc<Image>>)> = layout_with_metadata(&interface, &pictures, &metadata)
         .into_iter()
         .map(|shown| {
             let c = &interface.controls[shown.control];
@@ -480,6 +454,33 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         .collect();
     let part = &cx.view.parts[slot];
     let plans = if vector { super::vector::plan(&interface, &pictures, &drawn, &mut cx.state.vector_assets, |n| part.control_value(n)) } else { Vec::new() };
+    let mut demand = crate::plugin::VisualDemand { wallpaper: !interface.wallpaper.is_empty(), ..Default::default() };
+    // Probe geometry before clipping: an unloaded tall image can intersect the
+    // view even when the default control rectangle would lie outside it.
+    demand.metadata.extend(interface.controls.iter().enumerate()
+        .filter(|(n, c)| c.kind != "ui_panel" && !placed(&interface, *n).2)
+        .map(|(_, c)| prop(c, "$CONTROL_PAR_PICTURE"))
+        .filter(|name| !name.is_empty()).map(str::to_owned));
+    for (n, (shown, _)) in drawn.iter().enumerate() {
+        let c = &interface.controls[shown.control];
+        let replaced = vector && (super::vector::native_control(shown, c)
+            || shown.kind == Kind::Label && plans[n].face == VFace::Clear);
+        let name = prop(c, "$CONTROL_PAR_PICTURE");
+        if !name.is_empty() {
+            if !replaced { demand.pictures.push(name.to_owned()); }
+        }
+        if !replaced {
+            // Retain every font state of this visible control, including hover
+            // and pressed states, without fetching unused script-page fonts.
+            for on in [false, true] { for pressed in [false, true] { for hovered in [false, true] {
+                if let Some(id) = font_id(c, on, pressed, hovered).filter(|&id| id >= 26)
+                    && let Some(name) = interface.fonts.get((id - 26) as usize) {
+                    demand.pictures.push(crate::artwork::font_key(name));
+                }
+            } } }
+        }
+    }
+    cx.p.request_visual_assets(slot, demand);
     let resources = if vector { 0 } else {
         // Shared resource dependencies once, rather than scanning each control's
         // properties or invalidating every row on an unrelated publication.
@@ -1669,7 +1670,7 @@ mod tests {
     fn text_ink_reads_what_lies_under_it() {
         let white = Arc::new(Image::rgba(2, 2, vec![255u8; 16]).unwrap());
         let clear = Arc::new(Image::rgba(2, 2, vec![0u8; 16]).unwrap());
-        let at = |x, y, w, h| Shown { control: 0, kind: Kind::Label, x, y, w, h, z: 0, picture: None };
+        let at = |x, y, w, h| Shown { control: 0, kind: Kind::Label, x, y, w, h, z: 0, picture: None, picture_metadata: None };
         let wallpaper = Image::rgba(1, 100, [0u8, 0, 0, 255].repeat(100)).unwrap();
         let below = vec![(at(0., 0., 10., 10.), Some(white.clone())), (at(0., 0., 5., 5.), Some(clear))];
         assert_eq!(luma_under(&below, Some((&wallpaper, [0; 2])), 2., 2.), Some(1.), "a clear picture shows the one under it");
