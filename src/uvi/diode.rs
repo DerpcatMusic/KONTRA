@@ -5,7 +5,17 @@
 use super::dsp::{Frame, MAX_CHANNELS};
 use anyhow::{Result, ensure};
 
-pub const FIDELITY_DIAGNOSTIC: &str = "DiodeClipper circuit and fixed DC blocker before OutputGain, limited to six measured rates and direct physical controls. 432 circuit, 24 asymmetric stress, 624 DC/pre-gain and 576 pre-gain lifecycle authored comparisons are float32-identical, with unchanged native math and passive capture before gain. OutputGain, hosted controls, full callback, voice lifecycle and whole-program audio remain unverified; Program playback does not admit this leaf";
+pub const FIDELITY_DIAGNOSTIC: &str = "DiodeClipper circuit and fixed DC blocker before OutputGain, limited to six measured rates and direct physical controls. 432 circuit, 24 asymmetric stress, 624 DC/pre-gain and 576 pre-gain lifecycle authored comparisons are float32-identical, with unchanged native math and passive capture before gain. OutputGain magnitude conversion matches 513 native cases; its multiplication, complete native reset, hosted controls, full callback, voice lifecycle and whole-program audio remain unverified; Program playback does not admit this leaf";
+
+/// Measured magnitude passed into native OutputGain dispatch. This conversion
+/// does not apply gain to audio or establish the unavailable native multiply.
+pub fn output_gain_multiplier(gain_db: f64) -> Result<f32> {
+    ensure!(
+        gain_db.is_finite() && (-40.0..=10.0).contains(&gain_db),
+        "Invalid DiodeClipper OutputGain"
+    );
+    Ok(10f64.powf(f64::from(gain_db as f32) * 0.05) as f32)
+}
 
 #[derive(Clone, Copy, Default)]
 struct State {
@@ -260,6 +270,23 @@ impl DiodePreGain {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn authored_native_output_gain_conversion_only() {
+        for (value, bits) in [
+            (-40., 1008981770),
+            (-3., 1060453359),
+            (0., 1065353216),
+            (10., 1078616770),
+            (3.14159, 1069008571),
+            (-17.54321, 1040703487),
+        ] {
+            assert_eq!(output_gain_multiplier(value).unwrap().to_bits(), bits);
+        }
+        for value in [f64::NAN, f64::INFINITY, -40.1, 10.1] {
+            assert!(output_gain_multiplier(value).is_err());
+        }
+    }
+
     #[test]
     fn authored_native_impulse_and_retained_state() {
         let mut circuit = DiodeCircuit::new(2, 48_000.).unwrap();

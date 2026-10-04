@@ -71,11 +71,38 @@ Three focused Rust tests retain authored native impulse, asymmetric stiff
 transition, stereo partial-buffer, bypass, reset, channel independence and
 unsupported-control fixtures.
 
+The independent `output_gain_multiplier` helper prepares a magnitude only.
+Native setter `0x1412578d0` writes the float32 physical gain field; getter
+`0x1412578e0` returns it unchanged. The processor widens that field, multiplies
+by 0.05, computes native double pow(10, value), and rounds its result to float32
+before the multiplication dispatch. Native, independently authored conversion
+and actual compiled Rust match in 513 cases spanning endpoints -40/10, the
+owned -3 value, a uniform grid and original seeded values. This helper does
+not apply a multiplier to PCM.
+
+Another 504 boundary probes invoke the original audio callback with six rates,
+1/2/6/12 channels, seven retained-state gain edits and counts 0/1/17. Gain edits
+change only their physical field and leave pre-gain output identical to a
+parallel native instance with unchanged gain. The caller's channel-pointer
+array stays intact, guards around every authored audio buffer remain unchanged,
+and the first native gain entry receives channel zero's existing in-place
+buffer and the exact frame count. Zero-frame calls preserve all measured
+circuit/DC history before that entry. The callback's completion flag has not
+yet been cleared at this passive stop; callback completion is not claimed.
+
+Twenty-four native clear-boundary probes show original function `0x141258410`
+clearing all three circuit doubles per channel while retaining direct physical
+controls, then reaching the genuine DC zero-fill entry `0x141686880` with the
+correct state pointer and channel count. That IPP zero-fill implementation,
+like multiplication, is unavailable. The fixture stops without replacing it;
+complete native DC clearing and sample-rate reset remain unverified. Rust
+helper reset tests do not waive this native lifecycle boundary.
+
 OutputGain calls native SIMD dispatch `0x141686ae0` through runtime slot
 `0x14259f060`; its implementation is unavailable in the unchanged loaded-text
 snapshot. No replacement multiply or approximated arithmetic hook is used.
-Consequently OutputGain, the complete callback, hosted property smoothing,
-voice clone/cache behavior and whole-program audio remain unverified. This
+Consequently OutputGain multiplication, the complete callback/reset, hosted
+property smoothing, voice clone/cache behavior and whole-program audio remain unverified. This
 leaf exposes the measured circuit/DC helper boundary only. Program admission
 remains blocked and its fidelity diagnostic retains these limitations.
 
