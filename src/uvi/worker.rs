@@ -472,7 +472,8 @@ struct Details {
     lua_failure: Option<Arc<super::lua_failure::Context>>,
     phase: &'static str,
     phase_frame: u64,
-    program_report: Option<serde_json::Value>,
+    program_report: Option<Arc<serde_json::Value>>,
+    mapping: Option<Arc<super::mapping::Inspection>>,
     load_report: Option<Arc<serde_json::Value>>,
     diagnostics: Vec<&'static str>,
     ui_processors: Vec<NodeId>,
@@ -819,6 +820,7 @@ impl Worker {
         let count = |key: &str| counts.and_then(|counts| counts[key].as_u64())
             .and_then(|n| usize::try_from(n).ok());
         let snapshot = Arc::new(WorkerLoadActivity {
+            mapping: details.mapping.clone(),
             status, phase: details.phase, frame: details.phase_frame,
             elapsed: timing.finished.map_or_else(|| timing.started.elapsed(), |(elapsed, _)| elapsed),
             stages, nodes: count("nodes"), static_rejected_nodes: count("static_rejected_nodes"), sample_zones: count("sample_zones"),
@@ -842,7 +844,7 @@ impl Worker {
         serde_json::json!({
             "status":self.status(), "phase":details.phase, "frame":details.phase_frame,
             "epoch":self.shared.stamp.epoch, "generation":self.shared.stamp.generation,
-            "program":details.program_report, "stats":self.stats(),
+            "program":details.program_report.as_deref(), "stats":self.stats(),
             "initialization":details.initialization.report(),
             "failure":details.failure, "lua_failure":details.lua_failure.as_ref().map(|context|context.metadata()), "load_trace":details.load_report.as_deref(),
             "runtime_evidence":"worker_lifecycle_completed_packets_and_optional_requested_node_snapshot",
@@ -1621,13 +1623,15 @@ fn run(
     let loaded = library.program(&config.member, &config.program_namespace)?;
     initialization_stage(shared, trace, "uvi_graph_diagnosis_and_preflight");
     let preflight = super::playback::ProgramPreflight::new(&loaded.program);
-    let report = serde_json::to_value(super::diagnostics::report_preflighted(&preflight))?;
-    trace.detail("native_program_graph", report.clone());
-    shared
-        .details
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .program_report = Some(report);
+    let report = Arc::new(serde_json::to_value(super::diagnostics::report_preflighted(&preflight))?);
+    trace.detail("native_program_graph", report.as_ref().clone());
+    {
+        let mapping = Arc::new(super::mapping::Inspection::parsed(shared.stamp, &loaded.program, report.clone()));
+        let mut details = shared.details.lock().unwrap_or_else(|p| p.into_inner());
+        details.program_report = Some(report);
+        details.mapping = Some(mapping);
+        details.activity_cache = None;
+    }
     initialization_stage(shared, trace, "uvi_preflight");
     preflight.validate()?;
     if shared.stop.load(Ordering::Acquire) {
@@ -1647,6 +1651,11 @@ fn run(
     };
     if shared.stop.load(Ordering::Acquire) {
         return Ok(());
+    }
+    {
+        let mut details = shared.details.lock().unwrap_or_else(|p| p.into_inner());
+        details.mapping = details.mapping.as_ref().map(|mapping| Arc::new(mapping.decoded(&samples)));
+        details.activity_cache = None;
     }
     let resources = BankResources::new(library.clone(), &loaded.path, samples)?;
     let activation = shared
@@ -2077,7 +2086,7 @@ pub(crate) mod tests {
         {
             let mut details = worker.shared.details.lock().unwrap();
             details.phase = "resources";
-            details.program_report = Some(serde_json::json!({"counts":{"nodes":3,"static_rejected_nodes":1}}));
+            details.program_report = Some(Arc::new(serde_json::json!({"counts":{"nodes":3,"static_rejected_nodes":1}})));
             details.initialization.stage("resources");
             details.resource_activity = ResourceActivity { total: Some(4), loaded: 2,
                 unique_decodes: 1, bytes: 4096, current: Some("Samples/test.wav".into()) };
