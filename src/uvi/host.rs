@@ -303,6 +303,7 @@ pub struct UiStyle {
     pub show_popup_display: Option<bool>,
     pub unit: Option<f64>,
     pub mapper: Option<f64>,
+    pub hierarchical: Option<bool>,
     pub background_image: Option<UiArtwork>,
     pub image: Option<UiArtwork>,
     pub normal_image: Option<UiArtwork>,
@@ -579,6 +580,7 @@ pub fn snapshot_ui(processor: NodeId, environment: &Table) -> mlua::Result<UiSna
             show_popup_display: ui_optional_bool(&state, "showPopupDisplay")?,
             unit: ui_number(&state, "unit")?,
             mapper: ui_number(&state, "mapper")?,
+            hierarchical: ui_optional_bool(&state, "hierarchical")?,
             background_image: budget.artwork(&state, "backgroundImage")?,
             image: budget.artwork(&state, "image")?,
             normal_image: budget.artwork(&state, "normalImage")?,
@@ -2572,7 +2574,7 @@ mod tests {
           n.displayText='Authored display override'
           n.tooltip='Authored help'
           n:setStripImage('/Textures/authored-strip.png',16,false)
-          menu=Menu{name='choices',items={'First','Second'},selected=2}
+          menu=Menu{name='choices',items={'First','Second'},selected=2};menu.hierarchical=true
           curve=Table{'curve',3,0,0,1};curve:setValue(2,0.5,false)
           setmetatable(n._state,{__index=function()calls=calls+1;error('getter executed')end})
           setmetatable(UVI_UI_STATE.root,{__index=function()calls=calls+1;error('root getter executed')end})
@@ -2598,6 +2600,7 @@ mod tests {
         assert!(knob.effective_alpha == 0.25 && knob.has_changed_callback);
         assert!(matches!(knob.value,Some(UiValue::Number(n)) if n==0.25));
         assert!(first.widgets[2].items == ["First", "Second"]);
+        assert_eq!(first.widgets[2].style.hierarchical, Some(true));
         assert!(matches!(&first.widgets[3].value,Some(UiValue::Table(v)) if v==&[0.0,0.5,0.0]));
         assert_eq!(knob.style.display_text.as_deref(), Some("Authored display override"));
         assert_eq!(knob.style.tooltip.as_deref(), Some("Authored help"));
@@ -2608,12 +2611,14 @@ mod tests {
         assert!(a.raw_get::<u32>("calls").unwrap() == 0);
         assert!(other.widgets[0].effective_visible);
         assert_eq!(other.widgets[0].style.tooltip.as_deref(), Some("same"));
-        lua.load("p.visible=true;n:setValue(0.75);n.tooltip='Updated help'")
+        lua.load("p.visible=true;n:setValue(0.75);n.tooltip='Updated help';menu.hierarchical=false")
             .set_environment(a.clone())
             .exec()
             .unwrap();
         let updated = snapshot_ui(7, &a).unwrap();
         assert!(updated.widgets[1].effective_visible);
+        assert_eq!(updated.widgets[2].style.hierarchical, Some(false));
+        assert_eq!(first.widgets[2].style.hierarchical, Some(true));
         assert_eq!(updated.widgets[1].style.tooltip.as_deref(), Some("Updated help"));
         assert_eq!(first.widgets[1].style.tooltip.as_deref(), Some("Authored help"));
         assert!(matches!(updated.widgets[1].value,Some(UiValue::Number(n)) if n==0.75));
@@ -2754,6 +2759,7 @@ mod tests {
             ("p=Panel(string.rep('x',4097))", "text limit"),
             ("p=Knob('p');p.displayText=string.rep('x',4097)", "text limit"),
             ("p=Knob('p');p.tooltip=string.rep('x',4097)", "text limit"),
+            ("p=Menu('p');p.hierarchical='yes'", "Boolean"),
             (
                 "p=Menu('p',{});for i=1,300 do p._state.items[i]=string.rep('x',4096)end",
                 "text limit",
