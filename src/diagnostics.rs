@@ -1732,7 +1732,7 @@ impl LoadTrace {
                 "last_error":self.report["last_error"],
             }),
         );
-        Arc::new(self.report.clone())
+        Arc::new(std::mem::take(&mut self.report))
     }
 }
 impl Drop for LoadTrace {
@@ -1924,7 +1924,9 @@ mod tests {
         trace.detail("applied_instrument", json!({"name":"Authored inventory", "dependencies":dependencies}));
         let excerpt = json!({"script_slot":1,"line":3,"text":"3 | authored_array[700] := 1"});
         trace.issue_details("scripts", "warning", "Authored warning stays separate from the inventory".into(), json!({"source_excerpt":excerpt}));
+        let inventory_storage = trace.report["details"]["applied_instrument"]["dependencies"].as_array().unwrap().as_ptr();
         let report = trace.finish("loaded");
+        assert_eq!(report["details"]["applied_instrument"]["dependencies"].as_array().unwrap().as_ptr(), inventory_storage, "finishing transfers the complete inventory without copying it");
         assert_eq!(report["details"]["applied_instrument"]["dependencies"], json!(dependencies), "local report retains the complete original inventory");
         let (reply, done) = mpsc::channel();
         lock(&session.sender).as_ref().unwrap().send(Command::Flush(reply)).unwrap();
