@@ -223,6 +223,12 @@ gain. Phase cancellation retains real errors and does not interrupt an already
 executing Lua callback or renderer preparation unit. Full Falcon compatibility,
 native end-to-end audio/UI fidelity and sustainable live deadlines remain unfinished.
 
+Subsequent source through `4c62461` adds [static shared CompExp admission](UVI_COMPEXP_STATIC_EVIDENCE.md),
+the unadmitted [Brickwall cascade](UVI_BRICKWALL_CASCADE_EVIDENCE.md), and typed
+instruction-budget source context. These changes are not installed in `817b03a`.
+Actual Session recovery preserves separate failure locations across a failed
+save and a later callback; metadata excludes commercial source excerpts.
+
 At historical installed checkpoint `75998c3`, the combined `uvi,standalone` optimized CI test run passed 977 library checks,
 89 CLI/playback checks and four additional binary/integration checks. Thirty-five
 external-fixture checks were ignored and one screenshot check was excluded.
