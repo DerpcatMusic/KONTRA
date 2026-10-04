@@ -105,6 +105,14 @@ The [initial owned PCM cache](UVI_STATIC_PCM_CACHE_EVIDENCE.md) is experimental 
 disabled by default. Completed earlier-candidate sample and timing evidence does
 not verify the final combined Worker/UI integration. Browser catalog caching
 remains separate and already exists in the installed checkpoint.
+Later cache source binds the exact selected header/member read snapshot as well
+as bank bytes and program identity. A stale offset/size snapshot can no longer
+reuse PCM from a different read contract. This provenance correction has
+independent static review; its authored WAV/fallback fixture remains unrun, and
+existing pathname race limits remain explicit. Optional cache planning now
+observes the owner's borrowed stop flag before every alias and preserves typed
+cancellation without decoding fallback. Its prepared checks are unrun; individual
+path collection/resolution/digest operations remain noninterruptible.
 
 The [dual-Lua C ABI playback proof](PLAYER_ABI_PLAYBACK_EVIDENCE.md) delivered
 audio and root completions in a private authored fixture. The production neutral
@@ -166,6 +174,11 @@ publishes an exited worker's status and original failure before potentially
 blocking terminal journal calls. This source-order bug is independently reviewed;
 it is not measured attribution of the user's failure. Compilation and real-journal
 backpressure/playback verification remain pending.
+Control-thread diagnostic reports now retain immutable graph/report/context
+owners under the Details mutex and serialize large values after releasing it.
+Failure String copies also occur outside that guard. The source and unchanged
+report schema have independent review; no runtime contention or speed comparison
+was performed.
 Separate native browser metadata in `TagLibrary.ufs` is now a documented cover
 discovery lead. It is absent from the checked locations and current catalog;
 the bank/product-to-image join remains unimplemented.

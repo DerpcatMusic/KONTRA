@@ -39,7 +39,12 @@ authored tiny WAV fixture checks a genuine original decode and cache hit before
 changing only a snapshot offset, then compares fallback PCM and original error
 chains. It includes a duplicate-ID decoy and physical-size rejection. These
 prepared assertions are not completed evidence. Cache planning still has no
-owner-stop checks between its bounded alias iterations; that cancellation gap
-is separate from provenance binding.
+runtime cancellation evidence. Later source observes the existing borrowed
+owner-stop flag at plan entry and before every alias, including duplicates;
+typed cancellation follows the existing stop path without original decoding.
+Prepared pre-stopped valid/invalid alias cases and unchanged genuine-error
+precedence assertions are unrun. Collecting initial paths and a single
+resolver/digest operation remain noninterruptible; no immediate-stop or
+mid-iteration latency guarantee follows.
 
 The installed `bb60218` checkpoint is unchanged and does not include this cache. Do not enable it by default or claim complete loading parity from the receipts above.
