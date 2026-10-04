@@ -6,11 +6,27 @@ use super::{
     script::{self, Session},
 };
 use anyhow::{Context, Result, ensure};
-use std::{collections::BTreeMap, sync::atomic::AtomicBool};
+use std::{collections::BTreeMap, sync::atomic::AtomicBool, time::Instant};
 
 pub use super::script::HostedInput;
 
 pub const MAX_UI_EDITS: usize = 64;
+
+/// Wall time in the latest render attempt, including a failed partial attempt.
+/// Session covers input/UI callbacks, drain/GC and hosted completion processing.
+/// Renderer covers resource installation and command/control/DSP/audio rendering.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct PacketActivity {
+    pub session_ns: u64,
+    pub renderer_ns: u64,
+    pub resource_alias_count: usize,
+    pub resource_resident_pcm_bytes: usize,
+    pub resource_revision: u64,
+}
+
+fn elapsed_ns(started: Instant) -> u64 {
+    started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
+}
 
 /// Owned, fixed-size widget edit on the same absolute clock as MIDI inputs.
 #[derive(Clone, Copy)]
@@ -97,6 +113,7 @@ pub struct Player<'a> {
     frame: u64,
     failed: bool,
     hosted: bool,
+    packet_activity: PacketActivity,
 }
 
 impl<'a> Player<'a> {
@@ -289,6 +306,7 @@ impl<'a> Player<'a> {
             frame: 0,
             failed: false,
             hosted,
+            packet_activity: PacketActivity::default(),
         })
     }
     pub fn acknowledge_host_completions(&mut self, roots: &[script::HostRoot]) -> Result<()> {
@@ -429,6 +447,7 @@ impl<'a> Player<'a> {
         hosted: &[HostedInput],
         frames: usize,
     ) -> Result<Rendered> {
+        self.packet_activity = PacketActivity::default();
         ensure!(
             !self.failed,
             "UVI player must be replaced after an execution or render failure"
@@ -489,74 +508,85 @@ impl<'a> Player<'a> {
             self.session.validate_hosted_inputs(hosted)?;
         }
         let result = (|| {
-            let mut rejected_ui = 0u64;
-            let processed = if ui_inputs.is_empty() && hosted.is_empty() {
-                self.session.process(inputs, end - 1)?
-            } else {
-                let (mut midi, mut ui, mut hosted_index) = (0, 0, 0);
-                while midi < inputs.len() || ui < ui_inputs.len() || hosted_index < hosted.len() {
-                    if ui < ui_inputs.len()
-                        && (midi == inputs.len() || ui_inputs[ui].frame <= inputs[midi].frame)
-                        && (hosted_index == hosted.len()
-                            || ui_inputs[ui].frame <= hosted[hosted_index].frame())
-                    {
-                        let input = &ui_inputs[ui];
-                        match self.session.edit_ui(&input.edit, input.frame) {
-                            Ok(()) => {}
-                            Err(script::UiEditError::Rejected(_)) => rejected_ui |= 1u64 << ui,
-                            Err(error @ script::UiEditError::Execution(_)) => {
-                                return Err(error.into());
+            let started = Instant::now();
+            let processed_result: Result<_> = (|| {
+                let mut rejected_ui = 0u64;
+                let processed = if ui_inputs.is_empty() && hosted.is_empty() {
+                    self.session.process(inputs, end - 1)?
+                } else {
+                    let (mut midi, mut ui, mut hosted_index) = (0, 0, 0);
+                    while midi < inputs.len() || ui < ui_inputs.len() || hosted_index < hosted.len() {
+                        if ui < ui_inputs.len()
+                            && (midi == inputs.len() || ui_inputs[ui].frame <= inputs[midi].frame)
+                            && (hosted_index == hosted.len()
+                                || ui_inputs[ui].frame <= hosted[hosted_index].frame())
+                        {
+                            let input = &ui_inputs[ui];
+                            match self.session.edit_ui(&input.edit, input.frame) {
+                                Ok(()) => {}
+                                Err(script::UiEditError::Rejected(_)) => rejected_ui |= 1u64 << ui,
+                                Err(error @ script::UiEditError::Execution(_)) => {
+                                    return Err(error.into());
+                                }
                             }
+                            ui += 1;
+                        } else if hosted_index < hosted.len()
+                            && (midi == inputs.len()
+                                || hosted[hosted_index].frame() <= inputs[midi].frame)
+                        {
+                            match hosted[hosted_index] {
+                                HostedInput::On { root, input } => {
+                                    self.session.host_note_on(root, input)?
+                                }
+                                HostedInput::Off { root, frame } => {
+                                    self.session.host_note_off(root, frame)?
+                                }
+                                HostedInput::Choke { root, frame } => {
+                                    self.session.host_note_choke(root, frame)?
+                                }
+                                HostedInput::Event(input) => self.session.input(input)?,
+                            }
+                            hosted_index += 1;
+                        } else {
+                            self.session.input(inputs[midi])?;
+                            midi += 1;
                         }
-                        ui += 1;
-                    } else if hosted_index < hosted.len()
-                        && (midi == inputs.len()
-                            || hosted[hosted_index].frame() <= inputs[midi].frame)
-                    {
-                        match hosted[hosted_index] {
-                            HostedInput::On { root, input } => {
-                                self.session.host_note_on(root, input)?
-                            }
-                            HostedInput::Off { root, frame } => {
-                                self.session.host_note_off(root, frame)?
-                            }
-                            HostedInput::Choke { root, frame } => {
-                                self.session.host_note_choke(root, frame)?
-                            }
-                            HostedInput::Event(input) => self.session.input(input)?,
-                        }
-                        hosted_index += 1;
-                    } else {
-                        self.session.input(inputs[midi])?;
-                        midi += 1;
                     }
-                }
-                self.session.advance(end - 1)?;
-                self.session.drain()?
-            };
-            if self.resources.revision() != self.resource_revision {
-                self.renderer
-                    .install_prepared_samples(self.resources.samples())?;
-                self.resource_revision = self.resources.revision();
-            }
-            let (audio, host_completions) = if self.hosted {
-                let audio = self.renderer.render_with_roots(
-                    &processed.commands,
-                    &processed.command_roots,
-                    &processed.host_commands,
-                    frames,
-                )?;
-                let host_completions = self
-                    .session
-                    .complete_host_roots(end, &self.renderer.sounding_roots())?;
-                (audio, host_completions)
-            } else {
-                (
+                    self.session.advance(end - 1)?;
+                    self.session.drain()?
+                };
+                Ok((processed, rejected_ui))
+            })();
+            self.packet_activity.session_ns = elapsed_ns(started);
+            let (processed, rejected_ui) = processed_result?;
+            let started = Instant::now();
+            let audio_result: Result<_> = (|| {
+                if self.resources.revision() != self.resource_revision {
                     self.renderer
-                        .render(&processed.commands, &processed.host_commands, frames)?,
-                    Vec::new(),
-                )
-            };
+                        .install_prepared_samples(self.resources.samples())?;
+                    self.resource_revision = self.resources.revision();
+                }
+                if self.hosted {
+                    self.renderer.render_with_roots(
+                        &processed.commands,
+                        &processed.command_roots,
+                        &processed.host_commands,
+                        frames,
+                    )
+                } else {
+                    self.renderer.render(&processed.commands, &processed.host_commands, frames)
+                }
+            })();
+            self.packet_activity.renderer_ns = elapsed_ns(started);
+            let audio = audio_result?;
+            let host_completions = if self.hosted {
+                let started = Instant::now();
+                let completions = self.session
+                    .complete_host_roots(end, &self.renderer.sounding_roots());
+                self.packet_activity.session_ns = self.packet_activity.session_ns
+                    .saturating_add(elapsed_ns(started));
+                completions?
+            } else { Vec::new() };
             self.frame = end;
             Ok(Rendered {
                 audio,
@@ -574,5 +604,21 @@ impl<'a> Player<'a> {
             self.failed = true;
         }
         result
+    }
+
+    /// Worker-only fixed snapshots; neither getter executes Lua or scans voices.
+    pub(crate) fn packet_activity(&self) -> PacketActivity {
+        let (resource_alias_count, resource_resident_pcm_bytes, resource_revision) =
+            self.resources.activity();
+        PacketActivity {
+            resource_alias_count,
+            resource_resident_pcm_bytes,
+            resource_revision,
+            ..self.packet_activity
+        }
+    }
+
+    pub(crate) fn script_activity(&self) -> script::ScriptActivity {
+        self.session.script_activity()
     }
 }

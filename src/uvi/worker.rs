@@ -8,7 +8,7 @@ use super::{
     library::{BankResources, Library},
     player::{self, Player},
     program::NodeId,
-    script::{HostCompletion, HostRoot, HostedInput, Input, InputKind},
+    script::{HostCompletion, HostRoot, HostedInput, Input, InputKind, ScriptActivity},
 };
 use anyhow::{Context, Result, ensure};
 use crossbeam_queue::ArrayQueue;
@@ -368,8 +368,38 @@ pub struct Stats {
     /// Player.render only: excludes initialization and queue waiting.
     pub render_ns: u64,
     pub max_render_ns: u64,
+    /// Linux worker-thread CPU time during Player rendering, excluding waiting
+    /// and service snapshots. Zero samples means unavailable, not zero CPU use.
+    pub render_cpu_ns: u64,
+    pub max_render_cpu_ns: u64,
+    pub render_cpu_samples: u64,
     /// Render calls exceeding 256/sample_rate seconds, not arrival deadlines.
     pub render_deadline_misses: u64,
+    /// Wall-time phase totals/maxima, including failed partial render attempts.
+    /// Session includes callbacks/drain/GC and hosted completion processing.
+    /// Renderer includes prepared-resource installation and audio rendering.
+    /// These are not CPU time, queue waiting or callback-wide deadline measures.
+    pub session_ns: u64,
+    pub max_session_ns: u64,
+    pub renderer_ns: u64,
+    pub max_renderer_ns: u64,
+    /// Player calls reaching observation publication, including failed attempts.
+    /// Wire/stamp validation failures before Player invocation are excluded.
+    pub render_attempts: u64,
+    /// Latest attempt's owned alias count, resident PCM bytes and revision.
+    /// Distinct aliases may share PCM; bytes exclude Lua/DSP/UI allocations.
+    pub resource_alias_count: u64,
+    pub resource_resident_pcm_bytes: u64,
+    pub resource_revision: u64,
+    /// Latest render-attempt script snapshot, retained after stop/failure.
+    /// Emission totals are not audible starts or renderer voice counts.
+    pub script_activity: ScriptActivity,
+    /// Acquired pending UI requests, including unavailable/stale replies.
+    /// Timing includes snapshot, publication and displaced-reply destruction;
+    /// excludes request acquisition, assets, frame UI and other service work.
+    pub ui_snapshot_calls: u64,
+    pub ui_snapshot_ns: u64,
+    pub max_ui_snapshot_ns: u64,
     pub cancelled_requests: u64,
     pub cancelled_outputs: u64,
     /// Durable shared-queue and controller-held inline records discarded on
@@ -393,7 +423,33 @@ struct Counters {
     initialization_ns: AtomicU64,
     render_ns: AtomicU64,
     max_render_ns: AtomicU64,
+    render_cpu_ns: AtomicU64,
+    max_render_cpu_ns: AtomicU64,
+    render_cpu_samples: AtomicU64,
     render_deadline_misses: AtomicU64,
+    session_ns: AtomicU64,
+    max_session_ns: AtomicU64,
+    renderer_ns: AtomicU64,
+    max_renderer_ns: AtomicU64,
+    render_attempts: AtomicU64,
+    resource_alias_count: AtomicU64,
+    resource_resident_pcm_bytes: AtomicU64,
+    resource_revision: AtomicU64,
+    script_emitted_starts: AtomicU64,
+    script_emitted_releases: AtomicU64,
+    script_emitted_kill_fades: AtomicU64,
+    script_retired_voice_metadata: AtomicU64,
+    script_retained_voice_metadata: AtomicU64,
+    script_suspended_tasks: AtomicU64,
+    script_gc_full_calls: AtomicU64,
+    script_gc_full_ns: AtomicU64,
+    script_gc_full_max_ns: AtomicU64,
+    script_gc_step_calls: AtomicU64,
+    script_gc_step_ns: AtomicU64,
+    script_gc_step_max_ns: AtomicU64,
+    ui_snapshot_calls: AtomicU64,
+    ui_snapshot_ns: AtomicU64,
+    max_ui_snapshot_ns: AtomicU64,
     cancelled_requests: AtomicU64,
     cancelled_outputs: AtomicU64,
     cancelled_completions: AtomicU64,
@@ -570,7 +626,35 @@ impl Shared {
             initialization_ns: c.initialization_ns.load(Ordering::Relaxed),
             render_ns: c.render_ns.load(Ordering::Relaxed),
             max_render_ns: c.max_render_ns.load(Ordering::Relaxed),
+            render_cpu_ns: c.render_cpu_ns.load(Ordering::Relaxed),
+            max_render_cpu_ns: c.max_render_cpu_ns.load(Ordering::Relaxed),
+            render_cpu_samples: c.render_cpu_samples.load(Ordering::Relaxed),
             render_deadline_misses: c.render_deadline_misses.load(Ordering::Relaxed),
+            session_ns: c.session_ns.load(Ordering::Relaxed),
+            max_session_ns: c.max_session_ns.load(Ordering::Relaxed),
+            renderer_ns: c.renderer_ns.load(Ordering::Relaxed),
+            max_renderer_ns: c.max_renderer_ns.load(Ordering::Relaxed),
+            render_attempts: c.render_attempts.load(Ordering::Relaxed),
+            resource_alias_count: c.resource_alias_count.load(Ordering::Relaxed),
+            resource_resident_pcm_bytes: c.resource_resident_pcm_bytes.load(Ordering::Relaxed),
+            resource_revision: c.resource_revision.load(Ordering::Relaxed),
+            script_activity: ScriptActivity {
+                emitted_starts: c.script_emitted_starts.load(Ordering::Relaxed),
+                emitted_releases: c.script_emitted_releases.load(Ordering::Relaxed),
+                emitted_kill_fades: c.script_emitted_kill_fades.load(Ordering::Relaxed),
+                retired_voice_metadata: c.script_retired_voice_metadata.load(Ordering::Relaxed),
+                retained_voice_metadata: c.script_retained_voice_metadata.load(Ordering::Relaxed) as usize,
+                suspended_tasks: c.script_suspended_tasks.load(Ordering::Relaxed) as usize,
+                gc_full_calls: c.script_gc_full_calls.load(Ordering::Relaxed),
+                gc_full_ns: c.script_gc_full_ns.load(Ordering::Relaxed),
+                gc_full_max_ns: c.script_gc_full_max_ns.load(Ordering::Relaxed),
+                gc_step_calls: c.script_gc_step_calls.load(Ordering::Relaxed),
+                gc_step_ns: c.script_gc_step_ns.load(Ordering::Relaxed),
+                gc_step_max_ns: c.script_gc_step_max_ns.load(Ordering::Relaxed),
+            },
+            ui_snapshot_calls: c.ui_snapshot_calls.load(Ordering::Relaxed),
+            ui_snapshot_ns: c.ui_snapshot_ns.load(Ordering::Relaxed),
+            max_ui_snapshot_ns: c.max_ui_snapshot_ns.load(Ordering::Relaxed),
             cancelled_requests: c.cancelled_requests.load(Ordering::Relaxed),
             cancelled_outputs: c.cancelled_outputs.load(Ordering::Relaxed),
             cancelled_completions: c.cancelled_completions.load(Ordering::Relaxed),
@@ -1100,12 +1184,20 @@ impl Worker {
         }
     }
 
+    /// Control thread only. Stop execution without joining or retiring the
+    /// extracted AudioPort. An in-flight read/render must return before exit.
+    pub fn request_stop(&self) {
+        self.shared.stop.store(true, Ordering::Release);
+        if let Some(handle) = &self.thread {
+            handle.thread().unpark();
+        }
+    }
+
     /// Control thread only. Cancels even a worker waiting on a full output queue.
     /// An in-flight disk read or render must still return before the join finishes.
     pub fn stop(&mut self) {
-        self.shared.stop.store(true, Ordering::Release);
+        self.request_stop();
         if let Some(handle) = self.thread.take() {
-            handle.thread().unpark();
             if handle.join().is_err() {
                 self.shared.counters.errors.fetch_add(1, Ordering::Relaxed);
                 self.shared
@@ -1366,6 +1458,7 @@ fn capture_ui(player: &Player<'_>, shared: &Shared) {
         .ui_request
         .take();
     let Some(request) = request else { return };
+    let started = Instant::now();
     let reply = UiSnapshotReply {
         request: request.id,
         stamp: Stamp {
@@ -1388,6 +1481,10 @@ fn capture_ui(player: &Player<'_>, shared: &Shared) {
     };
     drop(details);
     drop(previous);
+    let elapsed = nanos(started.elapsed());
+    shared.counters.ui_snapshot_calls.fetch_add(1, Ordering::Relaxed);
+    shared.counters.ui_snapshot_ns.fetch_add(elapsed, Ordering::Relaxed);
+    shared.counters.max_ui_snapshot_ns.fetch_max(elapsed, Ordering::Relaxed);
 }
 
 fn capture_state(player: &mut Player<'_>, shared: &Shared) -> Result<()> {
@@ -1815,6 +1912,47 @@ fn phase(shared: &Shared, name: &'static str, frame: u64) {
     details.phase_frame = frame;
 }
 
+/// Publish only POD observations; all are independent relaxed samples, not a
+/// transaction. No audio-side Player/Session access or lock is introduced.
+fn publish_packet_activity(shared: &Shared, phase: player::PacketActivity, script: ScriptActivity) {
+    let c = &shared.counters;
+    c.session_ns.fetch_add(phase.session_ns, Ordering::Relaxed);
+    c.max_session_ns.fetch_max(phase.session_ns, Ordering::Relaxed);
+    c.renderer_ns.fetch_add(phase.renderer_ns, Ordering::Relaxed);
+    c.max_renderer_ns.fetch_max(phase.renderer_ns, Ordering::Relaxed);
+    c.render_attempts.fetch_add(1, Ordering::Relaxed);
+    c.resource_alias_count.store(phase.resource_alias_count as u64, Ordering::Relaxed);
+    c.resource_resident_pcm_bytes.store(phase.resource_resident_pcm_bytes as u64, Ordering::Relaxed);
+    c.resource_revision.store(phase.resource_revision, Ordering::Relaxed);
+    c.script_emitted_starts.store(script.emitted_starts, Ordering::Relaxed);
+    c.script_emitted_releases.store(script.emitted_releases, Ordering::Relaxed);
+    c.script_emitted_kill_fades.store(script.emitted_kill_fades, Ordering::Relaxed);
+    c.script_retired_voice_metadata.store(script.retired_voice_metadata, Ordering::Relaxed);
+    c.script_retained_voice_metadata.store(script.retained_voice_metadata as u64, Ordering::Relaxed);
+    c.script_suspended_tasks.store(script.suspended_tasks as u64, Ordering::Relaxed);
+    c.script_gc_full_calls.store(script.gc_full_calls, Ordering::Relaxed);
+    c.script_gc_full_ns.store(script.gc_full_ns, Ordering::Relaxed);
+    c.script_gc_full_max_ns.store(script.gc_full_max_ns, Ordering::Relaxed);
+    c.script_gc_step_calls.store(script.gc_step_calls, Ordering::Relaxed);
+    c.script_gc_step_ns.store(script.gc_step_ns, Ordering::Relaxed);
+    c.script_gc_step_max_ns.store(script.gc_step_max_ns, Ordering::Relaxed);
+}
+
+#[cfg(target_os = "linux")]
+fn thread_cpu_ns() -> Option<u64> {
+    let mut clock = std::mem::MaybeUninit::<libc::timespec>::uninit();
+    // The kernel initializes the whole timespec only on success.
+    if unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, clock.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    let clock = unsafe { clock.assume_init() };
+    u64::try_from(clock.tv_sec).ok()?.checked_mul(1_000_000_000)?
+        .checked_add(u64::try_from(clock.tv_nsec).ok()?)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn thread_cpu_ns() -> Option<u64> { None }
+
 fn serve(player: &mut Player<'_>, shared: &Shared, sample_rate: u32) -> Result<()> {
     let deadline = Duration::from_secs_f64(BLOCK_FRAMES as f64 / f64::from(sample_rate));
     let mut pending_completions = shared
@@ -1857,6 +1995,7 @@ fn serve(player: &mut Player<'_>, shared: &Shared, sample_rate: u32) -> Result<(
         // A queued authoritative-lifetime rejection is fatal: return before
         // rendering or advancing this block; finish() aborts the activation.
         request.validate()?;
+        let started_cpu = thread_cpu_ns();
         let rendered = if let Some(packet) = hosted {
             packet.validate()?;
             player.render_hosted_with_ui(
@@ -1873,6 +2012,15 @@ fn serve(player: &mut Player<'_>, shared: &Shared, sample_rate: u32) -> Result<(
             )
         };
         let elapsed = started.elapsed();
+        if let Some(duration) = started_cpu.zip(thread_cpu_ns())
+            .and_then(|(start, end)| end.checked_sub(start)) {
+            shared.counters.render_cpu_ns.fetch_add(duration, Ordering::Relaxed);
+            shared.counters.max_render_cpu_ns.fetch_max(duration, Ordering::Relaxed);
+            shared.counters.render_cpu_samples.fetch_add(1, Ordering::Relaxed);
+        }
+        // Retain changed script metadata and partial phase times before the
+        // render Result can abort this worker. Invalid wire packets stop earlier.
+        publish_packet_activity(shared, player.packet_activity(), player.script_activity());
         let duration = nanos(elapsed);
         shared
             .counters
@@ -1960,6 +2108,53 @@ fn serve(player: &mut Player<'_>, shared: &Shared, sample_rate: u32) -> Result<(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn packet_activity_publication_retains_failed_attempt_observations() {
+        let shared = Shared::new(3, 7);
+        let script = ScriptActivity {
+                emitted_starts: 8, emitted_releases: 2, emitted_kill_fades: 3,
+                retired_voice_metadata: 1, retained_voice_metadata: 7, suspended_tasks: 5,
+                gc_full_calls: 2, gc_full_ns: 17, gc_full_max_ns: 13,
+                gc_step_calls: 4, gc_step_ns: 19, gc_step_max_ns: 9,
+        };
+        publish_packet_activity(&shared,
+            player::PacketActivity {
+                session_ns: 11, renderer_ns: 29, resource_alias_count: 3,
+                resource_resident_pcm_bytes: 64, resource_revision: 2,
+            }, script);
+        // An authored partial Session failure has no Renderer phase. The
+        // publisher must retain its latest script census before finish clears
+        // live renderer ownership; this fixture does not execute Lua/rendering.
+        publish_packet_activity(&shared,
+            player::PacketActivity {
+                session_ns: 31, renderer_ns: 0, resource_alias_count: 4,
+                resource_resident_pcm_bytes: 96, resource_revision: 3,
+            },
+            ScriptActivity {
+                emitted_starts: 9, emitted_kill_fades: 4, retained_voice_metadata: 8,
+                suspended_tasks: 6, gc_full_calls: 3, gc_full_ns: 23, gc_full_max_ns: 13,
+                ..script
+            });
+        finish(&shared, Some("authored partial attempt".into()));
+        let stats = shared.stats();
+        assert_eq!(stats.render_attempts, 2);
+        assert_eq!((stats.session_ns, stats.max_session_ns), (42, 31));
+        assert_eq!((stats.renderer_ns, stats.max_renderer_ns), (29, 29));
+        assert_eq!(stats.rendered_blocks, 0, "attempts are not completed packets");
+        assert_eq!((stats.resource_alias_count, stats.resource_resident_pcm_bytes, stats.resource_revision), (4, 96, 3));
+        assert_eq!(stats.script_activity.emitted_starts, 9);
+        assert_eq!(stats.script_activity.emitted_kill_fades, 4);
+        assert_eq!(stats.script_activity.retained_voice_metadata, 8);
+        assert_eq!(stats.script_activity.suspended_tasks, 6);
+        assert_eq!(stats.script_activity.gc_full_ns, 23);
+        assert_eq!(stats.active_voices, 0);
+        assert_eq!(shared.status(), Status::Failed);
+        let json = serde_json::to_value(stats).unwrap();
+        assert_eq!(json["render_attempts"], 2);
+        assert_eq!(json["script_activity"]["emitted_kill_fades"], 4);
+        assert_eq!(json["ui_snapshot_calls"], 0);
+    }
+
     /// Reuse the worker's real bounded hosted transport, without a thread or
     /// renderer. This fixture proves packet plumbing only, not Worker readiness.
     pub(crate) struct HostedPacketFixture { shared: Arc<Shared> }
@@ -3172,13 +3367,21 @@ function onSave()error('runtime inspection must not run callbacks')end
                 .unwrap();
         }
         assert_eq!(worker.shared.requests.len(), QUEUE_CAPACITY);
-        worker.stop();
+        worker.request_stop();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while worker.status() != Status::Stopped
+            || worker.thread.as_ref().is_some_and(|handle| !handle.is_finished()) {
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        }
         assert_eq!(worker.status(), Status::Stopped);
+        assert!(worker.thread.is_some(), "request_stop retains the handle for later join");
         let stats = worker.stats();
         assert_eq!(stats.rendered_blocks, 11);
         assert_eq!(stats.cancelled_requests, 8);
         assert_eq!(stats.cancelled_outputs, 9);
         assert!(worker.private_failure().is_none());
+        worker.stop(); // Join separately after execution and queues are stopped.
         std::fs::remove_file(path).unwrap();
     }
 

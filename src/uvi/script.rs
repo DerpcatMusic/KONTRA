@@ -19,6 +19,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     rc::Rc,
+    time::Instant,
 };
 
 // Explicit offline context: 48 kHz, initially stopped at beat zero / 120 BPM.
@@ -489,6 +490,24 @@ struct HeldTrigger {
     held: bool,
 }
 
+/// Worker-local observations, not sample-voice counts or audible completions.
+/// GC timing covers only Runtime::prune calls, excluding automatic/authored GC.
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub struct ScriptActivity {
+    pub emitted_starts: u64,
+    pub emitted_releases: u64,
+    pub emitted_kill_fades: u64,
+    pub retired_voice_metadata: u64,
+    pub retained_voice_metadata: usize,
+    pub suspended_tasks: usize,
+    pub gc_full_calls: u64,
+    pub gc_full_ns: u64,
+    pub gc_full_max_ns: u64,
+    pub gc_step_calls: u64,
+    pub gc_step_ns: u64,
+    pub gc_step_max_ns: u64,
+}
+
 struct Voice {
     note: Note,
     parent: Option<u64>,
@@ -529,6 +548,9 @@ struct State {
     initializing_chain: bool,
     tasks: BTreeMap<(u64, u64), Task>,
     voices: HashMap<u32, Voice>,
+    emitted_starts: u64,
+    emitted_releases: u64,
+    emitted_kill_fades: u64,
     next_trigger: u64,
     triggers: HashMap<u64, HeldTrigger>,
     // Hosted-only ancestry; an empty legacy map allocates nothing.
@@ -655,6 +677,16 @@ impl State {
                     .and_modify(|at| *at = (*at).min(frame))
                     .or_insert(frame);
             }
+        }
+        match &action {
+            Action::Start(_) => self.emitted_starts = self.emitted_starts.saturating_add(1),
+            Action::Release(_) | Action::ReleaseNote { .. } => {
+                self.emitted_releases = self.emitted_releases.saturating_add(1);
+            }
+            Action::Fade { kill: true, .. } => {
+                self.emitted_kill_fades = self.emitted_kill_fades.saturating_add(1);
+            }
+            _ => {}
         }
         self.commands.push(Command { frame, action });
         if self.root_activation.is_some() {
@@ -1313,6 +1345,7 @@ struct Runtime {
     host: Option<host::Host>,
     environments: BTreeMap<NodeId, Table>,
     gc_drains: u8,
+    activity: ScriptActivity,
 }
 
 impl Runtime {
@@ -2073,6 +2106,7 @@ impl Runtime {
             host: object_host,
             environments: BTreeMap::new(),
             gc_drains: 0,
+            activity: ScriptActivity::default(),
         })
     }
 
@@ -2313,9 +2347,23 @@ impl Runtime {
             state.voices.len() >= LIMIT / 2 || state.triggers.len() >= LIMIT / 2
         };
         if pressure || self.gc_drains >= GC_MAX_DRAINS {
-            self.lua.gc_collect()?;
-        } else if !self.lua.gc_step()? {
-            return Ok(());
+            let started = Instant::now();
+            let result = self.lua.gc_collect();
+            let elapsed = started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+            self.activity.gc_full_calls = self.activity.gc_full_calls.saturating_add(1);
+            self.activity.gc_full_ns = self.activity.gc_full_ns.saturating_add(elapsed);
+            self.activity.gc_full_max_ns = self.activity.gc_full_max_ns.max(elapsed);
+            result?;
+        } else {
+            let started = Instant::now();
+            let result = self.lua.gc_step();
+            let elapsed = started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+            self.activity.gc_step_calls = self.activity.gc_step_calls.saturating_add(1);
+            self.activity.gc_step_ns = self.activity.gc_step_ns.saturating_add(elapsed);
+            self.activity.gc_step_max_ns = self.activity.gc_step_max_ns.max(elapsed);
+            if !result? {
+                return Ok(());
+            }
         }
         self.gc_drains = 0;
         // Inspect weak userdata only after a collection finishes: mlua values
@@ -2364,9 +2412,12 @@ impl Runtime {
             .iter()
             .filter_map(|(&id, trigger)| trigger.held.then_some(id))
             .collect::<HashSet<_>>();
+        let previous_voices = state.voices.len();
         state.voices.retain(|id, voice| {
             retained.contains(id) || voice.parent.is_some_and(|parent| held.contains(&parent))
         });
+        self.activity.retired_voice_metadata = self.activity.retired_voice_metadata
+            .saturating_add((previous_voices - state.voices.len()) as u64);
         retained.extend(state.voices.keys().copied());
         if let Some(scopes) = self
             .lua
@@ -2677,6 +2728,19 @@ pub struct Session {
 }
 
 impl Session {
+    /// Constant-size worker snapshot, including current retained metadata.
+    /// Emitted commands may still be future/canceled; these are not DSP starts.
+    pub(crate) fn script_activity(&self) -> ScriptActivity {
+        let state = self.runtime.state.borrow();
+        ScriptActivity {
+            emitted_starts: state.emitted_starts,
+            emitted_releases: state.emitted_releases,
+            emitted_kill_fades: state.emitted_kill_fades,
+            retained_voice_metadata: state.voices.len(),
+            suspended_tasks: state.tasks.len(),
+            ..self.runtime.activity
+        }
+    }
     pub fn new_program_chain(
         program: &Program,
         modules: BTreeMap<String, Vec<u8>>,
@@ -4526,6 +4590,66 @@ mod tests {
         assert!(matches!(cache.raw_get::<Value>(1).unwrap(), Value::Nil));
         let state = session.runtime.state.borrow();
         assert!(state.voices.is_empty() && state.triggers.is_empty());
+    }
+
+    #[test]
+    fn script_activity_distinguishes_emitted_terminal_actions_from_retained_handles() {
+        let program = session_program(r#"
+            local kept, keys
+            function onInit()
+                kept=playNote(60,100,1)
+                keys={[kept]=true}
+                playNote(61,100,1)
+                spawn(function()wait(10)end)
+            end
+            function onController(e)
+                if e.value==1 then
+                    assert(keys[kept])
+                    fadeout(kept,0,true)
+                elseif e.value==2 then
+                    kept=nil;keys=nil
+                end
+            end
+        "#);
+        let mut session = Session::new_program_chain(&program, BTreeMap::new(), None, 48000).unwrap();
+        let commands = session.process(&[], 96).unwrap().commands;
+        assert_eq!(commands.iter().filter(|c| matches!(c.action, Action::Start(_))).count(), 2);
+        assert_eq!(commands.iter().filter(|c| matches!(c.action, Action::Release(_) | Action::ReleaseNote { .. })).count(), 2);
+        let initial = session.script_activity();
+        assert_eq!(initial.emitted_starts, 2);
+        assert_eq!(initial.emitted_releases, 2);
+        assert_eq!(initial.emitted_kill_fades, 0);
+        assert_eq!(initial.suspended_tasks, 1);
+        for _ in 0..GC_MAX_DRAINS * 2 { session.drain().unwrap(); }
+        let retained = session.script_activity();
+        assert_eq!(retained.retained_voice_metadata, 1, "only the table-key handle stays reachable");
+        assert_eq!(retained.retired_voice_metadata, 1);
+        assert_eq!(retained.gc_full_calls + retained.gc_step_calls,
+            initial.gc_full_calls + initial.gc_step_calls + u64::from(GC_MAX_DRAINS) * 2);
+        assert!(retained.gc_full_max_ns <= retained.gc_full_ns);
+        assert!(retained.gc_step_max_ns <= retained.gc_step_ns);
+        let killed = session.process(&[Input { frame: 96,
+            kind: InputKind::Controller { channel: 0, controller: 1, value: 1 } }], 96).unwrap();
+        assert_eq!(killed.commands.len(), 1);
+        assert!(matches!(killed.commands[0].action, Action::Fade { kill: true, .. }));
+        let killed_activity = session.script_activity();
+        assert_eq!(killed_activity.emitted_starts, 2);
+        assert_eq!(killed_activity.emitted_releases, 2, "kill fades are not ordinary releases");
+        assert_eq!(killed_activity.emitted_kill_fades, 1);
+        for _ in 0..GC_MAX_DRAINS * 2 { session.drain().unwrap(); }
+        assert_eq!(session.script_activity().retained_voice_metadata, 1,
+            "emitting a kill does not invalidate a still-reachable opaque handle");
+        session.process(&[Input { frame: 480,
+            kind: InputKind::Controller { channel: 0, controller: 1, value: 2 } }], 480).unwrap();
+        for _ in 0..GC_MAX_DRAINS * 2 { session.drain().unwrap(); }
+        let dropped = session.script_activity();
+        assert_eq!(dropped.retained_voice_metadata, 0);
+        assert_eq!(dropped.retired_voice_metadata, 2);
+        assert_eq!(dropped.suspended_tasks, 0);
+        assert_eq!((dropped.emitted_starts, dropped.emitted_releases, dropped.emitted_kill_fades), (2, 2, 1));
+        assert!(dropped.gc_full_calls + dropped.gc_step_calls > retained.gc_full_calls + retained.gc_step_calls);
+        assert!(dropped.gc_full_max_ns <= dropped.gc_full_ns);
+        assert!(dropped.gc_step_max_ns <= dropped.gc_step_ns);
     }
 
     #[test]

@@ -387,13 +387,18 @@ fn capacity_context(worker: Option<&serde_json::Value>) -> String {
     let status = worker["status"].as_str().unwrap_or("unavailable");
     let errors = worker["stats"]["errors"].as_u64().map_or_else(|| "unavailable".into(), |count| count.to_string());
     let timing = &worker["timing"];
-    let mean = timing["mean_recorded_render_ns_per_completed_packet"].as_u64();
+    let mean = if timing["render_attempts"].is_u64() {
+        timing["mean_recorded_render_ns_per_attempt"].as_u64()
+    } else { timing["mean_recorded_render_ns_per_completed_packet"].as_u64() };
     let budget = timing["packet_budget_ns"].as_u64();
     let maximum = worker["stats"]["max_render_ns"].as_u64().map_or_else(|| "unavailable".into(),
         |ns| format!("{:.2} ms", ns as f64 / 1_000_000.));
     let comparison = mean.zip(budget).map_or_else(|| "Packet render comparison is unavailable.".into(), |(mean,budget)|
         format!("Recorded render wall time: mean {:.2} ms, maximum {maximum}; packet budget {:.2} ms.",mean as f64 / 1_000_000.,budget as f64 / 1_000_000.));
-    format!("Pending native request queue filled{configured}. Worker observed {status}; {errors} recorded worker errors. {comparison} CPU time and scheduler delays are not distinguished; see Info.")
+    let cpu = if timing["render_cpu_available"].as_bool() == Some(true) {
+        "Worker render CPU samples are available; see Info for their separate scope."
+    } else { "Worker render CPU timing is unavailable in this capture; see Info." };
+    format!("Pending native request queue filled{configured}. Worker observed {status}; {errors} recorded worker errors. {comparison} {cpu}")
 }
 
 fn failure_reason(reason: String, endpoint: Option<uvi::Failure>, worker: Option<&serde_json::Value>) -> String {
@@ -479,7 +484,7 @@ fn fail(
         }
     }
     crate::diagnostics::event(crate::diagnostics::LogLevel::Error, "uvi", code, failure);
-    cancel(params, activation);
+    params.shared.uvi_controls.lock().unwrap().abort(activation.epoch, activation.generation);
 }
 
 pub(super) fn service(params: &SamplerParams) {
@@ -827,7 +832,7 @@ mod tests {
         assert!(cause.contains("27 packets configured"));
         assert!(cause.contains("Worker observed ready; 0 recorded worker errors"));
         assert!(cause.contains("5.12 ms") && cause.contains("5.33 ms") && cause.contains("maximum 38.69 ms"));
-        assert!(cause.contains("CPU time and scheduler delays are not distinguished"));
+        assert!(cause.contains("Worker render CPU timing is unavailable in this capture"));
         assert!(capacity_context(None).contains("unavailable"));
         assert!(capacity_context(Some(&serde_json::json!({}))).contains("comparison is unavailable"));
     }

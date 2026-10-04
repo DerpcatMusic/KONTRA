@@ -137,6 +137,28 @@ impl Default for Inputs {
     }
 }
 
+// MIDI controller bytes are valid exactly when every high bit is clear.
+#[inline]
+fn controllers_valid(controllers: &[u8; 128]) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use std::arch::x86_64::{_mm_loadu_si128, _mm_movemask_epi8, _mm_or_si128, _mm_setzero_si128};
+        // SSE2 is baseline on x86_64. Each load stays inside its 16-byte
+        // chunk; unaligned loads require no additional array alignment.
+        unsafe {
+            let mut bits = _mm_setzero_si128();
+            for chunk in controllers.chunks_exact(16) {
+                bits = _mm_or_si128(bits, _mm_loadu_si128(chunk.as_ptr().cast()));
+            }
+            _mm_movemask_epi8(bits) == 0
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        controllers.iter().all(|cc| *cc < 128)
+    }
+}
+
 #[derive(Debug, Clone)]
 enum Source {
     Key,
@@ -156,6 +178,8 @@ enum Source {
 struct Connection {
     mode: u32,
     node: NodeId,
+    // Bound after all parameter slots exist; named live writes keep slots stable.
+    ratio_slot: usize,
     source: Source,
     mapper: Option<NodeId>,
 }
@@ -1905,6 +1929,7 @@ impl ModulationGraph {
                 .push(Connection {
                     mode: c.mode,
                     node: c.node,
+                    ratio_slot: 0, // Bound before the completed graph is returned.
                     source,
                     mapper,
                 });
@@ -2037,14 +2062,17 @@ impl ModulationGraph {
             for (name, mut cached) in parameters {
                 let slot = graph.parameter_values.len();
                 cached.slot = slot;
-                cached.edges = graph
-                    .connections
-                    .get(&cached.key)
-                    .cloned()
-                    .unwrap_or_default();
                 graph.cached_parameters[node].insert(name, slot);
                 graph.parameter_values.push(cached);
             }
+        }
+        // Every connection's Ratio key was included above, even if XML omitted
+        // the default. Resolve it once instead of hashing its name per edge/frame.
+        for connection in graph.connections.values_mut().flatten() {
+            connection.ratio_slot = graph.cached_parameters[connection.node]["Ratio"];
+        }
+        for cached in &mut graph.parameter_values {
+            cached.edges = graph.connections.get(&cached.key).cloned().unwrap_or_default();
         }
         for (node, targets) in graph.node_targets.iter().enumerate() {
             graph.node_target_slots[node] = targets
@@ -2739,7 +2767,7 @@ impl ModulationGraph {
                 && input.tune_semitones.is_finite()
                 && input.tune_semitones.abs() <= f64::from(f32::MAX)
                 && input.velocity < 128
-                && input.controllers.iter().all(|cc| *cc < 128),
+                && controllers_valid(&input.controllers),
             "Invalid UVI MIDI modulation inputs"
         );
         ensure!(
@@ -2971,7 +2999,8 @@ impl ModulationGraph {
                 if self.boolean(c.node, "Bypass", false, live)? {
                     continue;
                 }
-                let ratio = self.value_named(c.node, "Ratio", input, live, memo, depth + 1)?;
+                let cached_ratio = &self.parameter_values[c.ratio_slot];
+                let ratio = self.value_cached(&cached_ratio.key, Some(cached_ratio), input, live, memo, depth + 1)?;
                 let (mut source, bipolar) = self.source(&c.source, input, live, memo, depth + 1)?;
                 if self.boolean(c.node, "Inverted", false, live)? {
                     source = if bipolar { -source } else { 1. - source };
@@ -3080,7 +3109,8 @@ impl ModulationGraph {
             if self.boolean(c.node, "Bypass", false, live)? {
                 continue;
             }
-            let ratio = self.value_named(c.node, "Ratio", input, live, memo, depth + 1)?;
+            let cached_ratio = &self.parameter_values[c.ratio_slot];
+            let ratio = self.value_cached(&cached_ratio.key, Some(cached_ratio), input, live, memo, depth + 1)?;
             let (mut value, bipolar) = self.source(&c.source, input, live, memo, depth + 1)?;
             if self.boolean(c.node, "Inverted", false, live)? {
                 value = if bipolar { -value } else { 1. - value };
@@ -4821,6 +4851,79 @@ mod tests {
         assert_eq!(emitted, 2);
     }
     #[test]
+    fn bound_connection_ratio_slots_keep_live_writes_and_nested_order() {
+        let p = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" Gain="1" Pitch="3"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Gain" Ratio=".5"><Connections><SignalConnection Source="@MIDI CC 2" Destination="Ratio" Ratio=".25"/></Connections></SignalConnection><SignalConnection Source="@MIDI CC 3" Destination="Pitch"><Connections><SignalConnection Source="@MIDI CC 4" Destination="Ratio" Ratio=".75"/></Connections></SignalConnection></Connections></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let mut graph = ModulationGraph::new(&p).unwrap();
+        let player = p.sample_zones[0].player;
+        let nodes = HashSet::from([player]);
+        let outer = p.connections.iter().filter(|c| c.owner == player).map(|c| c.node).collect::<Vec<_>>();
+        let bindings = graph.parameter_values.iter().flat_map(|parameter| parameter.edges.iter())
+            .map(|edge| (edge.node, edge.ratio_slot)).collect::<Vec<_>>();
+        for &(node, slot) in &bindings {
+            assert_eq!(graph.parameter_values[slot].key, (node, "Ratio".into()));
+        }
+        for name in ["Gain", "Pitch"] {
+            let parameter = graph.cached_parameter(player, name).unwrap();
+            let expected = p.connections.iter().filter(|c| c.owner == player && c.destination == name)
+                .map(|c| c.node).collect::<Vec<_>>();
+            assert_eq!(parameter.edges.iter().map(|c| c.node).collect::<Vec<_>>(), expected);
+        }
+        // New unrelated registered fields append slots without moving bindings.
+        graph.update_live_parameter(p.root, "AuthoredNewNumeric", 7.).unwrap();
+        assert_eq!(graph.parameter_values.iter().flat_map(|p| p.edges.iter())
+            .map(|e| (e.node, e.ratio_slot)).collect::<Vec<_>>(), bindings);
+        let omitted = graph.cached_parameter(outer[1], "Ratio").unwrap();
+        assert!(omitted.number.is_none());
+        let mut initial = Inputs::default();
+        initial.controllers[4] = 127; // Nested factor = 1; omitted base stays 1.
+        {
+            let mut memo = graph.memo.borrow_mut();
+            memo.begin();
+            let named = graph.value_named(outer[1], "Ratio", &initial, Overrides::Registered, &mut memo, 0).unwrap();
+            memo.begin();
+            let bound = graph.value_cached(&omitted.key, Some(omitted), &initial, Overrides::Registered, &mut memo, 0).unwrap();
+            assert_eq!(named.to_bits(), 1f64.to_bits());
+            assert_eq!(bound.to_bits(), named.to_bits());
+        }
+        let mut live = HashMap::new();
+        let mut input = Inputs::default();
+        for cc in [0, 32, 91, 127] {
+            input.controllers[1..=4].fill(cc);
+            for (node, value) in [(outer[0], 0.2 + f64::from(cc) / 100.), (outer[1], 2.)] {
+                graph.update_live_parameter(node, "Ratio", value).unwrap();
+                live.insert((node, "Ratio".into()), value);
+            }
+            // Compare the bound dispatch to the retained named dispatch on the
+            // same graph, including omitted-default and nested Ratio records.
+            for &(node, slot) in &bindings {
+                for overrides in [Overrides::External(&live), Overrides::Registered] {
+                    let cached = &graph.parameter_values[slot];
+                    let mut memo = graph.memo.borrow_mut();
+                    memo.begin();
+                    let named = graph.value_named(node, "Ratio", &input, overrides, &mut memo, 0).unwrap();
+                    memo.begin();
+                    let bound = graph.value_cached(&cached.key, Some(cached), &input, overrides, &mut memo, 0).unwrap();
+                    assert_eq!(bound.to_bits(), named.to_bits());
+                    let named_error = graph.value_named(node, "Ratio", &input, overrides, &mut memo, DEPTH).unwrap_err();
+                    let bound_error = graph.value_cached(&cached.key, Some(cached), &input, overrides, &mut memo, DEPTH).unwrap_err();
+                    assert_eq!(format!("{bound_error:#}"), format!("{named_error:#}"));
+                }
+            }
+            let external = graph.evaluate_nodes(&input, &live, &nodes).unwrap().into_iter()
+                .map(|(p, v)| (p, v.to_bits())).collect::<BTreeMap<_, _>>();
+            let mut registered = BTreeMap::new();
+            graph.evaluate_registered_nodes_into(&input, &nodes, |p, v| { registered.insert(p.clone(), v.to_bits()); }).unwrap();
+            assert_eq!(registered, external); // Gain factor and Pitch delta paths.
+        }
+        // Connection gates still reject before any target is emitted.
+        graph.update_live_parameter(outer[0], "Bypass", 0.5).unwrap();
+        let mut emitted = 0;
+        let error = graph.evaluate_registered_nodes_into(&input, &nodes, |_, _| emitted += 1).unwrap_err();
+        assert!(error.to_string().contains("Invalid live UVI modulation Boolean Bypass"));
+        assert_eq!(emitted, 0);
+    }
+
+    #[test]
     fn compiled_parameters_keep_live_overrides_defaults_and_recursive_mapping() {
         let program = parse_program(r#"<Program><ControlSignalSources><ConstantModulation Name="Unused" Value=".4"/></ControlSignalSources><Mappers><ControlSignalMapper Name="Curve" Min="0" Max="1">0 1</ControlSignalMapper></Mappers><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" Pitch="3"><Connections><SignalConnection Name="Outer" Source="@MIDI CC 1" Destination="Pitch" Ratio="2" Mapper="Curve"><Connections><SignalConnection Source="@MIDI CC 2" Destination="Ratio" Ratio="1"/></Connections></SignalConnection></Connections></SamplePlayer></Oscillators><Inserts><GainMatrix/><OnePole Freq="NaN"/></Inserts></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
         let graph = ModulationGraph::new(&program).unwrap();
@@ -6402,6 +6505,83 @@ mod tests {
 mod registered_proof {
     use super::*;
     use crate::uvi::program::parse_program;
+    #[test]
+    fn controller_predicate_matches_scalar_for_every_position_and_byte() {
+        let graph = ModulationGraph::new(&fixture()).unwrap();
+        let empty = HashMap::new();
+        let mut input = Inputs::default();
+        input.controllers = std::array::from_fn(|i| (i % 128) as u8);
+        let check = |input: &Inputs| {
+            let expected = input.controllers.iter().all(|cc| *cc < 128);
+            assert_eq!(controllers_valid(&input.controllers), expected);
+            for live in [Overrides::Registered, Overrides::External(&empty)] {
+                let result = graph.validate(input, live);
+                if expected {
+                    assert!(result.is_ok());
+                } else {
+                    assert_eq!(result.unwrap_err().to_string(), "Invalid UVI MIDI modulation inputs");
+                }
+            }
+        };
+        for position in 0..128 {
+            let saved = input.controllers[position];
+            for byte in 0..=u8::MAX {
+                input.controllers[position] = byte;
+                check(&input);
+            }
+            input.controllers[position] = saved;
+        }
+        // Deterministic mixed arrays exercise simultaneous high bits in
+        // different lanes, plus arrays whose values all remain admissible.
+        let mut state = 0x63ac_0125_8e94_b7d1_u64;
+        for round in 0..512 {
+            for byte in &mut input.controllers {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                *byte = state as u8;
+                if round % 2 == 0 {
+                    *byte &= 127;
+                }
+            }
+            check(&input);
+        }
+    }
+
+    #[test]
+    fn controller_predicate_keeps_public_and_registered_error_precedence() {
+        let mut graph = ModulationGraph::new(&fixture()).unwrap();
+        let nodes = HashSet::from([usize::MAX]);
+        let live = HashMap::from([((usize::MAX, "Invalid".into()), f64::NAN)]);
+        let mut input = Inputs::default();
+        input.controllers[127] = 128;
+        input.pitch_bend = f64::NAN;
+        input.sample_rate = f64::NAN;
+        for expected in [
+            "Invalid UVI MIDI modulation inputs",
+            "Invalid UVI pressure/bend modulation inputs",
+            "Invalid UVI modulation clock",
+        ] {
+            let mut emitted = 0;
+            let external = graph.evaluate_nodes_into(&input, &live, &nodes, |_, _| emitted += 1);
+            assert_eq!(external.unwrap_err().to_string(), expected);
+            let registered = graph.evaluate_registered_nodes_into(&input, &nodes, |_, _| emitted += 1);
+            assert_eq!(registered.unwrap_err().to_string(), expected);
+            assert_eq!(emitted, 0);
+            match expected {
+                "Invalid UVI MIDI modulation inputs" => input.controllers[127] = 127,
+                "Invalid UVI pressure/bend modulation inputs" => input.pitch_bend = 0.,
+                _ => input.sample_rate = 48000.,
+            }
+        }
+        assert_eq!(graph.evaluate_nodes(&input, &live, &nodes).unwrap_err().to_string(),
+            "Invalid UVI live parameter override");
+        let mut emitted = 0;
+        assert_eq!(graph.evaluate_registered_nodes_into(&input, &nodes, |_, _| emitted += 1)
+            .unwrap_err().to_string(), "Invalid UVI modulation target node");
+        assert_eq!(emitted, 0);
+    }
+
     fn fixture() -> Program {
         parse_program(r#"<Program><ControlSignalSources><ConstantModulation Name="Unused" Value="0.4"/></ControlSignalSources><Mappers><ControlSignalMapper Name="Curve" Min="0" Max="1">0 1</ControlSignalMapper></Mappers><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" Pitch="3"><Connections><SignalConnection Name="Outer" Source="@MIDI CC 1" Destination="Pitch" Ratio="2" Mapper="Curve"><Connections><SignalConnection Source="@MIDI CC 2" Destination="Ratio" Ratio="1"/></Connections></SignalConnection><SignalConnection Source="@MIDI CC 3" Destination="Gain" Ratio="0.5"/></Connections></SamplePlayer></Oscillators><Inserts><GainMatrix/><OnePole Freq="NaN"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Freq" Ratio="1"/></Connections></OnePole></Inserts></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap()
     }
