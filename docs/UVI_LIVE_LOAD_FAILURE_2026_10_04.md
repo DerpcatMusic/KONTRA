@@ -44,6 +44,12 @@ solution is to implement and verify the missing source, effects and lifecycle
 paths, then admit their verified scope. Removing the checks would conceal
 missing sound behavior rather than supply it.
 
+[UVI's Step Envelope explanation](https://support.uvi.net/hc/en-us/articles/360001201418-Learning-Falcon-206-Using-Step-Envelopes)
+describes smoothing between steps and separately describes Spline interpolation.
+This corroborates that the rejected Smooth control has audible meaning; it does
+not specify the native smoothing kernel or clock arithmetic. Documentation alone
+does not justify treating it as zero or opening its execution gate.
+
 ## Why the failure message and Logs were misleading
 
 `prepare_uvi` in `src/plugin/uvi_load.rs` unconditionally appended "the current
@@ -108,6 +114,26 @@ does not establish a throughput fix. See
 [the render-timer and convolution boundary](UVI_PACKET_COST_BOUNDARY_EVIDENCE.md).
 
 ## Verification boundary
+
+Later static source work adds three narrowly scoped corrections:
+
+- `6390be3` fences native panels against the full loader context. A restore of
+  new state from the same bank/member no longer qualifies the retained old panel
+  merely by source and captured generation. Failed/unadopted inspection remains
+  available when its context still matches; downstream edit admission is unchanged.
+- `2b108ff` releases displaced UI/state/runtime snapshot owners after unlocking
+  the worker's phase/mailbox mutex. The same request IDs, stop gates, publication
+  and genuine state-capture errors are preserved. Controller-side destruction
+  can now overlap new worker snapshot work, so identical peak lifetime or cost
+  is not claimed. Normal service already avoided unrequested full-graph scans.
+- `31bb99e` iterates the immutable absolute-control declaration order by copied
+  node ID instead of cloning its Vec whenever the per-frame loop is reached.
+  Visit order, validation, arithmetic and publication are unchanged; other
+  control allocations remain.
+
+Each correction passed independent static review. None establishes a measured
+throughput improvement or the cause of the Oboe delivery backlog. No new feature
+gate is opened, and none admits the rejected Augmented Orchestra program.
 
 Installed binaries remain `cc54c67` during this investigation. Source commits
 `d7384b9`, `e4a674a` and `6a13afb` correct the playback claim, bound the preflight
