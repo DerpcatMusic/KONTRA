@@ -21,6 +21,7 @@ pub mod host;
 pub mod library;
 pub mod maximizer;
 pub mod modulation;
+pub mod multilfo;
 pub mod ms20;
 pub mod phasor;
 pub mod playback;
