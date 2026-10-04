@@ -140,13 +140,7 @@ pub struct ConstantFrequencyControl {
 }
 impl ConstantFrequencyControl {
     pub fn new(rate: u32, source: f32, initial_hz: f32) -> Result<Self> {
-        let (alpha_sample, alpha32) = match rate {
-            32_000 => (0.003458559513092041_f32, 0.10494154691696167_f32),
-            44_100 => (0.00251084566116333_f32, 0.07729637622833252_f32),
-            48_000 => (0.0023070573806762695_f32, 0.07124549150466919_f32),
-            96_000 => (0.001154184341430664_f32, 0.036280930042266846_f32),
-            _ => anyhow::bail!("Unmeasured ConstantModulation frequency-control rate"),
-        };
+        let (alpha_sample, alpha32) = control_coefficients(rate)?;
         ensure!(
             source.is_finite() && (0. ..=1.).contains(&source),
             "Invalid ConstantModulation Value"
@@ -291,33 +285,20 @@ impl ConstantFrequencyControl {
     }
     fn ramp(
         &self,
-        mut current: f32,
+        current: f32,
         target: f32,
         frames: usize,
         snap: bool,
         points: &mut [f32],
     ) -> (f32, f32) {
-        for (index, start) in (0..frames).step_by(32).enumerate() {
-            if let Some(point) = points.get_mut(index) {
-                *point = current;
-            }
-            let count = (frames - start).min(32);
-            if count == 32 {
-                current += (target - current) * self.alpha32;
-            } else {
-                for _ in 0..count {
-                    current += (target - current) * self.alpha_sample;
-                }
-            }
-        }
-        if snap && (target - current).abs() * self.alpha32 < 1e-6 {
-            current = target;
-        }
-        let mut lookahead = current;
-        for _ in 0..frames.wrapping_neg() & 31 {
-            lookahead += (target - lookahead) * self.alpha_sample;
-        }
-        (current, lookahead)
+        control_ramp(
+            (self.alpha_sample, self.alpha32),
+            current,
+            target,
+            frames,
+            snap,
+            points,
+        )
     }
     fn physical(value: f32) -> f32 {
         (f64::from(value) * (20_000_f64.ln() - 20_f64.ln()) + 20_f64.ln()).exp() as f32
@@ -325,6 +306,120 @@ impl ConstantFrequencyControl {
     fn normalized(value: f32) -> f32 {
         ((f64::from(value).ln() - 20_f64.ln()) / (20_000_f64.ln() - 20_f64.ln())) as f32
     }
+}
+
+/// Native Value-property RC for this measured Constant-to-Comb edition route.
+/// Descriptor Smooth=1, physical points held for 32 frames. Feed these points
+/// and the returned static flag into `next_value_points_into` for all three RCs.
+/// Host serial/coverage, property binding and voice ownership remain above this
+/// gated leaf. Process each source owner's host block once, at most 4096 frames.
+pub struct CombEditionValueProperty {
+    alpha_sample: f32,
+    alpha32: f32,
+    current: f32,
+    static_point: f32,
+}
+impl CombEditionValueProperty {
+    pub fn new(rate: u32, initial_value: f32) -> Result<Self> {
+        let (alpha_sample, alpha32) = control_coefficients(rate)?;
+        ensure!(
+            initial_value.is_finite() && (0. ..=1.).contains(&initial_value),
+            "Invalid initial ConstantModulation Value property"
+        );
+        Ok(Self {
+            alpha_sample,
+            alpha32,
+            current: initial_value,
+            static_point: initial_value,
+        })
+    }
+    /// Fill reusable physical Value points; false means this block is dynamic,
+    /// including the block that snaps its final current state to the target.
+    pub fn next_points_into(
+        &mut self,
+        value: f32,
+        frames: usize,
+        points: &mut [f32],
+    ) -> Result<bool> {
+        ensure!(
+            frames <= 4096,
+            "Unmeasured Value-property control-block length"
+        );
+        ensure!(
+            points.len() == frames.div_ceil(32),
+            "Invalid Value-property point length"
+        );
+        ensure!(
+            value.is_finite() && (0. ..=1.).contains(&value),
+            "Invalid ConstantModulation Value property"
+        );
+        let is_static = self.current == value;
+        if frames == 0 {
+            return Ok(is_static);
+        }
+        if is_static {
+            points.fill(self.static_point);
+        } else {
+            self.current = control_ramp(
+                (self.alpha_sample, self.alpha32),
+                self.current,
+                value,
+                frames,
+                true,
+                points,
+            )
+            .0;
+            // Computed physical points canonicalize zero; authored static initial
+            // values retain their bits until the property first becomes dynamic.
+            for point in points {
+                if *point == 0. {
+                    *point = 0.;
+                }
+            }
+            self.static_point = self.current + 0.;
+        }
+        Ok(is_static)
+    }
+}
+fn control_coefficients(rate: u32) -> Result<(f32, f32)> {
+    match rate {
+        32_000 => Ok((0.003458559513092041_f32, 0.10494154691696167_f32)),
+        44_100 => Ok((0.00251084566116333_f32, 0.07729637622833252_f32)),
+        48_000 => Ok((0.0023070573806762695_f32, 0.07124549150466919_f32)),
+        96_000 => Ok((0.001154184341430664_f32, 0.036280930042266846_f32)),
+        _ => anyhow::bail!("Unmeasured ConstantModulation control rate"),
+    }
+}
+fn control_ramp(
+    coefficients: (f32, f32),
+    mut current: f32,
+    target: f32,
+    frames: usize,
+    snap: bool,
+    points: &mut [f32],
+) -> (f32, f32) {
+    let (alpha_sample, alpha32) = coefficients;
+    for (index, start) in (0..frames).step_by(32).enumerate() {
+        if let Some(point) = points.get_mut(index) {
+            *point = current;
+        }
+        let count = (frames - start).min(32);
+        if count == 32 {
+            current += (target - current) * alpha32;
+        } else {
+            for _ in 0..count {
+                current += (target - current) * alpha_sample;
+            }
+        }
+    }
+    if snap && (target - current).abs() * alpha32 < 1e-6 {
+        current = target;
+    }
+    let mut lookahead = current;
+    for _ in 0..frames.wrapping_neg() & 31 {
+        lookahead += (target - lookahead) * alpha_sample;
+    }
+    (current, lookahead)
 }
 
 #[cfg(test)]
@@ -468,6 +563,86 @@ mod tests {
         cold.next_value_points_into(&[0.1], 32, true, &mut point)
             .unwrap();
         assert_eq!(point, [39.905247]);
+    }
+    #[test]
+    fn native_value_property_generator_is_consumed_by_edition_controller() {
+        for &(rate, blocks) in VALUE_FIXTURES {
+            let mut property = CombEditionValueProperty::new(rate, 0.1).unwrap();
+            let mut edition = ConstantFrequencyControl::new(rate, 0.1, 39.905247).unwrap();
+            let mut values = [0.; 128];
+            let mut frequencies = [0.; 128];
+            assert!(
+                property
+                    .next_points_into(0.1, 3072, &mut values[..96])
+                    .unwrap()
+            );
+            edition
+                .next_value_points_into(&values[..96], 3072, true, &mut frequencies[..96])
+                .unwrap();
+            for &(frames, expected_values, expected_freq) in blocks {
+                let count = frames.div_ceil(32);
+                let is_static = property
+                    .next_points_into(0.5, frames, &mut values[..count])
+                    .unwrap();
+                assert!(!is_static);
+                for (&value, &bits) in values.iter().zip(expected_values) {
+                    assert_eq!(value.to_bits(), bits, "rate={rate},frames={frames}");
+                }
+                edition
+                    .next_value_points_into(
+                        &values[..count],
+                        frames,
+                        is_static,
+                        &mut frequencies[..count],
+                    )
+                    .unwrap();
+                for (&freq, &bits) in frequencies.iter().zip(expected_freq) {
+                    assert_eq!(freq.to_bits(), bits, "rate={rate},frames={frames}");
+                }
+            }
+        }
+        assert!(CombEditionValueProperty::new(88_200, 0.1).is_err());
+        assert!(CombEditionValueProperty::new(48_000, f32::NAN).is_err());
+        let mut property = CombEditionValueProperty::new(48_000, 0.1).unwrap();
+        let mut output = [123.];
+        assert!(
+            property
+                .next_points_into(f32::NAN, 32, &mut output)
+                .is_err()
+        );
+        assert!(
+            property
+                .next_points_into(0.5, usize::MAX, &mut output)
+                .is_err()
+        );
+        assert!(property.next_points_into(0.5, 32, &mut []).is_err());
+        assert_eq!(property.current, 0.1);
+        assert_eq!(output, [123.]);
+        assert!(!property.next_points_into(0.5, 0, &mut []).unwrap());
+        assert_eq!(property.current, 0.1);
+        // Native snap publishes the old held point, then becomes static next block.
+        assert!(
+            !property
+                .next_points_into(0.10000002, 32, &mut output)
+                .unwrap()
+        );
+        assert_eq!(output, [0.1]);
+        assert!(
+            property
+                .next_points_into(0.10000002, 32, &mut output)
+                .unwrap()
+        );
+        assert_eq!(output, [0.10000002]);
+        let mut zero = CombEditionValueProperty::new(48_000, 0.).unwrap();
+        assert!(zero.next_points_into(-0., 32, &mut output).unwrap());
+        assert_eq!(output[0].to_bits(), 0);
+        let mut authored_negative_zero = CombEditionValueProperty::new(48_000, -0.).unwrap();
+        assert!(
+            authored_negative_zero
+                .next_points_into(0., 32, &mut output)
+                .unwrap()
+        );
+        assert_eq!(output[0].to_bits(), (-0_f32).to_bits());
     }
     type ValueBlock = (usize, &'static [u32], &'static [u32]);
     #[rustfmt::skip]
