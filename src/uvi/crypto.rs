@@ -7,6 +7,8 @@ use sha2::{Digest, Sha256};
 const MIX: u64 = 0xc6a4_a793_5bd1_e995;
 const STEP: u64 = 0x5851_f42d_4c95_7f2d;
 pub const PROGRAM_LIMIT: usize = 16 << 20;
+pub(crate) const PROGRAM_XML_LIMIT: usize = 32 << 20;
+pub(crate) const PROGRAM_NODE_LIMIT: u32 = 250_000;
 
 fn mix(value: u64) -> u64 {
     let value = value.wrapping_mul(MIX);
@@ -138,6 +140,136 @@ pub fn recover_key(cipher: &[u8; 16], plain: &[u8; 16], physical_offset: u64) ->
     Ok(found_key.load(Relaxed))
 }
 
+/// One plain ZIP entry is an observed UVIP wrapper; no archive files are extracted.
+fn unpack_program_zip(bytes: &[u8]) -> Result<Vec<u8>> {
+    use std::io::Read;
+    ensure!(
+        bytes.len() <= PROGRAM_XML_LIMIT,
+        "UVI ZIP program exceeds resource limit"
+    );
+    ensure!(
+        bytes.len() >= 30 && bytes.starts_with(b"PK\x03\x04"),
+        "Invalid UVI ZIP local header"
+    );
+    let word = |at| u16::from_le_bytes(bytes[at..at + 2].try_into().unwrap());
+    let dword = |at| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+    let (version, flags, method) = (word(4), word(6), word(8));
+    ensure!(
+        matches!(version, 10 | 20) && flags & !0x0800 == 0,
+        "Unsupported UVI ZIP version, encryption or flags"
+    );
+    ensure!(
+        matches!(method, 0 | 8) && (method == 0 || version == 20),
+        "Unsupported UVI ZIP compression method"
+    );
+    let (crc, compressed, uncompressed) = (dword(14), dword(18) as usize, dword(22) as usize);
+    ensure!(
+        compressed <= PROGRAM_XML_LIMIT && uncompressed <= PROGRAM_XML_LIMIT,
+        "UVI ZIP program exceeds resource limit"
+    );
+    let name_end = 30 + word(26) as usize;
+    let data_at = name_end + word(28) as usize;
+    let data_end = data_at + compressed;
+    let name = bytes
+        .get(30..name_end)
+        .context("Truncated UVI ZIP filename")?;
+    let name_text = std::str::from_utf8(name).context("Invalid UVI ZIP filename")?;
+    ensure!(
+        !name_text.is_empty()
+            && !name_text.contains(['\0', '/', '\\', ':'])
+            && name_text.to_ascii_lowercase().ends_with(".uvip"),
+        "Unsafe or unsupported UVI ZIP program filename"
+    );
+    let encoded = bytes
+        .get(data_at..data_end)
+        .context("Truncated UVI ZIP program data")?;
+    let central = bytes
+        .get(data_end..data_end + 46)
+        .context("Truncated UVI ZIP central header")?;
+    ensure!(
+        central.starts_with(b"PK\x01\x02"),
+        "UVI ZIP must contain exactly one program entry"
+    );
+    let cw = |at| u16::from_le_bytes(central[at..at + 2].try_into().unwrap());
+    let cd = |at| u32::from_le_bytes(central[at..at + 4].try_into().unwrap());
+    ensure!(
+        cw(6) == version
+            && cw(8) == flags
+            && cw(10) == method
+            && cd(16) == crc
+            && cd(20) as usize == compressed
+            && cd(24) as usize == uncompressed
+            && cw(34) == 0
+            && cd(42) == 0,
+        "UVI ZIP local and central headers disagree"
+    );
+    let attributes = cd(38);
+    ensure!(
+        attributes & 0x10 == 0 && matches!((attributes >> 16) & 0xf000, 0 | 0x8000),
+        "UVI ZIP program is not a regular file"
+    );
+    let central_name_end = data_end + 46 + cw(28) as usize;
+    ensure!(
+        bytes.get(data_end + 46..central_name_end) == Some(name),
+        "UVI ZIP filenames disagree"
+    );
+    let end_at = central_name_end + cw(30) as usize + cw(32) as usize;
+    let end = bytes
+        .get(end_at..end_at + 22)
+        .context("Truncated UVI ZIP end record")?;
+    let ew = |at| u16::from_le_bytes(end[at..at + 2].try_into().unwrap());
+    let ed = |at| u32::from_le_bytes(end[at..at + 4].try_into().unwrap());
+    ensure!(
+        end.starts_with(b"PK\x05\x06")
+            && ew(4) == 0
+            && ew(6) == 0
+            && ew(8) == 1
+            && ew(10) == 1
+            && ed(12) as usize == end_at - data_end
+            && ed(16) as usize == data_end
+            && end_at + 22 + ew(20) as usize == bytes.len(),
+        "Unsupported or inconsistent UVI ZIP directory"
+    );
+    let decoded = if method == 0 {
+        ensure!(compressed == uncompressed, "Stored UVI ZIP size mismatch");
+        encoded.to_vec()
+    } else {
+        let mut decoder = flate2::bufread::DeflateDecoder::new(encoded);
+        let mut decoded = Vec::new();
+        (&mut decoder)
+            .take(uncompressed as u64 + 1)
+            .read_to_end(&mut decoded)
+            .context("Invalid UVI ZIP deflate stream")?;
+        ensure!(
+            decoder.total_in() == compressed as u64,
+            "UVI ZIP deflate span mismatch"
+        );
+        decoded
+    };
+    ensure!(
+        decoded.len() == uncompressed && crc32fast::hash(&decoded) == crc,
+        "UVI ZIP program size or CRC mismatch"
+    );
+    Ok(decoded)
+}
+
+/// Decode either UTF-8 XML or the observed single-entry plain ZIP UVIP wrapper.
+pub fn decode_program_bytes(bytes: &[u8], namespace: &[u8]) -> Result<String> {
+    ensure!(
+        bytes.len() <= PROGRAM_XML_LIMIT,
+        "UVI Program bytes exceed resource limit"
+    );
+    let decoded;
+    let bytes = if bytes.starts_with(b"PK\x03\x04") {
+        decoded = unpack_program_zip(bytes)?;
+        decoded.as_slice()
+    } else {
+        bytes
+    };
+    let text = std::str::from_utf8(bytes).context("Decoded UVI program is not UTF-8")?;
+    decode_program(text, namespace)
+}
+
 fn decode_base64(text: &str, limit: usize) -> Result<Vec<u8>> {
     ensure!(
         text.len() <= limit.div_ceil(3) * 4 + 4096,
@@ -156,14 +288,14 @@ fn decode_base64(text: &str, limit: usize) -> Result<Vec<u8>> {
 /// Clear Program/UVI4 XML passes through; unsupported legacy protection is explicit.
 pub fn decode_program(text: &str, namespace: &[u8]) -> Result<String> {
     ensure!(
-        text.len() <= PROGRAM_LIMIT * 2,
+        text.len() <= PROGRAM_XML_LIMIT,
         "UVI Program XML exceeds resource limit"
     );
     let doc = Document::parse_with_options(
         text,
         ParsingOptions {
             allow_dtd: false,
-            nodes_limit: 100_000,
+            nodes_limit: PROGRAM_NODE_LIMIT,
             ..Default::default()
         },
     )
@@ -214,7 +346,7 @@ pub fn decode_program(text: &str, namespace: &[u8]) -> Result<String> {
         &decoded,
         ParsingOptions {
             allow_dtd: false,
-            nodes_limit: 100_000,
+            nodes_limit: PROGRAM_NODE_LIMIT,
             ..Default::default()
         },
     )
@@ -337,4 +469,109 @@ mod tests {
         transform(&mut cipher, recovered, offset);
         assert_eq!(cipher, plain);
     }
+    #[test]
+    fn authored_zip_program_requires_bounded_verified_single_regular_entry() {
+        use std::io::Write;
+        fn archive(plain: &[u8], method: u16, name: &[u8]) -> Vec<u8> {
+            let data = if method == 8 {
+                let mut encoder =
+                    flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+                encoder.write_all(plain).unwrap();
+                encoder.finish().unwrap()
+            } else {
+                plain.to_vec()
+            };
+            let crc = crc32fast::hash(plain);
+            let mut local = vec![0u8; 30];
+            local[..4].copy_from_slice(b"PK\x03\x04");
+            local[4..6].copy_from_slice(&20u16.to_le_bytes());
+            local[8..10].copy_from_slice(&method.to_le_bytes());
+            local[14..18].copy_from_slice(&crc.to_le_bytes());
+            local[18..22].copy_from_slice(&(data.len() as u32).to_le_bytes());
+            local[22..26].copy_from_slice(&(plain.len() as u32).to_le_bytes());
+            local[26..28].copy_from_slice(&(name.len() as u16).to_le_bytes());
+            local.extend_from_slice(name);
+            local.extend_from_slice(&data);
+            let central_at = local.len();
+            let mut central = vec![0u8; 46];
+            central[..4].copy_from_slice(b"PK\x01\x02");
+            central[4..6].copy_from_slice(&20u16.to_le_bytes());
+            central[6..8].copy_from_slice(&20u16.to_le_bytes());
+            central[10..12].copy_from_slice(&method.to_le_bytes());
+            central[16..20].copy_from_slice(&crc.to_le_bytes());
+            central[20..24].copy_from_slice(&(data.len() as u32).to_le_bytes());
+            central[24..28].copy_from_slice(&(plain.len() as u32).to_le_bytes());
+            central[28..30].copy_from_slice(&(name.len() as u16).to_le_bytes());
+            central.extend_from_slice(name);
+            let central_len = central.len();
+            local.extend_from_slice(&central);
+            let mut end = vec![0u8; 22];
+            end[..4].copy_from_slice(b"PK\x05\x06");
+            end[8..10].copy_from_slice(&1u16.to_le_bytes());
+            end[10..12].copy_from_slice(&1u16.to_le_bytes());
+            end[12..16].copy_from_slice(&(central_len as u32).to_le_bytes());
+            end[16..20].copy_from_slice(&(central_at as u32).to_le_bytes());
+            local.extend_from_slice(&end);
+            local
+        }
+        let plain = b"<UVI4><Program Name=\"Authored ZIP\"/></UVI4>";
+        let namespace = b"authored metadata namespace";
+        assert_eq!(
+            decode_program_bytes(plain, namespace).unwrap(),
+            std::str::from_utf8(plain).unwrap()
+        );
+        for method in [0, 8] {
+            let zip = archive(plain, method, b"authored.uvip");
+            assert_eq!(
+                decode_program_bytes(&zip, namespace).unwrap(),
+                std::str::from_utf8(plain).unwrap()
+            );
+            for cut in 0..zip.len() {
+                assert!(decode_program_bytes(&zip[..cut], namespace).is_err());
+            }
+        }
+        let zip = archive(plain, 0, b"authored.uvip");
+        let central = 30 + b"authored.uvip".len() + plain.len();
+        let end = zip.len() - 22;
+        let mut bad = zip.clone();
+        bad[30 + b"authored.uvip".len() + 10] ^= 1;
+        assert_eq!(
+            decode_program_bytes(&bad, namespace)
+                .unwrap_err()
+                .to_string(),
+            "UVI ZIP program size or CRC mismatch"
+        );
+        let mut bad = zip.clone();
+        bad[22..26].copy_from_slice(&((PROGRAM_XML_LIMIT + 1) as u32).to_le_bytes());
+        bad[central + 24..central + 28]
+            .copy_from_slice(&((PROGRAM_XML_LIMIT + 1) as u32).to_le_bytes());
+        assert!(decode_program_bytes(&bad, namespace).is_err());
+        let mut bad = zip.clone();
+        bad[end + 8..end + 10].copy_from_slice(&2u16.to_le_bytes());
+        bad[end + 10..end + 12].copy_from_slice(&2u16.to_le_bytes());
+        assert!(decode_program_bytes(&bad, namespace).is_err());
+        let mut bad = zip.clone();
+        bad[6] = 1;
+        bad[central + 8] = 1;
+        assert!(decode_program_bytes(&bad, namespace).is_err());
+        let mut bad = zip.clone();
+        bad[central + 38..central + 42].copy_from_slice(&0xa000_0000u32.to_le_bytes());
+        assert!(decode_program_bytes(&bad, namespace).is_err());
+        let mut bad = zip.clone();
+        bad[central + 16] ^= 1;
+        assert!(decode_program_bytes(&bad, namespace).is_err());
+        for name in [
+            b"../unsafe.uvip".as_slice(),
+            b"dir/unsafe.uvip",
+            b"C:unsafe.uvip",
+        ] {
+            assert!(decode_program_bytes(&archive(plain, 8, name), namespace).is_err());
+        }
+        let mut bad = archive(plain, 8, b"authored.uvip");
+        let central = bad.len() - 22 - 46 - b"authored.uvip".len();
+        bad[22..26].copy_from_slice(&4u32.to_le_bytes());
+        bad[central + 24..central + 28].copy_from_slice(&4u32.to_le_bytes());
+        assert!(decode_program_bytes(&bad, namespace).is_err());
+    }
+
 }

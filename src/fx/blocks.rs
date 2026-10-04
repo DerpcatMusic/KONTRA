@@ -1299,7 +1299,7 @@ mod tests {
                 for (l, r) in bl.chunks_mut(31).zip(br.chunks_mut(31)) { b.process(l, r); }
             };
             #[cfg(feature = "plugin")]
-            assert_eq!(crate::plugin::tests::allocations(|| exercise()), 0);
+            assert_eq!(crate::test_support::allocations(|| exercise()), 0);
             #[cfg(not(feature = "plugin"))]
             exercise();
             assert_eq!(al, bl, "host block partition preserves delay clock");
@@ -1344,7 +1344,7 @@ mod tests {
         for shape in [-1.0, -0.5, -0.0001, 0.0, 0.0001, 0.125, 0.2499, 0.25, 0.2501, 0.5, 1.0] {
             values[0] = shape;
             let (mut l, mut r) = (input, input.map(|x| -x));
-            assert_eq!(crate::plugin::tests::allocations(|| {
+            assert_eq!(crate::test_support::allocations(|| {
                 assert!(d.tune(Kind::SurroundPanner, &values, RATE));
                 d.process(&mut l, &mut r);
             }), 0);
@@ -1368,7 +1368,7 @@ mod tests {
         assert!(crate::engine::filter::unsupported_at(&program.insert, Some(8)).is_empty());
         let mut processor = program.processor(RATE, input.len());
         let (mut l, mut r) = (input, input);
-        assert_eq!(crate::plugin::tests::allocations(|| processor.process(&mut l, &mut r)), 0);
+        assert_eq!(crate::test_support::allocations(|| processor.process(&mut l, &mut r)), 0);
         for (x, y) in input.iter().zip(l) {
             assert!((f64::from(y) - reference(1.0, f64::from(*x)) * 0.79292566).abs() < 2e-6);
         }
@@ -1397,7 +1397,7 @@ mod tests {
         let mut d = Drive::default();
         for (drive, expected) in cases {
             values[1] = drive;
-            assert_eq!(crate::plugin::tests::allocations(|| {
+            assert_eq!(crate::test_support::allocations(|| {
                 assert!(d.tune(Kind::Distortion, &values, RATE));
                 let [k, out, _, _, negative, positive, ..] = d.c;
                 assert_eq!(out, 1.0, "Tube has no drive makeup");
@@ -1466,7 +1466,7 @@ mod tests {
                 values[1] = drive;
                 let (mut l, mut r) = (input, input);
                 r.reverse();
-                assert_eq!(crate::plugin::tests::allocations(|| {
+                assert_eq!(crate::test_support::allocations(|| {
                     d.clear();
                     assert!(d.tune(Kind::Distortion, &values, rate));
                     let [drive, power, _, _, threshold, scale, ..] = d.c;
@@ -1520,7 +1520,7 @@ mod tests {
                     l[0] = 1.0;
                     r[7] = -0.25;
                     let (mut split_l, mut split_r) = (l, r);
-                    assert_eq!(crate::plugin::tests::allocations(|| {
+                    assert_eq!(crate::test_support::allocations(|| {
                         assert!(full.tune(Kind::Distortion, &fields, rate));
                         let a = poles[damping_index][rate_index];
                         assert!((f64::from(full.c[2]) - a).abs() < 3e-6);
@@ -1580,7 +1580,7 @@ mod tests {
             fields[2] = 1.0;
             let mut drive = Drive::default();
             let mut dc_residual = [0.0; 2];
-            assert_eq!(crate::plugin::tests::allocations(|| {
+            assert_eq!(crate::test_support::allocations(|| {
                 drive.tune(Kind::Distortion, &fields, rate);
                 assert_eq!(&drive.c[6..11], &dc_reference(rate));
                 let coefficients = drive.c;
@@ -1639,7 +1639,7 @@ mod tests {
             eprintln!("Distortion DC residual rate{rate}: left={} right={}", dc_residual[0], dc_residual[1]);
             assert!(dc_residual.into_iter().all(|x| x < 1e-4));
             let block = Block::new(&effect(Kind::Distortion, &[0.0, 0.0, 1.0]), rate).unwrap();
-            assert_eq!(crate::plugin::tests::allocations(|| {
+            assert_eq!(crate::test_support::allocations(|| {
                 assert_eq!(block.tail(0.0), 0);
                 let radius = (-dc_reference(rate)[4]).sqrt();
                 let expected = ((super::super::processor::SILENCE / 1.0).ln() / radius.ln()).ceil() as usize;
@@ -1699,7 +1699,7 @@ mod tests {
             }
         };
         #[cfg(feature = "plugin")]
-        assert_eq!(crate::plugin::tests::allocations(check), 0);
+        assert_eq!(crate::test_support::allocations(check), 0);
         #[cfg(not(feature = "plugin"))]
         check();
     }

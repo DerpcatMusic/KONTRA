@@ -1639,6 +1639,7 @@ dependencies = [
  "derpcat-flight-recorder",
  "dirs",
  "fastlz",
+ "flate2",
  "getrandom 0.4.3",
  "hound",
  "libc",

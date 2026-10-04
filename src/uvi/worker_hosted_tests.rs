@@ -89,13 +89,7 @@ fn fixture() -> Fixture {
     }
 }
 fn check_callback(check: impl FnMut()) {
-    #[cfg(feature = "plugin")]
-    assert_eq!(crate::plugin::tests::allocations(check), 0);
-    #[cfg(not(feature = "plugin"))]
-    {
-        let mut check = check;
-        check();
-    }
+    assert_eq!(crate::test_support::allocations(check), 0);
 }
 fn note(frame: u64) -> Input {
     Input {

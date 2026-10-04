@@ -6,7 +6,7 @@ use super::{
 };
 use crate::artwork::{self, Picture};
 use anyhow::{Context, Result, ensure};
-use moose::mui::mui::scene::Image;
+use moose::mui::mui::{scene::Image, prelude::Font};
 use std::{
     collections::{HashMap, HashSet},
     io::Cursor,
@@ -14,6 +14,7 @@ use std::{
 };
 
 const COMPRESSED_LIMIT: usize = 16 << 20;
+const FONT_LIMIT: usize = 4 << 20;
 const IMAGE_LIMIT: usize = 64 << 20;
 const CACHE_LIMIT: usize = 128 << 20;
 const REFERENCE_LIMIT: usize = 4096;
@@ -102,6 +103,7 @@ fn dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
 pub struct Diagnostics {
     pub failed: u32,
     pub limited: u32,
+    pub font_failed: u32,
 }
 
 pub struct UiAssets {
@@ -110,6 +112,7 @@ pub struct UiAssets {
     sources: HashMap<String, Option<Arc<Image>>>,
     attempted: HashSet<String>,
     pictures: Arc<HashMap<String, Arc<Picture>>>,
+    fonts: Arc<HashMap<String, Font>>,
     resident: usize,
     diagnostics: Diagnostics,
     reference_limit_reported: bool,
@@ -143,6 +146,7 @@ impl UiAssets {
             sources: HashMap::new(),
             attempted: HashSet::new(),
             pictures: Arc::new(HashMap::new()),
+            fonts: Arc::default(),
             resident: 0,
             diagnostics: Diagnostics::default(),
             reference_limit_reported: false,
@@ -266,6 +270,50 @@ impl UiAssets {
         );
     }
 
+    /// Faces own their validated bytes and IDs. No global registration outlives
+    /// this load; the published scene retains only the handles it still draws.
+    pub fn fonts(&self) -> Arc<HashMap<String, Font>> { self.fonts.clone() }
+
+    fn load_font(&mut self, path: &str) {
+        if path.is_empty() { return; }
+        if path.len() > PATH_LIMIT || path.contains('\0') {
+            if !self.reference_limit_reported {
+                self.diagnostics.limited = self.diagnostics.limited.saturating_add(1);
+                self.reference_limit_reported = true;
+            }
+            return;
+        }
+        // Font and picture names share one reference budget without collisions.
+        let attempted = format!("\0font:{path}");
+        if self.attempted.contains(&attempted) { return; }
+        if self.attempted.len() >= REFERENCE_LIMIT {
+            if !self.reference_limit_reported {
+                self.diagnostics.limited = self.diagnostics.limited.saturating_add(1);
+                self.reference_limit_reported = true;
+            }
+            return;
+        }
+        self.attempted.insert(attempted);
+        let loaded = (|| {
+            let artwork = UiArtwork { path: path.replace('\\', "/"),
+                bank_root: path.starts_with(['/', '\\']) };
+            let path = resource_path(&artwork).ok()?;
+            let remaining = CACHE_LIMIT.saturating_sub(self.resident).min(FONT_LIMIT);
+            let bytes = self.library.data(&self.program_path, &path, remaining as u64).ok()?;
+            if !self.reserve(bytes.len()) { return None; }
+            let size = bytes.len();
+            let font = Font::new(bytes).ok()?;
+            self.resident += size;
+            Some(font)
+        })();
+        if let Some(font) = loaded {
+            Arc::make_mut(&mut self.fonts).insert(path.into(), font);
+        } else {
+            self.diagnostics.failed = self.diagnostics.failed.saturating_add(1);
+            self.diagnostics.font_failed = self.diagnostics.font_failed.saturating_add(1);
+        }
+    }
+
     /// Refresh only on the loader/control thread; published pictures are immutable.
     /// Missing or rejected artwork leaves renderer controls intact with their fallback.
     pub fn refresh(&mut self, snapshots: &[UiSnapshot]) -> Arc<HashMap<String, Arc<Picture>>> {
@@ -275,6 +323,7 @@ impl UiAssets {
             }
             for widget in &snapshot.widgets {
                 let style = &widget.style;
+                if let Some(font) = &style.font { self.load_font(font); }
                 for artwork in [
                     &style.background_image,
                     &style.image,
@@ -371,6 +420,8 @@ mod tests {
             ("horizontal.png", png(4, 1, &stripe)),
             ("vertical.png", png(1, 4, &stripe)),
             ("bad.png", b"invalid picture".to_vec()),
+            ("font.ttf", include_bytes!("../../assets/NotoSans.ttf").to_vec()),
+            ("bad.ttf", b"invalid font".to_vec()),
         ];
         let mut members = Vec::new();
         for (name, data) in &files {
@@ -492,6 +543,47 @@ mod tests {
         };
         let published = assets.refresh(&[snapshot.clone()]);
         assert!(Arc::ptr_eq(&published, &assets.refresh(&[snapshot])));
+        std::fs::remove_file(config.bank).unwrap();
+    }
+
+    #[test]
+    fn bank_fonts_own_bytes_cache_failures_and_obey_shared_limits() {
+        let config = bank();
+        let mut assets = UiAssets::open(&config).unwrap();
+        assets.load_font("font.ttf");
+        let published = assets.fonts();
+        let font = published.get("font.ttf").unwrap().clone();
+        let resident = assets.resident_bytes();
+        assert_eq!(font.as_ref().len(), resident);
+        assets.load_font("font.ttf");
+        assert_eq!(assets.fonts()["font.ttf"].id(), font.id());
+        assert_eq!(assets.resident_bytes(), resident);
+        for path in ["bad.ttf", "missing.ttf", "../../outside.ttf", "C:/outside.ttf"] {
+            assets.load_font(path);
+            let failed = assets.diagnostics().font_failed;
+            assets.load_font(path);
+            assert_eq!(assets.diagnostics().font_failed, failed);
+            assert!(!assets.fonts().contains_key(path));
+        }
+        assert_eq!(assets.diagnostics().font_failed, 4);
+        drop(assets);
+        // A scene can finish drawing after the load owner is removed.
+        assert!(!font.as_ref().is_empty());
+        let mut next = UiAssets::open(&config).unwrap();
+        next.load_font("font.ttf");
+        assert_ne!(next.fonts()["font.ttf"].id(), font.id());
+        let mut bounded = UiAssets::open(&config).unwrap();
+        bounded.resident = CACHE_LIMIT;
+        bounded.load_font("font.ttf");
+        assert!(bounded.fonts().is_empty());
+        assert_eq!(bounded.resident_bytes(), CACHE_LIMIT);
+        bounded.resident = 0;
+        while bounded.attempted.len() < REFERENCE_LIMIT {
+            bounded.attempted.insert(format!("authored-{}", bounded.attempted.len()));
+        }
+        bounded.load_font("/font.ttf");
+        assert!(bounded.fonts().is_empty());
+        assert!(bounded.diagnostics().limited > 0);
         std::fs::remove_file(config.bank).unwrap();
     }
 

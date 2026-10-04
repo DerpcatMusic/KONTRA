@@ -335,6 +335,10 @@ pub enum Status {
     Stopped,
 }
 
+#[path = "worker_activity.rs"]
+mod activity;
+pub use activity::{LoadStage, ResourceActivity, WorkerLoadActivity};
+
 #[derive(Debug, Default, Clone, Copy, serde::Serialize)]
 pub struct Stats {
     /// Rejected submissions (excluding Full) and fatal worker failures.
@@ -456,6 +460,8 @@ impl InitializationTiming {
 #[derive(Default)]
 struct Details {
     initialization: InitializationTiming,
+    resource_activity: ResourceActivity,
+    activity_cache: Option<(Instant, &'static str, Status, usize, Arc<WorkerLoadActivity>)>,
     failure: Option<String>,
     phase: &'static str,
     phase_frame: u64,
@@ -778,6 +784,39 @@ impl Worker {
             .initialization
             .current
             .map(|(phase, _)| (phase, details.initialization.started.elapsed()))
+    }
+
+    /// Cached bounded evidence for the loader and Info view. No graph traversal,
+    /// Lua request, PCM copy or whole diagnostic serialization is performed.
+    pub fn load_activity(&self) -> Arc<WorkerLoadActivity> {
+        let mut details = self.shared.details.lock().unwrap_or_else(|p| p.into_inner());
+        let status = self.status();
+        if let Some((at, phase, previous_status, stages, snapshot)) = &details.activity_cache
+            && at.elapsed() < Duration::from_millis(250)
+            && *phase == details.phase && *previous_status == status
+            && *stages == details.initialization.stages.len() {
+            return snapshot.clone();
+        }
+        let timing = &details.initialization;
+        let mut stages = timing.stages.iter().take(32).map(|&(phase, elapsed, outcome)|
+            LoadStage { phase, elapsed, outcome }).collect::<Vec<_>>();
+        if let Some((phase, at)) = timing.current {
+            stages.push(LoadStage { phase, elapsed: at.elapsed(), outcome: "in_progress" });
+        }
+        let counts = details.program_report.as_ref().map(|report| &report["counts"]);
+        let count = |key: &str| counts.and_then(|counts| counts[key].as_u64())
+            .and_then(|n| usize::try_from(n).ok());
+        let snapshot = Arc::new(WorkerLoadActivity {
+            status, phase: details.phase, frame: details.phase_frame,
+            elapsed: timing.finished.map_or_else(|| timing.started.elapsed(), |(elapsed, _)| elapsed),
+            stages, nodes: count("nodes"), sample_zones: count("sample_zones"),
+            script_processors: count("script_processors"), resources: details.resource_activity.clone(),
+            failure: details.failure.as_ref().map(|reason| reason.chars().take(4096).collect()),
+            stats: self.stats(),
+        });
+        details.activity_cache = Some((Instant::now(), details.phase, status,
+            details.initialization.stages.len(), snapshot.clone()));
+        snapshot
     }
 
     /// Private control-thread inspection. A parsed/admitted graph is not proof
@@ -1582,7 +1621,14 @@ fn run(
         serde_json::to_string(&unsupported)?
     );
     initialization_stage(shared, trace, "uvi_resources");
-    let resources = BankResources::new(library.clone(), &loaded.path, library.samples(&loaded)?)?;
+    let samples = library.samples_with_progress(&loaded, &mut |total, loaded, unique_decodes, bytes, current| {
+        let mut details = shared.details.lock().unwrap_or_else(|p| p.into_inner());
+        details.resource_activity = ResourceActivity {
+            total: Some(total), loaded, unique_decodes, bytes,
+            current: current.map(|path| path.chars().take(256).collect()),
+        };
+    })?;
+    let resources = BankResources::new(library.clone(), &loaded.path, samples)?;
     let activation = shared
         .hosted
         .as_ref()
@@ -1919,6 +1965,39 @@ pub(crate) mod tests {
         assert_eq!(*seen.borrow(), vec!["uvi_restore_apply"]);
         assert!(restored.saved_state().is_ok());
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn live_load_activity_is_cached_bounded_and_refreshes_on_stage_or_failure() {
+        let worker = Worker { shared: Arc::new(Shared::new(1, 2)), thread: None,
+            cursor: Some(PacketCursor::default()) };
+        let first = worker.load_activity();
+        assert!(Arc::ptr_eq(&first, &worker.load_activity()));
+        {
+            let mut details = worker.shared.details.lock().unwrap();
+            details.phase = "resources";
+            details.initialization.stage("resources");
+            details.resource_activity = ResourceActivity { total: Some(4), loaded: 2,
+                unique_decodes: 1, bytes: 4096, current: Some("Samples/test.wav".into()) };
+        }
+        let loading = worker.load_activity();
+        assert!(!Arc::ptr_eq(&first, &loading));
+        assert_eq!((loading.resources.total, loading.resources.loaded, loading.resources.bytes), (Some(4), 2, 4096));
+        assert_eq!(loading.stages.last().unwrap().outcome, "in_progress");
+        {
+            let mut details = worker.shared.details.lock().unwrap();
+            details.initialization.finish("failed");
+            details.failure = Some("authored error".repeat(1000));
+            assert!(details.ui_request.is_none() && details.state_request.is_none() && details.runtime_request.is_none());
+        }
+        worker.shared.status.store(Status::Failed as u8, Ordering::Release);
+        let failed = worker.load_activity();
+        assert!(!Arc::ptr_eq(&loading, &failed));
+        assert_eq!(failed.stages.last().unwrap().outcome, "failed");
+        assert_eq!(failed.failure.as_ref().unwrap().chars().count(), 4096);
+        let elapsed = failed.elapsed;
+        worker.shared.details.lock().unwrap().activity_cache = None;
+        assert_eq!(worker.load_activity().elapsed, elapsed);
     }
 
     #[test]
@@ -2452,17 +2531,11 @@ function onSave()error('runtime inspection must not run callbacks')end
                 PacketError::Stopped
             );
         };
-        #[cfg(feature = "plugin")]
         assert_eq!(
-            crate::plugin::tests::allocations(check),
+            crate::test_support::allocations(check),
             0,
             "packet paths allocate or free"
         );
-        #[cfg(not(feature = "plugin"))]
-        {
-            let mut check = check;
-            check();
-        }
         let stats = shared.stats();
         assert_eq!(stats.backpressure, 1);
         assert_eq!(stats.underruns, 3);
@@ -2647,13 +2720,7 @@ function onSave()error('runtime inspection must not run callbacks')end
                 PacketError::Stopped
             );
         };
-        #[cfg(feature = "plugin")]
-        assert_eq!(crate::plugin::tests::allocations(check), 0);
-        #[cfg(not(feature = "plugin"))]
-        {
-            let mut check = check;
-            check();
-        }
+        assert_eq!(crate::test_support::allocations(check), 0);
         drop(port);
         worker.stop();
     }
@@ -2963,13 +3030,7 @@ function onSave()error('runtime inspection must not run callbacks')end
             assert_eq!(queued.ui_count, 1);
             assert!(queued.ui_inputs[0].edit == edit.edit);
         };
-        #[cfg(feature = "plugin")]
-        assert_eq!(crate::plugin::tests::allocations(check), 0);
-        #[cfg(not(feature = "plugin"))]
-        {
-            let mut check = check;
-            check();
-        }
+        assert_eq!(crate::test_support::allocations(check), 0);
     }
 
     #[test]

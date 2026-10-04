@@ -17,6 +17,18 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
 };
 
+/// An existing graph node cannot execute as a modulation source.
+#[derive(Debug)]
+pub(crate) struct UnsupportedSourceKind {
+    pub(crate) node: NodeId,
+}
+impl std::fmt::Display for UnsupportedSourceKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Unsupported UVI source kind at node {}", self.node)
+    }
+}
+impl std::error::Error for UnsupportedSourceKind {}
+
 pub type Parameter = (NodeId, String);
 type SourceStateKey = (NodeId, Option<u32>, Option<u64>);
 type BuiltinStateKey = (u8, Option<u32>, Option<u64>);
@@ -1225,6 +1237,7 @@ struct MemoScratch {
     epoch: u64,
     values: Vec<f64>,
     stamps: Vec<u64>,
+    sources: FxHashMap<NodeId, (f64, bool)>,
 }
 impl MemoScratch {
     fn new(slots: usize) -> Self {
@@ -1232,9 +1245,11 @@ impl MemoScratch {
             epoch: 1,
             values: vec![0.; slots],
             stamps: vec![0; slots],
+            sources: FxHashMap::default(),
         }
     }
     fn begin(&mut self) {
+        self.sources.clear();
         self.epoch = self.epoch.wrapping_add(1);
         if self.epoch == 0 {
             self.stamps.fill(0);
@@ -1258,7 +1273,7 @@ pub struct ModulationGraph {
     parents: Vec<Option<NodeId>>,
     kinds: Vec<String>,
     bases: Vec<BTreeMap<String, String>>,
-    cached_parameters: Vec<BTreeMap<String, usize>>,
+    cached_parameters: Vec<FxHashMap<String, usize>>,
     parameter_values: Vec<CachedParameter>,
     node_target_slots: Vec<Vec<usize>>,
     connections: HashMap<Parameter, Vec<Connection>>,
@@ -1554,7 +1569,7 @@ impl ModulationGraph {
             parents: program.nodes.iter().map(|node| node.parent).collect(),
             kinds: program.nodes.iter().map(|n| n.kind.clone()).collect(),
             bases: program.nodes.iter().map(|n| n.attributes.clone()).collect(),
-            cached_parameters: vec![BTreeMap::new(); program.nodes.len()],
+            cached_parameters: vec![FxHashMap::default(); program.nodes.len()],
             parameter_values: Vec::new(),
             node_target_slots: vec![Vec::new(); program.nodes.len()],
             connections: HashMap::new(),
@@ -1718,22 +1733,21 @@ impl ModulationGraph {
                 }
                 s => {
                     let id = paths.resolve(c.owner, s)?;
-                    ensure!(
-                        matches!(
-                            program.nodes[id].kind.as_str(),
-                            "ConstantModulation"
-                                | "ScriptEventModulation"
-                                | "LFO"
-                                | "AnalogADSR"
-                                | "DAHDSR"
-                                | "AHD"
-                                | "MultiEnvelope"
-                                | "AttackDecayEnv"
-                                | "StdRandom"
-                                | "Drunk"
-                        ),
-                        "Unsupported UVI source kind at node {id}"
-                    );
+                    if !matches!(
+                        program.nodes[id].kind.as_str(),
+                        "ConstantModulation"
+                            | "ScriptEventModulation"
+                            | "LFO"
+                            | "AnalogADSR"
+                            | "DAHDSR"
+                            | "AHD"
+                            | "MultiEnvelope"
+                            | "AttackDecayEnv"
+                            | "StdRandom"
+                            | "Drunk"
+                    ) {
+                        return Err(UnsupportedSourceKind { node: id }.into());
+                    }
                     if program.nodes[id].kind == "LFO" {
                         let attributes = &program.nodes[id].attributes;
                         let wave = number(attributes, "WaveFormType", 0.)?;
@@ -3060,6 +3074,13 @@ impl ModulationGraph {
                 )
             }
             Source::Node(n) => {
+                let cache_source = matches!(self.kinds[n].as_str(), "ConstantModulation" | "ScriptEventModulation");
+                if cache_source {
+                    if let Some(&value) = memo.sources.get(&n) {
+                        ensure!(depth + 1 < DEPTH, "UVI modulation evaluation depth exceeds limit");
+                        return Ok(value);
+                    }
+                }
                 let bipolar = self.boolean(
                     n,
                     "Bipolar",
@@ -3162,6 +3183,10 @@ impl ModulationGraph {
                     }
                     _ => bail!("Unsupported UVI modulation source"),
                 };
+                if cache_source {
+                    ensure!(v.is_finite(), "Nonfinite UVI modulation source");
+                    memo.sources.insert(n, (v, bipolar));
+                }
                 (v, bipolar)
             }
         };
@@ -6026,6 +6051,67 @@ mod registered_proof {
             out.insert(p.clone(), v.to_bits());
         })?;
         Ok(out)
+    }
+    #[test]
+    fn source_memo_resets_between_same_frame_voices_inputs_and_live_writes() {
+        let p = parse_program(r#"<Program><ControlSignalSources><ConstantModulation Name="C" Value="0.4"/><ScriptEventModulation Name="S" EventId="7" Bipolar="1"/></ControlSignalSources><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"><Connections><SignalConnection Source="$Program/C" Destination="Gain" Ratio="1"/><SignalConnection Source="$Program/S" Destination="Gain" Ratio="1"/></Connections></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let player = p.sample_zones[0].player;
+        let constant = p.nodes.iter().position(|n| n.kind == "ConstantModulation").unwrap();
+        let script = p.nodes.iter().position(|n| n.kind == "ScriptEventModulation").unwrap();
+        let mut graph = ModulationGraph::new(&p).unwrap();
+        let mut input = Inputs::default();
+        let empty = HashMap::new();
+        for (instance, value) in [(1, -0.5), (2, 0.75)] {
+            input.instance = Some(instance);
+            input.voice = Some(instance as u32);
+            input.velocity = 80 + instance as u8;
+            input.key = 60 + instance as u8;
+            input.controllers[1] = instance as u8;
+            input.script_values.insert(7, value);
+            graph.evaluate(&input, &empty).unwrap();
+            assert_eq!(graph.memo.borrow().sources[&script].0.to_bits(), value.to_bits());
+            assert!(graph.constant_clocks.borrow().contains_key(&(constant, input.voice, input.instance)));
+        }
+        assert_eq!(graph.constant_clocks.borrow().len(), 2);
+        let nodes = HashSet::from([player]);
+        graph.update_live_parameter(script, "EventId", 8.).unwrap();
+        input.script_values.insert(8, -0.25);
+        graph.evaluate_registered_nodes_into(&input, &nodes, |_, _| {}).unwrap();
+        assert_eq!(graph.memo.borrow().sources[&script].0.to_bits(), (-0.25f64).to_bits());
+        // External overrides are a distinct pass at the same frame and voice.
+        let external = HashMap::from([((script, "EventId".into()), 9.)]);
+        input.script_values.insert(9, 0.5);
+        graph.evaluate_nodes_into(&input, &external, &nodes, |_, _| {}).unwrap();
+        assert_eq!(graph.memo.borrow().sources[&script].0.to_bits(), 0.5f64.to_bits());
+        graph.update_live_parameter(script, "EventId", 128.).unwrap();
+        assert!(graph.evaluate_registered_nodes_into(&input, &nodes, |_, _| {}).is_err());
+    }
+    #[test]
+    fn source_memo_keeps_same_frame_state_and_resets_for_each_evaluation() {
+        let p = fixture();
+        let node = p.nodes.iter().position(|n| n.kind == "ConstantModulation").unwrap();
+        let mut graph = ModulationGraph::new(&p).unwrap();
+        let source = Source::Node(node);
+        let mut input = Inputs::default();
+        for frame in [0, 1, 31, 32, 63, 64, 255, 256] {
+            input.time_seconds = frame as f64 / input.sample_rate;
+            graph.update_live_parameter(node, "Value", if frame < 32 { 0.4 } else { 0.8 }).unwrap();
+            let mut memo = graph.memo.borrow_mut();
+            memo.begin();
+            assert!(memo.sources.is_empty());
+            let first = graph.source(&source, &input, Overrides::Registered, &mut memo, 0).unwrap();
+            let repeated = graph.source(&source, &input, Overrides::Registered, &mut memo, 0).unwrap();
+            memo.sources.clear();
+            let original = graph.source(&source, &input, Overrides::Registered, &mut memo, 0).unwrap();
+            assert_eq!((first.0.to_bits(), first.1), (repeated.0.to_bits(), repeated.1));
+            assert_eq!((first.0.to_bits(), first.1), (original.0.to_bits(), original.1));
+            assert!(graph.source(&source, &input, Overrides::Registered, &mut memo, DEPTH - 1).is_err());
+        }
+        graph.update_live_parameter(node, "Style", 2.).unwrap();
+        let mut memo = graph.memo.borrow_mut();
+        memo.begin();
+        assert!(graph.source(&source, &input, Overrides::Registered, &mut memo, 0).is_err());
+        assert!(memo.sources.is_empty());
     }
     #[test]
     fn registered_updates_are_atomic_isolated_and_keep_defaults() {

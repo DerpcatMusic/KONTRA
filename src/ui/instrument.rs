@@ -97,7 +97,11 @@ pub fn notices(cx: &Cx, slot: usize) -> Option<El> {
     let mut out = Vec::new();
     if cx.selection.parts.get(slot).is_some_and(|p| p.uvi.is_some()) {
         if !v.loading && native_problem(&v.status) {
-            out.push(banner(Role::Danger, v.status.clone()));
+            let reason = v.load_report.as_ref().and_then(|report| report["failure"].as_str())
+                .map(|reason| reason.chars().take(240).collect::<String>());
+            let message = reason.map_or_else(|| v.status.clone(), |reason|
+                format!("{} {reason} See Info for failure details.",v.status));
+            out.push(banner(Role::Danger, message));
         }
         return (!out.is_empty()).then(|| col(out).gap(TIGHT).pad((INSET, SPACE)).shrink(0));
     }
@@ -191,16 +195,14 @@ pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     if cx.selection.parts.get(slot).is_some_and(|p| p.uvi.is_some()) {
         let v = &cx.view.parts[slot];
         let status = native_wait(v.loading, &v.status);
-        if native_problem(&v.status) {
-            return caption(status.clone()).named(status).fill(secondary()).lines(3).pad(INSET)
-                .id(format!("stage-{slot}"));
-        }
         #[cfg(feature = "uvi")]
         if let Some((published, current)) = native_panel(cx, slot) {
             if let Some(snapshot) = published.snapshots.iter().rev().find(|s| s.root.performance_view) {
                 let shared = &cx.p.shared;
-                return super::uvi_instrument::view(ui, cx.state.uvi.entry(slot).or_default(), slot,
-                    current, published.stamp, snapshot, &published.pictures,
+                let state = cx.state.uvi.entry(slot).or_default();
+                state.set_interactive(!native_problem(&v.status));
+                return super::uvi_instrument::view(ui, state, slot,
+                    current, published.stamp, snapshot, &published.pictures, &published.fonts,
                     |stamp, input| shared.edit_uvi(slot, stamp, input.edit));
             }
             return caption("This instrument has no performance controls.").fill(secondary()).pad(INSET);
@@ -230,9 +232,9 @@ pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
 pub(super) fn native_panel(cx: &Cx, slot: usize) -> Option<(Arc<crate::plugin::uvi_ui::Published>, crate::uvi::worker::Stamp)> {
     let source = cx.selection.parts.get(slot)?.uvi.as_ref()?;
     let view = cx.view.parts.get(slot)?;
-    if native_problem(&view.status) { return None; }
     let published = view.uvi_ui.clone()?;
-    if !view.uvi_matches(source, published.stamp) { return None; }
+    if !view.uvi_matches(source, published.stamp)
+        || published.stamp.epoch != cx.p.shared.uvi_activation_epoch() { return None; }
     let generation = cx.p.shared.part(slot)?.uvi_generation.load(std::sync::atomic::Ordering::Acquire);
     Some((published.clone(), crate::uvi::worker::Stamp { epoch: cx.p.shared.uvi_activation_epoch(), generation,
         frame: published.stamp.frame }))
@@ -396,6 +398,83 @@ pub fn mapping(ui: &mut Ui, cx: &mut Cx) -> El {
     .min_h(0)
 }
 
+#[cfg(feature = "uvi")]
+fn native_stage_name(phase: &str) -> &str {
+    match phase {
+        "starting" => "Starting worker",
+        "bank_open" => "Opening bank",
+        "program_decode" => "Parsing program",
+        "graph_diagnosis_and_preflight" => "Inspecting program graph",
+        "preflight" | "player_preflight" => "Checking playback support",
+        "resources" => "Decoding initial sample resources",
+        "modules" => "Reading script modules",
+        "lua_init" => "Initializing scripts and controls",
+        "renderer_init" | "restore_renderer_init" => "Preparing sound renderer",
+        "restore_validation_and_audio" => "Validating restored audio",
+        "restore_apply" => "Restoring settings",
+        "player_finalize" => "Finishing player initialization",
+        "serve" => "Rendering playback",
+        _ => phase,
+    }
+}
+
+/// Formats only the worker's bounded scalar snapshot; never asks Lua or copies
+/// the graph. Initial resource totals deliberately exclude authored later loads.
+#[cfg(feature = "uvi")]
+fn native_activity_lines(activity: &crate::uvi::worker::WorkerLoadActivity) -> Vec<(String, bool)> {
+    use crate::uvi::worker::Status;
+    let mut lines = Vec::new();
+    let completed = activity.stages.iter().filter(|stage| stage.outcome == "finished").count();
+    let state = match activity.status {
+        Status::Starting => "In progress",
+        Status::Ready => "Worker ready",
+        Status::Failed => "Worker failed",
+        Status::Stopped => "Worker stopped",
+    };
+    lines.push((format!("{state} · {:.1} s initialization · {completed} completed stages", activity.elapsed.as_secs_f64()),
+        activity.status == Status::Failed));
+    if let Some(nodes) = activity.nodes {
+        lines.push((format!("Parsed: {nodes} graph nodes · {} sample zones · {} script processors",
+            activity.sample_zones.unwrap_or(0), activity.script_processors.unwrap_or(0)), false));
+    } else {
+        lines.push(("Program graph: not yet parsed".into(), false));
+    }
+    let resources = &activity.resources;
+    if let Some(total) = resources.total {
+        lines.push((format!("Initial resources: {} / {total} paths loaded · {} unique decodes · {:.2} MiB decoded PCM",
+            resources.loaded, resources.unique_decodes, resources.bytes as f64 / (1024. * 1024.)), false));
+        if let Some(path) = &resources.current {
+            lines.push((format!("Current resource: {path}"), false));
+        }
+        lines.push(("Resource totals cover the initial program references; additional resources loaded by scripts are not counted here.".into(), false));
+    } else {
+        lines.push(("Initial resources: waiting for program resource inventory".into(), false));
+    }
+    for stage in &activity.stages {
+        let outcome = match stage.outcome {
+            "finished" => "Completed",
+            "in_progress" => "Current",
+            "failed" => "Failed",
+            "cancelled" => "Cancelled",
+            other => other,
+        };
+        lines.push((format!("{outcome} · {} · {:.0} ms", native_stage_name(stage.phase),
+            stage.elapsed.as_secs_f64() * 1000.), stage.outcome == "failed"));
+    }
+    if let Some(reason) = &activity.failure {
+        lines.push((format!("Worker error during {} at frame {}: {reason}",
+            native_stage_name(activity.phase), activity.frame), true));
+    }
+    let stats = activity.stats;
+    lines.push((format!("Playback: {} rendered packets · {} active voice instances · {} worker errors",
+        stats.rendered_blocks, stats.active_voices, stats.errors), stats.errors != 0));
+    lines.push((format!("Packet reads unavailable: {} · queue backpressure: {} · stale packets: {} · omitted script prints: {}",
+        stats.underruns, stats.backpressure, stats.stale_packets, stats.dropped_logs),
+        stats.underruns != 0 || stats.dropped_logs != 0));
+    lines.push(("Voice instances include held or releasing silent voices. Packet counters do not measure audio-driver dropouts.".into(), false));
+    lines
+}
+
 /// What was loaded and what could not be.
 pub fn info(ui: &mut Ui, cx: &mut Cx) -> El {
     let (logs, logs_el) = action(ui, "info-open-logs", "Open Logs for this load", false);
@@ -421,7 +500,37 @@ pub fn info(ui: &mut Ui, cx: &mut Cx) -> El {
             caption(format!("Program: {}", source.member)).fill(secondary()).lines(4),
             body(status).lines(3).id("native-instrument-status"),
             caption("Playback and controls follow this UVI program. Key mapping and the Sound editor are unavailable; use the instrument’s Rack controls.")
-                .fill(secondary()).lines(4), logs_el];
+                .fill(secondary()).lines(4)];
+        if let Some(report) = &v.load_report {
+            if let Some(reason) = report["failure"].as_str().or_else(|| report["failure"]["reason"].as_str()) {
+                rows.push(body(reason).fill(Role::Warning).lines(8).id("uvi-load-failure"));
+            }
+            let endpoint = &report["terminal_failure"]["endpoint"];
+            if let Some(stage) = endpoint["stage"].as_str() {
+                rows.push(caption(format!("Audio endpoint: {stage} · frame {}", endpoint["frame"].as_u64().unwrap_or(0)))
+                    .fill(secondary()).lines(3));
+            } else if let Some(code) = report["terminal_failure"]["code"].as_str() {
+                let location = match code {
+                    "uvi_worker_configuration_failed" => "Configuring the worker",
+                    "uvi_worker_start_failed" => "Starting the worker",
+                    "uvi_delay_admission_failed" => "Preparing host audio buffers",
+                    "uvi_endpoint_failed" => "Connecting the audio endpoint",
+                    "uvi_worker_failed" => "UVI playback worker",
+                    "uvi_audio_endpoint_failed" => "Audio endpoint",
+                    _ => code,
+                };
+                rows.push(caption(format!("Failure location: {location}")).fill(secondary()).lines(3));
+            }
+        }
+        #[cfg(feature = "uvi")]
+        if let Some(activity) = &v.uvi_activity {
+            rows.push(section("Loading details"));
+            for (index, (line, warning)) in native_activity_lines(activity).into_iter().enumerate() {
+                rows.push(body(line).text_size(TEXT).fill(if warning { Role::Warning.into() } else { secondary() })
+                    .lines(6).shrink(0).id(format!("uvi-load-detail-{index}")));
+            }
+        }
+        rows.push(logs_el);
         if let Some(path) = crate::diagnostics::log_path() {
             rows.push(caption(format!("Log file: {}", path.display())).fill(Role::Dim).lines(4));
         }

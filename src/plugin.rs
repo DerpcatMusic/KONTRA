@@ -39,11 +39,13 @@ mod uvi_state;
 #[cfg(feature = "uvi")]
 pub(crate) mod uvi_load;
 #[cfg(feature = "uvi")]
+use uvi_load::{UviPrepared, install_prepared_uvi, prepare_uvi, uvi_load_key};
+#[cfg(feature = "uvi")]
 mod uvi_delay;
+#[cfg(feature = "uvi")]
+use uvi_delay::{UVI_LEAD_PACKETS, UviDelayHandoff, UviDelayPreparation, admitted_uvi_latency, physical_uvi_latency, uvi_delay_ready};
 #[cfg(all(test, feature = "uvi"))]
 mod uvi_integration_tests;
-#[cfg(feature = "uvi")]
-const UVI_LEAD_PACKETS: usize = 16;
 
 /// Opaque native persistence, shared by rack/UI clones. Debug never prints
 /// authored values. The wire format remains the existing byte vector.
@@ -571,6 +573,8 @@ pub(crate) struct PartShared {
     #[cfg(feature = "uvi")]
     uvi_failed: AtomicBool,
     #[cfg(feature = "uvi")]
+    uvi_failure: uvi::FailureAtoms,
+    #[cfg(feature = "uvi")]
     uvi_state_frame: AtomicU64,
     pub(crate) generation: AtomicU64,
     /// Out of [`crate::engine::LOAD_DONE`], rising within each load.
@@ -580,6 +584,35 @@ pub(crate) struct PartShared {
     underruns: AtomicU64,
     mics: [AtomicU16; OUTS],
     measuring: AtomicBool,
+}
+
+#[cfg(feature = "uvi")]
+impl PartShared {
+    #[track_caller]
+    fn record_uvi_failure(&self, audio: &uvi_control::Audio, error: uvi::Error,
+        stage: uvi::FailureStage, frame: u64) {
+        // A retiring or superseded endpoint cannot fault its replacement.
+        if self.uvi_generation.load(Ordering::Acquire) != audio.generation()
+            || self.uvi_part_generation.load(Ordering::Acquire) != audio.part_generation() {
+            return;
+        }
+        let (error, frame, source, line) = match audio.slot().error_origin() {
+            Some((error, frame, line)) => (error, frame, "src/plugin/uvi.rs", line),
+            None => (error, frame, "src/plugin.rs", std::panic::Location::caller().line()),
+        };
+        if self.uvi_failure.record(uvi::Failure { error, frame, source, line, stage,
+            epoch: audio.epoch(), generation: audio.generation() }) {
+            self.uvi_failed.store(true, Ordering::Release);
+        }
+    }
+    pub(crate) fn uvi_failure(&self, epoch: u64, generation: u64) -> Option<uvi::Failure> {
+        if !self.uvi_failed.load(Ordering::Acquire)
+            || self.uvi_generation.load(Ordering::Acquire) != generation {
+            return None;
+        }
+        let failure = self.uvi_failure.snapshot(epoch, generation)?;
+        (self.uvi_generation.load(Ordering::Acquire) == generation).then_some(failure)
+    }
 }
 
 pub struct Shared {
@@ -807,6 +840,8 @@ fn first_script_live(rt: &Runtime) -> Box<Live> {
 pub(crate) struct PartView {
     #[cfg(feature = "uvi")]
     pub(crate) uvi_ui: Option<Arc<uvi_ui::Published>>,
+    #[cfg(feature = "uvi")]
+    pub(crate) uvi_activity: Option<Arc<crate::uvi::worker::WorkerLoadActivity>>,
     #[cfg(feature = "uvi")]
     pub(crate) uvi_activation: Option<uvi_load::Activation>,
     pub(crate) program: u32,
@@ -2303,279 +2338,6 @@ fn catalog_uvi_receipt(view: &mut View, requested: Option<&library::UviRequest>)
 
 pub struct Load;
 
-#[cfg(feature = "uvi")]
-#[derive(Clone, PartialEq, Eq)]
-struct UviLoadKey {
-    request: library::UviRequest,
-    epoch: u64,
-    rate: u64,
-    max_host_frames: usize,
-    catalog: u64,
-    /// Exact active Kontakt identity/generation, without changing that engine.
-    target: Option<((String, u32, String), u64)>,
-    target_uvi: Option<library::UviSource>,
-}
-
-#[cfg(feature = "uvi")]
-struct UviPrepared {
-    key: UviLoadKey,
-    generation: u64,
-    worker: Option<crate::uvi::worker::Worker>,
-    status: &'static str,
-    ui: Option<uvi_ui::Mailbox>,
-}
-
-#[cfg(feature = "uvi")]
-fn uvi_load_key(params: &SamplerParams, selection: &Selection) -> Option<UviLoadKey> {
-    let request = selection.uvi_requested.clone()?;
-    let target = request.slot.and_then(|slot| {
-        let slot = slot as usize;
-        Some((selection.parts.get(slot)?.source(), params.shared.part(slot)?.generation.load(Ordering::Acquire)))
-    });
-    let target_uvi = request.slot.and_then(|slot| selection.parts.get(slot as usize)).and_then(|p| p.uvi.clone());
-    Some(UviLoadKey { request, epoch: params.shared.uvi_epoch.load(Ordering::Acquire),
-        rate: params.shared.rate.load(Ordering::Acquire),
-        max_host_frames: params.shared.uvi_max_host_frames.load(Ordering::Acquire),
-        catalog: params.shared.libraries.wanted(),
-        target_uvi, target })
-}
-
-#[cfg(feature = "uvi")]
-fn prepare_uvi(params: &SamplerParams, selection: &Selection) {
-    use crate::uvi::worker::{Status, Worker};
-    const STARTING: &str = "Loading the UVI instrument; the current instrument is still playing.";
-    const READY: &str = "Preparing the UVI player for the rack…";
-    const FAILED: &str = "The UVI instrument could not be loaded; the current instrument is still playing.";
-    let key = uvi_load_key(params, selection);
-    let retired = {
-        let mut prepared = params.shared.uvi_prepared.lock().unwrap();
-        if prepared.as_ref().map(|p| &p.key) != key.as_ref() { prepared.take() } else { None }
-    };
-    // Stop/join and all graph/Lua/resource destruction run only on Load.
-    drop(retired);
-    let Some(key) = key else {
-        let mut view = params.shared.view.lock().unwrap();
-        if params.selection.read().unwrap().uvi_requested.is_none() {
-            view.uvi_attempted = None; view.uvi_status.clear(); view.uvi_ui = None;
-        }
-        return;
-    };
-    let missing = params.shared.uvi_prepared.lock().unwrap().is_none();
-    if missing {
-        let rate = f64::from_bits(key.rate);
-        let configured = if key.request.new && key.request.slot.is_some()
-            || key.request.slot.is_some() && key.target.is_none() {
-            Err("The UVI destination changed. Select its program again.")
-        } else if !(8000. ..=192000.).contains(&rate) || rate.fract() != 0. {
-            Err("The current sample rate is unsupported by this UVI instrument.")
-        } else {
-            params.shared.libraries.uvi_worker_config(&key.request.source, rate as u32)
-        };
-        if uvi_load_key(params, &params.selection.read().unwrap()) != Some(key.clone()) { return; }
-        let generation = params.shared.uvi_generation.fetch_add(1, Ordering::AcqRel) + 1;
-        let mut trace = crate::diagnostics::LoadTrace::new(&key.request.source.bank, 0, key.request.slot.map(|slot| slot as usize));
-        trace.detail("backend", "uvi");
-        trace.detail("member", key.request.source.member.clone());
-        trace.detail("epoch", key.epoch);
-        trace.detail("generation", generation);
-        trace.stage("uvi_controller_setup");
-        let (worker, status, ui) = match configured {
-            Ok(config) => {
-                let assets = match crate::uvi::ui_assets::UiAssets::open(&config) {
-                    Ok(assets) => Some(assets),
-                    Err(error) => { trace.issue("ui", "uvi_artwork_authority_unavailable", format!("{error:#}")); None }
-                };
-                match Worker::start_hosted(config, key.epoch, generation) {
-                    Ok(worker) => (Some(worker), STARTING, Some(uvi_ui::Mailbox::new(
-                        crate::uvi::worker::Stamp { epoch: key.epoch, generation, frame: 0 }, assets))),
-                    Err(error) => { trace.fail(format!("Starting UVI worker: {error:#}")); (None, FAILED, None) },
-                }
-            },
-            Err(reason) => { trace.fail(reason); (None, reason, None) },
-        };
-        trace.finish(if worker.is_some() { "worker_started" } else { "failed" });
-        let prepared = UviPrepared { key: key.clone(), generation, worker, status, ui };
-        if uvi_load_key(params, &params.selection.read().unwrap()) != Some(key.clone()) { drop(prepared); return; }
-        *params.shared.uvi_prepared.lock().unwrap() = Some(prepared);
-    }
-    let (status, failed, ui) = {
-        let mut prepared = params.shared.uvi_prepared.lock().unwrap();
-        let p = prepared.as_mut().unwrap();
-        let failed = match p.worker.as_ref().map(Worker::status) {
-            Some(Status::Ready) => { p.status = READY; None },
-            Some(Status::Failed | Status::Stopped) => { p.status = FAILED; p.worker.take() },
-            _ => None,
-        };
-        let ui = match (&p.worker, &mut p.ui) {
-            (Some(worker), Some(ui)) => ui.poll(worker),
-            _ => None,
-        };
-        let display = if p.status == STARTING {
-            p.worker.as_ref().and_then(Worker::initialization_progress)
-                .map(|progress| format!("{}; the current instrument is still playing.", uvi_load::loading_status(Some(progress))))
-                .unwrap_or_else(|| p.status.to_owned())
-        } else { p.status.to_owned() };
-        (display, failed, ui)
-    };
-    if let Some(worker) = &failed {
-        crate::diagnostics::event(crate::diagnostics::LogLevel::Error, "uvi", "uvi_staging_failed",
-            serde_json::json!({"path":key.request.source.bank, "member":key.request.source.member,
-                "epoch":key.epoch, "reason":worker.private_failure()}));
-    }
-    drop(failed);
-    if uvi_load_key(params, &params.selection.read().unwrap()) != Some(key.clone()) { return; }
-    let mut view = params.shared.view.lock().unwrap();
-    if params.selection.read().unwrap().uvi_requested.as_ref() == Some(&key.request)
-        && params.shared.uvi_epoch.load(Ordering::Acquire) == key.epoch {
-        if view.uvi_attempted.as_ref() != Some(&key.request) { view.uvi_ui = None; }
-        view.uvi_attempted = Some(key.request);
-        if let Some(ui) = ui { view.uvi_ui = Some(ui); }
-        if view.uvi_status != status { view.uvi_status = status; }
-    }
-}
-
-#[cfg(feature = "uvi")]
-struct UviDelayHandoff { epoch: u64, ticket: u64, storage: Box<uvi_delay::Prepared> }
-
-#[cfg(feature = "uvi")]
-struct UviDelayPreparation {
-    context: (u64, usize, usize),
-    outcome: Result<(u32, u64), uvi_delay::Error>,
-}
-
-/// Different callback queues are unordered. A native endpoint is published only
-/// after the callback acknowledged storage for this epoch and complete rack.
-#[cfg(feature = "uvi")]
-fn uvi_delay_ready(params: &SamplerParams) -> Result<bool, uvi_delay::Error> {
-    let epoch = params.shared.uvi_epoch.load(Ordering::Acquire);
-    let count = params.shared.with_parts(|parts| parts.len());
-    if count > params.shared.grown.load(Ordering::Acquire) as usize { return Ok(false) }
-    let maximum = params.shared.uvi_max_host_frames.load(Ordering::Acquire);
-    let context = (epoch, count, maximum);
-    let mut prepared = params.shared.uvi_delay_prepared.lock().unwrap();
-    if let Some(previous) = prepared.as_ref()
-        && previous.context == context {
-        let (latency, ticket) = previous.outcome?;
-        params.shared.uvi_latency_admission.store(((maximum as u64) << 32) | u64::from(latency), Ordering::Release);
-        return Ok(params.shared.uvi_delay_installed.load(Ordering::Acquire) == ticket);
-    }
-    let allocated = crate::uvi::bridge::Bridge::buffering_latency(maximum, UVI_LEAD_PACKETS)
-        .map_err(|_| uvi_delay::Error::InvalidLayout)
-        .and_then(|latency| {
-            let mut storage = uvi_delay::Prepared::new(count, latency as usize)?;
-            if !storage.set_all(latency) { return Err(uvi_delay::Error::InvalidLayout) }
-            Ok((latency, storage))
-        });
-    let (latency, storage) = match allocated {
-        Ok(allocated) => allocated,
-        Err(error) => {
-            *prepared = Some(UviDelayPreparation { context, outcome: Err(error) });
-            return Err(error);
-        }
-    };
-    params.shared.uvi_latency_admission.store(((maximum as u64) << 32) | u64::from(latency), Ordering::Release);
-    let ticket = params.shared.uvi_delay_wanted.fetch_add(1, Ordering::AcqRel) + 1;
-    let next = UviDelayHandoff { epoch, ticket, storage: Box::new(storage) };
-    let _ = params.shared.uvi_delays.force_push(next);
-    *prepared = Some(UviDelayPreparation { context, outcome: Ok((latency, ticket)) });
-    Ok(false)
-}
-
-/// Scalar-only host report. Actual mixer delays still follow live endpoints.
-#[cfg(feature = "uvi")]
-fn admitted_uvi_latency(shared: &Shared, maximum: usize) -> u32 {
-    let admitted = shared.uvi_latency_admission.load(Ordering::Acquire);
-    if admitted >> 32 == maximum as u64 { admitted as u32 } else { 0 }
-}
-
-/// Preserve physical compensation during replacement only when the already
-/// adopted storage can actually supply the retained host-reported delay.
-#[cfg(feature = "uvi")]
-fn physical_uvi_latency(s: &Dsp, live: u32) -> u32 {
-    if s.uvi_delays.as_ref().is_some_and(|delays|
-        delays.slots() == s.uvi.len() && delays.latency_frames() == s.uvi_reported_latency) {
-        live.max(s.uvi_reported_latency)
-    } else { live }
-}
-
-/// Commit the requested identity only after native initialization succeeded.
-/// The controller remains on Load; its endpoint is published separately after
-/// common mixer delay storage has been acknowledged by the audio thread.
-#[cfg(feature = "uvi")]
-fn install_prepared_uvi(params: &SamplerParams) {
-    use crate::uvi::worker::Status;
-    let ready = {
-        let prepared = params.shared.uvi_prepared.lock().unwrap();
-        prepared.as_ref().filter(|p| p.worker.as_ref().is_some_and(|w| w.status() == Status::Ready))
-            .map(|p| p.key.clone())
-    };
-    let Some(key) = ready else { return };
-    let before = params.selection.read().unwrap().clone();
-    if uvi_load_key(params, &before) != Some(key.clone()) { return }
-    if !key.request.new && key.request.slot.is_none()
-        && let Some(slot) = before.parts.iter().enumerate().find_map(|(slot, p)| {
-            (p.uvi.as_ref() == Some(&key.request.source)
-                && params.shared.part(slot).is_some_and(|a| !a.uvi_failed.load(Ordering::Acquire)
-                    && a.uvi_generation.load(Ordering::Acquire) != 0)).then_some(slot)
-        }) {
-        let mut current = params.selection.write().unwrap();
-        if uvi_load_key(params, &current) != Some(key) { return }
-        current.uvi_requested = None;
-        params.shared.focus_request.store(slot as u64, Ordering::Release);
-        drop(current);
-        params.shared.uvi_prepared.lock().unwrap().take();
-        return;
-    }
-    let retry = (!key.request.new).then(|| before.parts.iter().position(|p|
-        p.uvi.as_ref() == Some(&key.request.source))).flatten();
-    let slot = key.request.slot.map(|s| s as usize).or(retry).unwrap_or_else(||
-        before.parts.iter().position(Part::is_empty).unwrap_or(before.parts.len()));
-    params.shared.ensure_parts(slot + 1);
-    let atoms = params.shared.part(slot).unwrap();
-    let mut current = params.selection.write().unwrap();
-    if uvi_load_key(params, &current) != Some(key.clone()) { return }
-    let mut prepared = params.shared.uvi_prepared.lock().unwrap().take().unwrap();
-    let generation = prepared.generation;
-    let part_generation = atoms.generation.load(Ordering::Acquire).wrapping_add(1);
-    let rate = f64::from_bits(key.rate) as u32;
-    let result = params.shared.uvi_controls.lock().unwrap().adopt_prepared(
-        prepared.worker.take().unwrap(), prepared.ui.take().unwrap(), key.request.source.clone(),
-        key.epoch, generation, part_generation, slot, rate, key.max_host_frames, UVI_LEAD_PACKETS);
-    if result.is_err() {
-        drop(current);
-        params.shared.view.lock().unwrap().uvi_status = "The UVI player could not be prepared.".into();
-        return;
-    }
-    let mut part = if key.request.slot.is_some() || retry.is_some() { current.parts[slot].clone() }
-        else {
-            let settings = params.shared.libraries.settings();
-            let (port, channel) = settings.new_input.unwrap_or_else(|| current.next_input());
-            Part { port, channel, output: settings.new_output.unwrap_or(0),
-                output_manual: settings.new_output.is_some(), ..Default::default() }
-        };
-    part.path.clear(); part.snapshot.clear(); part.program = 0;
-    part.uvi = Some(key.request.source.clone());
-    part.uvi_state.clear();
-    part.name.clear();
-    part.group = u32::MAX; part.articulate = Default::default(); part.mpe = Default::default();
-    part.tune = 0.;
-    part.edits = Default::default(); part.script_state.clear(); part.ir_settings.clear();
-    part.engine_state.clear(); part.delay_state.clear();
-    if slot == current.parts.len() { current.parts.push(part); } else { current.parts[slot] = part; }
-    if !current.order.contains(&(slot as u32)) { current.order.push(slot as u32); }
-    current.uvi_requested = None;
-    atoms.generation.store(part_generation, Ordering::Release);
-    params.shared.focus_request.store(slot as u64, Ordering::Release);
-    drop(current);
-    let mut view = params.shared.view.lock().unwrap();
-    view.parts[slot] = PartView {
-        uvi_activation: Some(uvi_load::Activation { source: key.request.source, saved_state: NativeState::default(), epoch: key.epoch,
-            generation, part_generation, rate, max_host_frames: key.max_host_frames, published: false }),
-        status: "Preparing UVI playback…".into(), loading: true, ..Default::default()
-    };
-    view.uvi_attempted = None; view.uvi_status.clear(); view.uvi_ui = None;
-}
-
 impl BackgroundTask for Load {
     type Params = SamplerParams;
     const SERIALIZED: bool = true;
@@ -3496,10 +3258,15 @@ fn native_delivery<'a>(native: &'a mut [Option<uvi_control::Audio>], parts: &'a 
     -> impl FnMut(usize, u8, In, &Router, bool) -> bool + 'a {
     move |slot, port, ev, router, reached| {
         let Some(audio) = native.get_mut(slot).and_then(Option::as_mut) else { return false };
-        let failed = audio.slot_mut().feed(ev, port, reached, router.mpe_enabled()).is_err();
-        if reached && !router.external_input_supported() { audio.slot_mut().abort_activation(); }
-        if failed || reached && !router.external_input_supported() {
-            part_atoms(parts, shared, slot).unwrap().uvi_failed.store(true, Ordering::Release);
+        let frame = audio.slot().frame();
+        if let Err(error) = audio.slot_mut().feed(ev, port, reached, router.mpe_enabled()) {
+            part_atoms(parts, shared, slot).unwrap()
+                .record_uvi_failure(audio, error, uvi::FailureStage::Feed, frame);
+        }
+        if reached && !router.external_input_supported() {
+            let error = audio.slot_mut().abort_unsupported_router();
+            part_atoms(parts, shared, slot).unwrap()
+                .record_uvi_failure(audio, error, uvi::FailureStage::Router, frame);
         }
         true
     }
@@ -4298,6 +4065,7 @@ impl PluginLogic for Sampler {
                     s.native_slots[slot] = true;
                     let atoms = part_atoms(&s.shared_parts, &p.shared, slot).unwrap();
                     atoms.uvi_state_frame.store(0, Ordering::Release);
+                    atoms.uvi_failure.reset();
                     atoms.uvi_failed.store(false, Ordering::Release);
                     atoms.uvi_part_generation.store(generation, Ordering::Release);
                     atoms.uvi_generation.store(native_generation, Ordering::Release);
@@ -4431,8 +4199,7 @@ impl PluginLogic for Sampler {
         {
             for (slot, audio) in s.uvi.iter_mut().enumerate() {
                 if let Some(audio) = audio {
-                    let player = audio.slot_mut();
-                    let consumed_start = player.frame();
+                    let consumed_start = audio.slot().frame();
                     // Include this callback's partial native packet before dequeuing controls.
                     // A snapshot waits for real PCM processing at this boundary.
                     let boundary = consumed_start.saturating_add(frames as u64)
@@ -4440,10 +4207,13 @@ impl PluginLogic for Sampler {
                         .saturating_mul(crate::uvi::worker::BLOCK_FRAMES as u64);
                     part_atoms(&s.shared_parts, &p.shared, slot).unwrap()
                         .uvi_state_frame.store(boundary, Ordering::Release);
-                    if player.collect_completions(consumed_start).is_err()
-                        || player.set_host_transport(cx.transport.playing, cx.transport.position_beats,
-                            cx.transport.tempo).is_err() {
-                        part_atoms(&s.shared_parts, &p.shared, slot).unwrap().uvi_failed.store(true, Ordering::Release);
+                    if let Err(error) = audio.slot_mut().collect_completions(consumed_start) {
+                        part_atoms(&s.shared_parts, &p.shared, slot).unwrap()
+                            .record_uvi_failure(audio, error, uvi::FailureStage::Completions, consumed_start);
+                    } else if let Err(error) = audio.slot_mut().set_host_transport(cx.transport.playing,
+                        cx.transport.position_beats, cx.transport.tempo) {
+                        part_atoms(&s.shared_parts, &p.shared, slot).unwrap()
+                            .record_uvi_failure(audio, error, uvi::FailureStage::Transport, consumed_start);
                     }
                 }
             }
@@ -4451,9 +4221,12 @@ impl PluginLogic for Sampler {
                 if let Some(audio) = s.uvi.get_mut(slot).and_then(Option::as_mut)
                     && (audio.epoch(), audio.generation()) == (stamp.epoch, stamp.generation)
                     && stamp.epoch == p.shared.uvi_epoch.load(Ordering::Acquire)
-                    && audio.part_generation() == part_atoms(&s.shared_parts, &p.shared, slot).unwrap().generation.load(Ordering::Acquire)
-                    && audio.slot_mut().push_ui(edit).is_err() {
-                    part_atoms(&s.shared_parts, &p.shared, slot).unwrap().uvi_failed.store(true, Ordering::Release);
+                    && audio.part_generation() == part_atoms(&s.shared_parts, &p.shared, slot).unwrap().generation.load(Ordering::Acquire) {
+                    let frame = audio.slot().frame();
+                    if let Err(error) = audio.slot_mut().push_ui(edit) {
+                        part_atoms(&s.shared_parts, &p.shared, slot).unwrap()
+                            .record_uvi_failure(audio, error, uvi::FailureStage::UiEdit, frame);
+                    }
                 }
             }
         }
@@ -4525,7 +4298,15 @@ impl PluginLogic for Sampler {
             s.rack.panic();
             #[cfg(feature = "uvi")]
             {
-                for audio in s.uvi.iter_mut().chain(&mut s.retiring_uvi).flatten() { audio.slot_mut().panic(); }
+                for (slot, audio) in s.uvi.iter_mut().enumerate() {
+                    if let Some(audio) = audio {
+                        let frame = audio.slot().frame();
+                        audio.slot_mut().panic();
+                        part_atoms(&s.shared_parts, &p.shared, slot).unwrap()
+                            .record_uvi_failure(audio, uvi::Error::Aborted, uvi::FailureStage::Panic, frame);
+                    }
+                }
+                for audio in s.retiring_uvi.iter_mut().flatten() { audio.slot_mut().panic(); }
                 p.shared.uvi_epoch.fetch_add(1, Ordering::AcqRel);
                 p.shared.uvi_delay_installed.store(0, Ordering::Release);
                 for slot in 0..s.uvi.len() {
@@ -4594,10 +4375,14 @@ impl PluginLogic for Sampler {
             let (channel, velocity) = (preview_channel(e), preview_velocity(e, note));
             #[cfg(feature = "uvi")]
             if let Some(audio) = &mut s.uvi[slot] {
-                let player = audio.slot_mut();
-                let _ = player.feed(In::Cc(channel, 123, 0), 0, true, false);
-                if player.feed(In::NoteOn(channel, note, velocity), 0, true, false).is_err() {
-                    part_atoms(&s.shared_parts, &p.shared, slot).unwrap().uvi_failed.store(true, Ordering::Release);
+                let frame = audio.slot().frame();
+                if let Err(error) = audio.slot_mut().feed(In::Cc(channel, 123, 0), 0, true, false) {
+                    part_atoms(&s.shared_parts, &p.shared, slot).unwrap()
+                        .record_uvi_failure(audio, error, uvi::FailureStage::AuditionRelease, frame);
+                }
+                if let Err(error) = audio.slot_mut().feed(In::NoteOn(channel, note, velocity), 0, true, false) {
+                    part_atoms(&s.shared_parts, &p.shared, slot).unwrap()
+                        .record_uvi_failure(audio, error, uvi::FailureStage::AuditionNote, frame);
                 }
             } else { e.note_on(channel, note, velocity); }
             #[cfg(not(feature = "uvi"))]
@@ -4667,7 +4452,13 @@ impl PluginLogic for Sampler {
                         }
                         #[cfg(feature = "uvi")]
                         if let Some(audio) = &mut s.uvi[slot] {
-                            for channel in 0..16 { let _ = audio.slot_mut().feed(In::Cc(channel, 123, 0), 0, true, false); }
+                            let frame = audio.slot().frame();
+                            for channel in 0..16 {
+                                if let Err(error) = audio.slot_mut().feed(In::Cc(channel, 123, 0), 0, true, false) {
+                                    part_atoms(&s.shared_parts, &p.shared, slot).unwrap()
+                                        .record_uvi_failure(audio, error, uvi::FailureStage::AuditionEnd, frame);
+                                }
+                            }
                         }
                         #[cfg(not(feature = "uvi"))]
                         let _ = slot;
@@ -4685,8 +4476,10 @@ impl PluginLogic for Sampler {
                 let shared_parts = &s.shared_parts;
                 let mut source = |slot: usize, left: &mut [f32], right: &mut [f32]| {
                     let Some(audio) = &mut native[slot] else { return false };
-                    if audio.slot_mut().process_mode(left, right, offline).is_err() {
-                        part_atoms(shared_parts, &p.shared, slot).unwrap().uvi_failed.store(true, Ordering::Release);
+                    let frame = audio.slot().frame();
+                    if let Err(error) = audio.slot_mut().process_mode(left, right, offline) {
+                        part_atoms(shared_parts, &p.shared, slot).unwrap()
+                            .record_uvi_failure(audio, error, uvi::FailureStage::Process, frame);
                     }
                     true
                 };
@@ -7046,40 +6839,8 @@ end on"#,dir.display());
         router.join().unwrap();
         assert!(readable, "routing held the selection while it waited for the view");
     }
-    use std::{alloc::{GlobalAlloc, Layout, System}, cell::Cell};
+    pub(crate) use crate::test_support::allocations;
 
-    struct Counting;
-    thread_local! {
-        static COUNTING: Cell<bool> = const { Cell::new(false) };
-        static CALLS: Cell<usize> = const { Cell::new(0) };
-    }
-    fn count() {
-        if COUNTING.with(Cell::get) {
-            CALLS.with(|n| n.set(n.get() + 1));
-        }
-    }
-    // SAFETY: forwards every call unchanged to the system allocator.
-    unsafe impl GlobalAlloc for Counting {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            count();
-            unsafe { System.alloc(layout) }
-        }
-        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            count();
-            unsafe { System.dealloc(ptr, layout) }
-        }
-    }
-    #[global_allocator]
-    static GLOBAL: Counting = Counting;
-
-    /// Allocations and frees `f` makes on this thread.
-    pub(crate) fn allocations(f: impl FnOnce()) -> usize {
-        let before = CALLS.with(Cell::get);
-        COUNTING.with(|c| c.set(true));
-        f();
-        COUNTING.with(|c| c.set(false));
-        CALLS.with(Cell::get) - before
-    }
     #[test]
     fn plugin_contract() {
         assert!(

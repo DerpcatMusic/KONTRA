@@ -40,6 +40,14 @@ fn main() {
         visit(Path::new(source), &mut build_hash);
     }
     println!("cargo:rustc-env=KONTRA_BUILD_HASH={build_hash:016x}");
+    // Digests only: installed binaries never embed these complete sources.
+    use sha2::{Digest, Sha256};
+    for (source, name) in [("src/plugin.rs", "KONTRA_PLUGIN_SOURCE_SHA256"),
+                           ("src/plugin/uvi.rs", "KONTRA_UVI_SLOT_SOURCE_SHA256")] {
+        println!("cargo:rerun-if-changed={source}");
+        let digest = Sha256::digest(std::fs::read(source).expect("native diagnostic source"));
+        println!("cargo:rustc-env={name}={digest:x}");
+    }
     identity(hash, build_hash);
 }
 

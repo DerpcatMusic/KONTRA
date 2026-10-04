@@ -22,6 +22,7 @@ use super::{
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
+use rustc_hash::FxHashMap;
 use std::{
     cell::Cell,
     collections::{BTreeMap, HashMap, HashSet},
@@ -151,6 +152,7 @@ fn resolve_path_with(
 }
 
 pub fn preflight(program: &Program) -> Vec<Unsupported> {
+    const MISSING_EXECUTION: &str = "Processor or control source is not executable by this renderer (including if later enabled)";
     let mut unsupported = Vec::new();
     for (id, node) in program.nodes.iter().enumerate() {
         let implemented = matches!(
@@ -200,7 +202,16 @@ pub fn preflight(program: &Program) -> Vec<Unsupported> {
                     | "UserTable"
             );
         if !implemented {
-            unsupported.push(Unsupported { node:id, kind:node.kind.clone(), reason:"Processor or control source is not executable by this renderer (including if later enabled)".into() });
+            let reason = if node.kind == "CombFilter" {
+                super::comb::FIDELITY_DIAGNOSTIC
+            } else if node.kind == "MS20" {
+                super::ms20::FIDELITY_DIAGNOSTIC
+            } else if node.kind == "Flanger" {
+                super::flanger::FIDELITY_DIAGNOSTIC
+            } else {
+                MISSING_EXECUTION
+            };
+            unsupported.push(Unsupported { node: id, kind: node.kind.clone(), reason: reason.into() });
         }
         if node.kind == "MultiEnvelope"
             && node
@@ -431,11 +442,26 @@ pub fn preflight(program: &Program) -> Vec<Unsupported> {
                 });
             }
         }
-        Err(error) => unsupported.push(Unsupported {
-            node: program.root,
-            kind: "ControlGraph".into(),
-            reason: error.to_string(),
-        }),
+        Err(error) => {
+            if let Some(source) = error.downcast_ref::<modulation::UnsupportedSourceKind>() {
+                // The same non-executable source was already rejected above.
+                if !unsupported.iter().any(|issue| {
+                    issue.node == source.node && issue.reason == MISSING_EXECUTION
+                }) {
+                    unsupported.push(Unsupported {
+                        node: source.node,
+                        kind: program.nodes[source.node].kind.clone(),
+                        reason: error.to_string(),
+                    });
+                }
+            } else {
+                unsupported.push(Unsupported {
+                    node: program.root,
+                    kind: "ControlGraph".into(),
+                    reason: error.to_string(),
+                });
+            }
+        }
     }
     unsupported
 }
@@ -786,7 +812,7 @@ pub struct Renderer<'a> {
     insert_bypassed: Vec<Cell<bool>>,
     runtime_nodes: Vec<NodeId>,
     parameters: Vec<BTreeMap<String, String>>,
-    numbers: Vec<BTreeMap<String, usize>>,
+    numbers: Vec<FxHashMap<String, usize>>,
     number_slots: Vec<CachedNumber>,
     active_numbers: Vec<usize>,
     effective_generation: u64,
@@ -1686,7 +1712,6 @@ impl<'a> Renderer<'a> {
         ensure!(
             note.id > 0
                 && note.note < 128
-                && note.velocity > 0
                 && note.velocity < 128
                 && note.channel < 16
                 && note.volume.is_finite()
@@ -3171,6 +3196,36 @@ impl<'a> Renderer<'a> {
 mod tests {
     use super::*;
     use crate::uvi::{program::parse_program, sample::SampleLoop, storage::Storage};
+    #[test]
+    fn unimplemented_sources_are_reported_once_at_the_source_node() {
+        for kind in ["StepEnvelope", "MultiLFO"] {
+            let program = parse_program(&format!(r#"<Program><ControlSignalSources><{kind} Name="Steps"/></ControlSignalSources><Connections><SignalConnection Source="$Program/Steps" Destination="Gain" Ratio="1"/></Connections></Program>"#)).unwrap();
+            let source = program.nodes.iter().position(|node| node.kind == kind).unwrap();
+            let blocked = preflight(&program);
+            assert_eq!(blocked.len(), 1);
+            assert_eq!(blocked[0].node, source);
+            assert_eq!(blocked[0].kind, kind);
+            assert!(blocked[0].reason.contains("not executable"));
+        }
+    }
+    #[test]
+    fn executable_effect_cannot_be_used_as_a_modulation_source() {
+        let program = parse_program(r#"<Program><Inserts><Gain Name="Fx" Gain="1"/></Inserts><Connections><SignalConnection Source="$Program/Fx" Destination="Gain" Ratio="1"/></Connections></Program>"#).unwrap();
+        let source = program.nodes.iter().position(|node| node.kind == "Gain").unwrap();
+        let blocked = preflight(&program);
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked[0].node, source);
+        assert_eq!(blocked[0].kind, "Gain");
+        assert!(blocked[0].reason.contains("Unsupported UVI source kind"));
+    }
+    #[test]
+    fn unknown_builtin_source_keeps_the_control_graph_rejection() {
+        let program = parse_program(r#"<Program><Connections><SignalConnection Source="@UnrecognizedSource" Destination="Gain" Ratio="1"/></Connections></Program>"#).unwrap();
+        let blocked = preflight(&program);
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked[0].kind, "ControlGraph");
+        assert!(blocked[0].reason.contains("Unsupported UVI control source"));
+    }
     fn sample(channels: usize) -> Sample {
         Sample {
             rate: 48000,
@@ -3195,6 +3250,26 @@ mod tests {
             wavetable_image: false,
             riff_metadata: vec![b"riff".to_vec()],
         }
+    }
+    #[test]
+    fn generated_zero_velocity_passes_admission_and_keygroup_range_still_filters() {
+        let program = parse_program(r#"<Program Gain="1"><Layers><Layer Gain="1"><Keygroups><Keygroup Gain="1"><Oscillators><FmOscillator Gain="1"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let mut renderer = Renderer::new(&program, HashMap::new(), 48000).unwrap();
+        let mut generated = note(1);
+        generated.velocity = 0;
+        let output = renderer.render(&[script::Command {frame:0,action:script::Action::Start(generated.clone())}], &[], 64).unwrap();
+        assert!(output.iter().all(|frame| *frame == [0.,0.]));
+        generated.velocity = 128;
+        assert!(renderer.render(&[script::Command {frame:64,action:script::Action::Start(generated)}], &[], 64).is_err());
+    }
+
+    #[test]
+    fn comb_scalar_evidence_keeps_unmeasured_element_lifecycle_gated() {
+        let program = parse_program(r#"<Program><Inserts><CombFilter Mode="0" Freq="39.905247" Q="0.93642187" KeyTracking="0" Bypass="0"/></Inserts></Program>"#).unwrap();
+        let blocked = preflight(&program);
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked[0].kind, "CombFilter");
+        assert_eq!(blocked[0].reason, super::super::comb::FIDELITY_DIAGNOSTIC);
     }
     #[test]
     fn sample_metadata_remains_checked_and_storage_rejects_nonfinite_pcm() {

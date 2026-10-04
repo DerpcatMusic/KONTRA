@@ -1,6 +1,6 @@
 //! Native controls over a bank's authored UVI layout. Snapshots and decoded
 //! artwork are adopted off the audio thread; this module never opens resources.
-//! Original glyphs, units, mappers and complex displays are not emulated here.
+//! Units, mappers and complex displays are not emulated here.
 use super::theme::*;
 use crate::artwork::Picture;
 use crate::uvi::{
@@ -17,6 +17,7 @@ pub struct State {
     pending: Option<(u32, UiEditValue, u64)>,
     menu: Option<u32>,
     table_cell: Option<(u32, usize)>,
+    read_only: bool,
 }
 
 fn same_activation(a: Stamp, b: Stamp) -> bool {
@@ -24,11 +25,21 @@ fn same_activation(a: Stamp, b: Stamp) -> bool {
 }
 
 impl State {
+    pub fn set_interactive(&mut self, interactive: bool) {
+        self.read_only = !interactive;
+        if self.read_only {
+            self.pending = None;
+            self.menu = None;
+            self.table_cell = None;
+        }
+    }
+
     fn adopt(&mut self, current: Stamp, captured: Stamp, processor: usize) -> bool {
         let activation = Some((current.epoch, current.generation, processor));
         if self.activation != activation {
             *self = Self {
                 activation,
+                read_only: self.read_only,
                 ..Self::default()
             };
         }
@@ -117,6 +128,15 @@ fn scale_control(el: &mut El, ui: &Ui, scale: f64) {
     }
 }
 
+fn widget_font(el: &mut El, widget: &UiWidget, fonts: &HashMap<String, Font>) {
+    let Some(font) = widget.style.font.as_ref().and_then(|path| fonts.get(path)) else { return };
+    fn apply(el: &mut El, font: &Font) {
+        el.payload_mut().font = Some(font.clone());
+        for child in el.children_mut() { apply(child, font); }
+    }
+    apply(el, font);
+}
+
 fn range(widget: &UiWidget) -> Option<std::ops::RangeInclusive<f64>> {
     let (lo, hi) = widget.min.zip(widget.max)?;
     (lo.is_finite() && hi.is_finite() && lo <= hi).then_some(lo..=hi)
@@ -157,7 +177,7 @@ fn colour(text: Option<&str>) -> Option<Color> {
 }
 
 // UVI text boxes use nine authored anchor positions. Keep the inherited
-// face until bank fonts are loaded, but honor the supplied size and ink.
+// face when a bank font is unavailable, but honor the supplied size and ink.
 fn styled_text(widget: &UiWidget, said: &str, scale: f64, fallback: Justify) -> El {
     let (justify, align) = match widget.style.align.as_deref() {
         Some("centred" | "centre" | "center") => (Justify::Center, Align::Center),
@@ -277,6 +297,7 @@ pub fn view(
     captured: Stamp,
     snapshot: &UiSnapshot,
     pictures: &HashMap<String, Arc<Picture>>,
+    fonts: &HashMap<String, Font>,
     mut send: impl FnMut(Stamp, UiInput) -> bool,
 ) -> El {
     let admitted = state.adopt(current, captured, snapshot.processor);
@@ -331,7 +352,7 @@ pub fn view(
             continue;
         }
         let id = identity(owner, current, snapshot, widget.id);
-        let usable = admitted && enabled(snapshot, widget);
+        let usable = admitted && !state.read_only && enabled(snapshot, widget);
         let bounds = widget.absolute_bounds;
         let (w, h) = (bounds.width * scale, bounds.height * scale);
         let response = ui.get(id.as_str());
@@ -369,7 +390,7 @@ pub fn view(
                     }
                     let mut field = field.el.value_text(number_text(value, widget.integer)).el();
                     scale_control(&mut field, ui, scale);
-                    let content = if widget.style.show_label != Some(false) {
+                    let mut content = if widget.style.show_label != Some(false) {
                         row![
                             caption(display_name).text_size(SMALL * scale).lines(1),
                             field.flex(1).min_w(0)
@@ -379,6 +400,7 @@ pub fn view(
                     } else {
                         field
                     };
+                    widget_font(&mut content, widget, fonts);
                     layers.push(
                         content
                             .size(w, h)
@@ -532,8 +554,9 @@ pub fn view(
                 if let Some(caret) = el.children_mut().get_mut(1) {
                     *caret = glyph(Icon::Down, TEXT * scale, secondary());
                 }
-                // Generic field minimums must not overrule the authored width.
-                let el = el.min_w(0);
+                // Authored bounds already include the menu's text area. Generic
+                // field padding/minimums squeeze narrow CC selections at bank size.
+                let el = el.min_w(0).pad(0);
                 if usable && hit {
                     state.menu = if state.menu == Some(widget.id) {
                         None
@@ -722,6 +745,7 @@ pub fn view(
         } else if let Some(fill) = colour(widget.style.background_colour.as_deref()) {
             control = control.fill(fill);
         }
+        widget_font(&mut control, widget, fonts);
         layers.push(
             control
                 .size(w, h)
@@ -753,7 +777,7 @@ pub fn popup(
     window: Size,
     mut send: impl FnMut(Stamp, UiInput) -> bool,
 ) -> Option<El> {
-    if !state.adopt(current, captured, snapshot.processor) {
+    if state.read_only || !state.adopt(current, captured, snapshot.processor) {
         return None;
     }
     let widget = snapshot.widgets.iter().find(|w| Some(w.id) == state.menu)?;
@@ -955,6 +979,7 @@ mod tests {
             captured,
             snapshot,
             &HashMap::new(),
+            &HashMap::new(),
             |s, e| {
                 edits.push((s, e));
                 true
@@ -1013,10 +1038,46 @@ mod tests {
     }
 
     #[test]
+    fn retained_failed_panel_is_visible_and_all_gestures_are_inert() {
+        let snapshot = authored();
+        let mut ui = super::super::theme::ui();
+        let mut state = State::default();
+        let mut edits = Vec::new();
+        let current = stamp(4);
+        for _ in 0..3 {
+            tick(&mut ui,&mut state,&snapshot,current,current,Input::default(),&mut edits);
+        }
+        state.menu = Some(5);
+        state.pending = Some((2,UiEditValue::Number(0.8),0));
+        state.table_cell = Some((9,2));
+        state.set_interactive(false);
+        for (widget,key) in [(2,Key::Up),(3,Key::Right),(4,Key::Up),(5,Key::Enter),
+                             (6,Key::Space),(7,Key::Enter),(9,Key::Up)] {
+            let id=identity(0,current,&snapshot,widget);
+            ui.focus(id.clone());
+            tick(&mut ui,&mut state,&snapshot,current,current,
+                Input{keys:vec![KeyPress{key,mods:Mods::default()}],..Input::default()},&mut edits);
+            tick(&mut ui,&mut state,&snapshot,current,current,Input::default(),&mut edits);
+            assert!(ui.scene().unwrap().surface(&id).is_some());
+        }
+        assert!(ui.scene().unwrap().surface("uvi-stage-0").is_some());
+        assert!(state.pending.is_none() && state.menu.is_none() && state.table_cell.is_none());
+        assert!(edits.is_empty(),"owned retained controls cannot submit even when send accepts");
+        let mut reset=current; reset.epoch+=1;
+        tick(&mut ui,&mut state,&snapshot,reset,current,Input::default(),&mut edits);
+        assert!(ui.scene().unwrap().surface("uvi-stage-0").is_none());
+        state.set_interactive(true);
+        tick(&mut ui,&mut state,&snapshot,reset,reset,Input::default(),&mut edits);
+        assert!(ui.scene().unwrap().surface("uvi-stage-0").is_some());
+    }
+
+    #[test]
     fn authored_panel_scales_up_and_down_without_changing_coordinates() {
         let mut snapshot = authored();
         let menu = &mut snapshot.widgets[4];
         menu.style.show_label = Some(false);
+        menu.style.font = Some("bank-face.ttf".into());
+        menu.items = vec!["CC11".into()];
         menu.style.background_image = Some(crate::uvi::host::UiArtwork {
             path: "menu.png".into(),
             bank_root: false,
@@ -1035,6 +1096,8 @@ mod tests {
                 atlas: None,
             }),
         );
+        let font = Font::new(NOTO_SANS).unwrap();
+        let fonts = HashMap::from([("bank-face.ttf".into(), font.clone())]);
         let current = stamp(4);
         let mut ui = super::super::theme::ui();
         let mut state = State::default();
@@ -1049,6 +1112,7 @@ mod tests {
                     current,
                     &snapshot,
                     &pictures,
+                    &fonts,
                     |_, _| false,
                 );
                 ui.frame(
@@ -1074,6 +1138,10 @@ mod tests {
             assert!((menu.y - 108. * scale).abs() < 0.01);
             assert!((menu.size.width - 60. * scale).abs() < 0.01);
             assert!((menu.size.height - 18. * scale).abs() < 0.01);
+            let selected = scene.paint.iter().filter_map(|p| p.text.as_ref())
+                .find(|t| t.fonts[0].id() == font.id()).unwrap();
+            assert_eq!(selected.glyphs.len(), 4, "short CC selection remains legible");
+            assert!((f64::from(selected.size) - 13. * scale).abs() < 0.01);
             let knob = scene
                 .surface(&identity(0, current, &snapshot, 2))
                 .unwrap()
@@ -1083,6 +1151,25 @@ mod tests {
             assert!((knob.y - intrinsic.y * scale).abs() < 0.01);
             assert!((knob.size.width - intrinsic.width * scale).abs() < 0.01);
             assert!((knob.size.height - intrinsic.height * scale).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn authored_font_is_owned_and_missing_face_uses_scene_fallback() {
+        let mut widget = authored().widgets[0].clone();
+        widget.style.font = Some("bank-face.ttf".into());
+        let font = Font::new(NOTO_SANS).unwrap();
+        for available in [false, true] {
+            let mut fonts = HashMap::new();
+            if available { fonts.insert("bank-face.ttf".into(), font.clone()); }
+            let mut el = styled_text(&widget, "Authored face", 1., Justify::Start).size(240., 28.);
+            widget_font(&mut el, &widget, &fonts);
+            // The element owns cloned handles; the cache owner can go away.
+            drop(fonts);
+            let mut ui = super::super::theme::ui();
+            ui.frame(el, Some(Size::new(240., 28.)), Input::default(), 1. / 60.).unwrap();
+            let drawn = ui.scene().unwrap().paint.iter().find_map(|p| p.text.as_ref()).unwrap();
+            assert_eq!(drawn.fonts[0].id() == font.id(), available);
         }
     }
 

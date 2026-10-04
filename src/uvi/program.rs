@@ -10,8 +10,8 @@ use roxmltree::{Document, Node, ParsingOptions};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 
-const XML_LIMIT: usize = 16 << 20;
-const NODE_LIMIT: u32 = 100_000;
+const XML_LIMIT: usize = super::crypto::PROGRAM_XML_LIMIT;
+const NODE_LIMIT: u32 = super::crypto::PROGRAM_NODE_LIMIT;
 const DEPTH_LIMIT: usize = 64;
 
 /// IDs index `Program::nodes` and are stable for a given input document.
@@ -165,7 +165,7 @@ fn structural(kind: &str) -> bool {
 pub fn parse_program(text: &str) -> Result<Program> {
     ensure!(
         text.len() <= XML_LIMIT,
-        "UVI Program XML exceeds 16 MiB limit"
+        "UVI Program XML exceeds 32 MiB limit"
     );
     let doc = Document::parse_with_options(
         text,
@@ -408,4 +408,18 @@ mod tests {
         assert!(parse_program(&xml.replace("HighKey=\"60\"", "HighKey=\"20\"")).is_err());
         assert!(parse_program("<UVI4><Program/><Program/></UVI4>").is_err());
     }
+    #[test]
+    fn authored_large_xml_stays_bounded_without_dropping_whitespace_or_nodes() {
+        let xml = format!("<Program><!--{}--></Program>", "x".repeat(16 << 20));
+        assert!(parse_program(&xml).is_ok());
+        let xml = format!(
+            "<Program>{}</Program>",
+            "<Properties>\n<x/>\n</Properties>\n".repeat(40_000)
+        );
+        assert_eq!(parse_program(&xml).unwrap().nodes.len(), 80_001);
+        let excessive_nodes = format!("<Program>{}</Program>", "<x/>\n".repeat(125_000));
+        assert!(parse_program(&excessive_nodes).is_err());
+        assert!(parse_program(&"x".repeat(XML_LIMIT + 1)).is_err());
+    }
+
 }

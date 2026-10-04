@@ -2749,7 +2749,7 @@ mod release_note_mono_tests {
         let mut e = engine(false, false, false);
         e.note_on_from(0, 1, 60, 100);
         e.note_on_from(1, 2, 61, 100);
-        assert_eq!(crate::plugin::tests::allocations(|| {
+        assert_eq!(crate::test_support::allocations(|| {
             e.cc_from(0, 1, 120, 0);
             assert!(e.player.voices.iter().filter(|v| v.channel == 0).all(|v| !v.held && v.fade.dying()));
             assert!(e.player.voices.iter().filter(|v| v.channel == 1).all(|v| v.held && !v.fade.dying()));
@@ -2775,7 +2775,7 @@ mod release_note_mono_tests {
         let mut e = engine(false, false, false);
         e.note_on_from(7, 1, 60, 100);
         e.note_on_from(7, 2, 60, 100);
-        assert_eq!(crate::plugin::tests::allocations(|| {
+        assert_eq!(crate::test_support::allocations(|| {
             e.all_sound_off_from(7, 1 << 1);
             assert!(e.player.voices.iter().filter(|v| v.input_channel == Some(1)).all(|v| !v.held && v.fade.dying()));
             assert!(e.player.voices.iter().filter(|v| v.input_channel == Some(2)).all(|v| v.held && !v.fade.dying()));
@@ -2873,7 +2873,7 @@ mod service_home_tests {
             if mpe { e.set_mpe_zone(Some((0, (1 << 1) | (1 << 2)))); }
             let (voice_channel, controller_channel) = if mpe { (1, 0) } else { (7, 7) };
             let (mut left, mut right) = ([0.;512], [0.;512]);
-            assert_eq!(crate::plugin::tests::allocations(|| {
+            assert_eq!(crate::test_support::allocations(|| {
                 // The configured home is already available before any MIDI.
                 e.ui_control(0,0,127);
                 e.render(&mut left,&mut right);

@@ -24,7 +24,7 @@ Button and OnOffButton labels now default off, Knob labels/values default on, an
 
 Stationary 48-kHz stereo Exciter Modes0/1 at Oversampling0 and individually measured SparkVerb delay-layout tuples are admitted; Exciter coefficients remain fitted and carry a fidelity diagnostic. Static square LFO uses measured control points; unmeasured live waveform/connected-parameter changes remain gated. WaveTable scalar endpoint conversion groundwork does not enable its unverified moving control routes. **Starter coverage remains 1/50**: no additional original preset is advertised as fully playable from these leaf changes. Prior paid-worker measurements include missed render deadlines; realtime readiness remains unproven.
 
-Combined optimized CI validation of the current frozen source with `uvi,standalone` passes **977 library tests, 89 CLI/playback tests and four additional binary/integration checks**, with 35 external-fixture tests ignored and one screenshot excluded. This includes the native two-part rack save/reopen PCM regression and new diagnostic failure cases. The older corpus and native-comparison measurements below remain separately scoped; they were not all rerun for this checkpoint.
+Combined optimized CI validation at installed checkpoint `75998c3` with `uvi,standalone` passed **977 library tests, 89 CLI/playback tests and four additional binary/integration checks**, with 35 external-fixture tests ignored and one screenshot excluded. This includes the native two-part rack save/reopen PCM regression and diagnostic failure cases. Subsequent source changes use focused functional checks and feature-isolation checks; those broad counts do not describe the newer source. The older corpus and native-comparison measurements below remain separately scoped.
 
 A subsequent source follow-up admits bounded larger PNG image wavetables using
 the measured native software-image rescaler. Ten original fixtures match complete
@@ -47,6 +47,54 @@ latency or sustainable realtime performance. The selected preload datasets made
 zero sample-decryption calls.
 
 ## Current evidence ledger
+
+An actual Alto Flute 2 hosted-worker/Bridge probe reproduced audible playback
+followed by `RequestCapacity`: the worker fell behind the bounded request queue
+while its initialization status remained Ready. A single held note also
+reproduced the failure. The user's earlier report lacks the exact adapter cause,
+so this establishes a failure mechanism rather than identifying that historical
+incident conclusively. First-failure atoms now retain the endpoint error, stage,
+frame and Rust source location without audio-thread formatting or logging.
+Increasing queue capacity alone would not establish sustainable playback.
+
+Augmented Orchestra's Bartok member is a valid single-file ZIP wrapper. Bounded
+CRC-checked inflation parses its 97,046 retained graph nodes and 6,984 zones;
+the program still has 787 explicit preflight issues after removing a duplicate
+StepEnvelope rejection formerly attributed to the synthetic ControlGraph category.
+Dedicated CombFilter and
+MS20 scalar leaves match authored native helper comparisons but remain outside
+Program admission because the connected-control clock, startup and bypass
+behavior are unverified. See [MS20 evidence](UVI_MS20_SCALAR_EVIDENCE.md).
+
+A subsequent decode-only frontier checked all 50 Starter programs, all 40
+declared VWinds programs across 25 banks, and eight selected Augmented Orchestra
+programs: 98/98 decoded and 41 passed static preflight (40 VWinds, one Starter).
+All eight Augmented members use ZIP wrappers and exceed 16 MiB expanded XML.
+Their combined blockers include 3,112 CombFilter, 3,104 MS20 and 32 Flanger nodes.
+This scan did not load samples, initialize scripts or play those programs.
+
+Changing only the lookup-only numeric name index to the existing `FxHashMap`
+preserves six actual Alto corpus hashes and counts. Two controlled render-loop
+counter pairs reduced instructions by 10.88% and 10.87%. One non-overlapping
+pair reduced thread CPU by 4.31%; the second timing pair overlapped other work.
+The paced Bridge still reached RequestCapacity, so this is an incremental cost
+reduction, not a deadline or blackout fix.
+
+The combined Renderer and graph lookup changes plus per-evaluation Constant/
+Script source memo reduce instructions by 26.67% in two alternating actual Alto
+corpus comparisons, preserving all six PCM/event/state hashes and counts.
+Memoization resets between voices, instances, inputs and parameter edits; LFO
+and stochastic clocks are unchanged. External builds confound elapsed/CPU
+comparisons. The paced combined probe still reaches RequestCapacity at frame
+41,984, so sustainable playback remains unresolved.
+
+Live loading snapshots report stage durations, graph counts, current initial
+resource, successful aliases/unique decodes and resident PCM. An actual Clarinet
+V2 source-worker capture included 52 partial resource updates and ended at
+196/196 initial resources and 317,220,848 PCM bytes. These counts exclude later
+Lua-requested resources. Genuine bank-font loading uses the existing UI font
+API and shared resource budget; native visual comparison and advanced display
+support remain incomplete.
 
 The previous installed `f4e2a17f8c35def9bda97e652c61e708ea95893f` CLI (SHA-256
 `6a80a63eaf1e9c4091adf2000c80886f91fc1a48ea5faec0e064c8f8dc1d7c5b`)
@@ -76,11 +124,16 @@ outside-range probes emitted no Starts. Additional fresh boundary probes confirm
 script suppression before Renderer admission; this does not justify changing the
 renderer. The observed range globals are bank conventions, not a universal API.
 
-That investigation also reproduced invalid generated noise velocities. In a
-seeded original Clarinet fixture, valid input49/64 produced release noise with
-velocity0; other cases generated negative or greater-than127 values. Existing
-API validation reports the error. Vendor clipping/handling remains unverified,
-so errors must not be hidden or called a complete expressive pass.
+That investigation also reproduced generated noise velocities outside our old
+admission range. Unchanged native `postEvent` binding/decoder instructions now
+establish numeric truncation, signed 32-bit narrowing and clamp to 0–127.
+Generated NoteOn handling applies that measured conversion and Renderer admits
+zero; incoming MIDI validation retains its separate contract. Four focused
+checks and five actual Clarinet source probes cover release velocity0, -2→0,
+134→127, the authored outside-range suppression and a normal control note, with
+finite 12,000-frame renders and no callback/renderer errors. The full native
+playNote helper wrapper and end-to-end native PCM remain unmeasured; this is a
+specific decoder correction, not a complete expressive parity claim.
 
 Evidence is tracked separately rather than collapsed into a compatibility percentage:
 

@@ -23,7 +23,180 @@ pub(crate) enum Error {
     UnsupportedExpression,
     UnsupportedChoke,
     UnsupportedInitialTuning,
+    UnsupportedRouterInput,
     Aborted,
+}
+impl Error {
+    /// Stable, allocation-free audio/control transport. Zero means no failure.
+    pub(crate) fn code(self) -> u32 {
+        match self {
+            Self::InvalidInput => 1,
+            Self::Capacity => 2,
+            Self::DuplicateNote => 3,
+            Self::TokenExhausted => 4,
+            Self::UnsupportedMpe => 5,
+            Self::UnsupportedExpression => 6,
+            Self::UnsupportedChoke => 7,
+            Self::UnsupportedInitialTuning => 8,
+            Self::Aborted => 9,
+            Self::UnsupportedRouterInput => 10,
+            Self::Bridge(error) => match error {
+                BridgeError::InvalidConfig => 32,
+                BridgeError::NotReady => 33,
+                BridgeError::InvalidBuffer => 34,
+                BridgeError::TimelineOverflow => 35,
+                BridgeError::RequestCapacity => 36,
+                BridgeError::Worker(error) => match error {
+                    PacketError::WrongEpoch => 64,
+                    PacketError::WrongGeneration => 65,
+                    PacketError::WrongFrame => 66,
+                    PacketError::InvalidInput => 67,
+                    PacketError::TooManyInputs => 68,
+                    PacketError::Full => 69,
+                    PacketError::Underrun => 70,
+                    PacketError::Failed => 71,
+                    PacketError::Stopped => 72,
+                    PacketError::PortTaken => 73,
+                },
+            },
+        }
+    }
+    pub(crate) fn from_code(code: u32) -> Option<Self> {
+        Some(match code {
+            1 => Self::InvalidInput,
+            2 => Self::Capacity,
+            3 => Self::DuplicateNote,
+            4 => Self::TokenExhausted,
+            5 => Self::UnsupportedMpe,
+            6 => Self::UnsupportedExpression,
+            7 => Self::UnsupportedChoke,
+            8 => Self::UnsupportedInitialTuning,
+            9 => Self::Aborted,
+            10 => Self::UnsupportedRouterInput,
+            32 => Self::Bridge(BridgeError::InvalidConfig),
+            33 => Self::Bridge(BridgeError::NotReady),
+            34 => Self::Bridge(BridgeError::InvalidBuffer),
+            35 => Self::Bridge(BridgeError::TimelineOverflow),
+            36 => Self::Bridge(BridgeError::RequestCapacity),
+            64 => Self::Bridge(BridgeError::Worker(PacketError::WrongEpoch)),
+            65 => Self::Bridge(BridgeError::Worker(PacketError::WrongGeneration)),
+            66 => Self::Bridge(BridgeError::Worker(PacketError::WrongFrame)),
+            67 => Self::Bridge(BridgeError::Worker(PacketError::InvalidInput)),
+            68 => Self::Bridge(BridgeError::Worker(PacketError::TooManyInputs)),
+            69 => Self::Bridge(BridgeError::Worker(PacketError::Full)),
+            70 => Self::Bridge(BridgeError::Worker(PacketError::Underrun)),
+            71 => Self::Bridge(BridgeError::Worker(PacketError::Failed)),
+            72 => Self::Bridge(BridgeError::Worker(PacketError::Stopped)),
+            73 => Self::Bridge(BridgeError::Worker(PacketError::PortTaken)),
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum FailureStage {
+    Feed = 1,
+    Router,
+    Completions,
+    Transport,
+    UiEdit,
+    AuditionRelease,
+    AuditionNote,
+    AuditionEnd,
+    Process,
+    Panic,
+}
+impl FailureStage {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Feed => "feed",
+            Self::Router => "router",
+            Self::Completions => "completions",
+            Self::Transport => "transport",
+            Self::UiEdit => "ui_edit",
+            Self::AuditionRelease => "audition_release",
+            Self::AuditionNote => "audition_note",
+            Self::AuditionEnd => "audition_end",
+            Self::Process => "process",
+            Self::Panic => "panic",
+        }
+    }
+    fn from_code(code: u8) -> Option<Self> {
+        Some(match code {
+            1 => Self::Feed,
+            2 => Self::Router,
+            3 => Self::Completions,
+            4 => Self::Transport,
+            5 => Self::UiEdit,
+            6 => Self::AuditionRelease,
+            7 => Self::AuditionNote,
+            8 => Self::AuditionEnd,
+            9 => Self::Process,
+            10 => Self::Panic,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Failure {
+    pub(crate) error: Error,
+    pub(crate) frame: u64,
+    pub(crate) stage: FailureStage,
+    pub(crate) epoch: u64,
+    pub(crate) generation: u64,
+    pub(crate) source: &'static str,
+    pub(crate) line: u32,
+}
+
+/// One audio writer; the loader only takes snapshots. Claim before metadata,
+/// publish the complete cause before the enclosing PartShared failed flag.
+#[derive(Default)]
+pub(crate) struct FailureAtoms {
+    code: std::sync::atomic::AtomicU32,
+    frame: std::sync::atomic::AtomicU64,
+    origin: std::sync::atomic::AtomicU64,
+    epoch: std::sync::atomic::AtomicU64,
+    generation: std::sync::atomic::AtomicU64,
+}
+impl FailureAtoms {
+    pub(crate) fn record(&self, failure: Failure) -> bool {
+        use std::sync::atomic::Ordering;
+        if self.code.compare_exchange(0, u32::MAX, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            return false;
+        }
+        self.frame.store(failure.frame, Ordering::Relaxed);
+        self.origin.store(u64::from(failure.line) | ((failure.stage as u64) << 32)
+            | (u64::from(failure.source == "src/plugin/uvi.rs") << 40), Ordering::Relaxed);
+        self.epoch.store(failure.epoch, Ordering::Relaxed);
+        self.generation.store(failure.generation, Ordering::Relaxed);
+        self.code.store(failure.error.code(), Ordering::Release);
+        true
+    }
+    /// Audio adoption only, before publishing the new native generation.
+    pub(crate) fn reset(&self) {
+        self.code.store(0, std::sync::atomic::Ordering::Release);
+    }
+    pub(crate) fn snapshot(&self, epoch: u64, generation: u64) -> Option<Failure> {
+        use std::sync::atomic::Ordering;
+        let code = self.code.load(Ordering::Acquire);
+        let error = Error::from_code(code)?;
+        let origin = self.origin.load(Ordering::Relaxed);
+        let failure = Failure {
+            error,
+            frame: self.frame.load(Ordering::Relaxed),
+            stage: FailureStage::from_code((origin >> 32) as u8)?,
+            epoch: self.epoch.load(Ordering::Relaxed),
+            generation: self.generation.load(Ordering::Relaxed),
+            source: if origin & (1 << 40) != 0 { "src/plugin/uvi.rs" } else { "src/plugin.rs" },
+            line: origin as u32,
+        };
+        (failure.epoch == epoch && failure.generation == generation
+            && self.code.load(Ordering::Acquire) == code
+            && self.epoch.load(Ordering::Relaxed) == epoch
+            && self.generation.load(Ordering::Relaxed) == generation).then_some(failure)
+    }
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -200,6 +373,8 @@ pub(crate) struct Slot {
     notes: Notes,
     frame: u64,
     error: Option<Error>,
+    error_frame: u64,
+    error_line: u32,
     active_voices: u64,
     underruns: u64,
     discarded_packets: u64,
@@ -226,6 +401,8 @@ impl Slot {
             notes: Notes::new(epoch, generation),
             frame,
             error: None,
+            error_frame: 0,
+            error_line: 0,
             active_voices: 0,
             underruns: 0,
             discarded_packets: 0,
@@ -244,6 +421,9 @@ impl Slot {
     }
     pub(crate) fn error(&self) -> Option<Error> {
         self.error
+    }
+    pub(crate) fn error_origin(&self) -> Option<(Error, u64, u32)> {
+        self.error.map(|error| (error, self.error_frame, self.error_line))
     }
     pub(crate) fn active_voices(&self) -> u64 {
         self.active_voices
@@ -282,14 +462,19 @@ impl Slot {
             owner.host.is_some() && owner.channel == channel && owner.key == key && owner.held
         })
     }
+    #[track_caller]
     fn fail(&mut self, error: Error) -> Error {
-        self.error.get_or_insert(error);
+        if self.error.is_none() {
+            self.error = Some(error);
+            self.error_frame = self.frame;
+            self.error_line = std::panic::Location::caller().line();
+        }
         self.bridge.abort(match error {
             Error::Bridge(reason) => reason,
             _ => BridgeError::Worker(PacketError::InvalidInput),
         });
         self.notes.abort();
-        error
+        self.error.unwrap()
     }
     /// Only core panic/reset authorizes releasing every physical gate. The
     /// activation stays aborted; replace it off audio to begin playback again.
@@ -301,6 +486,9 @@ impl Slot {
     /// playback. Retain the whole Slot until canonical End output is accepted.
     pub(crate) fn abort_activation(&mut self) {
         self.panic();
+    }
+    pub(crate) fn abort_unsupported_router(&mut self) -> Error {
+        self.fail(Error::UnsupportedRouterInput)
     }
     pub(crate) fn has_host_owners(&self) -> bool {
         self.notes
@@ -1069,7 +1257,7 @@ mod tests {
     fn adopted_note_mapping_and_retirement_do_not_allocate() {
         let mut notes = Notes::new(7, 9);
         assert_eq!(
-            crate::plugin::tests::allocations(|| {
+            crate::test_support::allocations(|| {
                 let typed = notes.allocate(None, 0, 2, 60).unwrap();
                 let exact = notes.allocate(Some(note(42)), 0, 2, 60).unwrap();
                 assert_eq!(notes.release_typed(0, 2, 60), Some(typed));
@@ -1147,7 +1335,7 @@ mod tests {
                 let mut l = [0.];
                 let mut r = [0.];
                 assert_eq!(
-                    crate::plugin::tests::allocations(|| {
+                    crate::test_support::allocations(|| {
                         slot.set_host_transport(playing, beat, 120.).unwrap();
                         if [0, 127, 255].contains(&frame) {
                             slot.feed(In::NoteOn(0, 60, 100), 0, true, false).unwrap()

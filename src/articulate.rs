@@ -1315,7 +1315,7 @@ mod tests {
     fn channel_noteoffs_keep_physical_owners_after_switching_to_keys() {
         fn no_heap(f: impl FnOnce()) {
             #[cfg(feature="plugin")]
-            assert_eq!(crate::plugin::tests::allocations(f),0);
+            assert_eq!(crate::test_support::allocations(f),0);
             #[cfg(not(feature="plugin"))]
             f();
         }
@@ -1351,7 +1351,7 @@ mod tests {
         let (mut e,mut r)=three_articulation_part();
         let note=HostNote { port:0,channel:2,key:60,id:10,clap:true };
         let pattern=HostPattern { port:0,channel:2,key:60,id:10,clap:true };
-        assert_eq!(crate::plugin::tests::allocations(|| {
+        assert_eq!(crate::test_support::allocations(|| {
             feed(&mut r,&mut e,In::HostOn(note,100,0.),7);
             assert_eq!(e.held_host_route(2,60),Some((7,60)),"the articulation keyswitch must not acquire the host tuple");
             assert_eq!(e.host_note_drops(),0);
@@ -1370,7 +1370,7 @@ mod tests {
         let (mut e,mut r)=three_articulation_part();
         e.set_script(None);
         r.route.arts[2].key=60;
-        assert_eq!(crate::plugin::tests::allocations(|| {
+        assert_eq!(crate::test_support::allocations(|| {
             r.switch(2,7,&mut |o| apply(&mut e,o));
             assert!(e.host_note_at(0).is_none());
             feed(&mut r,&mut e,In::HostOn(note,100,0.),7);
@@ -1408,7 +1408,7 @@ mod tests {
                 assert!(!e.key_down(7,60));
             };
             #[cfg(feature="plugin")]
-            assert_eq!(crate::plugin::tests::allocations(actions),0);
+            assert_eq!(crate::test_support::allocations(actions),0);
             #[cfg(not(feature="plugin"))]
             actions();
         }
@@ -2094,7 +2094,7 @@ end on"#;
             r.route.keys[61] = 49;
             let (first, second, controller) = if mpe { (1,2,0) } else { (4,4,4) };
             let (mut left, mut right) = ([0.;512], [0.;512]);
-            assert_eq!(crate::plugin::tests::allocations(|| {
+            assert_eq!(crate::test_support::allocations(|| {
                 feed(&mut r,&mut e,In::Cc(controller,74,32),7);
                 feed(&mut r,&mut e,In::NoteOn(first,60,100),7);
                 feed(&mut r,&mut e,In::NoteOn(second,61,100),7);
@@ -2747,7 +2747,7 @@ end on"#;
             assert_eq!(r.held[2][60], (2, 48));
         };
         #[cfg(feature="plugin")]
-        assert_eq!(crate::plugin::tests::allocations(check), 0);
+        assert_eq!(crate::test_support::allocations(check), 0);
         #[cfg(not(feature="plugin"))]
         { let mut check = check; check(); }
     }
@@ -3022,6 +3022,7 @@ mod real {
     /// the groups it plays with its channel alone (round robins aside).
     #[test]
     #[ignore = "requires the owner's local Solo library"]
+    #[cfg(feature = "plugin")]
     fn solo_cello_keeps_three_lines_apart() {
         let path = format!("{}/Solo/Instruments/01 Multi Patches/Solo - 03 Solo Cello.nki", crate::import::LIBRARY_ROOT);
         let i = crate::import::read(std::path::Path::new(&path)).unwrap();

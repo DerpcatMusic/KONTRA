@@ -283,7 +283,7 @@ mod tests {
         let volume = Address::Group(0, GroupPar::Volume);
         let decoded = [125000, 250000, 500000].map(|value| volume.decode(value));
         assert_eq!(
-            crate::plugin::tests::allocations(|| {
+            crate::test_support::allocations(|| {
                 state.capture(volume, par(0), 125000, decoded[0]);
                 state.capture(
                     Address::Group(29999, GroupPar::Volume),
@@ -320,7 +320,7 @@ mod tests {
         );
         saved.rewind();
         assert_eq!(
-            crate::plugin::tests::allocations(|| {
+            crate::test_support::allocations(|| {
                 assert!(state.refresh(&mut saved, 2));
             }),
             0

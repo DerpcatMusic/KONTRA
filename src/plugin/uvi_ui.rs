@@ -10,6 +10,7 @@ pub(crate) struct Published {
     pub stamp: Stamp,
     pub snapshots: Arc<Vec<UiSnapshot>>,
     pub pictures: Arc<HashMap<String, Arc<Picture>>>,
+    pub fonts: Arc<HashMap<String, moose::mui::mui::prelude::Font>>,
 }
 
 pub(super) struct Mailbox {
@@ -41,7 +42,8 @@ impl Mailbox {
             self.snapshots = snapshots.as_ref().clone();
             let pictures = self.assets.as_mut().map(|a| a.refresh(&self.snapshots)).unwrap_or_default();
             if matches!(worker.status(), Status::Failed | Status::Stopped) { return None; }
-            return Some(Arc::new(Published { stamp, snapshots, pictures }));
+            let fonts = self.assets.as_ref().map(UiAssets::fonts).unwrap_or_default();
+            return Some(Arc::new(Published { stamp, snapshots, pictures, fonts }));
         }
         if worker.status() != Status::Ready { return None; }
         if !self.discovered {
@@ -49,7 +51,7 @@ impl Mailbox {
             self.discovered = true;
             if self.processors.is_empty() {
                 return Some(Arc::new(Published { stamp: self.activation,
-                    snapshots: Arc::default(), pictures: Arc::default() }));
+                    snapshots: Arc::default(), pictures: Arc::default(), fonts: Arc::default() }));
             }
         }
         let mut published = None;
@@ -67,8 +69,9 @@ impl Mailbox {
                     self.snapshots.sort_by_key(|s| self.processors.iter().position(|p| *p == s.processor));
                 }
                 let pictures = self.assets.as_mut().map(|a| a.refresh(&self.snapshots)).unwrap_or_default();
+                let fonts = self.assets.as_ref().map(UiAssets::fonts).unwrap_or_default();
                 published = Some(Arc::new(Published { stamp: reply.stamp,
-                    snapshots: Arc::new(self.snapshots.clone()), pictures }));
+                    snapshots: Arc::new(self.snapshots.clone()), pictures, fonts }));
             }
         }
         if self.pending.is_none() && !self.processors.is_empty() {

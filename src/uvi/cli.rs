@@ -71,6 +71,12 @@ fn open_library(args: &[String], start: usize) -> Result<(ReaderNamespaces, libr
 fn member_bytes(args: &[String], start: usize) -> Result<(ReaderNamespaces, Vec<u8>)> {
     let (reader, library) = open_library(args, start)?;
     let member = library::resolve_member(&library.directory, &args[2])?;
+    if args[0] == "uvi-program" || args[2].to_ascii_lowercase().ends_with(".uvip") {
+        ensure!(
+            member.size <= crypto::PROGRAM_XML_LIMIT as u64,
+            "UVI Program member exceeds 32 MiB limit"
+        );
+    }
     let bytes = library.read(member)?;
     Ok((reader, bytes))
 }
@@ -579,9 +585,7 @@ pub fn run(args: &[String]) -> Result<()> {
             let (reader, bytes) = member_bytes(args, if extracting { 4 } else { 3 })?;
             let is_program = args[2].to_ascii_lowercase().ends_with(".uvip");
             if is_program || !extracting {
-                let text =
-                    std::str::from_utf8(&bytes).context("Decoded UVI program is not UTF-8")?;
-                let decoded = crypto::decode_program(text, &reader.program)?;
+                let decoded = crypto::decode_program_bytes(&bytes, &reader.program)?;
                 let program = program::parse_program(&decoded)?;
                 if extracting {
                     write_private(Path::new(&args[3]), decoded.as_bytes())?;

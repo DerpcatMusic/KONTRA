@@ -104,8 +104,16 @@ remain failures. Genuine initialized controls can be published after authored
 Lua initialization while fresh renderer preparation is still running; gestures
 remain disabled until matching audio adoption. Static sample decoding still
 precedes Lua. Saved-state restoration keeps its prevalidated renderer/resource
-and authored callback order. Failure, cancellation and stale activation cannot
-retain an initialized panel. Host latency admission survives engine resets while the native
+and authored callback order. Cancellation and stale activation cannot retain an
+initialized panel. A runtime failure after audio adoption retains the initialized
+panel for inspection, disables its controls and closes its popups; a new source
+or epoch hides it. Info shows live load stages, graph counts, initial-resource
+counts and PCM residency. The first endpoint failure includes its actual error,
+stage, frame, Rust source location and build revision. A bounded code excerpt
+appears only when the local source matches the digest captured by the binary;
+otherwise the reason it is unavailable is explicit. Repeated warning/error rows
+share one parent with distinct item/cause/location entries. Full exports keep
+the original records. Host latency admission survives engine resets while the native
 source remains selected, preventing a zero/loaded-latency restart cycle; physical
 compensation is retained only with matching already allocated delay storage.
 Actual Bitwig behavior still requires testing with the newly installed plugin.
@@ -124,7 +132,7 @@ sharing. Journals and exports have their existing retention and truncation limit
 | UFS/program/sample access | Owned-corpus directory and decode checks; native identities retained | Unsupported protection/layouts remain failures; no universal-bank claim |
 | Lua and MIDI | Authored initialization, measured original-node Gain/Pan defaults, timed commands, control edits, transport and rooted note tests | Complete host API, MPE/tuning/expression and every library interaction |
 | Native DSP | Scoped native comparisons and explicitly bounded admitted settings | Unsupported oscillators/routes/modes and broader live/rate fidelity |
-| VWinds controls | Original-source panel with uniform intrinsic 720×480 scaling; 273 widgets/38 images retained | Native fonts/units, advanced displays and full interaction/audio comparison |
+| VWinds controls | Original-source panel with uniform intrinsic 720×480 scaling; 273 widgets/38 images and owned bank fonts retained | Native visual comparison, units, advanced displays and full interaction/audio comparison |
 | Rack persistence | Real two-part save/reopen control and exact PCM regression | Host save failures cannot be returned through the framework hook |
 | Playback scheduling | Allocation-free callback transport and bounded packet ownership tests | Sustainable deadlines on user hardware; prior paid-worker misses remain |
 | Compatibility accounting | Parsed/admitted/rejected graph, worker lifecycle and explicitly requested instrumented node counters | Uninstrumented nodes, script callback coverage and native end-to-end musical parity |
@@ -138,13 +146,15 @@ does not prove its transition or timbre behavior.
 
 ## Checkpoint validation
 
-The combined `uvi,standalone` optimized CI test run passed 977 library checks,
+At installed checkpoint `75998c3`, the combined `uvi,standalone` optimized CI test run passed 977 library checks,
 89 CLI/playback checks and four additional binary/integration checks. Thirty-five
 external-fixture checks were ignored and one screenshot check was excluded.
 The authored and retained native regressions include root Choke ownership, state construction and
 resource precedence, no periodic onSave, real two-part rack save/reopen exact PCM,
 UI scaling bounds, graph admission reporting and DSP/Lua error attribution.
 These checks are scoped regressions, not a count of compatible Falcon features.
+Later source changes use focused functional checks and feature checks; this
+broad suite count is historical and does not describe a new checkpoint run.
 
 The installed `f4e2a17` CLI was also checked against all 40 catalog programs in
 25 paid banks: parsing/preflight, script checks, initialization-only diagnosis

@@ -1,10 +1,77 @@
 //! Loader-prepared source latency for the shared rack mixer. Native buffering
 //! and MIDI ownership stay with their existing endpoint/core owners.
+use super::{Dsp, SamplerParams, Shared, uvi_delay};
 use crate::engine::{HostNote, SourceDelay};
-use std::mem::size_of;
+use std::{mem::size_of, sync::atomic::Ordering};
 
 const MEMORY_LIMIT: usize = 256 << 20;
 const END_CAPACITY: usize = 4096;
+
+pub(super) const UVI_LEAD_PACKETS: usize = 16;
+
+#[cfg(feature = "uvi")]
+pub(super) struct UviDelayHandoff { pub(super) epoch: u64, pub(super) ticket: u64, pub(super) storage: Box<uvi_delay::Prepared> }
+
+#[cfg(feature = "uvi")]
+pub(super) struct UviDelayPreparation {
+    pub(super) context: (u64, usize, usize),
+    pub(super) outcome: Result<(u32, u64), uvi_delay::Error>,
+}
+
+/// Different callback queues are unordered. A native endpoint is published only
+/// after the callback acknowledged storage for this epoch and complete rack.
+#[cfg(feature = "uvi")]
+pub(super) fn uvi_delay_ready(params: &SamplerParams) -> Result<bool, uvi_delay::Error> {
+    let epoch = params.shared.uvi_epoch.load(Ordering::Acquire);
+    let count = params.shared.with_parts(|parts| parts.len());
+    if count > params.shared.grown.load(Ordering::Acquire) as usize { return Ok(false) }
+    let maximum = params.shared.uvi_max_host_frames.load(Ordering::Acquire);
+    let context = (epoch, count, maximum);
+    let mut prepared = params.shared.uvi_delay_prepared.lock().unwrap();
+    if let Some(previous) = prepared.as_ref()
+        && previous.context == context {
+        let (latency, ticket) = previous.outcome?;
+        params.shared.uvi_latency_admission.store(((maximum as u64) << 32) | u64::from(latency), Ordering::Release);
+        return Ok(params.shared.uvi_delay_installed.load(Ordering::Acquire) == ticket);
+    }
+    let allocated = crate::uvi::bridge::Bridge::buffering_latency(maximum, UVI_LEAD_PACKETS)
+        .map_err(|_| uvi_delay::Error::InvalidLayout)
+        .and_then(|latency| {
+            let mut storage = uvi_delay::Prepared::new(count, latency as usize)?;
+            if !storage.set_all(latency) { return Err(uvi_delay::Error::InvalidLayout) }
+            Ok((latency, storage))
+        });
+    let (latency, storage) = match allocated {
+        Ok(allocated) => allocated,
+        Err(error) => {
+            *prepared = Some(UviDelayPreparation { context, outcome: Err(error) });
+            return Err(error);
+        }
+    };
+    params.shared.uvi_latency_admission.store(((maximum as u64) << 32) | u64::from(latency), Ordering::Release);
+    let ticket = params.shared.uvi_delay_wanted.fetch_add(1, Ordering::AcqRel) + 1;
+    let next = UviDelayHandoff { epoch, ticket, storage: Box::new(storage) };
+    let _ = params.shared.uvi_delays.force_push(next);
+    *prepared = Some(UviDelayPreparation { context, outcome: Ok((latency, ticket)) });
+    Ok(false)
+}
+
+/// Scalar-only host report. Actual mixer delays still follow live endpoints.
+#[cfg(feature = "uvi")]
+pub(super) fn admitted_uvi_latency(shared: &Shared, maximum: usize) -> u32 {
+    let admitted = shared.uvi_latency_admission.load(Ordering::Acquire);
+    if admitted >> 32 == maximum as u64 { admitted as u32 } else { 0 }
+}
+
+/// Preserve physical compensation during replacement only when the already
+/// adopted storage can actually supply the retained host-reported delay.
+#[cfg(feature = "uvi")]
+pub(super) fn physical_uvi_latency(s: &Dsp, live: u32) -> u32 {
+    if s.uvi_delays.as_ref().is_some_and(|delays|
+        delays.slots() == s.uvi.len() && delays.latency_frames() == s.uvi_reported_latency) {
+        live.max(s.uvi_reported_latency)
+    } else { live }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Error {
@@ -285,7 +352,7 @@ mod tests {
         let mut prepared = Prepared::new(2, 513).unwrap();
         let mut growth = Prepared::new(3, 513).unwrap();
         let mut ends = Ends::default();
-        let calls = crate::plugin::tests::allocations(|| {
+        let calls = crate::test_support::allocations(|| {
             assert!(prepared.set_all(513));
             assert!(prepared.set_all(513));
             assert!(growth.set_all(513));
