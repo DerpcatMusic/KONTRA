@@ -35,6 +35,38 @@ Caches are separated by OS/target, profile and feature set. The cache action als
 keys the compiler, Cargo manifests/lockfile and compiler-related environment.
 Caches are accelerators, not test evidence or release artifacts.
 
+## Local UVI iteration and hot reload
+
+During edits, use `cargo check --locked --profile ci --features uvi --lib`.
+Run the relevant focused tests when behavior changes; build an optimized audio
+capture only after the source is stable. Metadata checks do not validate audio
+output, CPU deadlines or host loading.
+
+The existing Moose loader supports a reusable CLAP/VST3 development shell. Build
+one format and its dev-profile logic library with:
+
+```bash
+cargo moose build --shell --debug --clap --features uvi --target-cpu baseline
+```
+
+This bundles into the configured target directory without installing a plugin.
+It also writes Moose's local sidecar pointing to the logic library. Load that
+development shell in the host; keep the sidecar and library available. Subsequent
+implementation edits need only the ordinary logic build:
+
+```bash
+cargo build --locked --features uvi
+```
+
+Keep the shell and logic feature sets consistent. The locked loader watches the
+library for changes; editor changes are picked up on the next editor close/open.
+If parameters/state layout or the feature-dependent ABI changes, rebuild the
+shell and reload it in the host. Use `--vst3` in place of `--clap` for that format.
+The dev profile avoids release LTO and keeps incremental compilation available;
+its slower DSP is not a release-performance benchmark. The metadata check
+`cargo check --locked --profile ci --features uvi,shell --lib` passes; actual DAW
+hot-reload behavior remains a separate verification step.
+
 ## Nightly and deeper verification
 
 Every push or merge to public `main`, including documentation-only changes, starts

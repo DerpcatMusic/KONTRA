@@ -1,4 +1,7 @@
 -- NativeUI component graph. The host traverses this graph and renders its primitives.
+-- NativeUI's graph needs these helpers, not a different UVI VM dialect.
+table.pack = table.pack or function(...) return {n=select('#',...), ...} end
+table.unpack = table.unpack or unpack
 local ui = {}
 local methods = {}
 local node_mt = {__index=methods}

@@ -43,6 +43,7 @@ pub struct ProgramBank {
     controls: super::instrument::InstrumentControls,
     amplifier: super::instrument::ProgramAmplifier,
     now: u64,
+    block_start: u64,
     saved_tempo: f64,
     scratch: [[f32; MAX_BLOCK]; 2],
     unsupported: u64,
@@ -85,7 +86,7 @@ impl ProgramBank {
             output,
         )
     }
-    fn prepare(
+    pub(crate) fn prepare(
         imported: crate::import::InstrumentBank,
         port: u8,
         rate: f64,
@@ -185,15 +186,17 @@ impl ProgramBank {
             budget.kill_mode <= 4 && budget.prefer_released <= 1 && budget.exclusion_group < 0,
             "Unsupported instrument-bank shared voice rule"
         );
-        let ceiling = imported
-            .programs
-            .len()
-            .checked_mul(MAX_VOICES)
-            .context("Instrument-bank capacity overflow")?;
         ensure!(
-            u64::from(budget.max_voices) >= ceiling as u64,
-            "Instrument-bank shared voice arbitration is unsupported at this limit"
+            budget.max_voices > 0 && budget.fade_ms <= i32::MAX as u32,
+            "Invalid instrument-bank voice budget/fade"
         );
+        let voice_limit = crate::import::VoiceLimit {
+            max_voices: budget.max_voices,
+            kill_mode: budget.kill_mode as i16,
+            prefer_released: budget.prefer_released != 0,
+            fade_ms: budget.fade_ms,
+            exclusion_group: budget.exclusion_group,
+        };
         ensure!(
             !imported.programs.is_empty(),
             "Empty instrument-bank roster"
@@ -219,16 +222,22 @@ impl ProgramBank {
                     && instrument.fx.send_outputs.iter().all(|s| s.channel == -1),
                 "Instrument-bank direct program output routing is unsupported"
             );
+            // Mode2 returned sends encounter a separate retained program amp
+            // before the inner amp. Until that owner exists, admit only its
+            // neutral setting, or programs with no returned-send effects.
+            ensure!(
+                instrument.fx.send.slots.is_empty()
+                    || (instrument.program.gain == 1. && instrument.program.pan == 0.),
+                "Instrument-bank nonunit amplifier with returned-send FX is unsupported"
+            );
             ensure!(
                 lookup[slot as usize].is_none(),
                 "Duplicate instrument-bank program slot"
             );
             // Native bank admission uses the container rule, not the old program rule.
-            instrument.voice_limit = None;
-            ensure!(
-                instrument.program.gain == 1. && instrument.program.pan == 0.,
-                "Nonunit instrument-bank inner amplifier is unsupported"
-            );
+            // The container supplies the rule; each retained inner roster counts
+            // and selects its own victims. Other programs never enter this census.
+            instrument.voice_limit = Some(voice_limit);
             let options = instrument
                 .native_program_private
                 .as_ref()
@@ -246,7 +255,6 @@ impl ProgramBank {
                     .map(|w| format!("Program {slot}: {w}")),
             );
             let mut bank = super::Bank::load(&instrument)?;
-            bank.set_polyphony(MAX_VOICES);
             warnings.extend(bank.issues.iter().map(|w| format!("Program {slot}: {w}")));
             if let Some(w) = &bank.warning {
                 warnings.push(format!("Program {slot}: {w}"));
@@ -283,6 +291,7 @@ impl ProgramBank {
             },
             amplifier: Default::default(),
             now: 0,
+            block_start: 0,
             saved_tempo,
             scratch: [[0.; MAX_BLOCK]; 2],
             unsupported: 0,
@@ -313,6 +322,14 @@ impl ProgramBank {
     pub fn warnings(&self) -> &[String] {
         &self.warnings
     }
+    pub(crate) fn reject_input(&mut self) {
+        self.reject();
+    }
+    pub(crate) fn host_choke(&mut self, pattern: HostPattern) {
+        for index in 0..self.programs.len() {
+            self.with_program(index, |e| e.host_note_choke(pattern));
+        }
+    }
     pub fn unsupported_inputs(&self) -> u64 {
         self.unsupported
     }
@@ -320,6 +337,7 @@ impl ProgramBank {
         self.programs.iter().map(|p| p.engine.active_voices()).sum()
     }
     pub fn begin_audio_block(&mut self, frames: usize, offline: bool) {
+        self.block_start = self.now;
         let count = self.programs.len();
         for index in 0..count {
             self.with_program(index, |e| e.begin_audio_block(frames, count, offline));
@@ -346,7 +364,9 @@ impl ProgramBank {
         let key = bytes[1];
         match kind {
             8 => {
-                let v = self.received.release_velocity(bytes[2])
+                let v = self
+                    .received
+                    .release_velocity(bytes[2])
                     .unwrap_or_else(|| Velocity::from_midi1(bytes[2]));
                 self.off(channel, key, v);
                 Admission::Accepted
@@ -357,7 +377,9 @@ impl ProgramBank {
                 Admission::Accepted
             }
             9 => {
-                let v = self.received.velocity(bytes[2])
+                let v = self
+                    .received
+                    .velocity(bytes[2])
                     .unwrap_or_else(|| Velocity::from_midi1(bytes[2]));
                 let Some(index) = self.selected_index() else {
                     return Admission::Empty;
@@ -583,48 +605,244 @@ impl ProgramBank {
         left.fill(0.);
         right.fill(0.);
         let frames = left.len().min(right.len());
-        for index in 0..self.programs.len() {
-            self.with_program(index, |e| e.render_begin(frames));
-        }
+        self.render_begin(frames);
         let mut at = 0;
         loop {
-            for index in 0..self.programs.len() {
-                self.with_program(index, |e| e.render_boundary(at));
-            }
+            self.render_boundary(at);
             if at == frames {
                 break;
             }
-            let end = self
-                .programs
-                .iter()
-                .fold(frames, |end, p| end.min(p.engine.render_next_boundary(at)));
-            let n = end - at;
-            let window = self.programs[0].engine.player.release_counter.span();
-            let mut scratch = std::mem::replace(&mut self.scratch, [[0.; MAX_BLOCK]; 2]);
-            let mut fed = false;
-            for index in 0..self.programs.len() {
-                let [l, r] = &mut scratch;
-                fed |=
-                    self.with_program(index, |e| e.render_interval(at, &mut l[..n], &mut r[..n]));
-                for i in 0..n {
-                    left[at + i] += l[i];
-                    right[at + i] += r[i];
-                }
-            }
-            self.scratch = scratch;
-            self.amplifier.process(
-                self.controls,
-                window,
-                self.programs[0].engine.rate() as f32,
-                fed,
-                &mut left[at..end],
-                &mut right[at..end],
-            );
-            self.now = self.now.saturating_add(n as u64);
+            let end = self.render_next_boundary(at).min(frames);
+            debug_assert!(end > at);
+            self.render_interval(at, &mut left[at..end], &mut right[at..end]);
             at = end;
         }
+        self.render_finish();
+    }
+
+    pub(super) fn render_begin(&mut self, frames: usize) {
+        for index in 0..self.programs.len() {
+            self.with_program(index, |e| e.render_begin(frames));
+        }
+    }
+    pub(super) fn render_boundary(&mut self, at: usize) {
+        for index in 0..self.programs.len() {
+            self.with_program(index, |e| e.render_boundary(at));
+        }
+    }
+    pub(super) fn render_next_boundary(&self, at: usize) -> usize {
+        self.programs
+            .iter()
+            .map(|p| p.engine.render_next_boundary(at))
+            .min()
+            .unwrap_or(at)
+    }
+    pub(super) fn render_interval(
+        &mut self,
+        at: usize,
+        left: &mut [f32],
+        right: &mut [f32],
+    ) -> bool {
+        left.fill(0.);
+        right.fill(0.);
+        let n = left.len().min(right.len());
+        let window = self.programs[0].engine.player.release_counter.span();
+        let fresh = self.amplifier.is_fresh();
+        let mut scratch = std::mem::replace(&mut self.scratch, [[0.; MAX_BLOCK]; 2]);
+        let mut fed = false;
+        for index in 0..self.programs.len() {
+            let [l, r] = &mut scratch;
+            fed |= self.with_program(index, |e| {
+                e.render_interval_with_program_fresh(at, &mut l[..n], &mut r[..n], Some(fresh))
+            });
+            for i in 0..n {
+                left[i] += l[i];
+                right[i] += r[i];
+            }
+        }
+        self.scratch = scratch;
+        self.amplifier
+            .process(self.controls, window, self.rate() as f32, fed, left, right);
+        self.now = self.now.saturating_add(n as u64);
+        fed
+    }
+    pub(super) fn render_finish(&mut self) {
         for index in 0..self.programs.len() {
             self.with_program(index, Engine::render_finish);
         }
+    }
+
+    pub(crate) fn port(&self) -> u8 {
+        self.port
+    }
+    pub(crate) fn matches_input(&self, port: u8, channel: u8) -> bool {
+        self.matches(port, channel)
+    }
+    pub fn rate(&self) -> f64 {
+        self.programs[0].engine.rate()
+    }
+    pub fn audible_voices(&self) -> usize {
+        self.programs
+            .iter()
+            .map(|p| p.engine.audible_voices())
+            .sum()
+    }
+    pub fn underruns(&self) -> u64 {
+        self.programs.iter().map(|p| p.engine.underruns()).sum()
+    }
+    pub fn dropped_commands(&self) -> u64 {
+        self.programs
+            .iter()
+            .map(|p| p.engine.dropped_commands())
+            .sum()
+    }
+    pub fn pending_work(&self) -> [usize; 3] {
+        self.programs.iter().fold([0; 3], |mut sum, p| {
+            for (total, count) in sum.iter_mut().zip(p.engine.pending_work()) {
+                *total += count;
+            }
+            sum
+        })
+    }
+    pub fn take_stream_error(&self) -> Option<super::StreamError> {
+        self.programs
+            .iter()
+            .find_map(|p| p.engine.take_stream_error())
+    }
+    pub(crate) fn set_blocking_streams(&mut self, offline: bool) {
+        for p in &mut self.programs {
+            p.engine.blocking_streams = offline;
+        }
+    }
+    pub(crate) fn set_load(&mut self, load: f32) {
+        for p in &mut self.programs {
+            p.engine.load = load;
+        }
+    }
+    pub(crate) fn set_sampler_defaults(&mut self, attack: f32, release: f32, cutoff: f32) {
+        for p in &mut self.programs {
+            p.engine.attack = attack;
+            p.engine.release = release;
+            p.engine.cutoff = cutoff;
+        }
+    }
+    pub(crate) fn set_tune(&mut self, tune: f32) {
+        for p in &mut self.programs {
+            p.engine.tune = tune;
+        }
+    }
+    pub(crate) fn initialize_frame(&mut self, now: u64) {
+        self.now = now;
+        for p in &mut self.programs {
+            p.engine.initialize_frame(now);
+        }
+    }
+    pub(crate) fn reset(&mut self, rate: f64) {
+        self.received.reset();
+        self.requested_sustain = 0;
+        self.amplifier.idle();
+        let channel = self.channel;
+        for index in 0..self.programs.len() {
+            self.with_program(index, |e| e.reset_input(rate, channel, false));
+        }
+    }
+    pub(crate) fn audio_block_start(&self) -> u64 {
+        self.block_start
+    }
+    pub(crate) fn mark_host_notes(&mut self) {
+        for index in 0..self.programs.len() {
+            self.with_program(index, Engine::mark_host_notes);
+        }
+    }
+    pub(crate) fn host_note_at(&self, index: usize) -> Option<(HostNote, bool)> {
+        self.programs
+            .iter()
+            .flat_map(|p| &p.engine.player.host_notes.active)
+            .nth(index)
+            .and_then(|id| self.roots.get(*id))
+            .map(|o| (o.note, o.pinned))
+    }
+    pub(crate) fn host_note_present(&self, note: HostNote) -> bool {
+        self.programs
+            .iter()
+            .flat_map(|p| &p.engine.player.host_notes.active)
+            .any(|id| self.roots.get(*id).is_some_and(|o| o.note == note))
+    }
+    pub(crate) fn host_note_pending(&self, note: HostNote) -> bool {
+        self.programs
+            .iter()
+            .flat_map(|p| &p.engine.player.host_notes.active)
+            .any(|id| {
+                self.roots
+                    .get(*id)
+                    .is_some_and(|o| o.note == note && o.pinned)
+            })
+    }
+    pub(crate) fn host_note_end_at(&self, note: HostNote) -> Option<u64> {
+        self.programs
+            .iter()
+            .flat_map(|p| &p.engine.player.host_notes.active)
+            .filter_map(|id| self.roots.get(*id))
+            .filter(|o| o.note == note && !o.pinned)
+            .map(|o| {
+                o.pending_end
+                    .unwrap_or(o.start)
+                    .max(o.stop.unwrap_or(o.start))
+            })
+            .max()
+    }
+    pub(crate) fn host_key_held(&self, channel: u8, key: u8) -> bool {
+        self.programs
+            .iter()
+            .flat_map(|p| &p.engine.player.host_notes.active)
+            .any(|id| {
+                self.roots
+                    .get(*id)
+                    .is_some_and(|o| o.held && o.note.channel == channel && o.note.key == key)
+            })
+    }
+    pub(crate) fn host_note_drops(&self) -> u64 {
+        self.programs
+            .iter()
+            .map(|p| p.engine.host_note_drops())
+            .sum()
+    }
+    pub(crate) fn retire_host_note(&mut self, note: HostNote) {
+        for index in 0..self.programs.len() {
+            self.with_program(index, |e| e.retire_host_note(note));
+        }
+    }
+    pub(super) fn roots(&self) -> &Storage {
+        &self.roots
+    }
+    pub(super) fn roots_mut(&mut self) -> &mut Storage {
+        &mut self.roots
+    }
+    pub(super) fn detach_terminal_refs(
+        &mut self,
+        ended: &mut Vec<super::host_notes::HostRef>,
+    ) -> bool {
+        let count: usize = self
+            .programs
+            .iter()
+            .map(|p| p.engine.player.host_notes.active.len())
+            .sum();
+        if count > ended.capacity() - ended.len() {
+            return false;
+        }
+        if self
+            .programs
+            .iter()
+            .flat_map(|p| &p.engine.player.host_notes.active)
+            .any(|id| self.roots.terminal(*id).is_none())
+        {
+            return false;
+        }
+        for index in 0..self.programs.len() {
+            self.with_program(index, |e| {
+                e.player.host_notes.detach_terminal_refs(ended);
+            });
+        }
+        true
     }
 }

@@ -90,7 +90,7 @@ pub(super) struct Storage {
 }
 
 impl Storage {
-    fn get(&self, id: HostRef) -> Option<&Owner> {
+    pub(super) fn get(&self, id: HostRef) -> Option<&Owner> {
         self.slots.get(id.index as usize).filter(|o|o.live && o.generation==id.generation)
     }
     pub(super) fn terminal(&self, id: HostRef) -> Option<(HostNote,u64)> {

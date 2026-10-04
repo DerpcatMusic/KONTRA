@@ -281,6 +281,19 @@ impl Fixture {
     fn bank(&self) -> ProgramBank {
         ProgramBank::load(&self.path, 5, 2, 48000., MainStereo).unwrap()
     }
+    fn imported_with_budget(&self, max: u32) -> crate::import::InstrumentBank {
+        let mut imported = crate::import::read_instrument_bank(&self.path, 5).unwrap();
+        let rule = imported
+            .container
+            .0
+            .children
+            .iter_mut()
+            .find(|c| c.id == 0x2b)
+            .unwrap();
+        let at = 3 + 4 + "Nonbinding shared cap".encode_utf16().count() * 2 + 3;
+        rule.data[at..at + 4].copy_from_slice(&max.to_le_bytes());
+        imported
+    }
     fn references(&self) -> [Engine; 2] {
         self.programs.each_ref().map(|p| {
             let mut e = Engine::default();
@@ -347,12 +360,81 @@ fn cc(e: &mut Engine, n: u8, v: u8) {
     e.control_from(4, 4, Control::Cc(n, ControlValue::from_midi1(v)));
 }
 
+/// Independent unity-inner oracle for the native common-fresh contract. The
+/// standalone engines supply source PCM/work receipts, not bank amplifier state.
+#[derive(Default)]
+struct ReferenceAmplifiers {
+    gain: [f32; 2],
+    moving: [bool; 2],
+    window: [Option<(u64, u64)>; 2],
+    active: bool,
+}
+impl ReferenceAmplifiers {
+    fn render(&mut self, engines: &mut [Engine; 2], left: &mut [f32], right: &mut [f32]) {
+        let frames = left.len();
+        for e in engines.iter_mut() {
+            e.render_begin(frames);
+        }
+        let mut at = 0;
+        loop {
+            for e in engines.iter_mut() {
+                e.render_boundary(at);
+            }
+            if at == frames {
+                break;
+            }
+            let end = engines
+                .iter()
+                .map(|e| e.render_next_boundary(at))
+                .min()
+                .unwrap()
+                .min(frames);
+            let mut any_work = false;
+            for (index, e) in engines.iter_mut().enumerate() {
+                let (mut l, mut r) = ([0.; 128], [0.; 128]);
+                let work = e.render_interval(at, &mut l[..end - at], &mut r[..end - at]);
+                any_work |= work;
+                if !work {
+                    continue;
+                }
+                let window = e.player.release_counter.span();
+                if !self.active {
+                    self.gain[index] = 1.;
+                    self.moving[index] = false;
+                } else if self.window[index] != window {
+                    let ratio = (self.gain[index] + 1e-12).abs() / (1_f32 + 1e-12);
+                    self.moving[index] = ratio < f32::from_bits(0x3f7fbe77);
+                }
+                self.window[index] = window;
+                for i in 0..end - at {
+                    let gain = if self.moving[index] {
+                        self.gain[index]
+                    } else {
+                        1.
+                    };
+                    left[at + i] += (l[i] * gain) * 0.375;
+                    right[at + i] += (r[i] * gain) * 0.5;
+                    if self.moving[index] {
+                        self.gain[index] += (1. - self.gain[index]) * f32::from_bits(0x3a11a2b4);
+                    }
+                }
+            }
+            self.active = any_work;
+            at = end;
+        }
+        for e in engines {
+            e.render_finish();
+        }
+    }
+}
+
 #[test]
 fn actual_sparse_bank_keeps_original_roots_release_samples_decoder_and_exact_ends_without_heap() {
     let fixture = Fixture::new();
     for sizes in [&[128][..], &[1, 7, 31, 127, 13, 64][..]] {
         let mut bank = fixture.bank();
         let mut references = fixture.references();
+        let mut reference_amplifiers = ReferenceAmplifiers::default();
         assert_eq!(bank.selected(), 7);
         assert_eq!(bank.saved_tempo, 137.5);
         assert!(bank.set_transport(false, None, 0., (4, 4)));
@@ -389,15 +471,12 @@ fn actual_sparse_bank_keeps_original_roots_release_samples_decoder_and_exact_end
                             .min(256 - at % 256);
                         let [l, r] = &mut actual;
                         bank.render(&mut l[at..at + n], &mut r[at..at + n]);
-                        let mut scratch = [[0.; 128]; 2];
-                        for e in &mut references {
-                            let [l, r] = &mut scratch;
-                            e.render(&mut l[..n], &mut r[..n]);
-                            for i in 0..n {
-                                expected[0][at + i] += l[i] * 0.375;
-                                expected[1][at + i] += r[i] * 0.5;
-                            }
-                        }
+                        let [l, r] = &mut expected;
+                        reference_amplifiers.render(
+                            &mut references,
+                            &mut l[at..at + n],
+                            &mut r[at..at + n],
+                        );
                         at += n;
                         fragment += 1;
                     }
@@ -529,10 +608,180 @@ fn actual_sparse_bank_keeps_original_roots_release_samples_decoder_and_exact_end
         assert!(error < 2e-6, "bank PCM {error}");
         assert!(actual[0][200].abs() > 0.01);
         assert!(
-            actual[0][700] < -0.02,
+            actual[0][700] < 0.,
             "only program119's negative release-only sample is alive"
         );
     }
+}
+
+#[test]
+fn late_nonunit_inner_uses_zero_start_gain_and_pan_recurrence_without_heap() {
+    let fixture = Fixture::new();
+    let mut imported = fixture.imported_with_budget(2048);
+    imported.programs[1].1.program.gain = 0.4;
+    imported.programs[1].1.program.pan = -0.7;
+    let mut bank = ProgramBank::prepare(imported, 2, 48000., MainStereo).unwrap();
+    let [mut a, mut b] = fixture.references();
+    // This scenario has no RPN2 coarse-tuning transaction.
+    a.tune = 0.;
+    b.tune = 0.;
+    let (mut l, mut r, mut al, mut ar, mut bl, mut br) =
+        ([0.; 32], [0.; 32], [0.; 32], [0.; 32], [0.; 32], [0.; 32]);
+    assert_eq!(
+        crate::plugin::tests::allocations(|| {
+            bank.begin_audio_block(256, false);
+            for e in [&mut a, &mut b] {
+                e.begin_audio_block(256, 2, false);
+            }
+            bank.host_on(note(60), Velocity::from_midi1(127), 0.);
+            a.host_note_on(note(60), 4, 60, 127, 0.);
+            bank.render(&mut l, &mut r);
+            a.render(&mut al, &mut ar);
+            b.render(&mut bl, &mut br);
+            bank.midi1(2, &[0xc4, 119]);
+            bank.host_on(note(61), Velocity::from_midi1(127), 0.);
+            b.host_note_on(note(61), 4, 61, 127, 0.);
+            bank.render(&mut l, &mut r);
+            a.render(&mut al, &mut ar);
+            b.render(&mut bl, &mut br);
+            let (mut gain, mut pan) = (0_f32, 0_f32);
+            for i in 0..32 {
+                let el = (al[i] + bl[i] * gain) * 0.375;
+                let er = (ar[i] + (br[i] * gain) * (1. + pan)) * 0.5;
+                assert!(
+                    (l[i] - el).abs() < 2e-6 && (r[i] - er).abs() < 2e-6,
+                    "frame {i}: actual [{}, {}], oracle [{el}, {er}], gain {gain}, pan {pan}",
+                    l[i],
+                    r[i]
+                );
+                gain += (0.4 - gain) * f32::from_bits(0x3a11a2b4);
+                pan += -20_f32 / 48000.;
+            }
+        }),
+        0
+    );
+}
+
+#[test]
+fn nonunit_inner_with_returned_sends_is_rejected_during_preparation() {
+    let fixture = Fixture::new();
+    let mut imported = fixture.imported_with_budget(2048);
+    imported.programs[1].1.program.gain = 0.4;
+    imported.programs[1]
+        .1
+        .fx
+        .send
+        .slots
+        .push(crate::fx::Effect {
+            slot: 0,
+            kind: crate::fx::Kind::Gainer,
+            version: 0,
+            bypass: false,
+            output_gain: 1.,
+            dry_level: 0.,
+            params: crate::fx::Params::Gainer(crate::fx::params::Gainer { gain: 1. }),
+        });
+    let error = ProgramBank::prepare(imported, 2, 48000., MainStereo)
+        .err()
+        .unwrap();
+    assert!(
+        error
+            .to_string()
+            .contains("nonunit amplifier with returned-send FX")
+    );
+}
+
+#[test]
+fn max_one_budget_selects_victims_only_in_the_original_inner_program_without_heap() {
+    let fixture = Fixture::new();
+    let mut bank =
+        ProgramBank::prepare(fixture.imported_with_budget(1), 2, 48000., MainStereo).unwrap();
+    let a = note(60);
+    let b = note(61);
+    let next_a = HostNote { id: 10, ..a };
+    assert_eq!(
+        crate::plugin::tests::allocations(|| {
+            bank.begin_audio_block(256, false);
+            assert_eq!(
+                bank.host_on(a, Velocity::from_midi1(127), 0.),
+                Admission::Accepted
+            );
+            bank.render(&mut [0.; 16], &mut [0.; 16]);
+            assert_eq!(bank.midi1(2, &[0xc4, 119]), Admission::Accepted);
+            assert_eq!(
+                bank.host_on(b, Velocity::from_midi1(127), 0.),
+                Admission::Accepted
+            );
+            bank.render(&mut [0.; 16], &mut [0.; 16]);
+            assert_eq!(bank.programs[0].engine.active_voices(), 1);
+            assert_eq!(bank.programs[1].engine.active_voices(), 1);
+            assert_eq!(bank.midi1(2, &[0xc4, 7]), Admission::Accepted);
+            assert_eq!(
+                bank.host_on(next_a, Velocity::from_midi1(127), 0.),
+                Admission::Accepted
+            );
+            bank.render(&mut [0.; 32], &mut [0.; 32]);
+            // A's victim can remain in its fade; B never enters A's census.
+            assert!(bank.host_note_pending(b));
+            assert!(bank.host_note_pending(next_a));
+            assert_eq!(bank.programs[1].engine.active_voices(), 1);
+        }),
+        0
+    );
+    assert!(ProgramBank::prepare(fixture.imported_with_budget(0), 2, 48000., MainStereo).is_err());
+}
+
+#[test]
+fn typed_bank_replacement_retains_terminal_identity_until_ack_without_heap() {
+    let fixture = Fixture::new();
+    let mut part = super::super::RackPart::from(Box::new(fixture.bank()));
+    let [engine, _] = fixture.references();
+    let mut replacement = super::super::RackPart::from(engine);
+    let mut next_bank = super::super::RackPart::from(Box::new(fixture.bank()));
+    assert_eq!(
+        crate::plugin::tests::allocations(|| {
+            let bank = part.program_bank_mut().unwrap();
+            bank.begin_audio_block(256, false);
+            assert_eq!(
+                bank.host_on(note(60), Velocity::from_midi1(127), 0.),
+                Admission::Accepted
+            );
+            bank.render(&mut [0.; 32], &mut [0.; 32]);
+            assert!(part.replace_prepared(&mut replacement));
+            assert!(part.instrument().is_some());
+            assert_eq!(part.host_note_end_at(note(60)), Some(32));
+            assert!(
+                !part
+                    .instrument_mut()
+                    .unwrap()
+                    .host_note_on(note(60), 4, 60, 127, 0.),
+                "unacknowledged old identity must reject reuse in the new instrument"
+            );
+            assert!(part.replace_prepared(&mut next_bank));
+            assert!(
+                part.instrument_mut().is_none(),
+                "banks never expose an editable engine"
+            );
+            assert_eq!(part.host_note_end_at(note(60)), Some(32));
+            assert_eq!(
+                part.program_bank_mut()
+                    .unwrap()
+                    .host_on(note(60), Velocity::from_midi1(127), 0.),
+                Admission::Exhausted
+            );
+            part.retire_host_note(note(60));
+            assert!(!part.host_note_present(note(60)));
+            assert_eq!(
+                part.program_bank_mut()
+                    .unwrap()
+                    .host_on(note(60), Velocity::from_midi1(127), 0.),
+                Admission::Accepted
+            );
+        }),
+        0
+    );
+    // Replaced engines/banks, their FX and pools are freed off the callback.
+    drop((replacement, next_bank));
 }
 
 #[test]

@@ -22,6 +22,12 @@ impl std::convert::TryFrom<&ItemData> for AppSpecificProperties {
     type Error = NIFileError;
 
     fn try_from(item: &ItemData) -> Result<Self, NIFileError> {
+        Self::read_bounded(item, usize::MAX)
+    }
+}
+
+impl AppSpecificProperties {
+    pub fn read_bounded(item: &ItemData, max_expanded: usize) -> Result<Self, NIFileError> {
         if item.header.item_type() != ItemType::AppSpecific {
             return Err(NIFileError::ItemWrapError {
                 expected: ItemType::AppSpecific,
@@ -29,7 +35,7 @@ impl std::convert::TryFrom<&ItemData> for AppSpecificProperties {
             });
         }
 
-        let subtree_item = SubtreeItem::read(&mut Cursor::new(&item.child().ok_or(NIFileError::Static("AppSpecific subtree is missing"))?.data))?;
+        let subtree_item = SubtreeItem::read_with_key_bounded(Cursor::new(&item.child().ok_or(NIFileError::Static("AppSpecific subtree is missing"))?.data), None, max_expanded)?;
 
         let mut reader = Cursor::new(&item.data);
 

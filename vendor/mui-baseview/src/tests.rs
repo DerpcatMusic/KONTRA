@@ -44,6 +44,49 @@ fn native_window_attempt_is_logged_before_parent_conversion_panics() {
 }
 
 #[test]
+fn startup_diagnostics_are_bounded_before_model_and_handler_borrows() {
+    let h = RefCell::new(handler((400, 300), 1.0));
+    let requests = Arc::clone(&h.borrow().requests);
+    let shared = Arc::clone(&h.borrow().shared);
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sink = Arc::clone(&seen);
+    requests.on_log(Arc::new(Mutex::new(move |line: &str| sink.lock().unwrap().push(line.into()))));
+    let first_frame = Cell::new(false);
+    let borrow_failed = Cell::new(false);
+    // The first-frame marker must work even if a host callback holds both
+    // the model and handler. A reentrant skip has its own bounded marker.
+    let model = lock(&shared);
+    let handler = h.borrow_mut();
+    for _ in 0..32 {
+        startup_once(&requests, &first_frame, "first frame");
+        assert!(h.try_borrow_mut().is_err());
+        startup_once(&requests, &borrow_failed, "borrow skipped");
+    }
+    drop(handler);
+    drop(model);
+    assert!(h.try_borrow_mut().is_ok());
+    startup_once(&requests, &first_frame, "first frame");
+    assert_eq!(*seen.lock().unwrap(), ["first frame", "borrow skipped"]);
+}
+
+#[test]
+fn startup_diagnostics_do_not_wait_for_a_busy_or_panicking_sink() {
+    let requests = Requests::default();
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sink = Arc::clone(&seen);
+    let hook: LogHook = Arc::new(Mutex::new(move |line: &str| sink.lock().unwrap().push(line.into())));
+    requests.on_log(Arc::clone(&hook));
+    let busy = hook.lock().unwrap();
+    requests.startup_log("busy startup probe");
+    assert!(seen.lock().unwrap().is_empty());
+    drop(busy);
+    requests.startup_log("available startup probe");
+    assert_eq!(*seen.lock().unwrap(), ["available startup probe"]);
+    requests.on_log(Arc::new(Mutex::new(|_: &str| panic!("startup sink probe"))));
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| requests.startup_log("startup cause survives sink panic"))).is_ok());
+}
+
+#[test]
 fn uncaptured_gpu_diagnostics_reach_the_sink_without_the_model_lock() {
     let h = handler((400, 300), 1.0);
     let seen = Arc::new(Mutex::new(Vec::<String>::new()));

@@ -28,6 +28,10 @@ mod editor;
 mod fitted;
 mod header;
 mod instrument;
+#[cfg(feature = "uvi")]
+mod uvi_instrument;
+#[cfg(feature = "uvi")]
+mod uvi_mapping;
 mod keyboard;
 mod logs;
 mod menu;
@@ -38,6 +42,7 @@ mod native_ui;
 pub(crate) use perf_view::font_fallbacks;
 mod picker;
 mod rack;
+mod sample_preview;
 mod spectrum;
 #[cfg(test)]
 mod tests;
@@ -57,7 +62,7 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Mutex, MutexGuard, PoisonError, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 use theme::*;
 
@@ -66,7 +71,8 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let computer = Arc::new(computer::Computer::default());
     let picker = Arc::new(picker::Picker::default());
     let art = Arc::new(art::Art::default());
-    let build = build(&params, meters.clone(), computer.clone(), picker.clone(), art.clone());
+    let preview_receipt = Arc::new(AtomicU64::new(0));
+    let build = build_with_preview(&params, meters.clone(), computer.clone(), picker.clone(), art.clone(), preview_receipt.clone());
     let (drop_params, drop_picker) = (params.clone(), picker.clone());
     let (cancel_params, cancel_computer) = (params.clone(), computer.clone());
     let (key_params, key_computer) = (params.clone(), computer.clone());
@@ -75,6 +81,7 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let size = params.shared.libraries.settings().editor_size();
     let zoom_params = params.clone();
     let close_params = params.clone();
+    let cancel_preview = preview_receipt.clone();
     let last_size = AtomicU64::new(0);
     MuiEditor::new(params, theme::ui(), size, build)
         .on_log(|line| {
@@ -89,7 +96,10 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
             }
         })
         .on_files(move |ui, at, paths, dropped| native_files(&drop_params, &drop_picker, ui, at, paths, dropped))
-        .on_cancel(move |_| let_go(&cancel_params, &cancel_computer))
+        .on_cancel(move |_| {
+            let_go(&cancel_params, &cancel_computer);
+            sample_preview::cancel_receipt(&cancel_params, &cancel_preview);
+        })
         .on_key(move |ui, event| key_computer.key(ui, &key_params, event))
         .hide_pointer(theme::pointer_hidden)
         .native_timing(crate::diagnostics::native_timing_hook())
@@ -103,7 +113,10 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
             }
             zoom_params.shared.libraries.settings().editor_scale()
         })
-        .on_close(move || close_params.shared.libraries.flush_settings())
+        .on_close(move || {
+            sample_preview::close_receipt(&close_params, &preview_receipt);
+            close_params.shared.libraries.flush_settings();
+        })
         .resizable((900, 600))
         .into_editor()
 }
@@ -122,11 +135,11 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn read<T>(l: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+fn read(l: &crate::plugin::sample_preview::SelectionStore) -> RwLockReadGuard<'_, Selection> {
     l.read().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn write<T>(l: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+fn write(l: &crate::plugin::sample_preview::SelectionStore) -> RwLockWriteGuard<'_, Selection> {
     l.write().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -160,8 +173,8 @@ struct Watch {
     /// When the readouts were last sampled, and the disk counter then.
     cpu_at: Option<Instant>,
     disk_read: u64,
-    /// The disk counter to watch: [`crate::audio::DISK_READ`] unless a test
-    /// gives its own.
+    /// Test override for the application read counter. Production combines
+    /// Kontakt streaming with UVI preparation/cache reads (including OS cache).
     disk_counter: Option<&'static AtomicU64>,
     poll_at: Option<Instant>,
     frame_at: Option<Instant>,
@@ -199,8 +212,15 @@ impl Watch {
             }
             meters.cpu.store(self.cpu.to_bits(), Ordering::Relaxed);
             // Disk throughput since the last look, eased; idle settles on 0.
-            let counter = self.disk_counter.unwrap_or(&crate::audio::DISK_READ);
-            let read = counter.load(Ordering::Relaxed);
+            let read = match self.disk_counter {
+                Some(counter) => counter.load(Ordering::Relaxed),
+                None => {
+                    let read = crate::audio::DISK_READ.load(Ordering::Relaxed);
+                    #[cfg(feature = "uvi")]
+                    let read = read.saturating_add(crate::uvi::io::READ_BYTES.load(Ordering::Relaxed));
+                    read
+                }
+            };
             let rate = if since > 0. {
                 read.saturating_sub(self.disk_read) as f32 / 1_048_576. / since
             } else {
@@ -227,6 +247,14 @@ impl Watch {
             logs::wake().hash(&mut h);
         }
         p.shared.focus_request.load(Ordering::Relaxed).hash(&mut h);
+        p.selection.preview_control().status_key().hash(&mut h);
+        #[cfg(feature = "uvi")]
+        {
+            p.shared.uvi_activation_epoch().hash(&mut h);
+            p.shared.with_parts(|parts| for part in parts {
+                part.uvi_generation.load(Ordering::Acquire).hash(&mut h);
+            });
+        }
         // The wheels follow incoming MIDI as it moves them.
         p.shared.bend.load(Ordering::Relaxed).hash(&mut h);
         p.shared.modulation.load(Ordering::Relaxed).hash(&mut h);
@@ -329,7 +357,7 @@ fn fingerprint(view: &View, h: &mut DefaultHasher) {
     fn at<T>(a: &Option<Arc<T>>) -> usize {
         a.as_ref().map_or(0, |a| Arc::as_ptr(a) as *const () as usize)
     }
-    (&view.status, &view.multi_status, view.scanned).hash(h);
+    (&view.status, &view.multi_status, view.scanned, &view.uvi_status, &view.uvi_attempted).hash(h);
     (Arc::as_ptr(&view.files) as usize, view.artwork.len()).hash(h);
     for v in &view.parts {
         (v.loading, v.bytes, &v.status, v.program, &v.interface_status, &v.runtime_status, &v.wallpaper_status).hash(h);
@@ -341,6 +369,8 @@ fn fingerprint(view: &View, h: &mut DefaultHasher) {
             }
         }
         (at(&v.instrument), at(&v.interface), at(&v.wallpaper)).hash(h);
+        #[cfg(feature = "uvi")]
+        { at(&v.uvi_ui).hash(h); at(&v.uvi_activity).hash(h); }
         v.live_revisions.hash(h);
         for edit in v.edited_values() { edit.hash(h); }
         (Arc::as_ptr(&v.keys) as usize, Arc::as_ptr(&v.pictures) as usize).hash(h);
@@ -379,6 +409,12 @@ enum Tab {
 
 /// Editor-only state that outlives a frame but not the window.
 struct EditorState {
+    sample_preview: sample_preview::State,
+    sample_mapping: HashMap<usize, sample_preview::KontaktSelection>,
+    #[cfg(feature = "uvi")]
+    uvi: HashMap<usize, uvi_instrument::State>,
+    #[cfg(feature = "uvi")]
+    uvi_mapping: HashMap<usize, (crate::uvi::worker::Stamp, uvi_mapping::State)>,
     search: String,
     /// What the browser's lower pane lists; `None` searches every library.
     source: Option<browser::Source>,
@@ -400,7 +436,7 @@ struct EditorState {
     /// First octave on the keyboard.
     octave: i16,
     /// The part the keyboard was last centered on.
-    keyboard_for: Option<(String, u32)>,
+    keyboard_for: Option<keyboard::Identity>,
     /// The part the Mapping, Sound and Info views show, and the rack marks
     /// and the keyboard plays unless `unselected`: Esc or a click on the
     /// empty rack lets go, and the keyboard then plays every part MIDI would.
@@ -528,10 +564,36 @@ struct Cx<'a> {
 #[derive(Clone)]
 enum RackDrag {
     Instrument(String),
+    Uvi(crate::library::UviSource),
     Part(usize),
 }
 
 impl Cx<'_> {
+    /// Native selections remain requests until the live adapter can install them.
+    /// No bank/member alias is handed to the Kontakt importer or marked loaded.
+    fn open_preset(&mut self, target: crate::library::PresetTarget, new: bool, slot: Option<usize>) {
+        match target {
+            crate::library::PresetTarget::File(path) => {
+                if new { self.add(path.to_string_lossy().into_owned()); }
+                else if let Some(slot) = slot { self.replace(slot, path.to_string_lossy().into_owned()); }
+                else { self.open(&path); }
+            }
+            crate::library::PresetTarget::Uvi(source) => {
+                self.selection.uvi_recent.retain(|old| old != &source);
+                self.selection.uvi_recent.insert(0, source.clone());
+                self.selection.uvi_recent.truncate(6);
+                self.selection.uvi_requested = Some(crate::library::UviRequest { source, slot: slot.and_then(|s| u32::try_from(s).ok()), new });
+                self.state.notice = if cfg!(feature = "uvi") { "Loading UVI instrument…" } else { "UVI playback support is disabled in this build." }.into();
+            }
+        }
+    }
+
+    fn toggle_uvi_favorite(&mut self, source: &crate::library::UviSource) {
+        match self.selection.uvi_favorites.iter().position(|old| old == source) {
+            Some(at) => { self.selection.uvi_favorites.remove(at); }
+            None => self.selection.uvi_favorites.push(source.clone()),
+        }
+    }
     /// `library`'s artwork made into what the editor shows, once it is.
     /// Its own artwork, unless the player chose a picture or the generated
     /// cover for it; the generated cover when it has none.
@@ -576,7 +638,7 @@ impl Cx<'_> {
         self.selection
             .parts
             .get(self.state.selected)
-            .filter(|p| !p.path.is_empty())
+            .filter(|p| !p.is_empty())
     }
 
     /// Select `slot`, unfold it and scroll the rack to it.
@@ -623,6 +685,7 @@ impl Cx<'_> {
     /// Open a preset from the browser: a multi replaces the rack, an instrument
     /// already in the rack is shown, anything else takes a free slot.
     fn open(&mut self, path: &Path) {
+        self.selection.uvi_requested = None;
         let text = path.to_string_lossy().into_owned();
         self.remember(&text);
         if import::is_multi(path) {
@@ -649,6 +712,7 @@ impl Cx<'_> {
 
     /// Add an instrument to the first free slot and show it.
     fn add(&mut self, path: String) {
+        self.selection.uvi_requested = None;
         self.remember(&path);
         let part = new_part(&self.selection, &self.settings, path);
         let slot = add_part(&mut self.selection, part);
@@ -666,6 +730,7 @@ impl Cx<'_> {
 
     /// Put another instrument (or a multi) in `slot`.
     fn replace(&mut self, slot: usize, path: String) {
+        self.selection.uvi_requested = None;
         self.remember(&path);
         if import::is_multi(Path::new(&path)) {
             self.p.shared.queue_multi(path);
@@ -723,6 +788,8 @@ fn library_of(shelf: &crate::library::Shelf, path: &Path) -> String {
 
 /// Instrument state belongs to its preset; rack routing and player settings stay.
 fn replace_part(part: &mut Part, path: String) {
+    part.uvi = None;
+    part.uvi_state.clear();
     part.snapshot.clear();
     part.path = path;
     part.program = 0;
@@ -753,7 +820,7 @@ fn add_part(selection: &mut Selection, part: Part) -> usize {
     let slot = selection
         .parts
         .iter()
-        .position(|p| p.path.is_empty())
+        .position(Part::is_empty)
         .unwrap_or(selection.parts.len());
     if slot == selection.parts.len() {
         selection.parts.push(part);
@@ -806,14 +873,14 @@ fn sanitize(selection: &mut Selection) {
     let parts = &selection.parts;
     selection.order.retain(|n| {
         let n = *n as usize;
-        let keep = n < parts.len() && !parts[n].path.is_empty() && !seen[n];
+        let keep = n < parts.len() && !parts[n].is_empty() && !seen[n];
         if keep {
             seen[n] = true;
         }
         keep
     });
     for (n, part) in selection.parts.iter().enumerate() {
-        if !part.path.is_empty() && !seen[n] {
+        if !part.is_empty() && !seen[n] {
             selection.order.push(n as u32);
         }
     }
@@ -877,6 +944,7 @@ fn native_files(p: &SamplerParams, picker: &picker::Picker, ui: &Ui, at: Point, 
             let path = path.to_string_lossy().into_owned();
             let slot = match target.filter(|_| n == 0) {
                 Some(slot) => {
+                    p.selection.preview_source_commit(slot);
                     replace_part(&mut selection.parts[slot], path);
                     slot
                 }
@@ -891,6 +959,8 @@ fn native_files(p: &SamplerParams, picker: &picker::Picker, ui: &Ui, at: Point, 
     true
 }
 
+// Existing audit/test adapters keep their own default window lease. Native
+// editors pass the lease shared with their explicit close/cancel callbacks.
 fn build(
     params: &Arc<SamplerParams>,
     meters: Arc<Meters>,
@@ -898,7 +968,24 @@ fn build(
     picker: Arc<picker::Picker>,
     art: Arc<art::Art>,
 ) -> impl FnMut(&mut Ui, &mut Bridge<SamplerParams>) -> El + Send + 'static + use<> {
+    build_with_preview(params, meters, computer, picker, art, Arc::default())
+}
+
+fn build_with_preview(
+    params: &Arc<SamplerParams>,
+    meters: Arc<Meters>,
+    computer: Arc<computer::Computer>,
+    picker: Arc<picker::Picker>,
+    art: Arc<art::Art>,
+    preview_receipt: Arc<AtomicU64>,
+) -> impl FnMut(&mut Ui, &mut Bridge<SamplerParams>) -> El + Send + 'static + use<> {
     let mut state = EditorState {
+        sample_preview: sample_preview::State::new(preview_receipt),
+        sample_mapping: HashMap::new(),
+        #[cfg(feature = "uvi")]
+        uvi: HashMap::new(),
+        #[cfg(feature = "uvi")]
+        uvi_mapping: HashMap::new(),
         search: String::new(),
         source: None,
         pane: None,
@@ -1027,16 +1114,52 @@ fn build(
         native_ui::refresh(&mut cx);
         let keys = keyboard::dock(ui, &mut cx);
         let menu = menu::view(ui, &mut cx, window);
+        #[cfg(feature = "uvi")]
+        let native_menus: Vec<El> = (0..cx.selection.parts.len()).filter_map(|slot| {
+            let (published, current) = instrument::native_panel(&cx, slot)?;
+            let snapshot = published.snapshots.iter().rev().find(|s| s.root.performance_view)?;
+            let captured = published.snapshot_stamp(snapshot.processor)?;
+            let interactive = !instrument::failed(&cx, slot);
+            let state = cx.state.uvi.get_mut(&slot)?;
+            state.set_interactive(interactive);
+            uvi_instrument::popup(ui, state, slot, current, captured,
+                (cx.p.shared.admitted_uvi_edit_sequence(), published.snapshot_sequence(snapshot.processor)?), snapshot, window,
+                |stamp, edit| cx.p.shared.edit_uvi(slot, stamp, edit))
+        }).collect();
         let ghost = ghost(ui, &cx);
         cx.state.meters.logs_visible.store(cx.state.tab == Tab::Logs, Ordering::Relaxed);
 
+        let mapping_slot = (cx.state.tab == Tab::Mapping && cx.part().is_some()).then(|| cx.state.chosen()).flatten();
+        cx.state.sample_preview.finish_frame(&p, mapping_slot);
+        if p.sample_preview_pending() {
+            if let Some(tasks) = bridge.context().and_then(|context| context.tasks::<crate::plugin::sample_preview::Prepare>()) {
+                tasks.spawn_coalescing(crate::plugin::sample_preview::Prepare);
+            }
+        }
         let ui_zoom = cx.settings.editor_scale();
         let Cx { mut selection, view, .. } = cx;
         if selection != before {
             // Parts added, removed or rerouted are routed at once.
             p.shared.reroute(&mut selection);
             let mut current = write(&p.selection);
+            #[cfg(feature = "uvi")]
+            let before = {
+                // Native persistence can publish during a UI frame. Keep those
+                // bytes when applying independent mixer/rack edits from that frame.
+                let mut before = before.clone();
+                for (slot, old) in before.parts.iter_mut().enumerate() {
+                    if let Some(now) = current.parts.get(slot).filter(|now| now.uvi == old.uvi) {
+                        if let Some(edited) = selection.parts.get_mut(slot)
+                            .filter(|edited| edited.uvi == old.uvi && edited.uvi_state == old.uvi_state) {
+                            edited.uvi_state = now.uvi_state.clone();
+                        }
+                        old.uvi_state = now.uvi_state.clone();
+                    }
+                }
+                before
+            };
             if *current == before {
+                p.selection.preview_selection_commit(&current, &selection);
                 *current = selection;
                 p.shared.sync_overrides(&current);
                 let _ = p.shared.controls.force_push(mix(&current));
@@ -1058,6 +1181,8 @@ fn build(
         shell.push(keys);
         let mut layers = vec![col(shell).gap(0).full(), resize_corner(ui, &mut state.corner, window, ui_zoom, bridge)];
         layers.extend(menu);
+        #[cfg(feature = "uvi")]
+        layers.extend(native_menus);
         layers.extend(ghost);
         stack(layers)
             .full()
@@ -1212,6 +1337,7 @@ fn resize_corner(ui: &mut Ui, from: &mut Option<Size>, window: Size, zoom: f64, 
 fn ghost(ui: &Ui, cx: &Cx) -> Option<El> {
     let label = match ui.dragging::<RackDrag>()? {
         RackDrag::Instrument(path) => header::stem(path),
+        RackDrag::Uvi(source) => Path::new(&source.member).file_stem().unwrap_or_default().to_string_lossy().into_owned(),
         RackDrag::Part(slot) => rack::name(cx, *slot),
     };
     let at = ui.local("editor-root")?;
@@ -1279,6 +1405,8 @@ fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El
         content.extend(instrument::notices(cx, slot));
         content.push(match cx.state.tab {
             Tab::Mapping => instrument::mapping(ui, cx),
+            Tab::Sound if cx.part().is_some_and(|p| p.uvi.is_some()) => instrument::native_unavailable(
+                "Sound editing", "Use this instrument’s Rack controls to change its sound."),
             Tab::Sound => editor::view(ui, cx),
             _ => instrument::info(ui, cx),
         });

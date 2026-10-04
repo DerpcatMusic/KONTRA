@@ -58,7 +58,7 @@ pub type Mics = [[u16; OUTS]];
 
 /// Loaded slots, rack order first.
 fn loaded(sel: &Selection) -> Vec<usize> {
-    let used = |s: usize| sel.parts.get(s).is_some_and(|p| !p.path.is_empty());
+    let used = |s: usize| sel.parts.get(s).is_some_and(|p| !p.is_empty());
     let mut slots = Vec::new();
     for s in sel.order.iter().map(|&s| s as usize).chain(0..sel.parts.len()) {
         if used(s) && !slots.contains(&s) {

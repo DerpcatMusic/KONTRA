@@ -2,6 +2,8 @@ pub mod ksp;
 pub mod native_ui;
 pub(crate) mod midi;
 pub mod build_info;
+#[cfg(test)]
+mod test_support;
 pub mod import;
 // Encrypted library content: the `library-access` feature (enabled by default).
 #[cfg_attr(feature = "library-access", path = "access.rs")]
@@ -13,9 +15,12 @@ pub mod diagnostics;
 pub mod support;
 pub mod modulation;
 pub mod audio;
+mod preview_prepare;
 pub mod engine;
 pub mod articulate;
 pub mod timing;
+#[cfg(feature = "uvi")]
+pub mod uvi;
 pub mod fx;
 pub mod creator;
 #[cfg(feature="plugin")]

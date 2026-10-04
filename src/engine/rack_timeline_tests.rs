@@ -195,7 +195,7 @@ fn perform(parts: &[usize]) -> Vec<[[f32; 2]; 4]> {
     let scripts = [script(3), script(2)];
     let mut reference = [create(0, None, 64), create(1, None, 127)];
     for p in 0..2 {
-        rack.parts[p] = create(p, Some(&scripts[p]), if p == 0 { 64 } else { 127 });
+        rack.parts[p] = create(p, Some(&scripts[p]), if p == 0 { 64 } else { 127 }).into();
         rack.controls[p].output = p as u8;
         rack.controls[p].aux = 3;
         rack.controls[p].aux_gain = 0.3;
@@ -216,14 +216,14 @@ fn perform(parts: &[usize]) -> Vec<[[f32; 2]; 4]> {
             for p in 0..2 {
                 for i in 0..10 {
                     assert!(rack
-                        .with_part(p, |e| e.host_note_on(owner(p, i), 0, 60 + i as u8, 127, 0.))
+                        .with_instrument(p, |e| e.host_note_on(owner(p, i), 0, 60 + i as u8, 127, 0.))
                         .unwrap());
                     ids[p][i] = reference[p].start_event(&NoteEvent {
                         input_channel: Some(4),
                         ..NoteEvent::new(0, 60 + i as u8, 127)
                     });
                 }
-                rack.with_part(p, |e| e.cc_from(0, 4, 1, 127));
+                rack.with_instrument(p, |e| e.cc_from(0, 4, 1, 127));
             }
             let mut at = 0;
             let mut fragment = 0;
@@ -233,7 +233,7 @@ fn perform(parts: &[usize]) -> Vec<[[f32; 2]; 4]> {
                     64 => {
                         for p in 0..2 {
                             for i in (if p == 0 { 3 } else { 2 })..10 {
-                                rack.with_part(p, |e| off(e, owner(p, i)));
+                                rack.with_instrument(p, |e| off(e, owner(p, i)));
                                 reference[p].release_event(ids[p][i].unwrap());
                             }
                         }
@@ -241,7 +241,7 @@ fn perform(parts: &[usize]) -> Vec<[[f32; 2]; 4]> {
                     221 => {
                         for p in 0..2 {
                             let note = owner(p, 0);
-                            rack.with_part(p, |e| {
+                            rack.with_instrument(p, |e| {
                                 e.host_expression(
                                     HostPattern {
                                         port: p as i32,
@@ -258,25 +258,25 @@ fn perform(parts: &[usize]) -> Vec<[[f32; 2]; 4]> {
                     }
                     384 => {
                         for p in 0..2 {
-                            rack.with_part(p, |e| e.cc_from(0, 4, 64, 127));
+                            rack.with_instrument(p, |e| e.cc_from(0, 4, 64, 127));
                             reference[p].cc_from(0, 4, 64, 127);
                         }
                     }
                     400 => {
                         for p in 0..2 {
-                            rack.with_part(p, |e| off(e, owner(p, 0)));
+                            rack.with_instrument(p, |e| off(e, owner(p, 0)));
                             reference[p].release_event(ids[p][0].unwrap());
                         }
                     }
                     640 => {
                         for p in 0..2 {
-                            rack.with_part(p, |e| e.cc_from(0, 4, 64, 0));
+                            rack.with_instrument(p, |e| e.cc_from(0, 4, 64, 0));
                             reference[p].cc_from(0, 4, 64, 0);
                         }
                     }
                     800 => {
                         for p in 0..2 {
-                            rack.with_part(p, |e| e.cc_from(0, 4, 120, 0));
+                            rack.with_instrument(p, |e| e.cc_from(0, 4, 120, 0));
                             reference[p].cc_from(0, 4, 120, 0);
                         }
                     }
@@ -387,7 +387,7 @@ fn perform(parts: &[usize]) -> Vec<[[f32; 2]; 4]> {
                 if at == 384 {
                     for p in 0..2 {
                         assert_eq!(
-                            rack.parts[p].script().unwrap().last_message(),
+                            rack.parts[p].instrument().unwrap().script().unwrap().last_message(),
                             if p == 0 { "305" } else { "205" }
                         );
                     }
@@ -401,7 +401,7 @@ fn perform(parts: &[usize]) -> Vec<[[f32; 2]; 4]> {
                 assert!(!rack.parts[p].host_note_present(owner(p, 0)));
                 assert_eq!(rack.parts[p].active_voices(), 0);
                 assert_eq!(rack.parts[p].dropped_commands(), 0);
-                assert!(rack.parts[p].script().unwrap().diagnostics().is_empty());
+                assert!(rack.parts[p].instrument().unwrap().script().unwrap().diagnostics().is_empty());
             }
         }),
         0
@@ -499,12 +499,9 @@ end if
 end on"#;
     let mut rack = Box::new(Rack::with_slots(1));
     let mut prepared = Box::new(Rack::with_slots(2));
-    prepared.parts[1] = create(1, Some(script), 127);
-    prepared.parts[1]
-        .player
-        .release_counter
-        .reset(0, 60, 48000.);
-    assert_eq!(prepared.parts[1].player.release_counter.factor(60, 100), 1.);
+    prepared.parts[1] = create(1, Some(script), 127).into();
+    prepared.parts[1].instrument_mut().unwrap().player.release_counter.reset(0, 60, 48000.);
+    assert_eq!(prepared.parts[1].instrument().unwrap().player.release_counter.factor(60, 100), 1.);
     let mut reference = create(1, None, 127);
     let mut pcm = std::array::from_fn(|_| vec![0.; FRAMES]);
     let mut expected = pcm.clone();
@@ -524,18 +521,18 @@ end on"#;
     assert_eq!(
         crate::plugin::tests::allocations(|| {
             rack.adopt_parts(&mut prepared);
-            assert_eq!(rack.parts[0].player.now, 333);
-            assert_eq!(rack.parts[1].player.now, 333);
+            assert_eq!(rack.parts[0].instrument().unwrap().player.now, 333);
+            assert_eq!(rack.parts[1].instrument().unwrap().player.now, 333);
             assert_eq!(
-                rack.parts[1].player.release_counter.factor(60, 100),
+                rack.parts[1].instrument().unwrap().player.release_counter.factor(60, 100),
                 1.,
                 "adoption does not age a freshly seeded key by past Rack frames"
             );
             assert!(rack
-                .with_part(1, |e| e.host_note_on(a, 0, 60, 127, 0.))
+                .with_instrument(1, |e| e.host_note_on(a, 0, 60, 127, 0.))
                 .unwrap());
             assert!(rack
-                .with_part(1, |e| e.host_note_on(b, 0, 61, 127, 0.))
+                .with_instrument(1, |e| e.host_note_on(b, 0, 61, 127, 0.))
                 .unwrap());
             let id = reference
                 .start_event(&NoteEvent {
@@ -548,11 +545,11 @@ end on"#;
                 if at == 349 {
                     let expected = (100. - (1f32 / 3.)) / 100.;
                     assert!(
-                        (rack.parts[1].player.release_counter.factor(60, 100) - expected).abs()
+                        (rack.parts[1].instrument().unwrap().player.release_counter.factor(60, 100) - expected).abs()
                             < 1e-6,
                         "only sixteen newly rendered frames aged the seeded key"
                     );
-                    rack.with_part(1, |e| {
+                    rack.with_instrument(1, |e| {
                         off(e, a);
                         off(e, b);
                     });
@@ -574,8 +571,10 @@ end on"#;
                 fragment += 1;
                 // This fixture keeps direct output on the default main bus; the
                 // growth proof does not depend on the routing oracle above.
-                rack.with_part(1, |e| e.begin_audio_block(n, 1, false));
-                reference.begin_audio_block(n, 1, false);
+                // Test sample chronology, not an 8us wall-clock deadline in a
+                // debug interpreter. Offline keeps instruction work bounded.
+                rack.with_part(1, |e| e.begin_audio_block(n, 1, true));
+                reference.begin_audio_block(n, 1, true);
                 let bus = rack.render(n);
                 let [l, r] = &mut pcm;
                 l[at..at + n].copy_from_slice(&bus[0][0][..n]);
@@ -611,10 +610,10 @@ end on"#;
                 reference.render_finish();
                 at += n;
                 if at == 381 {
-                    assert_eq!(rack.parts[1].script().unwrap().last_message(), "");
+                    assert_eq!(rack.parts[1].instrument().unwrap().script().unwrap().last_message(), "");
                 }
                 if at == 382 {
-                    assert_eq!(rack.parts[1].script().unwrap().last_message(), "11");
+                    assert_eq!(rack.parts[1].instrument().unwrap().script().unwrap().last_message(), "11");
                     assert_eq!(rack.parts[1].host_note_end_at(b), None, "generated child retains inherited exact ownership after callback completion");
                 }
             }
@@ -625,10 +624,11 @@ end on"#;
                 Some(4477),
                 "generated Sample inherits the exact HostRef and extends its end to381+4096"
             );
-            assert_eq!(rack.parts[0].player.now, FRAMES as u64);
-            assert_eq!(rack.parts[1].player.now, FRAMES as u64);
+            assert_eq!(rack.parts[0].instrument().unwrap().player.now, FRAMES as u64);
+            assert_eq!(rack.parts[1].instrument().unwrap().player.now, FRAMES as u64);
             assert_eq!(rack.parts[1].active_voices(), 0);
-            assert!(rack.parts[1].script().unwrap().diagnostics().is_empty());
+            let diagnostics = rack.parts[1].instrument().unwrap().script().unwrap().diagnostics();
+            assert!(diagnostics.is_empty(), "rack adoption diagnostics: {diagnostics:?}");
         }),
         0
     );
@@ -641,7 +641,9 @@ end on"#;
         }
     }
     assert!(pcm[0][382..429].iter().any(|x| x.abs() > 1e-4));
-    assert!(pcm.iter().all(|ch| ch[4550..].iter().all(|x| *x == 0.)));
+    // FFT-convolution roundoff can remain after the last mathematical FIR tap.
+    let late_peak = pcm.iter().flat_map(|ch| &ch[4550..]).map(|x| x.abs()).fold(0_f32, f32::max);
+    assert!(late_peak < 1e-8, "drained FIR peak {late_peak}");
     pcm
 }
 #[test]
@@ -650,8 +652,8 @@ fn rack_adoption_preserves_global333_origin_and_local_preinstalled_listener_wait
     let a = growth(&[128]);
     let b = growth(&[1, 7, 31, 127]);
     for ch in 0..2 {
-        for (a, b) in a[ch].iter().zip(&b[ch]) {
-            assert!((a - b).abs() < 8e-6);
+        for (frame, (a, b)) in a[ch].iter().zip(&b[ch]).enumerate() {
+            assert!((a - b).abs() < 8e-6, "partition ch{ch} frame{frame}: fixed {a}, fragmented {b}");
         }
     }
 }

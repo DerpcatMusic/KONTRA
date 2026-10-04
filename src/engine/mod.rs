@@ -18,6 +18,8 @@ mod ahdsr_shared;
 mod envelope;
 mod bank;
 pub mod program_bank;
+mod rack_part;
+pub use rack_part::RackPart;
 pub(crate) mod filter;
 mod map;
 mod counted_loop;
@@ -44,6 +46,8 @@ pub use per_note::{InputAddress, PerNoteInput, PerNoteRef};
 pub mod overrides;
 pub(crate) mod params;
 mod rack;
+mod source_delay;
+pub use source_delay::SourceDelay;
 mod residency;
 mod script;
 mod commands;
@@ -51,6 +55,8 @@ pub(crate) mod native_state;
 mod stream;
 pub use stream::{StreamError, StreamErrorKind};
 mod voice;
+// Pure interpolation only; raw preview does not construct an engine voice.
+pub(crate) use voice::hermite;
 mod wavetable;
 pub(crate) mod zone;
 
@@ -2472,7 +2478,7 @@ mod release_note_mono_tests {
         let mut e = engine(false, false, false);
         e.note_on_from(0, 1, 60, 100);
         e.note_on_from(1, 2, 61, 100);
-        assert_eq!(crate::plugin::tests::allocations(|| {
+        assert_eq!(crate::test_support::allocations(|| {
             e.cc_from(0, 1, 120, 0);
             assert!(e.player.voices.iter().filter(|v| v.channel == 0).all(|v| !v.held && v.fade.dying()));
             assert!(e.player.voices.iter().filter(|v| v.channel == 1).all(|v| v.held && !v.fade.dying()));
@@ -2498,7 +2504,7 @@ mod release_note_mono_tests {
         let mut e = engine(false, false, false);
         e.note_on_from(7, 1, 60, 100);
         e.note_on_from(7, 2, 60, 100);
-        assert_eq!(crate::plugin::tests::allocations(|| {
+        assert_eq!(crate::test_support::allocations(|| {
             e.all_sound_off_from(7, 1 << 1);
             assert!(e.player.voices.iter().filter(|v| v.input_channel == Some(1)).all(|v| !v.held && v.fade.dying()));
             assert!(e.player.voices.iter().filter(|v| v.input_channel == Some(2)).all(|v| v.held && !v.fade.dying()));
@@ -2602,13 +2608,13 @@ mod service_home_tests {
             assert!(errors.iter().all(Option::is_none));
             let mut rack = Rack::with_slots(1);
             rack.set_controls(&Mix { parts:vec![PartControls { channel:7, ..Default::default() }], ..Default::default() });
-            let e = &mut rack.parts[0];
+            let e = rack.parts[0].instrument_mut().unwrap();
             e.set_bank(Some(Box::new(bank)));
             e.set_script(Some(Box::new(runtime)));
             if mpe { e.set_mpe_zone(Some((0, (1 << 1) | (1 << 2)))); }
             let (voice_channel, controller_channel) = if mpe { (1, 0) } else { (7, 7) };
             let (mut left, mut right) = ([0.;512], [0.;512]);
-            assert_eq!(crate::plugin::tests::allocations(|| {
+            assert_eq!(crate::test_support::allocations(|| {
                 // The configured home is already available before any MIDI.
                 e.ui_control(0,0,127);
                 e.render(&mut left,&mut right);

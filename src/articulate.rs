@@ -554,6 +554,13 @@ fn pressure_gain(pressure: u8) -> f32 {
 }
 
 impl Router {
+    pub(crate) fn mpe_enabled(&self) -> bool {
+        self.route.mpe.zone != Zone::Off
+    }
+    pub(crate) fn external_input_supported(&self) -> bool {
+        self.route.mode == Mode::Keyswitch && self.route.count == 0
+            && self.route.keys.iter().enumerate().all(|(key, &to)| usize::from(to) == key)
+    }
     /// Take a new route; held notes retain their captured destination.
     pub fn set_route(&mut self, route: Route) {
         if route != self.route {
@@ -1179,13 +1186,34 @@ pub fn reaches(c: &PartControls, r: &Router, port: u8, ev: In) -> bool {
     if wide { c.port == port } else { r.hears(c, port, ev.channel()) }
 }
 
+/// A bank keeps raw saved-channel delivery and never lends its selected engine.
+pub(crate) fn feed_part(r: &mut Router, part: &mut crate::engine::RackPart, ev: In, home: u8, port: u8) {
+    if part.is_instrument_bank() {
+        if r.external_input_supported() && !r.mpe_enabled() {
+            part.bank_input(port, ev);
+        } else if let Some(bank) = part.program_bank_mut() {
+            bank.reject_input();
+        }
+    } else if let Some(engine) = part.instrument_mut() {
+        feed_on_port(r, engine, ev, home, port);
+    }
+}
+
 /// Send host input through every part's router that accepts it.
 pub fn dispatch(rack: &mut Rack, routers: &mut [Router], port: u8, ev: In) {
+    dispatch_with(rack, routers, port, ev, &mut |_, _, _, _, _| false);
+}
+
+pub fn dispatch_with(rack: &mut Rack, routers: &mut [Router], port: u8, ev: In,
+    external: &mut impl FnMut(usize, u8, In, &Router, bool) -> bool) {
     for slot in 0..rack.parts.len().min(rack.controls.len()).min(routers.len()) {
         let c = rack.controls[slot];
         let r = &mut routers[slot];
-        if reaches(&c, r, port, ev) {
-            rack.with_part(slot, |e| feed_on_port(r, e, ev, u8::try_from(c.channel).unwrap_or(0), port));
+        let reached = if rack.parts[slot].is_instrument_bank() {
+            rack.parts[slot].matches_input(port, ev.channel())
+        } else { reaches(&c, r, port, ev) };
+        if !external(slot, port, ev, r, reached) && reached {
+            rack.with_part(slot, |e| feed_part(r, e, ev, u8::try_from(c.channel).unwrap_or(0), port));
         }
     }
 }
@@ -1193,13 +1221,20 @@ pub fn dispatch(rack: &mut Rack, routers: &mut [Router], port: u8, ev: In) {
 /// Dispatch and record its targets in caller-prepared storage for later key-up.
 /// Every flag is overwritten; there is no fixed-width part mask.
 pub fn dispatch_record(rack: &mut Rack, routers: &mut [Router], port: u8, ev: In, reached: &mut [bool]) {
+    dispatch_record_with(rack, routers, port, ev, reached, &mut |_, _, _, _, _| false);
+}
+
+pub fn dispatch_record_with(rack: &mut Rack, routers: &mut [Router], port: u8, ev: In, reached: &mut [bool],
+    external: &mut impl FnMut(usize, u8, In, &Router, bool) -> bool) {
     reached.fill(false);
     for slot in 0..rack.parts.len().min(rack.controls.len()).min(routers.len()).min(reached.len()) {
         let c = rack.controls[slot];
         let r = &mut routers[slot];
-        reached[slot] = reaches(&c, r, port, ev);
-        if reached[slot] {
-            rack.with_part(slot, |e| feed_on_port(r, e, ev, u8::try_from(c.channel).unwrap_or(0), port));
+        reached[slot] = if rack.parts[slot].is_instrument_bank() {
+            rack.parts[slot].matches_input(port, ev.channel())
+        } else { reaches(&c, r, port, ev) };
+        if !external(slot, port, ev, r, reached[slot]) && reached[slot] {
+            rack.with_part(slot, |e| feed_part(r, e, ev, u8::try_from(c.channel).unwrap_or(0), port));
         }
     }
 }
@@ -1210,17 +1245,31 @@ pub fn dispatch_to(rack: &mut Rack, routers: &mut [Router], slots: impl IntoIter
 }
 
 pub fn dispatch_to_on_port(rack: &mut Rack, routers: &mut [Router], slots: impl IntoIterator<Item = usize>, ev: In, port: u8) {
+    dispatch_to_with(rack, routers, slots, port, ev, &mut |_, _, _, _, _| false);
+}
+
+pub fn dispatch_to_with(rack: &mut Rack, routers: &mut [Router], slots: impl IntoIterator<Item = usize>, port: u8, ev: In,
+    external: &mut impl FnMut(usize, u8, In, &Router, bool) -> bool) {
     for slot in slots {
         if let (Some(c), Some(r)) = (rack.controls.get(slot).copied(), routers.get_mut(slot)) {
-            rack.with_part(slot, |e| feed_on_port(r, e, ev, u8::try_from(c.channel).unwrap_or(0), port));
+            if !external(slot, port, ev, r, true) {
+                rack.with_part(slot, |e| feed_part(r, e, ev, u8::try_from(c.channel).unwrap_or(0), port));
+            }
         }
     }
 }
 
 /// Send input to one rack part (the on-screen keyboard).
 pub fn play(rack: &mut Rack, routers: &mut [Router], slot: usize, ev: In) {
+    play_with(rack, routers, slot, 0, ev, &mut |_, _, _, _, _| false);
+}
+
+pub fn play_with(rack: &mut Rack, routers: &mut [Router], slot: usize, port: u8, ev: In,
+    external: &mut impl FnMut(usize, u8, In, &Router, bool) -> bool) {
     if let Some(r) = routers.get_mut(slot) {
-        rack.with_part(slot, |e| feed(r, e, ev, ev.channel()));
+        if !external(slot, port, ev, r, true) {
+            rack.with_part(slot, |e| feed_part(r, e, ev, ev.channel(), port));
+        }
     }
 }
 

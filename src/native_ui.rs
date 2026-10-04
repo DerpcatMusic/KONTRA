@@ -516,7 +516,6 @@ impl Session {
             mlua::StdLib::TABLE
                 | mlua::StdLib::STRING
                 | mlua::StdLib::MATH
-                | mlua::StdLib::UTF8
                 | mlua::StdLib::PACKAGE,
             mlua::LuaOptions::default(),
         )?;
@@ -527,7 +526,7 @@ impl Session {
         let package_api: Table = lua.globals().get("package")?;
         package_api.set("path", "")?;
         package_api.set("cpath", "")?;
-        package_api.set("searchers", lua.create_table()?)?;
+        package_api.set("loaders", lua.create_table()?)?;
         package_api.set("loadlib", LuaValue::Nil)?;
         let fuel = Arc::new(AtomicUsize::new(5_000_000));
         let hook_fuel = fuel.clone();
@@ -551,7 +550,7 @@ impl Session {
             .set_name("NativeUI host")
             .exec()?;
         let package_table: Table = lua.globals().get("package")?;
-        for key in ["loadlib", "searchers", "path", "cpath"] {
+        for key in ["loadlib", "loaders", "path", "cpath"] {
             package_table.set(key, LuaValue::Nil)?;
         }
         let bridge = Arc::new(Mutex::new(Bridge {

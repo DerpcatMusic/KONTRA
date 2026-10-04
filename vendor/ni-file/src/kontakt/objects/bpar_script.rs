@@ -59,6 +59,10 @@ impl BParScript {
         // Older scripts end here; a damaged table is dropped rather than failing the script.
         let mut entries = || -> Result<Vec<String>, Error> {
             let count = reader.read_u32_le()? as usize;
+            let remaining = reader.get_ref().len().saturating_sub(reader.position() as usize);
+            if count > remaining / 4 {
+                return Err(Error::Static("Invalid script persistence count"));
+            }
             let mut out = Vec::with_capacity(count.min(65536));
             for _ in 0..count {
                 let length = reader.read_u32_le()? as usize;
