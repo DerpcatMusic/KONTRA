@@ -949,6 +949,18 @@ fn collections() -> [(&'static str, &'static str); 10] {
     ]
 }
 
+// Only this measured absent EffectRack property family has compatibility
+// setter behavior. Descriptor absence does not create a getter or state slot.
+fn rack_gain_coefficient(name: &str) -> bool {
+    name.strip_prefix("Gain_")
+        .and_then(|indices| indices.split_once('_'))
+        .is_some_and(|(input, output)| {
+            [input, output].into_iter().all(|index| {
+                matches!(index.as_bytes(), [b'1'..=b'9'] | [b'1', b'0'..=b'2'])
+            })
+        })
+}
+
 /// Must be installed before running the instrument's source.
 pub(crate) fn source_parameters(program: &Program) -> Vec<BTreeMap<String, ParameterValue>> {
     let wrappers = collections().map(|(_, xml)| xml);
@@ -1072,12 +1084,22 @@ pub fn install(lua: &Lua, config: HostConfig<'_>) -> mlua::Result<Host> {
         let commands = host.commands.clone();
         let clock = now.clone();
         let ids = host.identities.clone();
+        let types = host.types.clone();
         methods.set(
             "setParameter",
             lua.create_function(move |_, (object, name, value): (Table, String, Value)| {
                 let id = node_id(&object, &ids)?;
                 let value = ParameterValue::from_lua(value)?;
                 let mut params = params.borrow_mut();
+                if !params[id].contains_key(&name)
+                    && types.get(id).map(String::as_str) == Some("EffectRack")
+                    && matches!(value, ParameterValue::Number(_))
+                    && rack_gain_coefficient(&name)
+                {
+                    // Original Rack registration has no Gain_i_j descriptor;
+                    // original numeric setter returns without changing state.
+                    return Ok(());
+                }
                 let old = params[id].get(&name).ok_or_else(|| {
                     mlua::Error::runtime(format!(
                         "Unknown or unretained UVI parameter {name} on node {id}"
@@ -2587,6 +2609,69 @@ mod tests {
         environment.raw_set("_G", environment.clone()).unwrap();
         install_ui(lua, &environment).unwrap();
         environment
+    }
+
+    #[test]
+    fn native_absent_rack_gain_writes_preserve_commands_state_and_saved_baseline() {
+        let program = parse_program(r#"<Program><AuxEffects><AuxEffect><Inserts><EffectRack Name="rack"/><GainMatrix Gain_1_1="1" Gain_2_2="1"/><EffectRack Gain_1_1="0.5"/><DigitalEq/></Inserts></AuxEffect></AuxEffects></Program>"#).unwrap();
+        let lua = vm();
+        let host = install(&lua, HostConfig {program:Some(&program),modules:BTreeMap::new(),now:Rc::new(||17),resources:None,valid_voice:None,layer_scope:None}).unwrap();
+        let baseline = host.parameters.borrow().clone();
+        let fingerprint = super::super::state::fingerprint(&program).unwrap();
+        let saved = super::super::state::SavedState::new(fingerprint,BTreeMap::new(),&host).unwrap().encode().unwrap();
+        lua.load(r#"
+          rack=Program.auxs[1].inserts[1]
+          for input=1,12 do for output=1,12 do
+            local name='Gain_'..input..'_'..output
+            assert(not rack:hasParameter(name))
+            rack:setParameter(name,0.98)
+            assert(not rack:hasParameter(name))
+            assert(not pcall(function()return rack:getParameter(name)end))
+          end end
+        "#).exec().unwrap();
+        assert!(host.commands.borrow().is_empty());
+        assert_eq!(*host.parameters.borrow(),baseline);
+        assert_eq!(super::super::state::SavedState::new(fingerprint,BTreeMap::new(),&host).unwrap().encode().unwrap(),saved);
+        let decoded = super::super::state::SavedState::decode(&saved).unwrap();
+        assert_eq!(decoded.encode().unwrap(),saved);
+        lua.load(r#"
+          Program.auxs[1].inserts[2]:setParameter('Gain_1_1',0.98)
+          Program.auxs[1].inserts[3]:setParameter('Gain_1_1',0.7)
+          rack:setParameter('Bypass',true)
+        "#).exec().unwrap();
+        assert_eq!(host.commands.borrow().len(),3);
+        assert!(matches!(&host.commands.borrow()[0].action,Action::Parameter{parameter,value:ParameterValue::Number(n),..} if parameter=="Gain_1_1" && *n==0.98));
+        assert!(matches!(&host.commands.borrow()[1].action,Action::Parameter{parameter,value:ParameterValue::Number(n),..} if parameter=="Gain_1_1" && *n==0.7));
+        assert!(matches!(&host.commands.borrow()[2].action,Action::Parameter{parameter,value:ParameterValue::Boolean(true),..} if parameter=="Bypass"));
+    }
+
+    #[test]
+    fn native_absent_rack_gain_compatibility_keeps_unknown_and_value_guards() {
+        let program = parse_program(r#"<Program><AuxEffects><AuxEffect><Inserts><EffectRack/><GainMatrix/><DigitalEq/></Inserts></AuxEffect></AuxEffects></Program>"#).unwrap();
+        let lua = vm();
+        let host = install(&lua, HostConfig {program:Some(&program),modules:BTreeMap::new(),now:Rc::new(||17),resources:None,valid_voice:None,layer_scope:None}).unwrap();
+        let baseline = host.parameters.borrow().clone();
+        lua.load(r#"
+          local rack=Program.auxs[1].inserts[1]
+          for _,name in ipairs{'Gain_0_1','Gain_13_1','Gain_1_0','Gain_1_13','Gain_01_1','Gain_1_01','Gain_1_1_1','Gain_+1_1','Gain_1.0_1','Gain__1','gain_1_1','Invented'} do
+            assert(not pcall(function()rack:setParameter(name,0.98)end))
+          end
+          for _,value in ipairs{true,'0.98',{},0/0,math.huge,-math.huge} do
+            assert(not pcall(function()rack:setParameter('Gain_1_1',value)end))
+          end
+          assert(not pcall(function()rack:setParameter('Gain_1_1',nil)end))
+          assert(not pcall(function()rack:setParameter('DisplayType','authored')end))
+          for _,context in ipairs{Program.parent,Program.parent.parent} do
+            for _,name in ipairs{'Gain_1_1','Invented'} do
+              local ok,err=pcall(function()context:setParameter(name,0.98)end)
+              assert(not ok and string.find(tostring(err),'Unknown or unretained UVI parameter',1,true))
+            end
+          end
+          assert(not pcall(function()Program.auxs[1].inserts[2]:setParameter('Gain_1_1',0.98)end))
+          assert(not pcall(function()Program.auxs[1].inserts[3]:setParameter('Gain_1_1',0.98)end))
+        "#).exec().unwrap();
+        assert!(host.commands.borrow().is_empty());
+        assert_eq!(*host.parameters.borrow(),baseline);
     }
 
     #[test]
