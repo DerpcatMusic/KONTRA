@@ -26,6 +26,18 @@ A further 64 global-context fixtures execute original note-on `0x141149320`, gen
 
 The module export and owned preflight diagnostic do not admit the source. A source-direct gate harness checks exactly one MultiLFO blocker at its source node, the owned diagnostic containing `not executable`, and continued ModulationGraph rejection. The native-vector preservation test rejects 8193 frames and `usize::MAX` before reproducing the unchanged measured vector.
 
+## Depth conversion and clock composition
+
+Depth can be measured independently of the unavailable Freq range globals. Its original registration encodes bounds 0/1 directly and invokes descriptor routines `0x140fffcb0`, `0x1410024f0` and `0x141002450`, producing mapper `0x141ea3270`, multiplicative converter `0x141e37a50` and Smooth enabled. The fixture supplies the documented parameter name and those literal registration bounds; no Freq globals are replaced.
+
+Original static converter `0x141429a80` matches 1,260 float32 cases covering five base depths, nine signed ratio values (including clipping beyond ±1), seven source values, both source polarities and inversion. For the measured scalar ABI, the first point buffer supplies ratio and the source node/state supplies its value. Bipolar values shift to unipolar before multiplicative Depth conversion; native Bipolar setter `0x141149650` explicitly updates source-node polarity at +0x238. This isolates static conversion, without constructing the complete connection graph.
+
+Another 300 cases execute the original Depth getter/setter `0x141149540`/`0x141149530`, descriptor, parameter manager and generic source wrapper `0x1410e5340`. Physical Depth clocks and composed Rust source endpoints match all float32 bits at 32/44.1/48/96 kHz, base depths 0/.5/1, warm targets .125/.9/0, fragmented lengths 1/17/31/32/33/65/129/256 and additional 8192-frame cases. No DSP, math or SIMD routine is substituted; allocation/free adapters serve the private caller heap.
+
+The existing leaf reproduces this composition when called once per real interval of at most 32 frames, with that interval's physical Depth point. The native wrapper selects each point before invoking the source callback; its initial output retains the previous interval's saved float. The normalized clock emits the prior future, advances persistent state by real frames, and pads the last exposed point separately. This proves caller-supplied scalar Depth edits and per-32-frame dispatch, not dynamic Ratio/source scheduling or actual graph wiring. The caller-authored parameter node/handler/vector, generation and fixed physical Freq are explicit fixture boundaries. Admission remains unchanged.
+
+Private receipts are `depth-static-comparison-safe.json` and `depth-clock-comparison-safe.json`; reproducible fixtures are `depth_descriptor.py`, `depth_static_compare.py`, `depth_clock.py` and `depth_clock_compare.py` in the directory above. Freq registration instead reads +0x258b060/+0x258b064 in the official image's .data section; the current mapped/original on-file bytes produce invalid negative range values. No authenticated loaded .data capture is presently established. Those bytes do not establish a usable range, and no replacement range or loader retry is part of this evidence.
+
 ## Measured behavior and boundary
 
 Phase advances in double precision by real interval length times `1/(double(rate)/double(Freq))`. Every endpoint precedes its interval. A partial interval updates persistent phase and smoothing only by real frames; its exposed final endpoint is extrapolated to 32 frames using float32 subtraction, multiply, division and addition.
