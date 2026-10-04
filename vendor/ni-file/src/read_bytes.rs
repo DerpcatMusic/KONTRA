@@ -220,7 +220,7 @@ pub trait ReadBytesExt: Read + Seek {
         //     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 
         String::from_utf16(bytes.as_slice()).map_err(|e| {
-            ReadBytesError::Generic(format!("Error converting bytes to UTF16: {e}, {bytes:?}"))
+            ReadBytesError::Generic(format!("Error converting {size_field} code units to UTF16: {e}"))
         })
     }
 }
@@ -300,6 +300,18 @@ mod tests {
             Wide(reversed)
         );
         assert!(io::Cursor::new([0; 3]).read_bytes(4).is_err());
+    }
+
+    #[test]
+    fn malformed_utf16_reports_length_without_dumping_payload() {
+        let mut bytes = 1025u32.to_le_bytes().to_vec();
+        for _ in 0..1024 { bytes.extend(0xffffu16.to_le_bytes()); }
+        bytes.extend(0xd800u16.to_le_bytes());
+        let mut reader = io::Cursor::new(bytes);
+        let error = reader.read_widestring_utf16().unwrap_err().to_string();
+        assert!(error.len() < 128, "Malformed string produced a payload-sized diagnostic");
+        assert!(error.contains("1025"));
+        assert_eq!(reader.position(), reader.get_ref().len() as u64);
     }
 
     #[test]
