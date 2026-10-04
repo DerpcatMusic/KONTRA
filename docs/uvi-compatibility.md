@@ -4,17 +4,23 @@ Status reviewed 2026-10-04. KONTRA's optional `uvi` path implements bounded UFS/
 
 ## Current status
 
-The last recorded installed standalone, CLAP and VST3 checkpoint (19:51 UTC
-on 2026-10-04) is **`8bae38c`**,
-documented in [the checkpoint report](UVI_TEST_CHECKPOINT.md#current-installed-checkpoint).
-Its 14 focused synthetic checks cover owned Info observations and existing Mode1
-coefficient reuse. The prior `cebaf80` has 20 focused quiet-attack, canonical owner
-retirement and documented AfterTouch checks. The earlier 28 bank/cache,
-snapshot and ConstantClock checks belong to `1f7d77e`; Vectorized/Mapping checks
-belong to `a25fc2e`. Artifact manifests and
-installation receipts identify the verified package; historical full-suite and
-full-corpus counts do not describe a new run of the package or later source.
-Later package build-info and VERIFICATION files supersede that dated identity.
+**Source-only preview follow-up:** final compact Mapping bounds check fails;
+no new binary was built or installed. Installed checkpoint remains `96dd6c8`.
+The user stopped further verification and requested commit/push. See the
+[status inventory](UVI_IMPLEMENTATION_STATUS.md) for the exact outstanding work.
+
+The current source adds a shared dry selected-sample Mapping preview through real
+Kontakt/UVI decoder adapters, exact global zone selection and intrinsic inspector
+flow. [Preview evidence](RAW_SAMPLE_PREVIEW_EVIDENCE.md) records its narrow functional
+and authored visual scope. [Implementation status](UVI_IMPLEMENTATION_STATUS.md)
+lists implemented, partial and unfinished work. Exact installed identity belongs
+to the local package's build-info, VERIFICATION and installation receipt.
+
+The preceding installed checkpoint `96dd6c8` has 20 focused connection-setting
+checks and an isolated scalar-lookup probe. Earlier `c3e06a6`, `8bae38c`, `cebaf80`,
+`1f7d77e` and `a25fc2e` checks retain their original source/fixture scope. They are
+not a new aggregate suite or evidence of complete current-binary bank/DAW fidelity.
+The chronological source follow-ups below are historical.
 
 The later source follow-up has 20 focused synthetic functional passes (nine new
 cases) for quiet exact CLAP/VST3 projection, zero-UVI root rejection without

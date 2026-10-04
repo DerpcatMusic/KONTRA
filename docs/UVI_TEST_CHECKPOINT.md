@@ -6,17 +6,26 @@ Unsupported native graphs remain explicit failures. Starter coverage is still
 1/50; the paid-library audit and native DSP comparisons have separate limits in
 [uvi-compatibility.md](uvi-compatibility.md).
 
-## Current installed checkpoint
+## Current source checkpoint
 
-At the recorded installation on 2026-10-04, 19:51 UTC, the standalone, CLAP
-and VST3 identify clean source
-`8bae38cd67dc2d1b14b8facf0cecb76da950603a`, build hash `60d01a6e6890deed`,
-version 0.3.148, baseline Linux x86_64 and optimized `ci` profile. The package is
-`KONTRA-UVI-checkpoint-8bae38c-linux-x86_64`. Factory enumeration and runtime
-library resolution pass; all 28 configuration/access files were preserved.
+**Source-only preview follow-up:** final compact Mapping bounds check fails;
+no new binary was built or installed. Installed checkpoint remains `96dd6c8`.
+The user stopped further verification and requested commit/push. See the
+[status inventory](UVI_IMPLEMENTATION_STATUS.md) for the exact outstanding work.
+
+This source adds a common dry Mapping sample preview and exact global sample-zone
+selection. [Preview evidence](RAW_SAMPLE_PREVIEW_EVIDENCE.md) records the focused
+functional checks, intrinsic compact/wide captures, decoder limits and ownership
+API change. [Implementation status](UVI_IMPLEMENTATION_STATUS.md) separates done,
+partial and unfinished work. The local package's build-info, VERIFICATION and
+installation receipt identify its exact clean revision and installed paths.
 Running host instances retain their earlier binary until the user reloads them.
-For a later local package, its build-info and VERIFICATION files supersede this
-dated installation record.
+
+The preceding clean `96dd6c8` was installed at 20:53 UTC on 2026-10-04, build hash
+`97735df2959accdd`. Its 20 focused checks and isolated setting-lookup probe are
+[historical evidence](UVI_CONNECTION_SETTING_EVIDENCE.md), not new tests of this
+preview checkpoint. `c3e06a6` prepared immutable relative-edge presence; `8bae38c`
+scoped owned Info and reused Mode1 coefficients. Each has separate evidence.
 
 Historical `1f7d77e`, following `a25fc2e`, adds opened-bank identity checks for direct reads
 and optional PCM-cache hashes, safe Ready-poll panel failures/recovery without
@@ -58,7 +67,8 @@ The local package's build-info and VERIFICATION identify its resulting revision.
 
 Full Falcon parity, native modeling equivalence, complete bank coverage and current
 user-DAW deadlines remain unproved. Current Mapping shows initial sampled zones,
-not live RR/microphone classification; raw selected-sample audition is not installed.
+not live RR/microphone classification. Raw selected-sample preview is implemented
+within the mono/stereo, one-shot bounds documented above.
 XY, WaveView and AudioMeter require native bindings and genuine owned data.
 Native library-cover identity is unresolved despite working sidecar publication.
 The older sections below retain their exact dated scope and do not supersede this

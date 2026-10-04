@@ -3,6 +3,89 @@ use crate::artwork;
 use crate::engine::load_scripts;
 use crate::plugin::{Play, script_interface};
 
+#[test]
+fn real_mapping_selector_pages_global_indices_and_retains_duplicate_source_paths() {
+    // Authored retained metadata only: no decoded/audio/sample-preview success
+    // is inferred from this editor selection fixture.
+    let p = Arc::new(SamplerParams::new());
+    let path = "/authored/Mapping.nki";
+    p.selection.write().unwrap().parts.push(Part { path: path.into(), group: 0, ..Default::default() });
+    let instrument = Arc::new(import::Instrument {
+        path: path.into(), name: "Mapping fixture".into(),
+        groups: vec![import::Group { name: "First".into(), ..Default::default() },
+            import::Group { name: "Second".into(), ..Default::default() }],
+        zones: (0..26).map(|index| import::Zone { group: if index == 25 { 1 } else { 0 },
+            sample: "same.wav".into(), root: (48 + index) as u8, ..Default::default() }).collect(),
+        ..Default::default()
+    });
+    p.shared.view.lock().unwrap().parts[0].instrument = Some(instrument.clone());
+    p.shared.focus_request.store(0, Ordering::Relaxed);
+    let mut h = Harness::new(&p, 900., 640.);
+    h.press("tab-mapping");
+    // Optional central evidence export reuses the existing CPU paint helper.
+    // Authored metadata only; no vendor bytes, decoded PCM or audible claim.
+    let capture = |h: &Harness, name: &str, width: u16, height: u16| {
+        if let Some(dir) = std::env::var_os("KONTAKTO_SAMPLE_PREVIEW_GUI_EVIDENCE") {
+            let dir = std::path::PathBuf::from(dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            moose::core::screenshot::save_png(&dir.join(name), &pixels(&h.ui, width, height),
+                u32::from(width), u32::from(height));
+        }
+    };
+    capture(&h, "authored-mapping-dry-preview-900x640.png", 900, 640);
+    let assert_inspector_bounds = |h: &Harness, wrapped_range: bool| {
+        let scene = h.ui.scene().unwrap();
+        let mut bottom = f64::NEG_INFINITY;
+        for id in ["mapping-selected-range", "mapping-selected-reference", "mapping-selected-note"] {
+            let frame = scene.surface(id).unwrap().frame;
+            assert!(frame.size.height > 0. && frame.y >= bottom,
+                "inspector captions must retain separate intrinsic flow boxes: {id}");
+            bottom = frame.y + frame.size.height;
+            let baselines: Vec<_> = scene.paint.iter().filter(|paint| paint.key == Id::from(id))
+                .filter_map(|paint| paint.text.as_ref()).flat_map(|text| text.glyphs.iter()
+                    .map(move |glyph| text.origin.y + f64::from(glyph.y))).collect();
+            assert!(!baselines.is_empty(), "caption must contain shaped text: {id}");
+            assert!(baselines.iter().all(|&y| y >= frame.y - 0.01 && y <= bottom + 0.01),
+                "wrapped glyph baselines must fit the caption's allocated flow height: {id}");
+            if wrapped_range && id == "mapping-selected-range" {
+                let low = baselines.iter().copied().fold(f64::INFINITY, f64::min);
+                let high = baselines.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                assert!(high - low > 0.01, "compact fixture must exercise a genuinely wrapped range");
+            }
+        }
+    };
+    assert_inspector_bounds(&h, true);
+    let label = |h: &Harness, id: &str| h.ui.scene().unwrap().surface(id).unwrap().semantics.as_ref()
+        .and_then(|semantics| semantics.label.as_deref()).unwrap_or_default().to_owned();
+    assert!(h.ui.scene().unwrap().surface("mapping-zone-0").is_some());
+    h.press("mapping-zone-page-next");
+    assert!(h.ui.scene().unwrap().surface("mapping-zone-24").is_some());
+    assert!(h.ui.scene().unwrap().surface("mapping-zone-0").is_none());
+    assert!(label(&h, "mapping-selected-range").contains(&format!("root {} (72)", note_name(72))),
+        "page one must select retained global zone24 even when every path is duplicated");
+    h.press("group-1");
+    assert_eq!(read(&p.selection).parts[0].group, 1);
+    assert!(h.ui.scene().unwrap().surface("mapping-zone-25").is_some());
+    assert!(label(&h, "mapping-selected-range").contains("(73)"));
+    h.press("group-0");
+    assert!(h.ui.scene().unwrap().surface("mapping-zone-0").is_some());
+    assert!(label(&h, "mapping-selected-range").contains("(48)"));
+    h.press("mapping-zone-page-next");
+    let foreign = Arc::new(import::Instrument { path: path.into(), name: "Replacement".into(),
+        groups: instrument.groups.clone(), zones: instrument.zones.clone(), ..Default::default() });
+    p.shared.view.lock().unwrap().parts[0].instrument = Some(foreign);
+    h.idle(3);
+    assert!(h.ui.scene().unwrap().surface("mapping-zone-0").is_some(), "foreign Arc owner resets selection despite equal paths");
+    assert!(h.ui.scene().unwrap().surface("mapping-zone-24").is_none());
+    assert!(!p.shared.audition.load(Ordering::Acquire), "mapping selection never becomes instrument audition");
+    h.size = Size::new(1180., 760.);
+    h.idle(3);
+    assert!(h.ui.scene().unwrap().surface("sample-preview-play").is_some());
+    assert!(h.ui.scene().unwrap().surface("mapping-selected-path").is_some());
+    capture(&h, "authored-mapping-dry-preview-1180x760.png", 1180, 760);
+    assert_inspector_bounds(&h, false);
+}
+
 fn enter() -> Input {
     Input {
         keys: vec![KeyPress {

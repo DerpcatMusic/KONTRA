@@ -1,5 +1,5 @@
 //! UVI-owned inspection adapter to the shared key × velocity canvas.
-use super::{instrument, theme::*};
+use super::{instrument, sample_preview, theme::*};
 #[cfg(feature = "plugin")]
 use super::Cx;
 use crate::uvi::{mapping::Inspection, program::{NodeId, SampleZone}, worker::Stamp};
@@ -69,19 +69,7 @@ impl State {
     }
 }
 
-fn pager(ui: &mut Ui, id: &str, count: usize, page: &mut usize) -> El {
-    let pages = count.max(1);
-    *page = (*page).min(pages - 1);
-    let (previous, previous_el) = action(ui, format!("{id}-previous"), "Previous", false);
-    let (next, next_el) = action(ui, format!("{id}-next"), "Next", false);
-    let can_previous = *page > 0;
-    let can_next = *page + 1 < pages;
-    if previous && can_previous { *page -= 1; }
-    if next && can_next { *page += 1; }
-    row![previous_el.when(!can_previous, |el| el.disabled()), spacer(),
-        caption(format!("{} / {pages}", *page + 1)), spacer(), next_el.when(!can_next, |el| el.disabled())]
-        .gap(TIGHT).align(Align::Center).w(Len::Pct(100.)).min_w(0).shrink(0)
-}
+use sample_preview::pager;
 
 fn node_name(mapping: &Inspection, node: NodeId) -> String {
     let name = mapping.report["nodes"][node]["name"].as_str().unwrap_or_default();
@@ -97,6 +85,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     let mapping = v.uvi_mapping_inspection(cx.p, slot, &cx.selection);
     let Some((mapping, ready)) = mapping else {
         cx.state.uvi_mapping.remove(&slot);
+        cx.state.sample_preview.clear(cx.p);
         return col![body("Initial sample mapping is not available yet."),
             caption(if v.loading { "Waiting for the UVI program to be parsed." } else {
                 "The program was not parsed for this load. See Info or Logs for its status."
@@ -105,8 +94,11 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     let mut state = cx.state.uvi_mapping.get(&slot).filter(|(stamp, _)| *stamp == mapping.stamp)
         .map(|(_, state)| state.clone()).unwrap_or_default();
     let el = inspection(ui, &mapping, &mut state, ready);
+    let ticket = cx.state.chosen().filter(|&chosen| chosen == slot).and(state.selected)
+        .and_then(|index| crate::plugin::sample_preview::Ticket::uvi(mapping.clone(), index));
+    let preview = sample_preview::view(ui, cx.p, &mut cx.state.sample_preview, slot, ticket);
     cx.state.uvi_mapping.insert(slot, (mapping.stamp, state));
-    el
+    col![el, preview].gap(0).flex(1).min_h(0)
 }
 
 fn layer_list(ui: &mut Ui, mapping: &Inspection, state: &mut State) -> El {
@@ -149,32 +141,20 @@ fn probe_controls(ui: &mut Ui, state: &mut State) -> El {
 }
 
 fn sample_rows(ui: &mut Ui, mapping: &Inspection, state: &mut State, indices: &[usize], start: usize, end: usize) -> El {
-    let mut rows = Vec::new();
-    for &index in &indices[start..end] {
+    let rows = indices[start..end].iter().map(|&index| {
         let zone = &mapping.zones[index];
-        let label = format!("Zone {} · {}\n{}–{} · velocity {}–{}", index + 1, zone.sample_path,
-            note_name(zone.low_key), note_name(zone.high_key), zone.low_velocity, zone.high_velocity);
-        let id = format!("uvi-mapping-zone-{index}");
-        if ui.get(id.clone()).activated() { state.selected = Some(index); }
-        let selected = state.selected == Some(index);
-        let title = format!("Zone {} · {}", index + 1, zone.sample_path);
-        let range = format!("{}–{} · velocity {}–{}", note_name(zone.low_key), note_name(zone.high_key),
-            zone.low_velocity, zone.high_velocity);
-        // Source and range flow independently; the one-line toolbar button
-        // cannot size a wrapped sample row to its actual content.
-        rows.push(interactive(col![body(title).lines(3).min_w(0), caption(range).lines(2).min_w(0)]
-            .gap(TIGHT).pad(SPACE).align(Align::Start).min_h(CONTROL)
-            .when(selected, |el| el.fill(Role::Raised))
-            .focusable().a11y(A11y::Button).named(label).id(id), selected)
-            .w(Len::Pct(100.)).min_w(0).shrink(0));
-    }
-    if indices.is_empty() { rows.push(caption("No authored sampled zones match this inspection. Try another note, velocity or layer.").lines(4)); }
-    col(rows).gap(1).align(Align::Stretch).flex(1).min_h(0).scroll().id("uvi-mapping-details")
+        sample_preview::SampleRow { index, title: format!("Zone {} · {}", index + 1, zone.sample_path),
+            range: format!("{}–{} · velocity {}–{}", note_name(zone.low_key), note_name(zone.high_key),
+                zone.low_velocity, zone.high_velocity) }
+    }).collect();
+    sample_preview::rows(ui, "uvi-mapping-zone", rows, &mut state.selected,
+        "No authored sampled zones match this inspection. Try another note, velocity or layer.")
+        .id("uvi-mapping-details")
 }
 
 fn sample_inspector(mapping: &Inspection, selected: Option<usize>) -> El {
     let Some((index, zone)) = selected.and_then(|index| mapping.zones.get(index).map(|zone| (index, zone))) else {
-        return col![section("Selected sample"), caption("Select a zone to inspect its source and ranges.").lines(3)]
+        return col![section("Selected sample").shrink(0), caption("Select a zone to inspect its source and ranges.").lines(3).min_w(0).shrink(0)]
             .gap(SPACE).min_w(0).min_h(0).flex(1);
     };
     let range = format!("Keys {} ({}) – {} ({}) · velocity {}–{} · root {} ({})",
@@ -185,16 +165,16 @@ fn sample_inspector(mapping: &Inspection, selected: Option<usize>) -> El {
             let duration = sample.duration().map_or_else(|| "duration unknown".into(), |seconds| format!("{seconds:.3} s"));
             format!("Decoded · {} Hz · {} channels · {} frames · {duration}", sample.rate, sample.channels, sample.frames)
         });
-    col![section("Selected sample"),
+    col![section("Selected sample").shrink(0),
         caption(format!("Zone {} · layer {} · keygroup {} · oscillator {}", index + 1, zone.layer + 1,
-            zone.keygroup + 1, zone.player + 1)).lines(3),
-        caption(zone.sample_path.clone()).named(zone.sample_path.clone()).lines(4).id("uvi-mapping-selected-path"),
-        caption(range.clone()).named(range).lines(4).id("uvi-mapping-selected-range"),
-        caption(resource.clone()).named(resource).lines(3).id("uvi-mapping-selected-resource"),
+            zone.keygroup + 1, zone.player + 1)).lines(3).min_w(0).shrink(0),
+        caption(zone.sample_path.clone()).named(zone.sample_path.clone()).lines(4).min_w(0).shrink(0).id("uvi-mapping-selected-path"),
+        caption(range.clone()).named(range).lines(4).min_w(0).shrink(0).id("uvi-mapping-selected-range"),
+        caption(resource.clone()).named(resource).lines(3).min_w(0).shrink(0).id("uvi-mapping-selected-resource"),
         caption(format!("Authored flags · {} · {} · {}", if zone.purged { "purged" } else { "not purged" },
-            if zone.bypassed { "bypassed" } else { "not bypassed" }, if zone.reverse { "reverse" } else { "forward" })).lines(3),
+            if zone.bypassed { "bypassed" } else { "not bypassed" }, if zone.reverse { "reverse" } else { "forward" })).lines(3).min_w(0).shrink(0).id("uvi-mapping-selected-flags"),
         caption("Round-robin and microphone grouping are unknown in this initial zone view. Overlapping zones or duplicate paths do not establish either.")
-            .fill(secondary()).lines(5)]
+            .fill(secondary()).lines(5).min_w(0).shrink(0).id("uvi-mapping-selected-note")]
         // This shares a flex row with the list: percentage width overrides the
         // flex basis in MUI and collapses the sibling list to zero width.
         .gap(SPACE).align(Align::Start).min_w(0).min_h(0).scroll().flex(1).id("uvi-mapping-selected")

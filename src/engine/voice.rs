@@ -1747,7 +1747,7 @@ fn copy_run(span: &Span, run: &Run, out: &mut [Frame]) {
 
 /// 4-point, 3rd-order Hermite (Catmull-Rom) interpolation between `q[1]` and `q[2]`.
 #[inline(always)]
-pub(super) fn hermite(q: &[Frame; 4], t: f32) -> Frame {
+pub(crate) fn hermite(q: &[Frame; 4], t: f32) -> Frame {
     std::array::from_fn(|c| {
         let (xm1, x0, x1, x2) = (q[0][c], q[1][c], q[2][c], q[3][c]);
         let c1 = 0.5 * (x1 - xm1);

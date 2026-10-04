@@ -397,75 +397,87 @@ fn stage_page(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         .id(format!("stage-{slot}"))
 }
 
-/// Groups on the left; the selected group's zones on a key × velocity grid.
+/// Retained global sample-zone selection, with independent dry source preview.
 pub fn mapping(ui: &mut Ui, cx: &mut Cx) -> El {
     if cx.part().is_some_and(|part| part.uvi.is_some()) {
         #[cfg(feature = "uvi")]
         return super::uvi_mapping::view(ui, cx);
         #[cfg(not(feature = "uvi"))]
-        return native_unavailable("Key and velocity mapping", "UVI support is disabled in this version.");
-    }
-    let instrument = current(cx).cloned();
-    let slot = cx.state.selected;
-    let group = cx.part().map_or(0, |p| p.group);
-    let mut groups = Vec::new();
-    if let Some(i) = &instrument {
-        for (n, g) in i.groups.iter().enumerate() {
-            let label = if g.name.is_empty() {
-                format!("Group {}", n + 1)
-            } else {
-                g.name.clone()
-            };
-            let (hit, el) = action(ui, format!("group-{n}"), &label, group == n as u32);
-            if hit {
-                cx.selection.parts[slot].group = n as u32;
-            }
-            groups.push(el.lines(1).min_w(0).w(Len::Pct(100.)).shrink(0));
+        {
+            cx.state.sample_preview.clear(cx.p);
+            return native_unavailable("Key and velocity mapping", "UVI support is disabled in this version.");
         }
     }
-    let zones: Vec<_> = instrument
-        .iter()
-        .flat_map(|i| i.zones.iter())
-        .filter(|z| z.group == group as usize)
-        .map(|z| {
-            (
-                z.low_key,
-                z.high_key,
-                z.low_velocity,
-                z.high_velocity,
-                z.available,
-            )
-        })
-        .collect();
-    let grid = mapping_grid(zones, "Selected group key and velocity mapping");
-    row![
-        col(groups)
-            .gap(1)
-            .w(SIDEBAR_MIN)
-            .shrink(0)
-            .min_h(0)
-            .scroll()
-            .id("groups-scroll"),
-        col![
-            grid,
-            row![
-                caption(note_name(0)),
-                spacer(),
-                caption("Key × velocity"),
-                spacer(),
-                caption(note_name(127))
-            ]
-            .shrink(0)
-        ]
-        .gap(SPACE)
-        .flex(1)
-        .min_w(0)
-        .min_h(0)
-    ]
-    .gap(INSET)
-    .pad(INSET)
-    .flex(1)
-    .min_h(0)
+    use super::sample_preview::{self, SampleRow, PAGE};
+    let slot = cx.state.selected;
+    let Some(instrument) = current(cx).cloned() else {
+        cx.state.sample_mapping.remove(&slot);
+        cx.state.sample_preview.clear(cx.p);
+        return body("Initial sample mapping is not available yet.").pad(INSET).flex(1);
+    };
+    let mut group = cx.part().map_or(0, |part| part.group as usize);
+    // Admit group input before building its selected style and dependent zones.
+    for index in 0..instrument.groups.len() {
+        if ui.get(format!("group-{index}")).activated() { group = index; }
+    }
+    if let Some(part) = cx.selection.parts.get_mut(slot) { part.group = group as u32; }
+    let groups = instrument.groups.iter().enumerate().map(|(index, item)| {
+        let label = if item.name.is_empty() { format!("Group {}", index + 1) } else { item.name.clone() };
+        let (_, el) = action(ui, format!("group-{index}"), &label, group == index);
+        el.lines(1).min_w(0).w(Len::Pct(100.)).shrink(0)
+    }).collect::<Vec<_>>();
+    let selection = cx.state.sample_mapping.entry(slot).or_default();
+    selection.bind(&instrument, group);
+    let indices = selection.indices.clone();
+    let old_page = selection.page;
+    let page = sample_preview::pager(ui, "mapping-zone-page", indices.len().div_ceil(PAGE), &mut selection.page);
+    let start = selection.page * PAGE;
+    let end = (start + PAGE).min(indices.len());
+    if old_page != selection.page || !selection.selected.is_some_and(|index| indices[start..end].contains(&index)) {
+        selection.selected = indices.get(start).copied();
+    }
+    let rows = indices[start..end].iter().map(|&index| {
+        let zone = &instrument.zones[index];
+        SampleRow { index, title: format!("Zone {} · {}", index + 1, zone.sample.display()),
+            range: format!("{}–{} · velocity {}–{}", note_name(zone.low_key), note_name(zone.high_key),
+                zone.low_velocity, zone.high_velocity) }
+    }).collect();
+    let rows = sample_preview::rows(ui, "mapping-zone", rows, &mut selection.selected,
+        "No initial sampled zones in this group.").id("mapping-sample-rows");
+    let selected = selection.selected;
+    let grid_selected = selected.and_then(|index| indices.iter().position(|&candidate| candidate == index));
+    let zones = indices.iter().map(|&index| {
+        let zone = &instrument.zones[index];
+        (zone.low_key, zone.high_key, zone.low_velocity, zone.high_velocity, zone.available)
+    }).collect();
+    let grid = mapping_grid_selected(zones, "Selected group key and velocity mapping", grid_selected, None);
+    let inspector = if let Some((index, zone)) = selected.and_then(|index| instrument.zones.get(index).map(|zone| (index, zone))) {
+        let path = zone.sample.display().to_string();
+        let range = format!("Keys {} ({}) – {} ({}) · velocity {}–{} · root {} ({})",
+            note_name(zone.low_key), zone.low_key, note_name(zone.high_key), zone.high_key,
+            zone.low_velocity, zone.high_velocity, note_name(zone.root), zone.root);
+        col![section("Selected sample").shrink(0),
+            caption(format!("Zone {} · group {}", index + 1, zone.group + 1)).min_w(0).shrink(0),
+            caption(path.clone()).named(path).lines(4).min_w(0).shrink(0).id("mapping-selected-path"),
+            caption(range.clone()).named(range).lines(4).min_w(0).shrink(0).id("mapping-selected-range"),
+            caption(if zone.available { "Initial sample reference resolved." } else { "Initial sample reference is unavailable." })
+                .lines(3).min_w(0).shrink(0).id("mapping-selected-reference"),
+            caption("Decoded source dimensions appear in preview feedback. This initial zone is not a live script-selected sample.")
+                .fill(secondary()).lines(4).min_w(0).shrink(0).id("mapping-selected-note")]
+            .gap(SPACE).align(Align::Start).min_w(0).min_h(0).flex(1).scroll()
+    } else {
+        col![section("Selected sample").shrink(0), caption("Select a sample zone to inspect its source.").lines(3).min_w(0).shrink(0)]
+            .gap(SPACE).min_w(0).min_h(0).flex(1)
+    };
+    let ticket = cx.state.chosen().filter(|&chosen| chosen == slot).and(selected)
+        .and_then(|index| crate::plugin::sample_preview::Ticket::kontakt(instrument.clone(), index));
+    let preview = sample_preview::view(ui, cx.p, &mut cx.state.sample_preview, slot, ticket);
+    col![row![col(groups).gap(1).w(SIDEBAR_MIN).shrink(0).min_h(0).scroll().id("groups-scroll"),
+            col![grid.min_h(CONTROL * 5.), row![caption(note_name(0)), spacer(), caption("Key × velocity"), spacer(), caption(note_name(127))].shrink(0),
+                row![col![section("Sample zones"), rows, page].gap(SPACE).flex(1).min_w(SIDEBAR_MIN).min_h(0),
+                    inspector.min_w(SIDEBAR_MIN)].wrap().gap(INSET).line_gap(SPACE).flex(1).min_h(0)]
+                .gap(SPACE).flex(1).min_w(0).min_h(0)].gap(INSET).pad(INSET).flex(1).min_h(0),
+        preview].gap(0).flex(1).min_h(0)
 }
 
 /// Shared read-only key × velocity canvas. Each backend owns its range adapter.

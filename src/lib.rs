@@ -13,6 +13,7 @@ pub mod diagnostics;
 pub mod support;
 pub mod modulation;
 pub mod audio;
+mod preview_prepare;
 pub mod engine;
 pub mod articulate;
 pub mod timing;

@@ -518,6 +518,56 @@ impl Ufs {
         }
         Ok(bytes)
     }
+
+    /// Never derives or guesses content access data; encrypted mode 2 needs a supplied key.
+    pub(crate) fn read_member_bounded_canceled(
+        &self,
+        member: &Member,
+        metadata_key: u64,
+        content_key: Option<u64>,
+        limit: u64,
+        canceled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>> {
+        super::sample::check_canceled(canceled)?;
+        ensure!(member.size <= limit, "UVI preview encoded source exceeds limit");
+        ensure!(
+            member.size <= MAX_MEMBER_SIZE,
+            "UFS member exceeds 512 MiB resource limit"
+        );
+        ensure!(
+            member
+                .offset
+                .checked_add(member.size)
+                .is_some_and(|end| end <= self.header.physical_size),
+            "UFS member range exceeds physical container"
+        );
+        let key = match member.mode {
+            0 => None,
+            1 => Some(metadata_key),
+            2 => Some(
+                content_key.context("UFS mode 2 member requires a caller-supplied content key")?,
+            ),
+            mode => bail!("Unsupported UFS member encryption mode {mode}"),
+        };
+        let mut file = self.open_snapshot()?;
+        let size = usize::try_from(member.size).context("UFS member does not fit address space")?;
+        file.seek(SeekFrom::Start(member.offset))?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(size)?;
+        bytes.resize(size, 0);
+        let mut reader = super::io::CountedRead::new(&mut file);
+        for chunk in bytes.chunks_mut(65536) {
+            super::sample::check_canceled(canceled)?;
+            reader.read_exact(chunk)?;
+        }
+        drop(reader);
+        self.check_snapshot(&file)?;
+        if let Some(key) = key {
+            crypto::transform_blocks(&mut bytes, key, member.offset);
+        }
+        super::sample::check_canceled(canceled)?;
+        Ok(bytes)
+    }
 }
 
 #[cfg(test)]

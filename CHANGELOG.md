@@ -8,6 +8,17 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ## Unreleased
 
+### Dry Mapping preview source checkpoint — verification paused
+
+- Add a shared dry sample cursor with off-thread Kontakt/UVI source preparation,
+  exact selection/restore cancellation and off-audio PCM retirement. Add global
+  sample-zone selection and intrinsic inspector rows.
+- The pre-layout source passed 48 focused checks; UVI-disabled source passed 29
+  common checks. The stronger compact text-bounds test still fails after the first
+  layout correction. This source is not a verified release or newly installed
+  binary. See docs/UVI_IMPLEMENTATION_STATUS.md for implemented/partial/missing
+  features and docs/RAW_SAMPLE_PREVIEW_EVIDENCE.md for exact scope.
+
 ### Local UVI interoperability follow-up
 
 - Validate Info worker observations against the current source, restore state and activation/context. Keep failed-owner inspection; render absent inventory counts as unknown, distinguish loader observations from endpoint/fault data, and deduplicate PCM separately from render timing so a failure before the first attempt retains its PCM census.
