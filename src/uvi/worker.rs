@@ -1622,6 +1622,9 @@ fn run(
         .program_report = Some(report);
     initialization_stage(shared, trace, "uvi_preflight");
     preflight.validate()?;
+    if shared.stop.load(Ordering::Acquire) {
+        return Ok(());
+    }
     initialization_stage(shared, trace, "uvi_resources");
     let samples = match library.samples_with_progress_cancel(&loaded, &mut |total, loaded, unique_decodes, bytes, current| {
         let mut details = shared.details.lock().unwrap_or_else(|p| p.into_inner());
@@ -1647,7 +1650,7 @@ fn run(
     if shared.stop.load(Ordering::Acquire) {
         return Ok(());
     }
-    let mut player = Player::new_with_state_traced(
+    let mut player = match Player::new_with_state_traced(
         &preflight,
         modules,
         resources,
@@ -1678,7 +1681,12 @@ fn run(
                 details.initialized_ui = Some(Arc::new(snapshots));
             }
         },
-    ).map_err(|error| retain_lua_failure(shared, error, &loaded.program))?;
+        Some(&shared.stop),
+    ) {
+        Ok(player) => player,
+        Err(error) if error.is::<super::sample::LoadCancelled>() => return Ok(()),
+        Err(error) => return Err(retain_lua_failure(shared, error, &loaded.program)),
+    };
     {
         let mut details = shared
             .details
@@ -1891,6 +1899,52 @@ pub(crate) mod tests {
     use std::collections::BTreeMap;
 
     #[test]
+    fn initial_player_stops_between_ui_observer_and_renderer() {
+        let (config, _) = authored_bank_with_script("function onInit()end");
+        let path = config.bank.clone();
+        let library = Rc::new(Library::open(&path, &config.metadata_namespace, None).unwrap());
+        let loaded = library.program(&config.member, &config.program_namespace).unwrap();
+        let preflight = super::super::playback::ProgramPreflight::new(&loaded.program);
+        let stop = AtomicBool::new(false);
+        let mut stages = Vec::new();
+        let result = Player::new_with_state_traced(&preflight, BTreeMap::new(),
+            BankResources::new(library, &loaded.path, Default::default()).unwrap(),
+            48000, None, None, &mut |name| stages.push(name),
+            &mut |_| stop.store(true, Ordering::Release), Some(&stop));
+        assert!(result.err().unwrap().is::<super::super::sample::LoadCancelled>());
+        assert_eq!(stages, ["uvi_player_preflight", "uvi_lua_init"]);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn initial_player_stops_after_lua_and_preserves_real_lua_failure() {
+        for fails in [false, true] {
+            let (config, _) = authored_bank_with_script(if fails {
+                "function onInit()error('authored cancellation race')end"
+            } else { "function onInit()knob=Knob('initialized',0.5,0,1)end" });
+            let path = config.bank.clone();
+            let library = Rc::new(Library::open(&path, &config.metadata_namespace, None).unwrap());
+            let loaded = library.program(&config.member, &config.program_namespace).unwrap();
+            let preflight = super::super::playback::ProgramPreflight::new(&loaded.program);
+            let stop = AtomicBool::new(false);
+            let mut stages = Vec::new();
+            let published = std::cell::Cell::new(false);
+            let result = Player::new_with_state_traced(&preflight, BTreeMap::new(),
+                BankResources::new(library, &loaded.path, Default::default()).unwrap(),
+                48000, None, None, &mut |name| {
+                    stages.push(name);
+                    if name == "uvi_lua_init" { stop.store(true, Ordering::Release); }
+                }, &mut |_| published.set(true), Some(&stop));
+            let error = result.err().unwrap();
+            assert_eq!(error.is::<super::super::sample::LoadCancelled>(), !fails);
+            if fails { assert!(format!("{error:#}").contains("authored cancellation race")); }
+            assert!(!published.get());
+            assert_eq!(stages, ["uvi_player_preflight", "uvi_lua_init"]);
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
     fn initialized_ui_is_owned_stamped_and_cleared_on_failure_or_stop() {
         for failure in [None, Some("authored terminal failure".to_owned())] {
             let worker = Worker { shared: Arc::new(Shared::new(7, 11)), thread: None,
@@ -1940,7 +1994,7 @@ pub(crate) mod tests {
         let published = std::cell::Cell::new(false);
         let result = Player::new_with_state_traced(&super::super::playback::ProgramPreflight::new(&loaded.program), BTreeMap::new(),
             BankResources::new(library, &loaded.path, Default::default()).unwrap(),
-            48000, None, None, &mut |_| {}, &mut |_| published.set(true));
+            48000, None, None, &mut |_| {}, &mut |_| published.set(true), None);
         assert!(published.get());
         assert!(result.is_err());
         let mut worker = Worker::start(config, 7, 11).unwrap();
@@ -1972,7 +2026,7 @@ pub(crate) mod tests {
                 seen.borrow_mut().push(phase.get());
                 assert!(matches!(session.ui_snapshot(processor).unwrap().widgets[0].value,
                     Some(UiValue::Number(n)) if n==0.75));
-            }).unwrap();
+            }, None).unwrap();
         assert_eq!(*seen.borrow(), vec!["uvi_lua_init"]);
         let saved = fresh.saved_state().unwrap();
         seen.borrow_mut().clear();
@@ -1981,7 +2035,7 @@ pub(crate) mod tests {
             48000, Some((7,12)), Some(&saved), &mut |name|phase.set(name), &mut |session| {
                 seen.borrow_mut().push(phase.get());
                 assert!(session.ui_snapshot(processor).unwrap() == fresh.ui_snapshot(processor).unwrap());
-            }).unwrap();
+            }, None).unwrap();
         assert_eq!(*seen.borrow(), vec!["uvi_restore_apply"]);
         assert!(restored.saved_state().is_ok());
         std::fs::remove_file(path).unwrap();

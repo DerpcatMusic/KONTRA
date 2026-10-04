@@ -6,7 +6,7 @@ use super::{
     script::{self, Session},
 };
 use anyhow::{Context, Result, ensure};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::atomic::AtomicBool};
 
 pub use super::script::HostedInput;
 
@@ -115,6 +115,7 @@ impl<'a> Player<'a> {
             None,
             None,
             None,
+            None,
         )
     }
     pub fn new_hosted(
@@ -131,6 +132,7 @@ impl<'a> Player<'a> {
             resources,
             sample_rate,
             Some((epoch, generation)),
+            None,
             None,
             None,
             None,
@@ -154,10 +156,12 @@ impl<'a> Player<'a> {
             saved,
             None,
             None,
+            None,
         )
     }
     /// Initialization-only timing observer. Never retained by the player or
-    /// called while rendering audio.
+    /// called while rendering audio. The borrowed initialization stop flag is
+    /// checked after successful stages, so an in-flight failure keeps its cause.
     pub(crate) fn new_with_state_traced(
         preflight: &ProgramPreflight<'a>,
         modules: BTreeMap<String, Vec<u8>>,
@@ -167,6 +171,7 @@ impl<'a> Player<'a> {
         saved: Option<&super::state::SavedState>,
         stage: &mut dyn FnMut(&'static str),
         initialized_ui: &mut dyn FnMut(&Session),
+        stop: Option<&AtomicBool>,
     ) -> Result<Self> {
         Self::new_inner(
             preflight,
@@ -177,6 +182,7 @@ impl<'a> Player<'a> {
             saved,
             Some(stage),
             Some(initialized_ui),
+            stop,
         )
     }
     fn new_inner(
@@ -188,6 +194,7 @@ impl<'a> Player<'a> {
         saved: Option<&super::state::SavedState>,
         mut stage: Option<&mut dyn FnMut(&'static str)>,
         mut initialized_ui: Option<&mut dyn FnMut(&Session)>,
+        stop: Option<&AtomicBool>,
     ) -> Result<Self> {
         let mut stage = |name| {
             if let Some(stage) = stage.as_deref_mut() {
@@ -197,12 +204,14 @@ impl<'a> Player<'a> {
         let hosted = activation.is_some();
         stage("uvi_player_preflight");
         preflight.validate()?;
+        super::sample::check_cancel(stop)?;
         let program = preflight.program();
         let capability = Some(resources.capability());
         if let Some(saved) = saved {
             stage("uvi_restore_validation_and_audio");
             saved.validate(program)?;
             saved.prepare_audio(capability.as_ref().unwrap())?;
+            super::sample::check_cancel(stop)?;
         }
         // A fresh instrument may load aliases during authored initialization.
         // Only restoration has a complete captured override set to prevalidate.
@@ -210,6 +219,7 @@ impl<'a> Player<'a> {
             stage("uvi_restore_renderer_init");
             let mut renderer = Renderer::new_preflighted(preflight, resources.samples(), sample_rate)?;
             saved.prepare_renderer(&mut renderer)?;
+            super::sample::check_cancel(stop)?;
             Some(renderer)
         } else {
             None
@@ -228,6 +238,7 @@ impl<'a> Player<'a> {
         } else {
             Session::new_program_chain_with_state(program, modules, capability, sample_rate, saved)?
         };
+        super::sample::check_cancel(stop)?;
         // Fresh initialization has completed authored constructors and onInit.
         // Restores remain private until their prevalidated renderer prefix and
         // authored onLoad/changed/onInit commands have applied successfully.
@@ -236,6 +247,7 @@ impl<'a> Player<'a> {
         {
             publish(&session);
         }
+        super::sample::check_cancel(stop)?;
         let mut renderer = match prepared {
             Some(renderer) => renderer,
             None => {
@@ -243,6 +255,7 @@ impl<'a> Player<'a> {
                 Renderer::new_preflighted(preflight, resources.samples(), sample_rate)?
             }
         };
+        super::sample::check_cancel(stop)?;
         if saved.is_some() {
             stage("uvi_restore_apply");
             let processed = session.drain()?;
@@ -254,12 +267,14 @@ impl<'a> Player<'a> {
                 hosted.then_some(processed.command_roots.as_slice()),
                 &processed.host_commands,
             )?;
+            super::sample::check_cancel(stop)?;
         }
         if saved.is_some()
             && let Some(publish) = initialized_ui.as_mut()
         {
             publish(&session);
         }
+        super::sample::check_cancel(stop)?;
         stage("uvi_player_finalize");
         let resource_revision = resources.revision();
         Ok(Self {
