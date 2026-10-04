@@ -1,7 +1,7 @@
 # Bounded static BiquadFilter source evidence
 
-Reviewed 2026-10-04. This source path has scoped original-native/Rust comparisons
-pending package verification. It does not establish whole-host lifecycle,
+Reviewed 2026-10-04. This path is included in installed checkpoint `817b03a`;
+its scoped original-native/Rust comparisons do not establish whole-host lifecycle,
 complete program audio parity or performance.
 
 | Admission dimension | Measured gate |
