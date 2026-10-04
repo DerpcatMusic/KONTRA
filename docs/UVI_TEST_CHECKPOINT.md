@@ -119,8 +119,8 @@ compensation is retained only with matching already allocated delay storage.
 Actual Bitwig behavior still requires testing with the newly installed plugin.
 Worker load journals retain decoded graph details even when admission fails. Lua errors
 retain processor/chunk/line and resumed frame when available; DSP errors identify
-processor/node/frame at the instrumented boundaries. Source changes after
-`1213001` add a [local Lua context panel](UVI_LOCAL_LUA_FAILURE_CONTEXT.md),
+processor/node/frame at the instrumented boundaries. Installed `817b03a` includes
+a [local Lua context panel](UVI_LOCAL_LUA_FAILURE_CONTEXT.md),
 using retained structured frames and already loaded approved source. Its bounded
 code excerpt is excluded from copied records, journals and support exports.
 Initialization failures retain a known entry without guessing their failing line. Missing source context is not
@@ -150,20 +150,28 @@ does not prove its transition or timbre behavior.
 
 ## Checkpoint validation
 
-Previous recorded installed checkpoint `1213001` replaced the standalone, CLAP and VST3 binaries,
-with the previous files backed up and settings/access records unchanged. Both
+Installed checkpoint `817b03a` replaces `1213001` for the standalone, CLAP and
+VST3, with previous files backed up, settings unchanged and all 26 private access
+records byte-identical. Installed hashes, build identity and the standalone link
+match the package. CLAP/VST3 factory and dynamic-dependency checks pass. Both
 actual Clarinet UI diagnoses initialize with zero resource failures; each owns
 one bank font. The original four-second Clarinet render is byte-identical to
-the prior checkpoint and reports no worker errors. These CLI observations do
+the prior checkpoint: 192,000 frames, WAV SHA-256
+`a35808f0ffca715cd85d8682aaa79387c2c2a402c912df12d361dcf6a2815aa0`,
+zero worker errors and two measured render-deadline misses. These CLI observations do
 not establish native visual fidelity or exercise the installed Bitwig editor.
 
 The current catalog contains 11 Kontakt libraries and 26 UVI banks declaring
 660 programs (620 Augmented Orchestra and 40 VWinds). Immediate publication of
-this saved catalog measured 12.9 ms; a full scan measured 21.3 seconds. Catalog
-declarations are distinct from the 98 decoded programs in the bounded audit
-(including 50 external Starter presets), and from its 41 static preflight
-admissions. Initialization, interaction, sustained playback and native musical
-comparison remain separate evidence.
+this saved catalog measured 10.765 ms; a full scan measured 19.555 seconds with
+37 total libraries and zero unavailable banks. Catalog declarations are distinct
+from the historical 98-program decode frontier and its 41 static admissions.
+The later [same-source census](UVI_AUGMENTED_PROGRAM_CENSUS.md) replaces the old
+eight-program Augmented sample: all 620 decode/parse with zero errors, and none
+passes static preflight at `384ed21`. Historical unique decode coverage reaches
+710 across Augmented, VWinds and external Starter; this does not establish
+same-revision preflight for all 710. Initialization, interaction, sustained
+playback and native musical comparison remain separate evidence.
 
 This checkpoint uses focused functional verification and feature checks,
 including audio first-cause retention, actual generated-note velocity cases,
@@ -183,9 +191,7 @@ Worker/Bridge observations use disclosed unchanged SDK glue; they do not verify
 live Bitwig operation, sustained deadlines on every machine or native musical
 parity. The original reported blackout remains unclassified.
 
-Later source evidence after `1213001` awaits package verification. A newer
-artifact's manifest identifies its exact source and enabled features; its
-installation needs a separate receipt. The source changes restore authored
+Installed `817b03a` includes the post-`1213001` changes that restore authored
 help text, index preparation resource paths, avoid cloning completed full load
 reports and skip unused Lua collection tables. A conservative Step gate rejects
 transport snapshots inside a logical generation block; measured Diode circuit
@@ -195,14 +201,27 @@ resource metadata and progress events in the actual V2 Clarinet initial load.
 That load made zero sample-decryption calls; buffer allocation requests fell
 from 38,903 to 1,231 without a demonstrated total startup speed improvement.
 
-The later source also includes [hierarchical preset menus](UVI_HIERARCHICAL_MENU_EVIDENCE.md)
+That checkpoint also includes [hierarchical preset menus](UVI_HIERARCHICAL_MENU_EVIDENCE.md)
 with actual source UI/hosted-callback checks across 360/720/1080 pixels and
 [bounded static BiquadFilter admission](UVI_BIQUAD_STATIC_EVIDENCE.md). The filter
 has 36 actual Rust/native cases and 69 actual Rust/native 32,768-frame tone
 cases; two of seven observed nodes pass its gate, while **zero whole presets**
 become playable. Menu native style/placement, changed/connected filter controls,
 broader settings and whole-host audio parity remain unverified. These focused
-source observations are not a new installed-plugin or full-corpus validation.
+source observations are not installed-DAW interaction or full-corpus validation.
+
+Source through `2b13e77` is later and **not installed**. It adds a bounded
+malformed Kontakt UTF-16 diagnostic (count/reason instead of the input payload),
+the [dual-Lua architecture proof](PLAYER_LUA_RUNTIME_BOUNDARY.md),
+[authored Table colors and owned parent-subtree ordering](UVI_PANEL_ORDER_EVIDENCE.md),
+and [immutable preflight reuse with phase cancellation](UVI_LOADING_ADMISSION_EVIDENCE.md).
+The reuse preserves actual fresh/saved audio, state, UI and resource captures;
+its three-baseline/three-candidate source measurements reduce median worker
+initialization wall time by 3.11% for one instrument. This excludes UI asset
+loading and audio adoption and does not establish a whole-startup or deadline
+gain. Phase cancellation retains real errors and does not interrupt an already
+executing Lua callback or renderer preparation unit. Full Falcon compatibility,
+native end-to-end audio/UI fidelity and sustainable live deadlines remain unfinished.
 
 At historical installed checkpoint `75998c3`, the combined `uvi,standalone` optimized CI test run passed 977 library checks,
 89 CLI/playback checks and four additional binary/integration checks. Thirty-five

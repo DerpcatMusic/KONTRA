@@ -1,8 +1,8 @@
 # Hierarchical preset-menu source evidence
 
-Reviewed 2026-10-04. This is source UI and hosted-callback evidence pending
-package verification; it does not establish native menu placement/style or a
-new installed-plugin result.
+Reviewed 2026-10-04. This path is included in installed checkpoint `817b03a`.
+Its source UI and hosted-callback evidence does not establish native menu
+placement/style or installed DAW interaction.
 
 The owned original/V2 general-preset menus contain 68/73 items, including 66/71
 slash-separated paths, five/nine root groups and two root leaves each. Three
