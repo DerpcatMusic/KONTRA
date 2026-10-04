@@ -220,7 +220,6 @@ mod tests {
         assert_eq!(right, [0.0; 2]);
     }
 
-    #[cfg(feature = "plugin")]
     #[test]
     fn prepared_delay_processing_changes_and_clears_do_not_allocate() {
         let mut delay = SourceDelay::new(1024).unwrap();
