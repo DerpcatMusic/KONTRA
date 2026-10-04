@@ -6,6 +6,7 @@
 //! this renderer does not assert overall numerical parity with Falcon.
 use super::{
     biquad::{self, BiquadFilter},
+    compexp::{self, CompExp},
     dsp::{self, Frame, Gain, GainMatrix, OnePole, TrackDelay},
     effects::{self, EffectProcessor},
     filter::{self, XpanderFilter},
@@ -203,6 +204,7 @@ pub fn preflight(program: &Program) -> Vec<Unsupported> {
             || sparkverb::supports(&node.kind)
             || phasor::supports(&node.kind)
             || biquad::supports(&node.kind)
+            || compexp::supports(&node.kind)
             || generator::supports(&node.kind)
             || wrapper(&node.kind)
             || matches!(
@@ -308,6 +310,29 @@ pub fn preflight(program: &Program) -> Vec<Unsupported> {
                     program.connections.iter().all(|connection| connection.owner != id),
                     "BiquadFilter connected control generation is unverified"
                 );
+                Ok(())
+            });
+            if let Err(error) = result {
+                unsupported.push(Unsupported {
+                    node: id,
+                    kind: node.kind.clone(),
+                    reason: error.to_string(),
+                });
+            }
+        }
+        if compexp::supports(&node.kind) {
+            let result = compexp::validate(node).and_then(|_| {
+                ensure!(
+                    program.connections.iter().all(|connection| connection.owner != id),
+                    "CompExp connected control generation is unverified"
+                );
+                let mut parent = node.parent;
+                for _ in 0..program.nodes.len() {
+                    let Some(owner) = parent else { break; };
+                    ensure!(program.nodes[owner].kind != "Keygroup",
+                        "CompExp keygroup note-off/voice-tail lifetime is unverified");
+                    parent = program.nodes[owner].parent;
+                }
                 Ok(())
             });
             if let Err(error) = result {
@@ -475,7 +500,8 @@ pub fn preflight(program: &Program) -> Vec<Unsupported> {
                     || maximizer::supports(&entry.kind)
                     || sparkverb::supports(&entry.kind)
                     || phasor::supports(&entry.kind)
-                    || biquad::supports(&entry.kind);
+                    || biquad::supports(&entry.kind)
+                    || compexp::supports(&entry.kind);
                 if rendered_target
                     && scope.is_none()
                     && graph.has_release_envelopes(&HashSet::from([node]))
@@ -530,6 +556,7 @@ enum Processor {
     Spark(Box<SparkVerb>),
     Phasor(Box<Phasor>),
     Biquad(BiquadFilter),
+    CompExp(CompExp),
 }
 impl Processor {
     fn new(
@@ -539,6 +566,9 @@ impl Processor {
         samples: &Arc<HashMap<String, Arc<Sample>>>,
     ) -> Result<Option<Self>> {
         let kind = node.kind.as_str();
+        if compexp::supports(kind) {
+            return Ok(Some(Self::CompExp(CompExp::new(node, channel_count, rate)?)));
+        }
         if biquad::supports(kind) {
             return Ok(Some(Self::Biquad(BiquadFilter::new(
                 node, channel_count, rate,
@@ -614,6 +644,7 @@ impl Processor {
                 Self::Filter(_) => std::mem::size_of::<XpanderFilter>(),
                 Self::Max(p) => p.memory_bytes() - std::mem::size_of::<Maximizer>(),
                 Self::Delay(p) => p.memory_bytes() - std::mem::size_of::<TrackDelay>(),
+                Self::CompExp(p) => p.memory_bytes() - std::mem::size_of::<CompExp>(),
                 Self::Spark(p) => std::mem::size_of::<SparkVerb>() + p.memory_bytes(),
                 Self::Phasor(p) => p.memory_bytes(),
                 _ => 0,
@@ -622,6 +653,7 @@ impl Processor {
     fn set(&mut self, name: &str, value: f64) -> Result<()> {
         match self {
             Self::Biquad(p) => p.set_parameter(name, &ParameterValue::Number(value)),
+            Self::CompExp(p) => p.set_parameter(name, &ParameterValue::Number(value)),
             Self::Matrix(p) => p.set_parameter(name, value),
             Self::Gain(p) => p.set_parameter(name, value),
             Self::Pole(p) => p.set_parameter(name, value),
@@ -652,6 +684,7 @@ impl Processor {
     fn set_value(&mut self, name: &str, value: &ParameterValue) -> Result<()> {
         match self {
             Self::Biquad(p) => return p.set_parameter(name, value),
+            Self::CompExp(p) => return p.set_parameter(name, value),
             Self::Effect(p) => return p.set_parameter(name, value),
             Self::Filter(p) => return p.set_parameter(name, value),
             Self::Time(p) => return p.set_parameter(name, value),
@@ -692,6 +725,7 @@ impl Processor {
             Self::Pole(p) => return Ok(p.parameter("Bypass")? != 0.),
             Self::Delay(p) => return Ok(p.parameter("Bypass")? != 0.),
             Self::Biquad(p) => p.parameter("Bypass")?,
+            Self::CompExp(p) => p.parameter("Bypass")?,
             Self::Effect(p) => p.parameter("Bypass")?,
             Self::Filter(p) => p.parameter("Bypass")?,
             Self::Time(p) => p.parameter("Bypass")?,
@@ -724,6 +758,7 @@ impl Processor {
             Self::Spark(p) => p.process(std::slice::from_mut(frame))?,
             Self::Phasor(p) => p.process(std::slice::from_mut(frame))?,
             Self::Biquad(p) => p.process(std::slice::from_mut(frame))?,
+            Self::CompExp(p) => p.process(std::slice::from_mut(frame))?,
         }
         Ok(())
     }
@@ -1177,6 +1212,7 @@ impl<'a> Renderer<'a> {
                 || sparkverb::supports(&node.kind)
                 || phasor::supports(&node.kind)
                 || biquad::supports(&node.kind)
+            || compexp::supports(&node.kind)
                 || matches!(
                     node.kind.as_str(),
                     "GainMatrix" | "Gain" | "OnePole" | "TrackDelay"
@@ -1211,6 +1247,7 @@ impl<'a> Renderer<'a> {
                 || maximizer::supports(&node.kind) || sparkverb::supports(&node.kind)
                 || phasor::supports(&node.kind)
                 || biquad::supports(&node.kind)
+            || compexp::supports(&node.kind)
                 || matches!(node.kind.as_str(), "GainMatrix" | "Gain" | "OnePole" | "TrackDelay"))
                 .then_some(id)
         }).collect();
@@ -1731,6 +1768,7 @@ impl<'a> Renderer<'a> {
                             | Processor::Spark(_)
                             | Processor::Phasor(_)
                             | Processor::Biquad(_)
+                            | Processor::CompExp(_)
                     ) {
                         continue;
                     }
@@ -2442,6 +2480,9 @@ impl<'a> Renderer<'a> {
                 }
                 if biquad::supports(kind) {
                     biquad::validate_static_write(&self.parameters[*node], parameter, value)?;
+                }
+                if compexp::supports(kind) {
+                    compexp::validate_static_write(&self.parameters[*node], parameter, value)?;
                 }
                 let mut bytes = self.processor_bytes();
                 if let Some(p) = self.processors.get_mut(node) {
@@ -3321,6 +3362,115 @@ mod tests {
             )
             .is_empty()
         );
+    }
+    #[test]
+    fn compexp_static_controls_reject_before_clock_or_prepared_parameters_change() {
+        let p = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup></Keygroups><Inserts><CompExp CompThreshold="-25"/></Inserts></Layer></Layers></Program>"#).unwrap();
+        let id = p.nodes.iter().position(|n| n.kind == "CompExp").unwrap();
+        let edit = |frame, value| host::Command {
+            frame,
+            action: host::Action::Parameter {
+                node: id,
+                parameter: "CompThreshold".into(),
+                value: ParameterValue::Number(value),
+            },
+        };
+        for active in [false, true] {
+            let mut renderer = Renderer::new(
+                &p,
+                HashMap::from([("a".into(), Arc::new(sample(1)))]),
+                48000,
+            )
+            .unwrap();
+            if active {
+                renderer
+                    .render(
+                        &[script::Command {
+                            frame: 0,
+                            action: script::Action::Start(note(1)),
+                        }],
+                        &[],
+                        1,
+                    )
+                    .unwrap();
+            }
+            let frame = renderer.current_frame();
+            let parameters = renderer.parameters.clone();
+            assert!(renderer.render(&[], &[edit(frame, -20.)], 1).is_err());
+            assert_eq!(renderer.current_frame(), frame);
+            assert_eq!(renderer.parameters, parameters);
+            renderer.render(&[], &[edit(frame, -25.)], 1).unwrap();
+        }
+        assert!(
+            !preflight(
+                &parse_program("<Program><Inserts><CompExp Bypass='1'/></Inserts></Program>")
+                    .unwrap()
+            )
+            .is_empty()
+        );
+    }
+    #[test]
+    fn compexp_keygroup_lifetime_is_gated_and_shared_renderer_tail_continues() {
+        let root = script::HostRoot {
+            epoch: 7,
+            generation: 9,
+            token: 1,
+        };
+        for shared in [false, true] {
+            let delay = r#"<Inserts><CompExp Mix="0"/></Inserts>"#;
+            let program=parse_program(&format!(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" NoteTracking="0"/></Oscillators>{}</Keygroup></Keygroups>{}</Layer></Layers></Program>"#,
+                if shared{""}else{delay},if shared{delay}else{""})).unwrap();
+            if !shared {
+                assert!(preflight(&program).iter().any(|b| b.kind == "CompExp" && b.reason.contains("voice-tail")));
+                assert!(Renderer::new(&program, HashMap::new(), 48000).is_err());
+                continue;
+            }
+            // This checks the existing shared Renderer routing, not native host
+            // voice lifetime. The leaf's delayed audio path is measured separately.
+            let mut renderer = Renderer::new(
+                &program,
+                HashMap::from([("a".into(), Arc::new(sample(1)))]),
+                48000,
+            )
+            .unwrap();
+            renderer
+                .render_with_roots(
+                    &[script::Command {
+                        frame: 0,
+                        action: script::Action::Start(note(7)),
+                    }],
+                    &[Some(root)],
+                    &[],
+                    8,
+                )
+                .unwrap();
+            let silent = renderer
+                .render_with_roots(
+                    &[script::Command {
+                        frame: 8,
+                        action: script::Action::ChokeRoot,
+                    }],
+                    &[Some(root)],
+                    &[],
+                    8,
+                )
+                .unwrap();
+            assert!(silent.iter().all(|frame| *frame == [0., 0.]));
+            assert!(renderer.sounding_roots().is_empty());
+            let tail = renderer.render_with_roots(&[], &[], &[], 64).unwrap();
+            assert_eq!(tail.iter().any(|frame| frame[0].abs() > 0.), shared);
+        }
+    }
+    #[test]
+    fn compexp_connected_controls_fail_immutable_preflight() {
+        let p=parse_program(r#"<Program><ControlSignalSources><ConstantModulation Name="M" Value="0"/></ControlSignalSources><Inserts><CompExp><Connections><SignalConnection Source="$Program/M" Destination="Mix" Ratio="1"/></Connections></CompExp></Inserts></Program>"#).unwrap();
+        let blocked = preflight(&p);
+        assert!(
+            blocked
+                .iter()
+                .any(|b| b.kind == "CompExp" && b.reason.contains("connected control"))
+        );
+        assert!(Renderer::new(&p, HashMap::new(), 48000).is_err());
     }
     #[test]
     fn unimplemented_sources_are_reported_once_at_the_source_node() {
