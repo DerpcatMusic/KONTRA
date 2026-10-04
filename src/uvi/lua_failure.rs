@@ -46,12 +46,58 @@ impl std::fmt::Display for Failure {
     }
 }
 impl std::error::Error for Failure {}
+// Lua 5.1 llex.c::inclinenumber consumes one CR/LF and then an immediately
+// opposite byte. Same-byte runs and triples therefore remain separate lines.
+fn source_lines(source: &str) -> impl Iterator<Item = &str> {
+    let mut remaining = Some(source);
+    std::iter::from_fn(move || {
+        let source = remaining.take()?;
+        if let Some(at) = source.find(['\r', '\n']) {
+            let newline = source.as_bytes()[at];
+            let mut tail = &source[at + 1..];
+            if tail.as_bytes().first().is_some_and(|&next| {
+                matches!(next, b'\r' | b'\n') && next != newline
+            }) {
+                tail = &tail[1..];
+            }
+            remaining = Some(tail);
+            Some(&source[..at])
+        } else {
+            Some(source)
+        }
+    })
+}
+
 fn excerpt(source: &str, line: u32) -> Option<serde_json::Value> {
-    let mut excerpt = crate::diagnostics::script_excerpt(source, 1, line, None)?;
-    excerpt.as_object_mut()?.remove("script_slot");
-    excerpt["origin"] = serde_json::json!("already loaded local UVI Lua source");
-    excerpt["source_kind"] = serde_json::json!("lua");
-    Some(excerpt)
+    if line == 0 { return None; }
+    use std::fmt::Write;
+    let first_line = line.saturating_sub(2).max(1);
+    let mut last_line = 0;
+    let mut truncated = false;
+    let mut text = String::new();
+    for (index, source_line) in source_lines(source).enumerate() {
+        let at = index as u32 + 1;
+        if at > line.saturating_add(2) { break; }
+        if at < first_line { continue; }
+        let mut rendered = String::new();
+        let mut clipped = false;
+        for ch in source_line.chars() {
+            if rendered.len() + ch.len_utf8() > 512 {
+                clipped = true;
+                break;
+            }
+            rendered.push(if ch.is_control() && ch != '\t' { '?' } else { ch });
+        }
+        truncated |= clipped;
+        let _ = writeln!(text, "{} {at:>6} | {rendered}{}",
+            if at == line { ">" } else { " " }, if clipped { "…" } else { "" });
+        last_line = at;
+    }
+    (last_line >= line).then(|| serde_json::json!({
+        "origin":"already loaded local UVI Lua source", "source_kind":"lua",
+        "line":line,"column":null,"first_line":first_line,"last_line":last_line,
+        "truncated":truncated,"text":text
+    }))
 }
 /// Preserve the known initialization entry without guessing its failing frame.
 /// Nested module failures may originate elsewhere; no source line is assigned.
@@ -277,6 +323,80 @@ pub(crate) fn from_error(error: &anyhow::Error, program: &Program) -> Option<Con
 mod tests {
     use super::*;
     use crate::uvi::script::{Input, InputKind, Session};
+    #[test]
+    fn lua_logical_newlines_preserve_pairs_runs_and_empty_lines() {
+        for newline in ["\n", "\r", "\r\n", "\n\r"] {
+            assert_eq!(source_lines(&format!("one{newline}two{newline}")).collect::<Vec<_>>(),
+                ["one", "two", ""]);
+        }
+        for source in ["one\r\rtwo", "one\n\ntwo", "one\r\n\rtwo", "one\n\r\ntwo"] {
+            assert_eq!(source_lines(source).collect::<Vec<_>>(), ["one", "", "two"]);
+        }
+        assert_eq!(source_lines("").collect::<Vec<_>>(), [""]);
+        assert_eq!(source_lines("界\r\n\n\rfin\r\r").collect::<Vec<_>>(), ["界", "", "fin", "", ""]);
+        assert!(excerpt("one\r\ntwo", 0).is_none());
+        assert!(excerpt("one\r\ntwo", 3).is_none());
+        assert_eq!(excerpt("one\r\ntwo\r\n", 3).unwrap()["line"], 3);
+        // The shared KSP helper retains its original LF-only interpretation.
+        assert_eq!(crate::diagnostics::script_excerpt("one\rtwo", 1, 1, None).unwrap()["last_line"], 1);
+        assert_eq!(excerpt("one\rtwo", 2).unwrap()["last_line"], 2);
+    }
+
+    #[test]
+    fn lua_excerpt_keeps_bounded_utf8_lines_and_sanitizes_controls() {
+        for newline in ["\n", "\r", "\r\n", "\n\r"] {
+            let long_line = format!("-- {}", "界".repeat(1000));
+            let lines = ["-- first", "-- before", "error('failed')", "-- \tcontrol\u{1b}",
+                long_line.as_str(), "-- excluded sixth"];
+            let value = excerpt(&lines.join(newline), 3).unwrap();
+            assert_eq!((value["first_line"].as_u64(), value["last_line"].as_u64()), (Some(1), Some(5)));
+            assert_eq!(value["truncated"], true);
+            let text = value["text"].as_str().unwrap();
+            assert_eq!(text.lines().count(), 5);
+            assert!(text.len() < 3000 && text.contains(">      3 | error('failed')"));
+            assert!(text.contains("\tcontrol?") && !text.contains("excluded sixth"));
+            assert!(!text.contains('\r') && !text.contains('\u{1b}'));
+            assert!(value.get("script_slot").is_none());
+            assert_eq!(value["text"], crate::diagnostics::script_excerpt(&lines.join("\n"), 1, 3, None).unwrap()["text"]);
+        }
+    }
+
+    #[test]
+    fn logical_newlines_use_exact_loaded_processor_and_module_source() {
+        for newline in ["\n", "\r", "\r\n", "\n\r"] {
+            for module in [false, true] {
+                let mut program=crate::uvi::program::parse_program("<Program><EventProcessors><ScriptProcessor><script/></ScriptProcessor></EventProcessors><Layers><Layer/></Layers></Program>").unwrap();
+                let marker = "-- source-only-logical-newline-marker";
+                let source = if module {
+                    [marker, "local module={}", "function module.fail() error('owned newline failure') end", "return module"].join(newline)
+                } else {
+                    [marker, "function onNote(e)", " error('owned newline failure')", "end"].join(newline)
+                };
+                // Set authored loaded bytes after XML parsing: XML newline
+                // normalization must not hide the Lua-local line rule under test.
+                program.nodes.iter_mut().find(|node| node.kind == "script").unwrap().text = if module {
+                    "local module=require('_Folder/Newline')\nfunction onNote(e) module.fail() end".into()
+                } else { source.clone() };
+                let modules = if module {
+                    BTreeMap::from([("Scripts._Folder.Newline".into(), source.into_bytes())])
+                } else { BTreeMap::new() };
+                let mut session = Session::new_program_chain(&program, modules, None, 48000).unwrap();
+                let error = session.process(&[Input { frame:256, kind:InputKind::NoteOn {
+                    channel:0, note:60, velocity:100,
+                }}],512).unwrap_err();
+                let context = from_error(&error,&program).unwrap();
+                assert_eq!((context.processor,context.frame,context.line),(Some(2),256,Some(3)));
+                assert_eq!(context.provenance,"structured_coroutine_frame");
+                assert_eq!(context.chunk,if module {"embedded module _Folder/Newline"} else {"UVI ScriptProcessor node 2"});
+                let text = context.excerpt.as_ref().unwrap()["text"].as_str().unwrap();
+                assert!(text.contains(">      3 |") && text.contains("error('owned newline failure')"));
+                assert!(text.contains(marker) && !text.contains('\r'));
+                assert!(!context.metadata().to_string().contains(marker));
+                assert!(!format!("{context:?}").contains(marker));
+            }
+        }
+    }
+
     fn fault(
         source: &str,
         modules: BTreeMap<String, Vec<u8>>,
