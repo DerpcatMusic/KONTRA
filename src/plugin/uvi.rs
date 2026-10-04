@@ -808,12 +808,17 @@ impl Slot {
         }
         self.send(HostedInput::Event(input))
     }
+    #[cfg(test)]
     pub(crate) fn push_ui(&mut self, edit: UiEdit) -> Result<(), Error> {
+        self.push_ui_tracked(edit, 0)
+    }
+    pub(crate) fn push_ui_tracked(&mut self, edit: UiEdit, sequence: u64) -> Result<(), Error> {
         if let Some(error) = self.error {
             return Err(error);
         }
         self.bridge
             .push_ui(UiInput {
+                sequence,
                 frame: self.frame,
                 edit,
             })

@@ -594,6 +594,7 @@ fn completion_authoritative_unknown_off_aborts_worker_without_executing_valid_pr
             stamp(0),
             &[note(0)],
             &[UiInput {
+                sequence: 0,
                 frame: 0,
                 edit: super::super::host::UiEdit {
                     processor,
@@ -798,6 +799,7 @@ fn completion_real_start_hosted_merges_ui_rooted_and_ordinary_inputs_once() {
             },
         ],
         &[UiInput {
+            sequence: 0,
             frame: 0,
             edit: UiEdit {
                 processor,

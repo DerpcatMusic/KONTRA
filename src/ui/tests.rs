@@ -3209,7 +3209,7 @@ fn authored_native_owned_pcm_voice_metrics_capture() {
     let atoms = p.shared.part(0).unwrap();
     atoms.uvi_generation.store(77, Ordering::Release);
     let stamp = Stamp { epoch: p.shared.uvi_activation_epoch(), generation: 77, frame: 256 };
-    let published = Arc::new(crate::plugin::uvi_ui::Published { stamp,
+    let published = Arc::new(crate::plugin::uvi_ui::Published { stamp, snapshot_boundaries: Arc::new(std::collections::HashMap::from([(processor, (stamp.frame, 0))])),
         snapshots: Arc::new(vec![session.ui_snapshot(processor).unwrap()]),
         key_colours: Arc::default(), pictures: Arc::default(), fonts: Arc::default() });
     let activity = WorkerLoadActivity { stamp, mapping: None, status: Status::Ready,
@@ -3328,7 +3328,7 @@ fn authored_native_full_editor_capture_and_terminal_failure() {
         let count = view.parts.len().max(1);
         view.parts.resize_with(count, PartView::default);
         let published = Arc::new(crate::plugin::uvi_ui::Published {
-            stamp, snapshots: Arc::new(vec![snapshot]), key_colours: Arc::default(), pictures: Arc::default(), fonts: Arc::default(),
+            stamp, snapshot_boundaries: Arc::new(std::collections::HashMap::from([(snapshot.processor, (stamp.frame, 0))])), snapshots: Arc::new(vec![snapshot]), key_colours: Arc::default(), pictures: Arc::default(), fonts: Arc::default(),
         });
         view.parts[0] = PartView::authored_uvi(source.clone(), published);
     }
@@ -3361,6 +3361,17 @@ fn authored_native_full_editor_capture_and_terminal_failure() {
     }
     assert_eq!(label(&h, "name-0"), "Authored UVI Controls");
     assert!(shows(&h, &native_id(2)) && shows(&h, &native_id(5)) && shows(&h, &native_id(9)));
+    // A current owned UVI performance panel shares the existing mode menu.
+    // Mode changes must invalidate the stage memo without a new snapshot.
+    assert!(shows(&h, "view-0"));
+    h.press("view-0");
+    h.press("menu-item-1");
+    assert_eq!(p.selection.read().unwrap().parts[0].view, 3);
+    assert_eq!(label(&h, "uvi-stage-0"), "Vectorized instrument controls");
+    h.press("view-0");
+    h.press("menu-item-0");
+    assert_eq!(p.selection.read().unwrap().parts[0].view, 1);
+    assert_eq!(label(&h, "uvi-stage-0"), "Instrument controls");
     assert!(
         !shows(&h, "tune-0"),
         "unsupported rack tuning has no editable target"
@@ -3444,6 +3455,7 @@ fn authored_native_full_editor_capture_and_terminal_failure() {
     p.selection.write().unwrap().parts[0].uvi.as_mut().unwrap().bank = "/another/source.ufs".into();
     h.idle(3);
     assert!(!shows(&h,"uvi-stage-0"),"the retained panel never crosses a source change");
+    assert!(!shows(&h,"view-0"),"a retained panel from another source offers no mode selector");
 }
 
 
@@ -3469,7 +3481,7 @@ fn authored_native_keyboard_ranges_are_owned_truthful_and_never_block_notes() {
         let groups = ranges.iter().map(|(low, high)| format!(r#"<Keygroup LowKey="{low}" HighKey="{high}"><Oscillators><SamplePlayer SamplePath="authored.wav" BaseNote="60"/></Oscillators></Keygroup>"#)).collect::<String>();
         let program = parse_program(&format!("<Program><EventProcessors><ScriptProcessor><script>function onNote(e) playNote(40, e.velocity) end</script></ScriptProcessor></EventProcessors><Layers><Layer><Keygroups>{groups}</Keygroups></Layer></Layers></Program>")).unwrap();
         let mapping = Arc::new(Inspection::parsed(stamp, &program, Arc::new(serde_json::json!({"nodes":[],"preflight_admitted":true}))));
-        let published = Arc::new(Published { stamp, snapshots: Arc::default(),
+        let published = Arc::new(Published { stamp, snapshot_boundaries: Arc::default(), snapshots: Arc::default(),
             key_colours: Arc::new(KeyColours { colours, conflicts: 0 }), pictures: Arc::default(), fonts: Arc::default() });
         let mut view = PartView::authored_uvi(source, published);
         view.loading = status == Status::Starting;
@@ -3552,7 +3564,7 @@ fn authored_three_native_part_strips_keep_sample_extents_when_every_sample_key_i
         let program = parse_program(&format!(r#"<Program><Layers><Layer><Keygroups><Keygroup LowKey="{low}" HighKey="{high}"><Oscillators><SamplePlayer SamplePath="authored.wav"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#)).unwrap();
         let mapping = Arc::new(Inspection::parsed(stamp, &program, Arc::new(serde_json::json!({"nodes":[]}))));
         let colours = (low..=high).map(|note| (note, "red".into())).chain([(1, "blue".into())]).collect();
-        let published = Arc::new(Published { stamp, snapshots: Arc::default(), key_colours: Arc::new(KeyColours { colours, conflicts: 0 }),
+        let published = Arc::new(Published { stamp, snapshot_boundaries: Arc::default(), snapshots: Arc::default(), key_colours: Arc::new(KeyColours { colours, conflicts: 0 }),
             pictures: Arc::default(), fonts: Arc::default() });
         let mut view = PartView::authored_uvi(source, published);
         view.uvi_activity = Some(Arc::new(WorkerLoadActivity { stamp, owned_pcm_bytes: None, mapping: Some(mapping),

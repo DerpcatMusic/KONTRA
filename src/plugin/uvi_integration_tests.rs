@@ -317,18 +317,18 @@ fn restored_native_rack_adopts_after_delay_ack_and_renders_keyboard_gain_pan_and
 
     let (stamp, change) = edit(&params, 0, 0.);
     assert!(
-        !params.shared.edit_uvi(1, stamp, change),
+        params.shared.edit_uvi(1, stamp, change).is_none(),
         "same widget in another slot must reject this generation"
     );
-    assert!(!params.shared.edit_uvi(
+    assert!(params.shared.edit_uvi(
         0,
         Stamp {
             generation: stamp.generation + 1,
             ..stamp
         },
         change
-    ));
-    assert!(params.shared.edit_uvi(0, stamp, change));
+    ).is_none());
+    let change_sequence = params.shared.edit_uvi(0, stamp, change).unwrap();
     let muted = render(&mut dsp, &params, latency + 1024);
     assert!(
         muted[muted.len() - 512..]
@@ -343,7 +343,7 @@ fn restored_native_rack_adopts_after_delay_ack_and_renders_keyboard_gain_pan_and
             .as_ref()
             .is_some_and(|ui| {
                 ui.snapshots
-                    .iter()
+                    .iter().filter(|snapshot| ui.snapshot_sequence(snapshot.processor).is_some_and(|sequence| sequence >= change_sequence))
                     .flat_map(|snapshot| &snapshot.widgets)
                     .any(|widget| {
                         widget.name == "authored_level" && widget.value == Some(UiValue::Number(0.))
@@ -358,7 +358,7 @@ fn restored_native_rack_adopts_after_delay_ack_and_renders_keyboard_gain_pan_and
         std::thread::sleep(Duration::from_millis(1));
     }
     let (stamp, restore) = edit(&params, 0, 1.);
-    assert!(params.shared.edit_uvi(0, stamp, restore));
+    assert!(params.shared.edit_uvi(0, stamp, restore).is_some());
     assert!(
         render(&mut dsp, &params, latency + 1024)
             .iter()
@@ -397,7 +397,7 @@ fn restored_native_rack_adopts_after_delay_ack_and_renders_keyboard_gain_pan_and
     );
     assert_eq!((next.rate, next.max_host_frames), (44100, BLOCK * 2));
     assert!(params.shared.view.lock().unwrap().parts[0].loading);
-    assert!(!params.shared.edit_uvi(0, stamp, restore));
+    assert!(params.shared.edit_uvi(0, stamp, restore).is_none());
     wait_live(&mut dsp, &params);
     assert!(
         !params
@@ -475,7 +475,7 @@ fn native_rack_save_reopens_authored_controls_and_applied_gain() {
     Sampler::reset(&mut dsp, &params, &AudioConfig::new(48000., BLOCK));
     wait_live(&mut dsp, &params);
     let (stamp, input) = edit(&params, 0, 0.25);
-    assert!(params.shared.edit_uvi(0, stamp, input));
+    assert!(params.shared.edit_uvi(0, stamp, input).is_some());
     render(&mut dsp, &params, 1024);
     let generation = dsp.uvi[0].as_ref().unwrap().generation();
     let mut selection = params.selection.read().unwrap().clone();
@@ -630,4 +630,29 @@ fn unsupported_native_delay_layout_finishes_loading_and_is_memoized() {
         .uvi_delay_installed
         .store(prepared.ticket, Ordering::Release);
     assert_eq!(uvi_delay_ready(&params), Ok(true));
+}
+
+#[test]
+fn gui_admission_receipts_follow_fifo_and_fail_without_consuming_tickets() {
+    let params = SamplerParams::new();
+    params.shared.ensure_parts(1);
+    let part = params.shared.part(0).unwrap();
+    part.uvi_generation.store(11, Ordering::Release);
+    part.uvi_part_generation.store(part.generation.load(Ordering::Acquire), Ordering::Release);
+    let stamp = Stamp { epoch: params.shared.uvi_activation_epoch(), generation: 11, frame: 0 };
+    let edit = UiEdit { processor: 2, widget: 1, value: UiEditValue::Number(0.75), modifiers: UiModifiers::default() };
+    assert!(params.shared.edit_uvi(0, Stamp { generation: 12, ..stamp }, edit).is_none());
+    assert_eq!(params.shared.admitted_uvi_edit_sequence(), 0);
+    for sequence in 1..=256 { assert_eq!(params.shared.edit_uvi(0, stamp, edit), Some(sequence)); }
+    assert!(params.shared.edit_uvi(0, stamp, edit).is_none());
+    assert_eq!(params.shared.admitted_uvi_edit_sequence(), 256);
+    for sequence in 1..=256 {
+        let (_, at, actual, payload) = params.shared.uvi_edits.pop().unwrap();
+        assert_eq!(at, stamp); assert_eq!(actual, sequence); assert!(payload == edit);
+    }
+    assert!(params.shared.uvi_edits.is_empty());
+    *params.shared.uvi_edit_sequence.lock().unwrap() = u64::MAX;
+    assert!(params.shared.edit_uvi(0, stamp, edit).is_none());
+    assert_eq!(params.shared.admitted_uvi_edit_sequence(), u64::MAX);
+    assert!(params.shared.uvi_edits.is_empty());
 }

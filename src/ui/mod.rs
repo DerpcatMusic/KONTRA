@@ -1066,10 +1066,12 @@ fn build(
         let native_menus: Vec<El> = (0..cx.selection.parts.len()).filter_map(|slot| {
             let (published, current) = instrument::native_panel(&cx, slot)?;
             let snapshot = published.snapshots.iter().rev().find(|s| s.root.performance_view)?;
+            let captured = published.snapshot_stamp(snapshot.processor)?;
             let interactive = !instrument::failed(&cx, slot);
             let state = cx.state.uvi.get_mut(&slot)?;
             state.set_interactive(interactive);
-            uvi_instrument::popup(ui, state, slot, current, published.stamp, snapshot, window,
+            uvi_instrument::popup(ui, state, slot, current, captured,
+                (cx.p.shared.admitted_uvi_edit_sequence(), published.snapshot_sequence(snapshot.processor)?), snapshot, window,
                 |stamp, edit| cx.p.shared.edit_uvi(slot, stamp, edit))
         }).collect();
         let ghost = ghost(ui, &cx);

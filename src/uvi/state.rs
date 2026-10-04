@@ -778,6 +778,7 @@ mod tests {
                 worker::{HostedRequest, Request},
             };
             let ui = edit.then(|| UiInput {
+                sequence: 0,
                 frame: 0,
                 edit: UiEdit {
                     processor: worker.ui_processors()[0],

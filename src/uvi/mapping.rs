@@ -3,6 +3,19 @@
 use super::{program::{NodeId, Program, SampleZone}, sample::Sample, worker::Stamp};
 use std::{collections::{BTreeMap, HashMap}, sync::Arc};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SampleDimensions {
+    pub rate: u32,
+    pub channels: usize,
+    pub frames: usize,
+}
+
+impl SampleDimensions {
+    pub fn duration(&self) -> Option<f64> {
+        (self.rate > 0).then(|| self.frames as f64 / f64::from(self.rate))
+    }
+}
+
 #[derive(Debug)]
 pub struct Inspection {
     pub stamp: Stamp,
@@ -20,7 +33,7 @@ pub struct Inspection {
     pub rejections: Arc<Vec<(NodeId, usize)>>,
     /// None before the initial resource decode finishes. Channels are actual
     /// decoded dimensions; an absent path is unknown, never assumed stereo.
-    pub channels: Option<Arc<HashMap<String, usize>>>,
+    pub samples: Option<Arc<HashMap<String, SampleDimensions>>>,
 }
 
 impl Inspection {
@@ -36,7 +49,7 @@ impl Inspection {
         let rejections = report["nodes"].as_array().into_iter().flatten().enumerate().flat_map(|(node, entry)|
             (0..entry["preflight_rejections"].as_array().map_or(0, Vec::len)).map(move |reason| (node, reason))).collect();
         Self { stamp, zones: Arc::new(program.sample_zones.clone()), layers: Arc::new(layers), layer_order, sample_keys, has_scripts, report,
-            rejections: Arc::new(rejections), channels: None }
+            rejections: Arc::new(rejections), samples: None }
     }
 
     pub fn key_span(&self) -> Option<(u8, u8)> {
@@ -45,11 +58,13 @@ impl Inspection {
     }
 
     pub(crate) fn decoded(&self, samples: &HashMap<String, Arc<Sample>>) -> Self {
-        let channels = samples.iter().map(|(path, sample)| (path.clone(), sample.channels)).collect();
+        let dimensions = samples.iter().map(|(path, sample)| (path.clone(), SampleDimensions {
+            rate: sample.rate, channels: sample.channels, frames: sample.frames,
+        })).collect();
         Self { stamp: self.stamp, zones: self.zones.clone(), layers: self.layers.clone(), layer_order: self.layer_order.clone(), report: self.report.clone(),
             sample_keys: self.sample_keys, has_scripts: self.has_scripts,
             rejections: self.rejections.clone(),
-            channels: Some(Arc::new(channels)) }
+            samples: Some(Arc::new(dimensions)) }
     }
 }
 
@@ -64,7 +79,7 @@ mod tests {
         let zone = &parsed.zones[0];
         assert_eq!((zone.low_key, zone.high_key, zone.low_velocity, zone.high_velocity, zone.root_note), (48, 72, 20, 100, 65));
         assert_eq!(zone.sample_path, "../Samples/reed.wav");
-        assert!(parsed.channels.is_none());
+        assert!(parsed.samples.is_none());
         assert_eq!(parsed.key_span(), Some((48, 72)));
         assert!(parsed.sample_keys[48..=72].iter().all(|&key| key));
         assert!(!parsed.sample_keys[47] && !parsed.sample_keys[73]);
@@ -76,7 +91,7 @@ mod tests {
         assert!(Arc::ptr_eq(&report, &decoded.report));
         assert_eq!(parsed.sample_keys, decoded.sample_keys);
         assert_eq!(parsed.has_scripts, decoded.has_scripts);
-        assert_eq!(decoded.channels.as_ref().unwrap().get(&zone.sample_path), None);
+        assert_eq!(decoded.samples.as_ref().unwrap().get(&zone.sample_path), None);
     }
 
     #[test]
@@ -95,5 +110,22 @@ mod tests {
         let decoded = parsed.decoded(&HashMap::new());
         assert_eq!(decoded.sample_keys, parsed.sample_keys);
         assert!(decoded.has_scripts);
+    }
+
+    #[test]
+    fn decoded_dimensions_publish_exact_scalar_metadata_without_pcm_or_unity_root_inference() {
+        let program = super::super::program::parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="owned.wav" BaseNote="65"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let parsed = Inspection::parsed(Stamp { epoch: 2, generation: 3, frame: 0 }, &program, Arc::new(serde_json::json!({"nodes":[]})));
+        let sample = Arc::new(Sample { rate: 48000, channels: 2, frames: 480,
+            interleaved: super::super::storage::Storage::from_f32(vec![0.; 960]).unwrap(), loops: Vec::new(), unity_note: Some(72),
+            wavetable_cycle_frames: None, wavetable_image: false, riff_metadata: Vec::new() });
+        let decoded = parsed.decoded(&HashMap::from([("owned.wav".into(), sample.clone())]));
+        let dimensions = decoded.samples.as_ref().unwrap()["owned.wav"];
+        assert_eq!(dimensions, SampleDimensions { rate: 48000, channels: 2, frames: 480 });
+        assert_eq!(dimensions.duration(), Some(0.01));
+        assert_eq!(decoded.zones[0].root_note, 65, "RIFF unity metadata never overwrites the zone's authored root");
+        assert_eq!(Arc::strong_count(&sample), 1, "inspection never retains decoded PCM owners");
+        assert!(Arc::ptr_eq(&parsed.zones, &decoded.zones));
+        assert_eq!(SampleDimensions { rate: 0, channels: 2, frames: 480 }.duration(), None);
     }
 }

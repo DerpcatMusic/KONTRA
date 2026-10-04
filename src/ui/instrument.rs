@@ -265,6 +265,7 @@ pub fn stage_deps(ui: &Ui, cx: &Cx, slot: usize) -> u64 {
     slot.hash(&mut h);
     if let Some(source) = cx.selection.parts.get(slot).and_then(|p| p.uvi.as_ref()) {
         source.hash(&mut h);
+        perf_view::shows(cx, slot).hash(&mut h);
         #[cfg(feature = "uvi")]
         {
             at(v.uvi_ui.as_ref().map(|s| Arc::as_ptr(s).cast())).hash(&mut h);
@@ -298,12 +299,15 @@ pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         let status = native_wait(v.loading, &v.status);
         #[cfg(feature = "uvi")]
         if let Some((published, current)) = native_panel(cx, slot) {
-            if let Some(snapshot) = published.snapshots.iter().rev().find(|s| s.root.performance_view) {
+            if let Some((snapshot, captured, applied_sequence)) = published.snapshots.iter().rev().find(|s| s.root.performance_view)
+                .and_then(|snapshot| Some((snapshot, published.snapshot_stamp(snapshot.processor)?, published.snapshot_sequence(snapshot.processor)?))) {
+                let mode = perf_view::shows(cx, slot);
                 let shared = &cx.p.shared;
                 let state = cx.state.uvi.entry(slot).or_default();
                 state.set_interactive(!native_problem(&v.status));
                 return super::uvi_instrument::view(ui, state, slot,
-                    current, published.stamp, snapshot, &published.pictures, &published.fonts,
+                    current, captured, (shared.admitted_uvi_edit_sequence(), applied_sequence),
+                    snapshot, &published.pictures, &published.fonts, mode,
                     |stamp, edit| shared.edit_uvi(slot, stamp, edit));
             }
             return caption("This instrument has no performance controls.").fill(secondary()).pad(INSET);
@@ -466,6 +470,12 @@ pub fn mapping(ui: &mut Ui, cx: &mut Cx) -> El {
 
 /// Shared read-only key × velocity canvas. Each backend owns its range adapter.
 pub(super) fn mapping_grid(zones: Vec<(u8, u8, u8, u8, bool)>, name: &'static str) -> El {
+    mapping_grid_selected(zones, name, None, None)
+}
+
+/// Shared selection/probe paint only. Backend adapters retain zone ownership.
+pub(super) fn mapping_grid_selected(zones: Vec<(u8, u8, u8, u8, bool)>, name: &'static str,
+    selected: Option<usize>, probe: Option<(u8, u8)>) -> El {
     canvas(move |s| {
         let mut draw = Vec::new();
         for n in (0..128).step_by(12) {
@@ -480,7 +490,7 @@ pub(super) fn mapping_grid(zones: Vec<(u8, u8, u8, u8, bool)>, name: &'static st
                 Role::Ink.alpha(0.06),
             ));
         }
-        for &(lo, hi, lv, hv, available) in &zones {
+        for (index, &(lo, hi, lv, hv, available)) in zones.iter().enumerate() {
             let x = f64::from(lo) / 128. * s.width;
             let y = f64::from(127 - hv) / 128. * s.height;
             let w = f64::from(hi.saturating_sub(lo) + 1) / 128. * s.width;
@@ -490,10 +500,17 @@ pub(super) fn mapping_grid(zones: Vec<(u8, u8, u8, u8, bool)>, name: &'static st
             } else {
                 Role::Danger.alpha(0.25)
             };
-            draw.push(Draw::fill(
-                rect(x, y, (w - 1.).max(1.), (h - 1.).max(1.)),
-                fill,
-            ));
+            let area = rect(x, y, (w - 1.).max(1.), (h - 1.).max(1.));
+            draw.push(Draw::fill(area.clone(), fill));
+            if selected == Some(index) {
+                draw.push(Draw::stroke(area, Role::Primary, 2.));
+            }
+        }
+        if let Some((note, velocity)) = probe {
+            let x = (f64::from(note) + 0.5) / 128. * s.width;
+            let y = (127.5 - f64::from(velocity)) / 128. * s.height;
+            draw.push(Draw::fill(rect(x, 0., 1., s.height), Role::Primary.alpha(0.5)));
+            draw.push(Draw::fill(rect(0., y, s.width, 1.), Role::Primary.alpha(0.5)));
         }
         draw
     })
@@ -504,6 +521,36 @@ pub(super) fn mapping_grid(zones: Vec<(u8, u8, u8, u8, bool)>, name: &'static st
     .clip()
     .named(name)
 
+}
+
+
+/// A clicked point on a key × velocity canvas. No MIDI or editing authority.
+pub(super) fn mapping_point(ui: &Ui, id: &str) -> Option<(u8, u8)> {
+    let response = ui.get(id);
+    if !response.pressed || response.button != Some(Button::Primary) { return None; }
+    let at = ui.local(id)?;
+    let size = ui.scene()?.surface(id)?.frame.size;
+    mapping_coordinates(at, size)
+}
+
+fn mapping_coordinates(at: Point, size: Size) -> Option<(u8, u8)> {
+    if size.width <= 0. || size.height <= 0. || !(0. ..size.width).contains(&at.x)
+        || !(0. ..size.height).contains(&at.y) { return None; }
+    Some(((at.x / size.width * 128.).floor().clamp(0., 127.) as u8,
+        127 - (at.y / size.height * 128.).floor().clamp(0., 127.) as u8))
+}
+
+#[cfg(test)]
+#[test]
+fn mapping_coordinates_preserve_all_inclusive_midi_edges() {
+    let size = Size::new(128., 128.);
+    assert_eq!(mapping_coordinates(Point::new(0., 0.), size), Some((0, 127)));
+    assert_eq!(mapping_coordinates(Point::new(127.99, 127.99), size), Some((127, 0)));
+    assert_eq!(mapping_coordinates(Point::new(60.5, 27.5), size), Some((60, 100)));
+    assert_eq!(mapping_coordinates(Point::new(128., 0.), size), None);
+    assert_eq!(mapping_coordinates(Point::new(0., 128.), size), None);
+    assert_eq!(mapping_coordinates(Point::new(-1., 0.), size), None);
+    assert_eq!(mapping_coordinates(Point::new(0., 0.), Size::new(0., 128.)), None);
 }
 
 #[cfg(feature = "uvi")]

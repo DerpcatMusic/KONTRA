@@ -31,6 +31,9 @@ fn elapsed_ns(started: Instant) -> u64 {
 /// Owned, fixed-size widget edit on the same absolute clock as MIDI inputs.
 #[derive(Clone, Copy)]
 pub struct UiInput {
+    /// GUI admission ticket; zero means an unassociated native/offline edit.
+    /// This scalar never changes callback order or the absolute execution frame.
+    pub sequence: u64,
     pub frame: u64,
     pub edit: super::host::UiEdit,
 }

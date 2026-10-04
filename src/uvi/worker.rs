@@ -113,6 +113,7 @@ impl Request {
             }; MAX_INPUTS],
             ui_count: ui_inputs.len() as u16,
             ui_inputs: [UiInput {
+                sequence: 0,
                 frame: 0,
                 edit: super::host::UiEdit {
                     processor: 0,
@@ -160,6 +161,7 @@ impl Request {
         {
             return Err(PacketError::InvalidInput);
         }
+        checked_ui_sequence(0, ui_inputs)?;
         Ok(())
     }
 }
@@ -286,6 +288,8 @@ pub struct UiSnapshotReply {
     /// Activation identity and the exclusive playback boundary at capture time.
     pub stamp: Stamp,
     pub processor: NodeId,
+    /// GUI edits dispatched/rejected before THIS snapshot; not yielded-task completion.
+    pub applied_ui_sequence: u64,
     pub snapshot: std::result::Result<UiSnapshot, UiSnapshotError>,
 }
 
@@ -1449,7 +1453,18 @@ fn nanos(duration: Duration) -> u64 {
     duration.as_nanos().min(u128::from(u64::MAX)) as u64
 }
 
-fn capture_ui(player: &Player<'_>, shared: &Shared) {
+/// Validate receipt order before the packet mutates the Lua clock/state.
+fn checked_ui_sequence(previous: u64, inputs: &[UiInput]) -> std::result::Result<u64, PacketError> {
+    let mut sequence = previous;
+    for input in inputs {
+        if input.sequence == 0 { continue; }
+        if input.sequence <= sequence { return Err(PacketError::InvalidInput); }
+        sequence = input.sequence;
+    }
+    Ok(sequence)
+}
+
+fn capture_ui(player: &Player<'_>, shared: &Shared, applied_ui_sequence: u64) {
     if !shared.ui_pending.load(Ordering::Acquire)
         || !shared.ui_pending.swap(false, Ordering::AcqRel)
     {
@@ -1470,6 +1485,7 @@ fn capture_ui(player: &Player<'_>, shared: &Shared) {
             ..shared.stamp
         },
         processor: request.processor,
+        applied_ui_sequence,
         snapshot: player
             .ui_snapshot(request.processor)
             .map_err(|_| UiSnapshotError::Unavailable),
@@ -1966,6 +1982,7 @@ fn thread_cpu_ns() -> Option<u64> {
 fn thread_cpu_ns() -> Option<u64> { None }
 
 fn serve(player: &mut Player<'_>, shared: &Shared, sample_rate: u32) -> Result<()> {
+    let mut applied_ui_sequence = 0;
     let deadline = Duration::from_secs_f64(BLOCK_FRAMES as f64 / f64::from(sample_rate));
     let mut pending_completions = shared
         .hosted
@@ -1978,7 +1995,7 @@ fn serve(player: &mut Player<'_>, shared: &Shared, sample_rate: u32) -> Result<(
         if let Some(pending) = &mut pending_completions {
             transfer_completions(player, shared, pending)?;
         }
-        capture_ui(&player, shared);
+        capture_ui(&player, shared, applied_ui_sequence);
         capture_state(player, shared)?;
         capture_runtime(player, shared);
         phase(shared, "serve", player.current_frame());
@@ -2007,6 +2024,8 @@ fn serve(player: &mut Player<'_>, shared: &Shared, sample_rate: u32) -> Result<(
         // A queued authoritative-lifetime rejection is fatal: return before
         // rendering or advancing this block; finish() aborts the activation.
         request.validate()?;
+        let next_ui_sequence = checked_ui_sequence(applied_ui_sequence,
+            &request.ui_inputs[..usize::from(request.ui_count)])?;
         let started_cpu = thread_cpu_ns();
         let rendered = if let Some(packet) = hosted {
             packet.validate()?;
@@ -2070,6 +2089,10 @@ fn serve(player: &mut Player<'_>, shared: &Shared, sample_rate: u32) -> Result<(
             rendered.audio.len() == BLOCK_FRAMES,
             "UVI worker renderer returned a short packet"
         );
+        // A successful packet includes nonfatal admission rejections. Every
+        // edit_ui initial dispatch has returned; yielded callbacks still follow
+        // the unchanged scheduler. Failed packets retire the activation instead.
+        applied_ui_sequence = next_ui_sequence;
         let mut output = Output {
             stamp: request.stamp,
             audio: [[0.; 2]; BLOCK_FRAMES],
@@ -2103,7 +2126,7 @@ fn serve(player: &mut Player<'_>, shared: &Shared, sample_rate: u32) -> Result<(
             if let Some(pending) = &mut pending_completions {
                 transfer_completions(player, shared, pending)?;
             }
-            capture_ui(&player, shared);
+            capture_ui(&player, shared, applied_ui_sequence);
             capture_state(player, shared)?;
             capture_runtime(player, shared);
             phase(shared, "serve", player.current_frame());
@@ -3477,6 +3500,7 @@ function onSave()error('runtime inspection must not run callbacks')end
 
     fn ui_input(frame: u64, processor: NodeId, value: super::super::host::UiEditValue) -> UiInput {
         UiInput {
+            sequence: 0,
             frame,
             edit: super::super::host::UiEdit {
                 processor,
@@ -3485,6 +3509,55 @@ function onSave()error('runtime inspection must not run callbacks')end
                 modifiers: Default::default(),
             },
         }
+    }
+
+    #[test]
+    fn ui_receipt_order_checks_are_fixed_and_zero_is_unassociated() {
+        let mut a = ui_input(0, 2, super::super::host::UiEditValue::Number(0.5));
+        a.sequence = 4;
+        let mut b = a; b.sequence = 7;
+        let mut unassociated = a; unassociated.sequence = 0;
+        assert_eq!(checked_ui_sequence(3, &[a, unassociated, b]), Ok(7));
+        assert_eq!(checked_ui_sequence(7, &[unassociated]), Ok(7));
+        assert_eq!(checked_ui_sequence(4, &[a]), Err(PacketError::InvalidInput));
+        assert_eq!(checked_ui_sequence(0, &[b, a]), Err(PacketError::InvalidInput));
+        assert_eq!(Request::new_with_ui(stamp(0), &[], &[a, a]).unwrap_err(), PacketError::InvalidInput);
+        assert_eq!(crate::test_support::allocations(|| {
+            assert_eq!(checked_ui_sequence(3, &[a, unassociated, b]), Ok(7));
+        }), 0);
+    }
+
+    #[test]
+    fn exact_ui_snapshot_receipts_include_rejection_and_initial_yield_dispatch() {
+        use super::super::host::{UiEditValue, UiValue};
+        let (config, _) = authored_bank_with_script(
+            "a=Knob('a',0.25,0,1); b=Knob('b',0.25,0,1); b.enabled=false; a.changed=function(self) wait(1000) end");
+        let path = config.bank.clone();
+        let mut worker = Worker::start(config, 7, 11).unwrap();
+        worker.wait_ready(Duration::from_secs(5)).unwrap();
+        let processor = worker.ui_processors()[0];
+        let before_request = worker.request_ui_snapshot(processor).unwrap();
+        let before = receive_ui(&worker, before_request);
+        assert_eq!(before.applied_ui_sequence, 0, "a pre-edit snapshot cannot acknowledge the future packet");
+        let mut accepted = ui_input(0, processor, UiEditValue::Number(0.75));
+        accepted.sequence = 4;
+        let mut rejected = accepted;
+        rejected.sequence = 5;
+        rejected.edit.widget = 2;
+        worker.realtime().try_submit(Request::new_with_ui(stamp(0), &[], &[accepted, rejected]).unwrap()).unwrap();
+        let output = receive(&mut worker, stamp(0));
+        assert_eq!(output.rejected_ui, 0b10);
+        let request = worker.request_ui_snapshot(processor).unwrap();
+        let captured = receive_ui(&worker, request);
+        assert_eq!(captured.applied_ui_sequence, 5, "nonfatal rejected edit also settles its ticket");
+        assert_eq!(captured.stamp, stamp(256));
+        let snapshot = captured.snapshot.unwrap();
+        assert_eq!(snapshot.widgets[0].value, Some(UiValue::Number(0.75)));
+        assert_eq!(snapshot.widgets[1].value, Some(UiValue::Number(0.25)));
+        assert!(worker.stats().script_activity.suspended_tasks > 0,
+            "receipt acknowledges initial dispatch, without completing the yielded callback");
+        worker.stop();
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -3573,6 +3646,7 @@ function onSave()error('runtime inspection must not run callbacks')end
         let edits = [
             ui_input(0, processor, UiEditValue::Number(0.75)),
             UiInput {
+                sequence: 0,
                 frame: 123,
                 edit: super::super::host::UiEdit {
                     widget: 99,
