@@ -40,6 +40,10 @@ volatile frame and statistics fields do not create duplicate children. Exact
 original worker cause when available. These source changes do not rewrite raw
 records or prove that a later worker observation caused the captured endpoint
 fault. Prepared grouping/source-context regressions remain unrun.
+When every child has the same primary cause, grouped details print it once above
+the unique items. Mixed causes remain attached to their respective children.
+Already-labelled Lua location fields are omitted from the display's JSON clone;
+supplementary failures, real excerpts and original records are retained.
 
 The bridge also makes one bounded service retry when its pending ring is full
 at packet sealing. This permits room that became available after the earlier

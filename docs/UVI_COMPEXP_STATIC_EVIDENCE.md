@@ -68,3 +68,9 @@ is unproved. It must not be described as note-off, silence detection or a tail
 policy. The Keygroup gate stays closed pending ownership and timed-release
 evidence. This static review ran no native playback or compilation under the
 CPU restriction.
+
+Further retained disassembly identifies collection insertion and Rack-chain
+attachment paths that supply the descriptor to children. These are graph
+attachment edges, not note-off or voice-retirement evidence. The actual voice
+caller and meaning of the scheduler's descriptor flag remain unresolved; no
+tail duration or drain policy is inferred.
