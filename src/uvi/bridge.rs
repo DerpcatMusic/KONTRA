@@ -303,7 +303,7 @@ impl Bridge {
         Ok(())
     }
 
-    fn service(&mut self, report: &mut ProcessReport) -> Result<(), BridgeError> {
+    fn submit_requests(&mut self, report: &mut ProcessReport) -> Result<(), BridgeError> {
         while let Some(request) = self.requests.front() {
             match self.port.realtime().try_submit_hosted(request) {
                 Ok(()) => {
@@ -315,6 +315,12 @@ impl Bridge {
                 Err(rejected) => return self.fail(BridgeError::Worker(rejected.reason)),
             }
         }
+        Ok(())
+    }
+
+    fn service(&mut self, report: &mut ProcessReport) -> Result<(), BridgeError> {
+        self.submit_requests(report)?;
+        let received_before = self.received_frame;
         while !self.audio.full() && self.received_frame < self.submitted_frame {
             let expected = Stamp {
                 frame: self.received_frame,
@@ -332,6 +338,11 @@ impl Bridge {
                 Ok(None) => break,
                 Err(error) => return self.fail(BridgeError::Worker(error)),
             }
+        }
+        if self.received_frame != received_before {
+            // Draining output can unblock a worker waiting to publish PCM.
+            // Recheck input room once; persistent pressure still aborts at seal.
+            self.submit_requests(report)?;
         }
         Ok(())
     }
