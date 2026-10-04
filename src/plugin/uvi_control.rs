@@ -349,8 +349,13 @@ impl Registry {
     pub fn failure_context(&self, epoch: u64, generation: u64) -> Option<serde_json::Value> {
         let control = self.controls.get(&(epoch, generation))?;
         let failure = control.worker.private_failure().map(|reason| reason.chars().take(4096).collect::<String>());
-        Some(serde_json::json!({"status":control.worker.status(),
-            "failure":failure, "stats":control.worker.stats()}))
+        let stats = serde_json::json!(control.worker.stats());
+        Some(serde_json::json!({"status":control.worker.status(), "failure":failure,
+            "timing":failure_timing(&stats, control.rate), "stats":stats,
+            "configured_pending_packets":control.maximum.div_ceil(crate::uvi::worker::BLOCK_FRAMES)
+                + control.lead + crate::uvi::worker::QUEUE_CAPACITY + 1,
+            "observation":"Concurrent worker counters sampled by the loader after the endpoint fault; they may have advanced before this report.",
+            "callback_counter_scope":"Bridge packet totals cover successful callback reports; the callback that failed may have performed partial work not included in those totals."}))
     }
 
     pub fn status(&self, epoch: u64, generation: u64) -> Option<Status> {
@@ -496,6 +501,23 @@ impl Registry {
         self.controls.is_empty()
     }
 }
+/// These existing counters measure elapsed wall time in the worker's render
+/// call, not thread CPU usage or arrival deadlines. All formatting stays on Load.
+fn failure_timing(stats: &serde_json::Value, rate: u32) -> serde_json::Value {
+    let packets = stats["rendered_blocks"].as_u64().unwrap_or(0);
+    let average = (packets != 0).then(|| stats["render_ns"].as_u64().unwrap_or(0) / packets);
+    let budget = (rate != 0).then(|| crate::uvi::worker::BLOCK_FRAMES as u64 * 1_000_000_000 / u64::from(rate));
+    let maximum = stats["max_render_ns"].as_u64().unwrap_or(0);
+    let ms = |value: Option<u64>| value.map_or_else(|| "unavailable".into(), |ns| format!("{:.2} ms",ns as f64 / 1_000_000.));
+    serde_json::json!({"native_packet_frames":crate::uvi::worker::BLOCK_FRAMES,
+        "packet_budget_ns":budget, "mean_recorded_render_ns_per_completed_packet":average,
+        "summary":format!("Packet render wall time: mean {} · maximum {} · budget {} per {} frames",
+            ms(average),ms(Some(maximum)),ms(budget),crate::uvi::worker::BLOCK_FRAMES),
+        "counter_summary":format!("{} over-budget render attempts · {} blocked submission attempts · {packets} completed packets",
+            stats["render_deadline_misses"].as_u64().unwrap_or(0),stats["backpressure"].as_u64().unwrap_or(0)),
+        "scope":"Approximate cumulative concurrent counters: wall time includes scheduler delays and render validation, but excludes queue waiting and output publication. Failed render durations may be included. CPU time is not measured."})
+}
+
 /// Support exports have a finite context budget. Keep aggregate evidence and
 /// full worker-owned snapshots, while explicitly reporting any omitted rows in
 /// this export copy. Processing, rejection and bypass evidence is retained first.
@@ -598,6 +620,23 @@ mod tests {
             member: config.member.clone(),
         };
         (config, source)
+    }
+
+    #[test]
+    fn failure_timing_distinguishes_packet_budget_from_cpu_and_queue_waiting() {
+        let slow = serde_json::json!({"rendered_blocks":145,"render_ns":928383472,
+            "max_render_ns":50976189,"render_deadline_misses":72,"backpressure":168});
+        let timing = failure_timing(&slow,48000);
+        assert_eq!(timing["packet_budget_ns"],5333333);
+        assert_eq!(timing["mean_recorded_render_ns_per_completed_packet"],6402644);
+        assert!(timing["summary"].as_str().unwrap().contains("mean 6.40 ms"));
+        assert!(timing["counter_summary"].as_str().unwrap().contains("72 over-budget"));
+        assert!(timing["scope"].as_str().unwrap().contains("CPU time is not measured"));
+        assert!(timing["scope"].as_str().unwrap().contains("excludes queue waiting"));
+        let empty = failure_timing(&serde_json::json!({"rendered_blocks":0,"render_ns":500}),0);
+        assert!(empty["packet_budget_ns"].is_null());
+        assert!(empty["mean_recorded_render_ns_per_completed_packet"].is_null());
+        assert!(empty["summary"].as_str().unwrap().contains("unavailable"));
     }
 
     #[test]

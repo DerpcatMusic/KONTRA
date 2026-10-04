@@ -368,6 +368,24 @@ fn terminal(part: &PartView, activation: &Activation) -> bool {
     })
 }
 
+fn capacity_context(worker: Option<&serde_json::Value>) -> String {
+    let Some(worker) = worker else {
+        return "Pending native request queue filled; worker timing context is unavailable.".into();
+    };
+    let configured = worker["configured_pending_packets"].as_u64()
+        .map_or_else(String::new, |count| format!(" ({count} packets configured)"));
+    let status = worker["status"].as_str().unwrap_or("unavailable");
+    let errors = worker["stats"]["errors"].as_u64().map_or_else(|| "unavailable".into(), |count| count.to_string());
+    let timing = &worker["timing"];
+    let mean = timing["mean_recorded_render_ns_per_completed_packet"].as_u64();
+    let budget = timing["packet_budget_ns"].as_u64();
+    let maximum = worker["stats"]["max_render_ns"].as_u64().map_or_else(|| "unavailable".into(),
+        |ns| format!("{:.2} ms", ns as f64 / 1_000_000.));
+    let comparison = mean.zip(budget).map_or_else(|| "Packet render comparison is unavailable.".into(), |(mean,budget)|
+        format!("Recorded render wall time: mean {:.2} ms, maximum {maximum}; packet budget {:.2} ms.",mean as f64 / 1_000_000.,budget as f64 / 1_000_000.));
+    format!("Pending native request queue filled{configured}. Worker observed {status}; {errors} recorded worker errors. {comparison} CPU time and scheduler delays are not distinguished; see Info.")
+}
+
 /// Preserve the first cause before cancelling its controller. A repeated poll
 /// of a failed audio atom must not evict that cause from the session journal.
 fn fail(
@@ -388,6 +406,10 @@ fn fail(
         .and_then(|part| part.uvi_failure(activation.epoch, activation.generation));
     let reason = endpoint.map_or(reason, |fault| format!("{:?} at {} (frame {})",
         fault.error, fault.stage.as_str(), fault.frame));
+    let reason = if endpoint.is_some_and(|fault| matches!(fault.error,
+        uvi::Error::Bridge(crate::uvi::bridge::BridgeError::RequestCapacity))) {
+        format!("{reason}. {}",capacity_context(worker.as_ref()))
+    } else { reason };
     let reason = worker.as_ref().and_then(|report| report["failure"].as_str())
         .unwrap_or(&reason).chars().take(4096).collect::<String>();
     let endpoint = endpoint.map(|fault| {
@@ -740,6 +762,21 @@ pub(super) fn service(params: &SamplerParams) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn full_request_queue_does_not_claim_cpu_overload_from_wall_time() {
+        // Measured LFO v3 still filled the queue with mean wall time below budget.
+        let worker=serde_json::json!({"status":"ready","stats":{"errors":0,"max_render_ns":38688600},
+            "configured_pending_packets":27,"timing":{"mean_recorded_render_ns_per_completed_packet":5122110,
+                "packet_budget_ns":5333333}});
+        let cause=capacity_context(Some(&worker));
+        assert!(cause.contains("27 packets configured"));
+        assert!(cause.contains("Worker observed ready; 0 recorded worker errors"));
+        assert!(cause.contains("5.12 ms") && cause.contains("5.33 ms") && cause.contains("maximum 38.69 ms"));
+        assert!(cause.contains("CPU time and scheduler delays are not distinguished"));
+        assert!(capacity_context(None).contains("unavailable"));
+        assert!(capacity_context(Some(&serde_json::json!({}))).contains("comparison is unavailable"));
+    }
+
     #[test]
     fn rust_fault_excerpt_requires_exact_build_source_and_stays_bounded() {
         use sha2::{Digest, Sha256};
