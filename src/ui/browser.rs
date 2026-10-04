@@ -84,16 +84,18 @@ impl Browse {
 #[derive(Clone, Debug)]
 enum Row {
     Folder { path: String, name: String, depth: usize, count: usize, open: bool },
+    /// Owned catalog folder key, never a filesystem path or load target.
+    UviFolder { path: String, name: String, depth: usize, count: usize, open: bool },
     /// `under` is its folder, shown under its name in a flat list.
     Preset { path: PathBuf, depth: usize, under: String },
-    Uvi { preset: Arc<crate::library::UviPreset>, under: String },
+    Uvi { preset: Arc<crate::library::UviPreset>, depth: usize, under: String },
 }
 
 impl Row {
     /// What the cursor holds when on this row.
     fn key(&self) -> String {
         match self {
-            Row::Folder { path, .. } => path.clone(),
+            Row::Folder { path, .. } | Row::UviFolder { path, .. } => path.clone(),
             Row::Preset { path, .. } => path.to_string_lossy().into_owned(),
             Row::Uvi { preset, .. } => preset.source.cursor_key(),
         }
@@ -101,8 +103,8 @@ impl Row {
 
     fn depth(&self) -> usize {
         match self {
-            Row::Folder { depth, .. } | Row::Preset { depth, .. } => *depth,
-            Row::Uvi { .. } => 0,
+            Row::Folder { depth, .. } | Row::UviFolder { depth, .. }
+            | Row::Preset { depth, .. } | Row::Uvi { depth, .. } => *depth,
         }
     }
 
@@ -116,7 +118,7 @@ impl Row {
 
     fn id(&self, n: usize) -> String {
         match self {
-            Row::Folder { .. } => format!("folder-{n}"),
+            Row::Folder { .. } | Row::UviFolder { .. } => format!("folder-{n}"),
             Row::Preset { .. } | Row::Uvi { .. } => format!("instrument-{n}"),
         }
     }
@@ -565,9 +567,9 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     let mut items = vec![block(1, tops[first]).shrink(0)];
     for n in first..last.max(first) {
         items.push(match &listed_rows[n] {
-            Row::Folder { .. } => folder(ui, cx, n, &listed_rows[n]),
+            Row::Folder { .. } | Row::UviFolder { .. } => folder(ui, cx, n, &listed_rows[n]),
             Row::Preset { path, depth, under } => preset(ui, cx, n, path, *depth, under),
-            Row::Uvi { preset, under } => uvi_preset(ui, cx, n, preset, under),
+            Row::Uvi { preset, depth, under } => uvi_preset(ui, cx, n, preset, *depth, under),
         });
     }
     items.push(block(1, y - tops[last.max(first)]).shrink(0));
@@ -707,6 +709,12 @@ fn list(
     if !cx.state.multis {
         for (bank_path, bank) in &view.shelf.uvi {
             let Some(library) = view.shelf.of(bank_path) else { continue };
+            if words.is_empty() && cx.state.source == Some(Source::Library(library.name.clone()))
+                && let Some(tree) = uvi_hierarchy(&bank.presets, &cx.settings.folders)
+            {
+                rows.extend(tree);
+                continue;
+            }
             for preset in &bank.presets {
                 let included = match &cx.state.source {
                     Some(Source::Favorites) => cx.selection.uvi_favorites.contains(&preset.source),
@@ -719,7 +727,7 @@ fn list(
                         Some(Source::Library(_)) => preset.folder.clone(),
                         _ => format!("{} / {}", cx.settings.library_name(library), preset.folder),
                     };
-                    rows.push(Row::Uvi { preset: preset.clone(), under });
+                    rows.push(Row::Uvi { preset: preset.clone(), depth: 0, under });
                 }
             }
         }
@@ -731,6 +739,74 @@ fn list(
         });
     }
     rows
+}
+
+/// Catalog members stay opaque; only '/' separates authored bank folders.
+/// The iterative traversal is bounded even for deeply nested member names.
+/// An oversized tree keeps the existing flat list rather than losing presets.
+fn uvi_hierarchy(presets: &[Arc<crate::library::UviPreset>], open: &BTreeMap<String, bool>) -> Option<Vec<Row>> {
+    struct Branch<'a> {
+        name: &'a str,
+        key: String,
+        children: Vec<usize>,
+        presets: Vec<usize>,
+        count: usize,
+    }
+    let first = presets.first()?;
+    let mut branches = vec![Branch { name: "", key: String::new(), children: Vec::new(), presets: Vec::new(), count: 0 }];
+    let mut indices = HashMap::new();
+    let mut key_bytes = 0usize;
+    for (preset_index, preset) in presets.iter().enumerate() {
+        if preset.source.bank != first.source.bank || preset.source.bank_uuid != first.source.bank_uuid { return None; }
+        let mut parent = 0;
+        branches[parent].count += 1;
+        for (end, _) in preset.source.member.match_indices('/') {
+            let path = &preset.source.member[..end];
+            let name = path.rsplit('/').next().unwrap_or_default();
+            if name.is_empty() { continue; }
+            let child = match indices.get(path).copied() {
+                Some(child) => child,
+                None => {
+                    let key = format!("uvi-folder:{:?}:{:?}:{path:?}", first.source.bank.as_os_str().as_encoded_bytes(), first.source.bank_uuid);
+                    key_bytes = key_bytes.checked_add(key.len())?;
+                    if branches.len() >= 16_384 || key_bytes > 8 << 20 { return None; }
+                    let child = branches.len();
+                    branches.push(Branch { name, key, children: Vec::new(), presets: Vec::new(), count: 0 });
+                    indices.insert(path, child);
+                    branches[parent].children.push(child);
+                    child
+                }
+            };
+            branches[child].count += 1;
+            parent = child;
+        }
+        branches[parent].presets.push(preset_index);
+    }
+    enum Visit { Branch(usize, usize), Folder(usize, usize, bool), Preset(usize, usize) }
+    let mut visits = vec![Visit::Branch(0, 0)];
+    let mut rows = Vec::new();
+    while let Some(visit) = visits.pop() {
+        match visit {
+            Visit::Preset(index, depth) => rows.push(Row::Uvi { preset: presets[index].clone(), depth, under: String::new() }),
+            Visit::Folder(index, depth, is_open) => {
+                let branch = &branches[index];
+                rows.push(Row::UviFolder { path: branch.key.clone(), name: branch.name.to_owned(), depth, count: branch.count, open: is_open });
+                if is_open { visits.push(Visit::Branch(index, depth + 1)); }
+            }
+            Visit::Branch(index, depth) => {
+                let branch = &branches[index];
+                for &preset in branch.presets.iter().rev() { visits.push(Visit::Preset(preset, depth)); }
+                let only = branch.children.len() == 1 && branch.presets.is_empty();
+                for &child in branch.children.iter().rev() {
+                    let is_open = open.get(&branches[child].key).copied().unwrap_or(only);
+                    // Queue child rows separately so folders and their contents
+                    // stay together before the next sibling.
+                    visits.push(Visit::Folder(child, depth, is_open));
+                }
+            }
+        }
+    }
+    Some(rows)
 }
 
 /// `folder`'s rows: its folders, each followed by its own rows when open,
@@ -958,7 +1034,7 @@ fn crumbs(ui: &mut Ui, cx: &mut Cx, library: &Library, listed: &Listed) -> Optio
     let folder = match &rows[at] {
         Row::Folder { path, .. } => PathBuf::from(path),
         Row::Preset { path, .. } => path.parent()?.to_path_buf(),
-        Row::Uvi { .. } => return None,
+        Row::Uvi { .. } | Row::UviFolder { .. } => return None,
     };
     let inside = folder.strip_prefix(&library.dir).ok()?;
     // One folder deep, its row says as much.
@@ -1184,7 +1260,7 @@ fn walk(ui: &mut Ui, cx: &mut Cx, listed: &Listed, page: usize, focus_to: &mut O
         let at = cursor_at(cx, listed);
         let parent = |n: usize| {
             let depth = rows[n].depth().checked_sub(1)?;
-            (0..n).rev().find(|&i| matches!(&rows[i], Row::Folder { depth: d, .. } if *d == depth))
+            (0..n).rev().find(|&i| matches!(&rows[i], Row::Folder { depth: d, .. } | Row::UviFolder { depth: d, .. } if *d == depth))
         };
         let next = match (k.key, at) {
             (Key::Down, None) => Some(0),
@@ -1196,15 +1272,15 @@ fn walk(ui: &mut Ui, cx: &mut Cx, listed: &Listed, page: usize, focus_to: &mut O
             (Key::Home, _) if !from_search => Some(0),
             (Key::End, _) if !from_search => Some(last),
             (Key::Right, Some(n)) if !from_search => match &rows[n] {
-                Row::Folder { open: false, path, .. } => {
+                Row::Folder { open: false, path, .. } | Row::UviFolder { open: false, path, .. } => {
                     set_open(cx, path, true);
                     None
                 }
-                Row::Folder { open: true, .. } => Some((n + 1).min(last)),
+                Row::Folder { open: true, .. } | Row::UviFolder { open: true, .. } => Some((n + 1).min(last)),
                 _ => None,
             },
             (Key::Left, Some(n)) if !from_search => match &rows[n] {
-                Row::Folder { open: true, path, .. } => {
+                Row::Folder { open: true, path, .. } | Row::UviFolder { open: true, path, .. } => {
                     set_open(cx, path, false);
                     None
                 }
@@ -1212,7 +1288,7 @@ fn walk(ui: &mut Ui, cx: &mut Cx, listed: &Listed, page: usize, focus_to: &mut O
             },
             (Key::Enter, Some(n)) if from_search || unfocused => {
                 match &rows[n] {
-                    Row::Folder { path, open, .. } => set_open(cx, path, !open),
+                    Row::Folder { path, open, .. } | Row::UviFolder { path, open, .. } => set_open(cx, path, !open),
                     Row::Preset { path, .. } => load(cx, &path.clone(), k.mods.shift),
                     Row::Uvi { preset, .. } => load_uvi(cx, &preset.source, k.mods.shift),
                 }
@@ -1241,7 +1317,8 @@ fn walk(ui: &mut Ui, cx: &mut Cx, listed: &Listed, page: usize, focus_to: &mut O
 /// A folder row: click or Enter opens or shuts it, the arrow shows which,
 /// and how many presets it holds in all.
 fn folder(ui: &mut Ui, cx: &mut Cx, n: usize, row: &Row) -> El {
-    let Row::Folder { path, name, depth, count, open } = row else { return block(0, ROW) };
+    let (Row::Folder { path, name, depth, count, open }
+        | Row::UviFolder { path, name, depth, count, open }) = row else { return block(0, ROW) };
     let id = row.id(n);
     let r = ui.get(id.as_str());
     // A double-click's second click leaves it as the first left it.
@@ -1377,7 +1454,7 @@ fn load_uvi(cx: &mut Cx, source: &crate::library::UviSource, new: bool) {
     cx.open_preset(crate::library::PresetTarget::Uvi(source.clone()), new, if new { None } else { cx.state.chosen() });
 }
 
-fn uvi_preset(ui: &mut Ui, cx: &mut Cx, n: usize, preset: &crate::library::UviPreset, under: &str) -> El {
+fn uvi_preset(ui: &mut Ui, cx: &mut Cx, n: usize, preset: &crate::library::UviPreset, depth: usize, under: &str) -> El {
     let id = format!("instrument-{n}");
     let star_id = format!("star-{n}");
     let key = preset.source.cursor_key();
@@ -1406,7 +1483,7 @@ fn uvi_preset(ui: &mut Ui, cx: &mut Cx, n: usize, preset: &crate::library::UviPr
             .gap(1).align(Align::Start).flex(1).min_w(0)
     };
     interactive(row![name, caption("UVI / Falcon").fill(secondary()).shrink(0), star]
-        .gap(INSET - 1.).align(Align::Center).pad(edges(0., SPACE, 0., SPACE))
+        .gap(INSET - 1.).align(Align::Center).pad(edges(0., SPACE, 0., SPACE + depth as f64 * INDENT))
         .h(if under.is_empty() { ROW } else { ROW2 }).when(cursor, |e| e.fill(Role::Raised))
         .focusable().a11y(A11y::Button).named(format!("{}, UVI program", preset.name))
         .tip(format!("{}\n{}\nUVI bank program", preset.source.bank.display(), preset.source.member))
@@ -1429,6 +1506,91 @@ fn stem(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bank_preset(member: &str) -> Arc<crate::library::UviPreset> {
+        Arc::new(crate::library::UviPreset {
+            source: crate::library::UviSource { bank: "/banks/Owned.ufs".into(), bank_uuid: [4; 16], member: member.into() },
+            name: Path::new(member).file_stem().unwrap().to_string_lossy().into_owned(),
+            folder: member.rsplit_once('/').map_or(String::new(), |(folder, _)| folder.replace('/', " / ")),
+            search: member.to_lowercase(),
+        })
+    }
+
+    #[test]
+    fn uvi_tree_folds_authored_members_without_changing_load_identity() {
+        let presets = [bank_preset("Presets/Keys/Piano.uvip"), bank_preset("Presets/Keys/EP.uvip"),
+            bank_preset("Presets/FX/Wind.uvip"), bank_preset("Top.uvip")];
+        let mut open = BTreeMap::new();
+        let closed = uvi_hierarchy(&presets, &open).unwrap();
+        assert!(matches!(&closed[0], Row::UviFolder { name, count: 3, open: false, depth: 0, .. } if name == "Presets"));
+        assert_eq!(closed.len(), 2);
+        open.insert(closed[0].key(), true);
+        let branches = uvi_hierarchy(&presets, &open).unwrap();
+        assert!(matches!(&branches[1], Row::UviFolder { name, count: 2, depth: 1, .. } if name == "Keys"));
+        assert!(matches!(&branches[2], Row::UviFolder { name, count: 1, depth: 1, .. } if name == "FX"));
+        open.insert(branches[1].key(), true);
+        let expanded = uvi_hierarchy(&presets, &open).unwrap();
+        assert_eq!(expanded.len(), 6);
+        for (row, preset) in [(&expanded[2], &presets[0]), (&expanded[3], &presets[1])] {
+            let Row::Uvi { preset: retained, depth: 2, under } = row else { panic!("Authored leaf lost") };
+            assert!(Arc::ptr_eq(retained, preset));
+            assert!(under.is_empty());
+            assert_eq!(row.key(), preset.source.cursor_key());
+        }
+        open.insert(closed[0].key(), false);
+        assert_eq!(uvi_hierarchy(&presets, &open).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn uvi_folder_keys_follow_bank_uuid_and_bound_deep_tree_work() {
+        let original = bank_preset("Presets/Piano.uvip");
+        let original_key = uvi_hierarchy(&[original.clone()], &BTreeMap::new()).unwrap()[0].key();
+        let mut replacement = (*original).clone();
+        replacement.source.bank_uuid = [5; 16];
+        assert_ne!(original_key, uvi_hierarchy(&[Arc::new(replacement.clone())], &BTreeMap::new()).unwrap()[0].key());
+        replacement.source.bank = "/banks/Other.ufs".into();
+        assert_ne!(original_key, uvi_hierarchy(&[Arc::new(replacement)], &BTreeMap::new()).unwrap()[0].key());
+        let deep = bank_preset(&format!("{}Patch.uvip", "folder/".repeat(1800)));
+        assert!(uvi_hierarchy(&[deep], &BTreeMap::new()).is_none(), "Key byte budget falls back to the flat inventory");
+    }
+
+    #[test]
+    fn uvi_folder_pointer_and_keyboard_reuse_the_existing_browser_controls() {
+        use crate::{library, plugin::SamplerParams};
+        let p = Arc::new(SamplerParams::new());
+        let presets = vec![bank_preset("Presets/Keys/Piano.uvip"), bank_preset("Top.uvip")];
+        let mut bank = library::UviBank::default(); bank.presets = presets.clone();
+        let mut shelf = library::Shelf::new(vec![Library { dir: presets[0].source.bank.clone(), name: "Owned".into(), instruments: 2, ..Default::default() }]);
+        shelf.uvi.insert(presets[0].source.bank.clone(), Arc::new(bank));
+        p.shared.view.lock().unwrap().shelf = Arc::new(shelf);
+        let mut draw = super::super::build(&p, Arc::default(), Arc::default(), Arc::default(), Arc::default());
+        let mut bridge = moose::mui::Bridge::new(p.clone());
+        let mut ui = super::super::theme::ui();
+        let frame = |ui: &mut Ui, draw: &mut dyn FnMut(&mut Ui, &mut moose::mui::Bridge<SamplerParams>) -> El, bridge: &mut moose::mui::Bridge<SamplerParams>, input| {
+            let root = draw(ui, bridge); ui.frame(root, Some(Size::new(1180., 900.)), input, 1. / 60.).unwrap();
+        };
+        for _ in 0..3 { frame(&mut ui, &mut draw, &mut bridge, Input::default()); }
+        ui.focus("library-0");
+        frame(&mut ui, &mut draw, &mut bridge, Input { keys: vec![KeyPress { key: Key::Enter, mods: Mods::default() }], ..Default::default() });
+        for _ in 0..3 { frame(&mut ui, &mut draw, &mut bridge, Input::default()); }
+        let closed = ui.scene().unwrap().surface("folder-0").unwrap().frame;
+        let pos = Point::new(closed.x + closed.size.width / 2., closed.y + closed.size.height / 2.);
+        for buttons in [Buttons::PRIMARY, Buttons::default()] {
+            frame(&mut ui, &mut draw, &mut bridge, PointerInput { pos: Some(pos), buttons, ..Default::default() }.into());
+        }
+        for _ in 0..3 { frame(&mut ui, &mut draw, &mut bridge, Input::default()); }
+        assert!(ui.scene().unwrap().surface("folder-1").is_some());
+        assert!(ui.scene().unwrap().surface("instrument-2").is_some());
+        ui.focus("folder-0");
+        frame(&mut ui, &mut draw, &mut bridge, Input { keys: vec![KeyPress { key: Key::Left, mods: Mods::default() }], ..Default::default() });
+        for _ in 0..3 { frame(&mut ui, &mut draw, &mut bridge, Input::default()); }
+        assert!(ui.scene().unwrap().surface("folder-1").is_none());
+        ui.focus("folder-0");
+        frame(&mut ui, &mut draw, &mut bridge, Input { keys: vec![KeyPress { key: Key::Right, mods: Mods::default() }], ..Default::default() });
+        for _ in 0..3 { frame(&mut ui, &mut draw, &mut bridge, Input::default()); }
+        assert!(ui.scene().unwrap().surface("instrument-2").is_some());
+        assert!(p.selection.read().unwrap().uvi_requested.is_none(), "Folding folders never dispatches a load");
+    }
 
     #[test]
     fn player_grouping_keeps_both_families_searchable_and_favoritable() {
@@ -1498,7 +1660,8 @@ mod tests {
         let mut draw = super::super::build(&p, Arc::default(), Arc::default(), Arc::default(), Arc::default());
         let mut bridge = moose::mui::Bridge::new(p.clone());
         let mut ui = super::super::theme::ui();
-        for focus in [None, Some("library-0"), Some("instrument-0")] {
+        // The authored Root / Keys ancestors occupy rows 0 and 1.
+        for focus in [None, Some("library-0"), Some("instrument-2")] {
             if let Some(id) = focus { ui.focus(id); }
             for frame in 0..3 {
                 let input = if focus.is_some() && frame == 0 { Input { keys: vec![KeyPress { key: Key::Enter, mods: Mods::default() }], ..Default::default() } } else { Input::default() };
@@ -1520,9 +1683,9 @@ mod tests {
         });
         let rows = vec![
             Row::Preset { path: "/banks/Piano.nki".into(), depth: 0, under: String::new() },
-            Row::Uvi { preset: preset("/banks/a.ufs", "Root/Keys/Piano.uvip"), under: "A / Keys".into() },
-            Row::Uvi { preset: preset("/banks/b.ufs", "Root/Keys/Piano.uvip"), under: "B / Keys".into() },
-            Row::Uvi { preset: preset("/banks/a.ufs", "Root/Other/Piano.uvip"), under: "A / Other".into() },
+            Row::Uvi { preset: preset("/banks/a.ufs", "Root/Keys/Piano.uvip"), depth: 0, under: "A / Keys".into() },
+            Row::Uvi { preset: preset("/banks/b.ufs", "Root/Keys/Piano.uvip"), depth: 0, under: "B / Keys".into() },
+            Row::Uvi { preset: preset("/banks/a.ufs", "Root/Other/Piano.uvip"), depth: 0, under: "A / Other".into() },
         ];
         let listed = Listed::new(rows);
         assert_eq!((listed.presets, listed.indices.len()), (4, 4));
