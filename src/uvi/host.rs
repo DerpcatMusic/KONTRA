@@ -981,8 +981,9 @@ pub(crate) fn source_parameters(program: &Program) -> Vec<BTreeMap<String, Param
                 .map(|(name, value)| (name.clone(), attribute(name, value)))
                 .collect();
             // Original Workstation 4.0.9 authored missing-attribute probes:
-            // these getters are linear Gain=1 and Pan=0. SamplePlayer has
-            // Gain, but native hasParameter('Pan') is false (getter is nil).
+            // these getters are linear Gain=1, Pan=0 and PanLaw=0 for
+            // Program/Layer/Keygroup (the PanLaw definition default is 1).
+            // SamplePlayer has Gain, but no Pan or PanLaw getter.
             if matches!(
                 node.kind.as_str(),
                 "Program" | "Layer" | "Keygroup" | "SamplePlayer"
@@ -994,6 +995,9 @@ pub(crate) fn source_parameters(program: &Program) -> Vec<BTreeMap<String, Param
             if matches!(node.kind.as_str(), "Program" | "Layer" | "Keygroup") {
                 values
                     .entry("Pan".into())
+                    .or_insert(ParameterValue::Number(0.));
+                values
+                    .entry("PanLaw".into())
                     .or_insert(ParameterValue::Number(0.));
             }
             if !wrappers.contains(&node.kind.as_str()) && node.kind != "Connections" {
@@ -2628,6 +2632,36 @@ mod tests {
         environment.raw_set("_G", environment.clone()).unwrap();
         install_ui(lua, &environment).unwrap();
         environment
+    }
+
+    #[test]
+    fn measured_missing_pan_law_defaults_preserve_retained_and_context_slots() {
+        let program = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer/></Oscillators></Keygroup></Keygroups></Layer><Layer PanLaw="1"/></Layers></Program>"#).unwrap();
+        let lua = vm();
+        let host = install(&lua, HostConfig {
+            program: Some(&program), modules: BTreeMap::new(), now: Rc::new(|| 0),
+            resources: None, valid_voice: None, layer_scope: None,
+        }).unwrap();
+        let fingerprint = super::super::state::fingerprint(&program).unwrap();
+        lua.load(r#"
+          for _,object in ipairs{Program,Program.layers[1],Program.layers[1].keygroups[1]} do
+            assert(object:hasParameter('PanLaw') and object:getParameter('PanLaw')==0)
+          end
+          assert(Program.layers[2]:getParameter('PanLaw')==1)
+          for _,object in ipairs{Program.layers[1].keygroups[1].oscillators[1],Program.parent,Program.parent.parent} do
+            assert(not object:hasParameter('PanLaw'))
+            assert(not pcall(function()return object:getParameter('PanLaw')end))
+            assert(not pcall(function()object:setParameter('PanLaw',1)end))
+          end
+        "#).exec().unwrap();
+        assert!(host.commands.borrow().is_empty());
+        assert_eq!(host.baseline, host.parameters.borrow()[..program.nodes.len()]);
+        for node in &program.nodes {
+            if matches!(node.kind.as_str(), "Program" | "Keygroup") {
+                assert!(!node.attributes.contains_key("PanLaw"));
+            }
+        }
+        assert_eq!(fingerprint, super::super::state::fingerprint(&program).unwrap());
     }
 
     #[test]
