@@ -26,6 +26,8 @@ pub(super) struct UviPrepared {
     pub(super) key: UviLoadKey,
     pub(super) generation: u64,
     pub(super) worker: Option<crate::uvi::worker::Worker>,
+    /// Bounded local code survives worker retirement only for this load key.
+    pub(super) failed_lua: Option<Arc<crate::uvi::lua_failure::Context>>,
     pub(super) status: &'static str,
     pub(super) ui: Option<uvi_ui::Mailbox>,
 }
@@ -99,16 +101,20 @@ pub(super) fn prepare_uvi(params: &SamplerParams, selection: &Selection) {
             Err(reason) => { trace.fail(reason); (None, reason, None) },
         };
         trace.finish(if worker.is_some() { "worker_started" } else { "failed" });
-        let prepared = UviPrepared { key: key.clone(), generation, worker, status, ui };
+        let prepared = UviPrepared { key: key.clone(), generation, worker, failed_lua: None, status, ui };
         if uvi_load_key(params, &params.selection.read().unwrap()) != Some(key.clone()) { drop(prepared); return; }
         *params.shared.uvi_prepared.lock().unwrap() = Some(prepared);
     }
-    let (status, failed, ui) = {
+    let (status, failed, generation, ui) = {
         let mut prepared = params.shared.uvi_prepared.lock().unwrap();
         let p = prepared.as_mut().unwrap();
         let failed = match p.worker.as_ref().map(Worker::status) {
             Some(Status::Ready) => { p.status = READY; None },
-            Some(Status::Failed | Status::Stopped) => { p.status = FAILED; p.worker.take() },
+            Some(Status::Failed | Status::Stopped) => {
+                p.status = FAILED;
+                p.failed_lua = p.worker.as_ref().and_then(Worker::private_lua_failure);
+                p.worker.take()
+            },
             _ => None,
         };
         let ui = match (&p.worker, &mut p.ui) {
@@ -120,12 +126,14 @@ pub(super) fn prepare_uvi(params: &SamplerParams, selection: &Selection) {
                 .map(|progress| format!("{}; the current instrument is still playing.", uvi_load::loading_status(Some(progress))))
                 .unwrap_or_else(|| p.status.to_owned())
         } else { p.status.to_owned() };
-        (display, failed, ui)
+        (display, failed, p.generation, ui)
     };
     if let Some(worker) = &failed {
         crate::diagnostics::event(crate::diagnostics::LogLevel::Error, "uvi", "uvi_staging_failed",
             serde_json::json!({"path":key.request.source.bank, "member":key.request.source.member,
-                "epoch":key.epoch, "reason":worker.private_failure()}));
+                "slot":key.request.slot, "epoch":key.epoch, "generation":generation,
+                "reason":worker.private_failure(),
+                "worker":{"lua_failure":worker.private_lua_failure().map(|context|context.metadata())}}));
     }
     drop(failed);
     if uvi_load_key(params, &params.selection.read().unwrap()) != Some(key.clone()) { return; }
