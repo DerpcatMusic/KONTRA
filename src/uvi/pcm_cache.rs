@@ -33,6 +33,7 @@ type Progress<'a> = dyn FnMut(usize, usize, usize, usize, Option<&str>) + 'a;
 struct Alias {
     path: String,
     identity: Vec<u64>,
+    read_contract: [u8; 32],
     slot: usize,
 }
 #[derive(Serialize, Deserialize)]
@@ -109,6 +110,30 @@ fn bank_hash(path: &Path, stop: Option<&AtomicBool>) -> Result<[u8; 32]> {
     );
     Ok(hash.finalize().into())
 }
+/// Bind the opened Library snapshot's read parameters, not only the bytes
+/// subsequently hashed through its pathname. Selected records remain ordered.
+fn member_read_contract(header: &super::ufs::Header, members: &[&super::ufs::Member]) -> Result<[u8; 32]> {
+    let mut h = Sha256::new();
+    h.update(header.version.to_le_bytes());
+    h.update(header.uuid);
+    h.update(header.expected_size.to_le_bytes());
+    h.update(header.physical_size.to_le_bytes());
+    h.update((header.bank_name.len() as u64).to_le_bytes());
+    h.update(header.bank_name.as_bytes());
+    h.update((members.len() as u64).to_le_bytes());
+    for member in members {
+        ensure!(member.mode == 0 && member.size > 0 && member.size <= SOURCE_LIMIT as u64,
+            "Only bounded unencrypted sample records are cached");
+        ensure!(member.offset.checked_add(member.size).is_some_and(|end|end <= header.physical_size),
+            "Optional cache member exceeds snapshot bounds");
+        h.update(member.record_offset.to_le_bytes());
+        h.update(member.offset.to_le_bytes());
+        h.update(member.size.to_le_bytes());
+        h.update([member.mode]);
+    }
+    Ok(h.finalize().into())
+}
+
 fn plan(lib: &Library, loaded: &LoadedProgram) -> Result<Vec<Alias>> {
     let mut seen = HashSet::new();
     let mut identities = HashMap::new();
@@ -122,24 +147,15 @@ fn plan(lib: &Library, loaded: &LoadedProgram) -> Result<Vec<Alias>> {
             continue;
         }
         bytes = library::alias_bytes(bytes, path)?;
-        let identity = lib.audio_identity(&loaded.path, path)?;
-        for id in &identity {
-            let member = lib
-                .directory
-                .files
-                .iter()
-                .find(|m| m.record_offset == *id)
-                .context("Missing cache source record")?;
-            ensure!(
-                member.mode == 0 && member.size > 0 && member.size <= SOURCE_LIMIT as u64,
-                "Only bounded unencrypted sample records are cached"
-            );
-        }
+        let members = library::resources(&lib.directory, &loaded.path, path)?;
+        let identity = members.iter().map(|member| member.record_offset).collect::<Vec<_>>();
+        let read_contract = member_read_contract(&lib.bank.header, &members)?;
         let next = identities.len();
         let slot = *identities.entry(identity.clone()).or_insert(next);
         aliases.push(Alias {
             path: path.to_owned(),
             identity,
+            read_contract,
             slot,
         });
     }
@@ -174,7 +190,7 @@ impl<W: Write> Write for HashWrite<W> {
         self.inner.flush()
     }
 }
-fn validate_entry(e: &Entry, alias: &Alias, lib: &Library) -> Result<usize> {
+fn validate_entry(e: &Entry, alias: &Alias, lib: &Library, loaded: &LoadedProgram) -> Result<usize> {
     ensure!(
         e.rate > 0 && e.channels > 0 && e.channels <= 64 && e.frames > 0,
         "Invalid cache dimensions"
@@ -193,13 +209,10 @@ fn validate_entry(e: &Entry, alias: &Alias, lib: &Library) -> Result<usize> {
         "Cache RIFF metadata bound"
     );
     ensure!(e.loops.len() <= 4096, "Cache loop metadata bound");
-    for id in &alias.identity {
-        let member = lib
-            .directory
-            .files
-            .iter()
-            .find(|m| m.record_offset == *id)
-            .context("Cache source record missing")?;
+    // Do not re-find by record ID: a public snapshot can contain duplicate IDs.
+    // Use the same selected members as the alias read-contract digest.
+    let members = library::resources(&lib.directory, &loaded.path, &alias.path)?;
+    for member in members {
         let scalars = if alias.identity.len() == 1 {
             count
         } else {
@@ -274,7 +287,7 @@ fn read(
     let metadata = meta.entries.iter().try_fold(
         aliases
             .iter()
-            .map(|a| a.path.len() + a.identity.len() * 8)
+            .map(|a| a.path.len() + a.identity.len() * 8 + 32)
             .sum::<usize>(),
         |n, e| {
             e.riff_metadata
@@ -304,7 +317,7 @@ fn read(
             .iter()
             .find(|a| a.slot == slot)
             .context("Cache slot not referenced")?;
-        let count = validate_entry(&e, alias, lib)?;
+        let count = validate_entry(&e, alias, lib, loaded)?;
         ensure!(e.offset == resident, "Noncontiguous cache PCM");
         resident = resident
             .checked_add(e.len)
@@ -378,7 +391,7 @@ fn write(
     let mut offset = 0;
     let mut metadata = aliases
         .iter()
-        .map(|a| a.path.len() + a.identity.len() * 8)
+        .map(|a| a.path.len() + a.identity.len() * 8 + 32)
         .sum::<usize>();
     for alias in &aliases {
         if alias.slot < entries.len() {
@@ -412,7 +425,7 @@ fn write(
             len: s.interleaved.bytes(),
             tag: s.interleaved.cache_tag()?,
         };
-        validate_entry(&e, alias, lib)?;
+        validate_entry(&e, alias, lib, loaded)?;
         offset = offset
             .checked_add(e.len)
             .context("Cache resident overflow")?;
@@ -548,4 +561,102 @@ mod tests {
         std::fs::remove_file(path).unwrap();
         assert!(result.is_err());
     }
+    #[test]
+    fn stale_member_read_snapshot_misses_and_preserves_original_failure() {
+        use std::io::Cursor;
+        fn wave(value: i16) -> Vec<u8> {
+            let mut bytes = Cursor::new(Vec::new());
+            let spec = hound::WavSpec { channels: 1, sample_rate: 8000,
+                bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+            let mut writer = hound::WavWriter::new(&mut bytes, spec).unwrap();
+            writer.write_sample(value).unwrap();
+            writer.write_sample(-value).unwrap();
+            writer.finalize().unwrap();
+            bytes.into_inner()
+        }
+        struct Fixture(std::path::PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+        }
+        let dir = std::env::temp_dir().join(format!("uvi-cache-snapshot-{}-{}",
+            std::process::id(), SERIAL.fetch_add(1, Ordering::Relaxed)));
+        std::fs::create_dir(&dir).unwrap();
+        let fixture = Fixture(dir);
+        let bank_path = fixture.0.join("authored.ufs");
+        let cache_path = fixture.0.join("authored.cache");
+        let a = wave(8192);
+        let b = wave(24576);
+        assert_eq!(a.len(), b.len());
+        let mut bank = vec![0; 320];
+        bank[..4].copy_from_slice(b"UFS2");
+        bank[4..8].copy_from_slice(&3u32.to_le_bytes());
+        bank[48..56].copy_from_slice(b"Authored");
+        bank.extend_from_slice(&(a.len() as u64).to_le_bytes());
+        let first_offset = bank.len() as u64;
+        bank.extend_from_slice(&a);
+        bank.extend_from_slice(&(b.len() as u64).to_le_bytes());
+        let second_offset = bank.len() as u64;
+        bank.extend_from_slice(&b);
+        let physical = bank.len() as u64;
+        bank[32..40].copy_from_slice(&physical.to_le_bytes());
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+        options.open(&bank_path).unwrap().write_all(&bank).unwrap();
+        let mut lib = Library::open(&bank_path, b"authored namespace", None).unwrap();
+        // Authored metadata snapshot over two real, valid WAV payloads. No reader
+        // emulation or commercial bank. Deliberately exercise unchanged record IDs.
+        lib.directory.files.push(super::super::ufs::Member {
+            record_offset: 320, name: "tone.wav".into(), parent: None,
+            path: Some("Samples/tone.wav".into()), size: a.len() as u64,
+            offset: first_offset, mode: 0, footer: Vec::new(),
+        });
+        let loaded = LoadedProgram {
+            program: super::super::program::parse_program(
+                r#"<Program><Effects><Convolver SamplePath="/Samples/tone.wav"/></Effects></Program>"#
+            ).unwrap(), path: "Programs/authored.uvip".into(),
+        };
+        assert_eq!(library::initial_paths(&loaded), vec![("/Samples/tone.wav", false)]);
+        let bank_digest = bank_hash(&bank_path, None).unwrap();
+        let first = lib.samples(&loaded).unwrap();
+        let first_bits = first["/Samples/tone.wav"].interleaved.iter().map(f32::to_bits).collect::<Vec<_>>();
+        assert_eq!(first_bits[0], 0.25f32.to_bits());
+        let first_plan = plan(&lib, &loaded).unwrap();
+        write(&cache_path, &lib, &loaded, bank_digest, first_plan, &first, None).unwrap();
+        assert!(cache_path.is_file());
+        let (_, initial_hit) = load(&lib, &loaded, &bank_path, Some(&cache_path), &mut |_,_,_,_,_|{}, None).unwrap();
+        assert_eq!(initial_hit, Some(true));
+
+        // Same path bytes, program, member ID, size/mode and frame geometry;
+        // only the selected snapshot offset changes to another valid WAV.
+        lib.directory.files[0].offset = second_offset;
+        let expected = lib.samples(&loaded).unwrap();
+        let expected_bits = expected["/Samples/tone.wav"].interleaved.iter().map(f32::to_bits).collect::<Vec<_>>();
+        assert_eq!(expected_bits[0], 0.75f32.to_bits());
+        let (changed, hit) = load(&lib, &loaded, &bank_path, Some(&cache_path), &mut |_,_,_,_,_|{}, None).unwrap();
+        assert_eq!(hit, Some(false));
+        assert_eq!(changed["/Samples/tone.wav"].interleaved.iter().map(f32::to_bits).collect::<Vec<_>>(), expected_bits);
+
+        // A duplicate public record ID must not bind the first unrelated member.
+        let mut decoy = lib.directory.files[0].clone();
+        decoy.name = "decoy.wav".into(); decoy.path = Some("Samples/decoy.wav".into());
+        decoy.offset = first_offset; decoy.mode = 1;
+        lib.directory.files.insert(0, decoy);
+        let (_, selected_hit) = load(&lib, &loaded, &bank_path, Some(&cache_path), &mut |_,_,_,_,_|{}, None).unwrap();
+        assert_eq!(selected_hit, Some(true));
+
+        // Changed encoded size rejects the cache; its error cannot mask the real
+        // original decoder failure. Physical-size bounds are likewise binding.
+        lib.directory.files[1].size -= 1;
+        let baseline = lib.samples(&loaded).unwrap_err();
+        let enabled = load(&lib, &loaded, &bank_path, Some(&cache_path), &mut |_,_,_,_,_|{}, None).unwrap_err();
+        assert_eq!(format!("{enabled:#}"), format!("{baseline:#}"));
+        lib.directory.files[1].size += 1;
+        lib.bank.header.physical_size = second_offset;
+        let baseline = lib.samples(&loaded).unwrap_err();
+        let enabled = load(&lib, &loaded, &bank_path, Some(&cache_path), &mut |_,_,_,_,_|{}, None).unwrap_err();
+        assert_eq!(format!("{enabled:#}"), format!("{baseline:#}"));
+    }
+
 }
