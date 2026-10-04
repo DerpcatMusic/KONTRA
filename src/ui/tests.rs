@@ -3368,6 +3368,12 @@ fn authored_native_full_editor_capture_and_terminal_failure() {
     h.press("menu-item-1");
     assert_eq!(p.selection.read().unwrap().parts[0].view, 3);
     assert_eq!(label(&h, "uvi-stage-0"), "Vectorized instrument controls");
+    h.tick(Input { keys: vec![KeyPress { key: Key::Escape, mods: Mods::default() }], ..Default::default() });
+    h.idle(3);
+    let vector_output = std::path::Path::new("/tmp/kontakto-uvi-ui-leaf/authored-full-editor-vectorized.png");
+    std::fs::create_dir_all(vector_output.parent().unwrap()).unwrap();
+    moose::core::screenshot::save_png(vector_output, &pixels(&h.ui, 1180, 760), 1180, 760);
+
     h.press("view-0");
     h.press("menu-item-0");
     assert_eq!(p.selection.read().unwrap().parts[0].view, 1);
