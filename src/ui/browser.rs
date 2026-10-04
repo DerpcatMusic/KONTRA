@@ -569,7 +569,9 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         layers.extend(bar.map(|b| b.anchor(Align::End, Align::Start)));
         stack(layers).w(Len::Pct(100.))
     };
-    col![
+    // Fixed chrome takes its own rows; the lists share the remaining height
+    // without squeezing either viewport below useful rows.
+    grid![1;
         section_bar(
             "Browser",
             vec![counted, add_el, hide_el]
@@ -582,12 +584,21 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             .pad(edges(SPACE, INSET, TIGHT, INSET))
             .shrink(0),
         rule(),
-        pane(sources_list, sources_bar).h(Len::Pct(cx.state.split * 100.)).shrink(0),
+        pane(sources_list, sources_bar).h(Len::Pct(100.)).min_h(0),
         split,
         col![search.w(Len::Pct(100.))].pad(edges(SPACE, INSET, SPACE, INSET)).shrink(0),
         col(above).gap(0).align(Align::Stretch).shrink(0),
-        pane(list, list_bar).flex(1).min_h(0),
+        pane(list, list_bar).h(Len::Pct(100.)).min_h(0),
     ]
+    .grid_tracks([GridTrack::MinFr { min: 0., fr: 1. }])
+    .grid_rows([
+        GridTrack::MaxContent, GridTrack::MaxContent, GridTrack::MaxContent,
+        GridTrack::MaxContent, GridTrack::MaxContent,
+        GridTrack::MinFr { min: SOURCE_ROW, fr: cx.state.split * 100. },
+        GridTrack::MaxContent, GridTrack::MaxContent, GridTrack::MaxContent,
+        GridTrack::MinFr { min: ROW2 * 2., fr: (1. - cx.state.split) * 100. },
+    ])
+    .align(Align::Stretch)
     .gap(0)
     .h(Len::Pct(100.))
     .shrink(0)
@@ -1012,8 +1023,11 @@ fn split_divider(ui: &mut Ui, cx: &mut Cx) -> El {
     let r = ui.get(id);
     let height = ui
         .scene()
-        .and_then(|s| s.surface("browser"))
-        .map_or(600., |s| s.frame.size.height);
+        .and_then(|s| {
+            Some(s.surface(&format!("browser-sources-{}", cx.state.multis))?.frame.size.height
+                + s.surface("browser-list")?.frame.size.height)
+        })
+        .unwrap_or(600.);
     if r.dragged {
         cx.state.split = (cx.state.split + r.drag_delta.y / height.max(1.)).clamp(SPLIT_MIN, SPLIT_MAX);
     }

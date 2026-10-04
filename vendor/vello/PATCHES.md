@@ -56,3 +56,6 @@ freed the persistent atlas for a 1x1 one. The resolver's `ImageCache` still mark
 its resident images clean, so the next full-size atlas came back empty and those
 images never drew again, while newly seen images did. A 0x0 resolve now reuses
 the persistent atlas. Grep `KONTAKTO patch`. Belongs upstream in MUI.
+
+The atlas fix remains absent from MUI `cc4e61e6` (2026-10-04), so KONTRA
+retains this override when updating the remaining MUI packages.

@@ -35,7 +35,7 @@ mod mixer;
 mod panel;
 mod perf_view;
 pub(crate) use perf_view::font_fallbacks;
-mod picker;
+pub(crate) mod picker;
 mod rack;
 mod spectrum;
 #[cfg(test)]
@@ -61,6 +61,9 @@ use theme::*;
 pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let meters = Arc::new(Meters::default());
     let computer = Arc::new(computer::Computer::default());
+    #[cfg(target_os = "linux")]
+    let picker = Arc::new(picker::Picker::with_runtime(Arc::clone(&params.shared.dialog_runtime)));
+    #[cfg(not(target_os = "linux"))]
     let picker = Arc::new(picker::Picker::default());
     let art = Arc::new(art::Art::default());
     let build = build(&params, meters.clone(), computer.clone(), picker.clone(), art.clone());
@@ -72,8 +75,11 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let size = params.shared.libraries.settings().editor_size();
     let zoom_params = params.clone();
     let close_params = params.clone();
+    let close_picker = Arc::clone(&picker);
+    #[cfg(target_os = "linux")]
+    let parent_picker = Arc::clone(&picker);
     let last_size = AtomicU64::new(0);
-    MuiEditor::new(params, theme::ui(), size, build)
+    let editor = MuiEditor::new(params, theme::ui(), size, build)
         .on_log(|line| {
             let failed = line.contains("unavailable") || line.contains("failed") || line.contains("panic");
             crate::diagnostics::event(if failed { crate::diagnostics::LogLevel::Warning } else { crate::diagnostics::LogLevel::Info },
@@ -100,9 +106,14 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
             }
             zoom_params.shared.libraries.settings().editor_scale()
         })
-        .on_close(move || close_params.shared.libraries.flush_settings())
-        .resizable((900, 600))
-        .into_editor()
+        .on_close(move || {
+            close_picker.close();
+            close_params.shared.libraries.flush_settings();
+        })
+        .resizable((900, 600));
+    #[cfg(target_os = "linux")]
+    let editor = editor.on_x11_window(move |parent| parent_picker.native_window(parent));
+    editor.into_editor()
 }
 
 /// Focus left or the window closes: every key the editor holds comes up.
@@ -1048,6 +1059,7 @@ fn build(
 /// to save the rack as a multi.
 fn picked(cx: &mut Cx) {
     match cx.state.picker.take() {
+        Some(picker::Picked::DialogError(error)) => cx.state.notice = format!("The file picker could not open: {error}"),
         Some(picker::Picked::Revealed(result)) => {
             if let Err(error) = result { cx.state.notice = error; }
         }

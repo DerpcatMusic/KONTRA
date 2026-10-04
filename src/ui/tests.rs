@@ -940,10 +940,70 @@ fn the_split_browser_walks_both_panes() {
             h.tick(pointer(Point::new(at.x + dx * step, at.y + dy * step), down));
         }
         h.idle(2);
+        if id == "browser-split" {
+            assert!((center(&h.ui, id).y - at.y - dy).abs() < 0.5,
+                "the divider follows the pointer within its unconstrained range");
+        }
     }
     let s = read(&p.selection).clone();
     assert!(s.browser_split as f64 > browser::SPLIT, "{}", s.browser_split);
     assert!(s.browser_width as f64 > SIDEBAR, "{}", s.browser_width);
+}
+
+#[test]
+fn split_browser_keeps_both_panes_usable_across_resize_and_scale() {
+    for split in [browser::SPLIT_MAX, browser::SPLIT_MIN, browser::SPLIT] {
+        for scale in [1., 1.5, 2.] {
+            let p = Arc::new(SamplerParams::new());
+            p.selection.write().unwrap().browser_split = split as f32;
+            {
+                let mut view = p.shared.view.lock().unwrap();
+                view.files = Arc::new((0..100).map(|n|
+                    PathBuf::from(format!("/virtual/Keys/Patch {n:03}.nki"))
+                ).collect());
+                view.shelf = Arc::new(crate::library::Shelf::under("/virtual", &view.files));
+            }
+            let mut h = Harness::new(&p, 900., 600.);
+            h.ui.set_scale(Some(scale));
+            h.press("library-0");
+            for size in [Size::new(900., 600.), Size::new(1180., 760.), Size::new(1600., 900.), Size::new(900., 600.)] {
+                h.size = size;
+                h.idle(3);
+                let scene = h.ui.scene().unwrap();
+                let frame = |id| scene.surface(id).unwrap_or_else(|| panic!("missing {id}")).frame;
+                let (browser, sources, presets, filter, search, divider) = (
+                    frame("browser"), frame("browser-sources-false"), frame("browser-list"),
+                    frame("library-filter"), frame("search"), frame("browser-split"),
+                );
+                assert!(presets.size.height >= TEXT * 6. + 8. - 0.5,
+                    "two tall preset rows must fit: split={split} scale={scale} size={size:?} presets={presets:?}");
+                assert!(sources.size.height >= browser::THUMB.1 + 2. * TIGHT - 0.5,
+                    "one library row must fit: split={split} scale={scale} sources={sources:?}");
+                assert!(filter.y + filter.size.height <= sources.y + 0.5);
+                assert!(sources.y + sources.size.height <= divider.y + 0.5);
+                assert!(divider.y + divider.size.height <= search.y + 0.5);
+                assert!(search.y + search.size.height <= presets.y + 0.5);
+                assert!(presets.y + presets.size.height <= browser.y + browser.size.height + 0.5,
+                    "the preset pane stays inside the browser: split={split} scale={scale} size={size:?} browser={browser:?} sources={sources:?} presets={presets:?} search={search:?}");
+                assert!((presets.y + presets.size.height - browser.y - browser.size.height).abs() < 0.5,
+                    "constrained pane fractions consume the available height");
+                assert_eq!(read(&p.selection).browser_split, split as f32, "resize preserves the saved split");
+                let start = if scene.surface("instrument-99").is_some() { "instrument-99" } else { "instrument-0" };
+                h.ui.focus(start);
+                h.tick(Input { keys: vec![KeyPress { key: Key::Home, mods: Mods::default() }], ..Default::default() });
+                h.idle(30);
+                assert_eq!(h.ui.focus_key(), Some("instrument-0"), "Home: split={split} scale={scale} size={size:?}");
+                h.tick(Input { keys: vec![KeyPress { key: Key::End, mods: Mods::default() }], ..Default::default() });
+                h.idle(30);
+                assert_eq!(h.ui.focus_key(), Some("instrument-99"), "End: split={split} scale={scale} size={size:?}");
+                let scene = h.ui.scene().unwrap();
+                let viewport = scene.surface("browser-list").unwrap().frame;
+                let last = scene.surface("instrument-99").unwrap().frame;
+                assert!(last.y >= viewport.y - 0.5 && last.y + last.size.height <= viewport.y + viewport.size.height + 0.5,
+                    "End reveals the focused last row after resize");
+            }
+        }
+    }
 }
 
 #[test]

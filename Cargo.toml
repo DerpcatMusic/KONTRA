@@ -12,7 +12,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [features]
 default = ["plugin", "clap", "vst3", "library-access"]
-plugin = ["dep:moose", "dep:png", "dep:rfd", "dep:mui-text", "dep:zune-jpeg"]
+plugin = ["dep:moose", "dep:png", "dep:rfd", "dep:mui-native-dialog", "dep:mui-text", "dep:zune-jpeg"]
 clap = ["plugin", "dep:moose-clap", "dep:clap-sys"]
 vst3 = ["plugin", "dep:moose-vst3"]
 standalone = ["plugin", "dep:moose-standalone"]
@@ -51,11 +51,15 @@ moose-vst3 = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b
 moose-standalone = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", features = ["gui", "playback"], optional = true }
 clap-sys = { version = "0.5", optional = true }
 mui = { git = "https://github.com/Matari-Audio/MUI", features = ["cpu"], optional = true }
-# Native file dialogs; on Linux the XDG desktop portal over a runtime-loaded libdbus.
-rfd = { version = "0.17", default-features = false, features = ["xdg-portal"], optional = true }
 # Library covers: the name typeset from the bundled font, and JPEG artwork the player picks.
 mui-text = { git = "https://github.com/Matari-Audio/MUI", optional = true }
 zune-jpeg = { version = "0.5", default-features = false, features = ["std"], optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+mui-native-dialog = { git = "https://github.com/Matari-Audio/MUI", features = ["xdg-portal"], optional = true }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"], optional = true }
 
 # Stream rings hand idle pages back (madvise).
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]

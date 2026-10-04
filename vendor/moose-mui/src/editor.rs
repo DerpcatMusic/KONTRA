@@ -218,6 +218,14 @@ impl<P: Params> MuiEditor<P> {
         self
     }
 
+    /// Publish a safe portal parent at creation; cancel dialogs before native close.
+    #[cfg(target_os = "linux")]
+    #[must_use]
+    pub fn on_x11_window(self, f: impl FnMut(Option<u32>) + Send + 'static) -> Self {
+        self.requests.on_x11_window(Arc::new(Mutex::new(f)));
+        self
+    }
+
     /// Hide the pointer while `f` says so (a knob being dragged), and put it
     /// back where it hid once `f` stops. Asked every display tick with the
     /// frame's `Ui`, on the window's thread.
