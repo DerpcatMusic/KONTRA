@@ -146,6 +146,34 @@ does not prove its transition or timbre behavior.
 
 ## Checkpoint validation
 
+Installed checkpoint `25105ae` replaces the standalone, CLAP and VST3 binaries,
+with the previous files backed up and settings/access records unchanged. Both
+actual Clarinet UI diagnoses initialize with zero resource failures; each owns
+one bank font. The original four-second Clarinet render is byte-identical to
+the prior checkpoint and reports no worker errors. These CLI observations do
+not establish native visual fidelity or exercise the installed Bitwig editor.
+
+The current catalog contains 11 Kontakt libraries and 26 UVI banks declaring
+660 programs (620 Augmented Orchestra and 40 VWinds). Immediate publication of
+this saved catalog measured 10.9 ms; a full scan measured 18.1 seconds. Catalog
+declarations are distinct from the 98 decoded programs in the bounded audit
+(including 50 external Starter presets), and from its 41 static preflight
+admissions. Initialization, interaction, sustained playback and native musical
+comparison remain separate evidence.
+
+This checkpoint uses focused functional verification and feature checks,
+including audio first-cause retention, actual generated-note velocity cases,
+UI resource loading and feature-disabled compilation. The measured lookup/source
+memo changes reduce actual Alto Flute corpus instructions by 26.67% with exact
+PCM/event/state captures. Paced Alto Flute playback still reaches request
+capacity; this is an unresolved realtime failure, not complete compatibility.
+
+The next source pass adds bounded authored `displayText` and eight documented
+unit readouts. Thirteen focused source checks include genuine double-click
+numeric editing: raw values commit on Enter/blur, Escape cancels, and displayed
+units do not silently rescale engine values. Pan formatting and native display
+precision remain uncalibrated. These source changes are not yet in `25105ae`.
+
 At installed checkpoint `75998c3`, the combined `uvi,standalone` optimized CI test run passed 977 library checks,
 89 CLI/playback checks and four additional binary/integration checks. Thirty-five
 external-fixture checks were ignored and one screenshot check was excluded.
