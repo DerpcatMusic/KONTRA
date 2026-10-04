@@ -57,11 +57,16 @@ generation needed for reliable association. The same failure was reported by
 the loader issue, loader completion and staging notification. They are three
 reports of one rejected load, not three separately proven DSP crashes.
 
-The source corrections being prepared use a bounded count/kind summary, retain
+The integrated source corrections use a bounded count/kind summary, retain
 the existing typed per-node causes, carry the exact worker load ID and stage
 into staging notifications, and wrap Logs text within the available width.
 Association must use genuine identity; older abbreviated staging events cannot
 be joined to other attempts merely because their bank and reason look alike.
+
+The single warning in the Augmented Orchestra session is
+`support/previous_session_unconfirmed`: an earlier session ended without native
+crash confirmation. It is not another program-decoder or DSP rejection, and
+does not itself establish that KONTRA crashed. The evidence remains local.
 
 The recorded attempt finished in 1,630.68 ms. Its recorded stages were bank
 opening 432.51 ms, program decode 260.03 ms, diagnosis/preflight reporting
@@ -74,6 +79,12 @@ The next journal records `VWinds-Oboe_V2.ufs`, `Presets/Oboe.uvip`, reaching
 playback before failing with `Bridge(RequestCapacity)` at the reported process
 frame 95,360. This failure belongs to the host/worker audio bridge, not the
 Augmented Orchestra feature checks.
+
+The actual capacity rejection is the bounded ring's `push` in
+`src/uvi/bridge.rs:84`, reached by `seal_partial` after its bounded service
+retry. The displayed excerpt at installed `src/plugin/uvi.rs:859` is the
+caller propagating that bridge error; it does not identify a native DSP
+processor that crashed.
 
 The audio-owned first-fault frontier retains 27 pending requests in a ring
 with capacity 27 and no prefetched audio. Submitted and received frontiers
@@ -98,8 +109,11 @@ does not establish a throughput fix. See
 
 ## Verification boundary
 
-Installed binaries remain `cc54c67` during this investigation. Subsequent
-message/layout/association source changes require compilation and editor
-verification; no new build, tests or playback runs are claimed here. Neither
+Installed binaries remain `cc54c67` during this investigation. Source commits
+`d7384b9`, `e4a674a` and `6a13afb` correct the playback claim, bound the preflight
+summary and retain exact failure identity, and wrap/group Logs respectively.
+The summary and layout changes passed independent static review. Authored
+tests, compilation and editor verification remain pending under the CPU
+constraint; no new build, tests or playback runs are claimed here. Neither
 failure has been shown resolved by the installed checkpoint, and complete
 Falcon compatibility remains unimplemented.

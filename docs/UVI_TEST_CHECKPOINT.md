@@ -62,6 +62,16 @@ compilation does not establish that the live blackout is resolved or that full
 Falcon parity is achieved. Optional PCM caching remains disabled by default.
 Already loaded host instances retain their old binary until the host unloads it.
 
+The subsequent [live failure investigation](UVI_LIVE_LOAD_FAILURE_2026_10_04.md)
+identifies an Augmented Orchestra preflight rejection and a separate Oboe
+request-capacity failure in this installed build. Source follow-ups remove the
+unconditional still-playing claim, bound preflight summaries without losing
+typed node causes, retain exact load identity/stage in staging failures, and
+wrap/group Logs with measured visible row heights. They have independent static
+review where noted; compilation, functional and visual verification are pending.
+These follow-ups have not replaced the installed binary or implemented the
+missing Augmented Orchestra execution paths.
+
 ## Previous installed checkpoint and historical verification
 
 Installed `bb60218e0226043ece56de9c3d66d20f655c748c` replaces the standalone,
