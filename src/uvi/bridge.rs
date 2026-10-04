@@ -33,6 +33,37 @@ pub struct ProcessReport {
     pub discarded_packets: u32,
 }
 
+/// Audio-owned state frozen after Bridge abort. It does not sample concurrent
+/// worker queue depths/counters or claim a scheduling/CPU cause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct FailureFrontier {
+    pub bridge_frame: u64,
+    pub partial_packet_frame: u64,
+    pub submitted_frame: u64,
+    pub received_frame: u64,
+    pub discard_before_frame: u64,
+    pub consumed_host_frame: u64,
+    pub latency_frames: u64,
+    pub pending_requests: u64,
+    pub pending_capacity: u64,
+    pub prefetched_audio: u64,
+    pub active_packet_frame: Option<u64>,
+}
+impl FailureFrontier {
+    pub(crate) fn words(self) -> [u64; 11] {
+        [self.bridge_frame, self.partial_packet_frame, self.submitted_frame,
+            self.received_frame, self.discard_before_frame, self.consumed_host_frame,
+            self.latency_frames, self.pending_requests, self.pending_capacity,
+            self.prefetched_audio, self.active_packet_frame.unwrap_or(u64::MAX)]
+    }
+    pub(crate) fn from_words(w: [u64; 11]) -> Self {
+        Self { bridge_frame: w[0], partial_packet_frame: w[1], submitted_frame: w[2],
+            received_frame: w[3], discard_before_frame: w[4], consumed_host_frame: w[5],
+            latency_frames: w[6], pending_requests: w[7], pending_capacity: w[8],
+            prefetched_audio: w[9], active_packet_frame: (w[10] != u64::MAX).then_some(w[10]) }
+    }
+}
+
 /// Two actual bounded queues: pending requests and prefetched stereo packets.
 /// Allocation and destruction belong to the loader, never to these operations.
 struct Ring<T: Copy> {
@@ -178,6 +209,24 @@ impl Bridge {
         self.failed
     }
 
+    /// Only failed endpoints publish a frontier: check() prevents later queue
+    /// or clock mutation. The slot/callback start remains a separate frame.
+    pub(crate) fn failure_frontier(&self) -> Option<FailureFrontier> {
+        self.failed.map(|_| FailureFrontier {
+            bridge_frame: self.frame,
+            partial_packet_frame: self.partial.request.stamp.frame,
+            submitted_frame: self.submitted_frame,
+            received_frame: self.received_frame,
+            discard_before_frame: self.discard_before,
+            consumed_host_frame: self.consumed_host_frame,
+            latency_frames: u64::from(self.latency),
+            pending_requests: self.requests.len as u64,
+            pending_capacity: self.requests.data.len() as u64,
+            prefetched_audio: self.audio.len as u64,
+            active_packet_frame: self.active_frame,
+        })
+    }
+
     /// Mark activation abort without joining, destroying or clearing its owned
     /// storage. The host ledger owns cancellation; the loader owns retirement.
     pub fn abort(&mut self, reason: BridgeError) {
@@ -284,6 +333,19 @@ impl Bridge {
                 Err(error) => return self.fail(BridgeError::Worker(error)),
             }
         }
+        Ok(())
+    }
+
+    fn seal_partial(&mut self, report: &mut ProcessReport) -> Result<(), BridgeError> {
+        if self.requests.full() {
+            // Worker input room may have opened since the pre-render service.
+            // One bounded retry; persistent pressure keeps the existing abort.
+            self.service(report)?;
+        }
+        if let Err(error) = self.requests.push(self.partial) {
+            return self.fail(error);
+        }
+        self.partial = empty_request(Stamp { frame: self.frame, ..self.stamp });
         Ok(())
     }
 
@@ -409,13 +471,7 @@ impl Bridge {
             offset += n;
             self.frame += n as u64;
             if self.frame.is_multiple_of(BLOCK_FRAMES as u64) {
-                if let Err(error) = self.requests.push(self.partial) {
-                    return self.fail(error);
-                }
-                self.partial = empty_request(Stamp {
-                    frame: self.frame,
-                    ..self.stamp
-                });
+                self.seal_partial(&mut report)?;
             }
         }
         self.service(&mut report)?;
@@ -654,5 +710,93 @@ mod tests {
         drop(bridge);
         worker.stop();
         std::fs::remove_file(bank).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod full_pending_seal_proof {
+    use super::*;
+    use crate::uvi::{script::{HostRoot, Input}, worker::tests::HostedPacketFixture};
+    fn hosted_note(stamp: Stamp, release: bool) -> HostedRequest {
+        let root = HostRoot { epoch: stamp.epoch, generation: stamp.generation, token: 42 };
+        let event = if release { HostedInput::Off { root, frame: stamp.frame } }
+        else { HostedInput::On { root, input: Input { frame: stamp.frame,
+            kind: InputKind::NoteOn { channel: 0, note: 60, velocity: 100 } } } };
+        HostedRequest::new(Request::new(stamp, &[]).unwrap(), &[event]).unwrap()
+    }
+    fn full_pending() -> (HostedPacketFixture, Bridge) {
+        let (fixture, port) = HostedPacketFixture::new();
+        let mut bridge = Bridge::new(port, 7, 9, 512, 16).unwrap();
+        for packet in 0..QUEUE_CAPACITY {
+            bridge.port.realtime().try_submit_hosted(empty_request(Stamp {
+                frame: packet as u64 * BLOCK_FRAMES as u64, ..bridge.stamp })).unwrap();
+        }
+        bridge.submitted_frame = QUEUE_CAPACITY as u64 * BLOCK_FRAMES as u64;
+        let capacity = bridge.requests.data.len();
+        for packet in QUEUE_CAPACITY..QUEUE_CAPACITY + capacity {
+            let stamp = Stamp { frame: packet as u64 * BLOCK_FRAMES as u64, ..bridge.stamp };
+            bridge.requests.push(if packet == QUEUE_CAPACITY { hosted_note(stamp, false) }
+                else { empty_request(stamp) }).unwrap();
+        }
+        bridge.partial = hosted_note(Stamp { frame: (QUEUE_CAPACITY + capacity) as u64
+            * BLOCK_FRAMES as u64, ..bridge.stamp }, true);
+        bridge.frame = bridge.partial.request.stamp.frame + BLOCK_FRAMES as u64;
+        (fixture, bridge)
+    }
+    #[test]
+    fn seal_retries_new_room_without_overtaking_or_dropping_hosted_notes() {
+        let (fixture, mut bridge) = full_pending();
+        let latency = bridge.latency;
+        let capacity = bridge.requests.data.len();
+        let sealed = bridge.partial;
+        let mut report = ProcessReport::default();
+        bridge.service(&mut report).unwrap();
+        assert_eq!(report.submitted_packets, 0);
+        // Deterministic worker dequeue between the pre-render poll and seal.
+        assert_eq!(fixture.pop().unwrap().request.stamp.frame, 0);
+        assert_eq!(crate::test_support::allocations(|| bridge.seal_partial(&mut report).unwrap()), 0);
+        assert_eq!(report.submitted_packets, 1);
+        assert_eq!((bridge.latency, bridge.requests.data.len(), bridge.requests.len), (latency, capacity, capacity));
+        for packet in 1..=QUEUE_CAPACITY {
+            let received = fixture.pop().unwrap();
+            assert_eq!(received.request.stamp.frame, packet as u64 * BLOCK_FRAMES as u64);
+            if packet == QUEUE_CAPACITY {
+                assert!(matches!(received.roots[0], HostedInput::On { root, .. } if root.token == 42));
+            }
+        }
+        let mut last = None;
+        while let Some(request) = bridge.requests.pop() {
+            if let Some(previous) = last { assert_eq!(request.request.stamp.frame, previous + BLOCK_FRAMES as u64); }
+            last = Some(request.request.stamp.frame);
+            if request.request.stamp.frame == sealed.request.stamp.frame {
+                assert_eq!(request.root_count, 1);
+                assert!(matches!(request.roots[0], HostedInput::Off { root, frame }
+                    if root.token == 42 && frame == sealed.request.stamp.frame));
+            }
+        }
+        assert_eq!(last, Some(sealed.request.stamp.frame));
+        assert_eq!(bridge.partial.request.stamp.frame, bridge.frame);
+        assert_eq!(bridge.failure(), None);
+    }
+    #[test]
+    fn persistent_full_retains_sealed_packet_and_freezes_owned_failure_frontier() {
+        let (fixture, mut bridge) = full_pending();
+        let sealed = bridge.partial.request.stamp.frame;
+        let mut report = ProcessReport::default();
+        assert_eq!(bridge.seal_partial(&mut report), Err(BridgeError::RequestCapacity));
+        let frontier = bridge.failure_frontier().unwrap();
+        assert_eq!(frontier.pending_requests, frontier.pending_capacity);
+        assert_eq!(frontier.partial_packet_frame, sealed);
+        assert_eq!(frontier.bridge_frame, sealed + BLOCK_FRAMES as u64);
+        assert_eq!(frontier.submitted_frame, QUEUE_CAPACITY as u64 * BLOCK_FRAMES as u64);
+        assert_eq!(bridge.partial.root_count, 1);
+        assert!(matches!(bridge.partial.roots[0], HostedInput::Off { .. }));
+        // Worker progress after failure is not part of the frozen Bridge census.
+        fixture.pop().unwrap();
+        let mut left = [1.; 2]; let mut right = [1.; 2];
+        assert_eq!(bridge.process(&mut left, &mut right), Err(BridgeError::RequestCapacity));
+        assert_eq!(left, [0.; 2]); assert_eq!(right, [0.; 2]);
+        assert_eq!(bridge.try_completion(0), Err(BridgeError::RequestCapacity));
+        assert_eq!(bridge.failure_frontier(), Some(frontier));
     }
 }

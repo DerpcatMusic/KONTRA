@@ -438,6 +438,11 @@ fn fail(
             "error_code":fault.error.code(), "stage":fault.stage.as_str(), "frame":fault.frame,
             "source_file":fault.source, "line":fault.line, "source_kind":"rust",
             "source_revision":crate::build_info::BUILD.source_revision});
+        if let Some(frontier) = fault.bridge_frontier {
+            details["bridge_frontier"] = serde_json::json!(frontier);
+            details["bridge_frontier_scope"] = serde_json::json!(
+                "audio_owned_state_after_first_failure_before_retirement; worker counters are later observations");
+        }
         match rust_excerpt(fault.source, fault.line) {
             Ok(excerpt) => details["source_excerpt"] = excerpt,
             Err(reason) => details["source_excerpt_unavailable"] = serde_json::json!(reason),
@@ -792,7 +797,7 @@ mod tests {
         let mut endpoint = uvi::Failure {
             error:uvi::Error::Bridge(BridgeError::RequestCapacity), frame:78464,
             stage:uvi::FailureStage::Process, epoch:4, generation:2,
-            source:"src/plugin/uvi.rs", line:1,
+            source:"src/plugin/uvi.rs", line:1, bridge_frontier:None,
         };
         let reason = failure_reason("fallback".into(),Some(endpoint),Some(&worker));
         assert!(reason.starts_with("Bridge(RequestCapacity) at process (frame 78464)"));

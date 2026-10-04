@@ -1919,6 +1919,21 @@ fn serve(player: &mut Player<'_>, shared: &Shared, sample_rate: u32) -> Result<(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    /// Reuse the worker's real bounded hosted transport, without a thread or
+    /// renderer. This fixture proves packet plumbing only, not Worker readiness.
+    pub(crate) struct HostedPacketFixture { shared: Arc<Shared> }
+    impl HostedPacketFixture {
+        pub(crate) fn new() -> (Self, AudioPort) {
+            let shared = Arc::new(Shared::new_mode(7, 9, true));
+            shared.status.store(Status::Ready as u8, Ordering::Release);
+            let port = AudioPort { shared: shared.clone(), cursor: PacketCursor::default() };
+            (Self { shared }, port)
+        }
+        pub(crate) fn pop(&self) -> Option<HostedRequest> {
+            self.shared.hosted.as_ref().unwrap().requests.pop()
+        }
+    }
+
     use super::super::{crypto, program::parse_program};
     use super::*;
     use std::collections::BTreeMap;

@@ -618,6 +618,7 @@ impl PartShared {
             None => (error, frame, "src/plugin.rs", std::panic::Location::caller().line()),
         };
         if self.uvi_failure.record(uvi::Failure { error, frame, source, line, stage,
+            bridge_frontier: audio.slot().failure_frontier(),
             epoch: audio.epoch(), generation: audio.generation() }) {
             self.uvi_failed.store(true, Ordering::Release);
         }
