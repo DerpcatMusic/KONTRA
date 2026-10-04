@@ -180,6 +180,7 @@ fn diagnose_ui(
             serde_json::json!({"outcome":if diagnostics.failed == 0 && diagnostics.limited == 0 {
                 "complete"
             } else {"partial"},"pictures":assets.refresh(&[]).len(),
+                "fonts":assets.fonts().len(),"failed_font_references":diagnostics.font_failed,
                 "failed_references":diagnostics.failed,"limited_references":diagnostics.limited,
                 "resident_bytes":assets.resident_bytes()})
         }

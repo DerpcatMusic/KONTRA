@@ -1,6 +1,7 @@
 //! Native controls over a bank's authored UVI layout. Snapshots and decoded
 //! artwork are adopted off the audio thread; this module never opens resources.
-//! Units, mappers and complex displays are not emulated here.
+//! Unit readouts follow documented conversions; mappers and complex displays
+//! are not emulated here. Typed numeric edits still use the raw value domain.
 use super::theme::*;
 use crate::artwork::Picture;
 use crate::uvi::{
@@ -152,6 +153,34 @@ fn number_text(value: f64, integer: bool) -> String {
             .to_owned()
     }
 }
+
+// Native enum IDs are installed by the host shim. Unit changes only the
+// readout, never the engine value, range, sprite position, or edit payload.
+fn unit_text(value: f64, integer: bool, unit: Option<f64>) -> String {
+    let (value, suffix) = match unit {
+        Some(1.) => (value, "%"),
+        Some(2.) => (value * 100., "%"),
+        Some(3.) if value.abs() < 1. => (value * 1000., "ms"),
+        Some(3.) => (value, "s"),
+        Some(5.) if value.abs() > 1000. => (value / 1000., "s"),
+        Some(5.) => (value, "ms"),
+        Some(7.) if value.abs() > 1000. => (value / 1000., "kHz"),
+        Some(7.) => (value, "Hz"),
+        Some(9.) => (value, "dB"),
+        Some(11.) if value <= 0. => return "-inf dB".into(),
+        Some(11.) => (20. * value.log10(), "dB"),
+        Some(14.) => (value, "st"),
+        // Pan's native text law and UVI filter formatting need calibration.
+        _ => return number_text(value, integer),
+    };
+    format!("{} {suffix}", number_text(value + 0., false))
+}
+
+fn value_text(widget: &UiWidget, value: f64) -> String {
+    widget.style.display_text.as_ref().filter(|s| !s.is_empty()).cloned()
+        .unwrap_or_else(|| unit_text(value, widget.integer, widget.style.unit))
+}
+
 
 fn colour(text: Option<&str>) -> Option<Color> {
     let text = text?.trim();
@@ -388,7 +417,10 @@ pub fn view(
                             &mut send,
                         );
                     }
-                    let mut field = field.el.value_text(number_text(value, widget.integer)).el();
+                    let mut field = field.el.value_text(value_text(widget, value)).el()
+                        .tip(format!("Enter a number from {} to {}.",
+                            number_text(*range.start(), widget.integer),
+                            number_text(*range.end(), widget.integer)));
                     scale_control(&mut field, ui, scale);
                     let mut content = if widget.style.show_label != Some(false) {
                         row![
@@ -484,7 +516,7 @@ pub fn view(
                 }
                 if widget.style.show_value != Some(false) {
                     content.push(
-                        caption(number_text(value, widget.integer))
+                        caption(value_text(widget, value))
                             .text_size(SMALL * scale)
                             .lines(1),
                     );
@@ -506,8 +538,8 @@ pub fn view(
                     })
                     .tip(format!(
                         "{label}: {}–{}",
-                        number_text(*range.start(), widget.integer),
-                        number_text(*range.end(), widget.integer)
+                        unit_text(*range.start(), widget.integer, widget.style.unit),
+                        unit_text(*range.end(), widget.integer, widget.style.unit)
                     ))
                     .named(label.to_owned())
                     .id(id.clone())
@@ -1151,6 +1183,118 @@ mod tests {
             assert!((knob.y - intrinsic.y * scale).abs() < 0.01);
             assert!((knob.size.width - intrinsic.width * scale).abs() < 0.01);
             assert!((knob.size.height - intrinsic.height * scale).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn documented_used_units_format_without_rescaling_values_or_edits() {
+        for (unit, value, expected) in [
+            (1., 25., "25 %"), (2., 0.25, "25 %"),
+            (3., 0.25, "250 ms"), (3., 1., "1 s"),
+            (5., 250., "250 ms"), (5., 1000., "1000 ms"), (5., 1250., "1.25 s"),
+            (7., 1000., "1000 Hz"), (7., 1250., "1.25 kHz"),
+            (9., -60., "-60 dB"), (11., 0., "-inf dB"),
+            (11., 1., "0 dB"), (11., 0.5, "-6.021 dB"), (14., -3., "-3 st"),
+        ] {
+            assert_eq!(unit_text(value, false, Some(unit)), expected);
+        }
+        let mut snapshot = authored();
+        let knob = &mut snapshot.widgets[1];
+        knob.style.unit = Some(2.);
+        assert_eq!(value_text(knob, 0.375), "37.5 %");
+        knob.style.display_text = Some("Authored override".into());
+        assert_eq!(value_text(knob, 0.375), "Authored override");
+        knob.style.display_text = Some(String::new());
+        assert_eq!(value_text(knob, 0.375), "37.5 %");
+        let current = stamp(4);
+        let mut ui = super::super::theme::ui();
+        let mut state = State::default();
+        let mut edits = Vec::new();
+        tick(&mut ui, &mut state, &snapshot, current, current, Input::default(), &mut edits);
+        ui.focus(identity(0, current, &snapshot, 2));
+        tick(&mut ui, &mut state, &snapshot, current, current, Input {
+            keys: vec![KeyPress { key: Key::Up, mods: Mods::default() }],
+            ..Input::default()
+        }, &mut edits);
+        tick(&mut ui, &mut state, &snapshot, current, current, Input::default(), &mut edits);
+        assert!(edits.iter().any(|(_, input)| matches!(input.edit.value,
+            UiEditValue::Number(value) if (value - 0.385).abs() < 1e-12)));
+        assert!(matches!(snapshot.widgets[1].value, Some(UiValue::Number(0.375))));
+    }
+
+    #[test]
+    fn numbox_double_click_types_raw_values_and_commits_or_cancels() {
+        for display in [None, Some("Authored display override")] {
+            for finish in ["unchanged", "enter", "blur", "escape", "unit_text"] {
+                let mut snapshot = authored();
+                let widget = &mut snapshot.widgets[3];
+                widget.value = Some(UiValue::Number(0.375));
+                widget.min = Some(0.);
+                widget.max = Some(1.);
+                widget.integer = false;
+                widget.style.show_label = Some(false);
+                widget.style.unit = Some(2.);
+                widget.style.display_text = display.map(str::to_owned);
+                let current = stamp(4);
+                let id = identity(0, current, &snapshot, 4);
+                let mut ui = super::super::theme::ui();
+                let mut state = State::default();
+                let mut edits = Vec::new();
+                for _ in 0..3 {
+                    tick(&mut ui,&mut state,&snapshot,current,current,Input::default(),&mut edits);
+                }
+                let bounds = ui.scene().unwrap().surface(&id).unwrap().frame;
+                assert_eq!(ui.scene().unwrap().surface(&id).unwrap().tip.as_deref(),
+                    Some("Enter a number from 0 to 1."));
+                let pos = Point::new(bounds.x+0.5*bounds.size.width,
+                    bounds.y+0.5*bounds.size.height);
+                let mut double_clicked = false;
+                for down in [true,false,true,false] {
+                    let pointer = PointerInput {pos:Some(pos),
+                        buttons:if down {Buttons::PRIMARY} else {Buttons::default()},
+                        ..PointerInput::default()};
+                    tick(&mut ui,&mut state,&snapshot,current,current,pointer.into(),&mut edits);
+                    double_clicked |= ui.get(&id).double_clicked;
+                }
+                tick(&mut ui,&mut state,&snapshot,current,current,Input::default(),&mut edits);
+                assert!(double_clicked, "a genuine double click opened the field");
+                assert!(ui.focus_is_text());
+                let field = ui.focus_key().unwrap().to_owned();
+                let field_value = |ui:&Ui| match &ui.scene().unwrap().surface(&field)
+                    .unwrap().semantics.as_ref().unwrap().role {
+                    A11y::TextInput {value,..} => value.to_string(),
+                    _ => panic!("editing the actual numeric text field"),
+                };
+                assert_eq!(field_value(&ui), "0.375", "display override cannot seed typed input");
+                assert!(edits.is_empty());
+                if finish != "unchanged" {
+                    let input = Input {text:if finish == "unit_text" {"37.5 %"} else {"0.625"}.into(),
+                        ..Input::default()};
+                    tick(&mut ui,&mut state,&snapshot,current,current,input,&mut edits);
+                    tick(&mut ui,&mut state,&snapshot,current,current,Input::default(),&mut edits);
+                    assert_eq!(field_value(&ui), if finish == "unit_text" {"37.5 %"} else {"0.625"});
+                }
+                let input = if finish == "blur" {
+                    PointerInput {pos:Some(Point::new(10.,10.)),buttons:Buttons::PRIMARY,
+                        ..PointerInput::default()}.into()
+                } else {
+                    Input {keys:vec![KeyPress {key:if finish == "escape" {Key::Escape} else {Key::Enter},
+                        mods:Mods::default()}],..Input::default()}
+                };
+                tick(&mut ui,&mut state,&snapshot,current,current,input,&mut edits);
+                for _ in 0..2 {
+                    tick(&mut ui,&mut state,&snapshot,current,current,Input::default(),&mut edits);
+                }
+                assert!(!ui.focus_is_text());
+                assert!(ui.scene().unwrap().surface(&field).is_none());
+                if matches!(finish, "enter" | "blur") {
+                    assert_eq!(edits.len(),1);
+                    assert!(matches!(edits[0].1.edit.value,UiEditValue::Number(v) if v==0.625));
+                } else {
+                    assert!(edits.is_empty(), "unchanged, cancelled, or unit-suffixed text cannot edit");
+                }
+                assert!(matches!(snapshot.widgets[3].value,Some(UiValue::Number(0.375))));
+            }
         }
     }
 

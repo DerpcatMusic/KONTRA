@@ -291,6 +291,7 @@ pub struct UiStrip {
 #[derive(Clone, PartialEq, Serialize, Default)]
 pub struct UiStyle {
     pub text: Option<String>,
+    pub display_text: Option<String>,
     pub align: Option<String>,
     pub font: Option<String>,
     pub font_size: Option<f64>,
@@ -565,6 +566,7 @@ pub fn snapshot_ui(processor: NodeId, environment: &Table) -> mlua::Result<UiSna
         }
         let style = UiStyle {
             text: budget.string(&state, "text")?,
+            display_text: budget.string(&state, "displayText")?,
             align: budget.string(&state, "align")?,
             font: budget.string(&state, "font")?,
             font_size,
@@ -2556,6 +2558,7 @@ mod tests {
           p=Panel{name='same',bounds={10,20,100,100},visible=false,alpha=0.5}
           n=p:Knob{name='gain',value=0.25,min=0,max=1,bounds={3,4,20,30},alpha=0.5}
           n.changed=function()calls=calls+1 end
+          n.displayText='Authored display override'
           n:setStripImage('/Textures/authored-strip.png',16,false)
           menu=Menu{name='choices',items={'First','Second'},selected=2}
           curve=Table{'curve',3,0,0,1};curve:setValue(2,0.5,false)
@@ -2584,6 +2587,7 @@ mod tests {
         assert!(matches!(knob.value,Some(UiValue::Number(n)) if n==0.25));
         assert!(first.widgets[2].items == ["First", "Second"]);
         assert!(matches!(&first.widgets[3].value,Some(UiValue::Table(v)) if v==&[0.0,0.5,0.0]));
+        assert_eq!(knob.style.display_text.as_deref(), Some("Authored display override"));
         assert!(knob.style.strip_image.as_ref().unwrap().frames == 16);
         assert!(knob.style.strip_image.as_ref().unwrap().artwork.bank_root);
         assert!(!first.root.background.as_ref().unwrap().bank_root);
@@ -2732,6 +2736,7 @@ mod tests {
                 "item limit",
             ),
             ("p=Panel(string.rep('x',4097))", "text limit"),
+            ("p=Knob('p');p.displayText=string.rep('x',4097)", "text limit"),
             (
                 "p=Menu('p',{});for i=1,300 do p._state.items[i]=string.rep('x',4096)end",
                 "text limit",
