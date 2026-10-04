@@ -133,6 +133,17 @@ for Program/Layer/Keygroup. Explicit XML, synthetic parents, SamplePlayer and
 renderer gates are unchanged. It is source-reviewed and remains uncompiled;
 newly saved omitted-property deltas cannot restore in older implementations.
 
+The [browser presentation changes](UVI_BROWSER_PRESENTATION.md) retain authored
+UVI preset folders and enable exact bank-stem image sidecars on both artwork
+worker paths. Native product-cover discovery remains unresolved; the inspected
+banks have no sidecars. Failure notices are shorter, Info presents structured
+evidence once, and later worker errors cannot replace an independent captured
+endpoint cause. These changes have static review and prepared unrun checks.
+The [user's Piccolo request-capacity failure](UVI_PICCOLO_REQUEST_CAPACITY_EVIDENCE.md)
+identifies queue exhaustion during playback, not a decoding failure. The
+[render timer boundary](UVI_PACKET_COST_BOUNDARY_EVIDENCE.md) excludes additional
+worker service work; a below-budget mean does not establish sustainable playback.
+
 ## Check the behavior
 
 1. Play from the keyboard, then from the DAW. Check release, overlap and sustain.

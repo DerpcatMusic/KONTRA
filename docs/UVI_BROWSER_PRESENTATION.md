@@ -1,0 +1,33 @@
+# UVI library browser presentation
+
+Source changes following the 2026-10-04 screenshots are reviewed statically.
+They are not compiled, visually checked or installed under the CPU restriction.
+
+Selecting a UVI bank with an empty search now shows expandable folders from
+its actual member paths. Leaves retain the original bank path, UUID and member
+identity. Folder rows cannot load instruments or become filesystem targets.
+Pointer and keyboard navigation reuse the existing browser controls. Search,
+Favorites and Recent remain flat; Unified / By player settings are preserved.
+Oversized trees fall back to the complete flat listing. This follows the
+expand/collapse behavior described in the official [Falcon File Browser
+manual](https://s3.amazonaws.com/uvi/UVIFC/falcon_manual.pdf); it does not claim
+complete parity with Falcon's separate searchable Library Browser.
+
+Both cached-startup and fresh-scan workers now discover explicit bank-specific
+cover sidecars: `Bank.ufs` tries `Bank.png`, then `Bank.jpg`, then `Bank.jpeg`.
+Missing or invalid candidates fall through. The scanner never reads the UFS
+body or uses a sibling bank's generic wallpaper or arbitrary instrument panel.
+Regular-file validation, nonblocking Unix opens, encoded-byte limits and
+decoded-pixel limits bound this automatic path. Images load off the UI thread;
+the immediate cached listing can initially show generated covers.
+
+User-selected covers already worked and retain priority. The inspected owned
+bank folders contain no exact sidecars, and an authoritative bundled product
+cover identity has not been established. Those banks can therefore still show
+generated initials. Native product-cover discovery remains unfinished; this
+change must not be reported as recovering their missing product images.
+
+Prepared functional checks cover folder navigation and preset identity, exact
+sidecar selection, fallback, bank isolation, resource bounds and FIFO rejection.
+All are unrun. No index schema change, bank census, asset decoding or binary
+replacement was performed for this work.
