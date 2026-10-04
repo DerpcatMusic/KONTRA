@@ -115,7 +115,7 @@ does not establish a throughput fix. See
 
 ## Verification boundary
 
-Later static source work adds three narrowly scoped corrections:
+Later static source work adds these narrowly scoped corrections:
 
 - `6390be3` fences native panels against the full loader context. A restore of
   new state from the same bank/member no longer qualifies the retained old panel
@@ -130,10 +130,28 @@ Later static source work adds three narrowly scoped corrections:
   node ID instead of cloning its Vec whenever the per-frame loop is reached.
   Visit order, validation, arithmetic and publication are unchanged; other
   control allocations remain.
+- `304c223` caches nine phase/table points for the existing admitted fixed,
+  global Step Envelope projection within a logical 256-frame block. Complete
+  projection inputs identify the cache; numeric writes invalidate it and the
+  original scalar gates and queried phase-overflow check still run. Other block
+  widths retain the previous path. This is reuse of the current projection,
+  not proof of native host-generation mapping or smoothing support.
+- `5970da8` validates final owned PanLaw scalars at the sampled constructor/save
+  boundary, after the existing authored work and command application. Transient
+  writes and saved prefixes remain admissible when repaired at that boundary.
+  All original Program/Layer/Keygroup owners, including inactive ones, must have
+  a supported scalar of zero or one; future and wait-suspended callbacks are not
+  fully executed by this check. Errors identify the actual node, kind and
+  parameter without echoing invalid retained text. Existing per-launch channel
+  restrictions and native setter/clamping uncertainties remain unchanged.
 
 Each correction passed independent static review. None establishes a measured
 throughput improvement or the cause of the Oboe delivery backlog. No new feature
 gate is opened, and none admits the rejected Augmented Orchestra program.
+Prepared Step cases compare every-frame output and failure timing with the
+explicit previous scalar path, including transport changes and overflow; PanLaw
+cases exercise actual Session ordering, restore repair and error privacy. These
+authored cases are uncompiled/unrun, not successful functional verification.
 
 Installed binaries remain `cc54c67` during this investigation. Source commits
 `d7384b9`, `e4a674a` and `6a13afb` correct the playback claim, bound the preflight

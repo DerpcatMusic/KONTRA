@@ -72,6 +72,15 @@ review where noted; compilation, functional and visual verification are pending.
 These follow-ups have not replaced the installed binary or implemented the
 missing Augmented Orchestra execution paths.
 
+Further static source work fences retained panels against same-source state
+replacement, releases displaced snapshot owners outside the worker phase mutex,
+removes per-frame control-order cloning, caches the admitted fixed Step Envelope
+projection, and validates final owned PanLaw scalars at initialization/save.
+Each has independent static review; new authored tests and runtime checks remain
+pending. No timing gain, Oboe backlog resolution, new Augmented Orchestra
+admission or native host-generation fidelity is established. These source
+changes are not installed in the current `cc54c67` binary.
+
 ## Previous installed checkpoint and historical verification
 
 Installed `bb60218e0226043ece56de9c3d66d20f655c748c` replaces the standalone,
