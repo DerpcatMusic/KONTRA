@@ -19,3 +19,8 @@ impl UviCatalog {
         Err("UVI playback requires a build with UVI support.")
     }
 }
+
+/// A disabled backend has no reader authority or cache reader binding.
+pub(super) fn effective_uvi_reader(settings: &super::Settings) -> Option<PathBuf> {
+    let _ = settings; None
+}

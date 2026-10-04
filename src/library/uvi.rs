@@ -173,3 +173,18 @@ impl UviCatalog {
         })
     }
 }
+
+/// Cache bindings follow the same configured/environment/discovered reader as playback.
+pub(super) fn effective_uvi_reader(settings: &super::Settings) -> Option<PathBuf> {
+    crate::uvi::access::reader_path(settings.uvi_reader.as_deref()).ok()
+}
+
+impl super::Scanner {
+    /// Loader only: authority is transferred directly to the dedicated worker.
+    #[cfg(feature = "uvi")]
+    pub(crate) fn uvi_worker_config(&self, source: &UviSource, sample_rate: u32) -> Result<crate::uvi::worker::StartConfig, &'static str> {
+        let mut catalog = super::lock(&self.uvi);
+        catalog.reader_path = self.settings().uvi_reader.clone();
+        catalog.worker_config(source, sample_rate)
+    }
+}
