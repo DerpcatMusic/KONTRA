@@ -1376,6 +1376,10 @@ impl Runtime {
                 .set_name(format!("UVI ScriptProcessor node {processor}"))
                 .set_environment(environment.clone())
                 .exec()
+                .map_err(|cause| super::lua_failure::initialization(
+                    cause, Some(processor), rt.state.borrow().now,
+                    &format!("UVI ScriptProcessor node {processor}"),
+                ))
                 .context("UVI scoped Lua initialization")?;
             ensure!(rt.fuel.get() > 0, "UVI instruction budget exceeded");
             rt.scope(processor);
@@ -2052,6 +2056,7 @@ impl Runtime {
             .load(source)
             .set_name(name)
             .exec()
+            .map_err(|cause| super::lua_failure::initialization(cause, None, self.state.borrow().now, name))
             .context("UVI Lua initialization")?;
         ensure!(self.fuel.get() > 0, "UVI instruction budget exceeded");
         let rt = self;
