@@ -458,7 +458,8 @@ fn native_activity_lines(activity: &crate::uvi::worker::WorkerLoadActivity) -> V
     }
     let resources = &activity.resources;
     if let Some(total) = resources.total {
-        lines.push((format!("Initial resources: {} / {total} paths loaded · {} unique decodes · {:.2} MiB decoded PCM",
+        let cache = match resources.cache_hit { Some(true) => " · cache hit", Some(false) => " · cache miss", None => "" };
+        lines.push((format!("Initial resources: {} / {total} paths loaded · {} unique decodes · {:.2} MiB decoded PCM{cache}",
             resources.loaded, resources.unique_decodes, resources.bytes as f64 / (1024. * 1024.)), false));
         if let Some(path) = &resources.current {
             lines.push((format!("Current resource: {path}"), false));

@@ -23,6 +23,146 @@ impl fmt::Debug for Storage {
 }
 
 impl Storage {
+    pub(crate) fn cache_tag(&self) -> Result<u8> {
+        Ok(match self.pcm {
+            Pcm::F32(_) => 1,
+            Pcm::I16(_) => 2,
+            Pcm::I24(_, _) => 3,
+            Pcm::Packed(_) => anyhow::bail!("Unsupported cached PCM"),
+        })
+    }
+
+    /// Bounded scratch; neither export nor import retains a second full payload.
+    pub(crate) fn write_cache(
+        &self,
+        writer: &mut impl std::io::Write,
+        stop: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<()> {
+        use std::io::Write;
+        fn words<const N: usize, T>(
+            values: &[T],
+            writer: &mut impl Write,
+            stop: Option<&std::sync::atomic::AtomicBool>,
+            encode: impl Fn(&T) -> [u8; N],
+        ) -> Result<()> {
+            let mut scratch = [0u8; 65536];
+            for chunk in values.chunks(scratch.len() / N) {
+                super::sample::check_cancel(stop)?;
+                for (word, v) in scratch.chunks_exact_mut(N).zip(chunk) {
+                    word.copy_from_slice(&encode(v));
+                }
+                writer.write_all(&scratch[..chunk.len() * N])?;
+                super::sample::check_cancel(stop)?;
+            }
+            Ok(())
+        }
+        match &self.pcm {
+            Pcm::F32(pairs) => words(pairs.as_flattened(), writer, stop, |v| {
+                v.to_bits().to_le_bytes()
+            }),
+            Pcm::I16(values) => words(values, writer, stop, |v| v.to_le_bytes()),
+            Pcm::I24(high, low) => {
+                words(high, writer, stop, |v| v.to_le_bytes())?;
+                for chunk in low.chunks(65536) {
+                    super::sample::check_cancel(stop)?;
+                    writer.write_all(chunk)?;
+                    super::sample::check_cancel(stop)?;
+                }
+                Ok(())
+            }
+            Pcm::Packed(_) => anyhow::bail!("Unsupported cached PCM"),
+        }
+    }
+
+    /// Reconstruct exact packed planes into the existing owned PCM types.
+    pub(crate) fn cache_read(
+        reader: &mut impl std::io::Read,
+        tag: u8,
+        samples: usize,
+        len: usize,
+        stop: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<Self> {
+        use std::io::Read;
+        ensure!(
+            samples <= MAX_SOURCE_BYTES / 4,
+            "Cache decoded sample bound"
+        );
+        let padded = samples
+            .checked_add(samples % 2)
+            .context("Cache count overflow")?;
+        let width = match tag {
+            1 => 4,
+            2 => 2,
+            3 => 3,
+            _ => anyhow::bail!("Unsupported cache storage"),
+        };
+        ensure!(
+            padded.checked_mul(width) == Some(len),
+            "Cache packed geometry mismatch"
+        );
+        let mut scratch = [0u8; 65536];
+        let pcm = match tag {
+            1 => {
+                let mut values = Vec::new();
+                values.try_reserve_exact(padded / 2)?;
+                for start in (0..padded / 2).step_by(scratch.len() / 8) {
+                    let count = (padded / 2 - start).min(scratch.len() / 8);
+                    super::sample::check_cancel(stop)?;
+                    reader.read_exact(&mut scratch[..count * 8])?;
+                    super::sample::check_cancel(stop)?;
+                    for word in scratch[..count * 8].chunks_exact(8) {
+                        let a = f32::from_bits(u32::from_le_bytes(word[..4].try_into()?));
+                        let b = f32::from_bits(u32::from_le_bytes(word[4..].try_into()?));
+                        ensure!(a.is_finite() && b.is_finite(), "Cache nonfinite PCM");
+                        values.push([a, b]);
+                    }
+                }
+                Pcm::F32(values.into_boxed_slice())
+            }
+            2 | 3 => {
+                let mut high = Vec::new();
+                high.try_reserve_exact(padded)?;
+                for start in (0..padded).step_by(scratch.len() / 2) {
+                    let count = (padded - start).min(scratch.len() / 2);
+                    super::sample::check_cancel(stop)?;
+                    reader.read_exact(&mut scratch[..count * 2])?;
+                    super::sample::check_cancel(stop)?;
+                    high.extend(
+                        scratch[..count * 2]
+                            .chunks_exact(2)
+                            .map(|b| i16::from_le_bytes([b[0], b[1]])),
+                    );
+                }
+                if tag == 2 {
+                    Pcm::I16(high.into_boxed_slice())
+                } else {
+                    let mut low = Vec::new();
+                    low.try_reserve_exact(padded)?;
+                    for start in (0..padded).step_by(scratch.len()) {
+                        let count = (padded - start).min(scratch.len());
+                        super::sample::check_cancel(stop)?;
+                        reader.read_exact(&mut scratch[..count])?;
+                        super::sample::check_cancel(stop)?;
+                        low.extend_from_slice(&scratch[..count]);
+                    }
+                    Pcm::I24(high.into_boxed_slice(), low.into_boxed_slice())
+                }
+            }
+            _ => unreachable!(),
+        };
+        let result = Self { pcm, samples };
+        if samples % 2 != 0 {
+            let padding = match &result.pcm {
+                Pcm::F32(v) => v.last().unwrap()[1].to_bits() == 0,
+                Pcm::I16(v) => *v.last().unwrap() == 0,
+                Pcm::I24(h, l) => *h.last().unwrap() == 0 && *l.last().unwrap() == 0,
+                _ => false,
+            };
+            ensure!(padding, "Cache odd padding differs");
+        }
+        Ok(result)
+    }
+
     pub fn from_f32(mut values: Vec<f32>) -> Result<Self> {
         ensure!(
             values.len() <= MAX_SOURCE_BYTES / size_of::<f32>(),
@@ -126,6 +266,85 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owned_cache_planes_roundtrip_and_validate_before_use() {
+        use std::{io::Cursor, sync::atomic::AtomicBool};
+        for values in [
+            vec![0.5, -0.0, 0.25],
+            vec![0.5, 0.25, 0.75],
+            vec![1.0 / 8388608.0, 0.25, 0.75],
+        ] {
+            let original = Storage::from_f32(values).unwrap();
+            let tag = original.cache_tag().unwrap();
+            let mut bytes = Vec::new();
+            original.write_cache(&mut bytes, None).unwrap();
+            let restored = Storage::cache_read(
+                &mut Cursor::new(&bytes),
+                tag,
+                original.len(),
+                bytes.len(),
+                None,
+            )
+            .unwrap();
+            assert_eq!(restored.bytes(), original.bytes());
+            assert!(
+                restored
+                    .iter()
+                    .zip(original.iter())
+                    .all(|(a, b)| a.to_bits() == b.to_bits())
+            );
+            assert!(
+                Storage::cache_read(
+                    &mut Cursor::new(&bytes[..bytes.len() - 1]),
+                    tag,
+                    original.len(),
+                    bytes.len(),
+                    None
+                )
+                .is_err()
+            );
+            let stop = AtomicBool::new(true);
+            assert!(
+                Storage::cache_read(
+                    &mut Cursor::new(&bytes),
+                    tag,
+                    original.len(),
+                    bytes.len(),
+                    Some(&stop)
+                )
+                .unwrap_err()
+                .is::<super::super::sample::LoadCancelled>()
+            );
+        }
+        let mut nonfinite =
+            std::io::Cursor::new([f32::NAN.to_bits().to_le_bytes(), 0u32.to_le_bytes()].concat());
+        assert!(Storage::cache_read(&mut nonfinite, 1, 2, 8, None).is_err());
+        assert!(Storage::cache_read(&mut Cursor::new([0, 0, 1, 0]), 2, 1, 4, None).is_err());
+        assert!(
+            Storage::cache_read(&mut Cursor::new([]), 2, MAX_SOURCE_BYTES / 4 + 1, 0, None)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn owned_cache_read_preserves_real_io_error_during_stop() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct Fail<'a>(&'a AtomicBool);
+        impl std::io::Read for Fail<'_> {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                self.0.store(true, Ordering::Release);
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "authored cache read failure",
+                ))
+            }
+        }
+        let stop = AtomicBool::new(false);
+        let error = Storage::cache_read(&mut Fail(&stop), 2, 2, 4, Some(&stop)).unwrap_err();
+        assert!(!error.is::<super::super::sample::LoadCancelled>());
+        assert_eq!(error.to_string(), "authored cache read failure");
+    }
 
     #[test]
     fn validation_covers_chunk_boundaries_and_preserves_signed_zero() {
