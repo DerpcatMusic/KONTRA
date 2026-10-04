@@ -1510,10 +1510,11 @@ impl Runtime {
                         160 => "onPolyAfterTouch",
                         _ => anyhow::bail!("Unsupported UVI chain event type"),
                     };
-                    if let Some(f) = environment
-                        .get::<Option<Function>>("onEvent")?
-                        .or(environment.get::<Option<Function>>(callback)?)
-                    {
+                    let handler = match environment.get::<Option<Function>>("onEvent")? {
+                        Some(handler) => Some(handler),
+                        None => environment.get::<Option<Function>>(callback)?,
+                    };
+                    if let Some(f) = handler {
                         let event = event_snapshot(&self.lua, event)?;
                         let thread = self.lua.create_thread(f)?;
                         let mut state = self.state.borrow_mut();
@@ -2609,9 +2610,10 @@ impl Runtime {
             .borrow_mut()
             .receive(&self.lua, &event, None, root)?;
         let globals = self.lua.globals();
-        let handler = globals
-            .get::<Option<Function>>("onEvent")?
-            .or(globals.get::<Option<Function>>(callback)?);
+        let handler = match globals.get::<Option<Function>>("onEvent")? {
+            Some(handler) => Some(handler),
+            None => globals.get::<Option<Function>>(callback)?,
+        };
         if let Some(f) = handler {
             self.spawn(f, MultiValue::from_vec(vec![Value::Table(event)]), parent)?;
         } else {
@@ -3359,6 +3361,55 @@ fn collect(mut rt: Runtime, inputs: &[Input], until: u64) -> Result<Processed> {
 
 #[cfg(test)]
 mod tests {
+    fn callback_dispatch_fixture(scoped: bool, source: &str, inputs: &[Input], until: u64) -> Result<Vec<Command>> {
+        if scoped {
+            let program = parse_program(&format!(r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[{source}]]></script></ScriptProcessor></EventProcessors><Layers><Layer/></Layers></Program>"#))?;
+            Ok(process_program_chain(&program, BTreeMap::new(), None, inputs, until)?.commands)
+        } else {
+            process(source, "authored-callback-selection", inputs, until)
+        }
+    }
+
+    #[test]
+    fn winning_on_event_does_not_convert_unused_specialized_callbacks() {
+        let source = r#"
+          onNote=17;onController={}
+          function onEvent(e)
+            if e.type==Event.NoteOn then e.note=e.note+1;wait(1) end
+            postEvent(e)
+          end
+        "#;
+        let inputs = [audio_on(0), Input { frame: 48, kind: InputKind::Controller {
+            channel: 0, controller: 1, value: 70,
+        }}];
+        for scoped in [false, true] {
+            let commands = callback_dispatch_fixture(scoped, source, &inputs, 48).unwrap();
+            assert_eq!(commands.len(), 2);
+            assert!(matches!(&commands[0], Command {frame:48, action:Action::Start(note)} if note.note==61));
+            assert!(matches!(&commands[1], Command {frame:48, action:Action::Controller {channel:0, controller:1, value:70}}));
+        }
+    }
+
+    #[test]
+    fn selected_specialized_callback_type_errors_and_absent_forwarding_are_preserved() {
+        let controller = Input { frame: 0, kind: InputKind::Controller {
+            channel: 0, controller: 1, value: 70,
+        }};
+        for scoped in [false, true] {
+            assert!(callback_dispatch_fixture(scoped, "onNote=17", &[audio_on(0)], 0).is_err());
+            assert!(callback_dispatch_fixture(scoped, "onController={}", &[controller], 0).is_err());
+            assert!(callback_dispatch_fixture(scoped, "onEvent=17;function onNote(e)postEvent(e)end", &[audio_on(0)], 0).is_err());
+            let fallback = callback_dispatch_fixture(scoped,
+                "function onNote(e)e.note=e.note+2;postEvent(e)end", &[audio_on(0)], 0).unwrap();
+            assert_eq!(fallback.len(), 1);
+            assert!(matches!(&fallback[0].action, Action::Start(note) if note.note==62));
+            let automatic = callback_dispatch_fixture(scoped, "", &[audio_on(0), controller], 0).unwrap();
+            assert_eq!(automatic.len(), 2);
+            assert!(matches!(&automatic[0].action, Action::Start(note) if note.note==60));
+            assert!(matches!(&automatic[1].action, Action::Controller {channel:0, controller:1, value:70}));
+        }
+    }
+
     #[test]
     fn final_pan_law_admission_preserves_transient_repairs_and_restore_on_init() {
         let program = super::super::program::parse_program(r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
