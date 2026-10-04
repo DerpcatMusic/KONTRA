@@ -983,7 +983,8 @@ pub(crate) fn source_parameters(program: &Program) -> Vec<BTreeMap<String, Param
             // Original Workstation 4.0.9 authored missing-attribute probes:
             // these getters are linear Gain=1, Pan=0 and PanLaw=0 for
             // Program/Layer/Keygroup (the PanLaw definition default is 1).
-            // SamplePlayer has Gain, but no Pan or PanLaw getter.
+            // These three kinds also report omitted BypassInsertFX=false.
+            // SamplePlayer has Gain, but no Pan, PanLaw or BypassInsertFX getter.
             if matches!(
                 node.kind.as_str(),
                 "Program" | "Layer" | "Keygroup" | "SamplePlayer"
@@ -999,6 +1000,9 @@ pub(crate) fn source_parameters(program: &Program) -> Vec<BTreeMap<String, Param
                 values
                     .entry("PanLaw".into())
                     .or_insert(ParameterValue::Number(0.));
+                values
+                    .entry("BypassInsertFX".into())
+                    .or_insert(ParameterValue::Boolean(false));
             }
             if !wrappers.contains(&node.kind.as_str()) && node.kind != "Connections" {
                 values
@@ -2632,6 +2636,62 @@ mod tests {
         environment.raw_set("_G", environment.clone()).unwrap();
         install_ui(lua, &environment).unwrap();
         environment
+    }
+
+    #[test]
+    fn measured_missing_insert_bypass_default_preserves_types_and_saved_deltas() {
+        let program = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer/></Oscillators></Keygroup></Keygroups></Layer><Layer BypassInsertFX="1"><Keygroups><Keygroup BypassInsertFX="0"/></Keygroups></Layer></Layers></Program>"#).unwrap();
+        let lua = vm();
+        let host = install(&lua, HostConfig {
+            program: Some(&program), modules: BTreeMap::new(), now: Rc::new(|| 0),
+            resources: None, valid_voice: None, layer_scope: None,
+        }).unwrap();
+        lua.load(r#"
+          objects={Program,Program.layers[1],Program.layers[1].keygroups[1]}
+          for _,object in ipairs(objects)do
+            assert(object:hasParameter('BypassInsertFX'))
+            assert(object:getParameter('BypassInsertFX')==false)
+            object:setParameter('BypassInsertFX',1)
+            assert(object:getParameter('BypassInsertFX')==false)
+          end
+          assert(Program.layers[2]:getParameter('BypassInsertFX')==true)
+          assert(Program.layers[2].keygroups[1]:getParameter('BypassInsertFX')==false)
+          for _,object in ipairs{Program.layers[1].keygroups[1].oscillators[1],Program.parent,Program.parent.parent}do
+            assert(not object:hasParameter('BypassInsertFX'))
+            assert(not pcall(function()return object:getParameter('BypassInsertFX')end))
+            assert(not pcall(function()object:setParameter('BypassInsertFX',true)end))
+          end
+        "#).exec().unwrap();
+        assert!(host.commands.borrow().is_empty());
+        let fingerprint = super::super::state::fingerprint(&program).unwrap();
+        let initial = super::super::state::SavedState::new(fingerprint,BTreeMap::new(),&host).unwrap().encode().unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&initial).unwrap();
+        assert!(payload["parameters"].as_array().unwrap().is_empty());
+        super::super::state::SavedState::decode(&initial).unwrap().validate(&program).unwrap();
+        lua.load("for _,object in ipairs(objects)do object:setParameter('BypassInsertFX',true)end").exec().unwrap();
+        assert_eq!(host.commands.borrow().len(),3);
+        assert!(host.commands.borrow().iter().all(|command| matches!(
+            &command.action, Action::Parameter {parameter,value:ParameterValue::Boolean(true),..}
+            if parameter=="BypassInsertFX"
+        )));
+        let saved = super::super::state::SavedState::new(fingerprint,BTreeMap::new(),&host).unwrap().encode().unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+        assert_eq!(payload["parameters"].as_array().unwrap().len(),3);
+        let saved = super::super::state::SavedState::decode(&saved).unwrap();
+        saved.validate(&program).unwrap();
+        let fresh_lua = vm();
+        let fresh_host = install(&fresh_lua, HostConfig {
+            program: Some(&program), modules: BTreeMap::new(), now: Rc::new(|| 0),
+            resources: None, valid_voice: None, layer_scope: None,
+        }).unwrap();
+        saved.preload(&fresh_lua,&fresh_host).unwrap();
+        fresh_lua.load(r#"
+          for _,object in ipairs{Program,Program.layers[1],Program.layers[1].keygroups[1],Program.layers[2]}do
+            assert(object:getParameter('BypassInsertFX')==true)
+          end
+          assert(Program.layers[2].keygroups[1]:getParameter('BypassInsertFX')==false)
+        "#).exec().unwrap();
+        assert_eq!(super::super::state::SavedState::new(fingerprint,BTreeMap::new(),&fresh_host).unwrap().encode().unwrap(),saved.encode().unwrap());
     }
 
     #[test]
