@@ -30,7 +30,7 @@ accesskit_macos = { git = "https://github.com/Matari-Audio/MUI" }
 [target.'cfg(target_os = "linux")'.dependencies]
 arboard = { version = "3.6", default-features = false }
 # Accessibility and screen bounds borrow baseview's native connection.
-accesskit_unix = "0.22"
+accesskit_unix = { git = "https://github.com/Matari-Audio/MUI" }
 # The pointer put back after a drag (src/platform.rs): Xlib loaded at run
 # time, the same crate and version baseview loads it with.
 x11-dl = "2.21"

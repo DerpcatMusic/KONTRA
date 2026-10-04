@@ -6,12 +6,18 @@ snapshot fixes. MUI dependencies, including `moose-baseview`, resolve to the
 application's current MUI Git revision through `Cargo.lock`; MOOSE's older
 host must not shadow these fixes.
 
-macOS exception: `accesskit_macos` comes from MUI's vendored Git package
-at `7d140a387be220fb28002cd6e3c35a79715f2193` instead of crates.io, so
+Native provider exceptions: `accesskit_macos` and `accesskit_unix` come from
+MUI's vendored Git packages at the application revision in `Cargo.lock`.
+The Unix provider joins generation-owned workers on teardown. On macOS,
 the native provider uses runtime class names that coexist with other Matari
 plugins loaded by the same host. Its Git revision
 matches the other MUI packages in `Cargo.lock`. The combined accessibility
 adapter remains the existing KONTRA implementation.
+
+Linux picker parenting snapshots the live X11 window before the first frame
+and clears it before native close, outside the UI model lock. The local
+`on_x11_window` adapter hook forwards that lifetime to the portal picker;
+closing an older window cannot clear a newly opened window's parent.
 
 Retained KONTRA behavior:
 
