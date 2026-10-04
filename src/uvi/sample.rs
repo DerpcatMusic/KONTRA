@@ -49,12 +49,11 @@ pub struct Sample {
     pub riff_metadata: Vec<Vec<u8>>,
 }
 
-/// Assemble an ordered mono bundle. All operands must have identical timing
-/// and sampler metadata. Ownership is consumed: cache the result, not a second
-/// copy of the operands. Larger bundles require a streaming source.
-pub fn assemble_mono(mut samples: Vec<Sample>) -> Result<Sample> {
+// Validate a decoded prefix using the final member count. Callers still decode
+// later members before returning this error, preserving codec/read precedence.
+pub(crate) fn validate_mono(samples: &[Sample], channels: usize) -> Result<()> {
     let first = samples.first().context("Empty mono sample bundle")?;
-    let (rate, frames, channels) = (first.rate, first.frames, samples.len());
+    let (rate, frames) = (first.rate, first.frames);
     ensure!(rate > 0 && frames > 0, "Invalid mono bundle dimensions");
     let count = frames
         .checked_mul(channels)
@@ -65,7 +64,7 @@ pub fn assemble_mono(mut samples: Vec<Sample>) -> Result<Sample> {
     );
     let mut metadata_bytes = 0usize;
     let mut metadata_chunks = 0usize;
-    for sample in &samples {
+    for sample in samples {
         ensure!(sample.channels == 1, "Sample bundle operands must be mono");
         ensure!(!sample.wavetable_image, "Image tables cannot form audio bundles");
         ensure!(
@@ -95,10 +94,19 @@ pub fn assemble_mono(mut samples: Vec<Sample>) -> Result<Sample> {
             );
         }
     }
-    ensure!(
-        first.loops.len() <= CHUNK_LIMIT,
-        "Too many mono bundle loops"
-    );
+    Ok(())
+}
+
+/// Assemble an ordered mono bundle. All operands must have identical timing
+/// and sampler metadata. Ownership is consumed: cache the result, not a second
+/// copy of the operands. Larger bundles require a streaming source.
+pub fn assemble_mono(mut samples: Vec<Sample>) -> Result<Sample> {
+    let channels = samples.len();
+    validate_mono(&samples, channels)?;
+    let first = &samples[0];
+    ensure!(first.loops.len() <= CHUNK_LIMIT, "Too many mono bundle loops");
+    let (rate, frames) = (first.rate, first.frames);
+    let count = frames * channels;
     if channels == 1 {
         return Ok(samples.pop().unwrap());
     }
@@ -870,6 +878,30 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn prefix_bundle_limit_uses_final_channel_count_and_preserves_error_order() {
+        let mono = || Sample {
+            rate: 48000, channels: 1, frames: 3,
+            interleaved: Storage::from_f32(vec![0.; 3]).unwrap(),
+            loops: Vec::new(), unity_note: None, wavetable_cycle_frames: None,
+            wavetable_image: false, riff_metadata: Vec::new(),
+        };
+        let mut prefix = Vec::new();
+        for _ in 0..12 { prefix.push(mono()); validate_mono(&prefix, 12).unwrap(); }
+        assert_eq!(assemble_mono(prefix).unwrap().channels, 12);
+        // Declared dimensions exercise the former twelve-buffer path without
+        // allocating its potential 3 GiB. The size error precedes PCM shape.
+        let oversized = || { let mut s = mono(); s.frames = MEMORY_LIMIT / 4; s };
+        let first_error = validate_mono(&[oversized()], 12).unwrap_err().to_string();
+        let final_error = assemble_mono((0..12).map(|_| oversized()).collect()).unwrap_err().to_string();
+        assert_eq!(first_error, "Mono bundle exceeds memory limit");
+        assert_eq!(first_error, final_error);
+        let mut first = mono(); first.loops = vec![SampleLoop { id:0, kind:0, start:0, end:0, fraction:0, play_count:0 }; CHUNK_LIMIT + 1];
+        validate_mono(std::slice::from_ref(&first), 2).unwrap();
+        let mut other = mono(); other.channels = 2;
+        assert_eq!(assemble_mono(vec![first, other]).unwrap_err().to_string(), "Sample bundle operands must be mono");
     }
 
     #[test]
