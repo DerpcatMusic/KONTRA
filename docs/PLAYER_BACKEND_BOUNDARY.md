@@ -140,6 +140,23 @@ the consumed reference Engine helper. All four checks pass. The reference
 helper check is not a complete Mapping playback proof, and current documentation
 does not establish Workstation 4.0.9 native oracle equivalence.
 
+## Info observations and Mode1 coefficient reuse
+
+Info now consumes activity only after the existing complete source/restore,
+activation and context validity guard. It preserves failed-owner inspection while
+live header metrics reject terminal owners. Missing optional inventory counts are
+unknown; loading status and render statistics remain bounded later loader
+observations rather than endpoint readiness or exact fault snapshots. PCM census
+and render timing deduplicate independently, keeping seeded PCM visible after a
+zero-attempt failure. No registry, VM or graph query is added to UI rendering.
+
+Mode1 connections reuse their own existing producer alpha32 under the original
+rate/block/preview/limit guards. No cache state, source owner, cadence or admission
+is added. Cold reuse can populate the computational cache earlier; exactness
+assumes the worker's unchanged floating-point environment, not identical powf-call
+chronology. Fourteen focused functional checks and authored Info captures pass;
+[the evidence](UVI_INFO_MODE1_EVIDENCE.md) does not establish a measured speedup.
+
 ## Implemented loading and audio ownership
 
 Kontakt remains the immediate `Engine` player. UVI has a concrete optional per-part endpoint feeding the same Rack mixer; it is no longer only a staged CLI/controller. `Part.uvi` is an appended native bank/UUID/member identity, preserving older positional state fields (`src/plugin.rs:108`). Live diagnostics read installed generation/failure atomics (`src/plugin.rs:438`). Rack still stores Kontakt engines, with parallel optional native endpoints in Dsp; this is an implemented two-player adaptation, not yet a neutral backend enum/API.

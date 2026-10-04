@@ -3218,7 +3218,9 @@ fn authored_native_owned_pcm_voice_metrics_capture() {
         resources: crate::uvi::worker::ResourceActivity { cache_hit: Some(true), ..Default::default() },
         owned_pcm_bytes: Some(8 * 1_048_576), failure: None,
         stats: Stats { active_voices: 5, resource_resident_pcm_bytes: 8 * 1_048_576,
-            resource_alias_count: 2, render_cpu_ns: 4_000_000,
+            resource_alias_count: 2, resource_revision: 3,
+            render_attempts: 4, render_ns: 12_000_000, max_render_ns: 4_000_000,
+            render_cpu_ns: 4_000_000,
             render_cpu_samples: 4, max_render_cpu_ns: 1_000_000, ..Default::default() } };
     {
         let mut view = p.shared.view.lock().unwrap();
@@ -3236,6 +3238,66 @@ fn authored_native_owned_pcm_voice_metrics_capture() {
     let output = std::path::Path::new("/tmp/kontakto-uvi-ui-leaf/authored-owned-metrics.png");
     std::fs::create_dir_all(output.parent().unwrap()).unwrap();
     moose::core::screenshot::save_png(output, &pixels(&h.ui, 1180, 760), 1180, 760);
+    // Info uses the same stamped owner and bounded observation, not a second
+    // registry request or diagnostic serialization on the UI thread.
+    h.press("tab-info");
+    assert!(h.ui.scene().unwrap().surface("uvi-load-detail-0").is_some());
+    let output = output.with_file_name("authored-owned-metrics-info.png");
+    moose::core::screenshot::save_png(&output, &pixels(&h.ui, 1180, 760), 1180, 760);
+    h.size = Size::new(900., 640.);
+    h.idle(3);
+    for id in ["uvi-load-detail-0", "uvi-load-detail-5"] {
+        let frame = h.ui.scene().unwrap().surface(id).unwrap().frame;
+        assert!(frame.x >= 0. && frame.x + frame.size.width <= 900. + 0.01,
+            "Info observation overflows the compact viewport: {id}");
+    }
+    let compact = output.with_file_name("authored-owned-metrics-info-compact.png");
+    moose::core::screenshot::save_png(&compact, &pixels(&h.ui, 900, 640), 900, 640);
+    h.size = Size::new(1180., 760.);
+    h.idle(3);
+    // A terminal fault invalidates live metrics but preserves same-owner Info
+    // inspection; its snapshot is explicitly an earlier loader observation.
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        let activity = Arc::make_mut(view.parts[0].uvi_activity.as_mut().unwrap());
+        // Initial census existed before the first packet; no measured render
+        // wall/CPU/activity attempt can supply a canonical PCM summary yet.
+        activity.stats = Stats { resource_resident_pcm_bytes: 8 * 1_048_576,
+            resource_alias_count: 2, resource_revision: 3, ..Default::default() };
+        activity.frame = 0;
+        activity.stamp.frame = 0;
+        view.parts[0].status = "UVI playback failed. Open Logs for the cause.".into();
+        view.parts[0].load_report = Some(Arc::new(serde_json::json!({
+            "failure":"Bridge(RequestCapacity)", "terminal_failure": {
+                "epoch":stamp.epoch, "generation":stamp.generation,
+                "endpoint":{"error":"Bridge(RequestCapacity)", "stage":"process", "frame":0},
+                "worker":{"status":"ready","stats":{"render_attempts":0,"render_cpu_samples":0},
+                    "timing":{"summary":"Recorded render wall time: unavailable",
+                        "cpu_summary":"Worker render CPU: unavailable in this capture", "activity_summary":null}}
+            }})));
+    }
+    h.idle(3);
+    assert_eq!(label(&h, "readout-voices"), "Voices —");
+    assert!(h.ui.scene().unwrap().surface("uvi-load-detail-0").is_some());
+    assert!(h.ui.scene().unwrap().surface("uvi-failure-detail-0").is_some());
+    assert_eq!(label(&h, "uvi-load-detail-5"),
+        "Observed worker-owned PCM: 8.00 MiB · 2 aliases · resource revision 3 (includes script-loaded resources; excludes Lua/DSP/UI)",
+        "zero-attempt terminal timing must not hide the pre-first-packet PCM census");
+    let failed = output.with_file_name("authored-owned-metrics-info-zero-attempt-failed.png");
+    moose::core::screenshot::save_png(&failed, &pixels(&h.ui, 1180, 760), 1180, 760);
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.parts[0].status = "UVI instrument".into();
+        view.parts[0].load_report = None;
+        Arc::make_mut(view.parts[0].uvi_activity.as_mut().unwrap()).stamp.generation += 1;
+    }
+    h.idle(3);
+    assert!(h.ui.scene().unwrap().surface("uvi-load-detail-0").is_none(), "stale worker generation");
+    Arc::make_mut(p.shared.view.lock().unwrap().parts[0].uvi_activity.as_mut().unwrap()).stamp = stamp;
+    p.selection.write().unwrap().parts[0].uvi_state = vec![1].into();
+    h.idle(3);
+    assert!(h.ui.scene().unwrap().surface("uvi-load-detail-0").is_none(), "same-source restore requires a new owner");
+    p.selection.write().unwrap().parts[0].uvi_state = Default::default();
     // Prepared owner still owns PCM; no current adopted voice observation.
     atoms.uvi_generation.store(0, Ordering::Release);
     h.idle(3);
@@ -3247,6 +3309,8 @@ fn authored_native_owned_pcm_voice_metrics_capture() {
     assert_eq!(label(&h, "readout-voices"), "Voices —");
     let memory = label(&h, "readout-ram");
     assert!(memory.ends_with('+') || memory == "Sample PCM —");
+    assert!(h.ui.scene().unwrap().surface("uvi-load-detail-0").is_none(),
+        "Info must not display a replaced source's retained worker observation");
 }
 
 // Authored data only. No UFS/audio/image file is opened and no loader task runs.
