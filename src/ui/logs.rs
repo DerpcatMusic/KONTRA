@@ -1548,6 +1548,10 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
         if let Some(context)=local_context {
             content.push(col![body(context.display.clone()).text_size(TEXT).w(width.max(100.)).shrink(0)]
                 .pad(INSET).h(180.).shrink(0).scroll().id("logs-local-lua-context"));
+        } else if event.details["worker"]["lua_failure"]["local_source_excerpt_available"] == true {
+            content.push(body("Local source context is no longer retained for this activation.")
+                .text_size(TEXT).fill(secondary()).pad(INSET).shrink(0)
+                .id("logs-local-lua-context-unavailable"));
         }
     } else {
         content.push(rule());
@@ -1627,6 +1631,7 @@ mod tests {
         params.shared.view.lock().unwrap().parts[0].uvi_lua_failure=None;
         tick(&mut ui,&mut state,&params,Input::default());
         assert!(ui.scene().unwrap().surface("logs-local-lua-context").is_none());
+        assert!(ui.scene().unwrap().surface("logs-local-lua-context-unavailable").is_some());
     }
     fn tick(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>, input: Input) {
         let root = draw(ui, state, params).w(900.).h(700.);
