@@ -1153,8 +1153,7 @@ impl Scanner {
                 let before = (!valid && cache.is_some()).then(|| index::Fingerprint::read(&roots, reader.as_deref(), &progress)).flatten();
                 let scanned = if valid { cached.map(|index| {
                     let mut scanned = index.scanned(false);
-                    let kontakt: Vec<_> = scanned.shelf.libraries.iter().filter(|library| !scanned.shelf.uvi.contains_key(&library.dir)).cloned().collect();
-                    scanned.artwork = crate::artwork::scan(&kontakt);
+                    scanned.artwork = crate::artwork::scan(&scanned.shelf.libraries);
                     scanned
                 }) } else { scan(&roots, &progress).map(|(mut shelf, files)| {
                     #[cfg(feature = "uvi")]
@@ -1163,8 +1162,7 @@ impl Scanner {
                         catalog.reader_path = reader.clone();
                         catalog.scan(&roots, &mut shelf, &progress);
                     }
-                    let kontakt: Vec<_> = shelf.libraries.iter().filter(|library| !shelf.uvi.contains_key(&library.dir)).cloned().collect();
-                    let artwork = crate::artwork::scan(&kontakt);
+                    let artwork = crate::artwork::scan(&shelf.libraries);
                     for library in &mut shelf.libraries {
                         if !shelf.uvi.contains_key(&library.dir) && !artwork.contains_key(&library.name) && !progress.canceled() {
                             library.hue = crate::artwork::own_hue(&library.dir);
