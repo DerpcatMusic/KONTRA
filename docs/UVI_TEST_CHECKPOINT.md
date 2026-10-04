@@ -150,6 +150,9 @@ likewise supplies the retained native Boolean `false` baseline for omitted
 Program/Layer/Keygroup properties. It preserves explicit XML and renderer gates.
 Both cached Clarinet banks already serialize the property, so no actual-bank
 failure correction is claimed. Its shared state/host checks remain unrun.
+The [Layer Mute default](UVI_LAYER_MUTE_DEFAULT_EVIDENCE.md) supplies measured
+Boolean false only for an omitted Layer attribute. Both cached banks already
+retain it; synthetic Part support and native mute lifecycle remain unproved.
 
 The [browser presentation changes](UVI_BROWSER_PRESENTATION.md) retain authored
 UVI preset folders and enable exact bank-stem image sidecars on both artwork
@@ -179,9 +182,23 @@ owners under the Details mutex and serialize large values after releasing it.
 Failure String copies also occur outside that guard. The source and unchanged
 report schema have independent review; no runtime contention or speed comparison
 was performed.
+Grouped details now show a shared primary cause once above unique items, while
+mixed causes remain per child and real code excerpts stay attached to their
+locations. The [final saved-state admission check](UVI_STATE_COMMIT_OWNERSHIP_EVIDENCE.md)
+also rechecks installed endpoint ownership/failure before any rack/baseline
+write. Both corrections have independent static review and unrun functional
+cases; neither proves post-check atomicity or runtime persistence.
+Rack file save also captures into a local Selection copy, preserving the accepted
+file snapshot without letting an earlier capture overwrite a newer host
+publication at frame merge. This save-path correction has independent static
+review; its private facade harness is unrun and supplies no real GUI/plugin proof.
 Separate native browser metadata in `TagLibrary.ufs` is now a documented cover
 discovery lead. It is absent from the checked locations and current catalog;
 the bank/product-to-image join remains unimplemented.
+The [auxiliary-resource audit](UVI_AUXILIARY_RESOURCE_SCOPE.md) distinguishes
+retained `.vhfpreset` and font-ZIP members from complete program coverage. Their
+schemas and actual host requests remain unverified; no extra playable count or
+format correction follows from extension counts.
 
 ## Check the behavior
 
