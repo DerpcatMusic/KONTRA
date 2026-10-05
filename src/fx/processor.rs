@@ -4,6 +4,7 @@ use super::{Effect, Kind, Params, ProgramFx, blocks::Block, convolution::Convolv
 use std::ops::Range;
 
 /// Input at or below this level (−120 dBFS) counts as silence for tail tracking.
+#[cfg(test)]
 pub(super) const SILENCE: f32 = 1e-6;
 /// Kontakt's instrument buses.
 const BUSES: usize = 16;
@@ -527,14 +528,6 @@ impl FxProcessor {
             }
             self.out_fed = 0;
         }
-    }
-
-    fn out(&mut self, c: usize, frames: Range<usize>) -> Option<(&mut [f32], &mut [f32])> {
-        self.fresh_outs();
-        let [l, r] = self.outs.get_mut(c)?;
-        let out = (l.get_mut(frames.clone())?, r.get_mut(frames)?);
-        self.out_fed |= 1 << c;
-        Some(out)
     }
 
     /// Read only the just-rendered interval, without resetting the outer FX block.

@@ -31,6 +31,11 @@ use std::{collections::HashMap, sync::Arc};
 /// Longest impulse response loaded (seconds at the IR's own rate).
 const MAX_IR_SECONDS: usize = 20;
 
+/// Exponential one-pole coefficient; adapters retain their cutoff limits.
+pub(crate) fn one_pole_coefficient(hz: f32, rate: f32) -> f32 {
+    1.0 - (-std::f32::consts::TAU * hz / rate).exp()
+}
+
 /// What a script's `on init` loaded into an effect slot; effects build
 /// with it ([`ProgramFx::processor_with`]).
 #[derive(Clone)]

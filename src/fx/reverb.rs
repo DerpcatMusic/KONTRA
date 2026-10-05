@@ -74,13 +74,14 @@ pub struct Reverb {
     shelf_state: [f32; 2],
     width: f32,
     /// Frames the network takes to decay by 60 dB.
+    #[cfg(test)]
     rt60: f32,
     rate: f32,
 }
 
 /// One-pole lowpass coefficient for cutoff `hz`.
 fn one_pole(hz: f32, sample_rate: f32) -> f32 {
-    1.0 - (-TAU * hz.min(sample_rate * 0.49) / sample_rate).exp()
+    super::one_pole_coefficient(hz.min(sample_rate * 0.49), sample_rate)
 }
 
 impl Reverb {
@@ -115,6 +116,7 @@ impl Reverb {
             shelf_gain: 0.0,
             shelf_state: [0.0; 2],
             width: 0.0,
+            #[cfg(test)]
             rt60: 0.0,
             rate: sample_rate,
         };
@@ -142,17 +144,21 @@ impl Reverb {
         self.input_coef = one_pole(20_000.0 * 0.025f32.powf(n(p.high_cut)), sample_rate);
         self.shelf_gain = 10f32.powf(-18.0 * n(p.low_shelf) / 20.0) - 1.0;
         self.width = n(p.stereo);
-        self.rt60 = rt60 * sample_rate;
+        #[cfg(test)]
+        { self.rt60 = rt60 * sample_rate; }
         // Freeze: lossless, undamped feedback holds the tail; new input is muted.
         let frozen = p.freeze >= 0.5;
         self.input_gain = if frozen { 0.0 } else { 1.0 };
         if frozen {
-            (self.feedback, self.damp_coef, self.rt60) = ([1.0; LINES], 1.0, f32::INFINITY);
+            (self.feedback, self.damp_coef) = ([1.0; LINES], 1.0);
+            #[cfg(test)]
+            { self.rt60 = f32::INFINITY; }
         }
     }
 
     /// Frames of output after input at most `peak` falls silent, until it
     /// is below −120 dBFS: 60 dB per reverb time.
+    #[cfg(test)]
     pub fn tail(&self, peak: f32) -> usize {
         let db = 20.0 * (peak / super::processor::SILENCE).max(1.0).log10();
         // A frozen tail rings for good; the cap keeps summed tails from overflowing.

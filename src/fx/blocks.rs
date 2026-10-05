@@ -271,7 +271,7 @@ fn db(x: f32) -> f32 {
 
 /// One-pole low-pass coefficient for `hz`.
 fn one_pole(hz: f32, rate: f32) -> f32 {
-    1.0 - (-TAU * hz.min(0.45 * rate) / rate).exp()
+    super::one_pole_coefficient(hz.min(0.45 * rate), rate)
 }
 
 /// `tanh` to within 2.5% (Padé), exact ±1 past ±3: cheap enough per voice.
@@ -332,7 +332,7 @@ fn distortion_damping(damping: f32, rate: f32) -> f32 {
         z * (1.0 + z2 * (-1.0 / 6.0 + z2 * (1.0 / 120.0 - z2 / 5040.0)))
     };
     let k = f64::from(sin(0.5 - angle) / sin(0.5 + angle));
-    let prototype = f64::from(0.29340800642967224f32);
+    let prototype = f64::from(0.293_408_f32);
     ((prototype + k) / (1.0 + prototype * k)) as f32
 }
 
@@ -687,6 +687,9 @@ impl Comp {
     }
 
     fn tune(&mut self, kind: Kind, f: &Fields, rate: f32) {
+        if !VoiceEffect::dynamics(kind) { return; }
+        // A voice slot can change dynamics kind while retaining detector history.
+        (self.input, self.makeup, self.mix, self.link, self.feedback) = (1.0, 1.0, 1.0, true, false);
         let x = |i: usize| f[i].clamp(0.0, 1.0);
         let (threshold, ratio, attack, release) = match kind {
             // Stored in dB and ms; ratio normalized, 1..=50 (log).
@@ -879,6 +882,7 @@ impl Delay {
         }
     }
 
+    #[cfg(test)]
     fn tail(&self, peak: f32) -> usize {
         let repeats = if self.feedback > 1e-3 && peak > 1e-6 {
             ((1e-6 / peak).ln() / self.feedback.ln()).ceil().max(1.0)
@@ -948,6 +952,8 @@ struct Phaser {
     rate: f32,
     s: [[f32; 6]; 2],
     last: [f32; 2],
+    coeffs: [f32; 2],
+    remaining: usize,
 }
 
 /// Frames between all-pass coefficient updates.
@@ -956,11 +962,16 @@ const PHASER_STEP: usize = 16;
 impl Phaser {
     fn tune(&mut self, f: &Fields, rate: f32) {
         let x = |i: usize| f[i].clamp(0.0, 1.0);
+        let previous = (self.octaves, self.offset, self.rate);
         self.octaves = 5.0 * x(0);
         self.feedback = 0.9 * x(1);
         self.inc = lfo_hz(x(2)) / rate * PHASER_STEP as f32;
         self.offset = 0.5 * x(3);
         self.rate = rate;
+        // Apply controls at the current phase without restarting its frame clock.
+        if self.remaining != 0 && previous != (self.octaves, self.offset, self.rate) {
+            self.coeffs = [self.coefficient(self.phase), self.coefficient(self.phase + self.offset)];
+        }
     }
 
     fn coefficient(&self, p: f32) -> f32 {
@@ -970,13 +981,17 @@ impl Phaser {
     }
 
     fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
-        let n = left.len();
-        for start in (0..n).step_by(PHASER_STEP) {
-            let end = (start + PHASER_STEP).min(n);
-            self.phase = (self.phase + self.inc).fract();
-            let coeffs = [self.coefficient(self.phase), self.coefficient(self.phase + self.offset)];
+        let n = left.len().min(right.len());
+        let mut start = 0;
+        while start < n {
+            if self.remaining == 0 {
+                self.phase = (self.phase + self.inc).fract();
+                self.coeffs = [self.coefficient(self.phase), self.coefficient(self.phase + self.offset)];
+                self.remaining = PHASER_STEP;
+            }
+            let end = (start + self.remaining).min(n);
             for (ch, buf) in [&mut left[start..end], &mut right[start..end]].into_iter().enumerate() {
-                let a = coeffs[ch];
+                let a = self.coeffs[ch];
                 for x in buf.iter_mut() {
                     let mut y = *x + self.feedback * self.last[ch];
                     for s in &mut self.s[ch] {
@@ -988,6 +1003,8 @@ impl Phaser {
                     *x = y;
                 }
             }
+            self.remaining -= end - start;
+            start = end;
         }
     }
 }
@@ -1056,6 +1073,8 @@ impl Block {
                 rate,
                 s: [[0.0; 6]; 2],
                 last: [0.0; 2],
+                coeffs: [0.0; 2],
+                remaining: 0,
             }),
             _ => return None,
         };
@@ -1152,6 +1171,7 @@ impl Block {
     }
 
     /// Frames of output after input at most `peak` falls silent.
+    #[cfg(test)]
     pub(crate) fn tail(&self, peak: f32) -> usize {
         let ms = |ms: f32| (ms * 0.001 * self.rate) as usize;
         match &self.dsp {
@@ -1264,6 +1284,216 @@ mod tests {
         let (mut l, mut r) = sine(1000.0, 0.01, 48_000);
         run(&mut b, &mut l, &mut r);
         assert!((rms(&l[24_000..]) / (0.01 / 2f32.sqrt()) - 1.0).abs() < 0.02);
+    }
+
+    #[test]
+    fn dynamics_kind_retuning_replaces_controls_preserves_history_without_heap() {
+        let kinds = [Kind::Compressor, Kind::Limiter, Kind::SolidBusComp, Kind::FeedbackCompressor];
+        for rate in [44_100.0, RATE, 96_000.0] {
+            for source in kinds {
+                for destination in kinds {
+                    let mut source_fields = fields(&effect(source, defaults(source).unwrap()).params).unwrap();
+                    match source {
+                        Kind::Compressor => source_fields[5] = 0.0,
+                        Kind::Limiter => source_fields[0] = 12.0,
+                        Kind::SolidBusComp => {
+                            source_fields[4..7].copy_from_slice(&[0.7, 0.25, 0.0]);
+                        }
+                        Kind::FeedbackCompressor => {
+                            source_fields[0] = 0.8;
+                            source_fields[4..6].copy_from_slice(&[0.6, 0.35]);
+                            source_fields[8] = 0.0;
+                        }
+                        _ => unreachable!(),
+                    }
+                    let destination_fields = fields(&effect(destination, defaults(destination).unwrap()).params).unwrap();
+                    let mut voice = VoiceEffect::default();
+                    let (mut l, mut r) = ([0.75; 257], [-0.125; 257]);
+                    assert_eq!(crate::test_support::allocations(|| {
+                        voice.tune(source, &source_fields, rate);
+                        voice.process(&mut l, &mut r);
+                        let VoiceEffect::Comp(previous) = voice else { panic!("dynamics slot"); };
+                        let mut reference = Comp::new();
+                        reference.tune(destination, &destination_fields, rate);
+                        (reference.env, reference.last) = (previous.env, previous.last);
+                        voice.tune(destination, &destination_fields, rate);
+                        assert_eq!(voice, VoiceEffect::Comp(reference), "{source:?} -> {destination:?}");
+                        let (mut expected_l, mut expected_r) = (l, r);
+                        voice.process(&mut l, &mut r);
+                        for (start, end) in [(0, 1), (1, 14), (14, 64), (64, 257)] {
+                            reference.process(&mut expected_l[start..end], &mut expected_r[start..end]);
+                        }
+                        assert_eq!(l, expected_l);
+                        assert_eq!(r, expected_r);
+                        assert_eq!(voice, VoiceEffect::Comp(reference));
+                    }), 0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn phaser_stationary_impulse_matches_six_allpass_transfer() {
+        for rate in [44_100.0, RATE, 96_000.0] {
+            let mut block = Block::new(&effect(Kind::Phaser, &[0.0, 0.0, 0.5, 0.0]), rate).unwrap();
+            let (mut l, mut r) = ([0.0; 16], [0.0; 16]);
+            l[0] = 1.0;
+            r[0] = -0.25;
+            // Taylor coefficients of ((a + z^-1) / (1 + a*z^-1))^6,
+            // evaluated in f64 independently of the f32 state recurrence.
+            let t = (std::f64::consts::PI * 200.0 / f64::from(rate)).tan();
+            let a = (t - 1.0) / (t + 1.0);
+            let h = [a.powi(6), 6.0 * a.powi(5) * (1.0 - a * a),
+                15.0 * a.powi(4) * (1.0 - a * a).powi(2) - 6.0 * a.powi(6) * (1.0 - a * a)];
+            assert_eq!(crate::test_support::allocations(|| {
+                block.process(&mut l, &mut r);
+                for (i, expected) in h.into_iter().enumerate() {
+                    assert!((f64::from(l[i]) - expected).abs() < 2e-6);
+                    assert!((f64::from(r[i]) + 0.25 * expected).abs() < 2e-6);
+                }
+            }), 0);
+        }
+    }
+
+    #[test]
+    fn phaser_control_clock_is_partition_independent_and_preserved_by_clear_without_heap() {
+        for rate in [44_100.0, RATE, 96_000.0] {
+            let fx = effect(Kind::Phaser, &[0.8, 0.4, 0.95, 0.75]);
+            let mut full = Block::new(&fx, rate).unwrap();
+            let mut split = Block::new(&fx, rate).unwrap();
+            let mut aligned = Block::new(&fx, rate).unwrap();
+            let mut reset = Block::new(&fx, rate).unwrap();
+            let (mut l, mut r) = ([0.0; 513], [0.0; 513]);
+            l[0] = 1.0;
+            r[7] = -0.25;
+            let (mut split_l, mut split_r) = (l, r);
+            let (mut aligned_l, mut aligned_r) = (l, r);
+            assert_eq!(crate::test_support::allocations(|| {
+                full.process(&mut l, &mut r);
+                // Sixteen-frame chunks retain the previous aligned-buffer result.
+                for (cl, cr) in aligned_l.chunks_mut(PHASER_STEP).zip(aligned_r.chunks_mut(PHASER_STEP)) {
+                    aligned.process(cl, cr);
+                }
+                for (start, end) in [(0, 1), (1, 1), (1, 14), (14, 17), (17, 62), (62, 513)] {
+                    split.process(&mut split_l[start..end], &mut split_r[start..end]);
+                }
+                assert_eq!(l, aligned_l);
+                assert_eq!(r, aligned_r);
+                assert_eq!(l, split_l);
+                assert_eq!(r, split_r);
+                let (Dsp::Phaser(a), Dsp::Phaser(b), Dsp::Phaser(c)) = (&full.dsp, &split.dsp, &aligned.dsp) else { panic!("phaser"); };
+                assert_eq!((a.phase, a.remaining, a.coeffs, a.s, a.last), (b.phase, b.remaining, b.coeffs, b.s, b.last));
+                assert_eq!((a.phase, a.remaining, a.coeffs, a.s, a.last), (c.phase, c.remaining, c.coeffs, c.s, c.last));
+                let clock = (a.phase, a.remaining, a.coeffs);
+                let Dsp::Phaser(reference) = &mut reset.dsp else { panic!("phaser"); };
+                // Clear keeps the free-running oscillator, removing only audio history.
+                (reference.phase, reference.remaining, reference.coeffs) = clock;
+                full.clear();
+                let Dsp::Phaser(cleared) = &full.dsp else { panic!("phaser"); };
+                assert_eq!((cleared.phase, cleared.remaining, cleared.coeffs), clock);
+                let (mut clear_l, mut clear_r) = ([0.125; 37], [-0.25; 37]);
+                let (mut reset_l, mut reset_r) = (clear_l, clear_r);
+                full.process(&mut clear_l, &mut clear_r);
+                reset.process(&mut reset_l, &mut reset_r);
+                assert_eq!(clear_l, reset_l);
+                assert_eq!(clear_r, reset_r);
+                let Dsp::Phaser(before) = &full.dsp else { panic!("phaser"); };
+                let history = (before.phase, before.remaining, before.s, before.last);
+                let coeffs = before.coeffs;
+                assert!(full.set(Kind::Phaser, 0, 0.2));
+                let Dsp::Phaser(after) = &full.dsp else { panic!("phaser"); };
+                assert_eq!((after.phase, after.remaining, after.s, after.last), history);
+                assert_ne!(after.coeffs, coeffs, "depth changes apply at the retained phase immediately");
+            }), 0);
+        }
+    }
+
+    #[test]
+    fn phaser_same_value_writes_keep_uninterrupted_pcm_and_clock_without_heap() {
+        for rate in [44_100.0, RATE, 96_000.0] {
+            let controls = [0.8, 0.4, 0.95, 0.75];
+            let fx = effect(Kind::Phaser, &controls);
+            let mut full = Block::new(&fx, rate).unwrap();
+            let mut written = Block::new(&fx, rate).unwrap();
+            let mut l = std::array::from_fn::<_, 1025, _>(|i| (i % 19) as f32 * 0.01 - 0.09);
+            let mut r = std::array::from_fn::<_, 1025, _>(|i| (i % 13) as f32 * -0.01 + 0.06);
+            let (mut written_l, mut written_r) = (l, r);
+            assert_eq!(crate::test_support::allocations(|| {
+                full.process(&mut l, &mut r);
+                for frame in 0..l.len() {
+                    let field = frame % controls.len();
+                    assert!(written.set(Kind::Phaser, field as u8, controls[field]));
+                    written.process(&mut written_l[frame..frame + 1], &mut written_r[frame..frame + 1]);
+                }
+                assert_eq!(l, written_l);
+                assert_eq!(r, written_r);
+                let (Dsp::Phaser(a), Dsp::Phaser(b)) = (&full.dsp, &written.dsp) else { panic!("phaser"); };
+                assert_eq!((a.phase, a.remaining, a.coeffs, a.s, a.last), (b.phase, b.remaining, b.coeffs, b.s, b.last));
+            }), 0);
+        }
+    }
+
+    #[test]
+    fn phaser_automation_follows_absolute_control_ticks_and_fragmented_pcm_without_heap() {
+        let edits = [(1, 2, 0.95), (3, 0, 0.2), (7, 1, 0.6), (15, 3, 0.1),
+            (16, 2, 0.1), (17, 2, 0.8), (33, 0, 1.0), (47, 3, 0.9),
+            (62, 1, 0.2), (129, 2, 0.5), (255, 0, 0.6), (256, 2, 1.0)];
+        for rate in [44_100.0, RATE, 96_000.0] {
+            let initial = [0.8, 0.4, 0.95, 0.75];
+            let fx = effect(Kind::Phaser, &initial);
+            let mut scalar = Block::new(&fx, rate).unwrap();
+            let mut split = Block::new(&fx, rate).unwrap();
+            let mut l = std::array::from_fn::<_, 513, _>(|i| (i % 17) as f32 * 0.01 - 0.08);
+            let mut r = std::array::from_fn::<_, 513, _>(|i| (i % 11) as f32 * -0.01 + 0.05);
+            let (mut split_l, mut split_r) = (l, r);
+            assert_eq!(crate::test_support::allocations(|| {
+                let mut controls = initial;
+                let mut phase = 0.0f32;
+                let mut next = 0;
+                for frame in 0..l.len() {
+                    while let Some(&(at, field, value)) = edits.get(next) && at == frame {
+                        assert!(scalar.set(Kind::Phaser, field as u8, value));
+                        controls[field] = value;
+                        next += 1;
+                    }
+                    // The oracle advances on absolute frame multiples, independent
+                    // of the processor's countdown and the number of setters.
+                    if frame % 16 == 0 {
+                        phase = (phase + 0.01 * 1000f32.powf(controls[2]) / rate * 16.0).fract();
+                    }
+                    scalar.process(&mut l[frame..frame + 1], &mut r[frame..frame + 1]);
+                    let Dsp::Phaser(actual) = &scalar.dsp else { panic!("phaser"); };
+                    assert_eq!(actual.phase, phase, "frame {frame}");
+                    assert_eq!(actual.remaining, (16 - (frame + 1) % 16) % 16);
+                    for ch in 0..2 {
+                        // The cached coefficient's value uses an independent f64
+                        // evaluation of the published six-allpass cutoff law.
+                        let p = if ch == 0 { phase } else { phase + 0.5 * controls[3] };
+                        let hz = 200.0 * (5.0 * f64::from(controls[0])
+                            * (0.5 + 0.5 * (std::f64::consts::TAU * f64::from(p)).sin())).exp2();
+                        let t = (std::f64::consts::PI * hz.min(0.45 * f64::from(rate)) / f64::from(rate)).tan();
+                        assert!((f64::from(actual.coeffs[ch]) - (t - 1.0) / (t + 1.0)).abs() < 2e-6,
+                            "coefficient channel {ch}, frame {frame}");
+                    }
+                }
+                let (mut at, mut next, mut chunk) = (0, 0, 0);
+                while at < split_l.len() {
+                    while let Some(&(frame, field, value)) = edits.get(next) && frame == at {
+                        assert!(split.set(Kind::Phaser, field as u8, value));
+                        next += 1;
+                    }
+                    let boundary = edits.get(next).map_or(split_l.len(), |edit| edit.0);
+                    let end = (at + [1, 7, 31, 5][chunk % 4]).min(boundary).min(split_l.len());
+                    split.process(&mut split_l[at..end], &mut split_r[at..end]);
+                    at = end;
+                    chunk += 1;
+                }
+                assert_eq!(l, split_l);
+                assert_eq!(r, split_r);
+                let (Dsp::Phaser(a), Dsp::Phaser(b)) = (&scalar.dsp, &split.dsp) else { panic!("phaser"); };
+                assert_eq!((a.phase, a.remaining, a.coeffs, a.s, a.last), (b.phase, b.remaining, b.coeffs, b.s, b.last));
+            }), 0);
+        }
     }
 
     #[test]
@@ -1425,9 +1655,9 @@ mod tests {
     // Independently evaluated native float preparation, not effect-owned data.
     fn dc_reference(rate: f32) -> [f32; 5] {
         match rate as u32 {
-            44100 => [0.9984942674636841, -1.9969885349273682, 0.9984942674636841, 1.9969862699508667, -0.9969909191131592],
-            48000 => [0.9986164569854736, -1.9972329139709473, 0.9986164569854736, 1.9972310066223145, -0.9972348213195801],
-            96000 => [0.9993079900741577, -1.9986159801483154, 0.9993079900741577, 1.9986155033111572, -0.9986165165901184],
+            44100 => [0.998_494_27, -1.996_988_5, 0.998_494_27, 1.996_986_3, -0.996_990_9],
+            48000 => [0.998_616_46, -1.997_232_9, 0.998_616_46, 1.997_231, -0.997_234_8],
+            96000 => [0.999_308, -1.998_616, 0.999_308, 1.998_615_5, -0.998_616_5],
             _ => unreachable!(),
         }
     }
@@ -1446,7 +1676,7 @@ mod tests {
         // Independently evaluated decimal reference, including both threshold
         // joins, quarter-amplitude exits, quiet signals and above-unit input.
         let input = [-4.0, -0.25000006, -0.25, -0.24999997, -0.06250001, -0.0625,
-            -0.06249999, -0.00390625, -0.000244140625, 0.0, 0.00024412, 0.000244140625,
+            -0.06249999, -0.00390625, -0.000_244_140_63, 0.0, 0.00024412, 0.000_244_140_63,
             0.00024416, 0.00390625, 0.01, 0.24999997, 0.25, 4.0];
         let cases: [(f32, [f64; 18]); 3] = [
             (0.0, [-4.0, -0.25000006, -0.25, -0.24999997, -0.06250001, -0.0625,

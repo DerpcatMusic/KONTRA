@@ -51,6 +51,8 @@ struct Partitioned {
     overlap: Vec<f32>,
     scratch: Vec<Complex32>,
     scale: f32,
+    /// First-partition coefficients for construction-known one-frame calls.
+    direct: Option<Box<[f32]>>,
 }
 
 impl Partitioned {
@@ -61,6 +63,7 @@ impl Partitioned {
         let samples = self.time.capacity() + self.input.capacity() + self.overlap.capacity();
         spectra * std::mem::size_of::<Complex32>() + samples * std::mem::size_of::<f32>()
             + self.silent.capacity() * std::mem::size_of::<bool>()
+            + self.direct.as_ref().map_or(0, |ir| ir.len() * std::mem::size_of::<f32>())
     }
 
     fn new(planner: &mut RealFftPlanner<f32>, ir: &[f32], block: usize) -> Self {
@@ -98,6 +101,7 @@ impl Partitioned {
             overlap: vec![0.0; block],
             scratch,
             scale: 1.0 / size as f32,
+            direct: None,
         }
     }
 
@@ -116,6 +120,10 @@ impl Partitioned {
     }
 
     fn process(&mut self, input: &[f32], output: &mut [f32]) {
+        if self.direct.is_some() && input.len() < self.block - self.fill {
+            self.process_prefix(input, output);
+            return;
+        }
         let (bins, count) = (self.bins, self.count());
         let mut done = 0;
         while done < input.len() {
@@ -178,6 +186,39 @@ impl Partitioned {
                 self.pending = 1;
             }
         }
+    }
+
+    /// The older-partition history is fixed within a head block. Transform it
+    /// once, then evaluate only the changing first partition directly. The
+    /// completing call uses the original FFT path and publishes its overlap.
+    fn process_prefix(&mut self, input: &[f32], output: &mut [f32]) {
+        if input.is_empty() { return; }
+        let start = self.fill;
+        self.input[start..start + input.len()].copy_from_slice(input);
+        if start == 0 {
+            self.accumulate(self.count());
+            if self.quiet_history {
+                self.time.fill(0.0);
+            } else {
+                self.spectrum.copy_from_slice(&self.history);
+                self.spectrum[0].im = 0.0;
+                self.spectrum[self.bins - 1].im = 0.0;
+                let _ = self.ifft.process_with_scratch(
+                    &mut self.spectrum, &mut self.time, &mut self.scratch,
+                );
+            }
+        }
+        let kernel = self.direct.as_deref().unwrap();
+        let nonzero = self.input[..start + input.len()].iter().any(|&x| x != 0.0);
+        for (i, sample) in output[..input.len()].iter_mut().enumerate() {
+            let at = start + i;
+            *sample = (self.time[at] + self.overlap[at]) * self.scale;
+            if nonzero {
+                *sample += kernel.iter().zip(self.input[..=at].iter().rev())
+                    .map(|(h, x)| h * x).sum::<f32>();
+            }
+        }
+        self.fill += input.len();
     }
 
     /// Adds partitions `pending..upto` to the history of the block being filled.
@@ -279,7 +320,10 @@ impl Convolver {
         let block = max_block.next_power_of_two().clamp(32, 512);
         let split = (block * TAIL_FACTOR).min(ir.len());
         let mut planner = RealFftPlanner::new();
-        let head = Partitioned::new(&mut planner, &ir[..split], block);
+        let mut head = Partitioned::new(&mut planner, &ir[..split], block);
+        if max_block == 1 {
+            head.direct = Some(ir[..ir.len().min(block)].into());
+        }
         let mut tails = Vec::new();
         let (mut start, mut size) = (split, block * TAIL_FACTOR);
         while start < ir.len() {
@@ -379,6 +423,231 @@ mod tests {
                 (seed >> 8) as f32 / (1 << 24) as f32 - 0.5
             })
             .collect()
+    }
+
+    mod single_frame {
+        use super::*;
+
+        // Frozen pre-hybrid head path: independent algorithm for same-binary
+        // before/after PCM and release timing, with unchanged tail processing.
+        impl Partitioned {
+            fn frozen_process(&mut self, input: &[f32], output: &mut [f32]) {
+                let (bins, count) = (self.bins, self.count());
+                let mut done = 0;
+                while done < input.len() {
+                    let start = self.fill;
+                    let n = (input.len() - done).min(self.block - start);
+                    let fresh = &input[done..done + n];
+                    self.input[start..start + n].copy_from_slice(fresh);
+
+                    let current = self.current * bins;
+                    let segment = &mut self.segments[current..current + bins];
+                    // The spectrum of a silent block is all zeros.
+                    if self.input[..start + n].iter().any(|&x| x != 0.0) {
+                        self.time[..self.block].copy_from_slice(&self.input);
+                        self.time[self.block..].fill(0.0);
+                        let _ = self.fft.process_with_scratch(&mut self.time, segment, &mut self.scratch);
+                        self.silent[self.current] = false;
+                    } else if !self.silent[self.current] {
+                        segment.fill(Complex32::default());
+                        self.silent[self.current] = true;
+                    }
+
+                    if start == 0 {
+                        self.accumulate(count);
+                    }
+                    if self.quiet_history && self.silent[self.current] {
+                        // Nothing but zeros to transform back.
+                        self.time.fill(0.0);
+                    } else {
+                        self.spectrum.copy_from_slice(&self.history);
+                        if !self.silent[self.current] {
+                            mac(&mut self.spectrum, &self.ir[..bins], &self.segments[current..current + bins]);
+                        }
+                        self.spectrum[0].im = 0.0;
+                        self.spectrum[bins - 1].im = 0.0;
+                        let _ = self.ifft.process_with_scratch(
+                            &mut self.spectrum,
+                            &mut self.time,
+                            &mut self.scratch,
+                        );
+                    }
+
+                    let out = &mut output[done..done + n];
+                    let fresh = &self.time[start..start + n];
+                    let tail = &self.overlap[start..start + n];
+                    for ((y, a), b) in out.iter_mut().zip(fresh).zip(tail) {
+                        *y = (a + b) * self.scale;
+                    }
+
+                    self.fill += n;
+                    done += n;
+                    if self.fill == self.block {
+                        self.fill = 0;
+                        self.input.fill(0.0);
+                        self.overlap.copy_from_slice(&self.time[self.block..]);
+                        self.current = (self.current + count - 1) % count;
+                        if !self.quiet_history {
+                            self.history.fill(Complex32::default());
+                            self.quiet_history = true;
+                        }
+                        self.pending = 1;
+                    }
+                }
+            }
+        }
+
+        fn frozen_process(conv: &mut Convolver, io: &mut [f32]) {
+            let n = io.len().min(conv.scratch.len());
+            let (io, input) = (&mut io[..n], &mut conv.scratch[..n]);
+            input.copy_from_slice(io);
+            conv.head.frozen_process(input, io);
+            for tail in &mut conv.tails { tail.process(input, io); }
+        }
+
+        fn pcm(ir: &[f32], input: &[f32], max_block: usize, fragment: usize, frozen: bool) -> Vec<f32> {
+            let mut conv = Convolver::new(ir, max_block);
+            let mut output = input.to_vec();
+            let memory = conv.memory_bytes();
+            assert_eq!(crate::test_support::allocations(|| {
+                for block in output.chunks_mut(fragment) {
+                    if frozen { frozen_process(&mut conv, block); } else { conv.process(block); }
+                    conv.process(&mut []);
+                }
+            }), 0);
+            assert_eq!(conv.memory_bytes(), memory);
+            output
+        }
+
+        fn compare(actual: &[f32], expected: &[f32], tolerance: f32) {
+            assert_eq!(actual.len(), expected.len());
+            let error = actual.iter().zip(expected).map(|(a,b)| (a-b).abs()).fold(0., f32::max);
+            assert!(error < tolerance, "complete PCM error {error}, tolerance {tolerance}");
+        }
+
+        #[test]
+        fn single_frame_head_matches_independent_pcm_at_partition_boundaries_without_heap() {
+            for length in [1, 31, 32, 33, 511, 512, 513, 3000] {
+                let ir: Vec<_> = noise(length, 7).iter().enumerate()
+                    .map(|(i,v)| v * (-(i as f32)/800.).exp()).collect();
+                let mut input = noise(9000, 3);
+                input[2000..6500].fill(0.);
+                let expected = direct(&input, &ir);
+                let actual = pcm(&ir, &input, 1, 1, false);
+                compare(&actual, &expected, 1e-4);
+                let frozen = pcm(&ir, &input, 1, 1, true);
+                compare(&actual, &frozen, 1e-4);
+                let wide = pcm(&ir, &input, 128, 128, false);
+                compare(&actual, &wide, 1e-4);
+                assert_eq!(wide, pcm(&ir, &input, 128, 128, true));
+                assert_eq!(pcm(&ir, &input, 128, 1, false), pcm(&ir, &input, 128, 1, true));
+                for frame in (31..input.len()).step_by(32) {
+                    assert_eq!(actual[frame].to_bits(), frozen[frame].to_bits(), "full head boundary {frame}");
+                }
+                let mut impulse = vec![0.; length + 4096];
+                impulse[0] = 1.;
+                let response = pcm(&ir, &impulse, 1, 1, false);
+                let mut expected_ir = ir.clone();
+                expected_ir.resize(impulse.len(), 0.);
+                compare(&response, &expected_ir, 1e-6);
+            }
+        }
+
+        #[test]
+        fn single_frame_head_clear_and_empty_calls_preserve_prepared_coefficients_and_memory() {
+            let ir = noise(3000, 5);
+            let mut conv = Convolver::new(&ir, 1);
+            let coefficients = conv.head.direct.as_ref().unwrap().as_ptr();
+            let memory = conv.memory_bytes();
+            let extra = conv.head.direct.as_ref().unwrap().len() * std::mem::size_of::<f32>();
+            let mut fft = Convolver::new(&ir, 1);
+            fft.head.direct = None;
+            assert_eq!(memory - fft.memory_bytes(), extra);
+            let mut discarded = noise(77, 9);
+            let mut output = noise(9000, 13);
+            let expected = direct(&output, &ir);
+            assert_eq!(crate::test_support::allocations(|| {
+                for frame in &mut discarded { conv.process(std::slice::from_mut(frame)); }
+                let fill = conv.head.fill;
+                conv.process(&mut []);
+                assert_eq!(conv.head.fill, fill);
+                conv.clear();
+                conv.process(&mut []);
+                for frame in &mut output { conv.process(std::slice::from_mut(frame)); }
+            }), 0);
+            compare(&output, &expected, 1e-4);
+            assert_eq!(conv.memory_bytes(), memory);
+            assert_eq!(conv.head.direct.as_ref().unwrap().as_ptr(), coefficients);
+            let mut zero = Convolver::new(&[], 1);
+            let mut silent_ir = Convolver::new(&[0.; 513], 1);
+            for frame in noise(8192, 19) {
+                for conv in [&mut zero, &mut silent_ir] {
+                    let mut sample = [frame];
+                    conv.process(&mut sample);
+                    assert_eq!(sample, [0.]);
+                }
+            }
+        }
+
+        #[test]
+        fn single_frame_head_long_tail_keeps_original_overlap_and_ir_response() {
+            let ir: Vec<_> = noise(60_000, 5).iter().enumerate()
+                .map(|(i,v)| v * (-(i as f32)/20_000.).exp()).collect();
+            let mut input = vec![0.; ir.len() + 8192];
+            input[0] = 1.; input[17] = -0.25; input[35] = 0.5;
+            // Independent sparse input convolution, including the entire tail.
+            let mut expected = vec![0.; input.len()];
+            for (frame, output) in expected.iter_mut().enumerate() {
+                *output = [(0,1_f64),(17,-0.25),(35,0.5)].into_iter()
+                    .filter_map(|(at, gain)| frame.checked_sub(at).and_then(|i| ir.get(i)).map(|h| gain * f64::from(*h)))
+                    .sum::<f64>() as f32;
+            }
+            let peak = expected.iter().fold(0_f32, |peak,v| peak.max(v.abs()));
+            let actual = pcm(&ir, &input, 1, 1, false);
+            compare(&actual, &expected, 1e-5 * peak);
+            compare(&actual, &pcm(&ir, &input, 1, 1, true), 1e-5 * peak);
+            assert!(actual[60_035..].iter().all(|v| v.abs() < 1e-6));
+        }
+
+        #[test]
+        #[ignore = "release-only one-frame shared convolution comparison"]
+        fn single_frame_head_speed() {
+            let mut busy = noise(48_000 * 2, 3);
+            let mut ringing = busy.clone();
+            ringing[24_000..].fill(0.);
+            let mut silent = busy.clone();
+            silent.fill(0.);
+            // All construction, buffers, hashes and heap counting are outside timing.
+            for length in [512, 3000, 24_000, 60_000, 144_000] {
+                let ir: Vec<_> = noise(length, 7).iter().enumerate()
+                    .map(|(i,v)| v * (-(i as f32)/30_000.).exp()).collect();
+                for (name, input) in [("busy", &mut busy), ("ringing", &mut ringing), ("silent", &mut silent)] {
+                    let mut times = [Vec::new(), Vec::new()];
+                    let mut outputs = [Vec::new(), Vec::new()];
+                    for trial in 0..7 {
+                        for frozen in if trial % 2 == 0 { [true, false] } else { [false, true] } {
+                            let mut conv = Convolver::new(&ir, 1);
+                            let mut output = input.clone();
+                            let started = std::time::Instant::now();
+                            for frame in &mut output {
+                                if frozen { frozen_process(&mut conv, std::slice::from_mut(frame)); }
+                                else { conv.process(std::slice::from_mut(frame)); }
+                            }
+                            times[usize::from(!frozen)].push(started.elapsed().as_secs_f64());
+                            outputs[usize::from(!frozen)] = output;
+                        }
+                    }
+                    for values in &mut times { values.sort_by(f64::total_cmp); }
+                    let before = times[0][3]; let after = times[1][3];
+                    let peak = outputs[0].iter().fold(0_f32, |peak,v| peak.max(v.abs()));
+                    compare(&outputs[1], &outputs[0], (1e-5 * peak).max(1e-6));
+                    let hash = |output: &[f32]| output.iter().fold(0_u64, |h,v| (h ^ u64::from(v.to_bits())).wrapping_mul(0x100_0000_01b3));
+                    // Measure heap separately, before/after with identical input.
+                    for frozen in [true, false] { let _ = pcm(&ir, input, 1, 1, frozen); }
+                    println!("convolver max=1 IR={length} {name}: baseline={before:.6}s hybrid={after:.6}s delta={:.2}% heap=0/0 hashes={:016x}/{:016x}", (after/before-1.)*100., hash(&outputs[0]), hash(&outputs[1]));
+                }
+            }
+        }
     }
 
     #[test]
