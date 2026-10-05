@@ -88,6 +88,10 @@ fn note_lifecycle(partition: &'static [usize], script: &str) -> Performance {
     let group = linear_volume_group(ModSource::Velocity);
     let mut p = Performance::with_group(false, partition, group.clone());
     let mut reference = Performance::with_group(false, partition, group);
+    // KSP semantic equivalence needs an unbudgeted script clock; dedicated
+    // realtime budget tests retain Realtime and verify callback deferral.
+    p.process_mode = moose::core::ProcessMode::Offline;
+    reference.process_mode = moose::core::ProcessMode::Offline;
     install_performance_script(&mut p, script);
     let mut events = EventList::with_capacity(8);
     note(&mut events, ExactNoteKind::On, 480, 4, 62);
@@ -119,14 +123,22 @@ fn note_lifecycle(partition: &'static [usize], script: &str) -> Performance {
         1920,
         320,
     );
+    // This pre-wait stage is shorter than the usual measurement window.
+    let pending = &p.pcm[320..];
+    let pending_reference = &reference.pcm[320..];
+    assert_eq!(pending.len(), 1600);
+    assert_eq!(pending.len(), pending_reference.len());
     assert!(
-        p.measured()
+        pending
             .iter()
-            .zip(reference.measured())
+            .zip(pending_reference)
             .all(|(a, b)| (0..2).all(|ch| (a[ch] - b[ch]).abs() < 2e-6))
     );
-    assert!(amplitude(p.measured(), 0, 480.) > 0.001);
-    assert!(rms(p.measured())[1] < 1e-8);
+    // The plugin master defaults to -12 dB, in addition to the event -12 dB.
+    let gain = 64. / 127. * 10f64.powf(-24. / 20.);
+    assert!((amplitude(pending, 0, 480.) - 0.02 * gain).abs() < 1e-5);
+    assert!((amplitude(pending, 0, 960.) - 0.006 * gain).abs() < 1e-5);
+    assert!(rms(pending)[1] < 1e-8);
     events.clear();
     p.stage(
         "event IDs resumed note",
@@ -135,7 +147,6 @@ fn note_lifecycle(partition: &'static [usize], script: &str) -> Performance {
     );
     assert!(rms(p.measured())[0] < 1e-8);
     // The source fundamental and second harmonic are .02 and .006.
-    let gain = 64. / 127. * 10f64.powf(-12. / 20.);
     assert!((amplitude(p.measured(), 1, 240.) - 0.02 * gain).abs() < 1e-5);
     assert!((amplitude(p.measured(), 1, 480.) - 0.006 * gain).abs() < 1e-5);
     reference.stage(

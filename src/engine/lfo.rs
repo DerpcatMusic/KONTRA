@@ -811,12 +811,16 @@ mod tests {
                 21 => group.volume_lfos[0].source.digital.as_mut().unwrap().triangle = 0.25,
                 22 => group.volume_lfos[0].source.digital.as_mut().unwrap().saw = -0.25,
                 23 => group.volume_lfos[0].source.extended_fade = true,
-                24 => group.volume_lfos[0].source.fade_sync = Some(crate::modulation::LfoFadeSync { note_value: 0.125, count: 4. }),
+                24 => {
+                    group.volume_lfos[0].source.fade_ms = 0.;
+                    group.volume_lfos[0].source.fade_sync = Some(crate::modulation::LfoFadeSync { note_value: 0.125, count: 4. });
+                }
                 25 => group.pitch_lfos[0].fade_sync = Some(crate::modulation::LfoFadeSync { note_value: f32::NAN, count: 4. }),
+                26 => group.volume_lfos[0].source.fade_sync = Some(crate::modulation::LfoFadeSync { note_value: 0.125, count: 4. }),
                 _ => unreachable!(),
             }
         };
-        for case in 0..26 {
+        for case in 0..27 {
             let mut bad = valid(); corrupt(&mut bad, case);
             let imported = Bank::from_samples(vec![bad.clone()], Vec::new(), Vec::new())
                 .err().expect("unsafe authored source must fail preparation");
@@ -826,7 +830,8 @@ mod tests {
             let reason = match case {
                 0 | 1 => "outside", 2 | 3 => "duplicate", 11 => "nonfinite source",
                 12 | 13 => "nonfinite depth", 14 | 15 => "volume target",
-                16 | 18 => "invalid phase or nonfinite waveform", _ => "inconsistent shared",
+                16 | 18 => "invalid phase or nonfinite waveform",
+                25 | 26 => "invalid synchronized fade geometry or ambiguous units", _ => "inconsistent shared",
             };
             assert!(format!("{imported:#}").contains(reason), "case{case}: {imported:#}");
             assert!(format!("{prepared:#}").contains(reason), "case{case}: {prepared:#}");
@@ -1179,7 +1184,13 @@ mod tests {
                     engine.render_checked(&mut [], &mut []).unwrap();
                     error = engine.render_checked(&mut left, &mut right).err();
                     engine.mark_host_notes();
-                    assert_eq!(engine.host_note_end_at(owner), Some(failed_at));
+                    assert_eq!(engine.host_audio_end_at(owner), Some(failed_at));
+                    assert_eq!(engine.host_note_end_at(owner), None, "failed PCM does not release the held host root");
+                    let released_at = failed_at + left.len() as u64;
+                    assert_eq!(engine.player.now, released_at);
+                    engine.host_note_off(pattern);
+                    engine.mark_host_notes();
+                    assert_eq!(engine.host_note_end_at(owner), Some(released_at));
                 };
                 #[cfg(feature = "plugin")]
                 assert_eq!(crate::plugin::tests::allocations(|| fail()), 0);

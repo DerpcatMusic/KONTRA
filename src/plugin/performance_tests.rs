@@ -24,6 +24,7 @@ struct Performance {
     dsp: Dsp,
     params: SamplerParams,
     partition: &'static [usize],
+    process_mode: moose::core::ProcessMode,
     reported_loads: &'static [f32],
     block: usize,
     pcm: Vec<[f32; 2]>,
@@ -92,6 +93,7 @@ impl Performance {
             dsp,
             params,
             partition,
+            process_mode: moose::core::ProcessMode::Realtime,
             reported_loads: &[],
             block: 0,
             pcm: Vec::new(),
@@ -137,7 +139,7 @@ impl Performance {
             let mut channels = [&mut left[..len], &mut right[..len]];
             let mut buffer = AudioBuffer::from_slices_checked(&[], &mut channels, len);
             let mut cx = ProcessContext::new(&transport, RATE as f64, len, &mut output)
-                .with_process_mode(moose::core::ProcessMode::Realtime);
+                .with_process_mode(self.process_mode);
             assert_eq!(
                 super::tests::allocations(|| {
                     Sampler::process(&mut self.dsp, &self.params, &mut buffer, incoming, &mut cx);
@@ -2130,9 +2132,11 @@ fn wide_pitch_performance(partition:&'static [usize], scripted:bool, case:u8) ->
     assert!(actual.pcm[end..].iter().all(|v|*v==[0.;2]),"case{case}: source tail continued past EOF");
     let error=actual.pcm.iter().zip(&oracle.pcm).flat_map(|(a,b)|[(a[0]-b[0]).abs(),(a[1]-b[1]).abs()]).fold(0_f32,f32::max);
     assert!(error<2e-6,"case{case}: complete wide-pitch PCM differs from independently resampled source by {error}");
-    // The final few source taps can touch zero padding. Exclude that boundary
-    // from frequency estimation, while retaining it in the complete PCM check.
-    let hz=pcm_fundamental(&actual.pcm[1..end-4],0);
+    // Linear zero-crossing interpolation is biased by the final millisecond
+    // of source fade. Exclude that output-time interval from the observation,
+    // while retaining the fade and zero padding in the complete PCM check.
+    let unfaded_end=(source_frames as f64/ratio-0.001*RATE as f64).floor() as usize;
+    let hz=pcm_fundamental(&actual.pcm[1..unfaded_end],0);
     let expected_hz=source_hz*ratio;
     let tolerance=if case>=2 {0.005}else {0.00001};
     assert!((hz-expected_hz).abs()<tolerance,"case{case}: audible pitch {hz}Hz expected {expected_hz}Hz");

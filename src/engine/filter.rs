@@ -2844,8 +2844,11 @@ mod tests {
             assert!(f.set_knob(0, Knob::Output, 1.0));
             assert!(f.set_knob(1, Knob::Output, 1.0));
             assert!(voice.hold(&f, &table, RATE).is_none(), "pending inline ramps cannot collapse to a final matrix");
-            let (mut l, mut r) = ([0.0; 128], [0.0; 128]);
+            // Five ms at 48 kHz is 240 physical frames, independent of blocks.
+            let (mut l, mut r) = ([0.0; 239], [0.0; 239]);
             voice.process(&f, &table, &mut [0.0; MAX_BLOCK], &mut l, &mut r, RATE);
+            assert!(voice.hold(&f, &table, RATE).is_none(), "the final inline ramp frame is still pending");
+            voice.process(&f, &table, &mut [0.0; MAX_BLOCK], &mut [0.0; 1], &mut [0.0; 1], RATE);
             assert!(voice.hold(&f, &table, RATE).is_some(), "canonical routing returns after the inline ramp");
         }), 0);
     }
@@ -3818,12 +3821,12 @@ mod tests {
                 if value == 0 {
                     // Independent prepared float LP/HP coefficients and
                     // native clock. Apply the known amplifier split explicitly.
-                    let a = -0.7484753727912903f32;
+                    let a = -0.748_475_4_f32;
                     let b = 0.5 * (1.0 - a);
                     let (mut previous, mut state) = (0.0f32, 0.0f32);
                     let mut history = [0.0f32; 4];
-                    let [b0, b1, b2, a1, a2] = [0.9986164569854736f32, -1.9972329139709473,
-                        0.9986164569854736, 1.9972310066223145, -0.9972348213195801];
+                    let [b0, b1, b2, a1, a2] = [0.998_616_46_f32, -1.997_232_9,
+                        0.998_616_46, 1.997_231, -0.997_234_8];
                     for (x, actual) in source.into_iter().zip(l) {
                         let input = if split == 0 { x * 0.2 } else { x };
                         state = (b * input + b * previous) + a * state + 1e-20;

@@ -148,10 +148,13 @@ fn local_control_pcm(ignored: bool, shared: bool, parts: &[usize]) -> ([Vec<f32>
                 256 => {
                     received(&mut actual,7,1,122,127);
                     assert_eq!(actual.player.library_receiver.cc[7][122],127);
-                    assert_eq!(actual.cc_state()[1][122],if ignored {0} else {127});
+                    // Script forwarding enqueues an audio-frame command; receipt alone
+                    // does not update the applied physical controller state.
+                    assert_eq!(actual.cc_state()[1][122],0);
                     assert_eq!(actual.cc_state()[2][122],0);
                 }
                 280 => {
+                    assert_eq!(actual.cc_state()[1][122],if ignored {0} else {127});
                     actual.set_home_channel(9);
                     received(&mut actual,9,2,122,0);
                     assert_eq!(actual.player.library_receiver.cc[7][122],127);
