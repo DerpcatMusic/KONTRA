@@ -236,9 +236,11 @@ impl Native {
         let Self { source, interpolation } = self;
         interpolation.frame(|| source.point())
     }
+    #[cfg(test)]
     pub fn skip(&mut self, n: usize) {
         let _ = self.skip_terminal(n);
     }
+    #[cfg(test)]
     pub fn render(&mut self, out: &mut [f32]) {
         let _ = self.render_terminal(out);
     }

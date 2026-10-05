@@ -164,6 +164,7 @@ pub(super) fn publish(p: &SamplerParams, request: &Request, assets: Assets) -> b
 
 impl PartView {
     /// Unique decoded pixels currently owned by this part's published artwork.
+    #[cfg(test)]
     pub(crate) fn visual_bytes(&self) -> (usize, usize) {
         let mut images = HashMap::<usize, usize>::new();
         for image in self.pictures.values().chain(self.wallpaper.iter()).flat_map(|p| &p.frames) {

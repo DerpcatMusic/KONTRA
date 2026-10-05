@@ -26,6 +26,7 @@ fn resource_dirs(dir: &Path, name: &str) -> Vec<PathBuf> {
 /// The text of a script slot linked to `name` (as Kontakt stores it: a bare
 /// file name or any Windows or POSIX path ending in one) from the library's
 /// `Resources/scripts`, loose or in its resource container.
+#[cfg(test)]
 pub fn linked_script(instrument: &Path, name: &str) -> Result<Option<Vec<u8>>, String> {
     linked_script_with_dependencies(instrument, name, None)
 }

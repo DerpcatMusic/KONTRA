@@ -630,7 +630,7 @@ pub(super) fn service(params: &SamplerParams) {
                 trace.detail("epoch", activation.epoch);
                 trace.detail("generation", activation.generation);
                 trace.stage("uvi_configuration");
-                trace.fail(reason.clone());
+                trace.fail(reason);
                 trace.finish("failed");
                 Err(reason.to_owned())
             }

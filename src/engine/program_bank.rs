@@ -1,5 +1,5 @@
 //! Script-free retained instrument-bank playback. Plugin admission remains separate.
-use super::{Engine, HostExpression, HostNote, HostPattern, MAX_BLOCK, MAX_VOICES, Velocity};
+use super::{Engine, HostExpression, HostNote, HostPattern, MAX_BLOCK, Velocity};
 use anyhow::{Context, Result, ensure};
 use std::path::Path;
 
@@ -254,7 +254,7 @@ impl ProgramBank {
                     .iter()
                     .map(|w| format!("Program {slot}: {w}")),
             );
-            let mut bank = super::Bank::load(&instrument)?;
+            let bank = super::Bank::load(&instrument)?;
             warnings.extend(bank.issues.iter().map(|w| format!("Program {slot}: {w}")));
             if let Some(w) = &bank.warning {
                 warnings.push(format!("Program {slot}: {w}"));

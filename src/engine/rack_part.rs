@@ -3,7 +3,7 @@
 
 use super::host_notes::HostRef;
 use super::program_bank::ProgramBank;
-use super::{Engine, HostExpression, HostNote, HostPattern, StreamError};
+use super::{Engine, HostExpression, HostNote, StreamError};
 
 pub struct RackPart {
     playback: Playback,
@@ -307,12 +307,6 @@ impl RackPart {
         match &mut self.playback {
             Playback::Instrument(_) => None,
             Playback::InstrumentBank(bank) => Some(bank),
-        }
-    }
-    pub(crate) fn input_port(&self) -> Option<u8> {
-        match &self.playback {
-            Playback::Instrument(_) => None,
-            Playback::InstrumentBank(bank) => Some(bank.port()),
         }
     }
     pub(crate) fn matches_input(&self, port: u8, channel: u8) -> bool {

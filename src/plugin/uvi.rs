@@ -433,6 +433,7 @@ impl Slot {
     pub(crate) fn latency_frames(&self) -> u32 {
         self.bridge.latency_frames()
     }
+    #[cfg(test)]
     pub(crate) fn error(&self) -> Option<Error> {
         self.error
     }
@@ -448,6 +449,7 @@ impl Slot {
     pub(crate) fn underruns(&self) -> u64 {
         self.underruns
     }
+    #[cfg(test)]
     pub(crate) fn discarded_packets(&self) -> u64 {
         self.discarded_packets
     }
@@ -848,9 +850,6 @@ impl Slot {
                 edit,
             })
             .map_err(|error| self.fail(Error::Bridge(error)))
-    }
-    pub(crate) fn process(&mut self, left: &mut [f32], right: &mut [f32]) -> Result<(), Error> {
-        self.process_mode(left, right, false)
     }
     pub(crate) fn process_mode(
         &mut self,

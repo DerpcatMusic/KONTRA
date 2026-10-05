@@ -288,6 +288,7 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
 
 /// Run `i`'s scripts as the player does, lay out its view and note what
 /// is wrong; the part to draw, if it has a view.
+#[cfg(test)]
 fn audit_one(i: &Arc<import::Instrument>, found: &mut Found, trace: &mut crate::diagnostics::LoadTrace) -> Option<PartView> {
     audit_one_selected(i, found, trace, None)
 }

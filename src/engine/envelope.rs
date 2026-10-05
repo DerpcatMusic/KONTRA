@@ -945,6 +945,7 @@ impl Amplitude {
             Self::Native(_) | Self::Shared(_) => None,
         }
     }
+    #[cfg(test)]
     pub fn skip(&mut self, n: usize, flex: Option<&Flex>, rate: f32) {
         match self {
             Self::Ordinary(e) => e.skip(n, flex, rate),
@@ -952,6 +953,7 @@ impl Amplitude {
             Self::Shared(_) => unreachable!("shared AHDSR requires its sealed source cache"),
         }
     }
+    #[cfg(test)]
     pub fn render(&mut self, out: &mut [f32], flex: Option<&Flex>, rate: f32) {
         match self {
             Self::Ordinary(e) => e.render(out, flex, rate),

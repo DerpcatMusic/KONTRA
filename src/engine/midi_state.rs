@@ -3,7 +3,9 @@
 //! on the physical input channel. Pedals and voice lifetimes belong to Player.
 
 use super::Expression;
-use crate::midi::{Midi1Decoder, ReceivedControl, ParameterEvent, ParameterValue, MpeZones, Control, ControlTarget, ControlValue, Bend, ChannelTuning, reset_controller_value};
+use crate::midi::{Midi1Decoder, ReceivedControl, ParameterEvent, MpeZones, Control, ControlTarget, ControlValue, Bend, ChannelTuning, reset_controller_value};
+#[cfg(test)]
+use crate::midi::ParameterValue;
 
 #[cfg(all(test, feature = "plugin"))]
 #[path = "controller_defaults_tests.rs"]
@@ -171,7 +173,7 @@ impl MidiState {
     pub(super) fn accept(&mut self, target: ControlTarget, control: Control) -> bool {
         if !control.valid() || matches!(target, ControlTarget::Physical(channel) if channel >= 16) { return false; }
         let channels = match target {
-            ControlTarget::Physical(channel) => (1u16 << channel),
+            ControlTarget::Physical(channel) => 1u16 << channel,
             ControlTarget::Authored => u16::MAX,
         };
         for channel in (0..16).filter(|channel| channels & (1 << channel) != 0) {
@@ -274,6 +276,7 @@ impl MidiState {
         self.touch();
     }
 
+    #[cfg(test)]
     pub(super) fn receive_cc(&mut self, input: u8, cc: u8, value: u8) -> Option<ParameterValue> {
         self.receive_parameter(input, cc, value)?.absolute()
     }

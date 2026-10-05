@@ -198,6 +198,7 @@ impl Rack {
     }
 
     /// Instrument-only operations cannot mutate a bank's selected program.
+    #[cfg(test)]
     pub(crate) fn with_instrument<R>(&mut self, slot: usize, f: impl FnOnce(&mut super::Engine) -> R) -> Option<R> {
         self.with_part(slot, |part| part.instrument_mut().map(f)).flatten()
     }

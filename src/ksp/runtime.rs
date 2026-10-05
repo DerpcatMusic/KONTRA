@@ -2033,10 +2033,6 @@ impl Runtime {
         self.note_on_host_velocity(engine, at, owner, note, crate::midi::Velocity::from_midi1(velocity), host_note);
     }
 
-    pub(crate) fn note_on_from_velocity(&mut self, engine: &mut dyn KspEngine, at: u32, owner: u8, note: u8, velocity: crate::midi::Velocity) {
-        self.note_on_host_velocity(engine, at, owner, note, velocity, None);
-    }
-
     pub(crate) fn note_on_host_velocity(&mut self, engine: &mut dyn KspEngine, at: u32, owner: u8, note: u8, velocity: crate::midi::Velocity, host_note: Option<crate::engine::HostRef>) {
         self.note_on_owned_velocity(engine, at, owner, note, velocity, host_note, None);
     }

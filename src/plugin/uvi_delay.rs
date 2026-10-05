@@ -148,12 +148,10 @@ impl Prepared {
     pub fn slots(&self) -> usize {
         self.delays.len()
     }
-    pub fn capacity_frames(&self) -> usize {
-        self.capacity
-    }
     pub fn latency_frames(&self) -> u32 {
         self.latency
     }
+    #[cfg(test)]
     pub fn memory_bytes(&self) -> usize {
         self.bytes
     }

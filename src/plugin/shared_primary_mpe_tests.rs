@@ -71,9 +71,6 @@ fn source_bank(shared: bool, key: Option<u8>) -> Bank {
     )
     .unwrap()
 }
-fn actual_dsp() -> Dsp {
-    actual_dsp_manager(false)
-}
 fn actual_dsp_manager(midi1: bool) -> Dsp {
     let mut dsp = Dsp::default();
     dsp.until_poll = usize::MAX;

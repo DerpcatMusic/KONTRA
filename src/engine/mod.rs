@@ -943,6 +943,7 @@ impl Engine {
     }
 
     /// Exact host ingress. The route is captured once, before KSP can transpose.
+    #[cfg(test)]
     pub(crate) fn host_note_on(&mut self, note: HostNote, channel: u8, key: u8, velocity: u8, tune: f32) -> bool {
         if velocity > 127 { return false; }
         self.host_note_on_velocity(note, channel, key, Velocity::from_midi1(velocity), tune)
@@ -1961,6 +1962,7 @@ impl Engine {
     }
 
     /// Compatibility entry point for existing single-zone engine callers.
+    #[cfg(test)]
     pub(crate) fn set_mpe_zone(&mut self, zone: Option<(u8, u16)>) {
         self.configure_mpe(zone.map(|(manager, mask)| (manager, (mask & !(1 << manager.min(15))).count_ones() as u8, 48)));
     }
@@ -2138,14 +2140,6 @@ impl Engine {
         }
         self.render_finish();
         self.peer_voices = peers;
-    }
-
-    /// Rack peers remain unchanged throughout this invocation; own voices are live.
-    pub(crate) fn with_peer_voices<R>(&mut self, peers: usize, f: impl FnOnce(&mut Self) -> R) -> R {
-        let previous = self.peer_voices.replace(peers);
-        let result = f(self);
-        self.peer_voices = previous;
-        result
     }
 
     /// Only newly adopted, never-rendered engines receive the Rack frame origin.

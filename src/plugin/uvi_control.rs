@@ -24,7 +24,7 @@ use std::{
     },
 };
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub(super) enum Error {
     InvalidIdentity,
     DuplicateActivation,
@@ -37,6 +37,24 @@ pub(super) enum Error {
     Bridge(BridgeError),
     Slot(super::uvi::Error),
     State,
+}
+
+impl std::fmt::Debug for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidIdentity => f.write_str("InvalidIdentity"),
+            Self::DuplicateActivation => f.write_str("DuplicateActivation"),
+            Self::MissingActivation => f.write_str("MissingActivation"),
+            Self::Cancelled => f.write_str("Cancelled"),
+            Self::Start => f.write_str("Start"),
+            Self::NotReady => f.write_str("NotReady"),
+            Self::WorkerFailed => f.write_str("WorkerFailed"),
+            Self::EndpointTaken => f.write_str("EndpointTaken"),
+            Self::Bridge(error) => f.debug_tuple("Bridge").field(error).finish(),
+            Self::Slot(error) => f.debug_tuple("Slot").field(error).finish(),
+            Self::State => f.write_str("State"),
+        }
+    }
 }
 
 /// Move through ready/audio/retired ownership; never destroy in process/reset.
@@ -112,6 +130,7 @@ pub(super) struct Registry {
 impl Registry {
     /// Serialized loader only. Native initialization stays on Worker; artwork
     /// authority stays in this loader-owned mailbox. No controller enters Dsp.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn prepare(
         &mut self,
@@ -311,12 +330,6 @@ impl Registry {
             })
     }
 
-    /// Control/editor thread only. Includes measured packet counters, never a
-    /// claim that every decoded node has executed or matches Falcon.
-    pub fn diagnostic_report(&self) -> serde_json::Value {
-        self.report(None)
-    }
-
     /// Explicit support export only. One deadline bounds all rack workers.
     pub fn runtime_diagnostic_report(&self, timeout: std::time::Duration) -> serde_json::Value {
         self.report(Some(timeout))
@@ -507,6 +520,7 @@ impl Registry {
 
     /// Off audio. False means exported endpoints still need their ordinary
     /// audio-to-loader retirement; never wait for them while holding audio.
+    #[cfg(test)]
     pub fn shutdown(&mut self) -> bool {
         self.controls.retain(|_, control| {
             control.cancelled = true;

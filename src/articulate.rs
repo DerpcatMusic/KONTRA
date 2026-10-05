@@ -1016,6 +1016,7 @@ pub(crate) fn apply(e: &mut Engine, o: Out) {
 
 /// Send `ev` through `r` to its part's engine `e`; notes in channel mode
 /// arrive on `home`.
+#[cfg(test)]
 pub(crate) fn feed(r: &mut Router, e: &mut Engine, ev: In, home: u8) {
     feed_on_port(r,e,ev,home,0);
 }
@@ -1727,7 +1728,7 @@ mod tests {
             if !scripted { e.set_script(None); }
             let note=HostNote { port:0,channel:2,key:60,id:10,clap:true };
             let pattern=HostPattern { port:0,channel:2,key:60,id:10,clap:true };
-            let mut actions=|| {
+            let actions=|| {
         feed(&mut r,&mut e,In::HostOn(note,crate::midi::Velocity::from_midi1(100),0.),7);
                 assert_eq!(e.held_host_route(2,60),Some((7,60)));
                 assert_eq!(e.host_note_drops(),0);
@@ -1747,7 +1748,10 @@ mod tests {
             #[cfg(feature="plugin")]
             assert_eq!(crate::plugin::tests::allocations(actions),0);
             #[cfg(not(feature="plugin"))]
-            actions();
+            {
+                let mut actions = actions;
+                actions();
+            }
         }
     }
 
