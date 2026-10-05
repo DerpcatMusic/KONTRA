@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 
 mod relative;
 mod native_gain;
+mod vista_pedal_tests;
 mod mpe_cleanup;
 mod event_ids;
 mod mixed_protocol;

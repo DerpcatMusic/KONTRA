@@ -151,19 +151,19 @@ fn curved_future_overflow_preserves_current_source_pcm_and_legal_retune_without_
     let mut scratch = [[0.; 2]; WINDOW];
     let positions = [0; MAX_BLOCK];
     assert_eq!(crate::plugin::tests::allocations(|| {
-        let current = voice.prepare_source(&cx, 1).unwrap();
+        let current = voice.prepare_source(&cx, 1).unwrap_or_else(|_| panic!("current source must be admitted"));
         assert!(current.curved_pitch, "volume-only lag takes the existing curved source preview");
         assert_eq!(current.travel, 1u64 << 57, "the current increment is representable");
         assert_eq!(current.crossfade_partners[0] & 1, 1,
             "current pending phase itself proves the first segment crosses fade.begin");
-        voice.plan(&cx, 1, None, None).unwrap();
+        assert!(voice.plan(&cx, 1, None, None).is_ok(), "current source must be admitted");
         let mut underrun = false;
         let (pcm, _) = voice.window(&cx, &mut scratch, &positions, &mut underrun);
         assert!(!underrun); assert_eq!(pcm[1], [0.25; 2]);
         // A future live retune must still be admitted; the earlier speculative
         // overflow neither silences nor commits a fabricated source trajectory.
         voice.step = 1.;
-        let retuned = voice.prepare_source(&cx, 1).unwrap();
+        let retuned = voice.prepare_source(&cx, 1).unwrap_or_else(|_| panic!("current source must be admitted"));
         assert_eq!(retuned.travel, 1u64 << 32);
         assert_eq!(voice.counted.unwrap().position, 0.);
         assert_eq!(voice.pos, 0.);
