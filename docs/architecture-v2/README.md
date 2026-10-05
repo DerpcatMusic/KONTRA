@@ -1,6 +1,6 @@
 # KONTRA 2.0 architecture workbench
 
-Status: first experimental ownership/PCM kernel and authored KSP integration probe,
+Status: independent note/family/expression ownership and segmented PCM rendering,
 2026-10-05. Production playback has not been replaced or certified.
 
 This work starts on `docs/plan-v2-architecture`, in the isolated T3 worktree
@@ -26,9 +26,12 @@ compatibility remains a separate, evidence-backed capability.
    assigned to implementation tasks, without claiming execution.
 5. [First implementation evidence](IMPLEMENTATION.md): runnable checks, actual scope,
    reproduced legacy defects, and remaining gates.
+6. [Family/expression implementation and measurements](OWNERSHIP_SLICE.md): current
+   contracts, independent core checks and resident-render microbenchmark.
 
 Continue through **V2-01 → V2-02 → V2-03/V2-04**: define independent workload
-and protocol contracts, then implement families, expression and unified scheduling.
+and protocol contracts, then build unified event/continuation scheduling on the
+new family/expression ownership. Full lifecycle and pedal behavior remain open.
 The prototype may change freely. The old-VM KSP probe is historical evidence, not
 the new scripting implementation. Legacy defects do not block v2 delivery.
 

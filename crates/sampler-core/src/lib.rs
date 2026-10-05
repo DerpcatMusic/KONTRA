@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Experimental native ownership kernel. No plugin, file, or language dependencies.
 //!
 //! Construction/destruction are control-thread operations. After preparation, methods
@@ -6,6 +7,10 @@
 //! sample-time commands; it does not claim resampling, envelopes or vendor fidelity.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+
+mod ownership;
+pub use ownership::{Expression, ExpressionId, FamilyId, Inheritance};
+use ownership::{ExpressionOwner, Family};
 
 pub type Frame = [f32; 2];
 
@@ -26,6 +31,7 @@ pub struct VoiceId(Handle);
 pub enum Protocol {
     Native,
     Midi1,
+    Midi2,
     Clap,
     Vst3,
 }
@@ -36,6 +42,8 @@ pub enum Protocol {
 pub struct Input {
     pub protocol: Protocol,
     pub port: u16,
+    /// UMP group; zero for transports without group addressing.
+    pub group: u8,
     pub channel: u8,
     pub key: u8,
     pub external_id: Option<i32>,
@@ -48,6 +56,7 @@ pub enum Error {
     StaleHandle,
     DuplicateInput,
     ClosedNote,
+    ClosedFamily,
     PastEvent,
     ClockOverflow,
 }
@@ -55,6 +64,8 @@ pub enum Error {
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub notes: usize,
+    pub families: usize,
+    pub expressions: usize,
     pub voices: usize,
     pub commands: usize,
 }
@@ -75,11 +86,13 @@ struct Note {
     gate: bool,
     pins: usize,
     order: u64,
+    expression: ExpressionId,
+    families: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct Voice {
-    note: NoteId,
+    family: FamilyId,
     sample: usize,
     cursor: usize,
     gain: f32,
@@ -183,6 +196,8 @@ pub struct Runtime<'a> {
     pcm: &'a [Pcm<'a>],
     notes: Arena<Note>,
     voices: Arena<Voice>,
+    families: Arena<Family>,
+    expressions: Arena<ExpressionOwner>,
     commands: Vec<Scheduled>,
     command_limit: usize,
     now: u64,
@@ -212,6 +227,8 @@ impl<'a> Runtime<'a> {
             pcm,
             notes: Arena::new(id, limits.notes),
             voices: Arena::new(id, limits.voices),
+            families: Arena::new(id, limits.families),
+            expressions: Arena::new(id, limits.expressions),
             commands: Vec::with_capacity(limits.commands),
             command_limit: limits.commands,
             now: 0,
@@ -244,7 +261,7 @@ impl<'a> Runtime<'a> {
     /// Admit ownership before preparing any source or scheduled work. A caller
     /// receiving Err has not admitted an input; protocol rejection remains its job.
     pub fn note_on(&mut self, input: Input, key: u8, velocity: f64) -> Result<NoteId, Error> {
-        if input.channel >= 16 || input.key >= 128 {
+        if input.channel >= 16 || input.group >= 16 || input.key >= 128 {
             return Err(Error::InvalidInput);
         }
         if input.external_id.is_some()
@@ -256,7 +273,14 @@ impl<'a> Runtime<'a> {
         {
             return Err(Error::DuplicateInput);
         }
-        self.admit(Some(input), None, false, key, velocity)
+        self.admit(
+            Some(input),
+            None,
+            false,
+            key,
+            velocity,
+            Inheritance::Independent,
+        )
     }
 
     /// Detached children do not release with their parent, but still retain its
@@ -267,12 +291,20 @@ impl<'a> Runtime<'a> {
         key: u8,
         velocity: f64,
         linked_release: bool,
+        inheritance: Inheritance,
     ) -> Result<NoteId, Error> {
         let p = self.notes.get(parent.0).ok_or(Error::StaleHandle)?;
         if linked_release && !p.gate {
             return Err(Error::ClosedNote);
         }
-        self.admit(None, Some(parent), linked_release, key, velocity)
+        self.admit(
+            None,
+            Some(parent),
+            linked_release,
+            key,
+            velocity,
+            inheritance,
+        )
     }
 
     fn admit(
@@ -282,12 +314,34 @@ impl<'a> Runtime<'a> {
         linked_release: bool,
         key: u8,
         velocity: f64,
+        inheritance: Inheritance,
     ) -> Result<NoteId, Error> {
         if key >= 128 || !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
             return Err(Error::InvalidInput);
         }
         let order = self.order.checked_add(1).ok_or(Error::ClockOverflow)?;
-        let id = self.notes.insert(Note {
+        let parent_expression = parent.map(|p| self.notes.get(p.0).unwrap().expression);
+        let expression = match (inheritance, parent_expression) {
+            (Inheritance::Linked, Some(id)) => {
+                let owner = self.expressions.get_mut(id.0).unwrap();
+                owner.notes = owner.notes.checked_add(1).ok_or(Error::Capacity)?;
+                id
+            }
+            (policy, parent) => {
+                let value = if policy == Inheritance::Snapshot {
+                    parent
+                        .map(|p| self.expressions.get(p.0).unwrap().value)
+                        .unwrap_or_default()
+                } else {
+                    Expression::default()
+                };
+                ExpressionId(
+                    self.expressions
+                        .insert(ExpressionOwner { value, notes: 1 })?,
+                )
+            }
+        };
+        let id = match self.notes.insert(Note {
             input,
             parent,
             linked_release,
@@ -296,7 +350,15 @@ impl<'a> Runtime<'a> {
             gate: true,
             pins: 0,
             order,
-        })?;
+            expression,
+            families: 0,
+        }) {
+            Ok(id) => id,
+            Err(error) => {
+                self.drop_expression(expression);
+                return Err(error);
+            }
+        };
         self.order = order;
         Ok(NoteId(id))
     }
@@ -338,8 +400,8 @@ impl<'a> Runtime<'a> {
         Ok(id)
     }
 
-    /// Queue capacity and a voice slot are reserved together. A failed start leaves
-    /// no partial voice. Delayed starts are canceled by release, never resurrected.
+    /// Convenience for a single-source selection: creates and seals one family.
+    /// Multi-source selections explicitly create a family and use start_family.
     pub fn start(
         &mut self,
         note: NoteId,
@@ -347,23 +409,41 @@ impl<'a> Runtime<'a> {
         at: u64,
         gain: f32,
     ) -> Result<VoiceId, Error> {
-        if !self.notes.get(note.0).ok_or(Error::StaleHandle)?.gate {
-            return Err(Error::ClosedNote);
+        let family = self.create_family(note)?;
+        let result = self.start_family(family, sample, at, gain);
+        self.finish_family(family)?;
+        result
+    }
+
+    /// Reserve a voice and its delayed start atomically. A failed admission leaves
+    /// the family unchanged. Sealed families cannot admit additional sources.
+    pub fn start_family(
+        &mut self,
+        family: FamilyId,
+        sample: usize,
+        at: u64,
+        gain: f32,
+    ) -> Result<VoiceId, Error> {
+        let f = self.families.get(family.0).ok_or(Error::StaleHandle)?;
+        if !f.open {
+            return Err(Error::ClosedFamily);
         }
         if sample >= self.pcm.len() || !gain.is_finite() || !(0.0..=1.0).contains(&gain) {
             return Err(Error::InvalidInput);
         }
+        let count = f.voices.checked_add(1).ok_or(Error::Capacity)?;
         self.check_time(at)?;
         if at > self.now && self.commands.len() == self.command_limit {
             return Err(Error::Capacity);
         }
         let id = VoiceId(self.voices.insert(Voice {
-            note,
+            family,
             sample,
             cursor: 0,
             gain,
             started: at == self.now,
         })?);
+        self.families.get_mut(family.0).unwrap().voices = count;
         if at > self.now {
             self.queue(at, Action::Start(id));
         }
@@ -401,7 +481,7 @@ impl<'a> Runtime<'a> {
         self.voices.get(id.0).ok_or(Error::StaleHandle)?;
         self.commands
             .retain(|c| !matches!(c.action, Action::Start(v) if v == id));
-        self.voices.remove(id.0);
+        self.end_voice(id);
         Ok(())
     }
 
@@ -429,18 +509,7 @@ impl<'a> Runtime<'a> {
                 break;
             }
         }
-        for slot in &mut self.voices.slots {
-            if slot
-                .value
-                .is_some_and(|v| self.notes.get(v.note.0).is_none_or(|n| !n.gate))
-            {
-                slot.value = None;
-            }
-        }
-        self.commands.retain(|c| match c.action {
-            Action::Start(v) => self.voices.get(v.0).is_some(),
-            Action::Release(n) => self.notes.get(n.0).is_some_and(|n| n.gate),
-        });
+        self.cleanup_closed_notes();
         Ok(())
     }
 
@@ -448,14 +517,38 @@ impl<'a> Runtime<'a> {
     /// canceling their own work; reset does not invalidate IDs needed for NOTE_END.
     pub fn panic(&mut self) {
         self.commands.clear();
-        for s in &mut self.voices.slots {
-            s.value = None;
-        }
         for s in &mut self.notes.slots {
             if let Some(n) = &mut s.value {
                 n.gate = false;
             }
         }
+        self.cleanup_closed_notes();
+    }
+
+    fn cleanup_closed_notes(&mut self) {
+        // One pass per resource domain, including saturated family/voice pools.
+        for s in &mut self.families.slots {
+            if let Some(f) = &mut s.value
+                && !self.notes.get(f.note.0).unwrap().gate
+            {
+                f.open = false;
+            }
+        }
+        for i in 0..self.voices.slots.len() {
+            if let Some(v) = self.voices.slots[i].value {
+                let family = self.families.get(v.family.0).unwrap();
+                if !self.notes.get(family.note.0).unwrap().gate {
+                    self.end_voice(VoiceId(self.voices.id(i)));
+                }
+            }
+        }
+        for i in 0..self.families.slots.len() {
+            self.retire_family(FamilyId(self.families.id(i)));
+        }
+        self.commands.retain(|c| match c.action {
+            Action::Start(v) => self.voices.get(v.0).is_some(),
+            Action::Release(n) => self.notes.get(n.0).is_some_and(|n| n.gate),
+        });
     }
 
     /// Consume terminal notifications only after acceptance. The sink must be bounded
@@ -470,16 +563,12 @@ impl<'a> Runtime<'a> {
                 let id = NoteId(self.notes.id(i));
                 if n.gate
                     || n.pins != 0
+                    || n.families != 0
                     || self
                         .notes
                         .slots
                         .iter()
                         .any(|s| s.value.is_some_and(|n| n.parent == Some(id)))
-                    || self
-                        .voices
-                        .slots
-                        .iter()
-                        .any(|s| s.value.is_some_and(|v| v.note == id))
                 {
                     continue;
                 }
@@ -487,6 +576,7 @@ impl<'a> Runtime<'a> {
                     return;
                 }
                 self.notes.remove(id.0);
+                self.drop_expression(n.expression);
                 removed = true;
             }
             if !removed {
@@ -502,30 +592,49 @@ impl<'a> Runtime<'a> {
             .now
             .checked_add(output.len() as u64)
             .ok_or(Error::ClockOverflow)?;
+        output.fill([0.0; 2]);
         self.apply_due();
-        for frame in output {
+        let mut offset = 0;
+        while self.now < end {
             self.apply_due();
-            *frame = [0.0; 2];
-            for slot in &mut self.voices.slots {
-                let Some(v) = &mut slot.value else { continue };
+            let boundary = self.commands.first().map_or(end, |c| c.at.min(end));
+            let len = (boundary - self.now) as usize;
+            let segment = &mut output[offset..offset + len];
+            // Voice-major contiguous work: scan reserved capacity once per event
+            // segment, not once per sample. Slot order preserves deterministic sums.
+            for i in 0..self.voices.slots.len() {
+                let Some(v) = &mut self.voices.slots[i].value else {
+                    continue;
+                };
                 if !v.started {
                     continue;
                 }
-                let input = self.pcm[v.sample].frames[v.cursor];
-                for c in 0..2 {
-                    frame[c] += input[c] * v.gain;
+                let f = self.families.get(v.family.0).unwrap();
+                let n = self.notes.get(f.note.0).unwrap();
+                let gains = self.expressions.get(n.expression.0).unwrap().value.gains();
+                let pcm = self.pcm[v.sample].frames;
+                let count = len.min(pcm.len() - v.cursor);
+                for (frame, input) in segment[..count]
+                    .iter_mut()
+                    .zip(&pcm[v.cursor..v.cursor + count])
+                {
+                    for c in 0..2 {
+                        frame[c] += input[c] * v.gain * gains[c];
+                    }
                 }
-                v.cursor += 1;
-                if v.cursor == self.pcm[v.sample].frames.len() {
-                    slot.value = None;
+                v.cursor += count;
+                if v.cursor == pcm.len() {
+                    self.end_voice(VoiceId(self.voices.id(i)));
                 }
             }
-            // Finite source data can still overflow during summation.
-            if !frame.iter().all(|x| x.is_finite()) {
-                *frame = [0.0; 2];
-                self.nonfinite_frames = self.nonfinite_frames.saturating_add(1);
+            for frame in segment {
+                if !frame.iter().all(|x| x.is_finite()) {
+                    *frame = [0.0; 2];
+                    self.nonfinite_frames = self.nonfinite_frames.saturating_add(1);
+                }
             }
-            self.now += 1;
+            self.now = boundary;
+            offset += len;
         }
         debug_assert_eq!(self.now, end);
         Ok(())

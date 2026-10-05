@@ -4,6 +4,7 @@ fn input(id: Option<i32>) -> Input {
     Input {
         protocol: Protocol::Clap,
         port: 2,
+        group: 0,
         channel: 4,
         key: 60,
         external_id: id,
@@ -13,6 +14,8 @@ fn input(id: Option<i32>) -> Input {
 fn limits() -> Limits {
     Limits {
         notes: 8,
+        families: 8,
+        expressions: 8,
         voices: 8,
         commands: 8,
     }
@@ -26,8 +29,12 @@ fn ownership_survives_source_end_children_and_rejected_terminal_delivery() {
     }];
     let mut rt = Runtime::new(48000, &samples, limits()).unwrap();
     let root = rt.note_on(input(Some(7)), 72, 0.123456789).unwrap();
-    let linked = rt.child(root, 76, 1.0, true).unwrap();
-    let detached = rt.child(root, 79, 1.0, false).unwrap();
+    let linked = rt
+        .child(root, 76, 1.0, true, Inheritance::Snapshot)
+        .unwrap();
+    let detached = rt
+        .child(root, 79, 1.0, false, Inheritance::Snapshot)
+        .unwrap();
     rt.start(root, 0, 0, 1.0).unwrap();
     rt.start(linked, 0, 10, 1.0).unwrap();
     let independent = rt.start(detached, 0, 10, 1.0).unwrap();
@@ -82,6 +89,8 @@ fn cleanup_does_not_need_queue_space_and_no_source_notes_retry() {
         &samples,
         Limits {
             notes: 2,
+            families: 2,
+            expressions: 2,
             voices: 1,
             commands: 1,
         },
@@ -223,7 +232,10 @@ fn invalid_preparation_and_atomic_failed_start() {
     assert_eq!(rt.start(n, 0, 0, f32::INFINITY), Err(Error::InvalidInput));
     assert_eq!((rt.voice_count(), rt.pending_commands()), (0, 0));
     rt.release(n).unwrap();
-    assert_eq!(rt.child(n, 60, 1.0, true), Err(Error::ClosedNote));
+    assert_eq!(
+        rt.child(n, 60, 1.0, true, Inheritance::Snapshot),
+        Err(Error::ClosedNote)
+    );
     assert_eq!(rt.start(n, 0, 0, 1.0), Err(Error::ClosedNote));
 }
 
@@ -251,4 +263,316 @@ fn voice_scope_reuse_and_nonfinite_mix_are_observable() {
     assert_eq!(rt.nonfinite_frames(), 1);
     rt.release(root).unwrap();
     assert_eq!(rt.voice_count(), 0);
+}
+
+#[test]
+fn families_separate_admission_voice_stop_and_note_release() {
+    let samples = [Pcm {
+        rate: 48000,
+        frames: &[[1.0; 2]; 4],
+    }];
+    let mut rt = Runtime::new(48000, &samples, limits()).unwrap();
+    let n = rt.note_on(input(Some(1)), 60, 1.0).unwrap();
+    let f = rt.create_family(n).unwrap();
+    let a = rt.start_family(f, 0, 0, 0.25).unwrap();
+    let b = rt.start_family(f, 0, 10, 0.5).unwrap();
+    let sibling = rt.create_family(n).unwrap();
+    let c = rt.start_family(sibling, 0, 0, 1.0).unwrap();
+    rt.finish_family(f).unwrap();
+    assert_eq!(rt.start_family(f, 0, 0, 1.0), Err(Error::ClosedFamily));
+    assert_eq!(rt.family_note(f), Ok(n));
+    rt.stop_voice(a).unwrap();
+    assert_eq!(rt.family_voice_count(f), Ok(1));
+    assert!(rt.voice_active(b));
+    rt.stop_family(f).unwrap();
+    assert_eq!(rt.family_note(f), Err(Error::StaleHandle));
+    assert_eq!(rt.pending_commands(), 0);
+    assert!(rt.voice_active(c));
+    assert!(rt.note(n).unwrap().2);
+    rt.render(&mut [[0.0; 2]; 4]).unwrap();
+    assert_eq!(rt.family_voice_count(sibling), Ok(0)); // Open until explicitly sealed.
+    rt.finish_family(sibling).unwrap();
+    assert_eq!(rt.family_count(), 0);
+    let replacement = rt.create_family(n).unwrap();
+    assert_eq!(rt.stop_family(f), Err(Error::StaleHandle));
+    rt.start_family(replacement, 0, 10, 1.0).unwrap();
+    rt.release(n).unwrap();
+    assert_eq!(
+        (rt.family_count(), rt.voice_count(), rt.pending_commands()),
+        (0, 0, 0)
+    );
+    rt.flush_ended(|_| true);
+    assert_eq!((rt.note_count(), rt.expression_count()), (0, 0));
+}
+
+#[test]
+fn expression_inheritance_is_explicit_and_channel_reuse_is_isolated() {
+    let samples = [Pcm {
+        rate: 48000,
+        frames: &[[1.0; 2]; 8],
+    }];
+    let mut rt = Runtime::new(48000, &samples, limits()).unwrap();
+    let root = rt.note_on(input(None), 60, 1.0).unwrap();
+    let e = rt.expression_id(root).unwrap();
+    let first = Expression {
+        gain: 0.5,
+        pan: -0.5,
+        pressure: 0x8000_0001,
+        timbre: u32::MAX,
+        pitch_semitones: 0.123456789,
+    };
+    rt.set_expression(e, first).unwrap();
+    let linked = rt.child(root, 61, 1.0, false, Inheritance::Linked).unwrap();
+    let snapshot = rt
+        .child(root, 62, 1.0, false, Inheritance::Snapshot)
+        .unwrap();
+    let independent = rt
+        .child(root, 63, 1.0, false, Inheritance::Independent)
+        .unwrap();
+    assert_eq!(rt.expression_id(linked), Ok(e));
+    let snapshot_id = rt.expression_id(snapshot).unwrap();
+    assert_eq!(rt.expression(snapshot_id), Ok(first));
+    assert_eq!(
+        rt.expression(rt.expression_id(independent).unwrap()),
+        Ok(Expression::default())
+    );
+    let second = Expression {
+        gain: 0.25,
+        pressure: 0x8000_0002,
+        pan: 1.0,
+        ..first
+    };
+    rt.set_expression(e, second).unwrap();
+    assert_eq!(rt.expression(snapshot_id), Ok(first));
+    assert_eq!(rt.expression(rt.expression_id(linked).unwrap()), Ok(second));
+    let frozen = rt.detach_expression(linked).unwrap();
+    assert_ne!(frozen, e);
+    rt.set_expression(e, Expression::default()).unwrap();
+    assert_eq!(rt.expression(frozen), Ok(second));
+    rt.release(root).unwrap();
+    let reused_channel = rt.note_on(input(None), 60, 1.0).unwrap();
+    assert_ne!(rt.expression_id(reused_channel).unwrap(), e);
+    rt.set_expression(
+        rt.expression_id(reused_channel).unwrap(),
+        Expression::default(),
+    )
+    .unwrap();
+    rt.start(linked, 0, 0, 1.0).unwrap();
+    let mut audio = [[0.0; 2]; 1];
+    rt.render(&mut audio).unwrap();
+    assert_eq!(audio, [[0.0, 0.25]]);
+    let invalid = Expression {
+        pan: f64::NAN,
+        ..second
+    };
+    assert_eq!(rt.set_expression(frozen, invalid), Err(Error::InvalidInput));
+    assert_eq!(rt.expression(frozen), Ok(second));
+    rt.panic();
+    rt.flush_ended(|_| true);
+    assert_eq!(rt.expression_count(), 0);
+    assert_eq!(rt.set_expression(frozen, first), Err(Error::StaleHandle));
+}
+
+#[test]
+fn separate_budgets_reject_without_partial_ownership() {
+    let pcm = [Pcm {
+        rate: 48000,
+        frames: &[[1.0; 2]; 2],
+    }];
+    let mut rt = Runtime::new(
+        48000,
+        &pcm,
+        Limits {
+            notes: 3,
+            families: 1,
+            expressions: 1,
+            voices: 1,
+            commands: 1,
+        },
+    )
+    .unwrap();
+    let n = rt.note_on(input(Some(1)), 60, 1.0).unwrap();
+    assert_eq!(rt.note_on(input(Some(2)), 60, 1.0), Err(Error::Capacity));
+    let child = rt.child(n, 60, 1.0, false, Inheritance::Linked).unwrap();
+    let old = rt.expression_id(child).unwrap();
+    assert_eq!(rt.detach_expression(child), Err(Error::Capacity));
+    assert_eq!(rt.expression_id(child), Ok(old));
+    assert_eq!(
+        rt.child(n, 60, 1.0, false, Inheritance::Snapshot),
+        Err(Error::Capacity)
+    );
+    assert_eq!(rt.note_count(), 2);
+    let f = rt.create_family(n).unwrap();
+    assert_eq!(rt.create_family(child), Err(Error::Capacity));
+    rt.start_family(f, 0, 4, 1.0).unwrap();
+    assert_eq!(rt.start_family(f, 0, 5, 1.0), Err(Error::Capacity));
+    assert_eq!(rt.family_voice_count(f), Ok(1));
+    rt.stop_family(f).unwrap();
+    assert_eq!(
+        (rt.family_count(), rt.voice_count(), rt.pending_commands()),
+        (0, 0, 0)
+    );
+    rt.panic();
+    rt.flush_ended(|_| false);
+    assert_eq!((rt.note_count(), rt.expression_count()), (1, 1));
+    rt.flush_ended(|_| true);
+    assert_eq!((rt.note_count(), rt.expression_count()), (0, 0));
+    // A full note pool must return an expression slot allocated during admission.
+    let mut rt = Runtime::new(
+        48000,
+        &pcm,
+        Limits {
+            notes: 1,
+            expressions: 3,
+            ..limits()
+        },
+    )
+    .unwrap();
+    rt.note_on(input(Some(1)), 60, 1.0).unwrap();
+    for _ in 0..10 {
+        assert_eq!(rt.note_on(input(Some(2)), 60, 1.0), Err(Error::Capacity));
+    }
+    assert_eq!(rt.expression_count(), 1);
+}
+
+#[test]
+fn input_groups_and_new_handle_domains_do_not_alias() {
+    let mut rt = Runtime::new(48000, &[], limits()).unwrap();
+    let a = Input {
+        protocol: Protocol::Midi2,
+        group: 0,
+        ..input(None)
+    };
+    let b = Input { group: 15, ..a };
+    let n = rt.note_on(a, 60, 1.0 / 65535.0).unwrap();
+    let other = rt.note_on(b, 60, 1.0).unwrap();
+    assert_eq!(rt.note_off(b), Ok(other));
+    assert!(rt.note(n).unwrap().2);
+    assert_eq!(
+        rt.note_on(Input { group: 16, ..a }, 60, 1.0),
+        Err(Error::InvalidInput)
+    );
+    let family = rt.create_family(n).unwrap();
+    let expression = rt.expression_id(n).unwrap();
+    let mut foreign = Runtime::new(48000, &[], limits()).unwrap();
+    let f = foreign.note_on(a, 60, 1.0).unwrap();
+    foreign.create_family(f).unwrap();
+    assert_eq!(foreign.stop_family(family), Err(Error::StaleHandle));
+    assert_eq!(
+        foreign.set_expression(expression, Expression::default()),
+        Err(Error::StaleHandle)
+    );
+    rt.panic();
+    rt.flush_ended(|_| true);
+    rt.families.slots[0].generation = u64::MAX;
+    rt.expressions.slots[0].generation = u64::MAX;
+    let n = rt.note_on(a, 60, 1.0).unwrap();
+    assert_ne!(rt.expression_id(n).unwrap().0.index, 0);
+    assert_ne!(rt.create_family(n).unwrap().0.index, 0);
+}
+
+#[test]
+fn ownership_counters_match_reachable_state_under_mixed_operations() {
+    let pcm = [Pcm {
+        rate: 48000,
+        frames: &[[0.25; 2]; 31],
+    }];
+    let mut rt = Runtime::new(48000, &pcm, limits()).unwrap();
+    let mut seed = 12345u64;
+    for step in 0..4000 {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let index = (seed >> 32) as usize % 8;
+        let note = NoteId(rt.notes.id(index));
+        let family = FamilyId(rt.families.id(index));
+        let voice = VoiceId(rt.voices.id(index));
+        match seed % 10 {
+            0 => {
+                let _ = rt.note_on(input(None), 60, 1.0);
+            }
+            1 => {
+                let _ = rt.child(note, 61, 1.0, step % 2 == 0, Inheritance::Linked);
+            }
+            2 => {
+                let _ = rt.create_family(note);
+            }
+            3 => {
+                let _ = rt.start_family(family, 0, rt.now() + seed % 17, 1.0);
+            }
+            4 => {
+                let _ = rt.finish_family(family);
+            }
+            5 => {
+                let _ = rt.stop_voice(voice);
+            }
+            6 => {
+                let _ = rt.release(note);
+            }
+            7 => {
+                let _ = rt.detach_expression(note);
+            }
+            8 => {
+                rt.render(&mut [[0.0; 2]; 7]).unwrap();
+            }
+            _ => {
+                rt.flush_ended(|_| step % 3 == 0);
+            }
+        }
+        for (i, slot) in rt.notes.slots.iter().enumerate() {
+            if let Some(n) = slot.value {
+                let id = NoteId(rt.notes.id(i));
+                assert!(rt.expressions.get(n.expression.0).is_some());
+                assert!(n.parent.is_none_or(|p| rt.notes.get(p.0).is_some()));
+                assert_eq!(
+                    n.families,
+                    rt.families
+                        .slots
+                        .iter()
+                        .filter(|s| s.value.is_some_and(|f| f.note == id))
+                        .count()
+                );
+            }
+        }
+        for (i, slot) in rt.families.slots.iter().enumerate() {
+            if let Some(f) = slot.value {
+                assert!(rt.notes.get(f.note.0).is_some());
+                assert_eq!(
+                    f.voices,
+                    rt.voices
+                        .slots
+                        .iter()
+                        .filter(|s| s
+                            .value
+                            .is_some_and(|v| v.family == FamilyId(rt.families.id(i))))
+                        .count()
+                );
+                assert!(f.open || f.voices > 0);
+            }
+        }
+        for (i, slot) in rt.expressions.slots.iter().enumerate() {
+            if let Some(e) = slot.value {
+                assert_eq!(
+                    e.notes,
+                    rt.notes
+                        .slots
+                        .iter()
+                        .filter(|s| s
+                            .value
+                            .is_some_and(|n| n.expression == ExpressionId(rt.expressions.id(i))))
+                        .count()
+                );
+                assert!(e.notes > 0);
+            }
+        }
+    }
+    rt.panic();
+    rt.flush_ended(|_| true);
+    assert_eq!(
+        (
+            rt.note_count(),
+            rt.family_count(),
+            rt.voice_count(),
+            rt.expression_count()
+        ),
+        (0, 0, 0, 0)
+    );
 }

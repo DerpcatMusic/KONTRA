@@ -7,4 +7,4 @@ license = "Apache-2.0"
 publish = false
 
 [lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny" # The library forbids it; only allocator instrumentation opts out.
