@@ -181,3 +181,29 @@ The heap-audited regression compares direct playback with an immediately generat
 snapshot child, changes the parent before rendering, and checks analytic pitch,
 gain and stereo balance. It also verifies exact 32-bit pressure/timbre retention,
 invalid initial values, failed source-rate admission, and complete cleanup.
+
+
+## Silent source advancement
+
+An explicitly zero source gain or zero gains on both output channels now bypasses
+PCM reads and sinc evaluation. This is not silence detection or voice retirement.
+The cursor and envelope advance, release-loop exits stay intact, and ordinary
+ownership cleanup occurs at the same source/envelope endpoint. Fractional strides
+use the exact per-frame phase recurrence; a rounded block-size product would break
+partition invariance. Zero-phase integer strides can advance the bounded virtual
+source distance in bulk. Dynamic envelope stages still advance through their
+normal transitions before a constant level can skip work.
+
+Heap-guarded comparisons against always-audible reference voices cover forward and
+reverse views, continuous/until-release loops, attack/hold/decay/release, repeated
+mute/unmute including tails, transpositions 0/-12/7/48, and partitions 1/11/128.
+Restored PCM and voice retirement match the reference. Gain changes do not reset
+source position or create another voice.
+
+`render_workloads --muted` and `--transpose 7 --muted` now expose this case with an
+exact zero-output oracle. On the local pinned CPU, unity-rate silent configurations
+measured a median 3.62× speedup (1.90–6.88×). Fractional +7-semitone configurations
+measured 41.5–44.1×; 64 voices/256 frames dropped from 4547.8 to 104.0 microseconds.
+Three paired audible runs measured a median configuration ratio of 1.025, with
+configuration medians 0.964–1.082. These are process-level local observations, not
+callback deadline guarantees. CSVs, logs and binary hashes use `artifacts/muted-*`.

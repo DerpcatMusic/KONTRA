@@ -204,6 +204,10 @@ impl Cursor {
         gains: [f32; 2],
         kernel: &Kernel,
     ) {
+        if gain == 0.0 || gains == [0.0; 2] {
+            self.advance_silent(output.len(), envelope);
+            return;
+        }
         if self.step == 1.0 && self.fraction == 0.0 {
             let mut offset = 0;
             while offset < output.len() && !self.done() && !envelope.done() {
@@ -232,6 +236,40 @@ impl Cursor {
             return;
         }
         self.render_filtered(pcm, output, envelope, gain, gains, kernel);
+    }
+
+    fn advance_silent(&mut self, frames: usize, envelope: &mut EnvelopeState) {
+        if self.fraction == 0.0 && self.step.fract() == 0.0 {
+            let step = self.step as u64;
+            let remaining = self
+                .limit()
+                .unwrap_or(u64::MAX)
+                .saturating_sub(self.position);
+            let count = frames
+                .min(envelope.remaining())
+                .min(usize::try_from(remaining.div_ceil(step)).unwrap_or(usize::MAX));
+            for _ in 0..count {
+                if envelope.constant_level().is_some() {
+                    break;
+                }
+                envelope.next();
+            }
+            self.position = self
+                .position
+                .saturating_add((count as u64).saturating_mul(step));
+            return;
+        }
+        // Preserve the exact fractional recurrence, including rounding, rather
+        // than replacing repeated addition with a partition-dependent product.
+        for _ in 0..frames {
+            if self.done() || envelope.done() {
+                break;
+            }
+            if envelope.constant_level().is_none() {
+                envelope.next();
+            }
+            self.advance();
+        }
     }
 
     fn render_filtered(
