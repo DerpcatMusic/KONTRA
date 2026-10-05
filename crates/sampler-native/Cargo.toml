@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 sampler-core = { path = "../sampler-core" }
 sampler-midi = { path = "../sampler-midi" }
+sampler-ksp = { path = "../sampler-ksp" }
 
 [lints.rust]
 unsafe_code = "forbid"

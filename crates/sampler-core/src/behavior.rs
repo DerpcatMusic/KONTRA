@@ -1,5 +1,11 @@
 //! Native bounded musical instructions, independent of any vendor language VM.
-use super::{Action, Error, Handle, NoteId, Runtime};
+use super::{Action, Error, Handle, Inheritance, NoteId, Runtime};
+
+#[derive(Clone, Copy, Debug)]
+pub enum Velocity {
+    Scale(f64),
+    Fixed(f64),
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Duration {
@@ -24,7 +30,8 @@ pub enum Instruction {
     /// Generate a mapped child with an explicit release policy.
     Play {
         transpose: i8,
-        velocity_scale: f64,
+        velocity: Velocity,
+        inheritance: Inheritance,
         duration: Duration,
     },
     /// Sample-clock wait. Zero advances inline and still consumes instruction fuel.
@@ -65,9 +72,10 @@ impl Program {
         let mut locals = 0;
         for op in &code {
             match *op {
-                Instruction::Play { velocity_scale, .. }
-                    if !velocity_scale.is_finite() || !(0.0..=1.0).contains(&velocity_scale) =>
-                {
+                Instruction::Play {
+                    velocity: Velocity::Scale(value) | Velocity::Fixed(value),
+                    ..
+                } if !value.is_finite() || !(0.0..=1.0).contains(&value) => {
                     return Err(Error::InvalidInput);
                 }
                 Instruction::Jump { target } | Instruction::JumpIfZero { target, .. }
@@ -259,7 +267,8 @@ impl Runtime {
             }
             Instruction::Play {
                 transpose,
-                velocity_scale,
+                velocity,
+                inheritance,
                 duration,
             } => {
                 let n = self.notes.get(note.0).unwrap();
@@ -267,7 +276,10 @@ impl Runtime {
                 if !(0..128).contains(&key) {
                     return Err(Error::InvalidInput);
                 }
-                let velocity = n.velocity * velocity_scale;
+                let velocity = match velocity {
+                    Velocity::Scale(scale) => n.velocity * scale,
+                    Velocity::Fixed(value) => value,
+                };
                 let frames = match duration {
                     Duration::Gate => None,
                     Duration::Frames(frames) | Duration::FramesOrGate(frames) => Some(frames),
@@ -284,7 +296,7 @@ impl Runtime {
                     return Err(Error::Capacity);
                 }
                 let linked = !matches!(duration, Duration::Frames(_));
-                let child = self.trigger_child(note, key as u8, velocity, linked)?;
+                let child = self.trigger_child(note, key as u8, velocity, linked, inheritance)?;
                 if let Some(at) = at {
                     self.release_at(child, at)?;
                 }

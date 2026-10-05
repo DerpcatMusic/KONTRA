@@ -4,7 +4,7 @@ use sampler_core::{Instruction, Limits, Outcome, Pcm, Prepared, Program, Region,
 use sampler_midi::{Applied, Ingress, Packets, TimedPacket, Version};
 use std::{
     fs::OpenOptions,
-    io::{self, BufWriter, Write},
+    io::{self, BufWriter, Read, Write},
     path::Path,
 };
 
@@ -12,14 +12,16 @@ fn core(error: sampler_core::Error) -> io::Error {
     io::Error::other(format!("native core: {error:?}"))
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Copy,
     Demo,
     Echo,
+    Script(Program),
 }
 
 fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
+    let demo = !matches!(&mode, Mode::Copy);
+    let scripted = matches!(&mode, Mode::Script(_));
     let rate = sample.rate;
     let count = sample.frames.len();
     let mut plan = Prepared::new(
@@ -27,44 +29,52 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
         vec![sample],
         vec![Region {
             playback: sampler_core::Playback::default(),
-            envelope: if mode != Mode::Copy {
+            envelope: if demo {
                 sampler_core::Envelope::new(rate / 200, 0, rate / 10, 0.8, rate / 20)
                     .map_err(core)?
             } else {
                 sampler_core::Envelope::default()
             },
             sample: 0,
-            key_low: 60,
-            key_high: 60,
+            key_low: if scripted { 0 } else { 60 },
+            key_high: if scripted { 127 } else { 60 },
             velocity_low: 0.0,
             velocity_high: 1.0,
             gain: 1.0,
         }],
-        1,
+        if scripted { 128 } else { 1 },
     )
     .map_err(core)?;
-    if mode == Mode::Echo {
-        let play = Instruction::Play {
-            transpose: 0,
-            velocity_scale: 0.75,
-            duration: sampler_core::Duration::FramesOrGate(rate / 8),
-        };
-        let program = Program::new(vec![
-            Instruction::SetLocal { local: 0, value: 2 },
-            play,
-            Instruction::Wait(rate / 4),
-            Instruction::AddLocal {
-                local: 0,
-                value: -1,
-            },
-            Instruction::JumpIfZero {
-                local: 0,
-                target: 6,
-            },
-            Instruction::Jump { target: 1 },
-            Instruction::End,
-        ])
-        .map_err(core)?;
+    let program = match mode {
+        Mode::Echo => {
+            let play = Instruction::Play {
+                transpose: 0,
+                velocity: sampler_core::Velocity::Scale(0.75),
+                inheritance: sampler_core::Inheritance::Linked,
+                duration: sampler_core::Duration::FramesOrGate(rate / 8),
+            };
+            let program = Program::new(vec![
+                Instruction::SetLocal { local: 0, value: 2 },
+                play,
+                Instruction::Wait(rate / 4),
+                Instruction::AddLocal {
+                    local: 0,
+                    value: -1,
+                },
+                Instruction::JumpIfZero {
+                    local: 0,
+                    target: 6,
+                },
+                Instruction::Jump { target: 1 },
+                Instruction::End,
+            ])
+            .map_err(core)?;
+            Some(program)
+        }
+        Mode::Script(program) => Some(program),
+        _ => None,
+    };
+    if let Some(program) = program {
         plan = plan.with_programs(vec![program], Some(0)).map_err(core)?;
     }
     let mut rt = Runtime::new(
@@ -91,7 +101,7 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
         (u64::from(rate) / 2, [0x4080_3c00, 0x8000_0000]),
         (u64::from(rate), [0x40b0_4000, 0]),
     ];
-    let packets = events[..if mode != Mode::Copy { 4 } else { 1 }]
+    let packets = events[..if demo { 4 } else { 1 }]
         .iter()
         .map(|(at, words)| {
             let packet = Packets::new(words)
@@ -175,34 +185,54 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
     Ok(())
 }
 
+fn demo_sample() -> Pcm {
+    let rate = 48000;
+    let frames = (0..rate * 2)
+        .map(|i| {
+            let v = (i as f32 * 440.0 * std::f32::consts::TAU / rate as f32).sin() * 0.25;
+            [v, v]
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    Pcm { rate, frames }
+}
+
 fn run() -> io::Result<()> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     match args.as_slice() {
-        [command, output] if command == "demo" || command == "echo" => {
-            let rate = 48000;
-            let frames = (0..rate * 2)
-                .map(|i| {
-                    let v = (i as f32 * 440.0 * std::f32::consts::TAU / rate as f32).sin() * 0.25;
-                    [v, v]
-                })
-                .collect::<Vec<_>>()
-                .into_boxed_slice();
-            render(
-                Pcm { rate, frames },
-                Path::new(output),
-                if command == "echo" {
-                    Mode::Echo
-                } else {
-                    Mode::Demo
-                },
-            )
-        }
+        [command, output] if command == "demo" || command == "echo" => render(
+            demo_sample(),
+            Path::new(output),
+            if command == "echo" {
+                Mode::Echo
+            } else {
+                Mode::Demo
+            },
+        ),
         [command, input, output] if command == "render" => {
             render(wave::read(Path::new(input))?, Path::new(output), Mode::Copy)
         }
+        [command, source, output] if command == "script" => {
+            let limits = sampler_ksp::Limits {
+                source_bytes: 1 << 20,
+                instructions: 65536,
+            };
+            let mut text = String::new();
+            std::fs::File::open(source)?
+                .take(limits.source_bytes as u64 + 1)
+                .read_to_string(&mut text)?;
+            let sample = demo_sample();
+            let program = sampler_ksp::compile(&text, sample.rate, limits).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{}: {e}", Path::new(source).display()),
+                )
+            })?;
+            render(sample, Path::new(output), Mode::Script(program))
+        }
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: sampler-native demo OUTPUT.wav | echo OUTPUT.wav | render INPUT.wav OUTPUT.wav",
+            "usage: sampler-native demo OUTPUT.wav | echo OUTPUT.wav | render INPUT.wav OUTPUT.wav | script INPUT.ksp OUTPUT.wav",
         )),
     }
 }

@@ -3630,6 +3630,13 @@ name = "sampler-core"
 version = "0.1.0"
 
 [[package]]
+name = "sampler-ksp"
+version = "0.1.0"
+dependencies = [
+ "sampler-core",
+]
+
+[[package]]
 name = "sampler-midi"
 version = "0.1.0"
 dependencies = [
@@ -3641,6 +3648,7 @@ name = "sampler-native"
 version = "0.1.0"
 dependencies = [
  "sampler-core",
+ "sampler-ksp",
  "sampler-midi",
 ]
 

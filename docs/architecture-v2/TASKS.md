@@ -77,7 +77,8 @@ Family/expression ownership and segmented rendering now have
 
 - **Partial evidence:** [native instructions](BEHAVIOR.md) now execute generated
   notes, suppression and waits through the shared queue, with fuel, cancellation
-  and retained completion/fault outcomes. Language/state/controller work stays open.
+  and retained completion/fault outcomes. A [new KSP source subset](KSP_FRONTEND.md)
+  now compiles into these services. Broader language/state/controller work stays open.
 
 - [ ] **P0; dependencies:** V2-03/04.
 - Build command/query services, continuations, callback contexts, cancellation and

@@ -48,6 +48,9 @@ compatibility remains a separate, evidence-backed capability.
 13. [Native bounded behavior execution](BEHAVIOR.md): generated notes, waits,
     suppression, instruction fuel and retained completion/fault ownership.
 
+14. [Clean-sheet KSP source subset](KSP_FRONTEND.md): bounded source compilation,
+    explicit unsupported diagnostics and execution through the new native runtime.
+
 Continue through **V2-01 → V2-02 → V2-03/V2-04**: define independent workload
 and protocol contracts, then build unified event/continuation scheduling on the
 new family/expression ownership. Full lifecycle and pedal behavior remain open.
