@@ -1,8 +1,9 @@
 # Native behavior execution
 
 This is a clean-sheet, bounded musical instruction path. It does not use the old
-parser, VM or compatibility bridge. It is partial V2-05 evidence, not KSP or Lua
-support and not completion of the behavior milestone.
+parser, VM or compatibility bridge. A [new KSP source subset](KSP_FRONTEND.md) now
+compiles into it. This remains partial V2-05 evidence, not full KSP/Lua support or
+completion of the behavior milestone.
 
 ## Executed contract
 
@@ -26,7 +27,8 @@ The current instructions are deliberately concrete:
 Transposition currently changes region selection; the resident source renderer
 still runs at unity rate. This is not a pitch-resampling claim.
 
-Generated children share the originating expression and use an explicit duration:
+Generated children select linked, snapshot or independent expression inheritance,
+and fixed or scaled velocity, separately from their explicit duration:
 `Gate` follows the originating effective gate, `Frames` is independent, and
 `FramesOrGate` ends on whichever condition happens first. The default wait lifetime
 is gate-bound; `WaitLifetime::Callback` retains a callback across input release.
@@ -101,7 +103,7 @@ and audio evidence is under ignored `artifacts/architecture-v2/behavior-*`.
 
 ## Still open
 
-Language parsing, shared/persistent state, real/array/string values, note-handle
+Broader language parsing, shared/persistent state, real/array/string values, note-handle
 locals, release/controller callbacks, consumed controller projections, rich engine queries,
 beat/transport waits, async services and compatibility profiles are not implemented.
 Their implementations must use these ownership/time services and extend the

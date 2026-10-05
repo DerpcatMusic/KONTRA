@@ -63,7 +63,8 @@ fn runtime_with_lifetime(
 fn play(duration: u32) -> Instruction {
     Instruction::Play {
         transpose: 0,
-        velocity_scale: 0.5,
+        velocity: sampler_core::Velocity::Scale(0.5),
+        inheritance: sampler_core::Inheritance::Linked,
         duration: sampler_core::Duration::FramesOrGate(duration),
     }
 }
@@ -187,7 +188,8 @@ fn faults_and_fuel_are_observable_and_cannot_leave_partial_owned_work() {
         (
             vec![Instruction::Play {
                 transpose: 127,
-                velocity_scale: 1.,
+                velocity: sampler_core::Velocity::Scale(1.),
+                inheritance: sampler_core::Inheritance::Linked,
                 duration: sampler_core::Duration::FramesOrGate(1),
             }],
             limits(),
@@ -239,7 +241,8 @@ fn faults_and_fuel_are_observable_and_cannot_leave_partial_owned_work() {
     assert!(
         Program::new(vec![Instruction::Play {
             transpose: 0,
-            velocity_scale: f64::NAN,
+            velocity: sampler_core::Velocity::Scale(f64::NAN),
+            inheritance: sampler_core::Inheritance::Linked,
             duration: sampler_core::Duration::FramesOrGate(1)
         }])
         .is_err()
@@ -323,7 +326,8 @@ fn deferred_fault_is_reported_at_the_resume_boundary() {
             Instruction::Wait(4),
             Instruction::Play {
                 transpose: 127,
-                velocity_scale: 1.,
+                velocity: sampler_core::Velocity::Scale(1.),
+                inheritance: sampler_core::Inheritance::Linked,
                 duration: sampler_core::Duration::FramesOrGate(1),
             },
         ],
@@ -556,7 +560,8 @@ fn callback_retention_can_outlive_input_release_without_orphaning_generated_note
                     Instruction::Wait(4),
                     Instruction::Play {
                         transpose: 0,
-                        velocity_scale: 0.5,
+                        velocity: sampler_core::Velocity::Scale(0.5),
+                        inheritance: sampler_core::Inheritance::Linked,
                         duration: Duration::Frames(4),
                     },
                     Instruction::End,
@@ -614,7 +619,8 @@ fn generated_duration_and_gate_are_independent_policies() {
         let mut rt = runtime(
             vec![Instruction::Play {
                 transpose: 0,
-                velocity_scale: 1.,
+                velocity: sampler_core::Velocity::Scale(1.),
+                inheritance: sampler_core::Inheritance::Linked,
                 duration,
             }],
             limits(),
@@ -677,7 +683,8 @@ fn independent_duration_keeps_ownership_after_callback_fault_until_its_release()
         vec![
             Instruction::Play {
                 transpose: 0,
-                velocity_scale: 1.,
+                velocity: sampler_core::Velocity::Scale(1.),
+                inheritance: sampler_core::Inheritance::Linked,
                 duration: sampler_core::Duration::Frames(4),
             },
             Instruction::Wait(1),

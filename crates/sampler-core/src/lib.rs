@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 mod behavior;
 use behavior::Continuation;
-pub use behavior::{BehaviorId, Duration, Instruction, Outcome, Program, WaitLifetime};
+pub use behavior::{BehaviorId, Duration, Instruction, Outcome, Program, Velocity, WaitLifetime};
 mod source;
 pub use source::{Direction, Loop, LoopMode, Playback};
 mod envelope;

@@ -1,5 +1,5 @@
 [package]
-name = "sampler-native"
+name = "sampler-ksp"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
@@ -8,8 +8,6 @@ publish = false
 
 [dependencies]
 sampler-core = { path = "../sampler-core" }
-sampler-midi = { path = "../sampler-midi" }
-sampler-ksp = { path = "../sampler-ksp" }
 
 [lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
