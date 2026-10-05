@@ -351,7 +351,7 @@ fn render_script(sample: Pcm, source: &Path, output: &Path) -> io::Result<()> {
     std::fs::File::open(source)?
         .take(limits.source_bytes as u64 + 1)
         .read_to_string(&mut text)?;
-    let program = sampler_ksp::compile(&text, sample.sample_rate(), limits).map_err(|e| {
+    let program = sampler_ksp::compile(&text, sample.sample_rate(), limits, &[]).map_err(|e| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("{}: {e}", source.display()),

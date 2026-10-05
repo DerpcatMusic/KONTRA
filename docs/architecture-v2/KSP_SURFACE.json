@@ -63,6 +63,26 @@
     "continue": {
       "implementation": "partial_native_subset",
       "evidence": "KSP_FRONTEND.md"
+    },
+    "ui_knob": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "ui_slider": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "ui_button": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "ui_switch": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "make_perfview": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
     }
   },
   "chapters": [

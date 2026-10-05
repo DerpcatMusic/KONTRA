@@ -1,0 +1,242 @@
+use sampler_core::*;
+use sampler_ksp::{Widget, compile};
+#[path = "../../sampler-core/tests/support/mod.rs"]
+mod support;
+
+const ENABLED: ControlId = ControlId(0x10001);
+const LEVEL: ControlId = ControlId(0x10002);
+const SLIDER: ControlId = ControlId(0x10003);
+const BUTTON: ControlId = ControlId(0x10004);
+const BINDINGS: &[(&str, ControlId)] = &[
+    ("$enabled", ENABLED),
+    ("$level", LEVEL),
+    ("$slider", SLIDER),
+    ("$button", BUTTON),
+];
+const SOURCE: &str = "on init
+    make_perfview
+    declare ui_knob $level(-100, 100, -10)
+    declare ui_switch $enabled
+    declare ui_slider $slider(-2147483648,2147483647)
+    declare ui_button $button
+    declare polyphonic $seen
+    $enabled := 1
+    $level := 30
+end on
+on note
+    ignore_event($EVENT_ID)
+    $seen := $level
+    wait(1000)
+    if ($enabled = 1)
+        if ($level > $seen)
+            play_note($EVENT_NOTE, 127, 0, 1000)
+        end if
+    end if
+    $button := 1
+end on
+on release
+    $slider := $seen
+end on";
+fn limits() -> sampler_ksp::Limits {
+    sampler_ksp::Limits {
+        source_bytes: 4096,
+        instructions: 64,
+        variables: 8,
+    }
+}
+fn plan() -> Prepared {
+    Prepared::new(
+        48000,
+        vec![Pcm::new(48000, vec![[1.; 2]; 512].into_boxed_slice()).unwrap()],
+        vec![Region {
+            sample: 0,
+            key_low: 60,
+            key_high: 60,
+            root_key: None,
+            velocity_low: 0.,
+            velocity_high: 1.,
+            gain: 1.,
+            envelope: Envelope::default(),
+            playback: Playback::default(),
+        }],
+        1,
+    )
+    .unwrap()
+}
+#[test]
+fn source_controls_drive_audio_without_a_ui_and_keep_polyphonic_memory_separate() {
+    for block in [1, 7, 64] {
+        let script = compile(SOURCE, 48000, limits(), BINDINGS).unwrap();
+        assert_eq!(script.note_cells(), 1);
+        assert!(script.has_performance_view());
+        assert_eq!(
+            script.controls()[0].widget,
+            Widget::Knob { display_ratio: -10 }
+        );
+        let presentation = script.controls().to_vec();
+        let mut rt = Runtime::new(
+            script.bind(plan()).unwrap(),
+            Limits {
+                notes: 4,
+                channels: 0,
+                performances: 1,
+                families: 4,
+                expressions: 4,
+                voices: 4,
+                decisions: 0,
+                commands: 4,
+                behaviors: 4,
+                behavior_fuel: 32,
+                behavior_cells: 8,
+                note_cells: 4,
+            },
+        )
+        .unwrap();
+        let generation = rt.active_plan();
+        // No window/renderer/presentation survives to own musical state.
+        drop(presentation);
+        let mut pcm = [[0.; 2]; 144];
+        support::without_heap(|| {
+            let input = Input {
+                protocol: Protocol::Native,
+                port: 0,
+                group: 0,
+                channel: 0,
+                key: 60,
+                external_id: None,
+            };
+            let note = rt.trigger(input, 60, 1.).unwrap();
+            for chunk in pcm[..24].chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
+            rt.edit_controls(
+                generation,
+                Some(0),
+                &[ControlWrite {
+                    id: LEVEL,
+                    value: ControlValue::Integer(60),
+                }],
+            )
+            .unwrap();
+            for chunk in pcm[24..72].chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
+            assert_eq!(
+                rt.control_value(generation, BUTTON),
+                Ok(ControlValue::Integer(1))
+            );
+            rt.key_up(note, None).unwrap();
+            assert_eq!(
+                rt.control_value(generation, SLIDER),
+                Ok(ControlValue::Integer(30))
+            );
+            for chunk in pcm[72..].chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
+            rt.flush_behaviors(|_, _, outcome| {
+                assert_eq!(outcome, Outcome::Finished);
+                true
+            });
+            rt.flush_ended(|_| true);
+            assert_eq!((rt.note_count(), rt.voice_count()), (0, 0));
+        });
+        assert!(pcm[..48].iter().all(|f| *f == [0.; 2]));
+        assert!(pcm[48..96].iter().all(|f| *f == [1.; 2]));
+        assert!(pcm[96..].iter().all(|f| *f == [0.; 2]));
+    }
+    // Stable names bind to the same IDs when source declaration order changes.
+    let reordered = SOURCE.replace(
+        "declare ui_knob $level(-100, 100, -10)\n    declare ui_switch $enabled",
+        "declare ui_switch $enabled\n    declare ui_knob $level(-100, 100, -10)",
+    );
+    let original = compile(SOURCE, 48000, limits(), BINDINGS)
+        .unwrap()
+        .bind(plan())
+        .unwrap();
+    let changed = compile(&reordered, 48000, limits(), BINDINGS)
+        .unwrap()
+        .bind(plan())
+        .unwrap();
+    assert_eq!(original.controls(), changed.controls());
+}
+
+#[test]
+fn source_controls_reject_ambiguous_identity_and_invalid_declarations() {
+    for bindings in [
+        &[][..],
+        &BINDINGS[..3],
+        &[("$enabled", ENABLED), ("$enabled", LEVEL)],
+        &[("$enabled", ENABLED), ("$level", ENABLED)],
+    ] {
+        assert!(compile(SOURCE, 48000, limits(), bindings).is_err());
+    }
+    let mut unused = BINDINGS.to_vec();
+    unused.push(("$missing", ControlId(999)));
+    assert!(compile(SOURCE, 48000, limits(), &unused).is_err());
+    for declaration in [
+        "declare ui_knob $level(100,-100,1)",
+        "declare ui_knob $level(0,100,0)",
+        "declare ui_slider $level(-2147483649,0)",
+        "declare ui_slider $level(0,2147483648)",
+        "declare ui_button $level $level := 2",
+        "declare ui_switch $level $level := -1",
+        "declare ui_slider $level(0,100) $level := $other",
+        "declare ui_slider $level(0,100) declare ui_slider $level(0,100)",
+    ] {
+        let text = format!("on init {declaration} end on on release end on");
+        let error = compile(&text, 48000, limits(), &[("$level", LEVEL)])
+            .err()
+            .expect("invalid declaration accepted");
+        assert!(text.is_char_boundary(error.offset));
+    }
+}
+
+#[test]
+fn init_only_controls_keep_native_attack_selection() {
+    let script = compile(
+        "on init make_perfview declare ui_slider $level(0,100) $level := 25 end on",
+        48000,
+        limits(),
+        &[("$level", LEVEL)],
+    )
+    .unwrap();
+    assert!(script.has_performance_view());
+    let mut rt = Runtime::new(
+        script.bind(plan()).unwrap(),
+        Limits {
+            notes: 1,
+            channels: 0,
+            performances: 1,
+            families: 1,
+            expressions: 1,
+            voices: 1,
+            decisions: 0,
+            commands: 0,
+            behaviors: 0,
+            behavior_fuel: 0,
+            behavior_cells: 0,
+            note_cells: 0,
+        },
+    )
+    .unwrap();
+    support::without_heap(|| {
+        let input = Input {
+            protocol: Protocol::Native,
+            port: 0,
+            group: 0,
+            channel: 0,
+            key: 60,
+            external_id: None,
+        };
+        let note = rt.trigger(input, 60, 1.).unwrap();
+        let mut audio = [[0.; 2]; 4];
+        rt.render(&mut audio).unwrap();
+        assert_eq!(audio, [[1.; 2]; 4]);
+        assert_eq!(
+            rt.control_value(rt.active_plan(), LEVEL),
+            Ok(ControlValue::Integer(25))
+        );
+        rt.release(note).unwrap();
+        rt.flush_ended(|_| true);
+    });
+}

@@ -33,6 +33,7 @@ pub struct PlanTransfer {
     pub request: u64,
     pub prepared: Box<Prepared>,
     sequences: super::variation::SequenceState,
+    controls: super::control::ControlState,
 }
 
 pub(super) struct Generation {
@@ -40,6 +41,7 @@ pub(super) struct Generation {
     pub prepared: Box<Prepared>,
     pub notes: usize,
     pub sequences: super::variation::SequenceState,
+    pub controls: super::control::ControlState,
 }
 
 pub(super) struct PlanQueues {
@@ -81,10 +83,12 @@ impl PlanControl {
         }
         let request = self.sequence + 1;
         let sequences = super::variation::SequenceState::new(&prepared);
+        let controls = super::control::ControlState::new(&prepared);
         match self.pending.push(PlanTransfer {
             request,
             prepared,
             sequences,
+            controls,
         }) {
             Ok(()) => {
                 self.sequence = request;
@@ -182,6 +186,7 @@ impl Runtime {
                 request: generation.request,
                 prepared: generation.prepared,
                 sequences: generation.sequences,
+                controls: generation.controls,
             }) {
                 Ok(()) => count += 1,
                 Err(PushError::Full(plan)) => {
@@ -191,6 +196,7 @@ impl Runtime {
                             request: plan.request,
                             prepared: plan.prepared,
                             sequences: plan.sequences,
+                            controls: plan.controls,
                             notes: 0,
                         },
                     );
@@ -228,6 +234,7 @@ impl Runtime {
                     request,
                     prepared: plan.prepared,
                     sequences: plan.sequences,
+                    controls: plan.controls,
                     notes: 0,
                 })
                 .expect("reserved plan generation slot"),
