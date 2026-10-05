@@ -53,12 +53,25 @@ pub struct Picker {
     pub rows: Mutex<Vec<Option<PathBuf>>>,
 }
 
+#[cfg(test)]
+type PublicationGate = Box<dyn FnOnce() + Send>;
+
 #[derive(Default)]
 struct Answer {
     open: AtomicBool,
     picked: Mutex<Option<Picked>>,
+    #[cfg(test)]
+    publication_gate: Mutex<Option<PublicationGate>>,
     #[cfg(target_os = "linux")]
     current: Mutex<Option<Arc<linux::Operation>>>,
+}
+
+#[cfg(test)]
+impl Answer {
+    fn pause_publication(&self) {
+        let gate = super::lock(&self.publication_gate).take();
+        if let Some(gate) = gate { gate(); }
+    }
 }
 
 impl Drop for Picker {
@@ -120,8 +133,13 @@ impl Picker {
             .name("kontakto-file-dialog".into())
             .spawn(move || {
                 let picked = show(ask);
-                *super::lock(&answer.picked) = picked;
+                // Ready/take must not expose an answer until the worker is closed.
+                let mut published = super::lock(&answer.picked);
+                *published = picked;
+                #[cfg(test)]
+                answer.pause_publication();
                 answer.open.store(false, Ordering::Release);
+                drop(published);
                 super::logs::wake_worker();
             });
         match spawned {
@@ -221,6 +239,40 @@ fn selected_file(base: &PathBuf, path: &PathBuf, extensions: &[&str]) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn completion_cannot_publish_an_answer_before_clearing_busy() {
+        let _lease = crate::diagnostics::acquire();
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing");
+        let picker = Arc::new(Picker::default());
+        let (paused_tx, paused_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        *super::super::lock(&picker.answer.publication_gate) = Some(Box::new(move || {
+            paused_tx.send(()).unwrap();
+            resume_rx.recv().unwrap();
+        }));
+        assert!(picker.ask(Ask::Reveal(missing.clone())));
+        // This gate is in the actual platform worker after it stores the answer
+        // and before it clears busy. No sleeps or probabilistic scheduling race.
+        paused_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        let hidden = matches!(picker.answer.picked.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock));
+        let still_busy = picker.answer.open.load(Ordering::Acquire);
+        // Release the real worker before any assertion can unwind the test.
+        resume_tx.send(()).unwrap();
+        let ready = picker.ready();
+        let closed = !picker.answer.open.load(Ordering::Acquire);
+        let picked = picker.take();
+        let consumed = picker.take().is_none();
+        drop(picker);
+        assert!(hidden, "the answer became readable before completion cleared busy");
+        assert!(still_busy, "the gate must precede completion");
+        assert!(ready && closed, "readiness must expose a completed operation");
+        let Some(Picked::Revealed(Err(error))) = picked else { panic!("missing-path result was not delivered") };
+        assert!(error.contains(&missing.display().to_string()));
+        assert!(consumed, "a completion is delivered exactly once");
+    }
+
     #[test]
     fn reveal_completion_is_owned_and_a_busy_request_is_not_silently_dropped() {
         let _lease = crate::diagnostics::acquire();
