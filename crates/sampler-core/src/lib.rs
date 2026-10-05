@@ -37,7 +37,7 @@ pub use behavior::{
     BehaviorId, Comparison, Duration, Instruction, Outcome, Program, Velocity, WaitLifetime,
 };
 mod source;
-pub use source::{Direction, Loop, LoopMode, Playback};
+pub use source::{Direction, Loop, LoopMode, LoopShape, Playback};
 mod envelope;
 pub use envelope::Envelope;
 use envelope::EnvelopeState;

@@ -17,11 +17,12 @@ Loops use half-open ranges and two explicit native policies:
 - `Continuous`: repeat through the release tail until the envelope ends or an
   explicit stop/panic cuts the voice.
 - `UntilRelease`: stop wrapping when the effective note gate closes and continue
-  in the current direction toward the selected source end. Sustain/sostenuto
+  in the initial direction toward the selected source end. Ping-pong playback
+  completes its return leg before taking that outward exit. Sustain/sostenuto
   therefore defer loop exit just as they defer envelope release.
 
 The first pass includes the material before entering the loop (after the loop
-when playing in reverse). Subsequent passes repeat only the loop range. A
+when playing in reverse). Subsequent passes traverse only the loop range. A
 one-frame loop is valid. Wrap is deferred until the next read: a release exactly
 at the loop boundary enters the source tail immediately, without an extra loop.
 Source EOF still retires audio independently of a held logical note; NOTE_END
@@ -65,9 +66,53 @@ optimization; they do not establish worst-case deadlines or a competitor ranking
 
 The original evidence above covers integer-position unity-rate playback.
 [Fractional playback and rate conversion](RESAMPLING.md) now extend this contract.
-Crossfades and ping-pong loops remain open. Native root-key tracking compiles
+Native ping-pong motion now extends this contract below; crossfades remain open. Native root-key tracking compiles
 into the prepared key index; [live pitch and modulation](MODULATION.md) are now
 implemented. The pinned [reference review](REFERENCE_REVIEW.md) records required
 fractional crossfade/partner-phase regressions for the remaining loop modes.
 Raw loop boundaries are exact, not automatically click-free; no undocumented
 smoothing is applied. Host/plugin integration and streaming also remain open.
+
+
+## Ping-pong topology
+
+`Loop.shape` explicitly separates `Wrap` and `PingPong` from continuous/until-release
+lifetime policy. No legacy loop flag or runtime shim is involved. The half-open
+range includes its first and last sample frames once at each turn: `[2, 5)` visits
+`2, 3, 4, 3, 2, 3, 4, ...`. A one-frame loop holds that frame. Starting in reverse
+mirrors this traversal and preserves the selected source view's initial prelude.
+
+Each cursor still advances one monotonic integer-plus-fraction traversal clock.
+Integer guard reads map onto the same reflected path as audible reads, so a high
+rate can cross multiple turns without an unbounded reflection loop. No floating
+absolute source index accumulates drift, no reversed asset is copied, and stereo
+channels share the identical cursor. Reflection periods that cannot fit the native
+u64 traversal representation are rejected during preparation.
+
+Until-release exits occur at the next outward boundary in the **initial** source
+direction. Exact-boundary release exits immediately. Release during the returning
+leg completes the turn before reaching the source tail. Previously traversed loop
+samples remain available to the interpolation window; future guards switch to the
+tail only at the selected exit. Contiguous unity-rate spans are clipped at that exit,
+including when a reflected span would otherwise cross it inside one block.
+
+These are explicit native semantics. Architecture §8.3 requires declared boundaries;
+the v1 `alternating_loops_match_unrolled_pcm_at_fractional_and_high_rates` fixture
+supplies a useful independent endpoint matrix. The pinned Shortcircuit review also
+identifies multi-turn overshoot and direction-sensitive release as necessary cases.
+No vendor or external engine execution is claimed by these native tests.
+
+Evidence includes literal unity-rate paths for one/two/three-frame loops, both
+initial directions and all small block partitions; mid-return and exact-boundary
+release; independent unrolled PCM at rates from 1/256 through 16 source frames per
+output frame; fractional released interpolation against an analytic sinc reference;
+long loops with contiguous windows; muted/restored phase and envelope continuity;
+integer guard identity beyond 2^54 traversal frames; malformed period rejection;
+and allocation/free checks on execution and terminal retirement. Crossfades, finite
+loop counts and streaming remain open; exact loops do not imply click-free material.
+
+Final validation: all 181 tests across the four native crates pass in debug,
+release and Rust 1.92, along with strict all-target Clippy and both root boundary
+tests. Logs use `artifacts/ping-pong-fast-{debug,release,msrv,clippy,boundary}.log`.
+The [paired render measurements](RENDER_WORKLOADS.md#ping-pong-source-topology-2026-10-06)
+record the initial regression, correction and remaining workload-dependent costs.

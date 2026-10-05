@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Add native ping-pong loop topology with shared traversal/interpolation boundaries, exact endpoint visits and explicit outward release exits. Independent unrolled PCM and analytic fractional checks cover reverse starts, short loops, high rates, muted phase and block partitioning.
+
 - Execute KSP scalar while loops and nested continue through the existing bounded native scheduler. Repeating-note tests cover physical release under sustain, independent same-key owners, zero-time fuel exhaustion, cancellation and standalone WAV output.
 
 - Add native physical-key queries and overflow-free signed comparisons; compile nested KSP scalar conditionals and callback exit with bounded code and registers. Regression cases cover same-key owners, waits under sustain, signed boundaries, terminal retry and exact standalone WAV output.

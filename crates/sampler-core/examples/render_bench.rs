@@ -7,14 +7,19 @@ fn main() {
     const BLOCKS: usize = 2000;
     let mode = std::env::args().nth(1);
     let envelope = match mode.as_deref() {
-        None | Some("--loop") => Envelope::default(),
+        None | Some("--loop" | "--ping-pong") => Envelope::default(),
         Some("--envelope") => Envelope::new((BLOCK * (BLOCKS + 100)) as u32, 0, 0, 1.0, 0).unwrap(),
-        _ => panic!("usage: render_bench [--envelope | --loop]"),
+        _ => panic!("usage: render_bench [--envelope | --loop | --ping-pong]"),
     };
     let playback = Playback {
-        loop_range: (mode.as_deref() == Some("--loop")).then_some(Loop {
+        loop_range: matches!(mode.as_deref(), Some("--loop" | "--ping-pong")).then_some(Loop {
             start: 0,
             end: 127,
+            shape: if mode.as_deref() == Some("--ping-pong") {
+                sampler_core::LoopShape::PingPong
+            } else {
+                sampler_core::LoopShape::Wrap
+            },
             mode: LoopMode::Continuous,
         }),
         ..Playback::default()

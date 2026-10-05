@@ -18,12 +18,49 @@ pub enum LoopMode {
     UntilRelease,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoopShape {
+    Wrap,
+    /// Reflect between the first/last included frames; endpoints occur once per turn.
+    PingPong,
+}
+
 /// Half-open sample-frame range. One-frame loops are valid.
 #[derive(Clone, Copy, Debug)]
 pub struct Loop {
     pub start: usize,
     pub end: usize,
     pub mode: LoopMode,
+    pub shape: LoopShape,
+}
+
+impl Loop {
+    fn period(self) -> u64 {
+        let length = (self.end - self.start) as u64;
+        match self.shape {
+            LoopShape::Wrap => length,
+            LoopShape::PingPong => (2 * (length - 1)).max(1),
+        }
+    }
+
+    // Relative index, contiguous count and whether traversal reverses the initial
+    // direction. Used by both exact spans and every interpolation guard read.
+    #[inline]
+    fn span(self, distance: u64) -> (u64, u64, bool) {
+        let length = (self.end - self.start) as u64;
+        if self.shape == LoopShape::Wrap || length == 1 {
+            let within = distance % length;
+            return (within, length - within, false);
+        }
+        let period = self.period();
+        // distance starts after the first pass has visited the far endpoint.
+        let phase = (distance + 1) % period;
+        if phase < length - 1 {
+            (length - 1 - phase, length - phase, true)
+        } else {
+            (phase - (length - 1), period - phase + 1, false)
+        }
+    }
 }
 
 /// Immutable source view. Transposition combines with the asset/output rate ratio.
@@ -55,9 +92,12 @@ impl Playback {
             || output_rate == 0
             || !self.transpose_semitones.is_finite()
             || !(MIN_STEP..=MAX_STEP).contains(&step)
-            || self
-                .loop_range
-                .is_some_and(|r| r.start < self.start || r.start >= r.end || r.end > end)
+            || self.loop_range.is_some_and(|r| {
+                r.start < self.start
+                    || r.start >= r.end
+                    || r.end > end
+                    || r.shape == LoopShape::PingPong && (r.end - r.start - 1) as u64 > u64::MAX / 2
+            })
         {
             return Err(Error::InvalidInput);
         }
@@ -118,7 +158,7 @@ impl Cursor {
             && self.exit.is_none()
         {
             let first = self.first_boundary(r);
-            let length = (r.end - r.start) as u64;
+            let length = r.period();
             let distance = self.position.saturating_sub(first);
             let cycles = distance / length
                 + u64::from(
@@ -153,7 +193,7 @@ impl Cursor {
             {
                 offset = first.checked_add(offset - exit)?;
             } else if offset >= first {
-                offset = first - length + (offset - first) % length;
+                offset = first - length + r.span(offset - first).0;
             }
         }
         if offset >= (self.end - self.start) as u64 {
@@ -172,8 +212,10 @@ impl Cursor {
         self.position = self.position.saturating_add(whole as u64);
     }
 
-    fn span(&self) -> (usize, usize) {
+    #[inline]
+    fn span(&self) -> (usize, usize, Direction) {
         let length = (self.end - self.start) as u64;
+        let mut direction = self.direction;
         let (offset, count) = if let Some(r) = self.loop_range {
             let first = self.first_boundary(r);
             if let Some(exit) = self.exit
@@ -185,8 +227,22 @@ impl Cursor {
                 (self.position, first - self.position)
             } else {
                 let loop_length = (r.end - r.start) as u64;
-                let within = (self.position - first) % loop_length;
-                (first - loop_length + within, loop_length - within)
+                let (within, count, reverse) = r.span(self.position - first);
+                // Only a reflected span can cross an outward exit inside its
+                // contiguous run. Wrap spans already stop at that boundary.
+                let count = if r.shape == LoopShape::PingPong {
+                    self.exit
+                        .map_or(count, |exit| count.min(exit - self.position))
+                } else {
+                    count
+                };
+                if reverse {
+                    direction = match direction {
+                        Direction::Forward => Direction::Reverse,
+                        Direction::Reverse => Direction::Forward,
+                    };
+                }
+                (first - loop_length + within, count)
             }
         } else {
             (self.position, length - self.position)
@@ -195,7 +251,7 @@ impl Cursor {
             Direction::Forward => self.start + offset as usize,
             Direction::Reverse => self.end - 1 - offset as usize,
         };
-        (index, count as usize)
+        (index, count as usize, direction)
     }
 
     #[inline]
@@ -215,10 +271,10 @@ impl Cursor {
         if self.step == 1.0 && self.fraction == 0.0 {
             let mut offset = 0;
             while offset < output.len() && !self.done() && !envelope.done() {
-                let (index, count) = self.span();
+                let (index, count, direction) = self.span();
                 let count = count.min(output.len() - offset).min(envelope.remaining());
                 let destination = &mut output[offset..offset + count];
-                match self.direction {
+                match direction {
                     Direction::Forward => mix(
                         pcm[index..index + count].iter(),
                         destination,
@@ -293,8 +349,8 @@ impl Cursor {
             let position = i128::from(self.position);
             let left = self.index(position - i128::from(radius));
             let right = self.index(position + i128::from(radius));
-            let source = match (left, right, self.direction) {
-                (Some(left), Some(right), Direction::Forward)
+            let source = match (left, right) {
+                (Some(left), Some(right))
                     if right.checked_sub(left) == Some(2 * radius as usize) =>
                 {
                     let span = &pcm[left..=right];
@@ -302,7 +358,7 @@ impl Cursor {
                         span[(offset + radius) as usize]
                     })
                 }
-                (Some(left), Some(right), Direction::Reverse)
+                (Some(left), Some(right))
                     if left.checked_sub(right) == Some(2 * radius as usize) =>
                 {
                     let span = &pcm[right..=left];
@@ -360,6 +416,7 @@ mod tests {
             loop_range: Some(Loop {
                 start: 0,
                 end: 1,
+                shape: LoopShape::Wrap,
                 mode: LoopMode::Continuous,
             }),
             ..Playback::default()
@@ -377,5 +434,55 @@ mod tests {
         assert_eq!((cursor.position, cursor.fraction), (origin + 1, 0.0));
         cursor.position = u64::MAX;
         assert!(cursor.done());
+    }
+
+    #[test]
+    fn reflected_guards_keep_integer_identity_beyond_float_precision_and_reject_period_overflow() {
+        for direction in [Direction::Forward, Direction::Reverse] {
+            let mut cursor = Playback {
+                direction,
+                loop_range: Some(Loop {
+                    start: 0,
+                    end: 4,
+                    mode: LoopMode::Continuous,
+                    shape: LoopShape::PingPong,
+                }),
+                ..Playback::default()
+            }
+            .cursor(4, 12000, 48000)
+            .unwrap();
+            cursor.position = (1_u64 << 54) + 3;
+            for _ in 0..8 {
+                cursor.advance();
+                for guard in -768..=768 {
+                    let at = i128::from(cursor.position) + guard;
+                    let expected = [2, 1, 0, 1, 2, 3][((at - 4) % 6) as usize];
+                    assert_eq!(
+                        cursor.index(at),
+                        Some(if direction == Direction::Forward {
+                            expected
+                        } else {
+                            3 - expected
+                        })
+                    );
+                }
+            }
+            assert_eq!((cursor.position, cursor.fraction), ((1_u64 << 54) + 5, 0.));
+        }
+        if let Ok(length) = usize::try_from(u64::MAX / 2 + 2) {
+            let playback = Playback {
+                loop_range: Some(Loop {
+                    start: 0,
+                    end: length,
+                    mode: LoopMode::Continuous,
+                    shape: LoopShape::PingPong,
+                }),
+                ..Playback::default()
+            };
+            assert!(matches!(
+                playback.cursor(length, 48000, 48000),
+                Err(Error::InvalidInput)
+            ));
+        }
     }
 }

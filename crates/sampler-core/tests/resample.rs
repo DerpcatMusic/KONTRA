@@ -158,6 +158,7 @@ fn fractional_loop_release_preserves_traversal_guards_and_source_end() {
                             loop_range: Some(Loop {
                                 start: 4,
                                 end: 6,
+                                shape: sampler_core::LoopShape::Wrap,
                                 mode: LoopMode::UntilRelease,
                             }),
                             ..Playback::default()
@@ -996,7 +997,16 @@ fn controller_batches_reject_every_change_if_any_owner_or_source_is_invalid() {
 #[test]
 fn muted_sources_match_audible_phase_envelopes_and_loop_exits_when_restored() {
     for direction in [Direction::Forward, Direction::Reverse] {
-        for mode in [LoopMode::Continuous, LoopMode::UntilRelease] {
+        for (mode, shape) in [LoopMode::Continuous, LoopMode::UntilRelease]
+            .into_iter()
+            .flat_map(|mode| {
+                [
+                    sampler_core::LoopShape::Wrap,
+                    sampler_core::LoopShape::PingPong,
+                ]
+                .map(|shape| (mode, shape))
+            })
+        {
             for transpose_semitones in [0.0, -12.0, 7.0, 48.0] {
                 for partition in [1, 11, 128] {
                     let make = || {
@@ -1021,6 +1031,7 @@ fn muted_sources_match_audible_phase_envelopes_and_loop_exits_when_restored() {
                                             start: 16,
                                             end: 24,
                                             mode,
+                                            shape,
                                         }),
                                         transpose_semitones,
                                     },
@@ -1099,6 +1110,193 @@ fn muted_sources_match_audible_phase_envelopes_and_loop_exits_when_restored() {
                             );
                         }
                     });
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn ping_pong_matches_independently_unrolled_pcm_at_fractional_and_multi_turn_rates() {
+    use sampler_core::LoopShape;
+    let source: Vec<_> = (0..256)
+        .map(|i| {
+            let x = ((i * 31 % 97) as f32 - 48.) / 200.;
+            [x, -0.7 * x]
+        })
+        .collect();
+    for direction in [Direction::Forward, Direction::Reverse] {
+        for (view_start, view_end, start, end) in [(1, 8, 2, 5), (1, 8, 3, 4), (1, 255, 2, 200)] {
+            // Build a literal traversal by appending independently ordered ranges.
+            // No core loop/index helper constructs this reference asset.
+            let mut unrolled: Vec<_> = match direction {
+                Direction::Forward => source[view_start..end].to_vec(),
+                Direction::Reverse => source[start..view_end].iter().rev().copied().collect(),
+            };
+            while unrolled.len() < 10000 {
+                if end - start == 1 {
+                    unrolled.push(source[start]);
+                } else if direction == Direction::Forward {
+                    unrolled.extend(source[start..end - 1].iter().rev().copied());
+                    unrolled.extend_from_slice(&source[start + 1..end]);
+                } else {
+                    unrolled.extend_from_slice(&source[start + 1..end]);
+                    unrolled.extend(source[start..end - 1].iter().rev().copied());
+                }
+            }
+            for (source_rate, transpose) in [
+                (48000, -96.),
+                (12000, 0.),
+                (24000, 0.),
+                (48000, 0.),
+                (72000, 0.),
+                (156000, 0.),
+                (768000, 0.),
+            ] {
+                for block in [1, 37, 257] {
+                    let mut actual = runtime(
+                        prepare(
+                            Pcm::new(source_rate, source.clone().into_boxed_slice()).unwrap(),
+                            48000,
+                            Playback {
+                                start: view_start,
+                                end: Some(view_end),
+                                direction,
+                                transpose_semitones: transpose,
+                                loop_range: Some(Loop {
+                                    start,
+                                    end,
+                                    mode: LoopMode::Continuous,
+                                    shape: LoopShape::PingPong,
+                                }),
+                            },
+                        )
+                        .unwrap(),
+                    );
+                    let mut reference = runtime(
+                        prepare(
+                            Pcm::new(source_rate, unrolled.clone().into_boxed_slice()).unwrap(),
+                            48000,
+                            Playback {
+                                transpose_semitones: transpose,
+                                ..Playback::default()
+                            },
+                        )
+                        .unwrap(),
+                    );
+                    let frames = if transpose == -96. { 2048 } else { 512 };
+                    let mut output = vec![[0.; 2]; frames];
+                    let mut expected = vec![[0.; 2]; frames];
+                    support::without_heap(|| {
+                        actual.trigger(input(), 60, 1.).unwrap();
+                        reference.trigger(input(), 60, 1.).unwrap();
+                        for (a, b) in output.chunks_mut(block).zip(expected.chunks_mut(block)) {
+                            actual.render(a).unwrap();
+                            reference.render(b).unwrap();
+                            actual.render(&mut []).unwrap();
+                            reference.render(&mut []).unwrap();
+                        }
+                        actual.panic();
+                        reference.panic();
+                        actual.flush_ended(|_| true);
+                        reference.flush_ended(|_| true);
+                    });
+                    assert_eq!(
+                        output, expected,
+                        "{direction:?}, loop {start}..{end}, rate {source_rate}, transpose {transpose}, block {block}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn fractional_ping_pong_release_keeps_past_guards_and_changes_only_the_future_exit() {
+    use sampler_core::LoopShape;
+    for (direction, prefix, cycle, tail) in [
+        (
+            Direction::Forward,
+            vec![2., 3., 4., 5.],
+            [4., 3., 4., 5.],
+            vec![6., 7.],
+        ),
+        (
+            Direction::Reverse,
+            vec![7., 6., 5., 4., 3.],
+            [4., 5., 4., 3.],
+            vec![2.],
+        ),
+    ] {
+        for delta in [-1, 0, 1, 3, 6, 8] {
+            let release = (prefix.len() as i64 * 2 + delta) as usize;
+            let exit = (0..16)
+                .map(|i| prefix.len() + i * cycle.len())
+                .find(|&p| p as f64 >= release as f64 * 0.5)
+                .unwrap();
+            for block in [1, 3, 8, 48] {
+                let mut rt = runtime(
+                    prepare(
+                        Pcm::new(24000, (0..10).map(|i| [i as f32; 2]).collect()).unwrap(),
+                        48000,
+                        Playback {
+                            start: 2,
+                            end: Some(8),
+                            direction,
+                            loop_range: Some(Loop {
+                                start: 3,
+                                end: 6,
+                                mode: LoopMode::UntilRelease,
+                                shape: LoopShape::PingPong,
+                            }),
+                            ..Playback::default()
+                        },
+                    )
+                    .unwrap(),
+                );
+                let mut audio = [[0.; 2]; 48];
+                support::without_heap(|| {
+                    let note = rt.trigger(input(), 60, 1.).unwrap();
+                    rt.schedule_event(release as u64, Event::KeyUp(note, None))
+                        .unwrap();
+                    for chunk in audio.chunks_mut(block) {
+                        rt.render(chunk).unwrap();
+                        rt.render(&mut []).unwrap();
+                    }
+                    rt.flush_ended(|_| true);
+                    assert_eq!((rt.voice_count(), rt.note_count()), (0, 0));
+                });
+                for (frame, actual) in audio.iter().enumerate() {
+                    let released = frame >= release;
+                    let position = frame as f64 * 0.5;
+                    let expected = if released && position >= (exit + tail.len()) as f64 {
+                        0.
+                    } else {
+                        let sample = filtered(position, |index| {
+                            let Ok(index) = usize::try_from(index) else {
+                                return 0.;
+                            };
+                            if released && index >= exit {
+                                tail.get(index - exit).copied().unwrap_or(0.)
+                            } else if index < prefix.len() {
+                                prefix[index]
+                            } else {
+                                cycle[(index - prefix.len()) % cycle.len()]
+                            }
+                        });
+                        sample
+                            * if released {
+                                (1. - (frame - release) as f64 / 1000.) as f32
+                            } else {
+                                1.
+                            }
+                    };
+                    assert!(
+                        (actual[0] - expected).abs() < 0.00002,
+                        "{direction:?}, release {release}, block {block}, frame {frame}: {} != {expected}",
+                        actual[0]
+                    );
+                    assert_eq!(actual[0], actual[1]);
                 }
             }
         }

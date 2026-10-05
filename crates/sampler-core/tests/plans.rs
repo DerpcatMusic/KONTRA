@@ -335,6 +335,7 @@ fn shared_pcm_keeps_its_buffer_across_plan_adoption_and_control_side_retirement(
                     loop_range: Some(sampler_core::Loop {
                         start: 0,
                         end: 4,
+                        shape: sampler_core::LoopShape::Wrap,
                         mode: sampler_core::LoopMode::Continuous,
                     }),
                     ..Playback::default()

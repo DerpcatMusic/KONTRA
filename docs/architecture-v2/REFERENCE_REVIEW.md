@@ -27,7 +27,7 @@ This is a focused source review, not execution or certification of either engine
 | sfizz [`Layer.cpp:111–128`](https://github.com/sfztools/sfizz/blob/f5c6e29f23b8057867c08e88f5f6ac6738baa30b/src/sfizz/Layer.cpp#L111) distinguishes key release from pedal-delayed release. | Architecture §7.2: physical key, effective gate, source EOF and retained selection context remain independent. | `tests/release_selection.rs`, `tests/articulation.rs` exercise both phases and attack EOF. Full SFZ release equivalence is unverified. |
 | sfizz [`Layer.cpp:133–179`](https://github.com/sfztools/sfizz/blob/f5c6e29f23b8057867c08e88f5f6ac6738baa30b/src/sfizz/Layer.cpp#L133) updates CC conditions separately from evaluating a controller-triggered region. | Architecture §6.1 and `ARTICULATION_POLICIES_05`: a CC predicate gates note selection; it does not implicitly generate a note. | `tests/controllers.rs` now checks audible predicate selection and no advancement for ineligible gestures. Controller-triggered ownership remains open. |
 | sfizz [`MidiState.cpp:88–127`](https://github.com/sfztools/sfizz/blob/f5c6e29f23b8057867c08e88f5f6ac6738baa30b/src/sfizz/MidiState.cpp#L88) retains the final event value across block boundaries and reserves event storage when block size changes. | Architecture §5.2–5.3: stable sample-time order and separate raw/downstream state. Native storage is construction-bounded; no resize on audio. | `tests/controllers.rs` checks exclusive-end/empty-block updates, one-bit 32-bit distinctions, rejection atomicity and heap-free retained snapshots. Script interception remains open; the effective bank is not presented as raw input history. |
-| Shortcircuit [`generator.cpp:318–338`](https://github.com/surge-synthesizer/shortcircuit-xt/blob/8785f09acd9f93682ce4f754fac1d3c62e5b1a9a/src/scxt-core/dsp/generator.cpp#L318) documents a former one-sample mismatch between main and crossfade interpolation; mirrored reads can need a different fractional phase. | Architecture §8.3 source boundaries; phase-aligned interpolation on both crossfade legs. | **Open:** crossfade/ping-pong implementation must test fractional forward/reverse endpoints, mirrored partner phase, nonunity rates, one-frame loops, stereo coherence and block partitioning. Current exact-wrap tests do not satisfy this. |
+| Shortcircuit [`generator.cpp:318–338`](https://github.com/surge-synthesizer/shortcircuit-xt/blob/8785f09acd9f93682ce4f754fac1d3c62e5b1a9a/src/scxt-core/dsp/generator.cpp#L318) documents a former one-sample mismatch between main and crossfade interpolation; mirrored reads can need a different fractional phase. | Architecture §8.3 source boundaries; phase-aligned interpolation on both crossfade legs. | **Open:** crossfade implementation must test fractional forward/reverse endpoints, mirrored partner phase, nonunity rates, one-frame loops, stereo coherence and block partitioning. Native ping-pong traversal now has separate unrolled/analytic boundary tests; crossfade partner tests remain open. |
 | Shortcircuit [`generator.cpp:46–92`](https://github.com/surge-synthesizer/shortcircuit-xt/blob/8785f09acd9f93682ce4f754fac1d3c62e5b1a9a/src/scxt-core/dsp/generator.cpp#L46) separates advancing the cursor from constructing an interpolation window; loop padding differs from EOF padding. | Source views and interpolation must agree on first-pass, looped and released topology. | Existing source/resampling tests are partial. Extend explicit boundary checks for each new playback mode, including arbitrary seek/offset and high-ratio multi-wrap reads. |
 
 ## Review coverage still required
@@ -125,3 +125,17 @@ Reference execution in this worktree (2026-10-06): the four focused v1 tests
 `ci` profile. Logs are retained in ignored `artifacts/v1-reference-*.log`. These
 establish reproducible legacy regression inputs, not Kontakt equivalence or v2
 coverage. The separate UVI checkout was inspected only; no tests were run there.
+
+
+### Reflected-loop follow-up
+
+The pinned Shortcircuit generator at `8785f09...` was additionally inspected at
+[`generator.cpp:626–669`](https://github.com/surge-synthesizer/shortcircuit-xt/blob/8785f09acd9f93682ce4f754fac1d3c62e5b1a9a/src/scxt-core/dsp/generator.cpp#L626)
+(multi-turn reflection and separate initial/travel direction) and
+[`generator.cpp:849–868`](https://github.com/surge-synthesizer/shortcircuit-xt/blob/8785f09acd9f93682ce4f754fac1d3c62e5b1a9a/src/scxt-core/dsp/generator.cpp#L849)
+(gated-loop exit and no continuing loop crossfade after exit). Its MIT license
+was reviewed; no implementation was copied. The v1 authored unrolled fixture at
+`tests/playback.rs:432–460` was also inspected. New native tests recreate independent
+forward/reverse integer traversals, fractional reflection and high-rate multi-turn
+reads in `tests/source.rs` and `tests/resample.rs`. These test native declared
+semantics, not Shortcircuit/Kontakt/Falcon parity. Crossfade partner phase remains open.

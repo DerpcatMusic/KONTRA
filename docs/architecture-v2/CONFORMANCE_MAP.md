@@ -161,3 +161,14 @@ scheduling cases; the broader KSP probes belong to V2-14.
 | `HOST_LIFECYCLE_AND_OFFLINE_06` | Real-time versus offline contract | native | V2-15 | M4 |
 | `HOST_LIFECYCLE_AND_OFFLINE_07` | Host pool refusal | native | V2-15 | M4 |
 | `HOST_LIFECYCLE_AND_OFFLINE_08` | Multi-output layouts | native | V2-15 | M4 |
+
+### Reflected endpoint execution evidence
+
+`SAMPLE_SOURCES_05` now has native execution evidence in
+`sampler-core/tests/source.rs` (uniquely tagged one/two/three-frame loops, both
+initial directions and release boundaries) and `tests/resample.rs` (independently
+unrolled PCM, analytic released interpolation and muted phase). Heap guards cover
+execution/retirement; source EOF and logical terminal ownership remain separate.
+See [SOURCE_VIEWS.md](SOURCE_VIEWS.md#ping-pong-topology). This supplements the
+unchanged supplied scenario record; it does not mark all sample-source scenarios
+or vendor conformance complete. Crossfade dual-demand `SAMPLE_SOURCES_06` remains open.
