@@ -1505,3 +1505,59 @@ fn physical_native_cc120_has_exact10ms_pcm_fade_while_compatibility_and_logical_
         block.export(&format!("sound-off-native-{native}-path-{path}"));
     }
 }
+
+#[test]
+fn cc64_before_note_on_keeps_native_and_compatibility_attack_pcm_and_physical_hold() {
+    let source = Source::new();
+    for native in [false, true] {
+        for script in [None, Some("on note\nend on\non controller\nend on"),
+            Some("on note\nset_event_par($EVENT_ID,$EVENT_PAR_MIDI_CHANNEL,7)\nend on\non controller\nend on")] {
+            for partition in [&[128][..], &[1, 7, 31, 127][..]] {
+                let record = native.then(|| private(0xae, true, 0));
+                let mut actual = source.performance(partition, record.clone(), false);
+                let mut reference = source.performance(partition, record, false);
+                if let Some(script) = script {
+                    install_performance_script(&mut actual, script);
+                    install_performance_script(&mut reference, script);
+                }
+                let mut events = EventList::with_capacity(4);
+                let empty = EventList::with_capacity(0);
+                // Accepted MIDI order is pedal down BEFORE the exact On, even
+                // in the same callback. The oracle has no pedal at all.
+                cc(&mut events, 4, 64, 127);
+                note(&mut events, ExactNoteKind::On, 550, 4, 60);
+                let attack = actual.stage_for("pedal before attack", "CC64 must not suppress On", &events, 256, 0);
+                events.clear();
+                note(&mut events, ExactNoteKind::On, 550, 4, 60);
+                reference.stage_for("independent no-pedal attack", "same actual source and envelope", &events, 256, 0);
+                assert!(attack.iter().all(|v| *v > 0.0001), "held pedal suppressed attack native{native} script{script:?}");
+                events.clear();
+                note(&mut events, ExactNoteKind::Off, 550, 4, 60);
+                actual.stage_for("physical Off under pedal", "voice continues after key-up", &events, 512, 0);
+                reference.stage_for("key still held oracle", "uninterrupted source supplies full held PCM", &empty, 512, 0);
+                assert!(actual.ended.is_empty());
+                assert!(!actual.dsp.rack.parts[0].host_key_held(4, 60));
+                events.clear();
+                // A rerouted logical channel cannot lift physical input4's gate.
+                cc(&mut events, 7, 64, 0);
+                actual.stage_for("unrelated pedal up", "physical4 hold remains", &events, 128, 0);
+                reference.stage_for("unrelated-input oracle", "same continued source", &empty, 128, 0);
+                assert!(actual.ended.is_empty());
+                events.clear();
+                cc(&mut events, 4, 64, 0);
+                actual.stage_for("physical pedal up", "release starts at this exact source clock", &events, 4096, 0);
+                events.clear();
+                note(&mut events, ExactNoteKind::Off, 550, 4, 60);
+                reference.stage_for("independent release oracle", "physical Off now matches effective pedal Off", &events, 4096, 0);
+                assert_eq!(actual.ended, [address(550, 4, 60)]);
+                assert_eq!(actual.ended_frames, reference.ended_frames);
+                assert_eq!(actual.pcm.len(), reference.pcm.len());
+                let error = actual.pcm.iter().zip(&reference.pcm).flat_map(|(a, b)|
+                    [(a[0] - b[0]).abs(), (a[1] - b[1]).abs()]).fold(0f32, f32::max);
+                assert!(error < 2e-6, "complete pedal/source PCM native{native} script{script:?}: {error}");
+                // Performance::stage_for checks zero allocation/free in every
+                // real Sampler::process callback and rejects duplicate NOTE_END.
+            }
+        }
+    }
+}
