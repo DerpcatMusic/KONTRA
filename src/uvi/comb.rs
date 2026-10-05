@@ -383,10 +383,10 @@ impl CombEditionValueProperty {
 }
 fn control_coefficients(rate: u32) -> Result<(f32, f32)> {
     match rate {
-        32_000 => Ok((0.003458559513092041_f32, 0.10494154691696167_f32)),
-        44_100 => Ok((0.00251084566116333_f32, 0.07729637622833252_f32)),
-        48_000 => Ok((0.0023070573806762695_f32, 0.07124549150466919_f32)),
-        96_000 => Ok((0.001154184341430664_f32, 0.036280930042266846_f32)),
+        32_000 => Ok((0.003_458_559_5_f32, 0.104_941_55_f32)),
+        44_100 => Ok((0.002_510_845_7_f32, 0.077_296_376_f32)),
+        48_000 => Ok((0.002_307_057_4_f32, 0.071_245_49_f32)),
+        96_000 => Ok((0.001_154_184_3_f32, 0.036_280_93_f32)),
         _ => anyhow::bail!("Unmeasured ConstantModulation control rate"),
     }
 }
@@ -464,11 +464,11 @@ mod tests {
             let mut warm = vec![[0.; MAX_CHANNELS]; 128];
             warm[0][0] = 1.;
             kernel
-                .process_control_points(&mut warm, &[1008.4754; 4], &[0.93642187; 4], false)
+                .process_control_points(&mut warm, &[1008.4754; 4], &[0.936_421_9; 4], false)
                 .unwrap();
             let mut dry = [[0.125; MAX_CHANNELS]; 64];
             kernel
-                .process_control_points(&mut dry, &[20.; 2], &[0.93642187; 2], true)
+                .process_control_points(&mut dry, &[20.; 2], &[0.936_421_9; 2], true)
                 .unwrap();
             assert_eq!(dry, [[0.125; MAX_CHANNELS]; 64]);
             let mut resumed = vec![[0.; MAX_CHANNELS]; 5000];
@@ -477,7 +477,7 @@ mod tests {
                 .process_control_points(
                     &mut resumed,
                     &vec![20.; count],
-                    &vec![0.93642187; count],
+                    &vec![0.936_421_9; count],
                     false,
                 )
                 .unwrap();

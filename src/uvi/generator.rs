@@ -1263,11 +1263,11 @@ mod tests {
                     -0.0024106507f32,
                     0.20330076,
                     -0.12900233,
-                    -0.25559399,
+                    -0.255_594,
                     -0.38218564,
                     0.36549637,
                     -0.37427366,
-                    -0.44152549,
+                    -0.441_525_5,
                 ],
             ),
             (
@@ -1372,7 +1372,7 @@ mod tests {
             (2, [-0.17677669, -0.18272589, -0.18846081]),
             (3, [-0.24999997, -0.25479552, -0.25929227]),
             (4, [-0.30177668, -0.30587977, -0.30962408]),
-            (8, [-0.44435823, -0.44712409, -0.44936562]),
+            (8, [-0.44435823, -0.447_124_1, -0.44936562]),
         ] {
             let xml = format!(
                 r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><MinBlepGenerator Waveform="4" NumOscillators="{count}" MultiOscSpread="0" PhaseSpread="0"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#
@@ -1396,7 +1396,7 @@ mod tests {
             }
         }
         for (count, spread, native) in [
-            (2, 0.5, [-0.05177670, -0.30177670]),
+            (2, 0.5, [-0.051_776_7, -0.301_776_7]),
             (3, 1., [-0.25000003, -0.24999993]),
             (4, 1., [-0.27588835, -0.32766503]),
         ] {
@@ -1461,7 +1461,7 @@ mod tests {
             -0.000000010927847,
             -0.008560038,
             -0.017110027,
-            -0.025639949,
+            -0.025_639_95,
             -0.034139805,
         ];
         let params = |name: &str, default| number(node, name, default);
@@ -1505,8 +1505,8 @@ mod tests {
             );
         }
         for (wave, expected) in [
-            (3., [0.23159003, 0.12257910, 0.01356816, -0.09544277]),
-            (4., [-0.24832933, -0.17406739, -0.02128702, 0.14109556]),
+            (3., [0.23159003, 0.122_579_1, 0.01356816, -0.09544277]),
+            (4., [-0.24832933, -0.174_067_4, -0.02128702, 0.14109556]),
         ] {
             let mut g = Generator::new(node, 48_000., None).unwrap();
             let params = |name: &str, default| match name {
@@ -1629,115 +1629,115 @@ mod tests {
         for (attributes, native) in [
             (
                 r#"NumOscs="1" PhaseDistortionMode="0" PhaseDistortionAmount="0.25" EnableFM="0""#,
-                [0.221286297, -0.079275049, -0.211388722, -0.248151630],
+                [0.221_286_3, -0.079_275_05, -0.211_388_72, -0.248_151_63],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="0" PhaseDistortionAmount="0.75" EnableFM="0""#,
-                [0.158156887, 0.244968951, 0.221286267, 0.097780176],
+                [0.158_156_89, 0.244_968_95, 0.221_286_27, 0.097780176],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0.25" EnableFM="0""#,
-                [0.183114290, 0.248151645, 0.019777611, -0.240257353],
+                [0.183_114_29, 0.248_151_65, 0.019_777_61, -0.240_257_35],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0.5" EnableFM="0""#,
-                [0.158156887, 0.244968951, 0.029626202, -0.248151645],
+                [0.158_156_89, 0.244_968_95, 0.029626202, -0.248_151_65],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="1" EnableFM="0""#,
-                [0.122851476, 0.213990197, 0.249889717, -0.221286267],
+                [0.122851476, 0.213_990_2, 0.249_889_72, -0.221_286_27],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="1" PhaseDistortionAmount="0" EnableFM="0""#,
-                [0.213990197, 0.221286267, 0.014840190, -0.205939636],
+                [0.213_990_2, 0.221_286_27, 0.014_840_19, -0.205_939_64],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth="0" FMRatio="0" FMRatioMode="1" FMFixedFreq="0""#,
-                [0.213990197, 0.221286267, 0.014840190, -0.205939636],
+                [0.213_990_2, 0.221_286_27, 0.014_840_19, -0.205_939_64],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth="0.1" FMRatio="0" FMRatioMode="1" FMFixedFreq="0""#,
-                [0.240642637, 0.180850729, 0.010183915, -0.162811130],
+                [0.240_642_64, 0.180_850_73, 0.010183915, -0.162_811_13],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth="0.25" FMRatio="0" FMRatioMode="1" FMFixedFreq="0""#,
-                [0.247928917, 0.095416874, 0.003193203, -0.078886494],
+                [0.247_928_92, 0.095_416_87, 0.003193203, -0.078886494],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth="0.5" FMRatio="0" FMRatioMode="1" FMFixedFreq="0""#,
-                [0.173972219, -0.074734695, -0.008460922, 0.080051571],
+                [0.173_972_22, -0.074734695, -0.008460922, 0.080_051_57],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth="0.25" FMRatio="12" FMRatioMode="1" FMFixedFreq="0""#,
-                [0.247125953, 0.246687114, 0.037967816, -0.247865841],
+                [0.247_125_95, 0.246_687_11, 0.037967816, -0.247_865_84],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth="0.25" FMRatio="-12" FMRatioMode="1" FMFixedFreq="0""#,
-                [0.246907800, 0.100685626, -0.165908024, -0.248935327],
+                [0.246_907_8, 0.100685626, -0.165_908_02, -0.248_935_33],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="3.84" FMRatioMode="1" FMFixedFreq="0""#,
-                [0.247928917, 0.095416874, 0.003193203, -0.078886494],
+                [0.247_928_92, 0.095_416_87, 0.003193203, -0.078886494],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="3.84" FMRatioMode="1" FMFixedFreq="0" FMRatioFine="25""#,
-                [0.247731641, 0.098005563, 0.011985413, -0.072825484],
+                [0.247_731_64, 0.098_005_56, 0.011985413, -0.072825484],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="0" FMRatioMode="1" FMFixedFreq="0" StartPhase=".25""#,
-                [-0.032129847, -0.231074795, -0.249979585, -0.237226292],
+                [-0.032129847, -0.231_074_8, -0.249_979_59, -0.237_226_29],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="0" PhaseDistortionAmount=".25" EnableFM="1" FMDepth=".25" FMRatio="0" FMRatioMode="1" FMFixedFreq="0""#,
-                [-0.021454122, -0.176905826, -0.215435237, -0.238115102],
+                [-0.021454122, -0.176_905_83, -0.215_435_24, -0.238_115_1],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount=".5" EnableFM="1" FMDepth=".25" FMRatio="0" FMRatioMode="1" FMFixedFreq="0""#,
-                [0.226434514, 0.176389500, 0.006385846, -0.149714127],
+                [0.226_434_51, 0.176_389_5, 0.006385846, -0.149_714_13],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="3.84" FMRatioMode="0" FMFixedFreq="0""#,
-                [0.244527623, 0.153016835, 0.134689257, -0.061890118],
+                [0.244_527_62, 0.153_016_84, 0.134_689_26, -0.061890118],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="7" FMRatioMode="1" FMFixedFreq="0""#,
-                [0.247928917, 0.095416874, 0.003193203, -0.078886494],
+                [0.247_928_92, 0.095_416_87, 0.003193203, -0.078886494],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="7.1" FMRatioMode="1" FMFixedFreq="0""#,
-                [0.247125953, 0.246687114, 0.037967816, -0.247865841],
+                [0.247_125_95, 0.246_687_11, 0.037967816, -0.247_865_84],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="-7" FMRatioMode="1" FMFixedFreq="0""#,
-                [0.247928917, 0.095416874, 0.003193203, -0.078886494],
+                [0.247_928_92, 0.095_416_87, 0.003193203, -0.078886494],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="-7.1" FMRatioMode="1" FMFixedFreq="0""#,
-                [0.246907800, 0.100685626, -0.165908024, -0.248935327],
+                [0.246_907_8, 0.100685626, -0.165_908_02, -0.248_935_33],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="18" FMRatioMode="1" FMFixedFreq="0""#,
-                [0.219782606, 0.231138200, -0.019930065, -0.176386967],
+                [0.219_782_6, 0.231_138_2, -0.019930065, -0.176_386_97],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="3.84" FMRatioMode="2" FMFixedFreq="0""#,
-                [0.244391486, 0.156121314, 0.139085442, -0.065752700],
+                [0.244_391_49, 0.156_121_31, 0.139_085_44, -0.065_752_7],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="0" PhaseDistortionAmount="0" EnableFM="0" FMDepth=".25" FMRatio="0" FMRatioMode="1" FMFixedFreq="0""#,
-                [-0.122851372, -0.213990137, -0.249889717, -0.221286312],
+                [-0.122_851_37, -0.213_990_14, -0.249_889_72, -0.221_286_31],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="0" PhaseDistortionAmount="1" EnableFM="0" FMDepth=".25" FMRatio="0" FMRatioMode="1" FMFixedFreq="0""#,
-                [0.122851461, 0.213990197, 0.249889717, 0.221286297],
+                [0.122_851_46, 0.213_990_2, 0.249_889_72, 0.221_286_3],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="-3.5" FMRatioMode="2" FMFixedFreq="0""#,
-                [0.249638259, 0.076517284, -0.085954845, -0.165842399],
+                [0.249_638_26, 0.076517284, -0.085954845, -0.165_842_4],
             ),
             (
                 r#"NumOscs="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="3.5" FMRatioMode="2" FMFixedFreq="0""#,
-                [0.244391486, 0.156121314, 0.139085442, -0.065752700],
+                [0.244_391_49, 0.156_121_31, 0.139_085_44, -0.065_752_7],
             ),
         ] {
             let xml = format!(
@@ -1774,85 +1774,85 @@ mod tests {
                 "MinBlepGenerator",
                 r#"PhaseSpread="1" Stereo="1" StereoSpread="1" StereoSpreadMode="0" DetuneMode="0" Waveform="4" NumOscillators="3" MultiOscSpread="1""#,
                 2,
-                [-0.275590807, -0.014004918, 0.266967982, 0.304236174],
+                [-0.275_590_8, -0.014004918, 0.266_967_98, 0.304_236_17],
             ),
             (
                 "MinBlepGenerator",
                 r#"PhaseSpread="1" Stereo="1" StereoSpread="1" StereoSpreadMode="0" DetuneMode="0" Waveform="4" NumOscillators="4" MultiOscSpread="1""#,
                 2,
-                [-0.107728302, 0.050638020, 0.167280227, 0.129072845],
+                [-0.107_728_3, 0.050_638_02, 0.167_280_23, 0.129_072_84],
             ),
             (
                 "MinBlepGenerator",
                 r#"PhaseSpread="1" Stereo="1" StereoSpread="1" StereoSpreadMode="0" DetuneMode="0" Waveform="4" NumOscillators="8" MultiOscSpread="1""#,
                 2,
-                [-0.062036742, 0.061183780, 0.130527824, 0.073105335],
+                [-0.062_036_74, 0.061_183_78, 0.130_527_82, 0.073105335],
             ),
             (
                 "WaveTableOscillator",
                 r#"PhaseSpread="1" Stereo="1" StereoSpread="1" StereoSpreadMode="0" DetuneMode="0" NumOscs="3" Spread="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="0""#,
                 0,
-                [0.264549941, -0.007548321, -0.279071480, -0.295308977],
+                [0.264_549_94, -0.007548321, -0.279_071_48, -0.295_308_98],
             ),
             (
                 "WaveTableOscillator",
                 r#"PhaseSpread="1" Stereo="1" StereoSpread="1" StereoSpreadMode="0" DetuneMode="0" NumOscs="4" Spread="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="0""#,
                 0,
-                [0.099129915, -0.061487794, -0.170098007, -0.120848477],
+                [0.099129915, -0.061487794, -0.170_098, -0.120_848_48],
             ),
             (
                 "WaveTableOscillator",
                 r#"PhaseSpread="1" Stereo="1" StereoSpread="1" StereoSpreadMode="0" DetuneMode="0" NumOscs="8" Spread="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="0""#,
                 0,
-                [0.054703251, -0.068812735, -0.130791947, -0.065306954],
+                [0.054_703_25, -0.068812735, -0.130_791_95, -0.065306954],
             ),
             (
                 "MinBlepGenerator",
                 r#"PhaseSpread="1" Stereo="1" StereoSpread="1" StereoSpreadMode="1" DetuneMode="0" Waveform="4" NumOscillators="5" MultiOscSpread="1""#,
                 2,
-                [0.064328887, 0.270805240, 0.221229121, -0.046154205],
+                [0.064_328_89, 0.270_805_24, 0.221_229_12, -0.046154205],
             ),
             (
                 "MinBlepGenerator",
                 r#"PhaseSpread="1" Stereo="1" StereoSpread="1" StereoSpreadMode="1" DetuneMode="0" Waveform="4" NumOscillators="7" MultiOscSpread="1""#,
                 2,
-                [0.117592521, 0.195809245, 0.081077613, -0.121896811],
+                [0.117_592_52, 0.195_809_25, 0.081_077_61, -0.121_896_81],
             ),
             (
                 "WaveTableOscillator",
                 r#"PhaseSpread="1" Stereo="1" StereoSpread="1" StereoSpreadMode="1" DetuneMode="0" NumOscs="5" Spread="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="0""#,
                 0,
-                [-0.082784764, -0.276580662, -0.208153874, 0.066034853],
+                [-0.082784764, -0.276_580_66, -0.208_153_87, 0.066_034_85],
             ),
             (
                 "WaveTableOscillator",
                 r#"PhaseSpread="1" Stereo="1" StereoSpread="1" StereoSpreadMode="1" DetuneMode="0" NumOscs="7" Spread="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="0""#,
                 0,
-                [-0.128001288, -0.194017753, -0.068180121, 0.133526132],
+                [-0.128_001_29, -0.194_017_75, -0.068_180_12, 0.133_526_13],
             ),
             (
                 "WaveTableOscillator",
                 r#"NumOscs="3" Spread="0.5" PhaseSpread="0" Stereo="1" StereoSpread="1" StereoSpreadMode="0" DetuneMode="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="0""#,
                 0,
-                [0.377380818, 0.143450543, -0.228840873, -0.383089066],
+                [0.377_380_82, 0.143_450_54, -0.228_840_87, -0.383_089_07],
             ),
             (
                 "WaveTableOscillator",
                 r#"NumOscs="4" Spread="1" PhaseSpread="0" Stereo="1" StereoSpread="1" StereoSpreadMode="0" DetuneMode="1" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="0""#,
                 0,
-                [0.363319933, 0.141347200, -0.210431963, -0.393792987],
+                [0.363_319_93, 0.141_347_2, -0.210_431_96, -0.393_793],
             ),
             (
                 "WaveTableOscillator",
                 r#"NumOscs="3" Spread="1" PhaseSpread="1" Stereo="1" StereoSpread="1" StereoSpreadMode="0" DetuneMode="0" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="0" FMRatioMode="1" FMFixedFreq="0""#,
                 0,
-                [0.100060381, -0.214301318, -0.286698788, -0.319311619],
+                [0.100_060_38, -0.214_301_32, -0.286_698_8, -0.319_311_62],
             ),
             (
                 "WaveTableOscillator",
                 r#"NumOscs="4" Spread="1" PhaseSpread="0" Stereo="1" StereoSpread="1" StereoSpreadMode="0" DetuneMode="0" PhaseDistortionMode="3" PhaseDistortionAmount="0" EnableFM="1" FMDepth=".25" FMRatio="12" FMRatioMode="1" FMFixedFreq="0""#,
                 0,
-                [0.197078899, 0.281218469, -0.201622218, -0.219292223],
+                [0.197_078_9, 0.281_218_47, -0.201_622_22, -0.219_292_22],
             ),
         ] {
             let xml = format!(
@@ -1988,17 +1988,17 @@ mod tests {
         // Native L/R observations distinguish positive i/N index spread from
         // centered detune positions and establish clamping at the top wave.
         for (count, index, spread, native) in [
-            (2., 0.5, 0.0, [0.176776692, 0.176776692]),
-            (2., 0.5, 0.25, [0.176776692, 0.198873773]),
-            (2., 0.5, 0.5, [0.176776692, 0.220970869]),
-            (2., 0.5, 1.0, [0.176776692, 0.265165031]),
-            (2., 0.0, 0.5, [0.088388346, 0.132582515]),
-            (2., 0.2, 0.5, [0.123743691, 0.167937845]),
-            (2., 0.8, 0.5, [0.229809716, 0.265165031]),
-            (2., 1.0, 0.5, [0.265165031, 0.265165031]),
-            (3., 0.2, 0.6, [0.180421963, 0.209289476]),
-            (4., 0.2, 0.6, [0.215245888, 0.247254133]),
-            (8., 0.0, 1.0, [0.314807981, 0.348104656]),
+            (2., 0.5, 0.0, [0.176_776_69, 0.176_776_69]),
+            (2., 0.5, 0.25, [0.176_776_69, 0.198_873_77]),
+            (2., 0.5, 0.5, [0.176_776_69, 0.220_970_87]),
+            (2., 0.5, 1.0, [0.176_776_69, 0.265_165_03]),
+            (2., 0.0, 0.5, [0.088388346, 0.132_582_52]),
+            (2., 0.2, 0.5, [0.123_743_69, 0.167_937_84]),
+            (2., 0.8, 0.5, [0.229_809_72, 0.265_165_03]),
+            (2., 1.0, 0.5, [0.265_165_03, 0.265_165_03]),
+            (3., 0.2, 0.6, [0.180_421_96, 0.209_289_48]),
+            (4., 0.2, 0.6, [0.215_245_89, 0.247_254_13]),
+            (8., 0.0, 1.0, [0.314_807_98, 0.348_104_66]),
         ] {
             let xml = format!(
                 r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><WaveTableOscillator WavetablePath="authored_2048.wav" NumOscs="{count}" WaveIndex="{index}" WaveIndexSpread="{spread}" PhaseSpread="0" Stereo="1" StereoSpread="1" StereoSpreadMode="0"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#
@@ -2032,11 +2032,11 @@ mod tests {
                 1.,
                 0.,
                 [
-                    0.3496526777744293,
-                    0.21780210733413696,
-                    -0.3497423827648163,
-                    0.34804442524909973,
-                    0.34429341554641724,
+                    0.349_652_68,
+                    0.217_802_1,
+                    -0.349_742_38,
+                    0.348_044_43,
+                    0.344_293_42,
                 ],
             ),
             (
@@ -2044,11 +2044,11 @@ mod tests {
                 1.,
                 0.,
                 [
-                    0.6546869277954102,
-                    0.03177136182785034,
-                    -0.4014642536640167,
-                    0.6363136768341064,
-                    -0.28029942512512207,
+                    0.654_686_9,
+                    0.031_771_36,
+                    -0.401_464_25,
+                    0.636_313_7,
+                    -0.280_299_43,
                 ],
             ),
             (
@@ -2056,11 +2056,11 @@ mod tests {
                 1.,
                 0.,
                 [
-                    0.30837351083755493,
-                    0.2014549970626831,
-                    -0.34748515486717224,
-                    0.23946194350719452,
-                    0.3497641682624817,
+                    0.308_373_5,
+                    0.201_455,
+                    -0.347_485_15,
+                    0.239_461_94,
+                    0.349_764_17,
                 ],
             ),
             (
@@ -2068,11 +2068,11 @@ mod tests {
                 1.,
                 0.,
                 [
-                    0.9233050346374512,
-                    0.06094476580619812,
-                    -0.3223050832748413,
-                    0.28053271770477295,
-                    -0.3523567318916321,
+                    0.923_305_03,
+                    0.060_944_766,
+                    -0.322_305_08,
+                    0.280_532_72,
+                    -0.352_356_73,
                 ],
             ),
             (
@@ -2080,11 +2080,11 @@ mod tests {
                 0.,
                 1.,
                 [
-                    0.3005619943141937,
-                    0.28907546401023865,
-                    0.14037208259105682,
-                    0.1383959800004959,
-                    -0.2191067487001419,
+                    0.300_562,
+                    0.289_075_46,
+                    0.140_372_08,
+                    0.138_395_98,
+                    -0.219_106_75,
                 ],
             ),
             (
@@ -2092,11 +2092,11 @@ mod tests {
                 1.,
                 0.37,
                 [
-                    0.30837351083755493,
-                    0.2004684954881668,
-                    -0.34795334935188293,
-                    0.21789395809173584,
-                    0.34804585576057434,
+                    0.308_373_5,
+                    0.200_468_5,
+                    -0.347_953_35,
+                    0.217_893_96,
+                    0.348_045_86,
                 ],
             ),
             (
@@ -2104,11 +2104,11 @@ mod tests {
                 1.,
                 0.6,
                 [
-                    0.47180497646331787,
-                    0.1619706153869629,
-                    -0.21064996719360352,
-                    0.19575756788253784,
-                    0.47868961095809937,
+                    0.471_804_98,
+                    0.161_970_62,
+                    -0.210_649_97,
+                    0.195_757_57,
+                    0.478_689_6,
                 ],
             ),
             (
@@ -2116,11 +2116,11 @@ mod tests {
                 0.,
                 0.37,
                 [
-                    0.46748751401901245,
-                    0.7478116750717163,
-                    0.43330276012420654,
-                    -0.4486665427684784,
-                    -0.6644572019577026,
+                    0.467_487_5,
+                    0.747_811_7,
+                    0.433_302_76,
+                    -0.448_666_54,
+                    -0.664_457_2,
                 ],
             ),
             (
@@ -2128,11 +2128,11 @@ mod tests {
                 0.,
                 0.37,
                 [
-                    0.7317759990692139,
-                    0.7381051778793335,
-                    0.21440300345420837,
-                    -0.4636915624141693,
-                    -0.8253520727157593,
+                    0.731_776,
+                    0.738_105_2,
+                    0.214_403,
+                    -0.463_691_56,
+                    -0.825_352_1,
                 ],
             ),
             (
@@ -2140,11 +2140,11 @@ mod tests {
                 0.,
                 0.224,
                 [
-                    0.3499845266,
-                    0.2983056307,
-                    0.2498360872,
-                    0.1441069394,
-                    -0.1261043698,
+                    0.349_984_53,
+                    0.298_305_63,
+                    0.249_836_09,
+                    0.144_106_94,
+                    -0.126_104_37,
                 ],
             ),
         ] {

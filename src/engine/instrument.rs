@@ -575,9 +575,9 @@ mod tests {
         // byte-63/64 parameter values. Compatibility retains its existing law.
         for (policy, gains, pans) in [
             (ControllerPolicy::Native, [0.5, 4., 0.5, 0., 0.5],
-                [0., -0.007875978946685791, 0.00787198543548584, -1., 1.]),
+                [0., -0.007_875_979, 0.007_871_985, -1., 1.]),
             (ControllerPolicy::Compatibility,
-                [0.4976339638233185, 3.9810717, 0.4976339638233185, 0., 0.4976339638233185],
+                [0.497_633_96, 3.9810717, 0.497_633_96, 0., 0.497_633_96],
                 [0., -0.007876, 0.007872, -1., 1.]),
         ] {
             let record = (policy == ControllerPolicy::Native).then(|| ProgramDataPrivateParams {
