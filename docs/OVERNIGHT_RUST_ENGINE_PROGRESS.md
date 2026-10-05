@@ -2,7 +2,8 @@
 
 Continuation of Pi session `01a108e5-4786-7255-9f9c-82de218c6ec5` in the
 isolated `refactor/rust-audio-engine` worktree. The original dirty checkout is
-preserved. No public push, release, or local plugin installation has occurred.
+preserved. No public push or release has occurred. The validated local test
+build e72d11e is now installed, with backups of the previous binaries.
 
 Latest validated checkpoint: parser nesting repair `b105706` and the third
 mechanical cleanup `1acd310`. The combined v19 source passes 494 scoped
@@ -315,3 +316,28 @@ regression is prepared; bounded retention and host acknowledgement design
 remain under independent review. Anonymous IDs also
 require wildcard-aware completion timing across live route changes. These
 findings are under review; no unverified terminal retry change is integrated.
+
+## Installed test build — 08:36 UTC
+
+At the user’s request, built clean checkpoint `e72d11e`, version 0.3.148,
+build hash `6906fba1eed3485d`, with default, standalone and UVI features.
+Expected CLAP/VST3 exports and native note/MIDI/pedal/routing smoke tests pass.
+All six complete own-engine library captures match the preserved v11 WAVs
+bit for bit; protected inputs and source remain unchanged. Offline worker
+deadline misses remain 3 and 7, so this is audio correctness evidence rather
+than proof of real-time capacity or full native-engine parity.
+
+Replaced CLAP, VST3 and the standalone link atomically and verified installed
+hashes. Backups and the installation receipt live under the user’s Codex
+artifacts. Experimental optimizations and the unverified host-retry repair
+are excluded. The wide-channel optimization is held after 546 PCM-equal pairs
+because longer mono-nearest repeats confirm about 3% regression; its revised
+dispatch source/binary are frozen externally. Held sampler source is removed
+from this worktree while correctness and parity changes are developed.
+
+The actual native reject-once reproduction fails on the identified v11
+plugin with “refused NOTE_END must retry in the next callback.” Framework
+retention, host acknowledgement and wildcard restart correctness remain
+under review. A separate UVI sustain-routing regression uses retained
+authored complete native PCM; its historical DLL identity is unbound, and
+no before/after runtime result is claimed yet.
