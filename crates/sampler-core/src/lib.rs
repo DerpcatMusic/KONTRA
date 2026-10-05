@@ -154,14 +154,20 @@ struct Arena<T> {
     slots: Box<[Slot<T>]>,
     occupied: usize,
     available: usize,
+    free: Box<[u64]>,
 }
 
 impl<T> Arena<T> {
     fn new(runtime: u64, capacity: usize) -> Self {
+        let mut free = vec![u64::MAX; capacity.div_ceil(64)].into_boxed_slice();
+        if !capacity.is_multiple_of(64) {
+            *free.last_mut().unwrap() = (1u64 << (capacity % 64)) - 1;
+        }
         Self {
             runtime,
             occupied: 0,
             available: capacity,
+            free,
             slots: std::iter::repeat_with(|| Slot {
                 generation: 0,
                 value: None,
@@ -175,13 +181,18 @@ impl<T> Arena<T> {
         if self.available == 0 {
             return Err(Error::Capacity);
         }
-        // ponytail: bounded linear scan; add a free list if measured admission cost warrants it.
-        let (index, slot) = self
-            .slots
+        // Scan words rather than every slot, retaining lowest-slot allocation and
+        // therefore deterministic voice summation after arbitrary holes/reuse.
+        let (word, bits) = self
+            .free
             .iter_mut()
             .enumerate()
-            .find(|(_, s)| s.value.is_none() && s.generation < u64::MAX)
+            .find(|(_, bits)| **bits != 0)
             .ok_or(Error::Capacity)?;
+        let index = word * 64 + bits.trailing_zeros() as usize;
+        *bits &= *bits - 1;
+        let slot = &mut self.slots[index];
+        debug_assert!(slot.value.is_none() && slot.generation < u64::MAX);
         slot.generation += 1; // Exhausted generations are quarantined, never wrapped.
         slot.value = Some(value);
         self.occupied += 1;
@@ -218,7 +229,10 @@ impl<T> Arena<T> {
         let slot = &mut self.slots[id.index];
         let value = slot.value.take();
         self.occupied -= 1;
-        self.available += usize::from(slot.generation < u64::MAX);
+        if slot.generation < u64::MAX {
+            self.available += 1;
+            self.free[id.index / 64] |= 1 << (id.index % 64);
+        }
         value
     }
 
@@ -232,6 +246,7 @@ impl<T> Arena<T> {
         slot.value = Some(value);
         self.occupied += 1;
         self.available -= usize::from(slot.generation < u64::MAX);
+        self.free[id.index / 64] &= !(1 << (id.index % 64));
     }
 
     fn id(&self, index: usize) -> Handle {

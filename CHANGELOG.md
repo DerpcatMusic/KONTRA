@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Allocate arena slots through control-prepared free bitmaps, preserving lowest-slot order, generation quarantine and exact transfer rollback. No callback allocation or free-list ordering change is introduced.
+
 - Maintain arena capacity and occupancy during ownership changes instead of scanning reservations for every admission. Plan transfer rollback preserves counters and generations; a new burst workload measures the remaining insertion cost explicitly.
 
 - Admit native absolute note pitch separately from tuning and live expression, and consume MIDI 2.0 Pitch 7.9 attributes without changing physical note pairing. Generated notes retain fractional pitch through transposition; source-rate failures remain transactional.

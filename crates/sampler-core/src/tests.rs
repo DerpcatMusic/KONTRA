@@ -528,7 +528,7 @@ fn input_groups_and_new_handle_domains_do_not_alias() {
 
 #[test]
 fn arena_capacity_matches_slots_through_quarantine_and_transfer_rollback() {
-    for capacity in [0, 1, 65] {
+    for capacity in [0, 1, 63, 64, 65, 128, 129] {
         let mut arena = Arena::new(73, capacity);
         if capacity != 0 {
             arena.slots[0].generation = u64::MAX - 1;
@@ -594,6 +594,20 @@ fn arena_capacity_matches_slots_through_quarantine_and_transfer_rollback() {
                     .iter()
                     .filter(|slot| slot.value.is_none() && slot.generation < u64::MAX)
                     .count()
+            );
+            for (index, slot) in arena.slots.iter().enumerate() {
+                assert_eq!(
+                    arena.free[index / 64] & (1 << (index % 64)) != 0,
+                    slot.value.is_none() && slot.generation < u64::MAX,
+                );
+            }
+            assert_eq!(
+                arena
+                    .free
+                    .iter()
+                    .map(|bits| bits.count_ones() as usize)
+                    .sum::<usize>(),
+                arena.available()
             );
         }
     }

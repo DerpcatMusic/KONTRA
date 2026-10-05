@@ -111,7 +111,8 @@ advancement optimization. This does not bypass ownership or stop muted voices.
 bursts of 16/64/256/1,024 same-key notes with four prepared layers each, plus 16
 notes in a 4,096-voice reservation. Each configuration uses 32 warmups and 128 timed
 bursts. Preparation, panic, accepted terminals and counter assertions are outside
-timing. This isolates admission; it does not measure total block work or cleanup.
+timing. Inputs have no external host ID, so duplicate-ID lookup is not included.
+This isolates admission; it does not measure total block work or cleanup.
 
 Arena capacity and occupancy are now maintained at insertion/removal rather than
 reconstructed by scanning reserved slots. Plan transfers use the same accounting:
@@ -132,8 +133,41 @@ median-of-median admission times in microseconds:
 | 1,024 | 4,096 | 10,005.507 | 6,083.934 | 1.64× |
 | 16 | 4,096 | 63.971 | 4.840 | 13.22× |
 
-The largest burst remains too expensive for a 256-frame/48 kHz block before any
-rendering. Slot insertion still searches linearly; removing count scans does not
-claim to complete admission optimization. Local binaries, hashes and CSVs use
+At this stage the largest burst remained too expensive for a 256-frame/48 kHz block
+before any rendering. Removing count scans alone did not complete admission
+optimization. Local binaries, hashes and CSVs use
 `artifacts/admission-*`. Scheduling outliers and these synthetic bursts are not a
 production polyphony guarantee.
+
+### Free-slot lookup
+
+Every arena now maintains one free bit per reserved slot. Insertion scans 64-bit
+words and chooses the lowest set bit, preserving the previous lowest-slot policy
+and therefore voice summation order after holes and reuse. Removal sets a bit only
+if the generation can be reused; transfer rollback clears it without incrementing
+the generation. Unused bits in the final word remain zero. The bitmap is allocated
+on control and costs 512 bytes per 4,096 reserved slots. Lookup remains bounded by
+the declared number of words, rather than claiming constant-time allocation at
+arbitrary capacities.
+
+The mixed-operation test checks bits, counts and lowest-slot results against full
+slot reconstruction at capacities 0/1/63/64/65/128/129. Exhausted generations,
+foreign/stale handles and rollback are included. Existing heap-audited voice-order
+and real cross-thread plan-transfer checks cover the shared allocator in runtime use.
+
+Three rotated CPU-2 comparisons used the original `b56b38c` binary, counters-only
+`c2404d4`, and the bitmap implementation, with identical workloads and no concurrent
+builds. Median-of-median burst times in microseconds were:
+
+| Notes | Reserved voices | Original | Counters | Bitmap |
+| ---: | ---: | ---: | ---: | ---: |
+| 16 | 64 | 3.461 | 2.810 | 1.870 |
+| 64 | 256 | 39.920 | 26.751 | 7.670 |
+| 256 | 1,024 | 605.551 | 370.087 | 31.201 |
+| 1,024 | 4,096 | 10,330.433 | 6,058.363 | 160.853 |
+| 16 | 4,096 | 63.961 | 2.840 | 1.950 |
+
+The largest synthetic burst improved 37.66× over counters alone and 64.22× over
+the original allocator. Raw data and binary hashes use `artifacts/admission-bitmap-*`.
+This does not include external-ID duplicate checks, streaming, rendering, script
+bursts or cleanup; it is not a production deadline guarantee.
