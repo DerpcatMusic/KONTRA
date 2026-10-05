@@ -214,17 +214,6 @@ fn partial_readout(known: String, zero: bool, pending: usize) -> String {
     }
 }
 
-#[cfg(test)]
-mod metric_tests {
-    #[test]
-    fn unavailable_native_observation_is_not_zero_ram_or_zero_voices() {
-        assert_eq!(super::partial_readout("0 MB".into(), true, 1), "—");
-        assert_eq!(super::partial_readout("304 MB".into(), false, 1), "304 MB+");
-        assert_eq!(super::partial_readout("0".into(), true, 0), "0");
-        assert_eq!(super::partial_readout("4".into(), false, 1), "4+");
-    }
-}
-
 /// The master output level: a thin bar in dB, neutral until it nears clipping.
 fn meter_bar(level: f32) -> El {
     let db = 20. * f64::from(level.max(1e-6)).log10();
@@ -594,4 +583,15 @@ pub fn stem(path: &str) -> String {
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned()
+}
+
+#[cfg(test)]
+mod metric_tests {
+    #[test]
+    fn unavailable_native_observation_is_not_zero_ram_or_zero_voices() {
+        assert_eq!(super::partial_readout("0 MB".into(), true, 1), "—");
+        assert_eq!(super::partial_readout("304 MB".into(), false, 1), "304 MB+");
+        assert_eq!(super::partial_readout("0".into(), true, 0), "0");
+        assert_eq!(super::partial_readout("4".into(), false, 1), "4+");
+    }
 }

@@ -8,6 +8,7 @@ use std::sync::{LockResult, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockRe
 /// Public reads retain the existing lock/poison behavior. Public replacement and
 /// persisted restoration fence playback before assignment; raw writes stay crate
 /// private so the audited source-commit/capture distinction remains explicit.
+#[derive(Default)]
 pub struct SelectionStore {
     value: RwLock<Selection>,
     control: Arc<preview::Control>,
@@ -16,15 +17,6 @@ pub struct SelectionStore {
     feedback: Mutex<Option<Arc<Feedback>>>,
     #[cfg(test)]
     decode_panic: AtomicBool,
-}
-impl Default for SelectionStore {
-    fn default() -> Self {
-        Self { value: RwLock::default(), control: Arc::default(), pending: Mutex::default(),
-            prepared: Mutex::default(), feedback: Mutex::default(),
-            #[cfg(test)]
-            decode_panic: AtomicBool::new(false),
-        }
-    }
 }
 impl PersistField for SelectionStore {
     fn persist_write(&self, buf: &mut Vec<u8>) { self.value.persist_write(buf); }

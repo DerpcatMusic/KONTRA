@@ -1532,7 +1532,7 @@ mod tests {
                 for (l, r) in bl.chunks_mut(31).zip(br.chunks_mut(31)) { b.process(l, r); }
             };
             #[cfg(feature = "plugin")]
-            assert_eq!(crate::test_support::allocations(|| exercise()), 0);
+            assert_eq!(crate::test_support::allocations(&mut exercise), 0);
             #[cfg(not(feature = "plugin"))]
             exercise();
             assert_eq!(al, bl, "host block partition preserves delay clock");

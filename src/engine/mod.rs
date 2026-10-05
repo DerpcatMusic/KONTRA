@@ -1952,9 +1952,8 @@ impl Engine {
     /// changes one zone independently and never writes the route snapshot.
     pub(crate) fn configure_mpe(&mut self, configured: Option<(u8, u8, u8)>) {
         let mut mpe = crate::midi::MpeZones::default();
-        if let Some((manager, members, range)) = configured {
-            if mpe.configure(manager, members, range).is_none() { return; }
-        }
+        if let Some((manager, members, range)) = configured
+            && mpe.configure(manager, members, range).is_none() { return; }
         let channels = self.player.midi.mpe_role_changes(mpe);
         self.reconcile_mpe_channels(channels, None);
         self.player.midi.set_mpe(mpe);
@@ -2461,7 +2460,7 @@ mod release_note_mono_tests {
         }).collect();
         let sample = crate::audio::Sample { rate:48000, frames:vec![[0.2;2];16384] };
         let bank = Bank::from_samples(groups, zones, vec![(std::path::PathBuf::new(),sample)]).unwrap();
-        let mut engine = Engine::default(); engine.attack=0.0001; engine.release=0.001;
+        let mut engine = Engine { attack: 0.0001, release: 0.001, ..Engine::default() };
         engine.set_bank(Some(Box::new(bank))); engine
     }
     fn tick(e: &mut Engine) { e.render(&mut [0.;512], &mut [0.;512]); }
