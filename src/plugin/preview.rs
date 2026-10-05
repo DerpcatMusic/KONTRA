@@ -31,7 +31,7 @@ impl Control {
         Some(id)
     }
     fn advance(&self) -> Option<u64> {
-        self.wanted.fetch_update(Ordering::AcqRel, Ordering::Acquire,
+        self.wanted.try_update(Ordering::AcqRel, Ordering::Acquire,
             |id| (id < LAST_ID).then(|| id + 1)).ok().map(|id| id + 1)
     }
     /// Global host reset/panic/restore cancellation: bounded POD only.
@@ -84,7 +84,7 @@ impl Control {
         let next = (id << 3) | status as u64;
         // One tagged atomic: late Ready cannot regress Playing; an older
         // producer cannot overwrite a newer request, including concurrent Stop.
-        let _ = self.status.fetch_update(Ordering::AcqRel, Ordering::Acquire,
+        let _ = self.status.try_update(Ordering::AcqRel, Ordering::Acquire,
             |word| (word < next).then_some(next));
     }
     fn audible(&self, id: u64) -> bool {
