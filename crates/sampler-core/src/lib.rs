@@ -10,6 +10,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 mod gate;
 mod ownership;
+mod prepare;
+pub use prepare::{Pcm, Prepared, Region};
 mod schedule;
 use gate::Channel;
 pub use gate::{ChannelAddress, ChannelId};
@@ -75,12 +77,6 @@ pub struct Limits {
     pub expressions: usize,
     pub voices: usize,
     pub commands: usize,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct Pcm<'a> {
-    pub rate: u32,
-    pub frames: &'a [Frame],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -182,6 +178,13 @@ impl<T: Copy> Arena<T> {
         }
     }
 
+    fn available(&self) -> usize {
+        self.slots
+            .iter()
+            .filter(|s| s.value.is_none() && s.generation < u64::MAX)
+            .count()
+    }
+
     fn count(&self) -> usize {
         self.slots.iter().filter(|s| s.value.is_some()).count()
     }
@@ -189,9 +192,9 @@ impl<T: Copy> Arena<T> {
 
 /// All capacities are supplied at preparation. Terminal delivery uses the note's
 /// existing slot, so a full command queue cannot discard its cleanup or notification.
-pub struct Runtime<'a> {
+pub struct Runtime {
     rate: u32,
-    pcm: &'a [Pcm<'a>],
+    plan: Prepared,
     notes: Arena<Note>,
     channels: Arena<Channel>,
     voices: Arena<Voice>,
@@ -204,16 +207,9 @@ pub struct Runtime<'a> {
     nonfinite_frames: u64,
 }
 
-impl<'a> Runtime<'a> {
-    pub fn new(rate: u32, pcm: &'a [Pcm<'a>], limits: Limits) -> Result<Self, Error> {
-        if rate == 0
-            || limits.notes == 0
-            || pcm.iter().any(|p| {
-                p.rate != rate
-                    || p.frames.is_empty()
-                    || p.frames.iter().flatten().any(|x| !x.is_finite())
-            })
-        {
+impl Runtime {
+    pub fn new(plan: Prepared, limits: Limits) -> Result<Self, Error> {
+        if limits.notes == 0 {
             return Err(Error::InvalidInput);
         }
         static NEXT_RUNTIME: AtomicU64 = AtomicU64::new(1);
@@ -222,8 +218,8 @@ impl<'a> Runtime<'a> {
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
             .map_err(|_| Error::Capacity)?;
         Ok(Self {
-            rate,
-            pcm,
+            rate: plan.rate,
+            plan,
             notes: Arena::new(id, limits.notes),
             channels: Arena::new(id, limits.channels),
             voices: Arena::new(id, limits.voices),
@@ -438,7 +434,7 @@ impl<'a> Runtime<'a> {
         if !f.open {
             return Err(Error::ClosedFamily);
         }
-        if sample >= self.pcm.len() || !gain.is_finite() || !(0.0..=1.0).contains(&gain) {
+        if sample >= self.plan.pcm.len() || !gain.is_finite() || !(0.0..=1.0).contains(&gain) {
             return Err(Error::InvalidInput);
         }
         let count = f.voices.checked_add(1).ok_or(Error::Capacity)?;
@@ -617,7 +613,7 @@ impl<'a> Runtime<'a> {
                 let f = self.families.get(v.family.0).unwrap();
                 let n = self.notes.get(f.note.0).unwrap();
                 let gains = self.expressions.get(n.expression.0).unwrap().value.gains();
-                let pcm = self.pcm[v.sample].frames;
+                let pcm = &self.plan.pcm[v.sample].frames;
                 let count = len.min(pcm.len() - v.cursor);
                 for (frame, input) in segment[..count]
                     .iter_mut()

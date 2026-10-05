@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Add an independent `sampler-native` offline executable with owned prepared PCM, indexed native region selection and transactional layer admission. Its narrow WAV path and rendered output are checked; live audio, plugin hosts and full source/DSP behavior remain in development.
+
 - Add physical/effective key separation, channel-scoped sustain/sostenuto and timestamped expression to the new core's shared sample-time queue. Queue-full cleanup and scheduled ownership are covered by independent realtime checks; advanced pedal and continuation behavior remain open.
 
 - Add independent generational family/expression ownership, explicit child inheritance and bounded cleanup to the new sampler core. Render resident PCM in event-delimited segments and include a reproducible microbenchmark and core-only allocation/free checks. This remains experimental; it does not change production playback or establish MIDI 2.0 device support.

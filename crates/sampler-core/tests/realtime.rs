@@ -5,9 +5,9 @@ mod support;
 fn ownership_pressure_render_and_retirement_do_no_heap_work() {
     let pcm = [Pcm {
         rate: 48000,
-        frames: &[[0.25; 2]; 16],
+        frames: Box::from([[0.25; 2]; 16]),
     }];
-    let mut rt = Runtime::new(
+    let mut rt = fixture_runtime(
         48000,
         &pcm,
         Limits {
@@ -84,9 +84,9 @@ fn pedal_and_expression_timeline_pressure_do_no_heap_work() {
     use sampler_core::Event;
     let pcm = [Pcm {
         rate: 48000,
-        frames: &[[0.25; 2]; 64],
+        frames: Box::from([[0.25; 2]; 64]),
     }];
-    let mut rt = Runtime::new(
+    let mut rt = fixture_runtime(
         48000,
         &pcm,
         Limits {
@@ -142,4 +142,73 @@ fn pedal_and_expression_timeline_pressure_do_no_heap_work() {
             );
         }
     });
+}
+
+fn fixture_runtime(rate: u32, pcm: &[Pcm], limits: Limits) -> Result<Runtime, sampler_core::Error> {
+    Runtime::new(
+        sampler_core::Prepared::new(rate, pcm.to_vec(), Vec::new(), 0)?,
+        limits,
+    )
+}
+
+#[test]
+fn prepared_native_selection_and_owned_asset_retirement_do_no_heap_work() {
+    use sampler_core::{Prepared, Region};
+    let plan = Prepared::new(
+        48000,
+        vec![Pcm {
+            rate: 48000,
+            frames: Box::new([[0.25; 2]; 8]),
+        }],
+        vec![
+            Region {
+                sample: 0,
+                key_low: 0,
+                key_high: 127,
+                velocity_low: 0.0,
+                velocity_high: 1.0,
+                gain: 1.0
+            };
+            2
+        ],
+        256,
+    )
+    .unwrap();
+    let mut rt = Runtime::new(
+        plan,
+        Limits {
+            notes: 4,
+            channels: 0,
+            expressions: 4,
+            families: 4,
+            voices: 2,
+            commands: 4,
+        },
+    )
+    .unwrap();
+    let input = Input {
+        protocol: Protocol::Native,
+        port: 0,
+        group: 0,
+        channel: 0,
+        key: 60,
+        external_id: None,
+    };
+    support::without_heap(|| {
+        for _ in 0..100 {
+            let note = rt.trigger(input, 60, 0.5).unwrap();
+            assert_eq!(rt.trigger(input, 60, 0.5), Err(Error::Capacity));
+            assert_eq!(rt.note_count(), 1);
+            let mut audio = [[0.0; 2]; 16];
+            rt.render(&mut audio).unwrap();
+            assert!(audio[..8].iter().all(|f| *f == [0.25; 2]));
+            assert!(audio[8..].iter().all(|f| *f == [0.0; 2]));
+            rt.release(note).unwrap();
+            rt.flush_ended(|_| true);
+            assert_eq!(
+                (rt.note_count(), rt.family_count(), rt.expression_count()),
+                (0, 0, 0)
+            );
+        }
+    }); // Owned asset destruction occurs only after this callback scope.
 }

@@ -70,7 +70,7 @@ pub(super) struct Family {
     pub open: bool,
 }
 
-impl Runtime<'_> {
+impl Runtime {
     pub fn family_count(&self) -> usize {
         self.families.count()
     }

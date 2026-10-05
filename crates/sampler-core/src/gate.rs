@@ -30,7 +30,7 @@ pub(super) struct Channel {
     pub sostenuto: bool,
 }
 
-impl Runtime<'_> {
+impl Runtime {
     /// Register a controller domain before admitting its control traffic. Registration
     /// is idempotent and bounded; addresses remain stable for this runtime's lifetime.
     /// Panic resets values, not identity. No dynamic allocation occurs here.

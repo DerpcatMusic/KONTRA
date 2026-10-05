@@ -8,11 +8,11 @@ fn main() {
     let pcm = vec![[0.001, -0.001]; BLOCK * (BLOCKS + 100)];
     let samples = [Pcm {
         rate: 48000,
-        frames: &pcm,
+        frames: pcm.into_boxed_slice(),
     }];
     println!("active,capacity,p50_us,p99_us,max_us,deadline_misses,checksum");
     for (active, capacity) in [(16, 64), (16, 4096), (256, 256)] {
-        let mut rt = Runtime::new(
+        let mut rt = fixture_runtime(
             48000,
             &samples,
             Limits {
@@ -66,4 +66,11 @@ fn main() {
             times[BLOCKS - 1] as f64 / 1000.0
         );
     }
+}
+
+fn fixture_runtime(rate: u32, pcm: &[Pcm], limits: Limits) -> Result<Runtime, sampler_core::Error> {
+    Runtime::new(
+        sampler_core::Prepared::new(rate, pcm.to_vec(), Vec::new(), 0)?,
+        limits,
+    )
 }

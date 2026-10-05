@@ -14,13 +14,13 @@ struct Binding {
     whole_sample: bool,
 }
 
-struct Bridge<'a> {
-    core: Runtime<'a>,
+struct Bridge {
+    core: Runtime,
     root: Option<NoteId>,
     bindings: Vec<Binding>,
 }
 
-impl Bridge<'_> {
+impl Bridge {
     fn render(&mut self, output: &mut [[f32; 2]]) {
         self.core.render(output).unwrap();
         for b in &self.bindings {
@@ -34,7 +34,7 @@ impl Bridge<'_> {
     }
 }
 
-impl KspEngine for Bridge<'_> {
+impl KspEngine for Bridge {
     fn play_note(&mut self, at: u32, n: &NoteSpec<'_>) -> Option<EventId> {
         // This probe deliberately accepts only the fixture's unity-rate PCM surface.
         // Unexpected services fail the test instead of silently claiming support.
@@ -112,9 +112,9 @@ impl KspEngine for Bridge<'_> {
 fn v2_ksp_suppression_children_wait_and_release_share_the_native_kernel_without_heap() {
     let pcm = [Pcm {
         rate: 48000,
-        frames: &[[0.25; 2]; 96],
+        frames: Box::from([[0.25; 2]; 96]),
     }];
-    let core = Runtime::new(
+    let core = fixture_runtime(
         48000,
         &pcm,
         Limits {
@@ -211,9 +211,9 @@ end on"#;
 fn v2_native_saturation_reset_and_terminal_retry_do_not_allocate_or_free() {
     let pcm = [Pcm {
         rate: 48000,
-        frames: &[[0.5; 2]; 16],
+        frames: Box::from([[0.5; 2]; 16]),
     }];
-    let mut core = Runtime::new(
+    let mut core = fixture_runtime(
         48000,
         &pcm,
         Limits {
@@ -261,4 +261,11 @@ fn v2_native_saturation_reset_and_terminal_retry_do_not_allocate_or_free() {
             );
         }
     });
+}
+
+fn fixture_runtime(rate: u32, pcm: &[Pcm], limits: Limits) -> Result<Runtime, sampler_core::Error> {
+    Runtime::new(
+        sampler_core::Prepared::new(rate, pcm.to_vec(), Vec::new(), 0)?,
+        limits,
+    )
 }
