@@ -2,8 +2,10 @@
 
 Upstream: [`vello` 0.10.0](https://crates.io/crates/vello/0.10.0), from
 linebender/vello at commit `fc0baddd06c63287ef516180d276333aa2401e6e`
-(the crate's `.cargo_vcs_info.json`; `path_in_vcs = "vello"`). The shader
-crates (`vello_encoding`, `vello_shaders`) are unpatched registry 0.10.0.
+(the crate's `.cargo_vcs_info.json`; `path_in_vcs = "vello"`). This local copy
+tracks MUI `1f1daadb0e77c16f30f394255121e7c2fb14b1f2` plus the persistent
+atlas fix below. `vello_encoding` uses that same locked MUI Git source for its
+hint-instance cache patches; `vello_shaders` remains registry 0.10.0.
 
 Diff it against the registry copy:
 
@@ -48,7 +50,15 @@ Images a recording frees go into `pool.images` for the next recording to reuse
 does not take is destroyed when it ends. Upstream destroyed and re-created
 them every frame (its own `TODO: have a pool`).
 
-## 5. KONTAKTO: keep the image atlas across image-free frames (`src/render.rs`)
+## 5. MUI hint-instance cache (`vello_encoding`)
+
+The upstream MUI encoding package keeps 32 cached font/size/coordinate hint
+instances and looks them up lazily on glyph misses. The Git dependency in
+`Cargo.toml` consumes that upstream implementation without another local
+vendor tree. `vello_shaders` may still use registry encoding for plain buffer
+types; it does not share the renderer's glyph cache.
+
+## 6. KONTAKTO: keep the image atlas across image-free frames (`src/render.rs`)
 
 MUI re-encodes only the damaged part of a frame. When that part holds no image
 or gradient, `Resolver::resolve` returns a 0x0 atlas, and `render_encoding_coarse`
