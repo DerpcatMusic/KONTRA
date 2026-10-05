@@ -3590,6 +3590,10 @@ impl Runtime {
                         event: ctx.event,
                         slot: next,
                     });
+                } else {
+                    // A silent ignored parent need not retain its exact root.
+                    // `free` still defers for callbacks or an attached voice.
+                    self.env.events.free(ctx.event);
                 }
             }
             Forward::Controller => {

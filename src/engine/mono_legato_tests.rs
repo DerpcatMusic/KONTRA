@@ -187,6 +187,7 @@ fn record(mode: usize, priority: usize, shared: bool, parts: &[usize]) -> ([Vec<
     };
     let mut mono: Option<(EventId,u8)> = None;
     let mut sibling = None;
+    let mut owner_gain = [1.;5];
     let mut ends = [0;5];
     assert_eq!(crate::plugin::tests::allocations(|| {
         let mut from = 0;
@@ -211,9 +212,11 @@ fn record(mode: usize, priority: usize, shared: bool, parts: &[usize]) -> ([Vec<
                 // The ignored B root is physically held but never takes over
                 // the existing Legato event's exact expression ownership.
                 actual.host_expression(pattern(owner(1)),HostExpression::Gain(0.));
+                owner_gain[1] = 0.;
             }
             if index==5 {
                 actual.host_expression(pattern(owner(0)),HostExpression::Gain(0.5));
+                owner_gain[0] = 0.5;
                 if mode==2 { reference.change_event(mono.unwrap().0,EventChange::Volume(0.5)); }
             }
             if index<7 && let Some(note) = selections[index] {
@@ -222,8 +225,11 @@ fn record(mode: usize, priority: usize, shared: bool, parts: &[usize]) -> ([Vec<
                 } else {
                     if let Some((id,_)) = mono { reference.fade_event(id,0.001,0.,true); }
                     let offset_us = if mode==3 { (to/48*1000) as u64 } else {0};
-                    let id = reference.start_event(&NoteEvent { pan:-1.,offset_us,
-                        input_channel:Some(owner(if index<4 {index} else {7-index}).channel),
+                    // Retriggers inherit the callback's physical root, even
+                    // when the chosen pitch belongs to another held key.
+                    let origin = if index<4 {index} else {7-index};
+                    let id = reference.start_event(&NoteEvent { pan:-1.,offset_us,volume:owner_gain[origin],
+                        input_channel:Some(owner(origin).channel),
                         ..NoteEvent::new(7,note,127) }).unwrap();
                     mono = Some((id,note));
                 }
@@ -344,5 +350,47 @@ fn reduced_factory_legato_survives_original_physical_key_up_with_exact_owner_exp
     for shared in [false,true] {
         let (fragmented,other) = early_original_release(shared,&[1,7,31,127,13,64]);
         same(&fixed,&fragmented); assert_eq!(ends,other);
+    }
+}
+
+#[test]
+fn ignored_release_keeps_sounding_owner_until_sample_end_without_heap() {
+    let source = "on init\nend on\non release\nignore_event($EVENT_ID)\nend on";
+    let frames = 16_384 + 64;
+    for parts in [&[128][..], &[1, 7, 31, 127, 13, 64][..]] {
+        let (mut actual, mut reference) = (engine(false, Some(source)), engine(false, None));
+        let (mut pcm, mut expected) = (
+            std::array::from_fn(|_| vec![0.; frames]),
+            std::array::from_fn(|_| vec![0.; frames]),
+        );
+        let n = owner(0);
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            for e in [&mut actual, &mut reference] {
+                assert!(e.host_note_on(n, 7, n.key + 12, 127, 0.));
+            }
+            render(&mut actual, &mut pcm, 0, 128, parts);
+            render(&mut reference, &mut expected, 0, 128, &[128]);
+            actual.host_note_off(pattern(n));
+            // The independent oracle stays held: ignoring release must keep
+            // the original source clock and envelope, not start a new note.
+            render(&mut actual, &mut pcm, 128, FRAMES, parts);
+            render(&mut reference, &mut expected, 128, FRAMES, &[128]);
+            actual.mark_host_notes();
+            assert!(!actual.input_key_down_from(n.channel, 7, n.key + 12));
+            assert!(actual.host_note_pending(n));
+            assert_eq!(actual.host_note_end_at(n), None);
+            assert_eq!(actual.active_voices(), 1);
+
+            render(&mut actual, &mut pcm, FRAMES, frames, parts);
+            render(&mut reference, &mut expected, FRAMES, frames, &[128]);
+            actual.mark_host_notes();
+            assert_eq!(actual.host_note_end_at(n), Some(16_384));
+            assert!(!actual.host_note_pending(n));
+            assert_eq!(actual.active_voices(), 0);
+            assert!(actual.script().unwrap().diagnostics().is_empty());
+        }), 0);
+        same(&pcm, &expected);
+        assert!(pcm[0][128..FRAMES].iter().any(|v| v.abs() > 0.1));
+        assert!(pcm.iter().all(|row| row[16_384..].iter().all(|v| v.abs() < 1e-8)));
     }
 }
