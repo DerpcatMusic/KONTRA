@@ -17,6 +17,7 @@ fn main() {
             &samples,
             Limits {
                 notes: 1,
+                channels: 4,
                 families: capacity,
                 expressions: 1,
                 voices: capacity,

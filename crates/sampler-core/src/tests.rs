@@ -14,6 +14,7 @@ fn input(id: Option<i32>) -> Input {
 fn limits() -> Limits {
     Limits {
         notes: 8,
+        channels: 4,
         families: 8,
         expressions: 8,
         voices: 8,
@@ -89,6 +90,7 @@ fn cleanup_does_not_need_queue_space_and_no_source_notes_retry() {
         &samples,
         Limits {
             notes: 2,
+            channels: 4,
             families: 2,
             expressions: 2,
             voices: 1,
@@ -384,6 +386,7 @@ fn separate_budgets_reject_without_partial_ownership() {
         &pcm,
         Limits {
             notes: 3,
+            channels: 4,
             families: 1,
             expressions: 1,
             voices: 1,
@@ -423,6 +426,7 @@ fn separate_budgets_reject_without_partial_ownership() {
         &pcm,
         Limits {
             notes: 1,
+            channels: 4,
             expressions: 3,
             ..limits()
         },
@@ -575,4 +579,273 @@ fn ownership_counters_match_reachable_state_under_mixed_operations() {
         ),
         (0, 0, 0, 0)
     );
+}
+
+#[test]
+fn sustain_pairs_physical_keys_fifo_and_sostenuto_captures_only_held_notes() {
+    let pcm = [Pcm {
+        rate: 48000,
+        frames: &[[0.25; 2]; 64],
+    }];
+    let mut rt = Runtime::new(48000, &pcm, limits()).unwrap();
+    let address = input(None).channel_address();
+    let channel = rt.register_channel(address).unwrap();
+    assert_eq!(rt.register_channel(address), Ok(channel));
+    let a = rt.note_on(input(None), 60, 1.0).unwrap();
+    rt.start(a, 0, 0, 1.0).unwrap();
+    rt.sustain(channel, true).unwrap();
+    assert_eq!(rt.note_off(input(None)), Ok(a));
+    assert_eq!(rt.key_down(a), Ok(false));
+    assert!(rt.note(a).unwrap().2);
+    let b = rt.note_on(input(None), 60, 1.0).unwrap();
+    rt.start(b, 0, 0, 1.0).unwrap();
+    rt.sostenuto(channel, true).unwrap(); // Captures b, not the pedal-held a.
+    let c = rt.note_on(input(None), 60, 1.0).unwrap();
+    rt.sostenuto(channel, true).unwrap(); // Repeated down is not a new capture.
+    assert_eq!(rt.note_off(input(None)), Ok(b));
+    assert_eq!(rt.note_off(input(None)), Ok(c));
+    rt.sustain(channel, false).unwrap();
+    assert!(!rt.note(a).unwrap().2);
+    assert!(rt.note(b).unwrap().2);
+    assert!(!rt.note(c).unwrap().2);
+    assert_eq!(rt.voice_count(), 1);
+    rt.sostenuto(channel, false).unwrap();
+    assert_eq!(rt.voice_count(), 0);
+    rt.flush_ended(|_| true);
+    assert_eq!(rt.note_count(), 0);
+    // A different port/group/channel/protocol must not inherit these pedal values.
+    rt.sustain(channel, true).unwrap();
+    for other in [
+        Input {
+            group: 1,
+            ..input(None)
+        },
+        Input {
+            port: 3,
+            ..input(None)
+        },
+        Input {
+            channel: 5,
+            ..input(None)
+        },
+        Input {
+            protocol: Protocol::Midi2,
+            ..input(None)
+        },
+    ] {
+        let n = rt.note_on(other, 60, 1.0).unwrap();
+        rt.note_off(other).unwrap();
+        assert!(!rt.note(n).unwrap().2);
+        rt.flush_ended(|_| true);
+    }
+    rt.panic();
+    assert_eq!(rt.pedals(channel), Ok((false, false)));
+}
+
+#[test]
+fn mixed_timeline_is_partition_invariant_and_immediate_changes_follow_due_work() {
+    let pcm = [Pcm {
+        rate: 48000,
+        frames: &[[1.0; 2]; 128],
+    }];
+    let render = |partition: &[usize]| {
+        let mut rt = Runtime::new(
+            48000,
+            &pcm,
+            Limits {
+                commands: 16,
+                ..limits()
+            },
+        )
+        .unwrap();
+        let ch = rt.register_channel(input(None).channel_address()).unwrap();
+        let n = rt.note_on(input(None), 60, 1.0).unwrap();
+        rt.start(n, 0, 3, 1.0).unwrap();
+        rt.schedule_event(5, Event::Sustain(ch, true)).unwrap();
+        rt.schedule_event(8, Event::KeyUp(n)).unwrap();
+        rt.schedule_event(
+            10,
+            Event::Expression(
+                n,
+                Expression {
+                    gain: 0.5,
+                    ..Expression::default()
+                },
+            ),
+        )
+        .unwrap();
+        rt.schedule_event(
+            10,
+            Event::Expression(
+                n,
+                Expression {
+                    gain: 0.25,
+                    ..Expression::default()
+                },
+            ),
+        )
+        .unwrap();
+        rt.schedule_event(17, Event::Sustain(ch, false)).unwrap();
+        let mut output = [[0.0; 2]; 64];
+        let mut at = 0;
+        let mut i = 0;
+        while at < output.len() {
+            let len = partition[i % partition.len()].min(output.len() - at);
+            rt.render(&mut output[at..at + len]).unwrap();
+            at += len;
+            i += 1;
+        }
+        rt.flush_ended(|_| true);
+        assert_eq!(
+            (
+                rt.note_count(),
+                rt.pending_commands(),
+                rt.expression_count()
+            ),
+            (0, 0, 0)
+        );
+        output
+    };
+    let reference = render(&[1]);
+    assert!(reference[..3].iter().all(|f| *f == [0.0; 2]));
+    assert!(reference[3..10].iter().all(|f| *f == [1.0; 2]));
+    assert!(reference[10..17].iter().all(|f| *f == [0.25; 2]));
+    assert!(reference[17..].iter().all(|f| *f == [0.0; 2]));
+    for blocks in [&[64][..], &[0, 3, 5, 9, 1, 0, 17], &[16], &[32]] {
+        assert_eq!(render(blocks), reference);
+    }
+    let mut rt = Runtime::new(48000, &pcm, limits()).unwrap();
+    let n = rt.note_on(input(None), 60, 1.0).unwrap();
+    rt.start(n, 0, 0, 1.0).unwrap();
+    rt.schedule_event(
+        8,
+        Event::Expression(
+            n,
+            Expression {
+                gain: 0.5,
+                ..Expression::default()
+            },
+        ),
+    )
+    .unwrap();
+    rt.render(&mut [[0.0; 2]; 8]).unwrap(); // Due-at-end remains queued.
+    rt.schedule_event(
+        8,
+        Event::Expression(
+            n,
+            Expression {
+                gain: 0.25,
+                ..Expression::default()
+            },
+        ),
+    )
+    .unwrap();
+    let mut audio = [[0.0; 2]; 1];
+    rt.render(&mut audio).unwrap();
+    assert_eq!(audio, [[0.25; 2]]); // Earlier queued change precedes immediate change.
+}
+
+#[test]
+fn scheduled_expression_has_private_lifetime_pins_and_cancellation() {
+    let mut rt = Runtime::new(
+        48000,
+        &[],
+        Limits {
+            commands: 1,
+            ..limits()
+        },
+    )
+    .unwrap();
+    let n = rt.note_on(input(Some(1)), 60, 1.0).unwrap();
+    let e = Expression {
+        gain: 0.125,
+        ..Expression::default()
+    };
+    rt.schedule_event(10, Event::Expression(n, e)).unwrap();
+    assert_eq!(rt.unpin(n), Err(Error::InvalidInput));
+    assert_eq!(
+        rt.schedule_event(11, Event::Expression(n, e)),
+        Err(Error::Capacity)
+    );
+    assert_eq!(rt.notes.get(n.0).unwrap().work, 1);
+    rt.release(n).unwrap(); // Queue-full cleanup cancels and releases scheduler pin.
+    assert_eq!(rt.pending_commands(), 0);
+    rt.flush_ended(|_| true);
+    let replacement = rt.note_on(input(Some(1)), 60, 1.0).unwrap();
+    rt.render(&mut [[0.0; 2]; 12]).unwrap();
+    assert_eq!(
+        rt.expression(rt.expression_id(replacement).unwrap()),
+        Ok(Expression::default())
+    );
+    let linked = rt
+        .child(replacement, 61, 1.0, false, Inheritance::Linked)
+        .unwrap();
+    rt.schedule_event(16, Event::Expression(linked, e)).unwrap();
+    rt.detach_expression(linked).unwrap();
+    rt.render(&mut [[0.0; 2]; 4]).unwrap();
+    assert_eq!(rt.pending_commands(), 1);
+    rt.render(&mut []).unwrap();
+    assert_eq!(rt.expression(rt.expression_id(linked).unwrap()), Ok(e));
+    assert_eq!(
+        rt.expression(rt.expression_id(replacement).unwrap()),
+        Ok(Expression::default())
+    );
+    rt.schedule_event(20, Event::Expression(linked, e)).unwrap();
+    rt.panic();
+    rt.flush_ended(|_| true);
+    assert_eq!(
+        (
+            rt.note_count(),
+            rt.expression_count(),
+            rt.pending_commands()
+        ),
+        (0, 0, 0)
+    );
+}
+
+#[test]
+fn full_queue_cannot_drop_pedal_up_and_channel_domains_are_bounded() {
+    let mut rt = Runtime::new(
+        48000,
+        &[],
+        Limits {
+            channels: 1,
+            commands: 1,
+            ..limits()
+        },
+    )
+    .unwrap();
+    let address = input(None).channel_address();
+    let ch = rt.register_channel(address).unwrap();
+    assert_eq!(
+        rt.register_channel(ChannelAddress {
+            group: 1,
+            ..address
+        }),
+        Err(Error::Capacity)
+    );
+    assert_eq!(
+        rt.register_channel(ChannelAddress {
+            group: 16,
+            ..address
+        }),
+        Err(Error::InvalidInput)
+    );
+    let n = rt.note_on(input(None), 60, 1.0).unwrap();
+    rt.sustain(ch, true).unwrap();
+    rt.note_off(input(None)).unwrap();
+    rt.schedule_event(100, Event::Expression(n, Expression::default()))
+        .unwrap();
+    rt.sustain(ch, false).unwrap();
+    assert!(!rt.note(n).unwrap().2);
+    assert_eq!(rt.pending_commands(), 0);
+    rt.flush_ended(|_| true);
+    assert_eq!(rt.note_count(), 0);
+    rt.schedule_event(100, Event::Sustain(ch, true)).unwrap();
+    rt.panic();
+    rt.render(&mut [[0.0; 2]; 101]).unwrap();
+    assert_eq!(rt.pedals(ch), Ok((false, false)));
+    let mut foreign = Runtime::new(48000, &[], limits()).unwrap();
+    foreign.register_channel(address).unwrap();
+    assert_eq!(foreign.sustain(ch, true), Err(Error::StaleHandle));
 }

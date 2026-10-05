@@ -12,6 +12,7 @@ fn ownership_pressure_render_and_retirement_do_no_heap_work() {
         &pcm,
         Limits {
             notes: 8,
+            channels: 4,
             expressions: 4,
             families: 4,
             voices: 4,
@@ -73,6 +74,71 @@ fn ownership_pressure_render_and_retirement_do_no_heap_work() {
                     rt.pending_commands()
                 ),
                 (0, 0, 0, 0, 0)
+            );
+        }
+    });
+}
+
+#[test]
+fn pedal_and_expression_timeline_pressure_do_no_heap_work() {
+    use sampler_core::Event;
+    let pcm = [Pcm {
+        rate: 48000,
+        frames: &[[0.25; 2]; 64],
+    }];
+    let mut rt = Runtime::new(
+        48000,
+        &pcm,
+        Limits {
+            notes: 4,
+            channels: 1,
+            expressions: 4,
+            families: 4,
+            voices: 4,
+            commands: 4,
+        },
+    )
+    .unwrap();
+    let input = Input {
+        protocol: Protocol::Midi2,
+        port: 0,
+        group: 0,
+        channel: 0,
+        key: 60,
+        external_id: None,
+    };
+    support::without_heap(|| {
+        let ch = rt.register_channel(input.channel_address()).unwrap();
+        for _ in 0..100 {
+            let n = rt.note_on(input, 60, 1.0).unwrap();
+            rt.start(n, 0, rt.now(), 1.0).unwrap();
+            rt.schedule_event(rt.now() + 1, Event::Sostenuto(ch, true))
+                .unwrap();
+            rt.schedule_event(rt.now() + 2, Event::KeyUp(n)).unwrap();
+            rt.schedule_event(
+                rt.now() + 3,
+                Event::Expression(
+                    n,
+                    Expression {
+                        gain: 0.5,
+                        ..Expression::default()
+                    },
+                ),
+            )
+            .unwrap();
+            rt.schedule_event(rt.now() + 4, Event::Sostenuto(ch, false))
+                .unwrap();
+            assert_eq!(rt.release_at(n, rt.now() + 5), Err(Error::Capacity));
+            rt.render(&mut [[0.0; 2]; 8]).unwrap();
+            rt.flush_ended(|_| false);
+            rt.flush_ended(|_| true);
+            assert_eq!(
+                (
+                    rt.note_count(),
+                    rt.expression_count(),
+                    rt.pending_commands()
+                ),
+                (0, 0, 0)
             );
         }
     });
