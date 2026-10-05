@@ -42,6 +42,7 @@ fn authored_script_uses_new_native_ownership_after_input_release_without_heap() 
                 CoreLimits {
                     notes: 4,
                     channels: 1,
+                    performances: 1,
                     families: 4,
                     decisions: 0,
                     expressions: 4,

@@ -22,15 +22,23 @@ fn main() {
     let variation = policy.is_some();
     let with_releases = args.iter().any(|arg| arg == "--releases");
     let phases = if with_releases { 2 } else { 1 };
-    if args.len() != usize::from(identified) + usize::from(variation) + usize::from(with_releases) {
+    let articulated = args.iter().any(|arg| arg == "--articulations");
+    let articulations = if articulated { 64 } else { 1 };
+    if args.len()
+        != usize::from(identified)
+            + usize::from(variation)
+            + usize::from(with_releases)
+            + usize::from(articulated)
+    {
         eprintln!(
-            "usage: admission_workload [--ids] [--releases] [--variation | --random | --no-repeat | --shuffle]"
+            "usage: admission_workload [--ids] [--releases] [--articulations] [--variation | --random | --no-repeat | --shuffle]"
         );
         std::process::exit(1);
     }
-    let per_phase = if variation { 12 } else { 4 };
+    let per_articulation = if variation { 12 } else { 4 };
+    let per_phase = per_articulation * articulations;
     let candidates = per_phase * phases;
-    eprintln!("release selection: {with_releases}");
+    eprintln!("release selection: {with_releases}; articulations: {articulations}");
     println!(
         "variation,external_ids,notes,voices,reserved_voices,median_us,p99_us,note_off_median_us,note_off_p99_us,retire_median_us,retire_p99_us"
     );
@@ -70,7 +78,7 @@ fn main() {
                     .map(|i| {
                         Some(Take {
                             sequence: i / per_phase,
-                            index: ((i % per_phase) / 4) as u32,
+                            index: ((i % per_articulation) / 4) as u32,
                         })
                     })
                     .collect(),
@@ -99,11 +107,25 @@ fn main() {
         } else {
             plan
         };
+        let plan = if articulated {
+            plan.with_articulations(
+                (0..candidates)
+                    .map(|i| Some(((i % per_phase) / per_articulation) as u32))
+                    .collect(),
+                vec![],
+                sampler_core::SelectionPolicy::Onset,
+                sampler_core::SelectionPolicy::Onset,
+            )
+            .unwrap()
+        } else {
+            plan
+        };
         let mut rt = Runtime::new(
             plan,
             Limits {
                 notes: reserved / 4,
                 channels: 1,
+                performances: 1,
                 families: reserved / 4 * phases,
                 decisions: if variation { reserved / 4 * phases } else { 0 },
                 expressions: reserved / 4,
@@ -115,6 +137,8 @@ fn main() {
             },
         )
         .unwrap();
+        rt.set_articulation(rt.performance(0).unwrap(), (articulations - 1) as u32)
+            .unwrap();
         let input = Input {
             protocol: Protocol::Native,
             port: 0,

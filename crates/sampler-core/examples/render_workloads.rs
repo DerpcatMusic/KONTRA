@@ -53,6 +53,7 @@ fn prepare(
         Limits {
             notes,
             channels: 0,
+            performances: 1,
             families: notes,
             decisions: 0,
             expressions: notes,

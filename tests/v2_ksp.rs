@@ -117,6 +117,7 @@ fn v2_ksp_suppression_children_wait_and_release_share_the_native_kernel_without_
         Limits {
             notes: 8,
             channels: 4,
+            performances: 1,
             families: 8,
             decisions: 0,
             expressions: 8,
@@ -217,6 +218,7 @@ fn v2_native_saturation_reset_and_terminal_retry_do_not_allocate_or_free() {
         Limits {
             notes: 4,
             channels: 4,
+            performances: 1,
             families: 4,
             decisions: 0,
             expressions: 4,

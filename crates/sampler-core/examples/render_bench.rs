@@ -29,6 +29,7 @@ fn main() {
             Limits {
                 notes: 1,
                 channels: 4,
+                performances: 1,
                 families: capacity,
                 decisions: 0,
                 expressions: 1,

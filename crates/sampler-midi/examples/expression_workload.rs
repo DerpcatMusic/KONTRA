@@ -71,6 +71,7 @@ fn main() {
                 Limits {
                     notes: reserved,
                     channels: 1,
+                    performances: 1,
                     expressions: reserved,
                     families: reserved,
                     decisions: 0,

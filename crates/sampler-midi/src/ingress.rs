@@ -1,5 +1,5 @@
 use crate::{Attribute, Message, Packet, Value, Version};
-use sampler_core::{Error, Expression, Input, NoteId, NotePitch, Protocol, Runtime};
+use sampler_core::{Error, Expression, Input, NoteId, NotePitch, PerformanceId, Protocol, Runtime};
 
 /// Protocol selection belongs to the connection/control plane, never inferred from
 /// incoming notes. Disabled groups and protocol mismatches cannot mutate the core.
@@ -54,6 +54,18 @@ impl Ingress {
     /// Note attributes support absolute Pitch 7.9 in addition to ordinary notes. Other
     /// decoded messages are reported as unsupported, not silently approximated.
     pub fn apply(&self, runtime: &mut Runtime, packet: Packet<'_>) -> Result<Applied, ApplyError> {
+        self.apply_in(runtime, runtime.performance(0)?, packet)
+    }
+
+    /// Route note pairing/selection to a musical domain. Pedals/channel modes retain
+    /// their declared physical channel scope, independent of articulation routing.
+    pub fn apply_in(
+        &self,
+        runtime: &mut Runtime,
+        performance: PerformanceId,
+        packet: Packet<'_>,
+    ) -> Result<Applied, ApplyError> {
+        runtime.articulation(performance)?;
         let Some(voice) = packet.channel_voice() else {
             return Ok(Applied::Unsupported);
         };
@@ -77,7 +89,8 @@ impl Ingress {
                 key,
                 velocity,
                 attribute,
-            } if matches!(attribute.kind, 0 | 3) => Applied::Started(runtime.trigger_pitched(
+            } if matches!(attribute.kind, 0 | 3) => Applied::Started(runtime.trigger_in(
+                performance,
                 Input { key, ..input },
                 if attribute.kind == 3 {
                     NotePitch::Absolute(f64::from(attribute.data) / 512.0)
@@ -93,7 +106,8 @@ impl Ingress {
                 attribute,
             } => {
                 // Unknown release attributes must not strand a sounding note.
-                let note = runtime.note_off(
+                let note = runtime.note_off_in(
+                    performance,
                     Input { key, ..input },
                     velocity.map(crate::Value::normalized),
                 )?;

@@ -29,6 +29,8 @@ struct Siblings {
     next: Option<Index>,
 }
 
+mod articulation;
+pub use articulation::{Keyswitch, PerformanceId, SelectionPolicy, SelectionSnapshot};
 mod behavior;
 use behavior::Continuation;
 pub use behavior::{BehaviorId, Duration, Instruction, Outcome, Program, Velocity, WaitLifetime};
@@ -126,6 +128,8 @@ pub enum Error {
 pub struct Limits {
     pub notes: usize,
     pub channels: usize,
+    /// Fixed musical routing domains, independent of expressive channels; at least one.
+    pub performances: usize,
     pub families: usize,
     pub expressions: usize,
     pub voices: usize,
@@ -139,7 +143,7 @@ pub struct Limits {
 
 #[derive(Clone, Copy)]
 enum NoteOrigin {
-    Input(Input, Expression),
+    Input(Input, Expression, usize),
     Child(NoteId, bool, Inheritance),
 }
 
@@ -344,6 +348,8 @@ pub struct Runtime {
     executing_due: bool,
     command_limit: usize,
     reserved_commands: usize,
+    articulations: Box<[u32]>,
+    selections: Box<[articulation::NoteSelection]>,
     now: u64,
     order: u64,
     nonfinite_frames: u64,
@@ -355,7 +361,7 @@ impl Runtime {
     }
 
     pub fn new(plan: Prepared, limits: Limits) -> Result<Self, Error> {
-        if limits.notes == 0 {
+        if limits.notes == 0 || limits.performances == 0 {
             return Err(Error::InvalidInput);
         }
         let behavior_stride = limits
@@ -374,6 +380,9 @@ impl Runtime {
         std::alloc::Layout::array::<i64>(cells).map_err(|_| Error::Capacity)?;
         std::alloc::Layout::array::<release::ReleaseTimes>(limits.notes)
             .map_err(|_| Error::Capacity)?;
+        std::alloc::Layout::array::<articulation::NoteSelection>(limits.notes)
+            .map_err(|_| Error::Capacity)?;
+        std::alloc::Layout::array::<u32>(limits.performances).map_err(|_| Error::Capacity)?;
         static NEXT_RUNTIME: AtomicU64 = AtomicU64::new(1);
         #[allow(deprecated, reason = "fetch_update supports the Rust 1.92 minimum")]
         let id = NEXT_RUNTIME
@@ -415,6 +424,9 @@ impl Runtime {
             nonfinite_frames: 0,
             // Keep cold payload allocation after the frequently traversed pools.
             release_times: vec![release::ReleaseTimes::default(); limits.notes].into_boxed_slice(),
+            selections: vec![articulation::NoteSelection::default(); limits.notes]
+                .into_boxed_slice(),
+            articulations: vec![0; limits.performances].into_boxed_slice(),
         })
     }
 
@@ -465,20 +477,42 @@ impl Runtime {
         velocity: f64,
         expression: Expression,
     ) -> Result<NoteId, Error> {
+        self.note_on_pitched_in(
+            self.performance(0).unwrap(),
+            input,
+            pitch,
+            velocity,
+            expression,
+        )
+    }
+
+    /// Admit a logical input in an explicit musical routing domain, without selecting sources.
+    pub fn note_on_pitched_in(
+        &mut self,
+        performance: PerformanceId,
+        input: Input,
+        pitch: NotePitch,
+        velocity: f64,
+        expression: Expression,
+    ) -> Result<NoteId, Error> {
+        let performance = self.performance_index(performance)?;
         self.apply_due();
         if input.channel >= 16 || input.group >= 16 || input.key >= 128 || !expression.valid() {
             return Err(Error::InvalidInput);
         }
         if input.external_id.is_some()
-            && self
-                .notes
-                .slots
-                .iter()
-                .any(|s| s.value.is_some_and(|n| n.input == Some(input)))
+            && self.notes.slots.iter().enumerate().any(|(i, s)| {
+                s.value.is_some_and(|n| n.input == Some(input))
+                    && self.selections[i].performance == performance
+            })
         {
             return Err(Error::DuplicateInput);
         }
-        self.admit(NoteOrigin::Input(input, expression), pitch, velocity)
+        self.admit(
+            NoteOrigin::Input(input, expression, performance),
+            pitch,
+            velocity,
+        )
     }
 
     /// Detached children do not release with their parent, but still retain its
@@ -526,8 +560,15 @@ impl Runtime {
         pitch: NotePitch,
         velocity: f64,
     ) -> Result<NoteId, Error> {
+        let performance = match origin {
+            NoteOrigin::Input(_, _, performance) => performance,
+            NoteOrigin::Child(parent, ..) => {
+                self.notes.get(parent.0).ok_or(Error::StaleHandle)?;
+                self.selections[parent.0.index].performance
+            }
+        };
         let (input, parent, linked_release, inheritance, initial) = match origin {
-            NoteOrigin::Input(input, expression) => (
+            NoteOrigin::Input(input, expression, _) => (
                 Some(input),
                 None,
                 false,
@@ -610,6 +651,11 @@ impl Runtime {
                 return Err(error);
             }
         };
+        self.selections[id.index] = articulation::NoteSelection {
+            performance,
+            articulation: self.articulations[performance],
+            consumed_switch: false,
+        };
         self.release_times[id.index] = release::ReleaseTimes {
             admitted_at: self.now,
             ..release::ReleaseTimes::default()
@@ -654,6 +700,17 @@ impl Runtime {
     /// Native anonymous-input fallback: FIFO within the exact original input address.
     /// Release velocity is normalized; None means it was not supplied.
     pub fn note_off(&mut self, input: Input, velocity: Option<f64>) -> Result<NoteId, Error> {
+        self.note_off_in(self.performance(0).unwrap(), input, velocity)
+    }
+
+    /// FIFO pairing within the exact physical input identity and musical domain.
+    pub fn note_off_in(
+        &mut self,
+        performance: PerformanceId,
+        input: Input,
+        velocity: Option<f64>,
+    ) -> Result<NoteId, Error> {
+        let performance = self.performance_index(performance)?;
         release::validate_velocity(velocity)?;
         self.apply_due();
         let id = self
@@ -664,7 +721,11 @@ impl Runtime {
             .filter_map(|(i, s)| {
                 s.value
                     .as_ref()
-                    .filter(|n| n.key_down() && n.input == Some(input))
+                    .filter(|n| {
+                        n.key_down()
+                            && n.input == Some(input)
+                            && self.selections[i].performance == performance
+                    })
                     .map(|n| (i, n.order))
             })
             .min_by_key(|(_, order)| *order)

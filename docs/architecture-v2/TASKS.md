@@ -10,6 +10,15 @@ bridge is historical boundary evidence, not progress toward a new scripting runt
 Family/expression ownership and segmented rendering now have
 [additional executable evidence](OWNERSHIP_SLICE.md). No full implementation gate is closed. The four supplied references remain intact.
 
+## Required completion scope
+
+The user reiterated on 2026-10-06 that completion means the entire new core, fully
+wired production UI, an upgraded sample section, and full Kontakt KSP parity.
+Intermediate commits and native subsets are progress only. Do not substitute a
+smaller supported subset for the full KSP requirement or count legacy bridge tests
+as its implementation. Core/plugin completion still requires removal of the old
+production engine paths and no compatibility shims.
+
 ## Completed groundwork
 
 - [x] Isolate worktree, preserve all attachments and record their hashes.
@@ -158,8 +167,10 @@ Family/expression ownership and segmented rendering now have
   advancement and original-generation state, including seeded random/no-repeat/shuffle
   policies with bounded draws and control-prepared bags. Independent multimic PCM and
   failure/retirement checks pass. Independent key/gate release phases now use native
-  selection and retained decisions with admission-owned quotas. Articulation state and
-  snapshot/restore remain open.
+  selection and retained decisions with admission-owned quotas. [Articulation routing](ARTICULATION.md)
+  adds independent performance domains, silent latched switches and onset/current
+  release snapshots. Controller selection/snapshots, other switch policies, phrase
+  state and persisted snapshot/restore remain open.
 
 - [ ] **P1; dependencies:** V2-04/06/07.
 - Implement indexed selection, scoped counters, family take decisions, phrase and
@@ -225,11 +236,13 @@ Family/expression ownership and segmented rendering now have
 
 ### V2-14 — Implement new KSP frontend and external behavior profiles
 
-- [ ] **P1; dependencies:** V2-05/08/09/13.
-- Implement parsing/lowering and documented services against the new behavior runtime.
-  Inventory supported builtins, async calls, persistence and controls from real fixtures.
-- **Done when:** every claimed feature has service tests and appropriate pinned reference
-  evidence. Approximate/unsupported/unverified features remain clearly distinguished.
+- [ ] **P0; dependencies:** V2-05/08/09/13.
+- Implement full Kontakt KSP language and service semantics against the new runtime:
+  callbacks, builtins, asynchronous work, persistence, UI controls and engine services.
+  Pin the target Kontakt/KSP version and inventory the complete reference surface.
+- **Done when:** the full pinned KSP surface has implementation and appropriate service/
+  reference evidence. A supported subset is not completion; approximate, unsupported
+  or unverified required semantics remain open obligations.
 - External KSP semantics are a product capability, not old KONTRA compatibility.
 
 ### V2-15 — Implement new host and MIDI 2.0 adapters
@@ -249,7 +262,8 @@ Family/expression ownership and segmented rendering now have
   without legacy dependencies. Live audio, host adapters and UI remain open.
 
 - [ ] **P0; dependencies:** V2-12/13/14/15.
-- New executables/plugin targets, product/state identity and UI bound to headless services.
+- New executables/plugin targets, product/state identity and complete UI bound to headless services.
+  Upgrade the sample section and verify its real editing/playback flows against the new core.
   No legacy runtime switch, old session loader or old engine in production dependencies.
 - **Done when:** declared native/import scope works in standalone and chosen DAWs;
   independent build and platform/host matrix pass; failed activation leaves valid v2
@@ -282,7 +296,9 @@ Family/expression ownership and segmented rendering now have
 - **Done when:** numerical targets from V2-02 hold for admitted workloads; dependency
   and artifact audits show no legacy engine/VM/state requirement; reproducible reports
   support performance claims. Remove obsolete prototype code after checking callers.
-- Legacy repair, behavioral parity and migration are not release gates.
+- Parity with the old KONTRA engine is not a release gate. Full Kontakt KSP parity
+  is an explicit product requirement under V2-14; new-core/UI integration is required
+  under V2-16.
 
 ### V2-20 — Deliver broader source and product capabilities
 

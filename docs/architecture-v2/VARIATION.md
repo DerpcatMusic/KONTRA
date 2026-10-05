@@ -116,9 +116,8 @@ continue using the old generation's state and regions. There is no implicit
 cross-generation state migration. Snapshot/restore and stable serialized sequence
 identities remain future persistence work.
 
-Scope lookup currently scans that sequence's bounded cells. Selection visits only
-the chosen key's candidates, but evaluates candidate groups during preflight and
-admission. Decision history uses the existing fixed generational arena and private
+Scope lookup currently scans that sequence's bounded cells. Selection visits the chosen key/phase groups and uses sparse unconditional/selected
+articulation ranges during preflight and admission. Decision history uses the existing fixed generational arena and private
 note-owned links. These are explicit cost bounds, not constant-time claims at
 arbitrary instrument sizes.
 

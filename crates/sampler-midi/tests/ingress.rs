@@ -25,6 +25,7 @@ fn runtime() -> Runtime {
         Limits {
             notes: 4,
             channels: 2,
+            performances: 2,
             families: 4,
             decisions: 0,
             expressions: 4,
@@ -157,6 +158,7 @@ fn midi2_pitch_attribute_overrides_tuning_without_changing_physical_pairing() {
             Limits {
                 notes: 4,
                 channels: 1,
+                performances: 1,
                 families: 4,
                 decisions: 0,
                 expressions: 4,
@@ -705,4 +707,35 @@ fn release_velocity_precision_and_missing_values_reach_retained_core_context() {
             rt.flush_ended(|_| true);
         });
     }
+}
+
+#[test]
+fn explicit_performance_routing_keeps_note_pairing_separate_from_channel_identity() {
+    let mut rt = runtime();
+    let ingress = Ingress::new(0, [Some(Version::Midi1); 16]);
+    support::without_heap(|| {
+        let domain = rt.performance(1).unwrap();
+        rt.set_articulation(domain, 123456).unwrap();
+        let on = [0x2090_3c7f];
+        let packet = || Packets::new(&on).next().unwrap().unwrap();
+        let Applied::Started(a) = ingress.apply(&mut rt, packet()).unwrap() else {
+            panic!("note");
+        };
+        let Applied::Started(b) = ingress.apply_in(&mut rt, domain, packet()).unwrap() else {
+            panic!("note");
+        };
+        assert_eq!(rt.note_selection(a).unwrap().articulation, 0);
+        assert_eq!(rt.note_selection(b).unwrap().articulation, 123456);
+        let off = [0x2080_3c00];
+        let packet = || Packets::new(&off).next().unwrap().unwrap();
+        assert!(
+            matches!(ingress.apply_in(&mut rt, domain, packet()).unwrap(), Applied::Released { note, .. } if note == b)
+        );
+        assert!(rt.key_down(a).unwrap());
+        assert!(
+            matches!(ingress.apply(&mut rt, packet()).unwrap(), Applied::Released { note, .. } if note == a)
+        );
+        rt.panic();
+        rt.flush_ended(|_| true);
+    });
 }
