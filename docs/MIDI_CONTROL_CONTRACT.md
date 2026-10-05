@@ -391,9 +391,27 @@ write retains its full fractional word under subsequent relative steps. That
 mixed-protocol endpoint choice is explicit local policy. MPE uses direct physical
 channel tuning here; optional manager-wide tuning fanout is not inferred.
 Cached `f64` ratios compose once after per-note absolute pitch and before source
-travel. The existing maximum source rate of 32 frames per output frame still
-limits extreme audible transposition; accepting endpoint parameter data does
-not establish correct pitch beyond that traversal limit.
+travel. The Kontakt source planner has no universal 32-source-frame pitch cap:
+sample increments use checked 32.32 conversion and each requested source
+trajectory must remain representable; wavetable increments reduce finite travel
+modulo the cycle. A finite wire tuning value can still overflow its derived
+exponential ratio. The planner diagnoses `UnrepresentablePitch` before committing
+that source's PCM or clock, rather than clipping its pitch. Underflow to a finite
+zero increment retains a supported stationary clock. Audio completion does not
+release a still-held physical root; actual Off remains necessary for host
+retirement. These are local source-admission policies, separate from the RPN1/2
+parameter laws above and from UVI's native parameter behavior.
+
+The independent complete-source PCM and exact-EOF fixture
+`full_key_coarse_and_exact_pitch_ranges_reach_finite_plugin_pcm_without_heap`
+in [performance_tests.rs](../src/plugin/performance_tests.rs) covers the authored
+wide pitch ranges and host partitions. The checked-boundary fixtures
+`vst3_extreme_finite_onset_tuning_keeps_processing_bounded_without_heap` in
+[plugin.rs](../src/plugin.rs) and
+`positive_saved_glide_with_unrepresentable_duration_fails_before_pcm_commit` in
+[glide_tests.rs](../src/engine/glide_tests.rs) distinguish representable motion,
+stationary underflow, failed source admission and physical note lifetime. These
+fixtures do not establish arbitrary source or vendor pitch fidelity.
 Both RPN and NRPN `127/127` deselect parameter input, as documented in
 [UMP/MIDI 2.0 Appendix D.3.3](https://amei-music.github.io/midi2.0-docs/amei-pdf/M2-104-UM_v1-1-2_UMP_and_MIDI_2-0_Protocol_Specification.pdf).
 CC121 clears the affected physical decoder and MPE manager resets also clear
