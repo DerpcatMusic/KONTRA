@@ -514,6 +514,55 @@ fn shot_scaled(part: &PartView, code: u8, to: &Path, device_scale: f64) -> anyho
 mod tests {
     use super::*;
 
+    /// Minimal control separates Vello compute output from MUI's retained present.
+    #[test]
+    #[ignore = "parent-run GPU correctness control; no display or owned library required"]
+    fn conflux_gpu_solid_control_separates_compute_and_retained_present() {
+        use moose::mui::mui::{scene::prelude::*,vello::{self,vello::wgpu}};
+        let out = PathBuf::from(std::env::var_os("KONTRA_UI_GPU_CONTROL_OUTPUT")
+            .expect("KONTRA_UI_GPU_CONTROL_OUTPUT"));
+        std::fs::create_dir_all(&out).unwrap();
+        let size = [192,144];
+        let mut capture = GpuCapture::new(size,1.5).unwrap();
+        capture.calibrate(&out.join("solid.png")).unwrap();
+        let mut direct_scene = vello::vello::Scene::new();
+        direct_scene.fill(vello::vello::peniko::Fill::NonZero,vello::kurbo::Affine::IDENTITY,
+            vello::vello::peniko::Color::WHITE,None,
+            &vello::kurbo::Rect::new(0.,0.,f64::from(size[0]),f64::from(size[1])));
+        let encoding = direct_scene.encoding();
+        println!("UI_GPU_DIRECT_ENCODING {}",serde_json::json!({"path_tags":encoding.path_tags.len(),
+            "path_data":encoding.path_data.len(),"draw_tags":encoding.draw_tags.len(),
+            "draw_data":encoding.draw_data.len(),"transforms":encoding.transforms.len()}));
+        let mut direct = gpu_checked(&capture.device,"direct_solid_setup",||Ok(
+            vello::vello::Renderer::new(&capture.device,vello::vello::RendererOptions {
+                use_cpu:false,antialiasing_support:vello::vello::AaSupport::area_only(),..Default::default()
+            })?)).unwrap();
+        gpu_checked(&capture.device,"direct_solid_draw",||Ok(direct.render_to_texture(
+            &capture.device,&capture.queue,&direct_scene,&capture.view,&vello::vello::RenderParams {
+                base_color:vello::vello::peniko::Color::TRANSPARENT,width:size[0],height:size[1],
+                antialiasing_method:vello::vello::AaConfig::Area,
+            })?)).unwrap();
+        let compute = gpu_checked(&capture.device,"direct_solid_readback",||capture.readback()).unwrap();
+        moose::core::screenshot::save_png(&out.join("direct-vello-solid.png"),&compute,size[0],size[1]);
+        let scene = moose::mui::mui::scene::resolve(&SceneSpec::new(
+            block(128.,96.).radius(0.).fill(Color::oklcha(1.,0.,0.,1.)))
+            .offered(Size::new(128.,96.)).scale(1.5)).unwrap();
+        let stats = gpu_checked(&capture.device,"retained_solid_draw",||Ok(
+            capture.renderer.render(&scene,capture.transform,&capture.view)?)).unwrap();
+        let presented = gpu_checked(&capture.device,"retained_solid_readback",||capture.readback()).unwrap();
+        moose::core::screenshot::save_png(&out.join("mui-retained-solid.png"),&presented,size[0],size[1]);
+        let receipt = serde_json::json!({"direct_nontransparent_pixels":compute.chunks_exact(4).filter(|p|p[3]!=0).count(),
+            "direct_white_pixels":compute.chunks_exact(4).filter(|p|*p==[255,255,255,255]).count(),
+            "retained_nontransparent_pixels":presented.chunks_exact(4).filter(|p|p[3]!=0).count(),
+            "comparison":gpu_pixel_diff(&compute,&presented,size),"retained_renders":stats.renders,
+            "retained_paint_entries":scene.paint.len(),"size":size,"device_scale":1.5});
+        println!("UI_GPU_SOLID_CONTROL {receipt}");
+        std::fs::write(out.join("solid-control.json"),serde_json::to_vec_pretty(&receipt).unwrap()).unwrap();
+        assert!(compute.chunks_exact(4).all(|p|p==[255,255,255,255]),
+            "direct Vello compute control failed: {receipt}");
+        assert_eq!(compute,presented,"MUI retained encoding/presentation differs from direct solid output: {receipt}");
+    }
+
     /// Opt-in correctness probe: synchronous readback never enters production UI.
     pub(super) struct GpuCapture {
         device: moose::mui::mui::vello::vello::wgpu::Device,

@@ -1172,11 +1172,18 @@ impl Runtime {
         let desired = self
             .programs
             .iter()
-            .flat_map(|p| &p.strings)
+            .zip(&self.states)
+            .filter(|(_, state)| state.error.is_none())
+            .flat_map(|(p, _)| &p.strings)
             .map(|s| s.len())
             .max()
             .unwrap_or(0)
             .clamp(512, 65536);
+        for (prog, state) in self.programs.iter().zip(&mut self.states) {
+            if state.error.is_none() {
+                for control in &mut state.ui.controls { control.prepare_indexed_keys(prog); }
+            }
+        }
         let text_cells = 80
             + 3 * 128
             + self.env.host.pgs_strs.len()
@@ -1196,6 +1203,7 @@ impl Runtime {
                         .iter()
                         .map(|c| {
                             c.props.len()
+                                + 2 * c.indexed.iter().filter(|(_, _, value)| matches!(value, super::ui::Prop::Str(_))).count()
                                 + 7
                                 + c.menu.len()
                                 + if p.vars[c.var as usize].ui.as_deref() == Some("ui_menu") {
@@ -1209,7 +1217,18 @@ impl Runtime {
                 .sum::<usize>();
         // At most 16 MiB of added UI/host text headroom; large string arrays
         // have their separate 4 MiB-per-slot allowance below.
-        let text_bytes = desired.min((16 << 20) / text_cells.max(1));
+        let native_indexed_bytes = self.states.iter().flat_map(|state| &state.ui.controls)
+            .flat_map(|control| &control.indexed).fold(0usize, |bytes, (_, _, value)| {
+                bytes.saturating_add(match value {
+                    super::ui::Prop::Str(text) => text.capacity().max(desired).max(1024),
+                    super::ui::Prop::Int(_) => 0,
+                })
+            });
+        let indexed_key_bytes = self.states.iter().flat_map(|state| &state.ui.controls)
+            .fold(0usize, |bytes, control| bytes.saturating_add(control.indexed_key_bytes()))
+            .saturating_mul(3);
+        let text_bytes = desired.min((16usize << 20).saturating_sub(native_indexed_bytes)
+            .saturating_sub(indexed_key_bytes) / text_cells.max(1));
         // A full Unicode variable plus a literal must fit an expression before
         // the bounded assignment copies its 320-character prefix.
         self.stacks.strs.prepare(text_bytes.max(vm::MAX_STRING_VAR_BYTES.saturating_add(desired)).min(65536));
@@ -1352,6 +1371,95 @@ impl Runtime {
         }
     }
 
+    /// Admit complete authored indexed-string domains before freezing. Planning
+    /// and checked charging precede all cell/key allocation; an oversized domain
+    /// fails script loading instead of leaving a silently truncated prefix.
+    fn prepare_indexed_text(&mut self) -> Result<()> {
+        let desired = self.programs.iter().zip(&self.states)
+            .filter(|(_, state)| state.error.is_none())
+            .flat_map(|(prog, _)| &prog.strings).map(|text| text.len())
+            .max().unwrap_or(0).clamp(512, 65536);
+        let mut charged = 0usize;
+        let mut additions = Vec::new();
+        for (slot, (prog, state)) in self.programs.iter().zip(&self.states).enumerate() {
+            if state.error.is_some() { continue; }
+            // Three serialized key copies: ordered source keys plus generic and
+            // native published maps. Six suffix bytes cover every valid [index];
+            // twelve fallback bytes cover '#' plus any signed i32 parameter.
+            let key_bytes = |parameter| -> Result<usize> {
+                prog.symbol_name(parameter).map_or(12, str::len).checked_add(6)
+                    .and_then(|n| n.checked_mul(3))
+                    .context("Indexed control text preparation key byte count overflow")
+            };
+            let mut charge = |parameter, capacity: Option<usize>| -> Result<()> {
+                let text_bytes = if let Some(capacity) = capacity {
+                    let capacity = capacity.max(desired);
+                    capacity.checked_mul(2).and_then(|n| n.checked_add(capacity.max(1024)))
+                        .context("Indexed control text preparation byte count overflow")?
+                } else { 0 };
+                let bytes = key_bytes(parameter)?.checked_add(text_bytes)
+                    .context("Indexed control text preparation byte count overflow")?;
+                charged = charged.checked_add(bytes)
+                    .context("Indexed control text preparation byte count overflow")?;
+                if charged > 16 << 20 { bail!("Indexed control text preparation exceeds 16 MiB"); }
+                Ok(())
+            };
+            for control in &state.ui.controls {
+                for &(parameter, _, ref value) in &control.indexed {
+                    charge(parameter, match value {
+                        super::ui::Prop::Str(text) => Some(text.capacity()),
+                        super::ui::Prop::Int(_) => None,
+                    })?;
+                }
+            }
+            let mut reservations = BTreeMap::<(usize, i32), usize>::new();
+            for request in &prog.indexed_text {
+                if request.len > 4096 { bail!("Indexed control text domain exceeds 4096 indices"); }
+                let mut add = |control: usize| {
+                    reservations.entry((control, request.parameter))
+                        .and_modify(|len| *len = (*len).max(request.len as usize))
+                        .or_insert(request.len as usize);
+                };
+                match request.target {
+                    compile::IndexedTextTarget::Control(var) => {
+                        if let Some(control) = state.ui.controls.iter().position(|c| c.var == var) { add(control); }
+                    }
+                    compile::IndexedTextTarget::IdArray(var) => {
+                        let var = &prog.vars[var as usize];
+                        let start = var.slot as usize;
+                        let end = start.checked_add(var.len.unwrap_or(0) as usize)
+                            .context("Indexed control ID array range overflow")?;
+                        let ids = state.mem.ints.get(start..end)
+                            .context("Indexed control ID array range is invalid")?;
+                        for id in ids {
+                            if let Some(control) = state.ui.control(*id) { add(control); }
+                        }
+                    }
+                }
+            }
+            let mut counts: Vec<_> = state.ui.controls.iter().map(|c| c.indexed.len()).collect();
+            for ((control, parameter), len) in reservations {
+                for index in 0..len {
+                    match state.ui.controls[control].indexed(parameter, index) {
+                        Some(super::ui::Prop::Str(_)) => continue,
+                        Some(_) => bail!("Indexed control text property type mismatch"),
+                        None => {}
+                    }
+                    counts[control] = counts[control].checked_add(1)
+                        .context("Indexed control text preparation cell count overflow")?;
+                    if counts[control] > 4096 { bail!("Indexed control text preparation exceeds 4096 cells per control"); }
+                    charge(parameter, Some(0))?;
+                    additions.push((slot, control, parameter, index));
+                }
+            }
+        }
+        for (slot, control, parameter, index) in additions {
+            self.states[slot].ui.controls[control].indexed
+                .push((parameter, index, super::ui::Prop::Str(String::new())));
+        }
+        Ok(())
+    }
+
     fn load_slot(&mut self, engine: &mut dyn KspEngine, source: &str) -> Result<()> {
         if self.programs.len() >= MAX_SLOTS {
             bail!("At most {MAX_SLOTS} script slots");
@@ -1399,6 +1507,21 @@ impl Runtime {
         self.settle(engine);
         self.fuel_cap = CALLBACK_FUEL;
         self.env.block_fuel = block_fuel;
+        if let Err(error) = self.prepare_indexed_text() {
+            self.env.host = staged;
+            self.states[index as usize].error = Some(format!("{error:#}"));
+            // Loading persistence may already have yielded. Failed preparation
+            // must not leave that callback runnable after the reported load error.
+            for thread in 0..self.threads.len() {
+                if self.threads[thread].live && self.threads[thread].ctx.slot == index {
+                    self.finish(engine, thread as u16);
+                }
+            }
+            for control in &mut self.states[index as usize].ui.controls {
+                control.indexed.clear();
+            }
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -1591,6 +1714,7 @@ impl Runtime {
                         if let (Value::Text(t),super::ui::Prop::Str(source))=(target,source){t.reserve(source.capacity().saturating_sub(t.len()));}
                     }
                 }
+                c.reserve_indexed_text(&mut descriptor.properties, 1024);
                 for name in ["$CONTROL_PAR_LABEL","$CONTROL_PAR_TEXT","$CONTROL_PAR_HELP"] {descriptor.properties.entry(name.into()).or_insert_with(||Value::Text(String::with_capacity(1024)));}
                 for value in descriptor.properties.values_mut() { each_text_in(value, &mut |text| {text.reserve(1024usize.saturating_sub(text.len()));}); }
                 descriptor.menu=c.menu.iter().map(|item|(item.text.clone(),item.value)).collect();
@@ -1765,6 +1889,7 @@ impl Runtime {
                         dst.reserve(source.capacity().saturating_sub(dst.len()));
                     }
                 }
+                c.reserve_indexed_text(&mut out.properties, 0);
                 let var = &prog.vars[c.var as usize];
                 if var.ty == Ty::Str && let Some(value) = out.properties.get_mut("$CONTROL_PAR_VALUE") {
                     let mut i = var.slot as usize;
@@ -1905,19 +2030,9 @@ impl Runtime {
                 };
                 if changed { live.interface_revision = live.interface_revision.wrapping_add(1); at.changed = true; }
             }
-            for (par, index, source) in &c.indexed {
-                // Keys were serialized off audio; matching numeric suffixes avoids formatting here.
-                let Some(name) = prog.symbol_name(*par) else { continue; };
-                for (key, target) in &mut binding.descriptor.properties {
-                    if !key.starts_with(name) || key.as_bytes().get(name.len()) != Some(&b'[') { continue; }
-                    if key.get(name.len()+1..key.len().saturating_sub(1)).and_then(|s| s.parse::<usize>().ok()) != Some(*index) { continue; }
-                    let changed = match (source, target) {
-                        (super::ui::Prop::Int(n), Value::Int(dst)) => std::mem::replace(dst, *n) != *n,
-                        (super::ui::Prop::Str(text), Value::Text(dst)) => copy_text(dst, text), _ => false,
-                    };
-                    if changed { live.interface_revision = live.interface_revision.wrapping_add(1); at.changed = true; }
-                    break;
-                }
+            if c.refresh_indexed(&mut binding.descriptor.properties) {
+                live.interface_revision = live.interface_revision.wrapping_add(1);
+                at.changed = true;
             }
             let spare=&mut live.native_menu_spares[at.native_item];
             let menu=&mut binding.descriptor.menu;
@@ -1929,7 +2044,7 @@ impl Runtime {
                 changed|=std::mem::replace(&mut target.1,source.value)!=source.value;
                 changed|=std::mem::replace(visible,source.visible)!=source.visible;
             }
-            left=left.saturating_sub(c.menu.len()+c.props.len());
+            left=left.saturating_sub(c.menu.len()+c.props.len()+c.indexed.len());
             if changed {live.interface_revision=live.interface_revision.wrapping_add(1);at.changed=true;}
             at.native_item += 1;
         }
