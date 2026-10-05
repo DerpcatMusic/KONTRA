@@ -439,7 +439,12 @@ impl Events {
                     .iter()
                     .position(|e| e.live && e.callbacks == 0 && !e.release_scheduled
                         && e.at_engine && !e.held
-                        && (e.length == NoteLength::Sample || e.released_to_engine)
+                        && (e.length == NoteLength::Sample || e.released_to_engine
+                            // Suppressed physical release already requested
+                            // retirement; retain its alias until real voice EOF.
+                            || e.source < 0 && e.length == NoteLength::UntilNoteOff
+                                && e.recycle_pending && e.released_at.is_some()
+                                && e.voice.is_some())
                         && e.voice.is_none_or(|voice| !engine.voice_active(voice)))?;
                 i as u32
             }
