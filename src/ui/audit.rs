@@ -518,7 +518,7 @@ mod tests {
     #[test]
     #[ignore = "parent-run GPU correctness control; no display or owned library required"]
     fn conflux_gpu_solid_control_separates_compute_and_retained_present() {
-        use moose::mui::mui::{scene::prelude::*,vello::{self,vello::wgpu}};
+        use moose::mui::mui::{scene::prelude::*,vello::{self}};
         let out = PathBuf::from(std::env::var_os("KONTRA_UI_GPU_CONTROL_OUTPUT")
             .expect("KONTRA_UI_GPU_CONTROL_OUTPUT"));
         std::fs::create_dir_all(&out).unwrap();
