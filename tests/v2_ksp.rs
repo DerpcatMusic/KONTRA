@@ -110,10 +110,7 @@ impl KspEngine for Bridge {
 
 #[test]
 fn v2_ksp_suppression_children_wait_and_release_share_the_native_kernel_without_heap() {
-    let pcm = [Pcm {
-        rate: 48000,
-        frames: Box::from([[0.25; 2]; 96]),
-    }];
+    let pcm = [Pcm::new(48000, Box::from([[0.25; 2]; 96])).unwrap()];
     let core = fixture_runtime(
         48000,
         &pcm,
@@ -212,10 +209,7 @@ end on"#;
 
 #[test]
 fn v2_native_saturation_reset_and_terminal_retry_do_not_allocate_or_free() {
-    let pcm = [Pcm {
-        rate: 48000,
-        frames: Box::from([[0.5; 2]; 16]),
-    }];
+    let pcm = [Pcm::new(48000, Box::from([[0.5; 2]; 16])).unwrap()];
     let mut core = fixture_runtime(
         48000,
         &pcm,

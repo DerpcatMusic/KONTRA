@@ -69,7 +69,7 @@ compatibility remains a separate, evidence-backed capability.
   source views/loops, bandlimited rate conversion, root-key and live pitch,
   initial expression, transactional multi-owner gestures and prepared event-rate
   pressure/timbre modulation to gain, balance and pitch.
-- Preparation: immutable plans, adoption between notes, original-generation tails
+- Preparation: validated immutable PCM shared across plans, adoption between notes, original-generation tails
   and callbacks, and control-thread retirement. Native WAV rendering and the
   deliberately small KSP source subset run independently of the old engine.
 - MIDI: UMP framing and MIDI 1/2 note/pedal/channel-mode ingress; separate fixed-zone

@@ -36,10 +36,7 @@ fn runtime_with_lifetime(
 ) -> Runtime {
     let plan = Prepared::new(
         48000,
-        vec![Pcm {
-            rate: 48000,
-            frames: vec![[1.; 2]; 64].into_boxed_slice(),
-        }],
+        vec![Pcm::new(48000, vec![[1.; 2]; 64].into_boxed_slice()).unwrap()],
         vec![Region {
             sample: 0,
             key_low: 60,

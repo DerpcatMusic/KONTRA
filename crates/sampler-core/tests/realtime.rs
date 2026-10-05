@@ -3,10 +3,7 @@ mod support;
 
 #[test]
 fn ownership_pressure_render_and_retirement_do_no_heap_work() {
-    let pcm = [Pcm {
-        rate: 48000,
-        frames: Box::from([[0.25; 2]; 16]),
-    }];
+    let pcm = [Pcm::new(48000, Box::from([[0.25; 2]; 16])).unwrap()];
     let mut rt = fixture_runtime(
         48000,
         &pcm,
@@ -102,10 +99,7 @@ fn ownership_pressure_render_and_retirement_do_no_heap_work() {
 #[test]
 fn pedal_and_expression_timeline_pressure_do_no_heap_work() {
     use sampler_core::Event;
-    let pcm = [Pcm {
-        rate: 48000,
-        frames: Box::from([[0.25; 2]; 64]),
-    }];
+    let pcm = [Pcm::new(48000, Box::from([[0.25; 2]; 64])).unwrap()];
     let mut rt = fixture_runtime(
         48000,
         &pcm,
@@ -179,10 +173,7 @@ fn prepared_native_selection_and_owned_asset_retirement_do_no_heap_work() {
     use sampler_core::{Prepared, Region};
     let plan = Prepared::new(
         48000,
-        vec![Pcm {
-            rate: 48000,
-            frames: Box::new([[0.25; 2]; 8]),
-        }],
+        vec![Pcm::new(48000, Box::new([[0.25; 2]; 8])).unwrap()],
         vec![
             Region {
                 playback: sampler_core::Playback::default(),
@@ -401,10 +392,7 @@ fn sparse_voice_words_preserve_slot_order_reuse_and_eof_without_heap() {
     use sampler_core::{Error, Input, Limits, Pcm, Prepared, Protocol, Runtime};
     let samples = [1., 1e20, -1e20]
         .into_iter()
-        .map(|value| Pcm {
-            rate: 48000,
-            frames: vec![[value; 2]; 4].into_boxed_slice(),
-        })
+        .map(|value| Pcm::new(48000, vec![[value; 2]; 4].into_boxed_slice()).unwrap())
         .collect();
     let mut rt = Runtime::new(
         Prepared::new(48000, samples, vec![], 0).unwrap(),

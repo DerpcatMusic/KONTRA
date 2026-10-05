@@ -23,10 +23,7 @@ fn main() {
         for (notes, reserved) in [(64, 64), (256, 256), (1024, 1024), (64, 4096)] {
             let plan = Prepared::new(
                 48000,
-                vec![Pcm {
-                    rate: 48000,
-                    frames: vec![[1.0; 2]; 64].into_boxed_slice(),
-                }],
+                vec![Pcm::new(48000, vec![[1.0; 2]; 64].into_boxed_slice()).unwrap()],
                 vec![Region {
                     sample: 0,
                     key_low: 60,

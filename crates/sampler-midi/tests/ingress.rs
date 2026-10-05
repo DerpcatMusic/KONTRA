@@ -7,10 +7,7 @@ fn runtime() -> Runtime {
     Runtime::new(
         Prepared::new(
             48000,
-            vec![Pcm {
-                rate: 48000,
-                frames: vec![[1.; 2]; 32].into_boxed_slice(),
-            }],
+            vec![Pcm::new(48000, vec![[1.; 2]; 32].into_boxed_slice()).unwrap()],
             vec![Region {
                 sample: 0,
                 key_low: 60,

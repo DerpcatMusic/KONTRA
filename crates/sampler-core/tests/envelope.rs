@@ -16,10 +16,7 @@ fn input(id: i32) -> Input {
 fn runtime(envelope: Envelope, frames: usize) -> Runtime {
     let plan = Prepared::new(
         48000,
-        vec![Pcm {
-            rate: 48000,
-            frames: vec![[1.0; 2]; frames].into_boxed_slice(),
-        }],
+        vec![Pcm::new(48000, vec![[1.0; 2]; frames].into_boxed_slice()).unwrap()],
         vec![Region {
             playback: sampler_core::Playback::default(),
             sample: 0,

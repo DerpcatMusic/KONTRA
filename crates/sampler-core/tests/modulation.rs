@@ -31,19 +31,22 @@ fn plan(routes: Vec<Route>, playback: Playback, constant: bool) -> Prepared {
     let modulation = Modulation::new(routes, 8).unwrap();
     Prepared::new(
         48000,
-        vec![Pcm {
-            rate: 48000,
-            frames: (0..8192)
-                .map(|i| {
-                    if constant {
-                        [1.0; 2]
-                    } else {
-                        let phase = f64::from(i) * std::f64::consts::TAU * 0.017;
-                        [phase.cos() as f32, phase.sin() as f32]
-                    }
-                })
-                .collect(),
-        }],
+        vec![
+            Pcm::new(
+                48000,
+                (0..8192)
+                    .map(|i| {
+                        if constant {
+                            [1.0; 2]
+                        } else {
+                            let phase = f64::from(i) * std::f64::consts::TAU * 0.017;
+                            [phase.cos() as f32, phase.sin() as f32]
+                        }
+                    })
+                    .collect(),
+            )
+            .unwrap(),
+        ],
         vec![Region {
             sample: 0,
             key_low: 60,

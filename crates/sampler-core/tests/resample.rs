@@ -65,15 +65,16 @@ fn rates_and_transposition_follow_analytic_tones_without_heap_or_partition_drift
         let step = f64::from(source_rate) / f64::from(output_rate) * (semitones / 12.0_f64).exp2();
         let mut baseline = [[0.0; 2]; 256];
         for partition in [1, 7, 64, 256] {
-            let pcm = Pcm {
-                rate: source_rate,
-                frames: (0..4096)
+            let pcm = Pcm::new(
+                source_rate,
+                (0..4096)
                     .map(|i| {
                         let angle = 2.0 * PI * frequency * i as f64;
                         [angle.cos() as f32, angle.sin() as f32]
                     })
                     .collect(),
-            };
+            )
+            .unwrap();
             let mut rt = runtime(
                 prepare(
                     pcm,
@@ -145,10 +146,7 @@ fn fractional_loop_release_preserves_traversal_guards_and_source_end() {
             for partition in [1, 3, 8, 24] {
                 let mut rt = runtime(
                     prepare(
-                        Pcm {
-                            rate: 24000,
-                            frames: (0..10).map(|i| [i as f32; 2]).collect(),
-                        },
+                        Pcm::new(24000, (0..10).map(|i| [i as f32; 2]).collect()).unwrap(),
                         48000,
                         Playback {
                             start: 2,
@@ -227,15 +225,16 @@ fn fractional_loop_release_preserves_traversal_guards_and_source_end() {
 #[test]
 fn downsampling_rejects_above_output_nyquist_and_invalid_ratios() {
     for source_frequency in [0.26, 0.3, 0.4, 0.49] {
-        let pcm = Pcm {
-            rate: 96000,
-            frames: (0..4096)
+        let pcm = Pcm::new(
+            96000,
+            (0..4096)
                 .map(|i| {
                     let x = 2.0 * PI * source_frequency * i as f64;
                     [x.cos() as f32, x.sin() as f32]
                 })
                 .collect(),
-        };
+        )
+        .unwrap();
         let mut rt = runtime(prepare(pcm, 48000, Playback::default()).unwrap());
         rt.trigger(input(), 60, 1.0).unwrap();
         rt.render(&mut [[0.0; 2]; 128]).unwrap();
@@ -246,10 +245,7 @@ fn downsampling_rejects_above_output_nyquist_and_invalid_ratios() {
     for transpose_semitones in [f64::NAN, f64::INFINITY, f64::MAX, -f64::MAX, 49.0, -97.0] {
         assert!(matches!(
             prepare(
-                Pcm {
-                    rate: 48000,
-                    frames: Box::from([[1.0; 2]; 8])
-                },
+                Pcm::new(48000, Box::from([[1.0; 2]; 8])).unwrap(),
                 48000,
                 Playback {
                     transpose_semitones,
@@ -273,10 +269,7 @@ fn prepared_key_tracking_uses_logical_keys_and_keeps_exact_root_pitch() {
         let reference = frames.clone();
         let plan = Prepared::new(
             48000,
-            vec![Pcm {
-                rate: 48000,
-                frames,
-            }],
+            vec![Pcm::new(48000, frames).unwrap()],
             vec![Region {
                 sample: 0,
                 key_low: 59,
@@ -339,12 +332,7 @@ fn prepared_key_tracking_uses_logical_keys_and_keeps_exact_root_pitch() {
     };
     // Only mapped keys need to be playable; the unselected root can lie outside
     // the supported source/output ratio, while the authored key is exactly step 16.
-    let sample = || {
-        vec![Pcm {
-            rate: 96000,
-            frames: Box::from([[0.25; 2]; 128]),
-        }]
-    };
+    let sample = || vec![Pcm::new(96000, Box::from([[0.25; 2]; 128])).unwrap()];
     assert!(Prepared::new(48000, sample(), vec![region], 1).is_ok());
     assert!(matches!(
         Prepared::new(
@@ -379,15 +367,16 @@ fn expression(pitch_semitones: f64) -> Expression {
     }
 }
 fn tone() -> Pcm {
-    Pcm {
-        rate: 48000,
-        frames: (0..4096)
+    Pcm::new(
+        48000,
+        (0..4096)
             .map(|i| {
                 let phase = 2.0 * PI * 0.017 * i as f64;
                 [phase.cos() as f32, phase.sin() as f32]
             })
             .collect(),
-    }
+    )
+    .unwrap()
 }
 
 #[test]

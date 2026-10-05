@@ -30,10 +30,7 @@ fn input(id: i32) -> Input {
 fn plan(value: f32, code: Option<Vec<Instruction>>) -> Prepared {
     let prepared = Prepared::new(
         48000,
-        vec![Pcm {
-            rate: 48000,
-            frames: vec![[value; 2]; 64].into_boxed_slice(),
-        }],
+        vec![Pcm::new(48000, vec![[value; 2]; 64].into_boxed_slice()).unwrap()],
         vec![Region {
             sample: 0,
             key_low: 60,
@@ -281,4 +278,76 @@ fn control_thread_destroys_returned_assets_while_audio_only_moves_ownership() {
         }
     });
     assert_eq!(rt.note_count(), 0);
+}
+
+#[test]
+fn shared_pcm_keeps_its_buffer_across_plan_adoption_and_control_side_retirement() {
+    let frames: Box<[sampler_core::Frame]> = Box::from([[0.25, -0.25]; 4]);
+    let original = frames.as_ptr();
+    let pcm = Pcm::new(48000, frames).unwrap();
+    assert_eq!(pcm.frames().as_ptr(), original);
+    let alias = pcm.clone();
+    assert_eq!(alias.frames().as_ptr(), original);
+    assert_eq!(alias.sample_rate(), 48000);
+    let prepare = |gain| {
+        Prepared::new(
+            48000,
+            vec![pcm.clone()],
+            vec![Region {
+                sample: 0,
+                key_low: 60,
+                key_high: 60,
+                root_key: None,
+                velocity_low: 0.0,
+                velocity_high: 1.0,
+                gain,
+                envelope: Envelope::default(),
+                playback: Playback {
+                    loop_range: Some(sampler_core::Loop {
+                        start: 0,
+                        end: 4,
+                        mode: sampler_core::LoopMode::Continuous,
+                    }),
+                    ..Playback::default()
+                },
+            }],
+            1,
+        )
+        .unwrap()
+    };
+    let (mut rt, mut control) = Runtime::with_plan_updates(prepare(1.0), limits(), 2, 1).unwrap();
+    let request = control.submit(Box::new(prepare(0.5))).unwrap();
+    drop(pcm);
+    drop(alias);
+    support::without_heap(|| {
+        let old = rt.trigger(input(1), 60, 1.0).unwrap();
+        let mut frame = [[0.0; 2]; 1];
+        rt.render(&mut frame).unwrap();
+        assert_eq!(frame, [[0.25, -0.25]]);
+        assert_eq!(rt.poll_plan_update(), Ok(Some(request)));
+        rt.trigger(input(2), 60, 1.0).unwrap();
+        rt.render(&mut frame).unwrap();
+        assert_eq!(frame, [[0.375, -0.375]]);
+        rt.release(old).unwrap();
+        rt.flush_ended(|_| true);
+        assert_eq!(rt.collect_retired_plans(), 1);
+    });
+    // Destroy the old plan on control; the active plan owns the same PCM buffer.
+    drop(control.retired().unwrap());
+    support::without_heap(|| {
+        let mut audio = [[0.0; 2]; 128];
+        rt.render(&mut audio).unwrap();
+        assert_eq!(audio, [[0.125, -0.125]; 128]);
+        rt.panic();
+        rt.flush_ended(|_| true);
+        assert_eq!((rt.note_count(), rt.voice_count()), (0, 0));
+    });
+    for (rate, frames) in [
+        (0, Box::from([[0.0; 2]])),
+        (48000, Box::from([])),
+        (48000, Box::from([[f32::NAN, 0.0]])),
+        (48000, Box::from([[0.0, f32::INFINITY]])),
+    ] {
+        assert!(matches!(Pcm::new(rate, frames), Err(Error::InvalidInput)));
+    }
 }

@@ -20,10 +20,7 @@ fn main() {
         ..Playback::default()
     };
     let pcm = vec![[0.001, -0.001]; BLOCK * (BLOCKS + 100)];
-    let samples = [Pcm {
-        rate: 48000,
-        frames: pcm.into_boxed_slice(),
-    }];
+    let samples = [Pcm::new(48000, pcm.into_boxed_slice()).unwrap()];
     println!("active,capacity,p50_us,p99_us,max_us,deadline_misses,checksum");
     for (active, capacity) in [(16, 64), (16, 4096), (256, 256)] {
         let mut rt = fixture_runtime(

@@ -20,10 +20,7 @@ fn authored_script_uses_new_native_ownership_after_input_release_without_heap() 
             let program = compile(source, rate, limits()).unwrap();
             let plan = Prepared::new(
                 rate,
-                vec![Pcm {
-                    rate,
-                    frames: vec![[1.; 2]; 64].into_boxed_slice(),
-                }],
+                vec![Pcm::new(rate, vec![[1.; 2]; 64].into_boxed_slice()).unwrap()],
                 vec![Region {
                     sample: 0,
                     key_low: 61,
