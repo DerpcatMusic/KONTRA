@@ -405,10 +405,53 @@ fn shot_scaled(part: &PartView, code: u8, to: &Path, device_scale: f64) -> anyho
     ui.set_scale(Some(device_scale));
     let mut build = build(&p, Arc::default(), Arc::default(), Arc::default(), Arc::default());
     let mut bridge = Bridge::new(p.clone());
-    for _ in 0..8 {
+    #[cfg(test)]
+    let staged_native = std::env::var_os("KONTRA_UI_BENCH_STAGED_NATIVE_ASSETS").is_some();
+    #[cfg(not(test))]
+    let staged_native = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
+    let mut frames = 0;
+    let mut settled = 0;
+    loop {
         let root = build(&mut ui, &mut bridge);
         ui.frame(root, Some(Size::new(1180., 900.)), Input::default(), 1. / 60.)
             .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        frames += 1;
+        if !staged_native {
+            if frames == 8 { break; }
+            continue;
+        }
+        let ready = {
+            let view = p.shared.view.lock().unwrap();
+            let active = &view.parts[0];
+            !active.visual_worker && !active.visual_demand.native_images.is_empty()
+                && active.native_ui.as_ref().is_some_and(|package| {
+                    active.visual_demand.native_images.iter().all(|name| package.images.contains_key(name))
+                })
+        };
+        settled = if ready { settled + 1 } else { 0 };
+        if settled == 8 {
+            let view = p.shared.view.lock().unwrap();
+            let active = &view.parts[0];
+            let package = active.native_ui.as_ref().unwrap();
+            println!("UI_STAGED_NATIVE {}", serde_json::json!({
+                "frames":frames,"settled_frames":settled,"revision":active.visual_revision,
+                "requested_images":active.visual_demand.native_images.len(),
+                "decoded_images":package.images.len(),"image_metadata":package.image_metadata.len(),
+                "worker_complete":!active.visual_worker,"resource_status":active.wallpaper_status,
+                "decoded_bytes":package.images.values().map(|image| image.rgba.len()).sum::<usize>(),
+                "scope":"actual full-app demand request and production visual worker publication"
+            }));
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            let view = p.shared.view.lock().unwrap();
+            let active = &view.parts[0];
+            anyhow::bail!("NativeUI staged demand did not settle: worker={} requested={} decoded={} status={}",
+                active.visual_worker, active.visual_demand.native_images.len(),
+                active.native_ui.as_ref().map_or(0, |package| package.images.len()), active.wallpaper_status);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
     let scene = ui.scene().ok_or_else(|| anyhow::anyhow!("nothing drawn"))?;
     let mut ctx = RenderContext::new(width, height);
@@ -556,6 +599,20 @@ mod tests {
             return;
         };
         part.program = program;
+        if std::env::var_os("KONTRA_UI_BENCH_STAGED_NATIVE_ASSETS").is_some() {
+            assert!(part.interface.as_ref().is_some_and(|interface| !interface.native_ui.is_empty()),
+                "staged capture requires the actual authored NativeUI route");
+            let sources = crate::native_ui::Package::load_sources(&instrument.path).unwrap();
+            assert!(sources.images.is_empty() && sources.fonts.is_empty());
+            assert!(!sources.image_metadata.is_empty());
+            part.native_ui = Some(Arc::new(sources));
+            println!("UI_STAGED_NATIVE_START {}", serde_json::json!({
+                "decoded_images":0,"source_modules":part.native_ui.as_ref().unwrap().members.len(),
+                "image_metadata":part.native_ui.as_ref().unwrap().image_metadata.len(),
+                "native_entry":part.interface.as_ref().unwrap().native_ui,
+                "scope":"production sources-only package before first app frame"
+            }));
+        }
         println!("UI_BENCH program={program} mode={mode} device_scale={device_scale} snapshot_restored={}", snapshot.is_some());
         println!("UI_BENCH import_ms={import_ms:.3} setup_ms={:.3} controls={} pictures={}",
             started.elapsed().as_secs_f64() * 1000., part.interface.as_ref().unwrap().controls.len(), part.pictures.len());
