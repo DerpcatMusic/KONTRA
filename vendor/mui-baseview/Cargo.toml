@@ -2,7 +2,7 @@
 # accelerated wheel scrolling, pointer hide/restore and resize cursor,
 # bounded native timing capture and GPU diagnostics. See PATCHES.md.
 [package]
-name = "mui-baseview"
+name = "kontra-native-host"
 version = "0.4.0"
 edition = "2024"
 rust-version = "1.98"
@@ -13,7 +13,8 @@ publish = false
 [dependencies]
 mui = { git = "https://github.com/Matari-Audio/MUI", features = ["gpu-effects"] }
 baseview = { package = "moose-baseview", git = "https://github.com/Matari-Audio/MUI" }
-mui-access = { git = "https://github.com/Matari-Audio/MUI" }
+# Public accessibility and IME bridges; not shadowed by this custom host.
+mui-native = { package = "mui-baseview", git = "https://github.com/Matari-Audio/MUI" }
 keyboard-types = { version = "0.8", default-features = false }
 # baseview's handles; the same 0.6 wgpu takes.
 raw-window-handle = "0.6"
@@ -24,17 +25,14 @@ wgpu = { version = "30", default-features = false, features = ["wgsl", "vulkan",
 # already pulls it in there.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
-accesskit_macos = { git = "https://github.com/Matari-Audio/MUI" }
 
 # baseview does not own an X11 selection; arboard keeps one alive.
 [target.'cfg(target_os = "linux")'.dependencies]
 arboard = { version = "3.6", default-features = false }
-# Accessibility and screen bounds borrow baseview's native connection.
-accesskit_unix = { git = "https://github.com/Matari-Audio/MUI" }
 # The pointer put back after a drag (src/platform.rs): Xlib loaded at run
 # time, the same crate and version baseview loads it with.
 x11-dl = "2.21"
 x11rb = { version = "0.13.2", default-features = false, features = ["allow-unsafe-code", "dl-libxcb"] }
 
-[target.'cfg(target_os = "windows")'.dependencies]
-accesskit_windows = "0.34"
+[dev-dependencies]
+static_assertions = "1.1"
