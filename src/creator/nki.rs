@@ -901,7 +901,11 @@ mod tests {
                 assert!((expected[2049][0]-wrong_left).abs()>1e-4,
                     "the repeated-pass left stencil must be audibly distinguishable");
             }
-            let create = |kind| {
+            let mut compatibility_instrument = crate::import::read(&path).unwrap();
+            compatibility_instrument.groups = instrument.groups.clone();
+            compatibility_instrument.sampling_profile = crate::import::SamplingProfile::Compatibility;
+            let create = |kind, compatibility| {
+                let instrument = if compatibility { &compatibility_instrument } else { &instrument };
                 let bank = if kind == 0 { Bank::load_counting(&instrument,MEMORY_LIMIT,Streaming::RamOnly,
                     &[],&std::sync::atomic::AtomicU32::new(0)).unwrap() }
                 else if kind < 3 { Bank::load_bare(&instrument).unwrap() }
@@ -916,7 +920,7 @@ mod tests {
             };
             if !decoded.is_empty() {
                 for kind in [0,1] { for started in [false,true] {
-                    let (mut engine,id) = create(kind);
+                    let (mut engine,id) = create(kind, true);
                     if started { engine.render_checked(&mut [0.;64],&mut [0.;64]).unwrap(); }
                     engine.change_event(id,EventChange::Tune(12.*(0.5/step).log2()));
                     let (mut left,mut right) = ([9.;1],[9.;1]);
@@ -925,11 +929,11 @@ mod tests {
                         failure = Some(engine.render_checked(&mut left,&mut right).unwrap_err());
                     }),0);
                     assert_eq!(failure.unwrap().kind,crate::engine::StreamErrorKind::UnsupportedWindow,
-                        "fractional crossfade pending endpoint must fail even when the only output phase is integral");
+                        "Compatibility fractional crossfade pending endpoint must fail even when the only output phase is integral");
                     assert_eq!((left,right),([0.;1],[0.;1]),"no PCM from an unsupported initial or live-retuned phase");
                 } }
             }
-            let mut engines: Vec<_> = (0..5).map(create).collect();
+            let mut engines: Vec<_> = (0..5).map(|kind| create(kind, false)).collect();
             let length = total + 256;
             // The step-two ordered crossfade tail ends before frame7000.
             // Resume early enough to hear its second row's repeated fade.
