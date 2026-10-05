@@ -1,0 +1,91 @@
+name: Rust Doctor
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  merge_group:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: rust-doctor-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TARGET_DIR: target
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  inspect:
+    name: Inspect
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      # Baseline scope checks the comparison ref out into a temporary worktree,
+      # so the shallow default clone is not enough.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # rust-doctor shells out to `cargo clippy` inside the scanned workspace.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.99.0
+          components: clippy
+
+      - name: Linux audio and GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libx11-dev libx11-xcb-dev libxcb1-dev libxcb-icccm4-dev libxcursor-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libxrandr-dev \
+            libgl1-mesa-dev libvulkan-dev mesa-vulkan-drivers \
+            libasound2-dev libjack-jackd2-dev
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: rust-doctor-0.7.0
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # The npm launcher resolves the prebuilt binary for the runner rather
+      # than compiling rust-doctor from source on every run. The version is
+      # pinned: a CI gate whose rule set moves on its own fails builds for
+      # reasons nobody chose.
+      - name: Install rust-doctor
+        run: npm install -g rust-doctor@0.7.0
+
+      # Compare against the exact event base; pass it as data, never shell code.
+      - name: Inspect the workspace
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: |
+          set -euo pipefail
+          scope_arguments=(--scope full)
+          if [ -n "${BASE_SHA:-}" ]; then
+            scope_arguments=(--scope baseline --base "$BASE_SHA")
+          fi
+          set +e
+          rust-doctor . --yes --json "${scope_arguments[@]}" > rust-doctor.json
+          scan_status=$?
+          set -e
+          python3 .github/scripts/check_rust_doctor.py rust-doctor.json
+          exit "$scan_status"
+
+      - name: Preserve scan evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rust-doctor
+          path: rust-doctor.json
+          if-no-files-found: error
+
+      - name: Independent core checks
+        run: |
+          cargo clippy --locked -p sampler-core -p sampler-native --all-targets -- -D warnings
+          cargo test --locked --release -p sampler-core -p sampler-native

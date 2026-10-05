@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Pin Rust Doctor 0.7.0 with a fail-closed CI report check, PR baseline comparison and a documented Rust/realtime DSP review policy. Preserve full-workspace debt instead of hiding it behind a score.
+
 - Add an independent `sampler-native` offline executable with owned prepared PCM, indexed native region selection and transactional layer admission. Its narrow WAV path and rendered output are checked; live audio, plugin hosts and full source/DSP behavior remain in development.
 
 - Add physical/effective key separation, channel-scoped sustain/sostenuto and timestamped expression to the new core's shared sample-time queue. Queue-full cleanup and scheduled ownership are covered by independent realtime checks; advanced pedal and continuation behavior remain open.

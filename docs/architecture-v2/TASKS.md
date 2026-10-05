@@ -17,6 +17,9 @@ Family/expression ownership and segmented rendering now have
 - [x] Implement/test the first independent note/PCM prototype.
 - [x] Replace the migration mandate with clean-sheet implementation requirements.
 
+- [x] Run Rust Doctor and configure the pinned CI/DSP policy; see [scan evidence](RUST_DSP_POLICY.md).
+- [ ] Review new-core invariant unwrap/index findings before expanding callback functionality.
+
 ## M0 — contracts and measurable targets
 
 ### V2-01 — Establish independent conformance and workload evidence

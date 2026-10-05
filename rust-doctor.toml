@@ -1,0 +1,12 @@
+# Review policy and DSP-specific acceptance rules: docs/architecture-v2/RUST_DSP_POLICY.md
+# Warnings remain visible; do not optimize the score by hiding findings.
+blocking = "error"
+
+[categories]
+security = "error"
+correctness = "error"
+
+[rules]
+"clippy::mem_forget" = "error"
+"clippy::zombie_processes" = "error"
+"clippy::missing_safety_doc" = "error"
