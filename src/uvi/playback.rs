@@ -974,6 +974,8 @@ pub struct Renderer<'a> {
     live: HashMap<Parameter, f64>,
     registered_live_valid: bool,
     controllers: [[u8; 128]; 16],
+    native_sustain: bool,
+    layer_sustain: Vec<bool>,
     bends: [f64; 16],
     pressures: [f64; 16],
     poly_pressures: [[u8; 128]; 16],
@@ -1231,6 +1233,8 @@ impl<'a> Renderer<'a> {
             live: HashMap::new(),
             registered_live_valid: true,
             controllers: [[0; 128]; 16],
+            native_sustain: false,
+            layer_sustain: vec![false; program.nodes.len()],
             bends: [0.; 16],
             pressures: [0.; 16],
             poly_pressures: [[0; 128]; 16],
@@ -2197,7 +2201,11 @@ impl<'a> Renderer<'a> {
         for mut voice in voices {
             if voice.key_released
                 && voice.note_off.is_none()
-                && self.controllers[voice.note.channel as usize][64] < 64
+                && !(if self.native_sustain {
+                    self.layer_sustain[voice.layer]
+                } else {
+                    self.controllers[voice.note.channel as usize][64] >= 64
+                })
             {
                 voice.note_off = Some(self.frame);
                 for oscillator in &mut voice.oscillators {
@@ -2259,12 +2267,13 @@ impl<'a> Renderer<'a> {
     }
     #[cfg(test)]
     fn apply_note(&mut self, action: &script::Action) -> Result<()> {
-        self.apply_note_rooted(action, None)
+        self.apply_note_rooted(action, None, None)
     }
     fn apply_note_rooted(
         &mut self,
         action: &script::Action,
         root: Option<script::HostRoot>,
+        sustain_layer: Option<NodeId>,
     ) -> Result<()> {
         match action {
             script::Action::ChokeRoot => {
@@ -2381,6 +2390,9 @@ impl<'a> Renderer<'a> {
                     channel[*controller as usize] = *value;
                 }
                 if *controller == 64 {
+                    if let Some(layer) = sustain_layer {
+                        self.layer_sustain[layer] = *value >= 64;
+                    }
                     self.release_pending()?;
                 }
             }
@@ -2395,6 +2407,9 @@ impl<'a> Renderer<'a> {
                 );
                 self.controllers[*channel as usize][*controller as usize] = *value;
                 if *controller == 64 {
+                    if let Some(layer) = sustain_layer {
+                        self.layer_sustain[layer] = *value >= 64;
+                    }
                     self.release_pending()?;
                 }
             }
@@ -3231,6 +3246,24 @@ impl<'a> Renderer<'a> {
         roots: Option<&[Option<script::HostRoot>]>,
         host: &[host::Command],
     ) -> Result<()> {
+        self.apply_boundary_inner(notes, roots, None, host)
+    }
+    pub(crate) fn apply_boundary_with_sustain_routes(
+        &mut self,
+        notes: &[script::Command],
+        roots: Option<&[Option<script::HostRoot>]>,
+        sustain_layers: &[Option<NodeId>],
+        host: &[host::Command],
+    ) -> Result<()> {
+        self.apply_boundary_inner(notes, roots, Some(sustain_layers), host)
+    }
+    fn apply_boundary_inner(
+        &mut self,
+        notes: &[script::Command],
+        roots: Option<&[Option<script::HostRoot>]>,
+        sustain_layers: Option<&[Option<NodeId>]>,
+        host: &[host::Command],
+    ) -> Result<()> {
         ensure!(
             notes.len() <= LIMIT && host.len() <= LIMIT,
             "UVI boundary command limit exceeded"
@@ -3244,11 +3277,16 @@ impl<'a> Renderer<'a> {
             roots.is_none_or(|r| r.len() == notes.len()),
             "Hosted boundary ancestry length mismatch"
         );
+        if let Some(layers) = sustain_layers {
+            self.validate_sustain_routes(notes, layers)?;
+            self.native_sustain = true;
+        }
         for command in host {
             self.apply_host(&command.action)?;
         }
         for (index, command) in notes.iter().enumerate() {
-            self.apply_note_rooted(&command.action, roots.and_then(|r| r[index]))?;
+            self.apply_note_rooted(&command.action, roots.and_then(|r| r[index]),
+                sustain_layers.and_then(|layers| layers[index]))?;
         }
         self.check_processor_memory()
     }
@@ -3261,7 +3299,7 @@ impl<'a> Renderer<'a> {
         host: &[host::Command],
         frames: usize,
     ) -> Result<Vec<[f32; 2]>> {
-        self.render_inner(notes, None, host, frames)
+        self.render_inner(notes, None, None, host, frames)
     }
     /// Activation-local ancestry annotates terminal launches; it never changes
     /// opaque Lua ID/key/layer release matching or core note identity.
@@ -3272,6 +3310,21 @@ impl<'a> Renderer<'a> {
         host: &[host::Command],
         frames: usize,
     ) -> Result<Vec<[f32; 2]>> {
+        Self::validate_roots(notes, roots)?;
+        self.render_inner(notes, Some(roots), None, host, frames)
+    }
+    pub(crate) fn render_with_sustain_routes(
+        &mut self,
+        notes: &[script::Command],
+        roots: Option<&[Option<script::HostRoot>]>,
+        sustain_layers: &[Option<NodeId>],
+        host: &[host::Command],
+        frames: usize,
+    ) -> Result<Vec<[f32; 2]>> {
+        if let Some(roots) = roots { Self::validate_roots(notes, roots)?; }
+        self.render_inner(notes, roots, Some(sustain_layers), host, frames)
+    }
+    fn validate_roots(notes: &[script::Command], roots: &[Option<script::HostRoot>]) -> Result<()> {
         ensure!(
             roots.len() == notes.len(),
             "Hosted command ancestry length mismatch"
@@ -3288,12 +3341,22 @@ impl<'a> Renderer<'a> {
                 !matches!(command.action, script::Action::ChokeRoot) || root.is_some()),
             "Hosted choke has no ancestry"
         );
-        self.render_inner(notes, Some(roots), host, frames)
+        Ok(())
+    }
+    fn validate_sustain_routes(&self, notes: &[script::Command], layers: &[Option<NodeId>]) -> Result<()> {
+        ensure!(layers.len() == notes.len(), "UVI sustain route length mismatch");
+        ensure!(notes.iter().zip(layers).all(|(command, layer)| layer.is_none_or(|layer|
+            self.program.layers.contains(&layer) && matches!(command.action,
+                script::Action::Controller { controller: 64, .. }
+                | script::Action::ControllerAll { controller: 64, .. }))),
+            "Invalid UVI terminal sustain route");
+        Ok(())
     }
     fn render_inner(
         &mut self,
         notes: &[script::Command],
         roots: Option<&[Option<script::HostRoot>]>,
+        sustain_layers: Option<&[Option<NodeId>]>,
         host: &[host::Command],
         frames: usize,
     ) -> Result<Vec<[f32; 2]>> {
@@ -3344,6 +3407,10 @@ impl<'a> Renderer<'a> {
                 }),
             "Unverified host-only control mutation inside a planned UVI processing segment"
         );
+        if let Some(layers) = sustain_layers {
+            self.validate_sustain_routes(notes, layers)?;
+            self.native_sustain = true;
+        }
         let (mut ni, mut hi) = (0, 0);
         let mut output = Vec::with_capacity(frames);
         for _ in 0..frames {
@@ -3380,7 +3447,8 @@ impl<'a> Renderer<'a> {
                 })?;
             }
             while notes.get(ni).is_some_and(|c| c.frame == self.frame) {
-                self.apply_note_rooted(&notes[ni].action, roots.and_then(|roots| roots[ni]))?;
+                self.apply_note_rooted(&notes[ni].action, roots.and_then(|roots| roots[ni]),
+                sustain_layers.and_then(|layers| layers[ni]))?;
                 ni += 1;
             }
             output.push(self.next_frame()?);
@@ -5011,6 +5079,146 @@ mod tests {
             .unwrap();
         assert_eq!(a, b);
     }
+    #[test]
+    fn terminal_layer_sustain_matches_dry_release_pcm_for_forward_drop_and_synthetic_posts() {
+        // Routing expectations come from retained authored native captures. The portable
+        // reference has no controller events: it releases each Layer at an explicit frame.
+        for (case, layer_script, controller, release_frames, before_on) in [
+            ("forward", "", 64, [1024, 1024], false),
+            (
+                "drop64",
+                "function onController(e)if e.controller~=64 then postEvent(e)end end",
+                64,
+                [512, 1024],
+                false,
+            ),
+            (
+                "synthetic64",
+                "function onController(e)if e.controller==3 then controlChange(64,e.value,e.channel)else postEvent(e)end end",
+                3,
+                [1024, 512],
+                false,
+            ),
+            ("before-on", "", 64, [1024, 1024], true),
+        ] {
+            let layer = |key, path, script| {
+                format!(
+                    r#"<Layer><EventProcessors><ScriptProcessor><script>function onNote(e)postEvent(e)end {script}</script></ScriptProcessor></EventProcessors><Keygroups><Keygroup LowKey="{key}" HighKey="{key}"><Oscillators><SamplePlayer SamplePath="{path}" NoteTracking="0"><PlaybackOptions Start="0" Stop="8" PlayRelease="1"><Loop Start="2" End="5" Type="0"/></PlaybackOptions></SamplePlayer></Oscillators><ControlSignalSources><DAHDSR Name="Env" DelayTime="0" AttackTime="0" HoldTime="0" DecayTime="0" SustainLevel="1" ReleaseTime="0" VelocityAmount="0"/></ControlSignalSources><Connections><SignalConnection Source="Env" Destination="Gain" Ratio="1"/></Connections></Keygroup></Keygroups></Layer>"#
+                )
+            };
+            let program = parse_program(&format!(
+                "<Program><Layers>{}{}</Layers></Program>",
+                layer(60, "a", layer_script),
+                layer(72, "b", ""),
+            ))
+            .unwrap();
+            let mut second_sample = sample(1);
+            second_sample.interleaved = Storage::from_f32(vec![0.25; 8]).unwrap();
+            let samples = HashMap::from([
+                ("a".into(), Arc::new(sample(1))),
+                ("b".into(), Arc::new(second_sample)),
+            ]);
+            let mut actual = Renderer::new(&program, samples.clone(), 48000).unwrap();
+            let mut reference = Renderer::new(&program, samples, 48000).unwrap();
+            let mut dry_commands = Vec::new();
+            for (layer, (&key, &release_frame)) in [60, 72].iter().zip(&release_frames).enumerate() {
+                let key = {
+                    let mut event = note(layer as u32 + 1);
+                    event.note = key;
+                    event.channel = layer as u8;
+                    event.velocity = 127;
+                    event.layers = Some(vec![program.layers[layer]]);
+                    event
+                };
+                let id = key.id;
+                dry_commands.push(script::Command {
+                    frame: 0,
+                    action: script::Action::Start(key),
+                });
+                dry_commands.push(script::Command {
+                    frame: release_frame,
+                    action: script::Action::Release(id),
+                });
+            }
+            dry_commands.sort_by_key(|command| command.frame);
+            let expected = reference.render(&dry_commands, &[], 1536).unwrap();
+            let input = |frame, kind| script::Input { frame, kind };
+            let mut inputs = vec![input(
+                if before_on { 0 } else { 256 },
+                script::InputKind::Controller {
+                    channel: 0,
+                    controller,
+                    value: 127,
+                },
+            )];
+            for (channel, key) in [(0, 60), (1, 72)] {
+                inputs.push(input(
+                    0,
+                    script::InputKind::NoteOn {
+                        channel,
+                        note: key,
+                        velocity: 127,
+                    },
+                ));
+                inputs.push(input(
+                    512,
+                    script::InputKind::NoteOff {
+                        channel,
+                        note: key,
+                        velocity: 64,
+                    },
+                ));
+            }
+            inputs.push(input(
+                1024,
+                script::InputKind::Controller {
+                    channel: 0,
+                    controller,
+                    value: 0,
+                },
+            ));
+            inputs.sort_by_key(|event| event.frame);
+            let mut session = script::Session::new_program_chain(
+                &program,
+                std::collections::BTreeMap::new(),
+                None,
+                48000,
+            )
+            .unwrap();
+            let mut output = Vec::new();
+            for start in (0..1536).step_by(256) {
+                let block: Vec<_> = inputs
+                    .iter()
+                    .copied()
+                    .filter(|event| event.frame >= start && event.frame < start + 256)
+                    .collect();
+                let prepared = session.process(&block, start + 256).unwrap();
+                output.extend(
+                    actual
+                        .render_with_sustain_routes(
+                            &prepared.commands,
+                            None,
+                            &prepared.sustain_layers,
+                            &prepared.host_commands,
+                            256,
+                        )
+                        .unwrap(),
+                );
+            }
+            assert_eq!(output, expected, "{case}: complete dry release PCM");
+            assert!(
+                output[..256].iter().any(|frame| frame[0] != 0.),
+                "{case}: attack"
+            );
+            assert!(
+                output[512..1024].iter().any(|frame| frame[0] != 0.),
+                "{case}: held PCM"
+            );
+            assert_eq!(actual.active_voices(), 0, "{case}: final retirement");
+            assert_eq!(reference.active_voices(), 0, "{case}: dry retirement");
+        }
+    }
+
     #[test]
     fn shared_voice_gate_waits_for_its_channel_sustain_pedal() {
         let p = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
