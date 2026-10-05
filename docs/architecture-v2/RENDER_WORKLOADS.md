@@ -323,3 +323,60 @@ sample bursts; automatic release mapping/reserves remain unimplemented.
 Final CSVs use ignored `artifacts/release-context-layout-*`; the inline and first
 split-layout investigations remain under `release-context-final-*` and
 `release-context-split-*`. Binary provenance is in `release-context-binaries.sha256`.
+
+## Native release selection cost
+
+On 2026-10-06, compare committed `56b0f5f` with the native release-selection
+checkpoint on the same Ryzen 7 7800X3D/Linux machine, pinned to CPU 2. Three paired
+runs per configuration, no concurrent compiler/scan. Values below are medians of
+run medians in microseconds. The existing workload admits four microphones per
+note, times note-off and retirement separately, with 32 warmups and 128 measured
+bursts. It is a local microbenchmark, not host or vendor comparison evidence.
+
+| Notes | Voice capacity | Plain admission before → after | ID admission before → after | Shuffle admission before → after |
+| ---: | ---: | ---: | ---: | ---: |
+| 16 | 64 | 2.271 → 2.490 | 2.380 → 2.480 | 3.570 → 3.930 |
+| 64 | 256 | 9.200 → 9.651 | 11.500 → 12.060 | 14.980 → 15.901 |
+| 256 | 1024 | 37.941 → 39.751 | 75.751 → 78.132 | 60.552 → 66.371 |
+| 1024 | 4096 | 187.923 → 195.303 | 898.076 → 929.207 | 289.075 → 313.526 |
+| 16 | 4096 | 2.301 → 2.480 | 9.860 → 9.801 | 3.640 → 4.010 |
+
+The initial implementation performed release preparation checks even for empty
+phases. Skipping those checks reduced large plain admission overhead from about
+11% to 4%; remaining shuffle admission overhead is about 6–10% in these runs.
+The added phase metadata/reservation checks are not claimed free. Inlining the
+shared scope-position helper did not produce a repeatable improvement and was
+not retained. Further optimization should preserve transactional ownership and be
+justified by representative workloads.
+
+At 1024 notes, plain/ID/shuffle note-off medians changed respectively from
+3894.301/2373.553/4028.314 to 4041.634/2296.232/3961.292 microseconds. Retirement
+changed from 8.380/8.450/9.410 to 8.351/8.320/9.090 microseconds. The 32 resident
+render configurations had a median after/before ratio of 0.974 (range 0.909–1.025).
+This does not establish a general rendering speedup; the playback loop is unchanged.
+
+`admission_workload --releases` additionally reserves four gate-release microphones
+per note, then selects them at note-off. `--releases --shuffle` gives attack and gate
+phases separate three-take shuffle sequences. Voice/family/decision budgets double;
+the printed capacity includes both phases. The release block reaches natural EOF
+outside the timed note-off/retirement spans. These are immediate note-off bursts,
+not a measurement of one shared pedal-up event; pedal coherence is tested separately.
+
+| Notes | Total voice capacity | Plain admission / note-off | Shuffle admission / note-off |
+| ---: | ---: | ---: | ---: |
+| 16 | 128 | 2.730 / 4.161 | 4.740 / 5.730 |
+| 64 | 512 | 10.940 / 27.820 | 19.190 / 34.270 |
+| 256 | 2048 | 44.070 / 297.985 | 77.751 / 327.346 |
+| 1024 | 8192 | 214.504 / 4237.967 | 355.956 / 4382.030 |
+| 16 | 8192 | 2.710 / 63.482 | 4.810 / 66.052 |
+
+The large note-off and sparse-capacity figures still include input matching and
+bounded cleanup scans. They are not acceptable evidence of arbitrary polyphony
+meeting a small audio deadline. Streaming, effects, continuous modulation and live
+host load remain outside this workload.
+
+Local CSVs use `artifacts/release-selection-final-{before,after}-*.csv` and
+`artifacts/release-selection-final-release*.csv`; executable hashes are in
+`artifacts/release-selection-final-binaries.sha256`. The earlier exploratory runs
+and inlining experiment are retained separately. Release-selection tests retain
+allocation/deallocation guards independently of these timing measurements.

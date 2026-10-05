@@ -136,6 +136,39 @@ impl Runtime {
                 }
             }
         }
+        if self.voices.reserved != 0 {
+            for (index, slot) in self.notes.slots.iter().enumerate() {
+                let Some(note) = &slot.value else {
+                    continue;
+                };
+                let phases = self.release_times[index].selection;
+                if phases
+                    .iter()
+                    .all(|&phase| phase != crate::ReleaseStatus::Pending)
+                {
+                    continue;
+                }
+                if let Some(ratio) = proposed(note.expression) {
+                    let prepared = &self.plans.get(note.plan.0).unwrap().prepared;
+                    for trigger in [crate::Trigger::KeyRelease, crate::Trigger::GateRelease] {
+                        if phases[trigger.release_index().unwrap()] == crate::ReleaseStatus::Pending
+                        {
+                            prepared.validate_release_pitch(
+                                note.pitch,
+                                trigger,
+                                PitchRange::constant(ratio),
+                                prepared.release_velocity(
+                                    trigger,
+                                    note.velocity,
+                                    note.key_release.is_some(),
+                                    self.release_times[index].velocity,
+                                ),
+                            )?;
+                        }
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }

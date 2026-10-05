@@ -90,6 +90,10 @@ pub(super) struct Cursor {
 }
 
 impl Cursor {
+    pub(super) fn looping(&self) -> bool {
+        self.loop_range.is_some()
+    }
+
     pub(super) fn step(&self) -> f64 {
         self.step
     }

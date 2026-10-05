@@ -183,13 +183,12 @@ impl SequenceState {
         }
     }
 
-    pub fn choose(
+    fn position(
         &self,
-        sequence: usize,
         prepared: &PreparedSequence,
         address: ChannelAddress,
         key: u8,
-    ) -> Result<PendingTake, Error> {
+    ) -> Result<(usize, Position), Error> {
         let spec = prepared.spec;
         let owner = match spec.scope {
             SequenceScope::Global => Owner::Global,
@@ -204,7 +203,7 @@ impl SequenceState {
             .position(|p| p.is_some_and(|p| p.owner == owner))
             .or_else(|| cells.iter().position(Option::is_none))
             .ok_or(Error::Capacity)?;
-        let mut progress = cells[index]
+        let progress = cells[index]
             .map(|p| p.progress)
             .unwrap_or_else(|| match spec.policy {
                 TakePolicy::Sequential => Progress::Sequential(0),
@@ -217,6 +216,37 @@ impl SequenceState {
                     remaining: 0,
                 },
             });
+        Ok((prepared.offset + index, Position { owner, progress }))
+    }
+
+    pub fn check_owner(
+        &self,
+        prepared: &PreparedSequence,
+        address: ChannelAddress,
+        key: u8,
+    ) -> Result<(), Error> {
+        self.position(prepared, address, key).map(|_| ())
+    }
+
+    pub fn claim_owner(&mut self, prepared: &PreparedSequence, address: ChannelAddress, key: u8) {
+        let (cell, position) = self
+            .position(prepared, address, key)
+            .expect("preflighted scope owner");
+        self.positions[cell].get_or_insert(position);
+    }
+
+    pub fn choose(
+        &self,
+        sequence: usize,
+        prepared: &PreparedSequence,
+        address: ChannelAddress,
+        key: u8,
+    ) -> Result<PendingTake, Error> {
+        let spec = prepared.spec;
+        let (cell, position) = self.position(prepared, address, key)?;
+        let index = cell - prepared.offset;
+        let owner = position.owner;
+        let mut progress = position.progress;
         let mut swap = None;
         let take = match &mut progress {
             Progress::Sequential(next) => {
@@ -245,7 +275,7 @@ impl SequenceState {
             }
         };
         Ok(PendingTake {
-            cell: prepared.offset + index,
+            cell,
             position: Position { owner, progress },
             swap,
             take: Take {
@@ -265,6 +295,7 @@ impl SequenceState {
 
 #[derive(Clone, Copy)]
 pub(super) struct Decision {
+    pub trigger: super::Trigger,
     pub take: Take,
     pub next: Option<Index>,
 }
@@ -276,7 +307,12 @@ impl Runtime {
         self.decisions.count()
     }
 
-    pub fn note_take(&self, note: NoteId, sequence: usize) -> Result<Option<u32>, Error> {
+    pub fn note_take(
+        &self,
+        note: NoteId,
+        trigger: super::Trigger,
+        sequence: usize,
+    ) -> Result<Option<u32>, Error> {
         let note = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
         if sequence
             >= self
@@ -292,7 +328,7 @@ impl Runtime {
         let mut next = note.first_decision;
         while let Some(index) = next {
             let decision = self.decisions.slots[index.get()].value.unwrap();
-            if decision.take.sequence == sequence {
+            if decision.trigger == trigger && decision.take.sequence == sequence {
                 return Ok(Some(decision.take.index));
             }
             next = decision.next;
@@ -307,11 +343,17 @@ impl Runtime {
             .map(|index| self.decisions.slots[index.get()].value.unwrap().take))
     }
 
-    pub(super) fn record_take(&mut self, note: NoteId, take: Take) -> Index {
+    pub(super) fn record_take(
+        &mut self,
+        note: NoteId,
+        trigger: super::Trigger,
+        take: Take,
+    ) -> Index {
         let note = self.notes.get_mut(note.0).unwrap();
         let id = self
             .decisions
             .insert(Decision {
+                trigger,
                 take,
                 next: note.first_decision,
             })

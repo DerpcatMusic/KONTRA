@@ -48,7 +48,10 @@ mod plans;
 mod prepare;
 mod release;
 mod render;
-pub use release::{GateRelease, KeyRelease, ReleaseCause, ReleaseContext};
+pub use release::{
+    GateRelease, KeyRelease, ReleaseCause, ReleaseContext, ReleaseOptions, ReleaseReserve,
+    ReleaseStatus, ReleaseVelocity, Trigger,
+};
 mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
@@ -187,6 +190,7 @@ struct Arena<T> {
     slots: Box<[Slot<T>]>,
     occupied: usize,
     available: usize,
+    reserved: usize,
     free: Box<[u64]>,
 }
 
@@ -204,6 +208,7 @@ impl<T> Arena<T> {
             runtime,
             occupied: 0,
             available: capacity,
+            reserved: 0,
             free,
             slots: std::iter::repeat_with(|| Slot {
                 generation: 0,
@@ -215,7 +220,7 @@ impl<T> Arena<T> {
     }
 
     fn insert(&mut self, value: T) -> Result<Handle, Error> {
-        if self.available == 0 {
+        if self.available() == 0 {
             return Err(Error::Capacity);
         }
         // Scan words rather than every slot, retaining lowest-slot allocation and
@@ -295,7 +300,17 @@ impl<T> Arena<T> {
     }
 
     fn available(&self) -> usize {
-        self.available
+        self.available - self.reserved
+    }
+
+    fn reserve(&mut self, count: usize) {
+        assert!(count <= self.available());
+        self.reserved += count;
+    }
+
+    fn unreserve(&mut self, count: usize) {
+        assert!(count <= self.reserved);
+        self.reserved -= count;
     }
 
     fn count(&self) -> usize {
@@ -328,6 +343,7 @@ pub struct Runtime {
     behavior_locals: Box<[i64]>,
     executing_due: bool,
     command_limit: usize,
+    reserved_commands: usize,
     now: u64,
     order: u64,
     nonfinite_frames: u64,
@@ -393,6 +409,7 @@ impl Runtime {
             behavior_locals: vec![0; cells].into_boxed_slice(),
             executing_due: false,
             command_limit: limits.commands,
+            reserved_commands: 0,
             now: 0,
             order: 0,
             nonfinite_frames: 0,
@@ -735,7 +752,7 @@ impl Runtime {
         let cursor = cursor.with_step(step);
         let count = f.voices.checked_add(1).ok_or(Error::Capacity)?;
         let next_sibling = f.first_voice;
-        if at > self.now && self.commands.len() == self.command_limit {
+        if at > self.now && self.available_commands() == 0 {
             return Err(Error::Capacity);
         }
         let id = VoiceId(self.voices.insert(Voice {
@@ -801,6 +818,10 @@ impl Runtime {
             // retire or slots can be reused. Storage was reserved for every note.
             assert!(self.closed_notes.len() < self.closed_notes.capacity());
             self.closed_notes.push(id);
+            if !cause.musical() {
+                self.run_release(id, Trigger::KeyRelease, false);
+            }
+            self.run_release(id, Trigger::GateRelease, cause.musical());
         }
     }
 
@@ -839,37 +860,30 @@ impl Runtime {
 
     fn cleanup_closed_notes(&mut self) {
         while let Some(note) = self.closed_notes.pop() {
-            let mut child = self.notes.get(note.0).unwrap().first_child;
+            let n = self.notes.get(note.0).unwrap();
+            let cause = n.gate_release.unwrap();
+            let child_cause = if cause.musical() {
+                ReleaseCause::Parent
+            } else {
+                cause
+            };
+            let mut child = n.first_child;
             while let Some(index) = child {
                 let state = self.notes.at_mut(index);
                 child = state.siblings.next;
                 if state.linked_release {
                     state.sostenuto = false;
-                    self.release_key(
-                        NoteId(self.notes.id(index.get())),
-                        ReleaseCause::Parent,
-                        None,
-                    );
-                    self.close_gate(NoteId(self.notes.id(index.get())), ReleaseCause::Parent);
+                    self.release_key(NoteId(self.notes.id(index.get())), child_cause, None);
+                    self.close_gate(NoteId(self.notes.id(index.get())), child_cause);
                 }
             }
             let mut family = self.notes.get(note.0).unwrap().first_family;
             while let Some(index) = family {
                 let state = self.families.at_mut(index);
                 family = state.siblings.next;
-                state.open = false;
-                let mut voice = state.first_voice;
-                while let Some(index) = voice {
-                    let state = self.voices.at_mut(index);
-                    voice = state.siblings.next;
-                    state.envelope.release();
-                    state.cursor.release();
-                    if !state.started || state.envelope.done() {
-                        self.end_voice(VoiceId(self.voices.id(index.get())));
-                    }
+                if state.trigger == Trigger::Attack || !cause.musical() {
+                    self.release_family_now(FamilyId(self.families.id(index.get())));
                 }
-                // The last voice may already have retired this sealed family.
-                self.retire_family(FamilyId(self.families.id(index.get())));
             }
         }
         self.cancel_closed_work();

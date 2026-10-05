@@ -70,6 +70,8 @@ pub(super) struct Family {
     pub note: NoteId,
     pub voices: usize,
     pub open: bool,
+    pub gate: bool,
+    pub trigger: super::Trigger,
     pub siblings: super::Siblings,
     pub first_voice: Option<super::Index>,
     pub decision: Option<super::Index>,
@@ -182,8 +184,16 @@ impl Runtime {
     /// seals it with finish_family after adding all layers; an open family is retained.
     pub fn create_family(&mut self, note: NoteId) -> Result<FamilyId, Error> {
         self.apply_due();
+        self.create_family_for(note, super::Trigger::Attack)
+    }
+
+    pub(super) fn create_family_for(
+        &mut self,
+        note: NoteId,
+        trigger: super::Trigger,
+    ) -> Result<FamilyId, Error> {
         let n = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
-        if !n.gate() {
+        if trigger == super::Trigger::Attack && !n.gate() {
             return Err(Error::ClosedNote);
         }
         let count = n.families.checked_add(1).ok_or(Error::Capacity)?;
@@ -192,6 +202,8 @@ impl Runtime {
             note,
             voices: 0,
             open: true,
+            gate: true,
+            trigger,
             siblings: super::Siblings {
                 previous: None,
                 next: next_sibling,
@@ -207,6 +219,42 @@ impl Runtime {
         note.families = count;
         note.first_family = Some(index);
         Ok(family)
+    }
+
+    pub fn family_trigger(&self, family: FamilyId) -> Result<super::Trigger, Error> {
+        Ok(self
+            .families
+            .get(family.0)
+            .ok_or(Error::StaleHandle)?
+            .trigger)
+    }
+
+    /// Close this family's source gates using their own envelopes and loop exits.
+    /// This does not consume its logical note's physical key or other families.
+    pub fn release_family(&mut self, family: FamilyId) -> Result<(), Error> {
+        self.schedule_event(self.now, super::Event::ReleaseFamily(family))
+    }
+
+    pub(super) fn release_family_now(&mut self, id: FamilyId) {
+        let Some(family) = self.families.get_mut(id.0) else {
+            return;
+        };
+        if !family.gate {
+            return;
+        }
+        family.gate = false;
+        family.open = false;
+        let mut voice = family.first_voice;
+        while let Some(index) = voice {
+            let state = self.voices.at_mut(index);
+            voice = state.siblings.next;
+            state.envelope.release();
+            state.cursor.release();
+            if !state.started || state.envelope.done() {
+                self.end_voice(VoiceId(self.voices.id(index.get())));
+            }
+        }
+        self.retire_family(id);
     }
 
     pub fn family_note(&self, id: FamilyId) -> Result<NoteId, Error> {
@@ -298,6 +346,9 @@ impl Runtime {
             }
             self.notes.get_mut(f.note.0).unwrap().families -= 1;
             self.families.remove(id.0);
+            // ponytail: bounded command scan per retirement; index targets if queue workloads require it.
+            self.commands.retain(|command| !matches!(command.action,
+                super::Action::Event(super::Event::ReleaseFamily(target) | super::Event::ChokeFamily(target, _)) if target == id));
         }
     }
 

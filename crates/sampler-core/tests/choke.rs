@@ -242,7 +242,7 @@ fn natural_completion_cancels_scheduled_choke_without_pinning_or_retargeting() {
         rt.render(&mut [[0.; 2]; 2]).unwrap();
         assert_eq!(rt.family_count(), 0);
         rt.flush_ended(|_| true);
-        assert_eq!((rt.note_count(), rt.pending_commands()), (0, 1));
+        assert_eq!((rt.note_count(), rt.pending_commands()), (0, 0)); // EOF frees the scheduled choke.
         let note = rt.note_on(input(), 60, 1.).unwrap();
         let replacement = rt.create_family(note).unwrap();
         rt.start_family(

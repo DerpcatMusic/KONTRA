@@ -20,13 +20,17 @@ fn main() {
         _ => None,
     });
     let variation = policy.is_some();
-    if args.len() != usize::from(identified) + usize::from(variation) {
+    let with_releases = args.iter().any(|arg| arg == "--releases");
+    let phases = if with_releases { 2 } else { 1 };
+    if args.len() != usize::from(identified) + usize::from(variation) + usize::from(with_releases) {
         eprintln!(
-            "usage: admission_workload [--ids] [--variation | --random | --no-repeat | --shuffle]"
+            "usage: admission_workload [--ids] [--releases] [--variation | --random | --no-repeat | --shuffle]"
         );
         std::process::exit(1);
     }
-    let candidates = if variation { 12 } else { 4 };
+    let per_phase = if variation { 12 } else { 4 };
+    let candidates = per_phase * phases;
+    eprintln!("release selection: {with_releases}");
     println!(
         "variation,external_ids,notes,voices,reserved_voices,median_us,p99_us,note_off_median_us,note_off_p99_us,retire_median_us,retire_p99_us"
     );
@@ -53,22 +57,43 @@ fn main() {
         .unwrap();
         let plan = if variation {
             plan.with_variation(
-                vec![Sequence {
-                    takes: 3,
-                    policy: policy.unwrap(),
-                    scope: SequenceScope::Global,
-                    capacity: 1,
-                }],
+                vec![
+                    Sequence {
+                        takes: 3,
+                        policy: policy.unwrap(),
+                        scope: SequenceScope::Global,
+                        capacity: 1,
+                    };
+                    phases
+                ],
                 (0..candidates)
                     .map(|i| {
                         Some(Take {
-                            sequence: 0,
-                            index: (i / 4) as u32,
+                            sequence: i / per_phase,
+                            index: ((i % per_phase) / 4) as u32,
                         })
                     })
                     .collect(),
-                1,
-                3,
+                phases,
+                phases * 3,
+            )
+            .unwrap()
+        } else {
+            plan
+        };
+        let plan = if with_releases {
+            plan.with_releases(
+                (0..candidates)
+                    .map(|i| {
+                        if i < per_phase {
+                            sampler_core::Trigger::Attack
+                        } else {
+                            sampler_core::Trigger::GateRelease
+                        }
+                    })
+                    .collect(),
+                sampler_core::ReleaseOptions::default(),
+                sampler_core::ReleaseOptions::default(),
             )
             .unwrap()
         } else {
@@ -79,10 +104,10 @@ fn main() {
             Limits {
                 notes: reserved / 4,
                 channels: 1,
-                families: reserved / 4,
-                decisions: if variation { reserved / 4 } else { 0 },
+                families: reserved / 4 * phases,
+                decisions: if variation { reserved / 4 * phases } else { 0 },
                 expressions: reserved / 4,
-                voices: reserved,
+                voices: reserved * phases,
                 commands: 0,
                 behaviors: 0,
                 behavior_fuel: 0,
@@ -130,9 +155,19 @@ fn main() {
                 );
             }
             let elapsed = begin.elapsed().as_nanos();
-            assert_eq!((rt.note_count(), rt.voice_count()), (notes, 0));
+            assert_eq!(
+                (rt.note_count(), rt.voice_count()),
+                (notes, if with_releases { notes * 4 } else { 0 })
+            );
+            assert_eq!(
+                rt.release_reserve(),
+                sampler_core::ReleaseReserve::default()
+            );
             if iteration >= 32 {
                 releases[iteration - 32] = elapsed;
+            }
+            if with_releases {
+                rt.render(&mut [[0.; 2]; 8]).unwrap();
             }
             let mut ended = 0;
             let begin = Instant::now();
@@ -151,8 +186,9 @@ fn main() {
         releases.sort_unstable();
         retirements.sort_unstable();
         println!(
-            "{variation},{identified},{notes},{},{reserved},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3}",
+            "{variation},{identified},{notes},{},{},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3}",
             notes * 4,
+            reserved * phases,
             times[64] as f64 / 1000.0,
             times[126] as f64 / 1000.0,
             releases[64] as f64 / 1000.0,

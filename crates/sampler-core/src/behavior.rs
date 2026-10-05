@@ -280,7 +280,7 @@ impl Runtime {
                     .now
                     .checked_add(u64::from(frames))
                     .ok_or(Error::ClockOverflow)?;
-                if self.commands.len() == self.command_limit {
+                if self.available_commands() == 0 {
                     return Err(Error::Capacity);
                 }
                 self.queue(at, Action::Resume(id));
@@ -309,13 +309,18 @@ impl Runtime {
                             .ok_or(Error::ClockOverflow)
                     })
                     .transpose()?;
-                if at.is_some_and(|at| at != self.now) && self.commands.len() == self.command_limit
-                {
+                if at.is_some_and(|at| at != self.now) && self.available_commands() == 0 {
                     return Err(Error::Capacity);
                 }
                 let linked = !matches!(duration, Duration::Frames(_));
                 self.reclaim_internal_notes(0);
-                let child = self.trigger_child(note, pitch, velocity, linked, inheritance)?;
+                // Protect the duration command while child selection reserves its
+                // own later release families and commands. Neither may consume the other.
+                let command = usize::from(at.is_some_and(|at| at != self.now));
+                self.reserved_commands += command;
+                let child = self.trigger_child(note, pitch, velocity, linked, inheritance);
+                self.reserved_commands -= command;
+                let child = child?;
                 if let Some(at) = at {
                     self.release_at(child, at)?;
                 }
