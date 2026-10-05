@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Add native bounded behavior programs with generated notes, sample-time waits, suppression, instruction fuel and retained completion/fault ownership. An independent MIDI-driven `sampler-native echo` command exercises the new path; no old parser or VM is linked.
+
 - Make linked-release propagation linear even across reverse-order reused slots. Independent children retain their gate and ancestry until explicitly released; deep-chain heap checks and a before/after microbenchmark cover the change.
 
 - Replace repeated descendant-retirement scans with counted child ownership and an iterative parent walk. Deep reused-slot trees, pinned descendants, failed admission and terminal backpressure preserve ownership without callback heap work; an independent benchmark records the scaling improvement.

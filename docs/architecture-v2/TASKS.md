@@ -75,6 +75,10 @@ Family/expression ownership and segmented rendering now have
 
 ### V2-05 — Implement a new bounded behavior runtime
 
+- **Partial evidence:** [native instructions](BEHAVIOR.md) now execute generated
+  notes, suppression and waits through the shared queue, with fuel, cancellation
+  and retained completion/fault outcomes. Language/state/controller work stays open.
+
 - [ ] **P0; dependencies:** V2-03/04.
 - Build command/query services, continuations, callback contexts, cancellation and
   fault cleanup from scratch. Native behavior and new language frontends share them.

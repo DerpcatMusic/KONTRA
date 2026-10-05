@@ -1,6 +1,6 @@
 //! Independent offline composition root; no legacy application or engine dependency.
 mod wave;
-use sampler_core::{Limits, Pcm, Prepared, Region, Runtime};
+use sampler_core::{Instruction, Limits, Outcome, Pcm, Prepared, Program, Region, Runtime};
 use sampler_midi::{Applied, Ingress, Packets, TimedPacket, Version};
 use std::{
     fs::OpenOptions,
@@ -12,15 +12,22 @@ fn core(error: sampler_core::Error) -> io::Error {
     io::Error::other(format!("native core: {error:?}"))
 }
 
-fn render(sample: Pcm, output: &Path, demo: bool) -> io::Result<()> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Copy,
+    Demo,
+    Echo,
+}
+
+fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
     let rate = sample.rate;
     let count = sample.frames.len();
-    let plan = Prepared::new(
+    let mut plan = Prepared::new(
         rate,
         vec![sample],
         vec![Region {
             playback: sampler_core::Playback::default(),
-            envelope: if demo {
+            envelope: if mode != Mode::Copy {
                 sampler_core::Envelope::new(rate / 200, 0, rate / 10, 0.8, rate / 20)
                     .map_err(core)?
             } else {
@@ -36,6 +43,21 @@ fn render(sample: Pcm, output: &Path, demo: bool) -> io::Result<()> {
         1,
     )
     .map_err(core)?;
+    if mode == Mode::Echo {
+        let play = Instruction::Play {
+            transpose: 0,
+            velocity_scale: 0.75,
+            duration: rate / 8,
+        };
+        let program = Program::new(vec![
+            play,
+            Instruction::Wait(rate / 4),
+            play,
+            Instruction::End,
+        ])
+        .map_err(core)?;
+        plan = plan.with_programs(vec![program], Some(0)).map_err(core)?;
+    }
     let mut rt = Runtime::new(
         plan,
         Limits {
@@ -45,6 +67,8 @@ fn render(sample: Pcm, output: &Path, demo: bool) -> io::Result<()> {
             families: 32,
             voices: 64,
             commands: 64,
+            behaviors: 1,
+            behavior_fuel: 8,
         },
     )
     .map_err(core)?;
@@ -57,7 +81,7 @@ fn render(sample: Pcm, output: &Path, demo: bool) -> io::Result<()> {
         (u64::from(rate) / 2, [0x4080_3c00, 0x8000_0000]),
         (u64::from(rate), [0x40b0_4000, 0]),
     ];
-    let packets = events[..if demo { 4 } else { 1 }]
+    let packets = events[..if mode != Mode::Copy { 4 } else { 1 }]
         .iter()
         .map(|(at, words)| {
             let packet = Packets::new(words)
@@ -113,10 +137,21 @@ fn render(sample: Pcm, output: &Path, demo: bool) -> io::Result<()> {
         if let Some(result) = failure {
             return Err(io::Error::other(format!("UMP input: {result:?}")));
         }
+        let mut behavior_failure = None;
+        rt.flush_behaviors(|_, _, outcome| {
+            if outcome != Outcome::Finished {
+                behavior_failure.get_or_insert(outcome);
+            }
+            true
+        });
+        if let Some(outcome) = behavior_failure {
+            return Err(io::Error::other(format!("native behavior: {outcome:?}")));
+        }
         wave::frames(&mut out, &buffer[..len])?;
         remaining -= len;
     }
     rt.panic();
+    rt.flush_behaviors(|_, _, outcome| matches!(outcome, Outcome::Finished | Outcome::Cancelled));
     let mut terminals = 0;
     rt.flush_ended(|_| {
         terminals += 1;
@@ -133,7 +168,7 @@ fn render(sample: Pcm, output: &Path, demo: bool) -> io::Result<()> {
 fn run() -> io::Result<()> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     match args.as_slice() {
-        [command, output] if command == "demo" => {
+        [command, output] if command == "demo" || command == "echo" => {
             let rate = 48000;
             let frames = (0..rate * 2)
                 .map(|i| {
@@ -142,14 +177,22 @@ fn run() -> io::Result<()> {
                 })
                 .collect::<Vec<_>>()
                 .into_boxed_slice();
-            render(Pcm { rate, frames }, Path::new(output), true)
+            render(
+                Pcm { rate, frames },
+                Path::new(output),
+                if command == "echo" {
+                    Mode::Echo
+                } else {
+                    Mode::Demo
+                },
+            )
         }
         [command, input, output] if command == "render" => {
-            render(wave::read(Path::new(input))?, Path::new(output), false)
+            render(wave::read(Path::new(input))?, Path::new(output), Mode::Copy)
         }
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: sampler-native demo OUTPUT.wav | render INPUT.wav OUTPUT.wav",
+            "usage: sampler-native demo OUTPUT.wav | echo OUTPUT.wav | render INPUT.wav OUTPUT.wav",
         )),
     }
 }

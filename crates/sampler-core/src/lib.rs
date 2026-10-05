@@ -8,6 +8,9 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod behavior;
+use behavior::Continuation;
+pub use behavior::{BehaviorId, Instruction, Outcome, Program};
 mod source;
 pub use source::{Direction, Loop, LoopMode, Playback};
 mod envelope;
@@ -82,6 +85,8 @@ pub struct Limits {
     pub expressions: usize,
     pub voices: usize,
     pub commands: usize,
+    pub behaviors: usize,
+    pub behavior_fuel: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -209,6 +214,9 @@ pub struct Runtime {
     families: Arena<Family>,
     expressions: Arena<ExpressionOwner>,
     commands: Vec<Scheduled>,
+    behaviors: Arena<Continuation>,
+    behavior_fuel: usize,
+    executing_due: bool,
     command_limit: usize,
     now: u64,
     order: u64,
@@ -234,6 +242,9 @@ impl Runtime {
             families: Arena::new(id, limits.families),
             expressions: Arena::new(id, limits.expressions),
             commands: Vec::with_capacity(limits.commands),
+            behaviors: Arena::new(id, limits.behaviors),
+            behavior_fuel: limits.behavior_fuel,
+            executing_due: false,
             command_limit: limits.commands,
             now: 0,
             order: 0,

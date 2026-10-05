@@ -124,6 +124,8 @@ fn v2_ksp_suppression_children_wait_and_release_share_the_native_kernel_without_
             expressions: 8,
             voices: 8,
             commands: 8,
+            behaviors: 0,
+            behavior_fuel: 0,
         },
     )
     .unwrap();
@@ -223,6 +225,8 @@ fn v2_native_saturation_reset_and_terminal_retry_do_not_allocate_or_free() {
             expressions: 4,
             voices: 2,
             commands: 2,
+            behaviors: 0,
+            behavior_fuel: 0,
         },
     )
     .unwrap();

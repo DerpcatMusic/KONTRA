@@ -21,6 +21,8 @@ fn main() {
                     families: 0,
                     voices: 0,
                     commands: 0,
+                    behaviors: 0,
+                    behavior_fuel: 0,
                 },
             )
             .unwrap();
