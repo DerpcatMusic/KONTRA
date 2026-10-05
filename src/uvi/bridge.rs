@@ -730,7 +730,7 @@ mod full_pending_seal_proof {
     use crate::uvi::{script::{HostRoot, Input}, worker::tests::HostedPacketFixture};
     fn hosted_note(stamp: Stamp, release: bool) -> HostedRequest {
         let root = HostRoot { epoch: stamp.epoch, generation: stamp.generation, token: 42 };
-        let event = if release { HostedInput::Off { root, frame: stamp.frame } }
+        let event = if release { HostedInput::Off { root, frame: stamp.frame, velocity: crate::midi::Velocity::ZERO } }
         else { HostedInput::On { root, input: Input { frame: stamp.frame,
             kind: InputKind::NoteOn { channel: 0, note: 60, velocity: 100 } } } };
         HostedRequest::new(Request::new(stamp, &[]).unwrap(), &[event]).unwrap()
@@ -753,6 +753,30 @@ mod full_pending_seal_proof {
             * BLOCK_FRAMES as u64, ..bridge.stamp }, true);
         bridge.frame = bridge.partial.request.stamp.frame + BLOCK_FRAMES as u64;
         (fixture, bridge)
+    }
+    #[test]
+    fn hosted_release_packet_preserves_physical_velocity_without_heap() {
+        let (fixture, port) = HostedPacketFixture::new();
+        let mut bridge = Bridge::new(port, 7, 9, 256, 1).unwrap();
+        let velocity = crate::midi::Velocity::new(0.123456789123).unwrap();
+        let event = HostedInput::Off {
+            root: HostRoot { epoch: 7, generation: 9, token: 42 },
+            frame: 0,
+            velocity,
+        };
+        let mut left = [0.; BLOCK_FRAMES];
+        let mut right = [0.; BLOCK_FRAMES];
+        assert_eq!(crate::test_support::allocations(|| {
+            bridge.push_hosted(event).unwrap();
+            let report = bridge.process(&mut left, &mut right).unwrap();
+            assert_eq!(report.submitted_packets, 1);
+        }), 0);
+        let packet = fixture.pop().unwrap();
+        let HostedInput::Off { velocity: received, .. } = packet.roots[0] else {
+            panic!("Expected owned release");
+        };
+        assert_eq!(received, velocity);
+        assert_ne!(received.normalized(), f64::from(received.midi1()) / 127.);
     }
     #[test]
     fn seal_retries_new_room_without_overtaking_or_dropping_hosted_notes() {
@@ -781,7 +805,7 @@ mod full_pending_seal_proof {
             last = Some(request.request.stamp.frame);
             if request.request.stamp.frame == sealed.request.stamp.frame {
                 assert_eq!(request.root_count, 1);
-                assert!(matches!(request.roots[0], HostedInput::Off { root, frame }
+                assert!(matches!(request.roots[0], HostedInput::Off { root, frame, .. }
                     if root.token == 42 && frame == sealed.request.stamp.frame));
             }
         }

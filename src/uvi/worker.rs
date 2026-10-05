@@ -109,6 +109,7 @@ impl Request {
                 kind: InputKind::NoteOff {
                     channel: 0,
                     note: 0,
+                    velocity: 0,
                 },
             }; MAX_INPUTS],
             ui_count: ui_inputs.len() as u16,
@@ -191,6 +192,7 @@ impl HostedRequest {
                     token: 0,
                 },
                 frame: 0,
+                velocity: crate::midi::Velocity::ZERO,
             }; MAX_HOSTED_INPUTS],
         };
         packet.roots[..roots.len()].copy_from_slice(roots);
@@ -219,7 +221,7 @@ impl HostedRequest {
                     last_on = root.token;
                     (Some(root), input.frame)
                 }
-                HostedInput::Off { root, frame } | HostedInput::Choke { root, frame } => {
+                HostedInput::Off { root, frame, .. } | HostedInput::Choke { root, frame } => {
                     (Some(root), frame)
                 }
                 HostedInput::Event(input) => {
@@ -3056,6 +3058,8 @@ function onSave()error('runtime inspection must not run callbacks')end
                     playing: true,
                     beat: 0.,
                     tempo: 1e100,
+                    time_sig_num: 4,
+                    time_sig_den: 4,
                 },
             };
             assert_eq!(

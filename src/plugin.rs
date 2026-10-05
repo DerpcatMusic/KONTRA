@@ -4786,7 +4786,8 @@ impl PluginLogic for Sampler {
                         part_atoms(&s.shared_parts, &p.shared, slot).unwrap()
                             .record_uvi_failure(audio, error, uvi::FailureStage::Completions, consumed_start);
                     } else if let Err(error) = audio.slot_mut().set_host_transport(cx.transport.playing,
-                        cx.transport.position_beats, cx.transport.tempo) {
+                        cx.transport.position_beats, cx.transport.tempo,
+                        (cx.transport.time_sig_num, cx.transport.time_sig_den)) {
                         part_atoms(&s.shared_parts, &p.shared, slot).unwrap()
                             .record_uvi_failure(audio, error, uvi::FailureStage::Transport, consumed_start);
                     }
