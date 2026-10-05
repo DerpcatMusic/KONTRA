@@ -246,3 +246,186 @@ fn full_note_pool_does_not_skip_later_release_in_the_block() {
     assert_eq!(audio, [[3.; 2]; 4]);
     assert_eq!((rt.note_count(), rt.voice_count()), (3, 3));
 }
+
+#[test]
+fn all_notes_off_respects_pedals_and_channel_scope_at_exact_offsets() {
+    use sampler_midi::TimedPacket;
+    for version in [Version::Midi1, Version::Midi2] {
+        for pedal in [0, 64, 66] {
+            let (prefix, velocity, down) = match version {
+                Version::Midi1 => (0x2300_0000, 127, 127),
+                Version::Midi2 => (0x4300_0000, 0xffff_0000, u32::MAX),
+            };
+            let encode = |status: u32, index: u32, value: u32| {
+                if version == Version::Midi1 {
+                    [prefix | status << 16 | index << 8 | value, 0]
+                } else {
+                    [prefix | status << 16 | index << 8, value]
+                }
+            };
+            let words = [
+                encode(0x92, 60, velocity),
+                encode(0x93, 60, velocity),
+                encode(0xb2, pedal, down),
+                encode(0x92, 60, velocity),
+                encode(0xb2, 123, 0),
+                encode(0xb2, pedal, 0),
+                encode(0xb3, 123, 0),
+            ];
+            let offsets = [0, 0, 2, 3, 4, 6, 8];
+            let packets: [_; 7] = std::array::from_fn(|i| TimedPacket {
+                offset: offsets[i],
+                packet: Packets::new(&words[i]).next().unwrap().unwrap(),
+            });
+            let mut groups = [None; 16];
+            groups[3] = Some(version);
+            let ingress = Ingress::new(4, groups);
+            for block in 1..=16 {
+                let mut rt = runtime();
+                let mut output = [[0.; 2]; 16];
+                let mut next = 0;
+                let mut outcomes = 0;
+                let mut terminals = 0;
+                support::without_heap(|| {
+                    for begin in (0..16).step_by(block) {
+                        let end = (begin + block).min(16);
+                        let mut local = [packets[0]; 7];
+                        let mut count = 0;
+                        while next < packets.len() && packets[next].offset < end {
+                            local[count] = TimedPacket {
+                                offset: packets[next].offset - begin,
+                                ..packets[next]
+                            };
+                            count += 1;
+                            next += 1;
+                        }
+                        ingress
+                            .render(
+                                &mut rt,
+                                &mut output[begin..end],
+                                &local[..count],
+                                7,
+                                |_, result| {
+                                    if outcomes == 4 || outcomes == 6 {
+                                        assert_eq!(
+                                            result,
+                                            Ok(Applied::AllNotesOff {
+                                                released: if outcomes == 4 { 2 } else { 1 }
+                                            })
+                                        );
+                                    } else {
+                                        assert!(result.is_ok());
+                                    }
+                                    outcomes += 1;
+                                },
+                            )
+                            .unwrap();
+                        rt.flush_ended(|input| {
+                            assert_eq!((input.port, input.group, input.key), (4, 3, 60));
+                            terminals += 1;
+                            true
+                        });
+                    }
+                    assert_eq!((outcomes, terminals, rt.note_count()), (7, 3, 0));
+                });
+                for (frame, actual) in output.iter().enumerate() {
+                    let expected = match frame {
+                        0..=2 => 2.,
+                        3 => 3.,
+                        4..=5 if pedal == 64 => 3.,
+                        4..=5 if pedal == 66 => 2.,
+                        4..=7 => 1.,
+                        _ => 0.,
+                    };
+                    assert_eq!(
+                        *actual, [expected; 2],
+                        "{version:?}, pedal {pedal}, block {block}, frame {frame}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn all_notes_off_needs_no_spare_capacity_and_preserves_other_input_domains() {
+    use sampler_core::{Error, Event, Expression, Input, Protocol};
+    let mut rt = runtime();
+    let mut groups = [None; 16];
+    groups[3] = Some(Version::Midi2);
+    let ingress = Ingress::new(4, groups);
+    let input = Input {
+        protocol: Protocol::Midi2,
+        port: 4,
+        group: 3,
+        channel: 2,
+        key: 60,
+        external_id: None,
+    };
+    support::without_heap(|| {
+        let notes = [
+            rt.trigger(input, 60, 1.).unwrap(),
+            rt.trigger(Input { port: 5, ..input }, 60, 1.).unwrap(),
+            rt.trigger(Input { group: 4, ..input }, 60, 1.).unwrap(),
+            rt.trigger(
+                Input {
+                    protocol: Protocol::Midi1,
+                    ..input
+                },
+                60,
+                1.,
+            )
+            .unwrap(),
+        ];
+        for channel in [0, 1] {
+            rt.register_channel(sampler_core::ChannelAddress {
+                channel,
+                ..input.channel_address()
+            })
+            .unwrap();
+        }
+        rt.schedule_event(100, Event::Expression(notes[0], Expression::default()))
+            .unwrap();
+        rt.schedule_event(100, Event::Expression(notes[1], Expression::default()))
+            .unwrap();
+        assert_eq!(rt.pending_commands(), 2);
+        assert_eq!(
+            apply(&ingress, &mut rt, &[0x43b2_7b00, 1]),
+            Ok(Applied::Unsupported)
+        );
+        assert_eq!(
+            rt.all_notes_off(sampler_core::ChannelAddress {
+                group: 16,
+                ..input.channel_address()
+            }),
+            Err(Error::InvalidInput)
+        );
+        assert_eq!(rt.key_down(notes[0]), Ok(true));
+        assert_eq!(
+            apply(&ingress, &mut rt, &[0x43b2_7b00, 0]),
+            Ok(Applied::AllNotesOff { released: 1 })
+        );
+        assert_eq!(
+            apply(&ingress, &mut rt, &[0x43b2_7b00, 0]),
+            Ok(Applied::AllNotesOff { released: 0 })
+        );
+        assert_eq!(rt.key_down(notes[0]), Ok(false));
+        for note in &notes[1..] {
+            assert_eq!(rt.key_down(*note), Ok(true));
+            assert!(rt.note(*note).unwrap().2);
+        }
+        assert_eq!((rt.voice_count(), rt.pending_commands()), (3, 1));
+        rt.flush_ended(|_| false);
+        assert_eq!(rt.note_count(), 4);
+        let mut ends = 0;
+        rt.flush_ended(|origin| {
+            assert_eq!(origin, input);
+            ends += 1;
+            true
+        });
+        assert_eq!(ends, 1);
+        rt.panic();
+        rt.flush_ended(|_| true);
+        assert_eq!((rt.note_count(), rt.pending_commands()), (0, 0));
+    });
+}

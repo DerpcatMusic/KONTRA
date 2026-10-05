@@ -73,6 +73,39 @@ impl Runtime {
         self.schedule_event(self.now, super::Event::Sostenuto(channel, down))
     }
 
+    /// Release every physically held input in one channel domain, respecting pedals.
+    /// Cleanup never needs a new channel slot or command slot. Returns keys released.
+    pub fn all_notes_off(&mut self, address: ChannelAddress) -> Result<usize, Error> {
+        if address.group >= 16 || address.channel >= 16 {
+            return Err(Error::InvalidInput);
+        }
+        self.apply_due();
+        let sustained = self.channels.slots.iter().any(|slot| {
+            slot.value
+                .is_some_and(|c| c.address == address && c.sustain)
+        });
+        let mut released = 0;
+        for slot in &mut self.notes.slots {
+            let Some(note) = &mut slot.value else {
+                continue;
+            };
+            if note.key_down
+                && note
+                    .input
+                    .is_some_and(|input| input.channel_address() == address)
+            {
+                note.key_down = false;
+                if !sustained && !note.sostenuto {
+                    note.gate = false;
+                }
+                released += 1;
+            }
+        }
+        self.propagate_release();
+        self.cleanup_closed_notes();
+        Ok(released)
+    }
+
     /// Physical key release respects pedals. Explicit release() bypasses them.
     pub fn key_up(&mut self, note: NoteId) -> Result<(), Error> {
         self.apply_due();
