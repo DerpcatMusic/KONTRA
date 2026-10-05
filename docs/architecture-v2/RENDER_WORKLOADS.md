@@ -139,6 +139,15 @@ optimization. Local binaries, hashes and CSVs use
 `artifacts/admission-*`. Scheduling outliers and these synthetic bursts are not a
 production polyphony guarantee.
 
+The admission example also accepts `--ids`, assigning a distinct external input
+ID to each note and exercising duplicate-ID rejection lookup. After the bitmap
+change, three local runs measured 1,024-note medians of 160.2 microseconds without
+IDs and 1,010.5 microseconds with IDs; 16 notes in the 4,096-voice reservation took
+1.92 and 9.69 microseconds respectively. The existing duplicate guard still scans
+reserved notes. This cost is explicitly separate from allocator performance;
+`artifacts/admission-address-*` records the comparison. No host-ID index has been
+added or claimed by the allocator change.
+
 ### Free-slot lookup
 
 Every arena now maintains one free bit per reserved slot. Insertion scans 64-bit
