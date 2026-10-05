@@ -114,3 +114,132 @@ fn protocol_scope_and_unsupported_messages_cannot_create_partial_notes() {
     );
     assert_eq!(rt.note_count(), 0);
 }
+
+#[test]
+fn block_timing_order_and_rejections_are_partition_invariant_without_heap() {
+    use sampler_midi::{BlockError, TimedPacket};
+    let words = [
+        [0x4090_3c00, 0xffff_0000],
+        [0x40b0_4000, u32::MAX],
+        [0x4080_3c00, 0],
+        [0x40b0_4000, 0],
+        [0x4190_3c00, 0xffff_0000],
+        [0x4090_3c00, 0xffff_0000],
+        [0x4080_3c00, 0],
+        [0x4090_3c00, 0xffff_0000],
+        [0x4080_3c00, 0],
+    ];
+    let offsets = [0, 4, 8, 12, 14, 14, 14, 16, 19];
+    let packets: [_; 9] = std::array::from_fn(|i| TimedPacket {
+        offset: offsets[i],
+        packet: Packets::new(&words[i]).next().unwrap().unwrap(),
+    });
+    let mut groups = [None; 16];
+    groups[0] = Some(Version::Midi2);
+    let ingress = Ingress::new(0, groups);
+    for block in 1..=32 {
+        let mut rt = runtime();
+        let mut output = [[0.; 2]; 32];
+        let mut next = 0;
+        let mut outcomes = 0;
+        support::without_heap(|| {
+            for begin in (0..32).step_by(block) {
+                let end = (begin + block).min(32);
+                let mut local = [packets[0]; 9];
+                let mut count = 0;
+                while next < packets.len() && packets[next].offset < end {
+                    local[count] = TimedPacket {
+                        offset: packets[next].offset - begin,
+                        ..packets[next]
+                    };
+                    count += 1;
+                    next += 1;
+                }
+                ingress
+                    .render(
+                        &mut rt,
+                        &mut output[begin..end],
+                        &local[..count],
+                        9,
+                        |_, result| {
+                            if outcomes == 4 {
+                                assert_eq!(result, Err(ApplyError::DisabledGroup));
+                            } else {
+                                assert!(result.is_ok());
+                            }
+                            outcomes += 1;
+                        },
+                    )
+                    .unwrap();
+                rt.flush_ended(|_| true);
+            }
+        });
+        assert_eq!(outcomes, 9);
+        assert_eq!(rt.note_count(), 0);
+        for (frame, sample) in output.iter().enumerate() {
+            let expected = if frame < 12 || (16..19).contains(&frame) {
+                1.
+            } else {
+                0.
+            };
+            assert_eq!(*sample, [expected; 2], "block {block}, frame {frame}");
+        }
+    }
+    let mut rt = runtime();
+    let mut output = [[42.; 2]; 8];
+    assert_eq!(
+        ingress.render(&mut rt, &mut output, &packets[..2], 1, |_, _| panic!()),
+        Err(BlockError::EventBudget)
+    );
+    assert_eq!(
+        ingress.render(&mut rt, &mut output, &packets[..3], 3, |_, _| panic!()),
+        Err(BlockError::InvalidOffset { index: 2 })
+    );
+    assert_eq!(
+        ingress.render(
+            &mut rt,
+            &mut output,
+            &[packets[1], packets[0]],
+            2,
+            |_, _| panic!()
+        ),
+        Err(BlockError::InvalidOffset { index: 1 })
+    );
+    assert_eq!((rt.now(), rt.note_count()), (0, 0));
+    assert_eq!(output, [[42.; 2]; 8]);
+    ingress
+        .render(&mut rt, &mut [], &packets[..1], 1, |_, result| {
+            assert!(matches!(result, Ok(Applied::Started(_))));
+        })
+        .unwrap();
+    assert_eq!((rt.now(), rt.note_count()), (0, 1));
+}
+
+#[test]
+fn full_note_pool_does_not_skip_later_release_in_the_block() {
+    use sampler_midi::TimedPacket;
+    let on = [0x4090_3c00, 0xffff_0000];
+    let off = [0x4080_3c00, 0];
+    let mut events = [TimedPacket {
+        offset: 0,
+        packet: Packets::new(&on).next().unwrap().unwrap(),
+    }; 6];
+    events[5].packet = Packets::new(&off).next().unwrap().unwrap();
+    let mut rt = runtime();
+    let ingress = Ingress::new(0, [Some(Version::Midi2); 16]);
+    let mut audio = [[0.; 2]; 4];
+    support::without_heap(|| {
+        ingress
+            .render(&mut rt, &mut audio, &events, 6, |index, result| {
+                if index == 4 {
+                    assert_eq!(result, Err(ApplyError::Core(sampler_core::Error::Capacity)));
+                } else {
+                    assert!(result.is_ok());
+                }
+            })
+            .unwrap();
+        rt.flush_ended(|_| true);
+    });
+    assert_eq!(audio, [[3.; 2]; 4]);
+    assert_eq!((rt.note_count(), rt.voice_count()), (3, 3));
+}

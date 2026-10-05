@@ -1,7 +1,7 @@
 //! Independent offline composition root; no legacy application or engine dependency.
 mod wave;
 use sampler_core::{Limits, Pcm, Prepared, Region, Runtime};
-use sampler_midi::{Ingress, Packets, Version};
+use sampler_midi::{Applied, Ingress, Packets, TimedPacket, Version};
 use std::{
     fs::OpenOptions,
     io::{self, BufWriter, Write},
@@ -57,7 +57,20 @@ fn render(sample: Pcm, output: &Path, demo: bool) -> io::Result<()> {
         (u64::from(rate) / 2, [0x4080_3c00, 0x8000_0000]),
         (u64::from(rate), [0x40b0_4000, 0]),
     ];
-    let mut events = events[..if demo { 4 } else { 1 }].iter().peekable();
+    let packets = events[..if demo { 4 } else { 1 }]
+        .iter()
+        .map(|(at, words)| {
+            let packet = Packets::new(words)
+                .next()
+                .ok_or_else(|| io::Error::other("missing demo packet"))?
+                .map_err(|e| io::Error::other(format!("UMP framing: {e:?}")))?;
+            Ok(TimedPacket {
+                offset: *at as usize,
+                packet,
+            })
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let mut next = 0;
     // Refuse overwrites, including an input path reused as output.
     let file = OpenOptions::new()
         .write(true)
@@ -68,22 +81,38 @@ fn render(sample: Pcm, output: &Path, demo: bool) -> io::Result<()> {
     let mut buffer = [[0.0; 2]; 256];
     let mut remaining = count;
     while remaining > 0 {
-        while let Some((at, words)) = events.peek()
-            && *at == rt.now()
-        {
-            for packet in Packets::new(words) {
-                let packet = packet.map_err(|e| io::Error::other(format!("UMP framing: {e:?}")))?;
-                ingress
-                    .apply(&mut rt, packet)
-                    .map_err(|e| io::Error::other(format!("UMP input: {e:?}")))?;
-            }
-            events.next();
+        let len = remaining.min(buffer.len());
+        let begin = count - remaining;
+        let mut batch = [packets[0]; 4];
+        let mut event_count = 0;
+        while next < packets.len() && packets[next].offset < begin + len {
+            batch[event_count] = TimedPacket {
+                offset: packets[next].offset - begin,
+                ..packets[next]
+            };
+            event_count += 1;
+            next += 1;
         }
-        let boundary = events
-            .peek()
-            .map_or(remaining, |(at, _)| (*at - rt.now()) as usize);
-        let len = remaining.min(buffer.len()).min(boundary);
-        rt.render(&mut buffer[..len]).map_err(core)?;
+        let mut failure = None;
+        ingress
+            .render(
+                &mut rt,
+                &mut buffer[..len],
+                &batch[..event_count],
+                4,
+                |_, result| {
+                    if !matches!(
+                        result,
+                        Ok(Applied::Started(_) | Applied::Released { .. } | Applied::Pedal)
+                    ) {
+                        failure.get_or_insert(result);
+                    }
+                },
+            )
+            .map_err(|e| io::Error::other(format!("UMP block: {e:?}")))?;
+        if let Some(result) = failure {
+            return Err(io::Error::other(format!("UMP input: {result:?}")));
+        }
         wave::frames(&mut out, &buffer[..len])?;
         remaining -= len;
     }

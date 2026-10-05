@@ -53,3 +53,26 @@ is under ignored `artifacts/architecture-v2/midi-*`, including source hashes.
 The full workspace baseline scan against `47d6aff` passed with no new errors.
 The native demo produced 96,000 stereo frames with the expected held interval
 and exact silent suffix after release. Production legacy playback is unchanged.
+
+## Host block contract
+
+`Ingress::render` accepts already-framed packets with sample offsets and an explicit
+per-call event budget. Before touching audio or runtime it checks the total budget,
+clock overflow, monotonic offsets and block bounds. Invalid batches leave both
+unchanged; the host decides its failure-output policy. Events at the exclusive end
+belong to the next block; an empty block can apply offset-zero events without
+advancing time. Equal offsets preserve input order. Previously queued internal
+work at a boundary runs before external packets at that boundary.
+
+Every admitted batch event reports its own result. A full note pool does not skip
+a later release in the same batch. Unsupported messages and protocol/admission
+errors are observable through the callback, which the host must keep realtime-safe.
+Work is bounded by the caller's event budget, block size and prepared core limits.
+No queue, allocation or sorting occurs in this path.
+
+The native executable now uses this same processor with 256-frame blocks. Its
+output is byte-identical to the prior explicitly split demo. Independent tests
+cover every block size 1–32, same-frame note-on/off ordering, empty blocks, invalid
+and descending offsets, budget rejection, continued cleanup after capacity failure,
+and zero callback allocations/frees. Rust 1.99 strict Clippy and tests plus MSRV
+1.92 tests pass. The updated authoritative new-core score remains 91.
