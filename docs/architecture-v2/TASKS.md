@@ -331,3 +331,16 @@ Record changed entry points, test commands/results, source/build and fixture ide
 quality/performance settings and remaining limits. Keep all 128 supplied scenarios
 allocated; their original bytes/statuses remain unchanged. MIDI 2.0 protocol fixtures
 must supplement that catalogue. No task closes on document wording alone.
+
+## Legacy reference extraction (2026-10-06 steering)
+
+- [x] Locate the separate Falcon/UVI implementation and review selected v1 Kontakt
+  import/runtime/tests and UVI graph/dispatch/ownership/evidence paths. The source
+  pins, useful fixtures and explicit differences are in
+  [REFERENCE_REVIEW.md](REFERENCE_REVIEW.md#existing-kontra-implementations-as-migration-references).
+- [ ] Re-author controller consumption, captured callback context, script-stage
+  forwarding, generated handles/group eligibility and hard-cleanup state fixtures
+  on the new runtime (V2-05/14). Old passing tests alone do not close these gates.
+- [ ] Preserve reviewed source identity/decoding, UVI graph hierarchy, DSP default/
+  control-clock and streaming edge cases in new import/render fixtures (V2-07–13).
+  No old-runtime fallback or wholesale branch merge.

@@ -72,3 +72,56 @@ Tests in `sampler-core/tests/behavior.rs` and `sampler-ksp/tests/compile.rs` cov
 concurrent note/release waits, same-key distinct owners, source EOF, completion
 backpressure, slot reuse, plan replacement and bounded failure. NKSP's broader
 local/real variable extensions are not treated as KSP features.
+
+## Existing KONTRA implementations as migration references
+
+User direction on 2026-10-06 explicitly includes the v1 Kontakt and Falcon paths.
+Inspect their real inputs, tests and retained evidence before implementing each
+corresponding v2 service. Preserve useful behavior and regressions; do not treat
+legacy output as the vendor oracle, import its ownership model wholesale, or add
+a runtime bridge. Re-author fixtures against native services and the new frontend.
+
+Reviewed source checkpoints:
+
+- Kontakt: this worktree at `5e5340d`; `src/import.rs`, `src/ksp/runtime.rs`,
+  selected `src/ksp/tests.rs` and the existing streaming test. Legacy source is
+  unchanged at that checkpoint; native additions coexist only for development.
+- Falcon/UVI: clean separate worktree
+  `/home/derpcat/.codex/worktrees/kontakto-uvi-latest`, branch
+  `codex/uvi-latest-integration`, commit
+  `4bffbb18b867b0a8e84b435d11684784b237693c`. This tree has the implementation
+  absent from the v2 branch. It is read-only reference material here, not merged.
+  Review `src/uvi/program.rs:21–99,165–210`, `script.rs:1534–1574,2668–2699,2937–2972`,
+  `player.rs:438–510` and hosted ownership regressions at `script.rs:6286–6335,6474–6532`.
+
+| Salvage target | Concrete v1 evidence | Native obligation / status |
+| --- | --- | --- |
+| Container/resource semantics | Kontakt `src/import.rs:632–656,724–780,874–966`: linked/saved script preference, encodings, file tables, IR/resource dependencies and load warnings | Preserve source identity and diagnostics in source→semantic→prepared compilation. The current Latin-1 fallback is only an approximation of Windows-1252; reimplement correct decoding, including non-ASCII punctuation. Import migration remains open. |
+| Ordered script stages | Kontakt `events_pass_through_slots_in_order` and `runtime.rs:2918–2999`: changes/suppression affect later slots; controller and note forwarding differ | Raw input, stage-visible state and committed engine state need separate contracts. New frontend still has one script table; slot forwarding and controller interception remain open. |
+| Retained note state | Kontakt `a_released_parent_survives_its_waiting_note_callback`, `midi_channels_survive_waits_and_release_independently`; UVI exact-root/FIFO overlap, consumed-root and delayed-descendant tests | Native note/callback/cell retention is exercised, including terminal pressure and slot reuse. Add source-level channel and generated-handle fixtures as those APIs land; do not derive ownership from key alone. |
+| Release selection and cleanup | Kontakt `release_callbacks_select_groups_for_their_generated_notes`, `a_waiting_ignored_release_finishes_state_cleanup_after_sound_off` | Group eligibility and script-state cleanup across ignored releases remain KSP obligations. Current native hard cleanup suppresses/cancels handlers; that policy is not proof of Kontakt cleanup parity. Preserve this difference explicitly until reference semantics are implemented. |
+| UVI graph identity | `program.rs` preserves node parents, local oscillator values, raw units, connections and initially bypassed unsupported nodes | Preserve semantic hierarchy and required dormant capabilities; compile it to bounded native scopes/indices. Do not flatten Layer/Program gains into a voice or silently omit nodes. |
+| UVI callback priority | Both `script.rs` dispatch paths choose `onEvent` before specialized handlers, with explicit `postEvent` forwarding | Recreate the dispatch/forwarding tests in the new frontend. Lua syntax support is not the UVI runtime contract. Native UVI execution remains open. |
+| Source topology/streaming | `tests/playback.rs:842–956` compares RAM/streamed float and 24-bit PCM, offsets, pitched crossfades, reverse and alternating loops | Retain the authored input matrix; compare independently expected boundaries and PCM too. Both v1 paths can share a defect. New-core streaming and advanced loop modes remain open. |
+| DSP defaults and clocks | UVI `UVI_PANLAW_DEFAULT_EVIDENCE.md`, `UVI_LFO_SMOOTH_EVIDENCE.md`, leaf comparison reports | Loaded defaults can differ from descriptor defaults; control lookahead must not commit future state. Carry exact reference version, operation order, parameters and successful-return scope into new fixtures. Reports are historical evidence, not new v2 passes. |
+| Worker failure and timing | UVI `UVI_RUNTIME_QUEUE_INVESTIGATION.md`, `UVI_IMPLEMENTATION_STATUS.md` | Preserve first-cause reporting, owner-stamped completion and terminal cleanup. Bounded queues do not prove sustainable throughput; do not transplant the allocating worker/Lua/DSP bridge as the new realtime core. |
+
+The legacy KSP test `computed_ui_and_execution_limits` explicitly accepts unknown
+functions as diagnostic no-ops returning zero. That tolerance must not silently
+turn missing v2 services into apparent support. Likewise, the UVI status reports
+620 decoded Augmented Orchestra programs but zero admitted complete graphs at its
+recorded census. Decoding, execution and fidelity remain separate gates.
+
+Immediate fixture migration order: controller suppression/remapping and captured
+callback channels; staged note/release forwarding; generated-event handles and
+group eligibility; cleanup/state continuity; persistence/UI-independent state;
+then vendor source graphs and DSP/streaming matrices. This supplements the full
+KSP inventory and v2 task dependencies rather than substituting feature counts.
+
+Reference execution in this worktree (2026-10-06): the four focused v1 tests
+`controllers_can_be_filtered_and_remapped`, `events_pass_through_slots_in_order`,
+`a_waiting_ignored_release_finishes_state_cleanup_after_sound_off` and
+`a_released_parent_survives_its_waiting_note_callback` each passed under the locked
+`ci` profile. Logs are retained in ignored `artifacts/v1-reference-*.log`. These
+establish reproducible legacy regression inputs, not Kontakt equivalence or v2
+coverage. The separate UVI checkout was inspected only; no tests were run there.
