@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Apply whole-semitone MPE RPN 0 sensitivity transactionally: independent manager range, shared member range, retained raw bends and frozen released-note pitch. Selector/null/NRPN isolation and failed-rate rollback preserve existing notes and future controller state.
+
 - Project fixed-zone MPE channel pressure and CC74 into native expression, preserving released member snapshots and unrelated note dimensions. Manager combination is explicit; audible modulation destinations and dynamic receiver configuration remain pending.
 
 - Add fixed-zone MPE note/pitch projection with generational tail bindings, initial controller state and atomic whole-zone gestures. Member expression freezes at physical key-up while manager pitch reaches retained owners; bounded heap-free batches validate occupied voices once. Dynamic configuration and remaining MPE controls are still unsupported.

@@ -157,9 +157,9 @@ channel reuse, delayed sources, failed immediate and queued changes, detach, and
 transactional generated-source rejection. Existing gain/pan inheritance checks
 remain at unity pitch; the separate audio checks establish actual pitch behavior.
 
-These are native expression services, not completed MPE or MIDI 2.0 controller
-routing. Wire decoding still needs an explicit ownership-aware expression adapter,
-including member-channel reuse and raw-versus-consumed controller stages. Vendor
+These native services now support the separate [fixed-zone MPE adapter](MIDI_INGRESS.md),
+including member-channel reuse and frozen released-member expression. Full MPE/MIDI
+2.0 receiver behavior and raw-versus-consumed scripting stages remain pending. Vendor
 imports will use that shared service rather than defining the engine's expression
 limits. Pitch ramps and custom tuning remain separate pending work.
 

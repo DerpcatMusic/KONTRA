@@ -32,6 +32,8 @@ pub enum Applied {
         attribute: Attribute,
     },
     Pedal,
+    /// A controller selector/state change, not a claim of full device configuration.
+    Configuration,
     AllNotesOff {
         released: usize,
     },

@@ -68,11 +68,25 @@ enum Control {
     Timbre(u8),
 }
 
+#[derive(Clone, Copy)]
+struct Parameter {
+    rpn: [u8; 2],
+    registered: bool,
+}
+impl Default for Parameter {
+    fn default() -> Self {
+        Self {
+            rpn: [127; 2],
+            registered: false,
+        }
+    }
+}
+
 /// One explicitly configured MIDI 1.0 zone in one runtime/port/group domain.
 /// Construct and drop on the control thread. The binding budget includes tails
 /// and unaccepted terminal notes. No pins are added and no heap work occurs in apply.
 ///
-/// This is not a complete MPE receiver: RPN/MCM, pedals and other channel modes are
+/// This is not a complete MPE receiver: MCM, fractional/relative RPN, pedals and other channel modes are
 /// reported Unsupported. Do not forward those messages to ordinary channel
 /// ingress as a substitute for zone semantics. Raw-event consumers run before
 /// this adapter; a consumed message must not be passed to apply.
@@ -84,6 +98,9 @@ pub struct Mpe {
     members: u8,
     limit: usize,
     controls: [Controls; 16],
+    bends: [u16; 16],
+    ranges: [u8; 2],
+    parameters: [Parameter; 16],
     bindings: Vec<Binding>,
     changes: Vec<(ExpressionId, Expression)>,
 }
@@ -115,9 +132,17 @@ impl Mpe {
             members,
             limit: notes,
             controls: [Controls::default(); 16],
+            bends: [8192; 16],
+            ranges: [2, 48],
+            parameters: [Parameter::default(); 16],
             bindings,
             changes,
         })
+    }
+
+    /// Whole-semitone manager and shared member bend sensitivities.
+    pub fn pitch_ranges(&self) -> (u8, u8) {
+        (self.ranges[0], self.ranges[1])
     }
 
     /// Apply at the current sample boundary, after due native work. Only this
@@ -191,12 +216,14 @@ impl Mpe {
                 attribute,
             },
             Message::PitchBend(Value::Bits14(value)) => {
-                let range = if voice.channel == self.zone.manager() {
-                    2.0
-                } else {
-                    48.0
-                };
-                self.control(runtime, voice.channel, Control::Pitch(pitch(value, range)))?
+                let range = self.ranges[usize::from(voice.channel != self.zone.manager())];
+                let applied = self.control(
+                    runtime,
+                    voice.channel,
+                    Control::Pitch(pitch(value, f64::from(range))),
+                )?;
+                self.bends[usize::from(voice.channel)] = value;
+                applied
             }
             Message::ChannelPressure(Value::Bits7(value)) => {
                 self.control(runtime, voice.channel, Control::Pressure(value))?
@@ -205,6 +232,10 @@ impl Mpe {
                 index: 74,
                 value: Value::Bits7(value),
             } => self.control(runtime, voice.channel, Control::Timbre(value))?,
+            Message::Control {
+                index: index @ (6 | 38 | 98..=101),
+                value: Value::Bits7(value),
+            } => self.parameter(runtime, voice.channel, index, value)?,
             _ => Applied::Unsupported,
         })
     }
@@ -215,21 +246,30 @@ impl Mpe {
         channel: u8,
         control: Control,
     ) -> Result<Applied, Error> {
-        let manager = channel == self.zone.manager();
-        let manager_controls = self.controls[usize::from(self.zone.manager())];
-        let manager_controls = if manager {
-            manager_controls.with(control)
-        } else {
-            manager_controls
-        };
+        let mut controls = self.controls;
+        controls[usize::from(channel)] = controls[usize::from(channel)].with(control);
+        self.project(runtime, controls, Some(channel), control)
+    }
+
+    fn project(
+        &mut self,
+        runtime: &mut Runtime,
+        controls: [Controls; 16],
+        channel: Option<u8>,
+        control: Control,
+    ) -> Result<Applied, Error> {
+        let manager = channel == Some(self.zone.manager());
+        let manager_controls = controls[usize::from(self.zone.manager())];
         self.changes.clear();
         for binding in &self.bindings {
-            let active_member = binding.channel == channel && runtime.key_down(binding.note)?;
+            let active_member = binding.channel != self.zone.manager()
+                && channel.is_none_or(|channel| binding.channel == channel)
+                && runtime.key_down(binding.note)?;
             if manager || active_member {
                 let owner = runtime.expression_id(binding.note)?;
                 let mut expression = runtime.expression(owner)?;
                 let member = if !manager && active_member {
-                    binding.member.with(control)
+                    controls[usize::from(binding.channel)]
                 } else {
                     binding.member
                 };
@@ -247,17 +287,73 @@ impl Mpe {
         // Controller state and per-note snapshots commit only after every owner
         // accepts the gesture. Rejected pitch must not leak into the next note.
         runtime.set_expressions(&self.changes)?;
-        self.controls[usize::from(channel)] = self.controls[usize::from(channel)].with(control);
+        self.controls = controls;
         if !manager {
             for binding in &mut self.bindings {
-                if binding.channel == channel && runtime.key_down(binding.note)? {
-                    binding.member = binding.member.with(control);
+                if binding.channel != self.zone.manager()
+                    && channel.is_none_or(|channel| binding.channel == channel)
+                    && runtime.key_down(binding.note)?
+                {
+                    binding.member = controls[usize::from(binding.channel)];
                 }
             }
         }
         Ok(Applied::Expression {
             owners: self.changes.len(),
         })
+    }
+    fn parameter(
+        &mut self,
+        runtime: &mut Runtime,
+        channel: u8,
+        index: u8,
+        value: u8,
+    ) -> Result<Applied, Error> {
+        let parameter = &mut self.parameters[usize::from(channel)];
+        match index {
+            100 | 101 => {
+                parameter.rpn[usize::from(index == 100)] = value;
+                parameter.registered = true;
+                Ok(Applied::Configuration)
+            }
+            98 | 99 => {
+                parameter.registered = false;
+                Ok(Applied::Configuration)
+            }
+            6 if parameter.registered && parameter.rpn == [0, 0] => {
+                self.range(runtime, channel, value)
+            }
+            38 if parameter.registered && parameter.rpn == [0, 0] && value == 0 => {
+                Ok(Applied::Configuration)
+            }
+            _ => Ok(Applied::Unsupported),
+        }
+    }
+
+    fn range(&mut self, runtime: &mut Runtime, channel: u8, value: u8) -> Result<Applied, Error> {
+        if value > 96 {
+            return Err(Error::InvalidInput);
+        }
+        let manager = channel == self.zone.manager();
+        let mut controls = self.controls;
+        for (index, control) in controls.iter_mut().enumerate() {
+            let channel = index as u8;
+            if (manager && channel == self.zone.manager())
+                || (!manager
+                    && channel != self.zone.manager()
+                    && self.zone.contains(channel, self.members))
+            {
+                control.pitch = pitch(self.bends[index], f64::from(value));
+            }
+        }
+        let applied = self.project(
+            runtime,
+            controls,
+            manager.then_some(channel),
+            Control::Pitch(0.0),
+        )?;
+        self.ranges[usize::from(!manager)] = value;
+        Ok(applied)
     }
 }
 
