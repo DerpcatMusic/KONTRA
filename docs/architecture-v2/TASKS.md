@@ -33,6 +33,10 @@ Family/expression ownership and segmented rendering now have
 - [x] Add bounded fixed-zone MPE note/pitch/pressure/timbre projection, physical key-up snapshots,
   runtime identity, whole-semitone RPN sensitivity, zone pedals and atomic gestures; [partial receiver scope](MIDI_INGRESS.md).
 
+- [x] Prepare note-scoped event-rate pressure/timbre routes to gain, balance and
+  pitch, with retained-plan ownership and transactional source constraints;
+  [scope, evidence and remaining modulation work](MODULATION.md).
+
 ## M0 — contracts and measurable targets
 
 ### V2-01 — Establish independent conformance and workload evidence

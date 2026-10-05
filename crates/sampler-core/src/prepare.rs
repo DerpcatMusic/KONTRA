@@ -48,6 +48,7 @@ pub struct Prepared {
     candidates: Box<[Candidate]>,
     pub(super) programs: Box<[super::Program]>,
     note_program: Option<usize>,
+    pub(super) modulation: super::Modulation,
 }
 
 impl Prepared {
@@ -134,6 +135,7 @@ impl Prepared {
             candidates: candidates.into_boxed_slice(),
             programs: Box::new([]),
             note_program: None,
+            modulation: super::Modulation::default(),
         })
     }
 
@@ -150,6 +152,12 @@ impl Prepared {
         self.programs = programs.into_boxed_slice();
         self.note_program = note_program;
         Ok(self)
+    }
+
+    /// Bind a validated note-scoped modulation program on the control thread.
+    pub fn with_modulation(mut self, modulation: super::Modulation) -> Self {
+        self.modulation = modulation;
+        self
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -241,11 +249,19 @@ impl Runtime {
             }
         };
         let pitch = match origin {
-            NoteOrigin::Input(_, expression) => {
-                super::pitch::PitchRange::constant(super::pitch::ratio(expression.pitch_semitones))
-            }
+            NoteOrigin::Input(_, expression) => super::pitch::PitchRange::constant(
+                self.project_expression(self.modulation_plan(plan), expression, None)?
+                    .ratio,
+            ),
             NoteOrigin::Child(_, _, super::Inheritance::Independent) => {
-                super::pitch::PitchRange::constant(1.0)
+                super::pitch::PitchRange::constant(
+                    self.project_expression(
+                        self.modulation_plan(plan),
+                        Expression::default(),
+                        None,
+                    )?
+                    .ratio,
+                )
             }
             NoteOrigin::Child(parent, _, inheritance) => {
                 let owner = self.notes.get(parent.0).unwrap().expression;

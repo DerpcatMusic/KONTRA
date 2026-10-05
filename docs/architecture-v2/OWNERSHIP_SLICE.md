@@ -192,3 +192,9 @@ owners. A silent old same-key input retains FIFO pairing until that release; it 
 not borrow a voice or a public pin for this lifetime. Descendants inherit immutable
 input-channel provenance at admission so scoped cleanup remains linear. See the
 [All Sound Off contract and evidence](MIDI_INGRESS.md#channel-scoped-all-sound-off).
+
+Prepared [note-expression modulation](MODULATION.md) now separates canonical input
+from cached rendering values. Nonempty programs retain the original plan identity
+through counted notes; linked, snapshot, detached and independent owners preserve
+their existing lifetimes. Source constraints apply to projected pitch, including
+pressure/timbre routes and queued changes.

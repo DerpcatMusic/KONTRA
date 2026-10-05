@@ -10,6 +10,9 @@ fn runtime() -> Runtime {
     runtime_with_channels(4)
 }
 fn runtime_with_channels(channels: usize) -> Runtime {
+    runtime_with_modulation(channels, sampler_core::Modulation::default())
+}
+fn runtime_with_modulation(channels: usize, modulation: sampler_core::Modulation) -> Runtime {
     Runtime::new(
         Prepared::new(
             48000,
@@ -35,7 +38,8 @@ fn runtime_with_channels(channels: usize) -> Runtime {
             }],
             2,
         )
-        .unwrap(),
+        .unwrap()
+        .with_modulation(modulation),
         Limits {
             notes: 8,
             channels,
@@ -558,4 +562,72 @@ fn zone_pedal_admission_is_atomic_and_pedal_up_needs_no_channel_capacity() {
             rt.flush_ended(|_| true);
         });
     }
+}
+
+#[test]
+fn mpe_drives_prepared_native_modulation_and_muted_sources_keep_their_position() {
+    use sampler_core::{Destination, ExpressionSource, Modulation, Route};
+    let modulation = Modulation::new(
+        vec![
+            Route {
+                source: ExpressionSource::Pressure,
+                destination: Destination::LinearGain {
+                    zero: 0.0,
+                    one: 1.0,
+                },
+            },
+            Route {
+                source: ExpressionSource::Timbre,
+                destination: Destination::StereoBalance {
+                    zero: -0.5,
+                    one: 0.5,
+                },
+            },
+            Route {
+                source: ExpressionSource::Timbre,
+                destination: Destination::PitchSemitones {
+                    zero: 0.0,
+                    one: 12.0,
+                },
+            },
+        ],
+        3,
+    )
+    .unwrap();
+    let mut rt = runtime_with_modulation(4, modulation);
+    let mut mpe = Mpe::new(&rt, 7, 3, Zone::Lower, 2, 8).unwrap();
+    support::without_heap(|| {
+        apply(&mut mpe, &mut rt, packet(0xb0, 1, 74, 0)).unwrap();
+        let note = start(&mut mpe, &mut rt, 1, 60);
+        let mut audio = [[0.0; 2]; 64];
+        rt.render(&mut audio).unwrap();
+        assert_eq!(audio, [[0.0; 2]; 64]);
+        apply(&mut mpe, &mut rt, packet(0xd0, 1, 127, 0)).unwrap();
+        rt.render(&mut audio).unwrap();
+        for (index, frame) in audio.iter().enumerate() {
+            let phase = (64 + index) as f64 * std::f64::consts::TAU * 0.017;
+            assert_eq!(*frame, [phase.cos() as f32, phase.sin() as f32 * 0.5]);
+        }
+        apply(&mut mpe, &mut rt, packet(0xb0, 1, 74, 127)).unwrap();
+        rt.render(&mut audio).unwrap();
+        for (index, frame) in audio.iter().enumerate() {
+            let phase = (128 + 2 * index) as f64 * std::f64::consts::TAU * 0.017;
+            assert!((f64::from(frame[0]) - phase.cos() * 0.5).abs() < 0.0001);
+            assert!((f64::from(frame[1]) - phase.sin()).abs() < 0.0001);
+        }
+        assert_eq!(
+            expression(&rt, note),
+            Expression {
+                pressure: u32::MAX,
+                timbre: u32::MAX,
+                ..Expression::default()
+            }
+        );
+        rt.panic();
+        rt.flush_ended(|_| true);
+        assert_eq!(
+            (rt.note_count(), rt.expression_count(), rt.voice_count()),
+            (0, 0, 0)
+        );
+    });
 }

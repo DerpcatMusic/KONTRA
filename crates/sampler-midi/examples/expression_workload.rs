@@ -1,11 +1,20 @@
 //! Run in release mode on an idle pinned CPU. Measures a whole-zone pitch gesture
 //! separately from PCM filtering; preparation, note admission and rendering are untimed.
-use sampler_core::{Envelope, Limits, Pcm, Playback, Prepared, Region, Runtime};
+use sampler_core::{
+    Destination, Envelope, ExpressionSource, Limits, Modulation, Pcm, Playback, Prepared, Region,
+    Route, Runtime,
+};
 use sampler_midi::{Applied, Mpe, Packets, Zone};
 use std::{hint::black_box, time::Instant};
 
 fn main() {
-    println!("control,notes,reserved,median_ns,p99_ns,max_ns,median_ns_per_note");
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    let route_count = match args.as_slice() {
+        [] => 0,
+        [flag] if flag == "--modulated" => 3,
+        _ => panic!("usage: expression_workload [--modulated]"),
+    };
+    println!("routes,control,notes,reserved,median_ns,p99_ns,max_ns,median_ns_per_note");
     for (control, center, above) in [
         ("pitch", 0x20e0_0040, 0x20e0_0140),
         ("pressure", 0x20d0_0000, 0x20d0_7f00),
@@ -32,6 +41,34 @@ fn main() {
                 1,
             )
             .unwrap();
+            let routes = if route_count == 0 {
+                vec![]
+            } else {
+                vec![
+                    Route {
+                        source: ExpressionSource::Pressure,
+                        destination: Destination::LinearGain {
+                            zero: 0.0,
+                            one: 1.0,
+                        },
+                    },
+                    Route {
+                        source: ExpressionSource::Timbre,
+                        destination: Destination::StereoBalance {
+                            zero: -0.25,
+                            one: 0.25,
+                        },
+                    },
+                    Route {
+                        source: ExpressionSource::Timbre,
+                        destination: Destination::PitchSemitones {
+                            zero: 0.0,
+                            one: 12.0,
+                        },
+                    },
+                ]
+            };
+            let plan = plan.with_modulation(Modulation::new(routes, route_count).unwrap());
             let mut runtime = Runtime::new(
                 plan,
                 Limits {
@@ -75,7 +112,7 @@ fn main() {
             times.sort_unstable();
             let median = times[times.len() / 2];
             println!(
-                "{control},{notes},{reserved},{median},{},{},{}",
+                "{route_count},{control},{notes},{reserved},{median},{},{},{}",
                 times[times.len() * 99 / 100],
                 times[times.len() - 1],
                 median as f64 / notes as f64

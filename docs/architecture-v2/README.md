@@ -59,19 +59,23 @@ compatibility remains a separate, evidence-backed capability.
 16. [Resident render measurements](RENDER_WORKLOADS.md): reproducible polyphony and
     capacity workloads plus measured sustain optimization.
 
+17. [Prepared note-expression modulation](MODULATION.md): typed destinations,
+    event-rate projection, retained-plan ownership and actual MPE audio.
+
 ## Implemented and still open
 
 - Native core: generational note/family/voice/expression ownership, physical versus
   effective gates, bounded scheduling/behaviors, resident selection, AHDSR,
   source views/loops, bandlimited rate conversion, root-key and live pitch,
-  initial expression and transactional multi-owner gestures.
+  initial expression, transactional multi-owner gestures and prepared event-rate
+  pressure/timbre modulation to gain, balance and pitch.
 - Preparation: immutable plans, adoption between notes, original-generation tails
   and callbacks, and control-thread retirement. Native WAV rendering and the
   deliberately small KSP source subset run independently of the old engine.
 - MIDI: UMP framing and MIDI 1/2 note/pedal/channel-mode ingress; separate fixed-zone
   MPE pitch/pressure/CC74, whole-semitone RPN sensitivity and zone pedals. Full MIDI
   2 expression, MPE zone configuration/modes and raw scripting interception remain open.
-- Product work remains substantial: modulation/filter/effect execution, streaming,
+- Product work remains substantial: broader modulation rates/scopes, filters/effects, streaming,
   richer selection/behavior/imports, host integration, persistence and UI. The
   production plugin/UI still uses the old core. There is no new-core DAW build yet.
 

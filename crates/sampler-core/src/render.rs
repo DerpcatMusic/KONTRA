@@ -66,8 +66,8 @@ impl Runtime {
         let f = self.families.get(v.family.0).unwrap();
         let n = self.notes.get(f.note.0).unwrap();
         let expression = self.expressions.get(n.expression.0).unwrap();
-        let gains = expression.value.gains();
-        v.cursor = v.cursor.with_step(v.base_step * expression.pitch_ratio);
+        let gains = expression.rendered.gains;
+        v.cursor = v.cursor.with_step(v.base_step * expression.rendered.ratio);
         // Prepared playback bounds and the cursor's contiguous spans stay
         // within immutable PCM; looping never changes asset ownership.
         let pcm = &self.plans.get(n.plan.0).unwrap().prepared.pcm[v.sample].frames;

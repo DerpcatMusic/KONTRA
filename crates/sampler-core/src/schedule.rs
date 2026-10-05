@@ -53,7 +53,7 @@ impl Runtime {
                 return Err(Error::InvalidInput);
             }
             let owner = self.notes.get(note.0).unwrap().expression;
-            self.validate_pitch_change(owner, e.pitch_semitones)?;
+            self.validate_expression_change(owner, e)?;
         }
         if at == self.now {
             self.apply_event(event);
