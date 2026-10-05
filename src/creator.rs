@@ -117,13 +117,22 @@ pub fn read_native(path: &Path) -> Result<Instrument> {
     ensure!(native.zones.iter().all(|z| z.group < native.groups.len()), "A zone refers to a missing group");
     let path = path.canonicalize()?;
     let dir = path.parent().context("Preset has no folder")?;
+    let mut dependency_paths = vec![path.clone()];
     let mut missing = BTreeSet::new();
     let zones = native
         .zones
         .into_iter()
         .map(|mut z| {
             z.sample = dir.join(&z.sample);
+            dependency_paths.push(z.sample.clone());
+            // Alias targets can share file stamps; watch only directories containing symlinks.
+            for alias in z.sample.ancestors() {
+                if alias.symlink_metadata().is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+                    dependency_paths.extend(alias.parent().map(Path::to_path_buf));
+                }
+            }
             z.sample = z.sample.canonicalize().unwrap_or(z.sample);
+            dependency_paths.push(z.sample.clone());
             // Tune has f32 precision, as in Kontakt; JSON's last digit may be a ulp off.
             z.tune = f64::from(z.tune as f32);
             z.available = z.sample.is_file();
@@ -142,6 +151,7 @@ pub fn read_native(path: &Path) -> Result<Instrument> {
         zones,
         scripts: native.scripts,
         missing_samples: missing.into_iter().collect(),
+        dependencies: crate::cache::dependencies(dependency_paths),
         ..Default::default()
     })
 }
