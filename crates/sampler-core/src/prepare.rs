@@ -42,7 +42,7 @@ impl Prepared {
     ) -> Result<Self, Error> {
         if rate == 0
             || pcm.iter().any(|p| {
-                p.rate != rate
+                p.rate == 0
                     || p.frames.is_empty()
                     || p.frames.iter().flatten().any(|x| !x.is_finite())
             })
@@ -64,7 +64,8 @@ impl Prepared {
             {
                 return Err(Error::InvalidInput);
             }
-            r.playback.cursor(pcm[r.sample].frames.len())?;
+            r.playback
+                .cursor(pcm[r.sample].frames.len(), pcm[r.sample].rate, rate)?;
             count = count
                 .checked_add(usize::from(r.key_high - r.key_low) + 1)
                 .ok_or(Error::Capacity)?;

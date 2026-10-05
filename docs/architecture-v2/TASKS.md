@@ -25,6 +25,9 @@ Family/expression ownership and segmented rendering now have
 
 - [x] Pin UMP v1.1.2 and implement allocation-free framing/channel-voice decoding plus native note/pedal ingress; [partial scope and evidence](MIDI_INGRESS.md).
 
+- [x] Add native fractional source traversal, asset/output rate conversion and static
+  transposition with ratio-dependent filtering; [evidence and open quality work](RESAMPLING.md).
+
 ## M0 — contracts and measurable targets
 
 ### V2-01 — Establish independent conformance and workload evidence

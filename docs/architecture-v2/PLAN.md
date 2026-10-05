@@ -35,6 +35,32 @@ resource use, callback latency and developer-facing module contracts. We will no
 claim market leadership or future-proofness without comparative evidence. MIDI 2.0
 is required scope from the event-model stage, not a postponed adapter.
 
+## Current implementation priority
+
+The user clarified the product direction again on 2026-10-05: complete the native
+architecture before an early DAW/UI preview. Linux CLAP in Bitwig is the eventual
+hands-on target, not a reason to rush host integration ahead of the engine.
+
+Native expression and modulation capabilities must not be restricted by the source
+format. For example, an imported Falcon instrument should be able to receive native
+MPE routing even where its original authored behavior did not provide that route.
+This requires distinct raw controller, expressive member-channel, musical routing,
+logical-note and expression-owner identities; it does not mean applying all incoming
+controllers before a script has had the opportunity to consume them.
+
+After these foundations are ready, port useful product behavior and independently
+review reusable implementations from the old product. Retain code only where it
+fits the new contracts and passes independent tests; delete redundant ownership,
+parallel engines and obsolete constraints. Reuse is permitted, compatibility shims
+and dependence on the old core are not. Unsupported vendor behavior remains explicit.
+
+The next source work is native pitch/rate conversion with measured anti-aliasing,
+then live note expression and routing. Import coverage, streaming, DSP graphs,
+fuller scripting, persistence and product integration remain substantial open work.
+Rust Doctor configuration stays available, but repeated score scans are no longer
+the interactive work loop at the user's request; correctness and realtime checks
+continue with each affected implementation.
+
 ## Responsibility and dependency boundaries
 
 ```mermaid

@@ -21,6 +21,7 @@ mod ownership;
 mod plans;
 mod prepare;
 mod render;
+mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{Pcm, Prepared, Region};
@@ -220,6 +221,7 @@ pub struct Runtime {
     channels: Arena<Channel>,
     voices: Arena<Voice>,
     voice_activity: Box<[u64]>,
+    kernel: &'static resample::Kernel,
     families: Arena<Family>,
     expressions: Arena<ExpressionOwner>,
     commands: Vec<Scheduled>,
@@ -274,6 +276,7 @@ impl Runtime {
             channels: Arena::new(id, limits.channels),
             voices: Arena::new(id, limits.voices),
             voice_activity: vec![0; limits.voices.div_ceil(64)].into_boxed_slice(),
+            kernel: resample::Kernel::shared(),
             families: Arena::new(id, limits.families),
             expressions: Arena::new(id, limits.expressions),
             commands: Vec::with_capacity(limits.commands),
@@ -524,7 +527,11 @@ impl Runtime {
         if sample >= plan.pcm.len() || !gain.is_finite() || !(0.0..=1.0).contains(&gain) {
             return Err(Error::InvalidInput);
         }
-        let cursor = playback.cursor(plan.pcm[sample].frames.len())?;
+        let cursor = playback.cursor(
+            plan.pcm[sample].frames.len(),
+            plan.pcm[sample].rate,
+            self.rate,
+        )?;
         let count = f.voices.checked_add(1).ok_or(Error::Capacity)?;
         self.check_time(at)?;
         if at > self.now && self.commands.len() == self.command_limit {

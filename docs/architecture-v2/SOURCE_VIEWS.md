@@ -63,7 +63,8 @@ The general cursor adds measurable overhead against the earlier unity-only path
 (~5.32 us median at 256 voices). These uncontrolled microbenchmarks guide further
 optimization; they do not establish worst-case deadlines or a competitor ranking.
 
-This is integer-position unity-rate playback. Crossfades, ping-pong loops,
-fractional positions, anti-aliased resampling and pitch tracking remain open.
+The original evidence above covers integer-position unity-rate playback.
+[Fractional playback and rate conversion](RESAMPLING.md) now extend this contract.
+Crossfades, ping-pong loops and live/key-tracked pitch remain open.
 Raw loop boundaries are exact, not automatically click-free; no undocumented
 smoothing is applied. Host/plugin integration and streaming also remain open.
