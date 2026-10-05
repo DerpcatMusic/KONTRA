@@ -531,7 +531,8 @@ end on"#;
             plan(u, &pictures, &drawn, &mut Assets::default(), |_| None)
         };
         let p = read(&u);
-        assert!(p[0].words.is_empty() && p[2].words.is_empty(), "Original switch and label text is not replanned");
+        assert_eq!(p[0].words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>(), ["Workbench"], "the native switch plans its authored caption exactly once");
+        assert!(p[2].words.is_empty(), "Original label text is not replanned");
         assert_eq!(prop(&u.controls[0], "$CONTROL_PAR_TEXT"), "Workbench");
         assert!(p[1].words.iter().any(|w| w.text == "Cutoff"));
         u.controls[1].properties.insert("$CONTROL_PAR_TEXT".into(), Value::Text("Resonance".into()));
