@@ -2,7 +2,9 @@
 //! UMP v1.1.2 word framing and channel-voice decoding. Word byte order is the
 //! transport's responsibility. No allocation, protocol negotiation or clock inference.
 mod ingress;
+mod mpe;
 pub use ingress::{Applied, ApplyError, BlockError, Ingress, TimedPacket};
+pub use mpe::{Mpe, Zone};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Version {

@@ -679,3 +679,51 @@ fn initial_expression_precedes_selection_and_immediate_snapshot_programs() {
         assert!((f64::from(frame[1]) - phase.sin() * 0.5).abs() < 0.0001);
     }
 }
+
+#[test]
+fn controller_batches_reject_every_change_if_any_owner_or_source_is_invalid() {
+    let mut rt = runtime(prepare(tone(), 48000, Playback::default()).unwrap());
+    let mut foreign = runtime(prepare(tone(), 48000, Playback::default()).unwrap());
+    support::without_heap(|| {
+        let a = rt.trigger(input(), 60, 1.0).unwrap();
+        let b = rt.trigger(input(), 60, 1.0).unwrap();
+        let a = rt.expression_id(a).unwrap();
+        let b = rt.expression_id(b).unwrap();
+        let other = foreign.note_on(input(), 60, 1.0).unwrap();
+        let other = foreign.expression_id(other).unwrap();
+        for (bad_owner, bad_value, error) in [
+            (b, expression(49.0), Error::InvalidInput),
+            (b, expression(f64::NAN), Error::InvalidInput),
+            (other, expression(12.0), Error::StaleHandle),
+        ] {
+            assert_eq!(
+                rt.set_expressions(&[(a, expression(12.0)), (bad_owner, bad_value)]),
+                Err(error)
+            );
+            assert_eq!(rt.expression(a), Ok(Expression::default()));
+            assert_eq!(rt.expression(b), Ok(Expression::default()));
+        }
+        assert_eq!(
+            rt.set_expressions(&[(a, expression(12.0)), (a, expression(7.0))]),
+            Err(Error::InvalidInput)
+        );
+        assert_eq!(rt.expression(a), Ok(Expression::default()));
+        rt.set_expressions(&[(a, expression(7.0)), (b, expression(-12.0))])
+            .unwrap();
+        assert_eq!(rt.expression(a), Ok(expression(7.0)));
+        assert_eq!(rt.expression(b), Ok(expression(-12.0)));
+        rt.render(&mut [[0.0; 2]; 64]).unwrap();
+        for runtime in [&mut rt, &mut foreign] {
+            runtime.panic();
+            runtime.flush_ended(|_| true);
+            assert_eq!(
+                (
+                    runtime.note_count(),
+                    runtime.expression_count(),
+                    runtime.voice_count()
+                ),
+                (0, 0, 0)
+            );
+        }
+    });
+}

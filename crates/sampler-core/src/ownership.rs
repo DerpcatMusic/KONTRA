@@ -94,6 +94,45 @@ impl Runtime {
         self.set_expression_now(id, value)
     }
 
+    /// Apply one controller gesture to several owners without partial updates.
+    /// Due work runs first, as with other immediate mutations. Every entry must
+    /// be valid and each owner may occur once. The caller bounds the slice.
+    pub fn set_expressions(&mut self, changes: &[(ExpressionId, Expression)]) -> Result<(), Error> {
+        self.apply_due();
+        if changes.is_empty() {
+            return Ok(());
+        }
+        // Scratch is private, allocated with the expression arena, and cleared
+        // before every batch. An error never mutates an expression owner.
+        self.expression_changes.fill(None);
+        let mut pitch_changed = false;
+        for &(id, value) in changes {
+            if !value.valid() {
+                return Err(Error::InvalidInput);
+            }
+            let owner = self.expressions.get(id.0).ok_or(Error::StaleHandle)?;
+            let proposed = &mut self.expression_changes[id.0.index];
+            if proposed.is_some() {
+                return Err(Error::InvalidInput);
+            }
+            *proposed = Some(if owner.value.pitch_semitones == value.pitch_semitones {
+                owner.pitch_ratio
+            } else {
+                pitch_changed = true;
+                super::pitch::ratio(value.pitch_semitones)
+            });
+        }
+        if pitch_changed {
+            self.validate_source_pitches(|id| self.expression_changes[id.0.index])?;
+        }
+        for &(id, value) in changes {
+            let owner = self.expressions.get_mut(id.0).unwrap();
+            owner.pitch_ratio = self.expression_changes[id.0.index].unwrap();
+            owner.value = value;
+        }
+        Ok(())
+    }
+
     pub(super) fn set_expression_now(
         &mut self,
         id: ExpressionId,

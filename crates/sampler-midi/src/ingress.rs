@@ -23,6 +23,9 @@ impl From<Error> for ApplyError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Applied {
     Started(NoteId),
+    Expression {
+        owners: usize,
+    },
     Released {
         note: NoteId,
         velocity: Option<Value>,

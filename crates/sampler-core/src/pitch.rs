@@ -82,7 +82,14 @@ impl Runtime {
             return Ok(owner.pitch_ratio);
         }
         let pitch_ratio = ratio(semitones);
-        let range = PitchRange::constant(pitch_ratio);
+        self.validate_source_pitches(|owner| (owner == id).then_some(pitch_ratio))?;
+        Ok(pitch_ratio)
+    }
+
+    pub(super) fn validate_source_pitches(
+        &self,
+        mut proposed: impl FnMut(ExpressionId) -> Option<f64>,
+    ) -> Result<(), Error> {
         // Walk occupied words rather than every reserved Voice record. This is
         // bounded by the admitted voices and bitmap size, not source duration.
         for (word, &bits) in self.voice_activity.iter().enumerate() {
@@ -92,11 +99,12 @@ impl Runtime {
                 occupied &= occupied - 1;
                 let voice = self.voices.slots[index].value.as_ref().unwrap();
                 let family = self.families.get(voice.family.0).unwrap();
-                if self.notes.get(family.note.0).unwrap().expression == id {
-                    range.apply(voice.base_step)?;
+                let owner = self.notes.get(family.note.0).unwrap().expression;
+                if let Some(ratio) = proposed(owner) {
+                    PitchRange::constant(ratio).apply(voice.base_step)?;
                 }
             }
         }
-        Ok(pitch_ratio)
+        Ok(())
     }
 }
