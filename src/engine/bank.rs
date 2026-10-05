@@ -383,7 +383,7 @@ pub(crate) struct ZonePlay {
     pub read_end: u64,
     /// Maximum start offset in frames.
     pub start_mod: u64,
-    pub wavetable: Option<super::wavetable::Table>,
+    pub(super) wavetable: Option<super::wavetable::Table>,
     pub counted: Option<u32>,
 }
 
