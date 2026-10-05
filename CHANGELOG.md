@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Compile native source cursor templates during preparation, discard the redundant authoring playback fields, and share one bounded voice-admission boundary. Prepared note starts no longer repeat static pitch/rate calculations or source-view validation.
+
 - Add fractional resident playback, source/output rate conversion and static semitone transposition to the new core. Ratio-dependent windowed-sinc filtering preserves independent forward/reverse loop traversal and release guards; analytic tones, independent FIR sequences, block-partition and heap checks cover the path. High-ratio performance and live pitch remain open.
 
 - Skip unused voice reservations with a bounded occupancy bitmap while preserving exact slot-order mixing. The sparse resident workload measured 1.37–2.25× improvement locally; boundary, reuse, EOF and allocation checks cover ownership.
