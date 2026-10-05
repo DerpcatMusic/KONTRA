@@ -23,6 +23,7 @@ fn limits() -> Limits {
         commands: 8,
         behaviors: 4,
         behavior_fuel: 8,
+        behavior_cells: 16,
     }
 }
 fn runtime(code: Vec<Instruction>, limits: Limits) -> Runtime {
@@ -168,6 +169,7 @@ fn faults_and_fuel_are_observable_and_cannot_leave_partial_owned_work() {
             vec![play(20), Instruction::Wait(0), Instruction::End],
             Limits {
                 behavior_fuel: 1,
+                behavior_cells: 0,
                 ..limits()
             },
             Outcome::FuelExhausted,
@@ -217,6 +219,7 @@ fn faults_and_fuel_are_observable_and_cannot_leave_partial_owned_work() {
         vec![Instruction::Wait(0)],
         Limits {
             behavior_fuel: 1,
+            behavior_cells: 0,
             ..limits()
         },
     );
@@ -331,5 +334,204 @@ fn deferred_fault_is_reported_at_the_resume_boundary() {
         rt.flush_behaviors(|_, _, _| true);
         rt.flush_ended(|_| true);
         assert_eq!(rt.note_count(), 0);
+    });
+}
+
+#[test]
+fn callback_locals_survive_waits_and_remain_polyphonically_isolated() {
+    let code = vec![
+        Instruction::ReadKey { local: 0 },
+        Instruction::AddLocal {
+            local: 0,
+            value: -59,
+        },
+        play(2),
+        Instruction::Wait(3),
+        Instruction::AddLocal {
+            local: 0,
+            value: -1,
+        },
+        Instruction::JumpIfZero {
+            local: 0,
+            target: 7,
+        },
+        Instruction::Jump { target: 2 },
+        Instruction::End,
+    ];
+    for block in 1..=16 {
+        let mut rt = runtime(code.clone(), limits());
+        let mut audio = [[0.; 2]; 16];
+        support::without_heap(|| {
+            let a = rt.note_on(input(), 60, 1.).unwrap();
+            let b = rt
+                .note_on(
+                    Input {
+                        external_id: Some(8),
+                        ..input()
+                    },
+                    61,
+                    1.,
+                )
+                .unwrap();
+            let x = rt.start_behavior(a, 0).unwrap();
+            let y = rt.start_behavior(b, 0).unwrap();
+            assert_eq!(
+                (rt.behavior_local(x, 0), rt.behavior_local(y, 0)),
+                (Ok(1), Ok(2))
+            );
+            assert_eq!(rt.behavior_local(x, 1), Err(Error::InvalidInput));
+            for chunk in audio.chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
+            assert_eq!(
+                (rt.behavior_local(x, 0), rt.behavior_local(y, 0)),
+                (Ok(0), Ok(0))
+            );
+            assert_eq!(rt.behavior_outcome(x), Ok(Some(Outcome::Finished)));
+            assert_eq!(rt.behavior_outcome(y), Ok(Some(Outcome::Finished)));
+            rt.panic();
+            rt.flush_behaviors(|_, _, _| true);
+            assert_eq!(rt.behavior_local(x, 0), Err(Error::StaleHandle));
+            let mut ends = 0;
+            rt.flush_ended(|_| {
+                ends += 1;
+                true
+            });
+            assert_eq!((ends, rt.note_count()), (2, 0));
+        });
+        for (i, frame) in audio.iter().enumerate() {
+            let gain = if i < 2 {
+                1.
+            } else if (3..5).contains(&i) {
+                0.5
+            } else {
+                0.
+            };
+            assert_eq!(*frame, [gain; 2], "block {block}, frame {i}");
+        }
+    }
+}
+
+#[test]
+fn local_storage_is_budgeted_and_zeroed_on_callback_slot_reuse() {
+    let programs = vec![
+        Program::new(vec![Instruction::SetLocal {
+            local: 0,
+            value: 99,
+        }])
+        .unwrap(),
+        Program::new(vec![
+            Instruction::Wait(1),
+            Instruction::AddLocal { local: 0, value: 1 },
+        ])
+        .unwrap(),
+    ];
+    let plan = Prepared::new(48000, vec![], vec![], 0)
+        .unwrap()
+        .with_programs(programs, None)
+        .unwrap();
+    let mut rt = Runtime::new(
+        plan,
+        Limits {
+            behaviors: 1,
+            behavior_cells: 1,
+            ..limits()
+        },
+    )
+    .unwrap();
+    support::without_heap(|| {
+        let note = rt.note_on(input(), 60, 1.).unwrap();
+        let old = rt.start_behavior(note, 0).unwrap();
+        assert_eq!(rt.behavior_local(old, 0), Ok(99));
+        rt.flush_behaviors(|_, _, _| true);
+        let fresh = rt.start_behavior(note, 1).unwrap();
+        assert_ne!(old, fresh);
+        assert_eq!(rt.behavior_local(old, 0), Err(Error::StaleHandle));
+        assert_eq!(rt.behavior_local(fresh, 0), Ok(0));
+        rt.render(&mut [[0.; 2]; 1]).unwrap();
+        assert_eq!(rt.behavior_local(fresh, 0), Ok(0));
+        rt.render(&mut []).unwrap();
+        assert_eq!(rt.behavior_local(fresh, 0), Ok(1));
+        assert_eq!(rt.behavior_outcome(fresh), Ok(Some(Outcome::Finished)));
+        rt.panic();
+        rt.flush_behaviors(|_, _, _| true);
+        rt.flush_ended(|_| true);
+    });
+    let plan = Prepared::new(48000, vec![], vec![], 0)
+        .unwrap()
+        .with_programs(
+            vec![Program::new(vec![Instruction::ReadKey { local: u16::MAX }]).unwrap()],
+            None,
+        )
+        .unwrap();
+    assert!(matches!(Runtime::new(plan, limits()), Err(Error::Capacity)));
+    assert!(Program::new(vec![Instruction::Jump { target: 2 }]).is_err());
+    assert!(
+        Program::new(vec![Instruction::JumpIfZero {
+            local: 0,
+            target: 2
+        }])
+        .is_err()
+    );
+}
+
+#[test]
+fn branching_loops_obey_fuel_and_integer_arithmetic_never_wraps() {
+    let cases = [
+        (
+            vec![Instruction::Jump { target: 0 }],
+            Outcome::FuelExhausted,
+        ),
+        (
+            vec![
+                Instruction::SetLocal {
+                    local: 0,
+                    value: i64::MAX,
+                },
+                Instruction::AddLocal { local: 0, value: 1 },
+            ],
+            Outcome::Fault(Error::ArithmeticOverflow),
+        ),
+        (
+            vec![
+                Instruction::SetLocal {
+                    local: 0,
+                    value: i64::MIN,
+                },
+                Instruction::AddLocal {
+                    local: 0,
+                    value: -1,
+                },
+            ],
+            Outcome::Fault(Error::ArithmeticOverflow),
+        ),
+    ];
+    for (code, outcome) in cases {
+        let mut rt = runtime(code, limits());
+        support::without_heap(|| {
+            let note = rt.note_on(input(), 60, 1.).unwrap();
+            let id = rt.start_behavior(note, 0).unwrap();
+            assert_eq!(rt.behavior_outcome(id), Ok(Some(outcome)));
+            assert_eq!(rt.pending_commands(), 0);
+            rt.flush_behaviors(|_, _, _| true);
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.note_count(), 0);
+        });
+    }
+    let mut rt = runtime(
+        vec![Instruction::Wait(1), Instruction::Jump { target: 0 }],
+        limits(),
+    );
+    support::without_heap(|| {
+        let note = rt.note_on(input(), 60, 1.).unwrap();
+        let id = rt.start_behavior(note, 0).unwrap();
+        rt.render(&mut [[0.; 2]; 64]).unwrap();
+        assert_eq!(rt.behavior_outcome(id), Ok(None));
+        assert_eq!(rt.pending_commands(), 1);
+        rt.release(note).unwrap();
+        assert_eq!(rt.behavior_outcome(id), Ok(Some(Outcome::Cancelled)));
+        assert_eq!(rt.pending_commands(), 0);
+        rt.flush_behaviors(|_, _, _| true);
+        rt.flush_ended(|_| true);
     });
 }

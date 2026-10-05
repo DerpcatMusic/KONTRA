@@ -21,6 +21,7 @@ fn limits() -> Limits {
         commands: 8,
         behaviors: 0,
         behavior_fuel: 0,
+        behavior_cells: 0,
     }
 }
 
@@ -99,6 +100,7 @@ fn cleanup_does_not_need_queue_space_and_no_source_notes_retry() {
             commands: 1,
             behaviors: 0,
             behavior_fuel: 0,
+            behavior_cells: 0,
         },
     )
     .unwrap();
@@ -442,6 +444,7 @@ fn separate_budgets_reject_without_partial_ownership() {
             commands: 1,
             behaviors: 0,
             behavior_fuel: 0,
+            behavior_cells: 0,
         },
     )
     .unwrap();
@@ -740,6 +743,7 @@ fn mixed_timeline_is_partition_invariant_and_immediate_changes_follow_due_work()
                 commands: 16,
                 behaviors: 0,
                 behavior_fuel: 0,
+                behavior_cells: 0,
                 ..limits()
             },
         )
@@ -840,6 +844,7 @@ fn scheduled_expression_has_private_lifetime_pins_and_cancellation() {
             commands: 1,
             behaviors: 0,
             behavior_fuel: 0,
+            behavior_cells: 0,
             ..limits()
         },
     )
@@ -901,6 +906,7 @@ fn full_queue_cannot_drop_pedal_up_and_channel_domains_are_bounded() {
             commands: 1,
             behaviors: 0,
             behavior_fuel: 0,
+            behavior_cells: 0,
             ..limits()
         },
     )
@@ -1126,6 +1132,7 @@ fn native_wait_clock_overflow_faults_without_scheduling_or_losing_ownership() {
         Limits {
             behaviors: 1,
             behavior_fuel: 2,
+            behavior_cells: 0,
             ..limits()
         },
     )

@@ -50,9 +50,18 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
             duration: rate / 8,
         };
         let program = Program::new(vec![
+            Instruction::SetLocal { local: 0, value: 2 },
             play,
             Instruction::Wait(rate / 4),
-            play,
+            Instruction::AddLocal {
+                local: 0,
+                value: -1,
+            },
+            Instruction::JumpIfZero {
+                local: 0,
+                target: 6,
+            },
+            Instruction::Jump { target: 1 },
             Instruction::End,
         ])
         .map_err(core)?;
@@ -69,6 +78,7 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
             commands: 64,
             behaviors: 1,
             behavior_fuel: 8,
+            behavior_cells: 1,
         },
     )
     .map_err(core)?;

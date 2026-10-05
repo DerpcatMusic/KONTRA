@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Add budgeted callback-local integer state, logical-key readback and validated branches to native behavior programs. Locals survive waits and remain isolated across notes and reused slots; checked overflow and zero-time loops produce retained faults. The echo example now runs a counter loop.
+
 - Add native bounded behavior programs with generated notes, sample-time waits, suppression, instruction fuel and retained completion/fault ownership. An independent MIDI-driven `sampler-native echo` command exercises the new path; no old parser or VM is linked.
 
 - Make linked-release propagation linear even across reverse-order reused slots. Independent children retain their gate and ancestry until explicitly released; deep-chain heap checks and a before/after microbenchmark cover the change.

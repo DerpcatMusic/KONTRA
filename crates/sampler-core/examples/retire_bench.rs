@@ -23,6 +23,7 @@ fn main() {
                     commands: 0,
                     behaviors: 0,
                     behavior_fuel: 0,
+                    behavior_cells: 0,
                 },
             )
             .unwrap();

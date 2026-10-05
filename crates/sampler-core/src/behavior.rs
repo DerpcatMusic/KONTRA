@@ -12,21 +12,58 @@ pub enum Instruction {
     /// Sample-clock wait. Zero advances inline and still consumes instruction fuel.
     Wait(u32),
     End,
+    SetLocal {
+        local: u16,
+        value: i64,
+    },
+    AddLocal {
+        local: u16,
+        value: i64,
+    },
+    ReadKey {
+        local: u16,
+    },
+    Jump {
+        target: usize,
+    },
+    JumpIfZero {
+        local: u16,
+        target: usize,
+    },
 }
 
 pub struct Program {
     pub(super) code: Box<[Instruction]>,
+    pub(super) locals: usize,
 }
 impl Program {
     pub fn new(code: Vec<Instruction>) -> Result<Self, Error> {
-        if code.iter().any(|op| {
-            matches!(op, Instruction::Play { velocity_scale, .. }
-            if !velocity_scale.is_finite() || !(0.0..=1.0).contains(velocity_scale))
-        }) {
-            return Err(Error::InvalidInput);
+        let mut locals = 0;
+        for op in &code {
+            match *op {
+                Instruction::Play { velocity_scale, .. }
+                    if !velocity_scale.is_finite() || !(0.0..=1.0).contains(&velocity_scale) =>
+                {
+                    return Err(Error::InvalidInput);
+                }
+                Instruction::Jump { target } | Instruction::JumpIfZero { target, .. }
+                    if target > code.len() =>
+                {
+                    return Err(Error::InvalidInput);
+                }
+                _ => {}
+            }
+            if let Instruction::SetLocal { local, .. }
+            | Instruction::AddLocal { local, .. }
+            | Instruction::ReadKey { local }
+            | Instruction::JumpIfZero { local, .. } = *op
+            {
+                locals = locals.max(usize::from(local) + 1);
+            }
         }
         Ok(Self {
             code: code.into_boxed_slice(),
+            locals,
         })
     }
 }
@@ -71,12 +108,28 @@ impl Runtime {
             outcome: None,
         })?);
         n.work = work;
+        let begin = id.0.index * self.behavior_stride;
+        self.behavior_locals[begin..begin + self.plan.programs[program].locals].fill(0);
         self.resume_behavior(id);
         Ok(id)
     }
 
     pub fn behavior_outcome(&self, id: BehaviorId) -> Result<Option<Outcome>, Error> {
         Ok(self.behaviors.get(id.0).ok_or(Error::StaleHandle)?.outcome)
+    }
+
+    /// Callback-local integer state remains readable through waits and completion
+    /// backpressure. Handles and register bounds are checked before indexing.
+    pub fn behavior_local(&self, id: BehaviorId, local: u16) -> Result<i64, Error> {
+        let c = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+        let local = usize::from(local);
+        if local >= self.plan.programs[c.program].locals {
+            return Err(Error::InvalidInput);
+        }
+        self.behavior_locals
+            .get(id.0.index * self.behavior_stride + local)
+            .copied()
+            .ok_or(Error::InvalidInput)
     }
 
     /// Native abort policy: release the originating note and linked children.
@@ -146,6 +199,23 @@ impl Runtime {
         op: Instruction,
     ) -> Result<bool, Error> {
         match op {
+            Instruction::SetLocal { local, value } => *self.local_cell_mut(id, local)? = value,
+            Instruction::AddLocal { local, value } => {
+                let cell = self.local_cell_mut(id, local)?;
+                *cell = cell.checked_add(value).ok_or(Error::ArithmeticOverflow)?;
+            }
+            Instruction::ReadKey { local } => {
+                let key = self.notes.get(note.0).ok_or(Error::StaleHandle)?.key;
+                *self.local_cell_mut(id, local)? = i64::from(key);
+            }
+            Instruction::Jump { target } => {
+                self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?.pc = target
+            }
+            Instruction::JumpIfZero { local, target } => {
+                if *self.local_cell_mut(id, local)? == 0 {
+                    self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?.pc = target;
+                }
+            }
             Instruction::End => {
                 self.behaviors.get_mut(id.0).unwrap().outcome = Some(Outcome::Finished);
                 return Ok(true);
@@ -185,6 +255,14 @@ impl Runtime {
             }
         }
         Ok(false)
+    }
+
+    fn local_cell_mut(&mut self, id: BehaviorId, local: u16) -> Result<&mut i64, Error> {
+        // Program operands are validated at preparation; physical access is still
+        // checked here so instruction execution reports a fault instead of indexing.
+        self.behavior_locals
+            .get_mut(id.0.index * self.behavior_stride + usize::from(local))
+            .ok_or(Error::InvalidInput)
     }
 
     fn fail_behavior(&mut self, id: BehaviorId, outcome: Outcome) {
