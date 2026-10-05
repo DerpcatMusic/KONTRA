@@ -21,6 +21,7 @@ Family/expression ownership and segmented rendering now have
 - [x] Meet and enforce user-selected new-core score >=90 plus no new workspace errors (90, authoritative, complete; no rules disabled).
 - [x] Review callback ownership/index invariants before expanding DSP; [evidence and remaining review](ENVELOPES.md).
 - [x] Implement native linear AHDSR and retained release tails with independent timing/heap tests.
+- [x] Implement independent source ranges, forward/reverse playback and continuous/until-release loops; [evidence](SOURCE_VIEWS.md).
 
 ## M0 — contracts and measurable targets
 

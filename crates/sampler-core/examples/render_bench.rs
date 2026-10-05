@@ -1,14 +1,23 @@
 //! Synthetic resident-PCM microbenchmark, not a DAW or competitor benchmark.
-use sampler_core::{Envelope, Input, Limits, Pcm, Protocol, Runtime};
+use sampler_core::{Envelope, Input, Limits, Loop, LoopMode, Pcm, Playback, Protocol, Runtime};
 use std::{hint::black_box, time::Instant};
 
 fn main() {
     const BLOCK: usize = 64;
     const BLOCKS: usize = 2000;
-    let envelope = match std::env::args().nth(1).as_deref() {
-        None => Envelope::default(),
+    let mode = std::env::args().nth(1);
+    let envelope = match mode.as_deref() {
+        None | Some("--loop") => Envelope::default(),
         Some("--envelope") => Envelope::new((BLOCK * (BLOCKS + 100)) as u32, 0, 0, 1.0, 0).unwrap(),
-        _ => panic!("usage: render_bench [--envelope]"),
+        _ => panic!("usage: render_bench [--envelope | --loop]"),
+    };
+    let playback = Playback {
+        loop_range: (mode.as_deref() == Some("--loop")).then_some(Loop {
+            start: 0,
+            end: 127,
+            mode: LoopMode::Continuous,
+        }),
+        ..Playback::default()
     };
     let pcm = vec![[0.001, -0.001]; BLOCK * (BLOCKS + 100)];
     let samples = [Pcm {
@@ -46,7 +55,8 @@ fn main() {
             .unwrap();
         for _ in 0..active {
             let family = rt.create_family(note).unwrap();
-            rt.start_family(family, 0, 0, 1.0, envelope).unwrap();
+            rt.start_family(family, 0, 0, 1.0, envelope, playback)
+                .unwrap();
             rt.finish_family(family).unwrap();
         }
         let mut audio = [[0.0; 2]; BLOCK];

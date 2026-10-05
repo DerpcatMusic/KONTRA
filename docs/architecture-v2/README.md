@@ -39,6 +39,9 @@ compatibility remains a separate, evidence-backed capability.
 10. [Native envelopes and tail ownership](ENVELOPES.md): sample-time AHDSR, retained
     release tails and callback invariant review.
 
+11. [Native source views and loops](SOURCE_VIEWS.md): independent PCM ranges,
+    forward/reverse cursors, release exits and boundary evidence.
+
 Continue through **V2-01 → V2-02 → V2-03/V2-04**: define independent workload
 and protocol contracts, then build unified event/continuation scheduling on the
 new family/expression ownership. Full lifecycle and pedal behavior remain open.

@@ -18,6 +18,7 @@ fn render(sample: Pcm, output: &Path, demo: bool) -> io::Result<()> {
         rate,
         vec![sample],
         vec![Region {
+            playback: sampler_core::Playback::default(),
             envelope: if demo {
                 sampler_core::Envelope::new(rate / 200, 0, rate / 10, 0.8, rate / 20)
                     .map_err(core)?
