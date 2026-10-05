@@ -42,7 +42,8 @@ cmp /tmp/kontra-v2-demo.wav /tmp/kontra-v2-copy.wav
 ```
 
 Demo renders two seconds at 48 kHz: a prepared 440 Hz sample, sustain down at 0.25 s,
-physical key-up at 0.5 s, and pedal-up at 1 s. The second second is silent. This
+physical key-up at 0.5 s, and pedal-up at 1 s. The current demo adds a native envelope whose release ends at 1.05 s; the
+original entry-slice evidence below predates that envelope. This
 exercises the scheduler and lifecycle through the new executable, rather than a
 legacy host adapter. `render` replays a supported input at its original sample rate.
 
@@ -80,7 +81,7 @@ redistributed. Fixtures are authored.
 ## Open product work
 
 This executable is offline and fixed-pitch; it is not yet a live standalone or
-CLAP/VST3 plugin. Tracking/resampling, loops, envelopes/tails, richer mapping and DSP,
+CLAP/VST3 plugin. Tracking/resampling, loops, advanced envelope behavior, richer mapping and DSP,
 new scripting, streaming, live plan changes and MIDI 2.0 transport remain open.
 The next implementation extends native source/behavior services and the new host
 composition; it must not insert a legacy-engine fallback for missing functionality.

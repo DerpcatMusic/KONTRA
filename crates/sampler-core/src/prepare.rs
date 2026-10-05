@@ -1,5 +1,5 @@
 //! Control-thread compilation of immutable resident assets and native mappings.
-use super::{Error, Frame, Input, NoteId, Runtime};
+use super::{Envelope, Error, Frame, Input, NoteId, Runtime};
 
 #[derive(Clone, Debug)]
 pub struct Pcm {
@@ -17,6 +17,7 @@ pub struct Region {
     pub velocity_low: f64,
     pub velocity_high: f64,
     pub gain: f32,
+    pub envelope: Envelope,
 }
 
 pub struct Prepared {
@@ -135,8 +136,14 @@ impl Runtime {
         for i in begin..end {
             let r = self.plan.regions[self.plan.candidates[i]];
             if r.velocity_low <= velocity && velocity <= r.velocity_high {
-                self.start_family(family, r.sample, self.now, r.gain * velocity as f32)
-                    .expect("prepared and preflighted source admission");
+                self.start_family(
+                    family,
+                    r.sample,
+                    self.now,
+                    r.gain * velocity as f32,
+                    r.envelope,
+                )
+                .expect("prepared and preflighted source admission");
             }
         }
         self.finish_family(family).expect("admitted family");

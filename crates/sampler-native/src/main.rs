@@ -18,6 +18,12 @@ fn render(sample: Pcm, output: &Path, demo: bool) -> io::Result<()> {
         rate,
         vec![sample],
         vec![Region {
+            envelope: if demo {
+                sampler_core::Envelope::new(rate / 200, 0, rate / 10, 0.8, rate / 20)
+                    .map_err(core)?
+            } else {
+                sampler_core::Envelope::default()
+            },
             sample: 0,
             key_low: 60,
             key_high: 60,

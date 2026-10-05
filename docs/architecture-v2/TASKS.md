@@ -18,7 +18,8 @@ Family/expression ownership and segmented rendering now have
 - [x] Replace the migration mandate with clean-sheet implementation requirements.
 
 - [x] Run Rust Doctor and configure the pinned CI/DSP policy; see [scan evidence](RUST_DSP_POLICY.md).
-- [ ] Review new-core invariant unwrap/index findings before expanding callback functionality.
+- [x] Review callback ownership/index invariants before expanding DSP; [evidence and remaining review](ENVELOPES.md).
+- [x] Implement native linear AHDSR and retained release tails with independent timing/heap tests.
 
 ## M0 — contracts and measurable targets
 
