@@ -340,7 +340,7 @@ impl Slot {
         self.request_packet(generation, PacketKind::Taps, taps)
     }
 
-    pub fn request_kernel(&self, generation: u16, quality: i32, points: &[super::hq::Point]) -> Result<SparseRequest, StreamErrorKind> {
+    pub(super) fn request_kernel(&self, generation: u16, quality: i32, points: &[super::hq::Point]) -> Result<SparseRequest, StreamErrorKind> {
         let mut words = [0; SPARSE_TAPS];
         let words = kernel_words(points, &mut words)?;
         self.request_packet(generation, PacketKind::kernel(quality)?, words)
@@ -363,7 +363,7 @@ impl Slot {
         self.prefetch_packet(generation, PacketKind::Taps, taps)
     }
 
-    pub fn prefetch_kernel(&self, generation: u16, quality: i32, points: &[super::hq::Point]) -> Result<(), StreamErrorKind> {
+    pub(super) fn prefetch_kernel(&self, generation: u16, quality: i32, points: &[super::hq::Point]) -> Result<(), StreamErrorKind> {
         let mut words = [0; SPARSE_TAPS];
         let words = kernel_words(points, &mut words)?;
         self.prefetch_packet(generation, PacketKind::kernel(quality)?, words)
@@ -402,9 +402,14 @@ impl Slot {
     fn sparse_cache(&self, config: u32, kind: PacketKind, taps: &[u64], excluded: Option<usize>) -> Option<SparseRequest> {
         let mut best = None;
         let mut coverage = 0;
+        let pending = self.sparse_seq.load(Ordering::Relaxed);
+        let pending_bank = self.sparse_bank.load(Ordering::Relaxed) as usize;
         for (bank, packet) in self.sparse_packets.iter().enumerate() {
             if excluded == Some(bank) { continue; }
             let key = packet.ready.load(Ordering::Acquire);
+            // A superseded producer may publish after the replacement clears
+            // readiness. Its pending bank is stable only for the current stamp.
+            if pending != 0 && bank == pending_bank && key as u32 != pending { continue; }
             if key == 0 || key >> 32 != u64::from(config)
                 || packet.kind.load(Ordering::Relaxed) != kind as u32 { continue; }
             let len = packet.len.load(Ordering::Relaxed) as usize;
@@ -912,6 +917,8 @@ struct Worker {
     before_dense_publish: Option<Arc<AtomicU32>>,
     #[cfg(test)]
     before_sparse_publish: Option<Arc<AtomicU32>>,
+    #[cfg(test)]
+    after_sparse_validation: Option<Arc<AtomicU32>>,
 }
 
 impl Worker {
@@ -925,6 +932,8 @@ impl Worker {
             before_dense_publish: None,
             #[cfg(test)]
             before_sparse_publish: None,
+            #[cfg(test)]
+            after_sparse_validation: None,
         }
     }
 
@@ -1084,6 +1093,15 @@ impl Worker {
             }
             if slot.seq.load(Ordering::Acquire) != cursor.seq
                 || slot.sparse_seq.load(Ordering::Acquire) != request { return true; }
+            #[cfg(test)]
+            if let Some(gate) = &self.after_sparse_validation
+                && gate.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while gate.load(Ordering::Acquire) == 1 {
+                    assert!(Instant::now() < deadline, "fixture must release the validated sparse producer");
+                    std::thread::yield_now();
+                }
+            }
             packet.ready.store(0, Ordering::Release);
             let error = match decoded {
                 Ok(()) => {
@@ -1173,6 +1191,9 @@ struct Decoded {
     readers: HashMap<usize, (Arc<Source>, SampleReader, u64)>,
     blocks: HashMap<(usize, u64), (Arc<Source>, Box<[Frame]>)>,
     order: VecDeque<(usize, u64)>,
+    // Decode before evicting, so a failed miss retains every valid block.
+    // At most BLOCKS cached buffers plus this single worker-owned scratch.
+    spare: Option<Box<[Frame]>>,
     clock: u64,
     decode_failures: u64,
     // ponytail: READERS recent failures retain repeat counts; raise that ceiling
@@ -1231,6 +1252,7 @@ impl Decoded {
         self.readers.clear();
         self.blocks.clear();
         self.order.clear();
+        self.spare = None;
         self.errors.clear();
     }
 
@@ -1288,14 +1310,19 @@ impl Decoded {
                     out.fill([0.; 2]);
                     return Ok(());
                 }
-                let mut frames = vec![[0.0; 2]; CHUNK as usize].into_boxed_slice();
-                reader.read(base, &mut frames)?;
+                let mut frames = self.spare.take()
+                    .unwrap_or_else(|| vec![[0.0; 2]; CHUNK as usize].into_boxed_slice());
+                if let Err(error) = reader.read(base, &mut frames) {
+                    self.spare = Some(frames);
+                    return Err(error);
+                }
                 #[cfg(test)]
                 {
                     self.decodes += 1;
                 }
                 if self.blocks.len() == BLOCKS {
-                    self.blocks.remove(&self.order.pop_front().unwrap());
+                    self.spare = self.blocks.remove(&self.order.pop_front().unwrap())
+                        .map(|(_, frames)| frames);
                 }
                 self.blocks.insert(key, (source.clone(), frames));
                 self.order.push_back(key);
@@ -1319,6 +1346,12 @@ pub(super) mod tests {
 
     #[path = "kernel_prefetch_tests.rs"]
     mod kernel_prefetch;
+
+    #[path = "cache_reuse_tests.rs"]
+    mod cache_reuse;
+
+    #[path = "publication_tests.rs"]
+    mod publication;
 
     /// Deterministic real-disk readiness for sibling Engine PCM fixtures.
     /// Construct before notes: paused background cursors have untouched pages,
@@ -1392,7 +1425,7 @@ pub(super) mod tests {
         source.zones[0].tune = 16.;
         source.groups[0].volume_env = Some(crate::import::Ahdsr { attack_curve:0., attack_ms:7., decay_ms:13.,
             sustain:0.6, release_ms:11., hold_ms:0., unknown_flag:0, unknown_tail:vec![] });
-        source.groups[0].mods = [(ModSource::MidiCc(1), ModTarget::Pitch, 12., 13),
+        source.groups[0].mods = [(ModSource::MidiCc(1), ModTarget::Pitch, 1., 13),
             (ModSource::MidiCc(11), ModTarget::Volume, 0.5, 7)].into_iter().map(|(cc,target,intensity,lag_ms)|
                 ModAssignment { cc_default: None, name:"Onset".into(), source:cc, target, intensity, lag_ms,
                     invert:false, shaper:None }).collect();
@@ -1468,7 +1501,7 @@ pub(super) mod tests {
         }),0);
         // Data arriving before key-up cannot resurrect an attack that already
         // waited. Publish genuine PCM while the worker remains paused.
-        let frames = crate::audio::decode(&source.zones[0].sample,256).unwrap();
+        let frames = crate::audio::decode(&source.zones[0].sample,131072).unwrap();
         let stream = engine.player.voices[0].stream.unwrap();
         let slot = &shared.slots[stream.slot as usize];
         for (i, frame) in frames.frames.iter().take(256).enumerate() {
@@ -1688,7 +1721,7 @@ pub(super) mod tests {
         instrument.zones[0].tune = 72.;
         instrument.groups[0].mods.push(crate::import::ModAssignment { cc_default: None,
             name:"Live wide pitch".into(), source:crate::import::ModSource::MidiCc(1),
-            target:crate::import::ModTarget::Pitch, intensity:12., lag_ms:0,
+            target:crate::import::ModTarget::Pitch, intensity:1., lag_ms:0,
             invert:false, shaper:None,
         });
         let pcm = crate::audio::decode(&instrument.zones[0].sample, 131072).unwrap();
@@ -1813,7 +1846,7 @@ pub(super) mod tests {
         let _diagnostics = crate::diagnostics::acquire();
         let dir = tempfile::tempdir().unwrap();
         let mut instrument = instrument(&dir.path().join("retained-ring.wav"), false);
-        instrument.zones[0].tune = -120.;
+        instrument.zones[0].tune = 2f64.powf(-120. / 12.);
         let decoded = crate::audio::decode(&instrument.zones[0].sample, 131072).unwrap();
         let bad_path = dir.path().join("broken-ahead.wav");
         std::fs::write(&bad_path, [0u8; 256]).unwrap();
