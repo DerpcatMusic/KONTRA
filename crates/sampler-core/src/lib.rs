@@ -18,6 +18,7 @@ pub use envelope::Envelope;
 use envelope::EnvelopeState;
 mod gate;
 mod ownership;
+mod pitch;
 mod plans;
 mod prepare;
 mod render;
@@ -122,6 +123,7 @@ struct Voice {
     family: FamilyId,
     sample: usize,
     cursor: source::Cursor,
+    base_step: f64,
     envelope: EnvelopeState,
     gain: f32,
     started: bool,
@@ -393,17 +395,21 @@ impl Runtime {
                 id
             }
             (policy, parent) => {
-                let value = if policy == Inheritance::Snapshot {
+                let (value, pitch_ratio) = if policy == Inheritance::Snapshot {
                     parent
-                        .map(|p| self.expressions.get(p.0).unwrap().value)
-                        .unwrap_or_default()
+                        .map(|p| {
+                            let owner = self.expressions.get(p.0).unwrap();
+                            (owner.value, owner.pitch_ratio)
+                        })
+                        .unwrap_or((Expression::default(), 1.0))
                 } else {
-                    Expression::default()
+                    (Expression::default(), 1.0)
                 };
-                ExpressionId(
-                    self.expressions
-                        .insert(ExpressionOwner { value, notes: 1 })?,
-                )
+                ExpressionId(self.expressions.insert(ExpressionOwner {
+                    value,
+                    pitch_ratio,
+                    notes: 1,
+                })?)
             }
         };
         let id = match self.notes.insert(Note {
@@ -550,6 +556,10 @@ impl Runtime {
         if !f.open {
             return Err(Error::ClosedFamily);
         }
+        let owner = self.notes.get(f.note.0).unwrap().expression;
+        let base_step = cursor.step();
+        let step = self.pitch_range(owner, true)?.apply(base_step)?;
+        let cursor = cursor.with_step(step);
         let count = f.voices.checked_add(1).ok_or(Error::Capacity)?;
         if at > self.now && self.commands.len() == self.command_limit {
             return Err(Error::Capacity);
@@ -558,6 +568,7 @@ impl Runtime {
             family,
             sample,
             cursor,
+            base_step,
             envelope: EnvelopeState::new(envelope),
             gain,
             started: at == self.now,

@@ -15,9 +15,9 @@ pub enum Inheritance {
     Independent,
 }
 
-/// Canonical note expression. Integer controls retain all 32 bits. Only gain and
-/// stereo balance are consumed by the current PCM fixture; pitch/pressure/timbre
-/// await the modulation/source compiler. No MIDI packet decoder is implied.
+/// Canonical note expression. Gain, stereo balance and pitch affect resident PCM.
+/// Integer pressure/timbre retain all 32 bits for future modulation routing.
+/// Protocol decoding and member-channel assignment remain adapter responsibilities.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Expression {
     pub gain: f64,
@@ -60,6 +60,7 @@ impl Expression {
 #[derive(Clone, Copy)]
 pub(super) struct ExpressionOwner {
     pub value: Expression,
+    pub pitch_ratio: f64,
     pub notes: usize,
 }
 
@@ -101,10 +102,10 @@ impl Runtime {
         if !value.valid() {
             return Err(Error::InvalidInput);
         }
-        self.expressions
-            .get_mut(id.0)
-            .ok_or(Error::StaleHandle)?
-            .value = value;
+        let pitch_ratio = self.validate_pitch_change(id, value.pitch_semitones)?;
+        let owner = self.expressions.get_mut(id.0).unwrap();
+        owner.value = value;
+        owner.pitch_ratio = pitch_ratio;
         Ok(())
     }
 
@@ -119,6 +120,7 @@ impl Runtime {
         }
         let new = ExpressionId(self.expressions.insert(ExpressionOwner {
             value: owner.value,
+            pitch_ratio: owner.pitch_ratio,
             notes: 1,
         })?);
         self.expressions.get_mut(old.0).unwrap().notes -= 1;

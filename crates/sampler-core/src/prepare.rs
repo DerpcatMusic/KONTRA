@@ -165,11 +165,11 @@ impl Prepared {
         self.candidates.len()
     }
 
-    fn matches(&self, key: u8, velocity: f64) -> impl Iterator<Item = &PreparedRegion> {
+    fn matches(&self, key: u8, velocity: f64) -> impl Iterator<Item = (&PreparedRegion, f64)> {
         self.candidates[self.offsets[key as usize]..self.offsets[key as usize + 1]]
             .iter()
-            .map(|candidate| &self.regions[candidate.region])
-            .filter(move |r| r.velocity_low <= velocity && velocity <= r.velocity_high)
+            .map(|candidate| (&self.regions[candidate.region], candidate.step))
+            .filter(move |(r, _)| r.velocity_low <= velocity && velocity <= r.velocity_high)
     }
 }
 
@@ -224,13 +224,26 @@ impl Runtime {
             Origin::Input(_) => self.active_plan,
             Origin::Child(parent, ..) => self.notes.get(parent.0).ok_or(Error::StaleHandle)?.plan,
         };
-        let count = self
+        let pitch = match origin {
+            Origin::Input(_) | Origin::Child(_, _, super::Inheritance::Independent) => {
+                super::pitch::PitchRange::constant(1.0)
+            }
+            Origin::Child(parent, _, inheritance) => {
+                let owner = self.notes.get(parent.0).unwrap().expression;
+                self.pitch_range(owner, inheritance == super::Inheritance::Linked)?
+            }
+        };
+        let mut count = 0;
+        for (_, step) in self
             .plans
             .get(plan.0)
             .unwrap()
             .prepared
             .matches(key, velocity)
-            .count();
+        {
+            pitch.apply(step)?;
+            count += 1;
+        }
         if count > self.voices.available() || (count != 0 && self.families.available() == 0) {
             return Err(Error::Capacity);
         }

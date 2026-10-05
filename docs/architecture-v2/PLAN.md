@@ -54,8 +54,9 @@ fits the new contracts and passes independent tests; delete redundant ownership,
 parallel engines and obsolete constraints. Reuse is permitted, compatibility shims
 and dependence on the old core are not. Unsupported vendor behavior remains explicit.
 
-The next source work is native pitch/rate conversion with measured anti-aliasing,
-then live note expression and routing. Import coverage, streaming, DSP graphs,
+Native [pitch/rate conversion and live note expression](RESAMPLING.md) now have
+initial independent audio/ownership evidence. Expression routing, broader resampler
+performance and quality coverage, and modulation remain open. Import coverage, streaming, DSP graphs,
 fuller scripting, persistence and product integration remain substantial open work.
 Rust Doctor configuration stays available, but repeated score scans are no longer
 the interactive work loop at the user's request; correctness and realtime checks

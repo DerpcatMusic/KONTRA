@@ -94,7 +94,7 @@ impl Cursor {
         self.step
     }
 
-    // Only the prepared compiler supplies this validated candidate rate.
+    // Prepared candidates and validated expression changes supply this rate.
     pub(super) fn with_step(mut self, step: f64) -> Self {
         debug_assert!((MIN_STEP..=MAX_STEP).contains(&step));
         self.step = step;

@@ -1,6 +1,6 @@
 use sampler_core::{
-    Direction, Envelope, Error, Event, Input, Limits, Loop, LoopMode, Pcm, Playback, Prepared,
-    Protocol, Region, Runtime,
+    Direction, Envelope, Error, Event, Expression, Inheritance, Input, Limits, Loop, LoopMode, Pcm,
+    Playback, Prepared, Protocol, Region, Runtime,
 };
 use std::f64::consts::PI;
 mod support;
@@ -370,4 +370,194 @@ fn prepared_key_tracking_uses_logical_keys_and_keeps_exact_root_pitch() {
         ),
         Err(Error::InvalidInput)
     ));
+}
+
+fn expression(pitch_semitones: f64) -> Expression {
+    Expression {
+        pitch_semitones,
+        ..Expression::default()
+    }
+}
+fn tone() -> Pcm {
+    Pcm {
+        rate: 48000,
+        frames: (0..4096)
+            .map(|i| {
+                let phase = 2.0 * PI * 0.017 * i as f64;
+                [phase.cos() as f32, phase.sin() as f32]
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn live_pitch_is_phase_continuous_and_sample_accurate_at_every_partition() {
+    let mut baseline = [[0.0; 2]; 512];
+    for partition in [1, 7, 64, 256, 512] {
+        let mut rt = runtime(
+            prepare(
+                tone(),
+                48000,
+                Playback {
+                    start: 512,
+                    ..Playback::default()
+                },
+            )
+            .unwrap(),
+        );
+        let mut audio = [[0.0; 2]; 512];
+        support::without_heap(|| {
+            let note = rt.trigger(input(), 60, 1.0).unwrap();
+            for (at, pitch) in [(256, 12.0), (384, -12.0), (511, 0.0)] {
+                rt.schedule_event(at, Event::Expression(note, expression(pitch)))
+                    .unwrap();
+            }
+            rt.render(&mut [[0.0; 2]; 128]).unwrap();
+            for block in audio.chunks_mut(partition) {
+                rt.render(&mut []).unwrap();
+                rt.render(block).unwrap();
+            }
+            assert_eq!(rt.pending_commands(), 0);
+            rt.panic();
+            rt.flush_ended(|_| true);
+        });
+        if partition == 1 {
+            baseline = audio;
+        } else {
+            assert_eq!(baseline, audio);
+        }
+        let mut position = 640.0;
+        for (index, frame) in audio.iter().enumerate() {
+            let time = 128 + index;
+            let phase = 2.0 * PI * 0.017 * position;
+            assert!(
+                (f64::from(frame[0]) - phase.cos()).abs() < 0.0001,
+                "time={time}"
+            );
+            assert!(
+                (f64::from(frame[1]) - phase.sin()).abs() < 0.0001,
+                "time={time}"
+            );
+            position += match time {
+                0..256 => 1.0,
+                256..384 => 2.0,
+                384..511 => 0.5,
+                _ => 1.0,
+            };
+        }
+    }
+}
+
+#[test]
+fn pitch_inheritance_and_reused_channels_do_not_retarget_existing_sources() {
+    for policy in [
+        Inheritance::Linked,
+        Inheritance::Snapshot,
+        Inheritance::Independent,
+    ] {
+        let mut rt = runtime(prepare(tone(), 48000, Playback::default()).unwrap());
+        let mut audio = [[0.0; 2]; 384];
+        support::without_heap(|| {
+            let root = rt.note_on(input(), 60, 1.0).unwrap();
+            let owner = rt.expression_id(root).unwrap();
+            rt.set_expression(owner, expression(12.0)).unwrap();
+            let child = rt.child(root, 60, 1.0, false, policy).unwrap();
+            rt.start(child, 0, 0, 1.0).unwrap();
+            rt.schedule_event(256, Event::Expression(root, expression(-12.0)))
+                .unwrap();
+            rt.render(&mut [[0.0; 2]; 128]).unwrap();
+            let reused = rt.note_on(input(), 60, 1.0).unwrap();
+            rt.set_expression(rt.expression_id(reused).unwrap(), expression(36.0))
+                .unwrap();
+            rt.render(&mut audio).unwrap();
+            rt.panic();
+            rt.flush_ended(|_| true);
+        });
+        let first_step = if policy == Inheritance::Independent {
+            1.0
+        } else {
+            2.0
+        };
+        let mut position = 128.0 * first_step;
+        for (i, frame) in audio.iter().enumerate() {
+            let phase = 2.0 * PI * 0.017 * position;
+            assert!((f64::from(frame[0]) - phase.cos()).abs() < 0.0001);
+            assert!((f64::from(frame[1]) - phase.sin()).abs() < 0.0001);
+            position += if policy == Inheritance::Linked && i + 128 >= 256 {
+                0.5
+            } else {
+                first_step
+            };
+        }
+    }
+}
+
+#[test]
+fn pending_pitch_constrains_late_sources_and_detachment_keeps_admission_atomic() {
+    let mut rt = runtime(prepare(tone(), 48000, Playback::default()).unwrap());
+    support::without_heap(|| {
+        let root = rt.note_on(input(), 60, 1.0).unwrap();
+        let owner = rt.expression_id(root).unwrap();
+        rt.start(root, 0, 0, 1.0).unwrap();
+        rt.schedule_event(100, Event::Expression(root, expression(12.0)))
+            .unwrap();
+        let family = rt.create_family(root).unwrap();
+        let at_limit = Playback {
+            transpose_semitones: 48.0,
+            ..Playback::default()
+        };
+        assert_eq!(
+            rt.start_family(family, 0, 50, 1.0, Envelope::default(), at_limit),
+            Err(Error::InvalidInput)
+        );
+        assert_eq!(
+            (
+                rt.voice_count(),
+                rt.pending_commands(),
+                rt.family_voice_count(family).unwrap()
+            ),
+            (1, 1, 0)
+        );
+        rt.start_family(
+            family,
+            0,
+            50,
+            1.0,
+            Envelope::default(),
+            Playback {
+                transpose_semitones: 36.0,
+                ..Playback::default()
+            },
+        )
+        .unwrap();
+        rt.finish_family(family).unwrap();
+        // Delayed voices already constrain immediate and future expression.
+        assert_eq!(
+            rt.set_expression(owner, expression(13.0)),
+            Err(Error::InvalidInput)
+        );
+        assert_eq!(
+            rt.schedule_event(75, Event::Expression(root, expression(13.0))),
+            Err(Error::InvalidInput)
+        );
+        assert_eq!(rt.expression(owner), Ok(Expression::default()));
+        assert_eq!(rt.pending_commands(), 2);
+        let detached = rt.child(root, 60, 1.0, false, Inheritance::Linked).unwrap();
+        rt.detach_expression(detached).unwrap();
+        let detached_family = rt.create_family(detached).unwrap();
+        // The queued root expression no longer targets this detached owner.
+        rt.start_family(detached_family, 0, 0, 1.0, Envelope::default(), at_limit)
+            .unwrap();
+        rt.finish_family(detached_family).unwrap();
+        rt.render(&mut [[0.0; 2]; 128]).unwrap();
+        assert_eq!(rt.expression(owner), Ok(expression(12.0)));
+        assert_eq!(
+            rt.expression(rt.expression_id(detached).unwrap()),
+            Ok(Expression::default())
+        );
+        assert_eq!(rt.pending_commands(), 0);
+        rt.panic();
+        rt.flush_ended(|_| true);
+        assert_eq!((rt.voice_count(), rt.note_count()), (0, 0));
+    });
 }

@@ -393,6 +393,9 @@ fn expression_inheritance_is_explicit_and_channel_reuse_is_isolated() {
         gain: 0.25,
         pressure: 0x8000_0002,
         pan: 1.0,
+        // Keep this gain/pan PCM oracle at unity pitch. Fractional playback has
+        // independent tone and filter-boundary checks in tests/resample.rs.
+        pitch_semitones: 0.0,
         ..first
     };
     rt.set_expression(e, second).unwrap();
