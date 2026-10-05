@@ -250,6 +250,7 @@ impl Runtime {
             }
             self.notes.remove(id.0);
             self.drop_expression(n.expression);
+            self.plans.get_mut(n.plan.0).unwrap().notes -= 1;
             let Some(parent) = n.parent else {
                 break;
             };

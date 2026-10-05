@@ -19,7 +19,9 @@ then converted to the float audio gain domain. PCM must match the prepared rate.
 `Runtime` now owns its immutable prepared plan. The previous borrowed fixture-only
 constructor is removed. There is no leaked storage or self-referential lifetime
 workaround. Construction/destruction remain control-side operations. This establishes
-one-plan ownership; bounded live plan replacement/worker retirement is still required.
+one-plan ownership. [Bounded plan replacement](PLAN_ADOPTION.md) now extends the
+core with retained generations and off-audio retirement; this command-line path
+still prepares a single instrument.
 
 `trigger` preflights the complete matching layer set before admitting ownership.
 Capacity failure cannot sound a partial family. A valid unmapped input still creates

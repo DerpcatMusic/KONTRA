@@ -112,9 +112,10 @@ executable contracts. No old-VM fallback is present.
 ## Callback-local state and bounded branches
 
 Preparation derives each program's local count from validated 16-bit operands.
-Runtime construction checks the maximum program width times continuation capacity
-against `Limits.behavior_cells`, including multiplication and allocation-layout
-limits, before allocating storage. A callback clears its own local range when
+Runtime construction reserves a fixed stride from `Limits.behavior_cells` divided
+by continuation capacity and checks each program width and allocation layout before
+allocating. [Plan replacement](PLAN_ADOPTION.md) validates new widths against that
+same reserved stride; old callbacks keep their original program and local bounds. A callback clears its own local range when
 admitted. Values survive waits and completion backpressure; reused slots start at
 zero. `behavior_local` validates both the generational handle and program-local
 bound, so a caller cannot inspect another callback's cells.

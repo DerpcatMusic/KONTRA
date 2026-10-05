@@ -143,7 +143,13 @@ impl Runtime {
     /// no-source note, still paired with its key-up and terminal acceptance.
     pub fn trigger(&mut self, input: Input, key: u8, velocity: f64) -> Result<NoteId, Error> {
         self.apply_due();
-        if let Some(program) = self.plan.note_program {
+        if let Some(program) = self
+            .plans
+            .get(self.active_plan.0)
+            .unwrap()
+            .prepared
+            .note_program
+        {
             if self.behaviors.available() == 0 {
                 return Err(Error::Capacity);
             }
@@ -172,7 +178,17 @@ impl Runtime {
         if key >= 128 || !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
             return Err(Error::InvalidInput);
         }
-        let count = self.plan.matches(key, velocity).count();
+        let plan = match origin {
+            Origin::Input(_) => self.active_plan,
+            Origin::Child(parent, ..) => self.notes.get(parent.0).ok_or(Error::StaleHandle)?.plan,
+        };
+        let count = self
+            .plans
+            .get(plan.0)
+            .unwrap()
+            .prepared
+            .matches(key, velocity)
+            .count();
         if count > self.voices.available() || (count != 0 && self.families.available() == 0) {
             return Err(Error::Capacity);
         }
@@ -188,10 +204,12 @@ impl Runtime {
         // Everything below was validated by Prepared and preflight. No callbacks,
         // concurrent writers or newly due work can consume the reserved resources.
         let family = self.create_family(note).expect("preflight family capacity");
-        let begin = self.plan.offsets[key as usize];
-        let end = self.plan.offsets[key as usize + 1];
+        let prepared = &self.plans.get(plan.0).unwrap().prepared;
+        let begin = prepared.offsets[key as usize];
+        let end = prepared.offsets[key as usize + 1];
         for i in begin..end {
-            let r = self.plan.regions[self.plan.candidates[i]];
+            let prepared = &self.plans.get(plan.0).unwrap().prepared;
+            let r = prepared.regions[prepared.candidates[i]];
             if r.velocity_low <= velocity && velocity <= r.velocity_high {
                 self.start_family(
                     family,

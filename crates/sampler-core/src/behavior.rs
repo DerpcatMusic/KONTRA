@@ -126,11 +126,12 @@ impl Runtime {
     /// until flush_behaviors accepts it, including synchronous completion/failure.
     pub fn start_behavior(&mut self, note: NoteId, program: usize) -> Result<BehaviorId, Error> {
         self.apply_due();
-        if program >= self.plan.programs.len() {
+        let n = self.notes.get_mut(note.0).ok_or(Error::StaleHandle)?;
+        let plan = &self.plans.get(n.plan.0).unwrap().prepared;
+        if program >= plan.programs.len() {
             return Err(Error::InvalidInput);
         }
-        let n = self.notes.get_mut(note.0).ok_or(Error::StaleHandle)?;
-        if !n.gate && self.plan.programs[program].wait_lifetime == WaitLifetime::Gate {
+        if !n.gate && plan.programs[program].wait_lifetime == WaitLifetime::Gate {
             return Err(Error::ClosedNote);
         }
         let work = n.work.checked_add(1).ok_or(Error::Capacity)?;
@@ -142,7 +143,7 @@ impl Runtime {
         })?);
         n.work = work;
         let begin = id.0.index * self.behavior_stride;
-        self.behavior_locals[begin..begin + self.plan.programs[program].locals].fill(0);
+        self.behavior_locals[begin..begin + plan.programs[program].locals].fill(0);
         self.resume_behavior(id);
         Ok(id)
     }
@@ -156,7 +157,12 @@ impl Runtime {
     pub fn behavior_local(&self, id: BehaviorId, local: u16) -> Result<i64, Error> {
         let c = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
         let local = usize::from(local);
-        if local >= self.plan.programs[c.program].locals {
+        let plan = &self
+            .plans
+            .get(self.notes.get(c.note.0).unwrap().plan.0)
+            .unwrap()
+            .prepared;
+        if local >= plan.programs[c.program].locals {
             return Err(Error::InvalidInput);
         }
         self.behavior_locals
@@ -201,7 +207,12 @@ impl Runtime {
             if c.outcome.is_some() {
                 return;
             }
-            let Some(op) = self.plan.programs[c.program].code.get(c.pc).copied() else {
+            let plan = &self
+                .plans
+                .get(self.notes.get(c.note.0).unwrap().plan.0)
+                .unwrap()
+                .prepared;
+            let Some(op) = plan.programs[c.program].code.get(c.pc).copied() else {
                 c.outcome = Some(Outcome::Finished);
                 return;
             };
@@ -217,7 +228,12 @@ impl Runtime {
             }
         }
         let c = self.behaviors.get_mut(id.0).unwrap();
-        if c.pc == self.plan.programs[c.program].code.len() {
+        let plan = &self
+            .plans
+            .get(self.notes.get(c.note.0).unwrap().plan.0)
+            .unwrap()
+            .prepared;
+        if c.pc == plan.programs[c.program].code.len() {
             c.outcome = Some(Outcome::Finished);
         } else {
             self.fail_behavior(id, Outcome::FuelExhausted);

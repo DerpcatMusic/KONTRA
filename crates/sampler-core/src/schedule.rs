@@ -135,7 +135,14 @@ impl Runtime {
                 if c.outcome.is_some() {
                     false
                 } else if notes.get(c.note.0).unwrap().gate
-                    || self.plan.programs[c.program].wait_lifetime == super::WaitLifetime::Callback
+                    || self
+                        .plans
+                        .get(notes.get(c.note.0).unwrap().plan.0)
+                        .unwrap()
+                        .prepared
+                        .programs[c.program]
+                        .wait_lifetime
+                        == super::WaitLifetime::Callback
                 {
                     true
                 } else {
