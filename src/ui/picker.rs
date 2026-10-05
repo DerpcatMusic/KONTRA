@@ -3,7 +3,7 @@
 //! before their native parent closes. Windows/macOS retain their native rfd
 //! worker. Filesystem work stays off the GUI; plugin teardown joins workers.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -107,10 +107,9 @@ impl Picker {
         if !cfg!(target_os = "linux") {
             return true;
         }
-        let bus = std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some()
+        std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some()
             || std::env::var_os("XDG_RUNTIME_DIR")
-                .is_some_and(|dir| PathBuf::from(dir).join("bus").exists());
-        bus
+                .is_some_and(|dir| PathBuf::from(dir).join("bus").exists())
     }
 
     /// Run a file operation on its owned worker. Unavailable dialogs return
@@ -225,7 +224,7 @@ fn show(ask: Ask) -> Option<Picked> {
 }
 
 /// Runs only on the picker worker, so symlink and case handling never blocks audio.
-fn selected_file(base: &PathBuf, path: &PathBuf, extensions: &[&str]) -> Result<String, String> {
+fn selected_file(base: &PathBuf, path: &Path, extensions: &[&str]) -> Result<String, String> {
     let path = path.canonicalize().map_err(|e| e.to_string())?;
     if !path.starts_with(base) || !path.is_file() { return Err("Select a file inside the authored base directory".into()) }
     if !path.extension().is_some_and(|e| extensions.iter().any(|x| e.eq_ignore_ascii_case(x))) {

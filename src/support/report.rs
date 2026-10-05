@@ -372,19 +372,19 @@ pub(super) fn try_auto_report_pending_incident() {
                 Some(AutomaticReportContinuation::ManualRequired(_, _))
             ),
         );
-        if let Ok(bytes) = serde_json::to_vec(&value) {
-            if let Err(error) = buffr_durable_file::publish_private_streaming(
+        if let Ok(bytes) = serde_json::to_vec(&value)
+            && let Err(error) = buffr_durable_file::publish_private_streaming(
                 &status_path,
                 std::time::Duration::from_millis(500),
                 |file| std::io::Write::write_all(file, &bytes),
-            ) {
-                crate::diagnostics::event(
-                    crate::diagnostics::LogLevel::Error,
-                    "support",
-                    "report_receipt_write_failed",
-                    serde_json::json!({"reason":format!("Could not persist the crash-report delivery status: {error}")}),
-                );
-            }
+            )
+        {
+            crate::diagnostics::event(
+                crate::diagnostics::LogLevel::Error,
+                "support",
+                "report_receipt_write_failed",
+                serde_json::json!({"reason":format!("Could not persist the crash-report delivery status: {error}")}),
+            );
         }
         crate::diagnostics::event(level, "support", "automatic_crash_report", value);
         if result.is_ok() {
@@ -1241,10 +1241,7 @@ mod tests {
                 };
                 outcome.send(acknowledged).unwrap();
                 finishing.recv_timeout(timeout).unwrap();
-                if !acknowledged {
-                    return; // Rejected receipt, offline or unconfirmed incident.
-                }
-                // Successful completion leaves through the same scope boundary.
+                // Every outcome leaves through the same scope boundary.
             })
             .unwrap();
             began.recv_timeout(timeout).unwrap();

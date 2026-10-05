@@ -312,7 +312,7 @@ pub fn plan(interface: &Interface, _pictures: &HashMap<String, Arc<Picture>>, dr
                 let room = spot(longest, align);
                 let lines = break_lines(&said, room.1 - 4., FONT, s.h >= 2. * LINE);
                 let tall = LINE * lines.len() as f64;
-                let y0 = top.map_or((s.h - tall) / 2., |y| y);
+                let y0 = top.unwrap_or((s.h - tall) / 2.);
                 // Text set below the label's foot is clipped away, as Kontakt hides it.
                 if top.is_none_or(|y| y < s.h) {
                     for (k, line) in lines.iter().enumerate() {
@@ -653,7 +653,7 @@ end on"#;
         u.width = 800;
         assert_eq!(u.controls[1].properties["picture menu"], Value::Int(u.controls[0].id));
         let pictures: HashMap<_, _> = [
-            ("face_13".into(), Arc::new(Picture { frames: vec![Arc::new(Image::rgba(732,71,vec![255;732*71*4]).unwrap());180], stretch: [false;2], atlas: None })),
+            ("face_13".into(), Arc::new(Picture { frames: { let frame = Arc::new(Image::rgba(732,71,vec![255;732*71*4]).unwrap()); vec![frame;180] }, stretch: [false;2], atlas: None })),
             ("transparent".into(), Arc::new(Picture { frames: vec![Arc::new(Image::rgba(734,73,vec![0;734*73*4]).unwrap())], stretch: [false;2], atlas: None })),
         ].into();
         for (value, caption) in [(13,"Rhythm"),(4,"Filter")] {
@@ -676,7 +676,7 @@ end on"#;
         // pictures at source index32, overlaid by a 260x58 loop-start slider0.
         let mut u = crate::ksp::initialize("on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_label $dark(1,1)\nset_text($dark,\"\")\nset_control_par_str(get_ui_id($dark),$CONTROL_PAR_PICTURE,\"wave\")\nset_control_par(get_ui_id($dark),$CONTROL_PAR_WIDTH,258)\nset_control_par(get_ui_id($dark),$CONTROL_PAR_PICTURE_STATE,32)\ndeclare ui_label $bright(1,1)\nset_text($bright,\"\")\nset_control_par_str(get_ui_id($bright),$CONTROL_PAR_PICTURE,\"wave\")\nset_control_par(get_ui_id($bright),$CONTROL_PAR_WIDTH,257)\nset_control_par(get_ui_id($bright),$CONTROL_PAR_PICTURE_STATE,32)\ndeclare ui_slider $start(0,1000000)\nset_control_par_str(get_ui_id($start),$CONTROL_PAR_PICTURE,\"transparent\")\nend on", 0, 8).unwrap();
         let pictures: HashMap<_, _> = [
-            ("wave".into(), Arc::new(Picture { frames: vec![Arc::new(Image::rgba(258,63,vec![255;258*63*4]).unwrap());180], stretch: [true,false], atlas: None })),
+            ("wave".into(), Arc::new(Picture { frames: { let frame = Arc::new(Image::rgba(258,63,vec![255;258*63*4]).unwrap()); vec![frame;180] }, stretch: [true,false], atlas: None })),
             ("transparent".into(), Arc::new(Picture { frames: vec![Arc::new(Image::rgba(260,58,vec![0;260*58*4]).unwrap())], stretch: [false;2], atlas: None })),
         ].into();
         for source in [32, 0] {

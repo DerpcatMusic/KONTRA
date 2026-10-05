@@ -1088,20 +1088,20 @@ impl Scanner {
         if installed == want {
             return None;
         }
-        if let Some(done) = lock(&self.done).take_if(|(g, _)| *g <= want) {
-            if done.0 == want {
-                if let Some(imported) = done.1.as_ref().and_then(|s| s.imported.clone()) {
-                    self.edit(|s| {
-                        for root in imported {
-                            if !s.roots.iter().any(|r| r.path == root.path) {
-                                s.roots.push(root);
-                            }
+        if let Some(done) = lock(&self.done).take_if(|(g, _)| *g <= want)
+            && done.0 == want
+        {
+            if let Some(imported) = done.1.as_ref().and_then(|s| s.imported.clone()) {
+                self.edit(|s| {
+                    for root in imported {
+                        if !s.roots.iter().any(|r| r.path == root.path) {
+                            s.roots.push(root);
                         }
-                        s.imported = true;
-                    });
-                }
-                return Some(done);
+                    }
+                    s.imported = true;
+                });
             }
+            return Some(done);
         }
         let cached = if !self.cache_read.swap(true, Ordering::AcqRel) {
             let settings = self.settings();

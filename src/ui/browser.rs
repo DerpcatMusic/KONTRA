@@ -1543,7 +1543,7 @@ mod tests {
     #[test]
     fn uvi_folder_keys_follow_bank_uuid_and_bound_deep_tree_work() {
         let original = bank_preset("Presets/Piano.uvip");
-        let original_key = uvi_hierarchy(&[original.clone()], &BTreeMap::new()).unwrap()[0].key();
+        let original_key = uvi_hierarchy(std::slice::from_ref(&original), &BTreeMap::new()).unwrap()[0].key();
         let mut replacement = (*original).clone();
         replacement.source.bank_uuid = [5; 16];
         assert_ne!(original_key, uvi_hierarchy(&[Arc::new(replacement.clone())], &BTreeMap::new()).unwrap()[0].key());

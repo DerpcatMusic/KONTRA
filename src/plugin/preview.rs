@@ -173,17 +173,17 @@ impl Cursor {
         if !self.playing && self.current.is_some() && !discard.is_full() {
             progress.retired |= self.retire(discard);
         }
-        if self.current.is_none() && !discard.is_full() {
-            if let Some(next) = mailbox.ready.pop() {
-                progress.ready_taken = true;
-                self.current = Some(next);
-                self.at = 0;
-                self.playing = self.valid(control, rate);
-                if self.playing { control.set_status(self.current.as_ref().unwrap().id, Status::Playing); }
-                else {
-                    control.set_status(self.current.as_ref().unwrap().id, Status::Stopped);
-                    progress.retired |= self.retire(discard);
-                }
+        if self.current.is_none() && !discard.is_full()
+            && let Some(next) = mailbox.ready.pop()
+        {
+            progress.ready_taken = true;
+            self.current = Some(next);
+            self.at = 0;
+            self.playing = self.valid(control, rate);
+            if self.playing { control.set_status(self.current.as_ref().unwrap().id, Status::Playing); }
+            else {
+                control.set_status(self.current.as_ref().unwrap().id, Status::Stopped);
+                progress.retired |= self.retire(discard);
             }
         }
         progress

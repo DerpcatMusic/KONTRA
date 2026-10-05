@@ -2342,7 +2342,7 @@ impl Runtime {
                 }
                 continue;
             }
-            if !(self.env.events.get(t.ctx.event).is_some_and(&selected_event)
+            if !(self.env.events.get(t.ctx.event).is_some_and(selected_event)
                 || t.ctx.host_pressure.is_some_and(|(r, _)| host_note == Some(r))
                 || host_note.is_none() && input && selected(t.ctx.channel, t.ctx.input_channel)) { continue; }
             let ctx = t.ctx;

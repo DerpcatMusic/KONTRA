@@ -682,7 +682,7 @@ fn pack_fixed<const W: usize>(fields: &[i32; BLOCK], out: &mut Vec<u8>) {
     // Groups land in a stack buffer and append once: a length check per
     // block rather than per group.
     let mut packed = [0u8; BLOCK / 8 * 33];
-    let groups = fields.as_chunks::<8>().0.iter().zip(packed.chunks_exact_mut(W));
+    let groups = fields.as_chunks::<8>().0.iter().zip(packed.as_chunks_mut::<W>().0.iter_mut());
     for (group, out) in groups {
         let mut words = [0u64; 5];
         for (k, &v) in group.iter().enumerate() {
@@ -1505,7 +1505,7 @@ mod tests {
             let mut bytes = b"RIFF\0\0\0\0WAVEfmt ".to_vec();
             bytes.extend((fmt_len as u32).to_le_bytes());
             bytes.extend(fmt);
-            if fmt_len % 2 != 0 {
+            if !fmt_len.is_multiple_of(2) {
                 bytes.push(0);
             } // RIFF padding is outside fmt.
             bytes.extend(b"data");

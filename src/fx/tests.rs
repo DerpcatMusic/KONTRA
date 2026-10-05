@@ -319,7 +319,7 @@ fn waited_ksp_rack_output_and_group_send_writes_keep_their_actual_pcm_timestamps
         let ended = actual.host_note_end_at(exact).unwrap();
         assert_eq!(Some(ended), reference.host_note_end_at(exact));
         assert!(
-            ended >= 768 && ended < 896,
+            (768..896).contains(&ended),
             "exact owner ends on its authored release clock"
         );
         if let Some((old_pcm, old_tail, old_direct, old_direct_tail, old_end)) = complete {
