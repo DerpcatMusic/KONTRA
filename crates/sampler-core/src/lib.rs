@@ -639,31 +639,6 @@ impl Runtime {
         self.cancel_closed_work();
     }
 
-    /// Consume terminal notifications only after acceptance. The sink must be bounded
-    /// and non-allocating on an audio thread. A rejection stops retries for this call.
-    pub fn flush_ended(&mut self, mut accept: impl FnMut(Input) -> bool) {
-        for i in 0..self.notes.slots.len() {
-            let mut id = NoteId(self.notes.id(i));
-            // Each removal visits its parent once. No recursion, scratch queue or
-            // repeated pool scans: O(reserved slots + retired notes).
-            while let Some(n) = self.notes.get(id.0).copied() {
-                if n.gate || n.pins != 0 || n.work != 0 || n.families != 0 || n.children != 0 {
-                    break;
-                }
-                if n.input.is_some_and(|input| !accept(input)) {
-                    return;
-                }
-                self.notes.remove(id.0);
-                self.drop_expression(n.expression);
-                let Some(parent) = n.parent else {
-                    break;
-                };
-                self.notes.get_mut(parent.0).unwrap().children -= 1;
-                id = parent;
-            }
-        }
-    }
-
     /// Events at the exclusive block end stay pending until the next render (including
     /// an empty block). Overflow is rejected before any output/state mutation.
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Error> {

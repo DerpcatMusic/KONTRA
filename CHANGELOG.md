@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Reclaim finished internal note/expression ownership before bounded behavior admission runs out of slots. Repeating scripts remain independent of block size and rejected host terminals; live voices, descendants and pins still retain their owners.
+
 - Add a clean-sheet KSP note-callback source subset with bounded compilation and explicit unsupported diagnostics. Literal waits and fixed-duration generated notes execute through the new core and `sampler-native script`; authored timing/ownership fixtures pass without the old parser or VM. Kontakt fidelity remains unverified.
 
 - Separate callback retention from generated-note duration in native behavior execution. Fixed-duration notes can outlive input release; gate-linked notes and retained callbacks keep distinct ownership. Panic cancels both kinds of waits, and tests cover late generation and fault-time retirement.

@@ -296,6 +296,7 @@ impl Runtime {
                     return Err(Error::Capacity);
                 }
                 let linked = !matches!(duration, Duration::Frames(_));
+                self.reclaim_internal_notes();
                 let child = self.trigger_child(note, key as u8, velocity, linked, inheritance)?;
                 if let Some(at) = at {
                     self.release_at(child, at)?;

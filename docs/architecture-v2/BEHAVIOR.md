@@ -161,3 +161,25 @@ and [release callbacks](https://docs.native-instruments.com/ni-tech-manuals/ksp-
 These references motivate distinct ownership policies. No Kontakt binary comparison
 or complete language implementation is implied; source-duration zero and vendor
 microsecond rounding still require separate implementation/evidence.
+
+## Generated-note reclamation under pressure
+
+Before a behavior admits another generated note, exhausted note or expression
+capacity triggers a bounded internal-owner sweep. Closed notes retire only after
+all families, children, public pins and private work pins are gone. External input
+owners remain allocated until `flush_ended` accepts their terminal; a waiting or
+rejected external terminal does not block reclamation of unrelated internal notes.
+Code retaining an internal note handle across later generation must pin it until
+finished with it. Reclamation allocates/frees no heap memory and shares the same
+iterative retirement path as explicit terminal draining.
+
+The regression first failed with `Fault(Capacity)`. It now renders 100 short notes
+using three note slots (two retained inputs and one reusable child), and separately
+with three expression slots. Blocks 1, 7, 64 and 256 produce identical expected
+pulses while the terminal sink rejects delivery. Completion and both original
+terminals are accepted exactly once afterward. This removes dependence on host
+block size or terminal-drain frequency for completed generated-note reuse; genuinely
+simultaneous live owners still require sufficient declared capacity.
+
+Evidence: `artifacts/architecture-v2/reclaim-*`. The authoritative new-core scan is
+90, complete, zero errors and 118 warnings, with no rule suppression.
