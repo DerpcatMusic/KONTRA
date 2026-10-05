@@ -31,8 +31,8 @@ slots are quarantined. Explicit family creation is required for coordinated laye
 `start(note, ...)` is the convenience operation for a single-source family.
 
 `Input` now preserves group alongside port/channel/original key. Pressure and timbre
-retain exact `u32` values; canonical gain, pan and pitch use `f64`. Only gain and
-stereo balance currently affect PCM. Pitch, pressure and timbre storage is **not**
+retain exact `u32` values; canonical gain, pan and pitch use `f64`. Gain and stereo balance affect PCM; [live pitch](RESAMPLING.md) now also drives
+native source phase. Pressure and timbre storage is **not**
 a completed modulation engine. Balance has center unity and no smoothing in this
 fixture; production panning and modulation policies still need implementation.
 

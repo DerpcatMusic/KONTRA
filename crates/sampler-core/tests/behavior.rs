@@ -918,3 +918,78 @@ fn scoped_hard_silence_cancels_descendants_and_retained_waits_but_keeps_physical
         });
     }
 }
+
+#[test]
+fn generated_source_pitch_preflight_preserves_accepted_future_expression() {
+    use sampler_core::{Duration, Expression, Inheritance, Velocity};
+    for inheritance in [
+        Inheritance::Linked,
+        Inheritance::Snapshot,
+        Inheritance::Independent,
+    ] {
+        let mut rt = runtime(
+            vec![
+                Instruction::Wait(1),
+                Instruction::Play {
+                    transpose: 0,
+                    velocity: Velocity::Fixed(1.0),
+                    inheritance,
+                    duration: Duration::Frames(4),
+                },
+                Instruction::End,
+            ],
+            limits(),
+        );
+        support::without_heap(|| {
+            let root = rt.note_on(input(), 60, 1.0).unwrap();
+            // With no admitted source, retaining this native value is valid. A
+            // subsequently linked source cannot support it and must fail before
+            // creating a child/family; snapshots do not inherit future changes.
+            rt.schedule_event(
+                10,
+                Event::Expression(
+                    root,
+                    Expression {
+                        pitch_semitones: 120.0,
+                        ..Expression::default()
+                    },
+                ),
+            )
+            .unwrap();
+            let behavior = rt.start_behavior(root, 0).unwrap();
+            let mut audio = [[0.0; 2]; 2];
+            rt.render(&mut audio).unwrap();
+            let linked = inheritance == Inheritance::Linked;
+            assert_eq!(
+                rt.behavior_outcome(behavior),
+                Ok(Some(if linked {
+                    Outcome::Fault(Error::InvalidInput)
+                } else {
+                    Outcome::Finished
+                }))
+            );
+            assert_eq!(rt.note_count(), if linked { 1 } else { 2 });
+            assert_eq!(rt.voice_count(), usize::from(!linked));
+            assert_eq!(audio, [[0.0; 2], [if linked { 0.0 } else { 1.0 }; 2]]);
+            rt.render(&mut [[0.0; 2]; 16]).unwrap();
+            assert_eq!(
+                rt.expression(rt.expression_id(root).unwrap())
+                    .unwrap()
+                    .pitch_semitones,
+                if linked { 0.0 } else { 120.0 }
+            );
+            rt.flush_behaviors(|_, _, _| true);
+            rt.key_up(root).unwrap();
+            rt.flush_ended(|_| true);
+            assert_eq!(
+                (
+                    rt.note_count(),
+                    rt.family_count(),
+                    rt.voice_count(),
+                    rt.pending_commands()
+                ),
+                (0, 0, 0, 0)
+            );
+        });
+    }
+}

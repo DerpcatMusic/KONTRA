@@ -93,7 +93,7 @@ its normal invocation remains the original unity workload. Exact binary DC outpu
 is checked outside timed callbacks. Local evidence uses ignored
 `artifacts/architecture-v2/resample-*`.
 
-Live expression-to-pitch consumption, pitch ramps, broader rate
+Pitch ramps, broader rate
 ranges, quality tiers, streaming demand windows, ping-pong and crossfade loops remain
 open. The host plugin and UI have not been switched to this core. Imported formats
 will lower into these native source and expression contracts rather than selecting
@@ -117,3 +117,53 @@ exceeded that duration. This is not sufficient evidence for a production polypho
 limit. Raw stages are `resample-pitch-*`, `resample-span-pitch-*` and
 `resample-fixed-pitch-*`; the filter shape and numerical acceptance bounds were not
 reduced to achieve that improvement. Wider ratios remain proportionally expensive.
+
+## Live note-scoped pitch
+
+`Expression::pitch_semitones` now affects resident playback. Every voice retains
+its immutable admitted base step (asset/output rate, authored tuning and logical
+key tracking). Rendering combines that base with a cached ratio on the expression
+owner. Pitch changes do not restart the source, clear fractional phase, rewrite PCM
+or change physical input identity. Returning to unit step at a fractional position
+continues through the filter rather than snapping onto a source sample.
+
+Immediate and scheduled changes validate the resulting step for every admitted
+voice sharing that expression owner, including delayed starts. Invalid changes
+return `InvalidInput` without changing the expression or taking a command slot.
+Later source admission validates its base step against both the current expression
+and all queued expressions currently targeting that owner. This reciprocal check
+keeps a previously accepted scheduled change executable after later admissions.
+Detachment only splits an owner's note set; linked child admission checks the same
+pending constraints, while snapshots inherit the current value only. Generated
+selection checks these constraints before creating a child or family, so a rejected
+Play produces a normal retained behavior fault without partial source ownership.
+
+An expression value may be retained on an owner without audio even when no supported
+source step can currently realize it. Source admission then fails explicitly. This
+preserves the canonical expression value without silently clamping it or selecting
+a lower-quality source path. Usual gate cancellation still cancels pending events;
+a behavior fault closes its gate and follows that existing cancellation policy.
+
+The ratio is computed when expression changes, not inside the sample loop. Unchanged
+pitch avoids the voice validation walk. Changed pitch visits the occupancy bitmap
+and admitted voices, skipping empty voice storage. Source admission visits the
+bounded pending queue. Dense modulation/admission costs still need workload evidence
+before assigning production budgets or introducing further indices.
+
+New heap-audited checks compare analytic phase across +12/-12/zero-semitone changes,
+including return to unity with a retained half-frame phase, with block sizes
+1/7/64/256/512. Other checks cover linked/snapshot/independent inheritance, physical
+channel reuse, delayed sources, failed immediate and queued changes, detach, and
+transactional generated-source rejection. Existing gain/pan inheritance checks
+remain at unity pitch; the separate audio checks establish actual pitch behavior.
+
+These are native expression services, not completed MPE or MIDI 2.0 controller
+routing. Wire decoding still needs an explicit ownership-aware expression adapter,
+including member-channel reuse and raw-versus-consumed controller stages. Vendor
+imports will use that shared service rather than defining the engine's expression
+limits. Pitch ramps and custom tuning remain separate pending work.
+
+The unmodulated resident workload was repeated after live pitch was connected:
+three paired CPU-2 runs against the preserved pre-expression renderer measured
+median speedup 1.013 (individual configuration ratios 0.955–1.089). This checks the
+steady unity path, not dense MPE traffic. Logs, CSVs and hashes use `live-pitch-*`.

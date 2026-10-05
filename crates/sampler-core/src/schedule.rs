@@ -48,10 +48,12 @@ impl Runtime {
                 self.channels.get(id.0).ok_or(Error::StaleHandle)?;
             }
         }
-        if let Event::Expression(_, e) = event
-            && !e.valid()
-        {
-            return Err(Error::InvalidInput);
+        if let Event::Expression(note, e) = event {
+            if !e.valid() {
+                return Err(Error::InvalidInput);
+            }
+            let owner = self.notes.get(note.0).unwrap().expression;
+            self.validate_pitch_change(owner, e.pitch_semitones)?;
         }
         if at == self.now {
             self.apply_event(event);

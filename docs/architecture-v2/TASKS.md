@@ -27,6 +27,8 @@ Family/expression ownership and segmented rendering now have
 
 - [x] Add native fractional source traversal, asset/output rate conversion and static
   transposition with ratio-dependent filtering; [evidence and open quality work](RESAMPLING.md).
+- [x] Compile native root-key tracking and apply live note-scoped pitch, with queued
+  expression/source admission invariants. MPE routing and pitch ramps remain open.
 
 ## M0 — contracts and measurable targets
 
