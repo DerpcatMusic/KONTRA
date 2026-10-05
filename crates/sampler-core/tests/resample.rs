@@ -561,3 +561,121 @@ fn pending_pitch_constrains_late_sources_and_detachment_keeps_admission_atomic()
         assert_eq!((rt.voice_count(), rt.note_count()), (0, 0));
     });
 }
+
+#[test]
+fn initial_expression_precedes_selection_and_immediate_snapshot_programs() {
+    use sampler_core::{Duration, Instruction, Outcome, Program, Velocity};
+    let initial = Expression {
+        gain: 0.5,
+        pan: 0.25,
+        pitch_semitones: 12.0,
+        pressure: 0x1234_5678,
+        timbre: 0xfedc_ba98,
+    };
+    let mut plain = runtime(prepare(tone(), 48000, Playback::default()).unwrap());
+    let plan = prepare(tone(), 48000, Playback::default())
+        .unwrap()
+        .with_programs(
+            vec![
+                Program::new(vec![
+                    Instruction::Play {
+                        transpose: 0,
+                        velocity: Velocity::Fixed(1.0),
+                        inheritance: Inheritance::Snapshot,
+                        duration: Duration::Frames(512),
+                    },
+                    Instruction::End,
+                ])
+                .unwrap(),
+            ],
+            Some(0),
+        )
+        .unwrap();
+    let mut scripted = Runtime::new(
+        plan,
+        Limits {
+            notes: 4,
+            channels: 1,
+            families: 4,
+            expressions: 4,
+            voices: 4,
+            commands: 4,
+            behaviors: 1,
+            behavior_fuel: 4,
+            behavior_cells: 0,
+        },
+    )
+    .unwrap();
+    let mut expected = [[0.0; 2]; 256];
+    let mut actual = expected;
+    support::without_heap(|| {
+        for invalid in [
+            expression(f64::NAN),
+            expression(f64::INFINITY),
+            expression(49.0),
+            Expression {
+                gain: -1.0,
+                ..initial
+            },
+            Expression {
+                pan: 2.0,
+                ..initial
+            },
+        ] {
+            assert_eq!(
+                plain.trigger_with_expression(input(), 60, 1.0, invalid),
+                Err(Error::InvalidInput)
+            );
+            assert_eq!(
+                (
+                    plain.note_count(),
+                    plain.expression_count(),
+                    plain.family_count(),
+                    plain.voice_count()
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        let direct = plain
+            .trigger_with_expression(input(), 60, 1.0, initial)
+            .unwrap();
+        assert_eq!(
+            plain.expression(plain.expression_id(direct).unwrap()),
+            Ok(initial)
+        );
+        let root = scripted
+            .trigger_with_expression(input(), 60, 1.0, initial)
+            .unwrap();
+        let owner = scripted.expression_id(root).unwrap();
+        assert_eq!(scripted.expression(owner), Ok(initial));
+        assert_eq!((scripted.note_count(), scripted.voice_count()), (2, 1));
+        scripted
+            .set_expression(owner, Expression::default())
+            .unwrap();
+        scripted.flush_behaviors(|_, note, outcome| {
+            assert_eq!((note, outcome), (root, Outcome::Finished));
+            true
+        });
+        plain.render(&mut expected).unwrap();
+        scripted.render(&mut actual).unwrap();
+        assert_eq!(actual, expected);
+        for rt in [&mut plain, &mut scripted] {
+            rt.panic();
+            rt.flush_ended(|_| true);
+            assert_eq!(
+                (
+                    rt.note_count(),
+                    rt.expression_count(),
+                    rt.family_count(),
+                    rt.voice_count()
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+    });
+    for (index, frame) in actual.iter().enumerate().skip(128) {
+        let phase = 2.0 * PI * 0.017 * (index * 2) as f64;
+        assert!((f64::from(frame[0]) - phase.cos() * 0.375).abs() < 0.0001);
+        assert!((f64::from(frame[1]) - phase.sin() * 0.5).abs() < 0.0001);
+    }
+}

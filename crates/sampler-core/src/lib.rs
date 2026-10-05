@@ -97,6 +97,12 @@ pub struct Limits {
     pub behavior_cells: usize,
 }
 
+#[derive(Clone, Copy)]
+enum NoteOrigin {
+    Input(Input, Expression),
+    Child(NoteId, bool, Inheritance),
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Note {
     input: Option<Input>,
@@ -318,8 +324,20 @@ impl Runtime {
     /// Admit ownership before preparing any source or scheduled work. A caller
     /// receiving Err has not admitted an input; protocol rejection remains its job.
     pub fn note_on(&mut self, input: Input, key: u8, velocity: f64) -> Result<NoteId, Error> {
+        self.note_on_with_expression(input, key, velocity, Expression::default())
+    }
+
+    /// Initial expression is part of ownership admission, before any callback or
+    /// source can snapshot it. Unsupported PCM rates are checked at source admission.
+    pub fn note_on_with_expression(
+        &mut self,
+        input: Input,
+        key: u8,
+        velocity: f64,
+        expression: Expression,
+    ) -> Result<NoteId, Error> {
         self.apply_due();
-        if input.channel >= 16 || input.group >= 16 || input.key >= 128 {
+        if input.channel >= 16 || input.group >= 16 || input.key >= 128 || !expression.valid() {
             return Err(Error::InvalidInput);
         }
         if input.external_id.is_some()
@@ -331,14 +349,7 @@ impl Runtime {
         {
             return Err(Error::DuplicateInput);
         }
-        self.admit(
-            Some(input),
-            None,
-            false,
-            key,
-            velocity,
-            Inheritance::Independent,
-        )
+        self.admit(NoteOrigin::Input(input, expression), key, velocity)
     }
 
     /// Detached children do not release with their parent, but still retain its
@@ -357,24 +368,29 @@ impl Runtime {
             return Err(Error::ClosedNote);
         }
         self.admit(
-            None,
-            Some(parent),
-            linked_release,
+            NoteOrigin::Child(parent, linked_release, inheritance),
             key,
             velocity,
-            inheritance,
         )
     }
 
-    fn admit(
-        &mut self,
-        input: Option<Input>,
-        parent: Option<NoteId>,
-        linked_release: bool,
-        key: u8,
-        velocity: f64,
-        inheritance: Inheritance,
-    ) -> Result<NoteId, Error> {
+    fn admit(&mut self, origin: NoteOrigin, key: u8, velocity: f64) -> Result<NoteId, Error> {
+        let (input, parent, linked_release, inheritance, initial) = match origin {
+            NoteOrigin::Input(input, expression) => (
+                Some(input),
+                None,
+                false,
+                Inheritance::Independent,
+                expression,
+            ),
+            NoteOrigin::Child(parent, linked, inheritance) => (
+                None,
+                Some(parent),
+                linked,
+                inheritance,
+                Expression::default(),
+            ),
+        };
         if key >= 128 || !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
             return Err(Error::InvalidInput);
         }
@@ -403,7 +419,7 @@ impl Runtime {
                         })
                         .unwrap_or((Expression::default(), 1.0))
                 } else {
-                    (Expression::default(), 1.0)
+                    (initial, pitch::ratio(initial.pitch_semitones))
                 };
                 ExpressionId(self.expressions.insert(ExpressionOwner {
                     value,

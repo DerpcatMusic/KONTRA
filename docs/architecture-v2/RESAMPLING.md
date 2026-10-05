@@ -167,3 +167,17 @@ The unmodulated resident workload was repeated after live pitch was connected:
 three paired CPU-2 runs against the preserved pre-expression renderer measured
 median speedup 1.013 (individual configuration ratios 0.955–1.089). This checks the
 steady unity path, not dense MPE traffic. Logs, CSVs and hashes use `live-pitch-*`.
+
+Initial expression can now be supplied to `note_on_with_expression` and
+`trigger_with_expression`. The existing entry points use the default expression.
+The supplied value belongs to the note before source selection or a bound program
+runs, so immediate snapshot children inherit it without a default-valued first
+frame. Plain prepared selection validates all source rates before publishing any
+ownership. A bound program still reports its own later source failures through
+the normal retained behavior outcome; admitting a program is not a promise that
+every generated source will succeed.
+
+The heap-audited regression compares direct playback with an immediately generated
+snapshot child, changes the parent before rendering, and checks analytic pitch,
+gain and stereo balance. It also verifies exact 32-bit pressure/timbre retention,
+invalid initial values, failed source-rate admission, and complete cleanup.
