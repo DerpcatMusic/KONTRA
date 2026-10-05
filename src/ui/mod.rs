@@ -970,6 +970,7 @@ fn native_files(p: &SamplerParams, picker: &picker::Picker, ui: &Ui, at: Point, 
 
 // Existing audit/test adapters keep their own default window lease. Native
 // editors pass the lease shared with their explicit close/cancel callbacks.
+#[cfg(any(test, feature = "shots"))]
 fn build(
     params: &Arc<SamplerParams>,
     meters: Arc<Meters>,
