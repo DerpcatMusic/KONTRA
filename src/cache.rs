@@ -438,10 +438,24 @@ pub fn store_headers(dir: &Path, preset: &Path, paths: &[&Path], headers: &[(&So
         w.0.push(keyed as u8);
     }
     let entry = headers_entry(dir, preset, paths);
-    let tmp = entry.with_extension(format!("tmp{}", std::process::id()));
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = entry.with_extension(format!(
+        "tmp{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     let written = std::fs::create_dir_all(dir)
         .and_then(|()| std::fs::write(&tmp, &bytes))
-        .and_then(|()| std::fs::rename(&tmp, &entry));
+        .and_then(|()| {
+            #[cfg(test)]
+            tests::HEADER_STORE_STAGING_GATE.with(|gate| {
+                if let Some((staged, publish)) = gate.borrow().as_ref() {
+                    staged.send(()).unwrap();
+                    publish.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+                }
+            });
+            std::fs::rename(&tmp, &entry)
+        });
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
@@ -518,6 +532,13 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    std::thread_local! {
+        // Only the two regression writers pause; unrelated cache tests keep running.
+        pub(super) static HEADER_STORE_STAGING_GATE: std::cell::RefCell<
+            Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>
+        > = const { std::cell::RefCell::new(None) };
+    }
 
     #[test]
     fn instruments_round_trip_and_stale_entries_miss() {
@@ -681,5 +702,79 @@ mod tests {
         std::io::Write::write_all(&mut std::fs::OpenOptions::new().append(true).open(&sample).unwrap(), b"x").unwrap();
         assert!(headers(&dir, &preset, &paths).is_none());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test]
+    fn concurrent_header_stores_publish_their_own_complete_source_headers() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("cache");
+        let preset = root.path().join("a.nki");
+        let virtual_path = root.path().join("member.wav");
+        let files = [root.path().join("first.wav"), root.path().join("second.wav")];
+        for (file, rate, bits, frames) in [
+            (&files[0], 44_100, 16, 5),
+            (&files[1], 48_000, 24, 9),
+        ] {
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate: rate,
+                bits_per_sample: bits,
+                sample_format: hound::SampleFormat::Int,
+            };
+            let mut writer = hound::WavWriter::create(file, spec).unwrap();
+            for frame in 0..frames {
+                writer.write_sample(frame).unwrap();
+            }
+            writer.finalize().unwrap();
+        }
+        // Open the real files independently of the serialized cache records.
+        let oracles = files.each_ref().map(|file| {
+            Sources::default().source(file).unwrap().open().unwrap().header()
+        });
+        assert_ne!(oracles[0], oracles[1]);
+        // Two resolutions of the same virtual member share a cache key, while
+        // each staged record must retain its own backing source and header.
+        let sources = files.each_ref().map(|file| {
+            Sources::default().rebuild(&virtual_path, file.clone(), 0, None, false).unwrap()
+        });
+        let paths = [virtual_path.as_path()];
+        let (staged_a, ready_a) = std::sync::mpsc::channel();
+        let (publish_a, release_a) = std::sync::mpsc::channel();
+        let (staged_b, ready_b) = std::sync::mpsc::channel();
+        let (publish_b, release_b) = std::sync::mpsc::channel();
+        let (first, second) = std::thread::scope(|scope| {
+            let (dir, preset, paths) = (&dir, &preset, &paths);
+            let source_a = &sources[0];
+            let source_b = &sources[1];
+            let header_a = oracles[0];
+            let header_b = oracles[1];
+            let a = scope.spawn(move || {
+                HEADER_STORE_STAGING_GATE.with(|gate| {
+                    *gate.borrow_mut() = Some((staged_a, release_a));
+                });
+                store_headers(dir, preset, paths, &[(source_a, header_a)]);
+            });
+            ready_a.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+            let b = scope.spawn(move || {
+                HEADER_STORE_STAGING_GATE.with(|gate| {
+                    *gate.borrow_mut() = Some((staged_b, release_b));
+                });
+                store_headers(dir, preset, paths, &[(source_b, header_b)]);
+            });
+            ready_b.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+            publish_a.send(()).unwrap();
+            a.join().unwrap();
+            let first = headers(dir, preset, paths);
+            // Release and join both writers before checking the first result.
+            publish_b.send(()).unwrap();
+            b.join().unwrap();
+            (first, headers(dir, preset, paths))
+        });
+        for ((published, file), oracle) in [first, second].into_iter().zip(&files).zip(oracles) {
+            let published = published.expect("a completed writer publishes a complete entry");
+            assert_eq!(published.len(), 1);
+            assert_eq!(published[0].0.parts(), (file.as_path(), 0, None, false));
+            assert_eq!(published[0].1, oracle);
+            assert_eq!(published[0].0.open().unwrap().header(), oracle);
+        }
     }
 }
