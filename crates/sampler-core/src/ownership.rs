@@ -236,7 +236,13 @@ impl Runtime {
         // Each removal visits its parent once. No recursion, scratch queue or
         // repeated pool scans: O(reserved slots + retired notes).
         while let Some(n) = self.notes.get(id.0).copied() {
-            if n.gate || n.pins != 0 || n.work != 0 || n.families != 0 || n.children != 0 {
+            if n.gate
+                || (n.input.is_some() && n.key_down)
+                || n.pins != 0
+                || n.work != 0
+                || n.families != 0
+                || n.children != 0
+            {
                 break;
             }
             if n.input.is_some_and(|input| !accept(input)) {

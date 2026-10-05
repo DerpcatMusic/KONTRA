@@ -34,7 +34,12 @@ impl Runtime {
             self.apply_due();
         }
         match event {
-            Event::KeyUp(id) | Event::Release(id) | Event::Expression(id, _) => {
+            Event::KeyUp(id) => {
+                if !self.notes.get(id.0).ok_or(Error::StaleHandle)?.key_down {
+                    return Err(Error::ClosedNote);
+                }
+            }
+            Event::Release(id) | Event::Expression(id, _) => {
                 if !self.notes.get(id.0).ok_or(Error::StaleHandle)?.gate {
                     return Err(Error::ClosedNote);
                 }
@@ -139,9 +144,8 @@ impl Runtime {
                 }
             }
             Action::Start(v) => self.voices.get(v.0).is_some(),
-            Action::Event(Event::KeyUp(n) | Event::Release(n)) => {
-                notes.get(n.0).is_some_and(|n| n.gate)
-            }
+            Action::Event(Event::KeyUp(n)) => notes.get(n.0).is_some_and(|n| n.key_down),
+            Action::Event(Event::Release(n)) => notes.get(n.0).is_some_and(|n| n.gate),
             Action::Event(Event::Expression(id, _)) => {
                 let n = notes.get_mut(id.0).unwrap(); // Work pins cannot be consumed by public unpin().
                 if n.gate {

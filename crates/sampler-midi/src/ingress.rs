@@ -32,6 +32,9 @@ pub enum Applied {
     AllNotesOff {
         released: usize,
     },
+    AllSoundOff {
+        stopped: usize,
+    },
     Unsupported,
 }
 
@@ -103,6 +106,12 @@ impl Ingress {
                 value: Value::Bits7(0) | Value::Bits32(0),
             } => Applied::AllNotesOff {
                 released: runtime.all_notes_off(input.channel_address())?,
+            },
+            Message::Control {
+                index: 120,
+                value: Value::Bits7(0) | Value::Bits32(0),
+            } => Applied::AllSoundOff {
+                stopped: runtime.all_sound_off(input.channel_address())?,
             },
             _ => Applied::Unsupported,
         })
