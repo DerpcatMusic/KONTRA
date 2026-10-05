@@ -120,3 +120,36 @@ gates and pedals, new scripting execution, instrument compilation, production DS
 plan/asset lifetime, streaming, coherent state and actual MIDI 2.0/host adapters
 remain open. PCM note release currently stops sources immediately; envelopes and
 release tails are not implemented by this fixture. The source attachments and their conformance statuses are unchanged.
+
+## Linear descendant retirement (2026-10-05)
+
+Logical notes now count live children. Admission increments the parent only after
+successful note insertion; retirement decrements exactly once. The 4,000-operation
+invariant test compares these counts to independently scanned parent references.
+`flush_ended` scans reserved slots once and walks newly eligible parents directly,
+without recursion or scratch storage. Each removal visits its parent once:
+O(reserved slots + retired notes), replacing nested full-pool scans. Terminal
+rejection stops the walk and retains that root and its expression for retry.
+Newly eligible parents can retire immediately; no global terminal order between
+independent roots is promised.
+
+A 512-slot heap test exercises a deep tree across reused arena indices, a pinned
+interior descendant, admission failure at capacity, rejection and later acceptance.
+It checks exact retained ownership and forbids duplicate delivery. All new-crate
+checks, strict Clippy and MSRV 1.92 checks pass; the authoritative Doctor score
+remains 91 with zero errors.
+
+`cargo run --release -p sampler-core --example retire_bench` measures only retirement
+of a closed single chain. Preparation, admission and panic are outside timing. Nine
+samples per size on the same uncontrolled local Ryzen 7800X3D machine:
+
+| Notes | Previous median, µs | New median, µs | New maximum, µs |
+| ---: | ---: | ---: | ---: |
+| 64 | 47.741 | 0.490 | 0.630 |
+| 256 | 3129.548 | 1.870 | 2.051 |
+| 1024 | 170360.711 | 4.380 | 5.980 |
+
+These are an adversarial ownership microbenchmark, not audio throughput or a
+competitor comparison. Raw logs and source-hash scan evidence are under ignored
+`artifacts/architecture-v2/retire-*`. Release propagation is still a separate
+bounded repeated-scan path and remains a performance follow-up.

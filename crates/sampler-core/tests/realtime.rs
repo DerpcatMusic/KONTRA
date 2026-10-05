@@ -231,3 +231,95 @@ fn prepared_native_selection_and_owned_asset_retirement_do_no_heap_work() {
         }
     }); // Owned asset destruction occurs only after this callback scope.
 }
+
+#[test]
+fn deep_reused_slot_trees_retire_without_heap_and_preserve_retry_ownership() {
+    let mut rt = Runtime::new(
+        sampler_core::Prepared::new(48000, vec![], vec![], 0).unwrap(),
+        Limits {
+            notes: 512,
+            channels: 1,
+            expressions: 512,
+            families: 0,
+            voices: 0,
+            commands: 0,
+        },
+    )
+    .unwrap();
+    let input = Input {
+        protocol: Protocol::Native,
+        port: 0,
+        group: 0,
+        channel: 0,
+        key: 60,
+        external_id: None,
+    };
+    support::without_heap(|| {
+        // Put the retained root above free slots: tree order must not rely on
+        // arena index order after ordinary generation reuse.
+        for _ in 0..128 {
+            rt.note_on(input, 60, 1.).unwrap();
+        }
+        let root = rt
+            .note_on(
+                Input {
+                    external_id: Some(7),
+                    ..input
+                },
+                60,
+                1.,
+            )
+            .unwrap();
+        for _ in 0..128 {
+            rt.note_off(input).unwrap();
+        }
+        let mut ends = 0;
+        rt.flush_ended(|_| {
+            ends += 1;
+            true
+        });
+        assert_eq!(ends, 128);
+        let mut parent = root;
+        let mut pinned = root;
+        for i in 0..400 {
+            parent = rt
+                .child(parent, 60, 1., false, Inheritance::Linked)
+                .unwrap();
+            if i == 200 {
+                rt.pin(parent).unwrap();
+                pinned = parent;
+            }
+        }
+        for _ in 401..512 {
+            rt.child(root, 60, 1., false, Inheritance::Linked).unwrap();
+        }
+        assert_eq!(
+            rt.child(root, 60, 1., false, Inheritance::Linked),
+            Err(Error::Capacity)
+        );
+        rt.panic();
+        rt.flush_ended(|_| panic!("pinned descendant must retain the root"));
+        assert_eq!(rt.note_count(), 202);
+        rt.unpin(pinned).unwrap();
+        let mut rejected = 0;
+        rt.flush_ended(|_| {
+            rejected += 1;
+            false
+        });
+        assert_eq!(
+            (rejected, rt.note_count(), rt.expression_count()),
+            (1, 1, 1)
+        );
+        let mut accepted = 0;
+        rt.flush_ended(|ended| {
+            assert_eq!(ended.external_id, Some(7));
+            accepted += 1;
+            true
+        });
+        rt.flush_ended(|_| panic!("terminal delivered twice"));
+        assert_eq!(
+            (accepted, rt.note_count(), rt.expression_count()),
+            (1, 0, 0)
+        );
+    });
+}

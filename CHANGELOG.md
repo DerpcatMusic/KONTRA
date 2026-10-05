@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Replace repeated descendant-retirement scans with counted child ownership and an iterative parent walk. Deep reused-slot trees, pinned descendants, failed admission and terminal backpressure preserve ownership without callback heap work; an independent benchmark records the scaling improvement.
+
 - Share bounded sample-offset UMP block processing with the native executable. Validate whole-batch timing before mutation, preserve stable event order, and keep processing releases after per-event admission failures; partition and heap checks cover the callback.
 
 - Add a clean-sheet UMP decoder preserving MIDI 1.0/2.0 precision and protocol identity, with bounded note/pedal ingress and native demo integration. Pin the wire specification, test framing and callback heap safety, and raise the authoritative new-core Rust Doctor score to 91. Full MIDI 2.0 musical/device support remains open.

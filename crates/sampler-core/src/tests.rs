@@ -597,6 +597,14 @@ fn ownership_counters_match_reachable_state_under_mixed_operations() {
                 assert!(rt.expressions.get(n.expression.0).is_some());
                 assert!(n.parent.is_none_or(|p| rt.notes.get(p.0).is_some()));
                 assert_eq!(
+                    n.children,
+                    rt.notes
+                        .slots
+                        .iter()
+                        .filter(|s| s.value.is_some_and(|child| child.parent == Some(id)))
+                        .count()
+                );
+                assert_eq!(
                     n.families,
                     rt.families
                         .slots
