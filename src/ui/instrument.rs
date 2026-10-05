@@ -459,16 +459,18 @@ pub fn mapping(ui: &mut Ui, cx: &mut Cx) -> El {
             note_name(zone.low_key), zone.low_key, note_name(zone.high_key), zone.high_key,
             zone.low_velocity, zone.high_velocity, note_name(zone.root), zone.root);
         col![section("Selected sample").shrink(0),
-            caption(format!("Zone {} · group {}", index + 1, zone.group + 1)).min_w(0).shrink(0),
-            caption(path.clone()).named(path).lines(4).min_w(0).shrink(0).id("mapping-selected-path"),
-            caption(range.clone()).named(range).lines(4).min_w(0).shrink(0).id("mapping-selected-range"),
+            caption(format!("Zone {} · group {}", index + 1, zone.group + 1)).w(Len::Pct(100.)).min_w(0).shrink(0),
+            caption(path.clone()).named(path).lines(4).w(Len::Pct(100.)).min_w(0).shrink(0).id("mapping-selected-path"),
+            caption(range.clone()).named(range).lines(4).w(Len::Pct(100.)).min_w(0).shrink(0).id("mapping-selected-range"),
             caption(if zone.available { "Initial sample reference resolved." } else { "Initial sample reference is unavailable." })
-                .lines(3).min_w(0).shrink(0).id("mapping-selected-reference"),
+                .lines(3).w(Len::Pct(100.)).min_w(0).shrink(0).id("mapping-selected-reference"),
             caption("Decoded source dimensions appear in preview feedback. This initial zone is not a live script-selected sample.")
-                .fill(secondary()).lines(4).min_w(0).shrink(0).id("mapping-selected-note")]
+                .fill(secondary()).lines(4).w(Len::Pct(100.)).min_w(0).shrink(0).id("mapping-selected-note")]
+            // Wrap captions at the assigned inspector width before measuring
+            // their flow heights; keep the inspector's sibling flex basis.
             .gap(SPACE).align(Align::Start).min_w(0).min_h(0).flex(1).scroll()
     } else {
-        col![section("Selected sample").shrink(0), caption("Select a sample zone to inspect its source.").lines(3).min_w(0).shrink(0)]
+        col![section("Selected sample").shrink(0), caption("Select a sample zone to inspect its source.").lines(3).w(Len::Pct(100.)).min_w(0).shrink(0)]
             .gap(SPACE).min_w(0).min_h(0).flex(1)
     };
     let ticket = cx.state.chosen().filter(|&chosen| chosen == slot).and(selected)
@@ -476,15 +478,10 @@ pub fn mapping(ui: &mut Ui, cx: &mut Cx) -> El {
     let preview = sample_preview::view(ui, cx.p, &mut cx.state.sample_preview, slot, ticket);
     col![row![col(groups).gap(1).w(SIDEBAR_MIN).shrink(0).min_h(0).scroll().id("groups-scroll"),
             col![grid.min_h(CONTROL * 5.), row![caption(note_name(0)), spacer(), caption("Key × velocity"), spacer(), caption(note_name(127))].shrink(0),
-                row![col![section("Sample zones"), rows, page].gap(SPACE).flex(1).min_w(SIDEBAR_MIN).min_h(0),
-                    inspector.min_w(SIDEBAR_MIN)].wrap().gap(INSET).line_gap(SPACE).flex(1).min_h(0)]
+                row![col![section("Sample zones"), rows, page].gap(SPACE).flex(1).min_w(0).min_h(0),
+                    inspector.min_w(0)].gap(INSET).flex(1).min_h(0)]
                 .gap(SPACE).flex(1).min_w(0).min_h(0)].gap(INSET).pad(INSET).flex(1).min_h(0),
         preview].gap(0).flex(1).min_h(0)
-}
-
-/// Shared read-only key × velocity canvas. Each backend owns its range adapter.
-pub(super) fn mapping_grid(zones: Vec<(u8, u8, u8, u8, bool)>, name: &'static str) -> El {
-    mapping_grid_selected(zones, name, None, None)
 }
 
 /// Shared selection/probe paint only. Backend adapters retain zone ownership.

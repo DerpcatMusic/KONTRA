@@ -50,7 +50,8 @@ fn real_mapping_selector_pages_global_indices_and_retains_duplicate_source_paths
             if wrapped_range && id == "mapping-selected-range" {
                 let low = baselines.iter().copied().fold(f64::INFINITY, f64::min);
                 let high = baselines.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-                assert!(high - low > 0.01, "compact fixture must exercise a genuinely wrapped range");
+                assert!(high - low > 0.01,
+                    "compact fixture must exercise a genuinely wrapped range: frame={frame:?}, baseline span={low}..{high}");
             }
         }
     };
@@ -1236,17 +1237,21 @@ fn racked(
     instruments: &[Arc<import::Instrument>],
     loaded: bool,
     state: &str,
+    catalog: Option<&Arc<crate::library::Shelf>>,
 ) -> Arc<SamplerParams> {
     let p = Arc::new(SamplerParams::new());
     {
         let mut view = p.shared.view.lock().unwrap();
         let (shelf, files) = match state {
-            "no-libraries" => (crate::library::Shelf::default(), Vec::new()),
-            "covers" => shelved(&cover_libraries()),
-            _ => (shelved(Path::new(import::LIBRARY_ROOT)).0, files.to_vec()),
+            "no-libraries" => (Arc::new(crate::library::Shelf::default()), Vec::new()),
+            "covers" => {
+                let (shelf, files) = shelved(&cover_libraries());
+                (Arc::new(shelf), files)
+            }
+            _ => (catalog.cloned().unwrap_or_else(|| Arc::new(shelved(Path::new(import::LIBRARY_ROOT)).0)), files.to_vec()),
         };
         view.artwork = artwork::scan(&shelf.libraries);
-        view.shelf = Arc::new(shelf);
+        view.shelf = shelf;
         view.files = Arc::new(files);
         view.scanned = p.shared.libraries.wanted();
         for (slot, i) in instruments.iter().enumerate().filter(|_| loaded) {
@@ -1400,7 +1405,7 @@ fn frame_cost() {
     for count in counts.split(',').filter_map(|n| n.trim().parse::<usize>().ok()) {
     println!("{count} parts");
     let instruments: Vec<_> = library.iter().cycle().take(count).cloned().collect();
-    let p = racked(&files, &instruments, true, "perform");
+    let p = racked(&files, &instruments, true, "perform", None);
     let (w, hgt) = (1600u16, 1000u16);
     let mut h = Harness::new(&p, f64::from(w), f64::from(hgt));
     h.idle(10);
@@ -1486,7 +1491,7 @@ fn lag() {
     let mut cache = vello::Cache::default();
     let mut pix = Pixmap::new(w, hgt);
     for (name, instruments) in racks {
-        let p = racked(&files, &instruments, true, "perform");
+        let p = racked(&files, &instruments, true, "perform", None);
         let mut h = Harness::new(&p, f64::from(w), f64::from(hgt));
         h.settle_art();
         let mut measure = |h: &mut Harness, label: &str, input: &mut dyn FnMut(usize, &Ui) -> Input| {
@@ -1640,13 +1645,18 @@ fn screenshot() {
         .collect();
     // Sticky headers need a second part to scroll past the first.
     let sticky_ok = instruments.len() > 1;
+    // All real-library states inspect the same immutable catalog. Scanning it
+    // per capture repeatedly decodes every snapshot instead of testing the UI.
+    let catalog = std::cell::OnceCell::new();
     for &(state, loaded, presses) in states
         .into_iter()
         // Without the owner's library (CI), only the states with no instrument.
         .filter(|(s, loaded, _)| wanted(s) && (*s != "sticky" || sticky_ok) && (!loaded || !instruments.is_empty()))
     {
         for &(width, height) in &sizes {
-            let p = racked(&files, &instruments, loaded, state);
+            let shelf = (!matches!(state, "covers" | "no-libraries"))
+                .then(|| catalog.get_or_init(|| Arc::new(shelved(Path::new(import::LIBRARY_ROOT)).0)));
+            let p = racked(&files, &instruments, loaded, state, shelf);
             if state == "library-ui" { p.selection.write().unwrap().parts.iter_mut().for_each(|p| p.view = 1); }
             if state == "sound-edited" {
                 use crate::engine::overrides::{Override, Param};
@@ -2353,16 +2363,20 @@ fn automatic_performance_scale_fits_rack_height_and_explicit_zoom_stays_scrollab
 
 #[test]
 fn the_vectorized_view_keeps_the_original_layout() {
-    let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_slider $vol(0, 100)\nmove_control_px($vol, 30, 40)\nset_control_par_str(get_ui_id($vol), $CONTROL_PAR_PICTURE, \"knob\")\ndeclare ui_switch $legato\nmove_control_px($legato, 120, 40)\ndeclare ui_menu $mic\nadd_menu_item($mic, \"Close\", 0)\nmove_control_px($mic, 200, 90)\ndeclare ui_label $title(1,1)\nset_text($title, \"Tone\")\nmove_control_px($title, 30, 100)\nend on");
-    {
-        let frame = Arc::new(moose::mui::mui::scene::Image::rgba(48, 50, vec![200; 48 * 50 * 4]).unwrap());
-        let knob = artwork::Picture { frames: vec![frame; 11], stretch: [false; 2], atlas: None };
-        let mut view = p.shared.view.lock().unwrap();
-        view.parts[0].pictures = Arc::new([("knob".to_owned(), Arc::new(knob))].into());
-        let wallpaper = Arc::new(moose::mui::mui::scene::Image::rgba(632, 268, [210, 180, 140, 255].repeat(632 * 268)).unwrap());
-        view.parts[0].wallpaper = Some(Arc::new(artwork::Picture { frames: vec![wallpaper], stretch: [false; 2], atlas: None }));
-    }
     let rects = |code: u8| {
+        // Each editor owns its visual demand and releases it on drop. Start both
+        // modes with complete authored resources, including retained metadata.
+        let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_slider $vol(0, 100)\nmove_control_px($vol, 30, 40)\nset_control_par_str(get_ui_id($vol), $CONTROL_PAR_PICTURE, \"knob\")\ndeclare ui_switch $legato\nmove_control_px($legato, 120, 40)\ndeclare ui_menu $mic\nadd_menu_item($mic, \"Close\", 0)\nmove_control_px($mic, 200, 90)\ndeclare ui_label $title(1,1)\nset_text($title, \"Tone\")\nmove_control_px($title, 30, 100)\nend on");
+        publish_interface(&p, |i| i.wallpaper = "wallpaper".into());
+        {
+            let frame = Arc::new(moose::mui::mui::scene::Image::rgba(48, 50, vec![200; 48 * 50 * 4]).unwrap());
+            let knob = artwork::Picture { frames: vec![frame; 11], stretch: [false; 2], atlas: None };
+            let mut view = p.shared.view.lock().unwrap();
+            view.parts[0].picture_metadata = Arc::new([("knob".to_owned(), artwork::PictureMetadata::of(&knob).unwrap())].into());
+            view.parts[0].pictures = Arc::new([("knob".to_owned(), Arc::new(knob))].into());
+            let wallpaper = Arc::new(moose::mui::mui::scene::Image::rgba(632, 268, [210, 180, 140, 255].repeat(632 * 268)).unwrap());
+            view.parts[0].wallpaper = Some(Arc::new(artwork::Picture { frames: vec![wallpaper], stretch: [false; 2], atlas: None }));
+        }
         p.selection.write().unwrap().parts[0].view = code;
         let mut h = Harness::new(&p, 1180., 760.);
         let scene = h.ui.scene().unwrap();
