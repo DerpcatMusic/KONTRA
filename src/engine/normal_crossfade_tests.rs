@@ -100,7 +100,7 @@ fn native_normal_positive_crossfade_matches_whole_native_pcm_and_pending_phases_
                                     48000., 120., &engine.player.stream_error, at as u64, true, 0.);
                                 cx.source_window = Some(((end - count) as u64, end as u64));
                                 let voice = &mut engine.player.voices[0];
-                                voice.plan(&cx, n, None, None).unwrap();
+                                assert!(voice.plan(&cx, n, None, None).is_ok(), "native source must be admitted");
                                 let mut underrun = false;
                                 let (pcm, _) = voice.window(&cx, &mut scratch, &positions, &mut underrun);
                                 assert!(!underrun, "{} mode{source_mode} streamed{streamed}", case.name);
