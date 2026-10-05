@@ -889,7 +889,7 @@ impl GpuRenderer {
         // Backdrops first: each is a render of its own that the frame samples.
         let mut blurred = Vec::new();
         let mut k = 0;
-        for (i, p) in resolved.paint.iter().enumerate() {
+        for (i, p) in crate::visible_paints(&resolved.paint) {
             if p.layer == Layer::Backdrop && p.blur.is_finite() && p.blur > 0.0 {
                 let outline = self.paths.get(&p.path)?.clone();
                 let reuse = self.backdrop_unchanged(&resolved.paint, i, p, xf);
@@ -943,7 +943,7 @@ impl GpuRenderer {
             canvas.begin_frame();
         }
         let mut blurred = blurred.into_iter();
-        for p in &resolved.paint {
+        for (_, p) in crate::visible_paints(&resolved.paint) {
             canvas.set_transform(crate::placed(draw, p));
             match p.layer {
                 Layer::External => {
