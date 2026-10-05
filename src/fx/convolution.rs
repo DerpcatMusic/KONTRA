@@ -264,8 +264,8 @@ fn mac_avx2(acc: &mut [Complex32], a: &[Complex32], b: &[Complex32]) {
     use std::arch::x86_64::*;
     let n = acc.len().min(a.len()).min(b.len());
     let (acc, a, b) = (&mut acc[..n], &a[..n], &b[..n]);
-    let mut acc4 = acc.chunks_exact_mut(4);
-    for ((y, a), b) in (&mut acc4).zip(a.chunks_exact(4)).zip(b.chunks_exact(4)) {
+    let (acc4, tail) = acc.as_chunks_mut::<4>();
+    for ((y, a), b) in acc4.iter_mut().zip(a.as_chunks::<4>().0).zip(b.as_chunks::<4>().0) {
         // SAFETY: each chunk is four `Complex32`s, eight contiguous f32.
         unsafe {
             let va = _mm256_loadu_ps(a.as_ptr().cast());
@@ -277,7 +277,7 @@ fn mac_avx2(acc: &mut [Complex32], a: &[Complex32], b: &[Complex32]) {
         }
     }
     let rest = n - n % 4;
-    mac_body(acc4.into_remainder(), &a[rest..], &b[rest..]);
+    mac_body(tail, &a[rest..], &b[rest..]);
 }
 
 #[inline(always)]

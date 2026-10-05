@@ -243,7 +243,7 @@ mod tests {
         script_mods[0] = id as i32;
         script_mods[SCRIPT_MOD_SOURCES - 1] = -(id as i32);
         Note::Release(Release { host_note: None, input_root: true,
-            input_sostenuto: id % 2 == 0, per_note: None, script_mods,
+            input_sostenuto: id.is_multiple_of(2), per_note: None, script_mods,
             trigger: Some(((id % 128) as u8, 127)), onset_velocity: crate::midi::Velocity::FULL,
             release_velocity: None, groups: GroupMask::all(), expression: None })
     }

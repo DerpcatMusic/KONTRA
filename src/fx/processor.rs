@@ -454,7 +454,11 @@ impl FxProcessor {
         let rack = match generic { -2 => Rack::Main, -1 => Rack::Insert, 0..16 => Rack::Bus(generic as u8), _ => return None };
         let slot = self.slot(rack, index.try_into().ok()?)?;
         if slot.bypass { return Some(0.); }
-        if let Dsp::Block(block) = &slot.dsp { if let Some(gain) = block.reduction(channel) { return Some(1. - gain); } }
+        if let Dsp::Block(block) = &slot.dsp
+            && let Some(gain) = block.reduction(channel)
+        {
+            return Some(1. - gain);
+        }
         Some(slot.meter[channel])
     }
     pub fn mix_buses(&mut self, left: &mut [f32], right: &mut [f32]) {
