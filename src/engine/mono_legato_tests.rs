@@ -394,3 +394,221 @@ fn ignored_release_keeps_sounding_owner_until_sample_end_without_heap() {
         assert!(pcm.iter().all(|row| row[16_384..].iter().all(|v| v.abs() < 1e-8)));
     }
 }
+
+fn finite_alias_engines(source: &str) -> (Engine, Engine) {
+    use crate::import::Instrument;
+    use ni_file::kontakt::objects::ProgramDataPrivateParams;
+    const SOURCE: usize = 64;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("finite-release-alias.wav");
+    let mut wav = hound::WavWriter::create(&path, hound::WavSpec {
+        channels: 2, sample_rate: 48_000, bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    }).unwrap();
+    for frame in 0..SOURCE {
+        for value in [0.2 + frame as f32 / 1000., -0.3 + frame as f32 / 2000.] {
+            wav.write_sample(value).unwrap();
+        }
+    }
+    wav.finalize().unwrap();
+    let instrument = Instrument {
+        groups: vec![Group::default()],
+        zones: vec![Zone { sample: path, root: 60, ..Zone::default() }],
+        native_program_private: Some(ProgramDataPrivateParams {
+            version: 0x80,
+            data: [0u32.to_le_bytes().as_slice(), &[1, 1],
+                0i32.to_le_bytes().as_slice(), &[0xa5, 0, 0xff]].concat(),
+        }),
+        scripts: vec![source.into()], ..Default::default()
+    };
+    let make_engine = |scripted| {
+        let bank = Bank::load(&instrument).unwrap().with_prepared_settings(|rows| {
+            // The forwarded-release control also reaches the finite source
+            // end; its independent oracle applies the same envelope release.
+            rows[0].envelope = Some(Ahdsr { release: 1., ..Ahdsr::UNITY });
+        }).unwrap();
+        assert_eq!(bank.initial_state.as_ref().unwrap().controller_policy,
+            super::instrument::ControllerPolicy::Native);
+        let mut e = Engine::default();
+        e.reset(48_000.); e.attack = 0.; e.set_home_channel(7);
+        e.set_bank(Some(Box::new(bank)));
+        if scripted {
+            let (runtime, errors) = super::script::load_scripts(&instrument, Vec::new(), 48_000.);
+            assert!(errors.is_empty(), "{errors:?}");
+            e.set_script(runtime);
+        }
+        e
+    };
+    (make_engine(true), make_engine(false))
+}
+
+fn finite_release_alias_cycles(ignore_release: bool) {
+    const SOURCE: usize = 64;
+    const CYCLE: usize = 96;
+    const CYCLES: usize = crate::ksp::EVENT_CAPACITY + 1;
+    let source = format!("on init\ndeclare $id\nend on\non note\n$id := $EVENT_ID\nend on\non release\n{}\nend on\non controller\nmessage(event_status($id))\nend on",
+        if ignore_release { "ignore_event($EVENT_ID)" } else { "" });
+    for parts in [&[128][..], &[1, 7, 31, 13][..]] {
+        let (mut actual, mut reference) = finite_alias_engines(&source);
+        let (mut pcm, mut expected) = (
+            std::array::from_fn(|_| vec![0.; CYCLE * CYCLES]),
+            std::array::from_fn(|_| vec![0.; CYCLE * CYCLES]),
+        );
+        let mut ignored_eof_active = 0;
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            for cycle in 0..CYCLES {
+                let at = cycle * CYCLE;
+                let n = HostNote { id: 20_000 + cycle as i32, ..owner(0) };
+                for e in [&mut actual, &mut reference] {
+                    assert!(e.host_note_on(n, 7, 60, 127, 0.),
+                        "host admission failed at cycle {cycle}");
+                }
+                render(&mut actual, &mut pcm, at, at + 8, parts);
+                render(&mut reference, &mut expected, at, at + 8, &[128]);
+                assert_eq!(actual.active_voices(), 1,
+                    "finite alias admission failed at cycle {cycle}; ignored EOF statuses previously active: {ignored_eof_active}");
+                actual.cc(7, 20, 1);
+                assert_eq!(actual.script().unwrap().last_message(), "1");
+                actual.host_note_off(pattern(n));
+                if !ignore_release { reference.host_note_off(pattern(n)); }
+                assert!(!actual.input_key_down_from(n.channel, 7, 60));
+                actual.cc(7, 20, 1);
+                assert_eq!(actual.script().unwrap().last_message(), "1");
+                render(&mut actual, &mut pcm, at + 8, at + SOURCE, parts);
+                render(&mut reference, &mut expected, at + 8, at + SOURCE, &[128]);
+                if ignore_release { reference.host_note_off(pattern(n)); }
+                render(&mut actual, &mut pcm, at + SOURCE, at + CYCLE, parts);
+                render(&mut reference, &mut expected, at + SOURCE, at + CYCLE, &[128]);
+                for e in [&mut actual, &mut reference] {
+                    e.mark_host_notes();
+                    assert_eq!(e.active_voices(), 0, "voice survived finite EOF at cycle {cycle}");
+                    assert_eq!(e.host_note_end_at(n), Some((at + SOURCE) as u64));
+                    assert!(!e.host_note_pending(n));
+                    e.retire_host_note(n);
+                    assert_eq!(e.host_note_end_at(n), None);
+                }
+                actual.cc(7, 20, 1);
+                let status = actual.script().unwrap().last_message();
+                if ignore_release {
+                    // Record the UntilNoteOff status without deciding native
+                    // post-EOF addressability before the pool-reuse probe.
+                    assert!(matches!(status, "0" | "1"));
+                    ignored_eof_active += usize::from(status == "1");
+                } else {
+                    assert_eq!(status, "0");
+                }
+                assert_eq!(actual.script().unwrap().now(), (at + CYCLE) as u64);
+                assert!(actual.script().unwrap().faults().next().is_none(),
+                    "KSP fault at cycle {cycle}");
+                for (a, b) in pcm.iter().zip(&expected) {
+                    assert!(a[at..at + CYCLE].iter().zip(&b[at..at + CYCLE]).all(|(a,b)|
+                        a.is_finite() && b.is_finite() && (a-b).abs()<2e-6),
+                        "complete finite PCM disagrees at cycle {cycle}");
+                    assert!(a[at + SOURCE..at + CYCLE].iter().all(|v| v.abs()<1e-8));
+                }
+                assert!(pcm[0][at..at + SOURCE].iter().any(|v| v.abs()>0.1));
+            }
+        }), 0);
+        assert!(actual.script().unwrap().diagnostics().is_empty());
+        same(&pcm, &expected);
+    }
+}
+
+#[test]
+fn finite_ignored_release_aliases_reuse_event_pool_after_exact_owner_retirement_without_heap() {
+    finite_release_alias_cycles(true);
+}
+
+#[test]
+fn finite_forwarded_release_aliases_reuse_event_pool_after_exact_owner_retirement_without_heap() {
+    finite_release_alias_cycles(false);
+}
+
+#[test]
+fn finite_alias_pressure_preserves_held_and_waiting_ignored_release_owners_without_heap() {
+    const CYCLE: usize = 96;
+    const CYCLES: usize = crate::ksp::EVENT_CAPACITY + 1;
+    const RESUME: usize = 480_008;
+    let source = "on init\ndeclare %ids[128]\ndeclare $done\nend on\non note\n%ids[$EVENT_VELOCITY] := $EVENT_ID\nend on\non release\nignore_event($EVENT_ID)\nif ($EVENT_VELOCITY=126)\nwait(10000000)\n$done := 1\nend if\nend on\non controller\nif ($CC_NUM=20)\nmessage(event_status(%ids[%CC[20]]))\nelse\nmessage($done)\nend if\nend on";
+    for parts in [&[128][..], &[1, 7, 31, 13][..]] {
+        let (mut actual, mut reference) = finite_alias_engines(source);
+        let (mut pcm, mut expected) = (
+            std::array::from_fn(|_| vec![0.; RESUME + CYCLE]),
+            std::array::from_fn(|_| vec![0.; RESUME + CYCLE]),
+        );
+        let held = HostNote { id: 10_000, ..owner(0) };
+        let waiting = HostNote { key: 49, id: 10_001, ..owner(1) };
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            for e in [&mut actual, &mut reference] {
+                assert!(e.host_note_on(held, 7, 60, 127, 0.));
+                assert!(e.host_note_on(waiting, 7, 60, 126, 0.));
+            }
+            render(&mut actual, &mut pcm, 0, 8, parts);
+            render(&mut reference, &mut expected, 0, 8, &[128]);
+            actual.host_note_off(pattern(waiting));
+            render(&mut actual, &mut pcm, 8, 64, parts);
+            render(&mut reference, &mut expected, 8, 64, &[128]);
+            reference.host_note_off(pattern(waiting));
+            render(&mut actual, &mut pcm, 64, CYCLE, parts);
+            render(&mut reference, &mut expected, 64, CYCLE, &[128]);
+            for cycle in 0..CYCLES {
+                let at = (cycle + 1) * CYCLE;
+                let n = HostNote { key: 50, id: 30_000 + cycle as i32, ..owner(0) };
+                for e in [&mut actual, &mut reference] {
+                    assert!(e.host_note_on(n, 7, 60, 125, 0.));
+                }
+                render(&mut actual, &mut pcm, at, at + 8, parts);
+                render(&mut reference, &mut expected, at, at + 8, &[128]);
+                assert_eq!(actual.active_voices(), 1, "pool pressure at cycle {cycle}");
+                actual.host_note_off(pattern(n));
+                render(&mut actual, &mut pcm, at + 8, at + 64, parts);
+                render(&mut reference, &mut expected, at + 8, at + 64, &[128]);
+                reference.host_note_off(pattern(n));
+                render(&mut actual, &mut pcm, at + 64, at + CYCLE, parts);
+                render(&mut reference, &mut expected, at + 64, at + CYCLE, &[128]);
+                for e in [&mut actual, &mut reference] {
+                    e.mark_host_notes();
+                    assert_eq!(e.active_voices(), 0);
+                    assert_eq!(e.host_note_end_at(n), Some((at + 64) as u64));
+                    assert!(!e.host_note_pending(n));
+                    e.retire_host_note(n);
+                    assert_eq!(e.host_note_end_at(n), None);
+                }
+                assert!(actual.host_note_pending(held));
+                assert!(actual.host_note_pending(waiting));
+                assert_eq!(actual.host_note_end_at(held), None);
+                assert_eq!(actual.host_note_end_at(waiting), None);
+                for velocity in [127, 126] {
+                    actual.cc(7, 20, velocity);
+                    assert_eq!(actual.script().unwrap().last_message(), "1",
+                        "retained event ID was recycled at cycle {cycle}");
+                }
+                assert!(actual.script().unwrap().faults().next().is_none());
+            }
+            let at = (CYCLES + 1) * CYCLE;
+            assert!(actual.input_key_down_from(held.channel, 7, 60));
+            assert!(!actual.input_key_down_from(waiting.channel, 7, 60));
+            actual.cc(7, 21, 1);
+            assert_eq!(actual.script().unwrap().last_message(), "0");
+            for e in [&mut actual, &mut reference] { e.host_note_off(pattern(held)); }
+            render(&mut actual, &mut pcm, at, RESUME - 1, parts);
+            render(&mut reference, &mut expected, at, RESUME - 1, &[128]);
+            actual.cc(7, 21, 1);
+            assert_eq!(actual.script().unwrap().last_message(), "0");
+            actual.mark_host_notes();
+            assert_eq!(actual.host_note_end_at(held), Some(at as u64));
+            assert!(actual.host_note_pending(waiting));
+            render(&mut actual, &mut pcm, RESUME - 1, RESUME + CYCLE, parts);
+            render(&mut reference, &mut expected, RESUME - 1, RESUME + CYCLE, &[128]);
+            actual.cc(7, 21, 1);
+            assert_eq!(actual.script().unwrap().last_message(), "1");
+            actual.mark_host_notes();
+            assert_eq!(actual.host_note_end_at(waiting), Some(RESUME as u64));
+            assert!(!actual.host_note_pending(waiting));
+            assert_eq!(actual.script().unwrap().now(), (RESUME + CYCLE) as u64);
+        }), 0);
+        same(&pcm, &expected);
+        assert!(pcm.iter().all(|row| row[(CYCLES + 1) * CYCLE..].iter().all(|v| v.abs()<1e-8)));
+        assert!(actual.script().unwrap().diagnostics().is_empty());
+    }
+}
