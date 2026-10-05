@@ -4,6 +4,51 @@ use super::{
     resample::{MAX_STEP, MIN_STEP},
 };
 
+/// Inherent note pitch, separate from its physical input address and live expression.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NotePitch {
+    /// Use the original plan's tuning for this logical key.
+    Key(u8),
+    /// Absolute semitone pitch on the A4=69=440 Hz scale, in [0, 128).
+    /// Overrides the plan's tuning table; its integer part selects regions.
+    Absolute(f64),
+}
+
+impl NotePitch {
+    /// Region-selection key. Admission rejects invalid pitches before using this.
+    pub fn key(self) -> u8 {
+        match self {
+            Self::Key(key) => key,
+            Self::Absolute(pitch) => pitch as u8,
+        }
+    }
+
+    pub(super) fn valid(self) -> bool {
+        match self {
+            Self::Key(key) => key < 128,
+            Self::Absolute(pitch) => (0.0..128.0).contains(&pitch),
+        }
+    }
+
+    pub(super) fn transpose(self, semitones: i8) -> Result<Self, Error> {
+        let pitch = match self {
+            Self::Key(key) => {
+                let key = i16::from(key) + i16::from(semitones);
+                if !(0..128).contains(&key) {
+                    return Err(Error::InvalidInput);
+                }
+                Self::Key(key as u8)
+            }
+            Self::Absolute(pitch) => Self::Absolute(pitch + f64::from(semitones)),
+        };
+        if pitch.valid() {
+            Ok(pitch)
+        } else {
+            Err(Error::InvalidInput)
+        }
+    }
+}
+
 pub(super) fn ratio(semitones: f64) -> f64 {
     if semitones == 0.0 {
         1.0

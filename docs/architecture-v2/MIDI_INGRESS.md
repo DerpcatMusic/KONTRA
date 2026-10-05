@@ -18,7 +18,7 @@ controller namespace/bank/index, relative signed values, note attributes and
 management flags. Unsupported packet types remain inspectable as raw words.
 Floating-point projection happens only on an explicit consumer request.
 
-The current musical ingress applies un-attributed notes, sustain/sostenuto and
+The current musical ingress applies ordinary notes, MIDI 2.0 Pitch 7.9 note attributes, sustain/sostenuto and
 zero-valued CC123 (All Notes Off) and CC120 (All Sound Off).
 Full input address and protocol reach the core's physical-note matching; note-off
 uses its FIFO overlap policy. Release velocity and attributes are returned to the
@@ -26,11 +26,32 @@ caller. Unknown release attributes do not strand a note. Unsupported Note On
 attributes return `Unsupported` without creating a partial note.
 
 This is partial V2-02/V2-15 evidence, **not full MIDI 2.0 support**. Per-note and
-channel expression in ordinary ingress, management, attribute pitch, program selection, MIDI-CI,
+channel expression in ordinary ingress, management, program selection, MIDI-CI,
 SysEx, JR timestamps and device transport remain unimplemented. The separate fixed-zone
 MPE note/expression projection below is partial receiver work. Decoding a
 message does not imply that the instrument consumes it. `Applied::Unsupported`
 is observable; there is no approximation through the old engine.
+
+## Absolute note pitch
+
+Attribute type 3 follows section 7.4.15.3 of the pinned specification. Its 16-bit
+unsigned Q7.9 value becomes an exact native `NotePitch::Absolute` value; all nine
+fractional bits survive. The transmitted Note Number remains the physical address
+for key-up/FIFO matching. This sampler chooses the integer part of absolute pitch
+for region selection, an explicit receiver policy allowed by section 7.4.15.
+
+Absolute pitch overrides the prepared per-key tuning for this note, with live
+expression applied relatively afterward. It does not rewrite a tuning table or
+persist into later note-ons. Native generated `Play` instructions transpose the
+inherent pitch while preserving its fraction, independently of their expression
+inheritance policy. Unsupported resulting source rates fail before publishing
+partial layers. Fixed-pitch regions remain authored fixed-pitch sources.
+
+Real UMP tests check adjacent fractional values, audible analytic pitch, a physical
+note index different from the musical key, unknown release attributes, subsequent
+ordinary tuned notes, and failed rate admission. Callback heap guards and block
+sizes 1/7/64/256 cover the path. Registered per-note Pitch 7.25 and live per-note
+pitch bend remain unimplemented; this attribute does not imply those capabilities.
 
 ## Native integration and time
 

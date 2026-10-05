@@ -15,8 +15,9 @@ Every mapped key must satisfy the declared rate bounds; an unmapped root need no
 The candidate budget now bounds records containing a region index and an f64 step
 (16 bytes per candidate on 64-bit targets). Logical playback keys select these
 records; physical input addresses remain unchanged for key-up and terminal pairing.
-Selection copies the template and compiled step into a voice; it does not repeat `exp2`, rate conversion
-or source-view validation at note-on. Both prepared selection and explicit manual
+Ordinary key selection copies the template and compiled step into a voice; it does not repeat `exp2`, rate conversion
+or source-view validation at note-on. Absolute-pitch selection, described below,
+calculates the overridden step at admission. Both prepared selection and explicit manual
 source admission use one bounded voice-reservation function.
 The current supported step is 1/256 through 16 source frames per output frame.
 This is a declared implementation limit, not silent clamping or quality fallback.
@@ -206,6 +207,33 @@ new tuning, while already-admitted notes and their later generated descendants
 keep their original plan's tuning. This is deliberately a future-root policy,
 not live retuning of held notes. Scala/MTS adapters, unmapped-key semantics and
 live retuning are not implemented by this native table.
+
+`NotePitch` separates inherent pitch from both physical input identity and live
+expression. `Key` uses the retained plan's tuning; `Absolute` uses the A4=69=440 Hz
+semitone scale and overrides that table. `trigger_pitched` selects regions with the
+integer part of absolute pitch. Tracked regions retain recorded-root/authored
+transpose metadata to compute that override without subtracting a rounded or
+potentially extreme tuning correction from an already compiled rate. Absolute
+selection evaluates the rate during preflight and admission, not per sample.
+Default key candidates keep their compiled path. No tuning table is added to the
+runtime, and fixed-pitch regions remain exempt from key and absolute tracking.
+
+`note_pitch` exposes the full inherent pitch. Generated `Play` transposes this
+value without discarding its fractional part; independent expression inheritance
+resets expression rather than the inherent pitch. Explicit `child_pitched` accepts
+its own pitch, while `child` requests a tuned key. Manual source-start APIs still
+use their explicitly supplied playback parameters; they have no recorded-root
+mapping to infer. Invalid/nonfinite or out-of-domain pitches fail admission.
+
+Core tests compare absolute playback with independent statically transposed sources,
+including fractional domain endpoints, generated-note transposition and independent
+expression. MIDI tests exercise the actual Pitch 7.9 attribute path and note pairing.
+
+Three paired ordinary-key render workloads against the pre-absolute-pitch binary
+measured median configuration speed ratio 0.996 (range 0.945–1.049), on the same
+pinned local CPU with no parallel builds. This measures steady rendering, not the
+new absolute-pitch admission cost or a host deadline guarantee. Local CSVs and
+binary hashes are `artifacts/absolute-pitch-*`.
 
 Heap-guarded tests compare analytic tones for irregular/nonmonotonic offsets,
 fixed-pitch exemption and live expression across block sizes 1/7/64/256. They

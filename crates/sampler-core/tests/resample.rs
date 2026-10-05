@@ -512,6 +512,140 @@ fn native_tuning_tracks_logical_pitch_without_changing_note_identity() {
 }
 
 #[test]
+fn absolute_pitch_overrides_tuning_and_survives_generated_note_transposition() {
+    use sampler_core::{Duration, Inheritance, Instruction, NotePitch, Program, Tuning, Velocity};
+    for absolute in [0.0, 60.0 + 1.0 / 512.0, 60.25, 127.0 + 511.0 / 512.0] {
+        let key = absolute as u8;
+        let transpose = if key == 127 { -1 } else { 1 };
+        for generated in [false, true] {
+            let region = Region {
+                sample: 0,
+                key_low: key.min((i16::from(key) + i16::from(transpose)) as u8),
+                key_high: key.max((i16::from(key) + i16::from(transpose)) as u8),
+                root_key: Some(key),
+                velocity_low: 0.0,
+                velocity_high: 1.0,
+                gain: 1.0,
+                envelope: Envelope::default(),
+                playback: Playback {
+                    start: 512,
+                    ..Playback::default()
+                },
+            };
+            let mut plan = Prepared::new_tuned(
+                48000,
+                vec![tone()],
+                vec![region],
+                2,
+                &Tuning::new([12.0; 128]).unwrap(),
+            )
+            .unwrap();
+            if generated {
+                plan = plan
+                    .with_programs(
+                        vec![
+                            Program::new(vec![
+                                Instruction::Wait(3),
+                                Instruction::Play {
+                                    transpose,
+                                    velocity: Velocity::Fixed(1.0),
+                                    inheritance: Inheritance::Independent,
+                                    duration: Duration::Gate,
+                                },
+                                Instruction::End,
+                            ])
+                            .unwrap(),
+                        ],
+                        Some(0),
+                    )
+                    .unwrap();
+            }
+            let mut rt = Runtime::new(
+                plan,
+                Limits {
+                    notes: 4,
+                    channels: 1,
+                    families: 4,
+                    expressions: 4,
+                    voices: 4,
+                    commands: 4,
+                    behaviors: 1,
+                    behavior_fuel: 8,
+                    behavior_cells: 0,
+                },
+            )
+            .unwrap();
+            let mut reference = runtime(
+                prepare(
+                    tone(),
+                    48000,
+                    Playback {
+                        start: 512,
+                        transpose_semitones: absolute - f64::from(key)
+                            + if generated { f64::from(transpose) } else { 0.0 },
+                        ..Playback::default()
+                    },
+                )
+                .unwrap(),
+            );
+            let mut actual = [[0.0; 2]; 256];
+            let mut expected = actual;
+            support::without_heap(|| {
+                let n = rt
+                    .trigger_pitched(
+                        input(),
+                        NotePitch::Absolute(absolute),
+                        1.0,
+                        expression(0.25),
+                    )
+                    .unwrap();
+                assert_eq!(rt.note_pitch(n), Ok(NotePitch::Absolute(absolute)));
+                assert_eq!(rt.note(n).unwrap().0, key);
+                if generated {
+                    rt.render(&mut [[0.0; 2]; 3]).unwrap();
+                }
+                // Independent expression resets the bend, not the inherent pitch.
+                reference
+                    .trigger_with_expression(
+                        input(),
+                        60,
+                        1.0,
+                        expression(if generated { 0.0 } else { 0.25 }),
+                    )
+                    .unwrap();
+                for (a, b) in actual.chunks_mut(7).zip(expected.chunks_mut(7)) {
+                    rt.render(a).unwrap();
+                    reference.render(b).unwrap();
+                }
+                assert_eq!(actual, expected);
+                rt.note_off(input()).unwrap();
+                rt.flush_behaviors(|_, _, _| true);
+                rt.flush_ended(|_| true);
+                assert_eq!(rt.note_count(), 0);
+            });
+        }
+    }
+    let mut rt = runtime(prepare(tone(), 48000, Playback::default()).unwrap());
+    support::without_heap(|| {
+        for pitch in [f64::NAN, f64::INFINITY, -0.001, 128.0] {
+            assert_eq!(
+                rt.trigger_pitched(
+                    input(),
+                    NotePitch::Absolute(pitch),
+                    1.0,
+                    Expression::default()
+                ),
+                Err(Error::InvalidInput)
+            );
+            assert_eq!(
+                (rt.note_count(), rt.expression_count(), rt.voice_count()),
+                (0, 0, 0)
+            );
+        }
+    });
+}
+
+#[test]
 fn live_pitch_is_phase_continuous_and_sample_accurate_at_every_partition() {
     let mut baseline = [[0.0; 2]; 512];
     for partition in [1, 7, 64, 256, 512] {

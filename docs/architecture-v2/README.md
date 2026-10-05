@@ -72,7 +72,7 @@ compatibility remains a separate, evidence-backed capability.
 - Preparation: validated immutable PCM shared across plans, adoption between notes, original-generation tails
   and callbacks, and control-thread retirement. Native WAV rendering and the
   deliberately small KSP source subset run independently of the old engine.
-- MIDI: UMP framing and MIDI 1/2 note/pedal/channel-mode ingress; separate fixed-zone
+- MIDI: UMP framing and MIDI 1/2 note/pedal/channel-mode ingress, MIDI 2 absolute pitch attributes; separate fixed-zone
   MPE pitch/pressure/CC74, whole-semitone RPN sensitivity and zone pedals. Full MIDI
   2 expression, MPE zone configuration/modes and raw scripting interception remain open.
 - Product work remains substantial: broader modulation rates/scopes, filters/effects, streaming,

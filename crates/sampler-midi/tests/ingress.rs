@@ -106,7 +106,7 @@ fn protocol_scope_and_unsupported_messages_cannot_create_partial_notes() {
     rt.flush_ended(|_| true);
     let ingress = Ingress::new(0, [Some(Version::Midi2); 16]);
     assert_eq!(
-        apply(&ingress, &mut rt, &[0x4090_3c03, 0xffff_7800]),
+        apply(&ingress, &mut rt, &[0x4090_3c7f, 0xffff_7800]),
         Ok(Applied::Unsupported)
     );
     assert_eq!(
@@ -114,6 +114,136 @@ fn protocol_scope_and_unsupported_messages_cannot_create_partial_notes() {
         Ok(Applied::Unsupported)
     );
     assert_eq!(rt.note_count(), 0);
+}
+
+#[test]
+fn midi2_pitch_attribute_overrides_tuning_without_changing_physical_pairing() {
+    use sampler_core::{Error, NotePitch, Tuning};
+    let make_runtime = |root, offset| {
+        Runtime::new(
+            Prepared::new_tuned(
+                48000,
+                vec![
+                    Pcm::new(
+                        48000,
+                        (0..4096)
+                            .map(|i| {
+                                let phase = std::f64::consts::TAU * 0.017 * i as f64;
+                                [phase.cos() as f32, phase.sin() as f32]
+                            })
+                            .collect(),
+                    )
+                    .unwrap(),
+                ],
+                vec![Region {
+                    sample: 0,
+                    key_low: 60,
+                    key_high: 60,
+                    root_key: Some(root),
+                    velocity_low: 0.0,
+                    velocity_high: 1.0,
+                    gain: 1.0,
+                    envelope: Envelope::default(),
+                    playback: Playback {
+                        start: 512,
+                        ..Playback::default()
+                    },
+                }],
+                1,
+                &Tuning::new([offset; 128]).unwrap(),
+            )
+            .unwrap(),
+            Limits {
+                notes: 4,
+                channels: 1,
+                families: 4,
+                expressions: 4,
+                voices: 4,
+                commands: 4,
+                behaviors: 0,
+                behavior_fuel: 0,
+                behavior_cells: 0,
+            },
+        )
+        .unwrap()
+    };
+    let ingress = Ingress::new(7, [Some(Version::Midi2); 16]);
+    for partition in [1, 7, 64, 256] {
+        let mut rt = make_runtime(60, 12.0);
+        let mut previous = [[0.0; 2]; 256];
+        support::without_heap(|| {
+            for fraction in [128u32, 129] {
+                let pitch = 60.0 + f64::from(fraction) / 512.0;
+                let Applied::Started(note) = apply(
+                    &ingress,
+                    &mut rt,
+                    &[0x439a_0003, 0xffff_0000 | (60 << 9) | fraction],
+                )
+                .unwrap() else {
+                    panic!()
+                };
+                assert_eq!(rt.note_pitch(note), Ok(NotePitch::Absolute(pitch)));
+                assert_eq!(rt.note(note).unwrap().0, 60);
+                let mut audio = [[0.0; 2]; 256];
+                for chunk in audio.chunks_mut(partition) {
+                    rt.render(chunk).unwrap();
+                }
+                let step = ((pitch - 60.0) / 12.0).exp2();
+                for (i, frame) in audio.iter().enumerate().skip(64) {
+                    let phase = std::f64::consts::TAU * 0.017 * (512.0 + i as f64 * step);
+                    assert!((f64::from(frame[0]) - phase.cos()).abs() < 0.0001);
+                    assert!((f64::from(frame[1]) - phase.sin()).abs() < 0.0001);
+                }
+                if fraction == 129 {
+                    assert_ne!(audio, previous);
+                }
+                previous = audio;
+                assert!(
+                    matches!(apply(&ingress, &mut rt, &[0x438a_00fe, 0x1234_5678]).unwrap(), Applied::Released { note: n, .. } if n == note)
+                );
+                rt.flush_ended(|input| {
+                    assert_eq!(
+                        (input.port, input.group, input.channel, input.key),
+                        (7, 3, 10, 0)
+                    );
+                    true
+                });
+                assert_eq!(rt.note_count(), 0);
+            }
+            // A one-note attribute must not replace the plan's tuning for later notes.
+            let Applied::Started(note) =
+                apply(&ingress, &mut rt, &[0x439a_3c00, 0xffff_0000]).unwrap()
+            else {
+                panic!()
+            };
+            assert_eq!(rt.note_pitch(note), Ok(NotePitch::Key(60)));
+            let mut audio = [[0.0; 2]; 256];
+            rt.render(&mut audio).unwrap();
+            for (i, frame) in audio.iter().enumerate().skip(64) {
+                let phase = std::f64::consts::TAU * 0.017 * (512.0 + i as f64 * 2.0);
+                assert!((f64::from(frame[0]) - phase.cos()).abs() < 0.0001);
+            }
+            rt.panic();
+            rt.flush_ended(|_| true);
+        });
+    }
+    let mut rt = make_runtime(0, -60.0);
+    support::without_heap(|| {
+        // Default tuning is valid, but absolute pitch bypasses it and exceeds step 16.
+        assert_eq!(
+            apply(&ingress, &mut rt, &[0x439a_0003, 0xffff_7800]),
+            Err(ApplyError::Core(Error::InvalidInput))
+        );
+        assert_eq!(
+            (
+                rt.note_count(),
+                rt.expression_count(),
+                rt.family_count(),
+                rt.voice_count()
+            ),
+            (0, 0, 0, 0)
+        );
+    });
 }
 
 #[test]

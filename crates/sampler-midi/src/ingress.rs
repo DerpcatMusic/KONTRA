@@ -1,5 +1,5 @@
 use crate::{Attribute, Message, Packet, Value, Version};
-use sampler_core::{Error, Input, NoteId, Protocol, Runtime};
+use sampler_core::{Error, Expression, Input, NoteId, NotePitch, Protocol, Runtime};
 
 /// Protocol selection belongs to the connection/control plane, never inferred from
 /// incoming notes. Disabled groups and protocol mismatches cannot mutate the core.
@@ -51,7 +51,7 @@ impl Ingress {
     }
 
     /// Apply at Runtime::now(). The host must split rendering at event timestamps.
-    /// Declared musical scope: un-attributed notes, sustain and sostenuto. Other
+    /// Note attributes support absolute Pitch 7.9 in addition to ordinary notes. Other
     /// decoded messages are reported as unsupported, not silently approximated.
     pub fn apply(&self, runtime: &mut Runtime, packet: Packet<'_>) -> Result<Applied, ApplyError> {
         let Some(voice) = packet.channel_voice() else {
@@ -77,10 +77,15 @@ impl Ingress {
                 key,
                 velocity,
                 attribute,
-            } if attribute.kind == 0 => Applied::Started(runtime.trigger(
+            } if matches!(attribute.kind, 0 | 3) => Applied::Started(runtime.trigger_pitched(
                 Input { key, ..input },
-                key,
+                if attribute.kind == 3 {
+                    NotePitch::Absolute(f64::from(attribute.data) / 512.0)
+                } else {
+                    NotePitch::Key(key)
+                },
                 velocity.normalized(),
+                Expression::default(),
             )?),
             Message::NoteOff {
                 key,
