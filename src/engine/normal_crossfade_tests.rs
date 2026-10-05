@@ -121,3 +121,52 @@ fn native_normal_positive_crossfade_matches_whole_native_pcm_and_pending_phases_
         }
     }
 }
+
+#[test]
+fn curved_future_overflow_preserves_current_source_pcm_and_legal_retune_without_heap() {
+    use crate::{audio::Sample, engine::{Engine, Ahdsr},
+        import::{Group, ModAssignment, ModSource, ModTarget, NativeLoop, SamplingProfile, Zone}};
+    let group = Group { source_mode: Some(0), interp_quality: 0,
+        mods: vec![ModAssignment { name: "volume lag".into(), source: ModSource::MidiCc(1),
+            target: ModTarget::Volume, intensity: 0.5, invert: false, lag_ms: 13,
+            cc_default: None, shaper: None }], ..Default::default() };
+    let zone = Zone { native_loops: vec![NativeLoop { slot: 0, mode: 1,
+        start: 256, length: 768, count: 0, alternating: false, tuning: 1., crossfade: 128 }],
+        ..Default::default() };
+    let bank = Bank::from_samples_with_profile(vec![group], vec![zone],
+        vec![(Default::default(), Sample { rate: 48000, frames: vec![[0.25; 2]; 4096] })],
+        SamplingProfile::Kontakt).unwrap()
+        .with_prepared_settings(|settings| settings[0].envelope = Some(Ahdsr::UNITY)).unwrap();
+    let mut engine = Engine::default(); engine.reset(48000.); engine.attack = 0.;
+    engine.set_bank(Some(Box::new(bank))); engine.note_on(0, 60, 127); engine.cc(0, 1, 127);
+    assert_eq!(engine.player.voices.len(), 1);
+    let bank = engine.bank.as_ref().unwrap();
+    let mut cx = Context::new(bank, &engine.state, &engine.player.midi,
+        &engine.player.host_notes, &engine.player.per_note,
+        engine.player.instrument_controls(&engine.state), false, 48000., 120.,
+        &engine.player.stream_error, 0, false, 0.);
+    cx.source_window = Some((0, 1024));
+    let voice = &mut engine.player.voices[0];
+    voice.step = (1u64 << 25) as f64;
+    let mut scratch = [[0.; 2]; WINDOW];
+    let positions = [0; MAX_BLOCK];
+    assert_eq!(crate::plugin::tests::allocations(|| {
+        let current = voice.prepare_source(&cx, 1).unwrap();
+        assert!(current.curved_pitch, "volume-only lag takes the existing curved source preview");
+        assert_eq!(current.travel, 1u64 << 57, "the current increment is representable");
+        assert_eq!(current.crossfade_partners[0] & 1, 1,
+            "current pending phase itself proves the first segment crosses fade.begin");
+        voice.plan(&cx, 1, None, None).unwrap();
+        let mut underrun = false;
+        let (pcm, _) = voice.window(&cx, &mut scratch, &positions, &mut underrun);
+        assert!(!underrun); assert_eq!(pcm[1], [0.25; 2]);
+        // A future live retune must still be admitted; the earlier speculative
+        // overflow neither silences nor commits a fabricated source trajectory.
+        voice.step = 1.;
+        let retuned = voice.prepare_source(&cx, 1).unwrap();
+        assert_eq!(retuned.travel, 1u64 << 32);
+        assert_eq!(voice.counted.unwrap().position, 0.);
+        assert_eq!(voice.pos, 0.);
+    }), 0);
+    assert!(engine.player.stream_error.get().is_none());
+}

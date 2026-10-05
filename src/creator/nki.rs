@@ -901,11 +901,11 @@ mod tests {
                 assert!((expected[2049][0]-wrong_left).abs()>1e-4,
                     "the repeated-pass left stencil must be audibly distinguishable");
             }
+            let mut compatibility_instrument = crate::import::read(&path).unwrap();
+            compatibility_instrument.groups = instrument.groups.clone();
+            compatibility_instrument.sampling_profile = crate::import::SamplingProfile::Compatibility;
             let create = |kind, compatibility| {
-                let mut instrument = instrument.clone();
-                if compatibility {
-                    instrument.sampling_profile = crate::import::SamplingProfile::Compatibility;
-                }
+                let instrument = if compatibility { &compatibility_instrument } else { &instrument };
                 let bank = if kind == 0 { Bank::load_counting(&instrument,MEMORY_LIMIT,Streaming::RamOnly,
                     &[],&std::sync::atomic::AtomicU32::new(0)).unwrap() }
                 else if kind < 3 { Bank::load_bare(&instrument).unwrap() }
