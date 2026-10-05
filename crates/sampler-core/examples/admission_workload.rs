@@ -7,7 +7,16 @@ fn main() {
         eprintln!("run with --release");
         std::process::exit(1);
     }
-    println!("notes,voices,reserved_voices,median_us,p99_us");
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    let identified = match args.as_slice() {
+        [] => false,
+        [flag] if flag == "--ids" => true,
+        _ => {
+            eprintln!("usage: admission_workload [--ids]");
+            std::process::exit(1);
+        }
+    };
+    println!("external_ids,notes,voices,reserved_voices,median_us,p99_us");
     for (notes, reserved) in [(16, 64), (64, 256), (256, 1024), (1024, 4096), (16, 4096)] {
         let plan = Prepared::new(
             48000,
@@ -55,7 +64,11 @@ fn main() {
         let mut times = [0u128; 128];
         for iteration in 0..160 {
             let begin = Instant::now();
-            for _ in 0..notes {
+            for note in 0..notes {
+                let input = Input {
+                    external_id: identified.then_some(note as i32),
+                    ..input
+                };
                 black_box(rt.trigger(input, 60, 1.0).unwrap());
             }
             let elapsed = begin.elapsed().as_nanos();
@@ -73,7 +86,7 @@ fn main() {
         }
         times.sort_unstable();
         println!(
-            "{notes},{},{reserved},{:.3},{:.3}",
+            "{identified},{notes},{},{reserved},{:.3},{:.3}",
             notes * 4,
             times[64] as f64 / 1000.0,
             times[126] as f64 / 1000.0
