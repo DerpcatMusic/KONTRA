@@ -2,7 +2,9 @@
 
 2026-10-05; follows `ae59279`. This is the first separate application composition
 root for the new core. It has no dependency on the old Engine, VM, UI, import model
-or host plugin. `cargo tree -p sampler-native` contains only `sampler-core` beneath it.
+or host plugin. At this checkpoint its only dependency was `sampler-core`. The later
+[MIDI ingress](MIDI_INGRESS.md) adds `sampler-midi` and shared sample-offset block
+processing; neither path depends on the old product.
 
 ## Implemented path
 

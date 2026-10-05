@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Share bounded sample-offset UMP block processing with the native executable. Validate whole-batch timing before mutation, preserve stable event order, and keep processing releases after per-event admission failures; partition and heap checks cover the callback.
+
 - Add a clean-sheet UMP decoder preserving MIDI 1.0/2.0 precision and protocol identity, with bounded note/pedal ingress and native demo integration. Pin the wire specification, test framing and callback heap safety, and raise the authoritative new-core Rust Doctor score to 91. Full MIDI 2.0 musical/device support remains open.
 
 - Add per-region PCM ranges, forward/reverse playback and continuous/until-release loops to the new core. Independent voice cursors preserve shared-asset ownership; exact loop-boundary release, invalid views and callback heap safety are tested.
