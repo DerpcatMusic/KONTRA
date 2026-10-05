@@ -23,6 +23,8 @@ Family/expression ownership and segmented rendering now have
 - [x] Implement native linear AHDSR and retained release tails with independent timing/heap tests.
 - [x] Implement independent source ranges, forward/reverse playback and continuous/until-release loops; [evidence](SOURCE_VIEWS.md).
 
+- [x] Pin UMP v1.1.2 and implement allocation-free framing/channel-voice decoding plus native note/pedal ingress; [partial scope and evidence](MIDI_INGRESS.md).
+
 ## M0 — contracts and measurable targets
 
 ### V2-01 — Establish independent conformance and workload evidence

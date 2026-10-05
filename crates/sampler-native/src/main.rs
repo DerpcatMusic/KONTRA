@@ -1,6 +1,7 @@
 //! Independent offline composition root; no legacy application or engine dependency.
 mod wave;
-use sampler_core::{Event, Input, Limits, Pcm, Prepared, Protocol, Region, Runtime};
+use sampler_core::{Limits, Pcm, Prepared, Region, Runtime};
+use sampler_midi::{Ingress, Packets, Version};
 use std::{
     fs::OpenOptions,
     io::{self, BufWriter, Write},
@@ -47,24 +48,16 @@ fn render(sample: Pcm, output: &Path, demo: bool) -> io::Result<()> {
         },
     )
     .map_err(core)?;
-    let input = Input {
-        protocol: Protocol::Native,
-        port: 0,
-        group: 0,
-        channel: 0,
-        key: 60,
-        external_id: Some(1),
-    };
-    let channel = rt.register_channel(input.channel_address()).map_err(core)?;
-    let note = rt.trigger(input, 60, 1.0).map_err(core)?;
-    if demo {
-        rt.schedule_event(u64::from(rate) / 4, Event::Sustain(channel, true))
-            .map_err(core)?;
-        rt.schedule_event(u64::from(rate) / 2, Event::KeyUp(note))
-            .map_err(core)?;
-        rt.schedule_event(u64::from(rate), Event::Sustain(channel, false))
-            .map_err(core)?;
-    }
+    let mut groups = [None; 16];
+    groups[0] = Some(Version::Midi2);
+    let ingress = Ingress::new(0, groups);
+    let events = [
+        (0, [0x4090_3c00, 0xffff_0000]),
+        (u64::from(rate) / 4, [0x40b0_4000, u32::MAX]),
+        (u64::from(rate) / 2, [0x4080_3c00, 0x8000_0000]),
+        (u64::from(rate), [0x40b0_4000, 0]),
+    ];
+    let mut events = events[..if demo { 4 } else { 1 }].iter().peekable();
     // Refuse overwrites, including an input path reused as output.
     let file = OpenOptions::new()
         .write(true)
@@ -75,7 +68,21 @@ fn render(sample: Pcm, output: &Path, demo: bool) -> io::Result<()> {
     let mut buffer = [[0.0; 2]; 256];
     let mut remaining = count;
     while remaining > 0 {
-        let len = remaining.min(buffer.len());
+        while let Some((at, words)) = events.peek()
+            && *at == rt.now()
+        {
+            for packet in Packets::new(words) {
+                let packet = packet.map_err(|e| io::Error::other(format!("UMP framing: {e:?}")))?;
+                ingress
+                    .apply(&mut rt, packet)
+                    .map_err(|e| io::Error::other(format!("UMP input: {e:?}")))?;
+            }
+            events.next();
+        }
+        let boundary = events
+            .peek()
+            .map_or(remaining, |(at, _)| (*at - rt.now()) as usize);
+        let len = remaining.min(buffer.len()).min(boundary);
         rt.render(&mut buffer[..len]).map_err(core)?;
         wave::frames(&mut out, &buffer[..len])?;
         remaining -= len;
