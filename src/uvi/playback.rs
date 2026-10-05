@@ -4470,9 +4470,9 @@ mod tests {
         let checkpoints = [
             (0, 0.),
             (1, 0.002226421),
-            (32, 0.071245493),
-            (128, 0.255947237),
-            (512, 0.693510939),
+            (32, 0.071_245_49),
+            (128, 0.255_947_23),
+            (512, 0.693_510_95),
         ];
         for offset in 0..=512 {
             let value = clock.value(20480 + offset, 1., 48000.);
@@ -4850,10 +4850,10 @@ mod tests {
             .unwrap();
         for (frame, expected) in [
             (0, 0.),
-            (96, 0.249999985),
-            (112, 0.281604865),
-            (113, 0.284641981125),
-            (145, 0.248657675),
+            (96, 0.249_999_99),
+            (112, 0.281_604_86),
+            (113, 0.284_641_98),
+            (145, 0.248_657_67),
         ] {
             assert!(
                 (output[frame][0] - expected).abs() < 0.000002,
@@ -4928,8 +4928,8 @@ mod tests {
             .unwrap();
         assert!(output[..480].iter().all(|frame| *frame == [0., 0.]));
         for (frame, expected) in [
-            (480, 0.11557837575674057),
-            (481, 0.008129146881401539),
+            (480, 0.115_578_376),
+            (481, 0.008_129_147),
             (960, 0.05334042),
         ] {
             assert!((output[frame][0] - expected).abs() < 3e-8);
@@ -4982,10 +4982,10 @@ mod tests {
             )
             .unwrap();
         for (frame, expected) in [
-            (3, 1.893573499e-04),
-            (7, 7.173242047e-03),
-            (15, 4.259800911e-02),
-            (31, 2.153839171e-02),
+            (3, 1.893_573_5e-4),
+            (7, 7.173_242e-3),
+            (15, 4.259_801e-2),
+            (31, 2.153_839_2e-2),
         ] {
             assert!((output[256 + frame][0] - expected * 0.5).abs() < 1e-6);
         }
@@ -5174,7 +5174,7 @@ mod tests {
     }
     #[test]
     fn cubic_neighbors_have_physical_zero_padding_and_cross_playhead_markers() {
-        for (start, stop, expected) in [(0, 8, 0.0869140625), (1, 2, 0.14111328125)] {
+        for (start, stop, expected) in [(0, 8, 0.086_914_06), (1, 2, 0.141_113_28)] {
             let p = parse_program(&format!(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a" NoteTracking="0" InterpolationMode="2"><PlaybackOptions Start="{start}" Stop="{stop}"/></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#)).unwrap();
             let mut source = sample(1);
             source.rate = 24000;

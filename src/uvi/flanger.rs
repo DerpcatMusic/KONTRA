@@ -205,7 +205,7 @@ mod tests {
     use super::*;
     #[test]
     fn flanger_rejects_nonfinite_active_input_before_mutation() {
-        let controls = [0.39889875, 0.39999998, 0.2, 0.50335938, 1.];
+        let controls = [0.39889875, 0.39999998, 0.2, 0.503_359_4, 1.];
         for invalid_at in [0, 64] {
             let mut fx = Flanger::new(48000, 1, controls).unwrap();
             let mut baseline = Flanger::new(48000, 1, controls).unwrap();
@@ -247,14 +247,14 @@ mod tests {
         let mut expected = vec![0.; 512];
         expected[0] = 1.;
         expected[192] = 1.;
-        expected[193] = 0.00000762939453125;
+        expected[193] = 0.000_007_629_394_5;
         assert_eq!(input, expected); // Authored native impulse, unchanged reader.
         fx.clear();
         let mut input = vec![0.; 512];
         input[0] = 1.;
         fx.process(&mut [&mut input]).unwrap();
         assert_eq!(input, expected);
-        let controls = [0.39889875, 0.39999998, 0.2, 0.50335938, 1.];
+        let controls = [0.39889875, 0.39999998, 0.2, 0.503_359_4, 1.];
         let original: Vec<Vec<f32>> = (0..2)
             .map(|c| {
                 (0..4096)
