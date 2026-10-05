@@ -284,3 +284,42 @@ matrix. Shuffle storage is four bytes per reserved take/owner, in addition to bo
 per-owner generator/progress state. CSVs and hashes use ignored
 `artifacts/random-final-*`; the preceding executable is retained as
 `artifacts/random-admission-before`.
+
+## Retained release-context cost
+
+Release timestamps/velocity use one control-preallocated payload per reserved note;
+key/gate cause markers replace the two note-state booleans. Payload allocation follows
+the frequently traversed pools. An initial inline-record prototype regressed the
+256-note identified-input admission case from 77.302 to 91.372 microseconds in a
+three-pass comparison. Separating the cold payload recovered that case. Allocating
+the payload among the hot pools also exposed a slower sparse-shuffle case in two of
+three runs (about 5.9 versus 3.6 microseconds); allocating it after those pools removed
+that regression in the final three-pass measurement. This is evidence for the local
+layout choice, not proof of identical cache behavior on other hardware/allocators.
+
+Final alternating CPU-2 runs compare `247b33d` with retained release context on the
+same Ryzen 7800X3D/Rust 1.99 release setup, after builds/scans finished.
+Median-of-median admission times in microseconds:
+
+| Notes | Reserved voices | Plain before | Plain after | IDs before | IDs after | Shuffle before | Shuffle after |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 16 | 64 | 2.250 | 2.230 | 2.410 | 2.420 | 3.590 | 3.600 |
+| 64 | 256 | 9.150 | 9.261 | 11.400 | 11.360 | 14.520 | 14.650 |
+| 256 | 1,024 | 37.171 | 37.581 | 76.831 | 75.722 | 60.052 | 60.811 |
+| 1,024 | 4,096 | 192.834 | 190.754 | 1,022.869 | 909.837 | 292.446 | 291.205 |
+| 16 | 4,096 | 2.320 | 2.310 | 9.801 | 9.850 | 3.650 | 3.710 |
+
+Plain/shuffle admission stays within about 1.7% in these cases. The largest identified
+case improved locally, but the comparison does not establish a general duplicate-ID
+lookup improvement. At 1,024 notes, note-off medians before/after were
+4,021.696/3,909.134 microseconds plain, 2,303.164/2,372.525 with IDs and
+3,901.063/4,019.496 with shuffle. Retirement was 7.510/8.450, 7.530/8.470 and
+9.080/9.420 respectively: retained metadata and marker changes are not free.
+
+Across 32 resident-render cases the median after/before ratio was 0.997,
+range 0.951–1.034. No source kernel or per-frame release-context query was added.
+These synthetic workloads do not certify host deadlines or full-polyphony release
+sample bursts; automatic release mapping/reserves remain unimplemented.
+Final CSVs use ignored `artifacts/release-context-layout-*`; the inline and first
+split-layout investigations remain under `release-context-final-*` and
+`release-context-split-*`. Binary provenance is in `release-context-binaries.sha256`.

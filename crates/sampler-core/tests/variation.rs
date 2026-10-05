@@ -237,7 +237,7 @@ fn compiled_selection_matches_independent_scoped_multimic_reference() {
             for (seq, expected) in expected_takes.iter().enumerate() {
                 assert_eq!(rt.note_take(note, seq), Ok(*expected));
             }
-            rt.note_off(source).unwrap();
+            rt.note_off(source, None).unwrap();
             rt.flush_ended(|_| false);
             assert_eq!(rt.decision_count(), expected_takes.iter().flatten().count());
             rt.flush_ended(|_| true);

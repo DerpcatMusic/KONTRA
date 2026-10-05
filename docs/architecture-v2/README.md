@@ -65,10 +65,14 @@ compatibility remains a separate, evidence-backed capability.
 18. [Coordinated native variation](VARIATION.md): scoped sequential/random/no-repeat/shuffle takes, retained
     decisions, transactional advancement and per-generation mutable state.
 
+19. [Retained release context](RELEASE_CONTEXT.md): key-up velocity, sample times,
+    closure causes and note-owned lifetime across pedals and plan replacement.
+
 ## Implemented and still open
 
 - Native core: generational note/family/voice/expression ownership, physical versus
-  effective gates, direct ownership release traversal, bounded scheduling/behaviors,
+  effective gates, retained key/gate release context, direct ownership release traversal,
+  bounded scheduling/behaviors,
   resident selection, AHDSR and scheduled family chokes,
   source views/loops, bandlimited rate conversion, root-key/native tuning and live pitch,
   initial expression, transactional multi-owner gestures and prepared event-rate

@@ -133,7 +133,8 @@ fn pedal_and_expression_timeline_pressure_do_no_heap_work() {
             rt.start(n, 0, rt.now(), 1.0).unwrap();
             rt.schedule_event(rt.now() + 1, Event::Sostenuto(ch, true))
                 .unwrap();
-            rt.schedule_event(rt.now() + 2, Event::KeyUp(n)).unwrap();
+            rt.schedule_event(rt.now() + 2, Event::KeyUp(n, None))
+                .unwrap();
             rt.schedule_event(
                 rt.now() + 3,
                 Event::Expression(
@@ -279,7 +280,7 @@ fn deep_reused_slot_trees_retire_without_heap_and_preserve_retry_ownership() {
             )
             .unwrap();
         for _ in 0..128 {
-            rt.note_off(input).unwrap();
+            rt.note_off(input, None).unwrap();
         }
         let mut ends = 0;
         rt.flush_ended(|_| {

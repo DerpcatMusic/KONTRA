@@ -166,7 +166,8 @@ fn fractional_loop_release_preserves_traversal_guards_and_source_end() {
                 let mut audio = [[0.0; 2]; 24];
                 support::without_heap(|| {
                     let note = rt.trigger(input(), 60, 1.0).unwrap();
-                    rt.schedule_event(release, Event::KeyUp(note)).unwrap();
+                    rt.schedule_event(release, Event::KeyUp(note, None))
+                        .unwrap();
                     for block in audio.chunks_mut(partition) {
                         rt.render(block).unwrap();
                     }
@@ -295,7 +296,7 @@ fn prepared_key_tracking_uses_logical_keys_and_keeps_exact_root_pitch() {
             let note = rt.trigger(input(), key, 1.0).unwrap();
             rt.render(&mut [[0.0; 2]; 128]).unwrap();
             rt.render(&mut audio).unwrap();
-            assert_eq!(rt.note_off(input()), Ok(note));
+            assert_eq!(rt.note_off(input(), None), Ok(note));
             rt.flush_ended(|ended| {
                 assert_eq!(ended, input());
                 true
@@ -428,7 +429,7 @@ fn native_tuning_tracks_logical_pitch_without_changing_note_identity() {
                     for block in audio.chunks_mut(partition) {
                         rt.render(block).unwrap();
                     }
-                    assert_eq!(rt.note_off(input()), Ok(note));
+                    assert_eq!(rt.note_off(input(), None), Ok(note));
                     rt.flush_ended(|ended| {
                         assert_eq!(ended, input());
                         true
@@ -620,7 +621,7 @@ fn absolute_pitch_overrides_tuning_and_survives_generated_note_transposition() {
                     reference.render(b).unwrap();
                 }
                 assert_eq!(actual, expected);
-                rt.note_off(input()).unwrap();
+                rt.note_off(input(), None).unwrap();
                 rt.flush_behaviors(|_, _, _| true);
                 rt.flush_ended(|_| true);
                 assert_eq!(rt.note_count(), 0);
@@ -1068,8 +1069,8 @@ fn muted_sources_match_audible_phase_envelopes_and_loop_exits_when_restored() {
                             }
                             assert_eq!(muted.voice_count(), audible.voice_count());
                             if control == -1 {
-                                muted.key_up(note).unwrap();
-                                audible.key_up(reference).unwrap();
+                                muted.key_up(note, None).unwrap();
+                                audible.key_up(reference, None).unwrap();
                             } else if control < 2 {
                                 silent = control == 0;
                                 muted

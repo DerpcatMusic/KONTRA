@@ -106,11 +106,11 @@ fn cleanup_does_not_need_queue_space_and_no_source_notes_retry() {
     assert_eq!(rt.start(b, 0, 50, 1.0), Err(Error::Capacity));
     assert_eq!(rt.release_at(a, 10), Err(Error::Capacity));
     assert_eq!(rt.note_on(input(Some(8)), 60, 1.0), Err(Error::Capacity));
-    assert_eq!(rt.note_off(input(None)), Ok(a)); // FIFO, even though b shares the key.
+    assert_eq!(rt.note_off(input(None), None), Ok(a)); // FIFO, even though b shares the key.
     assert_eq!(rt.pending_commands(), 0);
     assert_eq!(rt.voice_count(), 0);
     assert!(rt.note(b).unwrap().2);
-    rt.note_off(input(None)).unwrap();
+    rt.note_off(input(None), None).unwrap();
     rt.flush_ended(|_| false);
     assert_eq!(rt.note_count(), 2);
     let mut ends = 0;
@@ -500,7 +500,7 @@ fn input_groups_and_new_handle_domains_do_not_alias() {
     let b = Input { group: 15, ..a };
     let n = rt.note_on(a, 60, 1.0 / 65535.0).unwrap();
     let other = rt.note_on(b, 60, 1.0).unwrap();
-    assert_eq!(rt.note_off(b), Ok(other));
+    assert_eq!(rt.note_off(b, None), Ok(other));
     assert!(rt.note(n).unwrap().2);
     assert_eq!(
         rt.note_on(Input { group: 16, ..a }, 60, 1.0),
@@ -805,7 +805,7 @@ fn sustain_pairs_physical_keys_fifo_and_sostenuto_captures_only_held_notes() {
     let a = rt.note_on(input(None), 60, 1.0).unwrap();
     rt.start(a, 0, 0, 1.0).unwrap();
     rt.sustain(channel, true).unwrap();
-    assert_eq!(rt.note_off(input(None)), Ok(a));
+    assert_eq!(rt.note_off(input(None), None), Ok(a));
     assert_eq!(rt.key_down(a), Ok(false));
     assert!(rt.note(a).unwrap().2);
     let b = rt.note_on(input(None), 60, 1.0).unwrap();
@@ -813,8 +813,8 @@ fn sustain_pairs_physical_keys_fifo_and_sostenuto_captures_only_held_notes() {
     rt.sostenuto(channel, true).unwrap(); // Captures b, not the pedal-held a.
     let c = rt.note_on(input(None), 60, 1.0).unwrap();
     rt.sostenuto(channel, true).unwrap(); // Repeated down is not a new capture.
-    assert_eq!(rt.note_off(input(None)), Ok(b));
-    assert_eq!(rt.note_off(input(None)), Ok(c));
+    assert_eq!(rt.note_off(input(None), None), Ok(b));
+    assert_eq!(rt.note_off(input(None), None), Ok(c));
     rt.sustain(channel, false).unwrap();
     assert!(!rt.note(a).unwrap().2);
     assert!(rt.note(b).unwrap().2);
@@ -845,7 +845,7 @@ fn sustain_pairs_physical_keys_fifo_and_sostenuto_captures_only_held_notes() {
         },
     ] {
         let n = rt.note_on(other, 60, 1.0).unwrap();
-        rt.note_off(other).unwrap();
+        rt.note_off(other, None).unwrap();
         assert!(!rt.note(n).unwrap().2);
         rt.flush_ended(|_| true);
     }
@@ -873,7 +873,7 @@ fn mixed_timeline_is_partition_invariant_and_immediate_changes_follow_due_work()
         let n = rt.note_on(input(None), 60, 1.0).unwrap();
         rt.start(n, 0, 3, 1.0).unwrap();
         rt.schedule_event(5, Event::Sustain(ch, true)).unwrap();
-        rt.schedule_event(8, Event::KeyUp(n)).unwrap();
+        rt.schedule_event(8, Event::KeyUp(n, None)).unwrap();
         rt.schedule_event(
             10,
             Event::Expression(
@@ -1050,7 +1050,7 @@ fn full_queue_cannot_drop_pedal_up_and_channel_domains_are_bounded() {
     );
     let n = rt.note_on(input(None), 60, 1.0).unwrap();
     rt.sustain(ch, true).unwrap();
-    rt.note_off(input(None)).unwrap();
+    rt.note_off(input(None), None).unwrap();
     rt.schedule_event(100, Event::Expression(n, Expression::default()))
         .unwrap();
     rt.sustain(ch, false).unwrap();

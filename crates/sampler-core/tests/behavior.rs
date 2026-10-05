@@ -151,6 +151,15 @@ fn wait_cancellation_panic_and_explicit_abort_need_no_queue_space() {
                 1 => rt.panic(),
                 _ => rt.cancel_behavior(behavior).unwrap(),
             }
+            let cause = match action {
+                0 => sampler_core::ReleaseCause::Explicit,
+                1 => sampler_core::ReleaseCause::Panic,
+                _ => sampler_core::ReleaseCause::BehaviorCancelled,
+            };
+            assert_eq!(
+                rt.release_context(note).unwrap().gate,
+                Some(sampler_core::GateRelease { at: 2, cause })
+            );
             assert_eq!(rt.pending_commands(), 0);
             assert_eq!(rt.behavior_outcome(behavior), Ok(Some(Outcome::Cancelled)));
             let mut audio = [[123.; 2]; 32];
@@ -343,6 +352,13 @@ fn deferred_fault_is_reported_at_the_resume_boundary() {
             Ok(Some(Outcome::Fault(Error::InvalidInput)))
         );
         assert!(!rt.note(note).unwrap().2);
+        assert_eq!(
+            rt.release_context(note).unwrap().gate,
+            Some(sampler_core::GateRelease {
+                at: 4,
+                cause: sampler_core::ReleaseCause::BehaviorFault
+            })
+        );
         assert_eq!(rt.pending_commands(), 0);
         rt.flush_behaviors(|_, _, _| true);
         rt.flush_ended(|_| true);
@@ -847,7 +863,7 @@ fn scoped_hard_silence_cancels_descendants_and_retained_waits_but_keeps_physical
             rt.start(delayed, 0, 4, 1.).unwrap();
             let channel = rt.register_channel(input().channel_address()).unwrap();
             rt.sustain(channel, true).unwrap();
-            rt.schedule_event(10, Event::KeyUp(root)).unwrap();
+            rt.schedule_event(10, Event::KeyUp(root, None)).unwrap();
             rt.schedule_event(12, Event::Expression(root, Expression::default()))
                 .unwrap();
             rt.schedule_event(12, Event::Expression(other, Expression::default()))
@@ -977,7 +993,7 @@ fn generated_source_pitch_preflight_preserves_accepted_future_expression() {
                 if linked { 0.0 } else { 120.0 }
             );
             rt.flush_behaviors(|_, _, _| true);
-            rt.key_up(root).unwrap();
+            rt.key_up(root, None).unwrap();
             rt.flush_ended(|_| true);
             assert_eq!(
                 (

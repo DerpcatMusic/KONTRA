@@ -131,7 +131,7 @@ impl Runtime {
         if program >= plan.programs.len() {
             return Err(Error::InvalidInput);
         }
-        if !n.gate && plan.programs[program].wait_lifetime == WaitLifetime::Gate {
+        if !n.gate() && plan.programs[program].wait_lifetime == WaitLifetime::Gate {
             return Err(Error::ClosedNote);
         }
         let work = n.work.checked_add(1).ok_or(Error::Capacity)?;
@@ -179,7 +179,7 @@ impl Runtime {
         if c.outcome.is_none() {
             c.outcome = Some(Outcome::Cancelled);
             let note = c.note;
-            self.release_now(note)?;
+            self.release_now(note, super::ReleaseCause::BehaviorCancelled)?;
         }
         Ok(())
     }
@@ -336,7 +336,7 @@ impl Runtime {
         let c = self.behaviors.get_mut(id.0).unwrap();
         c.outcome = Some(outcome);
         let note = c.note;
-        self.release_now(note)
+        self.release_now(note, super::ReleaseCause::BehaviorFault)
             .expect("continuation retains originating note");
     }
 }

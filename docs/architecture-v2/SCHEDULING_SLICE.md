@@ -52,3 +52,10 @@ live in an independently constructed application/runtime. Add the native composi
 root, prepared instrument selection and source execution, then connect the new host
 and behavior services. Preserve typed lifetimes and off-audio construction/destruction
 through that integration; do not wrap the old Engine or VM to fill missing behavior.
+
+## Retained release-context follow-up
+
+The current native core derives physical/effective gate state from first-transition
+[release records](RELEASE_CONTEXT.md), including sample times, optional velocity and
+closure causes. Later milestones also add AHDSR tails and native behaviors; the
+fixture limitations above describe this document's original checkpoint.

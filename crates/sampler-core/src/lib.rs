@@ -46,7 +46,9 @@ mod pitch;
 pub use pitch::NotePitch;
 mod plans;
 mod prepare;
+mod release;
 mod render;
+pub use release::{GateRelease, KeyRelease, ReleaseCause, ReleaseContext};
 mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
@@ -151,8 +153,8 @@ struct Note {
     first_decision: Option<Index>,
     pitch: NotePitch,
     velocity: f64,
-    gate: bool,
-    key_down: bool,
+    key_release: Option<ReleaseCause>,
+    gate_release: Option<ReleaseCause>,
     sostenuto: bool,
     work: usize,
     pins: usize,
@@ -309,6 +311,7 @@ pub struct Runtime {
     active_plan: PlanId,
     plan_queues: Option<PlanQueues>,
     notes: Arena<Note>,
+    release_times: Box<[release::ReleaseTimes]>,
     closed_notes: Vec<NoteId>,
     channels: Arena<Channel>,
     voices: Arena<Voice>,
@@ -353,6 +356,8 @@ impl Runtime {
             return Err(Error::Capacity);
         }
         std::alloc::Layout::array::<i64>(cells).map_err(|_| Error::Capacity)?;
+        std::alloc::Layout::array::<release::ReleaseTimes>(limits.notes)
+            .map_err(|_| Error::Capacity)?;
         static NEXT_RUNTIME: AtomicU64 = AtomicU64::new(1);
         #[allow(deprecated, reason = "fetch_update supports the Rust 1.92 minimum")]
         let id = NEXT_RUNTIME
@@ -391,6 +396,8 @@ impl Runtime {
             now: 0,
             order: 0,
             nonfinite_frames: 0,
+            // Keep cold payload allocation after the frequently traversed pools.
+            release_times: vec![release::ReleaseTimes::default(); limits.notes].into_boxed_slice(),
         })
     }
 
@@ -486,7 +493,7 @@ impl Runtime {
     ) -> Result<NoteId, Error> {
         self.apply_due();
         let p = self.notes.get(parent.0).ok_or(Error::StaleHandle)?;
-        if linked_release && !p.gate {
+        if linked_release && !p.gate() {
             return Err(Error::ClosedNote);
         }
         self.admit(
@@ -570,8 +577,8 @@ impl Runtime {
             first_decision: None,
             pitch,
             velocity,
-            gate: true,
-            key_down: true,
+            key_release: None,
+            gate_release: None,
             sostenuto: false,
             work: 0,
             pins: 0,
@@ -585,6 +592,10 @@ impl Runtime {
                 self.drop_expression(expression);
                 return Err(error);
             }
+        };
+        self.release_times[id.index] = release::ReleaseTimes {
+            admitted_at: self.now,
+            ..release::ReleaseTimes::default()
         };
         if let Some(parent) = parent {
             let index = Index::new(id.index);
@@ -603,7 +614,7 @@ impl Runtime {
 
     pub fn note(&self, id: NoteId) -> Result<(u8, f64, bool), Error> {
         let n = self.notes.get(id.0).ok_or(Error::StaleHandle)?;
-        Ok((n.pitch.key(), n.velocity, n.gate))
+        Ok((n.pitch.key(), n.velocity, n.gate()))
     }
 
     pub fn note_pitch(&self, id: NoteId) -> Result<NotePitch, Error> {
@@ -623,8 +634,10 @@ impl Runtime {
         Ok(())
     }
 
-    /// Native anonymous-input fallback: FIFO within the original protocol/port/key.
-    pub fn note_off(&mut self, input: Input) -> Result<NoteId, Error> {
+    /// Native anonymous-input fallback: FIFO within the exact original input address.
+    /// Release velocity is normalized; None means it was not supplied.
+    pub fn note_off(&mut self, input: Input, velocity: Option<f64>) -> Result<NoteId, Error> {
+        release::validate_velocity(velocity)?;
         self.apply_due();
         let id = self
             .notes
@@ -634,13 +647,13 @@ impl Runtime {
             .filter_map(|(i, s)| {
                 s.value
                     .as_ref()
-                    .filter(|n| n.key_down && n.input == Some(input))
+                    .filter(|n| n.key_down() && n.input == Some(input))
                     .map(|n| (i, n.order))
             })
             .min_by_key(|(_, order)| *order)
             .map(|(i, _)| NoteId(self.notes.id(i)))
             .ok_or(Error::StaleHandle)?;
-        self.key_up_now(id)?;
+        self.key_up_now(id, velocity)?;
         Ok(id)
     }
 
@@ -767,22 +780,23 @@ impl Runtime {
 
     pub fn release(&mut self, id: NoteId) -> Result<(), Error> {
         self.apply_due();
-        self.release_now(id)
+        self.release_now(id, ReleaseCause::Explicit)
     }
 
-    fn release_now(&mut self, id: NoteId) -> Result<(), Error> {
+    fn release_now(&mut self, id: NoteId, cause: ReleaseCause) -> Result<(), Error> {
         let n = self.notes.get_mut(id.0).ok_or(Error::StaleHandle)?;
-        n.key_down = false;
         n.sostenuto = false;
-        self.close_gate(id);
+        self.release_key(id, cause, None);
+        self.close_gate(id, cause);
         self.cleanup_closed_notes();
         Ok(())
     }
 
-    fn close_gate(&mut self, id: NoteId) {
+    fn close_gate(&mut self, id: NoteId, cause: ReleaseCause) {
         let note = self.notes.get_mut(id.0).unwrap();
-        if note.gate {
-            note.gate = false;
+        if note.gate() {
+            self.release_times[id.0.index].gate_at = self.now;
+            note.gate_release = Some(cause);
             // Each live note enters at most once; cleanup drains before notes can
             // retire or slots can be reused. Storage was reserved for every note.
             assert!(self.closed_notes.len() < self.closed_notes.capacity());
@@ -795,9 +809,9 @@ impl Runtime {
     pub fn panic(&mut self) {
         for i in 0..self.notes.slots.len() {
             if let Some(n) = &mut self.notes.slots[i].value {
-                n.key_down = false;
                 n.sostenuto = false;
-                self.close_gate(NoteId(self.notes.id(i)));
+                self.release_key(NoteId(self.notes.id(i)), ReleaseCause::Panic, None);
+                self.close_gate(NoteId(self.notes.id(i)), ReleaseCause::Panic);
             }
         }
         for slot in &mut self.behaviors.slots {
@@ -830,9 +844,13 @@ impl Runtime {
                 let state = self.notes.at_mut(index);
                 child = state.siblings.next;
                 if state.linked_release {
-                    state.key_down = false;
                     state.sostenuto = false;
-                    self.close_gate(NoteId(self.notes.id(index.get())));
+                    self.release_key(
+                        NoteId(self.notes.id(index.get())),
+                        ReleaseCause::Parent,
+                        None,
+                    );
+                    self.close_gate(NoteId(self.notes.id(index.get())), ReleaseCause::Parent);
                 }
             }
             let mut family = self.notes.get(note.0).unwrap().first_family;

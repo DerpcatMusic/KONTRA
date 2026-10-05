@@ -602,7 +602,7 @@ fn all_sound_off_keeps_fifo_pairing_and_late_key_cleanup_without_resurrection() 
             assert_eq!(rt.key_down(old), Ok(true));
             assert_eq!(rt.voice_count(), 0);
             // A key-up can still be scheduled for a silent, physically held input.
-            rt.schedule_event(20, Event::KeyUp(old)).unwrap();
+            rt.schedule_event(20, Event::KeyUp(old, None)).unwrap();
             let Applied::Started(new) = apply(&ingress, &mut rt, &on).unwrap() else {
                 panic!()
             };
@@ -637,6 +637,72 @@ fn all_sound_off_keeps_fifo_pairing_and_late_key_cleanup_without_resurrection() 
                 true
             });
             assert_eq!((ends, rt.note_count(), rt.voice_count()), (2, 0, 0));
+        });
+    }
+}
+
+#[test]
+fn release_velocity_precision_and_missing_values_reach_retained_core_context() {
+    let mut groups = [None; 16];
+    groups[0] = Some(Version::Midi1);
+    groups[1] = Some(Version::Midi2);
+    let ingress = Ingress::new(9, groups);
+    for (on, words, off, velocity) in [
+        ([0x2090_3c7f, 0], 1, [0x2080_3c01, 0], Some(1. / 127.)),
+        ([0x2090_3c7f, 0], 1, [0x2080_3c00, 0], Some(0.)),
+        ([0x2090_3c7f, 0], 1, [0x2090_3c00, 0], None),
+        (
+            [0x4190_3c00, 0xffff_0000],
+            2,
+            [0x4180_3c00, 0x0001_0000],
+            Some(1. / 65535.),
+        ),
+        (
+            [0x4190_3c00, 0xffff_0000],
+            2,
+            [0x4180_3cfe, 0xfffe_4321],
+            Some(65534. / 65535.),
+        ),
+        (
+            [0x4190_3c00, 0xffff_0000],
+            2,
+            [0x4180_3c00, 0xffff_0000],
+            Some(1.),
+        ),
+        ([0x4190_3c00, 0xffff_0000], 2, [0x4180_3c00, 0], Some(0.)),
+    ] {
+        let mut rt = runtime();
+        support::without_heap(|| {
+            let Applied::Started(note) = apply(&ingress, &mut rt, &on[..words]).unwrap() else {
+                panic!()
+            };
+            rt.render(&mut [[0.; 2]; 3]).unwrap();
+            let Applied::Released { note: released, .. } =
+                apply(&ingress, &mut rt, &off[..words]).unwrap()
+            else {
+                panic!()
+            };
+            assert_eq!(released, note);
+            let context = rt.release_context(note).unwrap();
+            assert_eq!(context.admitted_at, 0);
+            assert_eq!(
+                context.key,
+                Some(sampler_core::KeyRelease {
+                    at: 3,
+                    velocity,
+                    cause: sampler_core::ReleaseCause::KeyUp
+                })
+            );
+            assert_eq!(
+                context.gate,
+                Some(sampler_core::GateRelease {
+                    at: 3,
+                    cause: sampler_core::ReleaseCause::KeyUp
+                })
+            );
+            rt.flush_ended(|_| false);
+            assert_eq!(rt.release_context(note), Ok(context));
+            rt.flush_ended(|_| true);
         });
     }
 }

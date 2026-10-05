@@ -59,7 +59,7 @@ fn ahdsr_is_sample_exact_and_partition_independent() {
     for partition in [1, 2, 3, 7, 18] {
         let mut rt = runtime(Envelope::new(4, 2, 4, 0.5, 4).unwrap(), 64);
         let note = rt.trigger(input(1), 60, 1.0).unwrap();
-        rt.schedule_event(12, Event::KeyUp(note)).unwrap();
+        rt.schedule_event(12, Event::KeyUp(note, None)).unwrap();
         let mut result = [[0.0; 2]; 18];
         for block in result.chunks_mut(partition) {
             rt.render(&mut []).unwrap();
@@ -85,7 +85,7 @@ fn release_captures_current_level_and_preserves_owners_without_heap_work() {
         let a = rt.trigger(input(1), 60, 1.0).unwrap();
         let expression = rt.expression_id(a).unwrap();
         rt.render(&mut [[0.0; 2]; 4]).unwrap();
-        rt.key_up(a).unwrap(); // next held sample would be 0.5
+        rt.key_up(a, None).unwrap(); // next held sample would be 0.5
         rt.flush_ended(|_| panic!("tail must retain the logical note"));
         assert_eq!(
             (rt.voice_count(), rt.family_count(), rt.note_count()),
@@ -117,7 +117,7 @@ fn pedals_delay_release_and_panic_cancels_tails_and_delayed_sources() {
     support::without_heap(|| {
         let n = rt.trigger(input(1), 60, 1.0).unwrap();
         rt.sustain(channel, true).unwrap();
-        rt.key_up(n).unwrap();
+        rt.key_up(n, None).unwrap();
         let mut held = [[0.0; 2]; 3];
         rt.render(&mut held).unwrap();
         assert_eq!(held, [[1.0; 2]; 3]);
