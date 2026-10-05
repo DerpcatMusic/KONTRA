@@ -394,3 +394,78 @@ fn reverse_index_release_paths_stop_at_independent_children_without_heap() {
         assert_eq!((ends, rt.note_count(), rt.expression_count()), (1, 0, 0));
     });
 }
+
+#[test]
+fn sparse_voice_words_preserve_slot_order_reuse_and_eof_without_heap() {
+    use sampler_core::{Error, Input, Limits, Pcm, Prepared, Protocol, Runtime};
+    let samples = [1., 1e20, -1e20]
+        .into_iter()
+        .map(|value| Pcm {
+            rate: 48000,
+            frames: vec![[value; 2]; 4].into_boxed_slice(),
+        })
+        .collect();
+    let mut rt = Runtime::new(
+        Prepared::new(48000, samples, vec![], 0).unwrap(),
+        Limits {
+            notes: 1,
+            channels: 0,
+            families: 65,
+            expressions: 1,
+            voices: 65,
+            commands: 1,
+            behaviors: 0,
+            behavior_fuel: 0,
+            behavior_cells: 0,
+        },
+    )
+    .unwrap();
+    let origin = Input {
+        protocol: Protocol::Native,
+        port: 0,
+        group: 0,
+        channel: 0,
+        key: 60,
+        external_id: Some(1),
+    };
+    support::without_heap(|| {
+        let note = rt.note_on(origin, 60, 1.).unwrap();
+        let mut fillers = [None; 63];
+        for filler in &mut fillers {
+            *filler = Some(rt.start(note, 0, 0, 0.).unwrap());
+        }
+        let high = rt.start(note, 1, 0, 1.).unwrap();
+        let next_word = rt.start(note, 2, 0, 1.).unwrap();
+        let mut first = [[0.; 2]; 1];
+        rt.render(&mut first).unwrap();
+        assert_eq!(first, [[0.; 2]]);
+        for filler in fillers {
+            rt.stop_voice(filler.unwrap()).unwrap();
+        }
+        let reused = rt.start(note, 0, rt.now(), 1.).unwrap();
+        // Reusing slot zero must sum before slots 63/64. Floating-point addition
+        // distinguishes (1 + 1e20) - 1e20 == 0 from (1e20 - 1e20) + 1 == 1.
+        let mut audio = [[0.; 2]; 5];
+        rt.render(&mut audio).unwrap();
+        assert_eq!(audio, [[0.; 2], [0.; 2], [0.; 2], [1.; 2], [0.; 2]]);
+        assert!(!rt.voice_active(high));
+        assert!(!rt.voice_active(next_word));
+        assert_eq!((rt.voice_count(), rt.family_count()), (0, 0));
+        let fresh = rt.start(note, 0, rt.now(), 1.).unwrap();
+        assert_eq!(rt.stop_voice(reused), Err(Error::StaleHandle));
+        assert!(rt.voice_active(fresh));
+        rt.render(&mut first).unwrap();
+        assert_eq!(first, [[1.; 2]]);
+        rt.panic();
+        let mut ends = 0;
+        rt.flush_ended(|input| {
+            assert_eq!(input, origin);
+            ends += 1;
+            true
+        });
+        assert_eq!(
+            (ends, rt.note_count(), rt.voice_count(), rt.family_count()),
+            (1, 0, 0, 0)
+        );
+    });
+}

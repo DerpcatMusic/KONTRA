@@ -203,6 +203,7 @@ impl Runtime {
     pub(super) fn end_voice(&mut self, id: VoiceId) {
         let v = *self.voices.get(id.0).unwrap();
         self.voices.remove(id.0);
+        self.voice_activity[id.0.index / 64] &= !(1 << (id.0.index % 64));
         self.families.get_mut(v.family.0).unwrap().voices -= 1;
         self.retire_family(v.family);
     }
