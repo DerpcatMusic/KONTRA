@@ -1,0 +1,2565 @@
+{
+  "schema_version": 1,
+  "research_date": "2026-10-05",
+  "purpose": "Human-authored conformance fixture specifications for a universal sampler. This is not a runnable test harness and contains no measured vendor results.",
+  "case_count": 128,
+  "categories": [
+    "protocol_adapters",
+    "note_identity",
+    "event_scheduling",
+    "articulation_policies",
+    "variation_and_release_selection",
+    "pedals_and_gates",
+    "voice_allocation",
+    "ksp_runtime",
+    "uvi_runtime",
+    "sample_sources",
+    "morphing_and_audio_graph",
+    "modulation_and_expression",
+    "streaming_and_assets",
+    "controls_and_persistence",
+    "robustness_and_resource_bounds",
+    "host_lifecycle_and_offline"
+  ],
+  "kind_definitions": {
+    "proposed_native_contract": "A proposed KONTRA/native behavior to turn into an executable test.",
+    "documented_profile_rule": "A public behavior to test against a pinned profile; documentation is not a measurement.",
+    "reference_probe_no_golden_result": "A question to measure with a licensed reference; do not infer the expected answer."
+  },
+  "global_requirements": {
+    "pin": [
+      "engine build",
+      "compatibility profile",
+      "sample hashes",
+      "script source",
+      "sample rate",
+      "block partition",
+      "seed",
+      "host/plugin API"
+    ],
+    "forbid_claims": [
+      "Do not mark passed without execution.",
+      "Do not use native expectations as proof of vendor equivalence.",
+      "Do not claim exact DSP from mapping-only tests."
+    ]
+  },
+  "cases": [
+    {
+      "id": "PROTOCOL_ADAPTERS_01",
+      "category": "protocol_adapters",
+      "title": "MIDI 1 zero-velocity convention",
+      "kind": "documented_profile_rule",
+      "target_profile": "MIDI 1 adapter",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Feed a MIDI 1 note-on with velocity zero after a matching note.",
+      "expected_or_probe_objective": "Adapter follows MIDI 1 release convention; compare separately with native host events.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "PROTOCOL_ADAPTERS_02",
+      "category": "protocol_adapters",
+      "title": "CLAP zero-velocity note-on",
+      "kind": "documented_profile_rule",
+      "target_profile": "CLAP",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Feed a native CLAP NOTE_ON with velocity 0.0.",
+      "expected_or_probe_objective": "Keep a valid note-on; do not apply the MIDI 1 zero-velocity conversion.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "HO01"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "PROTOCOL_ADAPTERS_03",
+      "category": "protocol_adapters",
+      "title": "Explicit-ID same-key overlap",
+      "kind": "documented_profile_rule",
+      "target_profile": "CLAP/VST3",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Start two native host notes with identical port/channel/key but distinct IDs; release one ID.",
+      "expected_or_probe_objective": "Only the addressed logical ownership is released, according to the host event contract.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "HO01",
+        "HO03"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "PROTOCOL_ADAPTERS_04",
+      "category": "protocol_adapters",
+      "title": "CLAP wildcard match",
+      "kind": "documented_profile_rule",
+      "target_profile": "CLAP",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Create notes across channels/ports; apply note-address wildcards.",
+      "expected_or_probe_objective": "The matched set follows CLAP tuple/wildcard semantics rather than key-only matching.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "HO01"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "PROTOCOL_ADAPTERS_05",
+      "category": "protocol_adapters",
+      "title": "Missing-ID repeated-key pairing",
+      "kind": "reference_probe_no_golden_result",
+      "target_profile": "Each imported engine",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Play overlapping identical MIDI notes without explicit IDs; vary note-off order.",
+      "expected_or_probe_objective": "Record each target profile's pairing and retrigger rules before assigning golden expectations.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "PROTOCOL_ADAPTERS_06",
+      "category": "protocol_adapters",
+      "title": "VST3 note tuning units",
+      "kind": "documented_profile_rule",
+      "target_profile": "VST3",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Supply equal keys with different VST3 note tuning values.",
+      "expected_or_probe_objective": "Interpret note tuning in cents independently of normalized velocity.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "HO03"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "PROTOCOL_ADAPTERS_07",
+      "category": "protocol_adapters",
+      "title": "No double dispatch across protocols",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native host adapters",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Present equivalent native-note and raw-MIDI representations through adapter test harness paths.",
+      "expected_or_probe_objective": "An event accepted through one selected path is not duplicated through another.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "HO01"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "PROTOCOL_ADAPTERS_08",
+      "category": "protocol_adapters",
+      "title": "High-resolution preservation",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native canonical events",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Vary canonical controller and velocity values more finely than MIDI 1 quantization.",
+      "expected_or_probe_objective": "Values retain meaningful precision until a target profile explicitly quantizes them.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "NOTE_IDENTITY_01",
+      "category": "note_identity",
+      "title": "Transpose and release identity",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native kernel",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Transpose and reroute an input note before it creates sources, then release the original address.",
+      "expected_or_probe_objective": "Transformed sources release while terminal reporting retains the original external identity.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "NOTE_IDENTITY_02",
+      "category": "note_identity",
+      "title": "Child-note ownership",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native kernel",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Create several generated notes owned by one input note and release the parent.",
+      "expected_or_probe_objective": "Only children with the configured linked-release policy are released.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "NOTE_IDENTITY_03",
+      "category": "note_identity",
+      "title": "Detached generated note",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native kernel",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Create a child with explicit independent duration and detach policy.",
+      "expected_or_probe_objective": "Parent release does not silently impose linked lifetime on the detached note.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "NOTE_IDENTITY_04",
+      "category": "note_identity",
+      "title": "Stale handle after slot reuse",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native kernel",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Steal/free a note, reuse its slot, then execute a scheduled command carrying the old handle.",
+      "expected_or_probe_objective": "Generation mismatch prevents mutation of the replacement note.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "NOTE_IDENTITY_05",
+      "category": "note_identity",
+      "title": "One-shot ends while key held",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native kernel",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Hold a key beyond a short one-shot sample's end.",
+      "expected_or_probe_objective": "Source completion does not erase logical state needed by the selected release policy.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "NOTE_IDENTITY_06",
+      "category": "note_identity",
+      "title": "Family versus source targeting",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native kernel",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Start several microphone voices; issue a family command followed by an individual-source command.",
+      "expected_or_probe_objective": "The two command scopes remain distinct and affect exactly their declared targets.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "NOTE_IDENTITY_07",
+      "category": "note_identity",
+      "title": "Ownership admission refusal",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native kernel",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Fill the note/cleanup reserve, then request another generated note.",
+      "expected_or_probe_objective": "Refuse or apply the specified stealing policy before creating untrackable ownership.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "NOTE_IDENTITY_08",
+      "category": "note_identity",
+      "title": "Script error cleanup",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native kernel",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Trigger owned notes and future notes, then force the owning script to fail.",
+      "expected_or_probe_objective": "Already sounding children and pending events follow a bounded cleanup policy; none become orphaned.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "EVENT_SCHEDULING_01",
+      "category": "event_scheduling",
+      "title": "Within-block onset",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native renderer",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Schedule tagged impulses at several sample offsets in a block.",
+      "expected_or_probe_objective": "Output onset positions match the canonical event timestamps.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "EVENT_SCHEDULING_02",
+      "category": "event_scheduling",
+      "title": "Block partition invariance",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native renderer",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Render the same event stream using several block partitions.",
+      "expected_or_probe_objective": "The native deterministic profile preserves event decisions and timing within defined numerical tolerance.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "EVENT_SCHEDULING_03",
+      "category": "event_scheduling",
+      "title": "Equal-time stable order",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native renderer",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Swap the input order of a keyswitch and note at one timestamp.",
+      "expected_or_probe_objective": "Preserve the defined order instead of applying an unconditional event-type sort.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "EVENT_SCHEDULING_04",
+      "category": "event_scheduling",
+      "title": "Cancel before delayed onset",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native renderer",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Schedule a future note-on, release/cancel its owner before onset.",
+      "expected_or_probe_objective": "The pending onset is canceled under native linked-note policy and cannot create a stuck note.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "HI01"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "EVENT_SCHEDULING_05",
+      "category": "event_scheduling",
+      "title": "Zero-time generator loop",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native renderer",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Run a script that repeatedly schedules an event at the current sample.",
+      "expected_or_probe_objective": "Fuel/event budget terminates or rejects the generator without unbounded callback time.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "EVENT_SCHEDULING_06",
+      "category": "event_scheduling",
+      "title": "Tempo change during beat wait",
+      "kind": "reference_probe_no_golden_result",
+      "target_profile": "KSP/UVI profiles",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Start a beat-based wait, change tempo before it ends, and repeat with a ramp.",
+      "expected_or_probe_objective": "Measure profile behavior; native musical-time policy is tested independently from emulation.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "KS05",
+        "UV03"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "EVENT_SCHEDULING_07",
+      "category": "event_scheduling",
+      "title": "Transport seek epoch",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native renderer",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Seek backward and loop host transport while notes and callbacks exist.",
+      "expected_or_probe_objective": "Engine ownership time remains monotonic and transport-reset policy is applied explicitly.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "EVENT_SCHEDULING_08",
+      "category": "event_scheduling",
+      "title": "Swallowed controller visibility",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native event graph",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Consume a CC in an event stage while a downstream parameter depends on that CC.",
+      "expected_or_probe_objective": "Downstream projected state does not see the swallowed update.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "UV05"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "ARTICULATION_POLICIES_01",
+      "category": "articulation_policies",
+      "title": "Velocity boundary and transform",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native mapper",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Use adjacent velocity regions and a preceding velocity remap.",
+      "expected_or_probe_objective": "Region boundaries and transform order follow the declared profile without accidental double gain scaling.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "ARTICULATION_POLICIES_02",
+      "category": "articulation_policies",
+      "title": "Latched keyswitch",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native mapper",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Send a switch note, release it, then play musical notes.",
+      "expected_or_probe_objective": "The selected articulation persists and consumed switch notes do not sound.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "ARTICULATION_POLICIES_03",
+      "category": "articulation_policies",
+      "title": "Momentary keyswitch",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native mapper",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Hold a switch through some notes then release it.",
+      "expected_or_probe_objective": "Eligibility changes only according to the momentary-switch policy.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "ARTICULATION_POLICIES_04",
+      "category": "articulation_policies",
+      "title": "Next-note switch consumption",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native mapper",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Set a next-note-only switch; play a nonmatching note and then matching notes.",
+      "expected_or_probe_objective": "The declared consumption rule determines which event clears the switch.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "ARTICULATION_POLICIES_05",
+      "category": "articulation_policies",
+      "title": "CC gate versus CC trigger",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native mapper",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Use the same CC as a selection predicate and as a pedal-noise trigger in separate fixtures.",
+      "expected_or_probe_objective": "Gating alters eligibility; triggering creates a new event without requiring note-on.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "ARTICULATION_POLICIES_06",
+      "category": "articulation_policies",
+      "title": "Channel articulation with MPE",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native mapper",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Route articulation explicitly while member channels carry expression.",
+      "expected_or_probe_objective": "Member-channel changes do not select unrelated articulations unless the instrument explicitly requests that mapping.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "MI01"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "ARTICULATION_POLICIES_07",
+      "category": "articulation_policies",
+      "title": "Recorded interval legato",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native mapper",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Play overlapping ascending, descending and repeated notes with tagged transition recordings.",
+      "expected_or_probe_objective": "Interval policy chooses the appropriate transition and does not substitute a simple pitch glide.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "ARTICULATION_POLICIES_08",
+      "category": "articulation_policies",
+      "title": "First and legato state definition",
+      "kind": "reference_probe_no_golden_result",
+      "target_profile": "Imported profiles",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Repeat first/legato gestures while earlier notes are released, pedal-held or source-ended.",
+      "expected_or_probe_objective": "Record whether each target uses physical keys, effective gates or active source state.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "SF02"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "VARIATION_AND_RELEASE_SELECTION_01",
+      "category": "variation_and_release_selection",
+      "title": "Coherent multimic round robin",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native coordinated mode",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Play repeated notes through a four-microphone family with tagged takes.",
+      "expected_or_probe_objective": "Native coordinated mode chooses one take decision per family rather than advancing per microphone.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "VARIATION_AND_RELEASE_SELECTION_02",
+      "category": "variation_and_release_selection",
+      "title": "Independent release sequence",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native release policy",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Use four attack takes and five release takes with an independent release policy.",
+      "expected_or_probe_objective": "Release selection is valid and not forced into the attack RR index.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "SF02"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "VARIATION_AND_RELEASE_SELECTION_03",
+      "category": "variation_and_release_selection",
+      "title": "Sequence scope isolation",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native variation service",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Interleave notes on different keys, channels and articulations with separate sequence scopes.",
+      "expected_or_probe_objective": "Only the declared sequence owner advances.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "VARIATION_AND_RELEASE_SELECTION_04",
+      "category": "variation_and_release_selection",
+      "title": "Seeded reproducibility",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native deterministic mode",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Repeat a performance after restoring a saved native seed/counter snapshot.",
+      "expected_or_probe_objective": "The selected variation sequence is reproducible under the same native profile.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "VARIATION_AND_RELEASE_SELECTION_05",
+      "category": "variation_and_release_selection",
+      "title": "Shuffle bag versus random",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native variation service",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Exercise native shuffle-bag and independent-random policies over many cycles.",
+      "expected_or_probe_objective": "Each policy follows its own invariant; no-repeat random is not treated as a shuffle bag.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "VARIATION_AND_RELEASE_SELECTION_06",
+      "category": "variation_and_release_selection",
+      "title": "Decent random distinction",
+      "kind": "documented_profile_rule",
+      "target_profile": "Decent documented profile",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Use three or more alternatives and compare random with true_random.",
+      "expected_or_probe_objective": "Implement the documented immediate-repeat restriction for random without adding it to true_random.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "DS02"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "VARIATION_AND_RELEASE_SELECTION_07",
+      "category": "variation_and_release_selection",
+      "title": "Advancement on rejected regions",
+      "kind": "reference_probe_no_golden_result",
+      "target_profile": "Imported profiles",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Change eligibility, purging and source allocation failure during a variation sequence.",
+      "expected_or_probe_objective": "Probe whether each target advances on gesture, region match or actual source creation.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "VARIATION_AND_RELEASE_SELECTION_08",
+      "category": "variation_and_release_selection",
+      "title": "Release multiplicity with microphones",
+      "kind": "reference_probe_no_golden_result",
+      "target_profile": "SFZ player profiles",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Release a note that triggered several attack regions and several potential releases.",
+      "expected_or_probe_objective": "Measure target release matching/multiplicity and encode it in a profile instead of assuming native family behavior.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "SF02"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "PEDALS_AND_GATES_01",
+      "category": "pedals_and_gates",
+      "title": "Sustain delayed gate release",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native pedal policy",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Hold sustain, play and release notes, then lift pedal.",
+      "expected_or_probe_objective": "Logical key release and effective gate release remain separate transitions.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "PEDALS_AND_GATES_02",
+      "category": "pedals_and_gates",
+      "title": "Sostenuto captured set",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native pedal policy",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Depress sostenuto with some keys held, then add more notes.",
+      "expected_or_probe_objective": "Only the eligible captured set receives sostenuto hold.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "PEDALS_AND_GATES_03",
+      "category": "pedals_and_gates",
+      "title": "Repeated key under sustain",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native pedal policy",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Retrigger one key repeatedly under sustain then release pedal.",
+      "expected_or_probe_objective": "Ownership remains distinguishable and the native retrigger/release policy is consistent.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "PEDALS_AND_GATES_04",
+      "category": "pedals_and_gates",
+      "title": "Half-pedal damping",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native optional piano policy",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Vary a continuous pedal value while released piano-like voices decay.",
+      "expected_or_probe_objective": "Damping follows the selected continuous native policy rather than only a binary flag.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "PEDALS_AND_GATES_05",
+      "category": "pedals_and_gates",
+      "title": "Repedal capture window",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native optional piano policy",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Release sustain briefly then reapply it during a configured catch interval.",
+      "expected_or_probe_objective": "Only eligible decaying notes are recaptured according to the explicit policy.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "PEDALS_AND_GATES_06",
+      "category": "pedals_and_gates",
+      "title": "Pedal release burst budget",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native pedal policy",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Accumulate many pedal-held notes and release them at one sample.",
+      "expected_or_probe_objective": "Cleanup is never dropped; release-source admission follows the defined bounded budget.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "PEDALS_AND_GATES_07",
+      "category": "pedals_and_gates",
+      "title": "All-notes versus all-sound off",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native channel-mode service",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Compare channel-mode termination paths on sustained notes and scheduled children.",
+      "expected_or_probe_objective": "Their declared differences are preserved; panic also resolves future generation and ownership.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "PEDALS_AND_GATES_08",
+      "category": "pedals_and_gates",
+      "title": "Release without live attack source",
+      "kind": "reference_probe_no_golden_result",
+      "target_profile": "Imported release profiles",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Send note-off after source end, and also without a prior attack source.",
+      "expected_or_probe_objective": "Measure target eligibility for release noise separately from native policy.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "SF02"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "VOICE_ALLOCATION_01",
+      "category": "voice_allocation",
+      "title": "Logical versus source polyphony",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native allocator",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Use notes with different numbers of microphones/dynamic layers.",
+      "expected_or_probe_objective": "Logical-note limits and source-voice limits are enforced independently.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "VOICE_ALLOCATION_02",
+      "category": "voice_allocation",
+      "title": "Expensive engine budget",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native allocator",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Mix ordinary playback with stretch/granular sources under configured budgets.",
+      "expected_or_probe_objective": "Admission honors cost-class limits without silently converting source algorithms.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "VOICE_ALLOCATION_03",
+      "category": "voice_allocation",
+      "title": "Family stealing",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native allocator",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Exceed polyphony with coordinated microphone families.",
+      "expected_or_probe_objective": "Native family policy does not leave an arbitrary partial family sounding.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "VOICE_ALLOCATION_04",
+      "category": "voice_allocation",
+      "title": "Bounded stealing fade",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native allocator",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Steal voices during a full-capacity block.",
+      "expected_or_probe_objective": "Fade state is pre-reserved and bounded; no hidden heap allocation is required.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "VOICE_ALLOCATION_05",
+      "category": "voice_allocation",
+      "title": "Steal then release callback",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native allocator",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Steal an attack source before its logical note is released.",
+      "expected_or_probe_objective": "Required release context remains available and no stale source handle is reused.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "VOICE_ALLOCATION_06",
+      "category": "voice_allocation",
+      "title": "Natural source completion",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native allocator",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Let all sources end with no remaining children or callbacks.",
+      "expected_or_probe_objective": "Resources reach reclaimable state exactly once.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "VOICE_ALLOCATION_07",
+      "category": "voice_allocation",
+      "title": "Shared bus tail ownership",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native allocator",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Send several notes to a shared reverb and end their per-note DSP.",
+      "expected_or_probe_objective": "Global effect tail does not accidentally keep every finished note identity alive indefinitely.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "VOICE_ALLOCATION_08",
+      "category": "voice_allocation",
+      "title": "Release-priority reserve",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native allocator",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Saturate note-on and telemetry queues while releases arrive.",
+      "expected_or_probe_objective": "Reserved cleanup capacity or equivalent invariant protects release processing.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "KSP_RUNTIME_01",
+      "category": "ksp_runtime",
+      "title": "Polyphonic note state",
+      "kind": "documented_profile_rule",
+      "target_profile": "KSP",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Store different values for simultaneous notes and inspect their release callbacks.",
+      "expected_or_probe_objective": "The corresponding note-associated value survives rather than becoming one shared global value.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "KS03"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "KSP_RUNTIME_02",
+      "category": "ksp_runtime",
+      "title": "Wait continuation",
+      "kind": "documented_profile_rule",
+      "target_profile": "KSP",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Suspend one callback and trigger another before the first resumes.",
+      "expected_or_probe_objective": "Independent callback state and permitted shared state behave as documented.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "KS05"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "KSP_RUNTIME_03",
+      "category": "ksp_runtime",
+      "title": "Generated note duration classes",
+      "kind": "documented_profile_rule",
+      "target_profile": "KSP",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Exercise linked, indefinite and finite generated-note durations.",
+      "expected_or_probe_objective": "Special duration behavior follows the selected KSP version, not generic duration arithmetic.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "KS04"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "KSP_RUNTIME_04",
+      "category": "ksp_runtime",
+      "title": "Read after engine parameter write",
+      "kind": "reference_probe_no_golden_result",
+      "target_profile": "KSP",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Set then query a parameter in one callback and compare same-sample sound.",
+      "expected_or_probe_objective": "Measure synchronous visibility, smoothing and DSP activation separately.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "KS02"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "KSP_RUNTIME_05",
+      "category": "ksp_runtime",
+      "title": "Script-slot event propagation",
+      "kind": "reference_probe_no_golden_result",
+      "target_profile": "KSP",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Transform, generate and suppress events through multiple script slots.",
+      "expected_or_probe_objective": "Characterize downstream callback order and generated-event propagation for the pinned version.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "KS02"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "KSP_RUNTIME_06",
+      "category": "ksp_runtime",
+      "title": "Persistence and initialization order",
+      "kind": "reference_probe_no_golden_result",
+      "target_profile": "KSP",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Use persisted values in init and persistence callbacks, then restore snapshots.",
+      "expected_or_probe_objective": "Record the exact visibility/callback sequence before implementing the profile.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "KS03"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "KSP_RUNTIME_07",
+      "category": "ksp_runtime",
+      "title": "Integer edge semantics",
+      "kind": "reference_probe_no_golden_result",
+      "target_profile": "KSP",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Exercise arithmetic boundaries, conversions, array indices and invalid operations.",
+      "expected_or_probe_objective": "Record required error/wrap/rounding rules instead of inheriting Rust debug/release behavior.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "KS03"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "KSP_RUNTIME_08",
+      "category": "ksp_runtime",
+      "title": "Unsupported API diagnostic",
+      "kind": "proposed_native_contract",
+      "target_profile": "KSP importer/runtime",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Load a script requiring an unimplemented command or disallowed callback operation.",
+      "expected_or_probe_objective": "Strict mode reports the exact requirement and does not silently no-op.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "UVI_RUNTIME_01",
+      "category": "uvi_runtime",
+      "title": "Default and explicit event forwarding",
+      "kind": "documented_profile_rule",
+      "target_profile": "UVI-script",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Compare missing callbacks with callbacks that do and do not post their events.",
+      "expected_or_probe_objective": "Forwarding follows UVI callback semantics rather than an always-forward policy.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "UV05"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "UVI_RUNTIME_02",
+      "category": "uvi_runtime",
+      "title": "onEvent callback precedence",
+      "kind": "documented_profile_rule",
+      "target_profile": "UVI-script",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Define onEvent and specialized note/controller callbacks.",
+      "expected_or_probe_objective": "Dispatch follows the documented overriding rule.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "UV05"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "UVI_RUNTIME_03",
+      "category": "uvi_runtime",
+      "title": "Coroutine-local state",
+      "kind": "documented_profile_rule",
+      "target_profile": "UVI-script",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Suspend overlapping note callbacks using local and global variables.",
+      "expected_or_probe_objective": "Coroutine-local state is independent while documented globals remain shared.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "UV03",
+        "UV04"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "UVI_RUNTIME_04",
+      "category": "uvi_runtime",
+      "title": "Widget versus coroutine context",
+      "kind": "reference_probe_no_golden_result",
+      "target_profile": "UVI-script",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Attempt allowed UI operations and waits from musical, widget and initialization contexts.",
+      "expected_or_probe_objective": "Record permitted contexts and errors; do not automatically make all callbacks yieldable.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "UV05",
+        "UV15"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "UVI_RUNTIME_05",
+      "category": "uvi_runtime",
+      "title": "Object hierarchy and indexing",
+      "kind": "documented_profile_rule",
+      "target_profile": "UVI-script",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Traverse a small program/layer/keygroup/oscillator tree with known identities.",
+      "expected_or_probe_objective": "Public hierarchy and indexing are preserved through optimized render-plan lowering.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "UV07",
+        "UV08",
+        "UV09",
+        "UV10"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "UVI_RUNTIME_06",
+      "category": "uvi_runtime",
+      "title": "Mapping dimensions are explicit",
+      "kind": "documented_profile_rule",
+      "target_profile": "UVI mapping profile",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Use key/velocity plus dim1/dim2 dispatch and vary MIDI channel independently.",
+      "expected_or_probe_objective": "Mapping dimension dispatch does not infer dim1 from the MIDI channel.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "UV15"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "UVI_RUNTIME_07",
+      "category": "uvi_runtime",
+      "title": "Async request versus completion",
+      "kind": "reference_probe_no_golden_result",
+      "target_profile": "UVI-script",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Request a mapping/sample load then query status, path and result at several stages.",
+      "expected_or_probe_objective": "Record accepted, parsed, ready and failed states separately for the target version.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "UV15"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "UVI_RUNTIME_08",
+      "category": "uvi_runtime",
+      "title": "Lua pool and execution exhaustion",
+      "kind": "proposed_native_contract",
+      "target_profile": "Proposed bounded UVI runtime",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Exhaust configured continuation/memory/fuel limits with an untrusted script.",
+      "expected_or_probe_objective": "Failure is bounded and diagnoses the exceeded resource while safely resolving owned notes.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "SAMPLE_SOURCES_01",
+      "category": "sample_sources",
+      "title": "Unity-ratio direct path",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native resampler",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Play aligned PCM at its source rate without pitch modulation.",
+      "expected_or_probe_objective": "Fast path matches the reference ordinary path under the stated exact-ratio assumptions.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "SAMPLE_SOURCES_02",
+      "category": "sample_sources",
+      "title": "Pitch and sample-rate ratio",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native resampler",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Render known tones across roots, tuning and different source/output sample rates.",
+      "expected_or_probe_objective": "Measured pitch agrees with the specified source increment within declared tolerance.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "SAMPLE_SOURCES_03",
+      "category": "sample_sources",
+      "title": "High-transposition alias rejection",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native resampler",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Sweep tonal input upward across several playback ratios and quality modes.",
+      "expected_or_probe_objective": "Measure passband/alias behavior; no quality claim is made solely from interpolation order.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "DP01"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "SAMPLE_SOURCES_04",
+      "category": "sample_sources",
+      "title": "Loop boundary guards",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native loop engine",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Place a short loop across a decoded-page boundary.",
+      "expected_or_probe_objective": "Interpolation sees the correct wrapped/guard samples and never reads outside storage.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "SAMPLE_SOURCES_05",
+      "category": "sample_sources",
+      "title": "Reverse and ping-pong endpoints",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native loop engine",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Use uniquely tagged sample frames and several loop lengths.",
+      "expected_or_probe_objective": "Direction changes follow the declared endpoint convention with no unintended duplicate or omitted frame.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "SAMPLE_SOURCES_06",
+      "category": "sample_sources",
+      "title": "Loop crossfade dual demand",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native loop engine",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Crossfade a loop whose two windows are far apart on disk.",
+      "expected_or_probe_objective": "Both required data windows are prefetched and mixed according to the chosen law.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "SAMPLE_SOURCES_07",
+      "category": "sample_sources",
+      "title": "Sustain loop exit to recorded tail",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native loop engine",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Release a note configured to exit its sustain loop.",
+      "expected_or_probe_objective": "Playback follows the declared exit point and remaining recorded tail policy.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "SAMPLE_SOURCES_08",
+      "category": "sample_sources",
+      "title": "Source start versus live scrub",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native source capabilities",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Set onset offset before first render and try changing it after onset.",
+      "expected_or_probe_objective": "The declared start-only operation is not incorrectly implemented as continuous scrubbing.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "MORPHING_AND_AUDIO_GRAPH_01",
+      "category": "morphing_and_audio_graph",
+      "title": "Identical correlated crossfade",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native morph module",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Crossfade a signal with an identical aligned copy.",
+      "expected_or_probe_objective": "Complementary linear gains preserve amplitude; equal-power behavior is measured rather than mislabeled.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "MORPHING_AND_AUDIO_GRAPH_02",
+      "category": "morphing_and_audio_graph",
+      "title": "Uncorrelated crossfade power",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native morph module",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Crossfade equal-power uncorrelated fixtures over a long analysis window.",
+      "expected_or_probe_objective": "Chosen equal-power law has the expected statistical power behavior within sampling tolerance.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "MORPHING_AND_AUDIO_GRAPH_03",
+      "category": "morphing_and_audio_graph",
+      "title": "Parameter morph units",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native morph module",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Morph pitch, cutoff and gain through their typed domains.",
+      "expected_or_probe_objective": "Interpolation uses each parameter's declared domain rather than raw enum or normalized-field interpolation.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "MORPHING_AND_AUDIO_GRAPH_04",
+      "category": "morphing_and_audio_graph",
+      "title": "Muted layer reactivation",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native morph module",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Bring a silent dynamic layer into audibility midway through a held note.",
+      "expected_or_probe_objective": "Its phase and required DSP history follow the declared kept-alive/virtualized policy.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "MORPHING_AND_AUDIO_GRAPH_05",
+      "category": "morphing_and_audio_graph",
+      "title": "Nonlinear placement preservation",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native graph compiler",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Compare per-voice distortion before sum against distortion after sum.",
+      "expected_or_probe_objective": "Compiler does not substitute one for the other as an exact optimization.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "NI02"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "MORPHING_AND_AUDIO_GRAPH_06",
+      "category": "morphing_and_audio_graph",
+      "title": "Per-voice state sharing guard",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native graph compiler",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Use identical filter parameters with different envelope and initialization states.",
+      "expected_or_probe_objective": "Shared kernels do not accidentally share mutable voice history.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "MORPHING_AND_AUDIO_GRAPH_07",
+      "category": "morphing_and_audio_graph",
+      "title": "Parallel path latency",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native graph compiler",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Mix a plain source with a delayed/stretch source through a defined alignment policy.",
+      "expected_or_probe_objective": "Output and host latency match the graph's explicit timing model.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "DP02"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "MORPHING_AND_AUDIO_GRAPH_08",
+      "category": "morphing_and_audio_graph",
+      "title": "Explicit feedback only",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native graph compiler",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Compile a zero-delay cycle and a valid delayed feedback route.",
+      "expected_or_probe_objective": "Reject the unsupported algebraic cycle; accept only a defined causal feedback implementation.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "MODULATION_AND_EXPRESSION_01",
+      "category": "modulation_and_expression",
+      "title": "Free-running versus note-reset LFO",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native modulation compiler",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Play staggered notes using otherwise identical LFO settings.",
+      "expected_or_probe_objective": "Only genuinely shared phase/state is computed as one shared modulator.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "MODULATION_AND_EXPRESSION_02",
+      "category": "modulation_and_expression",
+      "title": "Constant and event-rate folding",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native modulation compiler",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Compare an unoptimized graph with a graph using fixed/event-updated sources.",
+      "expected_or_probe_objective": "Constant folding and dirty propagation preserve results and event boundaries.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "MODULATION_AND_EXPRESSION_03",
+      "category": "modulation_and_expression",
+      "title": "Audio-rate modulation retention",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native modulation compiler",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Drive pitch/filter modulation beyond a chosen control quantum.",
+      "expected_or_probe_objective": "Declared audio-rate inputs are not silently demoted to block-rate changes.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "MODULATION_AND_EXPRESSION_04",
+      "category": "modulation_and_expression",
+      "title": "CLAP scoped parameter modulation",
+      "kind": "documented_profile_rule",
+      "target_profile": "CLAP",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Combine global and scoped host parameter modulation events.",
+      "expected_or_probe_objective": "Apply the CLAP override/composition contract without double-counting included global modulation.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "HO01"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "MODULATION_AND_EXPRESSION_05",
+      "category": "modulation_and_expression",
+      "title": "MPE channel independence",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native MPE adapter",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Apply member-channel pitch/timbre changes to simultaneous notes.",
+      "expected_or_probe_objective": "Only the correct expressive note scopes change, with explicit zone/global handling.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "MI01"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "MODULATION_AND_EXPRESSION_06",
+      "category": "modulation_and_expression",
+      "title": "Fourteen-bit and NRPN state",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native MIDI adapter",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Interleave paired controller bytes, RPN/NRPN selection and data messages across channels.",
+      "expected_or_probe_objective": "State is scoped and reconstructed according to the adapter's protocol specification.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "MODULATION_AND_EXPRESSION_07",
+      "category": "modulation_and_expression",
+      "title": "Filter modulation stability",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native filters",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Drive extreme valid cutoff/resonance changes and compare smoothing modes.",
+      "expected_or_probe_objective": "Samples remain finite; coefficient update policy is stable and declared immediate changes stay immediate.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "MODULATION_AND_EXPRESSION_08",
+      "category": "modulation_and_expression",
+      "title": "Retune existing versus future notes",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native tuning service",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Change a tuning table while notes sustain.",
+      "expected_or_probe_objective": "Configured retuning policy distinguishes held notes from future note-on tuning.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "STREAMING_AND_ASSETS_01",
+      "category": "streaming_and_assets",
+      "title": "Cold attack readiness",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native streaming",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Play a not-yet-ready asset under real-time admission rules.",
+      "expected_or_probe_objective": "Renderer never blocks; readiness/underrun outcome is explicit and observable.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "STREAMING_AND_ASSETS_02",
+      "category": "streaming_and_assets",
+      "title": "Injected storage stall",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native streaming",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Delay worker page delivery beyond a continuation deadline.",
+      "expected_or_probe_objective": "No callback wait occurs and the documented starvation policy is applied.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "STREAMING_AND_ASSETS_03",
+      "category": "streaming_and_assets",
+      "title": "Shared decoded pages",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native streaming",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Use many note/sample views referencing the same content window.",
+      "expected_or_probe_objective": "Decoded data is shared without sharing cursors or voice-local DSP state.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "STREAMING_AND_ASSETS_04",
+      "category": "streaming_and_assets",
+      "title": "Start-offset preload budget",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native streaming",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Request onset offsets inside and beyond the admitted preload interval.",
+      "expected_or_probe_objective": "Native policy is explicit; no unplanned synchronous seek occurs.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "STREAMING_AND_ASSETS_05",
+      "category": "streaming_and_assets",
+      "title": "Reverse/high-rate demand",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native streaming",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Run reverse and high-transposition voices through cold cache.",
+      "expected_or_probe_objective": "Demand windows account for actual source direction/rate and interpolation support.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "STREAMING_AND_ASSETS_06",
+      "category": "streaming_and_assets",
+      "title": "Prepared-plan held-note swap",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native streaming",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Publish a new mapping while older-generation notes sustain.",
+      "expected_or_probe_objective": "Old voices retain valid required data; new notes use the admitted new generation.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "STREAMING_AND_ASSETS_07",
+      "category": "streaming_and_assets",
+      "title": "Bound retained generations",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native streaming",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Repeatedly change presets with long-held notes and finite memory budget.",
+      "expected_or_probe_objective": "Generation retention obeys its cap with a documented transition/refusal policy.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "STREAMING_AND_ASSETS_08",
+      "category": "streaming_and_assets",
+      "title": "Failed asynchronous load rollback",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native asset plane",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Request an invalid replacement asset or mapping while a valid plan is live.",
+      "expected_or_probe_objective": "Failure is reported and active state changes only according to a defined rollback/commit policy.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "CONTROLS_AND_PERSISTENCE_01",
+      "category": "controls_and_persistence",
+      "title": "UI-closed musical equivalence",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native state model",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Render a binding-controlled instrument with its editor open and closed.",
+      "expected_or_probe_objective": "Musical control state and event behavior do not depend on editor existence.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "DS03"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "CONTROLS_AND_PERSISTENCE_02",
+      "category": "controls_and_persistence",
+      "title": "Stable automation identity",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native state model",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Save a project, reorder or optimize graph objects, and restore it.",
+      "expected_or_probe_objective": "Host automation still targets the same semantic parameter IDs.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "CONTROLS_AND_PERSISTENCE_03",
+      "category": "controls_and_persistence",
+      "title": "Widget restore callback order",
+      "kind": "reference_probe_no_golden_result",
+      "target_profile": "KSP/UVI/Decent profiles",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Restore preset control values that have script callbacks and engine bindings.",
+      "expected_or_probe_objective": "Characterize the target's exact restore and callback order before declaring equivalence.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "KS03",
+        "UV05",
+        "DS03"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "CONTROLS_AND_PERSISTENCE_04",
+      "category": "controls_and_persistence",
+      "title": "Coherent snapshot under playback",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native state model",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Request state while parameters and sequences change.",
+      "expected_or_probe_objective": "Saved data represents a coherent snapshot rather than an inconsistent mixture.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "CONTROLS_AND_PERSISTENCE_05",
+      "category": "controls_and_persistence",
+      "title": "Profile version pinning",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native state model",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Load an old project after changing the engine's native defaults.",
+      "expected_or_probe_objective": "Stored profile preserves behavior or requires an explicit migration.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "CONTROLS_AND_PERSISTENCE_06",
+      "category": "controls_and_persistence",
+      "title": "Relink and missing assets",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native asset/state model",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Move a library and leave some assets missing.",
+      "expected_or_probe_objective": "Resolution happens off-thread with precise diagnostics and no note-time directory scan.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "CONTROLS_AND_PERSISTENCE_07",
+      "category": "controls_and_persistence",
+      "title": "Live-set prepared transition",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native performance host",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Switch between prepared parts while notes and effect tails remain.",
+      "expected_or_probe_objective": "Declared finish/crossfade/choke policy is obeyed without invalidating old ownership.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "CONTROLS_AND_PERSISTENCE_08",
+      "category": "controls_and_persistence",
+      "title": "Obsolete async completion",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native asset/state model",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Start load A, start load B, then complete A after B.",
+      "expected_or_probe_objective": "Generation/request identity prevents stale completion from replacing the newer requested state.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "ROBUSTNESS_AND_RESOURCE_BOUNDS_01",
+      "category": "robustness_and_resource_bounds",
+      "title": "Parser structural limits",
+      "kind": "proposed_native_contract",
+      "target_profile": "All importers",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Feed excessive nesting, huge declared arrays and malformed fields.",
+      "expected_or_probe_objective": "Reject safely with bounded memory/time rather than allocating from unchecked declarations.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "ROBUSTNESS_AND_RESOURCE_BOUNDS_02",
+      "category": "robustness_and_resource_bounds",
+      "title": "Archive and path constraints",
+      "kind": "proposed_native_contract",
+      "target_profile": "Asset import boundary",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Use traversal paths and inflated decoded-size declarations in fixtures.",
+      "expected_or_probe_objective": "Asset resolution remains in authorized roots and respects resource limits.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "ROBUSTNESS_AND_RESOURCE_BOUNDS_03",
+      "category": "robustness_and_resource_bounds",
+      "title": "Queue saturation classes",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native queues",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Fill control, telemetry and musical queues in different combinations.",
+      "expected_or_probe_objective": "Loss policies are explicit and terminal ownership invariants remain intact.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "ROBUSTNESS_AND_RESOURCE_BOUNDS_04",
+      "category": "robustness_and_resource_bounds",
+      "title": "Native builtin execution budget",
+      "kind": "proposed_native_contract",
+      "target_profile": "Script runtimes",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Invoke pathological script string/table/native helper operations.",
+      "expected_or_probe_objective": "Budget enforcement covers native helpers, not only bytecode instructions.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "ROBUSTNESS_AND_RESOURCE_BOUNDS_05",
+      "category": "robustness_and_resource_bounds",
+      "title": "Nonfinite DSP input",
+      "kind": "proposed_native_contract",
+      "target_profile": "Compiler/host/DSP boundary",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Supply NaN/infinite or out-of-domain parameters from corrupt presets and automation.",
+      "expected_or_probe_objective": "Validate/reject or sanitize by policy; no uncontrolled nonfinite propagation reaches output.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "ROBUSTNESS_AND_RESOURCE_BOUNDS_06",
+      "category": "robustness_and_resource_bounds",
+      "title": "Long-duration clock arithmetic",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native scheduler/arenas",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Exercise scheduling near chosen clock and counter boundaries.",
+      "expected_or_probe_objective": "Arithmetic cannot silently wrap into premature events or stale generations.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "ROBUSTNESS_AND_RESOURCE_BOUNDS_07",
+      "category": "robustness_and_resource_bounds",
+      "title": "Unsupported feature honesty",
+      "kind": "proposed_native_contract",
+      "target_profile": "All importers",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Load an instrument whose unavailable source/filter/script changes sound.",
+      "expected_or_probe_objective": "Strict mode fails clearly; best-effort mode records the substitution in persistent diagnostics.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "ROBUSTNESS_AND_RESOURCE_BOUNDS_08",
+      "category": "robustness_and_resource_bounds",
+      "title": "Callback allocation audit",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native real-time boundary",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Run admitted stress scenarios with allocation and destruction instrumentation.",
+      "expected_or_probe_objective": "No forbidden callback allocation, deallocation, blocking or synchronous I/O is observed.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "HOST_LIFECYCLE_AND_OFFLINE_01",
+      "category": "host_lifecycle_and_offline",
+      "title": "Terminal output backpressure",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native CLAP adapter",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Force output-event push rejection when a note reaches terminal state.",
+      "expected_or_probe_objective": "Keep pending notification and identity until accepted under the adapter's retry contract.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "HO01"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "HOST_LIFECYCLE_AND_OFFLINE_02",
+      "category": "host_lifecycle_and_offline",
+      "title": "Terminal retry and same-key retrigger",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native CLAP adapter",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Reject terminal output, retrigger a matching key, then allow retries.",
+      "expected_or_probe_objective": "Pending terminal reporting does not terminate or misidentify the newer note.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "HO01"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "HOST_LIFECYCLE_AND_OFFLINE_03",
+      "category": "host_lifecycle_and_offline",
+      "title": "Variable and zero block sizes",
+      "kind": "proposed_native_contract",
+      "target_profile": "Host adapters",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Render with varying block sizes including valid zero-length host calls.",
+      "expected_or_probe_objective": "Events, state and buffers follow host constraints with no infinite scheduler loop.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "HOST_LIFECYCLE_AND_OFFLINE_04",
+      "category": "host_lifecycle_and_offline",
+      "title": "Suspend and reactivate",
+      "kind": "proposed_native_contract",
+      "target_profile": "Host adapters",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Suspend/deactivate with notes and pending jobs, then reactivate.",
+      "expected_or_probe_objective": "Lifecycle policy resolves or restores state without stale callbacks or invalid buffers.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "HOST_LIFECYCLE_AND_OFFLINE_05",
+      "category": "host_lifecycle_and_offline",
+      "title": "Sample-rate reconfiguration",
+      "kind": "proposed_native_contract",
+      "target_profile": "Host adapters",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Change sample rate while inactive and reload prepared processing.",
+      "expected_or_probe_objective": "Time-dependent coefficients, preloads and latency are rebuilt consistently off the active callback.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "HOST_LIFECYCLE_AND_OFFLINE_06",
+      "category": "host_lifecycle_and_offline",
+      "title": "Real-time versus offline contract",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native renderer",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Render identical prepared deterministic content live-style and offline-style.",
+      "expected_or_probe_objective": "Selection/timing agree where intended; differences due to readiness are separately reported.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "HOST_LIFECYCLE_AND_OFFLINE_07",
+      "category": "host_lifecycle_and_offline",
+      "title": "Host pool refusal",
+      "kind": "proposed_native_contract",
+      "target_profile": "Native CLAP adapter",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Request optional parallel work and force the host to reject it.",
+      "expected_or_probe_objective": "Serial fallback completes correctly without assuming the pool always exists.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [
+        "HO02"
+      ],
+      "status": "specified_not_executed"
+    },
+    {
+      "id": "HOST_LIFECYCLE_AND_OFFLINE_08",
+      "category": "host_lifecycle_and_offline",
+      "title": "Multi-output layouts",
+      "kind": "proposed_native_contract",
+      "target_profile": "Host adapters",
+      "fixture_requirement": "Construct a minimal instrument and event sequence isolating this feature; pin engine/profile and assets.",
+      "stimulus": "Activate several output arrangements and reroute parts/buses.",
+      "expected_or_probe_objective": "Channel buffers, silence flags and routing remain valid and no output is written out of bounds.",
+      "observe": [
+        "ordered event trace",
+        "logical-note/source ownership",
+        "selected regions and state",
+        "rendered audio where relevant",
+        "resource and diagnostic telemetry"
+      ],
+      "source_ids": [],
+      "status": "specified_not_executed"
+    }
+  ]
+}

@@ -31,6 +31,6 @@ Rust. Custom UI framework. Windows, macOS, Linux. CLAP, VST3, standalone.
 
 See the **[full feature inventory](docs/FEATURES.md)** for ✓ implemented, ◐ partial and ✗ missing functionality across DSP, filters, scripting, UI, formats and routing. Each entry includes implementation evidence and remaining gaps, cross-referenced with official Kontakt, KSP, Falcon and UVIScript documentation.
 
-[Contribute](CONTRIBUTING.md)
+[Contribute](CONTRIBUTING.md) · [2.0 architecture plan](docs/architecture-v2/README.md)
 
 [Apache-2.0](LICENSE). Bring your own legally usable libraries; purchase alone may not authorize third-party playback. Parser redistribution rights remain unresolved. Independent of NI/UVI. [Legal details](docs/LEGAL.md).
