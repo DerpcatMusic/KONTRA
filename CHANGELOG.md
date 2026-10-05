@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Compile KSP polyphonic integer declarations, scalar assignments and note/release callbacks into the new owned native program table. Source/rate/storage budgets are validated before activation; overlapping callbacks share only their originating note state, with executable PCM and standalone WAV checks. Full KSP parity remains open.
+
 - Reserve native physical-release callback capacity at triggered-input admission. Release handlers retain their original program and note state across EOF, pedals and plan replacement; faults remain observable without blocking physical release, and hard cleanup suppresses pending handlers.
 
 - Add bounded note-owned integer state shared across native callbacks and retained through release, terminal retry and plan replacement. Generated children and reused note slots start with zero state; KSP variable syntax and typed semantics remain open.

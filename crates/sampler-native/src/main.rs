@@ -18,7 +18,7 @@ enum Mode {
     Copy,
     Demo,
     Echo,
-    Script(Program),
+    Script(sampler_ksp::Script),
     Replace(Pcm),
 }
 
@@ -59,6 +59,10 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
     let scripted = matches!(&mode, Mode::Script(_));
     let replacing = matches!(&mode, Mode::Replace(_));
     let rate = sample.sample_rate();
+    let note_cells = match &mode {
+        Mode::Script(script) => script.note_cells(),
+        _ => 0,
+    };
     if replacing && rate < 2 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -99,7 +103,10 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
             .map_err(core)?;
             Some(program)
         }
-        Mode::Script(program) => Some(program),
+        Mode::Script(script) => {
+            plan = script.bind(plan).map_err(core)?;
+            None
+        }
         Mode::Replace(sample) => {
             replacement_sample = Some(sample);
             None
@@ -118,10 +125,12 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
         decisions: 0,
         voices: 64,
         commands: 64,
-        behaviors: 1,
-        behavior_fuel: 8,
-        behavior_cells: 1,
-        note_cells: 0,
+        behaviors: 2,
+        behavior_fuel: 65536,
+        behavior_cells: 2,
+        note_cells: note_cells
+            .checked_mul(32)
+            .ok_or_else(|| io::Error::other("note-state budget overflow"))?,
     };
     let (rt, replacement) = if let Some(sample) = replacement_sample {
         let prepared = prepare_sample(sample, false, true)?;
@@ -336,6 +345,7 @@ fn render_script(sample: Pcm, source: &Path, output: &Path) -> io::Result<()> {
     let limits = sampler_ksp::Limits {
         source_bytes: 1 << 20,
         instructions: 65536,
+        variables: 128,
     };
     let mut text = String::new();
     std::fs::File::open(source)?

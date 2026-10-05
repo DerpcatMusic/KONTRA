@@ -128,7 +128,9 @@ unimplemented cases. Source inspection alone is not passing conformance evidence
   survive callbacks, release and plan replacement separately from callback locals.
   Physical-release callbacks reserve continuation capacity at admission, survive
   source EOF and suppress safely under hard cleanup.
-  KSP typed variables and broader language/state/controller work stay open.
+  The new KSP frontend now lowers polyphonic declarations, scalar assignment and
+  note/release callbacks onto those services. Full typed arithmetic and broader
+  language/state/controller work stay open.
 
 - [ ] **P0; dependencies:** V2-03/04.
 - Build command/query services, continuations, callback contexts, cancellation and

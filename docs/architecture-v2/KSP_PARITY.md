@@ -1,7 +1,7 @@
 # Kontakt 8.12 KSP completion map
 
 Full Kontakt KSP parity is a required product gate. The current
-[`ksp-8.12-note-subset-v0`](KSP_FRONTEND.md) compiler is intermediate work.
+[`ksp-8.12-note-release-subset-v1`](KSP_FRONTEND.md) compiler is intermediate work.
 The target is the official manual identifying **Kontakt 8.12**, retrieved
 2026-10-06. Its public URLs may change; per-page SHA-256 values preserve which
 documentation was inspected. No licensed Kontakt differential run has occurred.
@@ -13,7 +13,7 @@ feature count or compatibility percentage. Operand rules, enum values, overloads
 callback restrictions and historical aliases still need section-level review.
 
 Every entry defaults to `missing` implementation and `unverified` Kontakt fidelity.
-Six named interfaces have explicit `partial_native_subset` overrides. A section's
+Eight named interfaces have explicit `partial_native_subset` overrides. A section's
 partial status means some behavior exists; it does not promote all of its symbols.
 Native services, legacy KONTRA tests and successful parsing are not vendor parity.
 
@@ -45,7 +45,8 @@ native services. No compatibility path to the old KONTRA engine is introduced.
   callbacks. Callback-local scratch is insufficient. The native implementation
   now has [bounded note-owned integer cells](BEHAVIOR.md#note-owned-integer-state)
   shared across executions and reserved native physical-release callbacks. KSP
-  declarations, typed arithmetic and source callback dispatch still require implementation.
+  polyphonic declarations, scalar assignment and note/release source dispatch now
+  exercise these services. Typed arithmetic and remaining state semantics stay open.
   [NI variables](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#polyphonic----polyphonic-integer-).
 - Callback identity and event identity are separate; waits need retained callback
   context and cancellation. Controller callbacks must not require fabricated note
