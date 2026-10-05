@@ -76,7 +76,7 @@ impl PlanControl {
             return Err(RejectedPlan { reason, prepared });
         }
         let request = self.sequence + 1;
-        let sequences = super::variation::SequenceState::new(prepared.sequence_cells);
+        let sequences = super::variation::SequenceState::new(&prepared);
         match self.pending.push(PlanTransfer {
             request,
             prepared,

@@ -62,7 +62,7 @@ compatibility remains a separate, evidence-backed capability.
 17. [Prepared note-expression modulation](MODULATION.md): typed destinations,
     event-rate projection, retained-plan ownership and actual MPE audio.
 
-18. [Coordinated native variation](VARIATION.md): scoped sequential takes, retained
+18. [Coordinated native variation](VARIATION.md): scoped sequential/random/no-repeat/shuffle takes, retained
     decisions, transactional advancement and per-generation mutable state.
 
 ## Implemented and still open
@@ -73,9 +73,9 @@ compatibility remains a separate, evidence-backed capability.
   source views/loops, bandlimited rate conversion, root-key/native tuning and live pitch,
   initial expression, transactional multi-owner gestures and prepared event-rate
   pressure/timbre modulation to gain, balance and pitch.
-- Selection: coordinated sequential takes with explicit scope/capacity, retained
-  note decisions and transactional multi-family admission. Random policies,
-  articulation state and release-trigger mapping remain open.
+- Selection: coordinated sequential/random/no-repeat/shuffle takes with explicit scope and
+  storage budgets, retained note decisions and transactional multi-family admission.
+  Articulation state, release-trigger mapping and persisted snapshots remain open.
 - Preparation: validated immutable PCM shared across plans, adoption between notes, original-generation tails
   and callbacks, and control-thread retirement. Native WAV rendering and the
   deliberately small KSP source subset run independently of the old engine.

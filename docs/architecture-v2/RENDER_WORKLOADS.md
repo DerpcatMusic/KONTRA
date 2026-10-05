@@ -253,3 +253,34 @@ range 0.898–1.050. No per-sample variation work was introduced; decision and s
 storage still have real memory/admission costs. These synthetic local timings are
 not a production deadline, streaming or competitor result. CSVs and executable
 hashes use ignored `artifacts/variation-final-*`.
+
+
+## Seeded policy cost
+
+`admission_workload --random`, `--no-repeat` and `--shuffle` use seed 42 with
+three global takes and four microphones per take; `--variation` remains sequential.
+Only one policy flag is accepted, optionally with `--ids`. The CSV variation column
+indicates whether variation is enabled; the invocation/file name identifies its policy.
+All runs admit the same four voices and one family per note.
+
+Three alternating CPU-2 passes compared `9a72ded` with the seeded-policy implementation
+on the Ryzen 7800X3D, Rust 1.99 release, after builds/checks finished. Median-of-median
+admission times in microseconds (no external IDs):
+
+| Notes | Reserved voices | Before, plain | After, plain | Before, sequential | After, sequential | Random | No-repeat | Shuffle |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 16 | 64 | 2.280 | 2.270 | 3.250 | 3.450 | 3.621 | 3.600 | 3.600 |
+| 64 | 256 | 9.220 | 9.200 | 13.020 | 13.791 | 14.791 | 14.451 | 14.601 |
+| 256 | 1,024 | 37.531 | 37.501 | 53.671 | 56.201 | 61.161 | 59.911 | 61.181 |
+| 1,024 | 4,096 | 189.824 | 191.814 | 262.085 | 279.436 | 297.625 | 290.625 | 292.816 |
+| 16 | 4,096 | 2.300 | 2.310 | 3.390 | 3.450 | 3.780 | 3.620 | 3.660 |
+
+Sequential selection pays roughly 2–7% for the larger transactional policy state;
+plain admission stays within about 1.1% here. At 1,024 notes the seeded policies cost
+4–7% over the new sequential path. This measures one global owner and tiny bags,
+not large channel-scope scans, cold cache behavior or a real host deadline.
+No per-frame DSP path changed; this checkpoint did not repeat the resident-render
+matrix. Shuffle storage is four bytes per reserved take/owner, in addition to bounded
+per-owner generator/progress state. CSVs and hashes use ignored
+`artifacts/random-final-*`; the preceding executable is retained as
+`artifacts/random-admission-before`.

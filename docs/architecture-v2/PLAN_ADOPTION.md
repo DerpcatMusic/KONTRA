@@ -23,8 +23,8 @@ Expression inheritance remains a separate decision.
 Generations also own separate mutable [sequence state](VARIATION.md). Its bounded
 storage is allocated on control during initial construction/submission, travels
 with the prepared plan through every ownership transfer and is destroyed on control.
-Adoption starts new counters; old generated notes keep the original counters and
-take definitions. Retained note decisions outlive their source families, so source
+Adoption starts fresh counters, seeded generators and shuffle bags; old generated
+notes keep their original state and take definitions. Retained note decisions outlive their source families, so source
 EOF alone cannot erase attack context or release an old generation prematurely.
 
 A control-side submission moves a boxed immutable `Prepared` into the bounded

@@ -62,6 +62,16 @@ addressed; attribution alone is insufficient. This is a provenance
 question, not a conclusion that matching format facts require GPL.
 [GPL-3.0 text, sections 5 and 6](https://github.com/maxton/nkxtract/blob/ca40dbf/COPYING).
 
+## Native variation generator
+
+`crates/sampler-core/src/variation.rs` contains a Rust adaptation of PCG32 XSH-RR,
+seeding and bounded selection from [pcg-c-basic](https://github.com/imneme/pcg-c-basic/blob/master/pcg_basic.c),
+Copyright 2014 Melissa O'Neill, licensed under Apache-2.0 (full license: [LICENSE](LICENSE)).
+The adaptation uses explicit wrapping arithmetic and caps rejection sampling at 64
+draws, returning a transactional error on exhaustion. The original generator's
+[published seed-42/stream-54 vector](https://www.pcg-random.org/using-pcg-c-basic.html)
+is exercised by the native unit tests. No dependency or C source was added.
+
 ## Vendored and patched
 
 | Component | Where | License | Notes |

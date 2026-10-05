@@ -266,7 +266,8 @@ fn control_thread_destroys_returned_assets_while_audio_only_moves_ownership() {
                             plan(request as f32 / 64., None)
                                 .with_variation(
                                     vec![sampler_core::Sequence {
-                                        takes: 2,
+                                        takes: 1,
+                                        policy: sampler_core::TakePolicy::Shuffle { seed: 41 },
                                         scope: sampler_core::SequenceScope::Global,
                                         capacity: 1
                                     }],
@@ -274,6 +275,7 @@ fn control_thread_destroys_returned_assets_while_audio_only_moves_ownership() {
                                         sequence: 0,
                                         index: 0
                                     })],
+                                    1,
                                     1,
                                 )
                                 .unwrap()

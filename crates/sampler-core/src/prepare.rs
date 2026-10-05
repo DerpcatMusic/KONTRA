@@ -103,6 +103,7 @@ pub struct Prepared {
     pub(super) modulation: super::Modulation,
     pub(super) sequences: Box<[super::variation::PreparedSequence]>,
     pub(super) sequence_cells: usize,
+    pub(super) shuffle_entries: usize,
 }
 
 impl Prepared {
@@ -209,6 +210,7 @@ impl Prepared {
             modulation: super::Modulation::default(),
             sequences: Box::new([]),
             sequence_cells: 0,
+            shuffle_entries: 0,
         })
     }
 
@@ -262,19 +264,26 @@ impl Prepared {
     /// Candidates are grouped by sequence without expanding a key/channel/take
     /// Cartesian product. Every sequence advances once per accepted eligible note,
     /// including a deliberately unmapped take; completely unmatched notes do not.
+    /// `max_states` bounds reserved scope cells; `max_shuffle_entries` bounds the
+    /// total u32 bag entries (reserved owners times takes for shuffle sequences).
     pub fn with_variation(
         mut self,
         sequences: Vec<super::Sequence>,
         region_takes: Vec<Option<super::Take>>,
         max_states: usize,
+        max_shuffle_entries: usize,
     ) -> Result<Self, Error> {
         if region_takes.len() != self.regions.len() {
             return Err(Error::InvalidInput);
         }
         let mut prepared = Vec::with_capacity(sequences.len());
         let mut cells = 0usize;
+        let mut entries = 0usize;
         for mut spec in sequences {
-            if spec.takes == 0 || spec.capacity == 0 {
+            if spec.takes == 0
+                || spec.capacity == 0
+                || (matches!(spec.policy, super::TakePolicy::NoRepeat { .. }) && spec.takes < 2)
+            {
                 return Err(Error::InvalidInput);
             }
             spec.capacity = match spec.scope {
@@ -287,9 +296,24 @@ impl Prepared {
             if cells > max_states {
                 return Err(Error::Capacity);
             }
-            prepared.push(super::variation::PreparedSequence { spec, offset });
+            let shuffle_offset = entries;
+            if matches!(spec.policy, super::TakePolicy::Shuffle { .. }) {
+                let count = spec
+                    .capacity
+                    .checked_mul(spec.takes as usize)
+                    .ok_or(Error::Capacity)?;
+                entries = entries.checked_add(count).ok_or(Error::Capacity)?;
+                if entries > max_shuffle_entries {
+                    return Err(Error::Capacity);
+                }
+            }
+            prepared.push(super::variation::PreparedSequence {
+                spec,
+                offset,
+                shuffle_offset,
+            });
         }
-        super::variation::SequenceState::check_size(cells)?;
+        super::variation::SequenceState::check_size(cells, entries)?;
         for (r, take) in self.regions.iter_mut().zip(region_takes) {
             if let Some(take) = take
                 && prepared
@@ -310,6 +334,7 @@ impl Prepared {
         }
         self.sequences = prepared.into_boxed_slice();
         self.sequence_cells = cells;
+        self.shuffle_entries = entries;
         Ok(self)
     }
 
@@ -530,7 +555,7 @@ impl Runtime {
             let until = prepared.group_end(from, end);
             let choice = prepared
                 .choose(from..until, velocity, address, key, &generation.sequences)
-                .expect("preflighted sequence scope capacity");
+                .expect("preflighted take decision");
             let decision = choice.map(|c| self.record_take(note, c.take));
             let mut family = None;
             for i in from..until {
@@ -564,12 +589,7 @@ impl Runtime {
             }
             if let Some(choice) = choice {
                 let generation = self.plans.get_mut(plan.0).unwrap();
-                generation.sequences.commit(
-                    choice,
-                    generation.prepared.sequences[choice.take.sequence]
-                        .spec
-                        .takes,
-                );
+                generation.sequences.commit(choice);
             }
             from = until;
         }
