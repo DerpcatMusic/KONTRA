@@ -5080,6 +5080,146 @@ mod tests {
         assert_eq!(a, b);
     }
     #[test]
+    fn terminal_layer_sustain_matches_dry_release_pcm_for_forward_drop_and_synthetic_posts() {
+        // Routing expectations come from retained authored native captures. The portable
+        // reference has no controller events: it releases each Layer at an explicit frame.
+        for (case, layer_script, controller, release_frames, before_on) in [
+            ("forward", "", 64, [1024, 1024], false),
+            (
+                "drop64",
+                "function onController(e)if e.controller~=64 then postEvent(e)end end",
+                64,
+                [512, 1024],
+                false,
+            ),
+            (
+                "synthetic64",
+                "function onController(e)if e.controller==3 then controlChange(64,e.value,e.channel)else postEvent(e)end end",
+                3,
+                [1024, 512],
+                false,
+            ),
+            ("before-on", "", 64, [1024, 1024], true),
+        ] {
+            let layer = |key, path, script| {
+                format!(
+                    r#"<Layer><EventProcessors><ScriptProcessor><script>function onNote(e)postEvent(e)end {script}</script></ScriptProcessor></EventProcessors><Keygroups><Keygroup LowKey="{key}" HighKey="{key}"><Oscillators><SamplePlayer SamplePath="{path}" NoteTracking="0"><PlaybackOptions Start="0" Stop="8" PlayRelease="1"><Loop Start="2" End="5" Type="0"/></PlaybackOptions></SamplePlayer></Oscillators><ControlSignalSources><DAHDSR Name="Env" DelayTime="0" AttackTime="0" HoldTime="0" DecayTime="0" SustainLevel="1" ReleaseTime="0" VelocityAmount="0"/></ControlSignalSources><Connections><SignalConnection Source="Env" Destination="Gain" Ratio="1"/></Connections></Keygroup></Keygroups></Layer>"#
+                )
+            };
+            let program = parse_program(&format!(
+                "<Program><Layers>{}{}</Layers></Program>",
+                layer(60, "a", layer_script),
+                layer(72, "b", ""),
+            ))
+            .unwrap();
+            let mut second_sample = sample(1);
+            second_sample.interleaved = Storage::from_f32(vec![0.25; 8]).unwrap();
+            let samples = HashMap::from([
+                ("a".into(), Arc::new(sample(1))),
+                ("b".into(), Arc::new(second_sample)),
+            ]);
+            let mut actual = Renderer::new(&program, samples.clone(), 48000).unwrap();
+            let mut reference = Renderer::new(&program, samples, 48000).unwrap();
+            let mut dry_commands = Vec::new();
+            for (layer, (&key, &release_frame)) in [60, 72].iter().zip(&release_frames).enumerate() {
+                let key = {
+                    let mut event = note(layer as u32 + 1);
+                    event.note = key;
+                    event.channel = layer as u8;
+                    event.velocity = 127;
+                    event.layers = Some(vec![program.layers[layer]]);
+                    event
+                };
+                let id = key.id;
+                dry_commands.push(script::Command {
+                    frame: 0,
+                    action: script::Action::Start(key),
+                });
+                dry_commands.push(script::Command {
+                    frame: release_frame,
+                    action: script::Action::Release(id),
+                });
+            }
+            dry_commands.sort_by_key(|command| command.frame);
+            let expected = reference.render(&dry_commands, &[], 1536).unwrap();
+            let input = |frame, kind| script::Input { frame, kind };
+            let mut inputs = vec![input(
+                if before_on { 0 } else { 256 },
+                script::InputKind::Controller {
+                    channel: 0,
+                    controller,
+                    value: 127,
+                },
+            )];
+            for (channel, key) in [(0, 60), (1, 72)] {
+                inputs.push(input(
+                    0,
+                    script::InputKind::NoteOn {
+                        channel,
+                        note: key,
+                        velocity: 127,
+                    },
+                ));
+                inputs.push(input(
+                    512,
+                    script::InputKind::NoteOff {
+                        channel,
+                        note: key,
+                        velocity: 64,
+                    },
+                ));
+            }
+            inputs.push(input(
+                1024,
+                script::InputKind::Controller {
+                    channel: 0,
+                    controller,
+                    value: 0,
+                },
+            ));
+            inputs.sort_by_key(|event| event.frame);
+            let mut session = script::Session::new_program_chain(
+                &program,
+                std::collections::BTreeMap::new(),
+                None,
+                48000,
+            )
+            .unwrap();
+            let mut output = Vec::new();
+            for start in (0..1536).step_by(256) {
+                let block: Vec<_> = inputs
+                    .iter()
+                    .copied()
+                    .filter(|event| event.frame >= start && event.frame < start + 256)
+                    .collect();
+                let prepared = session.process(&block, start + 256).unwrap();
+                output.extend(
+                    actual
+                        .render_with_sustain_routes(
+                            &prepared.commands,
+                            None,
+                            &prepared.sustain_layers,
+                            &prepared.host_commands,
+                            256,
+                        )
+                        .unwrap(),
+                );
+            }
+            assert_eq!(output, expected, "{case}: complete dry release PCM");
+            assert!(
+                output[..256].iter().any(|frame| frame[0] != 0.),
+                "{case}: attack"
+            );
+            assert!(
+                output[512..1024].iter().any(|frame| frame[0] != 0.),
+                "{case}: held PCM"
+            );
+            assert_eq!(actual.active_voices(), 0, "{case}: final retirement");
+            assert_eq!(reference.active_voices(), 0, "{case}: dry retirement");
+        }
+    }
+
+    #[test]
     fn shared_voice_gate_waits_for_its_channel_sustain_pedal() {
         let p = parse_program(r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="a"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
         let mut renderer = Renderer::new(

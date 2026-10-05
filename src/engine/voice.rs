@@ -252,6 +252,7 @@ impl Lanes {
 /// A voice's next block as [`Voice::plan`] works it out.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Plan {
+    pub crossfade_partners: [u64; 2],
     pub counted_cursor: Option<super::counted_loop::Cursor>,
     pub n: usize,
     /// Source frames per output frame, 32.32 fixed point.
@@ -473,6 +474,8 @@ pub(crate) struct Context<'a> {
     pub stream_error: &'a std::cell::Cell<Option<super::stream::StreamError>>,
     /// Native sample-geometry controls update only at the 32-frame edge.
     pub native_control_tick: bool,
+    /// Engine producer request, preserved across internal DSP subdivisions.
+    pub source_window: Option<(u64, u64)>,
     /// Changes whenever anything modulation reads may have: controllers,
     /// bend, pressure or group parameters.
     pub inputs: u32,
@@ -489,7 +492,7 @@ pub(super) struct PreparedSource {
     curved_pitch: bool, terminal: Option<usize>, target: [f32; 2],
     lagging: bool, lag_gain: f32, base_step: f64, base_semitones: f32,
     counted_cursor: Option<super::counted_loop::Cursor>, fixed_step: u64,
-    travel: u64, last: u64, wide: bool,
+    travel: u64, last: u64, wide: bool, crossfade_partners: [u64; 2],
 }
 
 impl PreparedSource {
@@ -507,7 +510,7 @@ impl<'a> Context<'a> {
         Self { bank, settings: &state.settings, instrument, slots: bank.slots(), midi,
             native_mpe_pressure, host_notes, per_note,
             tune: state.controls.tune + f32::from(bank.transpose) + tune,
-            rate, tempo, blocking, stream_error, native_control_tick: now & 31 == 0,
+            rate, tempo, blocking, stream_error, native_control_tick: now & 31 == 0, source_window: None,
             native_sampler: state.sampling_profile == crate::import::SamplingProfile::Kontakt,
             inputs: midi.revision, shared_lfos: &state.shared_lfos,
             shared_ahdsr: state.shared_ahdsr.as_deref(), lfo_timings: &state.lfo_timings, now }
@@ -828,7 +831,7 @@ impl Voice {
             && cx.bank.groups()[self.group as usize].source_mode == Some(3)
             && (self.map.reverse
                 || self.map.looped.is_some_and(|row| row.alternating || row.xfade != 0)
-                || self.counted.is_some_and(|cursor| cursor.crossfaded(&cx.bank.counted_loops[cursor.rows as usize]))) {
+                ) {
             return Err(self.source_error(super::stream::StreamErrorKind::UnsupportedWindow));
         }
         if let Some(primary) = &mut self.primary_amp {
@@ -980,22 +983,89 @@ impl Voice {
             for &offset in &positions[..n] {
                 end_cursor.advance(data, offset.checked_sub(prior).ok_or_else(overflow)? as f64 / FIXED_ONE)
                     .ok_or_else(overflow)?;
-                if end_cursor.crossfaded(data) && end_cursor.position.fract() != 0. {
+                if !self.native_cubic(cx) && end_cursor.crossfaded(data) && end_cursor.position.fract() != 0. {
                     return Err(self.source_error(super::stream::StreamErrorKind::UnsupportedWindow));
                 }
                 prior = offset;
             }
             end_cursor.travel(travel.checked_sub(prior).ok_or_else(overflow)? as f64 / FIXED_ONE)
                 .ok_or_else(overflow)?;
-            // Fractional crossfade support depends on a native producer quantum
-            // that is not yet mapped. Fail before PCM or retained clock mutation.
-            if end_cursor.crossfaded(data) && end_cursor.position.fract() != 0. {
+            if !self.native_cubic(cx) && end_cursor.crossfaded(data) && end_cursor.position.fract() != 0. {
                 return Err(self.source_error(super::stream::StreamErrorKind::UnsupportedWindow));
             }
             counted_cursor = Some(end_cursor);
             let mut normalized = end_cursor;
             normalized.advance(data, 0.).ok_or_else(overflow)?;
             if terminal.is_none() && normalized.done(data) { terminal = Some(n); }
+        }
+        let mut crossfade_partners = [0u64; 2];
+        if let Some(mut cursor) = self.counted {
+            let data = &cx.bank.counted_loops[cursor.rows as usize];
+            if self.native_cubic(cx) && cursor.crossfaded(data) {
+                let horizon = cx.source_window.map_or(n, |(_, end)| end.saturating_sub(cx.now) as usize);
+                if horizon < n || horizon > 1024 { return Err(overflow()); }
+                // The outer balanced request is an engine policy. The native
+                // producer law is captured; vendor host framing is not claimed.
+                let mut offsets = [0u64; 1025];
+                if curved_pitch {
+                    let mut clock = self.pitch_lfo;
+                    let mut glide = self.pitch_glide.ok_or_else(overflow)?;
+                    let mut envelopes = self.pitch_envs;
+                    self.mod_preview.copy_from_slice(&self.mods);
+                    let mut at = 0;
+                    let mut sum = 0u64;
+                    while at < horizon {
+                        let count = (horizon - at).min(MAX_BLOCK);
+                        let (travel, _) = self.preview_source(cx, &mut clock, &mut glide,
+                            &mut envelopes, base_step, lagging, at, &mut offsets[at..at + count])
+                            .ok_or_else(overflow)?;
+                        for point in &mut offsets[at..at + count] {
+                            *point = point.checked_add(sum).ok_or_else(overflow)?;
+                        }
+                        sum = sum.checked_add(travel).ok_or_else(overflow)?;
+                        at += count;
+                    }
+                    offsets[horizon] = sum;
+                } else {
+                    offsets[..n].copy_from_slice(&positions[..n]);
+                }
+                let mut previous = 0;
+                let mut segment_gate = None;
+                for (i, &offset) in offsets[..n].iter().enumerate() {
+                    cursor.advance(data, (offset - previous) as f64 / FIXED_ONE).ok_or_else(overflow)?;
+                    previous = offset;
+                    let Some(fade) = cursor.crossfade(data) else { continue; };
+                    // The main producer stops at the first physical row crossing,
+                    // before normalization. Its actual pending phase gates the
+                    // partner for the whole segment, including pre-fade support.
+                    let origin = cursor.position - offset as f64 / FIXED_ONE;
+                    let key = (fade, origin.to_bits());
+                    let enabled = if cursor.position.floor() >= fade.begin as f64 { true }
+                        else if let Some((old, enabled)) = segment_gate.filter(|(old, _)| *old == key) {
+                            let _ = old;
+                            enabled
+                        } else {
+                            let endpoint = if curved_pitch {
+                                offsets[i + 1..=horizon].iter().map(|point|
+                                    origin + *point as f64 / FIXED_ONE)
+                                    .find(|point| point.floor() >= fade.end as f64)
+                                    .unwrap_or(origin + offsets[horizon] as f64 / FIXED_ONE)
+                            } else {
+                                let step = fixed_step as f64 / FIXED_ONE;
+                                let count = if fixed_step == 0 { horizon - i } else {
+                                    (((fade.end as f64 - cursor.position) / step).ceil() as usize).min(horizon - i)
+                                };
+                                cursor.position + fixed_step.checked_mul(count as u64).ok_or_else(overflow)? as f64 / FIXED_ONE
+                            };
+                            let enabled = endpoint.floor() >= fade.begin as f64;
+                            segment_gate = Some((key, enabled));
+                            enabled
+                        };
+                    if enabled {
+                        crossfade_partners[i / 64] |= 1 << (i % 64);
+                    }
+                }
+            }
         }
         // f64 must retain consecutive integer tap coordinates, and the
         // relative32.32 clock must remain representable. Stream publication
@@ -1053,13 +1123,13 @@ impl Voice {
             }
         };
         if let Some(stream) = &mut self.stream { stream.sparse = sparse; }
-        Ok(PreparedSource { pitch, initial, input, x, curved_pitch, terminal, target, lagging, lag_gain, base_step, base_semitones, counted_cursor, fixed_step, travel, last, wide })
+        Ok(PreparedSource { pitch, initial, input, x, curved_pitch, terminal, target, lagging, lag_gain, base_step, base_semitones, counted_cursor, fixed_step, travel, last, wide, crossfade_partners })
     }
 
     #[inline(always)]
     pub fn plan(&mut self, cx: &Context, n: usize, bus: Option<u8>,
         through: Option<[f32; 2]>) -> Result<Option<Lane>, Start> {
-        let PreparedSource { pitch, initial, input, x, curved_pitch, terminal, target, lagging, lag_gain, base_step, base_semitones, counted_cursor, fixed_step, travel, last, wide } = self.prepare_source(cx, n)?;
+        let PreparedSource { pitch, initial, input, x, curved_pitch, terminal, target, lagging, lag_gain, base_step, base_semitones, counted_cursor, fixed_step, travel, last, wide, crossfade_partners } = self.prepare_source(cx, n)?;
         let group = &cx.settings[self.group as usize];
         self.onset = Onset::Started;
         self.pitch = pitch;
@@ -1094,6 +1164,7 @@ impl Voice {
         let declick = self.wavetable.is_none() && if self.counted.is_some() { counted_end.is_some() }
             else { end < n as f32 + DECLICK * cx.rate };
         let mut plan = Plan {
+            crossfade_partners,
             counted_cursor,
             n,
             // 32.32 fixed point: exact, cheap to index.
@@ -1802,7 +1873,8 @@ impl Voice {
                 *underrun = true;
             }
             let sample = &cx.bank.samples[self.sample as usize];
-            let mut fade_gains = [super::counted_loop::Gain::default(), super::counted_loop::Gain::default()];
+            let mut fade_gains: [[super::counted_loop::Gain; 4]; 2] =
+                std::array::from_fn(|_| std::array::from_fn(|_| super::counted_loop::Gain::default()));
             let mut previous = 0;
             for i in 0..self.plan.n {
                 let offset = if self.plan.curved_pitch { positions[i] } else { self.plan.step * i as u64 };
@@ -1822,19 +1894,38 @@ impl Voice {
                     else { *underrun = true; }
                 }
                 if let Some(fade) = cursor.crossfade(data) {
-                    // Integral phases use the two raw centers. Native gain is
-                    // applied before interpolation, then resampled signals add.
-                    for j in [1, 5] {
+                    if !self.native_cubic(cx) {
+                        for j in [1, 5] {
+                            if physical[j] == u64::MAX { continue; }
+                            let partner = j >= 4;
+                            let gain = fade_gains[usize::from(partner)][1].point(fade, physical[j], partner);
+                            if gain <= 0. { values[j] = [0.; 2]; }
+                            else if gain < 1. { values[j] = values[j].map(|value| value * gain); }
+                        }
+                        out[i + 1] = std::array::from_fn(|channel| values[1][channel] + values[5][channel]);
+                        continue;
+                    }
+                    // Native physical gains precede each independent quartet.
+                    // One gain cache per tap column keeps overlapping quartets
+                    // monotonic without repeating a 512-frame rounding prefix.
+                    for j in 0..8 {
                         if physical[j] == u64::MAX { continue; }
-                        let gain = fade_gains[usize::from(j == 5)].point(fade, physical[j], j == 5);
+                        let partner = j >= 4;
+                        let gain = fade_gains[usize::from(partner)][j % 4].point(fade, physical[j], partner);
                         if gain <= 0. { values[j] = [0.; 2]; }
                         else if gain < 1. { values[j] = values[j].map(|value| value * gain); }
                     }
-                    out[i + 1] = std::array::from_fn(|channel| values[1][channel] + values[5][channel]);
+                    let fraction = (((cursor.position.fract() * FIXED_ONE) as u32) >> 8) as f32 / (1u32 << 24) as f32;
+                    let main = if fraction == 0. { values[1] }
+                        else { interpolate(&[values[0], values[1], values[2], values[3]], fraction) };
+                    let partner = if self.plan.crossfade_partners[i / 64] & (1 << (i % 64)) == 0 { [0.; 2] }
+                        else if fraction == 0. { values[5] }
+                        else { interpolate(&[values[4], values[5], values[6], values[7]], fraction) };
+                    out[i + 1] = std::array::from_fn(|channel| main[channel] + partner[channel]);
                 } else {
                     let fraction = (((cursor.position.fract() * FIXED_ONE) as u32) >> 8) as f32 / (1u32 << 24) as f32;
                     out[i + 1] = if fraction == 0. { values[1] }
-                        else { interpolate(values[..4].try_into().expect("four main taps"), fraction) };
+                        else { interpolate(&[values[0], values[1], values[2], values[3]], fraction) };
                 }
             }
             return (out, 1 << 32);
@@ -4248,3 +4339,7 @@ mod tests {
         stopped.render_checked(&mut [0.;256],&mut [0.;256]).unwrap(); assert_eq!(stopped.active_voices(),0);
     }
 }
+
+#[cfg(test)]
+#[path = "normal_crossfade_tests.rs"]
+mod normal_crossfade_tests;

@@ -1186,23 +1186,13 @@ impl Builder {
                     group.key_tracking, source.phase_random, source.inharmonic_mode, source.mod_type));
                 continue;
             }
-            let native_crossfade = zone.native_loops.iter().any(|row| row.mode != 0 && row.crossfade > 0);
-            // Fixed starts behind a permanent plain loop cannot reach later fades.
-            // Preserve the saved rows and reject every reachable DFD fade as before.
-            let unreachable_crossfade = native_crossfade && zone.start_mod.unwrap_or(0) == 0
-                && !group.mods.iter().any(|m| super::params::loop_control_supported(group, m))
-                && frames.checked_add_signed(i64::from(zone.end)).is_some_and(|end|
-                    super::counted_loop::Rows::prepare(&zone.native_loops, frames, end,
-                        nonreflecting_single_pass_alternating(group, sampling_profile)).is_ok_and(|rows|
-                            !super::counted_loop::Cursor::new(0, &rows, zone.start as f64, false).crossfaded(&rows)));
             if sampling_profile == crate::import::SamplingProfile::Kontakt
                 && group.source_mode == Some(3) && group.interp_quality == 0
                 && (group.reverse
                     || zone.native_loops.iter().any(|row| row.mode != 0 && row.alternating)
-                    || native_crossfade && !unreachable_crossfade
-                    || zone.loop_range.as_ref().is_some_and(|row| row.alternating || row.crossfade > 0)) {
+                    || zone.loop_range.as_ref().is_some_and(|row| row.alternating || row.crossfade > 0 && zone.native_loops.is_empty())) {
                 issues.skip(ZoneSkipCause::UnsupportedSource, format_args!(
-                    "Native DFD Normal reverse, alternating or crossfaded source is unsupported (zone ID {zone_id}, sample {}); zone excluded", zone.sample.display()));
+                    "Native DFD Normal reverse, alternating or legacy crossfaded source is unsupported (zone ID {zone_id}, sample {}); zone excluded", zone.sample.display()));
                 continue;
             }
             match play_map(&zone, group, frames) {
