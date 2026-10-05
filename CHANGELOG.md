@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Add bounded prepared-plan replacement with generational note ownership and control-side retirement. Existing notes, tails and callbacks keep original PCM/programs while new inputs use the active plan; saturated queues retain ownership, and audio-thread heap checks cover cross-thread transfers.
+
 - Run authored KSP-subset scripts against resident WAV samples through the independent native executable. Compile at the source rate and render a fixed two-second audition; process-level checks compare exact expected audio at 44.1/48/96 kHz and preserve existing files.
 
 - Apply channel-scoped All Sound Off to native tails, generated descendants, delayed sources and retained callbacks. Silenced physical inputs retain same-key pairing until key-up; queued releases cannot resurrect work or target retired owners.

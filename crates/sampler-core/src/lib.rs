@@ -18,7 +18,10 @@ pub use envelope::Envelope;
 use envelope::EnvelopeState;
 mod gate;
 mod ownership;
+mod plans;
 mod prepare;
+use plans::{Generation, PlanQueues};
+pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{Pcm, Prepared, Region};
 mod schedule;
 use gate::Channel;
@@ -95,6 +98,7 @@ pub struct Limits {
 struct Note {
     input: Option<Input>,
     address: ChannelAddress,
+    plan: PlanId,
     parent: Option<NoteId>,
     linked_release: bool,
     release_checked: bool,
@@ -132,18 +136,16 @@ struct Arena<T> {
     slots: Box<[Slot<T>]>,
 }
 
-impl<T: Copy> Arena<T> {
+impl<T> Arena<T> {
     fn new(runtime: u64, capacity: usize) -> Self {
         Self {
             runtime,
-            slots: vec![
-                Slot {
-                    generation: 0,
-                    value: None
-                };
-                capacity
-            ]
-            .into_boxed_slice(),
+            slots: std::iter::repeat_with(|| Slot {
+                generation: 0,
+                value: None,
+            })
+            .take(capacity)
+            .collect(),
         }
     }
 
@@ -210,7 +212,9 @@ impl<T: Copy> Arena<T> {
 /// existing slot, so a full command queue cannot discard its cleanup or notification.
 pub struct Runtime {
     rate: u32,
-    plan: Prepared,
+    plans: Arena<Generation>,
+    active_plan: PlanId,
+    plan_queues: Option<PlanQueues>,
     notes: Arena<Note>,
     channels: Arena<Channel>,
     voices: Arena<Voice>,
@@ -233,7 +237,13 @@ impl Runtime {
         if limits.notes == 0 {
             return Err(Error::InvalidInput);
         }
-        let behavior_stride = plan.programs.iter().map(|p| p.locals).max().unwrap_or(0);
+        let behavior_stride = limits
+            .behavior_cells
+            .checked_div(limits.behaviors)
+            .unwrap_or(0);
+        if plan.programs.iter().any(|p| p.locals > behavior_stride) {
+            return Err(Error::Capacity);
+        }
         let cells = behavior_stride
             .checked_mul(limits.behaviors)
             .ok_or(Error::Capacity)?;
@@ -246,9 +256,18 @@ impl Runtime {
         let id = NEXT_RUNTIME
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
             .map_err(|_| Error::Capacity)?;
+        let rate = plan.rate;
+        let mut plans = Arena::new(id, 1);
+        let active_plan = PlanId(plans.insert(Generation {
+            request: 0,
+            prepared: Box::new(plan),
+            notes: 0,
+        })?);
         Ok(Self {
-            rate: plan.rate,
-            plan,
+            rate,
+            plans,
+            active_plan,
+            plan_queues: None,
             notes: Arena::new(id, limits.notes),
             channels: Arena::new(id, limits.channels),
             voices: Arena::new(id, limits.voices),
@@ -360,6 +379,7 @@ impl Runtime {
             .or_else(|| parent_note.map(|n| n.address))
             .ok_or(Error::InvalidInput)?;
         let parent_expression = parent_note.map(|n| n.expression);
+        let plan = parent_note.map_or(self.active_plan, |n| n.plan);
         let expression = match (inheritance, parent_expression) {
             (Inheritance::Linked, Some(id)) => {
                 let owner = self.expressions.get_mut(id.0).unwrap();
@@ -383,6 +403,7 @@ impl Runtime {
         let id = match self.notes.insert(Note {
             input,
             address,
+            plan,
             parent,
             linked_release,
             release_checked: false,
@@ -408,6 +429,7 @@ impl Runtime {
             // Successful admission bounds this count by the allocated note slots.
             self.notes.get_mut(parent.0).unwrap().children += 1;
         }
+        self.plans.get_mut(plan.0).unwrap().notes += 1;
         self.order = order;
         Ok(NoteId(id))
     }
@@ -491,10 +513,15 @@ impl Runtime {
         if !f.open {
             return Err(Error::ClosedFamily);
         }
-        if sample >= self.plan.pcm.len() || !gain.is_finite() || !(0.0..=1.0).contains(&gain) {
+        let plan = &self
+            .plans
+            .get(self.notes.get(f.note.0).unwrap().plan.0)
+            .unwrap()
+            .prepared;
+        if sample >= plan.pcm.len() || !gain.is_finite() || !(0.0..=1.0).contains(&gain) {
             return Err(Error::InvalidInput);
         }
-        let cursor = playback.cursor(self.plan.pcm[sample].frames.len())?;
+        let cursor = playback.cursor(plan.pcm[sample].frames.len())?;
         let count = f.voices.checked_add(1).ok_or(Error::Capacity)?;
         self.check_time(at)?;
         if at > self.now && self.commands.len() == self.command_limit {
@@ -679,7 +706,7 @@ impl Runtime {
                 let gains = self.expressions.get(n.expression.0).unwrap().value.gains();
                 // Prepared playback bounds and the cursor's contiguous spans stay
                 // within immutable PCM; looping never changes asset ownership.
-                let pcm = &self.plan.pcm[v.sample].frames;
+                let pcm = &self.plans.get(n.plan.0).unwrap().prepared.pcm[v.sample].frames;
                 v.cursor
                     .render(pcm, segment, &mut v.envelope, v.gain, gains);
                 if v.cursor.done() || v.envelope.done() {

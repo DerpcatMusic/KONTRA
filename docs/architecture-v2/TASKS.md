@@ -138,6 +138,13 @@ Family/expression ownership and segmented rendering now have
 
 ### V2-10 — Implement preparation, adoption and retirement
 
+- **Partial evidence:** [prepared-plan adoption](PLAN_ADOPTION.md) retains original
+  PCM/program generations through notes, descendants, callbacks and terminal
+  backpressure. Bounded SPSC transfer returns unused plans for control-side destruction;
+  mixed-generation audio and a separate control-thread check pass. Streaming and
+  host lifecycle integration remain open.
+
+
 - [ ] **P0; dependencies:** V2-02/07/09.
 - New worker/control/audio exchanges with immutable plans, tagged requests, bounded
   retained generations and reserved retirement capacity before adoption.
