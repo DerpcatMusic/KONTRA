@@ -51,6 +51,18 @@
     "exit": {
       "implementation": "partial_native_subset",
       "evidence": "KSP_FRONTEND.md"
+    },
+    "if": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "while": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "continue": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
     }
   },
   "chapters": [
@@ -1030,7 +1042,9 @@
               "if"
             ]
           },
-          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-statements#continue"
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-statements#continue",
+          "implementation": "partial_native_subset",
+          "evidence": "KSP_FRONTEND.md"
         },
         {
           "anchor": "if-----else-----end-if",
@@ -1058,7 +1072,9 @@
               "while"
             ]
           },
-          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-statements#while---"
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-statements#while---",
+          "implementation": "partial_native_subset",
+          "evidence": "KSP_FRONTEND.md"
         }
       ]
     },
