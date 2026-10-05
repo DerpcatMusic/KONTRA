@@ -134,37 +134,9 @@ pub fn decode_ump_channel_voice_2(words: [u32; 4]) -> Option<EventBody> {
             channel,
             value: w1,
         },
-        // 0x2 = Registered Controller (RPN), 0x3 = Assignable
-        // Controller (NRPN). Bank lives in `byte_a` (lower 7 bits),
-        // index in `byte_b` (lower 7 bits).
-        0x2 => EventBody::RegisteredController {
-            group,
-            channel,
-            bank: byte_a & 0x7F,
-            index: byte_b & 0x7F,
-            value: w1,
-        },
-        0x3 => EventBody::AssignableController {
-            group,
-            channel,
-            bank: byte_a & 0x7F,
-            index: byte_b & 0x7F,
-            value: w1,
-        },
-        0x4 => EventBody::RelativeRegisteredController {
-            group,
-            channel,
-            bank: byte_a & 0x7F,
-            index: byte_b & 0x7F,
-            delta: w1 as i32,
-        },
-        0x5 => EventBody::RelativeAssignableController {
-            group,
-            channel,
-            bank: byte_a & 0x7F,
-            index: byte_b & 0x7F,
-            delta: w1 as i32,
-        },
+        0x2..=0x5 => {
+            return decode_ump_controller_2(status, group, channel, byte_a, byte_b, w1);
+        }
         0xC => EventBody::ProgramChange2 {
             group,
             channel,
@@ -177,6 +149,51 @@ pub fn decode_ump_channel_voice_2(words: [u32; 4]) -> Option<EventBody> {
             } else {
                 None
             },
+        },
+        _ => return None,
+    };
+    Some(body)
+}
+
+// Registered/assignable controllers share a 7-bit bank and index;
+// their relative forms reinterpret the value's two's-complement bits.
+fn decode_ump_controller_2(
+    status: u8,
+    group: u8,
+    channel: u8,
+    bank: u8,
+    index: u8,
+    value: u32,
+) -> Option<EventBody> {
+    let body = match status {
+        // 0x2 = Registered Controller (RPN), 0x3 = Assignable (NRPN).
+        0x2 => EventBody::RegisteredController {
+            group,
+            channel,
+            bank: bank & 0x7F,
+            index: index & 0x7F,
+            value,
+        },
+        0x3 => EventBody::AssignableController {
+            group,
+            channel,
+            bank: bank & 0x7F,
+            index: index & 0x7F,
+            value,
+        },
+        0x4 => EventBody::RelativeRegisteredController {
+            group,
+            channel,
+            bank: bank & 0x7F,
+            index: index & 0x7F,
+            delta: value.cast_signed(),
+        },
+        0x5 => EventBody::RelativeAssignableController {
+            group,
+            channel,
+            bank: bank & 0x7F,
+            index: index & 0x7F,
+            delta: value.cast_signed(),
         },
         _ => return None,
     };
@@ -234,10 +251,10 @@ pub fn encode_ump_channel_voice_2(body: &EventBody) -> Option<[u32; 4]> {
         } => (0x3, bank, index & 0x7F, value),
         EventBody::RelativeRegisteredController {
             bank, index, delta, ..
-        } => (0x4, bank, index & 0x7F, delta as u32),
+        } => (0x4, bank, index & 0x7F, delta.cast_unsigned()),
         EventBody::RelativeAssignableController {
             bank, index, delta, ..
-        } => (0x5, bank, index & 0x7F, delta as u32),
+        } => (0x5, bank, index & 0x7F, delta.cast_unsigned()),
         EventBody::ProgramChange2 { program, bank, .. } => {
             // "B" (bank-valid) flag rides byte_b bit 0; the bank pair
             // sits in word 1 bytes 1..0, program in word 1 byte 3.
@@ -924,6 +941,68 @@ mod tests {
             note: 60,
             flags: 0x03,
         });
+    }
+
+    #[test]
+    fn absolute_controllers_mask_bank_and_index_without_narrowing_value() {
+        for status in [0x2, 0x3] {
+            let w0 = (0x4 << 28) | (7 << 24) | (status << 20) | (3 << 16) | (0xFF << 8) | 0x81;
+            let decoded = decode_ump_channel_voice_2([w0, u32::MAX, 0, 0]).unwrap();
+            let address_and_value = match decoded {
+                EventBody::RegisteredController {
+                    group,
+                    channel,
+                    bank,
+                    index,
+                    value,
+                }
+                | EventBody::AssignableController {
+                    group,
+                    channel,
+                    bank,
+                    index,
+                    value,
+                } => (group, channel, bank, index, value),
+                _ => panic!("expected absolute controller"),
+            };
+            assert_eq!(address_and_value, (7, 3, 0x7F, 1, u32::MAX));
+        }
+    }
+
+    #[test]
+    fn relative_controllers_preserve_signed_boundaries_and_mask_address() {
+        for status in [0x4, 0x5] {
+            for (delta, value) in [
+                (i32::MIN, 0x8000_0000),
+                (-1, u32::MAX),
+                (0, 0),
+                (i32::MAX, 0x7FFF_FFFF),
+            ] {
+                let w0 = (0x4 << 28) | (7 << 24) | (status << 20) | (3 << 16) | (0xFF << 8) | 0x81;
+                let decoded = decode_ump_channel_voice_2([w0, value, 0, 0]).unwrap();
+                let address_and_delta = match decoded {
+                    EventBody::RelativeRegisteredController {
+                        group,
+                        channel,
+                        bank,
+                        index,
+                        delta,
+                    }
+                    | EventBody::RelativeAssignableController {
+                        group,
+                        channel,
+                        bank,
+                        index,
+                        delta,
+                    } => (group, channel, bank, index, delta),
+                    _ => panic!("expected relative controller"),
+                };
+                assert_eq!(
+                    (address_and_delta, encode_ump_channel_voice_2(&decoded)),
+                    ((7, 3, 0x7F, 1, delta), Some([w0 & !0x8080, value, 0, 0]))
+                );
+            }
+        }
     }
 
     #[test]

@@ -28,7 +28,7 @@ impl VoiceGroups {
         let is_structured = reader.read_bool()?;
         let version = reader.read_u16_le()?;
 
-        assert_eq!(is_structured, false);
+        assert!(!is_structured);
 
         let voice_limit = match version {
             0x60 => VoiceLimit::read(&mut reader)?,
