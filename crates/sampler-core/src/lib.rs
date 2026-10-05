@@ -20,6 +20,7 @@ mod gate;
 mod ownership;
 mod plans;
 mod prepare;
+mod render;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{Pcm, Prepared, Region};
@@ -218,6 +219,7 @@ pub struct Runtime {
     notes: Arena<Note>,
     channels: Arena<Channel>,
     voices: Arena<Voice>,
+    voice_activity: Box<[u64]>,
     families: Arena<Family>,
     expressions: Arena<ExpressionOwner>,
     commands: Vec<Scheduled>,
@@ -271,6 +273,7 @@ impl Runtime {
             notes: Arena::new(id, limits.notes),
             channels: Arena::new(id, limits.channels),
             voices: Arena::new(id, limits.voices),
+            voice_activity: vec![0; limits.voices.div_ceil(64)].into_boxed_slice(),
             families: Arena::new(id, limits.families),
             expressions: Arena::new(id, limits.expressions),
             commands: Vec::with_capacity(limits.commands),
@@ -535,6 +538,7 @@ impl Runtime {
             gain,
             started: at == self.now,
         })?);
+        self.voice_activity[id.0.index / 64] |= 1 << (id.0.index % 64);
         self.families.get_mut(family.0).unwrap().voices = count;
         if at > self.now {
             self.queue(at, Action::Start(id));
@@ -673,57 +677,6 @@ impl Runtime {
             self.retire_family(FamilyId(self.families.id(i)));
         }
         self.cancel_closed_work();
-    }
-
-    /// Events at the exclusive block end stay pending until the next render (including
-    /// an empty block). Overflow is rejected before any output/state mutation.
-    pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Error> {
-        let end = self
-            .now
-            .checked_add(output.len() as u64)
-            .ok_or(Error::ClockOverflow)?;
-        output.fill([0.0; 2]);
-        self.apply_due();
-        let mut offset = 0;
-        while self.now < end {
-            self.apply_due();
-            let boundary = self.commands.first().map_or(end, |c| c.at.min(end));
-            let len = (boundary - self.now) as usize;
-            let segment = &mut output[offset..offset + len];
-            // Voice-major contiguous work: scan reserved capacity once per event
-            // segment, not once per sample. Slot order preserves deterministic sums.
-            for i in 0..self.voices.slots.len() {
-                let Some(v) = &mut self.voices.slots[i].value else {
-                    continue;
-                };
-                if !v.started {
-                    continue;
-                }
-                // Retention invariant: live voice -> counted family -> counted note
-                // -> expression owner. Each owner retires only after its dependents.
-                let f = self.families.get(v.family.0).unwrap();
-                let n = self.notes.get(f.note.0).unwrap();
-                let gains = self.expressions.get(n.expression.0).unwrap().value.gains();
-                // Prepared playback bounds and the cursor's contiguous spans stay
-                // within immutable PCM; looping never changes asset ownership.
-                let pcm = &self.plans.get(n.plan.0).unwrap().prepared.pcm[v.sample].frames;
-                v.cursor
-                    .render(pcm, segment, &mut v.envelope, v.gain, gains);
-                if v.cursor.done() || v.envelope.done() {
-                    self.end_voice(VoiceId(self.voices.id(i)));
-                }
-            }
-            for frame in segment {
-                if !frame.iter().all(|x| x.is_finite()) {
-                    *frame = [0.0; 2];
-                    self.nonfinite_frames = self.nonfinite_frames.saturating_add(1);
-                }
-            }
-            self.now = boundary;
-            offset += len;
-        }
-        debug_assert_eq!(self.now, end);
-        Ok(())
     }
 }
 

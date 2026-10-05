@@ -65,3 +65,35 @@ Raw CSVs, executable hashes, source hashes and platform metadata are under ignor
 `0358598`; only the benchmark's debug-mode guard changed before the final paired
 runs, with no release-mode workload change. The current new-core scan remains 90
 with all rules retained; complete gates accompany the implementation checkpoint.
+
+## Sparse voice reservations
+
+A control-side allocated occupancy bitmap now records admitted voice slots: one
+64-bit word per 64 reserved voices (512 bytes for 4,096 slots). Admission sets the
+bit; the shared voice retirement path clears it. Rendering skips empty words and
+iterates contiguous occupied runs in ascending slot order, preserving floating-point
+summation order after holes and reuse. Delayed voices remain occupied until retired.
+
+Three paired CPU-2 runs against `ade1401`, with the same workload and no concurrent
+builds, measured the following medians in microseconds for 64 voices / 4,096 slots:
+
+| Envelope | Rate | Frames | Before | After |
+| --- | ---: | ---: | ---: | ---: |
+| Unity | 48 kHz | 64 | 3.730 | 1.660 |
+| Unity | 48 kHz | 256 | 6.710 | 4.520 |
+| Unity | 96 kHz | 64 | 3.680 | 1.711 |
+| Unity | 96 kHz | 256 | 6.660 | 4.490 |
+| Sustain 0.5 | 48 kHz | 64 | 3.800 | 1.800 |
+| Sustain 0.5 | 48 kHz | 256 | 6.880 | 4.990 |
+| Sustain 0.5 | 96 kHz | 64 | 3.630 | 1.820 |
+| Sustain 0.5 | 96 kHz | 256 | 6.950 | 5.071 |
+
+Sparse median speedup was 1.74× (range 1.37–2.25×). Dense configurations had
+median speedup 1.002×, with individual ratios 0.931–1.102; these measurements do
+not establish a universal dense improvement. Raw paired results are in ignored
+`artifacts/architecture-v2/verified-*.csv`.
+
+The mixed-ownership test checks every bitmap bit against actual slot occupancy.
+A heap-audited test crosses slots 63/64, creates holes, reuses slot zero, checks
+order-sensitive cancellation, and exercises EOF, stale handles and panic. Rendering
+lives in its own module while admission and retirement retain bitmap ownership.

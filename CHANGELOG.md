@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Skip unused voice reservations with a bounded occupancy bitmap while preserving exact slot-order mixing. The sparse resident workload measured 1.37–2.25× improvement locally; boundary, reuse, EOF and allocation checks cover ownership.
+
 - Skip per-sample envelope-state work after AHDSR reaches a constant sustain level, preserving sample arithmetic and the existing unity fast path. A reproducible resident workload reports about 2.9× median improvement for 1,024 sustained voices in 256-frame blocks on the measured local machine; no production latency guarantee is implied.
 
 - Exercise resident plan replacement in `sampler-native replace`: adopt a second WAV between overlapping notes, preserve each original source and tail, and retire the old plan outside rendering. Independent process-level audio checks pass at 44.1/48/96 kHz.

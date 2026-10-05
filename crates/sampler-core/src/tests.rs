@@ -600,6 +600,12 @@ fn ownership_counters_match_reachable_state_under_mixed_operations() {
                 rt.flush_ended(|_| step % 3 == 0);
             }
         }
+        for (i, slot) in rt.voices.slots.iter().enumerate() {
+            assert_eq!(
+                rt.voice_activity[i / 64] & (1 << (i % 64)) != 0,
+                slot.value.is_some()
+            );
+        }
         for (i, slot) in rt.notes.slots.iter().enumerate() {
             if let Some(n) = slot.value {
                 let id = NoteId(rt.notes.id(i));
