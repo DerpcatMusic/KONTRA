@@ -207,7 +207,7 @@ fn owners(dsp: &Dsp) -> Value {
     let native = dsp.uvi.iter().enumerate().filter_map(|(slot, audio)| audio.as_ref().map(|audio| {
         let endpoint = audio.slot();
         json!({"slot":slot,"frame":endpoint.frame(),"latency_frames":endpoint.latency_frames(),
-            "voices":endpoint.active_voices(),"underruns":endpoint.underruns(),"error":endpoint.error().map(|error|format!("{error:?}"))})
+            "voices":endpoint.active_voices(),"underruns":endpoint.underruns(),"error":endpoint.error_origin().map(|(error,_,_)|format!("{error:?}"))})
     })).collect::<Vec<_>>();
     json!({"core":core,"native":native,"pending_terminal_notes":dsp.pending_host_note_ends.len(),
         "unsupported_host_expression":dsp.unsupported_host_expression,"unsupported_note_brightness":dsp.unsupported_note_brightness,
@@ -274,7 +274,8 @@ pub fn run(args: &[String], meter: fn(bool) -> [u64; 4]) -> Result<()> {
                 params
                     .shared
                     .libraries
-                    .configure_uvi_reader(Some(reader.clone()));
+                    .edit(|settings| settings.uvi_reader = Some(reader.clone()));
+                params.shared.libraries.rescan();
             }
         }
         other => anyhow::bail!("unknown item kind {other}"),
