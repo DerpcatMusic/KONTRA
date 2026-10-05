@@ -1,4 +1,3 @@
-#![allow(unsafe_code)] // Only forwards test allocations to System for counting.
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
@@ -15,6 +14,10 @@ fn count() {
     }
 }
 // SAFETY: forwards allocation and deallocation unchanged to System.
+#[allow(
+    unsafe_code,
+    reason = "Test-only allocator forwards unchanged to System to count allocation and deallocation"
+)]
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         count();

@@ -33,6 +33,9 @@ compatibility remains a separate, evidence-backed capability.
 8. [Independent native executable](NATIVE_ENTRY.md): owned prepared assets, indexed
    native layer selection and a runnable WAV render path.
 
+9. [Rust Doctor and realtime DSP policy](RUST_DSP_POLICY.md): scan evidence, CI gate,
+   Rust best practices and justified DSP decisions.
+
 Continue through **V2-01 → V2-02 → V2-03/V2-04**: define independent workload
 and protocol contracts, then build unified event/continuation scheduling on the
 new family/expression ownership. Full lifecycle and pedal behavior remain open.
