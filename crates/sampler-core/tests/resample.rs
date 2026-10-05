@@ -380,6 +380,138 @@ fn tone() -> Pcm {
 }
 
 #[test]
+fn native_tuning_tracks_logical_pitch_without_changing_note_identity() {
+    use sampler_core::Tuning;
+    let mut offsets = [0.0; 128];
+    // Deliberately nonmonotonic: key mapping must not assume ascending pitches.
+    offsets[59] = 2.25;
+    offsets[60] = -0.5;
+    offsets[61] = -1.75;
+    let tuning = Tuning::new(offsets).unwrap();
+    assert_eq!(tuning.offsets_semitones(), &offsets);
+    for root in [Some(60), None] {
+        for key in 59..=61 {
+            let mut baseline = [[0.0; 2]; 256];
+            for partition in [1, 7, 64, 256] {
+                let mut rt = runtime(
+                    Prepared::new_tuned(
+                        48000,
+                        vec![tone()],
+                        vec![Region {
+                            sample: 0,
+                            key_low: 59,
+                            key_high: 61,
+                            root_key: root,
+                            velocity_low: 0.0,
+                            velocity_high: 1.0,
+                            gain: 1.0,
+                            envelope: Envelope::default(),
+                            playback: Playback {
+                                start: 512,
+                                ..Playback::default()
+                            },
+                        }],
+                        3,
+                        &tuning,
+                    )
+                    .unwrap(),
+                );
+                let mut audio = [[0.0; 2]; 256];
+                support::without_heap(|| {
+                    let note = rt
+                        .trigger_with_expression(input(), key, 1.0, expression(0.25))
+                        .unwrap();
+                    assert_eq!(rt.note(note).unwrap().0, key);
+                    rt.schedule_event(128, Event::Expression(note, expression(-0.25)))
+                        .unwrap();
+                    for block in audio.chunks_mut(partition) {
+                        rt.render(block).unwrap();
+                    }
+                    assert_eq!(rt.note_off(input()), Ok(note));
+                    rt.flush_ended(|ended| {
+                        assert_eq!(ended, input());
+                        true
+                    });
+                    assert_eq!(rt.note_count(), 0);
+                });
+                if partition == 1 {
+                    baseline = audio;
+                } else {
+                    assert_eq!(audio, baseline);
+                }
+                let base = if root.is_some() {
+                    f64::from(key) - 60.0 + offsets[key as usize]
+                } else {
+                    0.0
+                };
+                let mut position = 512.0;
+                for (i, frame) in audio.iter().enumerate() {
+                    let phase = 2.0 * PI * 0.017 * position;
+                    // The source view is zero-extended before its start; compare
+                    // the steady tone after the filter no longer touches that edge.
+                    if i >= 64 {
+                        assert!((f64::from(frame[0]) - phase.cos()).abs() < 0.0001);
+                        assert!((f64::from(frame[1]) - phase.sin()).abs() < 0.0001);
+                    }
+                    position += ((base + if i < 128 { 0.25 } else { -0.25 }) / 12.0).exp2();
+                }
+            }
+        }
+    }
+    for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        offsets[127] = invalid;
+        assert!(matches!(Tuning::new(offsets), Err(Error::InvalidInput)));
+    }
+    let region = Region {
+        sample: 0,
+        key_low: 60,
+        key_high: 61,
+        root_key: Some(60),
+        velocity_low: 0.0,
+        velocity_high: 1.0,
+        gain: 1.0,
+        envelope: Envelope::default(),
+        playback: Playback::default(),
+    };
+    // A later candidate, not only the first key, must pass source-rate validation.
+    for invalid in [-1000.0, 1000.0, f64::MAX] {
+        let mut offsets = [0.0; 128];
+        offsets[61] = invalid;
+        let tuning = Tuning::new(offsets).unwrap();
+        assert!(matches!(
+            Prepared::new_tuned(48000, vec![tone()], vec![region], 2, &tuning),
+            Err(Error::InvalidInput)
+        ));
+        assert!(
+            Prepared::new_tuned(
+                48000,
+                vec![tone()],
+                vec![Region {
+                    key_high: 60,
+                    ..region
+                }],
+                1,
+                &tuning
+            )
+            .is_ok()
+        );
+        assert!(
+            Prepared::new_tuned(
+                48000,
+                vec![tone()],
+                vec![Region {
+                    root_key: None,
+                    ..region
+                }],
+                2,
+                &tuning
+            )
+            .is_ok()
+        );
+    }
+}
+
+#[test]
 fn live_pitch_is_phase_continuous_and_sample_accurate_at_every_partition() {
     let mut baseline = [[0.0; 2]; 512];
     for partition in [1, 7, 64, 256, 512] {

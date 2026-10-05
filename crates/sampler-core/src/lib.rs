@@ -28,7 +28,7 @@ mod render;
 mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
-pub use prepare::{Pcm, Prepared, Region};
+pub use prepare::{Pcm, Prepared, Region, Tuning};
 mod schedule;
 use gate::Channel;
 pub use gate::{ChannelAddress, ChannelId, ChannelScope};
