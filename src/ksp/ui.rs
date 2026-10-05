@@ -33,6 +33,8 @@ pub struct ControlState {
     pub midi: Vec<Option<(u8, u8)>>,
     pub midi_key: String,
     pub indexed: Vec<(i32, usize, Prop)>,
+    /// Serialized off audio, in the same lexical order as published properties.
+    indexed_keys: Vec<String>,
     pub props: Vec<(i32, Prop)>,
     /// Static metadata need not be recopied on every scalar value edit.
     pub revision: u64,
@@ -167,6 +169,47 @@ impl ControlState {
         self.revision = self.revision.wrapping_add(1);
         Ok(())
     }
+    pub fn prepare_indexed_keys(&mut self, prog: &Program) {
+        let mut indexed: Vec<_> = std::mem::take(&mut self.indexed).into_iter().map(|value| {
+            let name = prog.symbol_name(value.0).map_or_else(|| format!("#{}", value.0), str::to_owned);
+            (format!("{name}[{}]", value.1), value)
+        }).collect();
+        indexed.sort_by(|a, b| a.0.cmp(&b.0));
+        (self.indexed_keys, self.indexed) = indexed.into_iter().unzip();
+    }
+
+    pub fn indexed_key_bytes(&self) -> usize {
+        self.indexed_keys.iter().fold(0usize, |bytes, key| bytes.saturating_add(key.len()))
+    }
+
+    pub fn reserve_indexed_text(&self, out: &mut BTreeMap<String, Value>, minimum: usize) {
+        for (key, (_, _, value)) in self.indexed_keys.iter().zip(&self.indexed) {
+            if let (Prop::Str(source), Some(Value::Text(target))) = (value, out.get_mut(key)) {
+                target.reserve(source.capacity().max(minimum).saturating_sub(target.len()));
+            }
+        }
+    }
+
+    pub fn refresh_indexed(&self, out: &mut BTreeMap<String, Value>) -> bool {
+        // Each source and destination is visited once; neither formats a key
+        // nor allocates while copying late indexed metadata on audio.
+        let mut indexed = self.indexed_keys.iter().zip(&self.indexed);
+        let mut source = indexed.next();
+        let mut changed = false;
+        for (key, target) in out {
+            while source.is_some_and(|(name, _)| name < key) { source = indexed.next(); }
+            if let Some((name, (_, _, value))) = source && name == key {
+                changed |= match (value, target) {
+                    (Prop::Int(n), Value::Int(dst)) => std::mem::replace(dst, *n) != *n,
+                    (Prop::Str(text), Value::Text(dst)) => copy_text(dst, text),
+                    _ => false,
+                };
+                source = indexed.next();
+            }
+        }
+        changed
+    }
+
     pub fn prepare(&mut self, bytes: usize, menu: bool) {
         self.frozen = false;
         self.props.reserve(64);
@@ -302,6 +345,7 @@ impl Ui {
             midi: Vec::new(),
             midi_key: String::new(),
             indexed: Vec::new(),
+            indexed_keys: Vec::new(),
             props: Vec::with_capacity(8),
             revision: 0,
             menu: Vec::new(),
@@ -398,8 +442,9 @@ impl Ui {
                 left = left.saturating_sub(1);
                 let metadata_changed = revisions[index] != c.revision;
                 if metadata_changed {
-                    left = left.saturating_sub(c.props.len());
+                    left = left.saturating_sub(c.props.len() + c.indexed.len());
                     revisions[index] = c.revision;
+                    changed |= c.refresh_indexed(&mut o.properties);
                     for (par, v) in &c.props {
                         let Some(name) = prog.symbol_name(*par) else {
                             continue;

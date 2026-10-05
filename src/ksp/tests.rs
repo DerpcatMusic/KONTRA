@@ -356,6 +356,205 @@ fn repeated_equal_table_cell_assignments_do_not_consume_live_array_copy_budget()
     super::vm::REFERENCE.set(false);
 }
 
+
+#[test]
+fn indexed_text_preparation_rejects_whole_oversized_domains_without_callbacks() {
+    let key_heavy = format!("$CONTROL_PAR_{}", "X".repeat(2048));
+    let cases = [
+        ("4097", "$CONTROL_PAR_NKS_STR_VALUES".to_owned(), "", "4096 indices"),
+        ("4096", "$CONTROL_PAR_NKS_STR_VALUES".to_owned(),
+         "set_control_par_str_arr(get_ui_id($button),$CONTROL_PAR_TEXT,\"another property\",0)", "4096 cells per control"),
+        ("4096", key_heavy, "", "16 MiB"),
+    ];
+    for (len, parameter, extra, expected) in cases {
+        let source = format!(r#"on init
+SET_CONDITION(REJECTED)
+declare ui_button $button
+declare !names[{len}]
+declare $index
+end on
+function remap
+set_control_par_str_arr(get_ui_id($button),{parameter},!names[$index],$index)
+{extra}
+end function
+on persistence_changed
+wait(100000)
+call remap
+end on"#);
+        let mut engine = LogEngine::new(Vec::new(), 48000.0);
+        let (mut rt, errors) = Runtime::with_scripts(&[&source], &mut engine, 8, Vec::new());
+        assert!(errors[0].as_ref().is_some_and(|error| error.contains(expected)), "{errors:?}");
+        assert!(!rt.condition("REJECTED"));
+        assert!(rt.interface(0).controls.iter().all(|control| control.properties.keys().all(|key| !key.ends_with(']'))));
+        rt.process(&mut engine, 48000);
+        assert!(rt.faults().next().is_none(), "{:?}", rt.diagnostics());
+    }
+    // A third complete 4096-cell domain fits neither the combined source/
+    // generic/native text headroom nor the key allowance. No earlier domain
+    // from this rejected slot may be admitted as a prefix.
+    let source = r#"on init
+declare ui_button $first
+declare ui_button $second
+declare ui_button $third
+declare %ids[3]
+%ids[0] := get_ui_id($first)
+%ids[1] := get_ui_id($second)
+%ids[2] := get_ui_id($third)
+declare !names[4096]
+declare $index
+end on
+on persistence_changed
+wait(100000)
+set_control_par_str_arr(%ids[0],$CONTROL_PAR_NKS_STR_VALUES,!names[$index],$index)
+end on"#;
+    let mut engine = LogEngine::new(Vec::new(), 48000.0);
+    let (rt, errors) = Runtime::with_scripts(&[source], &mut engine, 8, Vec::new());
+    assert!(errors[0].as_ref().is_some_and(|error| error.contains("16 MiB")), "{errors:?}");
+    assert!(rt.interface(0).controls.iter().all(|control| control.properties.keys().all(|key| !key.ends_with(']'))));
+}
+
+#[test]
+fn delayed_indexed_effect_strings_are_prepared_and_published_without_heap() {
+    // Effect controls are remapped after persistence waits, as in Conflux.
+    // Lexical keys 0,1,10,11,2 must still map to the correct numeric cells.
+    let source = r#"on init
+make_perfview
+expose_controls
+declare ui_slider $first(0,100)
+declare ui_slider $second(0,100)
+declare ui_label $done(1,1)
+declare %ids[2]
+%ids[0] := get_ui_id($first)
+%ids[1] := get_ui_id($second)
+declare !names[12] := ("IR 0","IR 1","IR 2","IR 3","IR 4","IR 5","IR 6","IR 7","IR 8","IR 9","IR 10","IR 11")
+declare $control
+declare $index
+set_control_par_str_arr(get_ui_id($first),$CONTROL_PAR_NKS_STR_VALUES,"old",1)
+end on
+function remap
+$control := 0
+while ($control < 2)
+$index := 0
+while ($index < num_elements(!names))
+set_control_par_str_arr(%ids[$control],$CONTROL_PAR_NKS_STR_VALUES,!names[$index],$index)
+inc($index)
+end while
+inc($control)
+end while
+set_text($done,"complete")
+end function
+on persistence_changed
+wait(100000)
+call remap
+end on
+on ui_control($first)
+!names[11] := "remapped"
+call remap
+end on"#;
+    let mut rig = Rig::new(&[source]);
+    let mut live = rig.rt.live();
+    let mut exercise = || {
+        for _ in 0..50 {
+            rig.rt.begin_audio_block(128, 1, false);
+            rig.rt.process(&mut rig.engine, 128);
+        }
+        rig.rt.refresh_live(&mut live);
+    };
+    #[cfg(feature = "plugin")]
+    assert_eq!(crate::test_support::allocations(&mut exercise), 0);
+    #[cfg(not(feature = "plugin"))]
+    exercise();
+    assert!(rig.rt.faults().next().is_none(), "{:?}", rig.rt.diagnostics());
+    assert_eq!(prop(live.interface.as_ref().unwrap(), 2, "$CONTROL_PAR_TEXT"), "complete");
+    for control in 0..2 {
+        for index in 0..12 {
+            let key = format!("$CONTROL_PAR_NKS_STR_VALUES[{index}]");
+            let expected = Value::Text(format!("IR {index}"));
+            assert_eq!(live.interface.as_ref().unwrap().controls[control].properties[&key], expected);
+            assert_eq!(live.exposed_controls[control].descriptor.properties[&key], expected);
+        }
+    }
+    let mut remap = || {
+        rig.rt.ui_control(&mut rig.engine, 0, 0, 1);
+        rig.rt.refresh_live(&mut live);
+    };
+    #[cfg(feature = "plugin")]
+    assert_eq!(crate::test_support::allocations(&mut remap), 0);
+    #[cfg(not(feature = "plugin"))]
+    remap();
+    for control in 0..2 {
+        let key = "$CONTROL_PAR_NKS_STR_VALUES[11]";
+        assert_eq!(live.interface.as_ref().unwrap().controls[control].properties[key], Value::Text("remapped".into()));
+        assert_eq!(live.exposed_controls[control].descriptor.properties[key], Value::Text("remapped".into()));
+    }
+    assert!(rig.rt.faults().next().is_none(), "{:?}", rig.rt.diagnostics());
+}
+
+#[test]
+#[ignore = "requires the local Conflux instrument and its authored resources"]
+fn actual_conflux_metadata_install_reaches_persistence_indexed_strings() {
+    use super::engine::KspEngine;
+    let path = std::path::PathBuf::from(std::env::var_os("KONTRA_CONFLUX_INSTRUMENT").expect("set KONTRA_CONFLUX_INSTRUMENT"));
+    let instrument = crate::import::read(&path).unwrap();
+    assert_eq!(instrument.scripts.len(), 3, "exercise all authored script slots");
+    assert_eq!(serde_json::to_value(&instrument.script_state[0]["%engine__fx__unit_id"]).unwrap(),
+        serde_json::json!([-1, -1, -1, 21]), "preserve the owned NKI's native fourth-slot IR state");
+    let (rt, errors) = crate::engine::load_scripts(&instrument, instrument.script_state.clone(), 48_000.);
+    assert!(errors.is_empty(), "{errors:?}");
+    let mut rt = rt.expect("authored scripts must be admitted");
+    assert_eq!(rt.persistence().len(), 3, "retain all three admitted script states");
+
+    // Authored init assigns K1's ID plus0..11 to each slot's parameter array:
+    // eight knobs and four other controls. Names alone omit those four.
+    let initial = rt.interface(0);
+    let mut effect_ids = std::collections::BTreeSet::new();
+    for slot in 1..=4 {
+        let first = initial.controls.iter().find(|c| c.variable == format!("$FX__Slot{slot}__K1"))
+            .expect("authored first effect knob").id;
+        for offset in 0..12 {
+            let control = initial.controls.iter().find(|c| c.id == first + offset)
+                .expect("each init-assigned effect ID must identify a real control");
+            assert!(control.variable.starts_with(&format!("$FX__Slot{slot}__")), "{} escaped its authored slot", control.variable);
+            assert!(effect_ids.insert(control.id), "effect domains must be disjoint");
+        }
+    }
+    assert_eq!(effect_ids.len(), 48, "all four genuine12-control domains");
+
+    // Metadata installation proof, without loading a sample bank. ScriptSetup
+    // stages and validates mappings but intentionally leaves their async IDs
+    // pending. Apply the genuine accepted init requests to the installed setup
+    // before acknowledging them, as prepared bank installation does.
+    let pending: std::collections::BTreeSet<_> = rt.env.pending_async.iter().copied().collect();
+    let edits = rt.init_zone_edits.clone();
+    let edit_ids: std::collections::BTreeSet<_> = edits.iter().filter(|edit| edit.id >= 0)
+        .map(|edit| (edit.slot, edit.id)).collect();
+    assert!(!edit_ids.is_empty(), "authored persistence must await real mapping installation");
+    assert_eq!(edit_ids, pending, "complete only genuine pending mapping IDs");
+    let mut engine = crate::engine::ScriptSetup::new(&instrument, 48_000.);
+    for &(parameter, value) in &rt.init_engine_pars {
+        assert!(engine.set_engine_par(0, parameter, value), "accepted init parameter must replay on install: {parameter:?}");
+    }
+    for &edit in &edits {
+        engine.request_zone_edit(edit).expect("validate every source mapping before acknowledging installation");
+    }
+    for &(slot, id) in &edit_ids {
+        assert!(rt.service_complete(&mut engine, slot, id, true), "validated mapping completion must fit the prepared queue");
+    }
+    for _ in 0..100 { rt.process(&mut engine, 480); }
+    assert!(rt.env.pending_async.is_empty(), "persistence must not remain stalled on uninstalled metadata");
+    assert!(rt.faults().next().is_none(), "{:?}", rt.diagnostics());
+    let snapshots: Vec<_> = (0..3).map(|slot| rt.interface(slot)).collect();
+    let effects: Vec<_> = snapshots[0].controls.iter().filter(|c| effect_ids.contains(&c.id)).collect();
+    assert_eq!(effects.len(), 48, "all authored domains survive persistence publication");
+    assert!(effects.iter().any(|control| control.properties.iter().any(|(key, value)| {
+        key.starts_with("$CONTROL_PAR_NKS_STR_VALUES[") && matches!(value, Value::Text(text) if !text.is_empty())
+    })), "authored persistence must populate labels, not just reserve empty slots");
+    for control in effects {
+        assert!(control.properties.contains_key("$CONTROL_PAR_NKS_STR_VALUES[127]"), "{} lacks its declared128-cell IR domain", control.variable);
+    }
+    eprintln!("Conflux metadata install: all3 slots,4×12 genuine effect controls,128-cell IR domains,{} validated mapping completions and1-second persistence cadence: no runtime faults", edit_ids.len());
+}
+
 #[test]
 fn delayed_effect_control_remapping_prepares_short_and_automation_names_without_heap_work() {
     // Dynamic effect panels remap controls after persistence_changed yields.
