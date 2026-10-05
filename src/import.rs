@@ -618,6 +618,7 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
         }
         group.fx = fx;
     }
+    let mut dependencies = vec![snapshot.to_path_buf()];
     let mut slots = 0;
     for (slot, chunk) in program.0.children.iter().filter(|c| c.id == 6).enumerate() {
         slots += 1;
@@ -626,7 +627,7 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
             slot < saved.persistent.len(),
             "Base instrument has more snapshot script slots"
         );
-        if !params.bypass && script_source(base, slot, &params, &mut warnings).is_some() {
+        if !params.bypass && script_source(base, slot, &params, &mut warnings, Some(&mut dependencies)).is_some() {
             states.push(crate::ksp::saved_persistence(&saved.persistent[slot]));
         }
     }
@@ -642,7 +643,6 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
         instrument.script_state.len() == states.len(),
         "Base script persistence slots differ"
     );
-    let mut dependencies = vec![snapshot.to_path_buf()];
     let files = other_files(&snapshot_chunks)?;
     // Reject an invalid rooted path before applying any saved state/effects.
     for name in files.values() { snapshot_rooted_path(name)?; }
@@ -787,7 +787,8 @@ fn shared_instrument(
     static PARSED: Mutex<Option<Parsed>> = Mutex::new(None);
     let key = (std::fs::canonicalize(path).unwrap_or_else(|_| path.into()), program);
     let lock = || PARSED.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(i) = lock().get_or_insert_default().get(&key).and_then(Weak::upgrade) {
+    let cached = lock().get_or_insert_default().get(&key).and_then(Weak::upgrade);
+    if let Some(i) = cached {
         if i.missing_samples.is_empty() && crate::cache::current(&i.dependencies) {
             return Ok(i);
         }
@@ -836,11 +837,11 @@ fn resource_container(c: &KontaktChunks) -> Result<Option<String>> {
 /// the `Resources/scripts` file it links to when the library has it (Kontakt
 /// reloads linked scripts), else the text saved in the slot. Why a linked
 /// slot has no text is a warning, never a generic script error.
-fn script_source(path: &Path, slot: usize, s: &ni_file::kontakt::objects::BParScriptParams, warnings: &mut Vec<String>) -> Option<String> {
+fn script_source(path: &Path, slot: usize, s: &ni_file::kontakt::objects::BParScriptParams, warnings: &mut Vec<String>, dependencies: Option<&mut Vec<PathBuf>>) -> Option<String> {
     let saved = s.text.as_deref().map(|t| script_text(t.as_bytes())).filter(|t| !t.trim().is_empty());
     let Some(link) = s.textfile_name.as_deref().map(str::trim).filter(|n| !n.is_empty()) else { return saved };
     let slot = slot + 1;
-    let linked = crate::resources::linked_script(path, link);
+    let linked = crate::resources::linked_script_with_dependencies(path, link, dependencies);
     match linked {
         Ok(Some(bytes)) => return Some(script_text(&bytes)).filter(|t| !t.trim().is_empty()).or(saved),
         Ok(None) if saved.is_some() => {}
@@ -869,7 +870,7 @@ pub fn script_inventory(path:&Path)->Result<serde_json::Value>{
         for (program,p) in programs {
             let groups=GroupList::try_from(p.0.find_first(0x33).context("Missing group list")?)?.groups.len();let mut scripts=Vec::new();let mut host=crate::ksp::HostState::default();
             let mut warnings=Vec::new();
-            for (slot,child) in p.0.children.iter().filter(|c|c.id==6).enumerate() {let s=BParScript::try_from(child)?.params()?;if !s.bypass && let Some(source)=script_source(path,slot,&s,&mut warnings){scripts.push(crate::ksp::inspect(&source,groups,&mut host));}}
+            for (slot,child) in p.0.children.iter().filter(|c|c.id==6).enumerate() {let s=BParScript::try_from(child)?.params()?;if !s.bypass && let Some(source)=script_source(path,slot,&s,&mut warnings,None){scripts.push(crate::ksp::inspect(&source,groups,&mut host));}}
             if !warnings.is_empty() {scripts.push(serde_json::json!({"warnings":warnings}));}
             report.push(serde_json::json!({"program":program,"scripts":scripts}));
         }
@@ -917,7 +918,9 @@ pub fn source_inventory(path:&Path)->Result<serde_json::Value>{
 
 /// Program `index` of `path`, from the on-disk cache when it is current.
 fn read_inner(path: &Path, index: u32) -> Result<Instrument> {
-    if crate::creator::is_native(path) { return crate::creator::read_native(path); }
+    if crate::creator::is_native(path) {
+        return crate::creator::read_native(path);
+    }
     let path = path.canonicalize()?;
     let dir = crate::cache::dir();
     if let Some(i) = dir.as_deref().and_then(|dir| crate::cache::load(dir, &path, index)) {
@@ -961,6 +964,7 @@ fn cached_program(path: &Path, chunks: &KontaktChunks, program: Program, index: 
 
 fn parse_program(path: PathBuf, c: &KontaktChunks, p: Program) -> Result<Instrument> {
     let mut warnings = Vec::new();
+    let mut dependency_paths = Vec::new();
     let program = p.params().context("Program parameters")?;
     let native_program_private = p.private_params();
     match native_program_private.controller_options() {
@@ -1072,13 +1076,13 @@ fn parse_program(path: PathBuf, c: &KontaktChunks, p: Program) -> Result<Instrum
     let mut script_state = Vec::new();
     for (slot, c) in p.0.children.iter().filter(|c| c.id == 6).enumerate() {
         let s = BParScript::try_from(c)?.params().context("Script parameters")?;
-        if !s.bypass && let Some(text) = script_source(&path, slot, &s, &mut warnings) { scripts.push(text); script_state.push(crate::ksp::saved_persistence(&s.persistent)); }
+        if !s.bypass && let Some(text) = script_source(&path, slot, &s, &mut warnings, Some(&mut dependency_paths)) { scripts.push(text); script_state.push(crate::ksp::saved_persistence(&s.persistent)); }
     }
     warnings.push("Modulation: the first volume AHDSR and flex envelopes shape each voice, internal pitch AHDSRs drive voice pitch, and velocity, key, CC, pitch bend and aftertouch drive supported volume, pitch, sample-start, envelope-time and group-effect targets; LFO states outside saved retriggered zero-delay sine-only Multi pitch, additional volume envelopes, flexible pitch envelopes, external inversion, unsupported effect targets and other modulator parameters are not applied".into());
     let parent = path.parent().context("Instrument has no parent")?;
     let root = path.ancestors().find(|p| p.join("Samples").is_dir()).unwrap_or(parent);
     let mut resolver = Resolver::new(root);
-    let mut dependency_paths = vec![path.clone(), root.to_path_buf()];
+    dependency_paths.extend([path.clone(), root.to_path_buf()]);
     // Include absent resource paths too: installing them invalidates the entry.
     if let Some(container) = &container {
         dependency_paths.push(parent.join(container.replace('\\', "/")));
@@ -1198,7 +1202,7 @@ fn parse_program(path: PathBuf, c: &KontaktChunks, p: Program) -> Result<Instrum
     // thousands of nonexistent filesystem paths underneath it.
     let dependency_paths = dependency_paths.into_iter().map(|p| {
         archive_member_where(&p, |a| resolver.archives.contains_key(a.as_os_str()))
-            .map_or(p.clone(), |(archive, _)| archive)
+            .map(|(archive, _)| archive).unwrap_or(p)
     });
     let dependencies = crate::cache::dependencies(dependency_paths);
     Ok(Instrument {
@@ -1520,6 +1524,134 @@ pub(crate) fn library_metadata(path: &Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod preset_tests {
+
+    #[test]
+    fn shared_native_instruments_invalidate_when_presets_or_samples_change() {
+        use super::{Group, Zone, shared_program};
+        use std::sync::Arc;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("instrument.kontra-instrument");
+        let sample = dir.path().join("sample.wav");
+        std::fs::write(&sample, b"original").unwrap();
+        let mut preset = serde_json::json!({
+            "format": "kontra-instrument", "version": 1, "name": "Original",
+            "groups": [Group::default()],
+            "zones": [Zone { sample: "sample.wav".into(), ..Default::default() }],
+        });
+        std::fs::write(&path, serde_json::to_vec(&preset).unwrap()).unwrap();
+        let original = shared_program(&path, 0).unwrap();
+        let unchanged = shared_program(&path, 0).unwrap();
+        assert!(Arc::ptr_eq(&original, &unchanged));
+        assert_eq!(original.zones[0].sample, sample.canonicalize().unwrap());
+
+        std::fs::write(&sample, b"replacement sample").unwrap();
+        let edited_sample = shared_program(&path, 0).unwrap();
+        assert!(!Arc::ptr_eq(&original, &edited_sample));
+
+        preset["name"] = "Edited preset".into();
+        std::fs::write(&path, serde_json::to_vec(&preset).unwrap()).unwrap();
+        let edited_preset = shared_program(&path, 0).unwrap();
+        assert_eq!(edited_preset.name, "Edited preset");
+        assert_eq!(original.name, "Original");
+
+        std::fs::remove_file(&sample).unwrap();
+        let missing = shared_program(&path, 0).unwrap();
+        assert!(!missing.zones[0].available);
+        std::fs::write(&sample, b"installed sample").unwrap();
+        assert!(shared_program(&path, 0).unwrap().zones[0].available);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shared_native_instruments_invalidate_when_sample_aliases_are_retargeted_or_deleted() {
+        use super::{Group, Zone, shared_program};
+        use std::{fs::FileTimes, os::unix::fs::symlink, sync::Arc, time::{Duration, SystemTime}};
+        for directory_alias in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let preset_dir = dir.path().join("Presets/deep");
+            let first = dir.path().join("Targets/first");
+            let second = dir.path().join("Targets/second");
+            for folder in [&preset_dir, &first, &second] {
+                std::fs::create_dir_all(folder).unwrap();
+            }
+            // Equal destination stamps ensure that invalidation observes the alias itself.
+            let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+            for (folder, bytes) in [(&first, b"first"), (&second, b"other")] {
+                let sample = folder.join("sample.wav");
+                std::fs::write(&sample, bytes).unwrap();
+                std::fs::File::options().write(true).open(&sample).unwrap()
+                    .set_times(FileTimes::new().set_modified(modified)).unwrap();
+            }
+            let alias_dir = dir.path().join("aliases/deep");
+            let (alias, first_target, second_target) = if directory_alias {
+                (alias_dir, first.clone(), second.clone())
+            } else {
+                (alias_dir.join("sample.wav"), first.join("sample.wav"), second.join("sample.wav"))
+            };
+            std::fs::create_dir_all(alias.parent().unwrap()).unwrap();
+            symlink(&first_target, &alias).unwrap();
+            let path = preset_dir.join("instrument.kontra-instrument");
+            let preset = serde_json::json!({
+                "format": "kontra-instrument", "version": 1, "name": "Aliased sample",
+                "groups": [Group::default()],
+                "zones": [Zone { sample: "../../aliases/deep/sample.wav".into(), ..Default::default() }],
+            });
+            std::fs::write(&path, serde_json::to_vec(&preset).unwrap()).unwrap();
+            let original = shared_program(&path, 0).unwrap();
+            assert!(Arc::ptr_eq(&original, &shared_program(&path, 0).unwrap()));
+            assert_eq!(original.zones[0].sample, first.join("sample.wav").canonicalize().unwrap());
+
+            std::fs::remove_file(&alias).unwrap();
+            symlink(&second_target, &alias).unwrap();
+            let retargeted = shared_program(&path, 0).unwrap();
+            assert!(!Arc::ptr_eq(&original, &retargeted));
+            assert_eq!(retargeted.zones[0].sample, second.join("sample.wav").canonicalize().unwrap());
+
+            std::fs::remove_file(&alias).unwrap();
+            let deleted = shared_program(&path, 0).unwrap();
+            assert!(!Arc::ptr_eq(&retargeted, &deleted));
+            assert!(!deleted.zones[0].available);
+            assert_eq!(deleted.missing_samples.len(), 1);
+            assert!(first.join("sample.wav").is_file());
+            assert!(second.join("sample.wav").is_file());
+        }
+    }
+
+    #[test]
+    fn shared_linked_scripts_invalidate_when_loose_resources_change() {
+        use super::{Instrument, script_source, shared_instrument};
+        use ni_file::kontakt::objects::BParScriptParams;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("instrument.nki");
+        std::fs::write(&path, b"preset").unwrap();
+        let scripts = dir.path().join("Resources/scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        let linked = scripts.join("Main.txt");
+        let params = BParScriptParams {
+            text: Some("saved fallback".into()), textfile_name: Some(r"C:\Resources\scripts\Main.txt".into()),
+            source_editor_open: false, touched_but_not_applied: false, bypass: false,
+            password_hash: Vec::new(), description: None, persistent: Vec::new(),
+        };
+        let load = || {
+            let mut dependencies = vec![path.clone()];
+            let source = script_source(&path, 0, &params, &mut Vec::new(), Some(&mut dependencies)).unwrap();
+            Ok(Instrument {
+                path: path.clone(), scripts: vec![source],
+                dependencies: crate::cache::dependencies(dependencies), ..Default::default()
+            })
+        };
+        let original = shared_instrument(&path, 0, load).unwrap();
+        assert_eq!(original.scripts, ["saved fallback"]);
+        std::fs::write(&linked, b"linked source").unwrap();
+        let installed = shared_instrument(&path, 0, load).unwrap();
+        assert_eq!(installed.scripts, ["linked source"]);
+        std::fs::write(&linked, b"edited linked source").unwrap();
+        let edited = shared_instrument(&path, 0, load).unwrap();
+        assert_eq!(edited.scripts, ["edited linked source"]);
+        assert_eq!(original.scripts, ["saved fallback"]);
+        std::fs::remove_file(&linked).unwrap();
+        assert_eq!(shared_instrument(&path, 0, load).unwrap().scripts, ["saved fallback"]);
+    }
 
     #[test]
     fn native_wavetable_scalars_match_control_constants_without_losing_inactive_values() {

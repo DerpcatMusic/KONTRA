@@ -27,11 +27,23 @@ fn resource_dirs(dir: &Path, name: &str) -> Vec<PathBuf> {
 /// file name or any Windows or POSIX path ending in one) from the library's
 /// `Resources/scripts`, loose or in its resource container.
 pub fn linked_script(instrument: &Path, name: &str) -> Result<Option<Vec<u8>>, String> {
+    linked_script_with_dependencies(instrument, name, None)
+}
+
+pub(crate) fn linked_script_with_dependencies(
+    instrument: &Path,
+    name: &str,
+    dependencies: Option<&mut Vec<PathBuf>>,
+) -> Result<Option<Vec<u8>>, String> {
     let file = name.rsplit(['/', '\\']).next().unwrap_or(name);
     if file.is_empty() || file == "." || file == ".." {
         return Ok(None);
     }
-    Resources::of(instrument, "scripts").read(file)
+    let mut resources = Resources::of(instrument, "scripts");
+    if let Some(dependencies) = dependencies {
+        dependencies.extend(resources.dependency_paths());
+    }
+    resources.read(file)
 }
 
 /// Array data from the library's loose or archived Resources/data folder.
@@ -66,6 +78,7 @@ pub(crate) struct Resources {
     /// Containers to try in order, opened on first use.
     containers: Vec<PathBuf>,
     roots: Vec<PathBuf>,
+    search_dirs: Vec<PathBuf>,
     failed_archives: Vec<String>,
     open: Vec<(File, ni_file::nkr::Archive, PathBuf)>,
     key: Option<Option<std::sync::Arc<dyn ni_file::nis::LibraryKey>>>,
@@ -79,6 +92,7 @@ impl Resources {
         let mut files = HashMap::new();
         let mut containers = Vec::new();
         let mut roots = Vec::new();
+        let mut search_dirs = Vec::new();
         let nkrs = |dir: &Path| {
             let mut found: Vec<_> = std::fs::read_dir(dir)
                 .into_iter()
@@ -96,6 +110,7 @@ impl Resources {
             if depth >= 4 && !(files.is_empty() && containers.is_empty()) {
                 break;
             }
+            search_dirs.push(folder.to_path_buf());
             for dir in resource_dirs(folder, folder_name) {
                 roots.push(dir.clone());
                 for e in std::fs::read_dir(dir)
@@ -119,6 +134,7 @@ impl Resources {
             subfolders.sort();
             for sub in subfolders {
                 containers.extend(nkrs(&sub));
+                search_dirs.push(sub);
             }
         }
         containers.dedup();
@@ -126,12 +142,20 @@ impl Resources {
             files,
             containers,
             roots,
+            search_dirs,
             open: Vec::new(),
             failed_archives: Vec::new(),
             key: None,
             instrument: instrument.into(),
             folder: folder_name,
         }
+    }
+
+    /// Discovery directories detect newly installed overrides; files detect edits.
+    fn dependency_paths(&self) -> impl Iterator<Item = PathBuf> + '_ {
+        self.search_dirs.iter().chain(&self.roots).chain(self.files.values())
+            .chain(&self.containers).chain(self.open.iter().map(|(_, _, path)| path))
+            .cloned()
     }
 
     /// Relative package members, preserving namespaces and archive spelling.
@@ -317,6 +341,10 @@ mod tests {
         assert_eq!(resources.open[0].1.entries.values().filter(|e| e.checked).count(), 2);
         assert!(!resources.open[0].1.find("Resources/pictures/broken.bin").unwrap().checked);
         assert!(resources.read("broken.bin").is_err());
+        let dependencies = crate::cache::dependencies(resources.dependency_paths());
+        std::io::Write::write_all(&mut std::fs::OpenOptions::new().append(true)
+            .open(dir.join("resources.nkr")).unwrap(), b"changed").unwrap();
+        assert!(!crate::cache::current(&dependencies), "discovered containers retain their file stamps");
         drop(resources);
         std::fs::remove_dir_all(dir).unwrap();
     }
