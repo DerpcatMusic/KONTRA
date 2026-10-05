@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 mod behavior;
 use behavior::Continuation;
-pub use behavior::{BehaviorId, Instruction, Outcome, Program};
+pub use behavior::{BehaviorId, Duration, Instruction, Outcome, Program, WaitLifetime};
 mod source;
 pub use source::{Direction, Loop, LoopMode, Playback};
 mod envelope;
@@ -579,14 +579,21 @@ impl Runtime {
         }
     }
 
-    /// Resolve all voices and future commands. Continuation owners must unpin after
-    /// canceling their own work; reset does not invalidate IDs needed for NOTE_END.
+    /// Resolve voices and future commands. Behavior outcomes remain retained until
+    /// accepted; external owners must release manual pins. IDs stay valid for NOTE_END.
     pub fn panic(&mut self) {
         for s in &mut self.notes.slots {
             if let Some(n) = &mut s.value {
                 n.gate = false;
                 n.key_down = false;
                 n.sostenuto = false;
+            }
+        }
+        for slot in &mut self.behaviors.slots {
+            if let Some(c) = &mut slot.value
+                && c.outcome.is_none()
+            {
+                c.outcome = Some(Outcome::Cancelled);
             }
         }
         // Panic hard-stops tails as well as held voices.

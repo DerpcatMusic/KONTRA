@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Separate callback retention from generated-note duration in native behavior execution. Fixed-duration notes can outlive input release; gate-linked notes and retained callbacks keep distinct ownership. Panic cancels both kinds of waits, and tests cover late generation and fault-time retirement.
+
 - Add budgeted callback-local integer state, logical-key readback and validated branches to native behavior programs. Locals survive waits and remain isolated across notes and reused slots; checked overflow and zero-time loops produce retained faults. The echo example now runs a counter loop.
 
 - Add native bounded behavior programs with generated notes, sample-time waits, suppression, instruction fuel and retained completion/fault ownership. An independent MIDI-driven `sampler-native echo` command exercises the new path; no old parser or VM is linked.

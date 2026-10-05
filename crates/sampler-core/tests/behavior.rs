@@ -27,6 +27,13 @@ fn limits() -> Limits {
     }
 }
 fn runtime(code: Vec<Instruction>, limits: Limits) -> Runtime {
+    runtime_with_lifetime(code, limits, sampler_core::WaitLifetime::Gate)
+}
+fn runtime_with_lifetime(
+    code: Vec<Instruction>,
+    limits: Limits,
+    lifetime: sampler_core::WaitLifetime,
+) -> Runtime {
     let plan = Prepared::new(
         48000,
         vec![Pcm {
@@ -46,7 +53,10 @@ fn runtime(code: Vec<Instruction>, limits: Limits) -> Runtime {
         2,
     )
     .unwrap()
-    .with_programs(vec![Program::new(code).unwrap()], None)
+    .with_programs(
+        vec![Program::new(code).unwrap().with_wait_lifetime(lifetime)],
+        None,
+    )
     .unwrap();
     Runtime::new(plan, limits).unwrap()
 }
@@ -54,7 +64,7 @@ fn play(duration: u32) -> Instruction {
     Instruction::Play {
         transpose: 0,
         velocity_scale: 0.5,
-        duration,
+        duration: sampler_core::Duration::FramesOrGate(duration),
     }
 }
 
@@ -178,7 +188,7 @@ fn faults_and_fuel_are_observable_and_cannot_leave_partial_owned_work() {
             vec![Instruction::Play {
                 transpose: 127,
                 velocity_scale: 1.,
-                duration: 1,
+                duration: sampler_core::Duration::FramesOrGate(1),
             }],
             limits(),
             Outcome::Fault(Error::InvalidInput),
@@ -230,7 +240,7 @@ fn faults_and_fuel_are_observable_and_cannot_leave_partial_owned_work() {
         Program::new(vec![Instruction::Play {
             transpose: 0,
             velocity_scale: f64::NAN,
-            duration: 1
+            duration: sampler_core::Duration::FramesOrGate(1)
         }])
         .is_err()
     );
@@ -314,7 +324,7 @@ fn deferred_fault_is_reported_at_the_resume_boundary() {
             Instruction::Play {
                 transpose: 127,
                 velocity_scale: 1.,
-                duration: 1,
+                duration: sampler_core::Duration::FramesOrGate(1),
             },
         ],
         limits(),
@@ -533,5 +543,168 @@ fn branching_loops_obey_fuel_and_integer_arithmetic_never_wraps() {
         assert_eq!(rt.pending_commands(), 0);
         rt.flush_behaviors(|_, _, _| true);
         rt.flush_ended(|_| true);
+    });
+}
+
+#[test]
+fn callback_retention_can_outlive_input_release_without_orphaning_generated_notes() {
+    use sampler_core::{Duration, WaitLifetime};
+    for lifetime in [WaitLifetime::Gate, WaitLifetime::Callback] {
+        for block in 1..=16 {
+            let mut rt = runtime_with_lifetime(
+                vec![
+                    Instruction::Wait(4),
+                    Instruction::Play {
+                        transpose: 0,
+                        velocity_scale: 0.5,
+                        duration: Duration::Frames(4),
+                    },
+                    Instruction::End,
+                ],
+                limits(),
+                lifetime,
+            );
+            let mut audio = [[0.; 2]; 16];
+            support::without_heap(|| {
+                let note = rt.note_on(input(), 60, 1.).unwrap();
+                let id = rt.start_behavior(note, 0).unwrap();
+                rt.release_at(note, 2).unwrap();
+                for chunk in audio.chunks_mut(block) {
+                    rt.render(chunk).unwrap();
+                }
+                let expected = if lifetime == WaitLifetime::Gate {
+                    Outcome::Cancelled
+                } else {
+                    Outcome::Finished
+                };
+                assert_eq!(rt.behavior_outcome(id), Ok(Some(expected)));
+                rt.flush_ended(|_| panic!("completion still owns the original note"));
+                rt.flush_behaviors(|_, _, _| true);
+                let mut ends = 0;
+                rt.flush_ended(|ended| {
+                    assert_eq!(ended, input());
+                    ends += 1;
+                    true
+                });
+                assert_eq!((ends, rt.note_count(), rt.pending_commands()), (1, 0, 0));
+            });
+            for (frame, value) in audio.iter().enumerate() {
+                let gain = if lifetime == WaitLifetime::Callback && (4..8).contains(&frame) {
+                    0.5
+                } else {
+                    0.
+                };
+                assert_eq!(
+                    *value, [gain; 2],
+                    "{lifetime:?}, block {block}, frame {frame}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn generated_duration_and_gate_are_independent_policies() {
+    use sampler_core::Duration;
+    for duration in [
+        Duration::Gate,
+        Duration::Frames(4),
+        Duration::FramesOrGate(4),
+    ] {
+        let mut rt = runtime(
+            vec![Instruction::Play {
+                transpose: 0,
+                velocity_scale: 1.,
+                duration,
+            }],
+            limits(),
+        );
+        support::without_heap(|| {
+            let note = rt.note_on(input(), 60, 1.).unwrap();
+            rt.start_behavior(note, 0).unwrap();
+            rt.release_at(note, 2).unwrap();
+            let mut audio = [[0.; 2]; 8];
+            rt.render(&mut audio).unwrap();
+            let end = if duration == Duration::Frames(4) {
+                4
+            } else {
+                2
+            };
+            for (i, frame) in audio.iter().enumerate() {
+                assert_eq!(*frame, [if i < end { 1. } else { 0. }; 2]);
+            }
+            rt.flush_behaviors(|_, _, _| true);
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.note_count(), 0);
+        });
+    }
+}
+
+#[test]
+fn retained_callbacks_on_closed_notes_still_cancel_on_panic_or_explicit_abort() {
+    use sampler_core::WaitLifetime;
+    for panic in [false, true] {
+        let mut rt = runtime_with_lifetime(
+            vec![Instruction::Wait(10), play(2)],
+            limits(),
+            WaitLifetime::Callback,
+        );
+        support::without_heap(|| {
+            let note = rt.note_on(input(), 60, 1.).unwrap();
+            rt.release(note).unwrap();
+            // A release-side caller can start work while it still owns the closed ID.
+            let id = rt.start_behavior(note, 0).unwrap();
+            assert_eq!(rt.behavior_outcome(id), Ok(None));
+            if panic {
+                rt.panic();
+            } else {
+                rt.cancel_behavior(id).unwrap();
+            }
+            assert_eq!(rt.behavior_outcome(id), Ok(Some(Outcome::Cancelled)));
+            assert_eq!(rt.pending_commands(), 0);
+            rt.render(&mut [[0.; 2]; 32]).unwrap();
+            rt.flush_ended(|_| panic!("cancelled outcome still owns the note"));
+            rt.flush_behaviors(|_, _, _| true);
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.note_count(), 0);
+        });
+    }
+}
+
+#[test]
+fn independent_duration_keeps_ownership_after_callback_fault_until_its_release() {
+    let mut rt = runtime(
+        vec![
+            Instruction::Play {
+                transpose: 0,
+                velocity_scale: 1.,
+                duration: sampler_core::Duration::Frames(4),
+            },
+            Instruction::Wait(1),
+        ],
+        Limits {
+            commands: 1,
+            ..limits()
+        },
+    );
+    support::without_heap(|| {
+        let note = rt.note_on(input(), 60, 1.).unwrap();
+        let id = rt.start_behavior(note, 0).unwrap();
+        assert_eq!(
+            rt.behavior_outcome(id),
+            Ok(Some(Outcome::Fault(Error::Capacity)))
+        );
+        rt.flush_behaviors(|_, _, _| true);
+        rt.flush_ended(|_| panic!("independent duration still retains its input ancestor"));
+        let mut audio = [[0.; 2]; 8];
+        rt.render(&mut audio).unwrap();
+        assert_eq!(audio[..4], [[1.; 2]; 4]);
+        assert_eq!(audio[4..], [[0.; 2]; 4]);
+        let mut ends = 0;
+        rt.flush_ended(|_| {
+            ends += 1;
+            true
+        });
+        assert_eq!((ends, rt.note_count(), rt.pending_commands()), (1, 0, 0));
     });
 }

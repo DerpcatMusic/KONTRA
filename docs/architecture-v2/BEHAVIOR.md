@@ -26,12 +26,16 @@ The current instructions are deliberately concrete:
 Transposition currently changes region selection; the resident source renderer
 still runs at unity rate. This is not a pitch-resampling claim.
 
-Generated children link their gate and expression to the original logical note.
-Their own duration can end them earlier. A closed effective root gate cancels waits
-and releases linked children; sustain can keep that root gate open after physical
-key-up. Faults and explicit abort force root release and cancel pending linked work.
-Existing envelope tails finish normally; panic hard-stops them. These are native
-policies, not claims about vendor wait/cancellation semantics.
+Generated children share the originating expression and use an explicit duration:
+`Gate` follows the originating effective gate, `Frames` is independent, and
+`FramesOrGate` ends on whichever condition happens first. The default wait lifetime
+is gate-bound; `WaitLifetime::Callback` retains a callback across input release.
+Sustain can keep an effective gate open after physical key-up. Faults and explicit
+abort force root release and cancel pending gate-bound work. Already-admitted
+independent notes keep their scheduled release and retain the input ancestor until
+finished. Existing envelope tails finish normally; panic hard-stops all voices and
+cancels every pending callback regardless of its wait lifetime. These are explicit
+native policies, not claims about vendor cancellation behavior.
 
 ## Ownership and bounds
 
@@ -92,7 +96,7 @@ original-input terminal. Existing output files are refused.
 Rust 1.99 release/all-target Clippy, MSRV 1.92 and the historical v2 boundary checks
 pass. The full-workspace comparison against `2643eb9` has no new errors.
 The current authoritative, complete new-core Doctor scan
-meets **90**, zero errors, 113 warnings, with all rules retained. Local test, scan
+meets **90**, zero errors, 115 warnings, with all rules retained. Local test, scan
 and audio evidence is under ignored `artifacts/architecture-v2/behavior-*`.
 
 ## Still open
@@ -130,3 +134,28 @@ its rendered audio is byte-identical to the earlier straight-line program.
 The first expanded scan scored 89. Shared checked local access and fault propagation
 removed unchecked accesses without disabling rules; the authoritative scan is back
 at 90. Local evidence uses the `artifacts/architecture-v2/locals-*` prefix.
+
+## Independent callback and generated-note lifetimes
+
+Continuation retention, generated duration and expression inheritance are separate
+ownership decisions. `with_wait_lifetime(Callback)` permits waiting work on a still-
+owned closed note, allowing later release-side processing. It cannot resurrect an
+already retired handle. Completion still requires acceptance before the private
+input pin is released. An input-linked generated note on an already-closed gate is
+rejected; fixed-duration generation can proceed and retain the closed ancestor.
+
+New checks compare independent and gate-bound waits across blocks 1–16, explicit
+duration modes, closed-note callback admission, panic and explicit abort. A separate
+fault case verifies that an independent child's scheduled release remains owned
+and executable after its callback faults; the original input cannot retire early.
+All paths are allocation/free checked. The core score remains 90. Evidence is under
+`artifacts/architecture-v2/lifetime-*`.
+
+Frontend research is pinned to the KSP manual showing **Kontakt 8.12**, consulted
+2026-10-05: [manual version](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/welcome-to-ksp),
+[generated-note duration](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands),
+[wait timing](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/time-related-commands),
+and [release callbacks](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks).
+These references motivate distinct ownership policies. No Kontakt binary comparison
+or complete language implementation is implied; source-duration zero and vendor
+microsecond rounding still require separate implementation/evidence.
