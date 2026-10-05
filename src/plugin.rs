@@ -3640,6 +3640,13 @@ fn native_key_held(s: &Dsp, channel: u8, key: u8) -> bool {
 }
 
 fn feed_host_input(s: &mut Dsp, p: &SamplerParams, ev: In, port: u8, offset: u32, holding: bool, rate: f64) {
+    if let In::HostOn(note, ..) = ev && note.id != -1
+        && s.pending_host_note_ends.iter().any(|(owner, _)| *owner == note) {
+        // Keep input ordinals aligned with the sealed source, even when an
+        // unacknowledged terminal identity prevents this onset's admission.
+        s.source_input_ordinal = s.source_input_ordinal.saturating_add(1);
+        return;
+    }
     let lit = |note:u8, velocity| { if let Some(lit) = p.shared.heard.get(note as usize) { lit.store(velocity,Ordering::Relaxed); } };
     match ev {
         In::NoteOn(_,note,velocity) | In::Midi1NoteOn(_,note,velocity) => lit(note,velocity.max(1)),
@@ -3760,6 +3767,8 @@ fn prepare_shared_sources(s: &mut Dsp, events: &EventList, frames: usize, holdin
             if engine.shared_source_required() {
                 let mut reached = false;
                 accepted_inputs(events, |_,_,port,input| {
+                    if matches!(input, In::HostOn(note, ..) if note.id != -1
+                        && s.pending_host_note_ends.iter().any(|(owner, _)| *owner == note)) { return; }
                     reached |= articulate::reaches(&s.rack.controls[slot], &s.routers[slot], port, input);
                 })?;
                 if reached {
@@ -3778,6 +3787,10 @@ fn prepare_shared_sources(s: &mut Dsp, events: &EventList, frames: usize, holdin
         engine.seal_shared_source(topology,controls.tune,|visit| {
             let mut end_input = false;
             accepted_inputs(events, |ordinal,offset,port,input| {
+                // Delivery rejects these old tuples. Preserve their ordinal,
+                // but do not reserve shared roots or nominate their clones.
+                if matches!(input, In::HostOn(note, ..) if note.id != -1
+                    && s.pending_host_note_ends.iter().any(|(owner, _)| *owner == note)) { return; }
                 if !articulate::reaches(&controls,router,port,input) { return; }
                 if offset as usize >= frames { end_input = true; return; }
                 visit(ordinal,origin + u64::from(offset),port,input);
@@ -3814,6 +3827,23 @@ fn unsupported_midi_group(body: &EventBody) -> bool {
 
 fn finish_host_notes(s: &mut Dsp, cx: &mut ProcessContext, frames: u32) {
     for e in &mut s.rack.parts { e.mark_host_notes(); }
+    let mut rejected = false;
+    s.pending_host_note_ends.retain(|&(note, end)| {
+        if rejected { return true; }
+        let offset = end.saturating_sub(s.align.clock);
+        if offset >= u64::from(frames) { return true; }
+        if cx.output_events.try_push_exact(ExactEvent::new(offset as u32, ExactEventBody::Note {
+            kind: ExactNoteKind::End, address: ExactNoteAddress::from_raw_signed(i16::from(note.port),
+                i16::from(note.channel), i16::from(note.key), note.id), velocity: 0.,
+        })).is_err() {
+            rejected = true;
+            true
+        } else { false }
+    });
+    if rejected {
+        s.host_note_end_rejections = s.host_note_end_rejections.saturating_add(1);
+        return;
+    }
     for part in 0..s.rack.parts.len() {
         let mut index = 0;
         while let Some((note,pinned)) = s.rack.parts[part].host_note_at(index) {
@@ -3961,6 +3991,8 @@ pub struct Dsp {
     unsupported_host_expression: u64,
     uvi_zero_velocity_rejections: u64,
     host_note_end_rejections: u64,
+    /// Terminal-only CLAP roots have no engine owner to retain on backpressure.
+    pending_host_note_ends: Vec<(crate::engine::HostNote, u64)>,
     source_input_ordinal: u32,
     audio_session: u64,
     stream_errors: Vec<Option<StreamFailure>>,
@@ -4001,6 +4033,7 @@ impl Default for Dsp {
             key_channels: KeyChannels::default(), key_slots: KeySlots::default(), load: 0.0,
             align: Align::default(), until_diagnostics: 0, shared_parts: Vec::new(),
             diagnostic: AudioDiagnostics::with_parts(RACK_SLOTS), unsupported_note_brightness: 0, unsupported_host_expression: 0, uvi_zero_velocity_rejections: 0, host_note_end_rejections: 0,
+            pending_host_note_ends: Vec::with_capacity(crate::ksp::EVENT_CAPACITY),
             source_input_ordinal:0, audio_session:0, stream_errors:vec![None;RACK_SLOTS], stream_failure:None, _diagnostics: crate::diagnostics::acquire(),
             #[cfg(feature = "uvi")]
             _uvi_controllers: None,
@@ -4503,6 +4536,8 @@ impl PluginLogic for Sampler {
         s.audition_left.fill(0);
         for row in &mut s.key_slots.0 { row.fill(false); }
         s.align.clear();
+        // Reset starts a new clock; retained completions are already terminal.
+        for (_, end) in &mut s.pending_host_note_ends { *end = 0; }
         for router in &mut s.routers { router.reset_midi(); }
         // The voices are gone, and the host's releases for them may be too.
         p.shared.reset_midi();
@@ -4973,17 +5008,25 @@ impl PluginLogic for Sampler {
                     LosslessEventRef::Typed(e) => feed_typed_input(s,p,e,events.overflow().is_some(),cx,thru,holding,rate),
                     LosslessEventRef::Exact(exact) => match exact_host_input(exact) {
                         Some(ExactInput::Routed(ev,port)) => {
+                            let terminal_duplicate = matches!(ev, In::HostOn(note, ..) if note.id != -1
+                                && s.pending_host_note_ends.iter().any(|(owner, _)| *owner == note));
+                            if matches!(ev, In::HostOn(note, ..) if note.clap) && !terminal_duplicate
+                                && s.pending_host_note_ends.len() == s.pending_host_note_ends.capacity() {
+                                // Fail before admitting an onset whose terminal
+                                // identity could not be retained without growing.
+                                for channel in 0..channels { b.output(channel).fill(0.); }
+                                cx.output_events.clear();
+                                return ProcessStatus::Error;
+                            }
                             if let Some(e) = exact.fallback() { relay_typed_input(e,cx,thru); }
                             for e in exact.companions() { relay_typed_input(e,cx,thru); }
                             feed_host_input(s,p,ev,port,exact.sample_offset(),holding,rate);
                             // A switch or unmatched route creates no sounding
-                            // owner. Return that exact identity immediately.
+                            // owner. Retain its terminal identity until End fits.
                             if let In::HostOn(note, ..) = ev
-                                && note.clap && !s.align.host_note_waiting(note)
+                                && note.clap && !terminal_duplicate && !s.align.host_note_waiting(note)
                                 && !s.rack.parts.iter().any(|e| e.host_note_present(note)) && !native_note_present(s, note) {
-                                if cx.output_events.try_push_exact(ExactEvent::new(exact.sample_offset(),ExactEventBody::Note {
-                                    kind:ExactNoteKind::End,address:ExactNoteAddress::from_raw_signed(i16::from(note.port),i16::from(note.channel),i16::from(note.key),note.id),velocity:0.,
-                                })).is_err() { s.host_note_end_rejections=s.host_note_end_rejections.saturating_add(1); }
+                                s.pending_host_note_ends.push((note, s.align.clock.saturating_add(u64::from(exact.sample_offset()))));
                             }
                         }
                         Some(ExactInput::ProgramChange { port, channel, program }) => {
@@ -6131,6 +6174,8 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
 }
 #[cfg(test)]
 mod performance_tests;
+#[cfg(test)]
+mod note_end_tests;
 #[cfg(test)]
 mod shared_primary_tests;
 #[cfg(test)]
