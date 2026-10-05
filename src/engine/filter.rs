@@ -557,6 +557,7 @@ fn inverter_flags(params: &Params) -> bool {
 }
 
 /// Import warnings for group effects that do not play.
+#[cfg(test)]
 pub fn unsupported(chain: &Chain) -> Vec<String> { unsupported_at(chain, None) }
 
 pub fn unsupported_at(chain: &Chain, amp_split: Option<u8>) -> Vec<String> {

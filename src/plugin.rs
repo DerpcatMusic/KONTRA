@@ -441,7 +441,7 @@ impl SamplerParams {
 
     /// Serialized loader only. The controller and its blocking destructor stay
     /// here until an audio bridge has a separately owned, fixed packet port.
-    #[cfg(feature = "uvi")]
+    #[cfg(all(test, feature = "uvi"))]
     pub(crate) fn with_prepared_uvi_worker<T>(&self, use_worker: impl FnOnce(&library::UviRequest, u64, u64, &mut crate::uvi::worker::Worker) -> T) -> Option<T> {
         let key = uvi_load_key(self, &self.selection.read().unwrap())?;
         let mut prepared = self.shared.uvi_prepared.lock().unwrap();
@@ -1674,6 +1674,7 @@ pub(crate) struct PersistenceSnapshot {
     native: crate::engine::native_state::NativeSnapshot,
 }
 /// Initialize `i`'s scripts off the audio thread, with a snapshot buffer shaped for them.
+#[cfg(test)]
 fn scripts(
     i: &Instrument,
     saved: &str,

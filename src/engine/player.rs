@@ -1146,6 +1146,7 @@ impl Player {
         self.touch();
     }
 
+    #[cfg(test)]
     pub(super) fn sostenuto_channels(&self) -> u16 {
         self.pedals.sostenuto_channels()
     }

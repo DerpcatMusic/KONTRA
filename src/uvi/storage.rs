@@ -82,7 +82,6 @@ impl Storage {
         len: usize,
         stop: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<Self> {
-        use std::io::Read;
         ensure!(
             samples <= MAX_SOURCE_BYTES / 4,
             "Cache decoded sample bound"

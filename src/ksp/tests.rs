@@ -2521,7 +2521,7 @@ end on"#,root.display(),if success { "ready" } else { "missing" });
             delay();
             assert_eq!(state(&rig.rt)["$order"],Value::Int(1));
             assert_eq!(request.perform(),success,"only the worker performs file I/O");
-            let mut install = || {
+            let install = || {
                 assert!(rig.rt.finish_array_job(request).is_ok());
                 rig.rt.process(&mut rig.engine,128);
             };

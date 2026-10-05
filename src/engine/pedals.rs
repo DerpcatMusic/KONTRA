@@ -32,6 +32,7 @@ impl Pedals {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn sostenuto_channels(&self) -> u16 { self.sostenuto }
 
     /// An effective Off requires the key, sustain and captured sostenuto holds
