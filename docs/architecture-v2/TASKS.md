@@ -91,6 +91,10 @@ Family/expression ownership and segmented rendering now have
 
 ### V2-07 — Build new source, semantic and prepared representations
 
+- **Partial evidence:** owned prepared PCM, bounded native region compilation and
+  indexed selection now run through the [independent native entry](NATIVE_ENTRY.md).
+  Vendor frontends and the broader semantic model remain open.
+
 - [ ] **P1; dependencies:** V2-02/05.
 - Native authoring plus new Kontakt and one open-format frontend lower into neutral
   semantic data; preserve source identity, unknown data and explicit capability reports.
@@ -173,6 +177,9 @@ Family/expression ownership and segmented rendering now have
 - UMP passthrough or reserved numeric precision alone does not close MIDI 2.0 support.
 
 ### V2-16 — Ship an independent v2 composition root and application
+
+- **Partial evidence:** `sampler-native` renders supported WAV through the new core
+  without legacy dependencies. Live audio, host adapters and UI remain open.
 
 - [ ] **P0; dependencies:** V2-12/13/14/15.
 - New executables/plugin targets, product/state identity and UI bound to headless services.

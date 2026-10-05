@@ -26,9 +26,9 @@ fn limits() -> Limits {
 fn ownership_survives_source_end_children_and_rejected_terminal_delivery() {
     let samples = [Pcm {
         rate: 48000,
-        frames: &[[0.25, -0.25]; 2],
+        frames: Box::from([[0.25, -0.25]; 2]),
     }];
-    let mut rt = Runtime::new(48000, &samples, limits()).unwrap();
+    let mut rt = fixture_runtime(48000, &samples, limits()).unwrap();
     let root = rt.note_on(input(Some(7)), 72, 0.123456789).unwrap();
     let linked = rt
         .child(root, 76, 1.0, true, Inheritance::Snapshot)
@@ -83,9 +83,9 @@ fn ownership_survives_source_end_children_and_rejected_terminal_delivery() {
 fn cleanup_does_not_need_queue_space_and_no_source_notes_retry() {
     let samples = [Pcm {
         rate: 48000,
-        frames: &[[1.0; 2]; 4],
+        frames: Box::from([[1.0; 2]; 4]),
     }];
-    let mut rt = Runtime::new(
+    let mut rt = fixture_runtime(
         48000,
         &samples,
         Limits {
@@ -127,10 +127,10 @@ fn scheduling_is_partition_invariant_at_two_rates() {
     for rate in [44100, 48000] {
         let samples = [Pcm {
             rate,
-            frames: &[[0.5, -0.25]; 64],
+            frames: Box::from([[0.5, -0.25]; 64]),
         }];
         let render = |partition: &[usize]| {
-            let mut rt = Runtime::new(rate, &samples, limits()).unwrap();
+            let mut rt = fixture_runtime(rate, &samples, limits()).unwrap();
             let a = rt.note_on(input(Some(1)), 60, 1.0).unwrap();
             let b = rt.note_on(input(Some(2)), 60, 1.0).unwrap();
             let c = rt.note_on(input(Some(3)), 60, 1.0).unwrap();
@@ -172,16 +172,16 @@ fn scheduling_is_partition_invariant_at_two_rates() {
 fn boundary_order_overflow_and_handle_domains_are_explicit() {
     let samples = [Pcm {
         rate: 48000,
-        frames: &[[0.5; 2]; 4],
+        frames: Box::from([[0.5; 2]; 4]),
     }];
-    let mut rt = Runtime::new(48000, &samples, limits()).unwrap();
+    let mut rt = fixture_runtime(48000, &samples, limits()).unwrap();
     let note = rt.note_on(input(Some(-2)), 60, 0.0).unwrap(); // Signed IDs and native zero velocity survive.
     let voice = rt.start(note, 0, 16, 1.0).unwrap();
     rt.render(&mut [[0.0; 2]; 16]).unwrap();
     assert_eq!(rt.pending_commands(), 1);
     rt.render(&mut []).unwrap();
     assert_eq!(rt.pending_commands(), 0);
-    let mut other = Runtime::new(48000, &samples, limits()).unwrap();
+    let mut other = fixture_runtime(48000, &samples, limits()).unwrap();
     other.note_on(input(Some(-2)), 60, 0.0).unwrap();
     assert_eq!(other.release(note), Err(Error::StaleHandle));
     assert_eq!(other.stop_voice(voice), Err(Error::StaleHandle));
@@ -204,26 +204,26 @@ fn boundary_order_overflow_and_handle_domains_are_explicit() {
 #[test]
 fn invalid_preparation_and_atomic_failed_start() {
     assert!(matches!(
-        Runtime::new(0, &[], limits()),
+        fixture_runtime(0, &[], limits()),
         Err(Error::InvalidInput)
     ));
     let invalid = [Pcm {
         rate: 48000,
-        frames: &[[f32::NAN, 0.0]],
+        frames: Box::from([[f32::NAN, 0.0]]),
     }];
     assert!(matches!(
-        Runtime::new(48000, &invalid, limits()),
+        fixture_runtime(48000, &invalid, limits()),
         Err(Error::InvalidInput)
     ));
     let samples = [Pcm {
         rate: 48000,
-        frames: &[[1.0; 2]; 4],
+        frames: Box::from([[1.0; 2]; 4]),
     }];
     assert!(matches!(
-        Runtime::new(44100, &samples, limits()),
+        fixture_runtime(44100, &samples, limits()),
         Err(Error::InvalidInput)
     ));
-    let mut rt = Runtime::new(48000, &samples, limits()).unwrap();
+    let mut rt = fixture_runtime(48000, &samples, limits()).unwrap();
     assert_eq!(rt.note_on(input(None), 128, 1.0), Err(Error::InvalidInput));
     assert_eq!(
         rt.note_on(input(None), 60, f64::NAN),
@@ -245,9 +245,9 @@ fn invalid_preparation_and_atomic_failed_start() {
 fn voice_scope_reuse_and_nonfinite_mix_are_observable() {
     let samples = [Pcm {
         rate: 48000,
-        frames: &[[f32::MAX; 2]; 4],
+        frames: Box::from([[f32::MAX; 2]; 4]),
     }];
-    let mut rt = Runtime::new(48000, &samples, limits()).unwrap();
+    let mut rt = fixture_runtime(48000, &samples, limits()).unwrap();
     let root = rt.note_on(input(Some(1)), 60, 1.0).unwrap();
     let a = rt.start(root, 0, 0, 1.0).unwrap();
     let b = rt.start(root, 0, 0, 1.0).unwrap();
@@ -271,9 +271,9 @@ fn voice_scope_reuse_and_nonfinite_mix_are_observable() {
 fn families_separate_admission_voice_stop_and_note_release() {
     let samples = [Pcm {
         rate: 48000,
-        frames: &[[1.0; 2]; 4],
+        frames: Box::from([[1.0; 2]; 4]),
     }];
-    let mut rt = Runtime::new(48000, &samples, limits()).unwrap();
+    let mut rt = fixture_runtime(48000, &samples, limits()).unwrap();
     let n = rt.note_on(input(Some(1)), 60, 1.0).unwrap();
     let f = rt.create_family(n).unwrap();
     let a = rt.start_family(f, 0, 0, 0.25).unwrap();
@@ -311,9 +311,9 @@ fn families_separate_admission_voice_stop_and_note_release() {
 fn expression_inheritance_is_explicit_and_channel_reuse_is_isolated() {
     let samples = [Pcm {
         rate: 48000,
-        frames: &[[1.0; 2]; 8],
+        frames: Box::from([[1.0; 2]; 8]),
     }];
-    let mut rt = Runtime::new(48000, &samples, limits()).unwrap();
+    let mut rt = fixture_runtime(48000, &samples, limits()).unwrap();
     let root = rt.note_on(input(None), 60, 1.0).unwrap();
     let e = rt.expression_id(root).unwrap();
     let first = Expression {
@@ -379,9 +379,9 @@ fn expression_inheritance_is_explicit_and_channel_reuse_is_isolated() {
 fn separate_budgets_reject_without_partial_ownership() {
     let pcm = [Pcm {
         rate: 48000,
-        frames: &[[1.0; 2]; 2],
+        frames: Box::from([[1.0; 2]; 2]),
     }];
-    let mut rt = Runtime::new(
+    let mut rt = fixture_runtime(
         48000,
         &pcm,
         Limits {
@@ -421,7 +421,7 @@ fn separate_budgets_reject_without_partial_ownership() {
     rt.flush_ended(|_| true);
     assert_eq!((rt.note_count(), rt.expression_count()), (0, 0));
     // A full note pool must return an expression slot allocated during admission.
-    let mut rt = Runtime::new(
+    let mut rt = fixture_runtime(
         48000,
         &pcm,
         Limits {
@@ -441,7 +441,7 @@ fn separate_budgets_reject_without_partial_ownership() {
 
 #[test]
 fn input_groups_and_new_handle_domains_do_not_alias() {
-    let mut rt = Runtime::new(48000, &[], limits()).unwrap();
+    let mut rt = fixture_runtime(48000, &[], limits()).unwrap();
     let a = Input {
         protocol: Protocol::Midi2,
         group: 0,
@@ -458,7 +458,7 @@ fn input_groups_and_new_handle_domains_do_not_alias() {
     );
     let family = rt.create_family(n).unwrap();
     let expression = rt.expression_id(n).unwrap();
-    let mut foreign = Runtime::new(48000, &[], limits()).unwrap();
+    let mut foreign = fixture_runtime(48000, &[], limits()).unwrap();
     let f = foreign.note_on(a, 60, 1.0).unwrap();
     foreign.create_family(f).unwrap();
     assert_eq!(foreign.stop_family(family), Err(Error::StaleHandle));
@@ -479,9 +479,9 @@ fn input_groups_and_new_handle_domains_do_not_alias() {
 fn ownership_counters_match_reachable_state_under_mixed_operations() {
     let pcm = [Pcm {
         rate: 48000,
-        frames: &[[0.25; 2]; 31],
+        frames: Box::from([[0.25; 2]; 31]),
     }];
-    let mut rt = Runtime::new(48000, &pcm, limits()).unwrap();
+    let mut rt = fixture_runtime(48000, &pcm, limits()).unwrap();
     let mut seed = 12345u64;
     for step in 0..4000 {
         seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
@@ -585,9 +585,9 @@ fn ownership_counters_match_reachable_state_under_mixed_operations() {
 fn sustain_pairs_physical_keys_fifo_and_sostenuto_captures_only_held_notes() {
     let pcm = [Pcm {
         rate: 48000,
-        frames: &[[0.25; 2]; 64],
+        frames: Box::from([[0.25; 2]; 64]),
     }];
-    let mut rt = Runtime::new(48000, &pcm, limits()).unwrap();
+    let mut rt = fixture_runtime(48000, &pcm, limits()).unwrap();
     let address = input(None).channel_address();
     let channel = rt.register_channel(address).unwrap();
     assert_eq!(rt.register_channel(address), Ok(channel));
@@ -646,10 +646,10 @@ fn sustain_pairs_physical_keys_fifo_and_sostenuto_captures_only_held_notes() {
 fn mixed_timeline_is_partition_invariant_and_immediate_changes_follow_due_work() {
     let pcm = [Pcm {
         rate: 48000,
-        frames: &[[1.0; 2]; 128],
+        frames: Box::from([[1.0; 2]; 128]),
     }];
     let render = |partition: &[usize]| {
-        let mut rt = Runtime::new(
+        let mut rt = fixture_runtime(
             48000,
             &pcm,
             Limits {
@@ -714,7 +714,7 @@ fn mixed_timeline_is_partition_invariant_and_immediate_changes_follow_due_work()
     for blocks in [&[64][..], &[0, 3, 5, 9, 1, 0, 17], &[16], &[32]] {
         assert_eq!(render(blocks), reference);
     }
-    let mut rt = Runtime::new(48000, &pcm, limits()).unwrap();
+    let mut rt = fixture_runtime(48000, &pcm, limits()).unwrap();
     let n = rt.note_on(input(None), 60, 1.0).unwrap();
     rt.start(n, 0, 0, 1.0).unwrap();
     rt.schedule_event(
@@ -747,7 +747,7 @@ fn mixed_timeline_is_partition_invariant_and_immediate_changes_follow_due_work()
 
 #[test]
 fn scheduled_expression_has_private_lifetime_pins_and_cancellation() {
-    let mut rt = Runtime::new(
+    let mut rt = fixture_runtime(
         48000,
         &[],
         Limits {
@@ -805,7 +805,7 @@ fn scheduled_expression_has_private_lifetime_pins_and_cancellation() {
 
 #[test]
 fn full_queue_cannot_drop_pedal_up_and_channel_domains_are_bounded() {
-    let mut rt = Runtime::new(
+    let mut rt = fixture_runtime(
         48000,
         &[],
         Limits {
@@ -845,7 +845,168 @@ fn full_queue_cannot_drop_pedal_up_and_channel_domains_are_bounded() {
     rt.panic();
     rt.render(&mut [[0.0; 2]; 101]).unwrap();
     assert_eq!(rt.pedals(ch), Ok((false, false)));
-    let mut foreign = Runtime::new(48000, &[], limits()).unwrap();
+    let mut foreign = fixture_runtime(48000, &[], limits()).unwrap();
     foreign.register_channel(address).unwrap();
     assert_eq!(foreign.sustain(ch, true), Err(Error::StaleHandle));
+}
+
+fn fixture_runtime(rate: u32, pcm: &[Pcm], limits: Limits) -> Result<Runtime, Error> {
+    Runtime::new(Prepared::new(rate, pcm.to_vec(), Vec::new(), 0)?, limits)
+}
+
+#[test]
+fn prepared_selection_matches_independent_linear_reference() {
+    let samples = vec![
+        Pcm {
+            rate: 48000,
+            frames: Box::new([[0.25, -0.5]]),
+        },
+        Pcm {
+            rate: 48000,
+            frames: Box::new([[0.5, 0.125]]),
+        },
+    ];
+    let mut regions = Vec::new();
+    let mut seed = 19u32;
+    for i in 0..40 {
+        seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        let a = (seed % 128) as u8;
+        let b = ((seed >> 16) % 128) as u8;
+        regions.push(Region {
+            sample: i % 2,
+            key_low: a.min(b),
+            key_high: a.max(b),
+            velocity_low: if i % 2 == 0 { 0.0 } else { 0.5 },
+            velocity_high: 1.0,
+            gain: (i % 4) as f32 / 4.0,
+        });
+    }
+    let plan = Prepared::new(48000, samples.clone(), regions.clone(), 5120).unwrap();
+    assert_eq!(plan.sample_count(), 2);
+    assert_eq!(plan.region_count(), regions.len());
+    let mut rt = Runtime::new(
+        plan,
+        Limits {
+            voices: 40,
+            ..limits()
+        },
+    )
+    .unwrap();
+    for key in 0..128 {
+        for velocity in [0.0, 0.25, 0.5, 0.500000001, 1.0] {
+            let n = rt
+                .trigger(
+                    Input {
+                        key,
+                        ..input(Some(1))
+                    },
+                    key,
+                    velocity,
+                )
+                .unwrap();
+            let mut expected = [0.0; 2];
+            let mut selected = 0;
+            for r in &regions {
+                if r.key_low <= key
+                    && key <= r.key_high
+                    && r.velocity_low <= velocity
+                    && velocity <= r.velocity_high
+                {
+                    selected += 1;
+                    for (c, out) in expected.iter_mut().enumerate() {
+                        *out += samples[r.sample].frames[0][c] * (r.gain * velocity as f32);
+                    }
+                }
+            }
+            assert_eq!(rt.voice_count(), selected);
+            assert_eq!(rt.family_count(), usize::from(selected != 0));
+            let mut output = [[0.0; 2]; 1];
+            rt.render(&mut output).unwrap();
+            assert_eq!(output[0], expected);
+            assert_eq!(rt.family_count(), 0);
+            assert!(rt.note(n).unwrap().2); // EOF does not erase logical ownership.
+            rt.release(n).unwrap();
+            let mut ends = 0;
+            rt.flush_ended(|_| {
+                ends += 1;
+                true
+            });
+            assert_eq!(ends, 1);
+        }
+    }
+}
+
+#[test]
+fn prepared_validation_and_layer_admission_are_transactional() {
+    let samples = vec![Pcm {
+        rate: 48000,
+        frames: Box::new([[0.25; 2]; 4]),
+    }];
+    let region = Region {
+        sample: 0,
+        key_low: 60,
+        key_high: 60,
+        velocity_low: 0.0,
+        velocity_high: 1.0,
+        gain: 1.0,
+    };
+    assert!(matches!(
+        Prepared::new(48000, samples.clone(), vec![region], 0),
+        Err(Error::Capacity)
+    ));
+    for invalid in [
+        Region {
+            sample: 1,
+            ..region
+        },
+        Region {
+            key_high: 128,
+            ..region
+        },
+        Region {
+            key_low: 61,
+            ..region
+        },
+        Region {
+            velocity_low: f64::NAN,
+            ..region
+        },
+        Region {
+            velocity_high: -1.0,
+            ..region
+        },
+        Region {
+            gain: f32::INFINITY,
+            ..region
+        },
+    ] {
+        assert!(matches!(
+            Prepared::new(48000, samples.clone(), vec![invalid], 128),
+            Err(Error::InvalidInput)
+        ));
+    }
+    let plan = Prepared::new(48000, samples, vec![region, region], 2).unwrap();
+    let mut rt = Runtime::new(
+        plan,
+        Limits {
+            voices: 1,
+            ..limits()
+        },
+    )
+    .unwrap();
+    assert_eq!(rt.trigger(input(Some(1)), 60, 1.0), Err(Error::Capacity));
+    assert_eq!(
+        (
+            rt.note_count(),
+            rt.family_count(),
+            rt.expression_count(),
+            rt.voice_count()
+        ),
+        (0, 0, 0, 0)
+    );
+    let no_source = rt.trigger(input(Some(1)), 61, 1.0).unwrap();
+    assert_eq!(rt.voice_count(), 0);
+    rt.release(no_source).unwrap();
+    rt.flush_ended(|_| true);
+    assert_eq!(rt.note_count(), 0);
 }

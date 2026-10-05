@@ -23,7 +23,7 @@ pub(super) struct Scheduled {
     pub action: Action,
 }
 
-impl Runtime<'_> {
+impl Runtime {
     /// Equal timestamps execute in submission order. New immediate operations first
     /// drain previously submitted work due now. Future capacity failure is explicit;
     /// immediate key/pedal release never requires a free queue entry.
