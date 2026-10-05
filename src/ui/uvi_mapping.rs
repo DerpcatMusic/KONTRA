@@ -154,7 +154,7 @@ fn sample_rows(ui: &mut Ui, mapping: &Inspection, state: &mut State, indices: &[
 
 fn sample_inspector(mapping: &Inspection, selected: Option<usize>) -> El {
     let Some((index, zone)) = selected.and_then(|index| mapping.zones.get(index).map(|zone| (index, zone))) else {
-        return col![section("Selected sample").shrink(0), caption("Select a zone to inspect its source and ranges.").lines(3).min_w(0).shrink(0)]
+        return col![section("Selected sample").shrink(0), caption("Select a zone to inspect its source and ranges.").lines(3).w(Len::Pct(100.)).min_w(0).shrink(0)]
             .gap(SPACE).min_w(0).min_h(0).flex(1);
     };
     let range = format!("Keys {} ({}) – {} ({}) · velocity {}–{} · root {} ({})",
@@ -167,14 +167,16 @@ fn sample_inspector(mapping: &Inspection, selected: Option<usize>) -> El {
         });
     col![section("Selected sample").shrink(0),
         caption(format!("Zone {} · layer {} · keygroup {} · oscillator {}", index + 1, zone.layer + 1,
-            zone.keygroup + 1, zone.player + 1)).lines(3).min_w(0).shrink(0),
-        caption(zone.sample_path.clone()).named(zone.sample_path.clone()).lines(4).min_w(0).shrink(0).id("uvi-mapping-selected-path"),
-        caption(range.clone()).named(range).lines(4).min_w(0).shrink(0).id("uvi-mapping-selected-range"),
-        caption(resource.clone()).named(resource).lines(3).min_w(0).shrink(0).id("uvi-mapping-selected-resource"),
+            zone.keygroup + 1, zone.player + 1)).lines(3).w(Len::Pct(100.)).min_w(0).shrink(0),
+        caption(zone.sample_path.clone()).named(zone.sample_path.clone()).lines(4).w(Len::Pct(100.)).min_w(0).shrink(0).id("uvi-mapping-selected-path"),
+        caption(range.clone()).named(range).lines(4).w(Len::Pct(100.)).min_w(0).shrink(0).id("uvi-mapping-selected-range"),
+        caption(resource.clone()).named(resource).lines(3).w(Len::Pct(100.)).min_w(0).shrink(0).id("uvi-mapping-selected-resource"),
         caption(format!("Authored flags · {} · {} · {}", if zone.purged { "purged" } else { "not purged" },
-            if zone.bypassed { "bypassed" } else { "not bypassed" }, if zone.reverse { "reverse" } else { "forward" })).lines(3).min_w(0).shrink(0).id("uvi-mapping-selected-flags"),
+            if zone.bypassed { "bypassed" } else { "not bypassed" }, if zone.reverse { "reverse" } else { "forward" })).lines(3).w(Len::Pct(100.)).min_w(0).shrink(0).id("uvi-mapping-selected-flags"),
         caption("Round-robin and microphone grouping are unknown in this initial zone view. Overlapping zones or duplicate paths do not establish either.")
-            .fill(secondary()).lines(5).min_w(0).shrink(0).id("uvi-mapping-selected-note")]
+            .fill(secondary()).lines(5).w(Len::Pct(100.)).min_w(0).shrink(0).id("uvi-mapping-selected-note")]
+        // Captions get a definite wrapping width within this flex child;
+        // the inspector itself keeps its basis alongside the sibling list.
         // This shares a flex row with the list: percentage width overrides the
         // flex basis in MUI and collapses the sibling list to zero width.
         .gap(SPACE).align(Align::Start).min_w(0).min_h(0).scroll().flex(1).id("uvi-mapping-selected")
@@ -238,9 +240,9 @@ pub(super) fn inspection(ui: &mut Ui, mapping: &Inspection, state: &mut State, r
             caption(count.clone()).named(count).lines(2).id("uvi-mapping-query-count"),
             caption(shown).lines(2),
             row![col![section(if state.filter { "Matching zones" } else { "Sample zones" }), rows, page]
-                    .gap(SPACE).flex(1).min_w(SIDEBAR_MIN).min_h(0),
-                sample_inspector(mapping, state.selected).min_w(SIDEBAR_MIN)]
-                .wrap().gap(INSET).line_gap(SPACE).flex(1).min_h(0),
+                    .gap(SPACE).flex(1).min_w(0).min_h(0),
+                sample_inspector(mapping, state.selected).min_w(0)]
+                .gap(INSET).flex(1).min_h(0),
             caption("Read-only initial mapping. Scripts may change or route samples during playback; this is not the live sounding map.")
                 .fill(secondary()).lines(2).shrink(0)]
             .gap(SPACE).flex(1).min_w(0).min_h(0)
