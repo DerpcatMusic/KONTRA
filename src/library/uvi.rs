@@ -127,23 +127,6 @@ impl UviCatalog {
         *shelf = prepared;
     }
 
-    pub(super) fn inspect(&mut self, source: &UviSource) -> Result<(), &'static str> {
-        #[cfg(not(feature = "uvi"))]
-        { let _ = source; Err("UVI playback requires a build with UVI support.") }
-        #[cfg(feature = "uvi")]
-        {
-            let config = self.worker_config(source, 48_000)?;
-            let library = crate::uvi::library::Library::open(&source.bank, &config.metadata_namespace, config.content_key)
-                .map_err(|_| "The selected UVI bank could not be opened.")?;
-            let loaded = library.program(&source.member, &config.program_namespace)
-                .map_err(|_| "The selected UVI program could not be decoded.")?;
-            if !crate::uvi::playback::preflight(&loaded.program).is_empty() {
-                return Err("This UVI program requires unsupported playback features.");
-            }
-            Ok(())
-        }
-    }
-
     #[cfg(feature = "uvi")]
     pub(super) fn worker_config(&mut self, source: &UviSource, sample_rate: u32) -> Result<crate::uvi::worker::StartConfig, &'static str> {
         let bank = crate::uvi::ufs::Ufs::open(&source.bank)

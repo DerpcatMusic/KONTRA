@@ -1429,6 +1429,7 @@ fn retire_acknowledged_copy(
     Ok(())
 }
 
+#[cfg(test)]
 fn detect_stale_sessions(stopping: &AtomicBool) -> Option<CrashIncident> {
     find_stale_candidate(stopping, false)?.consume(stopping)
 }

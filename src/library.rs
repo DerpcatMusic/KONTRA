@@ -960,11 +960,13 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl Scanner {
     /// Configure the local reader without touching disk on the UI thread.
+    #[cfg(test)]
     pub fn configure_uvi_reader(&self, reader: Option<PathBuf>) {
         self.edit(|settings| settings.uvi_reader = reader);
         self.rescan();
     }
     /// Loader only. No authority bytes or decoded source leave this service.
+    #[cfg(not(feature = "uvi"))]
     pub(crate) fn inspect_uvi(&self, source: &UviSource) -> Result<(), &'static str> {
         let mut catalog = lock(&self.uvi);
         catalog.reader_path = self.settings().uvi_reader.clone();
