@@ -100,8 +100,10 @@ pub struct GroupSettings {
 /// Zone geometry is immutable proof, shared by script preparation and banks.
 pub(super) fn gate_primary_bypass(settings: &mut [GroupSettings], zones: &[Zone]) {
     for zone in zones {
-        if zone.loop_range.is_some() || zone.native_loops.iter().any(|row| row.mode != 0) {
-            if let Some(group) = settings.get_mut(zone.group) { group.primary_bypass = None; }
+        if (zone.loop_range.is_some() || zone.native_loops.iter().any(|row| row.mode != 0))
+            && let Some(group) = settings.get_mut(zone.group)
+        {
+            group.primary_bypass = None;
         }
     }
 }
@@ -972,7 +974,7 @@ impl Bank {
             for (index, edited) in state.settings.iter().enumerate() {
                 let group = &self.groups[index];
                 if !matches!(group.source_mode, Some(0 | 3)) || group.wavetable.is_some() { continue; }
-                anyhow::ensure!(matches!(edited.interp_quality, 0 | 1 | 2),
+                anyhow::ensure!(matches!(edited.interp_quality, 0..=2),
                     "Unsupported Kontakt ordinary source interpolation quality {} (group {index})", edited.interp_quality);
                 for (play, _) in self.plays.iter().zip(self.zones.iter()).filter(|(_, zone)| zone.group == index) {
                     let sample = &self.samples[play.sample as usize];
@@ -1011,14 +1013,14 @@ impl Bank {
     /// The same mapping selection used by queued script queries and voice starts.
     pub(crate) fn matching_zones<'a>(&'a self, channel: u8, note: u8, velocity: u8,
         release_trigger: bool, mask: &'a crate::ksp::GroupMask) -> impl Iterator<Item = u32> + 'a {
-        self.zones_on(note).iter().copied().filter_map(move |z| {
+        self.zones_on(note).iter().copied().filter(move |&z| {
             let zone = &self.zones[z as usize];
             let group = &self.groups[zone.group];
-            (self.playable[zone.group]
+            self.playable[zone.group]
                 && group.release_trigger == release_trigger
                 && (group.channel < 0 || group.channel == i16::from(channel))
                 && mask.contains(zone.group)
-                && (zone.low_velocity..=zone.high_velocity).contains(&velocity)).then_some(z)
+                && (zone.low_velocity..=zone.high_velocity).contains(&velocity)
         })
     }
 
@@ -1201,7 +1203,7 @@ impl Builder {
                         || l.crossfade != 0 && !l.alternating);
                     let counted = if needs_cursor {
                         let native_dfd = sampling_profile == crate::import::SamplingProfile::Kontakt
-                            && group.source_mode == Some(3) && matches!(group.interp_quality, 0 | 1 | 2);
+                            && group.source_mode == Some(3) && matches!(group.interp_quality, 0..=2);
                         let prepared = if group.reverse { Err("reverse counted or ordered sampling") }
                             else if group.wavetable.is_some() || group.source_mode.is_some_and(|mode| mode != 0 && !native_dfd) {
                                 Err("counted or ordered loops outside ordinary sampler source")
@@ -1635,14 +1637,14 @@ impl Builder {
 // Only this saved Sampler identity has a completed non-reflecting row proof.
 fn nonreflecting_single_pass_alternating(group: &Group, profile: crate::import::SamplingProfile) -> bool {
     profile == crate::import::SamplingProfile::Kontakt && group.source_mode == Some(0)
-        && group.wavetable.is_none() && matches!(group.interp_quality, 0 | 1 | 2)
+        && group.wavetable.is_none() && matches!(group.interp_quality, 0..=2)
 }
 
 /// Kontakt sources require their decoded mode-specific playback owner.
 pub(super) fn source_identity_supported(group: &Group, profile: crate::import::SamplingProfile) -> bool {
     profile == crate::import::SamplingProfile::Compatibility
         || match (group.source_mode, group.wavetable.is_some()) {
-            (Some(0 | 3), false) => matches!(group.interp_quality, 0 | 1 | 2),
+            (Some(0 | 3), false) => matches!(group.interp_quality, 0..=2),
             (Some(9), true) => true,
             _ => false,
         }

@@ -1274,17 +1274,16 @@ fn reporter_worker(
                         .join("deferred")
                         .join(format!("{incident_id}.json")),
                 ] {
-                    if let Err(error) = retire_acknowledged_copy(&copy, &incident_id, &stopping) {
-                        if error.kind() != std::io::ErrorKind::NotFound {
-                            retired = false;
-                            crate::diagnostics::event(
-                                crate::diagnostics::LogLevel::Error,
-                                "support",
-                                "acknowledged_report_cleanup_failed",
-                                serde_json::json!({"incident_id":incident_id,
-                                "reason":format!("Delivery was acknowledged, but a local queue copy could not be retired ({error}). Evidence remains local and may be retried; complete originals are retained.")}),
-                            );
-                        }
+                    if let Err(error) = retire_acknowledged_copy(&copy, &incident_id, &stopping)
+                        && error.kind() != std::io::ErrorKind::NotFound {
+                        retired = false;
+                        crate::diagnostics::event(
+                            crate::diagnostics::LogLevel::Error,
+                            "support",
+                            "acknowledged_report_cleanup_failed",
+                            serde_json::json!({"incident_id":incident_id,
+                            "reason":format!("Delivery was acknowledged, but a local queue copy could not be retired ({error}). Evidence remains local and may be retried; complete originals are retained.")}),
+                        );
                     }
                 }
                 if retired {
@@ -1633,7 +1632,7 @@ fn find_stale_candidate(stopping: &AtomicBool, confirmed_only: bool) -> Option<R
     if stopping.load(Ordering::Acquire) {
         return None;
     }
-    confirmed.or_else(|| if confirmed_only { None } else { unknown })
+    confirmed.or(if confirmed_only { None } else { unknown })
 }
 
 fn recover_pending_slot(pending: &Mutex<Option<CrashIncident>>, stopping: &AtomicBool) -> bool {
@@ -1876,14 +1875,13 @@ fn archive_original(
                 }
                 let bytes = original.read(&mut buffer)?;
                 if bytes == 0 {
-                    if let Some(expected) = expected.filter(|e| !e.blake3.is_empty()) {
-                        if total != expected.bytes
-                            || hasher.finalize().to_hex().as_str() != expected.blake3.as_str()
-                        {
-                            return Err(std::io::Error::other(
-                                "original journal changed after capture; session source retained",
-                            ));
-                        }
+                    if let Some(expected) = expected.filter(|e| !e.blake3.is_empty())
+                        && (total != expected.bytes
+                            || hasher.finalize().to_hex().as_str() != expected.blake3.as_str())
+                    {
+                        return Err(std::io::Error::other(
+                            "original journal changed after capture; session source retained",
+                        ));
                     }
                     return Ok(());
                 }
@@ -2778,10 +2776,9 @@ fn migrate_legacy_pending(stopping: &AtomicBool) -> bool {
                     )),
                 },
             );
-            if let Err(error) = publication {
-                if error.kind() != std::io::ErrorKind::AlreadyExists {
-                    return Err(error);
-                }
+            if let Err(error) = publication
+                && error.kind() != std::io::ErrorKind::AlreadyExists {
+                return Err(error);
             }
         }
         if stopping.load(Ordering::Acquire) {

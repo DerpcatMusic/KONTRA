@@ -543,22 +543,19 @@ fn flexibility(node: &Table) -> (bool, bool) {
         _ => (false, false),
     };
     for m in tables(node, "modifiers").unwrap_or_default() {
-        if string(&m, "name") == "frame" {
-            if let Ok(t) = m.get::<Table>("value") {
-                if number(&t, "width").is_some() {
-                    flex.0 = false;
-                } else if number(&t, "max_width").is_some_and(f64::is_finite) {
-                    flex.0 = false;
-                } else if number(&t, "max_width").is_some_and(|n| n.is_infinite()) {
-                    flex.0 = true;
-                }
-                if number(&t, "height").is_some() {
-                    flex.1 = false;
-                } else if number(&t, "max_height").is_some_and(f64::is_finite) {
-                    flex.1 = false;
-                } else if number(&t, "max_height").is_some_and(|n| n.is_infinite()) {
-                    flex.1 = true;
-                }
+        if string(&m, "name") == "frame"
+            && let Ok(t) = m.get::<Table>("value") {
+            if number(&t, "width").is_some()
+                || number(&t, "max_width").is_some_and(f64::is_finite) {
+                flex.0 = false;
+            } else if number(&t, "max_width").is_some_and(|n| n.is_infinite()) {
+                flex.0 = true;
+            }
+            if number(&t, "height").is_some()
+                || number(&t, "max_height").is_some_and(f64::is_finite) {
+                flex.1 = false;
+            } else if number(&t, "max_height").is_some_and(|n| n.is_infinite()) {
+                flex.1 = true;
             }
         }
     }
@@ -1030,11 +1027,10 @@ fn draw(
     // Alignment belongs to the resulting component, including its frame,
     // padding and decoration wrappers.
     for modifier in tables(node, "modifiers")? {
-        if string(&modifier, "name") == "align" {
-            if let Value::String(value) = val(&modifier, "value") {
-                let (x, y) = align(&value.to_string_lossy());
-                el = el.anchor(x, y);
-            }
+        if string(&modifier, "name") == "align"
+            && let Value::String(value) = val(&modifier, "value") {
+            let (x, y) = align(&value.to_string_lossy());
+            el = el.anchor(x, y);
         }
     }
     let path = string(node, "path");

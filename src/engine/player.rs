@@ -425,7 +425,7 @@ impl Player {
             // Recheck live source edits before releasing/stealing any sibling.
             let groups = ev.groups.unwrap_or(&self.allowed);
             let mut zones = bank.matching_zones(ev.channel, ev.note, ev.velocity, release_trigger, groups).peekable();
-            if zones.peek().is_none() { return None; }
+            zones.peek()?;
             if !ev.group_start_applied || zones.any(|z| !self.completion_supported(bank, state, z)) {
                 self.unsupported_native_controls = self.unsupported_native_controls.saturating_add(1);
                 return None;
@@ -583,13 +583,12 @@ impl Player {
             .frozen_expression
             .unwrap_or(self.midi.expression[expression_channel][expression_key as usize & 127]);
         let mut expression = expression;
-        if ev.frozen_expression.is_none() {
-            if let Some(zone) = self.midi.mpe.member(physical) {
-                expression.tune += self.midi.bend[c].dsp() * self.midi.channel_bend_range[c].map(|range| range.semitones())
-                    .unwrap_or_else(|| f64::from(zone.member_range.semitones())) as f32;
-                if self.native_mpe_pressure && self.midi.pressure_active[c] {
-                    expression.gain *= 10f32.powf((self.midi.pressure[c].dsp() - 1.) * 12. / 20.);
-                }
+        if ev.frozen_expression.is_none()
+            && let Some(zone) = self.midi.mpe.member(physical) {
+            expression.tune += self.midi.bend[c].dsp() * self.midi.channel_bend_range[c].map(|range| range.semitones())
+                .unwrap_or_else(|| zone.member_range.semitones()) as f32;
+            if self.native_mpe_pressure && self.midi.pressure_active[c] {
+                expression.gain *= 10f32.powf((self.midi.pressure[c].dsp() - 1.) * 12. / 20.);
             }
         }
         if self.midi.mpe.zone(physical).is_none() {
@@ -1082,7 +1081,7 @@ impl Player {
         }
         if let Some(zone) = self.midi.mpe.member(physical) {
             x.tune += x.member_bend.unwrap_or(self.midi.bend[c]).dsp() * self.midi.channel_bend_range[c].map(|range| range.semitones())
-                .unwrap_or_else(|| f64::from(zone.member_range.semitones())) as f32;
+                .unwrap_or_else(|| zone.member_range.semitones()) as f32;
             if self.native_mpe_pressure && pressure_active {
                 x.gain *= 10f32.powf((x.member_pressure.unwrap_or(self.midi.pressure[c]).dsp() - 1.) * 12. / 20.);
             }
@@ -1218,10 +1217,8 @@ impl Player {
         let on = value.normalized() >= 0.5;
         match cc {
             64 if self.native_sustain && state.uses_sustain() => {
-                if self.pedals.set_sustain(channel, on) {
-                    if let Some(bank) = bank {
-                        self.pedal_up(bank, state, channel, defaults);
-                    }
+                if self.pedals.set_sustain(channel, on) && let Some(bank) = bank {
+                    self.pedal_up(bank, state, channel, defaults);
                 }
             }
             // Sostenuto latches the keys down now; its release lets go of
@@ -1638,7 +1635,7 @@ impl Player {
 
     pub(super) fn physical_instrument_control(&self, state: &InstrumentState, param: super::params::GroupPar) -> Option<crate::midi::ControlValue> {
         (state.controller_policy == super::instrument::ControllerPolicy::Native
-            && state.controller_options.standard_volume_pan).then(|| match param {
+            && state.controller_options.standard_volume_pan).then_some(match param {
                 super::params::GroupPar::Volume => self.volume.physical,
                 super::params::GroupPar::Pan => self.pan.physical,
                 _ => None,
@@ -2029,7 +2026,7 @@ mod velocity_tests {
         for scripted in [false, true] {
             for reset in [false, true] {
                 for fragmented in [false, true] {
-                    let mut engine = Engine::default(); engine.attack = 0.; engine.release = 0.001;
+                    let mut engine = Engine { attack: 0., release: 0.001, ..Engine::default() };
                     engine.set_bank(Some(prepare(false)));
                     if scripted {
                         let (rt, errors) = crate::ksp::Runtime::with_scripts(&[source], &mut crate::ksp::LogEngine::default(), 0, Vec::new());
@@ -2115,8 +2112,7 @@ mod velocity_tests {
                 // assignments. Prepare the effective row as normal import does.
                 bank = bank.with_prepared_settings(|settings| settings[0].voice_group = Some(0)).unwrap();
             }
-            let mut engine = Engine::default();
-            engine.attack = 0.; engine.release = 0.001;
+            let mut engine = Engine { attack: 0., release: 0.001, ..Engine::default() };
             engine.set_bank(Some(Box::new(bank)));
             assert_eq!(engine.settings().unwrap()[0].voice_group, limited.then_some(0));
             if scripted {
@@ -2215,8 +2211,7 @@ mod velocity_tests {
             let bank = Bank::from_samples(vec![group], vec![Zone::default()], vec![(
                 Default::default(), Sample { rate: 48000, frames: vec![[0.25; 2]; 8192] },
             )]).unwrap();
-            let mut engine = Engine::default();
-            engine.attack = 0.;
+            let mut engine = Engine { attack: 0., ..Engine::default() };
             engine.set_bank(Some(Box::new(bank)));
             engine
         };
@@ -2347,7 +2342,7 @@ mod velocity_tests {
                 );
             };
             #[cfg(feature = "plugin")]
-            assert_eq!(crate::plugin::tests::allocations(|| exercise()), 0);
+            assert_eq!(crate::plugin::tests::allocations(&mut exercise), 0);
             #[cfg(not(feature = "plugin"))]
             exercise();
         }
@@ -2418,7 +2413,7 @@ mod velocity_tests {
             }
         };
         #[cfg(feature = "plugin")]
-        assert_eq!(crate::plugin::tests::allocations(|| exercise()), 0);
+        assert_eq!(crate::plugin::tests::allocations(&mut exercise), 0);
         #[cfg(not(feature = "plugin"))]
         exercise();
         for (pcm, release) in [(&left, releases[0]), (&other, releases[1])] {

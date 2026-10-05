@@ -66,8 +66,9 @@ impl Package {
             let bytes = resources.read(&name).map_err(anyhow::Error::msg)?
                 .ok_or_else(|| anyhow::anyhow!("NativeUI resource {name} missing"))?;
             #[cfg(feature = "plugin")]
-            if image && !selected {
-                if let Ok(size) = crate::artwork::native_dimensions(&bytes) { image_metadata.insert(lower.clone(), size); }
+            if image && !selected
+                && let Ok(size) = crate::artwork::native_dimensions(&bytes) {
+                image_metadata.insert(lower.clone(), size);
             }
             if !selected { continue; }
             total = total
@@ -111,12 +112,12 @@ impl Package {
             if wanted_images.is_some() {
                 members.retain(|name, _| name.ends_with(".nui") || name.ends_with(".ttf") || name.ends_with(".otf"));
             }
-            return Ok(Self {
+            Ok(Self {
                 members,
                 images,
                 fonts,
                 image_metadata,
-            });
+            })
         }
         #[cfg(not(feature = "plugin"))]
         Ok(Self { members })
@@ -425,7 +426,7 @@ impl UserData for Parameter {
                     22 => "$CONTROL_PAR_MAX_VALUE",
                     _ => "",
                 };
-                if let Some(index) = index { if let Some(v) = c.properties.get(&format!("{name}[{index}]")) { return lua_value(lua, v, None); } }
+                if let Some(index) = index && let Some(v) = c.properties.get(&format!("{name}[{index}]")) { return lua_value(lua, v, None); }
                 if let Some(v) = c.properties.get(name) {
                     return lua_value(lua, v, index);
                 }

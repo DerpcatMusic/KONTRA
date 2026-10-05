@@ -568,9 +568,9 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     let first = tops.partition_point(|&t| t <= list_y).saturating_sub(1);
     let last = tops[..listed_rows.len()].partition_point(|&t| t < list_y + shown);
     let mut items = vec![block(1, tops[first]).shrink(0)];
-    for n in first..last.max(first) {
-        items.push(match &listed_rows[n] {
-            Row::Folder { .. } | Row::UviFolder { .. } => folder(ui, cx, n, &listed_rows[n]),
+    for (n, row) in listed_rows.iter().enumerate().take(last.max(first)).skip(first) {
+        items.push(match row {
+            Row::Folder { .. } | Row::UviFolder { .. } => folder(ui, cx, n, row),
             Row::Preset { path, depth, under } => preset(ui, cx, n, path, *depth, under),
             Row::Uvi { preset, depth, under } => uvi_preset(ui, cx, n, preset, *depth, under),
         });

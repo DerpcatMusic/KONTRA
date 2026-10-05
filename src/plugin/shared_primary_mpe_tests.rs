@@ -72,8 +72,10 @@ fn source_bank(shared: bool, key: Option<u8>) -> Bank {
     .unwrap()
 }
 fn actual_dsp_manager(midi1: bool) -> Dsp {
-    let mut dsp = Dsp::default();
-    dsp.until_poll = usize::MAX;
+    let mut dsp = Dsp {
+        until_poll: usize::MAX,
+        ..Default::default()
+    };
     dsp.rack.reset(48000.);
     dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(Box::new(source_bank(true, None))));
     dsp.routers[0].set_route(Route::new(
@@ -83,7 +85,6 @@ fn actual_dsp_manager(midi1: bool) -> Dsp {
             zone: MpeZone::Lower,
             members: 2,
             bend_range: 48,
-            ..Default::default()
         },
     ));
     // Commit the real Router's initial topology before establishing the native
@@ -212,8 +213,8 @@ fn performance_mpe_with_rpn(split: bool, rpn: bool) -> Vec<[f32; 2]> {
                 bend(&mut events, origin, at, 2, 8704);
                 push_cc(&mut events, origin, at, 2, 74, 110);
             }
-            for i in 0..7 {
-                if at == ON[i] {
+            for (i, &onset) in ON.iter().enumerate() {
+                if at == onset {
                     mpe_note(&mut events, origin, at, i, ExactNoteKind::On);
                 }
             }
@@ -267,15 +268,14 @@ fn performance_mpe_with_rpn(split: bool, rpn: bool) -> Vec<[f32; 2]> {
         );
         assert_eq!(actual.rack.parts[0].instrument().unwrap().shared_source_reason(), None);
         for event in output.lossless_iter() {
-            if let LosslessEventRef::Exact(e) = event {
-                if let ExactEventBody::Note {
+            if let LosslessEventRef::Exact(e) = event
+                && let ExactEventBody::Note {
                     kind: ExactNoteKind::End,
                     address,
                     ..
                 } = *e.body()
-                {
-                    ended.push((address, origin + e.sample_offset() as usize));
-                }
+            {
+                ended.push((address, origin + e.sample_offset() as usize));
             }
         }
         let mut expected = vec![[0.; 2]; n];
@@ -321,10 +321,10 @@ fn performance_mpe_with_rpn(split: bool, rpn: bool) -> Vec<[f32; 2]> {
         }
     }
     assert_eq!(ended.len(), 7);
-    for i in 0..7 {
+    for (i, &end) in END.iter().enumerate() {
         assert_eq!(
             ended.iter().find(|x| x.0 == mpe_address(i)).map(|x| x.1),
-            Some(END[i])
+            Some(end)
         );
     }
     assert!(pcm[32..128].iter().flatten().any(|x| x.abs() > 0.01));
@@ -372,8 +372,10 @@ fn first_static_mpe_setup_clears_old_pedal_and_obeys_original_velocity_prefix_or
     // Two: first CC88 resets roles then arms the NEW prefix for the following On.
     let level = levels(2);
     for mode in 0..3 {
-        let mut actual = Dsp::default();
-        actual.until_poll = usize::MAX;
+        let mut actual = Dsp {
+            until_poll: usize::MAX,
+            ..Default::default()
+        };
         actual.rack.reset(48000.);
         actual.rack.parts[0].instrument_mut().unwrap().set_bank(Some(Box::new(source_bank(true, None))));
         actual.rack.parts[0].instrument_mut().unwrap().cc(1, 64, 127);
@@ -385,7 +387,6 @@ fn first_static_mpe_setup_clears_old_pedal_and_obeys_original_velocity_prefix_or
                 zone: MpeZone::Lower,
                 members: 2,
                 bend_range: 48,
-                ..Default::default()
             },
         ));
         let params = params();
@@ -461,23 +462,26 @@ fn first_static_mpe_setup_clears_old_pedal_and_obeys_original_velocity_prefix_or
                 );
             }
             for event in output.lossless_iter() {
-                if let LosslessEventRef::Exact(e) = event {
-                    if matches!(
+                if let LosslessEventRef::Exact(e) = event
+                    && matches!(
                         e.body(),
                         ExactEventBody::Note {
                             kind: ExactNoteKind::End,
                             ..
                         }
                     ) {
-                        ended.push(origin + e.sample_offset() as usize);
-                    }
+                    ended.push(origin + e.sample_offset() as usize);
                 }
             }
             let mut expected = vec![[0.; 2]; n];
             assert_eq!(
                 super::super::tests::allocations(|| {
                     for frame in origin..end {
-                        for i in 0..if mode == 0 { 2 } else { 1 } {
+                        for (i, voice) in reference
+                            .iter_mut()
+                            .enumerate()
+                            .take(if mode == 0 { 2 } else { 1 })
+                        {
                             let onset = i * 128;
                             if frame < onset {
                                 continue;
@@ -488,7 +492,7 @@ fn first_static_mpe_setup_clears_old_pedal_and_obeys_original_velocity_prefix_or
                                 } else {
                                     (12800. + if mode == 1 { 1. } else { 7. }) / 16383.
                                 };
-                                assert!(reference[i].host_note_on_velocity(
+                                assert!(voice.host_note_on_velocity(
                                     HostNote {
                                         port: 0,
                                         channel: 0,
@@ -503,7 +507,7 @@ fn first_static_mpe_setup_clears_old_pedal_and_obeys_original_velocity_prefix_or
                                 ));
                             }
                             let (mut x, mut y) = ([0.; 1], [0.; 1]);
-                            reference[i].render(&mut x, &mut y);
+                            voice.render(&mut x, &mut y);
                             let gain = level.get(512 + frame - onset).copied().unwrap_or(0.);
                             expected[frame - origin][0] += x[0] * gain;
                             expected[frame - origin][1] += y[0] * gain;

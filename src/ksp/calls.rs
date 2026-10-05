@@ -8,7 +8,7 @@ use super::runtime::{read_value, refresh_value, write_value_rt};
 use super::ui::{MenuItem, Prop};
 use super::arrays::{read_path, nka, save_nka};
 use super::vm::{Exec, Fault, Kind, Machine, Step, append_text, put_text, put_variable_text};
-use super::{KeyState, Value};
+use super::Value;
 
 fn ints<const N: usize>(m: &mut Machine) -> [i32; N] {
     let mut a = [0; N];
@@ -1182,14 +1182,14 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 return push_int(m, id);
             }
             let id = m.env.next_async();
-            let request = m.engine.request_ir_sample(&file, slot, generic, m.slot.index, id);
+            let request = m.engine.request_ir_sample(file, slot, generic, m.slot.index, id);
             if request == Some(true) {
                 m.env.pending_async.push((m.slot.index, id));
                 return push_int(m, id);
             }
             // Asynchronous in Kontakt: `on async_complete` reports 1 once
             // loaded, 0 when not found.
-            let loaded = request.or_else(|| m.engine.load_ir_sample(&file, slot, generic));
+            let loaded = request.or_else(|| m.engine.load_ir_sample(file, slot, generic));
             match loaded {
                 Some(true) => {}
                 Some(false) => m.env.note(
@@ -1712,7 +1712,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 .host
                 .keyboard
                 .entry(note)
-                .or_insert_with(KeyState::default);
+                .or_default();
             put_text(&mut key.name, text, m.env.loading)?;
             Ok(Step::Next)
         }
@@ -1729,7 +1729,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             }
             let family = if f == SetKeyColor { "$KEY_COLOR_" } else { "$NI_KEY_TYPE_" };
             let name = b::named(family, value);
-            let key = m.env.host.keyboard.entry(note).or_insert_with(KeyState::default);
+            let key = m.env.host.keyboard.entry(note).or_default();
             if f == SetKeyPressed { key.pressed = value == 1; }
             else { key.set_symbol(f == SetKeyColor, name, value, m.env.loading)?; }
             Ok(Step::Next)

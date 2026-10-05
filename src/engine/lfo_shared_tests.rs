@@ -208,7 +208,10 @@ fn trajectories() -> [[Vec<f32>; 2]; 5] {
         let (mut old_pitch, mut pitch, mut old_gain, mut gain) = (0., 0., 1., 1.);
         let mut initialized = false;
         let (mut receiver_entry, mut first_boundary) = (STARTS[index], STARTS[index]);
-        for frame in STARTS[index]..END {
+        let [pitch_out, gain_out] = &mut out;
+        for (frame, (pitch_sample, gain_sample)) in pitch_out.iter_mut()
+            .zip(gain_out.iter_mut()).enumerate().skip(STARTS[index])
+        {
             let bypass = GROUPS[index] == 0 && (117..181).contains(&frame);
             let age = frame - STARTS[index];
             if frame == STARTS[index] || WINDOWS.contains(&frame) {
@@ -221,7 +224,7 @@ fn trajectories() -> [[Vec<f32>; 2]; 5] {
                 first_boundary =
                     effective_entry + ((32 - ((effective_entry - STARTS[index]) & 31)) & 31);
             }
-            if !bypass && (age % 32 == 0 || !initialized) {
+            if !bypass && (age.is_multiple_of(32) || !initialized) {
                 old_pitch = pitch;
                 old_gain = gain;
                 let cursor = frame.saturating_sub(first_boundary) / 32;
@@ -240,12 +243,12 @@ fn trajectories() -> [[Vec<f32>; 2]; 5] {
                 }
             }
             let fraction = (age % 32) as f32 / 32.;
-            out[0][frame] = if bypass {
+            *pitch_sample = if bypass {
                 0.
             } else {
                 old_pitch + (pitch - old_pitch) * fraction
             };
-            out[1][frame] = if bypass {
+            *gain_sample = if bypass {
                 1.
             } else {
                 old_gain + (gain - old_gain) * fraction
@@ -489,7 +492,7 @@ impl ColdReference {
             self.tail = count - (end - frame).div_ceil(32);
         }
         let age = frame - born;
-        if !self.initialized || age % 32 == 0 {
+        if !self.initialized || age.is_multiple_of(32) {
             let phase = (phase + (self.tail + self.cursor) as f64) * step();
             let phase = phase.rem_euclid(1.);
             let raw = if phase < 0.5 {

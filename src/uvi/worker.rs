@@ -1024,18 +1024,17 @@ impl Worker {
                     request = Some(id);
                     let started = Instant::now();
                     loop {
-                        if let Some(reply) = self.poll_runtime_snapshot() {
-                            if reply.request == id
-                                && reply.stamp.epoch == minimum.epoch
-                                && reply.stamp.generation == minimum.generation
-                                && reply.stamp.frame >= minimum.frame
-                            {
-                                break if reply.snapshot.is_ok() {
-                                    "captured"
-                                } else {
-                                    "unavailable"
-                                };
-                            }
+                        if let Some(reply) = self.poll_runtime_snapshot()
+                            && reply.request == id
+                            && reply.stamp.epoch == minimum.epoch
+                            && reply.stamp.generation == minimum.generation
+                            && reply.stamp.frame >= minimum.frame
+                        {
+                            break if reply.snapshot.is_ok() {
+                                "captured"
+                            } else {
+                                "unavailable"
+                            };
                         }
                         if self.status() != Status::Ready {
                             break "unavailable";
@@ -1239,13 +1238,13 @@ impl Worker {
     /// An in-flight disk read or render must still return before the join finishes.
     pub fn stop(&mut self) {
         self.request_stop();
-        if let Some(handle) = self.thread.take() {
-            if handle.join().is_err() {
-                self.shared.counters.errors.fetch_add(1, Ordering::Relaxed);
-                self.shared
-                    .status
-                    .store(Status::Failed as u8, Ordering::Release);
-            }
+        if let Some(handle) = self.thread.take()
+            && handle.join().is_err()
+        {
+            self.shared.counters.errors.fetch_add(1, Ordering::Relaxed);
+            self.shared
+                .status
+                .store(Status::Failed as u8, Ordering::Release);
         }
         // Preserve the latest completed-packet voice census after stop.
         if self
@@ -2029,7 +2028,7 @@ fn serve(player: &mut Player<'_>, shared: &Shared, sample_rate: u32) -> Result<(
         if let Some(pending) = &mut pending_completions {
             transfer_completions(player, shared, pending)?;
         }
-        capture_ui(&player, shared, applied_ui_sequence);
+        capture_ui(player, shared, applied_ui_sequence);
         capture_state(player, shared)?;
         capture_runtime(player, shared);
         phase(shared, "serve", player.current_frame());
@@ -2160,7 +2159,7 @@ fn serve(player: &mut Player<'_>, shared: &Shared, sample_rate: u32) -> Result<(
             if let Some(pending) = &mut pending_completions {
                 transfer_completions(player, shared, pending)?;
             }
-            capture_ui(&player, shared, applied_ui_sequence);
+            capture_ui(player, shared, applied_ui_sequence);
             capture_state(player, shared)?;
             capture_runtime(player, shared);
             phase(shared, "serve", player.current_frame());

@@ -190,11 +190,11 @@ fn levels(i: usize) -> Vec<f32> {
         _ => unreachable!(),
     };
     let mut output = vec![0.; FINISH];
-    for frame in ON[i]..END[i] {
+    for (frame, value) in output.iter_mut().enumerate().take(END[i]).skip(ON[i]) {
         let index = points.iter().rposition(|p| p.0 <= frame).unwrap();
         let current = points[index].1.max(0.);
         let previous = points[index.saturating_sub(1)].1.max(0.);
-        output[frame] = previous + (current - previous) * ((frame - ON[i]) & 31) as f32 / 32.;
+        *value = previous + (current - previous) * ((frame - ON[i]) & 31) as f32 / 32.;
     }
     output
 }
@@ -207,8 +207,10 @@ fn signal(key: u8, age: usize) -> [f32; 2] {
     ]
 }
 fn dsp(reference: Option<usize>) -> Dsp {
-    let mut dsp = Dsp::default();
-    dsp.until_poll = usize::MAX;
+    let mut dsp = Dsp {
+        until_poll: usize::MAX,
+        ..Default::default()
+    };
     dsp.rack.reset(48_000.);
     let keys = reference.map_or(vec![60, 62], |i| vec![KEY[i]]);
     let groups: Vec<_> = keys
@@ -282,8 +284,8 @@ fn performance(split: bool) -> Vec<[f32; 2]> {
         // Build all events outside the audio allocation guard and sort by
         // authored frame. No provider candidate, phase or producer is read.
         for at in origin..end {
-            for i in 0..7 {
-                if at == ON[i] {
+            for (i, &onset) in ON.iter().enumerate() {
+                if at == onset {
                     push_note(&mut events, origin, at, i, ExactNoteKind::On);
                 }
             }
@@ -341,15 +343,14 @@ fn performance(split: bool) -> Vec<[f32; 2]> {
             pcm[origin + offset] = [left, right];
         }
         for event in output.lossless_iter() {
-            if let LosslessEventRef::Exact(event) = event {
-                if let ExactEventBody::Note {
+            if let LosslessEventRef::Exact(event) = event
+                && let ExactEventBody::Note {
                     kind: ExactNoteKind::End,
                     address,
                     ..
                 } = *event.body()
-                {
-                    ended.push((address, origin + event.sample_offset() as usize));
-                }
+            {
+                ended.push((address, origin + event.sample_offset() as usize));
             }
         }
         for (i, (dsp, p)) in dry.iter_mut().enumerate() {
@@ -379,10 +380,10 @@ fn performance(split: bool) -> Vec<[f32; 2]> {
         }
     }
     assert_eq!(ended.len(), 7);
-    for i in 0..7 {
+    for (i, &end) in END.iter().enumerate() {
         assert_eq!(
             ended.iter().find(|x| x.0 == address(i)).map(|x| x.1),
-            Some(END[i])
+            Some(end)
         );
     }
     let error = pcm
@@ -498,8 +499,10 @@ fn unsupported_shared_primary_rosters_reject_before_plugin_audio_or_root_publica
         vec![(Default::default(), sample())],
     )
     .unwrap();
-    let mut actual = Dsp::default();
-    actual.until_poll = usize::MAX;
+    let mut actual = Dsp {
+        until_poll: usize::MAX,
+        ..Default::default()
+    };
     actual.rack.reset(48_000.);
     actual.rack.parts[0].instrument_mut().unwrap().set_bank(Some(Box::new(bank)));
     let p = params();

@@ -448,7 +448,7 @@ impl In {
         match self {
             Self::HostOn(note, ..) => note.channel,
             Self::PerNoteManagement { channel, .. } => channel,
-            Self::HostOff(p) | Self::HostOffVelocity(p, _) | Self::HostChoke(p) | Self::HostExpression(p, _) | Self::HostPressure(p, _) => p.channel.max(0).min(15) as u8,
+            Self::HostOff(p) | Self::HostOffVelocity(p, _) | Self::HostChoke(p) | Self::HostExpression(p, _) | Self::HostPressure(p, _) => p.channel.clamp(0, 15) as u8,
             Self::NoteOn(c, ..)
             | Self::Midi1NoteOn(c, ..)
             | Self::Midi1Cc(c, ..)
@@ -1252,10 +1252,10 @@ pub fn dispatch_to_on_port(rack: &mut Rack, routers: &mut [Router], slots: impl 
 pub fn dispatch_to_with(rack: &mut Rack, routers: &mut [Router], slots: impl IntoIterator<Item = usize>, port: u8, ev: In,
     external: &mut impl FnMut(usize, u8, In, &Router, bool) -> bool) {
     for slot in slots {
-        if let (Some(c), Some(r)) = (rack.controls.get(slot).copied(), routers.get_mut(slot)) {
-            if !external(slot, port, ev, r, true) {
-                rack.with_part(slot, |e| feed_part(r, e, ev, u8::try_from(c.channel).unwrap_or(0), port));
-            }
+        if let (Some(c), Some(r)) = (rack.controls.get(slot).copied(), routers.get_mut(slot))
+            && !external(slot, port, ev, r, true)
+        {
+            rack.with_part(slot, |e| feed_part(r, e, ev, u8::try_from(c.channel).unwrap_or(0), port));
         }
     }
 }
@@ -1267,10 +1267,10 @@ pub fn play(rack: &mut Rack, routers: &mut [Router], slot: usize, ev: In) {
 
 pub fn play_with(rack: &mut Rack, routers: &mut [Router], slot: usize, port: u8, ev: In,
     external: &mut impl FnMut(usize, u8, In, &Router, bool) -> bool) {
-    if let Some(r) = routers.get_mut(slot) {
-        if !external(slot, port, ev, r, true) {
-            rack.with_part(slot, |e| feed_part(r, e, ev, ev.channel(), port));
-        }
+    if let Some(r) = routers.get_mut(slot)
+        && !external(slot, port, ev, r, true)
+    {
+        rack.with_part(slot, |e| feed_part(r, e, ev, ev.channel(), port));
     }
 }
 
@@ -1410,7 +1410,7 @@ mod tests {
             &mut LogEngine::new(Vec::new(), 48_000.), 8, Vec::new());
         assert!(errors.iter().all(Option::is_none), "{errors:?}");
         engine.set_script(Some(Box::new(runtime)));
-        let mut exercise = || {
+        let exercise = || {
             engine.begin_audio_block(128, 1, true);
             engine.ui_control(0, 0, 1);
             for input in [2, 5] {
@@ -1422,9 +1422,9 @@ mod tests {
             engine.render(&mut [0.; 128], &mut [0.; 128]);
         };
         #[cfg(feature = "plugin")]
-        assert_eq!(crate::plugin::tests::allocations(|| exercise()), 0);
+        assert_eq!(crate::plugin::tests::allocations(exercise), 0);
         #[cfg(not(feature = "plugin"))]
-        exercise();
+        { let mut exercise = exercise; exercise(); }
         let ui = engine.script().unwrap().interface(1);
         for (control, value) in [(0, 0), (1, 1), (2, 1), (3, 0)] {
             assert_eq!(ui.controls[control].properties["$CONTROL_PAR_VALUE"], Value::Int(value));
@@ -1481,7 +1481,7 @@ mod tests {
             &mut LogEngine::new(Vec::new(), 48_000.), 8, Vec::new());
         assert!(errors.iter().all(Option::is_none), "{errors:?}");
         engine.set_script(Some(Box::new(runtime)));
-        let mut exercise = || {
+        let exercise = || {
             engine.begin_audio_block(128, 1, true);
             engine.ui_control(0, 0, 1);
             for (input, key) in [(2, 60), (5, 64)] {
@@ -1492,9 +1492,9 @@ mod tests {
             engine.render(&mut [0.; 128], &mut [0.; 128]);
         };
         #[cfg(feature = "plugin")]
-        assert_eq!(crate::plugin::tests::allocations(|| exercise()), 0);
+        assert_eq!(crate::plugin::tests::allocations(exercise), 0);
         #[cfg(not(feature = "plugin"))]
-        exercise();
+        { let mut exercise = exercise; exercise(); }
         let ui = engine.script().unwrap().interface(1);
         for (control, value) in [(0, 0), (1, 1), (2, 0), (3, 1), (4, 1), (5, 0)] {
             assert_eq!(ui.controls[control].properties["$CONTROL_PAR_VALUE"], Value::Int(value),
@@ -3014,7 +3014,7 @@ end on"#;
                     while at<l.len() {let n=sizes[block%sizes.len()].min(l.len()-at);
                         e.render(&mut l[at..at+n],&mut r[at..at+n]);at+=n;block+=1;}
                 };
-                let mut exercise=|| {
+                let exercise=|| {
                     feed(&mut r,&mut e,In::NoteOn(1,60,100),0);
                     reference.note_on(1,60,100);
                     render(&mut e,&mut a,&mut b);render(&mut reference,&mut x,&mut y);
@@ -3032,9 +3032,9 @@ end on"#;
                     if let Some(rt)=e.script() {assert!(rt.diagnostics().is_empty(),"{:?}",rt.diagnostics());}
                 };
                 #[cfg(feature="plugin")]
-                assert_eq!(crate::plugin::tests::allocations(||exercise()),0);
+                assert_eq!(crate::plugin::tests::allocations(exercise),0);
                 #[cfg(not(feature="plugin"))]
-                exercise();
+                { let mut exercise = exercise; exercise(); }
             }
         }
     }
@@ -3061,7 +3061,7 @@ end on"#;
                             e.render(&mut l[at..at+n],&mut r[at..at+n]);at+=n;block+=1;}
                         e.mark_host_notes();
                     };
-                    let mut exercise=|| {
+                    let exercise=|| {
                         for on in [false,true] {
                             for owner in owners {feed(&mut r,&mut e,In::HostOn(owner,Velocity::from_midi1(100),0.),0);}
                             render(&mut e,&mut left,&mut right);
@@ -3089,9 +3089,9 @@ end on"#;
                         }
                     };
                     #[cfg(feature="plugin")]
-                    assert_eq!(crate::plugin::tests::allocations(||exercise()),0);
+                    assert_eq!(crate::plugin::tests::allocations(exercise),0);
                     #[cfg(not(feature="plugin"))]
-                    exercise();
+                    { let mut exercise = exercise; exercise(); }
                 }
             }
         }
@@ -3125,7 +3125,7 @@ end on"#;
                                 e.render(&mut l[at..at+n],&mut r[at..at+n]);at+=n;block+=1;}
                             e.mark_host_notes();
                         };
-                        let mut exercise=|| {
+                        let exercise=|| {
                             for owner in owners {
                                 let on=if exact {In::HostOn(owner,Velocity::from_midi1(100),0.)} else {In::NoteOn(owner.channel,owner.key,100)};
                                 feed(&mut r,&mut e,on,0);feed(&mut rr,&mut reference,on,0);
@@ -3156,9 +3156,9 @@ end on"#;
                             if let Some(rt)=e.script() {assert!(rt.diagnostics().is_empty(),"{:?}",rt.diagnostics());}
                         };
                         #[cfg(feature="plugin")]
-                        assert_eq!(crate::plugin::tests::allocations(||exercise()),0);
+                        assert_eq!(crate::plugin::tests::allocations(exercise),0);
                         #[cfg(not(feature="plugin"))]
-                        exercise();
+                        { let mut exercise = exercise; exercise(); }
                     }
                 }
             }
@@ -3564,7 +3564,7 @@ mod real {
             r.set_route(Route::new(&path, &a, &Mpe::default()));
             let ch = |l: usize| a.articulations[lines[l].0].channel;
             let mut heard = vec![[const { Vec::new() }; 3]; 8];
-            for beat in 0..8 {
+            for (beat, heard_beat) in heard.iter_mut().enumerate() {
                 for &l in order.iter().filter(|&&l| l != 0 && beat > 0) {
                     feed(&mut r, &mut e, In::NoteOff(ch(l), lines[l].1[beat - 1]), 0);
                 }
@@ -3579,10 +3579,10 @@ mod real {
                 step(&mut e, 0.07);
                 for (v, &l) in e.voice_census().iter().flat_map(|v| order.iter().map(move |l| (v, l))) {
                     if v.note == lines[l].1[beat] && !v.released && !v.release_trigger {
-                        heard[beat][l].push(groups[v.group as usize]);
+                        heard_beat[l].push(groups[v.group as usize]);
                     }
                 }
-                for g in &mut heard[beat] {
+                for g in heard_beat {
                     g.sort_unstable();
                     g.dedup();
                 }
