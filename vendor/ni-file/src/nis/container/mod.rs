@@ -9,6 +9,9 @@ pub use data::*;
 pub use header::*;
 pub use uuid::*;
 
+// Bound recursive parsing and later traversal/drop on ordinary loader thread stacks.
+const MAX_NESTING: usize = 64;
+
 // Advance within one declared body, so nested objects cannot consume sibling bytes.
 fn read_slice<'a>(
     reader: &mut std::io::Cursor<&'a [u8]>,
