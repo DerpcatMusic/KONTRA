@@ -150,8 +150,8 @@ domain. Raw-event interception precedes this projection; consumed messages must
 not reach it. A raw scripting interception API is still pending.
 
 Current support is MIDI 1.0 UMP note-on/off, pitch bend, channel pressure and CC74,
-with fixed default
-manager/member ranges of 2/48 semitones. Manager and member bends add; projection
+with initial
+manager/member ranges of 2/48 semitones and whole-semitone RPN 0 updates below. Manager and member bends add; projection
 uses a piecewise bipolar scale with exact center and endpoints. Both channel values
 are retained while idle and installed before source selection or note programs.
 Multiple active notes on a member share its gestures. Each admitted root retains
@@ -183,7 +183,7 @@ on the local Ryzen 7800X3D measured medians 0.85/3.38/13.78 microseconds for
 the median was 1.62 microseconds. These are local observations, not deadlines or
 full audio callback guarantees; CSV is `artifacts/mpe-expression-workload.csv`.
 
-RPN/MCM configuration, other bend sensitivities, zone pedals/modes and ordinary
+MCM configuration, fractional/relative RPN, zone pedals/modes and ordinary
 MIDI 2.0 expression routing remain unsupported. Do not forward
 unsupported zone controls to ordinary channel ingress as a substitute. Source
 rate limits can reject otherwise valid MPE pitches; the current 1/256..16 source
@@ -214,3 +214,35 @@ medians of 14.58 microseconds for pitch, 10.45 for pressure and 10.37 for timbre
 The pressure run included a 2.39 ms maximum scheduler outlier, reinforcing that
 these process timings are observations rather than realtime guarantees. Evidence
 uses `artifacts/mpe-controls-*`; filtering/rendering remains outside this workload.
+
+### Whole-semitone pitch-bend sensitivity
+
+RPN 0 now accepts CC101/100 selection in either order, CC6 sensitivity from 0 to
+96 semitones and a zero CC38. Per-channel selectors start null; NRPN selection
+(CC99/98) disables RPN data entry, and null or unknown RPNs cannot change pitch.
+Nonzero fractional CC38 and relative data entry remain explicitly unsupported.
+`Applied::Configuration` reports selector/zero-LSB state handling; actual range
+changes report the affected expression-owner count. It does not mean the entire
+MPE receiver has been configured.
+
+The manager range is independent. The last accepted member sensitivity updates
+every member channel in that zone, as required by section 2.2.5. Active member
+notes reproject their retained raw 14-bit bends; released notes keep their prior
+member pitch in semitones. Manager range changes still affect retained sounding
+owners. Idle controller state is updated for future notes. Raw bend values are
+stored separately from projected note values, so selecting a zero range cannot
+lose the position needed when a nonzero range is restored.
+
+Projection, source-rate preflight, expression commit, channel snapshots and range
+commit form one transaction after due work. A rate failure on any source preserves
+all prior expression/range/controller state. Bounds above 96 reject rather than
+clamp. Accepting a range while idle does not guarantee every subsequent note's
+source rate is supported; ordinary source admission still validates that case.
+
+Heap-guarded lower/upper-zone tests cover different member bends, shared range
+updates, independent manager sensitivity, released-tail snapshots, late failure
+rollback, out-of-range input, partial/null/NRPN selectors, unsupported fractions
+and exact restoration after zero sensitivity. Release, Clippy and MSRV checks
+remain the validation gate. The separate gesture workload still measured roughly
+14.9/10.4/10.3 microseconds at 1024 notes for pitch/pressure/timbre; local evidence
+uses `artifacts/mpe-rpn-*` and excludes rendering.

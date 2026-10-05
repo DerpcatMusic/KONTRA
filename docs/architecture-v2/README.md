@@ -1,6 +1,6 @@
 # KONTRA 2.0 architecture workbench
 
-Status: independent note/family/expression ownership and segmented PCM rendering,
+Status: independent native ownership, scheduling, resident DSP, behavior and MIDI services,
 2026-10-05. Production playback has not been replaced or certified.
 
 This work starts on `docs/plan-v2-architecture`, in the isolated T3 worktree
@@ -45,7 +45,7 @@ compatibility remains a separate, evidence-backed capability.
     forward/reverse cursors, release exits and boundary evidence.
 
 12. [Native MIDI/UMP ingress](MIDI_INGRESS.md): pinned wire protocol, precision,
-    bounded decoding and sample-time note/pedal routing.
+    bounded decoding, sample-time note/pedal routing and fixed-zone MPE expression.
 
 13. [Native bounded behavior execution](BEHAVIOR.md): generated notes, waits,
     suppression, instruction fuel and retained completion/fault ownership.
@@ -59,11 +59,27 @@ compatibility remains a separate, evidence-backed capability.
 16. [Resident render measurements](RENDER_WORKLOADS.md): reproducible polyphony and
     capacity workloads plus measured sustain optimization.
 
-Continue through **V2-01 → V2-02 → V2-03/V2-04**: define independent workload
-and protocol contracts, then build unified event/continuation scheduling on the
-new family/expression ownership. Full lifecycle and pedal behavior remain open.
-The prototype may change freely. The old-VM KSP probe is historical evidence, not
-the new scripting implementation. Legacy defects do not block v2 delivery.
+## Implemented and still open
+
+- Native core: generational note/family/voice/expression ownership, physical versus
+  effective gates, bounded scheduling/behaviors, resident selection, AHDSR,
+  source views/loops, bandlimited rate conversion, root-key and live pitch,
+  initial expression and transactional multi-owner gestures.
+- Preparation: immutable plans, adoption between notes, original-generation tails
+  and callbacks, and control-thread retirement. Native WAV rendering and the
+  deliberately small KSP source subset run independently of the old engine.
+- MIDI: UMP framing and MIDI 1/2 note/pedal/channel-mode ingress; separate fixed-zone
+  MPE pitch/pressure/CC74 and whole-semitone RPN sensitivity. Full MIDI 2 expression,
+  MPE zone configuration/modes/pedals and raw scripting interception remain open.
+- Product work remains substantial: modulation/filter/effect execution, streaming,
+  richer selection/behavior/imports, host integration, persistence and UI. The
+  production plugin/UI still uses the old core. There is no new-core DAW build yet.
+
+Continue the native foundations and their ownership/performance checks before
+selective porting and product cutover, following [TASKS.md](TASKS.md). High-ratio
+filter cost and supported pitch range remain explicit DSP limits. No broad task
+or format-conformance gate is closed by these partial implementations. The old-VM
+KSP probe remains historical evidence, not the new scripting implementation.
 
 ## Preserved source material
 
@@ -120,4 +136,5 @@ an existing test name, a parsed JSON file, or a checked planning item is not a
 passing conformance result. Keep measured results separate from the original catalogue.
 
 [Resident resampling foundation](RESAMPLING.md) records fractional traversal,
-static transposition, filter evidence and the remaining live-pitch work.
+static/root-key transposition, live pitch, initial expression, filter evidence and
+remaining range, quality, ramp and performance work.

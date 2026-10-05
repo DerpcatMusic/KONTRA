@@ -322,3 +322,119 @@ fn pressure_and_timbre_keep_member_snapshots_and_preserve_unrelated_expression()
         });
     }
 }
+
+#[test]
+fn rpn_sensitivity_is_zone_wide_transactional_and_keeps_released_member_pitch() {
+    for (zone, manager, a, b) in [(Zone::Lower, 0, 1, 2), (Zone::Upper, 15, 14, 13)] {
+        let mut rt = runtime();
+        let mut mpe = Mpe::new(&rt, 7, 3, zone, 2, 8).unwrap();
+        support::without_heap(|| {
+            assert_eq!(mpe.pitch_ranges(), (2, 48));
+            apply(&mut mpe, &mut rt, bend(a, 10240)).unwrap();
+            apply(&mut mpe, &mut rt, bend(b, 9216)).unwrap();
+            let tail = start(&mut mpe, &mut rt, a, 60);
+            apply(&mut mpe, &mut rt, packet(0x80, a, 60, 0)).unwrap();
+            let active_a = start(&mut mpe, &mut rt, a, 61);
+            let active_b = start(&mut mpe, &mut rt, b, 60);
+            assert_eq!(
+                apply(&mut mpe, &mut rt, packet(0xb0, a, 6, 24)),
+                Ok(Applied::Unsupported)
+            );
+            // Either selector byte may arrive first. One byte alone is not RPN 0.
+            apply(&mut mpe, &mut rt, packet(0xb0, a, 100, 0)).unwrap();
+            assert_eq!(
+                apply(&mut mpe, &mut rt, packet(0xb0, a, 6, 24)),
+                Ok(Applied::Unsupported)
+            );
+            apply(&mut mpe, &mut rt, packet(0xb0, a, 101, 0)).unwrap();
+            assert_eq!(
+                apply(&mut mpe, &mut rt, packet(0xb0, a, 6, 24)),
+                Ok(Applied::Expression { owners: 2 })
+            );
+            assert_eq!(mpe.pitch_ranges(), (2, 24));
+            assert_eq!(expression(&rt, tail).pitch_semitones, pitch(10240, 48.0));
+            assert_eq!(
+                expression(&rt, active_a).pitch_semitones,
+                pitch(10240, 24.0)
+            );
+            assert_eq!(expression(&rt, active_b).pitch_semitones, pitch(9216, 24.0));
+            for index in [101, 100] {
+                apply(&mut mpe, &mut rt, packet(0xb0, manager, index, 0)).unwrap();
+            }
+            apply(&mut mpe, &mut rt, packet(0xb0, manager, 6, 12)).unwrap();
+            apply(&mut mpe, &mut rt, bend(manager, 12288)).unwrap();
+            let global = pitch(12288, 12.0);
+            assert_eq!(
+                expression(&rt, tail).pitch_semitones,
+                pitch(10240, 48.0) + global
+            );
+            apply(&mut mpe, &mut rt, bend(b, 16383)).unwrap();
+            let before = [
+                expression(&rt, tail),
+                expression(&rt, active_a),
+                expression(&rt, active_b),
+            ];
+            assert_eq!(
+                apply(&mut mpe, &mut rt, packet(0xb0, a, 6, 96)),
+                Err(ApplyError::Core(Error::InvalidInput))
+            );
+            assert_eq!(mpe.pitch_ranges(), (12, 24));
+            assert_eq!(
+                [
+                    expression(&rt, tail),
+                    expression(&rt, active_a),
+                    expression(&rt, active_b)
+                ],
+                before
+            );
+            assert_eq!(
+                apply(&mut mpe, &mut rt, packet(0xb0, manager, 6, 97)),
+                Err(ApplyError::Core(Error::InvalidInput))
+            );
+            assert_eq!(
+                apply(&mut mpe, &mut rt, packet(0xb0, a, 38, 1)),
+                Ok(Applied::Unsupported)
+            );
+            assert_eq!(
+                apply(&mut mpe, &mut rt, packet(0xb0, a, 38, 0)),
+                Ok(Applied::Configuration)
+            );
+            // NRPN selection disables RPN data entry; null RPN does likewise.
+            apply(&mut mpe, &mut rt, packet(0xb0, a, 99, 0)).unwrap();
+            assert_eq!(
+                apply(&mut mpe, &mut rt, packet(0xb0, a, 6, 0)),
+                Ok(Applied::Unsupported)
+            );
+            for index in [101, 100] {
+                apply(&mut mpe, &mut rt, packet(0xb0, a, index, 127)).unwrap();
+            }
+            assert_eq!(
+                apply(&mut mpe, &mut rt, packet(0xb0, a, 6, 0)),
+                Ok(Applied::Unsupported)
+            );
+            for index in [100, 101] {
+                apply(&mut mpe, &mut rt, packet(0xb0, a, index, 0)).unwrap();
+            }
+            apply(&mut mpe, &mut rt, packet(0xb0, a, 6, 0)).unwrap();
+            assert_eq!(expression(&rt, active_a).pitch_semitones, global);
+            assert_eq!(expression(&rt, active_b).pitch_semitones, global);
+            assert_eq!(expression(&rt, tail), before[0]);
+            // Zero range must not erase raw bend positions needed on restoration.
+            apply(&mut mpe, &mut rt, packet(0xb0, a, 6, 24)).unwrap();
+            assert_eq!(
+                [
+                    expression(&rt, tail),
+                    expression(&rt, active_a),
+                    expression(&rt, active_b)
+                ],
+                before
+            );
+            rt.panic();
+            rt.flush_ended(|_| true);
+            assert_eq!(
+                (rt.note_count(), rt.expression_count(), rt.voice_count()),
+                (0, 0, 0)
+            );
+        });
+    }
+}
