@@ -1962,7 +1962,7 @@ impl LaneFilter {
             }
         };
         let whole = n / 4 * 4;
-        for ((k, l), r) in k[..whole].chunks_exact(4).zip(left.chunks_exact(4)).zip(right.chunks_exact(4)) {
+        for ((k, l), r) in k[..whole].as_chunks::<4>().0.iter().zip(left.as_chunks::<4>().0).zip(right.as_chunks::<4>().0) {
             for j in 0..4 {
                 at(&mut d[0], j, l[j], &k[j]);
                 at(&mut d[1], j, r[j], &k[j]);
@@ -2132,7 +2132,8 @@ mod tests {
                 starts[*knob] = current[*knob]; desired[*knob] = current[*knob]; elapsed[*knob] = [240; 2];
             } else if *lane == 3 { active.fill(false); }
             else if *lane == 4 { gain_start[*knob] = gain[*knob]; gain_target[*knob] = *value; gain_elapsed[*knob] = 0; }
-            for frame in *at..*end {
+            let [left, right] = &mut reference;
+            for (left, right) in left[*at..*end].iter_mut().zip(&mut right[*at..*end]) {
                 for voice in 0..2 {
                     if !active[voice] { continue; }
                     let mut input = [0.25 * gain[voice], -0.125 * gain[voice]];
@@ -2146,7 +2147,8 @@ mod tests {
                         current[voice][slot] = m;
                         input = [m[0] * input[0] + m[1] * input[1], m[2] * input[0] + m[3] * input[1]];
                     }
-                    for ch in 0..2 { reference[ch][frame] += input[ch]; }
+                    *left += input[0];
+                    *right += input[1];
                     gain_elapsed[voice] = (gain_elapsed[voice] + 1).min(240);
                     gain[voice] = if gain_elapsed[voice] == 240 { gain_target[voice] } else {
                         gain_start[voice] + (gain_target[voice] - gain_start[voice]) * (gain_elapsed[voice] as f32 / 240.)
@@ -2479,7 +2481,7 @@ mod tests {
                 ..Default::default()
             };
             for silent_amplifier in [false, true] {
-                for phase in 0..2 {
+                for (phase, energy) in energies[usize::from(silent_amplifier)].iter_mut().enumerate() {
                     let mut settings = groups.each_ref().map(GroupSettings::from);
                     let mut processor = fx.processor_for_groups(RATE, 64, &[], &groups);
                     assert!(!processor.is_empty(), "group-only taps retain their return DSP");
@@ -2555,7 +2557,7 @@ mod tests {
                         assert!(actual.iter().flatten().zip(expected.iter().flatten()).all(|(a, b)| (a - b).abs() < 3e-6),
                             "native tap positions, sparse send indices, segment offsets and cross-block IR tails");
                     }), 0);
-                    energies[usize::from(silent_amplifier)][phase] += actual.iter().flatten().map(|v| f64::from(*v).powi(2)).sum::<f64>();
+                    *energy += actual.iter().flatten().map(|v| f64::from(*v).powi(2)).sum::<f64>();
                 }
             }
         }
@@ -2956,7 +2958,7 @@ mod tests {
                         assert_eq!(clock.level(), before, "off during bypass captures the paused level");
                     }
                     assert_eq!(crate::plugin::tests::allocations(|| {
-                        for at in start..end {
+                        for (at, output) in oracle.iter_mut().enumerate().take(end).skip(start) {
                             let bypassed = (941..1107).contains(&at);
                             let mut level = [0.];
                             if !bypassed {
@@ -2971,7 +2973,7 @@ mod tests {
                             filter.set_knob(0, Knob::Cutoff, 0.12 + 0.61 * depth);
                             filter.set_knob(0, Knob::Resonance, 0.15 + 0.12 * depth);
                             let (mut l,mut r) = ([0.],[0.]); manual.render(&mut l,&mut r);
-                            oracle[at] = [l[0],r[0]];
+                            *output = [l[0],r[0]];
                         }
                     }),0);
                     for (engine, pcm, sizes) in [(&mut whole,&mut expected,&[128][..]),
@@ -3057,13 +3059,13 @@ mod tests {
                         5 => targets = [92./127.,11./127.],
                         _ => {},
                     }
-                    for at in start..end {
+                    for (at, output) in oracle.iter_mut().enumerate().take(end).skip(start) {
                         for i in 0..2 { levels[i] += (targets[i]-levels[i])*factors[i]; }
                         if at % CONTROL == 0 { held = levels; }
                         let filter = manual.state.settings[0].filter.as_mut().unwrap();
                         filter.set_knob(0,Knob::Cutoff,0.12 + 0.61 * held[0] as f32);
                         filter.set_knob(0,Knob::Resonance,0.15 + 0.12 * held[1] as f32);
-                        let (mut l,mut r) = ([0.],[0.]); manual.render(&mut l,&mut r); oracle[at] = [l[0],r[0]];
+                        let (mut l,mut r) = ([0.],[0.]); manual.render(&mut l,&mut r); *output = [l[0],r[0]];
                     }
                     for (engine,pcm,sizes) in [(&mut whole,&mut expected,&[128][..]),
                         (&mut irregular,&mut actual,&[1,7,31,128][..])] {
@@ -3141,7 +3143,7 @@ mod tests {
                     for at in start..end {
                         if at%CONTROL==0 {
                             let elapsed=at.saturating_sub(228) as f64;
-                            held=-(-elapsed/tau).exp_m1();
+                            held = -(-elapsed/tau).exp_m1();
                             old_held=1.-(1.-f64::from(old_step)).powf(elapsed);
                         }
                         for (e,pcm,level) in [(&mut manual,&mut oracle,held),(&mut rounded,&mut flawed,old_held)] {

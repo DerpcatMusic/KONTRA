@@ -1168,10 +1168,7 @@ fn pitch_ahdsr_frames_match_fragmented_ram_and_stream_without_heap() {
         ..Zone::default()
     };
     let create = |bank| {
-        let mut e = Engine::default();
-        e.attack = 0.;
-        e.release = 0.02;
-        e.blocking_streams = true;
+        let mut e = Engine { attack: 0., release: 0.02, blocking_streams: true, ..Engine::default() };
         e.set_bank(Some(Box::new(bank)));
         e
     };
@@ -1327,8 +1324,7 @@ fn pitch_ahdsr_muted_and_wavetable_clocks_match_fragmentation() {
                 )],
             )
             .unwrap();
-            let mut engine = Engine::default();
-            engine.attack = 0.;
+            let mut engine = Engine { attack: 0., ..Engine::default() };
             engine.set_bank(Some(Box::new(bank)));
             engine
         };
@@ -1568,7 +1564,7 @@ fn pitch_envelope_uses_ahdsr_and_script_addresses() {
         env.targets[0].intensity = address.decode(raw);
         let pitched = render(pitched);
         let ratio = 2f64.powf(f64::from(address.decode(raw)));
-        assert!((ratio - 2f64.powf(f64::from(st) / 12.)).abs() < 1e-4);
+        assert!((ratio - 2f64.powf(st / 12.)).abs() < 1e-4);
         let reference = render(Group {
             tune: ratio,
             ..Group::default()
@@ -1719,9 +1715,7 @@ fn lagged_gain_and_pitch_pcm_follow_sample_clock_in_ram_and_stream_without_heap(
                     )
                     .unwrap()
                 };
-                let mut engine = Engine::default();
-                engine.attack = 0.;
-                engine.blocking_streams = true;
+                let mut engine = Engine { attack: 0., blocking_streams: true, ..Engine::default() };
                 engine.set_bank(Some(Box::new(bank)));
                 engine.state.settings[0].gain = boost;
                 engine
@@ -1842,8 +1836,7 @@ fn quiet_lag_residual_keeps_amplified_engine_pcm() {
     let mut group = group();
     group.mods.remove(0);
     group.modulators.clear();
-    let mut engine = Engine::default();
-    engine.attack = 0.;
+    let mut engine = Engine { attack: 0., ..Engine::default() };
     engine.set_bank(Some(Box::new(
         Bank::from_samples(
             vec![group],
@@ -2224,10 +2217,7 @@ fn constant_loop_controls_preserve_physical_cursor_stream_seams_and_clock_withou
     )
     .unwrap();
     let create = |bank| {
-        let mut e = Engine::default();
-        e.attack = 0.;
-        e.release = 1.;
-        e.blocking_streams = true;
+        let mut e = Engine { attack: 0., release: 1., blocking_streams: true, ..Engine::default() };
         e.set_bank(Some(Box::new(bank)));
         e
     };
@@ -2469,10 +2459,7 @@ fn saved_pitch_lfo_and_constant_loop_are_partition_invariant_in_ram_and_stream()
         ..Zone::default()
     };
     let create = |bank| {
-        let mut e = Engine::default();
-        e.attack = 0.;
-        e.release = 0.001;
-        e.blocking_streams = true;
+        let mut e = Engine { attack: 0., release: 0.001, blocking_streams: true, ..Engine::default() };
         e.set_transport(false, 120., 0., (4, 4));
         e.set_bank(Some(Box::new(bank)));
         e
@@ -2709,9 +2696,7 @@ fn live_saved_pitch_lfo_targets_preserve_native_identity_phase_and_persistence_w
                 .map(|n| [(n as f32 * 0.031).sin() * 0.2; 2])
                 .collect(),
         };
-        let mut e = Engine::default();
-        e.attack = 0.;
-        e.release = 0.001;
+        let mut e = Engine { attack: 0., release: 0.001, ..Engine::default() };
         e.set_transport(false, 120., 0., (4, 4));
         e.set_bank(Some(Box::new(
             Bank::from_samples(
@@ -2954,9 +2939,7 @@ fn saved_sine_volume_reaches_amplifier_and_retains_shared_bypass_without_heap_at
             ..Default::default()
         };
         let create = |group: Group| {
-            let mut e = Engine::default();
-            e.attack = 0.0001;
-            e.release = 0.001;
+            let mut e = Engine { attack: 0.0001, release: 0.001, ..Engine::default() };
             e.set_transport(false, 120., 0., (4, 4));
             e.set_bank(Some(Box::new(
                 Bank::from_samples(
@@ -3161,8 +3144,7 @@ fn saved_sine_volume_uses_decoded_nonlinear_amplifier_split_without_heap() {
         ),
     };
     let create = |group| {
-        let mut engine = Engine::default();
-        engine.attack = 0.0001;
+        let mut engine = Engine { attack: 0.0001, ..Engine::default() };
         engine.set_transport(false, 120., 0., (4, 4));
         engine.set_bank(Some(Box::new(
             Bank::from_samples(
@@ -3320,9 +3302,7 @@ fn live_saved_pitch_lfo_bypass_preserves_clock_fade_pcm_and_restore_without_heap
                 rate: 48_000,
                 frames: (0..4096).map(|n| [n as f32 / 8192.; 2]).collect(),
             };
-            let mut engine = Engine::default();
-            engine.attack = 0.0001;
-            engine.release = 0.001;
+            let mut engine = Engine { attack: 0.0001, release: 0.001, ..Engine::default() };
             engine.set_transport(false, 120., 0., (4, 4));
             engine.set_bank(Some(Box::new(
                 Bank::from_samples(

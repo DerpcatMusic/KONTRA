@@ -1582,10 +1582,8 @@ fn load_arrays(params: &SamplerParams) {
         }
         let source = params.shared.view.lock().unwrap().parts[part].instrument.clone();
         let success = request.perform();
-        if !success {
-            if let Some(source) = &source {
-                crate::diagnostics::resource(&source.path, request.path(), request.error().unwrap_or("NKA file operation failed"));
-            }
+        if !success && let Some(source) = &source {
+            crate::diagnostics::resource(&source.path, request.path(), request.error().unwrap_or("NKA file operation failed"));
         }
         // A save already committed remains a real file write if its runtime is
         // replaced during I/O. Record that outcome; never deliver it to a new slot.
@@ -1740,11 +1738,11 @@ fn prepare_interface(live: &Live, previous: Option<&Interface>, versions: &[(u64
             && next.len() == source.controls.len()) else {
         return InterfaceUpdate { interface: Some(source.clone()), rows: None, versions: next };
     };
-    let rows = source.controls.iter().zip(&previous.controls).enumerate().filter_map(|(n, (new, old))| {
+    let rows = source.controls.iter().zip(&previous.controls).enumerate().filter(|&(n, (new, old))| {
         // Visible menu rows depend on arbitrary script variables, not just the
         // control's metadata/value stamps. No full property-map comparisons.
-        (versions[n] != next[n] || old.menu != new.menu).then(|| (n, new.clone()))
-    }).collect();
+        versions[n] != next[n] || old.menu != new.menu
+    }).map(|(n, (new, _))| (n, new.clone())).collect();
     let header = Interface {
         native_ui: source.native_ui.clone(),
         performance: source.performance, width: source.width, height: source.height,
@@ -2799,13 +2797,13 @@ impl BackgroundTask for Load {
                 if let Some(bank)=zone_bank.as_deref() {view.parts[slot].bytes=bank.bytes;}
                 if let Some(fx) = fx {
                     view.parts[slot].irs = irs;
-                    let _ = params.shared.publish_part((
+                    params.shared.publish_part((
                         slot,
                         generation,
                         Handoff::Fx(fx),
                     ));
                 }
-                let _ = params.shared.publish_part((
+                params.shared.publish_part((
                     slot,
                     generation,
                     Handoff::Script { script, bank:zone_bank, epoch },
@@ -2876,7 +2874,7 @@ impl BackgroundTask for Load {
                     ..Default::default()
                 };
                 drop(view);
-                let _ = params.shared.publish_part((
+                params.shared.publish_part((
                     slot,
                     generation,
                     Handoff::part(None, FxProcessor::default(), None, 0, params.shared.rate()),
@@ -3141,7 +3139,7 @@ impl BackgroundTask for Load {
                     });
                     v.fx_rate = rate;
                     v.irs = irs;
-                    let _ = params.shared.publish_part((
+                    params.shared.publish_part((
                         slot,
                         generation,
                         Handoff::part(bank, fx, script, epoch, rate),
@@ -3223,7 +3221,7 @@ impl BackgroundTask for Load {
                             let residency = bank.take_residency();
                             (v.bytes, v.status) = (bank.bytes, bank_status(&bank));
                             let bank = Handoff::Bank(Box::new(bank));
-                            let _ = params.shared.publish_part((slot, generation, bank));
+                            params.shared.publish_part((slot, generation, bank));
                             // After the bank in the queue: its heads resize the full bank.
                             params.shared.residency.lock().unwrap()[slot] =
                                 residency.map(|r| (generation, r));
@@ -3287,7 +3285,7 @@ impl BackgroundTask for Load {
                                 params.shared.residency.lock().unwrap()[slot] = None;
                                 (v.bytes, v.status) = (bank.bytes, bank_status(&bank));
                                 let bank = Handoff::Bank(Box::new(bank));
-                                let _ = params.shared.publish_part((slot, generation, bank));
+                                params.shared.publish_part((slot, generation, bank));
                             }
                             Err(e) => {
                                 v.status = v.status.replace(" · loading into RAM…", "");
@@ -3324,7 +3322,7 @@ impl BackgroundTask for Load {
             let Some((instrument, irs)) = stale else { continue };
             let fx = instrument.fx.processor_for_groups(rate as f32, MAX_BLOCK, &irs, &instrument.groups);
             params.shared.view.lock().unwrap().parts[slot].fx_rate = rate;
-            let _ = params.shared.publish_part((
+            params.shared.publish_part((
                 slot,
                 params.shared.part(slot).unwrap().generation.load(Ordering::Acquire),
                 Handoff::Fx(fx),
@@ -4916,8 +4914,8 @@ impl PluginLogic for Sampler {
                     Play::Note(note, velocity) => {
                         articulate::dispatch_record_with(rack, routers, 0, In::NoteOn(0, note, velocity), &mut s.key_slots.0[note as usize & 127], &mut external);
                     }
-                    Play::Bend(value) => drop(articulate::dispatch_with(rack, routers, 0, In::Bend(0, value), &mut external)),
-                    Play::Mod(value) => drop(articulate::dispatch_with(rack, routers, 0, In::Cc(0, 1, value), &mut external)),
+                    Play::Bend(value) => articulate::dispatch_with(rack, routers, 0, In::Bend(0, value), &mut external),
+                    Play::Mod(value) => articulate::dispatch_with(rack, routers, 0, In::Cc(0, 1, value), &mut external),
                 }
                 continue;
             }
@@ -6036,9 +6034,8 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
             (voices, voice_blocks) = (voices.max(now), voice_blocks + now as usize);
             audible_blocks += dsp.rack.parts.iter().map(|e| e.audible_voices()).sum::<usize>();
             cpu = cpu.max(f32::from_bits(p.shared.cpu.swap(0, Ordering::Relaxed) as u32));
-            if playing && b % (blocks / 4).max(1) == blocks / 8 {
-                if let Some(engine) = dsp.rack.parts[0].instrument() { census(&engine.voice_census()); }
-            }
+            if playing && b % (blocks / 4).max(1) == blocks / 8
+                && let Some(engine) = dsp.rack.parts[0].instrument() { census(&engine.voice_census()); }
             pace.until(block * (b + 1) as u32);
         }
         if playing {
@@ -6319,9 +6316,8 @@ pub(crate) mod tests {
         params.shared.uvi_max_host_frames.store(256, Ordering::Release);
         let source = library::UviSource { bank: "metrics.ufs".into(),
             bank_uuid: [0; 16], member: "preset.uvip".into() };
-        let mut selection = Selection::default();
-        selection.parts = vec![Part { uvi: Some(source.clone()), uvi_state: vec![1].into(),
-            ..Default::default() }];
+        let mut selection = Selection { parts: vec![Part { uvi: Some(source.clone()), uvi_state: vec![1].into(),
+            ..Default::default() }], ..Selection::default() };
         let atoms = params.shared.part(0).unwrap();
         let activation = uvi_load::Activation { source, saved_state: vec![1].into(),
             epoch: params.shared.uvi_epoch.load(Ordering::Acquire), generation: 7,
@@ -6365,9 +6361,8 @@ pub(crate) mod tests {
         params.shared.uvi_max_host_frames.store(256, Ordering::Release);
         let source = library::UviSource { bank: "panel-context.ufs".into(),
             bank_uuid: [0; 16], member: "preset.uvip".into() };
-        let mut selection = Selection::default();
-        selection.parts = vec![Part { uvi: Some(source.clone()), uvi_state: vec![1].into(),
-            ..Default::default() }];
+        let mut selection = Selection { parts: vec![Part { uvi: Some(source.clone()), uvi_state: vec![1].into(),
+            ..Default::default() }], ..Selection::default() };
         let atoms = params.shared.part(0).unwrap();
         let activation = uvi_load::Activation { source, saved_state: vec![1].into(),
             epoch: params.shared.uvi_epoch.load(Ordering::Acquire), generation: 7,
@@ -6758,7 +6753,7 @@ pub(crate) mod tests {
         assert!(after == before, "foreign snapshot changed fields {changed:?}; script bytes {} -> {}, IR slots {} -> {}; source retained {}; generation {} -> {}, epoch {} -> {}, bank retained {}",
             before.script_state.len(), after.script_state.len(), before.ir_settings.len(), after.ir_settings.len(),
             before.source() == after.source(), generation, p.shared.part(0).unwrap().generation.load(Ordering::Acquire), epoch, dsp.script_epoch[0],
-            dsp.rack.parts[0].instrument().unwrap().bank().unwrap() as *const Bank == bank);
+            std::ptr::eq(dsp.rack.parts[0].instrument().unwrap().bank().unwrap(), bank));
         assert!(p.shared.view.lock().unwrap().parts[0].status.contains("Snapshot requires base instrument"));
         let report = p.shared.view.lock().unwrap().parts[0].load_report.clone().unwrap();
         assert_eq!(report["details"]["operation"], "snapshot_validation");
@@ -7563,8 +7558,7 @@ end on"#,dir.display());
             assert_eq!(next_epoch(&mut view, 0, None, Some(new_live)), 2);
             view.parts[0].interface = Some(new_interface.clone());
         }
-        let mut dsp = Dsp::default();
-        dsp.until_poll = usize::MAX;
+        let mut dsp = Dsp { until_poll: usize::MAX, ..Dsp::default() };
         dsp.script_epoch[0] = 1;
         dsp.rack.parts[0].instrument_mut().unwrap().set_script(Some(Box::new(old)));
         p.shared.ready.push((0, 0, Handoff::Script { script: Some(Box::new(new)), bank:None, epoch: 2 })).ok().unwrap();
@@ -9293,7 +9287,7 @@ end on"#;
         use crate::{audio::Sample,import::{Group,Zone}};
         for scripted in [false,true] {
             let setup=|| {
-                let mut dsp=Dsp::default(); dsp.until_poll=usize::MAX;
+                let mut dsp = Dsp { until_poll: usize::MAX, ..Dsp::default() };
                 let engine=dsp.rack.parts[0].instrument_mut().unwrap(); engine.reset(48000.);
                 engine.attack=0.0001; engine.release=0.2;
                 let bank=Bank::from_samples(vec![Group::default()],vec![Zone::default()],vec![(PathBuf::new(),
@@ -9363,8 +9357,7 @@ end on"#;
         use moose::core::events::{RawMidi1, RawUmp};
         for scripted in [false, true] {
             let setup = || {
-                let mut dsp = Dsp::default();
-                dsp.until_poll = usize::MAX;
+                let mut dsp = Dsp { until_poll: usize::MAX, ..Dsp::default() };
                 let engine = dsp.rack.parts[0].instrument_mut().unwrap();
                 engine.reset(48_000.);
                 engine.set_bank(Some(Box::new(Bank::from_samples(vec![Group::default()],
@@ -9449,7 +9442,7 @@ end on"#;
     fn unsupported_per_note_controllers_leave_same_channel_owners_unchanged_without_heap() {
         use crate::{audio::Sample,import::{Group,Zone},modulation::{ModAssignment,ModSource,ModTarget}};
         let setup=|| {
-            let mut dsp=Dsp::default(); dsp.until_poll=usize::MAX;
+            let mut dsp = Dsp { until_poll: usize::MAX, ..Dsp::default() };
             let engine=dsp.rack.parts[0].instrument_mut().unwrap(); engine.reset(48000.); engine.attack=0.0001;
             let mods=[0,127].into_iter().map(|cc| ModAssignment { cc_default: None, name:format!("CC{cc}_VOLUME"),
                 source:ModSource::MidiCc(cc),target:ModTarget::Volume,intensity:1.,invert:false,lag_ms:0,shaper:None }).collect();
@@ -9494,7 +9487,7 @@ end on"#;
         use moose::core::events::{RawMidi1,RawUmp};
         for scripted in [false,true] {
             let setup=|| {
-                let mut dsp=Dsp::default(); dsp.until_poll=usize::MAX;
+                let mut dsp = Dsp { until_poll: usize::MAX, ..Dsp::default() };
                 let engine=dsp.rack.parts[0].instrument_mut().unwrap(); engine.reset(48_000.); engine.attack=0.0001;
                 let mods=[ModSource::Velocity,ModSource::PolyAftertouch].into_iter().map(|source| ModAssignment { cc_default: None,
                     name:"precision gain".into(),source,target:ModTarget::Volume,intensity:1.,invert:false,lag_ms:0,shaper:None }).collect();
@@ -9591,7 +9584,7 @@ end on"#;
         use crate::{audio::Sample, import::{Group,Zone}, modulation::{ModAssignment,ModSource,ModTarget}};
         for scripted in [false,true] {
             let setup=|| {
-                let mut dsp=Dsp::default(); dsp.until_poll=usize::MAX;
+                let mut dsp = Dsp { until_poll: usize::MAX, ..Dsp::default() };
                 dsp.align.plan.on=true; dsp.align.plan.latency_ms=20.;
                 dsp.align.plan.parts.fill(timing::Holds::of(&timing::Timing::default(),&[],20.));
                 for (slot,port,pan) in [(0,0,-1.),(1,2,1.)] {
@@ -9680,7 +9673,7 @@ end on"#;
             zones:vec![Zone {sample:path.clone(),..Zone::default()}],..Instrument::default()};
         let bank=Bank::load_bare(&source).unwrap();
         std::fs::remove_file(&path).unwrap();
-        let mut dsp=Dsp::default(); dsp.until_poll=usize::MAX; dsp.installed_generation[0]=7;
+        let mut dsp = Dsp { until_poll: usize::MAX, ..Dsp::default() }; dsp.installed_generation[0]=7;
         dsp.rack.parts[0].reset(48_000.); dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(Box::new(bank)));
         let params=SamplerParams::new();
         let mut on=EventList::with_capacity(1);
@@ -9835,8 +9828,7 @@ end on"#;
                     source:match kind { 0 => ModSource::MidiCc(11),1 => ModSource::MonoAftertouch,2 => ModSource::PitchBend,_ => ModSource::MidiCc(74) },
                     target:ModTarget::Volume,intensity:1.,invert:false,lag_ms:0,shaper:None,
                 }],..Default::default() };
-                let mut dsp = Dsp::default();
-                dsp.until_poll = usize::MAX;
+                let mut dsp = Dsp { until_poll: usize::MAX, ..Dsp::default() };
                 dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(Box::new(Bank::from_samples(vec![group],vec![import::Zone::default()],
                     vec![(PathBuf::new(),crate::audio::Sample { rate:48000,frames:(0..64000).map(|n| if kind==3 { [(std::f32::consts::TAU*750.*n as f32/48000.).sin()*0.25;2] } else { [0.25;2] }).collect() })]).unwrap())));
                 // Both physical channels route to logical home zero. Accepted
@@ -9981,7 +9973,7 @@ end on"#;
         use crate::{audio::Sample, import::{Group, Zone}};
         for clap in [true, false] { for quiet in [1e-9, 0.001] {
             let setup = || {
-                let mut dsp = Dsp::default(); dsp.until_poll = usize::MAX;
+                let mut dsp = Dsp { until_poll: usize::MAX, ..Dsp::default() };
                 dsp.rack.parts[0].reset(48000.);
                 let bank = Bank::from_samples(vec![Group::default()], vec![Zone::default()],
                     vec![(PathBuf::new(), Sample { rate:48000, frames:vec![[0.2;2];4096] })]).unwrap();
@@ -10042,7 +10034,7 @@ end on"#;
                 assert!(start.elapsed()<std::time::Duration::from_secs(5),"authored native worker not ready");
                 std::thread::yield_now();
             };
-            let mut dsp = Dsp::default(); dsp.until_poll=usize::MAX;
+            let mut dsp = Dsp { until_poll: usize::MAX, ..Dsp::default() };
             // Default rack slots all hear port0. Isolate this native destination
             // so empty Kontakt slots do not retain their own exact-zero gates.
             for control in dsp.rack.controls.iter_mut().skip(1) { control.port=1; }
@@ -10176,7 +10168,7 @@ end on"#;
         let mut reference=None;
         for length in [0,16,12000,-1,i32::MIN] {
             let params=SamplerParams::new();
-            let mut dsp=Dsp::default(); dsp.until_poll=usize::MAX;
+            let mut dsp = Dsp { until_poll: usize::MAX, ..Dsp::default() };
             dsp.rack.parts[0].reset(48000.);
             let bank=Bank::from_samples(vec![Group::default()],vec![Zone::default()],vec![(PathBuf::new(),
                 Sample { rate:48000,frames:vec![[0.2;2];4096] })]).unwrap();
@@ -10225,7 +10217,7 @@ end on"#;
     fn vst3_onset_tuning_keeps_anonymous_and_scripted_timed_owners_without_heap() {
         use crate::{audio::Sample, import::{Group,Zone}, engine::{HostExpression,HostPattern}};
         for anonymous in [false,true] { for scripted in [false,true] { for holding in [false,true] {
-            let params=SamplerParams::new(); let mut dsp=Dsp::default(); dsp.until_poll=usize::MAX;
+            let params=SamplerParams::new(); let mut dsp = Dsp { until_poll: usize::MAX, ..Dsp::default() };
             dsp.rack.parts[0].reset(48000.);
             let bank=Bank::from_samples(vec![Group::default()],vec![Zone::default()],vec![(PathBuf::new(),
                 Sample { rate:48000, frames:(0..24000).map(|n| [0.2+n as f32/240000.;2]).collect() })]).unwrap();
@@ -10299,7 +10291,7 @@ end on"#;
     fn vst3_extreme_finite_onset_tuning_keeps_processing_bounded_without_heap() {
         use crate::{audio::Sample, import::{Group,Zone,Wavetable}};
         for wavetable in [false,true] { for cents in [f32::MAX,-f32::MAX,6000.] {
-            let params=SamplerParams::new(); let mut dsp=Dsp::default(); dsp.until_poll=usize::MAX;
+            let params=SamplerParams::new(); let mut dsp = Dsp { until_poll: usize::MAX, ..Dsp::default() };
             dsp.rack.parts[0].reset(48000.);
             let group=Group { wavetable:wavetable.then_some(Wavetable { quality:2,form1_type:16,
                 form1:0.5,inharmonic:0.5,..Default::default() }),..Default::default() };
@@ -10367,7 +10359,7 @@ end on"#;
     fn exact_host_ids_keep_old_expression_and_emit_end_after_every_part_without_heap() {
         use crate::{audio::Sample, import::{Group,Zone}};
         let params=SamplerParams::new();
-        let mut dsp=Dsp::default(); dsp.until_poll=usize::MAX;
+        let mut dsp = Dsp { until_poll: usize::MAX, ..Dsp::default() };
         for (part,size) in [(0,256),(1,24000)] {
             dsp.rack.parts[part].reset(48000.);
             let bank=Bank::from_samples(vec![Group::default()],vec![Zone::default()],vec![(PathBuf::new(),Sample { rate:48000,frames:vec![[0.2;2];size] })]).unwrap();
@@ -10434,8 +10426,7 @@ end on"#;
         use crate::engine::{Bank,HostNote};
         use crate::import::{Group,Zone};
         use crate::audio::Sample;
-        let params=SamplerParams::new(); let mut dsp=Dsp::default();
-        dsp.until_poll=usize::MAX;
+        let params=SamplerParams::new(); let mut dsp = Dsp { until_poll: usize::MAX, ..Dsp::default() };
         dsp.rack.parts[0].reset(48000.);
         // A real source admits both owners; EOF after key-up makes both ends
         // ready in this callback, so capacity one must retain the second.
@@ -10478,8 +10469,7 @@ end on"#;
         // Sampler::process applies the host attack parameter to each engine;
         // configure that source rather than an engine field it overwrites.
         params.attack.set_value(0.0001);
-        let mut dsp = Dsp::default();
-        dsp.until_poll = usize::MAX;
+        let mut dsp = Dsp { until_poll: usize::MAX, ..Dsp::default() };
         dsp.rack.parts[0].reset(48000.);
         dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(Box::new(Bank::from_samples(vec![Group::default()],
             vec![Zone::default()],vec![(PathBuf::new(),Sample { rate:48000,frames:vec![[0.25;2];16] })]).unwrap())));
@@ -10519,8 +10509,7 @@ end on"#;
         let terminal = if held_until_stop {48} else {16};
         let params = SamplerParams::new();
         params.attack.set_value(0.0001);
-        let mut dsp = Dsp::default();
-        dsp.until_poll = usize::MAX;
+        let mut dsp = Dsp { until_poll: usize::MAX, ..Dsp::default() };
         dsp.rack.parts[0].reset(48000.);
         dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(Box::new(Bank::from_samples(vec![Group::default()],
             vec![Zone::default()], vec![(PathBuf::new(),Sample { rate:48000,frames:vec![[0.25;2];16] })]).unwrap())));
@@ -10766,8 +10755,8 @@ end on"#;
         let mut cx =
             ProcessContext::new(&transport, 48000., 128, &mut midi_out).with_bus_routing(routes);
         Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx);
-        for ch in 0..4 {
-            assert!(outputs[ch].iter().all(|x| *x == 0.));
+        for output in outputs.iter().take(4) {
+            assert!(output.iter().all(|x| *x == 0.));
         }
         assert!(outputs[4][..16].iter().all(|x| *x == 0.));
         assert!(outputs[4][127] > 0.);
@@ -11366,7 +11355,7 @@ end on"
         assert!(p.shared.view.lock().unwrap().parts[128].attempted.is_some());
         assert_eq!(p.shared.ready.len(), 64);
         assert_eq!(p.shared.pending_ready.lock().unwrap().len(), 49);
-        let mut seen = vec![false; 129];
+        let mut seen = [false; 129];
         loop {
             while let Some((slot, generation, ..)) = p.shared.ready.pop() {
                 assert_eq!(generation, p.shared.part(slot).unwrap().generation.load(Ordering::Acquire));
@@ -11398,7 +11387,7 @@ end on"
             v.live = Some(Box::new(rt.live()));
         }
         p.shared.publish_live(true);
-        let mut seen = vec![false; 129];
+        let mut seen = [false; 129];
         for _ in 0..129 {
             let (slot, _, live) = p.shared.live_requests.pop().unwrap();
             seen[slot] = true;
@@ -11506,8 +11495,7 @@ end on"
     fn audio_snapshots_wake_their_own_lane_without_a_loader_or_audio_heap_work() {
         use moose::core::tasks::{TaskSpawner, TaskSpawnerBundle};
         let p = Arc::new(SamplerParams::new());
-        let mut dsp = Dsp::default();
-        dsp.until_poll = usize::MAX;
+        let mut dsp = Dsp { until_poll: usize::MAX, ..Dsp::default() };
         moose::core::tasks::warm_pool();
         let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counted = runs.clone();

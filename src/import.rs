@@ -788,10 +788,10 @@ fn shared_instrument(
     let key = (std::fs::canonicalize(path).unwrap_or_else(|_| path.into()), program);
     let lock = || PARSED.lock().unwrap_or_else(|e| e.into_inner());
     let cached = lock().get_or_insert_default().get(&key).and_then(Weak::upgrade);
-    if let Some(i) = cached {
-        if i.missing_samples.is_empty() && crate::cache::current(&i.dependencies) {
-            return Ok(i);
-        }
+    if let Some(i) = cached
+        && i.missing_samples.is_empty() && crate::cache::current(&i.dependencies)
+    {
+        return Ok(i);
     }
     let instrument = Arc::new(load()?);
     let mut parsed = lock();
@@ -857,7 +857,7 @@ fn script_text(bytes: &[u8]) -> String {
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
     let utf16 = bytes.starts_with(b"\xFF\xFE") || (bytes.len() >= 4 && bytes[0] != 0 && bytes[1] == 0 && bytes[3] == 0);
     if utf16 {
-        let units: Vec<u16> = bytes.strip_prefix(b"\xFF\xFE").unwrap_or(bytes).chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        let units: Vec<u16> = bytes.strip_prefix(b"\xFF\xFE").unwrap_or(bytes).as_chunks::<2>().0.iter().copied().map(u16::from_le_bytes).collect();
         return String::from_utf16_lossy(&units);
     }
     String::from_utf8(bytes.to_vec()).unwrap_or_else(|_| bytes.iter().map(|&b| char::from(b)).collect())
@@ -1137,17 +1137,16 @@ fn parse_program(path: PathBuf, c: &KontaktChunks, p: Program) -> Result<Instrum
                 tuning:l.loop_tuning, crossfade:l.x_fade_length }).collect();
             // Preserve the established single unlimited path. Counted/ordered
             // rows are prepared against actual sample geometry by the bank.
-            if loops.items.iter().filter(|l| l.mode != 0).count() == 1 {
-            for l in loops.items.into_iter().filter(|l| l.mode != 0) {
-                if l.loop_count != 0 || l.loop_tuning != 1.0 || !matches!(l.mode, 1 | 2) { break; }
+            if loops.items.iter().filter(|l| l.mode != 0).count() == 1
+                && let Some(l) = loops.items.into_iter().find(|l| l.mode != 0)
+                && l.loop_count == 0 && l.loop_tuning == 1.0 && matches!(l.mode, 1 | 2)
+            {
                 if l.alternating_loop && l.x_fade_length != 0 {
                     warnings.push("A crossfaded alternating loop is preserved; playback uses forward crossfading".into());
                 }
                 ensure!(l.loop_start >= 0 && l.loop_length > 0, "Invalid sample loop");
                 loop_range = Some(Loop { start: l.loop_start as usize, end: l.loop_start as usize + l.loop_length as usize,
                     alternating: l.alternating_loop, until_release: l.mode == 2, crossfade: l.x_fade_length.max(0) as usize });
-                break;
-            }
             }
         }
         // Samples resolve in one batch after the zone list.

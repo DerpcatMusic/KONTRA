@@ -14,7 +14,6 @@ use std::sync::Arc;
 
 /// Modulation values one voice tracks: its group's first volume and pitch
 /// assignments with a modelled source.
-
 pub(crate) use crate::modulation::PITCH_ENVS;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -360,10 +359,10 @@ impl Inputs<'_> {
     /// Negotiated MPE master pitch is added independently by the voice;
     /// other bend destinations still read the combined controller normally.
     fn read_mod(&self, source: Source, target: Target, bend_pitch: Option<f32>) -> f32 {
-        if source == Source::Bend && target == Target::Pitch {
-            if let Some(bend) = bend_pitch {
-                return (bend + 1.) * 0.5;
-            }
+        if source == Source::Bend && target == Target::Pitch
+            && let Some(bend) = bend_pitch
+        {
+            return (bend + 1.) * 0.5;
         }
         self.read(source)
     }
@@ -738,7 +737,6 @@ pub(crate) fn share_curves<'a>(tables: impl Iterator<Item = &'a mut ModTable>) {
 
 
 /// One-pole smoothing step over `frames`: the share of the distance covered.
-
 fn lag_factor64(lag: f32, frames: usize, rate: f32) -> f64 {
     if lag <= 0. { 1. }
     else { (-(frames as f64) / (f64::from(lag) * f64::from(rate))).exp_m1() * -1. }
@@ -1692,14 +1690,13 @@ pub(crate) fn write(settings: &mut [GroupSettings], address: Address, value: f32
             }
             // One modulator may drive pitch and a filter; both copies share its knobs.
             let updated = *env;
-            if let Address::ModEnvelope(g, e, _) = address {
-                if let Some(env) = settings[g as usize]
+            if let Address::ModEnvelope(g, e, _) = address
+                && let Some(env) = settings[g as usize]
                     .filter
                     .as_mut()
                     .and_then(|f| f.envelope(e))
-                {
-                    *env = updated;
-                }
+            {
+                *env = updated;
             }
         }
         Address::Intensity {

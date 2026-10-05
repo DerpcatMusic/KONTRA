@@ -114,8 +114,10 @@ fn rejected_terminal_only_note_ends_keep_exact_routes_and_frames_without_heap() 
     // terminate without producing an engine owner.
     for case in 0..3 {
         let params = SamplerParams::new();
-        let mut dsp = Dsp::default();
-        dsp.until_poll = usize::MAX;
+        let mut dsp = Dsp {
+            until_poll: usize::MAX,
+            ..Dsp::default()
+        };
         dsp.rack.parts[0].reset(48000.);
         dsp.align.clock = 1024;
         let mut note = owner(if case == 1 { 3 } else { 0 }, 101 + case);
@@ -174,8 +176,10 @@ fn rejected_terminal_only_note_ends_keep_exact_routes_and_frames_without_heap() 
 fn terminal_only_completion_preserves_offset_and_defers_exclusive_boundary() {
     for offset in [23, 64] {
         let params = SamplerParams::new();
-        let mut dsp = Dsp::default();
-        dsp.until_poll = usize::MAX;
+        let mut dsp = Dsp {
+            until_poll: usize::MAX,
+            ..Dsp::default()
+        };
         let note = owner(3, 110);
         let mut output = EventList::with_capacity(1);
         process(&mut dsp, &params, &onset(note, offset), &mut output);
@@ -195,8 +199,10 @@ fn terminal_only_completion_preserves_offset_and_defers_exclusive_boundary() {
 fn rejected_terminal_identity_fences_duplicate_onsets_until_ack_then_allows_new_generation() {
     let params = SamplerParams::new();
     params.attack.set_value(0.0001);
-    let mut dsp = Dsp::default();
-    dsp.until_poll = usize::MAX;
+    let mut dsp = Dsp {
+        until_poll: usize::MAX,
+        ..Dsp::default()
+    };
     dsp.rack.parts[0].reset(48000.);
     let note = owner(0, 120);
     let input = onset(note, 7);
@@ -233,8 +239,10 @@ fn rejected_terminal_identity_fences_duplicate_onsets_until_ack_then_allows_new_
 #[test]
 fn anonymous_terminal_onsets_remain_distinct_through_partial_backpressure() {
     let params = SamplerParams::new();
-    let mut dsp = Dsp::default();
-    dsp.until_poll = usize::MAX;
+    let mut dsp = Dsp {
+        until_poll: usize::MAX,
+        ..Dsp::default()
+    };
     let note = owner(3, -1);
     let mut input = EventList::with_capacity(2);
     for offset in [7, 11] {
@@ -267,8 +275,10 @@ fn anonymous_terminal_onsets_remain_distinct_through_partial_backpressure() {
 #[test]
 fn terminal_capacity_failure_keeps_retained_identities_and_reset_retries_without_heap() {
     let params = SamplerParams::new();
-    let mut dsp = Dsp::default();
-    dsp.until_poll = usize::MAX;
+    let mut dsp = Dsp {
+        until_poll: usize::MAX,
+        ..Dsp::default()
+    };
     dsp.align.clock = 4096;
     let capacity = dsp.pending_host_note_ends.capacity();
     for id in 0..capacity {
@@ -529,8 +539,10 @@ fn deferred_release_without_a_zone_ends_at_exact_pedal_up_frame_without_heap() {
     for release_pedal in [false, true] {
         let params = SamplerParams::new();
         params.attack.set_value(0.0001);
-        let mut dsp = Dsp::default();
-        dsp.until_poll = usize::MAX;
+        let mut dsp = Dsp {
+            until_poll: usize::MAX,
+            ..Dsp::default()
+        };
         dsp.rack.parts[0].reset(48000.);
         dsp.rack.parts[0]
             .instrument_mut()

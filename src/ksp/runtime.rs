@@ -857,9 +857,8 @@ impl Env {
 
     pub fn release_after(&mut self, event: i32, slot: u8, us: i64) {
         let at = self.clock() + self.samples(us).max(1);
-        if self.timer(at, TimerKind::Release { event, slot }) {
-            if let Some(e) = self.events.get_mut(event) { e.release_scheduled = true; }
-        }
+        if self.timer(at, TimerKind::Release { event, slot })
+            && let Some(e) = self.events.get_mut(event) { e.release_scheduled = true; }
     }
 
     pub fn fault(&mut self, slot: u8, pc: u32, what: &'static str) {
@@ -1252,7 +1251,7 @@ impl Runtime {
                 {
                     for (target, value) in control.midi.iter_mut().zip(values) {
                         *target = (0..2048).contains(value)
-                            .then(|| ((*value / 128) as u8, (*value % 128) as u8));
+                            .then_some(((*value / 128) as u8, (*value % 128) as u8));
                     }
                 }
                 if prog.vars[control.var as usize].ui.as_deref() == Some("ui_file_selector") {
@@ -1627,8 +1626,8 @@ impl Runtime {
     fn native_midi(&mut self, engine: &mut dyn KspEngine, control: Control) {
         let Some(channel) = self.env.input.input_channel else { return; };
         let (cc, value) = match control {
-            Control::Cc(cc, value) if cc < 120 => (cc, f64::from(value.normalized())),
-            Control::Cc14 { cc, value, .. } if cc < 120 => (cc, f64::from(value.normalized())), _ => return,
+            Control::Cc(cc, value) if cc < 120 => (cc, value.normalized()),
+            Control::Cc14 { cc, value, .. } if cc < 120 => (cc, value.normalized()), _ => return,
         };
         for slot in 0..self.states.len() {
             if let Some((control, index)) = self.states[slot].ui.learn.take() {
@@ -1888,11 +1887,10 @@ impl Runtime {
             let var = &prog.vars[c.var as usize];
             let len = var.len.unwrap_or(1) as usize;
             let end = len.min(at.native_at.saturating_add(left));
-            if let Some(value) = binding.descriptor.properties.get_mut("$CONTROL_PAR_VALUE") {
-                if refresh_range(&state.mem, var, value, at.native_at..end) {
-                    live.interface_revision = live.interface_revision.wrapping_add(1);
-                    at.changed = true;
-                }
+            if let Some(value) = binding.descriptor.properties.get_mut("$CONTROL_PAR_VALUE")
+                && refresh_range(&state.mem, var, value, at.native_at..end) {
+                live.interface_revision = live.interface_revision.wrapping_add(1);
+                at.changed = true;
             }
             left = left.saturating_sub(end - at.native_at);
             if end < len { at.native_at = end; return false; }
@@ -2120,9 +2118,8 @@ impl Runtime {
                 && let Some(r) = self.env.events.get(event).filter(|e| e.live).and_then(|e| e.host_note) { visit(r); }
         }
         for e in &self.env.events.slots {
-            if e.live && (e.held || e.callbacks > 0 || (!e.at_engine && !e.ignored && !e.silenced)) {
-                if let Some(r) = e.host_note { visit(r); }
-            }
+            if e.live && (e.held || e.callbacks > 0 || (!e.at_engine && !e.ignored && !e.silenced))
+                && let Some(r) = e.host_note { visit(r); }
         }
         for t in &self.threads {
             if t.live && let Some((r, _)) = t.ctx.host_pressure { visit(r); }
@@ -2144,9 +2141,8 @@ impl Runtime {
                 && let Some(r) = self.env.events.get(event).filter(|e| e.live).and_then(|e| e.per_note) { visit(r.controls); }
         }
         for e in &self.env.events.slots {
-            if e.live && (e.held || e.callbacks > 0 || (!e.at_engine && !e.ignored && !e.silenced)) {
-                if let Some(r) = e.per_note { visit(r.controls); }
-            }
+            if e.live && (e.held || e.callbacks > 0 || (!e.at_engine && !e.ignored && !e.silenced))
+                && let Some(r) = e.per_note { visit(r.controls); }
         }
         for t in &self.threads {
             if t.live && let Some(r) = t.ctx.per_note { visit(r.controls); }
@@ -2346,7 +2342,7 @@ impl Runtime {
                 }
                 continue;
             }
-            if !(self.env.events.get(t.ctx.event).is_some_and(|e| selected_event(e))
+            if !(self.env.events.get(t.ctx.event).is_some_and(&selected_event)
                 || t.ctx.host_pressure.is_some_and(|(r, _)| host_note == Some(r))
                 || host_note.is_none() && input && selected(t.ctx.channel, t.ctx.input_channel)) { continue; }
             let ctx = t.ctx;
