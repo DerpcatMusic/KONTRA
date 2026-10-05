@@ -684,6 +684,86 @@ impl<S: Sample> RawBufferScratch<S> {
         }
     }
 
+    fn prepare_channels(&mut self, num_in: usize, num_out: usize, num_frames: usize) {
+        // Grow per-channel scratch slots if the bus widened or
+        // we're widening precision and need every channel copied.
+        // `output_buffers` grows unconditionally now: an unconnected
+        // output channel discards its writes into this scratch even in
+        // the same-precision path.
+        while self.input_copies.len() < num_in {
+            self.input_copies.push(Vec::new());
+        }
+        while self.output_buffers.len() < num_out {
+            self.output_buffers.push(Vec::new());
+        }
+        // Block-length silence for any unconnected input channel.
+        if self.silence.len() < num_frames {
+            self.silence.resize(num_frames, S::default());
+        }
+    }
+
+    // SAFETY: The host output pointers follow `build`'s contract, and the
+    // output scratch slots have already been grown to cover `num_out`.
+    unsafe fn build_output_slices<H: Sample>(
+        &mut self,
+        outputs: *mut *mut H,
+        num_out: usize,
+        nf: usize,
+        same_precision: bool,
+        supports_in_place: bool,
+        in_place_mask: u64,
+    ) {
+        unsafe {
+            self.output_slices.clear();
+            self.output_slices.reserve(num_out);
+            for ch in 0..num_out {
+                let ptr = *outputs.add(ch);
+                let slice: &mut [S] = if ptr.is_null() {
+                    // Unconnected output channel: give the plugin a
+                    // block-length discard buffer to write into rather than
+                    // an empty slice it would index out of range.
+                    // `finish_widening` skips it (null host pointer), so
+                    // nothing is copied back.
+                    let buf = &mut self.output_buffers[ch];
+                    buf.clear();
+                    buf.resize(nf, S::default());
+                    let p = buf.as_mut_ptr();
+                    let l = buf.len();
+                    std::slice::from_raw_parts_mut(p, l)
+                } else if same_precision {
+                    // SAFETY: same-precision branch - host pointer is
+                    // already `*mut S` modulo runtime type identity.
+                    let raw = ptr.cast::<S>();
+                    std::slice::from_raw_parts_mut(raw, nf)
+                } else {
+                    // Different precision: render into per-channel
+                    // scratch; finish_widening copies+converts back.
+                    let buf = &mut self.output_buffers[ch];
+                    buf.clear();
+                    buf.resize(nf, S::default());
+                    // For an opted-in in-place channel, `input(ch)` is the
+                    // empty sentinel, so `in_out_mut(ch)` (this scratch) is the
+                    // plugin's only view of its data. The host output pointer
+                    // aliases the input and still holds the input samples at
+                    // build time, so seed the scratch with the converted input
+                    // - otherwise a `supports_in_place` plugin on a converting
+                    // wire would read (and emit) silence. Same-precision needs
+                    // no seed: it reinterprets the host buffer directly above.
+                    if supports_in_place && ch < 64 && (in_place_mask >> ch) & 1 == 1 {
+                        let host = std::slice::from_raw_parts(ptr.cast_const(), nf);
+                        for (dst, &h) in buf.iter_mut().zip(host) {
+                            *dst = S::from_f64(h.to_f64());
+                        }
+                    }
+                    let p = buf.as_mut_ptr();
+                    let l = buf.len();
+                    std::slice::from_raw_parts_mut(p, l)
+                };
+                self.output_slices.push(slice);
+            }
+        }
+    }
+
     unsafe fn build_inner<'a, H: Sample>(
         &'a mut self,
         inputs: *const *const H,
@@ -734,21 +814,7 @@ impl<S: Sample> RawBufferScratch<S> {
                     })
             };
 
-            // Grow per-channel scratch slots if the bus widened or
-            // we're widening precision and need every channel copied.
-            // `output_buffers` grows unconditionally now: an unconnected
-            // output channel discards its writes into this scratch even in
-            // the same-precision path.
-            while self.input_copies.len() < num_in_u {
-                self.input_copies.push(Vec::new());
-            }
-            while self.output_buffers.len() < num_out_u {
-                self.output_buffers.push(Vec::new());
-            }
-            // Block-length silence for any unconnected input channel.
-            if self.silence.len() < nf {
-                self.silence.resize(nf, S::default());
-            }
+            self.prepare_channels(num_in_u, num_out_u, nf);
             let silence_ptr = self.silence.as_ptr();
 
             self.input_slices.clear();
@@ -817,53 +883,14 @@ impl<S: Sample> RawBufferScratch<S> {
                 self.input_slices.push(slice);
             }
 
-            self.output_slices.clear();
-            self.output_slices.reserve(num_out_u);
-            for ch in 0..num_out_u {
-                let ptr = *outputs.add(ch);
-                let slice: &mut [S] = if ptr.is_null() {
-                    // Unconnected output channel: give the plugin a
-                    // block-length discard buffer to write into rather than
-                    // an empty slice it would index out of range.
-                    // `finish_widening` skips it (null host pointer), so
-                    // nothing is copied back.
-                    let buf = &mut self.output_buffers[ch];
-                    buf.clear();
-                    buf.resize(nf, S::default());
-                    let p = buf.as_mut_ptr();
-                    let l = buf.len();
-                    std::slice::from_raw_parts_mut(p, l)
-                } else if same_precision {
-                    // SAFETY: same-precision branch - host pointer is
-                    // already `*mut S` modulo runtime type identity.
-                    let raw = ptr.cast::<S>();
-                    std::slice::from_raw_parts_mut(raw, nf)
-                } else {
-                    // Different precision: render into per-channel
-                    // scratch; finish_widening copies+converts back.
-                    let buf = &mut self.output_buffers[ch];
-                    buf.clear();
-                    buf.resize(nf, S::default());
-                    // For an opted-in in-place channel, `input(ch)` is the
-                    // empty sentinel, so `in_out_mut(ch)` (this scratch) is the
-                    // plugin's only view of its data. The host output pointer
-                    // aliases the input and still holds the input samples at
-                    // build time, so seed the scratch with the converted input
-                    // - otherwise a `supports_in_place` plugin on a converting
-                    // wire would read (and emit) silence. Same-precision needs
-                    // no seed: it reinterprets the host buffer directly above.
-                    if supports_in_place && ch < 64 && (in_place_mask >> ch) & 1 == 1 {
-                        let host = std::slice::from_raw_parts(ptr.cast_const(), nf);
-                        for (dst, &h) in buf.iter_mut().zip(host) {
-                            *dst = S::from_f64(h.to_f64());
-                        }
-                    }
-                    let p = buf.as_mut_ptr();
-                    let l = buf.len();
-                    std::slice::from_raw_parts_mut(p, l)
-                };
-                self.output_slices.push(slice);
-            }
+            self.build_output_slices(
+                outputs,
+                num_out_u,
+                nf,
+                same_precision,
+                supports_in_place,
+                in_place_mask,
+            );
 
             // SAFETY: Same transmute pattern as AudioBuffer::slice().
             // RawBufferScratch stores 'static slices but we return AudioBuffer<'a>.

@@ -46,11 +46,9 @@ impl Archive {
     pub fn read_index<R: Read + Seek>(reader: R) -> Result<Self, Error> {
         let mut reader = BufReader::new(reader);
         let length = reader.seek(SeekFrom::End(0))?;
-        let mut entries = HashMap::new();
-        let mut visited = HashSet::new();
-        let mut issues = Vec::new();
-        directory(&mut reader, 0, "", length, &mut visited, &mut entries, &mut issues, 0)?;
-        Ok(Self { entries, length, issues })
+        let mut index = DirectoryIndex::default();
+        directory(&mut reader, 0, "", length, &mut index, 0)?;
+        Ok(Self { entries: index.entries, length, issues: index.issues })
     }
     /// The entry for `name` with its header validated (read from `reader` if
     /// the archive was indexed lazily).
@@ -99,17 +97,22 @@ impl Archive {
 fn invalid(message: &str) -> Error {
     Error::Generic(message.into())
 }
+#[derive(Default)]
+struct DirectoryIndex {
+    visited: HashSet<u64>,
+    entries: HashMap<String, Entry>,
+    issues: Vec<String>,
+}
+
 fn directory<R: ReadBytesExt>(
     r: &mut R,
     offset: u64,
     prefix: &str,
     length: u64,
-    visited: &mut HashSet<u64>,
-    entries: &mut HashMap<String, Entry>,
-    issues: &mut Vec<String>,
+    index: &mut DirectoryIndex,
     depth: usize,
 ) -> Result<(), Error> {
-    if depth > 32 || !visited.insert(offset) {
+    if depth > 32 || !index.visited.insert(offset) {
         return Err(invalid(&format!("Invalid/cyclic NKX directory at {offset:#x} ({prefix}), depth {depth}, file length {length}")));
     }
     let available = length.saturating_sub(offset);
@@ -125,7 +128,7 @@ fn directory<R: ReadBytesExt>(
         if depth == 0 {
             return Err(invalid(&issue));
         }
-        issues.push(issue);
+        index.issues.push(issue);
         return Ok(());
     }
     let version = r.read_u16_le()?;
@@ -140,6 +143,11 @@ fn directory<R: ReadBytesExt>(
         return Err(invalid("Invalid NKX directory size"));
     }
     let mut start = offset + 22;
+    // Keep the first-entry boundary diagnostic before the aggregate count check,
+    // while still rejecting truncated input before allocating child records.
+    if count != 0 && length.saturating_sub(start) < 8 {
+        return Err(invalid(&format!("Truncated NKX directory entry 0/{count} at {start:#x} ({prefix}): need 8 bytes, available {}, file length {length}", length.saturating_sub(start))));
+    }
     // Every entry needs at least its 8-byte header, before any filename bytes.
     if u64::from(count) > length.saturating_sub(start) / 8 {
         return Err(invalid(&format!("Truncated NKX directory entries at {start:#x} ({prefix}): declared {count}, need at least {} bytes, available {}", u64::from(count) * 8, length.saturating_sub(start))));
@@ -154,14 +162,14 @@ fn directory<R: ReadBytesExt>(
         let size = r.read_u16_le()? as u64;
         let reference = r.read_u32_le()?;
         let kind = r.read_u16_le()?;
-        if size < 8 || size % 2 != 0 || start + size > length {
+        if size < 8 || size & 1 != 0 || start + size > length {
             return Err(invalid(&format!("Invalid NKX directory entry {entry}/{count} length {size} at {start:#x} ({prefix}), available {}, file length {length}", length.saturating_sub(start))));
         }
         // Bounded by the check above; `read_bytes` would seek and drop the read buffer.
         let mut bytes = vec![0; (size - 8) as usize];
         r.read_exact(&mut bytes)?;
         let words: Vec<_> = bytes
-            .chunks_exact(2)
+            .chunks(2)
             .map(|b| u16::from_le_bytes([b[0], b[1]]))
             .take_while(|c| *c != 0)
             .collect();
@@ -184,13 +192,11 @@ fn directory<R: ReadBytesExt>(
                 reference as u64,
                 &full,
                 length,
-                visited,
-                entries,
-                issues,
+                index,
                 depth + 1,
             )?,
             0 | 2 | 4 => {
-                if entries.len() >= 1_000_000 || entries.contains_key(&full.to_lowercase()) {
+                if index.entries.len() >= 1_000_000 || index.entries.contains_key(&full.to_lowercase()) {
                     return Err(invalid("Duplicate or excessive NKX member"));
                 }
                 let file_offset = if kind == 2 {
@@ -209,7 +215,7 @@ fn directory<R: ReadBytesExt>(
                     checked: false,
                     issue: None,
                 };
-                entries.insert(full.to_lowercase(), e);
+                index.entries.insert(full.to_lowercase(), e);
             }
             _ => return Err(invalid("Unknown NKX entry kind")),
         }

@@ -9,5 +9,4 @@ pub mod schema;
 // pub mod schemas;
 
 pub use container::*;
-pub use error::*;
 pub use properties::*;
