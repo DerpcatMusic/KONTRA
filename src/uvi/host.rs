@@ -2907,7 +2907,7 @@ mod tests {
 
     #[test]
     fn native_absent_rack_gain_writes_preserve_commands_state_and_saved_baseline() {
-        let program = parse_program(r#"<Program><AuxEffects><AuxEffect><Inserts><EffectRack Name="rack"/><GainMatrix Gain_1_1="1" Gain_2_2="1"/><EffectRack Gain_1_1="0.5"/><DigitalEq/></Inserts></AuxEffect></AuxEffects></Program>"#).unwrap();
+        let program = parse_program(r#"<Program><Auxs><AuxEffect><Inserts><EffectRack Name="rack"/><GainMatrix Gain_1_1="1" Gain_2_2="1"/><EffectRack Gain_1_1="0.5"/><DigitalEq/></Inserts></AuxEffect></Auxs></Program>"#).unwrap();
         let lua = vm();
         let host = install(&lua, HostConfig {program:Some(&program),modules:BTreeMap::new(),now:Rc::new(||17),resources:None,valid_voice:None,layer_scope:None}).unwrap();
         let baseline = host.parameters.borrow().clone();
@@ -2941,7 +2941,7 @@ mod tests {
 
     #[test]
     fn native_absent_rack_gain_compatibility_keeps_unknown_and_value_guards() {
-        let program = parse_program(r#"<Program><AuxEffects><AuxEffect><Inserts><EffectRack/><GainMatrix/><DigitalEq/></Inserts></AuxEffect></AuxEffects></Program>"#).unwrap();
+        let program = parse_program(r#"<Program><Auxs><AuxEffect><Inserts><EffectRack/><GainMatrix/><DigitalEq/></Inserts></AuxEffect></Auxs></Program>"#).unwrap();
         let lua = vm();
         let host = install(&lua, HostConfig {program:Some(&program),modules:BTreeMap::new(),now:Rc::new(||17),resources:None,valid_voice:None,layer_scope:None}).unwrap();
         let baseline = host.parameters.borrow().clone();

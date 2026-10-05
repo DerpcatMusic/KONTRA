@@ -224,6 +224,7 @@ fn render(e: &mut Engine, pcm: &mut Vec<[f32; 2]>, frames: usize, partition: &[u
         at += n;
         block += 1;
     }
+    e.mark_host_notes();
 }
 fn same(a: &[[f32; 2]], b: &[[f32; 2]]) {
     assert_eq!(a.len(), b.len());

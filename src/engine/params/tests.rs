@@ -768,10 +768,12 @@ fn saved_mixed_ahd_preserves_early_release_and_complete_pcm_without_heap() {
                 }
                 // Independent primary native AHD: 16 ms at 1500 points/s
                 // owns24 decay points, then one32-frame interpolation tick.
-                // It terminates at800; retrigger at317 terminates at1117.
-                for engine in [&mut whole, &mut fragmented, &mut reference, &mut ordinary] {
+                // Audio terminates at800; retrigger at317 terminates at1117.
+                // The deferred-off reference retains its first physical root until1001.
+                for (index, engine) in [&mut whole, &mut fragmented, &mut reference, &mut ordinary]
+                    .into_iter().enumerate() {
                     engine.mark_host_notes();
-                    assert_eq!(engine.host_note_end_at(first), Some(800));
+                    assert_eq!(engine.host_note_end_at(first), Some(if index == 2 { 1001 } else { 800 }));
                     assert_eq!(engine.host_note_end_at(second), Some(1117));
                 }
             }),

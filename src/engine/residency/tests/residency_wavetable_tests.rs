@@ -26,11 +26,12 @@ fn performance(partitions: &[usize]) -> [Vec<f32>; 2] {
     }
     let groups = vec![Group { source_mode: Some(9), wavetable: Some(Wavetable::default()),
         ..Default::default() }, Group { source_mode: Some(0), ..Default::default() }];
+    // Zone ends are signed offsets from EOF; each table window is 4096 frames.
     let zones = vec![
         Zone { sample: paths[0].clone(), group: 1, low_key: 60, high_key: 60,
-            end: 4096, pan: -1., ..Default::default() },
+            end: 4096 - FRAMES as i32, pan: -1., ..Default::default() },
         Zone { sample: paths[0].clone(), group: 1, low_key: 64, high_key: 64,
-            start: 65536, end: 69632, pan: 1., ..Default::default() },
+            start: 65536, end: 69632 - FRAMES as i32, pan: 1., ..Default::default() },
         Zone { sample: paths[1].clone(), group: 1, low_key: 65, high_key: 65,
             ..Default::default() },
     ];

@@ -182,8 +182,14 @@ fn performance(mode: i16, layered: bool, partition: &[usize]) -> Vec<[f32; 2]> {
         start(&mut main, c, 1.);
     }
     step(&mut actual, &mut main, &mut fader, &mut pcm, 48, partition);
-    assert_eq!(actual.host_note_end_at(a), Some(64));
-    assert_eq!(main.host_note_end_at(a), Some(64));
+    for engine in [&mut actual, &mut main] {
+        engine.mark_host_notes();
+        assert_eq!(engine.host_audio_end_at(a), Some(64));
+        assert_eq!(engine.host_note_end_at(a), None, "physical key still held after audio EOF");
+        engine.host_note_off(pattern(a));
+        engine.mark_host_notes();
+        assert_eq!(engine.host_note_end_at(a), Some(80));
+    }
     // Short A's swap-remove now puts the newer tied sample before the oldest.
     // Newest still ties on the note's age; prefer-released isolates its two layers.
     if mode == 2 {
@@ -201,6 +207,8 @@ fn performance(mode: i16, layered: bool, partition: &[usize]) -> Vec<[f32; 2]> {
     start(&mut actual, e, 0.);
     start(&mut main, e, 0.);
     step(&mut actual, &mut main, &mut fader, &mut pcm, 479, partition);
+    actual.mark_host_notes();
+    fader.mark_host_notes();
     assert_eq!(fader.host_note_end_at(b), None);
     assert_eq!(
         actual.host_note_end_at(b),
@@ -208,7 +216,15 @@ fn performance(mode: i16, layered: bool, partition: &[usize]) -> Vec<[f32; 2]> {
         "owner must survive the entire saved10ms fade"
     );
     step(&mut actual, &mut main, &mut fader, &mut pcm, 1, partition);
+    fader.mark_host_notes();
+    assert_eq!(fader.host_audio_end_at(b), Some(576));
+    if mode != 2 {
+        assert_eq!(fader.host_note_end_at(b), None, "stolen audio does not release the physical key");
+        fader.host_note_off(pattern(b));
+        fader.mark_host_notes();
+    }
     assert_eq!(fader.host_note_end_at(b), Some(576));
+    actual.mark_host_notes();
     if layered {
         assert_eq!(
             actual.host_note_end_at(b),
@@ -216,6 +232,10 @@ fn performance(mode: i16, layered: bool, partition: &[usize]) -> Vec<[f32; 2]> {
             "the surviving same-note layer owns its root"
         );
     } else {
+        assert_eq!(actual.host_audio_end_at(b), Some(576));
+        assert_eq!(actual.host_note_end_at(b), None, "oldest victim's physical key remains held");
+        actual.host_note_off(pattern(b));
+        actual.mark_host_notes();
         assert_eq!(actual.host_note_end_at(b), Some(576));
         assert_eq!(
             actual.host_note_end_at(c),
@@ -244,6 +264,8 @@ fn performance(mode: i16, layered: bool, partition: &[usize]) -> Vec<[f32; 2]> {
         4096,
         partition,
     );
+    actual.mark_host_notes();
+    main.mark_host_notes();
     for note in if layered {
         vec![b, d, e]
     } else {

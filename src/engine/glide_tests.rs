@@ -238,8 +238,15 @@ fn positive_saved_glide_with_unrepresentable_duration_fails_before_pcm_commit() 
     );
     assert_eq!(error.unwrap().kind, StreamErrorKind::UnrepresentablePitch);
     assert_eq!((left, right), ([0.; 128], [0.; 128]));
-    assert_eq!(e.host_note_end_at(root), Some(0));
+    assert_eq!(e.host_audio_end_at(root), Some(0));
+    assert_eq!(e.host_note_end_at(root), None, "failed source does not release its physical held root");
     assert_eq!(e.active_voices(), 0);
+    assert_eq!(crate::plugin::tests::allocations(|| {
+        e.host_note_off(pattern(root));
+        e.mark_host_notes();
+    }), 0);
+    assert_eq!(e.host_audio_end_at(root), Some(0));
+    assert_eq!(e.host_note_end_at(root), Some(128), "host lifetime ends at actual key-up");
 }
 
 const HISTORY: &str = "on init\ndeclare $child := 0\nend on

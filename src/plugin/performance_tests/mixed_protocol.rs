@@ -3,31 +3,37 @@ use super::*;
 use crate::articulate::{Articulate, Articulation, Mode, Mpe, Route};
 
 fn native_cc(events: &mut EventList, raw: bool, controller: u8, value: u32) {
+    let semantic = Event::on_port(
+        0,
+        0,
+        EventBody::ControlChange2 {
+            group: 0,
+            channel: 4,
+            cc: controller,
+            value,
+        },
+    );
     if raw {
+        // Retain the original UMP alongside its faithful semantic CC view,
+        // as the host decoder does; exact-only storage does not decode it.
         events
-            .try_push_exact(ExactEvent::new(
-                0,
-                ExactEventBody::Ump {
-                    port: 0,
-                    packet: moose::core::events::RawUmp::new(
-                        [0x40b4_0000 | (u32::from(controller) << 8), value, 0, 0],
-                        2,
-                    )
-                    .unwrap(),
-                },
-            ))
+            .try_push_with_exact(
+                semantic,
+                ExactEvent::new(
+                    0,
+                    ExactEventBody::Ump {
+                        port: 0,
+                        packet: moose::core::events::RawUmp::new(
+                            [0x40b4_0000 | (u32::from(controller) << 8), value, 0, 0],
+                            2,
+                        )
+                        .unwrap(),
+                    },
+                ),
+            )
             .unwrap();
     } else {
-        events.push(Event::on_port(
-            0,
-            0,
-            EventBody::ControlChange2 {
-                group: 0,
-                channel: 4,
-                cc: controller,
-                value,
-            },
-        ));
+        events.push(semantic);
     }
 }
 
@@ -261,7 +267,10 @@ end on"#,
         assert_eq!(values[1], 7, "callback retains routed logical channel");
     }
     assert_eq!(seen(&p)[0], before[0] + 2);
-    for (controller, value, tune) in [(6, 6, 3.495), (96, 127, 3.5), (97, 0, 3.495)] {
+    // A new Data Entry MSB clears the previous 99-cent fine byte. RPN0
+    // relative messages then change cents by one, regardless of their value.
+    // The independently authored pitches apply the retained half-scale bend.
+    for (controller, value, tune) in [(6, 6, 3.), (96, 127, 3.005), (97, 0, 3.)] {
         wire.clear();
         oracle.clear();
         cc(&mut wire, 4, controller, value);
@@ -273,16 +282,16 @@ end on"#,
         );
         reference.stage(
             "independent MIDI1 pitch update",
-            "half6.99,7.00,6.99 sensitivity in semitones",
+            "half6.00,6.01,6.00 sensitivity in semitones",
             &oracle,
         );
         compare(&p, &reference);
     }
     for (relative, index, value, tune) in [
-        (false, 1, 0x9000_0000, 3.62),
-        (true, 1, 0x1000_0000, 3.745),
-        (false, 2, 65u32 << 25, 4.745),
-        (true, 2, (-(1i32 << 25)) as u32, 3.745),
+        (false, 1, 0x9000_0000, 3.125),
+        (true, 1, 0x1000_0000, 3.25),
+        (false, 2, 65u32 << 25, 4.25),
+        (true, 2, (-(1i32 << 25)) as u32, 3.25),
     ] {
         wire.clear();
         oracle.clear();
@@ -348,7 +357,7 @@ end on"#,
     );
     compare(&p, &reference);
     assert_eq!(seen(&p)[4], -0x1000_0000);
-    assert!((pcm_fundamental(p.measured(), 0) - 240. * 2f64.powf(3.745 / 12.)).abs() < 2e-5);
+    assert!((pcm_fundamental(p.measured(), 0) - 240. * 2f64.powf(3.25 / 12.)).abs() < 2e-5);
     assert!((pcm_fundamental(p.measured(), 1) - 240.).abs() < 2e-5);
     wire.clear();
     oracle.clear();

@@ -454,7 +454,7 @@ mod tests {
                             let (mut a, mut ar, mut b, mut br) = ([0.; 6144], [0.; 6144], [0.; 6144], [0.; 6144]);
                             let (mut frame, mut chunk) = (0, 0);
                             let mut exercise = || {
-                                for stop in [0, 256, 1024, 1536, 2048, 2304, 4096, 6144] {
+                                for stop in [0, 256, 1024, 1536, 2048, 2176, 4096, 6144] {
                                     let mut reference_frame = frame;
                                     while frame < stop {
                                         let n = if fragmented { [1, 7, 31, 128][chunk % 4] } else { 128 }.min(stop - frame);
@@ -483,7 +483,9 @@ mod tests {
                                                 e.host_expression(pattern(410), HostExpression::Tune(1.));
                                             }
                                             2048 => e.cc_from(7, 4, pedal, 0),
-                                            2304 => {
+                                            // The unlatched transposed child's finite tail
+                                            // ends near2301; inspect while it still sounds.
+                                            2176 => {
                                                 let mut tails = 0;
                                                 for voice in e.player.voices.iter().filter(|v| v.release_trigger) {
                                                     tails += 1;
@@ -526,6 +528,13 @@ mod tests {
                             assert!(b[2048..4096].iter().any(|v| v.abs() > 0.01), "independent release oracle must sound");
                             assert!(a[4096..].iter().chain(&ar[4096..]).all(|v| v.abs() < 1e-6), "complete release must reach silence");
                             assert!(error < 1e-6, "finite={finite_attack} exact={exact} pedal={pedal} fragmented={fragmented} source={source:?}: full PCM error={error}");
+                            if source == sources[2] && !exact && pedal == 66 {
+                                // Sostenuto captured the physical root before this child
+                                // existed. Its release sample must run before pedal-up.
+                                assert!(a[1440..2048].iter().any(|v| v.abs() > 0.01));
+                                assert!(a[2304..].iter().chain(&ar[2304..]).all(|v| v.abs() < 1e-6),
+                                    "generated child incorrectly inherited physical sostenuto capture");
+                            }
                             if let Some(rt) = actual.script() { assert!(rt.diagnostics().is_empty(), "{:?}", rt.diagnostics()); }
                         }
                     }

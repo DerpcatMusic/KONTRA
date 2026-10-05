@@ -764,12 +764,19 @@ mod tests {
                 .map(|z| (z.group, (z.low_key, z.high_key), z.root, (z.low_velocity, z.high_velocity), z.loop_range.as_ref().map(|l| (l.start, l.end))))
                 .collect();
             assert_eq!(got, expected, "{instrument}");
-            // The NKI reads back zone for zone as the KONTRA preset, sample paths aside.
+            // NKI retains the native slot written for a simple KONTRA loop.
             assert_eq!(nki.zones.len(), native.zones.len());
             for (a, b) in nki.zones.iter().zip(&native.zones) {
                 assert_eq!(a.sample.file_name(), b.sample.file_name());
                 assert!(a.available && b.available);
-                assert_eq!(Zone { sample: b.sample.clone(), ..a.clone() }, *b);
+                assert!(b.native_loops.is_empty());
+                let expected_loops: Vec<_> = b.loop_range.iter().map(|l| crate::import::NativeLoop {
+                    slot: 0, mode: if l.until_release { 2 } else { 1 },
+                    start: l.start as i32, length: (l.end - l.start) as i32, count: 0,
+                    alternating: l.alternating, tuning: 1., crossfade: l.crossfade as i32,
+                }).collect();
+                assert_eq!(a.native_loops, expected_loops);
+                assert_eq!(Zone { sample: b.sample.clone(), native_loops: Vec::new(), ..a.clone() }, *b);
             }
             let group_names = |i: &Instrument| i.groups.iter().map(|g| g.name.clone()).collect::<Vec<_>>();
             assert_eq!(group_names(&nki), group_names(&native));

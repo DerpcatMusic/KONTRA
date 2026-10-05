@@ -1762,8 +1762,13 @@ fn zone_id_reports_no_mapping_and_zero_once_the_event_is_gone() {
     assert_eq!(rig.rt.last_message(), "-1");
     rig.block(64);
     assert_eq!(rig.rt.last_message(), "-1");
-    // A later note sees the released one as gone.
+    // LogEngine does not retire sample voices: Off alone still leaves an
+    // active, unmapped voice, just as an audible release tail would.
     rig.off(0, 60).block(64).on(0, 62).block(64);
+    assert_eq!(rig.rt.last_message(), "-1");
+    // Explicitly terminate the fixture's voices before testing a gone event.
+    rig.rt.all_sound_off(&mut rig.engine, u16::MAX);
+    rig.on(0, 64).block(64);
     assert_eq!(rig.rt.last_message(), "0");
 }
 
@@ -2310,11 +2315,22 @@ fn built_in_state_variables() {
 
 #[test]
 fn total_voice_count_requires_an_actual_multi_instrument_owner() {
-    let mut rig = Rig::new(&["on init\nmessage($PLAYED_VOICES_TOTAL)\nend on\non note\nmessage($PLAYED_VOICES_TOTAL)\nend on"]);
-    assert_eq!(rig.rt.last_message(), "0");
-    rig.on(0, 60).on(0, 61).block(64);
-    assert_eq!(rig.rt.last_message(), "0");
-    assert_eq!(rig.rt.diagnostics().iter().filter(|d| d.contains("PLAYED_VOICES_TOTAL unavailable")).count(), 1);
+    let mut engine = LogEngine::new(vec!["a".into(), "b".into(), "c".into()], 48_000.0);
+    let (mut rt, errors) = Runtime::with_scripts(
+        &["on init\nmessage($PLAYED_VOICES_TOTAL)\nend on\non note\nmessage($PLAYED_VOICES_TOTAL)\nend on"],
+        &mut engine,
+        8,
+        Vec::new(),
+    );
+    assert!(errors.iter().all(Option::is_none), "{errors:?}");
+    let expected = ["PLAYED_VOICES_TOTAL unavailable: no multi-instrument voice-count owner"];
+    assert_eq!(rt.last_message(), "0");
+    assert_eq!(rt.diagnostics(), expected);
+    rt.note_on(&mut engine, 0, 60, 100);
+    rt.note_on(&mut engine, 0, 61, 100);
+    rt.process(&mut engine, 64);
+    assert_eq!(rt.last_message(), "0");
+    assert_eq!(rt.diagnostics(), expected);
 }
 
 #[test]

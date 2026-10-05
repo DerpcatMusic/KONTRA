@@ -89,7 +89,7 @@ fn compatibility_flex_owns_full_vector_indices_and_complete_pcm_without_heap() {
         let mut pcm = [[[0.; FRAMES]; 2]; 2];
         let mut reference = [[[0.; FRAMES]; 2]; 2];
         let audio_ends = if mode == 2 { [520, 837] } else { [717, 354] };
-        let host_ends = if mode == 2 { [600, 837] } else { audio_ends };
+        let host_ends = if mode == 2 { [713, 837] } else { audio_ends };
         assert_eq!(crate::plugin::tests::allocations(|| {
             for engine in &mut engines {
                 assert!(engine.host_note_on(first, 0, 60, 127, 0.));
@@ -140,11 +140,18 @@ fn compatibility_flex_owns_full_vector_indices_and_complete_pcm_without_heap() {
                     if mode != 2 { assert!(engine.player.voices.iter().any(|v| !v.held && !v.released)); }
                     else {
                         engine.mark_host_notes();
-                        assert_eq!(engine.host_note_end_at(first), Some(600),
-                            "physical Off releases the held pin after audio completed at520");
+                        assert_eq!(engine.host_note_end_at(first), None,
+                            "sustain retains the released Host owner after audio completed at520");
                     }
                 }}
-                if end == 713 { for engine in &mut engines { engine.cc(0, 64, 0); } }
+                if end == 713 { for engine in &mut engines {
+                    engine.cc(0, 64, 0);
+                    if mode == 2 {
+                        engine.mark_host_notes();
+                        assert_eq!(engine.host_note_end_at(first), Some(713),
+                            "pedal-up retires the completed owner's remaining physical pin");
+                    }
+                } }
                 start = end;
             }
             for engine in &mut engines {

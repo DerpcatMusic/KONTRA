@@ -27,7 +27,7 @@ fn assignment(
 }
 
 fn imported_volume(default: i16, shape: Option<ShaperCurve>) -> ModAssignment {
-    use ni_file::kontakt::{Chunk, StructuredObject, objects::Group as RawGroup};
+    use ni_file::kontakt::{objects::Group as RawGroup, Chunk, StructuredObject};
     fn name(bytes: &mut Vec<u8>, text: &str) {
         bytes.extend((text.len() as u32).to_le_bytes());
         bytes.extend(text.as_bytes());
@@ -160,7 +160,11 @@ fn start(e: &mut Engine, note: HostNote, pan: f32) {
 }
 fn received(e: &mut Engine, input: u8, control: Control) {
     assert_eq!(
-        crate::plugin::tests::allocations(|| e.control_from_received(7, input, crate::midi::ReceivedControl::without_parameter(control))),
+        crate::plugin::tests::allocations(|| e.control_from_received(
+            7,
+            input,
+            crate::midi::ReceivedControl::without_parameter(control)
+        )),
         0
     );
 }
@@ -366,6 +370,8 @@ fn timeline(partition: &[usize]) -> Vec<[f32; 2]> {
         4096,
         partition,
     );
+    actual.mark_host_notes();
+    reference.mark_host_notes();
     for note in notes {
         assert_eq!(
             actual.host_note_end_at(note),
@@ -398,6 +404,8 @@ fn timeline(partition: &[usize]) -> Vec<[f32; 2]> {
         4096,
         partition,
     );
+    actual.mark_host_notes();
+    reference.mark_host_notes();
     assert_eq!(
         actual.host_note_end_at(fresh),
         reference.host_note_end_at(fresh)
@@ -439,11 +447,30 @@ fn saved_controller_availability_preserves_full_pcm_physical_scope_and_frozen_mp
         a.host_note_off(pattern(old));
         b.host_note_off(pattern(old));
         received(&mut a, 1, Control::Cc(74, ControlValue::ZERO));
+        // MPE setup centers both member and manager brightness at64. Clearing
+        // the new member leaves the manager's64/127 contribution; the old
+        // released member retains its centered value and saturated unity gain.
+        // Seed the independent new generation before On, preserving the old tail.
+        let address = crate::engine::InputAddress {
+            port: new.port,
+            channel: new.channel,
+            key: new.key,
+        };
+        assert!(b.per_note_manage(address, true, false));
+        let volume = ((64. / 127. / 4.) * f64::from(u32::MAX)).round() as u32;
+        assert!(b.note_controller_from(
+            7,
+            60,
+            address,
+            crate::midi::NoteControl::Registered {
+                index: 7,
+                value: volume
+            }
+        ));
         start(&mut a, new, 1.);
         start(&mut b, new, 1.);
-        b.host_expression(pattern(new), HostExpression::Gain(0.));
         step(&mut a, &mut b, &mut p, &mut q, 512, partition);
-        // Exact-note brightness takes precedence over frozen unreceived member state.
+        // Exact-note brightness takes precedence over frozen centered member state.
         a.host_expression(
             pattern(old),
             HostExpression::Brightness(ControlValue::from_midi1(64)),
@@ -453,6 +480,8 @@ fn saved_controller_availability_preserves_full_pcm_physical_scope_and_frozen_mp
         a.host_note_off(pattern(new));
         b.host_note_off(pattern(new));
         step(&mut a, &mut b, &mut p, &mut q, 4096, partition);
+        a.mark_host_notes();
+        b.mark_host_notes();
         for note in [old, new] {
             assert_eq!(a.host_note_end_at(note), b.host_note_end_at(note));
             assert!(a.host_note_end_at(note).is_some());

@@ -548,8 +548,16 @@ fn replacement(source: &Source, partition: &'static [usize]) -> Performance {
             boundary,
             "replacement end belongs to the callback boundary"
         );
+        // Install a separately prepared unity source: replacement retires
+        // immediately, whereas a Choke intentionally keeps a 5 ms audio fade.
+        let mut prepared = Performance::new(false, partition);
+        let incoming = prepared.dsp.rack.parts[0].instrument_mut().unwrap().set_bank(None).unwrap();
+        let mut retired = None;
+        assert_eq!(super::super::tests::allocations(|| {
+            retired = reference.dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(incoming));
+        }), 0);
+        drop(retired);
         events.clear();
-        note(&mut events, ExactNoteKind::Choke, old_id, 4, 60);
         reference.stage(
             "replacement oracle stop",
             "unity oracle owner retires at identical boundary",
@@ -1255,7 +1263,13 @@ fn pan_replacement(source: &Source, partition: &'static [usize]) -> Performance 
         );
         assert_eq!(*p.ended.last().unwrap(), address(old_id, 4, 60));
         assert_eq!(*p.ended_frames.last().unwrap(), boundary);
-        note(&mut events, ExactNoteKind::Choke, old_id, 4, 60);
+        let mut prepared = Performance::new(false, partition);
+        let incoming = prepared.dsp.rack.parts[0].instrument_mut().unwrap().set_bank(None).unwrap();
+        let mut retired = None;
+        assert_eq!(super::super::tests::allocations(|| {
+            retired = reference.dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(incoming));
+        }), 0);
+        drop(retired);
         reference.stage(
             "pan replacement oracle end",
             "same old owner boundary",
@@ -1463,12 +1477,21 @@ fn sound_off_fade(
             .all(|frame| *frame == [0.; 2]),
         "final ramp sample and every later sample must be zero"
     );
+    if path != 2 {
+        // Both physical and logical sound-off silence the held host root;
+        // Panic additionally releases the input gate.
+        assert!(p.ended.is_empty());
+        assert!(p.dsp.rack.parts[0].host_key_held(4, 60));
+        let release = p.pcm.len();
+        events.clear();
+        note(&mut events, ExactNoteKind::Off, 480, 4, 60);
+        p.stage_for("sound-off physical key-up", "silent owner completes at physical Off", &events, 128, 0);
+        assert!(!p.dsp.rack.parts[0].host_key_held(4, 60));
+        assert_eq!(p.ended_frames, [release]);
+    } else {
+        assert_eq!(p.ended_frames, [cut + frames], "logical stop completes at the fade clock");
+    }
     assert_eq!(p.ended, [address(480, 4, 60)]);
-    assert_eq!(
-        p.ended_frames,
-        [cut + frames],
-        "NOTE_END belongs to exact completed fade clock"
-    );
     p
 }
 

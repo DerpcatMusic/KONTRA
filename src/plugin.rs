@@ -7141,7 +7141,8 @@ end on"#,dir.display());
         dsp.script_epoch[0]=2;
         assert_eq!(allocations(|| { Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx); }),0);
         assert!(p.shared.array_requests.is_empty(),"queued old selections must not execute on a replacement script");
-        assert!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().diagnostics().is_empty());
+        let diagnostics = dsp.rack.parts[0].instrument().unwrap().script().unwrap().diagnostics();
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -9043,7 +9044,8 @@ end on"#;
             assert_eq!(interface.controls[1].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text(transition.into()),
                 "seeks/tempo changes must not fabricate start/stop transitions");
         }
-        assert!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().diagnostics().is_empty());
+        let diagnostics = dsp.rack.parts[0].instrument().unwrap().script().unwrap().diagnostics();
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 
     #[test]
@@ -10044,7 +10046,13 @@ end on"#;
             // Default rack slots all hear port0. Isolate this native destination
             // so empty Kontakt slots do not retain their own exact-zero gates.
             for control in dsp.rack.controls.iter_mut().skip(1) { control.port=1; }
+            params.shared.uvi_epoch.store(7,Ordering::Release);
             dsp.uvi[0]=Some(audio);
+            dsp.rack.parts[1].reset(48000.);
+            let bank = crate::engine::Bank::from_samples(
+                vec![crate::import::Group::default()],vec![crate::import::Zone::default()],
+                vec![(PathBuf::new(),crate::audio::Sample {rate:48000,frames:vec![[0.2;2];1]})]).unwrap();
+            dsp.rack.parts[1].instrument_mut().unwrap().set_bank(Some(Box::new(bank)));
             let atoms = params.shared.part(0).unwrap();
             atoms.uvi_generation.store(9,Ordering::Release);
             atoms.uvi_part_generation.store(0,Ordering::Release);
@@ -10057,70 +10065,84 @@ end on"#;
                         velocity:velocity as f32,tuning:0.,length:None } };
                 events.try_push_exact(ExactEvent::new(0,body)).unwrap(); events
             };
-            for (id,velocity) in [(42,0.001),(43,0.)] {
-                let events = attack(id,velocity);
-                let LosslessEventRef::Exact(event) = events.lossless_iter().next().unwrap() else { panic!("exact lane") };
-                let Some(ExactInput::Routed(input,port)) = exact_host_input(event) else { panic!("valid projection") };
-                assert_eq!(allocations(|| feed_host_input(&mut dsp,&params,input,port,0,false,48000.)),0);
-            }
+            let process = |dsp:&mut Dsp, events:&EventList, outgoing:&mut EventList| {
+                let (mut left,mut right) = ([0.;128],[0.;128]);
+                let mut channels = [&mut left[..],&mut right[..]];
+                let mut buffer = AudioBuffer::from_slices_checked(&[],&mut channels,128);
+                let transport = TransportInfo::default();
+                let mut cx = ProcessContext::new(&transport,48000.,128,outgoing);
+                assert_eq!(allocations(|| { Sampler::process(dsp,&params,&mut buffer,events,&mut cx); }),0);
+            };
+            let none = EventList::with_capacity(0);
+            let mut blocked = EventList::with_capacity(if clap {0} else {4});
+            // The native endpoint consumes MIDI1 velocity; use its positive
+            // minimum to distinguish this sustained owner from exact zero.
+            process(&mut dsp,&attack(42,1./127.),&mut blocked);
+            process(&mut dsp,&attack(43,0.),&mut blocked);
             let owner = |id| crate::engine::HostNote { port:0,channel:4,key:60,id,clap };
             let slot = dsp.uvi[0].as_ref().unwrap().slot();
-            assert!(slot.host_note_pending(owner(42)) && slot.has_host_note(owner(43)));
+            assert!(slot.host_note_pending(owner(42)));
+            assert_eq!(slot.has_host_note(owner(43)),clap,
+                "only CLAP retains a completed zero owner for End acknowledgement");
             assert!(!slot.host_note_pending(owner(43)) && slot.error().is_none());
             assert!(dsp.rack.parts.iter().all(|e| !e.host_note_present(owner(42))
                 && !e.host_note_present(owner(43))),"native-only fixture routed into a Kontakt slot");
             assert_eq!(dsp.uvi_zero_velocity_rejections,1);
             assert_eq!(dsp.unsupported_host_expression,0);
             assert!(!atoms.uvi_failed.load(Ordering::Acquire));
-            let transport = TransportInfo::default();
             if clap {
-                let mut blocked = EventList::with_capacity(0);
-                let mut cx = ProcessContext::new(&transport,48000.,128,&mut blocked);
-                assert_eq!(allocations(|| finish_host_notes(&mut dsp,&mut cx,0)),0);
                 assert!(dsp.uvi[0].as_ref().unwrap().slot().has_host_note(owner(43)),
                     "rejected canonical End lost exact-zero identity");
                 assert_eq!(dsp.host_note_end_rejections,1);
             }
             let mut outgoing = EventList::with_capacity(4);
-            let mut cx = ProcessContext::new(&transport,48000.,128,&mut outgoing);
-            assert_eq!(allocations(|| finish_host_notes(&mut dsp,&mut cx,0)),0);
+            process(&mut dsp,&none,&mut outgoing);
             assert!(!dsp.uvi[0].as_ref().unwrap().slot().has_host_note(owner(43)));
             assert!(dsp.uvi[0].as_ref().unwrap().slot().host_note_pending(owner(42)));
             if clap {
-                assert_eq!(cx.output_events.lossless_iter().filter(|e| matches!(e,
+                assert_eq!(outgoing.lossless_iter().filter(|e| matches!(e,
                     LosslessEventRef::Exact(e) if matches!(e.body(),ExactEventBody::Note {
                         kind:ExactNoteKind::End,address:a,.. } if *a==address(43)))).count(),1);
-            } else { assert_eq!(cx.output_events.lossless_iter().count(),0); }
+            } else { assert_eq!(outgoing.lossless_iter().count(),0); }
             // With a genuine second destination, the existing Kontakt zero
             // owner keeps its physical gate until Off. Native completion must
             // not bypass the shared all-destination End condition.
             dsp.rack.controls[1].port=0;
-            let mixed = attack(44,0.);
-            let LosslessEventRef::Exact(event) = mixed.lossless_iter().next().unwrap() else { panic!("exact lane") };
-            let Some(ExactInput::Routed(input,port)) = exact_host_input(event) else { panic!("valid projection") };
-            assert_eq!(allocations(|| feed_host_input(&mut dsp,&params,input,port,0,false,48000.)),0);
+            outgoing.clear();
+            process(&mut dsp,&attack(44,0.),&mut outgoing);
             assert!(dsp.rack.parts[1].host_key_held(4,60));
+            assert!(dsp.rack.parts[1].instrument().unwrap().voice_census().is_empty(),
+                "finite one-frame source must expire before physical key-up");
             assert!(dsp.rack.parts[1].host_note_present(owner(44)));
             assert!(!dsp.uvi[0].as_ref().unwrap().slot().host_note_pending(owner(44)));
-            assert_eq!(allocations(|| finish_host_notes(&mut dsp,&mut cx,0)),0);
             assert!(dsp.uvi[0].as_ref().unwrap().slot().has_host_note(owner(44)),
                 "native completion bypassed the other destination's physical gate");
-            assert!(!cx.output_events.lossless_iter().any(|e| matches!(e,
+            assert!(!outgoing.lossless_iter().any(|e| matches!(e,
                 LosslessEventRef::Exact(e) if matches!(e.body(),ExactEventBody::Note {
                     kind:ExactNoteKind::End,address:a,.. } if *a==address(44)))));
-            let pattern = crate::engine::HostPattern { port:0,channel:4,key:60,id:44,clap };
-            assert_eq!(allocations(|| feed_host_input(&mut dsp,&params,In::HostOff(pattern),0,0,false,48000.)),0);
+            let mut off = EventList::with_capacity(1);
+            let body = if clap { ExactEventBody::Note {kind:ExactNoteKind::Off,address:address(44),velocity:0.} }
+                else { ExactEventBody::DetailedNote {kind:ExactNoteKind::Off,address:address(44),velocity:0.,tuning:0.,length:None} };
+            off.try_push_exact(ExactEvent::new(0,body)).unwrap();
+            process(&mut dsp,&off,&mut outgoing);
             assert!(!dsp.rack.parts[1].host_key_held(4,60));
-            assert_eq!(allocations(|| finish_host_notes(&mut dsp,&mut cx,0)),0);
+            assert!(!dsp.rack.parts[1].host_note_pending(owner(44)),
+                "key-up must release the completed Kontakt owner");
+            // Mixed destinations retain a completed root until the native
+            // output latency has elapsed; source EOF alone cannot bypass it.
+            let latency=dsp.uvi_latency;
+            assert!(latency>0,"installed native endpoint must report its output latency");
+            assert!(dsp.uvi[0].as_ref().unwrap().slot().has_host_note(owner(44)));
+            for _ in 0..latency.div_ceil(128) { process(&mut dsp,&none,&mut outgoing); }
             assert!(!dsp.uvi[0].as_ref().unwrap().slot().has_host_note(owner(44)));
             assert!(!dsp.rack.parts[1].host_note_present(owner(44)));
             assert!(dsp.uvi[0].as_ref().unwrap().slot().host_note_pending(owner(42)));
             assert_eq!(dsp.uvi_zero_velocity_rejections,2);
             if clap {
-                assert_eq!(cx.output_events.lossless_iter().filter(|e| matches!(e,
+                assert_eq!(outgoing.lossless_iter().filter(|e| matches!(e,
                     LosslessEventRef::Exact(e) if matches!(e.body(),ExactEventBody::Note {
                         kind:ExactNoteKind::End,address:a,.. } if *a==address(44)))).count(),1);
-            } else { assert_eq!(cx.output_events.lossless_iter().count(),0); }
+            } else { assert_eq!(outgoing.lossless_iter().count(),0); }
             drop(dsp); registry.shutdown(); std::fs::remove_file(path).unwrap();
         }
     }
@@ -10144,7 +10166,7 @@ end on"#;
             }
         } }
         assert!(matches!(In::from_event(&EventBody::NoteOn { group:0,channel:4,note:60,velocity:0 }),
-            Some(In::NoteOff(4,60))),"ordinary MIDI On0 remains Off");
+            Some(In::Midi1ZeroNoteOff(4,60))),"ordinary MIDI On0 retains its protocol release marker");
     }
 
     #[test]
@@ -10276,7 +10298,7 @@ end on"#;
     #[test]
     fn vst3_extreme_finite_onset_tuning_keeps_processing_bounded_without_heap() {
         use crate::{audio::Sample, import::{Group,Zone,Wavetable}};
-        for wavetable in [false,true] { for cents in [f32::MAX,-f32::MAX] {
+        for wavetable in [false,true] { for cents in [f32::MAX,-f32::MAX,6000.] {
             let params=SamplerParams::new(); let mut dsp=Dsp::default(); dsp.until_poll=usize::MAX;
             dsp.rack.parts[0].reset(48000.);
             let group=Group { wavetable:wavetable.then_some(Wavetable { quality:2,form1_type:16,
@@ -10284,6 +10306,7 @@ end on"#;
             let bank=Bank::from_samples(vec![group],vec![Zone::default()],vec![(PathBuf::new(),
                 Sample { rate:48000,frames:vec![[0.2;2];49152] })]).unwrap();
             dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(Box::new(bank)));
+            let owner=crate::engine::HostNote { port:0,channel:4,key:60,id:42,clap:false };
             let address=ExactNoteAddress::from_vst3_signed(0,4,60,42);
             let mut on=EventList::with_capacity(1);
             on.try_push_exact(ExactEvent::new(16,ExactEventBody::DetailedNote {
@@ -10294,26 +10317,49 @@ end on"#;
             let none=EventList::with_capacity(0); let mut outgoing=EventList::with_capacity(16);
             let transport=TransportInfo::default();
             let mut render=|dsp:&mut Dsp,events:&EventList| {
-                let (mut left,mut right)=([0.;128],[0.;128]);
+                let (mut left,mut right)=([1.;128],[1.;128]);
                 let mut channels=[&mut left[..],&mut right[..]];
                 let mut buffer=AudioBuffer::from_slices_checked(&[],&mut channels,128);
                 let mut cx=ProcessContext::new(&transport,48000.,128,&mut outgoing);
                 Sampler::process(dsp,&params,&mut buffer,events,&mut cx);
                 assert!(left.iter().chain(&right).all(|x| x.is_finite()),"extreme finite tuning poisoned PCM");
+                if cents==f32::MAX {
+                    assert_eq!((left,right),([0.;128],[0.;128]),"unrepresentable source committed PCM");
+                }
             };
             for block in 0..8 {
                 assert_eq!(allocations(|| render(&mut dsp,if block==0 { &on } else { &none })),0);
                 let voices=dsp.rack.parts[0].instrument().unwrap().voice_census();
-                assert_eq!(voices.len(),1,"finite onset tuning was rejected");
-                // The existing sample traversal cap and overflow-safe wavetable
-                // clock bound actual motion, independently of the cached ratio.
-                assert!(voices[0].pos.is_finite());
-                assert!((0. ..=if wavetable { 2048. } else { 128.*8.*32. }).contains(&voices[0].pos));
+                if cents==f32::MAX {
+                    // Finite wire cents overflow the derived exponential ratio.
+                    // Checked admission fails before source-clock or PCM commit.
+                    assert!(voices.is_empty());
+                    assert_eq!(dsp.stream_failure.unwrap().error.kind,crate::engine::StreamErrorKind::UnrepresentablePitch);
+                    let engine=dsp.rack.parts[0].instrument().unwrap();
+                    assert_eq!(engine.host_audio_end_at(owner),Some(16));
+                    assert_eq!(engine.host_note_end_at(owner),None);
+                } else {
+                    assert_eq!(voices.len(),1,"representable onset tuning was rejected");
+                    assert!(voices[0].pos.is_finite());
+                    if wavetable {
+                        assert!((0. ..2048.).contains(&voices[0].pos));
+                    } else {
+                        // -MAX underflows to the supported stationary clock;
+                        // +6000 cents is five octaves: exactly32 source frames
+                        // per output frame from the onset at frame16.
+                        let expected=if cents<0. {0.} else {((block+1)*128-16) as f64*32.};
+                        assert_eq!(voices[0].pos,expected);
+                    }
+                    assert!(dsp.stream_failure.is_none());
+                }
             }
             assert!(dsp.rack.parts[0].host_key_held(4,60));
             assert_eq!(dsp.unsupported_host_expression,0);
             assert_eq!(allocations(|| render(&mut dsp,&off)),0);
             assert!(!dsp.rack.parts[0].host_key_held(4,60),"explicit Off lost the extreme-tuned owner");
+            if cents==f32::MAX {
+                assert!(!dsp.rack.parts[0].instrument().unwrap().host_note_pending(owner),"failed audio root did not retire after actual Off");
+            }
         } }
     }
 
@@ -10385,25 +10431,44 @@ end on"#;
 
     #[test]
     fn exact_note_end_backpressure_retains_owners_for_one_retry_without_heap() {
-        use crate::engine::{HostNote,HostPattern};
+        use crate::engine::{Bank,HostNote};
+        use crate::import::{Group,Zone};
+        use crate::audio::Sample;
         let params=SamplerParams::new(); let mut dsp=Dsp::default();
+        dsp.until_poll=usize::MAX;
+        dsp.rack.parts[0].reset(48000.);
+        // A real source admits both owners; EOF after key-up makes both ends
+        // ready in this callback, so capacity one must retain the second.
+        let bank=Bank::from_samples(vec![Group::default()],vec![Zone::default()],
+            vec![(PathBuf::new(),Sample {rate:48000,frames:vec![[0.2;2];1]})]).unwrap();
+        dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(Box::new(bank)));
         let first=HostNote { port:0,channel:4,key:60,id:10,clap:true };
         let second=HostNote { id:11,..first };
-        let pattern=HostPattern { port:0,channel:4,key:60,id:-1,clap:true };
+        let mut input=EventList::with_capacity(3);
+        for id in [10,11] {
+            input.try_push_exact(ExactEvent::new(0,ExactEventBody::Note {kind:ExactNoteKind::On,
+                address:ExactNoteAddress::from_raw_signed(0,4,60,id),velocity:100./127.})).unwrap();
+        }
+        input.try_push_exact(ExactEvent::new(0,ExactEventBody::Note {kind:ExactNoteKind::Off,
+            address:ExactNoteAddress::from_raw_signed(0,4,60,-1),velocity:0.})).unwrap();
+        let none=EventList::with_capacity(0);
         let transport=TransportInfo::default(); let mut output=EventList::with_capacity(1);
+        let (mut left,mut right)=([0.;128],[0.;128]);
+        let mut channels=[&mut left[..],&mut right[..]];
+        let mut buffer=AudioBuffer::from_slices_checked(&[],&mut channels,128);
         let mut cx=ProcessContext::new(&transport,48000.,128,&mut output);
-        assert_eq!(allocations(|| {
-        feed_host_input(&mut dsp,&params,In::HostOn(first,crate::midi::Velocity::from_midi1(100),0.),0,0,false,48000.);
-        feed_host_input(&mut dsp,&params,In::HostOn(second,crate::midi::Velocity::from_midi1(100),0.),0,0,false,48000.);
-            feed_host_input(&mut dsp,&params,In::HostOff(pattern),0,0,false,48000.);
-            finish_host_notes(&mut dsp,&mut cx,128);
-            assert_eq!(dsp.host_note_end_rejections,1,"repeated failures scanned the full owner pool");
-            assert!(dsp.rack.parts.iter().all(|e| !e.host_note_present(first) && e.host_note_present(second)));
-            cx.output_events.clear();
-            finish_host_notes(&mut dsp,&mut cx,128);
-            assert_eq!(dsp.host_note_end_rejections,1);
-            assert!(dsp.rack.parts.iter().all(|e| !e.host_note_present(second)));
-        }),0);
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp,&params,&mut buffer,&input,&mut cx); }),0);
+        assert_eq!(dsp.host_note_end_rejections,1,"repeated failures scanned the full owner pool");
+        assert!(!dsp.rack.parts[0].host_note_present(first));
+        assert!(dsp.rack.parts[0].host_note_present(second));
+        assert!(cx.output_events.lossless_iter().any(|e| matches!(e,LosslessEventRef::Exact(e)
+            if matches!(e.body(),ExactEventBody::Note {kind:ExactNoteKind::End,address,..} if *address==ExactNoteAddress::from_raw_signed(0,4,60,10)))));
+        cx.output_events.clear();
+        assert_eq!(allocations(|| { Sampler::process(&mut dsp,&params,&mut buffer,&none,&mut cx); }),0);
+        assert_eq!(dsp.host_note_end_rejections,1);
+        assert!(!dsp.rack.parts[0].host_note_present(second));
+        assert!(cx.output_events.lossless_iter().any(|e| matches!(e,LosslessEventRef::Exact(e)
+            if matches!(e.body(),ExactEventBody::Note {kind:ExactNoteKind::End,address,..} if *address==ExactNoteAddress::from_raw_signed(0,4,60,11)))));
     }
 
     #[test]
