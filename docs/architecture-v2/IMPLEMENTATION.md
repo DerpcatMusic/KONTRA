@@ -1,5 +1,11 @@
 # First executable slice
 
+> Scope amendment, 2026-10-05: the user requires a clean-sheet v2 with no 1.x
+> compatibility. This document records the earlier experiment and its results.
+> Legacy repair, VM reuse and migration statements below are historical and
+> superseded by [PLAN.md](PLAN.md) and [TASKS.md](TASKS.md). The old-VM bridge is
+> not the v2 behavior runtime. The new core is provisional, not a fixed API.
+
 Date: 2026-10-05. Source starting point: `fc0b5f4`, whose runtime is unchanged from
 `ac2adc981191347bbdacaee3a29c359464ec712e`. This is experimental M1 groundwork,
 not completion of M0/M1 or a production engine switch.

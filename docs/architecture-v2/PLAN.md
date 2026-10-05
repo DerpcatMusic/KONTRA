@@ -1,6 +1,9 @@
-# Proposed 2.0 architecture and migration
+# Clean-sheet 2.0 architecture and delivery
 
-Status: proposed implementation contract. Baseline and evidence are in
+Status: clean-sheet implementation contract, revised 2026-10-05 by explicit user direction.
+No backward compatibility with KONTRA 1.x is required. This supersedes migration,
+legacy reuse and rollback requirements in earlier planning and implementation notes.
+The supplied reference files remain unchanged as research inputs. Baseline and evidence are in
 [CURRENT_STATE.md](CURRENT_STATE.md); execution work is in [TASKS.md](TASKS.md).
 The first experimental subset and its checks are recorded in [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
@@ -11,10 +14,26 @@ allocation, and resource-use lifetimes. Kontakt, UVI, open formats, and native
 instruments contribute source translation and explicit behavior profiles. Source
 and effect implementations contribute algorithms, not independent MIDI/voice engines.
 
-The first usable delivery is a headless native PCM fixture plus a KSP fixture that
-suppresses an input, generates linked/detached children, waits, and releases safely.
-It must work at different block partitions and under exhausted capacities before
-becoming the production plugin path.
+V2 is a new implementation of the product: engine, ownership, preparation, asset
+service, scripting runtime, state, host integration and application composition.
+Old sessions, internal APIs, file ownership rules and playback quirks impose no
+compatibility obligation. Legacy code is a source of failure cases, not the scaffold
+or behavioral oracle. No legacy bug fix blocks v2 work.
+
+Third-party instrument/protocol compatibility is a separate product capability:
+Kontakt/KSP and UVI support still need explicit profiles and evidence, implemented
+against the new services. They do not require reuse of the old parser or VM.
+Standard libraries and independently selected dependencies remain available; a
+clean-sheet product does not require reimplementing operating systems or codecs.
+
+The existing new `sampler-core` is a tested experiment, not a frozen foundation.
+Replace any prototype contract that falls short of this design. Its old-VM KSP
+bridge proves a narrow experiment only and is not the v2 scripting implementation.
+
+“Best” is a design goal measured through correctness, audio quality, bounded
+resource use, callback latency and developer-facing module contracts. We will not
+claim market leadership or future-proofness without comparative evidence. MIDI 2.0
+is required scope from the event-model stage, not a postponed adapter.
 
 ## Responsibility and dependency boundaries
 
@@ -24,7 +43,7 @@ flowchart TD
     Frontend --> Semantic[Semantic instrument + profile + capability report]
     Semantic --> Prepare[Validate / compile / prepare on workers]
     Prepare --> Plan[Immutable prepared plan]
-    Host[CLAP / VST3 / MIDI / MPE adapters] --> Events[Canonical timestamped events]
+    Host[CLAP / VST3 / MIDI 1 / MPE / MIDI 2 UMP adapters] --> Events[Canonical timestamped events]
     Events --> Runtime[Musical runtime: notes / schedule / selection / expression]
     Plan --> Runtime
     Language[KSP / future UVI behavior frontend] --> Services[Typed command / query services]
@@ -36,7 +55,7 @@ flowchart TD
     Runtime --> Retire[Bounded retirement transfer]
     Retire --> Worker
     State[Headless controls / snapshots] --> Events
-    UI[MUI view] --> State
+    UI[New application view] --> State
 ```
 
 | Responsibility | Owns | Must not own |
@@ -50,28 +69,27 @@ flowchart TD
 | Host adapter | Protocol interpretation, host lifecycle and terminal delivery, audio-buffer contracts | Kontakt group rules or KSP numeric conventions |
 | UI | Presentation, user edits and diagnostics | Musical controls that disappear when the window closes |
 
-Initially create **one small `crates/sampler-core` crate**, only when it ships the
-first runnable note/PCM slice. Its dependency direction must be enforceable: it
-cannot depend on the root `kontakto` crate, Moose/MUI, `ni-file`, or KSP types. Start
-with standard-library types and private modules; do not create empty crates for
-every row. The root package composes the existing application and adapters around it.
+Build independently of the legacy root application. The new core must not depend
+on `kontakto`, legacy KSP/parser types, UI frameworks or host wrappers. Introduce
+functional modules with explicit ownership and dependency tests; split crates where
+that enforces a real boundary. Do not create empty interfaces for hypothetical uses.
 
-Extract existing pure DSP/PCM primitives as the slice needs them, with their tests.
-Do not copy `Engine` into a second crate or introduce a second production renderer
-by default. Avoid public traits until the slice has an actual boundary consumer;
-prepared enums/tables can cover the initial source variants. A script service seam
-is justified early because both native behavior and KSP must exercise it.
+Implement new source, DSP, compiler, asset and language services against these
+contracts. Do not extract old engine structures and rename them. Select third-party
+dependencies on their suitability for the new product, with an explicit realtime,
+licensing, portability and maintenance review when adopted. No old dependency is
+mandatory merely because it is already installed.
 
-The longer-term compiler, asset, language and host module names are responsibility
-names. Split further crates only when doing so prevents an observed dependency
-violation or meaningfully isolates build requirements. Keep existing dependencies;
-the references' mention of `rtrb`, Lua or Wasm is not a request to add them now.
+Modularity means documented inputs, outputs, lifetime, versioning, cost and failure
+behavior; it does not mean a plugin framework in every hot path. Prepared tables
+and statically dispatched kernels remain valid choices. External module distribution
+and ABI stability need separate evidence before being promised.
 
 ## Three representations
 
 1. **Source model:** preserves vendor hierarchy, object order/IDs, units, defaults,
-   unknown material, and provenance. Existing Kontakt `Instrument` remains an adapter
-   input during migration; do not rename it “universal” and keep its assumptions.
+   unknown material, and provenance. New frontends own these structures; do not rename the legacy Kontakt
+   `Instrument` “universal” and inherit its assumptions.
 2. **Semantic model:** separates mapping regions, selection domains, articulations,
    note/family relationships, source templates, modulation, audio routing, controls,
    and compatibility requirements. Unsupported meaning survives in the source/report.
@@ -130,20 +148,21 @@ Record imported exceptions in concrete versioned profiles.
 | Expression | Preserve host precision in canonical events. Quantize only at a profile boundary. Keep physical channel, logical part and compatibility-visible channel distinct. |
 | Variation | Seeded native randomness; one take decision per coordinated family. Explicit counter scope and commit point; independent release sequences remain possible. |
 | Admission | Independent note, family, voice, continuation and expensive-source budgets. Numeric limits come from V2-01 measurements and target workloads. Cleanup capacity is reserved. |
-| Reconfiguration | A new preset may explicitly choke or let old notes finish; never infer the policy from a pointer swap. First cutover preserves legacy behavior. |
+| Reconfiguration | A new preset may explicitly choke or let old notes finish; never infer the policy from a pointer swap. The native policy is explicit and tested; legacy behavior is irrelevant. |
 | Retained generations | A fixed prepared capacity, including pending adoption/retirement. When exhausted, postpone/refuse a new load on the control side. No unbounded tail retention. |
 | Missing assets/pages | Failed preparation leaves the active instrument intact. Live not-ready onsets are refused; starved sources use a specified bounded fade. Import profiles must label any behavioral difference. |
 | Failure | Invalid input is rejected at entry; script budget/fault cleanup resolves that script's children and future work. No silent API no-ops in strict mode. |
-| Import mode | New v2 imports default to strict capability validation; explicit best-effort records every substitution. Existing projects keep their legacy path until migrated. |
+| Import mode | New v2 imports default to strict capability validation; explicit best-effort records every substitution. Old KONTRA projects have no required reader or conversion path. |
 
 Live and offline execution must be distinguished explicitly. Native offline tools
 may prepare/wait outside the bounded render call. A plugin's offline behavior must
 be checked against its actual host contract; do not carry the current blocking
 flag into every new rendering context without review.
 
-## Scripting, controls, and compatibility
+## Scripting, controls, and external format support
 
-Keep the KSP frontend and its documented/probed semantics. Introduce neutral
+Build a new bounded behavior runtime and language frontends. Specify supported
+KSP semantics from documentation and reference probes, independently of the old VM. Introduce neutral
 operations for create/release/cancel, expression, scoped parameters, waits, controls
 and async requests. A synchronous command followed by a query needs immediate
 logical readback; expensive preparation is asynchronous only where the API allows it.
@@ -151,12 +170,13 @@ Budget native helpers as well as VM instructions and bound zero-time generation.
 
 Raw input and downstream script-visible/controller state are different projections.
 A swallowed CC must not already have changed downstream modulation. Test this
-before combining the existing schedulers or command queues.
+in the new unified event pipeline.
 
 Control values exist headlessly. Snapshot capture must have a defined consistency
 point and a bounded method of producing a coherent image. Stable automation IDs,
 profile IDs, source identity and schema migrations are separate from display names.
-Do not overwrite legacy saved projects during experimentation.
+Use a new v2 state format and product identity; never overwrite old project files.
+V2 schema evolution is required; importing 1.x state is not.
 
 Each import reports asset, structural, event, script, audio, and state/presentation
 capabilities separately. Statuses follow the supplied architecture: `exact`,
@@ -171,50 +191,63 @@ SampleTank, proprietary DSP and external module distribution remain conditional 
 concrete fixtures/access and measured requirements. A tidy interface does not solve
 those unknowns.
 
+## MIDI 2.0 and extensibility contract
+
+Design protocol-neutral musical events together with the MIDI 2.0 adapter. Preserve
+protocol address, group/channel context, original numeric precision and per-note
+controller identity without reducing every event to a MIDI 1 byte tuple. Transport
+address, musical-note identity, expression ownership and render-voice identity are
+separate. Unsupported input is observable, never silently truncated.
+
+V2-02 must pin applicable MIDI Association specifications and revisions before
+implementation claims. V2-15 must implement and test UMP packet validation/routing,
+MIDI 1/MIDI 2 translation policy, high-resolution channel/per-note expression,
+note-management semantics, timestamps and malformed/reserved input handling.
+Specify MIDI-CI discovery, profiles and property exchange support separately from
+UMP decoding, including transport capability limits. A float velocity field or an
+opaque UMP passthrough is not MIDI 2.0 support. CI/control-plane work stays off audio.
+
+Extend capabilities through versioned semantic schemas and explicit feature reports.
+Unknown optional data may be preserved for authoring; unsupported required behavior
+fails preparation. Evolve v2 schemas deliberately, without universal untyped messages
+or a speculative permanent ABI.
+
 ## Delivery gates
 
-| Gate | Deliverable and dependency | Exit evidence |
+| Gate | Deliverable | Exit evidence |
 | --- | --- | --- |
-| M0 — baseline/contracts | V2-01/02; current code remains production | Characterization traces, risk reproductions, accepted native policies and resource budget manifest; no invented vendor goldens. |
-| M1 — semantic vertical slice | V2-03–06; tiny headless core and early KSP adapter | Same-key overlap, stale handles, child cancellation, pedals, consumed CC, equal-time ordering, terminal pressure and PCM onset across variable partitions; zero callback heap work in exercised paths. |
-| M2 — source/semantic separation | V2-07–09; indexed selection and scoped rendering | Kontakt subset plus one authored open-format subset use the same note kernel; slow/compiled selection agrees; unsupported requirements are explicit. |
-| M3 — production resources | V2-10–12; generation exchange and asset service | Stale completion rejection, storage-stall behavior, held-note transitions, bounded retained memory, off-audio destruction. |
-| M4 — application cutover | V2-13–16; controls, broader KSP, host lifecycle and plugin integration | Legacy state migration, UI-closed equivalence, coherent capture, host backpressure and DAW reset/reactivation; current legacy regressions still pass. |
-| M5 — second semantic frontend | V2-17/18; UVI hierarchy/runtime slice | A pinned available fixture exercises different dispatch/hierarchy semantics through the same core; inaccessible banks stay blocked. |
-| M6 — retirement and expansion | V2-19/20; remove superseded paths, optimize measured costs | No migrated callers need the old implementation; matched-workload performance report and complete required CI; wider features each have a separate capability/evidence gate. |
+| M0 — native contracts | V2-01/02; workload and protocol contract | Resource manifest, pinned protocol requirements, failure fixtures and benchmark methodology; no legacy repair prerequisite. |
+| M1 — musical kernel | V2-03–06; new ownership, scheduling and behavior execution | Families, expression, gates, continuations, pressure and deterministic PCM; no dependency on old VM. |
+| M2 — instrument execution | V2-07–09; new compiler, selection, sources and DSP | Native authoring and declared import subsets share one runtime; quality/selection/state-scope tests. |
+| M3 — resource service | V2-10–12; preparation, streaming and retirement | Bounded memory, storage stalls, stale completion rejection and off-audio destruction. |
+| M4 — independent product | V2-13–16; new state, language support, hosts and app | Headless/UI equivalence, declared MIDI 2.0 scope, host lifecycle, standalone/DAW evidence; no old-session gate. |
+| M5 — second semantic frontend | V2-17/18; UVI hierarchy and behavior | Different hierarchy/dispatch exercises the same services; unavailable reference assets remain explicitly blocked. |
+| M6 — performance and expansion | V2-19/20 | Independent build, quality-matched measurements and verified broader capabilities. |
 
-KSP behavior is tested at M1; broader KSP coverage continues through M4. M3 resource
-contracts are designed at M0 even though production streaming arrives later. Host
-terminal semantics are represented in the headless harness before full host cutover.
+MIDI 2.0 event requirements enter at M0/M1 even though device/host integration is
+completed at M4. Performance measurements start with M1 and run throughout; M6 is
+not the first optimization pass. A milestone is a delivery sequence, not permission
+to omit the wider supplied architecture requirements.
 
-## Migration and rollback
+## Build independence and failure recovery
 
-Keep legacy playback as the default while M1–M3 mature. Run the experimental core
-through a headless test entry point; at M4 choose the engine at instrument preparation
-and activation, not with vendor/mode branches inside each sample loop. Both paths
-consume the same authored fixtures, but the legacy output is a characterization
-baseline, not automatically the correct result for a newly specified native contract.
+Build a new v2 composition root and executables/plugin targets. No legacy/v2 engine
+selector, old state conversion, or legacy production call path is required. The old
+checkout can remain available as historical evidence without entering v2 artifacts.
+Identify v2 plugins/state distinctly so hosts cannot silently load old sessions into
+an incompatible implementation.
 
-Each implementation change must state: entry point migrated, compatibility
-differences, evidence, remaining legacy callers, and the condition for deletion.
-Move pure functions with their regressions. Never route one live note through two
-allocators or migrate active raw pointers between engines.
+Within v2, failed preparation leaves the currently active v2 plan intact. Adoption
+and retirement are transactional and bounded. Recovery uses valid v2 generations;
+it never hands live voices to the old engine. Do not migrate active raw pointers.
 
-Use separate versioned experimental state. Preserve original legacy state on load,
-write migrated output to a new representation, and keep an explicit downgrade path
-until the cutover is accepted. On preparation failure the old active instrument stays
-valid. Roll back a failed gate by selecting the legacy path, not by trying to undo
-half-applied audio-thread state.
-
-Module responsibility is not permanent personal ownership of files. Work on bounded
-contracts with small changes. Before moving/renaming shared symbols, query Graft
-callers and enumerate all entry points. If concurrent work is later requested, give
-each change a concrete seam and one integration change for shared boundaries; do not
-rely on a perpetual “only person X may edit core.rs” rule.
+Module responsibility is not personal ownership of files. Enforce contracts through
+types, dependency direction, tests and resource budgets. Query Graft callers before
+changing shared symbols. No permanent “only person X may edit core.rs” rules.
 
 ## Validation and performance
 
-Use the existing Rust test infrastructure. Start with authored impulses/tones and
+Use ordinary Rust tests and a standalone v2 conformance/benchmark harness. Start with authored impulses/tones and
 small KSP scripts; no commercial sample banks are needed for the first gates.
 Record event/selection/ownership traces alongside PCM, engine/profile revision,
 sample hashes, seed, sample rate and block partition. Native results and licensed
@@ -229,8 +262,14 @@ source review and targeted instrumentation must also cover locks, I/O and bounde
 Report callback-time distributions and maximum observed time, deadline misses,
 notes/families/voices, memory high-water, retained generations, page misses and
 worker backlog. Compare matching source modes, DSP, layers, sample rates and quality
-with cold/warm caches. Choose hardware/host-specific performance limits from baseline
-measurements; no speedup is promised by this document.
+with cold/warm caches. Choose numerical callback and memory budgets for declared minimum hardware and
+workloads before accepting a production gate. Record p50/p95/p99/p99.9, worst observed
+callback and deadline misses, including overload and cold storage. These are empirical
+evidence, not a mathematical worst-case proof. Compare alternative layouts/SIMD and
+parallel execution only at matching output quality; keep numerical reference paths.
+Measure resampling/loop continuity, aliasing, modulation accuracy, latency and DSP
+stability as well as throughput. More voices alone does not establish better quality.
+Legacy measurements are optional comparisons, never acceptance oracles.
 
 Run focused checks while developing, and the applicable [CI gates](../CI.md) before
 integration. Use a worktree-specific Cargo target directory. Source/DSP/unsafe or
