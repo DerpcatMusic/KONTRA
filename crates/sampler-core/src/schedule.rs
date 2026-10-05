@@ -6,6 +6,8 @@ pub enum Event {
     /// Physical key-up with optional normalized release velocity.
     KeyUp(NoteId, Option<f64>),
     Release(NoteId),
+    /// Independent family gate, using each source's envelope and loop release.
+    ReleaseFamily(FamilyId),
     /// Fade a family over at most this many frames. Natural completion before
     /// execution cancels the action; it never pins or retargets a reused family.
     ChokeFamily(FamilyId, u32),
@@ -29,6 +31,10 @@ pub(super) struct Scheduled {
 }
 
 impl Runtime {
+    pub(super) fn available_commands(&self) -> usize {
+        self.command_limit - self.commands.len() - self.reserved_commands
+    }
+
     /// Equal timestamps execute in submission order. New immediate operations first
     /// drain previously submitted work due now. Future capacity failure is explicit;
     /// immediate key/pedal release never requires a free queue entry.
@@ -52,6 +58,11 @@ impl Runtime {
             Event::Sustain(id, _) | Event::Sostenuto(id, _) => {
                 self.channels.get(id.0).ok_or(Error::StaleHandle)?;
             }
+            Event::ReleaseFamily(id) => {
+                if !self.families.get(id.0).ok_or(Error::StaleHandle)?.gate {
+                    return Err(Error::ClosedFamily);
+                }
+            }
             Event::ChokeFamily(id, _) => {
                 self.families.get(id.0).ok_or(Error::StaleHandle)?;
             }
@@ -67,7 +78,7 @@ impl Runtime {
             self.apply_event(event);
             return Ok(());
         }
-        if self.commands.len() == self.command_limit {
+        if self.available_commands() == 0 {
             return Err(Error::Capacity);
         }
         if let Event::Expression(id, _) = event {
@@ -103,6 +114,10 @@ impl Runtime {
             }
             Event::Release(id) => {
                 self.release_now(id, super::ReleaseCause::Explicit).unwrap();
+            }
+            Event::ReleaseFamily(id) => {
+                self.release_family_now(id);
+                self.cancel_closed_work();
             }
             Event::ChokeFamily(id, frames) => self.choke_family_now(id, frames),
             Event::Expression(id, value) => {
@@ -165,6 +180,9 @@ impl Runtime {
             Action::Event(Event::KeyUp(n, _)) => notes.get(n.0).is_some_and(|n| n.key_down()),
             Action::Event(Event::Release(n)) => notes.get(n.0).is_some_and(|n| n.gate()),
             Action::Event(Event::ChokeFamily(id, _)) => self.families.get(id.0).is_some(),
+            Action::Event(Event::ReleaseFamily(id)) => {
+                self.families.get(id.0).is_some_and(|f| f.gate)
+            }
             Action::Event(Event::Expression(id, _)) => {
                 let n = notes.get_mut(id.0).unwrap(); // Work pins cannot be consumed by public unpin().
                 if n.gate() {

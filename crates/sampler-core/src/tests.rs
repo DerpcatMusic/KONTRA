@@ -1265,3 +1265,50 @@ fn native_wait_clock_overflow_faults_without_scheduling_or_losing_ownership() {
     rt.flush_ended(|_| true);
     assert_eq!(rt.note_count(), 0);
 }
+
+#[test]
+fn release_clock_overflow_consumes_gate_without_partial_selection_or_lost_reservations() {
+    let region = Region {
+        sample: 0,
+        key_low: 60,
+        key_high: 60,
+        root_key: None,
+        velocity_low: 0.,
+        velocity_high: 1.,
+        gain: 1.,
+        envelope: Envelope::default(),
+        playback: Playback::default(),
+    };
+    let plan = Prepared::new(
+        48000,
+        vec![Pcm::new(48000, Box::from([[1.; 2]])).unwrap()],
+        vec![region; 2],
+        2,
+    )
+    .unwrap()
+    .with_releases(
+        vec![Trigger::GateRelease; 2],
+        ReleaseOptions::default(),
+        ReleaseOptions {
+            duration: Some(2),
+            ..ReleaseOptions::default()
+        },
+    )
+    .unwrap();
+    let mut rt = Runtime::new(plan, limits()).unwrap();
+    let note = rt.trigger(input(Some(9)), 60, 1.).unwrap();
+    rt.now = u64::MAX - 1;
+    rt.key_up(note, Some(0.5)).unwrap();
+    assert!(!rt.note(note).unwrap().2);
+    assert_eq!(
+        rt.release_status(note, Trigger::GateRelease),
+        Ok(ReleaseStatus::Failed(Error::ClockOverflow))
+    );
+    assert_eq!(rt.release_reserve(), ReleaseReserve::default());
+    assert_eq!(
+        (rt.voice_count(), rt.family_count(), rt.pending_commands()),
+        (0, 0, 0)
+    );
+    rt.flush_ended(|_| true);
+    assert_eq!(rt.note_count(), 0);
+}

@@ -101,7 +101,7 @@ callbacks, manual pins and rejected terminal notifications continue to retain th
 note and its decisions. Completed internal notes can reclaim decision capacity under
 pressure without consuming external terminal notifications.
 
-`note_take(note, sequence)` reads the retained choice. `note_families(note)` borrows
+`note_take(note, trigger, sequence)` reads the retained choice. `note_families(note)` borrows
 the live family set, and `family_take(family)` identifies its coordinated decision;
 manual/unconditioned families return `None`. These APIs validate public generational
 handles and expose no internal slot addresses. Clients must interpret sequence indices
@@ -153,7 +153,9 @@ all-target Clippy, and the root historical boundary tests pass separately.
 
 This directly exercises `VARIATION_AND_RELEASE_SELECTION_01`'s coherent-microphone
 contract and the global/key/channel portion of `_03`. Articulation state in `_03`,
-independent release selection (`_02`), restored snapshots (`_04`) and vendor rules/probes (`_06`–`_08`) remain open.
+restored snapshots (`_04`) and vendor rules/probes (`_06`–`_08`) remain open.
+[Native release selection](RELEASE_SELECTION.md) now adds evidence for independent
+phase selection (`_02`), with explicit shared-sequence opt-in and retained phase decisions.
 Native random/shuffle policies provide executable evidence for `_05`; that does not
 claim imported-profile equivalence or close the full variation gate. The supplied
 scenario catalogue stays byte-for-byte unchanged; no vendor observation is inferred.

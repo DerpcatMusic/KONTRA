@@ -1,9 +1,9 @@
 # Retained native release context
 
 Logical notes now retain their admission time, first key release and first effective
-gate closure. This provides native release-policy input within V2-06/08; automatic
-release-region mapping, release-voice reserves and articulation/controller snapshots
-are still open. Source completion alone is not a key or gate transition.
+gate closure. This provides native release-policy input within V2-06/08.
+[Release selection](RELEASE_SELECTION.md) now uses these facts with note-owned capacity
+reservations; articulation/controller snapshots remain open. Source completion alone is not a key or gate transition.
 
 ## One authoritative lifecycle
 
@@ -90,8 +90,7 @@ Four native crates pass debug/release tests, Rust 1.92 and strict all-target Cli
 the root historical boundary tests pass separately. Workload costs are recorded in
 [the local measurements](RENDER_WORKLOADS.md#retained-release-context-cost).
 
-Next release-selection work must select attack versus current context explicitly,
-permit independent release sequences, budget coherent release families under full
-polyphony, and ensure panic/fault cleanup cannot accidentally spawn release audio.
-Articulation and controller snapshots remain separate missing facts. This checkpoint
-does not claim those selection/reservation contracts or vendor equivalence.
+The subsequent [release-selection checkpoint](RELEASE_SELECTION.md) adds explicit
+phase/velocity policies, independent release sequences, coherent family reservations
+and cleanup suppression. Articulation and controller snapshots remain separate missing
+facts; neither checkpoint claims universal vendor release behavior.

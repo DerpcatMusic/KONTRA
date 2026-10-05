@@ -127,7 +127,9 @@ Family/expression ownership and segmented rendering now have
   now execute through the shared timeline; see [scheduling evidence](SCHEDULING_SLICE.md).
   [Retained release context](RELEASE_CONTEXT.md) preserves sample times, optional
   velocity and distinct musical/cleanup causes through source EOF, pedal hold,
-  plan replacement and terminal rejection. Release-family reserves remain open.
+  plan replacement and terminal rejection. [Native release selection](RELEASE_SELECTION.md)
+  now reserves voices/families/decisions/commands at admission and preserves coherent
+  key/gate layers under full capacity. Half-pedal and repedal remain open.
 
 - [ ] **P0; dependencies:** V2-03/04/05.
 - Separate physical key, gate, sostenuto capture and source release. Specify and
@@ -155,7 +157,8 @@ Family/expression ownership and segmented rendering now have
   global/key/channel/channel-key scope, retained note decisions, transactional
   advancement and original-generation state, including seeded random/no-repeat/shuffle
   policies with bounded draws and control-prepared bags. Independent multimic PCM and
-  failure/retirement checks pass. Articulation state, release mapping and
+  failure/retirement checks pass. Independent key/gate release phases now use native
+  selection and retained decisions with admission-owned quotas. Articulation state and
   snapshot/restore remain open.
 
 - [ ] **P1; dependencies:** V2-04/06/07.

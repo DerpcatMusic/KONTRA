@@ -68,6 +68,9 @@ compatibility remains a separate, evidence-backed capability.
 19. [Retained release context](RELEASE_CONTEXT.md): key-up velocity, sample times,
     closure causes and note-owned lifetime across pedals and plan replacement.
 
+20. [Native release selection](RELEASE_SELECTION.md): independent key/gate layers,
+    reserved capacity, finite family lifetimes and cleanup suppression.
+
 ## Implemented and still open
 
 - Native core: generational note/family/voice/expression ownership, physical versus
@@ -79,7 +82,8 @@ compatibility remains a separate, evidence-backed capability.
   pressure/timbre modulation to gain, balance and pitch.
 - Selection: coordinated sequential/random/no-repeat/shuffle takes with explicit scope and
   storage budgets, retained note decisions and transactional multi-family admission.
-  Articulation state, release-trigger mapping and persisted snapshots remain open.
+  Key/gate release layers own reserved resources and independent phase decisions.
+  Articulation state and persisted snapshots remain open.
 - Preparation: validated immutable PCM shared across plans, adoption between notes, original-generation tails
   and callbacks, and control-thread retirement. Native WAV rendering and the
   deliberately small KSP source subset run independently of the old engine.

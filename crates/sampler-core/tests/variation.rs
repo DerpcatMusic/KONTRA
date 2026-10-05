@@ -213,7 +213,10 @@ fn compiled_selection_matches_independent_scoped_multimic_reference() {
         support::without_heap(|| {
             let note = rt.trigger(source, key, velocity).unwrap();
             for (seq, expected) in expected_takes.iter().enumerate() {
-                assert_eq!(rt.note_take(note, seq), Ok(*expected));
+                assert_eq!(
+                    rt.note_take(note, sampler_core::Trigger::Attack, seq),
+                    Ok(*expected)
+                );
             }
             assert_eq!(rt.decision_count(), expected_takes.iter().flatten().count());
             assert_eq!(rt.voice_count(), sources);
@@ -235,14 +238,20 @@ fn compiled_selection_matches_independent_scoped_multimic_reference() {
             assert_eq!(audio, [[expected; 2]; 4]);
             assert_eq!(rt.note_families(note).unwrap().count(), 0);
             for (seq, expected) in expected_takes.iter().enumerate() {
-                assert_eq!(rt.note_take(note, seq), Ok(*expected));
+                assert_eq!(
+                    rt.note_take(note, sampler_core::Trigger::Attack, seq),
+                    Ok(*expected)
+                );
             }
             rt.note_off(source, None).unwrap();
             rt.flush_ended(|_| false);
             assert_eq!(rt.decision_count(), expected_takes.iter().flatten().count());
             rt.flush_ended(|_| true);
             assert_eq!((rt.decision_count(), rt.note_count()), (0, 0));
-            assert_eq!(rt.note_take(note, 0), Err(Error::StaleHandle));
+            assert_eq!(
+                rt.note_take(note, sampler_core::Trigger::Attack, 0),
+                Err(Error::StaleHandle)
+            );
         });
     }
 }
@@ -268,7 +277,10 @@ fn failed_admission_does_not_advance_or_publish_partial_mics() {
         rt.release(blocker).unwrap();
         rt.flush_ended(|_| true);
         let first = rt.trigger(input(1), 60, 1.).unwrap();
-        assert_eq!(rt.note_take(first, 0), Ok(Some(0)));
+        assert_eq!(
+            rt.note_take(first, sampler_core::Trigger::Attack, 0),
+            Ok(Some(0))
+        );
         rt.render(&mut [[0.; 2]; 1]).unwrap();
         assert_eq!(rt.trigger(input(1), 60, 1.), Err(Error::DuplicateInput));
         assert_eq!(
@@ -301,7 +313,10 @@ fn failed_admission_does_not_advance_or_publish_partial_mics() {
         rt.release(first).unwrap();
         rt.flush_ended(|_| true);
         let second = rt.trigger(input(2), 60, 1.).unwrap();
-        assert_eq!(rt.note_take(second, 0), Ok(Some(1)));
+        assert_eq!(
+            rt.note_take(second, sampler_core::Trigger::Attack, 0),
+            Ok(Some(1))
+        );
         rt.panic();
         rt.flush_ended(|_| true);
         assert_eq!(rt.decision_count(), 0);
@@ -335,7 +350,10 @@ fn scope_and_retained_decision_capacities_fail_without_advancing_other_owners() 
                 Expression::default(),
             )
             .unwrap();
-        assert_eq!(rt.note_take(next, 0), Ok(Some(1)));
+        assert_eq!(
+            rt.note_take(next, sampler_core::Trigger::Attack, 0),
+            Ok(Some(1))
+        );
         rt.panic();
         rt.flush_ended(|_| true);
     });
@@ -368,12 +386,18 @@ fn missing_takes_advance_but_ineligible_gestures_do_not() {
     support::without_heap(|| {
         for i in 0..9 {
             let silent = rt.trigger(input(i), 60, 1.).unwrap();
-            assert_eq!(rt.note_take(silent, 0), Ok(None));
+            assert_eq!(
+                rt.note_take(silent, sampler_core::Trigger::Attack, 0),
+                Ok(None)
+            );
             assert_eq!((rt.voice_count(), rt.decision_count()), (0, 0));
             rt.release(silent).unwrap();
             rt.flush_ended(|_| true);
             let note = rt.trigger(input(i), 60, 0.5).unwrap();
-            assert_eq!(rt.note_take(note, 0), Ok(Some(i as u32 % 3)));
+            assert_eq!(
+                rt.note_take(note, sampler_core::Trigger::Attack, 0),
+                Ok(Some(i as u32 % 3))
+            );
             assert_eq!(rt.voice_count(), usize::from(i % 3 == 0));
             let mut audio = [[0.; 2]; 1];
             rt.render(&mut audio).unwrap();
@@ -401,7 +425,10 @@ fn generation_counters_and_delayed_children_keep_original_take_policy() {
         let mut choices = [0; 2];
         for (id, choice) in choices.iter_mut().enumerate() {
             let n = reference.trigger(input(id as i32), 60, 1.).unwrap();
-            *choice = reference.note_take(n, 0).unwrap().unwrap();
+            *choice = reference
+                .note_take(n, sampler_core::Trigger::Attack, 0)
+                .unwrap()
+                .unwrap();
             reference.release(n).unwrap();
             reference.flush_ended(|_| true);
         }
@@ -442,12 +469,18 @@ fn generation_counters_and_delayed_children_keep_original_take_policy() {
             rt.render(&mut audio[..1]).unwrap();
             assert_eq!(rt.poll_plan_update(), Ok(Some(1)));
             let first = rt.trigger(input(1), 60, 1.).unwrap();
-            assert_eq!(rt.note_take(first, 0), Ok(Some(choices[0])));
+            assert_eq!(
+                rt.note_take(first, sampler_core::Trigger::Attack, 0),
+                Ok(Some(choices[0]))
+            );
             rt.render(&mut audio[1..2]).unwrap();
             rt.release(first).unwrap();
             rt.flush_ended(|_| true);
             let second = rt.trigger(input(2), 60, 1.).unwrap();
-            assert_eq!(rt.note_take(second, 0), Ok(Some(choices[1])));
+            assert_eq!(
+                rt.note_take(second, sampler_core::Trigger::Attack, 0),
+                Ok(Some(choices[1]))
+            );
             rt.render(&mut audio[2..]).unwrap();
             assert_eq!(
                 audio.map(|f| f[0]),
@@ -460,7 +493,10 @@ fn generation_counters_and_delayed_children_keep_original_take_policy() {
                     0.
                 ]
             );
-            assert_eq!(rt.note_take(root, 0), Ok(Some(choices[0])));
+            assert_eq!(
+                rt.note_take(root, sampler_core::Trigger::Attack, 0),
+                Ok(Some(choices[0]))
+            );
             assert_eq!(rt.note_plan(root), Ok(old_plan));
             rt.flush_behaviors(|_, _, _| true);
             rt.panic();
@@ -582,7 +618,10 @@ fn later_sequence_failure_does_not_advance_an_earlier_sequence() {
         let mut choices = [0; 2];
         for (id, choice) in choices.iter_mut().enumerate() {
             let n = reference.trigger(input(id as i32), 60, 1.).unwrap();
-            *choice = reference.note_take(n, 0).unwrap().unwrap();
+            *choice = reference
+                .note_take(n, sampler_core::Trigger::Attack, 0)
+                .unwrap()
+                .unwrap();
             reference.release(n).unwrap();
             reference.flush_ended(|_| true);
         }
@@ -634,8 +673,14 @@ fn later_sequence_failure_does_not_advance_an_earlier_sequence() {
             );
             assert_eq!((rt.note_count(), rt.decision_count()), (0, 0));
             let second = rt.trigger(input(2), 60, 1.).unwrap();
-            assert_eq!(rt.note_take(second, 0), Ok(Some(choices[1])));
-            assert_eq!(rt.note_take(second, 1), Ok(Some(1)));
+            assert_eq!(
+                rt.note_take(second, sampler_core::Trigger::Attack, 0),
+                Ok(Some(choices[1]))
+            );
+            assert_eq!(
+                rt.note_take(second, sampler_core::Trigger::Attack, 1),
+                Ok(Some(1))
+            );
             rt.panic();
             rt.flush_ended(|_| true);
         });
@@ -684,7 +729,10 @@ fn generated_notes_reclaim_decisions_without_consuming_host_terminals() {
                 1.,
             )
             .unwrap();
-        assert_eq!(rt.note_take(root, 0), Ok(None)); // Bound program suppressed its own selection.
+        assert_eq!(
+            rt.note_take(root, sampler_core::Trigger::Attack, 0),
+            Ok(None)
+        ); // Bound program suppressed its own selection.
         let mut audio = [[0.; 2]; 6];
         rt.render(&mut audio).unwrap();
         assert_eq!(audio.map(|f| f[0]), [0.125, 0., 0.25, 0., 0.375, 0.]);
@@ -719,7 +767,10 @@ fn family_capacity_failure_preserves_take_and_selected_pitch_preflight_is_atomic
         assert_eq!((rt.decision_count(), rt.voice_count()), (0, 0));
         rt.finish_family(empty).unwrap();
         let note = rt.trigger(input(1), 60, 1.).unwrap();
-        assert_eq!(rt.note_take(note, 0), Ok(Some(0)));
+        assert_eq!(
+            rt.note_take(note, sampler_core::Trigger::Attack, 0),
+            Ok(Some(0))
+        );
         rt.panic();
         rt.flush_ended(|_| true);
     });
@@ -765,7 +816,10 @@ fn family_capacity_failure_preserves_take_and_selected_pitch_preflight_is_atomic
         let first = rt
             .trigger_with_expression(input(0), 60, 1., raised)
             .unwrap();
-        assert_eq!(rt.note_take(first, 0), Ok(Some(0)));
+        assert_eq!(
+            rt.note_take(first, sampler_core::Trigger::Attack, 0),
+            Ok(Some(0))
+        );
         rt.release(first).unwrap();
         rt.flush_ended(|_| true);
         assert_eq!(
@@ -782,7 +836,10 @@ fn family_capacity_failure_preserves_take_and_selected_pitch_preflight_is_atomic
             (0, 0, 0, 0)
         );
         let next = rt.trigger(input(1), 60, 1.).unwrap();
-        assert_eq!(rt.note_take(next, 0), Ok(Some(1)));
+        assert_eq!(
+            rt.note_take(next, sampler_core::Trigger::Attack, 0),
+            Ok(Some(1))
+        );
         rt.panic();
         rt.flush_ended(|_| true);
     });
@@ -810,8 +867,14 @@ fn seeded_policies_are_reproducible_and_enforce_their_distinct_contracts() {
             for (i, take) in history.iter_mut().enumerate() {
                 let na = a.trigger(input(i as i32), 60, 1.).unwrap();
                 let nb = b.trigger(input(i as i32), 60, 1.).unwrap();
-                *take = a.note_take(na, 0).unwrap().unwrap();
-                assert_eq!(b.note_take(nb, 0), Ok(Some(*take)));
+                *take = a
+                    .note_take(na, sampler_core::Trigger::Attack, 0)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    b.note_take(nb, sampler_core::Trigger::Attack, 0),
+                    Ok(Some(*take))
+                );
                 assert!(*take < 3);
                 assert_eq!((a.voice_count(), a.family_count()), (4, 1));
                 for family in a.note_families(na).unwrap() {
@@ -901,7 +964,10 @@ fn random_streams_follow_scope_identity_not_cell_assignment_or_other_owners() {
                         let n = a
                             .trigger(address(owner), 59 + (owner % 4) as u8, 1.)
                             .unwrap();
-                        step[owner] = a.note_take(n, 0).unwrap().unwrap();
+                        step[owner] = a
+                            .note_take(n, sampler_core::Trigger::Attack, 0)
+                            .unwrap()
+                            .unwrap();
                         a.release(n).unwrap();
                         a.flush_ended(|_| true);
                     }
@@ -912,7 +978,10 @@ fn random_streams_follow_scope_identity_not_cell_assignment_or_other_owners() {
                         let n = b
                             .trigger(address(owner), 59 + (owner % 4) as u8, 1.)
                             .unwrap();
-                        assert_eq!(b.note_take(n, 0), Ok(Some(step[owner])));
+                        assert_eq!(
+                            b.note_take(n, sampler_core::Trigger::Attack, 0),
+                            Ok(Some(step[owner]))
+                        );
                         b.release(n).unwrap();
                         b.flush_ended(|_| true);
                     }
@@ -952,7 +1021,10 @@ fn random_admission_failures_preserve_future_history_and_publish_nothing() {
             support::without_heap(|| {
                 let first = rt.trigger(input(0), 60, 1.).unwrap();
                 let expected = reference.trigger(input(0), 60, 1.).unwrap();
-                assert_eq!(rt.note_take(first, 0), reference.note_take(expected, 0));
+                assert_eq!(
+                    rt.note_take(first, sampler_core::Trigger::Attack, 0),
+                    reference.note_take(expected, sampler_core::Trigger::Attack, 0)
+                );
                 if failure >= 2 {
                     rt.render(&mut [[0.; 2]; 1]).unwrap();
                 }
@@ -1007,7 +1079,10 @@ fn random_admission_failures_preserve_future_history_and_publish_nothing() {
                 for id in 1..61 {
                     let n = rt.trigger(input(id), 60, 1.).unwrap();
                     let expected = reference.trigger(input(id), 60, 1.).unwrap();
-                    assert_eq!(rt.note_take(n, 0), reference.note_take(expected, 0));
+                    assert_eq!(
+                        rt.note_take(n, sampler_core::Trigger::Attack, 0),
+                        reference.note_take(expected, sampler_core::Trigger::Attack, 0)
+                    );
                     rt.release(n).unwrap();
                     rt.flush_ended(|_| true);
                     reference.release(expected).unwrap();
@@ -1062,7 +1137,10 @@ fn random_preparation_rejects_impossible_no_repeat_and_unbudgeted_shuffle() {
         support::without_heap(|| {
             for id in 0..8 {
                 let n = rt.trigger(input(id), 60, 1.).unwrap();
-                assert_eq!(rt.note_take(n, 0), Ok(Some(0)));
+                assert_eq!(
+                    rt.note_take(n, sampler_core::Trigger::Attack, 0),
+                    Ok(Some(0))
+                );
                 rt.release(n).unwrap();
                 rt.flush_ended(|_| true);
             }

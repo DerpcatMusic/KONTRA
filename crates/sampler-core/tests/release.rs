@@ -92,7 +92,10 @@ fn physical_fifo_context_survives_eof_pedals_replacement_and_terminal_retry() {
         assert_eq!(rt.note(first).unwrap(), (60, 0.75, true));
         assert_eq!(rt.poll_plan_update(), Ok(Some(1)));
         assert_eq!(rt.note_plan(first), Ok(old_plan));
-        assert_eq!(rt.note_take(first, 0), Ok(Some(0)));
+        assert_eq!(
+            rt.note_take(first, sampler_core::Trigger::Attack, 0),
+            Ok(Some(0))
+        );
         rt.render(&mut [[0.; 2]; 3]).unwrap();
         rt.sustain(channel, false).unwrap();
         expected.gate = Some(GateRelease {

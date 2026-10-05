@@ -1,7 +1,6 @@
 //! Control-thread compilation of immutable resident assets and native mappings.
-use super::{
-    Envelope, Error, Expression, Frame, Input, NoteId, NoteOrigin, NotePitch, Playback, Runtime,
-};
+mod selection;
+use super::{Envelope, Error, Frame, NotePitch, Playback};
 
 /// Validated immutable resident PCM. Construct, clone and drop handles on the
 /// control side. Clones share the original sample buffer; rendering only borrows.
@@ -84,6 +83,7 @@ struct PreparedRegion {
     root_key: Option<u8>,
     transpose_semitones: f64,
     take: Option<super::Take>,
+    trigger: super::Trigger,
 }
 
 #[derive(Clone, Copy)]
@@ -97,6 +97,9 @@ pub struct Prepared {
     pub(super) pcm: Box<[Pcm]>,
     regions: Box<[PreparedRegion]>,
     offsets: [usize; 129],
+    phase_offsets: [[usize; 2]; 128],
+    pub(super) release_options: [super::ReleaseOptions; 2],
+    pub(super) release_reserves: [[super::ReleaseReserve; 2]; 128],
     candidates: Box<[Candidate]>,
     pub(super) programs: Box<[super::Program]>,
     note_program: Option<usize>,
@@ -175,6 +178,7 @@ impl Prepared {
                 root_key: r.root_key,
                 transpose_semitones: r.playback.transpose_semitones,
                 take: None,
+                trigger: super::Trigger::Attack,
             });
         }
         let mut offsets = [0; 129];
@@ -203,6 +207,9 @@ impl Prepared {
             rate,
             pcm: pcm.into_boxed_slice(),
             regions: prepared_regions.into_boxed_slice(),
+            phase_offsets: std::array::from_fn(|key| [offsets[key + 1]; 2]),
+            release_options: [super::ReleaseOptions::default(); 2],
+            release_reserves: [[super::ReleaseReserve::default(); 2]; 128],
             offsets,
             candidates: candidates.into_boxed_slice(),
             programs: Box::new([]),
@@ -324,18 +331,208 @@ impl Prepared {
             }
             r.take = take;
         }
-        for key in 0..128 {
-            self.candidates[self.offsets[key]..self.offsets[key + 1]].sort_by_key(|candidate| {
-                (
-                    self.regions[candidate.region].take.map(|t| t.sequence),
-                    candidate.region,
-                )
-            });
-        }
         self.sequences = prepared.into_boxed_slice();
         self.sequence_cells = cells;
         self.shuffle_entries = entries;
+        self.compile_selection();
         Ok(self)
+    }
+
+    /// Attach native attack/key-release/gate-release phases in authoring order.
+    /// Release families choose their own takes and have independent source lifetimes.
+    pub fn with_releases(
+        mut self,
+        triggers: Vec<super::Trigger>,
+        key_release: super::ReleaseOptions,
+        gate_release: super::ReleaseOptions,
+    ) -> Result<Self, Error> {
+        if triggers.len() != self.regions.len() {
+            return Err(Error::InvalidInput);
+        }
+        for options in [key_release, gate_release] {
+            if let super::ReleaseVelocity::KeyUp { fallback } = options.velocity {
+                super::release::validate_velocity(Some(fallback))?;
+            }
+        }
+        self.release_options = [key_release, gate_release];
+        for (region, trigger) in self.regions.iter_mut().zip(triggers) {
+            if let Some(index) = trigger.release_index()
+                && self.release_options[index].duration.is_none()
+                && region.cursor.looping()
+            {
+                return Err(Error::InvalidInput);
+            }
+            region.trigger = trigger;
+        }
+        self.compile_selection();
+        Ok(self)
+    }
+
+    fn compile_selection(&mut self) {
+        for key in 0..128 {
+            let begin = self.offsets[key];
+            let end = self.offsets[key + 1];
+            let candidates = &mut self.candidates[begin..end];
+            candidates.sort_by_key(|c| {
+                let r = self.regions[c.region];
+                (r.trigger, r.take.map(|t| t.sequence), c.region)
+            });
+            self.phase_offsets[key] = [
+                begin
+                    + candidates.partition_point(|c| {
+                        self.regions[c.region].trigger == super::Trigger::Attack
+                    }),
+                begin
+                    + candidates.partition_point(|c| {
+                        self.regions[c.region].trigger != super::Trigger::GateRelease
+                    }),
+            ];
+            for trigger in [super::Trigger::KeyRelease, super::Trigger::GateRelease] {
+                self.release_reserves[key][trigger.release_index().unwrap()] =
+                    self.release_bound(key as u8, trigger);
+            }
+        }
+    }
+
+    fn range(&self, key: u8, trigger: super::Trigger) -> std::ops::Range<usize> {
+        let key = usize::from(key);
+        match trigger {
+            super::Trigger::Attack => self.offsets[key]..self.phase_offsets[key][0],
+            super::Trigger::KeyRelease => self.phase_offsets[key][0]..self.phase_offsets[key][1],
+            super::Trigger::GateRelease => self.phase_offsets[key][1]..self.offsets[key + 1],
+        }
+    }
+
+    fn release_bound(&self, key: u8, trigger: super::Trigger) -> super::ReleaseReserve {
+        use std::collections::BTreeMap;
+        // Control-only sweep: closed velocity intervals overlap at shared endpoints.
+        // Track each take's overlap and each group's maximum, without expanding
+        // key x velocity x take x microphone products or scanning every velocity.
+        struct Group {
+            counts: BTreeMap<u32, usize>,
+            levels: BTreeMap<usize, usize>,
+            sequenced: bool,
+        }
+        let range = self.range(key, trigger);
+        let mut events = Vec::with_capacity(range.len() * 2);
+        let mut groups = Vec::new();
+        let mut from = range.start;
+        while from < range.end {
+            let until = self.group_end(from, range.end);
+            for candidate in &self.candidates[from..until] {
+                let r = self.regions[candidate.region];
+                events.push((
+                    r.velocity_low,
+                    true,
+                    groups.len(),
+                    r.take.map_or(0, |t| t.index),
+                ));
+                events.push((
+                    r.velocity_high,
+                    false,
+                    groups.len(),
+                    r.take.map_or(0, |t| t.index),
+                ));
+            }
+            groups.push(Group {
+                counts: BTreeMap::new(),
+                levels: BTreeMap::new(),
+                sequenced: self.regions[self.candidates[from].region].take.is_some(),
+            });
+            from = until;
+        }
+        events.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then_with(|| b.1.cmp(&a.1)));
+        let mut active = super::ReleaseReserve::default();
+        let mut maximum = active;
+        for (_, start, group, take) in events {
+            let group = &mut groups[group];
+            let old_maximum = group.levels.last_key_value().map_or(0, |(&level, _)| level);
+            let count = group.counts.entry(take).or_default();
+            let old = *count;
+            *count = if start { old + 1 } else { old - 1 };
+            let new = *count;
+            if old > 0 {
+                let frequency = group.levels.get_mut(&old).unwrap();
+                *frequency -= 1;
+                if *frequency == 0 {
+                    group.levels.remove(&old);
+                }
+            }
+            if new > 0 {
+                *group.levels.entry(new).or_default() += 1;
+            }
+            let new_maximum = group.levels.last_key_value().map_or(0, |(&level, _)| level);
+            active.voices = active.voices - old_maximum + new_maximum;
+            if old_maximum == 0 && new_maximum != 0 {
+                active.families += 1;
+                active.decisions += usize::from(group.sequenced);
+            } else if new_maximum == 0 && old_maximum != 0 {
+                active.families -= 1;
+                active.decisions -= usize::from(group.sequenced);
+            }
+            active.commands = if self.release_options[trigger.release_index().unwrap()]
+                .duration
+                .is_some_and(|n| n > 0)
+            {
+                active.families
+            } else {
+                0
+            };
+            maximum = maximum.maximum(active);
+        }
+        maximum
+    }
+
+    pub(super) fn validate_release_pitch(
+        &self,
+        pitch: NotePitch,
+        trigger: super::Trigger,
+        range: super::pitch::PitchRange,
+        velocity: Option<f64>,
+    ) -> Result<(), Error> {
+        for &candidate in &self.candidates[self.range(pitch.key(), trigger)] {
+            let r = self.regions[candidate.region];
+            if velocity.is_some_and(|v| v < r.velocity_low || v > r.velocity_high) {
+                continue;
+            }
+            range.apply(self.step(candidate, pitch))?;
+        }
+        Ok(())
+    }
+
+    // None means physical release velocity is not known yet.
+    pub(super) fn release_velocity(
+        &self,
+        trigger: super::Trigger,
+        onset: f64,
+        key_released: bool,
+        velocity: Option<f64>,
+    ) -> Option<f64> {
+        match self.release_options[trigger.release_index().unwrap()].velocity {
+            super::ReleaseVelocity::Onset => Some(onset),
+            super::ReleaseVelocity::KeyUp { fallback } => {
+                key_released.then_some(velocity.unwrap_or(fallback))
+            }
+        }
+    }
+
+    fn sequence_groups(
+        &self,
+        key: u8,
+        trigger: super::Trigger,
+    ) -> impl Iterator<Item = usize> + '_ {
+        let mut range = self.range(key, trigger);
+        std::iter::from_fn(move || {
+            if range.is_empty() {
+                return None;
+            }
+            let sequence = self.regions[self.candidates[range.start].region]
+                .take
+                .map(|t| t.sequence);
+            range.start = self.group_end(range.start, range.end);
+            Some(sequence)
+        })
+        .flatten()
     }
 
     fn group_end(&self, begin: usize, end: usize) -> usize {
@@ -391,208 +588,5 @@ impl Prepared {
                 let r = self.regions[candidate.region];
                 r.velocity_low <= velocity && velocity <= r.velocity_high && r.take == take
             })
-    }
-}
-
-impl Runtime {
-    /// Select matching native layers, coordinating one family per take sequence
-    /// and one for unconditioned layers. Preflight
-    /// reserves the entire selection conceptually before publishing the note; no
-    /// partial layer set sounds when capacity is exhausted. No match is a logical
-    /// no-source note, still paired with its key-up and terminal acceptance.
-    pub fn trigger(&mut self, input: Input, key: u8, velocity: f64) -> Result<NoteId, Error> {
-        self.trigger_with_expression(input, key, velocity, Expression::default())
-    }
-
-    /// Admit a complete initial expression before selection or a bound note program.
-    /// Failed native source preflight publishes neither an input nor partial layers.
-    pub fn trigger_with_expression(
-        &mut self,
-        input: Input,
-        key: u8,
-        velocity: f64,
-        expression: Expression,
-    ) -> Result<NoteId, Error> {
-        self.trigger_pitched(input, NotePitch::Key(key), velocity, expression)
-    }
-
-    /// Select regions using inherent pitch, preserving the independent input address.
-    /// Absolute pitch bypasses per-key tuning; expression remains a relative offset.
-    pub fn trigger_pitched(
-        &mut self,
-        input: Input,
-        pitch: NotePitch,
-        velocity: f64,
-        expression: Expression,
-    ) -> Result<NoteId, Error> {
-        self.apply_due();
-        if !expression.valid() {
-            return Err(Error::InvalidInput);
-        }
-        if let Some(program) = self
-            .plans
-            .get(self.active_plan.0)
-            .unwrap()
-            .prepared
-            .note_program
-        {
-            if self.behaviors.available() == 0 {
-                return Err(Error::Capacity);
-            }
-            let note = self.note_on_pitched(input, pitch, velocity, expression)?;
-            self.start_behavior(note, program)
-                .expect("preflighted native behavior admission");
-            Ok(note)
-        } else {
-            self.select(NoteOrigin::Input(input, expression), pitch, velocity)
-        }
-    }
-
-    pub(super) fn trigger_child(
-        &mut self,
-        parent: NoteId,
-        pitch: NotePitch,
-        velocity: f64,
-        linked: bool,
-        inheritance: super::Inheritance,
-    ) -> Result<NoteId, Error> {
-        self.select(
-            NoteOrigin::Child(parent, linked, inheritance),
-            pitch,
-            velocity,
-        )
-    }
-
-    fn select(
-        &mut self,
-        origin: NoteOrigin,
-        note_pitch: NotePitch,
-        velocity: f64,
-    ) -> Result<NoteId, Error> {
-        self.apply_due();
-        if !note_pitch.valid() || !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
-            return Err(Error::InvalidInput);
-        }
-        let plan = match origin {
-            NoteOrigin::Input(..) => self.active_plan,
-            NoteOrigin::Child(parent, ..) => {
-                self.notes.get(parent.0).ok_or(Error::StaleHandle)?.plan
-            }
-        };
-        let pitch = match origin {
-            NoteOrigin::Input(_, expression) => super::pitch::PitchRange::constant(
-                self.project_expression(self.modulation_plan(plan), expression, None)?
-                    .ratio,
-            ),
-            NoteOrigin::Child(_, _, super::Inheritance::Independent) => {
-                super::pitch::PitchRange::constant(
-                    self.project_expression(
-                        self.modulation_plan(plan),
-                        Expression::default(),
-                        None,
-                    )?
-                    .ratio,
-                )
-            }
-            NoteOrigin::Child(parent, _, inheritance) => {
-                let owner = self.notes.get(parent.0).unwrap().expression;
-                self.pitch_range(owner, inheritance == super::Inheritance::Linked)?
-            }
-        };
-        let address = match origin {
-            NoteOrigin::Input(input, _) => input.channel_address(),
-            NoteOrigin::Child(parent, ..) => self.notes.get(parent.0).unwrap().address,
-        };
-        let key = note_pitch.key();
-        let generation = self.plans.get(plan.0).unwrap();
-        let prepared = &generation.prepared;
-        let begin = prepared.offsets[key as usize];
-        let end = prepared.offsets[key as usize + 1];
-        let mut voices = 0;
-        let mut families = 0;
-        let mut decisions = 0;
-        let mut from = begin;
-        while from < end {
-            let until = prepared.group_end(from, end);
-            let choice =
-                prepared.choose(from..until, velocity, address, key, &generation.sequences)?;
-            let mut count = 0;
-            for candidate in prepared.matches(from..until, velocity, choice.map(|c| c.take)) {
-                pitch.apply(prepared.step(candidate, note_pitch))?;
-                count += 1;
-            }
-            voices += count;
-            families += usize::from(count != 0);
-            decisions += usize::from(choice.is_some());
-            from = until;
-        }
-        if decisions > self.decisions.available() {
-            self.reclaim_internal_notes(decisions);
-        }
-        if voices > self.voices.available()
-            || families > self.families.available()
-            || decisions > self.decisions.available()
-        {
-            return Err(Error::Capacity);
-        }
-        let note = match origin {
-            NoteOrigin::Input(input, expression) => {
-                self.note_on_pitched(input, note_pitch, velocity, expression)?
-            }
-            NoteOrigin::Child(parent, linked, inheritance) => {
-                self.child_pitched(parent, note_pitch, velocity, linked, inheritance)?
-            }
-        };
-        if voices == 0 && decisions == 0 {
-            return Ok(note);
-        }
-        // Everything below was validated by Prepared and preflight. No callbacks,
-        // concurrent writers or newly due work can consume the reserved resources.
-        let mut from = begin;
-        while from < end {
-            let generation = self.plans.get(plan.0).unwrap();
-            let prepared = &generation.prepared;
-            let until = prepared.group_end(from, end);
-            let choice = prepared
-                .choose(from..until, velocity, address, key, &generation.sequences)
-                .expect("preflighted take decision");
-            let decision = choice.map(|c| self.record_take(note, c.take));
-            let mut family = None;
-            for i in from..until {
-                let prepared = &self.plans.get(plan.0).unwrap().prepared;
-                let candidate = prepared.candidates[i];
-                let r = prepared.regions[candidate.region];
-                if r.velocity_low > velocity
-                    || velocity > r.velocity_high
-                    || r.take != choice.map(|c| c.take)
-                {
-                    continue;
-                }
-                let step = prepared.step(candidate, note_pitch);
-                let family = *family.get_or_insert_with(|| {
-                    let family = self.create_family(note).expect("preflight family capacity");
-                    self.families.get_mut(family.0).unwrap().decision = decision;
-                    family
-                });
-                self.admit_voice(
-                    family,
-                    r.sample,
-                    self.now,
-                    r.gain * velocity as f32,
-                    r.envelope,
-                    r.cursor.with_step(step),
-                )
-                .expect("prepared and preflighted source admission");
-            }
-            if let Some(family) = family {
-                self.finish_family(family).expect("admitted family");
-            }
-            if let Some(choice) = choice {
-                let generation = self.plans.get_mut(plan.0).unwrap();
-                generation.sequences.commit(choice);
-            }
-            from = until;
-        }
-        Ok(note)
     }
 }
