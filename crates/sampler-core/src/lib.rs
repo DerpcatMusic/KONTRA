@@ -667,9 +667,11 @@ impl Runtime {
                 return Err(error);
             }
         };
-        let begin = id.index * self.note_stride;
-        let cells = self.plans.get(plan.0).unwrap().prepared.note_cells;
-        self.note_values[begin..begin + cells].fill(0);
+        if self.note_stride != 0 {
+            let begin = id.index * self.note_stride;
+            let cells = self.plans.get(plan.0).unwrap().prepared.note_cells;
+            self.note_values[begin..begin + cells].fill(0);
+        }
         self.selections[id.index] = performance::NoteSelection {
             performance,
             snapshot: self.performance_state.capture(performance),
