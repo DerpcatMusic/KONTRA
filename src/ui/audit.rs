@@ -467,12 +467,194 @@ fn shot_scaled(part: &PartView, code: u8, to: &Path, device_scale: f64) -> anyho
     ctx.render(&mut pix, &mut resources);
     let rgba: Vec<u8> = pix.take_unpremultiplied().iter().flat_map(|p| [p.r, p.g, p.b, p.a]).collect();
     moose::core::screenshot::save_png(to, &rgba, u32::from(width), u32::from(height));
+    #[cfg(test)]
+    if std::env::var_os("KONTRA_UI_BENCH_GPU_CAPTURE").is_some() {
+        let original = scene.clone();
+        let normal_images = original.paint.iter().filter(|paint|
+            matches!(paint.paint, moose::mui::mui::scene::Paint::Image { .. })).count();
+        let vectors = original.paint.iter().filter(|paint|
+            matches!(paint.paint, moose::mui::mui::scene::Paint::Vector { .. })).count();
+        assert!(normal_images>0,"actual Conflux scene must include normal image artwork");
+        println!("UI_GPU_SCENE {}",serde_json::json!({"normal_images":normal_images,"vectors":vectors,
+            "paint_entries":original.paint.len(),"device_scale":device_scale,
+            "scope":"exact resolved full-app Conflux scene, no renderer fixture"}));
+        let size = [u32::from(width),u32::from(height)];
+        let mut gpu = tests::GpuCapture::new(size,device_scale)?;
+        gpu.original(&original,&rgba,to)?;
+        let note = original.paint.iter().filter_map(|paint|
+            paint.key.as_str().strip_prefix("key-").and_then(|name|name.parse::<usize>().ok()))
+            .find(|&note|note<128).ok_or_else(||anyhow::anyhow!("real keyboard is not shown"))?;
+        let previous = p.shared.played[note].swap(127,std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(previous,0,"capture-only fixture has no pre-existing host note feedback");
+        for _ in 0..2 {
+            let root = build(&mut ui,&mut bridge);
+            ui.frame(root,Some(Size::new(1180.,900.)),Input::default(),1./60.)
+                .map_err(|e|anyhow::anyhow!("{e:?}"))?;
+        }
+        let changed = ui.scene().ok_or_else(||anyhow::anyhow!("changed scene missing"))?.clone();
+        p.shared.played[note].store(previous,std::sync::atomic::Ordering::Relaxed);
+        assert_ne!(original.paint,changed.paint,"real keyboard feedback must alter actual UI paint");
+        let mut changed_ctx = RenderContext::new(width,height);
+        let mut changed_resources = Resources::default();
+        vello::paint(&mut vello::Cpu { ctx:&mut changed_ctx,resources:&mut changed_resources,
+            cache:&mut vello::Cache::default() },&changed,vello::kurbo::Affine::scale(device_scale))
+            .map_err(|e|anyhow::anyhow!("{e:?}"))?;
+        changed_ctx.flush();
+        let mut changed_pix = Pixmap::new(width,height);
+        changed_ctx.render(&mut changed_pix,&mut changed_resources);
+        let changed_cpu:Vec<u8> = changed_pix.take_unpremultiplied().iter().flat_map(|p|[p.r,p.g,p.b,p.a]).collect();
+        moose::core::screenshot::save_png(&to.with_extension("cpu-changed.png"),&changed_cpu,size[0],size[1]);
+        println!("UI_GPU_FEEDBACK note={note} value=127");
+        gpu.changed(&changed,&changed_cpu,to)?;
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Opt-in correctness probe: synchronous readback never enters production UI.
+    pub(super) struct GpuCapture {
+        device: moose::mui::mui::vello::vello::wgpu::Device,
+        queue: moose::mui::mui::vello::vello::wgpu::Queue,
+        renderer: moose::mui::mui::vello::effects::GpuRenderer,
+        target: moose::mui::mui::vello::vello::wgpu::Texture,
+        view: moose::mui::mui::vello::vello::wgpu::TextureView,
+        size: [u32; 2],
+        transform: moose::mui::mui::vello::kurbo::Affine,
+    }
+    fn gpu_wait<F: std::future::Future>(future: F) -> F::Output {
+        let mut future = std::pin::pin!(future);
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        loop {
+            match future.as_mut().poll(&mut context) {
+                std::task::Poll::Ready(result) => return result,
+                std::task::Poll::Pending => std::thread::sleep(Duration::from_millis(1)),
+            }
+        }
+    }
+    fn gpu_pixel_diff(a: &[u8], b: &[u8], size: [u32; 2]) -> serde_json::Value {
+        assert_eq!(a.len(), b.len());
+        let mut different = 0usize;
+        let mut over_eight = 0usize;
+        let mut max = 0u8;
+        let mut sum = 0u64;
+        let mut bounds = [size[0], size[1], 0, 0];
+        for (n, (a, b)) in a.chunks_exact(4).zip(b.chunks_exact(4)).enumerate() {
+            let delta = a.iter().zip(b).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+            max = max.max(delta);
+            sum += a.iter().zip(b).map(|(a, b)| u64::from(a.abs_diff(*b))).sum::<u64>();
+            if delta > 0 {
+                different += 1;
+                let (x, y) = (n as u32 % size[0], n as u32 / size[0]);
+                bounds = [bounds[0].min(x), bounds[1].min(y), bounds[2].max(x + 1), bounds[3].max(y + 1)];
+            }
+            over_eight += usize::from(delta > 8);
+        }
+        serde_json::json!({"different_pixels":different,"pixels_over_8":over_eight,
+            "max_channel_delta":max,"absolute_channel_delta_sum":sum,
+            "difference_bounds":(different != 0).then_some(bounds),"total_pixels":u64::from(size[0])*u64::from(size[1])})
+    }
+    impl GpuCapture {
+        pub(super) fn new(size: [u32; 2], scale: f64) -> anyhow::Result<Self> {
+            use moose::mui::mui::vello::{self, vello::wgpu};
+            let instance = wgpu::Instance::default();
+            let adapter = gpu_wait(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance, ..Default::default()
+            }))?;
+            // Software adapters are valid correctness evidence; identify them explicitly.
+            println!("UI_GPU_ADAPTER {:?}", adapter.get_info());
+            let (device, queue) = gpu_wait(adapter.request_device(&wgpu::DeviceDescriptor::default()))?;
+            let target = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("actual Conflux correctness readback"),
+                size: wgpu::Extent3d { width:size[0], height:size[1], depth_or_array_layers:1 },
+                mip_level_count:1, sample_count:1, dimension:wgpu::TextureDimension::D2,
+                format:wgpu::TextureFormat::Rgba8Unorm,
+                usage:wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats:&[],
+            });
+            let view = target.create_view(&Default::default());
+            let renderer = gpu_wait(vello::effects::GpuRenderer::new(&device, &queue,
+                wgpu::TextureFormat::Rgba8Unorm, size, vello::effects::Budget::default()))?;
+            Ok(Self { device, queue, renderer, target, view, size, transform:vello::kurbo::Affine::scale(scale) })
+        }
+        fn readback(&self) -> anyhow::Result<Vec<u8>> {
+            use moose::mui::mui::vello::vello::wgpu;
+            let stride = (self.size[0] * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+            let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label:Some("actual Conflux readback rows"),size:u64::from(stride)*u64::from(self.size[1]),
+                usage:wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,mapped_at_creation:false,
+            });
+            let mut encoder = self.device.create_command_encoder(&Default::default());
+            encoder.copy_texture_to_buffer(self.target.as_image_copy(), wgpu::TexelCopyBufferInfo {
+                buffer:&buffer,layout:wgpu::TexelCopyBufferLayout {
+                    offset:0,bytes_per_row:Some(stride),rows_per_image:Some(self.size[1]),
+                },
+            },wgpu::Extent3d { width:self.size[0],height:self.size[1],depth_or_array_layers:1 });
+            self.queue.submit([encoder.finish()]);
+            let (send, recv) = std::sync::mpsc::sync_channel(1);
+            buffer.slice(..).map_async(wgpu::MapMode::Read,move |result| { let _ = send.send(result); });
+            self.device.poll(wgpu::PollType::wait_indefinitely())?;
+            recv.recv_timeout(Duration::from_secs(10))??;
+            let mapped = buffer.slice(..).get_mapped_range()?;
+            let mut pixels = Vec::with_capacity(self.size[0] as usize*self.size[1] as usize*4);
+            for row in mapped.chunks_exact(stride as usize) {
+                pixels.extend_from_slice(&row[..self.size[0] as usize*4]);
+            }
+            drop(mapped);
+            buffer.unmap();
+            Ok(pixels)
+        }
+        pub(super) fn original(&mut self, scene: &moose::mui::mui::scene::ResolvedScene,
+            cpu: &[u8], to: &Path) -> anyhow::Result<()> {
+            let scope = self.device.push_error_scope(moose::mui::mui::vello::vello::wgpu::ErrorFilter::Validation);
+            let full = self.renderer.render(scene,self.transform,&self.view)?;
+            assert_eq!(full.rendered_pixels,u64::from(self.size[0])*u64::from(self.size[1]));
+            let initial = self.readback()?;
+            let retained = self.renderer.render(scene,self.transform,&self.view)?;
+            let unchanged = self.readback()?;
+            moose::core::screenshot::save_png(&to.with_extension("gpu-full.png"),&initial,self.size[0],self.size[1]);
+            println!("UI_GPU_COMPARE {}",serde_json::json!({"stage":"original_cpu_vs_fresh_gpu",
+                "comparison":gpu_pixel_diff(cpu,&initial,self.size),"renders":full.renders,
+                "rendered_pixels":full.rendered_pixels,"paint_entries":scene.paint.len()}));
+            assert_eq!(retained.renders,0,"unchanged exact scene must be retained");
+            assert_eq!(initial,unchanged,"unchanged retained GPU frame changed pixels");
+            if let Some(error) = gpu_wait(scope.pop()) { anyhow::bail!("GPU validation: {error}"); }
+            Ok(())
+        }
+        pub(super) fn changed(&mut self, scene: &moose::mui::mui::scene::ResolvedScene,
+            cpu: &[u8], to: &Path) -> anyhow::Result<()> {
+            use moose::mui::mui::vello::{self,vello::wgpu};
+            let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let stats = self.renderer.render(scene,self.transform,&self.view)?;
+            let retained = self.readback()?;
+            let mut fresh = gpu_wait(vello::effects::GpuRenderer::new(&self.device,&self.queue,
+                wgpu::TextureFormat::Rgba8Unorm,self.size,vello::effects::Budget::default()))?;
+            let full = fresh.render(scene,self.transform,&self.view)?;
+            let reference = self.readback()?;
+            moose::core::screenshot::save_png(&to.with_extension("gpu-changed-retained.png"),&retained,self.size[0],self.size[1]);
+            moose::core::screenshot::save_png(&to.with_extension("gpu-changed-fresh.png"),&reference,self.size[0],self.size[1]);
+            let comparison = gpu_pixel_diff(&retained,&reference,self.size);
+            let receipt = serde_json::json!({"stage":"real_keyboard_feedback_retained_vs_same_scene_fresh_gpu",
+                "comparison":comparison,"cpu_vs_fresh_gpu":gpu_pixel_diff(cpu,&reference,self.size),
+                "renders":stats.renders,"rendered_pixels":stats.rendered_pixels,
+                "fresh_rendered_pixels":full.rendered_pixels,"paint_entries":scene.paint.len()});
+            println!("UI_GPU_COMPARE {receipt}");
+            std::fs::write(to.with_extension("gpu-comparison.json"),serde_json::to_vec_pretty(&receipt)?)?;
+            assert_eq!(stats.renders,1,"real feedback change must repaint");
+            assert!(stats.rendered_pixels>0 && stats.rendered_pixels<full.rendered_pixels,
+                "probe must exercise retained partial damage, not a full redraw");
+            // Fractional damage translation can change one-pixel edge rounding.
+            // Record every delta; reject a corruption footprint above 0.1% of frame.
+            let large = comparison["pixels_over_8"].as_u64().unwrap();
+            assert!(large*1000<=u64::from(self.size[0])*u64::from(self.size[1]),
+                "retained GPU frame diverges materially from exact fresh scene: {receipt}");
+            if let Some(error) = gpu_wait(scope.pop()) { anyhow::bail!("GPU validation: {error}"); }
+            Ok(())
+        }
+    }
+
 
     #[test]
     fn numbers_do_not_split_a_problem() {

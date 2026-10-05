@@ -356,6 +356,108 @@ fn repeated_equal_table_cell_assignments_do_not_consume_live_array_copy_budget()
     super::vm::REFERENCE.set(false);
 }
 
+
+#[test]
+fn delayed_indexed_effect_strings_are_prepared_and_published_without_heap() {
+    // Effect controls are remapped after persistence waits, as in Conflux.
+    // Lexical keys 0,1,10,11,2 must still map to the correct numeric cells.
+    let source = r#"on init
+make_perfview
+expose_controls
+declare ui_slider $first(0,100)
+declare ui_slider $second(0,100)
+declare ui_label $done(1,1)
+declare %ids[2]
+%ids[0] := get_ui_id($first)
+%ids[1] := get_ui_id($second)
+declare !names[12] := ("IR 0","IR 1","IR 2","IR 3","IR 4","IR 5","IR 6","IR 7","IR 8","IR 9","IR 10","IR 11")
+declare $control
+declare $index
+set_control_par_str_arr(get_ui_id($first),$CONTROL_PAR_NKS_STR_VALUES,"old",1)
+end on
+function remap
+$control := 0
+while ($control < 2)
+$index := 0
+while ($index < num_elements(!names))
+set_control_par_str_arr(%ids[$control],$CONTROL_PAR_NKS_STR_VALUES,!names[$index],$index)
+inc($index)
+end while
+inc($control)
+end while
+set_text($done,"complete")
+end function
+on persistence_changed
+wait(100000)
+call remap
+end on
+on ui_control($first)
+!names[11] := "remapped"
+call remap
+end on"#;
+    let mut rig = Rig::new(&[source]);
+    let mut live = rig.rt.live();
+    let mut exercise = || {
+        for _ in 0..50 {
+            rig.rt.begin_audio_block(128, 1, false);
+            rig.rt.process(&mut rig.engine, 128);
+        }
+        rig.rt.refresh_live(&mut live);
+    };
+    #[cfg(feature = "plugin")]
+    assert_eq!(crate::test_support::allocations(&mut exercise), 0);
+    #[cfg(not(feature = "plugin"))]
+    exercise();
+    assert!(rig.rt.faults().next().is_none(), "{:?}", rig.rt.diagnostics());
+    assert_eq!(prop(live.interface.as_ref().unwrap(), 2, "$CONTROL_PAR_TEXT"), "complete");
+    for control in 0..2 {
+        for index in 0..12 {
+            let key = format!("$CONTROL_PAR_NKS_STR_VALUES[{index}]");
+            let expected = Value::Text(format!("IR {index}"));
+            assert_eq!(live.interface.as_ref().unwrap().controls[control].properties[&key], expected);
+            assert_eq!(live.exposed_controls[control].descriptor.properties[&key], expected);
+        }
+    }
+    let mut remap = || {
+        rig.rt.ui_control(&mut rig.engine, 0, 0, 1);
+        rig.rt.refresh_live(&mut live);
+    };
+    #[cfg(feature = "plugin")]
+    assert_eq!(crate::test_support::allocations(&mut remap), 0);
+    #[cfg(not(feature = "plugin"))]
+    remap();
+    for control in 0..2 {
+        let key = "$CONTROL_PAR_NKS_STR_VALUES[11]";
+        assert_eq!(live.interface.as_ref().unwrap().controls[control].properties[key], Value::Text("remapped".into()));
+        assert_eq!(live.exposed_controls[control].descriptor.properties[key], Value::Text("remapped".into()));
+    }
+    assert!(rig.rt.faults().next().is_none(), "{:?}", rig.rt.diagnostics());
+}
+
+#[test]
+#[ignore = "requires the local Conflux instrument and its authored resources"]
+fn actual_conflux_persistence_prepares_effect_indexed_strings() {
+    let path = std::path::PathBuf::from(std::env::var_os("KONTRA_CONFLUX_INSTRUMENT").expect("set KONTRA_CONFLUX_INSTRUMENT"));
+    let instrument = crate::import::read(&path).unwrap();
+    assert_eq!(instrument.scripts.len(), 3, "exercise all authored script slots");
+    let (rt, errors) = crate::engine::load_scripts(&instrument, instrument.script_state.clone(), 48_000.);
+    assert!(errors.is_empty(), "{errors:?}");
+    let mut rt = rt.expect("authored scripts must be admitted");
+    let mut engine = crate::engine::ScriptSetup::new(&instrument, 48_000.);
+    for _ in 0..100 { rt.process(&mut engine, 480); }
+    assert!(rt.faults().next().is_none(), "{:?}", rt.diagnostics());
+    let ui = rt.interface(0);
+    let effects: Vec<_> = ui.controls.iter().filter(|c| c.variable.starts_with("$FX__Slot") && c.variable.contains("__K")).collect();
+    assert_eq!(effects.len(), 48, "all four authored effect-control domains");
+    assert!(effects.iter().any(|control| control.properties.iter().any(|(key, value)| {
+        key.starts_with("$CONTROL_PAR_NKS_STR_VALUES[") && matches!(value, Value::Text(text) if !text.is_empty())
+    })), "authored persistence must populate labels, not just reserve empty slots");
+    for control in effects {
+        assert!(control.properties.contains_key("$CONTROL_PAR_NKS_STR_VALUES[127]"), "{} lacks its declared128-cell IR domain", control.variable);
+    }
+    eprintln!("Conflux all3 slots,4×12 effect controls,128-cell IR domains and1-second persistence cadence: no runtime faults");
+}
+
 #[test]
 fn delayed_effect_control_remapping_prepares_short_and_automation_names_without_heap_work() {
     // Dynamic effect panels remap controls after persistence_changed yields.
