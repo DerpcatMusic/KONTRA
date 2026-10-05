@@ -435,3 +435,54 @@ Artifacts: `artifacts/articulation-final-*.csv` and
 `artifacts/articulation-final-binaries.sha256`. Initial measurements remain under
 `artifacts/articulation-{before,after,indexed}*`. Heap guards and independent
 selection/ownership tests remain separate from timing evidence.
+
+
+## Controller snapshots and predicate selection cost
+
+2026-10-06, Rust 1.99 release, Ryzen 7800X3D, CPU 2, three interleaved
+runs of `admission_workload`. Baseline is the controller-snapshot implementation
+`7e17e76` before predicate selection; final binaries and SHA-256 values are retained
+in `artifacts/controller-admission-{before,final}` and
+`artifacts/predicate-final-binaries.sha256`. Raw final measurements are
+`artifacts/predicate-{before,final}-{plain,shuffle,release,cc,cc-shuffle,cc-release}-{0,1,2}.csv`;
+CC configurations exist only for final. Values below are medians of the three
+per-run medians, in microseconds per admission burst.
+
+| Notes / base voice slots | Plain before → after | Shuffle before → after | Shuffle + release before → after | 64 CC groups | 64 CC groups + shuffle | 64 CC groups + shuffle + release |
+| --- | --- | --- | --- | --- | --- | --- |
+| 16 / 64 | 3.580 → 2.920 | 4.180 → 4.761 | 5.740 → 6.360 | 7.830 | 10.870 | 21.641 |
+| 64 / 256 | 11.490 → 11.681 | 16.820 → 19.421 | 22.661 → 25.791 | 31.271 | 44.700 | 88.432 |
+| 256 / 1024 | 45.451 → 48.440 | 70.671 → 80.561 | 93.441 → 105.532 | 129.022 | 179.703 | 355.167 |
+| 1024 / 4096 | 221.624 → 233.775 | 329.326 → 373.707 | 422.378 → 468.359 | 567.721 | 788.315 | 1481.568 |
+| 16 / 4096 | 2.780 → 3.440 | 4.230 → 4.840 | 5.800 → 6.381 | 8.070 | 10.760 | 21.560 |
+
+`--controllers` authors 64 mutually exclusive CC1 equality conditions and selects
+63. Each condition maps four microphones (three coordinated takes with `--shuffle`).
+This is sparse predicate traversal after key/phase indexing, not a 64-way Cartesian
+state cache. `--releases` adds an independently selected gate phase. Conservative
+controller release bounds currently require `base_slots * 65` source capacity for
+that last column, versus `base_slots * 2` without controller conditions; family and
+decision reservations remain one per phase/sequence. The geometry and resource
+assertions are part of the executable, so the over-reservation is visible.
+
+At 1024 notes, final note-off medians were 4011.666 us plain, 3969.365 us shuffle,
+4327.391 us shuffle/release and 4880.112 us CC/shuffle/release. Admission and cleanup
+bursts are not steady render callbacks; these values do not establish a host
+realtime deadline or a competitor ranking. Existing FIFO pairing contributes to
+large note-off workloads. Final ordinary admission still costs roughly 5–16% more
+in the larger plain/shuffle cases; this is an open performance concern, not a
+speedup claim.
+
+The first predicate implementation walked each condition run to find its end.
+Preparation now compiles those boundaries and unconditioned traversal uses direct
+range iteration. Intermediate binaries/CSVs retain that comparison under
+`controller-admission-{after,indexed}` and `controller-*.csv`. Host load varied
+substantially during intermediate runs (load average approximately 18–20 was
+observed), so cross-run optimization ratios are not treated as controlled evidence.
+No local compiler or test process ran concurrently with timed batches.
+
+Seven heap-guarded controller checks cover state ownership and actual selection;
+all four native crates pass debug/release, Rust 1.92 and strict all-target Clippy,
+with root boundary checks separate. Final validation logs are
+`artifacts/predicate-final-{debug,release,msrv,clippy}.log` and
+`artifacts/predicate-boundary.log`. No Doctor scan was used for this change.

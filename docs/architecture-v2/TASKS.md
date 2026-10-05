@@ -175,7 +175,8 @@ unimplemented cases. Source inspection alone is not passing conformance evidence
   selection and retained decisions with admission-owned quotas. [Articulation routing](ARTICULATION.md)
   adds independent performance domains, silent latched switches and onset/current
   release snapshots. Controller snapshots now retain bounded shared versions with full-resolution MIDI
-  updates. Controller predicates, other switch policies, phrase
+  updates and compiled controller conjunctions with onset/current release filtering.
+  Controller-triggered notes, other switch policies, phrase
   state and persisted snapshot/restore remain open.
 
 - [ ] **P1; dependencies:** V2-04/06/07.

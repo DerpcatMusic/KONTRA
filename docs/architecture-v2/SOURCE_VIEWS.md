@@ -65,7 +65,9 @@ optimization; they do not establish worst-case deadlines or a competitor ranking
 
 The original evidence above covers integer-position unity-rate playback.
 [Fractional playback and rate conversion](RESAMPLING.md) now extend this contract.
-Crossfades, ping-pong loops and live pitch remain open; native root-key tracking
-now compiles into the prepared key index.
+Crossfades and ping-pong loops remain open. Native root-key tracking compiles
+into the prepared key index; [live pitch and modulation](MODULATION.md) are now
+implemented. The pinned [reference review](REFERENCE_REVIEW.md) records required
+fractional crossfade/partner-phase regressions for the remaining loop modes.
 Raw loop boundaries are exact, not automatically click-free; no undocumented
 smoothing is applied. Host/plugin integration and streaming also remain open.

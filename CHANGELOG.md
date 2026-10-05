@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Compile full-resolution controller conjunctions into native attack/key/gate selection, with coherent onset/current policies, shared microphone predicates and transactional take decisions. Release capacity remains conservatively reserved across controller conditions.
+
 - Retain coherent articulation and full-resolution controller snapshots in a bounded shared-version pool. MIDI/MPE effective controller updates preserve note onset state without callback allocation; pedal publication and scope admission are atomic.
 
 - Add explicit musical performance domains, note-owned articulation snapshots and silent latched keyswitches. Sparse region filtering and onset/current release policies stay independent of MPE member channels; ordinary MIDI and MPE can route notes to a chosen domain.

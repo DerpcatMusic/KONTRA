@@ -2,7 +2,7 @@
 
 The native selector now has explicit musical performance domains, silent latched
 switches, sparse articulation filtering and per-release onset/current policies.
-This is partial V2-08 evidence. Controller predicates, momentary/additive
+This is partial V2-08 evidence. Controller-triggered notes, momentary/additive
 switches, next-note overrides, phrase selection and persisted recall remain open.
 
 ## Domains and note identity
@@ -48,7 +48,7 @@ cleans notes; it does not silently reset an instrument's latched articulation.
 unsigned 32-bit full-scale values for 128 CC slots. Each starts at zero. These are
 **effective downstream** values, committed after an event-processing stage accepts
 an event; they are not raw MIDI input history or per-note MPE expression. Full
-script interception and controller predicates remain separate pending work.
+script interception remains separate pending work.
 
 Each musical domain owns its current state version; each successfully admitted
 note retains its onset version. A private pool has exactly `notes + performances`
@@ -109,8 +109,8 @@ accepts one optional `u32` tag per region in original authoring order. `None` me
 an unconditional layer, and every `u32` label is valid, including sparse labels.
 The builder composes with variation and release compilation in any order.
 
-Candidates remain indexed by key and phase, then sequence, articulation and original
-region order. Within each sequence, binary partitioning yields two sparse ranges:
+Candidates remain indexed by key and phase, then sequence, articulation, interned
+controller condition set and original region order. Within each sequence, binary partitioning yields two sparse ranges:
 unconditional candidates and candidates for the selected articulation. Preflight
 and commit each reuse those ranges for eligibility, take choice and source selection;
 no key × articulation × take × microphone table is materialized. Inactive groups
@@ -119,7 +119,7 @@ meaning; a global sequence remains global, not implicitly per performance or per
 articulation. Additional variation scopes remain separate work.
 
 For each release phase, `SelectionPolicy::Onset` (default) uses the owning note's
-snapshot; `Current` reads that same performance domain at the phase's actual
+articulation/controller snapshot; `Current` reads that same performance domain at the phase's actual
 transition. Velocity policy, release timing, expression and mapping generation
 remain independent facts. A held old-generation note uses its original mapping and
 policy after replacement. A delayed child can use current domain state with the
@@ -139,6 +139,58 @@ also filters those checks. This prevents accepted expression changes from invali
 later releases. Scope-owner preclaim skips groups unreachable under known onset
 articulation/velocity; current or unknown state reserves every potentially needed
 owner without advancing its sequence.
+
+## Compiled controller conditions
+
+`with_controllers` accepts one conjunction of inclusive `ControllerCondition`
+ranges per region in original authoring order. Its explicit condition budget checks
+the total input count before preparation. It rejects invalid controller indices,
+inverted bounds and contradictory conditions on the same controller. Duplicate
+conditions are intersected, full-range tests removed and equivalent canonical sets
+interned. Empty conjunctions are unconditional. All comparisons preserve exact
+32-bit boundaries, including adjacent values around the midpoint and endpoints.
+
+Selection first narrows candidates by key, phase, sequence and articulation. A
+small cursor reads control-compiled run boundaries, evaluates each contiguous
+condition run once per selection pass and skips a rejected run; matching microphones reuse the result. It owns only indices,
+so committing voices needs neither candidate copies nor mutable prepared data.
+Condition sets repeated in separate sequence/articulation runs are reevaluated;
+this explicit ceiling should drive any future sparse-cache optimization. Run-end
+indices cost one `usize` per candidate only in plans with nontrivial conditions. No
+key × controller × articulation × take table is created.
+
+Take choice sees the first eligible candidate before any ownership changes.
+Wholly ineligible gestures do not advance or claim a sequence; an eligible gesture
+whose selected take has no mapped region still records/advances that take. Preflight
+and commit traverse the same immutable context. Controller updates alone generate
+no note, source, family or take decision.
+
+`with_release_selection(key_policy, gate_policy)` chooses onset/current independently
+for both release phases, including controller-only instruments. These policies
+apply to the coherent articulation/controller version together; velocity, mapping
+generation and expression retain their separate contracts. Onset dormant-pitch and
+sequence-scope checks skip unreachable controller conditions. Current policy checks
+all possible future controller conditions so later cleanup cannot introduce an
+invalid playback rate. Generated delayed children retain the original mapping but
+capture their own current domain version after replacement.
+
+Release reserves remain deliberately conservative for controller predicates:
+control preparation counts their possible overlap without solving correlations
+between several controller ranges. For example, 64 mutually exclusive CC groups
+may reserve capacity for all 64 at release, although only one sounds. Exact per-note
+reservation tightening or a compiled bound for such correlations is remaining
+performance work; it must preserve unconditional cleanup guarantees.
+
+[Admission measurements](RENDER_WORKLOADS.md#controller-snapshots-and-predicate-selection-cost)
+record both added cost and the conservative reservation geometry.
+
+`tests/controllers.rs` compares audible attack/key/gate selection with an independent
+linear evaluator over 128 gestures for each policy, coordinated takes and multiple
+microphones. It also checks inclusive bounds, canonical intersection, rejected
+preparation, unmatched gestures, unmapped takes, and direct/batch/scheduled dormant
+pitch changes, plus audible equal-time controller/release order across whole, split
+and empty blocks. The articulation replacement test now combines CC and articulation
+conditions across old delayed children/new mappings and off-audio retirement.
 
 ## Silent latched switches
 

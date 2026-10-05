@@ -1,6 +1,9 @@
 //! Control-thread compilation of immutable resident assets and native mappings.
+mod predicates;
 mod selection;
 use super::{Envelope, Error, Frame, NotePitch, Playback};
+pub use predicates::ControllerCondition;
+use predicates::Matching;
 
 /// Validated immutable resident PCM. Construct, clone and drop handles on the
 /// control side. Clones share the original sample buffer; rendering only borrows.
@@ -85,6 +88,7 @@ struct PreparedRegion {
     take: Option<super::Take>,
     trigger: super::Trigger,
     articulation: Option<u32>,
+    conditions: Option<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -106,6 +110,8 @@ pub struct Prepared {
     note_program: Option<usize>,
     keyswitches: [Option<u32>; 128],
     articulated: bool,
+    conditions: Box<[Box<[ControllerCondition]>]>,
+    condition_ends: Box<[usize]>,
     pub(super) release_selection: [super::SelectionPolicy; 2],
     pub(super) modulation: super::Modulation,
     pub(super) sequences: Box<[super::variation::PreparedSequence]>,
@@ -184,6 +190,7 @@ impl Prepared {
                 take: None,
                 trigger: super::Trigger::Attack,
                 articulation: None,
+                conditions: None,
             });
         }
         let mut offsets = [0; 129];
@@ -221,6 +228,8 @@ impl Prepared {
             note_program: None,
             keyswitches: [None; 128],
             articulated: false,
+            conditions: Box::new([]),
+            condition_ends: Box::new([]),
             release_selection: [super::SelectionPolicy::Onset; 2],
             modulation: super::Modulation::default(),
             sequences: Box::new([]),
@@ -407,8 +416,12 @@ impl Prepared {
         Ok(self)
     }
 
-    /// Unknown/current release state must validate every possible articulation.
-    pub(super) fn pending_articulation(&self, trigger: super::Trigger, onset: u32) -> Option<u32> {
+    /// Current release state is unknown until its actual transition.
+    pub(super) fn pending_selection<'a>(
+        &self,
+        trigger: super::Trigger,
+        onset: &'a super::performance::State,
+    ) -> Option<&'a super::performance::State> {
         match self.release_selection[trigger.release_index().unwrap()] {
             super::SelectionPolicy::Onset => Some(onset),
             super::SelectionPolicy::Current => None,
@@ -448,6 +461,7 @@ impl Prepared {
                     r.trigger,
                     r.take.map(|t| t.sequence),
                     r.articulation,
+                    r.conditions,
                     c.region,
                 )
             });
@@ -465,6 +479,22 @@ impl Prepared {
                 self.release_reserves[key][trigger.release_index().unwrap()] =
                     self.release_bound(key as u8, trigger);
             }
+        }
+        if self.conditions.is_empty() {
+            self.condition_ends = Box::new([]);
+        } else {
+            let mut ends = vec![0; self.candidates.len()];
+            let mut end = ends.len();
+            let mut previous = None;
+            for i in (0..ends.len()).rev() {
+                let condition = self.regions[self.candidates[i].region].conditions;
+                if previous != Some(condition) {
+                    end = i + 1;
+                    previous = Some(condition);
+                }
+                ends[i] = end;
+            }
+            self.condition_ends = ends.into_boxed_slice();
         }
     }
 
@@ -585,33 +615,20 @@ impl Prepared {
         trigger: super::Trigger,
         range: super::pitch::PitchRange,
         velocity: Option<f64>,
-        articulation: Option<u32>,
+        state: Option<&super::performance::State>,
     ) -> Result<(), Error> {
-        let validate = |candidate: Candidate| -> Result<(), Error> {
-            let r = self.regions[candidate.region];
-            if velocity.is_none_or(|v| r.velocity_low <= v && v <= r.velocity_high) {
+        let candidates = self.range(pitch.key(), trigger);
+        let mut from = candidates.start;
+        while from < candidates.end {
+            let until = self.group_end(from, candidates.end);
+            let ranges = state.map_or([from..until, 0..0], |state| {
+                self.active_ranges(from..until, state.articulation)
+            });
+            let mut matching = Matching::new(ranges);
+            while let Some(candidate) = matching.next(self, state, velocity) {
                 range.apply(self.step(candidate, pitch))?;
             }
-            Ok(())
-        };
-        let candidates = self.range(pitch.key(), trigger);
-        if let Some(articulation) = articulation {
-            let mut from = candidates.start;
-            while from < candidates.end {
-                let until = self.group_end(from, candidates.end);
-                let [common, selected] = self.active_ranges(from..until, articulation);
-                for &candidate in self.candidates[common]
-                    .iter()
-                    .chain(&self.candidates[selected])
-                {
-                    validate(candidate)?;
-                }
-                from = until;
-            }
-        } else {
-            for &candidate in &self.candidates[candidates] {
-                validate(candidate)?;
-            }
+            from = until;
         }
         Ok(())
     }
@@ -632,26 +649,23 @@ impl Prepared {
         }
     }
 
-    fn sequence_groups(
-        &self,
+    fn sequence_groups<'a>(
+        &'a self,
         key: u8,
         trigger: super::Trigger,
-        articulation: Option<u32>,
+        state: Option<&'a super::performance::State>,
         velocity: Option<f64>,
-    ) -> impl Iterator<Item = usize> + '_ {
+    ) -> impl Iterator<Item = usize> + 'a {
         let mut range = self.range(key, trigger);
         std::iter::from_fn(move || {
             if range.is_empty() {
                 return None;
             }
             let until = self.group_end(range.start, range.end);
-            let ranges = articulation.map_or([range.start..until, 0..0], |value| {
-                self.active_ranges(range.start..until, value)
+            let ranges = state.map_or([range.start..until, 0..0], |state| {
+                self.active_ranges(range.start..until, state.articulation)
             });
-            let eligible = ranges.into_iter().flatten().any(|i| {
-                let r = self.regions[self.candidates[i].region];
-                velocity.is_none_or(|v| r.velocity_low <= v && v <= r.velocity_high)
-            });
+            let eligible = Matching::new(ranges).next(self, state, velocity).is_some();
             let sequence = self.regions[self.candidates[range.start].region]
                 .take
                 .map(|t| t.sequence)
@@ -676,51 +690,16 @@ impl Prepared {
 
     fn choose(
         &self,
-        ranges: [std::ops::Range<usize>; 2],
-        velocity: f64,
+        first: Option<Candidate>,
         address: super::ChannelAddress,
         key: u8,
         state: &super::variation::SequenceState,
     ) -> Result<Option<super::variation::PendingTake>, Error> {
-        if self.sequences.is_empty() {
-            return Ok(None);
-        }
-        let Some(first) = ranges.iter().find(|range| !range.is_empty()) else {
+        let Some(take) = first.and_then(|c| self.regions[c.region].take) else {
             return Ok(None);
         };
-        let Some(take) = self.regions[self.candidates[first.start].region].take else {
-            return Ok(None);
-        };
-        let [common, selected] = ranges;
-        if !self.candidates[common]
-            .iter()
-            .chain(&self.candidates[selected])
-            .any(|c| {
-                let r = self.regions[c.region];
-                r.velocity_low <= velocity && velocity <= r.velocity_high
-            })
-        {
-            return Ok(None);
-        }
         state
             .choose(take.sequence, &self.sequences[take.sequence], address, key)
             .map(Some)
-    }
-
-    fn matches(
-        &self,
-        ranges: [std::ops::Range<usize>; 2],
-        velocity: f64,
-        take: Option<super::Take>,
-    ) -> impl Iterator<Item = Candidate> + '_ {
-        let [common, selected] = ranges;
-        self.candidates[common]
-            .iter()
-            .chain(&self.candidates[selected])
-            .copied()
-            .filter(move |candidate| {
-                let r = self.regions[candidate.region];
-                r.velocity_low <= velocity && velocity <= r.velocity_high && r.take == take
-            })
     }
 }

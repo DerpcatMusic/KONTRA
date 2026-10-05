@@ -573,6 +573,15 @@ fn delayed_children_keep_original_mapping_and_domain_but_capture_their_own_onset
         SelectionPolicy::Onset,
     )
     .unwrap()
+    .with_controllers(
+        vec![vec![sampler_core::ControllerCondition {
+            controller: 1,
+            low: 90000,
+            high: 90000,
+        }]],
+        1,
+    )
+    .unwrap()
     .with_programs(
         vec![
             Program::new(vec![
@@ -610,6 +619,16 @@ fn delayed_children_keep_original_mapping_and_domain_but_capture_their_own_onset
         SelectionPolicy::Onset,
     )
     .unwrap();
+    let new = new
+        .with_controllers(
+            vec![vec![sampler_core::ControllerCondition {
+                controller: 2,
+                low: 123,
+                high: 123,
+            }]],
+            1,
+        )
+        .unwrap();
     let (mut rt, mut control) = Runtime::with_plan_updates(old, limits(), 2, 1).unwrap();
     control.submit(Box::new(new)).unwrap();
     support::without_heap(|| {
@@ -627,6 +646,8 @@ fn delayed_children_keep_original_mapping_and_domain_but_capture_their_own_onset
         rt.start_behavior(root, 0).unwrap();
         rt.poll_plan_update().unwrap();
         rt.set_articulation(domain, 90000).unwrap();
+        rt.set_controller(domain, 1, 90000).unwrap();
+        rt.set_controller(domain, 2, 123).unwrap();
         let mut out = [[0.; 2]; 5];
         rt.render(&mut out).unwrap();
         assert_eq!(out, [[0.; 2], [0.; 2], [0.; 2], [0.5; 2], [0.; 2]]);
@@ -645,6 +666,7 @@ fn delayed_children_keep_original_mapping_and_domain_but_capture_their_own_onset
         assert_eq!(out[0], [2.; 2]);
         assert_eq!(rt.note_plan(root), Ok(old_plan));
         assert_eq!(rt.note_selection(root).unwrap().articulation, 0);
+        assert_eq!(rt.note_controller(root, 1).unwrap(), 0);
         rt.flush_behaviors(|_, _, _| true);
         rt.flush_ended(|_| false);
         assert_eq!(rt.collect_retired_plans(), 0);

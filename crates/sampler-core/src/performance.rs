@@ -77,18 +77,14 @@ impl Runtime {
         })
     }
 
-    pub(super) fn release_articulation(&self, note: NoteId, trigger: Trigger) -> u32 {
+    pub(super) fn release_selection(&self, note: NoteId, trigger: Trigger) -> usize {
         let n = self.notes.get(note.0).unwrap();
         let state = self.selections[note.0.index];
         match self.plans.get(n.plan.0).unwrap().prepared.release_selection
             [trigger.release_index().unwrap()]
         {
-            SelectionPolicy::Onset => self.performance_state.states[state.snapshot].articulation,
-            SelectionPolicy::Current => {
-                self.performance_state
-                    .current(state.performance)
-                    .articulation
-            }
+            SelectionPolicy::Onset => state.snapshot,
+            SelectionPolicy::Current => self.performance_state.current[state.performance],
         }
     }
 }
