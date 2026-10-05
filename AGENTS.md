@@ -2,6 +2,12 @@
 
 If `graft/` exists, query before source search/read: `graft ask "question" --source`, `graft grep "literal"`, `graft skeleton file`; `graft callers symbol` before renames or multi-file edits. Otherwise use `rg`.
 
+# Rust work
+
+Always read the installed `rust-best-practices/SKILL.md` and its relevant reference chapters before writing or reviewing Rust. On this workstation it is under `/home/derpcat/.agents/skills/`. Delegated agents must do the same; use GPT-6.1-Sol with high reasoning when available.
+
+Preserve sample-accurate MIDI identities, DSP parameter laws and format-specific semantics. Prepare and retire retained owners outside audio callbacks; callbacks must not allocate, free heap owners, lock or perform I/O. Validate behavioral changes with independent PCM or lifecycle checks, and measure performance in optimized builds before claiming an improvement.
+
 # Available analysis tools
 
 - Native: `r2`/`rabin2` + Ghidra `pdg`, `analyzeHeadless`, `retdec-decompiler`; MCP: `~/.local/bin/r2mcp -d pdg` (new sessions).
