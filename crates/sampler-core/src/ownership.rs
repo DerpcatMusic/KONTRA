@@ -40,7 +40,7 @@ impl Default for Expression {
 }
 
 impl Expression {
-    fn valid(self) -> bool {
+    pub(super) fn valid(self) -> bool {
         self.gain.is_finite()
             && (0.0..=1.0).contains(&self.gain)
             && self.pan.is_finite()
@@ -89,6 +89,15 @@ impl Runtime<'_> {
     /// Changes the owner, including all explicitly linked children. Adapters retain
     /// this handle per admitted note; they must never retarget tails by channel alone.
     pub fn set_expression(&mut self, id: ExpressionId, value: Expression) -> Result<(), Error> {
+        self.apply_due();
+        self.set_expression_now(id, value)
+    }
+
+    pub(super) fn set_expression_now(
+        &mut self,
+        id: ExpressionId,
+        value: Expression,
+    ) -> Result<(), Error> {
         if !value.valid() {
             return Err(Error::InvalidInput);
         }
@@ -102,6 +111,7 @@ impl Runtime<'_> {
     /// Freeze a shared note at its current expression. Capacity failure leaves its
     /// previous link intact; a uniquely owned expression needs no replacement slot.
     pub fn detach_expression(&mut self, note: NoteId) -> Result<ExpressionId, Error> {
+        self.apply_due();
         let old = self.expression_id(note)?;
         let owner = *self.expressions.get(old.0).unwrap();
         if owner.notes == 1 {
@@ -127,6 +137,7 @@ impl Runtime<'_> {
     /// A family coordinates source admissions for one selection decision. The caller
     /// seals it with finish_family after adding all layers; an open family is retained.
     pub fn create_family(&mut self, note: NoteId) -> Result<FamilyId, Error> {
+        self.apply_due();
         let n = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
         if !n.gate {
             return Err(Error::ClosedNote);
@@ -152,6 +163,7 @@ impl Runtime<'_> {
     /// Seal admissions; already admitted sources (including delayed starts) continue.
     /// Empty sealed families retire immediately. Sealing does not release a note.
     pub fn finish_family(&mut self, id: FamilyId) -> Result<(), Error> {
+        self.apply_due();
         self.families.get_mut(id.0).ok_or(Error::StaleHandle)?.open = false;
         self.retire_family(id);
         Ok(())
@@ -160,6 +172,7 @@ impl Runtime<'_> {
     /// Stop only this family's voices and delayed starts. Sibling families and the
     /// logical note are unaffected. This cleanup requires no queue capacity.
     pub fn stop_family(&mut self, id: FamilyId) -> Result<(), Error> {
+        self.apply_due();
         self.families.get(id.0).ok_or(Error::StaleHandle)?;
         for i in 0..self.voices.slots.len() {
             if self.voices.slots[i].value.is_some_and(|v| v.family == id) {

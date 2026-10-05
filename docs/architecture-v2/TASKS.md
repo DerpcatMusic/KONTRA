@@ -78,6 +78,9 @@ Family/expression ownership and segmented rendering now have
 
 ### V2-06 — Implement gates, pedals and release reserves
 
+- **Partial evidence:** binary sustain/sostenuto and physical/effective key separation
+  now execute through the shared timeline; see [scheduling evidence](SCHEDULING_SLICE.md).
+
 - [ ] **P0; dependencies:** V2-03/04/05.
 - Separate physical key, gate, sostenuto capture and source release. Specify and
   implement sustain, retrigger, panic, half-pedal and repedal semantics.

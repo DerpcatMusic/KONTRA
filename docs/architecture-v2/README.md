@@ -28,6 +28,8 @@ compatibility remains a separate, evidence-backed capability.
    reproduced legacy defects, and remaining gates.
 6. [Family/expression implementation and measurements](OWNERSHIP_SLICE.md): current
    contracts, independent core checks and resident-render microbenchmark.
+7. [Native gates and scheduling](SCHEDULING_SLICE.md): physical/effective keys,
+   sustain/sostenuto, timestamped expression and retained work ownership.
 
 Continue through **V2-01 → V2-02 → V2-03/V2-04**: define independent workload
 and protocol contracts, then build unified event/continuation scheduling on the
