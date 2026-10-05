@@ -95,11 +95,33 @@ impl Runtime {
     /// missing channel before mutation; pedal-up never needs capacity. Empty sets
     /// are no-ops. Due work runs before admission and cannot be rolled back.
     pub fn sustain_scope(&mut self, scope: ChannelScope, down: bool) -> Result<(), Error> {
-        self.pedal_scope(scope, down, false)
+        self.pedal_scope(scope, down, false, None)
     }
 
     pub fn sostenuto_scope(&mut self, scope: ChannelScope, down: bool) -> Result<(), Error> {
-        self.pedal_scope(scope, down, true)
+        self.pedal_scope(scope, down, true, None)
+    }
+
+    /// Commit an accepted downstream CC64/66 value and its physical pedal scope
+    /// together. Capacity is checked before publication; release selection observes
+    /// the new value. Pedal-up needs no free channel, event or snapshot slot.
+    pub fn set_pedal_controller(
+        &mut self,
+        performance: super::PerformanceId,
+        scope: ChannelScope,
+        controller: u8,
+        value: u32,
+    ) -> Result<(), Error> {
+        let performance = self.performance_index(performance)?;
+        if !matches!(controller, 64 | 66) {
+            return Err(Error::InvalidInput);
+        }
+        self.pedal_scope(
+            scope,
+            value >= 0x8000_0000,
+            controller == 66,
+            Some((performance, controller, value)),
+        )
     }
 
     fn pedal_scope(
@@ -107,6 +129,7 @@ impl Runtime {
         scope: ChannelScope,
         down: bool,
         sostenuto: bool,
+        controller: Option<(usize, u8, u32)>,
     ) -> Result<(), Error> {
         if scope.group >= 16 {
             return Err(Error::InvalidInput);
@@ -140,6 +163,9 @@ impl Runtime {
                     })
                     .expect("preflighted controller-domain capacity");
             }
+        }
+        if let Some((performance, controller, value)) = controller {
+            self.controller_now(performance, controller, value);
         }
         let mut sustained = 0;
         let mut rising = 0;

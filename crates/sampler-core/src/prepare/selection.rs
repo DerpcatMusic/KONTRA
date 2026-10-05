@@ -78,8 +78,10 @@ impl Runtime {
             .flatten()
         {
             let note = self.note_on_pitched_in(performance, input, pitch, velocity, expression)?;
-            self.articulations[index] = value;
-            self.selections[note.0.index].articulation = value;
+            self.articulation_now(index, value);
+            self.performance_state
+                .release(self.selections[note.0.index].snapshot);
+            self.selections[note.0.index].snapshot = self.performance_state.capture(index);
             self.selections[note.0.index].consumed_switch = true;
             return Ok(note);
         }
@@ -161,7 +163,7 @@ impl Runtime {
             NoteOrigin::Input(_, _, performance) => performance,
             NoteOrigin::Child(parent, ..) => self.selections[parent.0.index].performance,
         };
-        let articulation = self.articulations[performance];
+        let articulation = self.performance_state.current(performance).articulation;
         let key = note_pitch.key();
         let attack = self.preflight_selection(
             Selection {

@@ -165,7 +165,8 @@ impl Runtime {
                                 ),
                                 prepared.pending_articulation(
                                     trigger,
-                                    self.selections[index].articulation,
+                                    self.performance_state.states[self.selections[index].snapshot]
+                                        .articulation,
                                 ),
                             )?;
                         }

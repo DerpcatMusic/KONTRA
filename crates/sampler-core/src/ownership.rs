@@ -429,6 +429,8 @@ impl Runtime {
                 self.decisions.remove(self.decisions.id(index.get()));
             }
             self.notes.remove(id.0);
+            self.performance_state
+                .release(self.selections[id.0.index].snapshot);
             self.drop_expression(n.expression);
             self.plans.get_mut(n.plan.0).unwrap().notes -= 1;
             let Some(parent) = n.parent else {

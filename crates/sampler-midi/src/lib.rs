@@ -20,6 +20,18 @@ pub enum Value {
     Bits32(u32),
 }
 impl Value {
+    // Exact full-scale projection to the native domain, not UMP bit-depth translation.
+    // Decoded wire values have already passed their bit-range validation.
+    fn full_scale(self) -> u32 {
+        let (value, max) = match self {
+            Self::Bits7(v) => (u64::from(v), 127),
+            Self::Bits14(v) => (u64::from(v), 16383),
+            Self::Bits16(v) => (u64::from(v), 65535),
+            Self::Bits32(v) => return v,
+        };
+        (value * u64::from(u32::MAX) / max) as u32
+    }
+
     /// Exact integer precision is retained until a consumer asks for normalization.
     pub fn normalized(self) -> f64 {
         match self {

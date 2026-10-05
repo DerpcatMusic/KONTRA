@@ -5,6 +5,8 @@ use super::{ChannelId, Error, Expression, FamilyId, NoteId, Runtime, VoiceId};
 pub enum Event {
     /// Change a musical domain without changing any expressive channel identity.
     Articulation(super::PerformanceId, u32),
+    /// Effective downstream controller state with full native 32-bit precision.
+    Controller(super::PerformanceId, u8, u32),
     /// Physical key-up with optional normalized release velocity.
     KeyUp(NoteId, Option<f64>),
     Release(NoteId),
@@ -46,7 +48,10 @@ impl Runtime {
             self.apply_due();
         }
         match event {
-            Event::Articulation(id, _) => {
+            Event::Controller(_, controller, _) if controller >= 128 => {
+                return Err(Error::InvalidInput);
+            }
+            Event::Articulation(id, _) | Event::Controller(id, ..) => {
                 self.performance_index(id)?;
             }
             Event::KeyUp(id, velocity) => {
@@ -116,7 +121,11 @@ impl Runtime {
         match event {
             Event::Articulation(id, value) => {
                 let index = self.performance_index(id).unwrap();
-                self.articulations[index] = value;
+                self.articulation_now(index, value);
+            }
+            Event::Controller(id, controller, value) => {
+                let index = self.performance_index(id).unwrap();
+                self.controller_now(index, controller, value);
             }
             Event::KeyUp(id, velocity) => {
                 self.key_up_now(id, velocity).unwrap();
@@ -201,9 +210,12 @@ impl Runtime {
                     false
                 }
             }
-            Action::Event(Event::Sustain(..) | Event::Sostenuto(..) | Event::Articulation(..)) => {
-                true
-            }
+            Action::Event(
+                Event::Sustain(..)
+                | Event::Sostenuto(..)
+                | Event::Articulation(..)
+                | Event::Controller(..),
+            ) => true,
         });
     }
 }
