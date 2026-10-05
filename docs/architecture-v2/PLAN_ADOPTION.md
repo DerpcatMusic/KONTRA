@@ -20,6 +20,13 @@ bounds all resolve through that generation. An old callback therefore cannot res
 against a replacement program table or generate from replacement sample indices.
 Expression inheritance remains a separate decision.
 
+Generations also own separate mutable [sequence state](VARIATION.md). Its bounded
+storage is allocated on control during initial construction/submission, travels
+with the prepared plan through every ownership transfer and is destroyed on control.
+Adoption starts new counters; old generated notes keep the original counters and
+take definitions. Retained note decisions outlive their source families, so source
+EOF alone cannot erase attack context or release an old generation prematurely.
+
 A control-side submission moves a boxed immutable `Prepared` into the bounded
 pending queue. Rejection returns the exact box and a reason: queue capacity,
 sample-rate mismatch, callback-local capacity, disconnected endpoint or exhausted

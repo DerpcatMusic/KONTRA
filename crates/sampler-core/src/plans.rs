@@ -27,16 +27,18 @@ impl std::fmt::Debug for RejectedPlan {
     }
 }
 
-/// Owned plan and its control request identity. Dropping it destroys the assets.
+/// Owned plan, mutable sequence storage and control request identity. Drop on control.
 pub struct PlanTransfer {
     pub request: u64,
     pub prepared: Box<Prepared>,
+    sequences: super::variation::SequenceState,
 }
 
 pub(super) struct Generation {
     pub request: u64,
     pub prepared: Box<Prepared>,
     pub notes: usize,
+    pub sequences: super::variation::SequenceState,
 }
 
 pub(super) struct PlanQueues {
@@ -65,6 +67,8 @@ impl PlanControl {
             Some(PlanError::LocalCapacity)
         } else if self.sequence == u64::MAX {
             Some(PlanError::SequenceExhausted)
+        } else if self.pending.is_full() {
+            Some(PlanError::Capacity)
         } else {
             None
         };
@@ -72,7 +76,12 @@ impl PlanControl {
             return Err(RejectedPlan { reason, prepared });
         }
         let request = self.sequence + 1;
-        match self.pending.push(PlanTransfer { request, prepared }) {
+        let sequences = super::variation::SequenceState::new(prepared.sequence_cells);
+        match self.pending.push(PlanTransfer {
+            request,
+            prepared,
+            sequences,
+        }) {
             Ok(()) => {
                 self.sequence = request;
                 Ok(request)
@@ -167,6 +176,7 @@ impl Runtime {
             match queues.retired.push(PlanTransfer {
                 request: generation.request,
                 prepared: generation.prepared,
+                sequences: generation.sequences,
             }) {
                 Ok(()) => count += 1,
                 Err(PushError::Full(plan)) => {
@@ -175,6 +185,7 @@ impl Runtime {
                         Generation {
                             request: plan.request,
                             prepared: plan.prepared,
+                            sequences: plan.sequences,
                             notes: 0,
                         },
                     );
@@ -211,6 +222,7 @@ impl Runtime {
                 .insert(Generation {
                     request,
                     prepared: plan.prepared,
+                    sequences: plan.sequences,
                     notes: 0,
                 })
                 .expect("reserved plan generation slot"),

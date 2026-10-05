@@ -30,6 +30,7 @@ fn main() {
                 notes: 1,
                 channels: 4,
                 families: capacity,
+                decisions: 0,
                 expressions: 1,
                 voices: capacity,
                 commands: 0,

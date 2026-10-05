@@ -148,6 +148,12 @@ Family/expression ownership and segmented rendering now have
 
 ### V2-08 — Compile selection, articulation and variation
 
+- **Partial evidence:** [coordinated sequential takes](VARIATION.md) now support
+  global/key/channel/channel-key scope, retained note decisions, transactional
+  advancement and original-generation counters. Independent multimic PCM and
+  failure/retirement checks pass. Random policies, articulation state, release
+  mapping and snapshot/restore remain open.
+
 - [ ] **P1; dependencies:** V2-04/06/07.
 - Implement indexed selection, scoped counters, family take decisions, phrase and
   release context, with a straightforward independent reference evaluator.

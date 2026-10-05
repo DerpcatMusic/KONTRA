@@ -114,6 +114,7 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
         channels: 16,
         expressions: 32,
         families: 32,
+        decisions: 0,
         voices: 64,
         commands: 64,
         behaviors: 1,

@@ -43,6 +43,7 @@ fn authored_script_uses_new_native_ownership_after_input_release_without_heap() 
                     notes: 4,
                     channels: 1,
                     families: 4,
+                    decisions: 0,
                     expressions: 4,
                     voices: 4,
                     commands: 4,

@@ -19,6 +19,7 @@ fn main() {
                     channels: 1,
                     expressions: if release { count } else { 1 },
                     families: 0,
+                    decisions: 0,
                     voices: 0,
                     commands: 0,
                     behaviors: 0,

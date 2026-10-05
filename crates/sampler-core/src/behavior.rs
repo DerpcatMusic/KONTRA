@@ -314,7 +314,7 @@ impl Runtime {
                     return Err(Error::Capacity);
                 }
                 let linked = !matches!(duration, Duration::Frames(_));
-                self.reclaim_internal_notes();
+                self.reclaim_internal_notes(0);
                 let child = self.trigger_child(note, pitch, velocity, linked, inheritance)?;
                 if let Some(at) = at {
                     self.release_at(child, at)?;

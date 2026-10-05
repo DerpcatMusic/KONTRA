@@ -218,3 +218,38 @@ the median after/before time ratio was 1.033, range 0.978–1.153. The measured 
 cost is retained explicitly rather than claiming the added ownership metadata is free.
 No host deadline or competitor claim follows from these synthetic workloads.
 Raw CSVs and binary hashes use ignored `artifacts/release-final-*`.
+
+
+## Coordinated variation cost
+
+`admission_workload --variation` compiles three global sequential takes with four
+microphones each, selects four voices per note and retains one decision per note.
+`--ids` can be combined with it. Declaration/preparation stays outside timing;
+counter/resource assertions run outside each measured phase. Scope lookup here has
+one global owner; this does not characterize large channel-scope tables.
+
+Three alternating CPU-2 runs compared the preceding `ce34601` implementation with
+the variation implementation, on the same Ryzen 7800X3D/Rust 1.99 release setup and
+without concurrent builds/scans. Median-of-median admission times in microseconds:
+
+| Notes | Reserved voices | Before | New, no variation | New, three takes |
+| ---: | ---: | ---: | ---: | ---: |
+| 16 | 64 | 2.040 | 2.250 | 3.250 |
+| 64 | 256 | 8.051 | 9.130 | 12.940 |
+| 256 | 1,024 | 33.261 | 37.451 | 53.281 |
+| 1,024 | 4,096 | 174.613 | 188.704 | 261.625 |
+| 16 | 4,096 | 2.020 | 2.300 | 3.360 |
+
+Without variation, the new grouped preflight and metadata add 8–14% admission cost
+in these cases. With variation, admission also evaluates 12 candidates and acquires
+one retained decision per note. The largest enabled burst's note-off/retirement
+medians were 3,985.505/8.870 microseconds, versus 4,023.145/7.161 before. Input pairing
+still dominates that release workload. With external IDs and no variation, the
+largest admission medians were 1,031.099 before and 1,022.739 after; this does not
+establish a general improvement in duplicate-ID lookup.
+
+Across all 32 steady resident-render cases, the median after/before ratio was 0.994,
+range 0.898–1.050. No per-sample variation work was introduced; decision and scope
+storage still have real memory/admission costs. These synthetic local timings are
+not a production deadline, streaming or competitor result. CSVs and executable
+hashes use ignored `artifacts/variation-final-*`.

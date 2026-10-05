@@ -38,6 +38,7 @@ fn runtime(envelope: Envelope, frames: usize) -> Runtime {
             channels: 1,
             expressions: 2,
             families: 2,
+            decisions: 0,
             voices: 2,
             commands: 4,
             behaviors: 0,
