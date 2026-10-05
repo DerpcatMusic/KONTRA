@@ -75,6 +75,7 @@ pub enum Error {
     ClosedFamily,
     PastEvent,
     ClockOverflow,
+    ArithmeticOverflow,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -87,6 +88,7 @@ pub struct Limits {
     pub commands: usize,
     pub behaviors: usize,
     pub behavior_fuel: usize,
+    pub behavior_cells: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -216,6 +218,8 @@ pub struct Runtime {
     commands: Vec<Scheduled>,
     behaviors: Arena<Continuation>,
     behavior_fuel: usize,
+    behavior_stride: usize,
+    behavior_locals: Box<[i64]>,
     executing_due: bool,
     command_limit: usize,
     now: u64,
@@ -228,6 +232,14 @@ impl Runtime {
         if limits.notes == 0 {
             return Err(Error::InvalidInput);
         }
+        let behavior_stride = plan.programs.iter().map(|p| p.locals).max().unwrap_or(0);
+        let cells = behavior_stride
+            .checked_mul(limits.behaviors)
+            .ok_or(Error::Capacity)?;
+        if cells > limits.behavior_cells {
+            return Err(Error::Capacity);
+        }
+        std::alloc::Layout::array::<i64>(cells).map_err(|_| Error::Capacity)?;
         static NEXT_RUNTIME: AtomicU64 = AtomicU64::new(1);
         #[allow(deprecated, reason = "fetch_update supports the Rust 1.92 minimum")]
         let id = NEXT_RUNTIME
@@ -244,6 +256,8 @@ impl Runtime {
             commands: Vec::with_capacity(limits.commands),
             behaviors: Arena::new(id, limits.behaviors),
             behavior_fuel: limits.behavior_fuel,
+            behavior_stride,
+            behavior_locals: vec![0; cells].into_boxed_slice(),
             executing_due: false,
             command_limit: limits.commands,
             now: 0,

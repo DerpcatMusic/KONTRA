@@ -49,6 +49,7 @@ fn runtime(playback: Playback) -> Runtime {
             commands: 4,
             behaviors: 0,
             behavior_fuel: 0,
+            behavior_cells: 0,
         },
     )
     .unwrap()
@@ -192,6 +193,7 @@ fn shared_pcm_views_and_loop_release_are_independent_without_heap_work() {
             commands: 4,
             behaviors: 0,
             behavior_fuel: 0,
+            behavior_cells: 0,
         },
     )
     .unwrap();

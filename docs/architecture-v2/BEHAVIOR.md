@@ -19,6 +19,9 @@ The current instructions are deliberately concrete:
   layer set and create a generated child with a sample-duration release.
 - `Wait`: suspend until an absolute engine sample boundary; zero executes inline.
 - `End`: finish the callback. Reaching the instruction array's end also finishes.
+- `SetLocal` / `AddLocal`: callback-local signed 64-bit integers with checked addition.
+- `ReadKey`: read the originating note's logical key into a local.
+- `Jump` / `JumpIfZero`: validated instruction targets; all branches consume fuel.
 
 Transposition currently changes region selection; the resident source renderer
 still runs at unity rate. This is not a pitch-resampling claim.
@@ -89,13 +92,41 @@ original-input terminal. Existing output files are refused.
 Rust 1.99 release/all-target Clippy, MSRV 1.92 and the historical v2 boundary checks
 pass. The full-workspace comparison against `2643eb9` has no new errors.
 The current authoritative, complete new-core Doctor scan
-meets **90**, zero errors, 108 warnings, with all rules retained. Local test, scan
+meets **90**, zero errors, 113 warnings, with all rules retained. Local test, scan
 and audio evidence is under ignored `artifacts/architecture-v2/behavior-*`.
 
 ## Still open
 
-Language parsing, variables/registers, branching, callback-local/polyphonic state,
-release/controller callbacks, consumed controller projections, rich engine queries,
+Language parsing, shared/persistent state, real/array/string values, note-handle
+locals, release/controller callbacks, consumed controller projections, rich engine queries,
 beat/transport waits, async services and compatibility profiles are not implemented.
 Their implementations must use these ownership/time services and extend the
 executable contracts. No old-VM fallback is present.
+
+## Callback-local state and bounded branches
+
+Preparation derives each program's local count from validated 16-bit operands.
+Runtime construction checks the maximum program width times continuation capacity
+against `Limits.behavior_cells`, including multiplication and allocation-layout
+limits, before allocating storage. A callback clears its own local range when
+admitted. Values survive waits and completion backpressure; reused slots start at
+zero. `behavior_local` validates both the generational handle and program-local
+bound, so a caller cannot inspect another callback's cells.
+
+Branch targets are validated before activation. A yielding loop can continue while
+its originating note is held, with at most one queued resume per callback. A loop
+without a positive wait exhausts instruction fuel and follows the native abort
+policy. Integer overflow reports `Fault(ArithmeticOverflow)` instead of wrapping.
+These are native arithmetic semantics, not a vendor-language emulation rule.
+
+Tests run overlapping callbacks with different key-derived counters across blocks
+1–16, and check exact independently expected audio. Additional checks cover reused
+slots, reads at the exclusive wait boundary, stale handles, oversized local tables,
+invalid branches, positive/negative integer overflow, zero-time loops, and release
+of indefinitely yielding loops. Actual operations remain allocation/free checked.
+The native echo now uses a local counter and loop instead of two written-out plays;
+its rendered audio is byte-identical to the earlier straight-line program.
+
+The first expanded scan scored 89. Shared checked local access and fault propagation
+removed unchecked accesses without disabling rules; the authoritative scan is back
+at 90. Local evidence uses the `artifacts/architecture-v2/locals-*` prefix.
