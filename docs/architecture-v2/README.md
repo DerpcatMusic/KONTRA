@@ -54,6 +54,9 @@ compatibility remains a separate, evidence-backed capability.
 15. [Prepared-plan adoption](PLAN_ADOPTION.md): retained generations, bounded
     control/audio transfer and off-audio destruction.
 
+16. [Resident render measurements](RENDER_WORKLOADS.md): reproducible polyphony and
+    capacity workloads plus measured sustain optimization.
+
 Continue through **V2-01 → V2-02 → V2-03/V2-04**: define independent workload
 and protocol contracts, then build unified event/continuation scheduling on the
 new family/expression ownership. Full lifecycle and pedal behavior remain open.
