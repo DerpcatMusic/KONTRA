@@ -439,8 +439,8 @@ selection/ownership tests remain separate from timing evidence.
 
 ## Controller snapshots and predicate selection cost
 
-2026-10-06, Rust 1.99 release, Ryzen 7800X3D, CPU 2, three interleaved
-runs of `admission_workload`. Baseline is the controller-snapshot implementation
+Initial predicate implementation `c295e08`, measured 2026-10-06, Rust 1.99 release,
+Ryzen 7800X3D, CPU 2, three interleaved runs of `admission_workload`. Baseline is the controller-snapshot implementation
 `7e17e76` before predicate selection; final binaries and SHA-256 values are retained
 in `artifacts/controller-admission-{before,final}` and
 `artifacts/predicate-final-binaries.sha256`. Raw final measurements are
@@ -459,11 +459,11 @@ per-run medians, in microseconds per admission burst.
 `--controllers` authors 64 mutually exclusive CC1 equality conditions and selects
 63. Each condition maps four microphones (three coordinated takes with `--shuffle`).
 This is sparse predicate traversal after key/phase indexing, not a 64-way Cartesian
-state cache. `--releases` adds an independently selected gate phase. Conservative
-controller release bounds currently require `base_slots * 65` source capacity for
+state cache. `--releases` adds an independently selected gate phase. At that revision, conservative
+controller release bounds required `base_slots * 65` source capacity for
 that last column, versus `base_slots * 2` without controller conditions; family and
 decision reservations remain one per phase/sequence. The geometry and resource
-assertions are part of the executable, so the over-reservation is visible.
+assertions are part of the retained executable, so the former over-reservation is visible.
 
 At 1024 notes, final note-off medians were 4011.666 us plain, 3969.365 us shuffle,
 4327.391 us shuffle/release and 4880.112 us CC/shuffle/release. Admission and cleanup
@@ -486,3 +486,34 @@ all four native crates pass debug/release, Rust 1.92 and strict all-target Clipp
 with root boundary checks separate. Final validation logs are
 `artifacts/predicate-final-{debug,release,msrv,clippy}.log` and
 `artifacts/predicate-boundary.log`. No Doctor scan was used for this change.
+
+
+### Controller interval bounds follow-up
+
+The next control-only change computes per-controller interval projections and
+intersects their safe upper bounds with the existing velocity/articulation bound.
+The same 64-group shuffle/release workload now passes with **32.5× fewer reserved
+source slots**. This is a reservation reduction, not a measured CPU improvement.
+Three paired CPU-2 runs against the retained `c295e08` binary produced:
+
+| Notes / base slots | Source slots before → after | Admission us before → after | Note-off us before → after |
+| --- | --- | --- | --- |
+| 16 / 64 | 4160 → 128 | 21.650 → 22.210 | 13.030 → 13.280 |
+| 64 / 256 | 16640 → 512 | 88.792 → 89.062 | 64.071 → 64.642 |
+| 256 / 1024 | 66560 → 2048 | 355.957 → 368.267 | 450.239 → 454.409 |
+| 1024 / 4096 | 266240 → 8192 | 1475.678 → 1534.219 | 4858.184 → 4909.474 |
+| 16 / 4096 | 266240 → 8192 | 21.871 → 21.951 | 73.651 → 73.092 |
+
+Source-slot memory falls proportionally; total runtime memory also includes notes,
+snapshots, expressions, indices and the other pools, so it is not a 32.5× reduction
+of the whole engine. Preparation does extra sorting per used controller and take;
+its time is not measured by this callback workload. Arbitrary multidimensional
+correlations may still over-reserve safely. Existing burst timing concerns remain.
+
+Artifacts: `controller-bound-{final,bounded}-{0,1,2}.csv`,
+`controller-bound-binaries.sha256`, `controller-admission-bounded`, and
+`controller-bound-{debug,release,msrv,clippy,boundary}.log` under `artifacts/`.
+All four native debug/release/MSRV/strict-Clippy checks and the root boundary pass;
+nine controller tests include an independent multidimensional grid and exact-capacity
+exclusive releases at both unsigned endpoints. The source example now allocates
+`base_slots * 2` for this release case; only retained prior binaries use `* 65`.

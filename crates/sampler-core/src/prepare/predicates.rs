@@ -80,6 +80,64 @@ impl Prepared {
         self.release_selection = [key, gate];
         self
     }
+
+    // A projection onto one controller can only admit MORE regions than the full
+    // conjunction. Its maximum overlap is therefore a safe upper bound. Taking
+    // the minimum of these bounds avoids a Cartesian search across CC states.
+    pub(super) fn controller_release_bound(&self, key: u8, trigger: crate::Trigger) -> usize {
+        let range = self.range(key, trigger);
+        let mut from = range.start;
+        let mut total = 0;
+        while from < range.end {
+            let until = self.group_end(from, range.end);
+            let candidates = &self.candidates[from..until];
+            let mut controllers = 0u128;
+            let mut counts = BTreeMap::<u32, usize>::new();
+            for c in candidates {
+                let r = self.regions[c.region];
+                *counts.entry(r.take.map_or(0, |t| t.index)).or_default() += 1;
+                if let Some(index) = r.conditions {
+                    for condition in &self.conditions[index] {
+                        controllers |= 1u128 << condition.controller;
+                    }
+                }
+            }
+            let mut bound = counts.values().copied().max().unwrap_or(0);
+            while controllers != 0 {
+                let controller = controllers.trailing_zeros() as u8;
+                controllers &= controllers - 1;
+                let mut takes = BTreeMap::<u32, Vec<(u64, bool)>>::new();
+                for c in candidates {
+                    let r = self.regions[c.region];
+                    let condition = r.conditions.and_then(|index| {
+                        let set = &self.conditions[index];
+                        set.binary_search_by_key(&controller, |c| c.controller)
+                            .ok()
+                            .map(|i| set[i])
+                    });
+                    let (low, high) = condition.map_or((0, u32::MAX), |c| (c.low, c.high));
+                    let events = takes.entry(r.take.map_or(0, |t| t.index)).or_default();
+                    events.push((u64::from(low), true));
+                    // u64 represents the exclusive end above u32::MAX exactly.
+                    events.push((u64::from(high) + 1, false));
+                }
+                let mut maximum = 0;
+                for events in takes.values_mut() {
+                    events.sort_unstable(); // Ends before starts at a shared exclusive boundary.
+                    let mut active = 0;
+                    for &(_, start) in events.iter() {
+                        active = if start { active + 1 } else { active - 1 };
+                        maximum = maximum.max(active);
+                    }
+                }
+                bound = bound.min(maximum);
+            }
+            // Different sequence groups can select independently.
+            total += bound;
+            from = until;
+        }
+        total
+    }
 }
 
 // Cursor owns no borrowed runtime data. Commit can mutate ownership between reads

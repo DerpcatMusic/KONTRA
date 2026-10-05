@@ -176,6 +176,8 @@ unimplemented cases. Source inspection alone is not passing conformance evidence
   adds independent performance domains, silent latched switches and onset/current
   release snapshots. Controller snapshots now retain bounded shared versions with full-resolution MIDI
   updates and compiled controller conjunctions with onset/current release filtering.
+  Control-time interval projections tighten release source reserves for exclusive
+  CC groups while preserving conservative bounds for multidimensional correlations.
   Controller-triggered notes, other switch policies, phrase
   state and persisted snapshot/restore remain open.
 
