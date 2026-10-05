@@ -1349,6 +1349,9 @@ impl Player {
                     ..NoteEvent::new_velocity(r.channel, r.note, r.onset_velocity)
                 };
                 self.start(bank, state, &event, id, true, defaults);
+                // Deferred owner work completes here even without a matching
+                // release zone; an attached release voice may finish later.
+                self.host_notes.record_end(r.host_note, self.now);
             } else {
                 self.pending_releases[keep] = r;
                 keep += 1;
