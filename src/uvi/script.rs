@@ -558,6 +558,9 @@ struct State {
     roots: HashMap<HostRoot, RootInput>,
     posted_roots: HashMap<(Option<NodeId>, u32), Option<HostRoot>>,
     command_roots: Vec<Option<HostRoot>>,
+    sustain_layers: Vec<Option<NodeId>>,
+    capture_sustain_routes: bool,
+    terminal_controller_layer: Option<NodeId>,
     current_processor: Option<NodeId>,
     current_layer: Option<NodeId>,
     chain: Option<EventChain>,
@@ -705,11 +708,50 @@ impl State {
             }
             _ => {}
         }
+        if self.capture_sustain_routes {
+            self.sustain_layers.push(if matches!(action,
+                Action::Controller { controller: 64, .. }
+                | Action::ControllerAll { controller: 64, .. }) {
+                self.terminal_controller_layer
+            } else { None });
+        }
         self.commands.push(Command { frame, action });
         if self.root_activation.is_some() {
             self.command_roots.push(self.live_root(self.current_root));
         }
         Ok(())
+    }
+
+    // Commands and both owner sidecars share future/cancellation/order filtering.
+    fn take_ready_commands(&mut self, until: u64) -> (Vec<Command>, Vec<Option<HostRoot>>, Vec<Option<NodeId>>) {
+        let commands = std::mem::take(&mut self.commands);
+        let roots = std::mem::take(&mut self.command_roots);
+        let layers = std::mem::take(&mut self.sustain_layers);
+        let hosted = self.root_activation.is_some();
+        if hosted { assert_eq!(commands.len(), roots.len()); } else { assert!(roots.is_empty()); }
+        if self.capture_sustain_routes { assert_eq!(commands.len(), layers.len()); } else { assert!(layers.is_empty()); }
+        let mut ready = Vec::new();
+        for (index, command) in commands.into_iter().enumerate() {
+            let root = if hosted { roots[index] } else { None };
+            let layer = if self.capture_sustain_routes { layers[index] } else { None };
+            if command.frame > until {
+                self.commands.push(command);
+                if hosted { self.command_roots.push(root); }
+                if self.capture_sustain_routes { self.sustain_layers.push(layer); }
+            } else if !matches!(&command.action, Action::Start(note) if self.voices.get(&note.id).is_some_and(|v| v.canceled)) {
+                ready.push((command, root, layer));
+            }
+        }
+        ready.sort_by_key(|(command, _, _)| command.frame);
+        let mut commands = Vec::with_capacity(ready.len());
+        let mut roots = Vec::new();
+        let mut layers = Vec::new();
+        for (command, root, layer) in ready {
+            commands.push(command);
+            if hosted { roots.push(root); }
+            if self.capture_sustain_routes { layers.push(layer); }
+        }
+        (commands, roots, layers)
     }
 
     fn emit_event(&mut self, frame: u64, action: Action, event: &Table) -> mlua::Result<()> {
@@ -1393,6 +1435,7 @@ impl Runtime {
             saved.preload(&rt.lua, rt.host.as_ref().unwrap())?;
         }
         rt.state.borrow_mut().chain = Some(EventChain::new(program)?);
+        rt.state.borrow_mut().capture_sustain_routes = true;
         let processors = program
             .nodes
             .iter()
@@ -1634,11 +1677,14 @@ impl Runtime {
                 let chain = state.chain.take();
                 let previous = state.current;
                 let previous_root = state.current_root;
+                let previous_controller_layer = state.terminal_controller_layer;
+                state.terminal_controller_layer = layer;
                 state.current = parent;
                 state.current_root = state.live_root(root);
                 let result = state.post(&self.lua, &event, 0.);
                 state.current = previous;
                 state.current_root = previous_root;
+                state.terminal_controller_layer = previous_controller_layer;
                 state.chain = chain;
                 result?;
             }
@@ -2715,6 +2761,9 @@ pub struct Processed {
     pub commands: Vec<Command>,
     #[serde(skip)]
     pub command_roots: Vec<Option<HostRoot>>,
+    /// Terminal Layer scope for CC64 only; native chains align this with commands.
+    #[serde(skip)]
+    pub(crate) sustain_layers: Vec<Option<NodeId>>,
     pub host_commands: Vec<host::Command>,
     /// Local diagnostics may contain proprietary/private script data.
     #[serde(skip)]
@@ -2983,11 +3032,15 @@ impl Session {
             .retain(|_, forward| forward.root != Some(root));
         let commands = std::mem::take(&mut state.commands);
         let roots = std::mem::take(&mut state.command_roots);
-        (state.commands, state.command_roots) = commands
-            .into_iter()
-            .zip(roots)
-            .filter(|(command, ancestry)| command.frame < frame || *ancestry != Some(root))
-            .unzip();
+        let layers = std::mem::take(&mut state.sustain_layers);
+        let capture_sustain_routes = state.capture_sustain_routes;
+        for (index, (command, ancestry)) in commands.into_iter().zip(roots).enumerate() {
+            if command.frame < frame || ancestry != Some(root) {
+                state.commands.push(command);
+                state.command_roots.push(ancestry);
+                if capture_sustain_routes { state.sustain_layers.push(layers[index]); }
+            }
+        }
         if let Some(queue) = state.keys.get_mut(&(owner.channel, owner.note)) {
             queue.retain(|id| *id != owner.id);
         }
@@ -3242,28 +3295,7 @@ impl Session {
         self.runtime.prune()?;
         let mut state = self.runtime.state.borrow_mut();
         let until = state.now;
-        let commands = std::mem::take(&mut state.commands);
-        let (commands, command_roots) = if state.root_activation.is_some() {
-            let roots = std::mem::take(&mut state.command_roots);
-            assert_eq!(commands.len(), roots.len());
-            let (mut ready, future): (Vec<_>, Vec<_>) = commands
-                .into_iter()
-                .zip(roots)
-                .partition(|(command, _)| command.frame <= until);
-            (state.commands, state.command_roots) = future.into_iter().unzip();
-            ready.retain(|(command,_)| !matches!(&command.action, Action::Start(note) if state.voices.get(&note.id).is_some_and(|v| v.canceled)));
-            ready.sort_by_key(|(command, _)| command.frame);
-            ready.into_iter().unzip()
-        } else {
-            debug_assert!(state.command_roots.is_empty());
-            let (mut ready, future): (Vec<_>, Vec<_>) = commands
-                .into_iter()
-                .partition(|command| command.frame <= until);
-            state.commands = future;
-            ready.retain(|command| !matches!(&command.action, Action::Start(note) if state.voices.get(&note.id).is_some_and(|v| v.canceled)));
-            ready.sort_by_key(|command| command.frame);
-            (ready, Vec::new())
-        };
+        let (commands, command_roots, sustain_layers) = state.take_ready_commands(until);
         let mut host_commands = Vec::new();
         if let Some(host) = &self.runtime.host {
             let mut pending = host.commands.borrow_mut();
@@ -3281,6 +3313,7 @@ impl Session {
         Ok(Processed {
             commands,
             command_roots,
+            sustain_layers,
             host_commands,
             logs,
             dropped_logs,
@@ -3463,6 +3496,7 @@ fn collect(mut rt: Runtime, inputs: &[Input], until: u64) -> Result<Processed> {
     host_commands.sort_by_key(|c| c.frame);
     Ok(Processed {
         command_roots: Vec::new(),
+        sustain_layers: Vec::new(),
         commands,
         host_commands,
         logs: std::mem::take(&mut state.logs),

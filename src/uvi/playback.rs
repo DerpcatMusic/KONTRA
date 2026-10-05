@@ -974,6 +974,8 @@ pub struct Renderer<'a> {
     live: HashMap<Parameter, f64>,
     registered_live_valid: bool,
     controllers: [[u8; 128]; 16],
+    native_sustain: bool,
+    layer_sustain: Vec<bool>,
     bends: [f64; 16],
     pressures: [f64; 16],
     poly_pressures: [[u8; 128]; 16],
@@ -1231,6 +1233,8 @@ impl<'a> Renderer<'a> {
             live: HashMap::new(),
             registered_live_valid: true,
             controllers: [[0; 128]; 16],
+            native_sustain: false,
+            layer_sustain: vec![false; program.nodes.len()],
             bends: [0.; 16],
             pressures: [0.; 16],
             poly_pressures: [[0; 128]; 16],
@@ -2197,7 +2201,11 @@ impl<'a> Renderer<'a> {
         for mut voice in voices {
             if voice.key_released
                 && voice.note_off.is_none()
-                && self.controllers[voice.note.channel as usize][64] < 64
+                && !(if self.native_sustain {
+                    self.layer_sustain[voice.layer]
+                } else {
+                    self.controllers[voice.note.channel as usize][64] >= 64
+                })
             {
                 voice.note_off = Some(self.frame);
                 for oscillator in &mut voice.oscillators {
@@ -2259,12 +2267,13 @@ impl<'a> Renderer<'a> {
     }
     #[cfg(test)]
     fn apply_note(&mut self, action: &script::Action) -> Result<()> {
-        self.apply_note_rooted(action, None)
+        self.apply_note_rooted(action, None, None)
     }
     fn apply_note_rooted(
         &mut self,
         action: &script::Action,
         root: Option<script::HostRoot>,
+        sustain_layer: Option<NodeId>,
     ) -> Result<()> {
         match action {
             script::Action::ChokeRoot => {
@@ -2381,6 +2390,9 @@ impl<'a> Renderer<'a> {
                     channel[*controller as usize] = *value;
                 }
                 if *controller == 64 {
+                    if let Some(layer) = sustain_layer {
+                        self.layer_sustain[layer] = *value >= 64;
+                    }
                     self.release_pending()?;
                 }
             }
@@ -2395,6 +2407,9 @@ impl<'a> Renderer<'a> {
                 );
                 self.controllers[*channel as usize][*controller as usize] = *value;
                 if *controller == 64 {
+                    if let Some(layer) = sustain_layer {
+                        self.layer_sustain[layer] = *value >= 64;
+                    }
                     self.release_pending()?;
                 }
             }
@@ -3231,6 +3246,24 @@ impl<'a> Renderer<'a> {
         roots: Option<&[Option<script::HostRoot>]>,
         host: &[host::Command],
     ) -> Result<()> {
+        self.apply_boundary_inner(notes, roots, None, host)
+    }
+    pub(crate) fn apply_boundary_with_sustain_routes(
+        &mut self,
+        notes: &[script::Command],
+        roots: Option<&[Option<script::HostRoot>]>,
+        sustain_layers: &[Option<NodeId>],
+        host: &[host::Command],
+    ) -> Result<()> {
+        self.apply_boundary_inner(notes, roots, Some(sustain_layers), host)
+    }
+    fn apply_boundary_inner(
+        &mut self,
+        notes: &[script::Command],
+        roots: Option<&[Option<script::HostRoot>]>,
+        sustain_layers: Option<&[Option<NodeId>]>,
+        host: &[host::Command],
+    ) -> Result<()> {
         ensure!(
             notes.len() <= LIMIT && host.len() <= LIMIT,
             "UVI boundary command limit exceeded"
@@ -3244,11 +3277,16 @@ impl<'a> Renderer<'a> {
             roots.is_none_or(|r| r.len() == notes.len()),
             "Hosted boundary ancestry length mismatch"
         );
+        if let Some(layers) = sustain_layers {
+            self.validate_sustain_routes(notes, layers)?;
+            self.native_sustain = true;
+        }
         for command in host {
             self.apply_host(&command.action)?;
         }
         for (index, command) in notes.iter().enumerate() {
-            self.apply_note_rooted(&command.action, roots.and_then(|r| r[index]))?;
+            self.apply_note_rooted(&command.action, roots.and_then(|r| r[index]),
+                sustain_layers.and_then(|layers| layers[index]))?;
         }
         self.check_processor_memory()
     }
@@ -3261,7 +3299,7 @@ impl<'a> Renderer<'a> {
         host: &[host::Command],
         frames: usize,
     ) -> Result<Vec<[f32; 2]>> {
-        self.render_inner(notes, None, host, frames)
+        self.render_inner(notes, None, None, host, frames)
     }
     /// Activation-local ancestry annotates terminal launches; it never changes
     /// opaque Lua ID/key/layer release matching or core note identity.
@@ -3272,6 +3310,21 @@ impl<'a> Renderer<'a> {
         host: &[host::Command],
         frames: usize,
     ) -> Result<Vec<[f32; 2]>> {
+        Self::validate_roots(notes, roots)?;
+        self.render_inner(notes, Some(roots), None, host, frames)
+    }
+    pub(crate) fn render_with_sustain_routes(
+        &mut self,
+        notes: &[script::Command],
+        roots: Option<&[Option<script::HostRoot>]>,
+        sustain_layers: &[Option<NodeId>],
+        host: &[host::Command],
+        frames: usize,
+    ) -> Result<Vec<[f32; 2]>> {
+        if let Some(roots) = roots { Self::validate_roots(notes, roots)?; }
+        self.render_inner(notes, roots, Some(sustain_layers), host, frames)
+    }
+    fn validate_roots(notes: &[script::Command], roots: &[Option<script::HostRoot>]) -> Result<()> {
         ensure!(
             roots.len() == notes.len(),
             "Hosted command ancestry length mismatch"
@@ -3288,12 +3341,22 @@ impl<'a> Renderer<'a> {
                 !matches!(command.action, script::Action::ChokeRoot) || root.is_some()),
             "Hosted choke has no ancestry"
         );
-        self.render_inner(notes, Some(roots), host, frames)
+        Ok(())
+    }
+    fn validate_sustain_routes(&self, notes: &[script::Command], layers: &[Option<NodeId>]) -> Result<()> {
+        ensure!(layers.len() == notes.len(), "UVI sustain route length mismatch");
+        ensure!(notes.iter().zip(layers).all(|(command, layer)| layer.is_none_or(|layer|
+            self.program.layers.contains(&layer) && matches!(command.action,
+                script::Action::Controller { controller: 64, .. }
+                | script::Action::ControllerAll { controller: 64, .. }))),
+            "Invalid UVI terminal sustain route");
+        Ok(())
     }
     fn render_inner(
         &mut self,
         notes: &[script::Command],
         roots: Option<&[Option<script::HostRoot>]>,
+        sustain_layers: Option<&[Option<NodeId>]>,
         host: &[host::Command],
         frames: usize,
     ) -> Result<Vec<[f32; 2]>> {
@@ -3344,6 +3407,10 @@ impl<'a> Renderer<'a> {
                 }),
             "Unverified host-only control mutation inside a planned UVI processing segment"
         );
+        if let Some(layers) = sustain_layers {
+            self.validate_sustain_routes(notes, layers)?;
+            self.native_sustain = true;
+        }
         let (mut ni, mut hi) = (0, 0);
         let mut output = Vec::with_capacity(frames);
         for _ in 0..frames {
@@ -3380,7 +3447,8 @@ impl<'a> Renderer<'a> {
                 })?;
             }
             while notes.get(ni).is_some_and(|c| c.frame == self.frame) {
-                self.apply_note_rooted(&notes[ni].action, roots.and_then(|roots| roots[ni]))?;
+                self.apply_note_rooted(&notes[ni].action, roots.and_then(|roots| roots[ni]),
+                sustain_layers.and_then(|layers| layers[ni]))?;
                 ni += 1;
             }
             output.push(self.next_frame()?);
@@ -6681,3 +6749,7 @@ mod source_setting_attribution_proof {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "/tmp/kontakto-overnight-handoff/uvi-terminal-sustain-regression/regression-after.rs"]
+mod terminal_sustain_reference_tests;
