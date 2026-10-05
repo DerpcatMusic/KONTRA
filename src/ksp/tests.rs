@@ -1150,6 +1150,98 @@ end on"#), "120");
 }
 
 #[test]
+fn completed_callback_with_expired_wall_budget_does_not_report_deferral() {
+    for reference in [false, true] {
+        super::vm::REFERENCE.set(reference);
+        let mut rig = Rig::new(&[
+            "on init\ndeclare $done\nmake_persistent($done)\nend on\non note\n$done := 1\nend on",
+        ]);
+        // Runtime initialization retains the three-group contract; the recorder
+        // needs no group-vector snapshots in these scheduling fixtures.
+        rig.engine.groups.clear();
+        rig.engine.calls.reserve(4);
+        // Zero wall duration, positive instruction fuel: this short assignment
+        // reaches Halt before any safe deadline checkpoint is needed.
+        rig.rt.begin_audio_block(0, 1, false);
+        rig.rt.env.block_fuel = 1024;
+        assert_eq!(crate::test_support::allocations(|| { rig.on(0, 60).block(1); }), 0);
+        assert_eq!(rig.rt.persistence()[0]["$done"], Value::Int(1));
+        assert_eq!(rig.rt.env.block_fuel, 0);
+        assert!(rig.rt.diagnostics().is_empty(), "{:?}", rig.rt.diagnostics());
+        rig.rt.begin_audio_block(64, 1, true);
+        assert_eq!(crate::test_support::allocations(|| { rig.block(64); }), 0);
+        assert_eq!(rig.log(), ["play 60@0 v1 []"]);
+
+        let mut canceled = Rig::new(&[
+            "on init\ndeclare $callback\ndeclare $done\nmake_persistent($done)\nend on\non note\n$callback := $NI_CALLBACK_ID\nwait(1000)\n$done := 1\nend on\non controller\nstop_wait($callback,1)\nend on",
+        ]);
+        canceled.engine.groups.clear();
+        canceled.engine.calls.reserve(4);
+        canceled.rt.begin_audio_block(0, 1, false);
+        canceled.rt.env.block_fuel = 1024;
+        assert_eq!(crate::test_support::allocations(|| { canceled.on(0, 60).block(1); }), 0);
+        assert_eq!(canceled.rt.persistence()[0]["$done"], Value::Int(0));
+        assert!(canceled.rt.diagnostics().is_empty(), "an authored future wait is not budget deferral");
+        canceled.rt.env.block_fuel = 1024;
+        assert_eq!(crate::test_support::allocations(|| {
+            canceled.rt.controller(&mut canceled.engine, 0, 1, 127);
+            canceled.block(64);
+        }), 0);
+        assert_eq!(canceled.rt.persistence()[0]["$done"], Value::Int(1));
+        assert!(canceled.rt.diagnostics().is_empty(), "a canceled timer is not deferred work: {:?}", canceled.rt.diagnostics());
+    }
+    super::vm::REFERENCE.set(false);
+}
+
+#[test]
+fn actual_budget_continuations_and_due_waits_report_deferral_without_heap() {
+    let expected = ["KSP audio-block budget exhausted; scheduled work deferred"];
+    for reference in [false, true] {
+        super::vm::REFERENCE.set(reference);
+        for offline in [false, true] {
+            let mut rig = Rig::new(&[
+                "on init\ndeclare $done\nmake_persistent($done)\nend on\non note\n$done := 1\ncall finish_work\nend on\nfunction finish_work\n$done := 2\nend function",
+            ]);
+            // Avoid allocating recorder snapshots after Runtime has captured
+            // its original group count; keep the full callback under the guard.
+            rig.engine.groups.clear();
+            rig.engine.calls.reserve(4);
+            // A function-call boundary makes both wall and instruction
+            // exhaustion deterministic, rather than depending on CPU load.
+            rig.rt.begin_audio_block(0, 1, offline);
+            rig.rt.env.block_fuel = if offline { 1 } else { 1024 };
+            assert_eq!(crate::test_support::allocations(|| { rig.on(0, 60).block(1); }), 0);
+            assert_eq!(rig.rt.persistence()[0]["$done"], Value::Int(1));
+            assert!(rig.engine.calls.is_empty(), "the unfinished note callback must retain its owner");
+            assert_eq!(rig.rt.diagnostics(), expected);
+            rig.rt.begin_audio_block(64, 1, true);
+            assert_eq!(crate::test_support::allocations(|| { rig.block(64); }), 0);
+            assert_eq!(rig.rt.persistence()[0]["$done"], Value::Int(2));
+            assert_eq!(rig.log(), ["play 60@1 v1 []"]);
+            assert_eq!(rig.rt.diagnostics(), expected);
+        }
+
+        let mut due = Rig::new(&[
+            "on init\ndeclare $done\nmake_persistent($done)\nend on\non note\nwait(1000)\n$done := 1\nend on",
+        ]);
+        due.engine.groups.clear();
+        due.engine.calls.reserve(4);
+        due.rt.begin_audio_block(0, 1, false);
+        due.rt.env.block_fuel = 1024;
+        assert_eq!(crate::test_support::allocations(|| { due.on(0, 60).block(1); }), 0);
+        assert!(due.rt.diagnostics().is_empty(), "the authored wait is still in the future");
+        assert_eq!(crate::test_support::allocations(|| { due.block(64); }), 0);
+        assert_eq!(due.rt.persistence()[0]["$done"], Value::Int(0));
+        assert_eq!(due.rt.diagnostics(), expected);
+        due.rt.begin_audio_block(64, 1, true);
+        assert_eq!(crate::test_support::allocations(|| { due.block(64); }), 0);
+        assert_eq!(due.rt.persistence()[0]["$done"], Value::Int(1));
+        assert_eq!(due.rt.diagnostics(), expected);
+    }
+    super::vm::REFERENCE.set(false);
+}
+
+#[test]
 fn managed_audio_budget_is_shared_by_segments_and_rejects_large_sync_arrays() {
     let mut rig =
         Rig::new(&["on init\ndeclare $n\nend on\non note\nwhile (1)\ninc($n)\nend while\nend on"]);
