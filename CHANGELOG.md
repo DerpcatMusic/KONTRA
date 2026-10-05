@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Enforce the selected new-core Rust Doctor threshold of 90 with an authoritative, complete scoped report and source-hash evidence, alongside the workspace gate against new errors. The current new-core scan meets 90 with no rules disabled.
+
 - Add native sample-time linear AHDSR with per-region parameters and retained release-tail ownership. Pedals defer release; panic and explicit stops cut tails. Independent timing, retirement and callback allocation/free tests cover the new path.
 
 - Pin Rust Doctor 0.7.0 with a fail-closed CI report check, PR baseline comparison and a documented Rust/realtime DSP review policy. Preserve full-workspace debt instead of hiding it behind a score.

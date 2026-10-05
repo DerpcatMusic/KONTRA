@@ -85,6 +85,29 @@ jobs:
           path: rust-doctor.json
           if-no-files-found: error
 
+  core:
+    name: New core score >= 90
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.99.0
+          components: clippy
+      - name: Fetch locked dependencies
+        run: cargo fetch --locked
+      - name: Audit the new core
+        run: python3 .github/scripts/scan_new_core.py new-core-doctor.json
+      - name: Preserve scoped evidence and source hashes
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: new-core-rust-doctor
+          path: new-core-doctor*.json
+          if-no-files-found: error
       - name: Independent core checks
         run: |
           cargo clippy --locked -p sampler-core -p sampler-native --all-targets -- -D warnings

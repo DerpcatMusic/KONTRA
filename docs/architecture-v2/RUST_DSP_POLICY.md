@@ -19,7 +19,8 @@ by commit, Rust Doctor by version, credentials are not persisted, and the job
 has read-only repository permissions. JSON evidence is uploaded even on failure.
 An incomplete report, missing report, malformed JSON or failed diagnostic gate
 fails CI. A process failure is also preserved independently of the JSON gate.
-No score threshold is used.
+The workspace comparison uses no score threshold. The separately scoped new-core
+job requires an authoritative score of at least 90, as selected by the user.
 
 Security and correctness findings are errors, as are leaked ownership via
 `mem_forget`, unreaped child processes and missing unsafe API safety docs.
@@ -38,6 +39,38 @@ For machines with a full `/tmp`, use an existing writable `TMPDIR` outside the
 repository when running baseline scope. Version 0.7.0 rejects baseline temporary
 storage inside the repository. Set `RUSTC_WRAPPER=` if a shared sccache daemon is
 still using an unavailable temporary directory. Do not delete unrelated caches.
+
+
+## New-core quality gate — user-selected target
+
+Before further feature development: **new core >=90, no new workspace errors**.
+The workspace baseline comparison remains unchanged. A separate `core` job runs
+`.github/scripts/scan_new_core.py`, which uses Rust Doctor 0.7.0 and fails if the
+full scoped report is incomplete, has errors, has a non-authoritative score, or
+scores below 90. Both jobs must pass on a PR.
+
+Rust Doctor 0.7.0 has no package-selection flag. The scoped runner therefore
+copies all crate directories under `crates/` byte-for-byte into an ephemeral
+workspace. It retains their real package manifests, the root's build profiles,
+toolchain and unchanged lint policy. It starts from the real lockfile and uses
+offline Cargo metadata to prune unrelated packages without upgrading versions.
+It records source hashes, the projected workspace manifest and lockfile hash
+alongside the report. This defines the explicitly requested new-core scope;
+it does not modify or suppress findings in the separate legacy/vendor scan.
+The snapshot check verifies source bytes and parsed build-profile equivalence.
+
+```sh
+python3 .github/scripts/scan_new_core.py artifacts/architecture-v2/new-core-gate.json
+```
+
+Measured at `b0a264d` after native envelopes and the allocator allowance cleanup:
+**90/100, authoritative=true, complete=true, zero errors, 75 warnings** (plus two
+informational diagnostics). Security/dependencies/performance dimensions are
+100; reliability 69 and maintainability 82. The aggregate target is met, but
+these weaker dimensions and all warnings remain visible obligations. No rule
+was switched off or threshold weakened. The full workspace baseline scan also
+passes with zero new error-level findings. This is permission to continue
+feature work under the gate, not a declaration of production readiness.
 
 ## Applying Rust rules to DSP
 
