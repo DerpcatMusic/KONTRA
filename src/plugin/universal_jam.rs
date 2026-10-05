@@ -140,9 +140,28 @@ fn add_event(output: &mut EventList, event: &TraceEvent, origin: u64) -> Result<
         }
         other => anyhow::bail!("unknown trace event kind {other}"),
     };
-    output
-        .try_push_exact(ExactEvent::new(offset, body))
-        .map_err(|error| anyhow::anyhow!("input capacity {error:?}"))?;
+    let exact = ExactEvent::new(offset, body);
+    if let ExactEventBody::Midi1 { message, .. } = body {
+        let data = message.storage();
+        let status = data[0] & 0xf0;
+        // The same validation/decoder/link contract as CLAP_EVENT_MIDI conversion.
+        // Raw preservation alone does not dispatch physical MIDI in Sampler.
+        ensure!(
+            (0x80..=0xe0).contains(&status)
+                && data[1] < 128
+                && (matches!(status, 0xc0 | 0xd0) || data[2] < 128),
+            "invalid channel-voice MIDI data"
+        );
+        let semantic = moose::core::midi::decode_short_message(data[0], data[1], data[2])
+            .context("unsupported channel-voice MIDI status")?;
+        output
+            .try_push_with_exact(Event::on_port(offset, event.port, semantic), exact)
+            .map_err(|error| anyhow::anyhow!("input exact/semantic capacity {error:?}"))?;
+    } else {
+        output
+            .try_push_exact(exact)
+            .map_err(|error| anyhow::anyhow!("input capacity {error:?}"))?;
+    }
     Ok(())
 }
 fn process(
@@ -220,6 +239,14 @@ fn full_reports(params: &SamplerParams) -> Value {
 }
 /// Runs one externally frozen item/trace and retains partial artifacts on failures.
 pub fn run(args: &[String], meter: fn(bool) -> [u64; 4]) -> Result<()> {
+    if args.iter().any(|argument| argument == "--smoke-stimulus") {
+        let output = PathBuf::from(arg(args, "--output")?);
+        fs::create_dir_all(&output)?;
+        let report = stimulus_smoke(meter)?;
+        write_json(&output.join("stimulus-smoke.json"), &report)?;
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
     let item_bytes = fs::read(arg(args, "--item")?)?;
     let item: Item = serde_json::from_slice(&item_bytes)?;
     let trace_bytes = fs::read(arg(args, "--trace")?)?;
@@ -694,4 +721,165 @@ pub fn run(args: &[String], meter: fn(bool) -> [u64; 4]) -> Result<()> {
         anyhow::bail!("{error}; partial artifacts retained");
     }
     Ok(())
+}
+
+/// Checks actual dispatched state and audio, independently of trace serialization.
+fn stimulus_smoke(meter: fn(bool) -> [u64; 4]) -> Result<Value> {
+    use crate::{
+        audio::Sample,
+        import::{Group, Loop, Zone},
+    };
+    use moose::params::Params;
+    let params = SamplerParams::new();
+    params.shared.ensure_parts(1);
+    params.attack.set_value(0.0001);
+    params.release.set_value(0.005);
+    params.snap_smoothers();
+    let mut dsp = Dsp::default();
+    Sampler::reset(&mut dsp, &params, &AudioConfig::new(RATE as f64, FRAMES));
+    dsp.until_poll = usize::MAX;
+    let zone = Zone {
+        root: 60,
+        loop_range: Some(Loop {
+            start: 0,
+            end: 8192,
+            crossfade: 0,
+            until_release: false,
+            alternating: false,
+        }),
+        ..Zone::default()
+    };
+    dsp.rack.parts[0]
+        .instrument_mut()
+        .context("smoke core engine")?
+        .set_bank(Some(Box::new(Bank::from_samples(
+            vec![Group::default()],
+            vec![zone],
+            vec![(
+                PathBuf::new(),
+                Sample {
+                    rate: RATE as u32,
+                    frames: vec![[0.02; 2]; 8192],
+                },
+            )],
+        )?)));
+    let raw = |bytes: [u8; 3], frame: u64| TraceEvent {
+        frame,
+        kind: "midi".into(),
+        port: 0,
+        channel: bytes[0] & 15,
+        key: None,
+        key_index: None,
+        key_role: None,
+        midi: Some(bytes),
+        on: false,
+        velocity: 0,
+        note_id: 0,
+        value: 0.,
+        tag: "smoke".into(),
+    };
+    let mut data = Box::new([[0.; FRAMES]; CHANNELS]);
+    let mut output = EventList::with_capacity(256);
+    let mut events = EventList::with_capacity(32);
+    add_event(&mut events, &raw([0xb2, 64, 127], 0), 0)?;
+    add_event(&mut events, &raw([0x92, 60, 100], 31), 0)?;
+    add_event(&mut events, &raw([0xb2, 1, 96], 31), 0)?;
+    ensure!(
+        events.exact_len() == 3 && events.len() == 3 && events.lossless_iter().count() == 3,
+        "each exact wire input must own exactly one linked semantic fallback"
+    );
+    ensure!(
+        process(&mut dsp, &params, &events, &mut output, &mut data, meter).0
+            == ProcessStatus::Normal,
+        "smoke onset process Error"
+    );
+    let engine = dsp.rack.parts[0]
+        .instrument()
+        .context("smoke installed engine")?;
+    ensure!(
+        engine.cc_state()[2][64] == 127 && engine.cc_state()[2][1] == 96,
+        "physical CC64/CC1 did not reach actual engine state"
+    );
+    ensure!(
+        engine.key_down(2, 60) && engine.voice_census().len() == 1,
+        "physical On absent or duplicated"
+    );
+    ensure!(
+        data[0].iter().any(|sample| sample.abs() > 0.0001),
+        "physical On produced no PCM"
+    );
+    let onset = json!({"cc64":engine.cc_state()[2][64],"cc1":engine.cc_state()[2][1],
+        "physical_key_down":engine.key_down(2,60),"voices":engine.active_voices()});
+    events.clear();
+    add_event(&mut events, &raw([0x82, 60, 48], 17), 0)?;
+    ensure!(
+        process(&mut dsp, &params, &events, &mut output, &mut data, meter).0
+            == ProcessStatus::Normal,
+        "smoke Off process Error"
+    );
+    let engine = dsp.rack.parts[0]
+        .instrument()
+        .context("smoke held engine")?;
+    ensure!(
+        !engine.key_down(2, 60),
+        "physical Off did not clear key state"
+    );
+    ensure!(
+        engine.active_voices() == 1 && data[0].iter().any(|sample| sample.abs() > 0.0001),
+        "pedal-held Off must keep actual voice and PCM"
+    );
+    let held = json!({"cc64":engine.cc_state()[2][64],"physical_key_down":engine.key_down(2,60),
+        "voices":engine.active_voices()});
+    events.clear();
+    add_event(&mut events, &raw([0xb2, 64, 0], 23), 0)?;
+    ensure!(
+        process(&mut dsp, &params, &events, &mut output, &mut data, meter).0
+            == ProcessStatus::Normal,
+        "smoke Up process Error"
+    );
+    events.clear();
+    for _ in 0..32 {
+        ensure!(
+            process(&mut dsp, &params, &events, &mut output, &mut data, meter).0
+                == ProcessStatus::Normal,
+            "smoke release process Error"
+        );
+    }
+    let engine = dsp.rack.parts[0]
+        .instrument()
+        .context("smoke released engine")?;
+    ensure!(
+        engine.cc_state()[2][64] == 0 && !engine.key_down(2, 60) && engine.active_voices() == 0,
+        "pedal Up did not release actual voice"
+    );
+    let released = json!({"cc64":engine.cc_state()[2][64],"voices":engine.active_voices(),
+        "physical_key_down":engine.key_down(2,60)});
+    for (controller, value) in [(101, 0), (100, 6), (6, 4), (38, 0), (101, 127), (100, 127)] {
+        add_event(&mut events, &raw([0xb0, controller, value], 0), 0)?;
+    }
+    ensure!(
+        process(&mut dsp, &params, &events, &mut output, &mut data, meter).0
+            == ProcessStatus::Normal,
+        "smoke MPE process Error"
+    );
+    let zones = dsp.rack.parts[0]
+        .instrument()
+        .context("smoke MPE engine")?
+        .mpe_zones();
+    ensure!(
+        zones.member(1).is_some_and(|zone| zone.manager == 0)
+            && zones.member(4).is_some_and(|zone| zone.manager == 0)
+            && zones.member(5).is_none(),
+        "RPN6 did not negotiate actual lower MPE members1..4"
+    );
+    Ok(
+        json!({"schema":"universal-jam.stimulus-smoke.v1","status":"passed",
+        "onset":onset,"pedal_held_off":held,"pedal_up":released,"mpe":format!("{zones:?}"),
+        "oracle":"same add_event+Sampler::process path; real looping Bank PCM and engine controller/key/voice/MPE state"}),
+    )
+}
+#[cfg(test)]
+#[test]
+fn raw_trace_dispatches_physical_pedals_notes_and_mpe_through_actual_sampler() {
+    stimulus_smoke(|_| [0; 4]).unwrap();
 }
