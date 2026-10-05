@@ -154,9 +154,19 @@ fn mix<'a>(
     gain: f32,
     gains: [f32; 2],
 ) {
-    let unity = envelope.unity();
+    let constant = envelope.constant_level();
+    // Preserve the existing unity fast path: a general constant level otherwise
+    // adds an unnecessary multiply to every sample in the common default case.
+    if constant == Some(1.0) {
+        for (frame, source) in output.iter_mut().zip(input) {
+            for channel in 0..2 {
+                frame[channel] += source[channel] * gain * gains[channel];
+            }
+        }
+        return;
+    }
     for (frame, source) in output.iter_mut().zip(input) {
-        let level = if unity { 1.0 } else { envelope.next() };
+        let level = constant.unwrap_or_else(|| envelope.next());
         for channel in 0..2 {
             frame[channel] += source[channel] * gain * gains[channel] * level;
         }

@@ -29,6 +29,12 @@ Family/expression ownership and segmented rendering now have
 
 ### V2-01 — Establish independent conformance and workload evidence
 
+- **Partial evidence:** [resident render workloads](RENDER_WORKLOADS.md) now cover
+  layered polyphony, block size, sample rate, envelope state and sparse reservation,
+  with independent exact output and recorded local timing. Streaming, modulation,
+  host jitter and comparative production workloads remain open.
+
+
 - [ ] **P0; dependencies:** none.
 - Define authored correctness fixtures and workloads: dense same-key overlap,
   layered/multimic instruments, long release tails, modulation, streaming stalls,

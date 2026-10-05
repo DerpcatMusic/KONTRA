@@ -96,8 +96,16 @@ impl EnvelopeState {
             .map_or(usize::MAX, |(_, age)| (self.shape.release - age) as usize)
     }
 
-    pub(super) fn unity(&self) -> bool {
-        self.releasing.is_none() && self.shape.attack == 0 && self.shape.sustain == 1.0
+    pub(super) fn constant_level(&self) -> Option<f32> {
+        if self.releasing.is_some() {
+            return None;
+        }
+        if self.shape.attack == 0 && self.shape.sustain == 1.0 {
+            return Some(1.0);
+        }
+        let sustain_at =
+            u64::from(self.shape.attack) + u64::from(self.shape.hold) + u64::from(self.shape.decay);
+        (self.age >= sustain_at).then_some(self.shape.sustain)
     }
 
     pub(super) fn next(&mut self) -> f32 {
