@@ -59,7 +59,7 @@ pub use ownership::{Expression, ExpressionId, FamilyId, Inheritance};
 use ownership::{ExpressionOwner, Family};
 pub use schedule::Event;
 use schedule::{Action, Scheduled};
-pub use variation::{Sequence, SequenceScope, Take};
+pub use variation::{Sequence, SequenceScope, Take, TakePolicy};
 
 pub type Frame = [f32; 2];
 
@@ -113,6 +113,8 @@ pub enum Error {
     PastEvent,
     ClockOverflow,
     ArithmeticOverflow,
+    /// Unbiased selection exceeded its fixed draw budget; no decision was committed.
+    RandomBudget,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -360,7 +362,7 @@ impl Runtime {
         let mut plans = Arena::new(id, 1);
         let active_plan = PlanId(plans.insert(Generation {
             request: 0,
-            sequences: variation::SequenceState::new(plan.sequence_cells),
+            sequences: variation::SequenceState::new(&plan),
             prepared: Box::new(plan),
             notes: 0,
         })?);

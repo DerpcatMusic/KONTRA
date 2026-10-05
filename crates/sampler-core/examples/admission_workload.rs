@@ -12,9 +12,18 @@ fn main() {
     }
     let args: Vec<_> = std::env::args().skip(1).collect();
     let identified = args.iter().any(|arg| arg == "--ids");
-    let variation = args.iter().any(|arg| arg == "--variation");
+    let policy = args.iter().find_map(|arg| match arg.as_str() {
+        "--variation" => Some(sampler_core::TakePolicy::Sequential),
+        "--random" => Some(sampler_core::TakePolicy::Random { seed: 42 }),
+        "--no-repeat" => Some(sampler_core::TakePolicy::NoRepeat { seed: 42 }),
+        "--shuffle" => Some(sampler_core::TakePolicy::Shuffle { seed: 42 }),
+        _ => None,
+    });
+    let variation = policy.is_some();
     if args.len() != usize::from(identified) + usize::from(variation) {
-        eprintln!("usage: admission_workload [--ids] [--variation]");
+        eprintln!(
+            "usage: admission_workload [--ids] [--variation | --random | --no-repeat | --shuffle]"
+        );
         std::process::exit(1);
     }
     let candidates = if variation { 12 } else { 4 };
@@ -46,6 +55,7 @@ fn main() {
             plan.with_variation(
                 vec![Sequence {
                     takes: 3,
+                    policy: policy.unwrap(),
                     scope: SequenceScope::Global,
                     capacity: 1,
                 }],
@@ -58,6 +68,7 @@ fn main() {
                     })
                     .collect(),
                 1,
+                3,
             )
             .unwrap()
         } else {
