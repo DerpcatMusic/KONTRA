@@ -518,6 +518,154 @@ fn shot_scaled(part: &PartView, code: u8, to: &Path, device_scale: f64) -> anyho
 mod tests {
     use super::*;
 
+    /// Actual retained GPU path: deep transparent groups must neither blank the frame nor poison image ownership.
+    #[test]
+    #[ignore = "parent-run headless GPU lifecycle regression; no library, display or audio required"]
+    fn conflux_gpu_transparent_subtrees_preserve_images_and_retained_visibility() {
+        use moose::mui::mui::{scene::prelude::*,vello::{self,vello::wgpu,vello_cpu::{Pixmap,RenderContext,Resources}}};
+        let size = [768,576];
+        let red = Arc::new(moose::mui::mui::scene::Image::rgba(1,1,vec![255,0,0,255]).unwrap());
+        let blue = Arc::new(moose::mui::mui::scene::Image::rgba(1,1,vec![0,0,255,255]).unwrap());
+        let fixture = |opacity:f32,image:Arc<moose::mui::mui::scene::Image>| {
+            let mut child = block(32.,32.).fill(Fill::Image(image,Fit::Fill)).radius(0.)
+                .anchor(Align::Start,Align::Start).offset(40.,40.).id("owned.image");
+            for _ in 0..12 {
+                child=stack([child]).size(512.,384.).clip().radius(0.).opacity(opacity)
+                    .anchor(Align::Start,Align::Start);
+            }
+            moose::mui::mui::scene::resolve(&SceneSpec::new(stack([child]).size(512.,384.)
+                .fill(Color::oklcha(1.,0.,0.,1.)).radius(0.).id("background"))
+                .offered(Size::new(512.,384.))).unwrap()
+        };
+        let mut capture=GpuCapture::new(size,1.5).unwrap();
+        for (phase,(opacity,image)) in [(0.,red.clone()),(1.,red.clone()),(0.,blue.clone()),
+            (1.,blue.clone()),(0.,red.clone())].into_iter().enumerate() {
+            let scene=fixture(opacity,image);
+            let mut ctx=RenderContext::new(size[0] as u16,size[1] as u16);
+            let mut resources=Resources::default();
+            vello::paint(&mut vello::Cpu { ctx:&mut ctx,resources:&mut resources,
+                cache:&mut vello::Cache::default() },&scene,capture.transform).unwrap();
+            ctx.flush();
+            let mut pix=Pixmap::new(size[0] as u16,size[1] as u16);
+            ctx.render(&mut pix,&mut resources);
+            let cpu:Vec<u8>=pix.take_unpremultiplied().iter().flat_map(|p|[p.r,p.g,p.b,p.a]).collect();
+            let stats=gpu_checked(&capture.device,"transparent_retained_draw",||Ok(
+                capture.renderer.render(&scene,capture.transform,&capture.view)?)).unwrap();
+            let retained=gpu_checked(&capture.device,"transparent_retained_readback",||capture.readback()).unwrap();
+            assert_eq!(retained,cpu,"complete CPU/GPU pixels at phase {phase}");
+            assert_eq!(stats.renders,1);
+            let unchanged=gpu_checked(&capture.device,"transparent_unchanged_draw",||Ok(
+                capture.renderer.render(&scene,capture.transform,&capture.view)?)).unwrap();
+            assert_eq!(unchanged.renders,0,"unchanged scene must retain phase {phase}");
+            let mut fresh=gpu_checked(&capture.device,"transparent_fresh_setup",||Ok(gpu_wait(
+                vello::effects::GpuRenderer::new(&capture.device,&capture.queue,wgpu::TextureFormat::Rgba8Unorm,
+                    size,vello::effects::Budget::default()))?)).unwrap();
+            gpu_checked(&capture.device,"transparent_fresh_draw",||Ok(
+                fresh.render(&scene,capture.transform,&capture.view)?)).unwrap();
+            let fresh_pixels=gpu_checked(&capture.device,"transparent_fresh_readback",||capture.readback()).unwrap();
+            assert_eq!(retained,fresh_pixels,"retained image ownership diverged at phase {phase}");
+            let center=(70*size[0] as usize+70)*4;
+            let expected=if opacity==0. { [255,255,255,255] }
+                else if phase==1 { [255,0,0,255] } else { [0,0,255,255] };
+            assert_eq!(&retained[center..center+4],&expected,"visible image center at phase {phase}");
+        }
+        println!("UI_GPU_TRANSPARENT_SUBTREES_PASS phases=5 size={size:?} complete_cpu_gpu=true retained_fresh=true");
+    }
+
+    /// Hidden masked prefixes must not shift cached visible backdrops or apply ancestor opacity twice.
+    #[test]
+    #[ignore = "parent-run headless GPU backdrop lifecycle regression; no library, display or audio required"]
+    fn conflux_gpu_hidden_masked_prefix_preserves_backdrop_slots_and_ancestor_opacity() {
+        use moose::mui::mui::{scene::prelude::*,vello::{self,vello::wgpu,vello_cpu::{Pixmap,RenderContext,Resources}}};
+        use moose::mui::mui::scene::Layer;
+        let size=[480,300];
+        let green=Arc::new(moose::mui::mui::scene::Image::rgba(1,1,vec![0,255,0,255]).unwrap());
+        let yellow=Arc::new(moose::mui::mui::scene::Image::rgba(1,1,vec![255,255,0,255]).unwrap());
+        let fixture=|hidden_opacity:f32,visible_opacity:f32,image:Arc<moose::mui::mui::scene::Image>| {
+            let hidden=stack([
+                block(80.,100.).fill(Fill::Image(image,Fit::Fill)).radius(0.)
+                    .anchor(Align::Start,Align::Start).id("hidden.masked.image"),
+                block(100.,100.).backdrop_blur(4.).radius(0.).id("hidden.early.glass"),
+            ]).size(100.,100.).clip().radius(0.).mask(Color::srgba(1.,1.,1.,0.3))
+                .opacity(hidden_opacity).anchor(Align::Start,Align::Start).offset(50.,50.).id("hidden.masked.prefix");
+            let visible=stack([block(100.,100.).backdrop_blur(4.).radius(0.).id("visible.later.glass")])
+                .size(100.,100.).clip().radius(0.).opacity(visible_opacity)
+                .anchor(Align::Start,Align::Start).offset(110.,50.).id("visible.fractional.ancestor");
+            moose::mui::mui::scene::resolve(&SceneSpec::new(stack([
+                row![block(160.,200.).fill(Color::srgb(1.,0.,0.)).radius(0.),
+                    block(160.,200.).fill(Color::srgb(0.,0.,1.)).radius(0.)],
+                hidden,visible,
+            ]).size(320.,200.).radius(0.).id("backdrop.root")).offered(Size::new(320.,200.))).unwrap()
+        };
+        let cpu=|scene:&moose::mui::mui::scene::ResolvedScene| {
+            let mut ctx=RenderContext::new(size[0] as u16,size[1] as u16);
+            let mut resources=Resources::default();
+            vello::paint(&mut vello::Cpu { ctx:&mut ctx,resources:&mut resources,
+                cache:&mut vello::Cache::default() },scene,vello::kurbo::Affine::scale(1.5)).unwrap();
+            ctx.flush();
+            let mut pix=Pixmap::new(size[0] as u16,size[1] as u16);
+            ctx.render(&mut pix,&mut resources);
+            pix.take_unpremultiplied().iter().flat_map(|p|[p.r,p.g,p.b,p.a]).collect::<Vec<_>>()
+        };
+        let mut capture=GpuCapture::new(size,1.5).unwrap();
+        for (phase,(opacity,image)) in [(0.,green.clone()),(1.,green.clone()),(0.,yellow.clone()),
+            (1.,yellow.clone()),(0.,green.clone())].into_iter().enumerate() {
+            let scene=fixture(opacity,0.5,image.clone());
+            assert_eq!(scene.paint.iter().filter(|p|p.layer==Layer::Backdrop).count(),2);
+            assert!(scene.paint.iter().any(|p|p.layer==Layer::Mask));
+            let reference=cpu(&scene);
+            // An independent compositing oracle catches replaying the still-open 0.5 ancestor twice.
+            let base=cpu(&fixture(opacity,0.,image.clone()));
+            let opaque=cpu(&fixture(opacity,1.,image));
+            let mut worst=0u8;
+            for ((got,base),opaque) in reference.iter().zip(&base).zip(&opaque) {
+                let expected=((u16::from(*base)+u16::from(*opaque)+1)/2) as u8;
+                worst=worst.max(got.abs_diff(expected));
+            }
+            assert!(worst<=2,"open ancestor opacity applied twice at phase {phase}: delta{worst}");
+            let mut projected=scene.clone();
+            let mut depth=0usize;
+            projected.paint.retain(|p| {
+                if depth>0 {
+                    match p.layer { Layer::Clip|Layer::Blend {..}=>depth+=1,
+                        Layer::Unclip|Layer::Unblend=>depth-=1,_=>{} }
+                    return false;
+                }
+                if matches!(p.layer,Layer::Blend { mix:Mix::Normal,opacity } if opacity==0.) {
+                    depth=1;return false;
+                }
+                true
+            });
+            assert_eq!(depth,0);
+            assert_eq!(reference,cpu(&projected),"hidden masked prefix changed complete CPU output at phase {phase}");
+            assert_eq!(projected.paint.iter().filter(|p|p.layer==Layer::Backdrop).count(),
+                if opacity==0. {1} else {2},"visible backdrop changes between compacted slots0/1");
+            gpu_checked(&capture.device,"masked_backdrop_retained_draw",||Ok(
+                capture.renderer.render(&scene,capture.transform,&capture.view)?)).unwrap();
+            let retained=gpu_checked(&capture.device,"masked_backdrop_retained_readback",||capture.readback()).unwrap();
+            let mut fresh=gpu_checked(&capture.device,"masked_backdrop_fresh_setup",||Ok(gpu_wait(
+                vello::effects::GpuRenderer::new(&capture.device,&capture.queue,wgpu::TextureFormat::Rgba8Unorm,
+                    size,vello::effects::Budget::default()))?)).unwrap();
+            gpu_checked(&capture.device,"masked_backdrop_fresh_draw",||Ok(
+                fresh.render(&scene,capture.transform,&capture.view)?)).unwrap();
+            let full=gpu_checked(&capture.device,"masked_backdrop_fresh_readback",||capture.readback()).unwrap();
+            assert_eq!(retained,full,"compacted backdrop cache shifted at phase {phase}");
+            assert!(retained.chunks_exact(4).all(|p|p[3]==255),"opaque authored ground lost at phase {phase}");
+            let at=|x:usize,y:usize|&retained[(y*size[0] as usize+x)*4..(y*size[0] as usize+x)*4+4];
+            assert_eq!(at(15,15),&[255,0,0,255],"blur or mask escaped outside authored bounds");
+            assert_eq!(at(465,15),&[0,0,255,255],"blur or mask escaped outside authored bounds");
+            let edge=at(237,150);
+            assert!(edge[2]>0 && edge[0]<255,"visible backdrop did not blur the red/blue edge: {edge:?}");
+            let unchanged=gpu_checked(&capture.device,"masked_backdrop_unchanged_draw",||Ok(
+                capture.renderer.render(&scene,capture.transform,&capture.view)?)).unwrap();
+            assert_eq!(unchanged.renders,0);
+            println!("UI_GPU_MASKED_BACKDROP_PHASE {}",serde_json::json!({"phase":phase,
+                "hidden_opacity":opacity,"cpu_projection_exact":true,"ancestor_half_blend_max_delta":worst,
+                "retained_fresh_exact":true,"cpu_vs_gpu":gpu_pixel_diff(&reference,&retained,size)}));
+        }
+        println!("UI_GPU_MASKED_BACKDROP_PASS phases=5 cpu_projection_exact=true retained_fresh_exact=true");
+    }
+
     /// Minimal control separates Vello compute output from MUI's retained present.
     #[test]
     #[ignore = "parent-run GPU correctness control; no display or owned library required"]

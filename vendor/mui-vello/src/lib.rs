@@ -669,6 +669,28 @@ fn backdrop(
     Ok(())
 }
 
+/// Keep original paint indices while omitting invisible Normal/SrcOver subtrees.
+/// Their full-target blend clips otherwise consume Vello's finite spill pool.
+/// The resolved scene stays intact for damage tracking and later visibility changes.
+pub(crate) fn visible_paints(paint: &[Painted]) -> impl Iterator<Item = (usize, &Painted)> {
+    let mut hidden = 0usize;
+    paint.iter().enumerate().filter(move |(_, p)| {
+        if hidden > 0 {
+            match p.layer {
+                Layer::Clip | Layer::Blend { .. } => hidden += 1,
+                Layer::Unclip | Layer::Unblend => hidden -= 1,
+                _ => {}
+            }
+            return false;
+        }
+        if matches!(p.layer, Layer::Blend { mix: mui_scene::Mix::Normal, opacity } if opacity == 0.) {
+            hidden = 1;
+            return false;
+        }
+        true
+    })
+}
+
 /// `below` painted again under `base` as far as it can reach `reach`, bar
 /// what an open ancestor already applies.
 pub(crate) fn replay(
@@ -681,7 +703,7 @@ pub(crate) fn replay(
     // its clip already bounds this node and its layer composites it, so
     // replaying it would apply it twice -- an ancestor's opacity squared.
     let mut open = Vec::new();
-    for (i, q) in below.iter().enumerate() {
+    for (i, q) in visible_paints(below) {
         match q.layer {
             Layer::Clip | Layer::Blend { .. } => open.push(i),
             Layer::Unclip | Layer::Unblend => {
@@ -692,7 +714,7 @@ pub(crate) fn replay(
     }
     let mut ancestors = open.into_iter().peekable();
     let mut bez = BezPath::new();
-    for (i, q) in below.iter().enumerate() {
+    for (i, q) in visible_paints(below) {
         if ancestors.next_if_eq(&i).is_some()
             || matches!(q.layer, Layer::Backdrop | Layer::External)
             || layered(canvas, q)
@@ -1791,6 +1813,50 @@ mod snapshot {
 
     /// A 2x2 image stretched over a leaf: each source pixel owns a quadrant,
     /// and the leaf's rounded corner still cuts the image away.
+    #[test]
+    fn transparent_subtrees_preserve_prefix_pixels_layers_and_image_ownership() {
+        let image = Arc::new(mui_scene::Image::rgba(1, 1, [255, 0, 0, 255].to_vec()).unwrap());
+        let spec = |opacity| {
+            let mut child = block(8., 8.).fill(Fill::Image(image.clone(), Fit::Fill)).id("hidden.image");
+            for _ in 0..12 {
+                child = stack([child]).size(16., 16.).clip().opacity(opacity);
+            }
+            SceneSpec::new(stack([child]).size(16., 16.)
+                .fill(Color::oklcha(1., 0., 0., 1.)).id("ground"))
+                .offered(Size::new(16., 16.))
+        };
+        let hidden = resolve(&spec(0.)).unwrap();
+        let indices: Vec<_> = visible_paints(&hidden.paint).map(|(i, _)| i).collect();
+        assert!(indices.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(indices.len() < hidden.paint.len());
+        let mut projected = hidden.clone();
+        projected.paint = visible_paints(&hidden.paint).map(|(_, p)| p.clone()).collect();
+        let reference = pixels_scene(&hidden, 16, 16);
+        let pruned = pixels_scene(&projected, 16, 16);
+        assert_eq!(reference.data(), pruned.data(), "hidden nested image changed CPU pixels");
+        #[cfg(feature = "gpu-effects")]
+        {
+            let mut cache = Cache::default();
+            let textures = classic::Textures::default();
+            for opacity in [0., 1., 0., 1.] {
+                let scene = resolve(&spec(opacity)).unwrap();
+                let mut encoded = vello::Scene::new();
+                let mut canvas = Classic::new(&mut encoded, &mut cache, &textures, [16, 16]);
+                replay(&mut canvas, &scene.paint, Rect::new(0., 0., 16., 16.), Affine::IDENTITY).unwrap();
+                assert_eq!(canvas.images.len(), usize::from(opacity != 0.),
+                    "prefix image upload must follow visibility without losing its Arc owner");
+            }
+        }
+        // Neither a non-Normal compositor nor a tiny positive alpha is a zero-opacity group.
+        for (mix, opacity) in [(Mix::Multiply, 0.), (Mix::Normal, f32::MIN_POSITIVE)] {
+            let mut guarded = hidden.clone();
+            for p in &mut guarded.paint {
+                if let Layer::Blend { .. } = p.layer { p.layer = Layer::Blend { mix, opacity }; }
+            }
+            assert_eq!(visible_paints(&guarded.paint).count(), guarded.paint.len());
+        }
+    }
+
     #[test]
     fn an_image_fill_lands_the_right_pixel_in_each_quadrant() {
         #[rustfmt::skip]
