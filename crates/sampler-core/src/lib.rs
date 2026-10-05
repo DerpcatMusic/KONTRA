@@ -8,6 +8,27 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Internal, non-owning links are unlinked before a slot can be reused. Public
+/// identities remain generational handles. The niche keeps each optional link
+/// one word without adding pointers or allocations to the ownership graph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Index(std::num::NonZeroUsize);
+
+impl Index {
+    fn new(index: usize) -> Self {
+        Self(std::num::NonZeroUsize::new(index + 1).unwrap())
+    }
+    fn get(self) -> usize {
+        self.0.get() - 1
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct Siblings {
+    previous: Option<Index>,
+    next: Option<Index>,
+}
+
 mod behavior;
 use behavior::Continuation;
 pub use behavior::{BehaviorId, Duration, Instruction, Outcome, Program, Velocity, WaitLifetime};
@@ -118,7 +139,9 @@ struct Note {
     plan: PlanId,
     parent: Option<NoteId>,
     linked_release: bool,
-    release_checked: bool,
+    siblings: Siblings,
+    first_child: Option<Index>,
+    first_family: Option<Index>,
     pitch: NotePitch,
     velocity: f64,
     gate: bool,
@@ -135,6 +158,7 @@ struct Note {
 #[derive(Clone, Copy, Debug)]
 struct Voice {
     family: FamilyId,
+    siblings: Siblings,
     sample: usize,
     cursor: source::Cursor,
     base_step: f64,
@@ -158,6 +182,10 @@ struct Arena<T> {
 }
 
 impl<T> Arena<T> {
+    fn at_mut(&mut self, index: Index) -> &mut T {
+        self.slots[index.get()].value.as_mut().unwrap()
+    }
+
     fn new(runtime: u64, capacity: usize) -> Self {
         let mut free = vec![u64::MAX; capacity.div_ceil(64)].into_boxed_slice();
         if !capacity.is_multiple_of(64) {
@@ -274,6 +302,7 @@ pub struct Runtime {
     active_plan: PlanId,
     plan_queues: Option<PlanQueues>,
     notes: Arena<Note>,
+    closed_notes: Vec<NoteId>,
     channels: Arena<Channel>,
     voices: Arena<Voice>,
     voice_activity: Box<[u64]>,
@@ -334,6 +363,7 @@ impl Runtime {
             active_plan,
             plan_queues: None,
             notes: Arena::new(id, limits.notes),
+            closed_notes: Vec::with_capacity(limits.notes),
             channels: Arena::new(id, limits.channels),
             voices: Arena::new(id, limits.voices),
             voice_activity: vec![0; limits.voices.div_ceil(64)].into_boxed_slice(),
@@ -490,6 +520,7 @@ impl Runtime {
             .or_else(|| parent_note.map(|n| n.address))
             .ok_or(Error::InvalidInput)?;
         let parent_expression = parent_note.map(|n| n.expression);
+        let next_sibling = parent_note.and_then(|n| n.first_child);
         let plan = parent_note.map_or(self.active_plan, |n| n.plan);
         let expression = match (inheritance, parent_expression) {
             (Inheritance::Linked, Some(id)) => {
@@ -520,7 +551,12 @@ impl Runtime {
             plan,
             parent,
             linked_release,
-            release_checked: false,
+            siblings: Siblings {
+                previous: None,
+                next: next_sibling,
+            },
+            first_child: None,
+            first_family: None,
             pitch,
             velocity,
             gate: true,
@@ -540,8 +576,14 @@ impl Runtime {
             }
         };
         if let Some(parent) = parent {
+            let index = Index::new(id.index);
+            if let Some(next) = next_sibling {
+                self.notes.at_mut(next).siblings.previous = Some(index);
+            }
             // Successful admission bounds this count by the allocated note slots.
-            self.notes.get_mut(parent.0).unwrap().children += 1;
+            let parent = self.notes.get_mut(parent.0).unwrap();
+            parent.children += 1;
+            parent.first_child = Some(index);
         }
         self.plans.get_mut(plan.0).unwrap().notes += 1;
         self.order = order;
@@ -580,6 +622,7 @@ impl Runtime {
             .enumerate()
             .filter_map(|(i, s)| {
                 s.value
+                    .as_ref()
                     .filter(|n| n.key_down && n.input == Some(input))
                     .map(|n| (i, n.order))
             })
@@ -667,11 +710,16 @@ impl Runtime {
         let step = self.pitch_range(owner, true)?.apply(base_step)?;
         let cursor = cursor.with_step(step);
         let count = f.voices.checked_add(1).ok_or(Error::Capacity)?;
+        let next_sibling = f.first_voice;
         if at > self.now && self.commands.len() == self.command_limit {
             return Err(Error::Capacity);
         }
         let id = VoiceId(self.voices.insert(Voice {
             family,
+            siblings: Siblings {
+                previous: None,
+                next: next_sibling,
+            },
             sample,
             cursor,
             base_step,
@@ -680,7 +728,13 @@ impl Runtime {
             started: at == self.now,
         })?);
         self.voice_activity[id.0.index / 64] |= 1 << (id.0.index % 64);
-        self.families.get_mut(family.0).unwrap().voices = count;
+        let index = Index::new(id.0.index);
+        if let Some(next) = next_sibling {
+            self.voices.at_mut(next).siblings.previous = Some(index);
+        }
+        let family_state = self.families.get_mut(family.0).unwrap();
+        family_state.voices = count;
+        family_state.first_voice = Some(index);
         if at > self.now {
             self.queue(at, Action::Start(id));
         }
@@ -707,67 +761,32 @@ impl Runtime {
 
     fn release_now(&mut self, id: NoteId) -> Result<(), Error> {
         let n = self.notes.get_mut(id.0).ok_or(Error::StaleHandle)?;
-        n.gate = false;
         n.key_down = false;
         n.sostenuto = false;
-        self.propagate_release();
+        self.close_gate(id);
         self.cleanup_closed_notes();
         Ok(())
     }
 
-    fn propagate_release(&mut self) {
-        for slot in &mut self.notes.slots {
-            if let Some(note) = &mut slot.value {
-                note.release_checked = false;
-            }
-        }
-        for i in 0..self.notes.slots.len() {
-            if self.notes.slots[i].value.is_none() {
-                continue;
-            }
-            let start = NoteId(self.notes.id(i));
-            let mut id = start;
-            // Mark each open linked path once. A previously checked open path
-            // reaches an open root or an independent child, so it cannot close.
-            let closes = loop {
-                let n = self.notes.get_mut(id.0).unwrap();
-                if !n.gate {
-                    break true;
-                }
-                if n.release_checked || !n.linked_release {
-                    break false;
-                }
-                n.release_checked = true;
-                let Some(parent) = n.parent else {
-                    break false;
-                };
-                id = parent;
-            };
-            if closes {
-                id = start;
-                loop {
-                    let n = self.notes.get_mut(id.0).unwrap();
-                    if !n.gate {
-                        break;
-                    }
-                    n.gate = false;
-                    n.key_down = false;
-                    n.sostenuto = false;
-                    // The discovery walk proved a closed ancestor on this path.
-                    id = n.parent.unwrap();
-                }
-            }
+    fn close_gate(&mut self, id: NoteId) {
+        let note = self.notes.get_mut(id.0).unwrap();
+        if note.gate {
+            note.gate = false;
+            // Each live note enters at most once; cleanup drains before notes can
+            // retire or slots can be reused. Storage was reserved for every note.
+            assert!(self.closed_notes.len() < self.closed_notes.capacity());
+            self.closed_notes.push(id);
         }
     }
 
     /// Resolve voices and future commands. Behavior outcomes remain retained until
     /// accepted; external owners must release manual pins. IDs stay valid for NOTE_END.
     pub fn panic(&mut self) {
-        for s in &mut self.notes.slots {
-            if let Some(n) = &mut s.value {
-                n.gate = false;
+        for i in 0..self.notes.slots.len() {
+            if let Some(n) = &mut self.notes.slots[i].value {
                 n.key_down = false;
                 n.sostenuto = false;
+                self.close_gate(NoteId(self.notes.id(i)));
             }
         }
         for slot in &mut self.behaviors.slots {
@@ -794,28 +813,35 @@ impl Runtime {
     }
 
     fn cleanup_closed_notes(&mut self) {
-        // One pass per resource domain, including saturated family/voice pools.
-        for s in &mut self.families.slots {
-            if let Some(f) = &mut s.value
-                && !self.notes.get(f.note.0).unwrap().gate
-            {
-                f.open = false;
-            }
-        }
-        for i in 0..self.voices.slots.len() {
-            if let Some(v) = self.voices.slots[i].value.as_mut() {
-                let family = self.families.get(v.family.0).unwrap();
-                if !self.notes.get(family.note.0).unwrap().gate {
-                    v.envelope.release();
-                    v.cursor.release();
-                    if !v.started || v.envelope.done() {
-                        self.end_voice(VoiceId(self.voices.id(i)));
-                    }
+        while let Some(note) = self.closed_notes.pop() {
+            let mut child = self.notes.get(note.0).unwrap().first_child;
+            while let Some(index) = child {
+                let state = self.notes.at_mut(index);
+                child = state.siblings.next;
+                if state.linked_release {
+                    state.key_down = false;
+                    state.sostenuto = false;
+                    self.close_gate(NoteId(self.notes.id(index.get())));
                 }
             }
-        }
-        for i in 0..self.families.slots.len() {
-            self.retire_family(FamilyId(self.families.id(i)));
+            let mut family = self.notes.get(note.0).unwrap().first_family;
+            while let Some(index) = family {
+                let state = self.families.at_mut(index);
+                family = state.siblings.next;
+                state.open = false;
+                let mut voice = state.first_voice;
+                while let Some(index) = voice {
+                    let state = self.voices.at_mut(index);
+                    voice = state.siblings.next;
+                    state.envelope.release();
+                    state.cursor.release();
+                    if !state.started || state.envelope.done() {
+                        self.end_voice(VoiceId(self.voices.id(index.get())));
+                    }
+                }
+                // The last voice may already have retired this sealed family.
+                self.retire_family(FamilyId(self.families.id(index.get())));
+            }
         }
         self.cancel_closed_work();
     }

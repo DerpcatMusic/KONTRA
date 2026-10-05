@@ -2,7 +2,8 @@
 
 2026-10-05. This clean-sheet implementation extends the experiment at `95faf11`.
 It closes a runnable portion of V2-03/04/12/19, not their full product gates.
-The core remains dependency-free and forbids unsafe code. It builds/tests without
+The initial slice was dependency-free; current plan transfers use `rtrb`. The core
+forbids unsafe code. It builds/tests without
 the old application or VM. Historical KSP integration tests consume it only as a
 development dependency and are not the new scripting implementation.
 
@@ -51,13 +52,23 @@ splits a block at scheduled event boundaries, then processes contiguous frames f
 each voice. Slot order preserves summation order. Exclusive-end and empty-block
 semantics remain tested. Finite-source overflow still silences/counts affected frames.
 
-Release/panic cleanup scans families, voices and commands once per domain after
-propagating gate state. A family/voice retirement updates ownership counts directly.
-Arena admission is still a bounded linear scan; ancestry propagation and terminal
-retirement can still be quadratic. The renderer scans inactive capacity once per
-event segment. Dense event traffic, admission, streaming and DSP are not represented
-by the microbenchmark below. These ceilings remain optimization work, not claims
-of optimal complexity or proven hard realtime deadlines.
+Current release cleanup follows ownership lists: note to children and families,
+family to voices. Private slot links are inserted only after successful admission
+and unlinked before reuse. Public identities remain generational. A control-reserved
+stack holds newly closed notes; a gate closes once, and cleanup drains the stack
+before any note can retire. Linked descendants close iteratively, independent
+descendants remain open, and envelope tails retain their sealed families. This
+removes repeated scans of unrelated note/family/voice reservations from release.
+Stopping a family likewise visits its own sources. Neither path allocates or recurses.
+
+Links add storage and admission/retirement writes; the phase-specific
+[workload measurements](RENDER_WORKLOADS.md#note-release-and-terminal-retirement)
+record that tradeoff. Command cancellation still scans the bounded queue; input
+note-off pairing and terminal delivery still scan notes. Channel-mode/pedal batches
+and panic also inspect their domains. Arena insertion uses free bitmaps, and the
+renderer uses an occupancy bitmap while preserving ascending voice-slot mixing.
+These changes do not establish production callback deadlines or complete overload,
+streaming, DSP or host coverage.
 
 ## Validation
 
@@ -71,7 +82,7 @@ CARGO_TARGET_DIR="$PWD/target" cargo test --locked --offline --release --test v2
 CARGO_TARGET_DIR="$PWD/target-core" cargo run --locked --offline --release -p sampler-core --example render_bench
 ```
 
-Core: 11 unit tests plus one independent realtime integration test. The latter
+The initial slice had 11 unit tests plus one independent realtime integration test. The latter
 counts allocations and frees through first use, saturation, expression detachment,
 rendering, cancellation, panic and terminal retry for 100 cycles. The library forbids
 unsafe code; the shared test-only allocator wrapper locally permits forwarding to
@@ -79,15 +90,23 @@ unsafe code; the shared test-only allocator wrapper locally permits forwarding t
 family versus voice targeting, failed-admission rollback and 4,000 deterministic
 mixed operations checked against reachable ownership counts.
 
+Current mixed-operation checks also reconstruct every child, family and source
+list against independent slot counts, checking ownership, backlinks, missing
+entries and cycles after admission, failures, stops, releases, rendering, panic and
+terminal retries. Heap-audited tests cover 512-slot trees, reversed slot order,
+independent descendants, full capacities, tail completion and repeated reuse.
+All four native crates pass debug/release and Rust 1.92 tests, plus all-target
+Clippy with warnings denied; the root historical boundary tests also pass.
+
 Existing partition tests cover 44.1/48 kHz, regular blocks from 16 through 1024,
 one-frame reference, irregular partitions, zero blocks and canceled starts. The
 root suite remains a check against accidental checkout breakage, not a 1.x parity
 gate for v2. All listed tests pass: core debug/release on Rust 1.99.0 and core debug on the
 1.92.0 minimum; core clippy passes with warnings denied. Root CI passes 601 library,
 2 CLI, 89 playback and 2 historical integration tests (34 pre-existing ignores).
-The two historical integration tests also pass in the shipping release profile.
+The two historical integration tests also passed in the shipping release profile at that checkpoint.
 Root compilation still reports existing legacy warnings. `cargo tree -p sampler-core`
-shows no dependencies. No DAW, cross-platform, sanitizer or competitor validation
+showed no dependencies at that checkpoint. No DAW, cross-platform, sanitizer or competitor validation
 was performed in this slice.
 
 ## Initial performance observation

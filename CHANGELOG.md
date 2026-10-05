@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Follow direct child/family/source ownership links during release and family stops, with a preallocated closure stack and no recursive traversal. Independent descendants, envelope tails, failed admission and terminal retries retain their lifetime rules; phase workloads measure admission, note-off and retirement separately.
+
 - Allocate arena slots through control-prepared free bitmaps, preserving lowest-slot order, generation quarantine and exact transfer rollback. No callback allocation or free-list ordering change is introduced.
 
 - Maintain arena capacity and occupancy during ownership changes instead of scanning reservations for every admission. Plan transfer rollback preserves counters and generations; a new burst workload measures the remaining insertion cost explicitly.

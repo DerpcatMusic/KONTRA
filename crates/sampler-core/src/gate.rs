@@ -179,8 +179,8 @@ impl Runtime {
                 .is_some_and(|c| c.address == address && c.sustain)
         });
         let mut released = 0;
-        for slot in &mut self.notes.slots {
-            let Some(note) = &mut slot.value else {
+        for i in 0..self.notes.slots.len() {
+            let Some(note) = &mut self.notes.slots[i].value else {
                 continue;
             };
             if note.key_down
@@ -190,12 +190,11 @@ impl Runtime {
             {
                 note.key_down = false;
                 if !sustained && !note.sostenuto {
-                    note.gate = false;
+                    self.close_gate(super::NoteId(self.notes.id(i)));
                 }
                 released += 1;
             }
         }
-        self.propagate_release();
         self.cleanup_closed_notes();
         Ok(released)
     }
@@ -208,15 +207,15 @@ impl Runtime {
             return Err(Error::InvalidInput);
         }
         self.apply_due();
-        for slot in &mut self.notes.slots {
-            if let Some(note) = &mut slot.value
+        for i in 0..self.notes.slots.len() {
+            if let Some(note) = &mut self.notes.slots[i].value
                 && note.address == address
             {
-                note.gate = false;
                 note.sostenuto = false;
                 if note.input.is_none() {
                     note.key_down = false;
                 }
+                self.close_gate(super::NoteId(self.notes.id(i)));
             }
         }
         for slot in &mut self.behaviors.slots {
@@ -301,8 +300,10 @@ impl Runtime {
         sostenuto: bool,
         down: bool,
     ) {
-        for slot in &mut self.notes.slots {
-            let Some(n) = &mut slot.value else { continue };
+        for i in 0..self.notes.slots.len() {
+            let Some(n) = &mut self.notes.slots[i].value else {
+                continue;
+            };
             let Some(input) = n
                 .input
                 .filter(|input| scope.contains(input.channel_address()))
@@ -317,10 +318,9 @@ impl Runtime {
                 n.sostenuto = false;
             }
             if !n.key_down && sustained & bit == 0 && !n.sostenuto {
-                n.gate = false;
+                self.close_gate(super::NoteId(self.notes.id(i)));
             }
         }
-        self.propagate_release();
         self.cleanup_closed_notes();
     }
 }

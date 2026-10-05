@@ -70,6 +70,8 @@ pub(super) struct Family {
     pub note: NoteId,
     pub voices: usize,
     pub open: bool,
+    pub siblings: super::Siblings,
+    pub first_voice: Option<super::Index>,
 }
 
 impl Runtime {
@@ -184,12 +186,24 @@ impl Runtime {
             return Err(Error::ClosedNote);
         }
         let count = n.families.checked_add(1).ok_or(Error::Capacity)?;
+        let next_sibling = n.first_family;
         let family = FamilyId(self.families.insert(Family {
             note,
             voices: 0,
             open: true,
+            siblings: super::Siblings {
+                previous: None,
+                next: next_sibling,
+            },
+            first_voice: None,
         })?);
-        self.notes.get_mut(note.0).unwrap().families = count;
+        let index = super::Index::new(family.0.index);
+        if let Some(next) = next_sibling {
+            self.families.at_mut(next).siblings.previous = Some(index);
+        }
+        let note = self.notes.get_mut(note.0).unwrap();
+        note.families = count;
+        note.first_family = Some(index);
         Ok(family)
     }
 
@@ -215,10 +229,8 @@ impl Runtime {
     pub fn stop_family(&mut self, id: FamilyId) -> Result<(), Error> {
         self.apply_due();
         self.families.get(id.0).ok_or(Error::StaleHandle)?;
-        for i in 0..self.voices.slots.len() {
-            if self.voices.slots[i].value.is_some_and(|v| v.family == id) {
-                self.end_voice(VoiceId(self.voices.id(i)));
-            }
+        while let Some(first) = self.families.get(id.0).and_then(|f| f.first_voice) {
+            self.end_voice(VoiceId(self.voices.id(first.get())));
         }
         self.commands.retain(
             |c| !matches!(c.action, super::Action::Start(v) if self.voices.get(v.0).is_none()),
@@ -236,6 +248,15 @@ impl Runtime {
             && !f.open
             && f.voices == 0
         {
+            debug_assert!(f.first_voice.is_none());
+            if let Some(previous) = f.siblings.previous {
+                self.families.at_mut(previous).siblings.next = f.siblings.next;
+            } else {
+                self.notes.get_mut(f.note.0).unwrap().first_family = f.siblings.next;
+            }
+            if let Some(next) = f.siblings.next {
+                self.families.at_mut(next).siblings.previous = f.siblings.previous;
+            }
             self.notes.get_mut(f.note.0).unwrap().families -= 1;
             self.families.remove(id.0);
         }
@@ -243,6 +264,14 @@ impl Runtime {
 
     pub(super) fn end_voice(&mut self, id: VoiceId) {
         let v = *self.voices.get(id.0).unwrap();
+        if let Some(previous) = v.siblings.previous {
+            self.voices.at_mut(previous).siblings.next = v.siblings.next;
+        } else {
+            self.families.get_mut(v.family.0).unwrap().first_voice = v.siblings.next;
+        }
+        if let Some(next) = v.siblings.next {
+            self.voices.at_mut(next).siblings.previous = v.siblings.previous;
+        }
         self.voices.remove(id.0);
         self.voice_activity[id.0.index / 64] &= !(1 << (id.0.index % 64));
         self.families.get_mut(v.family.0).unwrap().voices -= 1;
@@ -289,6 +318,17 @@ impl Runtime {
             }
             if n.input.is_some_and(|input| !accept(input)) {
                 return false;
+            }
+            debug_assert!(n.first_child.is_none() && n.first_family.is_none());
+            if let Some(parent) = n.parent {
+                if let Some(previous) = n.siblings.previous {
+                    self.notes.at_mut(previous).siblings.next = n.siblings.next;
+                } else {
+                    self.notes.get_mut(parent.0).unwrap().first_child = n.siblings.next;
+                }
+                if let Some(next) = n.siblings.next {
+                    self.notes.at_mut(next).siblings.previous = n.siblings.previous;
+                }
             }
             self.notes.remove(id.0);
             self.drop_expression(n.expression);
