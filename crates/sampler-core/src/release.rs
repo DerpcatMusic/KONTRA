@@ -57,6 +57,7 @@ pub(super) struct ReleaseTimes {
     pub gate_at: u64,
     pub velocity: Option<f64>,
     pub selection: [super::ReleaseStatus; 2],
+    pub release_behavior: bool,
 }
 
 pub(super) fn validate_velocity(velocity: Option<f64>) -> Result<(), Error> {
@@ -75,6 +76,10 @@ impl Runtime {
             times.key_at = self.now;
             times.velocity = velocity;
             note.key_release = Some(cause);
+            self.run_release_behavior(
+                id,
+                matches!(cause, ReleaseCause::KeyUp | ReleaseCause::AllNotesOff),
+            );
             self.run_release(
                 id,
                 Trigger::KeyRelease,

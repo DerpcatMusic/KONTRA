@@ -899,6 +899,7 @@ impl Runtime {
             assert!(self.closed_notes.len() < self.closed_notes.capacity());
             self.closed_notes.push(id);
             if !cause.musical() {
+                self.run_release_behavior(id, false);
                 self.run_release(id, Trigger::KeyRelease, false);
             }
             self.run_release(id, Trigger::GateRelease, cause.musical());

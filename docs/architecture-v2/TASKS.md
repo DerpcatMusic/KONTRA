@@ -126,6 +126,8 @@ unimplemented cases. Source inspection alone is not passing conformance evidence
   under pressure without consuming host terminals; repeated-note audio is independent
   of block size and terminal backpressure. Bounded note-owned integer cells now
   survive callbacks, release and plan replacement separately from callback locals.
+  Physical-release callbacks reserve continuation capacity at admission, survive
+  source EOF and suppress safely under hard cleanup.
   KSP typed variables and broader language/state/controller work stay open.
 
 - [ ] **P0; dependencies:** V2-03/04.

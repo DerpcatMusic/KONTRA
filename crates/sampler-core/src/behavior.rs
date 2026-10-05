@@ -145,6 +145,10 @@ impl Runtime {
     /// until flush_behaviors accepts it, including synchronous completion/failure.
     pub fn start_behavior(&mut self, note: NoteId, program: usize) -> Result<BehaviorId, Error> {
         self.apply_due();
+        self.start_behavior_now(note, program)
+    }
+
+    fn start_behavior_now(&mut self, note: NoteId, program: usize) -> Result<BehaviorId, Error> {
         let n = self.notes.get_mut(note.0).ok_or(Error::StaleHandle)?;
         let plan = &self.plans.get(n.plan.0).unwrap().prepared;
         if program >= plan.programs.len() {
@@ -165,6 +169,27 @@ impl Runtime {
         self.behavior_locals[begin..begin + plan.programs[program].locals].fill(0);
         self.resume_behavior(id);
         Ok(id)
+    }
+
+    pub(super) fn run_release_behavior(&mut self, note: NoteId, musical: bool) {
+        // Consume before execution: faults can re-enter release cleanup, and must
+        // neither start another callback nor relinquish the reservation twice.
+        if !std::mem::take(&mut self.release_times[note.0.index].release_behavior) {
+            return;
+        }
+        self.behaviors.unreserve(1);
+        if musical {
+            let plan = self.notes.get(note.0).unwrap().plan;
+            let program = self
+                .plans
+                .get(plan.0)
+                .unwrap()
+                .prepared
+                .release_program
+                .unwrap();
+            self.start_behavior_now(note, program)
+                .expect("owned release continuation reservation");
+        }
     }
 
     pub fn behavior_outcome(&self, id: BehaviorId) -> Result<Option<Outcome>, Error> {
