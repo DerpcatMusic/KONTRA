@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Apply MPE manager sustain/sostenuto through native channel scopes, with atomic pedal-down reservation and capacity-independent pedal-up. Physical input domains remain isolated; repeated sostenuto and ignored member pedals preserve capture semantics.
+
 - Apply whole-semitone MPE RPN 0 sensitivity transactionally: independent manager range, shared member range, retained raw bends and frozen released-note pitch. Selector/null/NRPN isolation and failed-rate rollback preserve existing notes and future controller state.
 
 - Project fixed-zone MPE channel pressure and CC74 into native expression, preserving released member snapshots and unrelated note dimensions. Manager combination is explicit; audible modulation destinations and dynamic receiver configuration remain pending.

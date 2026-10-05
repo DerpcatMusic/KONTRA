@@ -28,7 +28,7 @@ pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{Pcm, Prepared, Region};
 mod schedule;
 use gate::Channel;
-pub use gate::{ChannelAddress, ChannelId};
+pub use gate::{ChannelAddress, ChannelId, ChannelScope};
 pub use ownership::{Expression, ExpressionId, FamilyId, Inheritance};
 use ownership::{ExpressionOwner, Family};
 pub use schedule::Event;

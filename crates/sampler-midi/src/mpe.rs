@@ -1,6 +1,8 @@
 //! Fixed-zone MPE 1.1 note/expression projection after raw-event interception.
 use crate::{Applied, ApplyError, Message, Packet, Value, Version};
-use sampler_core::{Error, Expression, ExpressionId, Input, NoteId, Protocol, Runtime, RuntimeId};
+use sampler_core::{
+    ChannelScope, Error, Expression, ExpressionId, Input, NoteId, Protocol, Runtime, RuntimeId,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Zone {
@@ -86,7 +88,7 @@ impl Default for Parameter {
 /// Construct and drop on the control thread. The binding budget includes tails
 /// and unaccepted terminal notes. No pins are added and no heap work occurs in apply.
 ///
-/// This is not a complete MPE receiver: MCM, fractional/relative RPN, pedals and other channel modes are
+/// This is not a complete MPE receiver: MCM, fractional/relative RPN and channel modes are
 /// reported Unsupported. Do not forward those messages to ordinary channel
 /// ingress as a substitute for zone semantics. Raw-event consumers run before
 /// this adapter; a consumed message must not be passed to apply.
@@ -227,6 +229,32 @@ impl Mpe {
             }
             Message::ChannelPressure(Value::Bits7(value)) => {
                 self.control(runtime, voice.channel, Control::Pressure(value))?
+            }
+            Message::Control {
+                index: index @ (64 | 66),
+                value: Value::Bits7(value),
+            } => {
+                if voice.channel != self.zone.manager() {
+                    Applied::Ignored
+                } else {
+                    let width = (1u32 << (self.members + 1)) - 1;
+                    let channels = match self.zone {
+                        Zone::Lower => width as u16,
+                        Zone::Upper => (width << (15 - self.members)) as u16,
+                    };
+                    let scope = ChannelScope {
+                        protocol: Protocol::Midi1,
+                        port: self.port,
+                        group: self.group,
+                        channels,
+                    };
+                    if index == 64 {
+                        runtime.sustain_scope(scope, value >= 64)?
+                    } else {
+                        runtime.sostenuto_scope(scope, value >= 64)?
+                    }
+                    Applied::Pedal
+                }
             }
             Message::Control {
                 index: 74,

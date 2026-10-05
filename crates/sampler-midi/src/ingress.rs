@@ -40,6 +40,8 @@ pub enum Applied {
     AllSoundOff {
         stopped: usize,
     },
+    /// A recognized message intentionally has no effect in this receiver mode.
+    Ignored,
     Unsupported,
 }
 

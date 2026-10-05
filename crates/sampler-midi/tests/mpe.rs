@@ -7,6 +7,9 @@ use sampler_midi::{Applied, ApplyError, Mpe, Packets, Zone};
 mod support;
 
 fn runtime() -> Runtime {
+    runtime_with_channels(4)
+}
+fn runtime_with_channels(channels: usize) -> Runtime {
     Runtime::new(
         Prepared::new(
             48000,
@@ -35,7 +38,7 @@ fn runtime() -> Runtime {
         .unwrap(),
         Limits {
             notes: 8,
-            channels: 4,
+            channels,
             families: 8,
             expressions: 8,
             voices: 8,
@@ -435,6 +438,124 @@ fn rpn_sensitivity_is_zone_wide_transactional_and_keeps_released_member_pitch() 
                 (rt.note_count(), rt.expression_count(), rt.voice_count()),
                 (0, 0, 0)
             );
+        });
+    }
+}
+
+#[test]
+fn manager_pedals_capture_the_zone_once_and_member_pedals_are_ignored() {
+    for (zone, manager, a, b) in [(Zone::Lower, 0, 1, 2), (Zone::Upper, 15, 14, 13)] {
+        let mut rt = runtime_with_channels(3);
+        let mut mpe = Mpe::new(&rt, 7, 3, zone, 2, 8).unwrap();
+        support::without_heap(|| {
+            let old = start(&mut mpe, &mut rt, a, 60);
+            assert_eq!(
+                apply(&mut mpe, &mut rt, packet(0xb0, manager, 64, 127)),
+                Ok(Applied::Pedal)
+            );
+            // Other protocol, port and group domains never inherit this pedal.
+            for (protocol, port, group) in [
+                (Protocol::Midi2, 7, 3),
+                (Protocol::Midi1, 8, 3),
+                (Protocol::Midi1, 7, 4),
+            ] {
+                let input = sampler_core::Input {
+                    protocol,
+                    port,
+                    group,
+                    channel: a,
+                    key: 60,
+                    external_id: None,
+                };
+                let outside = rt.trigger(input, 60, 1.0).unwrap();
+                rt.note_off(input).unwrap();
+                assert!(!rt.note(outside).unwrap().2);
+            }
+            apply(&mut mpe, &mut rt, packet(0x80, a, 60, 0)).unwrap();
+            let captured = start(&mut mpe, &mut rt, b, 60);
+            apply(&mut mpe, &mut rt, packet(0xb0, manager, 66, 127)).unwrap();
+            let late = start(&mut mpe, &mut rt, a, 61);
+            apply(&mut mpe, &mut rt, packet(0xb0, manager, 66, 127)).unwrap();
+            apply(&mut mpe, &mut rt, packet(0x80, b, 60, 0)).unwrap();
+            apply(&mut mpe, &mut rt, packet(0x80, a, 61, 0)).unwrap();
+            assert_eq!(
+                apply(&mut mpe, &mut rt, packet(0xb0, a, 64, 0)),
+                Ok(Applied::Ignored)
+            );
+            assert_eq!(
+                apply(&mut mpe, &mut rt, packet(0xb0, b, 66, 0)),
+                Ok(Applied::Ignored)
+            );
+            for note in [old, captured, late] {
+                assert!(rt.note(note).unwrap().2);
+            }
+            apply(&mut mpe, &mut rt, packet(0xb0, manager, 64, 0)).unwrap();
+            assert!(!rt.note(old).unwrap().2);
+            assert!(rt.note(captured).unwrap().2);
+            assert!(!rt.note(late).unwrap().2);
+            apply(&mut mpe, &mut rt, packet(0xb0, manager, 66, 0)).unwrap();
+            assert!(!rt.note(captured).unwrap().2);
+            rt.render(&mut [[0.0; 2]; 256]).unwrap();
+            rt.flush_ended(|_| true);
+            assert_eq!(
+                (rt.note_count(), rt.expression_count(), rt.voice_count()),
+                (0, 0, 0)
+            );
+        });
+    }
+}
+
+#[test]
+fn zone_pedal_admission_is_atomic_and_pedal_up_needs_no_channel_capacity() {
+    let mut rt = runtime_with_channels(2);
+    let mut mpe = Mpe::new(&rt, 7, 3, Zone::Lower, 2, 8).unwrap();
+    let address = ChannelAddress {
+        protocol: Protocol::Midi1,
+        port: 7,
+        group: 3,
+        channel: 1,
+    };
+    let channel = rt.register_channel(address).unwrap();
+    support::without_heap(|| {
+        let note = start(&mut mpe, &mut rt, 1, 60);
+        assert_eq!(
+            apply(&mut mpe, &mut rt, packet(0xb0, 0, 64, 127)),
+            Err(ApplyError::Core(Error::Capacity))
+        );
+        assert_eq!(rt.pedals(channel), Ok((false, false)));
+        // Failed zone admission did not consume the one remaining reservation.
+        let second = rt
+            .register_channel(ChannelAddress {
+                channel: 2,
+                ..address
+            })
+            .unwrap();
+        rt.sustain(channel, true).unwrap();
+        apply(&mut mpe, &mut rt, packet(0x80, 1, 60, 0)).unwrap();
+        assert!(rt.note(note).unwrap().2);
+        assert_eq!(
+            apply(&mut mpe, &mut rt, packet(0xb0, 0, 64, 0)),
+            Ok(Applied::Pedal)
+        );
+        assert_eq!(rt.pedals(channel), Ok((false, false)));
+        assert_eq!(rt.pedals(second), Ok((false, false)));
+        assert!(!rt.note(note).unwrap().2);
+        rt.render(&mut [[0.0; 2]; 256]).unwrap();
+        rt.flush_ended(|_| true);
+        assert_eq!(rt.note_count(), 0);
+    });
+    for (zone, manager, member) in [(Zone::Lower, 0, 15), (Zone::Upper, 15, 0)] {
+        let mut rt = runtime_with_channels(16);
+        let mut mpe = Mpe::new(&rt, 7, 3, zone, 15, 8).unwrap();
+        support::without_heap(|| {
+            apply(&mut mpe, &mut rt, packet(0xb0, manager, 64, 127)).unwrap();
+            let note = start(&mut mpe, &mut rt, member, 60);
+            apply(&mut mpe, &mut rt, packet(0x80, member, 60, 0)).unwrap();
+            assert!(rt.note(note).unwrap().2);
+            apply(&mut mpe, &mut rt, packet(0xb0, manager, 64, 0)).unwrap();
+            assert!(!rt.note(note).unwrap().2);
+            rt.panic();
+            rt.flush_ended(|_| true);
         });
     }
 }

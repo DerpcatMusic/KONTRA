@@ -69,8 +69,8 @@ compatibility remains a separate, evidence-backed capability.
   and callbacks, and control-thread retirement. Native WAV rendering and the
   deliberately small KSP source subset run independently of the old engine.
 - MIDI: UMP framing and MIDI 1/2 note/pedal/channel-mode ingress; separate fixed-zone
-  MPE pitch/pressure/CC74 and whole-semitone RPN sensitivity. Full MIDI 2 expression,
-  MPE zone configuration/modes/pedals and raw scripting interception remain open.
+  MPE pitch/pressure/CC74, whole-semitone RPN sensitivity and zone pedals. Full MIDI
+  2 expression, MPE zone configuration/modes and raw scripting interception remain open.
 - Product work remains substantial: modulation/filter/effect execution, streaming,
   richer selection/behavior/imports, host integration, persistence and UI. The
   production plugin/UI still uses the old core. There is no new-core DAW build yet.
