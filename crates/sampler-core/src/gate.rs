@@ -9,6 +9,24 @@ pub struct ChannelAddress {
     pub channel: u8,
 }
 
+/// A subset of one protocol/port/group's sixteen physical controller channels.
+/// Musical part/articulation selection is independent of this input scope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChannelScope {
+    pub protocol: Protocol,
+    pub port: u16,
+    pub group: u8,
+    pub channels: u16,
+}
+impl ChannelScope {
+    fn contains(self, address: ChannelAddress) -> bool {
+        self.protocol == address.protocol
+            && self.port == address.port
+            && self.group == address.group
+            && self.channels & (1 << address.channel) != 0
+    }
+}
+
 impl Input {
     pub fn channel_address(self) -> ChannelAddress {
         ChannelAddress {
@@ -71,6 +89,82 @@ impl Runtime {
 
     pub fn sostenuto(&mut self, channel: ChannelId, down: bool) -> Result<(), Error> {
         self.schedule_event(self.now, super::Event::Sostenuto(channel, down))
+    }
+
+    /// Apply a pedal to a channel set as one event. Pedal-down reserves every
+    /// missing channel before mutation; pedal-up never needs capacity. Empty sets
+    /// are no-ops. Due work runs before admission and cannot be rolled back.
+    pub fn sustain_scope(&mut self, scope: ChannelScope, down: bool) -> Result<(), Error> {
+        self.pedal_scope(scope, down, false)
+    }
+
+    pub fn sostenuto_scope(&mut self, scope: ChannelScope, down: bool) -> Result<(), Error> {
+        self.pedal_scope(scope, down, true)
+    }
+
+    fn pedal_scope(
+        &mut self,
+        scope: ChannelScope,
+        down: bool,
+        sostenuto: bool,
+    ) -> Result<(), Error> {
+        if scope.group >= 16 {
+            return Err(Error::InvalidInput);
+        }
+        self.apply_due();
+        if down {
+            let existing = self
+                .channels
+                .slots
+                .iter()
+                .filter_map(|slot| slot.value)
+                .filter(|channel| scope.contains(channel.address))
+                .fold(0u16, |mask, channel| mask | (1 << channel.address.channel));
+            let mut missing = scope.channels & !existing;
+            if missing.count_ones() as usize > self.channels.available() {
+                return Err(Error::Capacity);
+            }
+            while missing != 0 {
+                let channel = missing.trailing_zeros() as u8;
+                missing &= missing - 1;
+                self.channels
+                    .insert(Channel {
+                        address: ChannelAddress {
+                            protocol: scope.protocol,
+                            port: scope.port,
+                            group: scope.group,
+                            channel,
+                        },
+                        sustain: false,
+                        sostenuto: false,
+                    })
+                    .expect("preflighted controller-domain capacity");
+            }
+        }
+        let mut sustained = 0;
+        let mut rising = 0;
+        for slot in &mut self.channels.slots {
+            let Some(channel) = &mut slot.value else {
+                continue;
+            };
+            if !scope.contains(channel.address) {
+                continue;
+            }
+            let bit = 1 << channel.address.channel;
+            if sostenuto {
+                if down && !channel.sostenuto {
+                    rising |= bit
+                }
+                channel.sostenuto = down;
+            } else {
+                channel.sustain = down;
+            }
+            if channel.sustain {
+                sustained |= bit
+            }
+        }
+        self.update_pedal_notes(scope, sustained, rising, sostenuto, down);
+        Ok(())
     }
 
     /// Release every physically held input in one channel domain, respecting pedals.
@@ -186,22 +280,43 @@ impl Runtime {
         } else {
             c.sustain = down;
         }
-        let channel = *c;
+        let address = c.address;
+        let bit = 1 << address.channel;
+        let sustained = if c.sustain { bit } else { 0 };
+        let rising = if rising { bit } else { 0 };
+        let scope = ChannelScope {
+            protocol: address.protocol,
+            port: address.port,
+            group: address.group,
+            channels: bit,
+        };
+        self.update_pedal_notes(scope, sustained, rising, sostenuto, down);
+    }
+
+    fn update_pedal_notes(
+        &mut self,
+        scope: ChannelScope,
+        sustained: u16,
+        rising: u16,
+        sostenuto: bool,
+        down: bool,
+    ) {
         for slot in &mut self.notes.slots {
             let Some(n) = &mut slot.value else { continue };
-            if !n
+            let Some(input) = n
                 .input
-                .is_some_and(|i| i.channel_address() == channel.address)
-            {
+                .filter(|input| scope.contains(input.channel_address()))
+            else {
                 continue;
-            }
-            if rising && n.key_down && n.gate {
+            };
+            let bit = 1 << input.channel;
+            if rising & bit != 0 && n.key_down && n.gate {
                 n.sostenuto = true;
             }
             if sostenuto && !down {
                 n.sostenuto = false;
             }
-            if !n.key_down && !channel.sustain && !n.sostenuto {
+            if !n.key_down && sustained & bit == 0 && !n.sostenuto {
                 n.gate = false;
             }
         }

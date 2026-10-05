@@ -183,7 +183,7 @@ on the local Ryzen 7800X3D measured medians 0.85/3.38/13.78 microseconds for
 the median was 1.62 microseconds. These are local observations, not deadlines or
 full audio callback guarantees; CSV is `artifacts/mpe-expression-workload.csv`.
 
-MCM configuration, fractional/relative RPN, zone pedals/modes and ordinary
+MCM configuration, fractional/relative RPN, zone channel modes and ordinary
 MIDI 2.0 expression routing remain unsupported. Do not forward
 unsupported zone controls to ordinary channel ingress as a substitute. Source
 rate limits can reject otherwise valid MPE pitches; the current 1/256..16 source
@@ -246,3 +246,27 @@ and exact restoration after zero sensitivity. Release, Clippy and MSRV checks
 remain the validation gate. The separate gesture workload still measured roughly
 14.9/10.4/10.3 microseconds at 1024 notes for pitch/pressure/timbre; local evidence
 uses `artifacts/mpe-rpn-*` and excludes rendering.
+
+### Zone sustain and sostenuto
+
+Manager CC64/66 now apply to all member channels and the manager in one native
+`ChannelScope` event. The scope names a protocol/port/group and a 16-bit physical
+channel set; it does not define musical part or articulation routing. Member
+CC64/66 returns `Applied::Ignored` without changing controller state, following
+section 2.3.1. Unimplemented channel-mode messages remain unsupported; in particular,
+Appendix E prohibits manager CC120, so it must not be approximated as zone panic.
+
+Pedal-down preflights all missing controller domains before registering or changing
+any of them. The scope requires at most `members + 1` channel reservations, which
+also retain the pedal value for future notes. Pedal-up changes existing domains
+without reserving absent channels, so capacity cannot strand held notes. Channel
+values are updated together, followed by one note walk and ordinary release/cleanup.
+Sostenuto tracks rising edges per channel; repeated down does not recapture later
+notes. The single-channel and scope paths share the note-gating implementation.
+
+Tests cover both zones, sustain-held versus physically held keys, selective
+sostenuto capture, ignored member pedals, protocol/port/group isolation, failed
+whole-zone reservation without partial state or leaked slots, pedal-up under full
+capacity, and full fifteen-member masks. Existing core gate, scheduler, behavior,
+plan and MIDI checks still pass under the shared implementation. All event,
+rendering and cleanup checks retain allocation/deallocation guards.

@@ -31,7 +31,7 @@ Family/expression ownership and segmented rendering now have
   expression/source admission invariants and initial expression installed before
   bound programs/source selection. Pitch ramps remain open.
 - [x] Add bounded fixed-zone MPE note/pitch/pressure/timbre projection, physical key-up snapshots,
-  runtime identity, whole-semitone RPN sensitivity and atomic whole-zone gestures; [partial receiver scope](MIDI_INGRESS.md).
+  runtime identity, whole-semitone RPN sensitivity, zone pedals and atomic gestures; [partial receiver scope](MIDI_INGRESS.md).
 
 ## M0 — contracts and measurable targets
 
