@@ -10,7 +10,7 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
-- Compile full-resolution controller conjunctions into native attack/key/gate selection, with coherent onset/current policies, shared microphone predicates and transactional take decisions. Release capacity remains conservatively reserved across controller conditions.
+- Compile full-resolution controller conjunctions into native attack/key/gate selection, with coherent onset/current policies, shared microphone predicates and transactional take decisions. Control-time interval projections bound controller release overlap without a Cartesian state table; correlated multi-controller cases can remain conservative.
 
 - Retain coherent articulation and full-resolution controller snapshots in a bounded shared-version pool. MIDI/MPE effective controller updates preserve note onset state without callback allocation; pedal publication and scope admission are atomic.
 

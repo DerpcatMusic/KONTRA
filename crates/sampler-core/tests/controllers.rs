@@ -441,6 +441,207 @@ fn same_time_controller_and_release_order_is_audible_and_partition_invariant() {
         }
     }
 }
+
+#[test]
+fn exclusive_controller_release_groups_fit_the_actual_mic_budget_including_max_value() {
+    for policy in [SelectionPolicy::Onset, SelectionPolicy::Current] {
+        let mut regions = vec![region(0); 65];
+        // A common microphone overlaps every exclusive controller group.
+        regions[0].gain = 0.5;
+        let mut conditions = vec![vec![]];
+        for i in 0..64 {
+            let value = if i == 63 { u32::MAX } else { i };
+            conditions.push(vec![ControllerCondition {
+                controller: 1,
+                low: value,
+                high: value,
+            }]);
+        }
+        let plan = Prepared::new(
+            48000,
+            vec![Pcm::new(48000, Box::from([[0.5; 2]])).unwrap()],
+            regions,
+            65,
+        )
+        .unwrap()
+        .with_controllers(conditions, 64)
+        .unwrap()
+        .with_releases(
+            vec![Trigger::GateRelease; 65],
+            ReleaseOptions::default(),
+            ReleaseOptions::default(),
+        )
+        .unwrap()
+        .with_release_selection(policy, policy);
+        let mut budget = limits();
+        budget.voices = 2;
+        budget.families = 1;
+        let mut rt = Runtime::new(plan, budget).unwrap();
+        support::without_heap(|| {
+            let domain = rt.performance(0).unwrap();
+            for value in [0, 62, 63, u32::MAX] {
+                rt.set_controller(domain, 1, value).unwrap();
+                let note = rt.trigger(input(0), 60, 1.).unwrap();
+                assert_eq!(rt.release_reserve().voices, 2);
+                assert_eq!(rt.trigger(input(1), 60, 1.), Err(Error::Capacity));
+                rt.set_controller(domain, 1, u32::MAX).unwrap();
+                rt.key_up(note, None).unwrap();
+                let mut out = [[0.; 2]];
+                rt.render(&mut out).unwrap();
+                let expected = if policy == SelectionPolicy::Onset && value == 63 {
+                    0.25
+                } else {
+                    0.75
+                };
+                assert_eq!(out, [[expected; 2]]);
+                assert_eq!(rt.release_reserve().voices, 0);
+                rt.flush_ended(|_| true);
+            }
+        });
+    }
+}
+
+#[test]
+fn projected_controller_reserves_cover_an_independent_multidimensional_release_grid() {
+    let mut authored = Vec::new();
+    let mut conditions = Vec::new();
+    let mut arts = Vec::new();
+    let mut takes = Vec::new();
+    let mut regions = Vec::new();
+    // Include absent constraints, overlapping inclusive ranges and independent
+    // take groups. The reference below evaluates original authoring data directly.
+    for i in 0..48usize {
+        let a = ((i * 7) % 4) as u32;
+        let b = ((i * 11 + 1) % 4) as u32;
+        let first = (a.min(b), a.max(b));
+        let second = if i % 3 == 0 {
+            None
+        } else {
+            Some(((i % 3) as u32, 3))
+        };
+        let art = if i % 5 == 0 {
+            None
+        } else {
+            Some((i % 2) as u32)
+        };
+        let sequence = (i / 4) % 2;
+        let take = (i % 2) as u32;
+        let low = if i % 4 == 0 { 0.5 } else { 0. };
+        let high = if i % 4 == 1 { 0.5 } else { 1. };
+        authored.push((first, second, art, sequence, take, low, high));
+        let mut set = vec![ControllerCondition {
+            controller: 1,
+            low: first.0,
+            high: first.1,
+        }];
+        if let Some((low, high)) = second {
+            set.push(ControllerCondition {
+                controller: 127,
+                low,
+                high,
+            });
+        }
+        conditions.push(set);
+        arts.push(art);
+        takes.push(Some(Take {
+            sequence,
+            index: take,
+        }));
+        regions.push(Region {
+            velocity_low: low,
+            velocity_high: high,
+            ..region(0)
+        });
+    }
+    let plan = Prepared::new(
+        48000,
+        vec![Pcm::new(48000, Box::from([[0.03125; 2]])).unwrap()],
+        regions,
+        48,
+    )
+    .unwrap()
+    .with_controllers(conditions, 96)
+    .unwrap()
+    .with_articulations(arts, vec![], SelectionPolicy::Onset, SelectionPolicy::Onset)
+    .unwrap()
+    .with_variation(
+        vec![
+            Sequence {
+                takes: 2,
+                scope: SequenceScope::Global,
+                capacity: 1,
+                policy: TakePolicy::Sequential
+            };
+            2
+        ],
+        takes,
+        2,
+        0,
+    )
+    .unwrap()
+    .with_releases(
+        vec![Trigger::GateRelease; 48],
+        ReleaseOptions::default(),
+        ReleaseOptions::default(),
+    )
+    .unwrap();
+    let mut budget = limits();
+    budget.voices = 48;
+    budget.families = 2;
+    budget.decisions = 2;
+    let mut rt = Runtime::new(plan, budget).unwrap();
+    support::without_heap(|| {
+        let domain = rt.performance(0).unwrap();
+        let mut counters = [0u32; 2];
+        for cc1 in 0..4 {
+            for cc127 in 0..4 {
+                for art in 0..2 {
+                    for velocity in [0., 0.5, 1.] {
+                        rt.set_controller(domain, 1, cc1).unwrap();
+                        rt.set_controller(domain, 127, cc127).unwrap();
+                        rt.set_articulation(domain, art).unwrap();
+                        let mut count = 0;
+                        let mut expected = [None; 2];
+                        for group in 0..2 {
+                            let mut eligible = false;
+                            for &(a, b, tag, sequence, take, low, high) in &authored {
+                                if sequence == group
+                                    && a.0 <= cc1
+                                    && cc1 <= a.1
+                                    && b.is_none_or(|(low, high)| low <= cc127 && cc127 <= high)
+                                    && tag.is_none_or(|tag| tag == art)
+                                    && low <= velocity
+                                    && velocity <= high
+                                {
+                                    eligible = true;
+                                    count += usize::from(take == counters[group]);
+                                }
+                            }
+                            if eligible {
+                                expected[group] = Some(counters[group]);
+                                counters[group] ^= 1;
+                            }
+                        }
+                        let note = rt.trigger(input(0), 60, velocity).unwrap();
+                        assert!(rt.release_reserve().voices >= count);
+                        rt.key_up(note, None).unwrap();
+                        assert_eq!(rt.voice_count(), count);
+                        for (group, take) in expected.into_iter().enumerate() {
+                            assert_eq!(
+                                rt.note_take(note, Trigger::GateRelease, group).unwrap(),
+                                take
+                            );
+                        }
+                        let mut out = [[0.; 2]];
+                        rt.render(&mut out).unwrap();
+                        assert_eq!(out, [[count as f32 * 0.03125 * velocity as f32; 2]]);
+                        rt.flush_ended(|_| true);
+                    }
+                }
+            }
+        }
+    });
+}
 fn runtime() -> Runtime {
     Runtime::new(Prepared::new(48000, vec![], vec![], 0).unwrap(), limits()).unwrap()
 }

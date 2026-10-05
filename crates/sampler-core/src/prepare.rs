@@ -606,6 +606,11 @@ impl Prepared {
             };
             maximum = maximum.maximum(active);
         }
+        if !self.conditions.is_empty() {
+            maximum.voices = maximum
+                .voices
+                .min(self.controller_release_bound(key, trigger));
+        }
         maximum
     }
 

@@ -26,7 +26,6 @@ fn main() {
     let articulations = if articulated { 64 } else { 1 };
     let controlled = args.iter().any(|arg| arg == "--controllers");
     let controllers = if controlled { 64 } else { 1 };
-    let reserved_phases = 1 + usize::from(with_releases) * controllers;
     if args.len()
         != usize::from(identified)
             + usize::from(variation)
@@ -153,7 +152,7 @@ fn main() {
                 families: reserved / 4 * phases,
                 decisions: if variation { reserved / 4 * phases } else { 0 },
                 expressions: reserved / 4,
-                voices: reserved * reserved_phases,
+                voices: reserved * phases,
                 commands: 0,
                 behaviors: 0,
                 behavior_fuel: 0,
@@ -238,7 +237,7 @@ fn main() {
         println!(
             "{variation},{identified},{notes},{},{},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3}",
             notes * 4,
-            reserved * reserved_phases,
+            reserved * phases,
             times[64] as f64 / 1000.0,
             times[126] as f64 / 1000.0,
             releases[64] as f64 / 1000.0,

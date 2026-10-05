@@ -174,12 +174,25 @@ all possible future controller conditions so later cleanup cannot introduce an
 invalid playback rate. Generated delayed children retain the original mapping but
 capture their own current domain version after replacement.
 
-Release reserves remain deliberately conservative for controller predicates:
-control preparation counts their possible overlap without solving correlations
-between several controller ranges. For example, 64 mutually exclusive CC groups
-may reserve capacity for all 64 at release, although only one sounds. Exact per-note
-reservation tightening or a compiled bound for such correlations is remaining
-performance work; it must preserve unconditional cleanup guarantees.
+Release preparation now bounds controller overlap by projecting each independent
+sequence group onto every CC it uses. Each projection ignores the other conditions,
+so its maximum simultaneous overlap is a safe upper bound. The minimum of these
+bounds is still safe; summing independent groups and taking the minimum with the
+existing velocity/articulation sweep tightens the final source quota. It does not
+reduce family/decision/command bounds without separate evidence. Missing CC
+conditions cover the full range; a `u64` exclusive end represents `u32::MAX + 1`
+without wrapping. Each take is swept separately, with shared inclusive endpoints
+counted as overlapping.
+
+The 64 mutually exclusive CC groups in the admission workload now reserve only
+one group's microphones. General multi-controller correlations may still make the
+bound conservative: this is a set of one-dimensional projections, not a Cartesian
+solver or per-note callback calculation. All allocation/sorting stays in control
+preparation; the runtime reservation/admission contract is unchanged.
+
+Two additional guarded tests exercise 64 exclusive groups plus an unconditional
+mic at exact source capacity, including `u32::MAX`, and an independent grid over
+two CCs, articulation, velocity, independent sequences and alternating takes.
 
 [Admission measurements](RENDER_WORKLOADS.md#controller-snapshots-and-predicate-selection-cost)
 record both added cost and the conservative reservation geometry.
