@@ -121,6 +121,7 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
         behaviors: 1,
         behavior_fuel: 8,
         behavior_cells: 1,
+        note_cells: 0,
     };
     let (rt, replacement) = if let Some(sample) = replacement_sample {
         let prepared = prepare_sample(sample, false, true)?;

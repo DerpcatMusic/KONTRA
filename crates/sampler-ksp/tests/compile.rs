@@ -51,6 +51,7 @@ fn authored_script_uses_new_native_ownership_after_input_release_without_heap() 
                     behaviors: 1,
                     behavior_fuel: 8,
                     behavior_cells: 0,
+                    note_cells: 0,
                 },
             )
             .unwrap();

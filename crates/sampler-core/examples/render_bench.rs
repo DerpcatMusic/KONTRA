@@ -38,6 +38,7 @@ fn main() {
                 behaviors: 0,
                 behavior_fuel: 0,
                 behavior_cells: 0,
+                note_cells: 0,
             },
         )
         .unwrap();

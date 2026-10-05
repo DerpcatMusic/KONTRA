@@ -139,6 +139,8 @@ pub struct Limits {
     pub behaviors: usize,
     pub behavior_fuel: usize,
     pub behavior_cells: usize,
+    /// Total note-owned integer cells, divided evenly across logical note slots.
+    pub note_cells: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -345,6 +347,8 @@ pub struct Runtime {
     behavior_fuel: usize,
     behavior_stride: usize,
     behavior_locals: Box<[i64]>,
+    note_stride: usize,
+    note_values: Box<[i64]>,
     executing_due: bool,
     command_limit: usize,
     reserved_commands: usize,
@@ -364,6 +368,12 @@ impl Runtime {
         if limits.notes == 0 || limits.performances == 0 {
             return Err(Error::InvalidInput);
         }
+        let note_stride = limits.note_cells / limits.notes;
+        if plan.note_cells > note_stride {
+            return Err(Error::Capacity);
+        }
+        let note_cells = note_stride * limits.notes;
+        std::alloc::Layout::array::<i64>(note_cells).map_err(|_| Error::Capacity)?;
         let behavior_stride = limits
             .behavior_cells
             .checked_div(limits.behaviors)
@@ -424,6 +434,8 @@ impl Runtime {
             order: 0,
             nonfinite_frames: 0,
             // Keep cold payload allocation after the frequently traversed pools.
+            note_stride,
+            note_values: vec![0; note_cells].into_boxed_slice(),
             release_times: vec![release::ReleaseTimes::default(); limits.notes].into_boxed_slice(),
             selections: vec![performance::NoteSelection::default(); limits.notes]
                 .into_boxed_slice(),
@@ -655,6 +667,9 @@ impl Runtime {
                 return Err(error);
             }
         };
+        let begin = id.index * self.note_stride;
+        let cells = self.plans.get(plan.0).unwrap().prepared.note_cells;
+        self.note_values[begin..begin + cells].fill(0);
         self.selections[id.index] = performance::NoteSelection {
             performance,
             snapshot: self.performance_state.capture(performance),

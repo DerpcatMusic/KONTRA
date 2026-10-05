@@ -36,6 +36,7 @@ fn runtime(frames: usize, commands: usize) -> Runtime {
             behaviors: 0,
             behavior_fuel: 0,
             behavior_cells: 0,
+            note_cells: 0,
         },
     )
     .unwrap()
@@ -184,6 +185,7 @@ fn choke_preserves_loop_phase_and_muted_tail_duration() {
                 behaviors: 0,
                 behavior_fuel: 0,
                 behavior_cells: 0,
+                note_cells: 0,
             },
         )
         .unwrap();

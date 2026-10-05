@@ -48,6 +48,7 @@ fn runtime(plan: Prepared) -> Runtime {
             behaviors: 0,
             behavior_fuel: 0,
             behavior_cells: 0,
+            note_cells: 0,
         },
     )
     .unwrap()
@@ -577,6 +578,7 @@ fn absolute_pitch_overrides_tuning_and_survives_generated_note_transposition() {
                     behaviors: 1,
                     behavior_fuel: 8,
                     behavior_cells: 0,
+                    note_cells: 0,
                 },
             )
             .unwrap();
@@ -865,6 +867,7 @@ fn initial_expression_precedes_selection_and_immediate_snapshot_programs() {
             behaviors: 1,
             behavior_fuel: 4,
             behavior_cells: 0,
+            note_cells: 0,
         },
     )
     .unwrap();
