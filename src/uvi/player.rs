@@ -282,9 +282,10 @@ impl<'a> Player<'a> {
             // The preload is the prefix; authored onLoad/changed/onInit commands
             // follow it and therefore retain final native initialization authority.
             renderer.install_prepared_samples(resources.samples())?;
-            renderer.apply_boundary(
+            renderer.apply_boundary_with_sustain_routes(
                 &processed.commands,
                 hosted.then_some(processed.command_roots.as_slice()),
+                &processed.sustain_layers,
                 &processed.host_commands,
             )?;
             super::sample::check_cancel(stop)?;
@@ -391,9 +392,10 @@ impl<'a> Player<'a> {
                     .install_prepared_samples(self.resources.samples())?;
                 self.resource_revision = self.resources.revision();
             }
-            self.renderer.apply_boundary(
+            self.renderer.apply_boundary_with_sustain_routes(
                 &processed.commands,
                 self.hosted.then_some(processed.command_roots.as_slice()),
+                &processed.sustain_layers,
                 &processed.host_commands,
             )?;
             self.session.validate_final_pan_laws()?;
@@ -571,16 +573,13 @@ impl<'a> Player<'a> {
                         .install_prepared_samples(self.resources.samples())?;
                     self.resource_revision = self.resources.revision();
                 }
-                if self.hosted {
-                    self.renderer.render_with_roots(
-                        &processed.commands,
-                        &processed.command_roots,
-                        &processed.host_commands,
-                        frames,
-                    )
-                } else {
-                    self.renderer.render(&processed.commands, &processed.host_commands, frames)
-                }
+                self.renderer.render_with_sustain_routes(
+                    &processed.commands,
+                    self.hosted.then_some(processed.command_roots.as_slice()),
+                    &processed.sustain_layers,
+                    &processed.host_commands,
+                    frames,
+                )
             })();
             self.packet_activity.renderer_ns = elapsed_ns(started);
             let audio = audio_result?;
