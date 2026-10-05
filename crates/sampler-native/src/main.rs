@@ -44,6 +44,7 @@ fn prepare_sample(sample: Pcm, scripted: bool, demo: bool) -> io::Result<Prepare
             sample: 0,
             key_low: if scripted { 0 } else { 60 },
             key_high: if scripted { 127 } else { 60 },
+            root_key: None,
             velocity_low: 0.0,
             velocity_high: 1.0,
             gain: 1.0,

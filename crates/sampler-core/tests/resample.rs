@@ -23,6 +23,7 @@ fn prepare(pcm: Pcm, rate: u32, playback: Playback) -> Result<Prepared, Error> {
             sample: 0,
             key_low: 60,
             key_high: 60,
+            root_key: None,
             velocity_low: 0.0,
             velocity_high: 1.0,
             gain: 1.0,
@@ -258,4 +259,115 @@ fn downsampling_rejects_above_output_nyquist_and_invalid_ratios() {
             Err(Error::InvalidInput)
         ));
     }
+}
+
+#[test]
+fn prepared_key_tracking_uses_logical_keys_and_keeps_exact_root_pitch() {
+    for key in [59, 60, 61, 72] {
+        let frames: Box<[_]> = (0..4096)
+            .map(|i| {
+                let phase = 2.0 * PI * 0.037 * i as f64;
+                [phase.cos() as f32, phase.sin() as f32]
+            })
+            .collect();
+        let reference = frames.clone();
+        let plan = Prepared::new(
+            48000,
+            vec![Pcm {
+                rate: 48000,
+                frames,
+            }],
+            vec![Region {
+                sample: 0,
+                key_low: 59,
+                key_high: 72,
+                root_key: Some(60),
+                velocity_low: 0.0,
+                velocity_high: 1.0,
+                gain: 1.0,
+                envelope: Envelope::default(),
+                playback: Playback {
+                    start: 512,
+                    ..Playback::default()
+                },
+            }],
+            14,
+        )
+        .unwrap();
+        let mut rt = runtime(plan);
+        let mut audio = [[0.0; 2]; 256];
+        support::without_heap(|| {
+            // The physical address stays key 60 even when the musical key differs.
+            let note = rt.trigger(input(), key, 1.0).unwrap();
+            rt.render(&mut [[0.0; 2]; 128]).unwrap();
+            rt.render(&mut audio).unwrap();
+            assert_eq!(rt.note_off(input()), Ok(note));
+            rt.flush_ended(|ended| {
+                assert_eq!(ended, input());
+                true
+            });
+            assert_eq!(rt.note_count(), 0);
+        });
+        if key == 60 {
+            assert_eq!(
+                audio.as_slice(),
+                &reference[640..896],
+                "root note lost direct-read exactness"
+            );
+        } else {
+            let step = ((f64::from(key) - 60.0) / 12.0).exp2();
+            for (i, frame) in audio.iter().enumerate() {
+                let phase = 2.0 * PI * 0.037 * (512.0 + (128 + i) as f64 * step);
+                assert!((f64::from(frame[0]) - phase.cos()).abs() < 0.0001);
+                assert!((f64::from(frame[1]) - phase.sin()).abs() < 0.0001);
+            }
+        }
+    }
+    let region = Region {
+        sample: 0,
+        key_low: 60,
+        key_high: 60,
+        root_key: Some(72),
+        velocity_low: 0.0,
+        velocity_high: 1.0,
+        gain: 1.0,
+        envelope: Envelope::default(),
+        playback: Playback {
+            transpose_semitones: 48.0,
+            ..Playback::default()
+        },
+    };
+    // Only mapped keys need to be playable; the unselected root can lie outside
+    // the supported source/output ratio, while the authored key is exactly step 16.
+    let sample = || {
+        vec![Pcm {
+            rate: 96000,
+            frames: Box::from([[0.25; 2]; 128]),
+        }]
+    };
+    assert!(Prepared::new(48000, sample(), vec![region], 1).is_ok());
+    assert!(matches!(
+        Prepared::new(
+            48000,
+            sample(),
+            vec![Region {
+                key_high: 61,
+                ..region
+            }],
+            2
+        ),
+        Err(Error::InvalidInput)
+    ));
+    assert!(matches!(
+        Prepared::new(
+            48000,
+            sample(),
+            vec![Region {
+                root_key: Some(128),
+                ..region
+            }],
+            1
+        ),
+        Err(Error::InvalidInput)
+    ));
 }

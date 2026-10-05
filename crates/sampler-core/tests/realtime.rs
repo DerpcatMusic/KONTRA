@@ -190,6 +190,7 @@ fn prepared_native_selection_and_owned_asset_retirement_do_no_heap_work() {
                 sample: 0,
                 key_low: 0,
                 key_high: 127,
+                root_key: None,
                 velocity_low: 0.0,
                 velocity_high: 1.0,
                 gain: 1.0

@@ -25,6 +25,7 @@ fn runtime(envelope: Envelope, frames: usize) -> Runtime {
             sample: 0,
             key_low: 60,
             key_high: 60,
+            root_key: None,
             velocity_low: 0.0,
             velocity_high: 1.0,
             gain: 1.0,

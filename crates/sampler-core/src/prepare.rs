@@ -7,13 +7,15 @@ pub struct Pcm {
     pub frames: Box<[Frame]>,
 }
 
-/// Native fixed-pitch resident region. Playback metadata belongs to the region;
+/// Native resident region with optional equal-tempered root-key tracking.
 /// PCM can be shared by regions with independent ranges, directions and loops.
 #[derive(Clone, Copy, Debug)]
 pub struct Region {
     pub sample: usize,
     pub key_low: u8,
     pub key_high: u8,
+    /// Equal-tempered key tracking; None keeps the source at its authored pitch.
+    pub root_key: Option<u8>,
     pub velocity_low: f64,
     pub velocity_high: f64,
     pub gain: f32,
@@ -32,12 +34,18 @@ struct PreparedRegion {
     cursor: super::source::Cursor,
 }
 
+#[derive(Clone, Copy)]
+struct Candidate {
+    region: usize,
+    step: f64,
+}
+
 pub struct Prepared {
     pub(super) rate: u32,
     pub(super) pcm: Box<[Pcm]>,
     regions: Box<[PreparedRegion]>,
     offsets: [usize; 129],
-    candidates: Box<[usize]>,
+    candidates: Box<[Candidate]>,
     pub(super) programs: Box<[super::Program]>,
     note_program: Option<usize>,
 }
@@ -66,6 +74,7 @@ impl Prepared {
             if r.sample >= pcm.len()
                 || r.key_low > r.key_high
                 || r.key_high >= 128
+                || r.root_key.is_some_and(|key| key >= 128)
                 || !r.velocity_low.is_finite()
                 || !r.velocity_high.is_finite()
                 || r.velocity_low < 0.0
@@ -76,9 +85,11 @@ impl Prepared {
             {
                 return Err(Error::InvalidInput);
             }
-            let cursor = r
-                .playback
-                .cursor(pcm[r.sample].frames.len(), pcm[r.sample].rate, rate)?;
+            let mut playback = r.playback;
+            if let Some(root) = r.root_key {
+                playback.transpose_semitones += f64::from(r.key_low) - f64::from(root);
+            }
+            let cursor = playback.cursor(pcm[r.sample].frames.len(), pcm[r.sample].rate, rate)?;
             count = count
                 .checked_add(usize::from(r.key_high - r.key_low) + 1)
                 .ok_or(Error::Capacity)?;
@@ -98,12 +109,21 @@ impl Prepared {
         let mut candidates = Vec::with_capacity(count);
         for key in 0..128 {
             offsets[key as usize] = candidates.len();
-            candidates.extend(
-                regions
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, r)| (r.key_low <= key && key <= r.key_high).then_some(i)),
-            );
+            for (region, r) in regions.iter().enumerate() {
+                if r.key_low <= key && key <= r.key_high {
+                    let step = if let Some(root) = r.root_key {
+                        let mut playback = r.playback;
+                        playback.transpose_semitones += f64::from(key) - f64::from(root);
+                        playback.step(pcm[r.sample].rate, rate)
+                    } else {
+                        prepared_regions[region].cursor.step()
+                    };
+                    if !(super::resample::MIN_STEP..=super::resample::MAX_STEP).contains(&step) {
+                        return Err(Error::InvalidInput);
+                    }
+                    candidates.push(Candidate { region, step });
+                }
+            }
         }
         offsets[128] = candidates.len();
         Ok(Self {
@@ -148,7 +168,7 @@ impl Prepared {
     fn matches(&self, key: u8, velocity: f64) -> impl Iterator<Item = &PreparedRegion> {
         self.candidates[self.offsets[key as usize]..self.offsets[key as usize + 1]]
             .iter()
-            .map(|&i| &self.regions[i])
+            .map(|candidate| &self.regions[candidate.region])
             .filter(move |r| r.velocity_low <= velocity && velocity <= r.velocity_high)
     }
 }
@@ -231,7 +251,8 @@ impl Runtime {
         let end = prepared.offsets[key as usize + 1];
         for i in begin..end {
             let prepared = &self.plans.get(plan.0).unwrap().prepared;
-            let r = prepared.regions[prepared.candidates[i]];
+            let candidate = prepared.candidates[i];
+            let r = prepared.regions[candidate.region];
             if r.velocity_low <= velocity && velocity <= r.velocity_high {
                 self.admit_voice(
                     family,
@@ -239,7 +260,7 @@ impl Runtime {
                     self.now,
                     r.gain * velocity as f32,
                     r.envelope,
-                    r.cursor,
+                    r.cursor.with_step(candidate.step),
                 )
                 .expect("prepared and preflighted source admission");
             }

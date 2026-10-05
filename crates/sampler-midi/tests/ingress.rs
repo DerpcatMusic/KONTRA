@@ -15,6 +15,7 @@ fn runtime() -> Runtime {
                 sample: 0,
                 key_low: 60,
                 key_high: 60,
+                root_key: None,
                 velocity_low: 0.,
                 velocity_high: 1.,
                 gain: 1.,
