@@ -730,7 +730,7 @@ impl State {
         let hosted = self.root_activation.is_some();
         if hosted { assert_eq!(commands.len(), roots.len()); } else { assert!(roots.is_empty()); }
         if self.capture_sustain_routes { assert_eq!(commands.len(), layers.len()); } else { assert!(layers.is_empty()); }
-        let mut ready = Vec::new();
+        let mut ready = Vec::with_capacity(commands.len());
         for (index, command) in commands.into_iter().enumerate() {
             let root = if hosted { roots[index] } else { None };
             let layer = if self.capture_sustain_routes { layers[index] } else { None };
@@ -744,8 +744,8 @@ impl State {
         }
         ready.sort_by_key(|(command, _, _)| command.frame);
         let mut commands = Vec::with_capacity(ready.len());
-        let mut roots = Vec::new();
-        let mut layers = Vec::new();
+        let mut roots = if hosted { Vec::with_capacity(ready.len()) } else { Vec::new() };
+        let mut layers = if self.capture_sustain_routes { Vec::with_capacity(ready.len()) } else { Vec::new() };
         for (command, root, layer) in ready {
             commands.push(command);
             if hosted { roots.push(root); }

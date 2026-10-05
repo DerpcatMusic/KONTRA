@@ -6751,5 +6751,5 @@ mod source_setting_attribution_proof {
 }
 
 #[cfg(test)]
-#[path = "/tmp/kontakto-overnight-handoff/uvi-terminal-sustain-regression/regression-after.rs"]
+#[path = "terminal_sustain_external_tests.rs"]
 mod terminal_sustain_reference_tests;

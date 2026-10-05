@@ -185,6 +185,14 @@ impl Cursor {
 
     pub fn unlimited(&self, data: &Rows) -> bool { self.index < data.len && self.remaining <= 0 }
 
+    /// Later rows cannot require a kernel behind a permanent current loop.
+    pub fn crossfaded(&self, data: &Rows) -> bool {
+        if self.index < data.len && self.remaining <= 0 && !data.rows[self.index].until_release {
+            return data.rows[self.index].xfade != 0;
+        }
+        data.crossfaded()
+    }
+
     pub fn active(&self) -> bool { self.index < self.len }
 
     /// Current physical row, with native left/right support permissions.
