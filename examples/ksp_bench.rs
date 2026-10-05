@@ -79,11 +79,11 @@ impl Counter {
 
     fn read(&self) -> u64 {
         unsafe extern "C" {
-            fn read(fd: i32, buf: *mut u64, n: usize) -> isize;
+            fn read(fd: i32, buf: *mut std::ffi::c_void, n: usize) -> isize;
         }
         let mut value = 0;
         // SAFETY: reads one u64 count from the counter's descriptor.
-        unsafe { read(self.0, &mut value, 8) };
+        unsafe { read(self.0, std::ptr::from_mut(&mut value).cast(), 8) };
         value
     }
 }

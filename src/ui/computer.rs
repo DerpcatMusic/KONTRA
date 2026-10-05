@@ -70,7 +70,7 @@ impl Computer {
             return false;
         };
         let step = |a: &AtomicU8, f: &dyn Fn(u8) -> u8| {
-            let _ = a.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| Some(f(v)));
+            let _ = a.try_update(Ordering::Relaxed, Ordering::Relaxed, |v| Some(f(v)));
         };
         match c {
             'z' => step(&self.octave, &|o| o.saturating_sub(1)),
