@@ -35,6 +35,14 @@ voice cancellation occurs. A returned request ID reports activation to the calle
 
 ## Destruction domain
 
+`Pcm::new` validates nonzero rate, nonempty frames and finite samples once, taking
+the original boxed buffer without copying it. Its opaque immutable handle uses
+`Arc` to share that buffer between independently prepared plans. Construction,
+cloning and destruction belong on control; rendering borrows a slice and performs
+no reference-count operation. There is no global cache, path deduplication or
+streaming implied by sharing. Region and source constraints are still validated
+for every prepared plan.
+
 An inactive generation becomes eligible only after its last logical note retires.
 Rejected terminal notifications, physical keys, tails, descendants, manual pins and
 unaccepted behavior outcomes can all delay that retirement. `collect_retired_plans`
@@ -83,6 +91,20 @@ are cleared on admission. Sample-rate changes still require a new runtime.
 - Sixty-four transfers across an actual control thread. That thread destroys each
   returned plan; guarded audio operations adopt, render and retire without heap
   allocation or deallocation. Test synchronization is outside those operations.
+- Shared PCM keeps its original buffer address across handle cloning, plan adoption
+  and control-side destruction of the old generation. The surviving plan renders
+  exact audio after caller handles and the retired plan have been dropped.
+
+`cargo run --release --locked -p sampler-core --example prepare_workload` measures
+one-time PCM validation separately from repeated one-region preparation. On the
+local Ryzen 7800X3D pinned to CPU 2, median preparation was 0.22–0.28 microseconds
+for buffers from one frame to 1,048,576 frames (8 MiB); validation of the largest
+buffer took 541 microseconds. Preparation includes handle cloning and metadata
+allocation, with plan destruction outside timing. Three paired audible render
+runs against the preceding implementation measured a configuration-median speed
+ratio of 0.972 (range 0.903–1.036). The extra ownership indirection is not claimed
+to be free. Local CSV evidence is `artifacts/shared-pcm-*`; these are microbenchmarks,
+not host latency guarantees.
 
 The authoritative complete new-core score is 90, zero errors and 138 warnings,
 with all rules retained. Local evidence uses `artifacts/architecture-v2/plans-*`.

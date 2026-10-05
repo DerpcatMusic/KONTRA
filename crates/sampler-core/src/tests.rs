@@ -27,10 +27,7 @@ fn limits() -> Limits {
 
 #[test]
 fn ownership_survives_source_end_children_and_rejected_terminal_delivery() {
-    let samples = [Pcm {
-        rate: 48000,
-        frames: Box::from([[0.25, -0.25]; 2]),
-    }];
+    let samples = [Pcm::new(48000, Box::from([[0.25, -0.25]; 2])).unwrap()];
     let mut rt = fixture_runtime(48000, &samples, limits()).unwrap();
     let root = rt.note_on(input(Some(7)), 72, 0.123456789).unwrap();
     let linked = rt
@@ -84,10 +81,7 @@ fn ownership_survives_source_end_children_and_rejected_terminal_delivery() {
 
 #[test]
 fn cleanup_does_not_need_queue_space_and_no_source_notes_retry() {
-    let samples = [Pcm {
-        rate: 48000,
-        frames: Box::from([[1.0; 2]; 4]),
-    }];
+    let samples = [Pcm::new(48000, Box::from([[1.0; 2]; 4])).unwrap()];
     let mut rt = fixture_runtime(
         48000,
         &samples,
@@ -131,10 +125,7 @@ fn cleanup_does_not_need_queue_space_and_no_source_notes_retry() {
 #[test]
 fn scheduling_is_partition_invariant_at_two_rates() {
     for rate in [44100, 48000] {
-        let samples = [Pcm {
-            rate,
-            frames: Box::from([[0.5, -0.25]; 64]),
-        }];
+        let samples = [Pcm::new(rate, Box::from([[0.5, -0.25]; 64])).unwrap()];
         let render = |partition: &[usize]| {
             let mut rt = fixture_runtime(rate, &samples, limits()).unwrap();
             let a = rt.note_on(input(Some(1)), 60, 1.0).unwrap();
@@ -176,10 +167,7 @@ fn scheduling_is_partition_invariant_at_two_rates() {
 
 #[test]
 fn boundary_order_overflow_and_handle_domains_are_explicit() {
-    let samples = [Pcm {
-        rate: 48000,
-        frames: Box::from([[0.5; 2]; 4]),
-    }];
+    let samples = [Pcm::new(48000, Box::from([[0.5; 2]; 4])).unwrap()];
     let mut rt = fixture_runtime(48000, &samples, limits()).unwrap();
     let note = rt.note_on(input(Some(-2)), 60, 0.0).unwrap(); // Signed IDs and native zero velocity survive.
     let voice = rt.start(note, 0, 16, 1.0).unwrap();
@@ -213,18 +201,11 @@ fn invalid_preparation_and_atomic_failed_start() {
         fixture_runtime(0, &[], limits()),
         Err(Error::InvalidInput)
     ));
-    let invalid = [Pcm {
-        rate: 48000,
-        frames: Box::from([[f32::NAN, 0.0]]),
-    }];
     assert!(matches!(
-        fixture_runtime(48000, &invalid, limits()),
+        Pcm::new(48000, Box::from([[f32::NAN, 0.0]])),
         Err(Error::InvalidInput)
     ));
-    let samples = [Pcm {
-        rate: 48000,
-        frames: Box::from([[1.0; 2]; 4]),
-    }];
+    let samples = [Pcm::new(48000, Box::from([[1.0; 2]; 4])).unwrap()];
     assert!(matches!(
         fixture_runtime(0, &samples, limits()),
         Err(Error::InvalidInput)
@@ -249,10 +230,7 @@ fn invalid_preparation_and_atomic_failed_start() {
 
 #[test]
 fn voice_scope_reuse_and_nonfinite_mix_are_observable() {
-    let samples = [Pcm {
-        rate: 48000,
-        frames: Box::from([[f32::MAX; 2]; 4]),
-    }];
+    let samples = [Pcm::new(48000, Box::from([[f32::MAX; 2]; 4])).unwrap()];
     let mut rt = fixture_runtime(48000, &samples, limits()).unwrap();
     let root = rt.note_on(input(Some(1)), 60, 1.0).unwrap();
     let a = rt.start(root, 0, 0, 1.0).unwrap();
@@ -275,10 +253,7 @@ fn voice_scope_reuse_and_nonfinite_mix_are_observable() {
 
 #[test]
 fn families_separate_admission_voice_stop_and_note_release() {
-    let samples = [Pcm {
-        rate: 48000,
-        frames: Box::from([[1.0; 2]; 4]),
-    }];
+    let samples = [Pcm::new(48000, Box::from([[1.0; 2]; 4])).unwrap()];
     let mut rt = fixture_runtime(48000, &samples, limits()).unwrap();
     let n = rt.note_on(input(Some(1)), 60, 1.0).unwrap();
     let f = rt.create_family(n).unwrap();
@@ -360,10 +335,7 @@ fn families_separate_admission_voice_stop_and_note_release() {
 
 #[test]
 fn expression_inheritance_is_explicit_and_channel_reuse_is_isolated() {
-    let samples = [Pcm {
-        rate: 48000,
-        frames: Box::from([[1.0; 2]; 8]),
-    }];
+    let samples = [Pcm::new(48000, Box::from([[1.0; 2]; 8])).unwrap()];
     let mut rt = fixture_runtime(48000, &samples, limits()).unwrap();
     let root = rt.note_on(input(None), 60, 1.0).unwrap();
     let e = rt.expression_id(root).unwrap();
@@ -431,10 +403,7 @@ fn expression_inheritance_is_explicit_and_channel_reuse_is_isolated() {
 
 #[test]
 fn separate_budgets_reject_without_partial_ownership() {
-    let pcm = [Pcm {
-        rate: 48000,
-        frames: Box::from([[1.0; 2]; 2]),
-    }];
+    let pcm = [Pcm::new(48000, Box::from([[1.0; 2]; 2])).unwrap()];
     let mut rt = fixture_runtime(
         48000,
         &pcm,
@@ -552,10 +521,7 @@ fn input_groups_and_new_handle_domains_do_not_alias() {
 
 #[test]
 fn ownership_counters_match_reachable_state_under_mixed_operations() {
-    let pcm = [Pcm {
-        rate: 48000,
-        frames: Box::from([[0.25; 2]; 31]),
-    }];
+    let pcm = [Pcm::new(48000, Box::from([[0.25; 2]; 31])).unwrap()];
     let mut rt = fixture_runtime(48000, &pcm, limits()).unwrap();
     let mut seed = 12345u64;
     for step in 0..4000 {
@@ -679,10 +645,7 @@ fn ownership_counters_match_reachable_state_under_mixed_operations() {
 
 #[test]
 fn sustain_pairs_physical_keys_fifo_and_sostenuto_captures_only_held_notes() {
-    let pcm = [Pcm {
-        rate: 48000,
-        frames: Box::from([[0.25; 2]; 64]),
-    }];
+    let pcm = [Pcm::new(48000, Box::from([[0.25; 2]; 64])).unwrap()];
     let mut rt = fixture_runtime(48000, &pcm, limits()).unwrap();
     let address = input(None).channel_address();
     let channel = rt.register_channel(address).unwrap();
@@ -740,10 +703,7 @@ fn sustain_pairs_physical_keys_fifo_and_sostenuto_captures_only_held_notes() {
 
 #[test]
 fn mixed_timeline_is_partition_invariant_and_immediate_changes_follow_due_work() {
-    let pcm = [Pcm {
-        rate: 48000,
-        frames: Box::from([[1.0; 2]; 128]),
-    }];
+    let pcm = [Pcm::new(48000, Box::from([[1.0; 2]; 128])).unwrap()];
     let render = |partition: &[usize]| {
         let mut rt = fixture_runtime(
             48000,
@@ -962,14 +922,8 @@ fn fixture_runtime(rate: u32, pcm: &[Pcm], limits: Limits) -> Result<Runtime, Er
 #[test]
 fn prepared_selection_matches_independent_linear_reference() {
     let samples = vec![
-        Pcm {
-            rate: 48000,
-            frames: Box::new([[0.25, -0.5]]),
-        },
-        Pcm {
-            rate: 48000,
-            frames: Box::new([[0.5, 0.125]]),
-        },
+        Pcm::new(48000, Box::new([[0.25, -0.5]])).unwrap(),
+        Pcm::new(48000, Box::new([[0.5, 0.125]])).unwrap(),
     ];
     let mut regions = Vec::new();
     let mut seed = 19u32;
@@ -1022,7 +976,7 @@ fn prepared_selection_matches_independent_linear_reference() {
                 {
                     selected += 1;
                     for (c, out) in expected.iter_mut().enumerate() {
-                        *out += samples[r.sample].frames[0][c] * (r.gain * velocity as f32);
+                        *out += samples[r.sample].frames()[0][c] * (r.gain * velocity as f32);
                     }
                 }
             }
@@ -1046,10 +1000,7 @@ fn prepared_selection_matches_independent_linear_reference() {
 
 #[test]
 fn prepared_validation_and_layer_admission_are_transactional() {
-    let samples = vec![Pcm {
-        rate: 48000,
-        frames: Box::new([[0.25; 2]; 4]),
-    }];
+    let samples = vec![Pcm::new(48000, Box::new([[0.25; 2]; 4])).unwrap()];
     let region = Region {
         playback: crate::Playback::default(),
         envelope: crate::Envelope::default(),

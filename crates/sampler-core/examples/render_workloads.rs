@@ -20,10 +20,7 @@ fn prepare(
     let samples = (0..LAYERS)
         .map(|layer| {
             let value = (layer + 1) as f32 / 4096.;
-            Pcm {
-                rate,
-                frames: vec![[value, -value]; 4096].into_boxed_slice(),
-            }
+            Pcm::new(rate, vec![[value, -value]; 4096].into_boxed_slice()).unwrap()
         })
         .collect();
     let regions = (0..LAYERS)

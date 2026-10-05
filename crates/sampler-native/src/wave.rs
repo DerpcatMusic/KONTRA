@@ -108,15 +108,9 @@ fn decode(bytes: &[u8]) -> io::Result<Pcm> {
         };
         let l = sample(0);
         let r = if channels == 1 { l } else { sample(1) };
-        if !l.is_finite() || !r.is_finite() {
-            return Err(invalid("nonfinite PCM"));
-        }
         frames.push([l, r]);
     }
-    Ok(Pcm {
-        rate,
-        frames: frames.into_boxed_slice(),
-    })
+    Pcm::new(rate, frames.into_boxed_slice()).map_err(|_| invalid("invalid PCM sample data"))
 }
 
 /// Float32 stereo WAVEFORMATEX, with fact chunk. All IO stays outside rendering.
@@ -169,8 +163,8 @@ mod tests {
         header(&mut bytes, 48000, pcm.len()).unwrap();
         frames(&mut bytes, &pcm).unwrap();
         let result = decode(&bytes).unwrap();
-        assert_eq!(result.rate, 48000);
-        assert_eq!(&*result.frames, &pcm);
+        assert_eq!(result.sample_rate(), 48000);
+        assert_eq!(result.frames(), &pcm);
         for end in 0..bytes.len() {
             assert!(decode(&bytes[..end]).is_err());
         }
@@ -199,7 +193,7 @@ mod tests {
         mono.extend(i16::MIN.to_le_bytes());
         mono.extend(i16::MAX.to_le_bytes());
         assert_eq!(
-            &*decode(&mono).unwrap().frames,
+            decode(&mono).unwrap().frames(),
             &[[-1.0; 2], [32767.0 / 32768.0; 2]]
         );
     }

@@ -159,7 +159,9 @@ Family/expression ownership and segmented rendering now have
 - **Partial evidence:** [prepared-plan adoption](PLAN_ADOPTION.md) retains original
   PCM/program generations through notes, descendants, callbacks and terminal
   backpressure. Bounded SPSC transfer returns unused plans for control-side destruction;
-  mixed-generation audio and a separate control-thread check pass. Streaming and
+  validated immutable PCM handles now share buffers across plans without rescanning
+  contents or changing audio-thread destruction ownership.
+  Mixed-generation audio and a separate control-thread check pass. Streaming and
   host lifecycle integration remain open.
 
 

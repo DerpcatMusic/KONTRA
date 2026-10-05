@@ -30,10 +30,7 @@ fn region(playback: Playback) -> Region {
 fn prepare(regions: Vec<Region>) -> Result<Prepared, sampler_core::Error> {
     Prepared::new(
         48000,
-        vec![Pcm {
-            rate: 48000,
-            frames: (0..8).map(|i| [i as f32, -(i as f32)]).collect(),
-        }],
+        vec![Pcm::new(48000, (0..8).map(|i| [i as f32, -(i as f32)]).collect()).unwrap()],
         regions,
         8,
     )

@@ -70,7 +70,7 @@ impl Runtime {
         v.cursor = v.cursor.with_step(v.base_step * expression.rendered.ratio);
         // Prepared playback bounds and the cursor's contiguous spans stay
         // within immutable PCM; looping never changes asset ownership.
-        let pcm = &self.plans.get(n.plan.0).unwrap().prepared.pcm[v.sample].frames;
+        let pcm = self.plans.get(n.plan.0).unwrap().prepared.pcm[v.sample].frames();
         v.cursor
             .render(pcm, segment, &mut v.envelope, v.gain, gains, self.kernel);
         if v.cursor.done() || v.envelope.done() {

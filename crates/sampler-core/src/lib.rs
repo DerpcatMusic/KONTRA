@@ -562,8 +562,8 @@ impl Runtime {
             return Err(Error::InvalidInput);
         }
         let cursor = playback.cursor(
-            plan.pcm[sample].frames.len(),
-            plan.pcm[sample].rate,
+            plan.pcm[sample].frames().len(),
+            plan.pcm[sample].sample_rate(),
             self.rate,
         )?;
         self.admit_voice(family, sample, at, gain, envelope, cursor)

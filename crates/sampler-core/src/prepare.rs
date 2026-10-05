@@ -1,10 +1,31 @@
 //! Control-thread compilation of immutable resident assets and native mappings.
 use super::{Envelope, Error, Expression, Frame, Input, NoteId, NoteOrigin, Playback, Runtime};
 
+/// Validated immutable resident PCM. Construct, clone and drop handles on the
+/// control side. Clones share the original sample buffer; rendering only borrows.
 #[derive(Clone, Debug)]
-pub struct Pcm {
-    pub rate: u32,
-    pub frames: Box<[Frame]>,
+pub struct Pcm(std::sync::Arc<PcmData>);
+
+#[derive(Debug)]
+struct PcmData {
+    rate: u32,
+    frames: Box<[Frame]>,
+}
+impl Pcm {
+    /// Validate once without copying the owned frame buffer. All public access is
+    /// immutable, so subsequent prepared plans need not rescan sample contents.
+    pub fn new(rate: u32, frames: Box<[Frame]>) -> Result<Self, Error> {
+        if rate == 0 || frames.is_empty() || frames.iter().flatten().any(|x| !x.is_finite()) {
+            return Err(Error::InvalidInput);
+        }
+        Ok(Self(std::sync::Arc::new(PcmData { rate, frames })))
+    }
+    pub fn sample_rate(&self) -> u32 {
+        self.0.rate
+    }
+    pub fn frames(&self) -> &[Frame] {
+        &self.0.frames
+    }
 }
 
 /// Native resident region with optional equal-tempered root-key tracking.
@@ -52,21 +73,16 @@ pub struct Prepared {
 }
 
 impl Prepared {
-    /// Takes ownership without copying PCM. Validation and candidate construction
-    /// happen off audio. max_candidates bounds the expanded key index, not file IO.
+    /// Takes immutable PCM handles without copying/rescanning their frames. Region
+    /// validation and candidate construction happen off audio. max_candidates
+    /// bounds the expanded key index, not file IO.
     pub fn new(
         rate: u32,
         pcm: Vec<Pcm>,
         regions: Vec<Region>,
         max_candidates: usize,
     ) -> Result<Self, Error> {
-        if rate == 0
-            || pcm.iter().any(|p| {
-                p.rate == 0
-                    || p.frames.is_empty()
-                    || p.frames.iter().flatten().any(|x| !x.is_finite())
-            })
-        {
+        if rate == 0 {
             return Err(Error::InvalidInput);
         }
         let mut count = 0usize;
@@ -90,7 +106,11 @@ impl Prepared {
             if let Some(root) = r.root_key {
                 playback.transpose_semitones += f64::from(r.key_low) - f64::from(root);
             }
-            let cursor = playback.cursor(pcm[r.sample].frames.len(), pcm[r.sample].rate, rate)?;
+            let cursor = playback.cursor(
+                pcm[r.sample].frames().len(),
+                pcm[r.sample].sample_rate(),
+                rate,
+            )?;
             count = count
                 .checked_add(usize::from(r.key_high - r.key_low) + 1)
                 .ok_or(Error::Capacity)?;
@@ -115,7 +135,7 @@ impl Prepared {
                     let step = if let Some(root) = r.root_key {
                         let mut playback = r.playback;
                         playback.transpose_semitones += f64::from(key) - f64::from(root);
-                        playback.step(pcm[r.sample].rate, rate)
+                        playback.step(pcm[r.sample].sample_rate(), rate)
                     } else {
                         prepared_regions[region].cursor.step()
                     };

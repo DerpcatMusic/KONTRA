@@ -29,7 +29,7 @@ struct Replacement {
 }
 
 fn prepare_sample(sample: Pcm, scripted: bool, demo: bool) -> io::Result<Prepared> {
-    let rate = sample.rate;
+    let rate = sample.sample_rate();
     Prepared::new(
         rate,
         vec![sample],
@@ -58,7 +58,7 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
     let demo = !matches!(&mode, Mode::Copy);
     let scripted = matches!(&mode, Mode::Script(_));
     let replacing = matches!(&mode, Mode::Replace(_));
-    let rate = sample.rate;
+    let rate = sample.sample_rate();
     if replacing && rate < 2 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -69,7 +69,7 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
         usize::try_from(u64::from(rate) * 2)
             .map_err(|_| io::Error::other("two-second render exceeds platform frame capacity"))?
     } else {
-        sample.frames.len()
+        sample.frames().len()
     };
     let mut plan = prepare_sample(sample, scripted, demo)?;
     let mut replacement_sample = None;
@@ -291,7 +291,7 @@ fn demo_sample() -> Pcm {
         })
         .collect::<Vec<_>>()
         .into_boxed_slice();
-    Pcm { rate, frames }
+    Pcm::new(rate, frames).unwrap()
 }
 
 fn run() -> io::Result<()> {
@@ -338,7 +338,7 @@ fn render_script(sample: Pcm, source: &Path, output: &Path) -> io::Result<()> {
     std::fs::File::open(source)?
         .take(limits.source_bytes as u64 + 1)
         .read_to_string(&mut text)?;
-    let program = sampler_ksp::compile(&text, sample.rate, limits).map_err(|e| {
+    let program = sampler_ksp::compile(&text, sample.sample_rate(), limits).map_err(|e| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("{}: {e}", source.display()),
