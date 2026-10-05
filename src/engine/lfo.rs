@@ -1386,7 +1386,7 @@ mod tests {
 
     #[test]
     fn saved_sine_volume_shares_clock_lag_and_fragmented_interpolation() {
-        for start_phase in [0., 0.25, 0.4990234375, 0.5, 0.5009765625, 0.75, 1.] {
+        for start_phase in [0., 0.25, 0.499_023_44, 0.5, 0.500_976_56, 0.75, 1.] {
             saved_sine_volume_shares_clock_lag_and_fragmented_interpolation_at_phase(start_phase);
         }
     }

@@ -921,7 +921,7 @@ mod tests {
         assert_eq!(decoded.volume_lfos[0].lag_ms, 0);
         assert!(decoded.warnings.iter().any(|w| w.contains("other than admitted pitch and volume")));
 
-        for phase in [0., 0.25, 0.4990234375, 0.5, 0.5009765625, 0.75, 1.] {
+        for phase in [0., 0.25, 0.499_023_44, 0.5, 0.500_976_56, 0.75, 1.] {
             let decoded = read_group(&saved(&[("pitch", None), ("volume", None)], 0, 0x10, false, 40., phase)).unwrap();
             assert_eq!(decoded.pitch_lfos[0].start_phase.to_bits(), phase.to_bits());
             assert_eq!(decoded.volume_lfos[0].source.start_phase.to_bits(), phase.to_bits());

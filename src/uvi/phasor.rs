@@ -450,7 +450,7 @@ mod tests {
         let mut pulse = [[0.; MAX_CHANNELS]; 1];
         pulse[0][0] = 0.125;
         resumed.process(&mut pulse).unwrap();
-        assert!((pulse[0][0] - 0.1730194688).abs() < 2e-7);
+        assert!((pulse[0][0] - 0.173_019_47).abs() < 2e-7);
         let mut effect =
             Phasor::new(&node(&[("Feedback", "0"), ("Order", "1")]), 2, 48000.).unwrap();
         effect.process(&mut vec![[0.; MAX_CHANNELS]; 8192]).unwrap();
@@ -458,8 +458,8 @@ mod tests {
         frame[0][0] = 0.25;
         frame[0][1] = -0.125;
         effect.process(&mut frame).unwrap();
-        assert!((frame[0][0] - 0.3453131914).abs() < 2e-7);
-        assert!((frame[0][1] + 0.1748068035).abs() < 2e-7);
+        assert!((frame[0][0] - 0.345_313_2).abs() < 2e-7);
+        assert!((frame[0][1] + 0.174_806_8).abs() < 2e-7);
         assert!(matches!(
             effect.parameter("Bypass").unwrap(),
             ParameterValue::Boolean(false)

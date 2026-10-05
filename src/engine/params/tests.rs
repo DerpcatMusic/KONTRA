@@ -1977,7 +1977,7 @@ fn modern_signed_pitch_depth_matches_native_writer_without_heap() {
         None
     );
     // Actual Conflux PB->PITCH UP target: raw775160 and saved depth .16666558385.
-    assert!((pitch.decode(775_160) - 0.16666558385).abs() < 1e-7);
+    assert!((pitch.decode(775_160) - 0.166_665_58).abs() < 1e-7);
     let mut native = super::super::native_state::NativeState::default();
     native.prepare(pitch, par(id::MOD_TARGET_MP_INTENSITY, 1), pitch.encode(1.));
     native.prepare(
@@ -2049,8 +2049,8 @@ fn constant_loop_controls_preserve_physical_cursor_stream_seams_and_clock_withou
     let group = Group {
         mods: vec![
             assignment("pan", 0.25),
-            assignment("loopStart", 0.1266360729932785),
-            assignment("loopLength", -0.9170099496841431),
+            assignment("loopStart", 0.126_636_07),
+            assignment("loopLength", -0.917_009_95),
         ],
         modulators: vec![Modulator {
             name: "Constant".into(),
@@ -2092,10 +2092,10 @@ fn constant_loop_controls_preserve_physical_cursor_stream_seams_and_clock_withou
     );
     // Independent actual stored UI/timing + original inverse lookup produces
     // these normalized writes, not values fitted from the saved depths.
-    assert!((start.decode(751_086) - 0.1266360729932785).abs() < 1e-7);
-    assert!((length.decode(14_233) + 0.9170099496841431).abs() < 1e-7);
-    assert!((start.encode(0.1266360729932785) - 751_086).abs() <= 1);
-    assert!((length.encode(-0.9170099496841431) - 14_233).abs() <= 1);
+    assert!((start.decode(751_086) - 0.126_636_07).abs() < 1e-7);
+    assert!((length.decode(14_233) + 0.917_009_95).abs() < 1e-7);
+    assert!((start.encode(0.126_636_07) - 751_086).abs() <= 1);
+    assert!((length.encode(-0.917_009_95) - 14_233).abs() <= 1);
     let saved = PlayMap {
         start: 0,
         end: 4096,
@@ -2109,7 +2109,7 @@ fn constant_loop_controls_preserve_physical_cursor_stream_seams_and_clock_withou
         }),
     };
     let initial = saved
-        .controlled_loop([0.1266360729932785, -0.9170099496841431], 4096)
+        .controlled_loop([0.126_636_07, -0.917_009_95], 4096)
         .unwrap();
     assert_eq!(
         initial.looped.unwrap(),
@@ -2743,9 +2743,9 @@ fn live_saved_pitch_lfo_targets_preserve_native_identity_phase_and_persistence_w
             live.cc(0, 1, 127);
             // Independent physical-depth reference, without setters or source reset.
             let lfos = &mut reference.state.settings[0].pitch_lfos;
-            lfos[0].targets[0].1 = 0.16666558385;
+            lfos[0].targets[0].1 = 0.166_665_58;
             lfos[0].targets[1].1 = -0.125;
-            lfos[0].depth = 0.16666558385 - 0.125;
+            lfos[0].depth = 0.166_665_58 - 0.125;
             lfos[1].targets[0].1 = 0.0625;
             lfos[1].depth = 0.0625;
             for _ in 0..8 {
@@ -2763,7 +2763,7 @@ fn live_saved_pitch_lfo_targets_preserve_native_identity_phase_and_persistence_w
                 read(settings, address(id::MOD_TARGET_INTENSITY, 3, 1)),
                 Some(0.0625)
             );
-            assert!((settings[0].pitch_lfos[0].depth - (0.16666558385 - 0.125)).abs() < 1e-7);
+            assert!((settings[0].pitch_lfos[0].depth - (0.166_665_58 - 0.125)).abs() < 1e-7);
             assert!(!write(
                 &mut live.state.settings,
                 address(id::INTMOD_INTENSITY, 7, 1),
@@ -2847,7 +2847,7 @@ fn live_saved_pitch_lfo_targets_preserve_native_identity_phase_and_persistence_w
 
 #[test]
 fn saved_sine_volume_reaches_amplifier_and_retains_shared_bypass_without_heap() {
-    for start_phase in [0., 0.25, 0.4990234375, 0.5, 0.75, 1.] {
+    for start_phase in [0., 0.25, 0.499_023_44, 0.5, 0.75, 1.] {
         saved_sine_volume_reaches_amplifier_and_retains_shared_bypass_without_heap_at_phase(
             start_phase,
         );
@@ -3629,9 +3629,9 @@ fn signed_intensity_aliases_reach_external_pitch_and_cutoff_pcm_without_heap() {
         );
         let mut reference = group.clone();
         reference.mods[1].intensity = if pitch_raw < 500_000 {
-            -0.16666558385
+            -0.166_665_58
         } else {
-            0.16666558385
+            0.166_665_58
         };
         reference.mods[2].intensity = if cutoff_raw < 500_000 { -0.125 } else { 0.125 };
         let reference = render(
@@ -3664,7 +3664,7 @@ fn signed_intensity_aliases_reach_external_pitch_and_cutoff_pcm_without_heap() {
                 "pitch",
                 "Pitch",
                 None,
-                0.16666558385,
+                0.166_665_58,
                 if pitch_raw < 500_000 { 0x12 } else { 0x10 },
             ),
             (

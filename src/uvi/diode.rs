@@ -272,12 +272,14 @@ mod tests {
     use super::*;
     #[test]
     fn authored_native_output_gain_conversion_only() {
+        #[expect(clippy::approx_constant, reason = "Authored native fixture input; PI changes its bits and output gain.")]
+        const NATIVE_GAIN_DB: f64 = 3.14159;
         for (value, bits) in [
             (-40., 1008981770),
             (-3., 1060453359),
             (0., 1065353216),
             (10., 1078616770),
-            (3.14159, 1069008571),
+            (NATIVE_GAIN_DB, 1069008571),
             (-17.54321, 1040703487),
         ] {
             assert_eq!(output_gain_multiplier(value).unwrap().to_bits(), bits);
@@ -303,7 +305,7 @@ mod tests {
             0.52790403,
             0.14574495,
             0.040213335,
-            0.0110519696,
+            0.011_051_97,
             0.0029936153,
             0.00076679175,
             0.00015143739,
