@@ -238,7 +238,7 @@ impl OnePole {
         {
             a
         } else {
-            let a = 1. - (-std::f32::consts::TAU * self.frequency as f32 / self.rate as f32).exp();
+            let a = crate::fx::one_pole_coefficient(self.frequency as f32, self.rate as f32);
             self.coefficient = Some((frequency, a));
             a
         };
