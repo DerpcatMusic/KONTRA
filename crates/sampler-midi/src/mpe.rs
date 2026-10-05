@@ -48,10 +48,11 @@ impl Controls {
     fn expression(self, manager: Self) -> Expression {
         Expression {
             pitch_semitones: self.pitch + manager.pitch,
-            pressure: expand(self.pressure.max(manager.pressure)),
-            timbre: expand(
+            pressure: Value::Bits7(self.pressure.max(manager.pressure)).full_scale(),
+            timbre: Value::Bits7(
                 (i16::from(self.timbre) + i16::from(manager.timbre) - 64).clamp(0, 127) as u8,
-            ),
+            )
+            .full_scale(),
             ..Expression::default()
         }
     }
@@ -278,11 +279,12 @@ impl Mpe {
                         group: self.group,
                         channels,
                     };
-                    if index == 64 {
-                        runtime.sustain_scope(scope, value >= 64)?
-                    } else {
-                        runtime.sostenuto_scope(scope, value >= 64)?
-                    }
+                    runtime.set_pedal_controller(
+                        self.performance,
+                        scope,
+                        index,
+                        Value::Bits7(value).full_scale(),
+                    )?;
                     Applied::Pedal
                 }
             }
@@ -294,6 +296,14 @@ impl Mpe {
                 index: index @ (6 | 38 | 98..=101),
                 value: Value::Bits7(value),
             } => self.parameter(runtime, voice.channel, index, value)?,
+            Message::Control { index, value }
+                if index < 120
+                    && !matches!(index, 96 | 97)
+                    && voice.channel == self.zone.manager() =>
+            {
+                runtime.set_controller(self.performance, index, value.full_scale())?;
+                Applied::Controller
+            }
             _ => Applied::Unsupported,
         })
     }
@@ -419,10 +429,4 @@ fn pitch(value: u16, range: f64) -> f64 {
     let centered = f64::from(value) - 8192.0;
     // Exact center and endpoints; MPE permits meaningful receiver combination.
     range * centered / if value < 8192 { 8192.0 } else { 8191.0 }
-}
-
-// Exact integer projection to the native full-scale domain, not UMP bit-depth
-// translation. Original 7-bit values remain in the adapter's channel snapshots.
-fn expand(value: u8) -> u32 {
-    (u64::from(value) * u64::from(u32::MAX) / 127) as u32
 }

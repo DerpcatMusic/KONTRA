@@ -533,6 +533,7 @@ fn zone_pedal_admission_is_atomic_and_pedal_up_needs_no_channel_capacity() {
             Err(ApplyError::Core(Error::Capacity))
         );
         assert_eq!(rt.pedals(channel), Ok((false, false)));
+        assert_eq!(rt.controller(rt.performance(0).unwrap(), 64).unwrap(), 0);
         // Failed zone admission did not consume the one remaining reservation.
         let second = rt
             .register_channel(ChannelAddress {
@@ -563,6 +564,57 @@ fn zone_pedal_admission_is_atomic_and_pedal_up_needs_no_channel_capacity() {
             apply(&mut mpe, &mut rt, packet(0x80, member, 60, 0)).unwrap();
             assert!(rt.note(note).unwrap().2);
             apply(&mut mpe, &mut rt, packet(0xb0, manager, 64, 0)).unwrap();
+            assert!(!rt.note(note).unwrap().2);
+            rt.panic();
+            rt.flush_ended(|_| true);
+        });
+    }
+}
+
+#[test]
+fn manager_selection_controls_and_member_expression_have_separate_owners() {
+    for (zone, manager, member) in [(Zone::Lower, 0, 1), (Zone::Upper, 15, 14)] {
+        let mut rt = runtime();
+        let domain = rt.performance(0).unwrap();
+        let mut mpe = Mpe::new(&rt, 7, 3, zone, 1, 8).unwrap();
+        support::without_heap(|| {
+            assert_eq!(
+                apply(&mut mpe, &mut rt, packet(0xb0, manager, 96, 0)),
+                Ok(Applied::Unsupported)
+            );
+            assert_eq!(
+                apply(&mut mpe, &mut rt, packet(0xb0, manager, 97, 0)),
+                Ok(Applied::Unsupported)
+            );
+            assert_eq!(
+                apply(&mut mpe, &mut rt, packet(0xb0, manager, 1, 127)),
+                Ok(Applied::Controller)
+            );
+            assert_eq!(rt.controller(domain, 1).unwrap(), u32::MAX);
+            assert_eq!(
+                apply(&mut mpe, &mut rt, packet(0xb0, member, 1, 0)),
+                Ok(Applied::Unsupported)
+            );
+            assert_eq!(rt.controller(domain, 1).unwrap(), u32::MAX);
+            let note = start(&mut mpe, &mut rt, member, 60);
+            apply(&mut mpe, &mut rt, packet(0xb0, member, 74, 127)).unwrap();
+            assert_eq!(expression(&rt, note).timbre, u32::MAX);
+            assert_eq!(rt.controller(domain, 74).unwrap(), 0);
+            assert_eq!(rt.note_controller(note, 1).unwrap(), u32::MAX);
+            apply(&mut mpe, &mut rt, packet(0xb0, manager, 1, 0)).unwrap();
+            assert_eq!(rt.note_controller(note, 1).unwrap(), u32::MAX);
+            assert_eq!(rt.controller(domain, 1).unwrap(), 0);
+            assert_eq!(
+                apply(&mut mpe, &mut rt, packet(0xb0, member, 64, 127)),
+                Ok(Applied::Ignored)
+            );
+            assert_eq!(rt.controller(domain, 64).unwrap(), 0);
+            apply(&mut mpe, &mut rt, packet(0xb0, manager, 64, 127)).unwrap();
+            assert_eq!(rt.controller(domain, 64).unwrap(), u32::MAX);
+            apply(&mut mpe, &mut rt, packet(0x80, member, 60, 0)).unwrap();
+            assert!(rt.note(note).unwrap().2);
+            apply(&mut mpe, &mut rt, packet(0xb0, manager, 64, 0)).unwrap();
+            assert_eq!(rt.controller(domain, 64).unwrap(), 0);
             assert!(!rt.note(note).unwrap().2);
             rt.panic();
             rt.flush_ended(|_| true);

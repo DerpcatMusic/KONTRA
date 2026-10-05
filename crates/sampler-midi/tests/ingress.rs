@@ -739,3 +739,73 @@ fn explicit_performance_routing_keeps_note_pairing_separate_from_channel_identit
         rt.flush_ended(|_| true);
     });
 }
+
+#[test]
+fn controller_ingress_preserves_full_resolution_and_only_updates_the_routed_domain() {
+    for version in [Version::Midi1, Version::Midi2] {
+        let mut rt = runtime();
+        let ingress = Ingress::new(0, [Some(version); 16]);
+        support::without_heap(|| {
+            let domain = rt.performance(1).unwrap();
+            let values = if version == Version::Midi1 {
+                [0, 1, 63, 64, 126, 127]
+            } else {
+                [0, 1, 0x7fff_ffff, 0x8000_0000, u32::MAX - 1, u32::MAX]
+            };
+            for value in values {
+                let words = if version == Version::Midi1 {
+                    [0x20b0_0100 | value, 0]
+                } else {
+                    [0x40b0_0100, value]
+                };
+                let len = if version == Version::Midi1 { 1 } else { 2 };
+                let packet = Packets::new(&words[..len]).next().unwrap().unwrap();
+                assert_eq!(
+                    ingress.apply_in(&mut rt, domain, packet),
+                    Ok(Applied::Controller)
+                );
+                let expected = if version == Version::Midi1 {
+                    (u64::from(value) * u64::from(u32::MAX) / 127) as u32
+                } else {
+                    value
+                };
+                assert_eq!(rt.controller(domain, 1).unwrap(), expected);
+                assert_eq!(rt.controller(rt.performance(0).unwrap(), 1).unwrap(), 0);
+            }
+            let on = if version == Version::Midi1 {
+                [0x2090_3c7f, 0]
+            } else {
+                [0x4090_3c00, 0xffff_0000]
+            };
+            let len = if version == Version::Midi1 { 1 } else { 2 };
+            let Applied::Started(note) = ingress
+                .apply_in(
+                    &mut rt,
+                    domain,
+                    Packets::new(&on[..len]).next().unwrap().unwrap(),
+                )
+                .unwrap()
+            else {
+                panic!()
+            };
+            rt.set_controller(domain, 1, 0).unwrap();
+            assert_eq!(rt.note_controller(note, 1).unwrap(), u32::MAX);
+            // A channel-mode message is not an ordinary selection controller.
+            let reset = if version == Version::Midi1 {
+                [0x20b0_7900, 0]
+            } else {
+                [0x40b0_7900, 0]
+            };
+            assert_eq!(
+                ingress.apply_in(
+                    &mut rt,
+                    domain,
+                    Packets::new(&reset[..len]).next().unwrap().unwrap()
+                ),
+                Ok(Applied::Unsupported)
+            );
+            rt.panic();
+            rt.flush_ended(|_| true);
+        });
+    }
+}

@@ -19,6 +19,11 @@ smaller supported subset for the full KSP requirement or count legacy bridge tes
 as its implementation. Core/plugin completion still requires removal of the old
 production engine paths and no compatibility shims.
 
+Every subsystem must be checked against the architecture and pinned open-source
+sampler references, following [REFERENCE_REVIEW.md](REFERENCE_REVIEW.md). Convert
+relevant basic and advanced DSP/musical edge cases into tests; explicitly track
+unimplemented cases. Source inspection alone is not passing conformance evidence.
+
 ## Completed groundwork
 
 - [x] Isolate worktree, preserve all attachments and record their hashes.
@@ -169,7 +174,8 @@ production engine paths and no compatibility shims.
   failure/retirement checks pass. Independent key/gate release phases now use native
   selection and retained decisions with admission-owned quotas. [Articulation routing](ARTICULATION.md)
   adds independent performance domains, silent latched switches and onset/current
-  release snapshots. Controller selection/snapshots, other switch policies, phrase
+  release snapshots. Controller snapshots now retain bounded shared versions with full-resolution MIDI
+  updates. Controller predicates, other switch policies, phrase
   state and persisted snapshot/restore remain open.
 
 - [ ] **P1; dependencies:** V2-04/06/07.

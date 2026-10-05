@@ -32,6 +32,8 @@ pub enum Applied {
         attribute: Attribute,
     },
     Pedal,
+    /// Accepted effective selection CC; no implicit note or modulation is generated.
+    Controller,
     /// A controller selector/state change, not a claim of full device configuration.
     Configuration,
     AllNotesOff {
@@ -118,17 +120,25 @@ impl Ingress {
                 }
             }
             Message::Control {
-                index: 64 | 66,
+                index: index @ (64 | 66),
                 value,
             } => {
-                let channel = runtime.register_channel(input.channel_address())?;
-                let down = value.normalized() >= 0.5;
-                if matches!(voice.message, Message::Control { index: 64, .. }) {
-                    runtime.sustain(channel, down)?;
-                } else {
-                    runtime.sostenuto(channel, down)?;
-                }
+                runtime.set_pedal_controller(
+                    performance,
+                    sampler_core::ChannelScope {
+                        protocol: input.protocol,
+                        port: input.port,
+                        group: input.group,
+                        channels: 1 << input.channel,
+                    },
+                    index,
+                    value.full_scale(),
+                )?;
                 Applied::Pedal
+            }
+            Message::Control { index, value } if index < 120 => {
+                runtime.set_controller(performance, index, value.full_scale())?;
+                Applied::Controller
             }
             Message::Control {
                 index: 123,

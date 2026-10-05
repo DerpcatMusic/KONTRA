@@ -29,8 +29,8 @@ struct Siblings {
     next: Option<Index>,
 }
 
-mod articulation;
-pub use articulation::{Keyswitch, PerformanceId, SelectionPolicy, SelectionSnapshot};
+mod performance;
+pub use performance::{Keyswitch, PerformanceId, SelectionPolicy, SelectionSnapshot};
 mod behavior;
 use behavior::Continuation;
 pub use behavior::{BehaviorId, Duration, Instruction, Outcome, Program, Velocity, WaitLifetime};
@@ -348,8 +348,8 @@ pub struct Runtime {
     executing_due: bool,
     command_limit: usize,
     reserved_commands: usize,
-    articulations: Box<[u32]>,
-    selections: Box<[articulation::NoteSelection]>,
+    performance_state: performance::PerformanceState,
+    selections: Box<[performance::NoteSelection]>,
     now: u64,
     order: u64,
     nonfinite_frames: u64,
@@ -380,9 +380,10 @@ impl Runtime {
         std::alloc::Layout::array::<i64>(cells).map_err(|_| Error::Capacity)?;
         std::alloc::Layout::array::<release::ReleaseTimes>(limits.notes)
             .map_err(|_| Error::Capacity)?;
-        std::alloc::Layout::array::<articulation::NoteSelection>(limits.notes)
+        std::alloc::Layout::array::<performance::NoteSelection>(limits.notes)
             .map_err(|_| Error::Capacity)?;
-        std::alloc::Layout::array::<u32>(limits.performances).map_err(|_| Error::Capacity)?;
+        let state_capacity =
+            performance::PerformanceState::validate(limits.notes, limits.performances)?;
         static NEXT_RUNTIME: AtomicU64 = AtomicU64::new(1);
         #[allow(deprecated, reason = "fetch_update supports the Rust 1.92 minimum")]
         let id = NEXT_RUNTIME
@@ -424,9 +425,12 @@ impl Runtime {
             nonfinite_frames: 0,
             // Keep cold payload allocation after the frequently traversed pools.
             release_times: vec![release::ReleaseTimes::default(); limits.notes].into_boxed_slice(),
-            selections: vec![articulation::NoteSelection::default(); limits.notes]
+            selections: vec![performance::NoteSelection::default(); limits.notes]
                 .into_boxed_slice(),
-            articulations: vec![0; limits.performances].into_boxed_slice(),
+            performance_state: performance::PerformanceState::new(
+                state_capacity,
+                limits.performances,
+            ),
         })
     }
 
@@ -651,9 +655,9 @@ impl Runtime {
                 return Err(error);
             }
         };
-        self.selections[id.index] = articulation::NoteSelection {
+        self.selections[id.index] = performance::NoteSelection {
             performance,
-            articulation: self.articulations[performance],
+            snapshot: self.performance_state.capture(performance),
             consumed_switch: false,
         };
         self.release_times[id.index] = release::ReleaseTimes {

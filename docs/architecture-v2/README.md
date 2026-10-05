@@ -74,6 +74,9 @@ compatibility remains a separate, evidence-backed capability.
 21. [Articulation routing and snapshots](ARTICULATION.md): explicit performance domains,
     silent latched switches, sparse filtering and onset/current release policies.
 
+22. [Architecture and open-source reference review](REFERENCE_REVIEW.md): pinned
+    sampler sources, relevant edge cases, native evidence and remaining checks.
+
 ## Implemented and still open
 
 - Native core: generational note/family/voice/expression ownership, physical versus
@@ -87,7 +90,7 @@ compatibility remains a separate, evidence-backed capability.
   storage budgets, retained note decisions and transactional multi-family admission.
   Key/gate release layers own reserved resources and independent phase decisions.
   Explicit performance domains, latched switches and articulation snapshots are native.
-  Controller predicates/snapshots, other switch/phrase policies and persisted recall remain open.
+  Controller snapshots now use bounded shared versions; predicates, other switch/phrase policies and persisted recall remain open.
 - Preparation: validated immutable PCM shared across plans, adoption between notes, original-generation tails
   and callbacks, and control-thread retirement. Native WAV rendering and the
   deliberately small KSP source subset run independently of the old engine.

@@ -2,7 +2,7 @@
 
 The native selector now has explicit musical performance domains, silent latched
 switches, sparse articulation filtering and per-release onset/current policies.
-This is partial V2-08 evidence. Controller predicates/snapshots, momentary/additive
+This is partial V2-08 evidence. Controller predicates, momentary/additive
 switches, next-note overrides, phrase selection and persisted recall remain open.
 
 ## Domains and note identity
@@ -11,8 +11,8 @@ switches, next-note overrides, phrase selection and persisted recall remain open
 it must be at least one. Each starts at articulation `0`. `performance(index)`
 returns a runtime-bound `PerformanceId`; foreign IDs cannot address a domain in another runtime. Domains
 exist for the runtime's lifetime and cannot be recycled under a retained note or
-queued update. Their values use a control-allocated array; no new arena, lock,
-reference count or per-event allocation is needed.
+queued update. Their articulation/controller values use construction-bounded shared
+versions; no lock, atomic reference count or per-event allocation is needed.
 
 `trigger_in`, `note_on_pitched_in` and `note_off_in` select/pair in an explicit
 domain. Convenience APIs select domain zero. Identical external input IDs or
@@ -41,6 +41,66 @@ Expression inheritance remains a separate choice.
 updates/releases obey submission order and exclusive-end/empty-block rules. A
 failed future queue submission cannot mutate state. Panic cancels queued work and
 cleans notes; it does not silently reset an instrument's latched articulation.
+
+## Effective controllers and shared state versions
+
+`controller`, `set_controller`, `Event::Controller` and `note_controller` use native
+unsigned 32-bit full-scale values for 128 CC slots. Each starts at zero. These are
+**effective downstream** values, committed after an event-processing stage accepts
+an event; they are not raw MIDI input history or per-note MPE expression. Full
+script interception and controller predicates remain separate pending work.
+
+Each musical domain owns its current state version; each successfully admitted
+note retains its onset version. A private pool has exactly `notes + performances`
+slots. A version contains articulation, all 128 CC values and a non-atomic owner
+count. Updating an exclusively owned version changes it in place. Updating a
+shared version copies its fixed primitive payload into a free slot first. A shared
+version proves that the number of distinct live versions is less than the number
+of owners, so a free slot exists even when every note slot is occupied. This does
+not introduce a fallible controller-update budget. Identical updates do nothing.
+
+No private version index escapes. No public generational arena is repurposed, and
+no `Arc` destruction, heap allocation/free or lock occurs during capture, update
+or retirement. The last owner returns the slot to a construction-reserved free
+stack. The snapshot is released at actual logical retirement, not source EOF,
+key-up, gate closure or rejected terminal delivery. Failed admissions do not retain
+an owner. Children capture current domain state at their own admission independently
+of expression inheritance. A consumed switch records the resulting articulation
+and the existing controller state. Panic retains current musical state and cancels
+queued updates.
+
+The cost is bounded but real: on 64-bit targets, each state uses 528 bytes and the
+pool reserves its worst-case distinct-note snapshots at construction. Admission
+retains one private index without copying 128 CCs; the first changed update while
+notes share a domain version copies that payload once. Dense changes without a new
+snapshot mutate the current version in place. This is not sample-rate modulation,
+a persistence format or an unlimited controller namespace.
+
+Ordinary MIDI ingress commits CC0–119 to its explicitly routed domain; CC64/66
+also apply their physical pedal scope. Native full-scale projection of MIDI 1 uses
+integer `value * u32::MAX / 127`; MIDI 2's 32-bit value is unchanged. This is not a
+claim of protocol-level MIDI 1-to-UMP bit replication. Channel-mode messages are
+not ordinary CC bank updates: supported modes retain their cleanup semantics and
+unsupported reset/configuration remains explicit.
+
+`set_pedal_controller` preflights scope capacity before committing the value, then
+updates gates. Current release selection therefore observes the new value, while
+failed pedal-down changes neither bank nor gate. Pedal-up requires no free channel,
+command or snapshot slot. Direct `sustain`/`sostenuto` APIs change gates only, and
+`Event::Controller` changes selection state only; explicit adapters join them.
+Physical scope may cover notes in several domains; the accepted CC updates only
+the adapter's selected musical domain.
+
+MPE accepts ordinary selection CCs from its manager. Member CC74 remains expression,
+member pedals remain ignored, RPN selectors retain their existing interpreter, and
+manager CC74 retains its expression behavior. Unsupported member controllers or
+channel modes are not silently promoted to global musical state.
+
+`tests/controllers.rs` exercises 100 full-pool cycles, all 128 slots, sustained
+updates, distinct domains, terminal retry, failed admission, child/pin retention,
+one-bit precision, timeline boundaries and invalid targets under heap guards.
+MIDI tests cover both resolutions, MPE isolation, ignored/unsupported events and
+failed zone-pedal publication. Logs: `artifacts/controller-{debug,release,msrv,clippy,boundary}.log`.
 
 ## Prepared filtering and release policies
 
