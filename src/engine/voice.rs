@@ -1002,7 +1002,7 @@ impl Voice {
         if let Some(mut cursor) = self.counted {
             let data = &cx.bank.counted_loops[cursor.rows as usize];
             if self.native_cubic(cx) && cursor.crossfaded(data) {
-                let horizon = cx.source_window.map_or(n, |(_, end)| end.saturating_sub(cx.now) as usize);
+                let mut horizon = cx.source_window.map_or(n, |(_, end)| end.saturating_sub(cx.now) as usize);
                 if horizon < n || horizon > 1024 { return Err(overflow()); }
                 // The outer balanced request is an engine policy. The native
                 // producer law is captured; vendor host framing is not claimed.
@@ -1012,20 +1012,33 @@ impl Voice {
                     let mut glide = self.pitch_glide.ok_or_else(overflow)?;
                     let mut envelopes = self.pitch_envs;
                     self.mod_preview.copy_from_slice(&self.mods);
-                    let mut at = 0;
-                    let mut sum = 0u64;
-                    while at < horizon {
-                        let count = (horizon - at).min(MAX_BLOCK);
-                        let (travel, _) = self.preview_source(cx, &mut clock, &mut glide,
-                            &mut envelopes, base_step, lagging, at, &mut offsets[at..at + count])
-                            .ok_or_else(overflow)?;
-                        for point in &mut offsets[at..at + count] {
-                            *point = point.checked_add(sum).ok_or_else(overflow)?;
+                    // Future representability cannot reject a validated current
+                    // fragment. Keep the original bulk grouping when its forecast
+                    // is valid; otherwise the engine producer's known prefix is
+                    // exactly the current positions/travel. A prefix already past
+                    // fade.begin proves the gate by monotonic forward travel.
+                    let forecast = (|| -> Option<()> {
+                        let mut at = 0;
+                        let mut sum = 0u64;
+                        while at < horizon {
+                            let count = (horizon - at).min(MAX_BLOCK);
+                            let (travel, _) = self.preview_source(cx, &mut clock, &mut glide,
+                                &mut envelopes, base_step, lagging, at, &mut offsets[at..at + count])?;
+                            for point in &mut offsets[at..at + count] {
+                                *point = point.checked_add(sum)?;
+                            }
+                            sum = sum.checked_add(travel)?;
+                            at += count;
                         }
-                        sum = sum.checked_add(travel).ok_or_else(overflow)?;
-                        at += count;
+                        offsets[horizon] = sum;
+                        Some(())
+                    })();
+                    self.mod_preview.copy_from_slice(&self.mods);
+                    if forecast.is_none() {
+                        horizon = n;
+                        offsets[..n].copy_from_slice(&positions[..n]);
+                        offsets[n] = travel;
                     }
-                    offsets[horizon] = sum;
                 } else {
                     offsets[..n].copy_from_slice(&positions[..n]);
                 }
