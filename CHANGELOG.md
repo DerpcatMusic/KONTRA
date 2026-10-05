@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Add native sample-time linear AHDSR with per-region parameters and retained release-tail ownership. Pedals defer release; panic and explicit stops cut tails. Independent timing, retirement and callback allocation/free tests cover the new path.
+
 - Pin Rust Doctor 0.7.0 with a fail-closed CI report check, PR baseline comparison and a documented Rust/realtime DSP review policy. Preserve full-workspace debt instead of hiding it behind a score.
 
 - Add an independent `sampler-native` offline executable with owned prepared PCM, indexed native region selection and transactional layer admission. Its narrow WAV path and rendered output are checked; live audio, plugin hosts and full source/DSP behavior remain in development.

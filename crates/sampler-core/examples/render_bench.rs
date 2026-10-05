@@ -1,10 +1,15 @@
 //! Synthetic resident-PCM microbenchmark, not a DAW or competitor benchmark.
-use sampler_core::{Input, Limits, Pcm, Protocol, Runtime};
+use sampler_core::{Envelope, Input, Limits, Pcm, Protocol, Runtime};
 use std::{hint::black_box, time::Instant};
 
 fn main() {
     const BLOCK: usize = 64;
     const BLOCKS: usize = 2000;
+    let envelope = match std::env::args().nth(1).as_deref() {
+        None => Envelope::default(),
+        Some("--envelope") => Envelope::new((BLOCK * (BLOCKS + 100)) as u32, 0, 0, 1.0, 0).unwrap(),
+        _ => panic!("usage: render_bench [--envelope]"),
+    };
     let pcm = vec![[0.001, -0.001]; BLOCK * (BLOCKS + 100)];
     let samples = [Pcm {
         rate: 48000,
@@ -40,7 +45,9 @@ fn main() {
             )
             .unwrap();
         for _ in 0..active {
-            rt.start(note, 0, 0, 1.0).unwrap();
+            let family = rt.create_family(note).unwrap();
+            rt.start_family(family, 0, 0, 1.0, envelope).unwrap();
+            rt.finish_family(family).unwrap();
         }
         let mut audio = [[0.0; 2]; BLOCK];
         for _ in 0..100 {

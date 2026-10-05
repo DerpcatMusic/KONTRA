@@ -50,8 +50,23 @@ fn ownership_pressure_render_and_retirement_do_no_heap_work() {
             assert_eq!(rt.expression(detached).unwrap().pressure, u32::MAX - 1);
             assert_eq!(rt.note_on(input, 60, 1.0), Err(Error::Capacity));
             let family = rt.create_family(child).unwrap();
-            let a = rt.start_family(family, 0, rt.now() + 1, 1.0).unwrap();
-            rt.start_family(family, 0, rt.now() + 2, 1.0).unwrap();
+            let a = rt
+                .start_family(
+                    family,
+                    0,
+                    rt.now() + 1,
+                    1.0,
+                    sampler_core::Envelope::default(),
+                )
+                .unwrap();
+            rt.start_family(
+                family,
+                0,
+                rt.now() + 2,
+                1.0,
+                sampler_core::Envelope::default(),
+            )
+            .unwrap();
             rt.finish_family(family).unwrap();
             rt.start(snapshot, 0, rt.now() + 3, 1.0).unwrap();
             rt.start(reused, 0, rt.now() + 4, 1.0).unwrap();
@@ -162,6 +177,7 @@ fn prepared_native_selection_and_owned_asset_retirement_do_no_heap_work() {
         }],
         vec![
             Region {
+                envelope: sampler_core::Envelope::default(),
                 sample: 0,
                 key_low: 0,
                 key_high: 127,

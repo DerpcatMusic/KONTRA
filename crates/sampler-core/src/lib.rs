@@ -2,12 +2,15 @@
 //! Experimental native ownership kernel. No plugin, file, or language dependencies.
 //!
 //! Construction/destruction are control-thread operations. After preparation, methods
-//! do not allocate or free. PCM is borrowed and must outlive the runtime. This first
-//! slice supports resident stereo PCM at unity rate, immediate gate release, and
-//! sample-time commands; it does not claim resampling, envelopes or vendor fidelity.
+//! do not allocate or free. Prepared PCM is owned by the runtime. This slice
+//! supports resident stereo PCM at unity rate, native linear envelopes and
+//! sample-time commands; it does not claim resampling or vendor fidelity.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod envelope;
+pub use envelope::Envelope;
+use envelope::EnvelopeState;
 mod gate;
 mod ownership;
 mod prepare;
@@ -101,6 +104,7 @@ struct Voice {
     family: FamilyId,
     sample: usize,
     cursor: usize,
+    envelope: EnvelopeState,
     gain: f32,
     started: bool,
 }
@@ -412,7 +416,7 @@ impl Runtime {
         gain: f32,
     ) -> Result<VoiceId, Error> {
         let family = self.create_family(note)?;
-        let result = self.start_family(family, sample, at, gain);
+        let result = self.start_family(family, sample, at, gain, Envelope::default());
         self.finish_family(family)?;
         result
     }
@@ -425,6 +429,7 @@ impl Runtime {
         sample: usize,
         at: u64,
         gain: f32,
+        envelope: Envelope,
     ) -> Result<VoiceId, Error> {
         self.check_time(at)?;
         if at == self.now {
@@ -446,6 +451,7 @@ impl Runtime {
             family,
             sample,
             cursor: 0,
+            envelope: EnvelopeState::new(envelope),
             gain,
             started: at == self.now,
         })?);
@@ -518,6 +524,12 @@ impl Runtime {
                 n.sostenuto = false;
             }
         }
+        // Panic hard-stops tails as well as held voices.
+        for i in 0..self.voices.slots.len() {
+            if self.voices.slots[i].value.is_some() {
+                self.end_voice(VoiceId(self.voices.id(i)));
+            }
+        }
         self.cleanup_closed_notes();
         self.commands.clear();
         for s in &mut self.channels.slots {
@@ -538,10 +550,13 @@ impl Runtime {
             }
         }
         for i in 0..self.voices.slots.len() {
-            if let Some(v) = self.voices.slots[i].value {
+            if let Some(v) = self.voices.slots[i].value.as_mut() {
                 let family = self.families.get(v.family.0).unwrap();
                 if !self.notes.get(family.note.0).unwrap().gate {
-                    self.end_voice(VoiceId(self.voices.id(i)));
+                    v.envelope.release();
+                    if !v.started || v.envelope.done() {
+                        self.end_voice(VoiceId(self.voices.id(i)));
+                    }
                 }
             }
         }
@@ -610,21 +625,27 @@ impl Runtime {
                 if !v.started {
                     continue;
                 }
+                // Retention invariant: live voice -> counted family -> counted note
+                // -> expression owner. Each owner retires only after its dependents.
                 let f = self.families.get(v.family.0).unwrap();
                 let n = self.notes.get(f.note.0).unwrap();
                 let gains = self.expressions.get(n.expression.0).unwrap().value.gains();
+                // Admission validates the immutable sample index. Only this loop
+                // advances cursor, clamped to the remaining source length.
                 let pcm = &self.plan.pcm[v.sample].frames;
-                let count = len.min(pcm.len() - v.cursor);
+                let count = len.min(pcm.len() - v.cursor).min(v.envelope.remaining());
+                let unity = v.envelope.unity();
                 for (frame, input) in segment[..count]
                     .iter_mut()
                     .zip(&pcm[v.cursor..v.cursor + count])
                 {
+                    let level = if unity { 1.0 } else { v.envelope.next() };
                     for c in 0..2 {
-                        frame[c] += input[c] * v.gain * gains[c];
+                        frame[c] += input[c] * v.gain * gains[c] * level;
                     }
                 }
                 v.cursor += count;
-                if v.cursor == pcm.len() {
+                if v.cursor == pcm.len() || v.envelope.done() {
                     self.end_voice(VoiceId(self.voices.id(i)));
                 }
             }
