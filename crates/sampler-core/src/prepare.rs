@@ -1,5 +1,5 @@
 //! Control-thread compilation of immutable resident assets and native mappings.
-use super::{Envelope, Error, Frame, Input, NoteId, Runtime};
+use super::{Envelope, Error, Frame, Input, NoteId, Playback, Runtime};
 
 #[derive(Clone, Debug)]
 pub struct Pcm {
@@ -7,8 +7,8 @@ pub struct Pcm {
     pub frames: Box<[Frame]>,
 }
 
-/// Native fixed-pitch resident region. Tracking, loops and source modes require
-/// explicit future source contracts; they are not silently approximated here.
+/// Native fixed-pitch resident region. Playback metadata belongs to the region;
+/// PCM can be shared by regions with independent ranges, directions and loops.
 #[derive(Clone, Copy, Debug)]
 pub struct Region {
     pub sample: usize,
@@ -18,6 +18,7 @@ pub struct Region {
     pub velocity_high: f64,
     pub gain: f32,
     pub envelope: Envelope,
+    pub playback: Playback,
 }
 
 pub struct Prepared {
@@ -61,6 +62,7 @@ impl Prepared {
             {
                 return Err(Error::InvalidInput);
             }
+            r.playback.cursor(pcm[r.sample].frames.len())?;
             count = count
                 .checked_add(usize::from(r.key_high - r.key_low) + 1)
                 .ok_or(Error::Capacity)?;
@@ -142,6 +144,7 @@ impl Runtime {
                     self.now,
                     r.gain * velocity as f32,
                     r.envelope,
+                    r.playback,
                 )
                 .expect("prepared and preflighted source admission");
             }

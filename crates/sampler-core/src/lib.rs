@@ -8,6 +8,8 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod source;
+pub use source::{Direction, Loop, LoopMode, Playback};
 mod envelope;
 pub use envelope::Envelope;
 use envelope::EnvelopeState;
@@ -103,7 +105,7 @@ struct Note {
 struct Voice {
     family: FamilyId,
     sample: usize,
-    cursor: usize,
+    cursor: source::Cursor,
     envelope: EnvelopeState,
     gain: f32,
     started: bool,
@@ -416,7 +418,14 @@ impl Runtime {
         gain: f32,
     ) -> Result<VoiceId, Error> {
         let family = self.create_family(note)?;
-        let result = self.start_family(family, sample, at, gain, Envelope::default());
+        let result = self.start_family(
+            family,
+            sample,
+            at,
+            gain,
+            Envelope::default(),
+            Playback::default(),
+        );
         self.finish_family(family)?;
         result
     }
@@ -430,6 +439,7 @@ impl Runtime {
         at: u64,
         gain: f32,
         envelope: Envelope,
+        playback: Playback,
     ) -> Result<VoiceId, Error> {
         self.check_time(at)?;
         if at == self.now {
@@ -442,6 +452,7 @@ impl Runtime {
         if sample >= self.plan.pcm.len() || !gain.is_finite() || !(0.0..=1.0).contains(&gain) {
             return Err(Error::InvalidInput);
         }
+        let cursor = playback.cursor(self.plan.pcm[sample].frames.len())?;
         let count = f.voices.checked_add(1).ok_or(Error::Capacity)?;
         self.check_time(at)?;
         if at > self.now && self.commands.len() == self.command_limit {
@@ -450,7 +461,7 @@ impl Runtime {
         let id = VoiceId(self.voices.insert(Voice {
             family,
             sample,
-            cursor: 0,
+            cursor,
             envelope: EnvelopeState::new(envelope),
             gain,
             started: at == self.now,
@@ -554,6 +565,7 @@ impl Runtime {
                 let family = self.families.get(v.family.0).unwrap();
                 if !self.notes.get(family.note.0).unwrap().gate {
                     v.envelope.release();
+                    v.cursor.release();
                     if !v.started || v.envelope.done() {
                         self.end_voice(VoiceId(self.voices.id(i)));
                     }
@@ -630,22 +642,12 @@ impl Runtime {
                 let f = self.families.get(v.family.0).unwrap();
                 let n = self.notes.get(f.note.0).unwrap();
                 let gains = self.expressions.get(n.expression.0).unwrap().value.gains();
-                // Admission validates the immutable sample index. Only this loop
-                // advances cursor, clamped to the remaining source length.
+                // Prepared playback bounds and the cursor's contiguous spans stay
+                // within immutable PCM; looping never changes asset ownership.
                 let pcm = &self.plan.pcm[v.sample].frames;
-                let count = len.min(pcm.len() - v.cursor).min(v.envelope.remaining());
-                let unity = v.envelope.unity();
-                for (frame, input) in segment[..count]
-                    .iter_mut()
-                    .zip(&pcm[v.cursor..v.cursor + count])
-                {
-                    let level = if unity { 1.0 } else { v.envelope.next() };
-                    for c in 0..2 {
-                        frame[c] += input[c] * v.gain * gains[c] * level;
-                    }
-                }
-                v.cursor += count;
-                if v.cursor == pcm.len() || v.envelope.done() {
+                v.cursor
+                    .render(pcm, segment, &mut v.envelope, v.gain, gains);
+                if v.cursor.done() || v.envelope.done() {
                     self.end_voice(VoiceId(self.voices.id(i)));
                 }
             }

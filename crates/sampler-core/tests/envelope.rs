@@ -21,6 +21,7 @@ fn runtime(envelope: Envelope, frames: usize) -> Runtime {
             frames: vec![[1.0; 2]; frames].into_boxed_slice(),
         }],
         vec![Region {
+            playback: sampler_core::Playback::default(),
             sample: 0,
             key_low: 60,
             key_high: 60,
@@ -132,7 +133,15 @@ fn pedals_delay_release_and_panic_cancels_tails_and_delayed_sources() {
         rt.flush_ended(|_| true);
         let n = rt.note_on(input(2), 60, 1.0).unwrap();
         let f = rt.create_family(n).unwrap();
-        rt.start_family(f, 0, rt.now() + 10, 1.0, envelope).unwrap();
+        rt.start_family(
+            f,
+            0,
+            rt.now() + 10,
+            1.0,
+            envelope,
+            sampler_core::Playback::default(),
+        )
+        .unwrap();
         rt.finish_family(f).unwrap();
         rt.release(n).unwrap();
         assert_eq!(

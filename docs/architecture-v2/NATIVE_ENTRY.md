@@ -81,7 +81,7 @@ redistributed. Fixtures are authored.
 ## Open product work
 
 This executable is offline and fixed-pitch; it is not yet a live standalone or
-CLAP/VST3 plugin. Tracking/resampling, loops, advanced envelope behavior, richer mapping and DSP,
+CLAP/VST3 plugin. Tracking/resampling, advanced loop/envelope behavior, richer mapping and DSP,
 new scripting, streaming, live plan changes and MIDI 2.0 transport remain open.
 The next implementation extends native source/behavior services and the new host
 composition; it must not insert a legacy-engine fallback for missing functionality.

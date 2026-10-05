@@ -277,18 +277,46 @@ fn families_separate_admission_voice_stop_and_note_release() {
     let n = rt.note_on(input(Some(1)), 60, 1.0).unwrap();
     let f = rt.create_family(n).unwrap();
     let a = rt
-        .start_family(f, 0, 0, 0.25, crate::Envelope::default())
+        .start_family(
+            f,
+            0,
+            0,
+            0.25,
+            crate::Envelope::default(),
+            crate::Playback::default(),
+        )
         .unwrap();
     let b = rt
-        .start_family(f, 0, 10, 0.5, crate::Envelope::default())
+        .start_family(
+            f,
+            0,
+            10,
+            0.5,
+            crate::Envelope::default(),
+            crate::Playback::default(),
+        )
         .unwrap();
     let sibling = rt.create_family(n).unwrap();
     let c = rt
-        .start_family(sibling, 0, 0, 1.0, crate::Envelope::default())
+        .start_family(
+            sibling,
+            0,
+            0,
+            1.0,
+            crate::Envelope::default(),
+            crate::Playback::default(),
+        )
         .unwrap();
     rt.finish_family(f).unwrap();
     assert_eq!(
-        rt.start_family(f, 0, 0, 1.0, crate::Envelope::default()),
+        rt.start_family(
+            f,
+            0,
+            0,
+            1.0,
+            crate::Envelope::default(),
+            crate::Playback::default()
+        ),
         Err(Error::ClosedFamily)
     );
     assert_eq!(rt.family_note(f), Ok(n));
@@ -306,8 +334,15 @@ fn families_separate_admission_voice_stop_and_note_release() {
     assert_eq!(rt.family_count(), 0);
     let replacement = rt.create_family(n).unwrap();
     assert_eq!(rt.stop_family(f), Err(Error::StaleHandle));
-    rt.start_family(replacement, 0, 10, 1.0, crate::Envelope::default())
-        .unwrap();
+    rt.start_family(
+        replacement,
+        0,
+        10,
+        1.0,
+        crate::Envelope::default(),
+        crate::Playback::default(),
+    )
+    .unwrap();
     rt.release(n).unwrap();
     assert_eq!(
         (rt.family_count(), rt.voice_count(), rt.pending_commands()),
@@ -417,10 +452,24 @@ fn separate_budgets_reject_without_partial_ownership() {
     assert_eq!(rt.note_count(), 2);
     let f = rt.create_family(n).unwrap();
     assert_eq!(rt.create_family(child), Err(Error::Capacity));
-    rt.start_family(f, 0, 4, 1.0, crate::Envelope::default())
-        .unwrap();
+    rt.start_family(
+        f,
+        0,
+        4,
+        1.0,
+        crate::Envelope::default(),
+        crate::Playback::default(),
+    )
+    .unwrap();
     assert_eq!(
-        rt.start_family(f, 0, 5, 1.0, crate::Envelope::default()),
+        rt.start_family(
+            f,
+            0,
+            5,
+            1.0,
+            crate::Envelope::default(),
+            crate::Playback::default()
+        ),
         Err(Error::Capacity)
     );
     assert_eq!(rt.family_voice_count(f), Ok(1));
@@ -520,6 +569,7 @@ fn ownership_counters_match_reachable_state_under_mixed_operations() {
                     rt.now() + seed % 17,
                     1.0,
                     crate::Envelope::default(),
+                    crate::Playback::default(),
                 );
             }
             4 => {
@@ -893,6 +943,7 @@ fn prepared_selection_matches_independent_linear_reference() {
         let a = (seed % 128) as u8;
         let b = ((seed >> 16) % 128) as u8;
         regions.push(Region {
+            playback: crate::Playback::default(),
             envelope: crate::Envelope::default(),
             sample: i % 2,
             key_low: a.min(b),
@@ -964,6 +1015,7 @@ fn prepared_validation_and_layer_admission_are_transactional() {
         frames: Box::new([[0.25; 2]; 4]),
     }];
     let region = Region {
+        playback: crate::Playback::default(),
         envelope: crate::Envelope::default(),
         sample: 0,
         key_low: 60,
@@ -978,27 +1030,33 @@ fn prepared_validation_and_layer_admission_are_transactional() {
     ));
     for invalid in [
         Region {
+            playback: crate::Playback::default(),
             envelope: crate::Envelope::default(),
             sample: 1,
             ..region
         },
         Region {
+            playback: crate::Playback::default(),
             key_high: 128,
             ..region
         },
         Region {
+            playback: crate::Playback::default(),
             key_low: 61,
             ..region
         },
         Region {
+            playback: crate::Playback::default(),
             velocity_low: f64::NAN,
             ..region
         },
         Region {
+            playback: crate::Playback::default(),
             velocity_high: -1.0,
             ..region
         },
         Region {
+            playback: crate::Playback::default(),
             gain: f32::INFINITY,
             ..region
         },
