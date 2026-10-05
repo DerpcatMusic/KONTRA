@@ -2635,9 +2635,14 @@ pub(crate) mod tests {
                 .unwrap()
                 .contains("authored initialization failure")
         );
-        assert_eq!(report["load_trace"]["details"]["failure_phase"], "lua_init");
+        // Typed terminal context precedes journal finalization; join off callback
+        // before inspecting the finalized trace.
         worker.stop();
-        assert_eq!(worker.diagnostic_report()["initialization"], *timing);
+        let finalized = worker.diagnostic_report();
+        assert_eq!(worker.status(), Status::Failed);
+        assert_eq!(finalized["failure"], report["failure"]);
+        assert_eq!(finalized["load_trace"]["details"]["failure_phase"], "lua_init");
+        assert_eq!(finalized["initialization"], *timing);
         std::fs::remove_file(path).unwrap();
     }
 
@@ -2801,13 +2806,19 @@ pub(crate) mod tests {
                 .unwrap()
                 .contains("private-print-marker")
         );
-        assert_eq!(report["load_trace"]["details"]["failure_frame"], 256);
         let local=worker.private_lua_failure().unwrap();
         assert_eq!((local.processor,local.frame,local.line),(Some(2),256,Some(3)));
         assert!(local.display.contains("if counter==1 then error("));
         assert!(!report.to_string().contains("if counter==1 then error("),"commercial code remains absent from serialized report/export context");
         assert_eq!(report["lua_failure"]["local_source_excerpt_available"],true);
 
+        // Typed terminal context precedes journal finalization; join off callback
+        // before inspecting the finalized trace.
+        worker.stop();
+        let finalized = worker.diagnostic_report();
+        assert_eq!(worker.status(), Status::Failed);
+        assert_eq!(finalized["failure"], report["failure"]);
+        assert_eq!(finalized["load_trace"]["details"]["failure_frame"], 256);
         drop(worker);
         std::fs::remove_file(path).unwrap();
     }

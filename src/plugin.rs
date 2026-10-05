@@ -2892,6 +2892,18 @@ impl BackgroundTask for Load {
                 trace.stage(name);
                 params.shared.view.lock().unwrap().parts[slot].status = format!("Loading {name}…");
             };
+            #[cfg(test)]
+            {
+                let gate = {
+                    let mut gate = params.shared.load_gate.lock().unwrap();
+                    if gate.as_ref().is_some_and(|(at, _)| *at == slot) { gate.take() } else { None }
+                };
+                if let Some((_, gate)) = gate {
+                    gate.wait();
+                    gate.wait();
+                }
+            }
+            set_stage(&mut trace, "import");
             // Classify once: a saved bank cannot be flattened through shared_program.
             let source = if part.snapshot.is_empty() && prepared_snapshot.as_ref().is_none_or(|(at, source, _)| *at != slot || *source != target) {
                 import::read_slot_source(Path::new(&part.path), part.program).map(Some)
@@ -2949,18 +2961,6 @@ impl BackgroundTask for Load {
                 }
             };
             let result = (|| -> anyhow::Result<_> {
-                set_stage(&mut trace, "import");
-                #[cfg(test)]
-                {
-                    let gate = {
-                        let mut gate = params.shared.load_gate.lock().unwrap();
-                        if gate.as_ref().is_some_and(|(at, _)| *at == slot) { gate.take() } else { None }
-                    };
-                    if let Some((_, gate)) = gate {
-                        gate.wait();
-                        gate.wait();
-                    }
-                }
                 anyhow::ensure!(!canceled(), "Instrument load canceled");
                 let instrument = if let Some((_, _, instrument)) = prepared_snapshot.as_ref().filter(|(at, source, _)| *at == slot && *source == target) {
                     Arc::clone(instrument)
