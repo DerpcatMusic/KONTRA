@@ -84,6 +84,7 @@ struct PreparedRegion {
     transpose_semitones: f64,
     take: Option<super::Take>,
     trigger: super::Trigger,
+    articulation: Option<u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -103,6 +104,9 @@ pub struct Prepared {
     candidates: Box<[Candidate]>,
     pub(super) programs: Box<[super::Program]>,
     note_program: Option<usize>,
+    keyswitches: [Option<u32>; 128],
+    articulated: bool,
+    pub(super) release_selection: [super::SelectionPolicy; 2],
     pub(super) modulation: super::Modulation,
     pub(super) sequences: Box<[super::variation::PreparedSequence]>,
     pub(super) sequence_cells: usize,
@@ -179,6 +183,7 @@ impl Prepared {
                 transpose_semitones: r.playback.transpose_semitones,
                 take: None,
                 trigger: super::Trigger::Attack,
+                articulation: None,
             });
         }
         let mut offsets = [0; 129];
@@ -214,6 +219,9 @@ impl Prepared {
             candidates: candidates.into_boxed_slice(),
             programs: Box::new([]),
             note_program: None,
+            keyswitches: [None; 128],
+            articulated: false,
+            release_selection: [super::SelectionPolicy::Onset; 2],
             modulation: super::Modulation::default(),
             sequences: Box::new([]),
             sequence_cells: 0,
@@ -368,6 +376,67 @@ impl Prepared {
         Ok(self)
     }
 
+    /// Tag regions in original authoring order. None is an unconditional layer.
+    /// Policies independently choose onset/current articulation for key/gate releases.
+    pub fn with_articulations(
+        mut self,
+        regions: Vec<Option<u32>>,
+        switches: Vec<super::Keyswitch>,
+        key_release: super::SelectionPolicy,
+        gate_release: super::SelectionPolicy,
+    ) -> Result<Self, Error> {
+        if regions.len() != self.regions.len() {
+            return Err(Error::InvalidInput);
+        }
+        let mut keyswitches = [None; 128];
+        for switch in switches {
+            let slot = keyswitches
+                .get_mut(usize::from(switch.key))
+                .ok_or(Error::InvalidInput)?;
+            if slot.replace(switch.articulation).is_some() {
+                return Err(Error::InvalidInput);
+            }
+        }
+        self.articulated = regions.iter().any(Option::is_some);
+        for (region, value) in self.regions.iter_mut().zip(regions) {
+            region.articulation = value;
+        }
+        self.keyswitches = keyswitches;
+        self.release_selection = [key_release, gate_release];
+        self.compile_selection();
+        Ok(self)
+    }
+
+    /// Unknown/current release state must validate every possible articulation.
+    pub(super) fn pending_articulation(&self, trigger: super::Trigger, onset: u32) -> Option<u32> {
+        match self.release_selection[trigger.release_index().unwrap()] {
+            super::SelectionPolicy::Onset => Some(onset),
+            super::SelectionPolicy::Current => None,
+        }
+    }
+
+    // Two sparse ranges per sequence: unconditional regions plus the selected tag.
+    // Do not expand keys x articulations x takes x microphones into another table.
+    fn active_ranges(
+        &self,
+        range: std::ops::Range<usize>,
+        articulation: u32,
+    ) -> [std::ops::Range<usize>; 2] {
+        if !self.articulated {
+            return [range, 0..0];
+        }
+        let candidates = &self.candidates[range.clone()];
+        let common = candidates.partition_point(|c| self.regions[c.region].articulation.is_none());
+        let begin = candidates
+            .partition_point(|c| self.regions[c.region].articulation < Some(articulation));
+        let end = candidates
+            .partition_point(|c| self.regions[c.region].articulation <= Some(articulation));
+        [
+            range.start..range.start + common,
+            range.start + begin..range.start + end,
+        ]
+    }
+
     fn compile_selection(&mut self) {
         for key in 0..128 {
             let begin = self.offsets[key];
@@ -375,7 +444,12 @@ impl Prepared {
             let candidates = &mut self.candidates[begin..end];
             candidates.sort_by_key(|c| {
                 let r = self.regions[c.region];
-                (r.trigger, r.take.map(|t| t.sequence), c.region)
+                (
+                    r.trigger,
+                    r.take.map(|t| t.sequence),
+                    r.articulation,
+                    c.region,
+                )
             });
             self.phase_offsets[key] = [
                 begin
@@ -408,8 +482,26 @@ impl Prepared {
         // Control-only sweep: closed velocity intervals overlap at shared endpoints.
         // Track each take's overlap and each group's maximum, without expanding
         // key x velocity x take x microphone products or scanning every velocity.
-        struct Group {
+        #[derive(Default)]
+        struct TakeOverlap {
+            common: usize,
             counts: BTreeMap<u32, usize>,
+            levels: BTreeMap<usize, usize>,
+        }
+        fn change(levels: &mut BTreeMap<usize, usize>, old: usize, new: usize) {
+            if old > 0 {
+                let frequency = levels.get_mut(&old).unwrap();
+                *frequency -= 1;
+                if *frequency == 0 {
+                    levels.remove(&old);
+                }
+            }
+            if new > 0 {
+                *levels.entry(new).or_default() += 1;
+            }
+        }
+        struct Group {
+            counts: BTreeMap<u32, TakeOverlap>,
             levels: BTreeMap<usize, usize>,
             sequenced: bool,
         }
@@ -426,12 +518,14 @@ impl Prepared {
                     true,
                     groups.len(),
                     r.take.map_or(0, |t| t.index),
+                    r.articulation,
                 ));
                 events.push((
                     r.velocity_high,
                     false,
                     groups.len(),
                     r.take.map_or(0, |t| t.index),
+                    r.articulation,
                 ));
             }
             groups.push(Group {
@@ -444,23 +538,25 @@ impl Prepared {
         events.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then_with(|| b.1.cmp(&a.1)));
         let mut active = super::ReleaseReserve::default();
         let mut maximum = active;
-        for (_, start, group, take) in events {
+        for (_, start, group, take, articulation) in events {
             let group = &mut groups[group];
             let old_maximum = group.levels.last_key_value().map_or(0, |(&level, _)| level);
-            let count = group.counts.entry(take).or_default();
-            let old = *count;
-            *count = if start { old + 1 } else { old - 1 };
-            let new = *count;
-            if old > 0 {
-                let frequency = group.levels.get_mut(&old).unwrap();
-                *frequency -= 1;
-                if *frequency == 0 {
-                    group.levels.remove(&old);
-                }
+            let take = group.counts.entry(take).or_default();
+            let old = take.common + take.levels.last_key_value().map_or(0, |(&n, _)| n);
+            if let Some(articulation) = articulation {
+                let count = take.counts.entry(articulation).or_default();
+                let before = *count;
+                *count = if start { before + 1 } else { before - 1 };
+                change(&mut take.levels, before, *count);
+            } else {
+                take.common = if start {
+                    take.common + 1
+                } else {
+                    take.common - 1
+                };
             }
-            if new > 0 {
-                *group.levels.entry(new).or_default() += 1;
-            }
+            let new = take.common + take.levels.last_key_value().map_or(0, |(&n, _)| n);
+            change(&mut group.levels, old, new);
             let new_maximum = group.levels.last_key_value().map_or(0, |(&level, _)| level);
             active.voices = active.voices - old_maximum + new_maximum;
             if old_maximum == 0 && new_maximum != 0 {
@@ -489,13 +585,33 @@ impl Prepared {
         trigger: super::Trigger,
         range: super::pitch::PitchRange,
         velocity: Option<f64>,
+        articulation: Option<u32>,
     ) -> Result<(), Error> {
-        for &candidate in &self.candidates[self.range(pitch.key(), trigger)] {
+        let validate = |candidate: Candidate| -> Result<(), Error> {
             let r = self.regions[candidate.region];
-            if velocity.is_some_and(|v| v < r.velocity_low || v > r.velocity_high) {
-                continue;
+            if velocity.is_none_or(|v| r.velocity_low <= v && v <= r.velocity_high) {
+                range.apply(self.step(candidate, pitch))?;
             }
-            range.apply(self.step(candidate, pitch))?;
+            Ok(())
+        };
+        let candidates = self.range(pitch.key(), trigger);
+        if let Some(articulation) = articulation {
+            let mut from = candidates.start;
+            while from < candidates.end {
+                let until = self.group_end(from, candidates.end);
+                let [common, selected] = self.active_ranges(from..until, articulation);
+                for &candidate in self.candidates[common]
+                    .iter()
+                    .chain(&self.candidates[selected])
+                {
+                    validate(candidate)?;
+                }
+                from = until;
+            }
+        } else {
+            for &candidate in &self.candidates[candidates] {
+                validate(candidate)?;
+            }
         }
         Ok(())
     }
@@ -520,16 +636,27 @@ impl Prepared {
         &self,
         key: u8,
         trigger: super::Trigger,
+        articulation: Option<u32>,
+        velocity: Option<f64>,
     ) -> impl Iterator<Item = usize> + '_ {
         let mut range = self.range(key, trigger);
         std::iter::from_fn(move || {
             if range.is_empty() {
                 return None;
             }
+            let until = self.group_end(range.start, range.end);
+            let ranges = articulation.map_or([range.start..until, 0..0], |value| {
+                self.active_ranges(range.start..until, value)
+            });
+            let eligible = ranges.into_iter().flatten().any(|i| {
+                let r = self.regions[self.candidates[i].region];
+                velocity.is_none_or(|v| r.velocity_low <= v && v <= r.velocity_high)
+            });
             let sequence = self.regions[self.candidates[range.start].region]
                 .take
-                .map(|t| t.sequence);
-            range.start = self.group_end(range.start, range.end);
+                .map(|t| t.sequence)
+                .filter(|_| eligible);
+            range.start = until;
             Some(sequence)
         })
         .flatten()
@@ -549,7 +676,7 @@ impl Prepared {
 
     fn choose(
         &self,
-        range: std::ops::Range<usize>,
+        ranges: [std::ops::Range<usize>; 2],
         velocity: f64,
         address: super::ChannelAddress,
         key: u8,
@@ -558,31 +685,38 @@ impl Prepared {
         if self.sequences.is_empty() {
             return Ok(None);
         }
-        let sequence = self.regions[self.candidates[range.start].region]
-            .take
-            .map(|t| t.sequence);
-        let Some(sequence) = sequence else {
+        let Some(first) = ranges.iter().find(|range| !range.is_empty()) else {
             return Ok(None);
         };
-        if !self.candidates[range].iter().any(|c| {
-            let r = self.regions[c.region];
-            r.velocity_low <= velocity && velocity <= r.velocity_high
-        }) {
+        let Some(take) = self.regions[self.candidates[first.start].region].take else {
+            return Ok(None);
+        };
+        let [common, selected] = ranges;
+        if !self.candidates[common]
+            .iter()
+            .chain(&self.candidates[selected])
+            .any(|c| {
+                let r = self.regions[c.region];
+                r.velocity_low <= velocity && velocity <= r.velocity_high
+            })
+        {
             return Ok(None);
         }
         state
-            .choose(sequence, &self.sequences[sequence], address, key)
+            .choose(take.sequence, &self.sequences[take.sequence], address, key)
             .map(Some)
     }
 
     fn matches(
         &self,
-        range: std::ops::Range<usize>,
+        ranges: [std::ops::Range<usize>; 2],
         velocity: f64,
         take: Option<super::Take>,
     ) -> impl Iterator<Item = Candidate> + '_ {
-        self.candidates[range]
+        let [common, selected] = ranges;
+        self.candidates[common]
             .iter()
+            .chain(&self.candidates[selected])
             .copied()
             .filter(move |candidate| {
                 let r = self.regions[candidate.region];

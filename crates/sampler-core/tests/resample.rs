@@ -39,6 +39,7 @@ fn runtime(plan: Prepared) -> Runtime {
         Limits {
             notes: 4,
             channels: 1,
+            performances: 1,
             families: 4,
             decisions: 0,
             expressions: 4,
@@ -567,6 +568,7 @@ fn absolute_pitch_overrides_tuning_and_survives_generated_note_transposition() {
                 Limits {
                     notes: 4,
                     channels: 1,
+                    performances: 1,
                     families: 4,
                     decisions: 0,
                     expressions: 4,
@@ -854,6 +856,7 @@ fn initial_expression_precedes_selection_and_immediate_snapshot_programs() {
         Limits {
             notes: 4,
             channels: 1,
+            performances: 1,
             families: 4,
             decisions: 0,
             expressions: 4,

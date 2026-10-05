@@ -1,7 +1,8 @@
 //! Fixed-zone MPE 1.1 note/expression projection after raw-event interception.
 use crate::{Applied, ApplyError, Message, Packet, Value, Version};
 use sampler_core::{
-    ChannelScope, Error, Expression, ExpressionId, Input, NoteId, Protocol, Runtime, RuntimeId,
+    ChannelScope, Error, Expression, ExpressionId, Input, NoteId, NotePitch, PerformanceId,
+    Protocol, Runtime, RuntimeId,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,6 +95,7 @@ impl Default for Parameter {
 /// this adapter; a consumed message must not be passed to apply.
 pub struct Mpe {
     runtime: RuntimeId,
+    performance: PerformanceId,
     port: u16,
     group: u8,
     zone: Zone,
@@ -115,6 +117,28 @@ impl Mpe {
         members: u8,
         notes: usize,
     ) -> Result<Self, Error> {
+        Self::new_in(
+            runtime,
+            runtime.performance(0)?,
+            port,
+            group,
+            zone,
+            members,
+            notes,
+        )
+    }
+
+    /// Bind all expressive members to one explicit musical routing domain.
+    pub fn new_in(
+        runtime: &Runtime,
+        performance: PerformanceId,
+        port: u16,
+        group: u8,
+        zone: Zone,
+        members: u8,
+        notes: usize,
+    ) -> Result<Self, Error> {
+        runtime.articulation(performance)?;
         if group >= 16 || !(1..=15).contains(&members) || notes == 0 {
             return Err(Error::InvalidInput);
         }
@@ -128,6 +152,7 @@ impl Mpe {
             .map_err(|_| Error::Capacity)?;
         Ok(Self {
             runtime: runtime.id(),
+            performance,
             port,
             group,
             zone,
@@ -195,9 +220,10 @@ impl Mpe {
                     self.controls[usize::from(voice.channel)]
                 };
                 let expression = member.expression(self.controls[usize::from(self.zone.manager())]);
-                let note = runtime.trigger_with_expression(
+                let note = runtime.trigger_in(
+                    self.performance,
                     Input { key, ..input },
-                    key,
+                    NotePitch::Key(key),
                     velocity.normalized(),
                     expression,
                 )?;
@@ -213,7 +239,8 @@ impl Mpe {
                 velocity,
                 attribute,
             } => Applied::Released {
-                note: runtime.note_off(
+                note: runtime.note_off_in(
+                    self.performance,
                     Input { key, ..input },
                     velocity.map(crate::Value::normalized),
                 )?,

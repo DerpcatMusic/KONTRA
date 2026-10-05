@@ -10,6 +10,7 @@ fn ownership_pressure_render_and_retirement_do_no_heap_work() {
         Limits {
             notes: 8,
             channels: 4,
+            performances: 1,
             expressions: 4,
             families: 4,
             decisions: 0,
@@ -107,6 +108,7 @@ fn pedal_and_expression_timeline_pressure_do_no_heap_work() {
         Limits {
             notes: 4,
             channels: 1,
+            performances: 1,
             expressions: 4,
             families: 4,
             decisions: 0,
@@ -199,6 +201,7 @@ fn prepared_native_selection_and_owned_asset_retirement_do_no_heap_work() {
         Limits {
             notes: 4,
             channels: 0,
+            performances: 1,
             expressions: 4,
             families: 4,
             decisions: 0,
@@ -244,6 +247,7 @@ fn deep_reused_slot_trees_retire_without_heap_and_preserve_retry_ownership() {
         Limits {
             notes: 512,
             channels: 1,
+            performances: 1,
             expressions: 512,
             families: 0,
             decisions: 0,
@@ -341,6 +345,7 @@ fn reverse_index_release_paths_stop_at_independent_children_without_heap() {
         Limits {
             notes: COUNT,
             channels: 1,
+            performances: 1,
             expressions: COUNT,
             families: 0,
             decisions: 0,
@@ -405,6 +410,7 @@ fn sparse_voice_words_preserve_slot_order_reuse_and_eof_without_heap() {
         Limits {
             notes: 1,
             channels: 0,
+            performances: 1,
             families: 65,
             decisions: 0,
             expressions: 1,

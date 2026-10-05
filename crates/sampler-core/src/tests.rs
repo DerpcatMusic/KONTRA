@@ -15,6 +15,7 @@ fn limits() -> Limits {
     Limits {
         notes: 8,
         channels: 4,
+        performances: 1,
         families: 8,
         decisions: 0,
         expressions: 8,
@@ -89,6 +90,7 @@ fn cleanup_does_not_need_queue_space_and_no_source_notes_retry() {
         Limits {
             notes: 2,
             channels: 4,
+            performances: 1,
             families: 2,
             decisions: 0,
             expressions: 2,
@@ -415,6 +417,7 @@ fn separate_budgets_reject_without_partial_ownership() {
         Limits {
             notes: 3,
             channels: 4,
+            performances: 1,
             families: 1,
             decisions: 0,
             expressions: 1,
@@ -477,6 +480,7 @@ fn separate_budgets_reject_without_partial_ownership() {
         Limits {
             notes: 1,
             channels: 4,
+            performances: 1,
             expressions: 3,
             ..limits()
         },
@@ -1024,6 +1028,7 @@ fn full_queue_cannot_drop_pedal_up_and_channel_domains_are_bounded() {
         &[],
         Limits {
             channels: 1,
+            performances: 1,
             commands: 1,
             behaviors: 0,
             behavior_fuel: 0,

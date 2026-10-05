@@ -27,6 +27,7 @@ fn runtime(frames: usize, commands: usize) -> Runtime {
         Limits {
             notes: 2,
             channels: 1,
+            performances: 1,
             expressions: 2,
             families: 2,
             decisions: 0,
@@ -174,6 +175,7 @@ fn choke_preserves_loop_phase_and_muted_tail_duration() {
             Limits {
                 notes: 1,
                 channels: 0,
+                performances: 1,
                 expressions: 1,
                 families: 1,
                 decisions: 0,

@@ -9,6 +9,7 @@ struct Selection {
     velocity: f64,
     address: crate::ChannelAddress,
     trigger: Trigger,
+    articulation: u32,
 }
 
 impl Runtime {
@@ -42,9 +43,45 @@ impl Runtime {
         velocity: f64,
         expression: Expression,
     ) -> Result<NoteId, Error> {
+        self.trigger_in(
+            self.performance(0).unwrap(),
+            input,
+            pitch,
+            velocity,
+            expression,
+        )
+    }
+
+    /// Route a physical input independently of its expressive channel. Native latched
+    /// switches consume a silent logical input before bound programs or source selection.
+    pub fn trigger_in(
+        &mut self,
+        performance: crate::PerformanceId,
+        input: Input,
+        pitch: NotePitch,
+        velocity: f64,
+        expression: Expression,
+    ) -> Result<NoteId, Error> {
+        let index = self.performance_index(performance)?;
         self.apply_due();
         if !expression.valid() {
             return Err(Error::InvalidInput);
+        }
+        if let Some(value) = self
+            .plans
+            .get(self.active_plan.0)
+            .unwrap()
+            .prepared
+            .keyswitches
+            .get(usize::from(input.key))
+            .copied()
+            .flatten()
+        {
+            let note = self.note_on_pitched_in(performance, input, pitch, velocity, expression)?;
+            self.articulations[index] = value;
+            self.selections[note.0.index].articulation = value;
+            self.selections[note.0.index].consumed_switch = true;
+            return Ok(note);
         }
         if let Some(program) = self
             .plans
@@ -56,12 +93,12 @@ impl Runtime {
             if self.behaviors.available() == 0 {
                 return Err(Error::Capacity);
             }
-            let note = self.note_on_pitched(input, pitch, velocity, expression)?;
+            let note = self.note_on_pitched_in(performance, input, pitch, velocity, expression)?;
             self.start_behavior(note, program)
                 .expect("preflighted native behavior admission");
             Ok(note)
         } else {
-            self.select(NoteOrigin::Input(input, expression), pitch, velocity)
+            self.select(NoteOrigin::Input(input, expression, index), pitch, velocity)
         }
     }
 
@@ -97,7 +134,7 @@ impl Runtime {
             }
         };
         let pitch = match origin {
-            NoteOrigin::Input(_, expression) => crate::pitch::PitchRange::constant(
+            NoteOrigin::Input(_, expression, _) => crate::pitch::PitchRange::constant(
                 self.project_expression(self.modulation_plan(plan), expression, None)?
                     .ratio,
             ),
@@ -117,9 +154,14 @@ impl Runtime {
             }
         };
         let address = match origin {
-            NoteOrigin::Input(input, _) => input.channel_address(),
+            NoteOrigin::Input(input, ..) => input.channel_address(),
             NoteOrigin::Child(parent, ..) => self.notes.get(parent.0).unwrap().address,
         };
+        let performance = match origin {
+            NoteOrigin::Input(_, _, performance) => performance,
+            NoteOrigin::Child(parent, ..) => self.selections[parent.0.index].performance,
+        };
+        let articulation = self.articulations[performance];
         let key = note_pitch.key();
         let attack = self.preflight_selection(
             Selection {
@@ -128,6 +170,7 @@ impl Runtime {
                 velocity,
                 address,
                 trigger: Trigger::Attack,
+                articulation,
             },
             pitch,
         )?;
@@ -141,9 +184,15 @@ impl Runtime {
                     trigger,
                     pitch,
                     prepared.release_velocity(trigger, velocity, false, None),
+                    prepared.pending_articulation(trigger, articulation),
                 )?;
                 let generation = self.plans.get(plan.0).unwrap();
-                for sequence in prepared.sequence_groups(key, trigger) {
+                for sequence in prepared.sequence_groups(
+                    key,
+                    trigger,
+                    prepared.pending_articulation(trigger, articulation),
+                    prepared.release_velocity(trigger, velocity, false, None),
+                ) {
                     generation.sequences.check_owner(
                         &prepared.sequences[sequence],
                         address,
@@ -158,9 +207,13 @@ impl Runtime {
         }
         self.check_selection_capacity(required)?;
         let note = match origin {
-            NoteOrigin::Input(input, expression) => {
-                self.note_on_pitched(input, note_pitch, velocity, expression)?
-            }
+            NoteOrigin::Input(input, expression, performance) => self.note_on_pitched_in(
+                self.performance(performance).unwrap(),
+                input,
+                note_pitch,
+                velocity,
+                expression,
+            )?,
             NoteOrigin::Child(parent, linked, inheritance) => {
                 self.child_pitched(parent, note_pitch, velocity, linked, inheritance)?
             }
@@ -176,14 +229,19 @@ impl Runtime {
                 }
                 self.release_times[note.0.index].selection[trigger.release_index().unwrap()] =
                     ReleaseStatus::Pending;
-                for sequence in prepared.sequence_groups(key, trigger) {
+                for sequence in prepared.sequence_groups(
+                    key,
+                    trigger,
+                    prepared.pending_articulation(trigger, articulation),
+                    prepared.release_velocity(trigger, velocity, false, None),
+                ) {
                     generation
                         .sequences
                         .claim_owner(&prepared.sequences[sequence], address, key);
                 }
             }
         }
-        self.commit_selection(note, Trigger::Attack, velocity);
+        self.commit_selection(note, Trigger::Attack, velocity, articulation);
         Ok(note)
     }
 
@@ -210,6 +268,7 @@ impl Runtime {
             velocity,
             address,
             trigger,
+            articulation,
         } = selection;
         let key = note_pitch.key();
         let generation = self.plans.get(plan.0).unwrap();
@@ -219,10 +278,16 @@ impl Runtime {
         let mut from = range.start;
         while from < range.end {
             let until = prepared.group_end(from, range.end);
-            let choice =
-                prepared.choose(from..until, velocity, address, key, &generation.sequences)?;
+            let ranges = prepared.active_ranges(from..until, articulation);
+            let choice = prepared.choose(
+                ranges.clone(),
+                velocity,
+                address,
+                key,
+                &generation.sequences,
+            )?;
             let mut count = 0;
-            for candidate in prepared.matches(from..until, velocity, choice.map(|c| c.take)) {
+            for candidate in prepared.matches(ranges, velocity, choice.map(|c| c.take)) {
                 pitch.apply(prepared.step(candidate, note_pitch))?;
                 count += 1;
             }
@@ -244,7 +309,13 @@ impl Runtime {
         Ok(required)
     }
 
-    fn commit_selection(&mut self, note: NoteId, trigger: Trigger, velocity: f64) {
+    fn commit_selection(
+        &mut self,
+        note: NoteId,
+        trigger: Trigger,
+        velocity: f64,
+        articulation: u32,
+    ) {
         let n = self.notes.get(note.0).unwrap();
         let (plan, note_pitch, address) = (n.plan, n.pitch, n.address);
         let key = note_pitch.key();
@@ -257,12 +328,20 @@ impl Runtime {
             let generation = self.plans.get(plan.0).unwrap();
             let prepared = &generation.prepared;
             let until = prepared.group_end(from, end);
+            let ranges = prepared.active_ranges(from..until, articulation);
             let choice = prepared
-                .choose(from..until, velocity, address, key, &generation.sequences)
+                .choose(
+                    ranges.clone(),
+                    velocity,
+                    address,
+                    key,
+                    &generation.sequences,
+                )
                 .expect("preflighted take decision");
             let decision = choice.map(|c| self.record_take(note, trigger, c.take));
             let mut family = None;
-            for i in from..until {
+            let [common, selected] = ranges;
+            for i in common.chain(selected) {
                 let prepared = &self.plans.get(plan.0).unwrap().prepared;
                 let candidate = prepared.candidates[i];
                 let r = prepared.regions[candidate.region];
@@ -332,6 +411,7 @@ impl Runtime {
                 self.release_times[note.0.index].velocity,
             )
             .unwrap();
+        let articulation = self.release_articulation(note, trigger);
         let result = if musical {
             self.pitch_range(owner, true).and_then(|pitch| {
                 self.preflight_selection(
@@ -341,6 +421,7 @@ impl Runtime {
                         velocity,
                         address,
                         trigger,
+                        articulation,
                     },
                     pitch,
                 )
@@ -355,7 +436,7 @@ impl Runtime {
             Ok(required) => {
                 self.check_selection_capacity(required)
                     .expect("owned release reservation");
-                self.commit_selection(note, trigger, velocity);
+                self.commit_selection(note, trigger, velocity, articulation);
                 ReleaseStatus::Selected
             }
         };

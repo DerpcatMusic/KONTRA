@@ -71,6 +71,9 @@ compatibility remains a separate, evidence-backed capability.
 20. [Native release selection](RELEASE_SELECTION.md): independent key/gate layers,
     reserved capacity, finite family lifetimes and cleanup suppression.
 
+21. [Articulation routing and snapshots](ARTICULATION.md): explicit performance domains,
+    silent latched switches, sparse filtering and onset/current release policies.
+
 ## Implemented and still open
 
 - Native core: generational note/family/voice/expression ownership, physical versus
@@ -83,7 +86,8 @@ compatibility remains a separate, evidence-backed capability.
 - Selection: coordinated sequential/random/no-repeat/shuffle takes with explicit scope and
   storage budgets, retained note decisions and transactional multi-family admission.
   Key/gate release layers own reserved resources and independent phase decisions.
-  Articulation state and persisted snapshots remain open.
+  Explicit performance domains, latched switches and articulation snapshots are native.
+  Controller predicates/snapshots, other switch/phrase policies and persisted recall remain open.
 - Preparation: validated immutable PCM shared across plans, adoption between notes, original-generation tails
   and callbacks, and control-thread retirement. Native WAV rendering and the
   deliberately small KSP source subset run independently of the old engine.
@@ -93,6 +97,8 @@ compatibility remains a separate, evidence-backed capability.
 - Product work remains substantial: broader modulation rates/scopes, filters/effects, streaming,
   richer selection/behavior/imports, host integration, persistence and UI. The
   production plugin/UI still uses the old core. There is no new-core DAW build yet.
+  Completion explicitly requires full Kontakt KSP parity, complete new-core UI wiring
+  and an upgraded sample section; the current KSP subset is intermediate work.
 
 Continue the native foundations and their ownership/performance checks before
 selective porting and product cutover, following [TASKS.md](TASKS.md). High-ratio

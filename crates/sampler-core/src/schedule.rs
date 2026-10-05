@@ -3,6 +3,8 @@ use super::{ChannelId, Error, Expression, FamilyId, NoteId, Runtime, VoiceId};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
+    /// Change a musical domain without changing any expressive channel identity.
+    Articulation(super::PerformanceId, u32),
     /// Physical key-up with optional normalized release velocity.
     KeyUp(NoteId, Option<f64>),
     Release(NoteId),
@@ -44,6 +46,9 @@ impl Runtime {
             self.apply_due();
         }
         match event {
+            Event::Articulation(id, _) => {
+                self.performance_index(id)?;
+            }
             Event::KeyUp(id, velocity) => {
                 super::release::validate_velocity(velocity)?;
                 if !self.notes.get(id.0).ok_or(Error::StaleHandle)?.key_down() {
@@ -109,6 +114,10 @@ impl Runtime {
 
     fn apply_event(&mut self, event: Event) {
         match event {
+            Event::Articulation(id, value) => {
+                let index = self.performance_index(id).unwrap();
+                self.articulations[index] = value;
+            }
             Event::KeyUp(id, velocity) => {
                 self.key_up_now(id, velocity).unwrap();
             }
@@ -192,7 +201,9 @@ impl Runtime {
                     false
                 }
             }
-            Action::Event(Event::Sustain(..) | Event::Sostenuto(..)) => true,
+            Action::Event(Event::Sustain(..) | Event::Sostenuto(..) | Event::Articulation(..)) => {
+                true
+            }
         });
     }
 }

@@ -112,6 +112,7 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
     let limits = Limits {
         notes: 32,
         channels: 16,
+        performances: 1,
         expressions: 32,
         families: 32,
         decisions: 0,

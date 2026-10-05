@@ -380,3 +380,58 @@ Local CSVs use `artifacts/release-selection-final-{before,after}-*.csv` and
 `artifacts/release-selection-final-binaries.sha256`. The earlier exploratory runs
 and inlining experiment are retained separately. Release-selection tests retain
 allocation/deallocation guards independently of these timing measurements.
+
+## Articulation selection cost
+
+The articulation checkpoint adds fixed performance domains, cold note snapshots and
+sparse filtering without growing the hot note record. On 2026-10-06, three paired
+CPU-2 runs on the same Ryzen 7 7800X3D/Linux host compare the retained release-selection
+executable with this change. No concurrent build/scan ran during measurement. Values
+are medians of run medians in microseconds; CSVs retain individual-run tails.
+
+| Notes | Voice capacity | Plain admission before → after | ID admission before → after | Shuffle admission before → after |
+| ---: | ---: | ---: | ---: | ---: |
+| 16 | 64 | 2.440 → 2.681 | 2.560 → 2.930 | 4.020 → 4.040 |
+| 64 | 256 | 9.940 → 10.680 | 12.710 → 13.540 | 16.230 → 16.680 |
+| 256 | 1024 | 40.191 → 44.181 | 80.992 → 89.862 | 68.091 → 69.162 |
+| 1024 | 4096 | 199.713 → 218.234 | 936.377 → 994.988 | 316.166 → 323.156 |
+| 16 | 4096 | 2.520 → 2.691 | 9.830 → 10.601 | 4.130 → 4.100 |
+
+Plain admission costs about 7–10% more and shuffle about -1–3% in these local runs;
+ID results vary about 6–14%. These features are not free. At 1024 notes, plain/ID/
+shuffle note-off medians are 4038.816/2387.335/4016.074 microseconds after the change,
+versus 4122.467/2360.805/4017.715 before. The unchanged physical matching/cleanup work
+still dominates large bursts. Retirement remains approximately 8–9 microseconds.
+No steady-render speedup is claimed or inferred from admission measurements.
+
+`admission_workload --articulations` authors 64 exclusive labels, selects label 63,
+and still creates four microphones per note. It composes with `--shuffle` (three
+takes) and `--releases` (four separately reserved release microphones). The following
+costs include both sparse filtering and ordinary admission; they are not standalone
+binary-search timings.
+
+| Notes | Attack voice capacity | 64-label plain admission | 64-label shuffle admission | 64-label attack+release shuffle admission / note-off |
+| ---: | ---: | ---: | ---: | ---: |
+| 16 | 64 | 4.150 | 5.730 | 10.230 / 7.830 |
+| 64 | 256 | 15.881 | 23.260 | 39.900 / 42.801 |
+| 256 | 1024 | 64.441 | 97.572 | 160.753 / 364.346 |
+| 1024 | 4096 | 298.165 | 434.189 | 687.633 / 4603.726 |
+| 16 | 4096 | 3.960 | 9.370 | 9.880 / 68.101 |
+
+Release configurations double the printed table's attack capacity for the total
+voice budget. The sparse shuffle row was slower/noisier than the small dense row;
+retain it rather than treating pool capacity as irrelevant. Results do not prove
+arbitrary-library callback deadlines. Current-state release policies may require
+validating all possible articulation pitches; these indexed release measurements
+use known onset snapshots.
+
+The first implementation repeated articulation searches and scanned inactive tags
+during snapshot release-pitch validation. Reusing each group's two ranges and
+validating only reachable snapshot candidates reduced the measured 1024-note
+indexed attack+release admission from 1349.505 to 687.633 microseconds. It also
+reduced unarticulated shuffle overhead from roughly 8–15% to the values above.
+
+Artifacts: `artifacts/articulation-final-*.csv` and
+`artifacts/articulation-final-binaries.sha256`. Initial measurements remain under
+`artifacts/articulation-{before,after,indexed}*`. Heap guards and independent
+selection/ownership tests remain separate from timing evidence.

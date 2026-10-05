@@ -188,7 +188,7 @@ impl Runtime {
                     .input
                     .is_some_and(|input| input.channel_address() == address)
             {
-                let held = sustained || note.sostenuto;
+                let held = !self.selections[i].consumed_switch && (sustained || note.sostenuto);
                 self.release_key(NoteId(self.notes.id(i)), ReleaseCause::AllNotesOff, None);
                 if !held {
                     self.close_gate(super::NoteId(self.notes.id(i)), ReleaseCause::AllNotesOff);
@@ -262,7 +262,7 @@ impl Runtime {
                     .is_some_and(|c| c.address == i.channel_address() && c.sustain)
             })
         });
-        let held = sustained || n.sostenuto;
+        let held = !self.selections[note.0.index].consumed_switch && (sustained || n.sostenuto);
         self.release_key(note, ReleaseCause::KeyUp, velocity);
         if !held {
             self.close_gate(note, ReleaseCause::KeyUp);
@@ -315,7 +315,8 @@ impl Runtime {
                 continue;
             };
             let bit = 1 << input.channel;
-            if rising & bit != 0 && n.key_down() && n.gate() {
+            if rising & bit != 0 && n.key_down() && n.gate() && !self.selections[i].consumed_switch
+            {
                 n.sostenuto = true;
             }
             if sostenuto && !down {

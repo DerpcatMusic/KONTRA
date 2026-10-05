@@ -41,6 +41,7 @@ fn runtime(playback: Playback) -> Runtime {
         Limits {
             notes: 4,
             channels: 1,
+            performances: 1,
             families: 4,
             decisions: 0,
             expressions: 4,
@@ -187,6 +188,7 @@ fn shared_pcm_views_and_loop_release_are_independent_without_heap_work() {
         Limits {
             notes: 2,
             channels: 1,
+            performances: 1,
             families: 2,
             decisions: 0,
             expressions: 2,

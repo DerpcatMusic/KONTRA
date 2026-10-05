@@ -163,6 +163,10 @@ impl Runtime {
                                     note.key_release.is_some(),
                                     self.release_times[index].velocity,
                                 ),
+                                prepared.pending_articulation(
+                                    trigger,
+                                    self.selections[index].articulation,
+                                ),
                             )?;
                         }
                     }

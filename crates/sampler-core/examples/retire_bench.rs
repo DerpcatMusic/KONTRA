@@ -17,6 +17,7 @@ fn main() {
                 Limits {
                     notes: count,
                     channels: 1,
+                    performances: 1,
                     expressions: if release { count } else { 1 },
                     families: 0,
                     decisions: 0,

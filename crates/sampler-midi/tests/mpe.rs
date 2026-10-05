@@ -46,6 +46,7 @@ fn runtime_with_modulation(channels: usize, modulation: sampler_core::Modulation
         Limits {
             notes: 8,
             channels,
+            performances: 1,
             families: 8,
             decisions: 0,
             expressions: 8,
@@ -665,4 +666,74 @@ fn mpe_retains_release_velocity_for_both_zones_and_distinguishes_zero_note_on() 
             }
         });
     }
+}
+
+#[test]
+fn articulation_switch_on_one_member_routes_all_members_without_changing_expression_identity() {
+    use sampler_core::{Keyswitch, SelectionPolicy};
+    let plan = Prepared::new(
+        48000,
+        vec![Pcm::new(48000, Box::from([[0.5; 2]; 4])).unwrap()],
+        vec![Region {
+            sample: 0,
+            key_low: 60,
+            key_high: 61,
+            root_key: None,
+            velocity_low: 0.,
+            velocity_high: 1.,
+            gain: 1.,
+            envelope: Envelope::default(),
+            playback: Playback::default(),
+        }],
+        2,
+    )
+    .unwrap()
+    .with_articulations(
+        vec![Some(99)],
+        vec![Keyswitch {
+            key: 12,
+            articulation: 99,
+        }],
+        SelectionPolicy::Onset,
+        SelectionPolicy::Onset,
+    )
+    .unwrap();
+    let mut rt = Runtime::new(
+        plan,
+        Limits {
+            notes: 4,
+            channels: 3,
+            performances: 2,
+            families: 4,
+            expressions: 4,
+            voices: 4,
+            decisions: 0,
+            commands: 4,
+            behaviors: 0,
+            behavior_fuel: 0,
+            behavior_cells: 0,
+        },
+    )
+    .unwrap();
+    let domain = rt.performance(1).unwrap();
+    let mut mpe = Mpe::new_in(&rt, domain, 0, 3, Zone::Lower, 3, 4).unwrap();
+    support::without_heap(|| {
+        let switch = start(&mut mpe, &mut rt, 1, 12);
+        assert!(rt.note_selection(switch).unwrap().consumed_switch);
+        assert_eq!(rt.voice_count(), 0);
+        let a = start(&mut mpe, &mut rt, 2, 60);
+        let b = start(&mut mpe, &mut rt, 3, 61);
+        assert_ne!(rt.expression_id(a), rt.expression_id(b));
+        assert_eq!(rt.note_selection(a).unwrap().articulation, 99);
+        assert_eq!(rt.note_selection(a).unwrap().performance, domain);
+        assert_eq!(rt.articulation(rt.performance(0).unwrap()), Ok(0));
+        assert_eq!(rt.note_selection(b).unwrap().articulation, 99);
+        apply(&mut mpe, &mut rt, packet(0x80, 1, 12, 0)).unwrap();
+        assert!(rt.key_down(a).unwrap() && rt.key_down(b).unwrap());
+        let mut out = [[0.; 2]; 4];
+        rt.render(&mut out).unwrap();
+        assert_eq!(out, [[1.; 2]; 4]);
+        rt.panic();
+        rt.flush_ended(|_| true);
+    });
 }

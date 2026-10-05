@@ -17,6 +17,7 @@ fn limits() -> Limits {
     Limits {
         notes: 8,
         channels: 1,
+        performances: 1,
         families: 8,
         decisions: 0,
         expressions: 8,

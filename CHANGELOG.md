@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Add explicit musical performance domains, note-owned articulation snapshots and silent latched keyswitches. Sparse region filtering and onset/current release policies stay independent of MPE member channels; ordinary MIDI and MPE can route notes to a chosen domain.
+
 - Select native key/gate release layers with note-owned voice, family, decision and command reservations. Independent phase sequences, explicit velocity policies and finite family gates survive pedals and plan replacement; hard/fault cleanup suppresses pending releases without spawning audio.
 
 - Retain logical admission, key-up and gate-closure times with distinct musical/cleanup causes in note-owned release context. MIDI 1/2 and MPE preserve optional release velocity through pedals, source EOF, plan replacement and terminal retry; key/gate state derives from these records.

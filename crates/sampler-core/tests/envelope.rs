@@ -36,6 +36,7 @@ fn runtime(envelope: Envelope, frames: usize) -> Runtime {
         Limits {
             notes: 2,
             channels: 1,
+            performances: 1,
             expressions: 2,
             families: 2,
             decisions: 0,

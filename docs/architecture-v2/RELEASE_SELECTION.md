@@ -31,7 +31,8 @@ sequence)` preserves all three decisions separately. `family_trigger(family)` an
 `family_take(family)` identify a live family's role and decision.
 
 Selection uses the original prepared generation, inherent pitch and current expression
-owner. It does not silently capture an attack-time controller/articulation snapshot.
+owner. [Articulation policy](ARTICULATION.md) now explicitly chooses onset snapshots
+or current performance-domain state per release phase; controller snapshots remain open.
 `trigger` arms release phases; manual `note_on`/`child` admissions do not. A bound note
 program owns its source policy: generated `Play` children use the selector and arm
 releases, while the intercepted program root remains unarmed.
@@ -41,7 +42,8 @@ releases, while the intercepted program root remains unarmed.
 Before publishing an attack, the selector checks its immediate resources plus both
 release phases' worst-case voices, families, retained decisions and duration commands.
 A control-time sweep over closed velocity intervals computes each phase's bounds:
-within a sequence, reserve its largest simultaneously eligible take; sum independently
+within a sequence, reserve its largest simultaneously eligible take, combining
+unconditional layers with the maximum exclusive articulation overlap; sum independently
 selectable groups. Shared endpoints, including signed zero, overlap. Disjoint velocity
 layers and alternative takes do not all consume concurrent voice reservations.
 
