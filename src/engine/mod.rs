@@ -55,6 +55,8 @@ pub(crate) mod native_state;
 mod stream;
 pub use stream::{StreamError, StreamErrorKind};
 mod voice;
+#[cfg(all(test, feature = "plugin"))]
+pub(crate) mod vista_pedal_probe;
 // Pure interpolation only; raw preview does not construct an engine voice.
 pub(crate) use voice::hermite;
 mod wavetable;
@@ -2343,14 +2345,14 @@ pub struct VoiceInfo {
 /// Flush-to-zero and denormals-are-zero while alive, restoring the caller's
 /// mode after: decaying tails (tone filter, effects, releases) otherwise
 /// crawl through subnormals at many times the cost per sample.
-struct FlushDenormals {
+pub(crate) struct FlushDenormals {
     #[cfg(target_arch = "x86_64")]
     saved: u32,
 }
 
 impl FlushDenormals {
     #[allow(deprecated)]
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         #[cfg(target_arch = "x86_64")]
         {
             use std::arch::x86_64::{_mm_getcsr, _mm_setcsr};
@@ -2921,5 +2923,60 @@ end on"#.into()], ..Default::default() };
             assert_eq!(actual.underruns(), 0);
         }
         assert!(recorded[0].iter().flatten().zip(recorded[1].iter().flatten()).all(|(a, b)| (a - b).abs() < 1e-6));
+    }
+}
+
+#[cfg(test)]
+mod flush_denormals_tests {
+    use super::FlushDenormals;
+
+    #[test]
+    fn normal_stereo_pcm_is_unchanged_by_scoped_denormal_mode() {
+        let input = [[0.5_f32, -0.5], [1., -1.], [0.25, -0.25]];
+        let actual = {
+            let _ftz = FlushDenormals::new();
+            input.map(|frame| frame.map(|sample| std::hint::black_box(sample) * 0.5))
+        };
+        assert_eq!(actual, [[0.25, -0.25], [0.5, -0.5], [0.125, -0.125]]);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    #[allow(deprecated)]
+    fn denormal_mode_preserves_caller_bits_on_success_error_and_unwind() {
+        use std::arch::x86_64::{_mm_getcsr, _mm_setcsr};
+        const FTZ_DAZ: u32 = 0x8040;
+        // SAFETY: SSE is baseline on x86_64; this owner restores the original
+        // thread-local register even if an assertion below unwinds.
+        let original = unsafe { _mm_getcsr() };
+        let _restore = FlushDenormals { saved: original };
+        for mode in [0, 0x8000, 0x0040, FTZ_DAZ] {
+            let caller = (original & !FTZ_DAZ) | mode;
+            // SAFETY: only supported FTZ/DAZ bits change.
+            unsafe { _mm_setcsr(caller) };
+            for fail in [false, true] {
+                let result: Result<(), ()> = (|| {
+                    let _ftz = FlushDenormals::new();
+                    // SAFETY: reads this thread's SSE register.
+                    assert_eq!(unsafe { _mm_getcsr() }, caller | FTZ_DAZ);
+                    if fail {
+                        return Err(());
+                    }
+                    Ok(())
+                })();
+                assert_eq!(result.is_err(), fail);
+                // SAFETY: reads this thread's SSE register.
+                assert_eq!(unsafe { _mm_getcsr() }, caller);
+            }
+            let panic = std::panic::catch_unwind(|| {
+                let _ftz = FlushDenormals::new();
+                // SAFETY: reads this thread's SSE register.
+                assert_eq!(unsafe { _mm_getcsr() }, caller | FTZ_DAZ);
+                panic!("exercise scoped floating-point restoration");
+            });
+            assert!(panic.is_err());
+            // SAFETY: reads this thread's SSE register.
+            assert_eq!(unsafe { _mm_getcsr() }, caller);
+        }
     }
 }
