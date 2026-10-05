@@ -15,7 +15,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use a11y::A11y;
+use mui_native::native::{AccessibilityUi, NativeAccessibility};
+// Native first: dropping the pair invalidates the portable endpoint before it
+// is destroyed. The upstream native endpoint is explicitly !Send and !Sync.
+type A11y = (NativeAccessibility, AccessibilityUi);
 /// The baseview this window runs on (moose-baseview), so a consumer names
 /// `Window`, `WindowSettings` and friends without depending on it itself.
 pub use baseview;
@@ -33,6 +36,8 @@ use mui::prelude::{Button, Cursor, Key, Mods, Point};
 use mui::vello::host::{Frame, Host, target_size};
 use mui::vello::kurbo::Affine;
 use raw_window_handle::HasWindowHandle;
+#[cfg(target_os = "linux")]
+use raw_window_handle::HasDisplayHandle;
 
 mod timing;
 pub use timing::{NativeFrameOutcome, NativeFrameSample, NativeTimingHook, NativeTimingReport, NATIVE_METRICS, NATIVE_OUTCOMES, NATIVE_TIMING_LIMIT};
@@ -299,12 +304,16 @@ fn build<V: View + Send + 'static>(
             handler.requests.x11_window.store(handler.x11_window, Ordering::Release);
             handler.requests.notify_x11_window();
         }
-        handler.a11y = cx
-            .window_handle()
-            .ok()
-            .and_then(|handle| A11y::new(handle.as_raw()));
-        if let Some(a11y) = handler.a11y.as_mut() {
-            a11y.focus(cx.has_focus());
+        // SAFETY: baseview invokes this builder on the live window's owning
+        // thread before show. Adapter drops Handler (including the provider)
+        // before WindowContext; WillClose also drops it before model access.
+        #[expect(unsafe_code, reason = "baseview owns the native window lifecycle")]
+        unsafe {
+            handler.a11y = cx.window_handle().ok()
+                .and_then(|handle| NativeAccessibility::new(handle.as_raw()));
+        }
+        if let Some((native, _)) = handler.a11y.as_mut() {
+            native.focus(cx.has_focus());
         }
         handler.parented = parented;
         log(&handler.shared, "mui-baseview: native window ready; waiting for first frame");
@@ -438,8 +447,14 @@ impl<V: View> Handler<V> {
             return;
         }
         #[cfg(target_os = "linux")]
-        if let Some(a11y) = self.a11y.as_mut() {
-            a11y.update_bounds(window);
+        if let Some((native, _)) = self.a11y.as_mut()
+            && let Ok(display) = window.display_handle()
+            && let Ok(handle) = window.window_handle()
+        {
+            // SAFETY: both handles are borrowed from the same live context,
+            // on its owning thread and before acquiring the model lock.
+            #[expect(unsafe_code, reason = "borrow the live baseview display and window")]
+            unsafe { native.update_bounds(display.as_raw(), handle.as_raw()); }
         }
         // macOS: keep the child pinned to the parent's top as it resizes.
         // A top-level window's view is its content view: leave it be.
@@ -486,7 +501,7 @@ impl<V: View> Handler<V> {
             let lock_at = sample.as_ref().map(|_| Instant::now());
             let mut s = lock(&self.shared);
             if let Some(sample) = sample { sample.lock_ns = timing::elapsed(lock_at); }
-            let a11y = self.a11y.as_mut();
+            let a11y = self.a11y.as_mut().map(|(_, ui)| ui);
             if let Some(a11y) = &a11y
                 && a11y.wants_tree()
             {
@@ -518,7 +533,7 @@ impl<V: View> Handler<V> {
             // ignored key already goes to the host. Only on a change: each
             // call also moves focus.
             capture = s.ui.focus_is_text();
-            if let Some(a11y) = self.a11y.as_mut()
+            if let Some((_, a11y)) = self.a11y.as_mut()
                 && (fresh || a11y.wants_tree())
             {
                 accessibility_update = a11y.prepare(&s.ui);
@@ -538,8 +553,8 @@ impl<V: View> Handler<V> {
             window.set_keyboard_capture(capture);
             self.captured = Some(capture);
         }
-        if let (Some(a11y), Some(update)) = (self.a11y.as_mut(), accessibility_update) {
-            a11y.publish(update);
+        if let (Some((native, _)), Some(update)) = (self.a11y.as_mut(), accessibility_update) {
+            native.publish(update);
         }
         // Native IME APIs may synchronously call the adapter. No model lock is held.
         if self.applied_ime.as_ref() != Some(&ime_configuration) {
@@ -672,16 +687,7 @@ impl<V: View> Handler<V> {
         let points = |p: PhysicalPosition<f64>| Point::new(p.x / scale, p.y / scale);
         let d = &mut self.driver;
         match event {
-            Event::Ime(event) => d.ime(match event {
-                baseview::Ime::Selection(range) => mui::prelude::Ime::Selection(range.clone()),
-                baseview::Ime::Enabled => mui::prelude::Ime::Enabled,
-                baseview::Ime::Preedit { text, cursor } => mui::prelude::Ime::Preedit {
-                    text: text.clone(),
-                    cursor: *cursor,
-                },
-                baseview::Ime::Commit(text) => mui::prelude::Ime::Commit(text.clone()),
-                baseview::Ime::Disabled => mui::prelude::Ime::Disabled,
-            }),
+            Event::Ime(event) => d.ime(mui_native::native::ime_event(event)),
             Event::Keyboard(key) => {
                 let event = key_event(key);
                 let hook = self.requests.keys.lock().ok().and_then(|h| h.clone());
@@ -781,8 +787,8 @@ impl<V: View> Handler<V> {
                     self.hidden_at = None;
                 }
                 d.focus(focused);
-                if let Some(a11y) = self.a11y.as_mut() {
-                    a11y.focus(focused);
+                if let Some((native, _)) = self.a11y.as_mut() {
+                    native.focus(focused);
                 }
             }
             Event::Window(WindowEvent::WillClose) => {
@@ -896,12 +902,13 @@ impl<V: View + 'static> WindowHandler for Adapter<V> {
 
 /// Scene geometry is in UI points; baseview's IME contract uses client pixels.
 fn native_ime(config: mui::host::ImeConfiguration, scale: f64) -> baseview::ImeConfiguration {
+    let config = mui_native::native::ime_configuration(config, scale);
     baseview::ImeConfiguration {
         id: config.id,
-        position: PhysicalPosition::new(config.area.0.x * scale, config.area.0.y * scale),
+        position: PhysicalPosition::new(config.area.0.x, config.area.0.y),
         size: baseview::dpi::PhysicalSize::new(
-            config.area.1.width * scale,
-            config.area.1.height * scale,
+            config.area.1.width,
+            config.area.1.height,
         ),
         text: config.text,
         selection: config.selection,
@@ -1117,7 +1124,6 @@ fn open_gpu(window: &WindowContext, size: (u32, u32), mut report: impl FnMut(&st
     .map_err(|payload| gpu_panic_reason(payload.as_ref()))?
 }
 
-mod a11y;
 mod platform;
 mod surface;
 #[cfg(test)]
