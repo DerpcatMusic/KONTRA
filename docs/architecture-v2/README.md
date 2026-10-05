@@ -77,6 +77,9 @@ compatibility remains a separate, evidence-backed capability.
 22. [Architecture and open-source reference review](REFERENCE_REVIEW.md): pinned
     sampler sources, relevant edge cases, native evidence and remaining checks.
 
+23. [Full Kontakt 8.12 KSP completion map](KSP_PARITY.md): manual surface inventory,
+    native service dependencies and explicit implementation/reference gaps.
+
 ## Implemented and still open
 
 - Native core: generational note/family/voice/expression ownership, physical versus
