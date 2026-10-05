@@ -1,0 +1,4496 @@
+{
+  "target": "Kontakt 8.12 KSP",
+  "retrieved_on": "2026-10-06",
+  "scope": "All 25 functional chapters in the observed manual navigation; historical/resources/intro pages excluded from implementation counts.",
+  "limitations": [
+    "Section and declaration index, not an exhaustive enumeration of every operand, parameter value, legal callback context or historical alias.",
+    "Symbols are extracted from headings and definition-table cells; source review is required before implementing each section.",
+    "No licensed Kontakt execution comparison has been performed. Native substrate is not KSP compatibility."
+  ],
+  "default_status": {
+    "implementation": "missing",
+    "kontakt_fidelity": "unverified"
+  },
+  "symbol_overrides": {
+    "on note": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "play_note": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "wait": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "ignore_event": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "$EVENT_ID": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "$EVENT_NOTE": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    }
+  },
+  "chapters": [
+    {
+      "id": "advanced-concepts",
+      "title": "Advanced Concepts",
+      "service": "cross_service_semantics",
+      "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/advanced-concepts",
+      "sha256": "10063fe89b2b8b2bb1f5176154293b4351dcb02c3ccb53a872dedb171a91df14",
+      "sections": [
+        {
+          "anchor": "changing-fx-from-ksp",
+          "title": "Changing FX from KSP",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/advanced-concepts#changing-fx-from-ksp"
+        },
+        {
+          "anchor": "preprocessor---system-scripts",
+          "title": "Preprocessor & System Scripts",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/advanced-concepts#preprocessor---system-scripts"
+        },
+        {
+          "anchor": "pgs",
+          "title": "PGS",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/advanced-concepts#pgs"
+        },
+        {
+          "anchor": "the-advanced-engine-tab",
+          "title": "The Advanced Engine Tab",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/advanced-concepts#the-advanced-engine-tab"
+        }
+      ]
+    },
+    {
+      "id": "arithmetic-commands---operators",
+      "title": "Arithmetic Commands & Operators",
+      "service": "language",
+      "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators",
+      "sha256": "3bef630209e32d0a099168af024bded981619209b48908b4cc00743617a3df8a",
+      "sections": [
+        {
+          "anchor": "basic-operators",
+          "title": "Basic Operators",
+          "symbols": {
+            "command": [
+              "abs",
+              "signbit",
+              "sgn"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators#basic-operators"
+        },
+        {
+          "anchor": "integer-number-commands",
+          "title": "Integer Number Commands",
+          "symbols": {
+            "command": [
+              "inc",
+              "dec"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators#integer-number-commands"
+        },
+        {
+          "anchor": "real-number-commands",
+          "title": "Real Number Commands",
+          "symbols": {
+            "command": [
+              "exp",
+              "exp2",
+              "log",
+              "log2",
+              "log10",
+              "pow",
+              "sqrt",
+              "cbrt"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators#real-number-commands"
+        },
+        {
+          "anchor": "rounding-commands",
+          "title": "Rounding Commands",
+          "symbols": {
+            "command": [
+              "ceil",
+              "floor",
+              "round"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators#rounding-commands"
+        },
+        {
+          "anchor": "trigonometric-commands",
+          "title": "Trigonometric Commands",
+          "symbols": {
+            "command": [
+              "cos",
+              "sin",
+              "tan",
+              "acos",
+              "asin",
+              "atan"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators#trigonometric-commands"
+        },
+        {
+          "anchor": "bitwise-operators",
+          "title": "Bitwise Operators",
+          "symbols": {
+            "command": [
+              "sh_left",
+              "sh_right"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators#bitwise-operators"
+        },
+        {
+          "anchor": "random--",
+          "title": "random()",
+          "symbols": {
+            "command": [
+              "random"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators#random--"
+        },
+        {
+          "anchor": "real--",
+          "title": "real()",
+          "symbols": {
+            "command": [
+              "real"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators#real--"
+        },
+        {
+          "anchor": "int--",
+          "title": "int()",
+          "symbols": {
+            "command": [
+              "int"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators#int--"
+        },
+        {
+          "anchor": "msb--",
+          "title": "msb()",
+          "symbols": {
+            "command": [
+              "msb"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators#msb--"
+        },
+        {
+          "anchor": "lsb--",
+          "title": "lsb()",
+          "symbols": {
+            "command": [
+              "lsb"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators#lsb--"
+        }
+      ]
+    },
+    {
+      "id": "array-commands",
+      "title": "Array Commands",
+      "service": "script_state",
+      "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/array-commands",
+      "sha256": "1c091362091dcb71c5175fb9130ec450c1a5bce5344f66630c5a10bac71b3c87",
+      "sections": [
+        {
+          "anchor": "array_equal--",
+          "title": "array_equal()",
+          "symbols": {
+            "command": [
+              "array_equal"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/array-commands#array_equal--"
+        },
+        {
+          "anchor": "num_elements--",
+          "title": "num_elements()",
+          "symbols": {
+            "command": [
+              "num_elements"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/array-commands#num_elements--"
+        },
+        {
+          "anchor": "search--",
+          "title": "search()",
+          "symbols": {
+            "command": [
+              "search"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/array-commands#search--"
+        },
+        {
+          "anchor": "sort--",
+          "title": "sort()",
+          "symbols": {
+            "command": [
+              "sort"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/array-commands#sort--"
+        }
+      ]
+    },
+    {
+      "id": "built-in-variables-and-constants",
+      "title": "Built-in Variables and Constants",
+      "service": "script_context",
+      "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/built-in-variables-and-constants",
+      "sha256": "9a5ab14188022767684a1dea13a0ca0e060e0838a788073b7a26b50b0030247e",
+      "sections": [
+        {
+          "anchor": "general-102076",
+          "title": "General",
+          "symbols": {
+            "symbol": [
+              "$CURRENT_SCRIPT_SLOT",
+              "%GROUPS_SELECTED",
+              "$NI_ASYNC_EXIT_STATUS",
+              "$NI_ASYNC_ID",
+              "$NI_BUS_OFFSET",
+              "$NUM_GROUPS",
+              "$NUM_OUTPUT_CHANNELS",
+              "$NUM_ZONES",
+              "$PLAYED_VOICES_INST",
+              "$PLAYED_VOICES_TOTAL",
+              "$REF_GROUP_IDX",
+              "$GET_FOLDER_LIBRARY_DIR",
+              "$GET_FOLDER_FACTORY_DIR",
+              "$GET_FOLDER_PATCH_DIR",
+              "$GET_FOLDER_RC_DIR",
+              "$NI_VL_TMPRO_STANDARD",
+              "$NI_VL_TMRPO_HQ"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/built-in-variables-and-constants#general-102076"
+        },
+        {
+          "anchor": "events-and-midi",
+          "title": "Events and MIDI",
+          "symbols": {
+            "symbol": [
+              "$ALL_GROUPS",
+              "$ALL_EVENTS",
+              "$MARK_1",
+              "$MARK_28",
+              "%CC",
+              "$CC_NUM",
+              "%CC_TOUCHED",
+              "$EVENT_ID",
+              "$CURRENT_EVENT",
+              "$EVENT_NOTE",
+              "$EVENT_VELOCITY",
+              "$EVENT_PAR_0",
+              "$EVENT_PAR_3",
+              "$EVENT_PAR_VOLUME",
+              "$EVENT_PAR_PAN",
+              "$EVENT_PAR_TUNE",
+              "$EVENT_PAR_NOTE",
+              "$EVENT_PAR_VELOCITY",
+              "$EVENT_PAR_MIDI_CHANNEL",
+              "$EVENT_PAR_ALLOW_GROUP",
+              "$EVENT_PAR_CUSTOM",
+              "$EVENT_PAR_MOD_VALUE_ID",
+              "$EVENT_PAR_MOD_VALUE_EX_ID",
+              "$EVENT_PAR_SOURCE",
+              "$EVENT_PAR_PLAY_POS",
+              "$EVENT_PAR_ZONE_ID",
+              "$EVENT_PAR_OUTPUT_TYPE",
+              "$OUTPUT_TYPE_NOT_SPECIFIED",
+              "$EVENT_PAR_OUTPUT_INDEX",
+              "$EVENT_PAR_MIDI_COMMAND",
+              "$EVENT_PAR_MIDI_BYTE_1",
+              "$EVENT_PAR_MIDI_BYTE_2",
+              "$EVENT_PAR_POS",
+              "$EVENT_PAR_NOTE_LENGTH",
+              "$EVENT_PAR_ID",
+              "$EVENT_PAR_TRACK_NR",
+              "%EVENT_PAR",
+              "$EVENT_STATUS_INACTIVE",
+              "$EVENT_STATUS_NOTE_QUEUE",
+              "$EVENT_STATUS_MIDI_QUEUE",
+              "%GROUPS_AFFECTED",
+              "$NOTE_HELD",
+              "%POLY_AT",
+              "$POLY_AT_NUM",
+              "$RPN_ADDRESS",
+              "$RPN_VALUE",
+              "$VCC_MONO_AT",
+              "$VCC_PITCH_BEND",
+              "$VNC_PITCH_BEND",
+              "%KEY_DOWN",
+              "%KEY_DOWN_OCT",
+              "$NI_FADE_LINEAR",
+              "$NI_FADE_EQUAL_POWER",
+              "$NI_FADE_S_CURVE",
+              "$NI_FADE_EXPONENTIAL",
+              "$NI_FADE_LOGARITHMIC"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/built-in-variables-and-constants#events-and-midi"
+        },
+        {
+          "anchor": "time-and-transport",
+          "title": "Time and Transport",
+          "symbols": {
+            "symbol": [
+              "$NI_DATE_YEAR",
+              "$NI_DATE_MONTH",
+              "$NI_DATE_DAY",
+              "$NI_TIME_HOUR",
+              "$NI_TIME_MINUTE",
+              "$NI_TIME_SECOND",
+              "$DISTANCE_BAR_START",
+              "$DURATION_BAR",
+              "$SIGNATURE_NUM",
+              "$SIGNATURE_DENOM",
+              "$DURATION_",
+              "$DURATION_QUARTER",
+              "$DURATION_EIGHTH",
+              "$DURATION_SIXTEENTH",
+              "$DURATION_QUARTER_TRIPLET",
+              "$DURATION_EIGHTH_TRIPLET",
+              "$DURATION_SIXTEENTH_TRIPLET",
+              "$ENGINE_UPTIME",
+              "$KSP_TIMER",
+              "$NI_SONG_POSITION",
+              "$NI_TRANSPORT_RUNNING",
+              "$ENGINE_PAR_DL_TIME_UNIT",
+              "$NI_SYNC_UNIT_ABS",
+              "$NI_SYNC_UNIT_WHOLE",
+              "$NI_SYNC_UNIT_WHOLE_TRIPLET",
+              "$NI_SYNC_UNIT_HALF",
+              "$NI_SYNC_UNIT_HALF_TRIPLET",
+              "$NI_SYNC_UNIT_QUARTER",
+              "$NI_SYNC_UNIT_QUARTER_TRIPLET",
+              "$NI_SYNC_UNIT_8TH",
+              "$NI_SYNC_UNIT_8TH_TRIPLET",
+              "$NI_SYNC_UNIT_16TH",
+              "$NI_SYNC_UNIT_16TH_TRIPLET",
+              "$NI_SYNC_UNIT_32ND",
+              "$NI_SYNC_UNIT_32ND_TRIPLET",
+              "$NI_SYNC_UNIT_64TH",
+              "$NI_SYNC_UNIT_64TH_TRIPLET",
+              "$NI_SYNC_UNIT_256TH",
+              "$NI_SYNC_UNIT_ZONE",
+              "%NOTE_DURATION",
+              "$NI_BAR_START_POSITION"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/built-in-variables-and-constants#time-and-transport"
+        },
+        {
+          "anchor": "callbacks-and-ui",
+          "title": "Callbacks and UI",
+          "symbols": {
+            "symbol": [
+              "$NI_CALLBACK_ID",
+              "$NI_CALLBACK_TYPE",
+              "$NI_CB_TYPE_ASYNC_COMPLETE",
+              "$NI_CB_TYPE_CONTROLLER",
+              "$NI_CB_TYPE_INIT",
+              "$NI_CB_TYPE_LISTENER",
+              "$NI_CB_TYPE_NOTE",
+              "$NI_CB_TYPE_NOTE_CONTROLLER",
+              "$NI_CB_TYPE_NRPN",
+              "$NI_CB_TYPE_PERSISTENCE_CHANGED",
+              "$NI_CB_TYPE_PGS",
+              "$NI_CB_TYPE_POLY_AT",
+              "$NI_CB_TYPE_RELEASE",
+              "$NI_CB_TYPE_RPN",
+              "$NI_CB_TYPE_UI_CONTROL",
+              "$NI_CB_TYPE_UI_CONTROLS",
+              "$NI_CB_TYPE_UI_UPDATE",
+              "$NI_CB_TYPE_MIDI_IN",
+              "$CONTROL_PAR_UNIT",
+              "$KNOB_UNIT_NONE",
+              "$KNOB_UNIT_DB",
+              "$KNOB_UNIT_HZ",
+              "$KNOB_UNIT_PERCENT",
+              "$KNOB_UNIT_MS",
+              "$KNOB_UNIT_ST",
+              "$KNOB_UNIT_OCT",
+              "$NI_UI_ID",
+              "$NI_SIGNAL_TIMER_BEAT",
+              "$NI_SIGNAL_TIMER_MS",
+              "$NI_SIGNAL_TRANSP_START",
+              "$NI_SIGNAL_TRANSP_STOP",
+              "$NI_SIGNAL_TYPE",
+              "$NI_KONTAKT_IS_HEADLESS",
+              "$NI_KONTAKT_IS_STANDALONE"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/built-in-variables-and-constants#callbacks-and-ui"
+        },
+        {
+          "anchor": "mathematical-constants",
+          "title": "Mathematical Constants",
+          "symbols": {
+            "symbol": [
+              "~NI_MATH_PI",
+              "~NI_MATH_E"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/built-in-variables-and-constants#mathematical-constants"
+        }
+      ]
+    },
+    {
+      "id": "callbacks",
+      "title": "Callbacks",
+      "service": "event_processing",
+      "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks",
+      "sha256": "f91a2a1411c18e84e15f4e89e74499c3ae74dec75f230bb8c99df65e316267ba",
+      "sections": [
+        {
+          "anchor": "general-information-101878",
+          "title": "General Information",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks#general-information-101878"
+        },
+        {
+          "anchor": "on-async_complete",
+          "title": "on async_complete",
+          "symbols": {
+            "callback": [
+              "on async_complete"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks#on-async_complete"
+        },
+        {
+          "anchor": "on-controller",
+          "title": "on controller",
+          "symbols": {
+            "callback": [
+              "on controller"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks#on-controller"
+        },
+        {
+          "anchor": "on-init",
+          "title": "on init",
+          "symbols": {
+            "callback": [
+              "on init"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks#on-init"
+        },
+        {
+          "anchor": "on-listener",
+          "title": "on listener",
+          "symbols": {
+            "callback": [
+              "on listener"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks#on-listener"
+        },
+        {
+          "anchor": "on-note",
+          "title": "on note",
+          "symbols": {
+            "callback": [
+              "on note"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks#on-note",
+          "implementation": "partial_native_subset",
+          "evidence": "KSP_FRONTEND.md"
+        },
+        {
+          "anchor": "on-note_controller",
+          "title": "on note_controller",
+          "symbols": {
+            "callback": [
+              "on note_controller"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks#on-note_controller"
+        },
+        {
+          "anchor": "on-persistence_changed",
+          "title": "on persistence_changed",
+          "symbols": {
+            "callback": [
+              "on persistence_changed"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks#on-persistence_changed"
+        },
+        {
+          "anchor": "on-pgs_changed",
+          "title": "on pgs_changed",
+          "symbols": {
+            "callback": [
+              "on pgs_changed"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks#on-pgs_changed"
+        },
+        {
+          "anchor": "on-poly_at",
+          "title": "on poly_at",
+          "symbols": {
+            "callback": [
+              "on poly_at"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks#on-poly_at"
+        },
+        {
+          "anchor": "on-release",
+          "title": "on release",
+          "symbols": {
+            "callback": [
+              "on release"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks#on-release"
+        },
+        {
+          "anchor": "on-rpn-nrpn",
+          "title": "on rpn/nrpn",
+          "symbols": {
+            "callback": [
+              "on rpn/nrpn"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks#on-rpn-nrpn"
+        },
+        {
+          "anchor": "on-ui_control",
+          "title": "on ui_control",
+          "symbols": {
+            "callback": [
+              "on ui_control"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks#on-ui_control"
+        },
+        {
+          "anchor": "on-ui_controls",
+          "title": "on ui_controls",
+          "symbols": {
+            "callback": [
+              "on ui_controls"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks#on-ui_controls"
+        },
+        {
+          "anchor": "on-ui_update",
+          "title": "on ui_update",
+          "symbols": {
+            "callback": [
+              "on ui_update"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks#on-ui_update"
+        }
+      ]
+    },
+    {
+      "id": "control-parameters",
+      "title": "Control Parameters",
+      "service": "script_ui",
+      "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters",
+      "sha256": "8b1d2badc937f5980135c8b671b1d6c2bd906d2f4c80db520ccae270a766858c",
+      "sections": [
+        {
+          "anchor": "general-102082",
+          "title": "General",
+          "symbols": {
+            "symbol": [
+              "$CONTROL_PAR_NONE",
+              "$CONTROL_PAR_CUSTOM_ID",
+              "$CONTROL_PAR_TYPE",
+              "$NI_CONTROL_TYPE_NONE",
+              "$NI_CONTROL_TYPE_BUTTON",
+              "$NI_CONTROL_TYPE_KNOB",
+              "$NI_CONTROL_TYPE_MENU",
+              "$NI_CONTROL_TYPE_VALUE_EDIT",
+              "$NI_CONTROL_TYPE_LABEL",
+              "$NI_CONTROL_TYPE_TABLE",
+              "$NI_CONTROL_TYPE_WAVEFORM",
+              "$NI_CONTROL_TYPE_WAVETABLE",
+              "$NI_CONTROL_TYPE_SLIDER",
+              "$NI_CONTROL_TYPE_TEXT_EDIT",
+              "$NI_CONTROL_TYPE_FILE_SELECTOR",
+              "$NI_CONTROL_TYPE_SWITCH",
+              "$NI_CONTROL_TYPE_XY",
+              "$NI_CONTROL_TYPE_LEVEL_METER",
+              "$NI_CONTROL_TYPE_MOUSE_AREA",
+              "$NI_CONTROL_TYPE_PANEL"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters#general-102082"
+        },
+        {
+          "anchor": "size--position-and-look",
+          "title": "Size, Position and Look",
+          "symbols": {
+            "symbol": [
+              "$CONTROL_PAR_POS_X",
+              "$CONTROL_PAR_POS_Y",
+              "$CONTROL_PAR_GRID_X",
+              "$CONTROL_PAR_GRID_Y",
+              "$CONTROL_PAR_WIDTH",
+              "$CONTROL_PAR_HEIGHT",
+              "$CONTROL_PAR_GRID_WIDTH",
+              "$CONTROL_PAR_GRID_HEIGHT",
+              "$CONTROL_PAR_HIDE",
+              "$HIDE_PART_BG",
+              "$HIDE_PART_VALUE",
+              "$HIDE_PART_TITLE",
+              "$HIDE_PART_MOD_LIGHT",
+              "$HIDE_PART_NOTHING",
+              "$HIDE_PART_CURSOR",
+              "$HIDE_WHOLE_CONTROL",
+              "$CONTROL_PAR_PICTURE",
+              "$CONTROL_PAR_PICTURE_STATE",
+              "$CONTROL_PAR_PARENT_PANEL",
+              "$CONTROL_PAR_Z_LAYER"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters#size--position-and-look"
+        },
+        {
+          "anchor": "values",
+          "title": "Values",
+          "symbols": {
+            "symbol": [
+              "$CONTROL_PAR_MIN_VALUE",
+              "$CONTROL_PAR_MAX_VALUE",
+              "$CONTROL_PAR_VALUE",
+              "$CONTROL_PAR_DEFAULT_VALUE"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters#values"
+        },
+        {
+          "anchor": "text",
+          "title": "Text",
+          "symbols": {
+            "symbol": [
+              "$CONTROL_PAR_TEXT",
+              "$CONTROL_PAR_TEXTLINE",
+              "$CONTROL_PAR_IDENTIFIER",
+              "$CONTROL_PAR_HELP",
+              "$CONTROL_PAR_LABEL",
+              "$CONTROL_PAR_SHORT_NAME",
+              "$CONTROL_PAR_UNIT",
+              "$CONTROL_PAR_FONT_TYPE",
+              "$CONTROL_PAR_FONT_TYPE_ON",
+              "$CONTROL_PAR_FONT_TYPE_OFF_PRESSED",
+              "$CONTROL_PAR_FONT_TYPE_ON_PRESSED",
+              "$CONTROL_PAR_FONT_TYPE_OFF_HOVER",
+              "$CONTROL_PAR_FONT_TYPE_ON_HOVER",
+              "$CONTROL_PAR_DISABLE_TEXT_SHIFTING",
+              "$CONTROL_PAR_TEXTPOS_Y",
+              "$CONTROL_PAR_TEXT_ALIGNMENT"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters#text"
+        },
+        {
+          "anchor": "automation",
+          "title": "Automation",
+          "symbols": {
+            "symbol": [
+              "$CONTROL_PAR_ALLOW_AUTOMATION",
+              "$CONTROL_PAR_AUTOMATION_NAME",
+              "$CONTROL_PAR_LABEL",
+              "$CONTROL_PAR_AUTOMATION_ID"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters#automation"
+        },
+        {
+          "anchor": "key-modifiers",
+          "title": "Key Modifiers",
+          "symbols": {
+            "symbol": [
+              "$CONTROL_PAR_KEY_SHIFT",
+              "$CONTROL_PAR_KEY_ALT",
+              "$CONTROL_PAR_KEY_CONTROL"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters#key-modifiers"
+        },
+        {
+          "anchor": "specific-ui-widgets",
+          "title": "Specific UI Widgets",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters#specific-ui-widgets"
+        },
+        {
+          "anchor": "instrument-icon-and-wallpaper",
+          "title": "Instrument Icon and Wallpaper",
+          "symbols": {
+            "symbol": [
+              "$INST_ICON_ID",
+              "$CONTROL_PAR_HIDE",
+              "$HIDE_WHOLE_CONTROL",
+              "$CONTROL_PAR_PICTURE",
+              "$INST_WALLPAPER_ID"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters#instrument-icon-and-wallpaper"
+        },
+        {
+          "anchor": "ui_file_selector-731958",
+          "title": "ui_file_selector",
+          "symbols": {
+            "widget": [
+              "ui_file_selector"
+            ],
+            "symbol": [
+              "$CONTROL_PAR_BASEPATH",
+              "$CONTROL_PAR_COLUMN_WIDTH",
+              "$CONTROL_PAR_FILEPATH",
+              "$CONTROL_PAR_FILE_TYPE",
+              "$NI_FILE_TYPE_MIDI",
+              "$NI_FILE_TYPE_AUDIO",
+              "$NI_FILE_TYPE_ARRAY"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters#ui_file_selector-731958"
+        },
+        {
+          "anchor": "ui_label-731960",
+          "title": "ui_label",
+          "symbols": {
+            "widget": [
+              "ui_label"
+            ],
+            "symbol": [
+              "$CONTROL_PAR_DND_BEHAVIOUR",
+              "$CONTROL_PAR_MIDI_EXPORT_AREA_IDX"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters#ui_label-731960"
+        },
+        {
+          "anchor": "ui_level_meter-731961",
+          "title": "ui_level_meter",
+          "symbols": {
+            "widget": [
+              "ui_level_meter"
+            ],
+            "symbol": [
+              "$CONTROL_PAR_BG_COLOR",
+              "$CONTROL_PAR_OFF_COLOR",
+              "$CONTROL_PAR_ON_COLOR",
+              "$CONTROL_PAR_OVERLOAD_COLOR",
+              "$CONTROL_PAR_PEAK_COLOR",
+              "$CONTROL_PAR_VERTICAL",
+              "$CONTROL_PAR_RANGE_MIN",
+              "$CONTROL_PAR_RANGE_MAX"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters#ui_level_meter-731961"
+        },
+        {
+          "anchor": "ui_menu-731962",
+          "title": "ui_menu",
+          "symbols": {
+            "widget": [
+              "ui_menu"
+            ],
+            "symbol": [
+              "$CONTROL_PAR_NUM_ITEMS",
+              "$CONTROL_PAR_SELECTED_ITEM_IDX"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters#ui_menu-731962"
+        },
+        {
+          "anchor": "ui_mouse_area-731963",
+          "title": "ui_mouse_area",
+          "symbols": {
+            "widget": [
+              "ui_mouse_area"
+            ],
+            "symbol": [
+              "$CONTROL_PAR_DND_ACCEPT_AUDIO",
+              "$CONTROL_PAR_DND_ACCEPT_MIDI",
+              "$CONTROL_PAR_DND_ACCEPT_ARRAY",
+              "$NI_DND_ACCEPT_NONE",
+              "$NI_DND_ACCEPT_ONE",
+              "$NI_DND_ACCEPT_MULTIPLE",
+              "$CONTROL_PAR_RECEIVE_DRAG_EVENTS",
+              "$NI_MOUSE_EVENT_TYPE",
+              "$NI_MOUSE_OVER_CONTROL"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters#ui_mouse_area-731963"
+        },
+        {
+          "anchor": "ui_slider-731964",
+          "title": "ui_slider",
+          "symbols": {
+            "widget": [
+              "ui_slider"
+            ],
+            "symbol": [
+              "$CONTROL_PAR_MOUSE_BEHAVIOUR"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters#ui_slider-731964"
+        },
+        {
+          "anchor": "ui_table-731965",
+          "title": "ui_table",
+          "symbols": {
+            "widget": [
+              "ui_table"
+            ],
+            "symbol": [
+              "$NI_CONTROL_PAR_IDX",
+              "$CONTROL_PAR_BAR_COLOR",
+              "$CONTROL_PAR_ZERO_LINE_COLOR"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters#ui_table-731965"
+        },
+        {
+          "anchor": "ui_value_edit-731966",
+          "title": "ui_value_edit",
+          "symbols": {
+            "widget": [
+              "ui_value_edit"
+            ],
+            "symbol": [
+              "$CONTROL_PAR_SHOW_ARROWS",
+              "$CONTROL_PAR_VALUEPOS_Y"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters#ui_value_edit-731966"
+        },
+        {
+          "anchor": "ui_waveform-731967",
+          "title": "ui_waveform",
+          "symbols": {
+            "widget": [
+              "ui_waveform"
+            ],
+            "symbol": [
+              "$UI_WAVEFORM_USE_SLICES",
+              "$UI_WAVEFORM_USE_TABLE",
+              "$UI_WAVEFORM_TABLE_IS_BIPOLAR",
+              "$UI_WAVEFORM_USE_MIDI_DRAG",
+              "$UI_WF_PROP_PLAY_CURSOR",
+              "$UI_WF_PROP_FLAGS",
+              "$UI_WF_PROP_TABLE_VAL",
+              "$UI_WF_PROP_TABLE_IDX_HIGHLIGHT",
+              "$UI_WF_PROP_MIDI_DRAG_START_NOTE",
+              "$CONTROL_PAR_WF_VIS_MODE",
+              "$NI_WF_VIS_MODE_1",
+              "$NI_WF_VIS_MODE_2",
+              "$NI_WF_VIS_MODE_3",
+              "$CONTROL_PAR_BG_COLOR",
+              "$CONTROL_PAR_WAVE_COLOR",
+              "$CONTROL_PAR_WAVE_CURSOR_COLOR",
+              "$CONTROL_PAR_SLICEMARKERS_COLOR",
+              "$CONTROL_PAR_BG_ALPHA"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters#ui_waveform-731967"
+        },
+        {
+          "anchor": "ui_wavetable-731968",
+          "title": "ui_wavetable",
+          "symbols": {
+            "widget": [
+              "ui_wavetable"
+            ],
+            "symbol": [
+              "$CONTROL_PAR_WT_ZONE",
+              "$CONTROL_PAR_WT_VIS_MODE",
+              "$NI_WT_VIS_2D",
+              "$NI_WT_VIS_3D",
+              "$CONTROL_PAR_PARALLAX_X",
+              "$CONTROL_PAR_PARALLAX_Y",
+              "$CONTROL_PAR_WAVE_COLOR",
+              "$CONTROL_PAR_WAVE_ALPHA",
+              "$CONTROL_PAR_WAVETABLE_COLOR",
+              "$CONTROL_PAR_WAVETABLE_ALPHA",
+              "$CONTROL_PAR_BG_COLOR",
+              "$CONTROL_PAR_BG_ALPHA",
+              "$CONTROL_PAR_WAVE_END_COLOR",
+              "$CONTROL_PAR_WAVE_END_ALPHA",
+              "$CONTROL_PAR_WAVETABLE_END_COLOR",
+              "$CONTROL_PAR_WAVETABLE_END_ALPHA"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters#ui_wavetable-731968"
+        },
+        {
+          "anchor": "ui_xy-731969",
+          "title": "ui_xy",
+          "symbols": {
+            "widget": [
+              "ui_xy"
+            ],
+            "symbol": [
+              "$CONTROL_PAR_MOUSE_BEHAVIOUR_X",
+              "$CONTROL_PAR_MOUSE_BEHAVIOUR_Y",
+              "$CONTROL_PAR_MOUSE_MODE",
+              "$CONTROL_PAR_MOUSE_BEHAVIOUR",
+              "$CONTROL_PAR_ACTIVE_INDEX",
+              "$CONTROL_PAR_CURSOR_PICTURE",
+              "$CONTROL_PAR_PICTURE",
+              "$HIDE_PART_CURSOR",
+              "$NI_CONTROL_PAR_IDX",
+              "$NI_MOUSE_EVENT_TYPE",
+              "$NI_MOUSE_EVENT_TYPE_LEFT_BUTTON_DOWN",
+              "$NI_MOUSE_EVENT_TYPE_LEFT_BUTTON_UP",
+              "$NI_MOUSE_EVENT_TYPE_DRAG"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters#ui_xy-731969"
+        }
+      ]
+    },
+    {
+      "id": "control-statements",
+      "title": "Control Statements",
+      "service": "language",
+      "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-statements",
+      "sha256": "eaf3331a3fa4916511173ba78e9bb0642f0a478b1d6470c02fa9fdef6fc42f1b",
+      "sections": [
+        {
+          "anchor": "boolean-operators",
+          "title": "Boolean Operators",
+          "symbols": {
+            "command": [
+              "in_range"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-statements#boolean-operators"
+        },
+        {
+          "anchor": "continue",
+          "title": "continue",
+          "symbols": {
+            "command": [
+              "continue",
+              "while",
+              "if"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-statements#continue"
+        },
+        {
+          "anchor": "if-----else-----end-if",
+          "title": "if ... else ... end if",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-statements#if-----else-----end-if"
+        },
+        {
+          "anchor": "select---",
+          "title": "select ()",
+          "symbols": {
+            "command": [
+              "select"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-statements#select---"
+        },
+        {
+          "anchor": "while---",
+          "title": "while ()",
+          "symbols": {
+            "command": [
+              "while"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-statements#while---"
+        }
+      ]
+    },
+    {
+      "id": "engine-parameter-commands",
+      "title": "Engine Parameter Commands",
+      "service": "engine_parameters",
+      "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameter-commands",
+      "sha256": "df2fe7192f32df7c4a738c713663bafdfec3630c2821fd9afe1887c7d5ed006d",
+      "sections": [
+        {
+          "anchor": "get_mod_idx--",
+          "title": "get_mod_idx()",
+          "symbols": {
+            "command": [
+              "get_mod_idx"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameter-commands#get_mod_idx--"
+        },
+        {
+          "anchor": "get_target_idx--",
+          "title": "get_target_idx()",
+          "symbols": {
+            "command": [
+              "get_target_idx"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameter-commands#get_target_idx--"
+        },
+        {
+          "anchor": "get_engine_par--",
+          "title": "get_engine_par()",
+          "symbols": {
+            "command": [
+              "get_engine_par"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameter-commands#get_engine_par--"
+        },
+        {
+          "anchor": "get_engine_par_disp--",
+          "title": "get_engine_par_disp()",
+          "symbols": {
+            "command": [
+              "get_engine_par_disp"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameter-commands#get_engine_par_disp--"
+        },
+        {
+          "anchor": "get_engine_par_disp_ext--",
+          "title": "get_engine_par_disp_ext()",
+          "symbols": {
+            "command": [
+              "get_engine_par_disp_ext"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameter-commands#get_engine_par_disp_ext--"
+        },
+        {
+          "anchor": "get_voice_limit--",
+          "title": "get_voice_limit()",
+          "symbols": {
+            "command": [
+              "get_voice_limit"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameter-commands#get_voice_limit--"
+        },
+        {
+          "anchor": "output_channel_name--",
+          "title": "output_channel_name()",
+          "symbols": {
+            "command": [
+              "output_channel_name"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameter-commands#output_channel_name--"
+        },
+        {
+          "anchor": "set_engine_par--",
+          "title": "set_engine_par()",
+          "symbols": {
+            "command": [
+              "set_engine_par"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameter-commands#set_engine_par--"
+        },
+        {
+          "anchor": "set_voice_limit--",
+          "title": "set_voice_limit()",
+          "symbols": {
+            "command": [
+              "set_voice_limit"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameter-commands#set_voice_limit--"
+        }
+      ]
+    },
+    {
+      "id": "engine-parameters",
+      "title": "Engine Parameters",
+      "service": "dsp_graph",
+      "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters",
+      "sha256": "4a15e3b10a9da8993c90ddc7681fee9fd62a7eafc5f3685f47b0c5ab37d1d16d",
+      "sections": [
+        {
+          "anchor": "instrument--source-and-amplifier-module",
+          "title": "Instrument, Source and Amplifier Module",
+          "symbols": {
+            "symbol": [
+              "$ENGINE_PAR_TUNE",
+              "$ENGINE_PAR_PAN",
+              "$ENGINE_PAR_VOLUME",
+              "$ENGINE_PAR_PHASE_INVERT",
+              "$ENGINE_PAR_LR_SWAP",
+              "$ENGINE_PAR_POST_FX_SLOT",
+              "$ENGINE_PAR_OUTPUT_CHANNEL",
+              "$NI_BUS_OFFSET",
+              "$ENGINE_PAR_VOICE_GROUP",
+              "$ENGINE_PAR_SOURCE_MODE",
+              "$NI_SOURCE_MODE_SAMPLER",
+              "$NI_SOURCE_MODE_DFD",
+              "$NI_SOURCE_MODE_TONE_MACHINE",
+              "$NI_SOURCE_MODE_TIME_MACHINE_1",
+              "$NI_SOURCE_MODE_TIME_MACHINE_2",
+              "$NI_SOURCE_MODE_TIME_MACHINE_PRO",
+              "$NI_SOURCE_MODE_BEAT_MACHINE",
+              "$NI_SOURCE_MODE_MP60_MACHINE",
+              "$NI_SOURCE_MODE_S1200_MACHINE",
+              "$NI_SOURCE_MODE_WAVETABLE",
+              "$ENGINE_PAR_TRACKING",
+              "$ENGINE_PAR_HQI_MODE",
+              "$NI_HQI_MODE_STANDARD",
+              "$NI_HQI_MODE_HIGH",
+              "$NI_HQI_MODE_PERFECT",
+              "$ENGINE_PAR_SMOOTH",
+              "$ENGINE_PAR_FORMANT",
+              "$ENGINE_PAR_SPEED",
+              "$ENGINE_PAR_GRAIN_LENGTH",
+              "$ENGINE_PAR_SLICE_ATTACK",
+              "$ENGINE_PAR_SLICE_RELEASE",
+              "$ENGINE_PAR_TRANSIENT_SIZE",
+              "$ENGINE_PAR_ENVELOPE_ORDER",
+              "$ENGINE_PAR_FORMANT_SHIFT",
+              "$ENGINE_PAR_SPEED_UNIT",
+              "$ENGINE_PAR_TM_LEGATO",
+              "$ENGINE_PAR_TMPRO_KEEP_FORMANTS",
+              "$ENGINE_PAR_WT_POSITION",
+              "$ENGINE_PAR_WT_FORM",
+              "$ENGINE_PAR_WT_FORM2",
+              "$ENGINE_PAR_WT_PHASE",
+              "$ENGINE_PAR_WT_PHASE_RAND",
+              "$ENGINE_PAR_WT_QUALITY",
+              "$NI_WT_QUALITY_LOFI",
+              "$NI_WT_QUALITY_MEDIUM",
+              "$NI_WT_QUALITY_HIGH",
+              "$NI_WT_QUALITY_BEST",
+              "$ENGINE_PAR_WT_FORM_MODE",
+              "$ENGINE_PAR_WT_FORM2_MODE",
+              "$NI_WT_FORM_LINEAR",
+              "$NI_WT_FORM_SYNC1",
+              "$NI_WT_FORM_SYNC2",
+              "$NI_WT_FORM_SYNC3",
+              "$NI_WT_FORM_SYNC4",
+              "$NI_WT_FORM_SYNC5",
+              "$NI_WT_FORM_SYNC6",
+              "$NI_WT_FORM_BENDP",
+              "$NI_WT_FORM_BENDM",
+              "$NI_WT_FORM_BENDMP",
+              "$NI_WT_FORM_BEND2P",
+              "$NI_WT_FORM_BEND2M",
+              "$NI_WT_FORM_BEND2MP",
+              "$NI_WT_FORM_EXP",
+              "$NI_WT_FORM_LOG",
+              "$NI_WT_FORM_LOGEXP",
+              "$NI_WT_FORM_PWM",
+              "$NI_WT_FORM_ASYMP",
+              "$NI_WT_FORM_ASYMM",
+              "$NI_WT_FORM_ASYMMP",
+              "$NI_WT_FORM_ASYM2P",
+              "$NI_WT_FORM_ASYM2M",
+              "$NI_WT_FORM_ASYM2MP",
+              "$NI_WT_FORM_2BLINDS",
+              "$NI_WT_FORM_4BLINDS",
+              "$NI_WT_FORM_6BLINDS",
+              "$NI_WT_FORM_8BLINDS",
+              "$NI_WT_FORM_FLIP",
+              "$NI_WT_FORM_FOLD",
+              "$NI_WT_FORM_MIRROR",
+              "$NI_WT_FORM_SATURATE",
+              "$NI_WT_FORM_SEESAW",
+              "$NI_WT_FORM_QUANTIZE",
+              "$NI_WT_FORM_WRAP",
+              "$ENGINE_PAR_WT_INHARMONIC_MODE",
+              "$ENGINE_PAR_WT_INHARMONIC",
+              "$ENGINE_PAR_WT_MOD_TYPE",
+              "$NI_WT_MOD_TYPE_OFF",
+              "$NI_WT_MOD_TYPE_FM1",
+              "$NI_WT_MOD_TYPE_FM2",
+              "$NI_WT_MOD_TYPE_FM3",
+              "$NI_WT_MOD_TYPE_PM1",
+              "$NI_WT_MOD_TYPE_PM2",
+              "$NI_WT_MOD_TYPE_PM3",
+              "$NI_WT_MOD_TYPE_RM",
+              "$NI_WT_MOD_TYPE_MIX",
+              "$NI_WT_MOD_TYPE_BLEND",
+              "$ENGINE_PAR_WT_MOD_WAVE",
+              "$NI_WT_MOD_WAVE_SINE",
+              "$NI_WT_MOD_WAVE_TRIANGLE",
+              "$NI_WT_MOD_WAVE_TX2",
+              "$NI_WT_MOD_WAVE_TX3",
+              "$NI_WT_MOD_WAVE_TX4",
+              "$NI_WT_MOD_WAVE_TX5",
+              "$NI_WT_MOD_WAVE_TX6",
+              "$NI_WT_MOD_WAVE_TX7",
+              "$NI_WT_MOD_WAVE_TX8",
+              "$NI_WT_MOD_WAVE_WHITE_NOISE",
+              "$NI_WT_MOD_WAVE_PINK_NOISE",
+              "$NI_WT_MOD_WAVE_RED_NOISE",
+              "$NI_WT_MOD_WAVE_TUNED_NOISE",
+              "$ENGINE_PAR_WT_MOD_TUNE",
+              "$ENGINE_PAR_WT_MOD_TUNE_UNIT",
+              "$NI_WT_MOD_TUNE_UNIT_SEMITONES",
+              "$NI_WT_MOD_TUNE_UNIT_RATIO",
+              "$NI_WT_MOD_TUNE_UNIT_HZ",
+              "$ENGINE_PAR_S1200_FILTER_MODE",
+              "$NI_S1200_FILTER_NONE",
+              "$NI_S1200_FILTER_HIGH",
+              "$NI_S1200_FILTER_HIGH_MID",
+              "$NI_S1200_FILTER_LOW_MID",
+              "$NI_S1200_FILTER_LOW"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters#instrument--source-and-amplifier-module"
+        },
+        {
+          "anchor": "filters-and-eqs",
+          "title": "Filters and EQs",
+          "symbols": {
+            "symbol": [
+              "$ENGINE_PAR_CUTOFF",
+              "$ENGINE_PAR_RESONANCE",
+              "$ENGINE_PAR_EFFECT_BYPASS",
+              "$ENGINE_PAR_GAIN",
+              "$ENGINE_PAR_FILTER_LADDER_HQ",
+              "$ENGINE_PAR_FILTER_FM",
+              "$ENGINE_PAR_BANDWIDTH",
+              "$ENGINE_PAR_FILTER_FEEDBACK_TYPE",
+              "$NI_FILTER_FEEDBACK_TYPE_OFF",
+              "$NI_FILTER_FEEDBACK_TYPE_A",
+              "$NI_FILTER_FEEDBACK_TYPE_B",
+              "$ENGINE_PAR_FILTER_FEEDBACK",
+              "$ENGINE_PAR_HP_CUTOFF",
+              "$ENGINE_PAR_HP_RESONANCE",
+              "$ENGINE_PAR_LP_CUTOFF",
+              "$ENGINE_PAR_LP_RESONANCE",
+              "$ENGINE_PAR_FILTER_SHIFTB",
+              "$ENGINE_PAR_FILTER_SHIFTC",
+              "$ENGINE_PAR_FILTER_RESB",
+              "$ENGINE_PAR_FILTER_RESC",
+              "$ENGINE_PAR_FILTER_TYPEA",
+              "$ENGINE_PAR_FILTER_TYPEB",
+              "$ENGINE_PAR_FILTER_TYPEC",
+              "$ENGINE_PAR_FILTER_BYPA",
+              "$ENGINE_PAR_FILTER_BYPB",
+              "$ENGINE_PAR_FILTER_BYPC",
+              "$ENGINE_PAR_FILTER_GAIN",
+              "$ENGINE_PAR_FORMANT_TALK",
+              "$ENGINE_PAR_FORMANT_SHARP",
+              "$ENGINE_PAR_FORMANT_SIZE",
+              "$ENGINE_PAR_FREQ1",
+              "$ENGINE_PAR_BW1",
+              "$ENGINE_PAR_GAIN1",
+              "$ENGINE_PAR_FREQ2",
+              "$ENGINE_PAR_BW2",
+              "$ENGINE_PAR_GAIN2",
+              "$ENGINE_PAR_FREQ3",
+              "$ENGINE_PAR_BW3",
+              "$ENGINE_PAR_GAIN3",
+              "$ENGINE_PAR_SEQ_HP",
+              "$ENGINE_PAR_SEQ_HP_FREQ",
+              "$ENGINE_PAR_SEQ_LF_GAIN",
+              "$ENGINE_PAR_SEQ_LF_FREQ",
+              "$ENGINE_PAR_SEQ_LF_BELL",
+              "$ENGINE_PAR_SEQ_LMF_GAIN",
+              "$ENGINE_PAR_SEQ_LMF_FREQ",
+              "$ENGINE_PAR_SEQ_LMF_Q",
+              "$ENGINE_PAR_SEQ_HMF_GAIN",
+              "$ENGINE_PAR_SEQ_HMF_FREQ",
+              "$ENGINE_PAR_SEQ_HMF_Q",
+              "$ENGINE_PAR_SEQ_HF_GAIN",
+              "$ENGINE_PAR_SEQ_HF_FREQ",
+              "$ENGINE_PAR_SEQ_HF_BELL",
+              "$ENGINE_PAR_SEQ_LP",
+              "$ENGINE_PAR_SEQ_LP_FREQ"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters#filters-and-eqs"
+        },
+        {
+          "anchor": "insert-effects",
+          "title": "Insert Effects",
+          "symbols": {
+            "symbol": [
+              "$ENGINE_PAR_EFFECT_BYPASS",
+              "$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters#insert-effects"
+        },
+        {
+          "anchor": "dynamics",
+          "title": "Dynamics",
+          "symbols": {
+            "symbol": [
+              "$ENGINE_PAR_THRESHOLD",
+              "$ENGINE_PAR_RATIO",
+              "$ENGINE_PAR_COMP_ATTACK",
+              "$ENGINE_PAR_COMP_DECAY",
+              "$ENGINE_PAR_COMP_LINK",
+              "$ENGINE_PAR_COMP_TYPE",
+              "$NI_COMP_TYPE_CLASSIC",
+              "$NI_COMP_TYPE_ENHANCED",
+              "$NI_COMP_TYPE_PRO",
+              "$ENGINE_PAR_FCOMP_INPUT",
+              "$ENGINE_PAR_FCOMP_RATIO",
+              "$ENGINE_PAR_FCOMP_ATTACK",
+              "$ENGINE_PAR_FCOMP_RELEASE",
+              "$ENGINE_PAR_FCOMP_MAKEUP",
+              "$ENGINE_PAR_FCOMP_MIX",
+              "$ENGINE_PAR_FCOMP_HQ_MODE",
+              "$ENGINE_PAR_FCOMP_LINK",
+              "$ENGINE_PAR_LIM_IN_GAIN",
+              "$ENGINE_PAR_LIM_RELEASE",
+              "$ENGINE_PAR_SCOMP_THRESHOLD",
+              "$ENGINE_PAR_SCOMP_RATIO",
+              "$ENGINE_PAR_SCOMP_ATTACK",
+              "$ENGINE_PAR_SCOMP_RELEASE",
+              "$ENGINE_PAR_SCOMP_MAKEUP",
+              "$ENGINE_PAR_SCOMP_MIX",
+              "$ENGINE_PAR_SCOMP_LINK",
+              "$ENGINE_PAR_SUPERGT_TRIM",
+              "$ENGINE_PAR_SUPERGT_HPF_MODE",
+              "$NI_SUPERGT_HPF_MODE_OFF",
+              "$NI_SUPERGT_HPF_MODE_100",
+              "$NI_SUPERGT_HPF_MODE_300",
+              "$ENGINE_PAR_SUPERGT_SATURATION",
+              "$ENGINE_PAR_SUPERGT_SAT_MODE",
+              "$NI_SUPERGT_SAT_MODE_MILD",
+              "$NI_SUPERGT_SAT_MODE_MODERATE",
+              "$NI_SUPERGT_SAT_MODE_HOT",
+              "$ENGINE_PAR_SUPERGT_COMPRESS",
+              "$ENGINE_PAR_SUPERGT_ATTACK",
+              "$ENGINE_PAR_SUPERGT_RELEASE",
+              "$ENGINE_PAR_SUPERGT_CHARACTER",
+              "$ENGINE_PAR_SUPERGT_CHAR_MODE",
+              "$NI_SUPERGT_CHAR_MODE_FAT",
+              "$NI_SUPERGT_CHAR_MODE_WARM",
+              "$NI_SUPERGT_CHAR_MODE_BRIGHT",
+              "$ENGINE_PAR_SUPERGT_MIX",
+              "$ENGINE_PAR_SUPERGT_CHANNEL_LINK_MODE",
+              "$NI_SUPERGT_CHANNEL_LINK_MODE_STEREO",
+              "$NI_SUPERGT_CHANNEL_LINK_MODE_DUAL_MONO",
+              "$NI_SUPERGT_CHANNEL_LINK_MODE_MS",
+              "$ENGINE_PAR_TR_INPUT",
+              "$ENGINE_PAR_TR_ATTACK",
+              "$ENGINE_PAR_TR_SUSTAIN",
+              "$ENGINE_PAR_TR_SMOOTH",
+              "$ENGINE_PAR_TRANSLIM_THRESHOLD",
+              "$ENGINE_PAR_TRANSLIM_RELEASE",
+              "$ENGINE_PAR_TRANSLIM_CEILING"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters#dynamics"
+        },
+        {
+          "anchor": "amps",
+          "title": "Amps",
+          "symbols": {
+            "symbol": [
+              "$ENGINE_PAR_AC_NORMALVOLUME",
+              "$ENGINE_PAR_AC_BRILLIANTVOLUME",
+              "$ENGINE_PAR_AC_BASS",
+              "$ENGINE_PAR_AC_TREBLE",
+              "$ENGINE_PAR_AC_TONECUT",
+              "$ENGINE_PAR_AC_TREMOLOSPEED",
+              "$ENGINE_PAR_AC_TREMOLODEPTH",
+              "$ENGINE_PAR_AC_MONO",
+              "$ENGINE_PAR_BASSINVADER_VOLUME",
+              "$ENGINE_PAR_BASSINVADER_TREBLE",
+              "$ENGINE_PAR_BASSINVADER_HI_MID",
+              "$ENGINE_PAR_BASSINVADER_LO_MID",
+              "$ENGINE_PAR_BASSINVADER_BASS",
+              "$ENGINE_PAR_BASSINVADER_BOOST",
+              "$ENGINE_PAR_BASSINVADER_MASTER",
+              "$ENGINE_PAR_BASSINVADER_LO_CUT",
+              "$ENGINE_PAR_BASSINVADER_MID_CONTOUR",
+              "$ENGINE_PAR_BASSINVADER_HI_BOOST",
+              "$ENGINE_PAR_BASSINVADER_MONO",
+              "$ENGINE_PAR_BASSPRO_GAIN",
+              "$ENGINE_PAR_BASSPRO_BASS",
+              "$ENGINE_PAR_BASSPRO_MID",
+              "$ENGINE_PAR_BASSPRO_MIDFREQ",
+              "$ENGINE_PAR_BASSPRO_TREBLE",
+              "$ENGINE_PAR_BASSPRO_DRIVE",
+              "$ENGINE_PAR_BASSPRO_MASTER",
+              "$ENGINE_PAR_BASSPRO_GEQ_40",
+              "$ENGINE_PAR_BASSPRO_GEQ_90",
+              "$ENGINE_PAR_BASSPRO_GEQ_180",
+              "$ENGINE_PAR_BASSPRO_GEQ_300",
+              "$ENGINE_PAR_BASSPRO_GEQ_500",
+              "$ENGINE_PAR_BASSPRO_GEQ_1K",
+              "$ENGINE_PAR_BASSPRO_GEQ_2K",
+              "$ENGINE_PAR_BASSPRO_GEQ_4K",
+              "$ENGINE_PAR_BASSPRO_GEQ_10K",
+              "$ENGINE_PAR_BASSPRO_GEQ_VOLUME",
+              "$ENGINE_PAR_BASSPRO_ULTRALO",
+              "$ENGINE_PAR_BASSPRO_ULTRAHI",
+              "$ENGINE_PAR_BASSPRO_BRIGHT",
+              "$ENGINE_PAR_BASSPRO_GEQ",
+              "$ENGINE_PAR_BASSPRO_MONO",
+              "$ENGINE_PAR_CB_SIZE",
+              "$ENGINE_PAR_CB_AIR",
+              "$ENGINE_PAR_CB_TREBLE",
+              "$ENGINE_PAR_CB_BASS",
+              "$ENGINE_PAR_CABINET_TYPE",
+              "$ENGINE_PAR_EPP_DRIVE_MODE",
+              "$NI_EPP_DRIVE_MODE_BYPASS",
+              "$NI_EPP_DRIVE_MODE_DE_TUBE",
+              "$NI_EPP_DRIVE_MODE_US_TUBE",
+              "$NI_EPP_DRIVE_MODE_TRANSISTOR",
+              "$NI_EPP_DRIVE_MODE_TAPE",
+              "$ENGINE_PAR_EPP_DRIVE",
+              "$ENGINE_PAR_EPP_ELECTRIC_C_SOFT",
+              "$ENGINE_PAR_EPP_ELECTRIC_C_MEDIUM",
+              "$ENGINE_PAR_EPP_ELECTRIC_C_TREBLE",
+              "$ENGINE_PAR_EPP_ELECTRIC_C_BRILLIANT",
+              "$ENGINE_PAR_EPP_EQ_MODE",
+              "$NI_EPP_EQ_MODE_BYPASS",
+              "$NI_EPP_EQ_MODE_PASSIVE",
+              "$NI_EPP_EQ_MODE_70S",
+              "$NI_EPP_EQ_MODE_80S",
+              "$NI_EPP_EQ_MODE_E_GRAND",
+              "$NI_EPP_EQ_MODE_ELECTRIC_C",
+              "$ENGINE_PAR_EPP_EQ_BASS",
+              "$ENGINE_PAR_EPP_EQ_MID",
+              "$ENGINE_PAR_EPP_EQ_TREBLE",
+              "$ENGINE_PAR_EPP_PASSIVE_BASS",
+              "$ENGINE_PAR_EPP_TREMOLO_MODE",
+              "$NI_EPP_TREMOLO_MODE_BYPASS",
+              "$NI_EPP_TREMOLO_MODE_70S",
+              "$NI_EPP_TREMOLO_MODE_80S",
+              "$NI_EPP_TREMOLO_MODE_SYNTH",
+              "$NI_EPP_TREMOLO_MODE_GUITAR",
+              "$NI_EPP_TREMOLO_MODE_E_GRAND",
+              "$NI_EPP_TREMOLO_MODE_ELECTRIC_P",
+              "$ENGINE_PAR_EPP_TREMOLO_WAVE",
+              "$NI_EPP_TREMOLO_WAVE_SINE",
+              "$NI_EPP_TREMOLO_WAVE_TRIANGLE",
+              "$NI_EPP_TREMOLO_WAVE_SQUARE",
+              "$NI_EPP_TREMOLO_WAVE_SAW_DOWN",
+              "$NI_EPP_TREMOLO_WAVE_SAW_UP",
+              "$ENGINE_PAR_EPP_TREMOLO_RATE",
+              "$ENGINE_PAR_EPP_TREMOLO_RATE_UNIT",
+              "$ENGINE_PAR_EPP_TREMOLO_AMOUNT",
+              "$ENGINE_PAR_EPP_TREMOLO_WIDTH",
+              "$ENGINE_PAR_EPP_MONO",
+              "$ENGINE_PAR_HS_PRENORMAL",
+              "$ENGINE_PAR_HS_PREOVERDRIVE",
+              "$ENGINE_PAR_HS_BASS",
+              "$ENGINE_PAR_HS_MID",
+              "$ENGINE_PAR_HS_TREBLE",
+              "$ENGINE_PAR_HS_MASTER",
+              "$ENGINE_PAR_HS_PRESENCE",
+              "$ENGINE_PAR_HS_DEPTH",
+              "$ENGINE_PAR_HS_OVERDRIVE",
+              "$ENGINE_PAR_HS_MONO",
+              "$ENGINE_PAR_JMP_PREAMP",
+              "$ENGINE_PAR_JMP_BASS",
+              "$ENGINE_PAR_JMP_MID",
+              "$ENGINE_PAR_JMP_TREBLE",
+              "$ENGINE_PAR_JMP_MASTER",
+              "$ENGINE_PAR_JMP_PRESENCE",
+              "$ENGINE_PAR_JMP_HIGAIN",
+              "$ENGINE_PAR_JMP_MONO",
+              "$ENGINE_PAR_SF100_NORMAL_GAIN",
+              "$ENGINE_PAR_SF100_OD_GAIN",
+              "$ENGINE_PAR_SF100_BASS",
+              "$ENGINE_PAR_SF100_MID",
+              "$ENGINE_PAR_SF100_TREBLE",
+              "$ENGINE_PAR_SF100_MASTER",
+              "$ENGINE_PAR_SF100_PRESENCE",
+              "$ENGINE_PAR_SF100_DEPTH",
+              "$ENGINE_PAR_SF100_OVEDRIVE",
+              "$ENGINE_PAR_SF100_CRUNCH",
+              "$ENGINE_PAR_SF100_BRIGHT",
+              "$ENGINE_PAR_SF100_MONO",
+              "$ENGINE_PAR_TW_VOLUME",
+              "$ENGINE_PAR_TW_TREBLE",
+              "$ENGINE_PAR_TW_MID",
+              "$ENGINE_PAR_TW_BASS",
+              "$ENGINE_PAR_TW_BRIGHT",
+              "$ENGINE_PAR_TW_MONO",
+              "$ENGINE_PAR_V5_PREGAINRHYTHM",
+              "$ENGINE_PAR_V5_PREGAINLEAD",
+              "$ENGINE_PAR_V5_BASS",
+              "$ENGINE_PAR_V5_MID",
+              "$ENGINE_PAR_V5_TREBLE",
+              "$ENGINE_PAR_V5_POSTGAIN",
+              "$ENGINE_PAR_V5_RESONANCE",
+              "$ENGINE_PAR_V5_PRESENCE",
+              "$ENGINE_PAR_V5_LEADCHANNEL",
+              "$ENGINE_PAR_V5_HIGAIN",
+              "$ENGINE_PAR_V5_BRIGHT",
+              "$ENGINE_PAR_V5_CRUNCH",
+              "$ENGINE_PAR_V5_MONO"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters#amps"
+        },
+        {
+          "anchor": "stomps",
+          "title": "Stomps",
+          "symbols": {
+            "symbol": [
+              "$ENGINE_PAR_BIGFUZZ_SUSTAIN",
+              "$ENGINE_PAR_BIGFUZZ_TONE",
+              "$ENGINE_PAR_BIGFUZZ_BASS",
+              "$ENGINE_PAR_BIGFUZZ_TREBLE",
+              "$ENGINE_PAR_BIGFUZZ_MONO",
+              "$ENGINE_PAR_CT_VOLUME",
+              "$ENGINE_PAR_CT_DISTORTION",
+              "$ENGINE_PAR_CT_FILTER",
+              "$ENGINE_PAR_CT_BASS",
+              "$ENGINE_PAR_CT_BALLS",
+              "$ENGINE_PAR_CT_TREBLE",
+              "$ENGINE_PAR_CT_TONE",
+              "$ENGINE_PAR_CT_MONO",
+              "$ENGINE_PAR_CS_DISTORTION",
+              "$ENGINE_PAR_CS_LOW",
+              "$ENGINE_PAR_CS_HIGH",
+              "$ENGINE_PAR_CS_LEVEL",
+              "$ENGINE_PAR_CS_MONO",
+              "$ENGINE_PAR_CW_MONO",
+              "$ENGINE_PAR_CW_PEDAL",
+              "$ENGINE_PAR_DIRT_DRIVEA",
+              "$ENGINE_PAR_DIRT_AMOUNTA",
+              "$ENGINE_PAR_DIRT_BIASA",
+              "$ENGINE_PAR_DIRT_TILTA",
+              "$ENGINE_PAR_DIRT_MODEA",
+              "$NI_DIRT_MODE_I",
+              "$NI_DIRT_MODE_II",
+              "$NI_DIRT_MODE_III",
+              "$ENGINE_PAR_DIRT_SAFETYA",
+              "$ENGINE_PAR_DIRT_DRIVEB",
+              "$ENGINE_PAR_DIRT_AMOUNTB",
+              "$ENGINE_PAR_DIRT_BIASB",
+              "$ENGINE_PAR_DIRT_TILTB",
+              "$ENGINE_PAR_DIRT_MODEB",
+              "$ENGINE_PAR_DIRT_SAFETYB",
+              "$ENGINE_PAR_DIRT_ROUTING",
+              "$NI_DIRT_ROUTING_ATOB",
+              "$NI_DIRT_ROUTING_BTOA",
+              "$NI_DIRT_ROUTING_PARALLEL",
+              "$ENGINE_PAR_DIRT_MIX",
+              "$ENGINE_PAR_DIRT_BLEND",
+              "$ENGINE_PAR_DRIVE",
+              "$ENGINE_PAR_DAMPING",
+              "$ENGINE_PAR_DISTORTION_TYPE",
+              "$NI_DISTORTION_TYPE_TUBE",
+              "$NI_DISTORTION_TYPE_TRANS",
+              "$ENGINE_PAR_DS_VOLUME",
+              "$ENGINE_PAR_DS_TONE",
+              "$ENGINE_PAR_DS_DRIVE",
+              "$ENGINE_PAR_DS_BASS",
+              "$ENGINE_PAR_DS_MID",
+              "$ENGINE_PAR_DS_TREBLE",
+              "$ENGINE_PAR_DS_MONO",
+              "$ENGINE_PAR_FUZZ_AMOUNT",
+              "$ENGINE_PAR_FUZZ_BASS",
+              "$ENGINE_PAR_FUZZ_TREBLE",
+              "$ENGINE_PAR_FUZZ_MONO",
+              "$ENGINE_PAR_KOLOR_MODE",
+              "$NI_KOLOR_SOLID_CONSOLE",
+              "$NI_KOLOR_ANALOG_AURA",
+              "$NI_KOLOR_HARMONIC_CTRL",
+              "$NI_KOLOR_FULL_ON",
+              "$NI_KOLOR_SUPER_AMP",
+              "$NI_KOLOR_SMOOTH_FUZZ",
+              "$NI_KOLOR_TAPE",
+              "$NI_KOLOR_CRUNCH",
+              "$NI_KOLOR_SATURAVER",
+              "$NI_KOLOR_DIODE",
+              "$ENGINE_PAR_KOLOR_DRIVE",
+              "$ENGINE_PAR_KOLOR_BOOST",
+              "$ENGINE_PAR_KOLOR_BOOST_LEVEL",
+              "$ENGINE_PAR_KOLOR_BASS_SAVER",
+              "$ENGINE_PAR_KOLOR_LPF",
+              "$ENGINE_PAR_KOLOR_HPF",
+              "$ENGINE_PAR_KOLOR_BASS",
+              "$ENGINE_PAR_KOLOR_MID",
+              "$ENGINE_PAR_KOLOR_MID_FREQ",
+              "$ENGINE_PAR_KOLOR_MID_Q",
+              "$ENGINE_PAR_KOLOR_TREBLE",
+              "$ENGINE_PAR_KOLOR_MIX",
+              "$ENGINE_PAR_SHAPE",
+              "$ENGINE_PAR_SHAPE_TYPE",
+              "$NI_SHAPE_TYPE_CLASSIC",
+              "$NI_SHAPE_TYPE_ENHANCED",
+              "$NI_SHAPE_TYPE_DRUMS",
+              "$ENGINE_PAR_SK_TONE",
+              "$ENGINE_PAR_SK_DRIVE",
+              "$ENGINE_PAR_SK_BASS",
+              "$ENGINE_PAR_SK_BRIGHT",
+              "$ENGINE_PAR_SK_MIX",
+              "$ENGINE_PAR_SKDLX_MODE",
+              "$NI_SKDLX_MODE_CLASSIC",
+              "$NI_SKDLX_MODE_LED",
+              "$NI_SKDLX_MODE_EQ",
+              "$ENGINE_PAR_SKDLX_DRIVE",
+              "$ENGINE_PAR_SKDLX_TONE",
+              "$ENGINE_PAR_SKDLX_BASS",
+              "$ENGINE_PAR_SKDLX_MID",
+              "$ENGINE_PAR_SKDLX_TREBLE",
+              "$ENGINE_PAR_SKDLX_MONO"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters#stomps"
+        },
+        {
+          "anchor": "lo-fi",
+          "title": "Lo-Fi",
+          "symbols": {
+            "symbol": [
+              "$ENGINE_PAR_BITE_FREQUENCY",
+              "$ENGINE_PAR_BITE_BITS",
+              "$ENGINE_PAR_BITE_JITTER",
+              "$ENGINE_PAR_BITE_CRUNCH",
+              "$ENGINE_PAR_BITE_DITHER",
+              "$ENGINE_PAR_BITE_EXPAND",
+              "$ENGINE_PAR_BITE_SATURATE",
+              "$ENGINE_PAR_BITE_PREFILTER",
+              "$ENGINE_PAR_BITE_POSTFILTER",
+              "$ENGINE_PAR_BITE_DC_QUANT",
+              "$ENGINE_PAR_BITE_HPF",
+              "$NI_BITE_HPF_MODE_5",
+              "$NI_BITE_HPF_MODE_100",
+              "$NI_BITE_HPF_MODE_200",
+              "$ENGINE_PAR_BITE_MIX",
+              "$ENGINE_PAR_BITS",
+              "$ENGINE_PAR_FREQUENCY",
+              "$ENGINE_PAR_NOISELEVEL",
+              "$ENGINE_PAR_NOISECOLOR"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters#lo-fi"
+        },
+        {
+          "anchor": "tape",
+          "title": "Tape",
+          "symbols": {
+            "symbol": [
+              "$ENGINE_PAR_TP_GAIN",
+              "$ENGINE_PAR_TP_WARMTH",
+              "$ENGINE_PAR_TP_HF_ROLLOFF",
+              "$ENGINE_PAR_TP_QUALITY",
+              "$ENGINE_PAR_WOWFLUTTER_WOW",
+              "$ENGINE_PAR_WOWFLUTTER_FLUTTER",
+              "$ENGINE_PAR_WOWFLUTTER_SCRAPE",
+              "$ENGINE_PAR_WOWFLUTTER_SPEED",
+              "$ENGINE_PAR_WOWFLUTTER_STEREO",
+              "$ENGINE_PAR_WOWFLUTTER_AGE",
+              "$ENGINE_PAR_WOWFLUTTER_SATURATION",
+              "$ENGINE_PAR_WOWFLUTTER_MIX",
+              "$ENGINE_PAR_WOWFLUTTER_GATE"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters#tape"
+        },
+        {
+          "anchor": "modulation-732579",
+          "title": "Modulation",
+          "symbols": {
+            "symbol": [
+              "$ENGINE_PAR_CHORAL_RATE",
+              "$ENGINE_PAR_CHORAL_MODE",
+              "$NI_CHORAL_MODE_SYNTH",
+              "$NI_CHORAL_MODE_ENSEMBLE",
+              "$NI_CHORAL_MODE_DIMENSION",
+              "$NI_CHORAL_MODE_UNIVERSAL",
+              "$ENGINE_PAR_CHORAL_AMOUNT",
+              "$ENGINE_PAR_CHORAL_VOICES",
+              "$ENGINE_PAR_CHORAL_DELAY",
+              "$ENGINE_PAR_CHORAL_WIDTH",
+              "$ENGINE_PAR_CHORAL_FEEDBACK",
+              "$ENGINE_PAR_CHORAL_SCATTER",
+              "$ENGINE_PAR_CHORAL_INVERT_PHASE",
+              "$ENGINE_PAR_CHORAL_MIX",
+              "$ENGINE_PAR_FLAIR_MODE",
+              "$NI_FLAIR_MODE_STANDARD",
+              "$NI_FLAIR_MODE_THRU_ZERO",
+              "$NI_FLAIR_MODE_SCAN",
+              "$ENGINE_PAR_FLAIR_CHORD",
+              "$ENGINE_PAR_FLAIR_INVERT_PHASE",
+              "$ENGINE_PAR_FLAIR_RATE",
+              "$ENGINE_PAR_FLAIR_RATE_UNIT",
+              "$ENGINE_PAR_FLAIR_FEEDBACK",
+              "$ENGINE_PAR_FLAIR_AMOUNT",
+              "$ENGINE_PAR_FLAIR_WIDTH",
+              "$ENGINE_PAR_FLAIR_PITCH",
+              "$ENGINE_PAR_FLAIR_DAMPING",
+              "$ENGINE_PAR_FLAIR_VOICES",
+              "$ENGINE_PAR_FLAIR_DETUNE",
+              "$ENGINE_PAR_FLAIR_MIX",
+              "$ENGINE_PAR_FLAIR_OFFSET",
+              "$ENGINE_PAR_FLAIR_SCANMODE",
+              "$NI_FLAIR_SCANMODE_TRIANGLE",
+              "$NI_FLAIR_SCANMODE_SAW_UP",
+              "$NI_FLAIR_SCANMODE_SAW_DOWN",
+              "$ENGINE_PAR_FREAK_MODE",
+              "$NI_FREAK_MODE_RADIO",
+              "$NI_FREAK_MODE_OSCILLATOR",
+              "$NI_FREAK_MODE_SIDECHAIN",
+              "$ENGINE_PAR_FREAK_TYPE",
+              "$ENGINE_PAR_FREAK_HARMONICS",
+              "$ENGINE_PAR_FREAK_FEEDBACK",
+              "$ENGINE_PAR_FREAK_MIX",
+              "$ENGINE_PAR_FREAK_CARRIER",
+              "$ENGINE_PAR_FREAK_TUNING",
+              "$ENGINE_PAR_FREAK_WIDTH",
+              "$ENGINE_PAR_FREAK_DEMOD",
+              "$ENGINE_PAR_FREAK_GATE",
+              "$ENGINE_PAR_FREAK_FREQUENCY",
+              "$ENGINE_PAR_FREAK_ANTIFOLD",
+              "$ENGINE_PAR_FREAK_STEREO",
+              "$ENGINE_PAR_FREAK_WIDE_RANGE",
+              "$ENGINE_PAR_FREAK_CONTOUR",
+              "$ENGINE_PAR_FREAK_RELEASE",
+              "$ENGINE_PAR_FREAK_BP_FREQ",
+              "$ENGINE_PAR_FREAK_BP_FILTER",
+              "$ENGINE_PAR_PHASIS_RATE",
+              "$ENGINE_PAR_PHASIS_RATE_UNIT",
+              "$ENGINE_PAR_PHASIS_ULTRA",
+              "$ENGINE_PAR_PHASIS_AMOUNT",
+              "$ENGINE_PAR_PHASIS_CENTER",
+              "$ENGINE_PAR_PHASIS_STEREO",
+              "$ENGINE_PAR_PHASIS_SPREAD",
+              "$ENGINE_PAR_PHASIS_FEEDBACK",
+              "$ENGINE_PAR_PHASIS_MOD_MIX",
+              "$ENGINE_PAR_PHASIS_NOTCHES",
+              "$ENGINE_PAR_PHASIS_INVERT_PHASE",
+              "$ENGINE_PAR_PHASIS_INVERT_MOD_MIX",
+              "$ENGINE_PAR_PHASIS_MIX",
+              "$ENGINE_PAR_RINGMOD_RING",
+              "$ENGINE_PAR_RINGMOD_FM",
+              "$ENGINE_PAR_RINGMOD_FREQUENCY",
+              "$ENGINE_PAR_RINGMOD_EDGE",
+              "$ENGINE_PAR_RINGMOD_LFO_RATE",
+              "$ENGINE_PAR_RINGMOD_LFO_RATE_UNIT",
+              "$ENGINE_PAR_RINGMOD_LFO_AMOUNT",
+              "$ENGINE_PAR_RINGMOD_LFO_WAVE",
+              "$NI_RINGMOD_LFO_WAVE_SINE",
+              "$NI_RINGMOD_LFO_WAVE_SQUARE",
+              "$ENGINE_PAR_RINGMOD_FAST_MODE",
+              "$ENGINE_PAR_RT_SPEED",
+              "$ENGINE_PAR_RT_BALANCE",
+              "$ENGINE_PAR_RT_ACCEL_HI",
+              "$ENGINE_PAR_RT_ACCEL_LO",
+              "$ENGINE_PAR_RT_DISTANCE",
+              "$ENGINE_PAR_RT_MIX",
+              "$ENGINE_PAR_VC_BLEND",
+              "$ENGINE_PAR_VC_RATE",
+              "$ENGINE_PAR_VC_WIDTH",
+              "$ENGINE_PAR_VC_MIX",
+              "$ENGINE_PAR_VC_DEPTH",
+              "$NI_VC_DEPTH_1",
+              "$NI_VC_DEPTH_2",
+              "$NI_VC_DEPTH_3",
+              "$NI_VC_DEPTH_4",
+              "$NI_VC_DEPTH_5",
+              "$NI_VC_DEPTH_6",
+              "$ENGINE_PAR_VC_COLOR",
+              "$NI_VC_COLOR_TYPE_A",
+              "$NI_VC_COLOR_TYPE_B",
+              "$NI_VC_COLOR_TYPE_C"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters#modulation-732579"
+        },
+        {
+          "anchor": "mangling",
+          "title": "Mangling",
+          "symbols": {
+            "symbol": [
+              "$ENGINE_PAR_BEATMASHER_GATE",
+              "$ENGINE_PAR_BEATMASHER_LENGTH",
+              "$NI_BEATMASHER_LENGTH_32ND",
+              "$NI_BEATMASHER_LENGTH_16TH",
+              "$NI_BEATMASHER_LENGTH_8TH",
+              "$NI_BEATMASHER_LENGTH_8TH_DOTTED",
+              "$NI_BEATMASHER_LENGTH_QUARTER",
+              "$NI_BEATMASHER_LENGTH_QUARTER_DOTTED",
+              "$NI_BEATMASHER_LENGTH_HALF",
+              "$NI_BEATMASHER_LENGTH_HALF_DOTTED",
+              "$NI_BEATMASHER_LENGTH_BAR",
+              "$ENGINE_PAR_BEATMASHER_MASH",
+              "$ENGINE_PAR_BEATMASHER_MIX",
+              "$ENGINE_PAR_BEATMASHER_REVERSE",
+              "$ENGINE_PAR_BEATMASHER_ROTATE",
+              "$ENGINE_PAR_BEATMASHER_WRAP",
+              "$ENGINE_PAR_BEATSLICER_BUZZ",
+              "$ENGINE_PAR_BEATSLICER_GATE",
+              "$ENGINE_PAR_BEATSLICER_MIX",
+              "$ENGINE_PAR_BEATSLICER_PATTERN",
+              "$ENGINE_PAR_BEATSLICER_SLICE",
+              "$ENGINE_PAR_BEATSLICER_STYLE",
+              "$ENGINE_PAR_BEATSLICER_TWOBARS",
+              "$ENGINE_PAR_GATER_GATE",
+              "$ENGINE_PAR_GATER_MIX",
+              "$ENGINE_PAR_GATER_MUTE_INPUT",
+              "$ENGINE_PAR_GATER_NOISE",
+              "$ENGINE_PAR_GATER_RATE",
+              "$ENGINE_PAR_GATER_RATE_SYNC",
+              "$ENGINE_PAR_GATER_SHAPE",
+              "$ENGINE_PAR_GATER_STUTTER",
+              "$ENGINE_PAR_RG_FORWARD",
+              "$ENGINE_PAR_RG_GRAIN",
+              "$ENGINE_PAR_RG_INVERT_GRAINS",
+              "$ENGINE_PAR_RG_MIX",
+              "$ENGINE_PAR_RG_PITCH",
+              "$ENGINE_PAR_RG_REVERSE",
+              "$ENGINE_PAR_RG_SPEED",
+              "$ENGINE_PAR_TS_AMOUNT",
+              "$ENGINE_PAR_TS_GRAIN",
+              "$ENGINE_PAR_TS_KEY",
+              "$ENGINE_PAR_TS_MIX",
+              "$ENGINE_PAR_TS_SIZE",
+              "$ENGINE_PAR_TS_STRETCH",
+              "$ENGINE_PAR_TS_TWOBARS"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters#mangling"
+        },
+        {
+          "anchor": "spatial",
+          "title": "Spatial",
+          "symbols": {
+            "symbol": [
+              "$ENGINE_PAR_STEREO",
+              "$ENGINE_PAR_STEREO_PAN",
+              "$ENGINE_PAR_STEREO_PSEUDO",
+              "$ENGINE_PAR_STEREOTUNE_SPLIT",
+              "$ENGINE_PAR_STEREOTUNE_DRIFT",
+              "$ENGINE_PAR_STEREOTUNE_SPREAD",
+              "$ENGINE_PAR_STEREOTUNE_MIX",
+              "$ENGINE_PAR_SP_OFFSET_DISTANCE",
+              "$ENGINE_PAR_SP_OFFSET_AZIMUTH",
+              "$ENGINE_PAR_SP_OFFSET_X",
+              "$ENGINE_PAR_SP_OFFSET_Y",
+              "$ENGINE_PAR_SP_LFE_VOLUME",
+              "$ENGINE_PAR_SP_SIZE",
+              "$ENGINE_PAR_SP_DIVERGENCE"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters#spatial"
+        },
+        {
+          "anchor": "utilities-732582",
+          "title": "Utilities",
+          "symbols": {
+            "symbol": [
+              "$ENGINE_PAR_EXP_FILTER_MORPH",
+              "$ENGINE_PAR_EXP_FILTER_AMOUNT",
+              "$ENGINE_PAR_PHASE_INVERT",
+              "$ENGINE_PAR_LR_SWAP",
+              "$ENGINE_PAR_SENDLEVEL_0",
+              "$ENGINE_PAR_SENDLEVEL_1",
+              "$ENGINE_PAR_SENDLEVEL_2",
+              "$ENGINE_PAR_SENDLEVEL_3",
+              "$ENGINE_PAR_SENDLEVEL_4",
+              "$ENGINE_PAR_SENDLEVEL_5",
+              "$ENGINE_PAR_SENDLEVEL_6",
+              "$ENGINE_PAR_SENDLEVEL_7"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters#utilities-732582"
+        },
+        {
+          "anchor": "send-effects",
+          "title": "Send Effects",
+          "symbols": {
+            "symbol": [
+              "$ENGINE_PAR_SEND_EFFECT_BYPASS",
+              "$ENGINE_PAR_SEND_EFFECT_DRY_LEVEL",
+              "$ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters#send-effects"
+        },
+        {
+          "anchor": "delay",
+          "title": "Delay",
+          "symbols": {
+            "symbol": [
+              "$ENGINE_PAR_PSYDL_TIME",
+              "$ENGINE_PAR_PSYDL_TIME_UNIT",
+              "$ENGINE_PAR_PSYDL_FEEDBACK",
+              "$ENGINE_PAR_PSYDL_CROSS_FEEDBACK",
+              "$ENGINE_PAR_PSYDL_LR_OFFSET",
+              "$ENGINE_PAR_PSYDL_PITCH",
+              "$ENGINE_PAR_PSYDL_DETUNE",
+              "$ENGINE_PAR_PSYDL_REVERSE",
+              "$ENGINE_PAR_PSYDL_REVERSE_STEREO",
+              "$ENGINE_PAR_PSYDL_DETUNE_STEREO",
+              "$ENGINE_PAR_RDL_TYPE",
+              "$NI_REPLIKA_TYPE_MODERN",
+              "$NI_REPLIKA_TYPE_TAPE",
+              "$NI_REPLIKA_TYPE_VINTAGE",
+              "$NI_REPLIKA_TYPE_DIFFUSION",
+              "$NI_REPLIKA_TYPE_ANALOGUE",
+              "$ENGINE_PAR_RDL_TIME",
+              "$ENGINE_PAR_RDL_TIME_UNIT",
+              "$ENGINE_PAR_RDL_FEEDBACK",
+              "$ENGINE_PAR_RDL_LOWCUT",
+              "$ENGINE_PAR_RDL_HIGHCUT",
+              "$ENGINE_PAR_RDL_PINGPONG",
+              "$ENGINE_PAR_RDL_PINGPONG_FLIP",
+              "$ENGINE_PAR_RDL_SHUFFLE",
+              "$ENGINE_PAR_RDL_FEEL",
+              "$ENGINE_PAR_RDL_ACCENT",
+              "$ENGINE_PAR_RDL_PAN",
+              "$ENGINE_PAR_RDL_WIDTH",
+              "$ENGINE_PAR_RDL_LR_OFFSET",
+              "$ENGINE_PAR_RDL_DUCKING_SENSE",
+              "$ENGINE_PAR_RDL_DUCKING_RELEASE",
+              "$ENGINE_PAR_RDL_DUCKING_AMOUNT",
+              "$ENGINE_PAR_RDL_DEPTH",
+              "$ENGINE_PAR_RDL_RATE",
+              "$ENGINE_PAR_RDL_SATURATION",
+              "$ENGINE_PAR_RDL_BBDTYPE",
+              "$ENGINE_PAR_RDL_STEREO",
+              "$ENGINE_PAR_RDL_TAPEAGE",
+              "$ENGINE_PAR_RDL_FLUTTER",
+              "$ENGINE_PAR_RDL_NOISE",
+              "$ENGINE_PAR_RDL_QUALITY",
+              "$ENGINE_PAR_RDL_AMOUNT",
+              "$ENGINE_PAR_RDL_SIZE",
+              "$ENGINE_PAR_RDL_MODULATION",
+              "$ENGINE_PAR_RDL_DENSE",
+              "$ENGINE_PAR_TDL_PREDELAY_L",
+              "$ENGINE_PAR_TDL_PREDELAY_L_UNIT",
+              "$ENGINE_PAR_TDL_TIME_L",
+              "$ENGINE_PAR_TDL_TIME_L_UNIT",
+              "$ENGINE_PAR_TDL_FEEDBACK_L",
+              "$ENGINE_PAR_TDL_LEVEL_L",
+              "$ENGINE_PAR_TDL_PREDELAY_R",
+              "$ENGINE_PAR_TDL_PREDELAY_R_UNIT",
+              "$ENGINE_PAR_TDL_TIME_R",
+              "$ENGINE_PAR_TDL_TIME_R_UNIT",
+              "$ENGINE_PAR_TDL_FEEDBACK_R",
+              "$ENGINE_PAR_TDL_LEVEL_R",
+              "$ENGINE_PAR_TDL_CROSS_FEEDBACK",
+              "$ENGINE_PAR_TDL_WIDTH",
+              "$ENGINE_PAR_DL_TIME",
+              "$ENGINE_PAR_DL_TIME_UNIT",
+              "$ENGINE_PAR_DL_DAMPING",
+              "$ENGINE_PAR_DL_PAN",
+              "$ENGINE_PAR_DL_FEEDBACK"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters#delay"
+        },
+        {
+          "anchor": "reverb",
+          "title": "Reverb",
+          "symbols": {
+            "symbol": [
+              "$ENGINE_PAR_IRC_PREDELAY",
+              "$ENGINE_PAR_IRC_LENGTH_RATIO_ER",
+              "$ENGINE_PAR_IRC_FREQ_LOWPASS_ER",
+              "$ENGINE_PAR_IRC_FREQ_HIGHPASS_ER",
+              "$ENGINE_PAR_IRC_LENGTH_RATIO_LR",
+              "$ENGINE_PAR_IRC_FREQ_LOWPASS_LR",
+              "$ENGINE_PAR_IRC_FREQ_HIGHPASS_LR",
+              "$ENGINE_PAR_IRC_ER_LR_BOUNDARY",
+              "$ENGINE_PAR_IRC_AUTO_GAIN",
+              "$ENGINE_PAR_IRC_REVERSE",
+              "$ENGINE_PAR_PR_DECAY",
+              "$ENGINE_PAR_PR_LOWSHELF",
+              "$ENGINE_PAR_PR_HIDAMP",
+              "$ENGINE_PAR_PR_PREDELAY",
+              "$ENGINE_PAR_PR_STEREO",
+              "$ENGINE_PAR_RAUM_TYPE",
+              "$NI_RAUM_TYPE_GROUNDED",
+              "$NI_RAUM_TYPE_AIRY",
+              "$NI_RAUM_TYPE_COSMIC",
+              "$ENGINE_PAR_RAUM_PREDELAY",
+              "$ENGINE_PAR_RAUM_PREDELAY_UNIT",
+              "$ENGINE_PAR_RAUM_FEEDBACK",
+              "$ENGINE_PAR_RAUM_LOWSHELF",
+              "$ENGINE_PAR_RAUM_HIGHCUT",
+              "$ENGINE_PAR_RAUM_DECAY",
+              "$ENGINE_PAR_RAUM_MOD",
+              "$ENGINE_PAR_RAUM_REVERB",
+              "$ENGINE_PAR_RAUM_DIFFUSION",
+              "$ENGINE_PAR_RAUM_SIZE",
+              "$ENGINE_PAR_RAUM_DAMPING",
+              "$ENGINE_PAR_RAUM_RATE",
+              "$ENGINE_PAR_RAUM_FREEZE",
+              "$ENGINE_PAR_RAUM_SPARSE",
+              "$ENGINE_PAR_RV2_TYPE",
+              "$NI_REVERB2_TYPE_ROOM",
+              "$NI_REVERB2_TYPE_HALL",
+              "$ENGINE_PAR_RV2_TIME",
+              "$ENGINE_PAR_RV2_SIZE",
+              "$ENGINE_PAR_RV2_DAMPING",
+              "$ENGINE_PAR_RV2_MOD",
+              "$ENGINE_PAR_RV2_DIFF",
+              "$ENGINE_PAR_RV2_PREDELAY",
+              "$ENGINE_PAR_RV2_HIGHCUT",
+              "$ENGINE_PAR_RV2_LOWSHELF",
+              "$ENGINE_PAR_RV2_STEREO",
+              "$ENGINE_PAR_RV_PREDELAY",
+              "$ENGINE_PAR_RV_SIZE",
+              "$ENGINE_PAR_RV_COLOUR",
+              "$ENGINE_PAR_RV_STEREO",
+              "$ENGINE_PAR_RV_DAMPING"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters#reverb"
+        },
+        {
+          "anchor": "modulation-732585",
+          "title": "Modulation",
+          "symbols": {
+            "symbol": [
+              "$ENGINE_PAR_CH_DEPTH",
+              "$ENGINE_PAR_CH_SPEED",
+              "$ENGINE_PAR_CH_SPEED_UNIT",
+              "$ENGINE_PAR_CH_PHASE",
+              "$ENGINE_PAR_FL_DEPTH",
+              "$ENGINE_PAR_FL_SPEED",
+              "$ENGINE_PAR_FL_SPEED_UNIT",
+              "$ENGINE_PAR_FL_PHASE",
+              "$ENGINE_PAR_FL_FEEDBACK",
+              "$ENGINE_PAR_FL_COLOR",
+              "$ENGINE_PAR_PH_DEPTH",
+              "$ENGINE_PAR_PH_SPEED",
+              "$ENGINE_PAR_PH_SPEED_UNIT",
+              "$ENGINE_PAR_PH_PHASE",
+              "$ENGINE_PAR_PH_FEEDBACK"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters#modulation-732585"
+        },
+        {
+          "anchor": "utilities-732586",
+          "title": "Utilities",
+          "symbols": {
+            "symbol": [
+              "$ENGINE_PAR_GN_GAIN"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters#utilities-732586"
+        },
+        {
+          "anchor": "modulation-102089",
+          "title": "Modulation",
+          "symbols": {
+            "symbol": [
+              "$ENGINE_PAR_MOD_TARGET_INTENSITY",
+              "$ENGINE_PAR_MOD_TARGET_MP_INTENSITY",
+              "$MOD_TARGET_INVERT_SOURCE",
+              "$ENGINE_PAR_INTMOD_BYPASS",
+              "$ENGINE_PAR_INTMOD_RETRIGGER",
+              "$ENGINE_PAR_ATK_CURVE",
+              "$ENGINE_PAR_ATTACK",
+              "$ENGINE_PAR_ATTACK_UNIT",
+              "$ENGINE_PAR_HOLD",
+              "$ENGINE_PAR_HOLD_UNIT",
+              "$ENGINE_PAR_DECAY",
+              "$ENGINE_PAR_DECAY_UNIT",
+              "$ENGINE_PAR_SUSTAIN",
+              "$ENGINE_PAR_RELEASE",
+              "$ENGINE_PAR_RELEASE_UNIT",
+              "$ENGINE_PAR_ENV_AHD",
+              "$ENGINE_PAR_DECAY1",
+              "$ENGINE_PAR_DECAY1_UNIT",
+              "$ENGINE_PAR_BREAK",
+              "$ENGINE_PAR_DECAY2",
+              "$ENGINE_PAR_DECAY2_UNIT",
+              "$ENGINE_PAR_ENV_DBD_EASY",
+              "$ENGINE_PAR_FLEXENV_LOOP",
+              "$ENGINE_PAR_FLEXENV_ONESHOT",
+              "$ENGINE_PAR_FLEXENV_NUM_STAGES",
+              "$ENGINE_PAR_FLEXENV_LOOP_START",
+              "$ENGINE_PAR_FLEXENV_LOOP_END",
+              "$ENGINE_PAR_FLEXENV_STAGE_TIME",
+              "$ENGINE_PAR_FLEXENV_STAGE_LEVEL",
+              "$ENGINE_PAR_FLEXENV_STAGE_SLOPE",
+              "$ENGINE_PAR_ENVF_ATTACK",
+              "$ENGINE_PAR_ENVF_RELEASE",
+              "$ENGINE_PAR_ENVF_GAIN_BOOST",
+              "$ENGINE_PAR_ENVF_ADAPTION",
+              "$ENGINE_PAR_INTMOD_FREQUENCY",
+              "$ENGINE_PAR_INTMOD_FREQUENCY_UNIT",
+              "$ENGINE_PAR_LFO_DELAY",
+              "$ENGINE_PAR_LFO_DELAY_UNIT",
+              "$ENGINE_PAR_LFO_PHASE",
+              "$ENGINE_PAR_INTMOD_PULSEWIDTH",
+              "$ENGINE_PAR_LFO_SINE",
+              "$ENGINE_PAR_LFO_RECT",
+              "$ENGINE_PAR_LFO_TRI",
+              "$ENGINE_PAR_LFO_SAW",
+              "$ENGINE_PAR_LFO_RAND",
+              "$ENGINE_PAR_LFO_NORMALIZE",
+              "$ENGINE_PAR_STEPSEQ_NUM_STEPS",
+              "$ENGINE_PAR_STEPSEQ_ONESHOT",
+              "$ENGINE_PAR_STEPSEQ_STEP_VALUE",
+              "$ENGINE_PAR_GLIDE_COEF",
+              "$ENGINE_PAR_GLIDE_COEF_UNIT"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters#modulation-102089"
+        },
+        {
+          "anchor": "module-types-and-subtypes",
+          "title": "Module Types and Subtypes",
+          "symbols": {
+            "symbol": [
+              "$ENGINE_PAR_EFFECT_TYPE",
+              "$EFFECT_TYPE_NONE",
+              "$EFFECT_TYPE_FILTER",
+              "$EFFECT_TYPE_SOLID_GEQ",
+              "$EFFECT_TYPE_COMPRESSOR",
+              "$EFFECT_TYPE_FB_COMP",
+              "$EFFECT_TYPE_LIMITER",
+              "$EFFECT_TYPE_BUS_COMP",
+              "$EFFECT_TYPE_SUPERGT",
+              "$EFFECT_TYPE_TRANS_MASTER",
+              "$EFFECT_TYPE_TRANSLIM",
+              "$EFFECT_TYPE_ACBOX",
+              "$EFFECT_TYPE_BASSINVADER",
+              "$EFFECT_TYPE_BASSPRO",
+              "$EFFECT_TYPE_CABINET",
+              "$EFFECT_TYPE_EP_PREAMPS",
+              "$EFFECT_TYPE_HOTSOLO",
+              "$EFFECT_TYPE_JUMP",
+              "$EFFECT_TYPE_SUPERFAST100",
+              "$EFFECT_TYPE_TWANG",
+              "$EFFECT_TYPE_VAN51",
+              "$EFFECT_TYPE_BIGFUZZ",
+              "$EFFECT_TYPE_CAT",
+              "$EFFECT_TYPE_CHAINSAW",
+              "$EFFECT_TYPE_CRYWAH",
+              "$EFFECT_TYPE_DIRT",
+              "$EFFECT_TYPE_DISTORTION",
+              "$EFFECT_TYPE_DSTORTION",
+              "$EFFECT_TYPE_FUZZ",
+              "$EFFECT_TYPE_KOLOR",
+              "$EFFECT_TYPE_SHAPER",
+              "$EFFECT_TYPE_SKREAMER",
+              "$EFFECT_TYPE_SKREAMERDLX",
+              "$EFFECT_TYPE_BITE",
+              "$EFFECT_TYPE_LOFI",
+              "$EFFECT_TYPE_TAPE_SAT",
+              "$EFFECT_TYPE_WOWFLUTTER",
+              "$EFFECT_TYPE_PSYCHEDELAY",
+              "$EFFECT_TYPE_REPLIKA",
+              "$EFFECT_TYPE_TWINDELAY",
+              "$EFFECT_TYPE_DELAY",
+              "$EFFECT_TYPE_IRC",
+              "$EFFECT_TYPE_PLATEREVERB",
+              "$EFFECT_TYPE_RAUM",
+              "$EFFECT_TYPE_REVERB2",
+              "$EFFECT_TYPE_REVERB",
+              "$EFFECT_TYPE_CHORAL",
+              "$EFFECT_TYPE_FLAIR",
+              "$EFFECT_TYPE_FREAK",
+              "$EFFECT_TYPE_PHASIS",
+              "$EFFECT_TYPE_RINGMOD",
+              "$EFFECT_TYPE_ROTATOR",
+              "$EFFECT_TYPE_VIBRATO_CHORUS",
+              "$EFFECT_TYPE_CHORUS",
+              "$EFFECT_TYPE_FLANGER",
+              "$EFFECT_TYPE_PHASER",
+              "$EFFECT_TYPE_BEATMASHER",
+              "$EFFECT_TYPE_STEREO",
+              "$EFFECT_TYPE_STEREO_TUNE",
+              "$EFFECT_TYPE_SURROUND_PANNER",
+              "$EFFECT_TYPE_AET_FILTER",
+              "$EFFECT_TYPE_GAINER",
+              "$EFFECT_TYPE_INVERTER",
+              "$EFFECT_TYPE_SEND_LEVELS",
+              "$ENGINE_PAR_SEND_EFFECT_TYPE",
+              "$ENGINE_PAR_EFFECT_SUBTYPE",
+              "$FILTER_TYPE_LP1POLE",
+              "$FILTER_TYPE_HP1POLE",
+              "$FILTER_TYPE_BP2POLE",
+              "$FILTER_TYPE_LP2POLE",
+              "$FILTER_TYPE_HP2POLE",
+              "$FILTER_TYPE_LP4POLE",
+              "$FILTER_TYPE_HP4POLE",
+              "$FILTER_TYPE_BP4POLE",
+              "$FILTER_TYPE_BR4POLE",
+              "$FILTER_TYPE_LP6POLE",
+              "$FILTER_TYPE_PHASER",
+              "$FILTER_TYPE_VOWELA",
+              "$FILTER_TYPE_VOWELB",
+              "$FILTER_TYPE_PRO52",
+              "$FILTER_TYPE_LADDER",
+              "$FILTER_TYPE_VERSATILE",
+              "$FILTER_TYPE_EQ1BAND",
+              "$FILTER_TYPE_EQ2BAND",
+              "$FILTER_TYPE_EQ3BAND",
+              "$FILTER_TYPE_DAFT_LP",
+              "$FILTER_TYPE_SV_LP1",
+              "$FILTER_TYPE_SV_LP2",
+              "$FILTER_TYPE_SV_LP4",
+              "$FILTER_TYPE_SV_LP6",
+              "$FILTER_TYPE_LDR_LP1",
+              "$FILTER_TYPE_LDR_LP2",
+              "$FILTER_TYPE_LDR_LP3",
+              "$FILTER_TYPE_LDR_LP4",
+              "$FILTER_TYPE_MONARK_LP1",
+              "$FILTER_TYPE_MONARK_LP2",
+              "$FILTER_TYPE_MONARK_LP4",
+              "$FILTER_TYPE_AR_LP2",
+              "$FILTER_TYPE_AR_LP4",
+              "$FILTER_TYPE_AR_LP24",
+              "$FILTER_TYPE_SV_HP1",
+              "$FILTER_TYPE_SV_HP2",
+              "$FILTER_TYPE_SV_HP4",
+              "$FILTER_TYPE_SV_HP6",
+              "$FILTER_TYPE_LDR_HP1",
+              "$FILTER_TYPE_LDR_HP2",
+              "$FILTER_TYPE_LDR_HP3",
+              "$FILTER_TYPE_LDR_HP4",
+              "$FILTER_TYPE_AR_HP2",
+              "$FILTER_TYPE_AR_HP4",
+              "$FILTER_TYPE_AR_HP24",
+              "$FILTER_TYPE_DAFT_HP",
+              "$FILTER_TYPE_SV_BP2",
+              "$FILTER_TYPE_SV_BP4",
+              "$FILTER_TYPE_SV_BP6",
+              "$FILTER_TYPE_LDR_BP2",
+              "$FILTER_TYPE_LDR_BP4",
+              "$FILTER_TYPE_MONARK_BP",
+              "$FILTER_TYPE_AR_BP2",
+              "$FILTER_TYPE_AR_BP4",
+              "$FILTER_TYPE_AR_BP24",
+              "$FILTER_TYPE_SV_NOTCH4",
+              "$FILTER_TYPE_SV_NOTCH6",
+              "$FILTER_TYPE_LDR_PEAK",
+              "$FILTER_TYPE_LDR_NOTCH",
+              "$FILTER_TYPE_SV_PAR_LPHP",
+              "$FILTER_TYPE_SV_PAR_BPBP",
+              "$FILTER_TYPE_SV_SER_LPHP",
+              "$FILTER_TYPE_DUAL_SKF",
+              "$FILTER_TYPE_FORMANT_1",
+              "$FILTER_TYPE_FORMANT_2",
+              "$FILTER_TYPE_SIMPLE_LPHP",
+              "$ENGINE_PAR_INTMOD_TYPE",
+              "$INTMOD_TYPE_NONE",
+              "$INTMOD_TYPE_LFO",
+              "$INTMOD_TYPE_ENVELOPE",
+              "$INTMOD_TYPE_STEPMOD",
+              "$INTMOD_TYPE_ENV_FOLLOW",
+              "$INTMOD_TYPE_GLIDE",
+              "$ENGINE_PAR_INTMOD_SUBTYPE",
+              "$ENV_TYPE_AHDSR",
+              "$ENV_TYPE_FLEX",
+              "$ENV_TYPE_DBD",
+              "$LFO_TYPE_SINE",
+              "$LFO_TYPE_RECTANGLE",
+              "$LFO_TYPE_TRIANGLE",
+              "$LFO_TYPE_SAWTOOTH",
+              "$LFO_TYPE_RANDOM",
+              "$LFO_TYPE_MULTI"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters#module-types-and-subtypes"
+        },
+        {
+          "anchor": "group-start-options",
+          "title": "Group Start Options",
+          "symbols": {
+            "symbol": [
+              "$ENGINE_PAR_START_CRITERIA_MODE",
+              "$START_CRITERIA_NONE",
+              "$START_CRITERIA_ON_KEY",
+              "$START_CRITERIA_ON_CONTROLLER",
+              "$START_CRITERIA_CYCLE_ROUND_ROBIN",
+              "$START_CRITERIA_CYCLE_RANDOM",
+              "$START_CRITERIA_SLICE_TRIGGER",
+              "$ENGINE_PAR_START_CRITERIA_KEY_MIN",
+              "$ENGINE_PAR_START_CRITERIA_KEY_MAX",
+              "$ENGINE_PAR_START_CRITERIA_CONTROLLER",
+              "$ENGINE_PAR_START_CRITERIA_CC_MIN",
+              "$ENGINE_PAR_START_CRITERIA_CC_MAX",
+              "$ENGINE_PAR_START_CRITERIA_CYCLE_CLASS",
+              "$ENGINE_PAR_START_CRITERIA_ZONE_IDX",
+              "$ENGINE_PAR_START_CRITERIA_SLICE_IDX",
+              "$ENGINE_PAR_START_CRITERIA_SEQ_ONLY",
+              "$ENGINE_PAR_START_CRITERIA_NEXT_CRIT",
+              "$START_CRITERIA_AND_NEXT",
+              "$START_CRITERIA_AND_NOT_NEXT",
+              "$START_CRITERIA_OR_NEXT"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters#group-start-options"
+        }
+      ]
+    },
+    {
+      "id": "event-commands",
+      "title": "Event Commands",
+      "service": "musical_ownership",
+      "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands",
+      "sha256": "57f8f69b4deec41cc0eb98fd1cc5196f3c02b72e3d222faff7b91fe8551626ce",
+      "sections": [
+        {
+          "anchor": "by_marks---101946",
+          "title": "by_marks()",
+          "symbols": {
+            "command": [
+              "by_marks"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands#by_marks---101946"
+        },
+        {
+          "anchor": "change_note--",
+          "title": "change_note()",
+          "symbols": {
+            "command": [
+              "change_note"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands#change_note--"
+        },
+        {
+          "anchor": "change_pan--",
+          "title": "change_pan()",
+          "symbols": {
+            "command": [
+              "change_pan"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands#change_pan--"
+        },
+        {
+          "anchor": "change_tune--",
+          "title": "change_tune()",
+          "symbols": {
+            "command": [
+              "change_tune"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands#change_tune--"
+        },
+        {
+          "anchor": "change_velo--",
+          "title": "change_velo()",
+          "symbols": {
+            "command": [
+              "change_velo"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands#change_velo--"
+        },
+        {
+          "anchor": "change_vol--",
+          "title": "change_vol()",
+          "symbols": {
+            "command": [
+              "change_vol"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands#change_vol--"
+        },
+        {
+          "anchor": "delete_event_mark--",
+          "title": "delete_event_mark()",
+          "symbols": {
+            "command": [
+              "delete_event_mark"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands#delete_event_mark--"
+        },
+        {
+          "anchor": "event_status--",
+          "title": "event_status()",
+          "symbols": {
+            "command": [
+              "event_status"
+            ],
+            "symbol": [
+              "$EVENT_STATUS_NOTE_QUEUE",
+              "$EVENT_STATUS_MIDI_QUEUE",
+              "$EVENT_STATUS_INACTIVE"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands#event_status--"
+        },
+        {
+          "anchor": "fade_in--",
+          "title": "fade_in()",
+          "symbols": {
+            "command": [
+              "fade_in"
+            ],
+            "symbol": [
+              "$NI_FADE_LINEAR",
+              "$NI_FADE_EQUAL_POWER",
+              "$NI_FADE_S_CURVE",
+              "$NI_FADE_EXPONENTIAL",
+              "$NI_FADE_LOGARITHMIC"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands#fade_in--"
+        },
+        {
+          "anchor": "fade_out--",
+          "title": "fade_out()",
+          "symbols": {
+            "command": [
+              "fade_out"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands#fade_out--"
+        },
+        {
+          "anchor": "get_event_ids--",
+          "title": "get_event_ids()",
+          "symbols": {
+            "command": [
+              "get_event_ids"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands#get_event_ids--"
+        },
+        {
+          "anchor": "get_event_mark--",
+          "title": "get_event_mark()",
+          "symbols": {
+            "command": [
+              "get_event_mark"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands#get_event_mark--"
+        },
+        {
+          "anchor": "get_event_par--",
+          "title": "get_event_par()",
+          "symbols": {
+            "command": [
+              "get_event_par"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands#get_event_par--"
+        },
+        {
+          "anchor": "get_event_par_arr--",
+          "title": "get_event_par_arr()",
+          "symbols": {
+            "command": [
+              "get_event_par_arr"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands#get_event_par_arr--"
+        },
+        {
+          "anchor": "ignore_event--",
+          "title": "ignore_event()",
+          "symbols": {
+            "command": [
+              "ignore_event"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands#ignore_event--",
+          "implementation": "partial_native_subset",
+          "evidence": "KSP_FRONTEND.md"
+        },
+        {
+          "anchor": "redirect_-output---",
+          "title": "redirect_output()",
+          "symbols": {
+            "command": [
+              "redirect_output"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands#redirect_-output---"
+        },
+        {
+          "anchor": "set_event_mark--",
+          "title": "set_event_mark()",
+          "symbols": {
+            "command": [
+              "set_event_mark"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands#set_event_mark--"
+        },
+        {
+          "anchor": "set_event_par--",
+          "title": "set_event_par()",
+          "symbols": {
+            "command": [
+              "set_event_par"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands#set_event_par--"
+        },
+        {
+          "anchor": "set_event_par_arr--",
+          "title": "set_event_par_arr()",
+          "symbols": {
+            "command": [
+              "set_event_par_arr"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands#set_event_par_arr--"
+        },
+        {
+          "anchor": "set_map_editor_event_color--",
+          "title": "set_map_editor_event_color()",
+          "symbols": {
+            "command": [
+              "set_map_editor_event_color"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands#set_map_editor_event_color--"
+        }
+      ]
+    },
+    {
+      "id": "general-commands",
+      "title": "General Commands",
+      "service": "event_processing",
+      "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands",
+      "sha256": "9d71af86f192abff29804487e0c00d7b7b84b9fa191d04d4477f38b893cff0a2",
+      "sections": [
+        {
+          "anchor": "disable_logging--",
+          "title": "disable_logging()",
+          "symbols": {
+            "command": [
+              "disable_logging"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands#disable_logging--"
+        },
+        {
+          "anchor": "exit",
+          "title": "exit",
+          "symbols": {
+            "command": [
+              "exit"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands#exit"
+        },
+        {
+          "anchor": "ignore_controller",
+          "title": "ignore_controller",
+          "symbols": {
+            "command": [
+              "ignore_controller"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands#ignore_controller"
+        },
+        {
+          "anchor": "message--",
+          "title": "message()",
+          "symbols": {
+            "command": [
+              "message"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands#message--"
+        },
+        {
+          "anchor": "note_off--",
+          "title": "note_off()",
+          "symbols": {
+            "command": [
+              "note_off"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands#note_off--"
+        },
+        {
+          "anchor": "play_note--",
+          "title": "play_note()",
+          "symbols": {
+            "command": [
+              "play_note"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands#play_note--",
+          "implementation": "partial_native_subset",
+          "evidence": "KSP_FRONTEND.md"
+        },
+        {
+          "anchor": "set_controller--",
+          "title": "set_controller()",
+          "symbols": {
+            "command": [
+              "set_controller"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands#set_controller--"
+        },
+        {
+          "anchor": "set_note_controller--",
+          "title": "set_note_controller()",
+          "symbols": {
+            "command": [
+              "set_note_controller"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands#set_note_controller--"
+        },
+        {
+          "anchor": "set_poly_at--",
+          "title": "set_poly_at()",
+          "symbols": {
+            "command": [
+              "set_poly_at"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands#set_poly_at--"
+        },
+        {
+          "anchor": "set_rpn---set_nrpn--",
+          "title": "set_rpn()/set_nrpn()",
+          "symbols": {
+            "command": [
+              "set_rpn",
+              "set_nrpn"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands#set_rpn---set_nrpn--"
+        },
+        {
+          "anchor": "set_snapshot_type--",
+          "title": "set_snapshot_type()",
+          "symbols": {
+            "command": [
+              "set_snapshot_type"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands#set_snapshot_type--"
+        }
+      ]
+    },
+    {
+      "id": "group-commands",
+      "title": "Group Commands",
+      "service": "mapping_selection",
+      "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/group-commands",
+      "sha256": "3175d5bf76d9015372da8088652fa2bea5bc4903ba4d00de2f0351a5169a6475",
+      "sections": [
+        {
+          "anchor": "allow_group--",
+          "title": "allow_group()",
+          "symbols": {
+            "command": [
+              "allow_group"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/group-commands#allow_group--"
+        },
+        {
+          "anchor": "disallow_group--",
+          "title": "disallow_group()",
+          "symbols": {
+            "command": [
+              "disallow_group"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/group-commands#disallow_group--"
+        },
+        {
+          "anchor": "get_group_idx--",
+          "title": "get_group_idx()",
+          "symbols": {
+            "command": [
+              "get_group_idx"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/group-commands#get_group_idx--"
+        },
+        {
+          "anchor": "get_purge_state--",
+          "title": "get_purge_state()",
+          "symbols": {
+            "command": [
+              "get_purge_state"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/group-commands#get_purge_state--"
+        },
+        {
+          "anchor": "group_name--",
+          "title": "group_name()",
+          "symbols": {
+            "command": [
+              "group_name"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/group-commands#group_name--"
+        },
+        {
+          "anchor": "purge_group--",
+          "title": "purge_group()",
+          "symbols": {
+            "command": [
+              "purge_group"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/group-commands#purge_group--"
+        }
+      ]
+    },
+    {
+      "id": "keyboard-commands",
+      "title": "Keyboard Commands",
+      "service": "keyboard_state_ui",
+      "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/keyboard-commands",
+      "sha256": "e1758347234297bd7204e20b79a3ad1cf978716e6324caebe1878b4abf71ac2c",
+      "sections": [
+        {
+          "anchor": "get_key_color--",
+          "title": "get_key_color()",
+          "symbols": {
+            "command": [
+              "get_key_color"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/keyboard-commands#get_key_color--"
+        },
+        {
+          "anchor": "get_key_name--",
+          "title": "get_key_name()",
+          "symbols": {
+            "command": [
+              "get_key_name"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/keyboard-commands#get_key_name--"
+        },
+        {
+          "anchor": "get_key_triggerstate--",
+          "title": "get_key_triggerstate()",
+          "symbols": {
+            "command": [
+              "get_key_triggerstate"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/keyboard-commands#get_key_triggerstate--"
+        },
+        {
+          "anchor": "get_key_type--",
+          "title": "get_key_type()",
+          "symbols": {
+            "command": [
+              "get_key_type"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/keyboard-commands#get_key_type--"
+        },
+        {
+          "anchor": "get_keyrange_min_note--",
+          "title": "get_keyrange_min_note()",
+          "symbols": {
+            "command": [
+              "get_keyrange_min_note"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/keyboard-commands#get_keyrange_min_note--"
+        },
+        {
+          "anchor": "get_keyrange_max_note--",
+          "title": "get_keyrange_max_note()",
+          "symbols": {
+            "command": [
+              "get_keyrange_max_note"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/keyboard-commands#get_keyrange_max_note--"
+        },
+        {
+          "anchor": "get_keyrange_name--",
+          "title": "get_keyrange_name()",
+          "symbols": {
+            "command": [
+              "get_keyrange_name"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/keyboard-commands#get_keyrange_name--"
+        },
+        {
+          "anchor": "set_key_color--",
+          "title": "set_key_color()",
+          "symbols": {
+            "command": [
+              "set_key_color"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/keyboard-commands#set_key_color--"
+        },
+        {
+          "anchor": "set_key_name--",
+          "title": "set_key_name()",
+          "symbols": {
+            "command": [
+              "set_key_name"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/keyboard-commands#set_key_name--"
+        },
+        {
+          "anchor": "set_key_pressed--",
+          "title": "set_key_pressed()",
+          "symbols": {
+            "command": [
+              "set_key_pressed"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/keyboard-commands#set_key_pressed--"
+        },
+        {
+          "anchor": "set_key_pressed_support--",
+          "title": "set_key_pressed_support()",
+          "symbols": {
+            "command": [
+              "set_key_pressed_support"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/keyboard-commands#set_key_pressed_support--"
+        },
+        {
+          "anchor": "set_key_type--",
+          "title": "set_key_type()",
+          "symbols": {
+            "command": [
+              "set_key_type"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/keyboard-commands#set_key_type--"
+        },
+        {
+          "anchor": "set_keyrange--",
+          "title": "set_keyrange()",
+          "symbols": {
+            "command": [
+              "set_keyrange"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/keyboard-commands#set_keyrange--"
+        },
+        {
+          "anchor": "remove_keyrange--",
+          "title": "remove_keyrange()",
+          "symbols": {
+            "command": [
+              "remove_keyrange"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/keyboard-commands#remove_keyrange--"
+        }
+      ]
+    },
+    {
+      "id": "load-save-commands",
+      "title": "Load/Save Commands",
+      "service": "async_assets_persistence",
+      "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/load-save-commands",
+      "sha256": "9bcd5f671eac2301211c5d7c542d8fc506657c6517535709674fe31d14abffbf",
+      "sections": [
+        {
+          "anchor": "general-information-102044",
+          "title": "General Information",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/load-save-commands#general-information-102044"
+        },
+        {
+          "anchor": "get_folder--",
+          "title": "get_folder()",
+          "symbols": {
+            "command": [
+              "get_folder"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/load-save-commands#get_folder--"
+        },
+        {
+          "anchor": "load_array--",
+          "title": "load_array()",
+          "symbols": {
+            "command": [
+              "load_array"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/load-save-commands#load_array--"
+        },
+        {
+          "anchor": "load_array_str--",
+          "title": "load_array_str()",
+          "symbols": {
+            "command": [
+              "load_array_str"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/load-save-commands#load_array_str--"
+        },
+        {
+          "anchor": "load_ir_sample--",
+          "title": "load_ir_sample()",
+          "symbols": {
+            "command": [
+              "load_ir_sample"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/load-save-commands#load_ir_sample--"
+        },
+        {
+          "anchor": "save_array--",
+          "title": "save_array()",
+          "symbols": {
+            "command": [
+              "save_array"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/load-save-commands#save_array--"
+        },
+        {
+          "anchor": "save_array_str--",
+          "title": "save_array_str()",
+          "symbols": {
+            "command": [
+              "save_array_str"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/load-save-commands#save_array_str--"
+        },
+        {
+          "anchor": "save_midi_file--",
+          "title": "save_midi_file()",
+          "symbols": {
+            "command": [
+              "save_midi_file"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/load-save-commands#save_midi_file--"
+        }
+      ]
+    },
+    {
+      "id": "midi-object-commands",
+      "title": "MIDI Object Commands",
+      "service": "midi_objects",
+      "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands",
+      "sha256": "7ec282cd2020619f4d87b5915b65331f42406b0d7df79275f8e433c70d01d0d9",
+      "sections": [
+        {
+          "anchor": "general-information-102053",
+          "title": "General Information",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#general-information-102053"
+        },
+        {
+          "anchor": "by_marks---102066",
+          "title": "by_marks()",
+          "symbols": {
+            "command": [
+              "by_marks"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#by_marks---102066"
+        },
+        {
+          "anchor": "by_track--",
+          "title": "by_track()",
+          "symbols": {
+            "command": [
+              "by_track"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#by_track--"
+        },
+        {
+          "anchor": "mf_copy_export_area--",
+          "title": "mf_copy_export_area()",
+          "symbols": {
+            "command": [
+              "mf_copy_export_area"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#mf_copy_export_area--"
+        },
+        {
+          "anchor": "mf_get_buffer_size--",
+          "title": "mf_get_buffer_size()",
+          "symbols": {
+            "command": [
+              "mf_get_buffer_size"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#mf_get_buffer_size--"
+        },
+        {
+          "anchor": "mf_get_event_par--",
+          "title": "mf_get_event_par()",
+          "symbols": {
+            "command": [
+              "mf_get_event_par"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#mf_get_event_par--"
+        },
+        {
+          "anchor": "mf_get_first--",
+          "title": "mf_get_first()",
+          "symbols": {
+            "command": [
+              "mf_get_first"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#mf_get_first--"
+        },
+        {
+          "anchor": "mf_get_id--",
+          "title": "mf_get_id()",
+          "symbols": {
+            "command": [
+              "mf_get_id"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#mf_get_id--"
+        },
+        {
+          "anchor": "mf_get_last--",
+          "title": "mf_get_last()",
+          "symbols": {
+            "command": [
+              "mf_get_last"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#mf_get_last--"
+        },
+        {
+          "anchor": "mf_get_last_filename--",
+          "title": "mf_get_last_filename()",
+          "symbols": {
+            "command": [
+              "mf_get_last_filename"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#mf_get_last_filename--"
+        },
+        {
+          "anchor": "mf_get_mark--",
+          "title": "mf_get_mark()",
+          "symbols": {
+            "command": [
+              "mf_get_mark"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#mf_get_mark--"
+        },
+        {
+          "anchor": "mf_get_next--",
+          "title": "mf_get_next()",
+          "symbols": {
+            "command": [
+              "mf_get_next"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#mf_get_next--"
+        },
+        {
+          "anchor": "mf_get_next_at--",
+          "title": "mf_get_next_at()",
+          "symbols": {
+            "command": [
+              "mf_get_next_at"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#mf_get_next_at--"
+        },
+        {
+          "anchor": "mf_get_num_tracks--",
+          "title": "mf_get_num_tracks()",
+          "symbols": {
+            "command": [
+              "mf_get_num_tracks"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#mf_get_num_tracks--"
+        },
+        {
+          "anchor": "mf_get_prev--",
+          "title": "mf_get_prev()",
+          "symbols": {
+            "command": [
+              "mf_get_prev"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#mf_get_prev--"
+        },
+        {
+          "anchor": "mf_get_prev_at--",
+          "title": "mf_get_prev_at()",
+          "symbols": {
+            "command": [
+              "mf_get_prev_at"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#mf_get_prev_at--"
+        },
+        {
+          "anchor": "mf_insert_event--",
+          "title": "mf_insert_event()",
+          "symbols": {
+            "command": [
+              "mf_insert_event"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#mf_insert_event--"
+        },
+        {
+          "anchor": "mf_insert_file--",
+          "title": "mf_insert_file()",
+          "symbols": {
+            "command": [
+              "mf_insert_file"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#mf_insert_file--"
+        },
+        {
+          "anchor": "mf_remove_event--",
+          "title": "mf_remove_event()",
+          "symbols": {
+            "command": [
+              "mf_remove_event"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#mf_remove_event--"
+        },
+        {
+          "anchor": "mf_reset--",
+          "title": "mf_reset()",
+          "symbols": {
+            "command": [
+              "mf_reset"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#mf_reset--"
+        },
+        {
+          "anchor": "mf_set_buffer_size--",
+          "title": "mf_set_buffer_size()",
+          "symbols": {
+            "command": [
+              "mf_set_buffer_size"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#mf_set_buffer_size--"
+        },
+        {
+          "anchor": "mf_set_event_par--",
+          "title": "mf_set_event_par()",
+          "symbols": {
+            "command": [
+              "mf_set_event_par"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#mf_set_event_par--"
+        },
+        {
+          "anchor": "mf_set_export_area--",
+          "title": "mf_set_export_area()",
+          "symbols": {
+            "command": [
+              "mf_set_export_area"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#mf_set_export_area--"
+        },
+        {
+          "anchor": "mf_set_mark--",
+          "title": "mf_set_mark()",
+          "symbols": {
+            "command": [
+              "mf_set_mark"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#mf_set_mark--"
+        },
+        {
+          "anchor": "mf_set_num_export_areas--",
+          "title": "mf_set_num_export_areas()",
+          "symbols": {
+            "command": [
+              "mf_set_num_export_areas"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#mf_set_num_export_areas--"
+        }
+      ]
+    },
+    {
+      "id": "multi-script",
+      "title": "Multi Script",
+      "service": "event_processing",
+      "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/multi-script",
+      "sha256": "d60f94cea751ab739501b83f5ee0874e01f98531970a4764f7908f72b85a3b41",
+      "sections": [
+        {
+          "anchor": "general-information-102101",
+          "title": "General Information",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/multi-script#general-information-102101"
+        },
+        {
+          "anchor": "ignore_midi",
+          "title": "ignore_midi",
+          "symbols": {
+            "command": [
+              "ignore_midi"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/multi-script#ignore_midi"
+        },
+        {
+          "anchor": "on-midi_in",
+          "title": "on midi_in",
+          "symbols": {
+            "callback": [
+              "on midi_in"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/multi-script#on-midi_in"
+        },
+        {
+          "anchor": "set_midi--",
+          "title": "set_midi()",
+          "symbols": {
+            "command": [
+              "set_midi"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/multi-script#set_midi--"
+        },
+        {
+          "anchor": "multi-script-command-arguments",
+          "title": "Multi Script Command Arguments",
+          "symbols": {
+            "symbol": [
+              "$MIDI_CHANNEL",
+              "$MIDI_COMMAND",
+              "$MIDI_BYTE_1",
+              "$MIDI_BYTE_2",
+              "$MIDI_COMMAND_NOTE_ON",
+              "$MIDI_COMMAND_NOTE_OFF",
+              "$MIDI_COMMAND_POLY_AT",
+              "$MIDI_COMMAND_CC",
+              "$MIDI_COMMAND_PROGRAM_CHANGE",
+              "$MIDI_COMMAND_MONO_AT",
+              "$MIDI_COMMAND_PITCH_BEND",
+              "$MIDI_COMMAND_RPN",
+              "$MIDI_COMMAND_NRPN",
+              "$EVENT_PAR_MIDI_CHANNEL",
+              "$EVENT_PAR_MIDI_COMMAND",
+              "$EVENT_PAR_MIDI_BYTE_1",
+              "$EVENT_PAR_MIDI_BYTE_2"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/multi-script#multi-script-command-arguments"
+        }
+      ]
+    },
+    {
+      "id": "music-information-retrieval",
+      "title": "Music Information Retrieval",
+      "service": "async_analysis",
+      "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/music-information-retrieval",
+      "sha256": "f55102faaa7305b77e2e3e03de600e50876c4a3c368433ce3a1603a7ad35a9e5",
+      "sections": [
+        {
+          "anchor": "general-information-450500",
+          "title": "General Information",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/music-information-retrieval#general-information-450500"
+        },
+        {
+          "anchor": "detect_key--",
+          "title": "detect_key()",
+          "symbols": {
+            "command": [
+              "detect_key"
+            ],
+            "symbol": [
+              "$NI_DETECT_KEY",
+              "$NI_DETECT_KEY_INVALID"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/music-information-retrieval#detect_key--"
+        },
+        {
+          "anchor": "detect_pitch--",
+          "title": "detect_pitch()",
+          "symbols": {
+            "command": [
+              "detect_pitch"
+            ],
+            "symbol": [
+              "~NI_DETECT_PITCH_INVALID"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/music-information-retrieval#detect_pitch--"
+        },
+        {
+          "anchor": "detect_loudness--",
+          "title": "detect_loudness()",
+          "symbols": {
+            "command": [
+              "detect_loudness"
+            ],
+            "symbol": [
+              "~NI_DETECT_LOUDNESS_INVALID"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/music-information-retrieval#detect_loudness--"
+        },
+        {
+          "anchor": "detect_peak--",
+          "title": "detect_peak()",
+          "symbols": {
+            "command": [
+              "detect_peak"
+            ],
+            "symbol": [
+              "~NI_DETECT_PEAK_INVALID"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/music-information-retrieval#detect_peak--"
+        },
+        {
+          "anchor": "detect_rms--",
+          "title": "detect_rms()",
+          "symbols": {
+            "command": [
+              "detect_rms"
+            ],
+            "symbol": [
+              "~NI_DETECT_RMS_INVALID"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/music-information-retrieval#detect_rms--"
+        },
+        {
+          "anchor": "detect_tempo--",
+          "title": "detect_tempo()",
+          "symbols": {
+            "command": [
+              "detect_tempo"
+            ],
+            "symbol": [
+              "~NI_DETECT_TEMPO_INVALID"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/music-information-retrieval#detect_tempo--"
+        },
+        {
+          "anchor": "detect_sample_type--",
+          "title": "detect_sample_type()",
+          "symbols": {
+            "command": [
+              "detect_sample_type"
+            ],
+            "symbol": [
+              "$NI_DETECT_SAMPLE_TYPE",
+              "$NI_DETECT_SAMPLE_TYPE_INVALID"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/music-information-retrieval#detect_sample_type--"
+        },
+        {
+          "anchor": "detect_drum_type--",
+          "title": "detect_drum_type()",
+          "symbols": {
+            "command": [
+              "detect_drum_type"
+            ],
+            "symbol": [
+              "$NI_DETECT_DRUM_TYPE",
+              "$NI_DETECT_SAMPLE_TYPE_DRUM",
+              "~NI_DETECT_DRUM_TYPE_INVALID"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/music-information-retrieval#detect_drum_type--"
+        },
+        {
+          "anchor": "detect_instrument_type--",
+          "title": "detect_instrument_type()",
+          "symbols": {
+            "command": [
+              "detect_instrument_type"
+            ],
+            "symbol": [
+              "$NI_DETECT_INSTRUMENT_TYPE",
+              "$NI_DETECT_SAMPLE_TYPE_INSTRUMENT",
+              "$NI_DETECT_INSTRUMENT_TYPE_INVALID"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/music-information-retrieval#detect_instrument_type--"
+        },
+        {
+          "anchor": "examples",
+          "title": "Examples",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/music-information-retrieval#examples"
+        }
+      ]
+    },
+    {
+      "id": "resource-container",
+      "title": "Resource Container",
+      "service": "assets_packaging",
+      "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/resource-container",
+      "sha256": "22ed25f064d1459227fee6bf7c0a864e8e3791decc7fd1b60cafe5a6bafcf4cd",
+      "sections": [
+        {
+          "anchor": "resource-container-731149",
+          "title": "Resource Container",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/resource-container#resource-container-731149"
+        }
+      ]
+    },
+    {
+      "id": "time-related-commands",
+      "title": "Time-Related Commands",
+      "service": "scheduler_transport",
+      "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/time-related-commands",
+      "sha256": "aafd0e71a266571cc5a6adb9dbfb15bb31f4c4819e9748427634d171b34fa2f9",
+      "sections": [
+        {
+          "anchor": "change_listener_par--",
+          "title": "change_listener_par()",
+          "symbols": {
+            "command": [
+              "change_listener_par"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/time-related-commands#change_listener_par--"
+        },
+        {
+          "anchor": "ms_to_ticks--",
+          "title": "ms_to_ticks()",
+          "symbols": {
+            "command": [
+              "ms_to_ticks"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/time-related-commands#ms_to_ticks--"
+        },
+        {
+          "anchor": "set_listener--",
+          "title": "set_listener()",
+          "symbols": {
+            "command": [
+              "set_listener"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/time-related-commands#set_listener--"
+        },
+        {
+          "anchor": "stop_wait--",
+          "title": "stop_wait()",
+          "symbols": {
+            "command": [
+              "stop_wait"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/time-related-commands#stop_wait--"
+        },
+        {
+          "anchor": "reset_ksp_timer",
+          "title": "reset_ksp_timer",
+          "symbols": {
+            "command": [
+              "reset_ksp_timer"
+            ],
+            "symbol": [
+              "$KSP_TIMER"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/time-related-commands#reset_ksp_timer"
+        },
+        {
+          "anchor": "ticks_to_ms--",
+          "title": "ticks_to_ms()",
+          "symbols": {
+            "command": [
+              "ticks_to_ms"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/time-related-commands#ticks_to_ms--"
+        },
+        {
+          "anchor": "wait--",
+          "title": "wait()",
+          "symbols": {
+            "command": [
+              "wait"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/time-related-commands#wait--",
+          "implementation": "partial_native_subset",
+          "evidence": "KSP_FRONTEND.md"
+        },
+        {
+          "anchor": "wait_async--",
+          "title": "wait_async()",
+          "symbols": {
+            "command": [
+              "wait_async"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/time-related-commands#wait_async--"
+        },
+        {
+          "anchor": "wait_ticks--",
+          "title": "wait_ticks()",
+          "symbols": {
+            "command": [
+              "wait_ticks"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/time-related-commands#wait_ticks--"
+        }
+      ]
+    },
+    {
+      "id": "user-defined-functions",
+      "title": "User-defined Functions",
+      "service": "language",
+      "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-defined-functions",
+      "sha256": "b9621b38aceff6f5e79d053fa5a9ec7dcb3bd7a08571c29f3dc0c76e397e5d7c",
+      "sections": [
+        {
+          "anchor": "",
+          "title": "User-defined Functions",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-defined-functions"
+        }
+      ]
+    },
+    {
+      "id": "user-interface-commands",
+      "title": "User Interface Commands",
+      "service": "script_ui",
+      "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands",
+      "sha256": "ad269b9e26a32e9f1a8aea9b00d8e199af43551adb3b47cf71b93a7234e09d5e",
+      "sections": [
+        {
+          "anchor": "add_menu_item--",
+          "title": "add_menu_item()",
+          "symbols": {
+            "command": [
+              "add_menu_item"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#add_menu_item--"
+        },
+        {
+          "anchor": "add_text_line--",
+          "title": "add_text_line()",
+          "symbols": {
+            "command": [
+              "add_text_line"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#add_text_line--"
+        },
+        {
+          "anchor": "attach_level_meter--",
+          "title": "attach_level_meter()",
+          "symbols": {
+            "command": [
+              "attach_level_meter"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#attach_level_meter--"
+        },
+        {
+          "anchor": "attach_zone--",
+          "title": "attach_zone()",
+          "symbols": {
+            "command": [
+              "attach_zone"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#attach_zone--"
+        },
+        {
+          "anchor": "expose_controls",
+          "title": "expose_controls",
+          "symbols": {
+            "command": [
+              "expose_controls"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#expose_controls"
+        },
+        {
+          "anchor": "fs_get_filename--",
+          "title": "fs_get_filename()",
+          "symbols": {
+            "command": [
+              "fs_get_filename"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#fs_get_filename--"
+        },
+        {
+          "anchor": "fs_navigate--",
+          "title": "fs_navigate()",
+          "symbols": {
+            "command": [
+              "fs_navigate"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#fs_navigate--"
+        },
+        {
+          "anchor": "get_control_par--",
+          "title": "get_control_par()",
+          "symbols": {
+            "command": [
+              "get_control_par"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#get_control_par--"
+        },
+        {
+          "anchor": "get_control_par_arr--",
+          "title": "get_control_par_arr()",
+          "symbols": {
+            "command": [
+              "get_control_par_arr"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#get_control_par_arr--"
+        },
+        {
+          "anchor": "get_font_id--",
+          "title": "get_font_id()",
+          "symbols": {
+            "command": [
+              "get_font_id"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#get_font_id--"
+        },
+        {
+          "anchor": "get_menu_item_str--",
+          "title": "get_menu_item_str()",
+          "symbols": {
+            "command": [
+              "get_menu_item_str"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#get_menu_item_str--"
+        },
+        {
+          "anchor": "get_menu_item_value--",
+          "title": "get_menu_item_value()",
+          "symbols": {
+            "command": [
+              "get_menu_item_value"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#get_menu_item_value--"
+        },
+        {
+          "anchor": "get_menu_item_visibility--",
+          "title": "get_menu_item_visibility()",
+          "symbols": {
+            "command": [
+              "get_menu_item_visibility"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#get_menu_item_visibility--"
+        },
+        {
+          "anchor": "get_ui_id--",
+          "title": "get_ui_id()",
+          "symbols": {
+            "command": [
+              "get_ui_id"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#get_ui_id--"
+        },
+        {
+          "anchor": "get_ui_wf_property--",
+          "title": "get_ui_wf_property()",
+          "symbols": {
+            "command": [
+              "get_ui_wf_property"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#get_ui_wf_property--"
+        },
+        {
+          "anchor": "hide_part--",
+          "title": "hide_part()",
+          "symbols": {
+            "command": [
+              "hide_part"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#hide_part--"
+        },
+        {
+          "anchor": "load_performance_view--",
+          "title": "load_performance_view()",
+          "symbols": {
+            "command": [
+              "load_performance_view"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#load_performance_view--"
+        },
+        {
+          "anchor": "make_perfview",
+          "title": "make_perfview",
+          "symbols": {
+            "command": [
+              "make_perfview"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#make_perfview"
+        },
+        {
+          "anchor": "move_control--",
+          "title": "move_control()",
+          "symbols": {
+            "command": [
+              "move_control"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#move_control--"
+        },
+        {
+          "anchor": "move_control_px--",
+          "title": "move_control_px()",
+          "symbols": {
+            "command": [
+              "move_control_px"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#move_control_px--"
+        },
+        {
+          "anchor": "set_control_help--",
+          "title": "set_control_help()",
+          "symbols": {
+            "command": [
+              "set_control_help"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_control_help--"
+        },
+        {
+          "anchor": "set_control_par--",
+          "title": "set_control_par()",
+          "symbols": {
+            "command": [
+              "set_control_par"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_control_par--"
+        },
+        {
+          "anchor": "set_control_par_arr--",
+          "title": "set_control_par_arr()",
+          "symbols": {
+            "command": [
+              "set_control_par_arr"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_control_par_arr--"
+        },
+        {
+          "anchor": "set_knob_defval--",
+          "title": "set_knob_defval()",
+          "symbols": {
+            "command": [
+              "set_knob_defval"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_knob_defval--"
+        },
+        {
+          "anchor": "set_knob_label--",
+          "title": "set_knob_label()",
+          "symbols": {
+            "command": [
+              "set_knob_label"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_knob_label--"
+        },
+        {
+          "anchor": "set_knob_unit--",
+          "title": "set_knob_unit()",
+          "symbols": {
+            "command": [
+              "set_knob_unit"
+            ],
+            "symbol": [
+              "$KNOB_UNIT_NONE",
+              "$KNOB_UNIT_DB",
+              "$KNOB_UNIT_HZ",
+              "$KNOB_UNIT_PERCENT",
+              "$KNOB_UNIT_MS",
+              "$KNOB_UNIT_OCT",
+              "$KNOB_UNIT_ST"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_knob_unit--"
+        },
+        {
+          "anchor": "set_menu_item_str--",
+          "title": "set_menu_item_str()",
+          "symbols": {
+            "command": [
+              "set_menu_item_str"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_menu_item_str--"
+        },
+        {
+          "anchor": "set_menu_item_value--",
+          "title": "set_menu_item_value()",
+          "symbols": {
+            "command": [
+              "set_menu_item_value"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_menu_item_value--"
+        },
+        {
+          "anchor": "set_menu_item_visibility--",
+          "title": "set_menu_item_visibility()",
+          "symbols": {
+            "command": [
+              "set_menu_item_visibility"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_menu_item_visibility--"
+        },
+        {
+          "anchor": "set_table_steps_shown--",
+          "title": "set_table_steps_shown()",
+          "symbols": {
+            "command": [
+              "set_table_steps_shown"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_table_steps_shown--"
+        },
+        {
+          "anchor": "set_script_title--",
+          "title": "set_script_title()",
+          "symbols": {
+            "command": [
+              "set_script_title"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_script_title--"
+        },
+        {
+          "anchor": "set_skin_offset--",
+          "title": "set_skin_offset()",
+          "symbols": {
+            "command": [
+              "set_skin_offset"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_skin_offset--"
+        },
+        {
+          "anchor": "set_text--",
+          "title": "set_text()",
+          "symbols": {
+            "command": [
+              "set_text"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_text--"
+        },
+        {
+          "anchor": "set_ui_color--",
+          "title": "set_ui_color()",
+          "symbols": {
+            "command": [
+              "set_ui_color"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_ui_color--"
+        },
+        {
+          "anchor": "set_ui_height--",
+          "title": "set_ui_height()",
+          "symbols": {
+            "command": [
+              "set_ui_height"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_ui_height--"
+        },
+        {
+          "anchor": "set_ui_height_px--",
+          "title": "set_ui_height_px()",
+          "symbols": {
+            "command": [
+              "set_ui_height_px"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_ui_height_px--"
+        },
+        {
+          "anchor": "set_ui_width_px--",
+          "title": "set_ui_width_px()",
+          "symbols": {
+            "command": [
+              "set_ui_width_px"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_ui_width_px--"
+        },
+        {
+          "anchor": "set_ui_wf_property--",
+          "title": "set_ui_wf_property()",
+          "symbols": {
+            "command": [
+              "set_ui_wf_property"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_ui_wf_property--"
+        }
+      ]
+    },
+    {
+      "id": "user-interface-widgets",
+      "title": "User Interface Widgets",
+      "service": "script_ui",
+      "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-widgets",
+      "sha256": "951e74e119fb28e65ee6dc4235a0488a37a28f11e51b9d2f85db72b022de045d",
+      "sections": [
+        {
+          "anchor": "ui_button",
+          "title": "ui_button",
+          "symbols": {
+            "widget": [
+              "ui_button"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-widgets#ui_button"
+        },
+        {
+          "anchor": "ui_file_selector-101908",
+          "title": "ui_file_selector",
+          "symbols": {
+            "widget": [
+              "ui_file_selector"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-widgets#ui_file_selector-101908"
+        },
+        {
+          "anchor": "ui_label-101909",
+          "title": "ui_label",
+          "symbols": {
+            "widget": [
+              "ui_label"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-widgets#ui_label-101909"
+        },
+        {
+          "anchor": "ui_level_meter-101910",
+          "title": "ui_level_meter",
+          "symbols": {
+            "widget": [
+              "ui_level_meter"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-widgets#ui_level_meter-101910"
+        },
+        {
+          "anchor": "ui_knob",
+          "title": "ui_knob",
+          "symbols": {
+            "widget": [
+              "ui_knob"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-widgets#ui_knob"
+        },
+        {
+          "anchor": "ui_menu-101911",
+          "title": "ui_menu",
+          "symbols": {
+            "widget": [
+              "ui_menu"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-widgets#ui_menu-101911"
+        },
+        {
+          "anchor": "ui_mouse_area-450489",
+          "title": "ui_mouse_area",
+          "symbols": {
+            "widget": [
+              "ui_mouse_area"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-widgets#ui_mouse_area-450489"
+        },
+        {
+          "anchor": "ui_panel",
+          "title": "ui_panel",
+          "symbols": {
+            "widget": [
+              "ui_panel"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-widgets#ui_panel"
+        },
+        {
+          "anchor": "ui_slider-101912",
+          "title": "ui_slider",
+          "symbols": {
+            "widget": [
+              "ui_slider"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-widgets#ui_slider-101912"
+        },
+        {
+          "anchor": "ui_switch",
+          "title": "ui_switch",
+          "symbols": {
+            "widget": [
+              "ui_switch"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-widgets#ui_switch"
+        },
+        {
+          "anchor": "ui_table-101914",
+          "title": "ui_table",
+          "symbols": {
+            "widget": [
+              "ui_table"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-widgets#ui_table-101914"
+        },
+        {
+          "anchor": "ui_text_edit",
+          "title": "ui_text_edit",
+          "symbols": {
+            "widget": [
+              "ui_text_edit"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-widgets#ui_text_edit"
+        },
+        {
+          "anchor": "ui_value_edit-101916",
+          "title": "ui_value_edit",
+          "symbols": {
+            "widget": [
+              "ui_value_edit"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-widgets#ui_value_edit-101916"
+        },
+        {
+          "anchor": "ui_waveform-101917",
+          "title": "ui_waveform",
+          "symbols": {
+            "widget": [
+              "ui_waveform"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-widgets#ui_waveform-101917"
+        },
+        {
+          "anchor": "ui_wavetable-384292",
+          "title": "ui_wavetable",
+          "symbols": {
+            "widget": [
+              "ui_wavetable"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-widgets#ui_wavetable-384292"
+        },
+        {
+          "anchor": "ui_xy-101918",
+          "title": "ui_xy",
+          "symbols": {
+            "widget": [
+              "ui_xy"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-widgets#ui_xy-101918"
+        }
+      ]
+    },
+    {
+      "id": "variables",
+      "title": "Variables",
+      "service": "script_state",
+      "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables",
+      "sha256": "7347b8f35cc47c1cbbe89dde33f18590a64ba4271e2e6382d19367cbc10dc882",
+      "sections": [
+        {
+          "anchor": "general-information-101892",
+          "title": "General Information",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#general-information-101892"
+        },
+        {
+          "anchor": "---integer-variable-",
+          "title": "$ (integer variable)",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#---integer-variable-"
+        },
+        {
+          "anchor": "---integer-array-",
+          "title": "% (integer array)",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#---integer-array-"
+        },
+        {
+          "anchor": "---real-variable-",
+          "title": "~ (real variable)",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#---real-variable-"
+        },
+        {
+          "anchor": "---real-array-",
+          "title": "? (real array)",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#---real-array-"
+        },
+        {
+          "anchor": "---string-variable-",
+          "title": "@ (string variable)",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#---string-variable-"
+        },
+        {
+          "anchor": "---string-array-",
+          "title": "! (string array)",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#---string-array-"
+        },
+        {
+          "anchor": "const----constant-integer-",
+          "title": "const $ (constant integer)",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#const----constant-integer-"
+        },
+        {
+          "anchor": "const----real-constant-",
+          "title": "const ~ (real constant)",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#const----real-constant-"
+        },
+        {
+          "anchor": "polyphonic----polyphonic-integer-",
+          "title": "polyphonic $ (polyphonic integer)",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#polyphonic----polyphonic-integer-"
+        },
+        {
+          "anchor": "make_instr_persistent--",
+          "title": "make_instr_persistent()",
+          "symbols": {
+            "command": [
+              "make_instr_persistent"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#make_instr_persistent--"
+        },
+        {
+          "anchor": "make_persistent--",
+          "title": "make_persistent()",
+          "symbols": {
+            "command": [
+              "make_persistent"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#make_persistent--"
+        },
+        {
+          "anchor": "read_persistent_var--",
+          "title": "read_persistent_var()",
+          "symbols": {
+            "command": [
+              "read_persistent_var"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#read_persistent_var--"
+        },
+        {
+          "anchor": "watch_var--",
+          "title": "watch_var()",
+          "symbols": {
+            "command": [
+              "watch_var"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#watch_var--"
+        },
+        {
+          "anchor": "watch_array_idx--",
+          "title": "watch_array_idx()",
+          "symbols": {
+            "command": [
+              "watch_array_idx"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#watch_array_idx--"
+        }
+      ]
+    },
+    {
+      "id": "zone-commands",
+      "title": "Zone Commands",
+      "service": "mapping_assets",
+      "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/zone-commands",
+      "sha256": "c8b8061df61a57af739ce0620e39a424ce3ca10beb1c3a5bd0d1bb7b39c5574d",
+      "sections": [
+        {
+          "anchor": "user-zone-information",
+          "title": "User Zone Information",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/zone-commands#user-zone-information"
+        },
+        {
+          "anchor": "zone-and-slice-functions",
+          "title": "Zone and Slice Functions",
+          "symbols": {},
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/zone-commands#zone-and-slice-functions"
+        },
+        {
+          "anchor": "get_loop_par--",
+          "title": "get_loop_par()",
+          "symbols": {
+            "command": [
+              "get_loop_par"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/zone-commands#get_loop_par--"
+        },
+        {
+          "anchor": "get_num_zones--",
+          "title": "get_num_zones()",
+          "symbols": {
+            "command": [
+              "get_num_zones"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/zone-commands#get_num_zones--"
+        },
+        {
+          "anchor": "get_sample--",
+          "title": "get_sample()",
+          "symbols": {
+            "command": [
+              "get_sample"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/zone-commands#get_sample--"
+        },
+        {
+          "anchor": "get_sel_zones_idx--",
+          "title": "get_sel_zones_idx()",
+          "symbols": {
+            "command": [
+              "get_sel_zones_idx"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/zone-commands#get_sel_zones_idx--"
+        },
+        {
+          "anchor": "get_zone_id--",
+          "title": "get_zone_id()",
+          "symbols": {
+            "command": [
+              "get_zone_id"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/zone-commands#get_zone_id--"
+        },
+        {
+          "anchor": "get_zone_par--",
+          "title": "get_zone_par()",
+          "symbols": {
+            "command": [
+              "get_zone_par"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/zone-commands#get_zone_par--"
+        },
+        {
+          "anchor": "get_zone_status--",
+          "title": "get_zone_status()",
+          "symbols": {
+            "command": [
+              "get_zone_status"
+            ],
+            "symbol": [
+              "$NI_ZONE_STATUS_EMPTY",
+              "$NI_ZONE_STATUS_LOADED",
+              "$NI_ZONE_STATUS_PURGED",
+              "$NI_ZONE_STATUS_IGNORED"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/zone-commands#get_zone_status--"
+        },
+        {
+          "anchor": "set_loop_par--",
+          "title": "set_loop_par()",
+          "symbols": {
+            "command": [
+              "set_loop_par"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/zone-commands#set_loop_par--"
+        },
+        {
+          "anchor": "set_num_user_zones--",
+          "title": "set_num_user_zones()",
+          "symbols": {
+            "command": [
+              "set_num_user_zones"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/zone-commands#set_num_user_zones--"
+        },
+        {
+          "anchor": "set_sample--",
+          "title": "set_sample()",
+          "symbols": {
+            "command": [
+              "set_sample"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/zone-commands#set_sample--"
+        },
+        {
+          "anchor": "set_zone_par--",
+          "title": "set_zone_par()",
+          "symbols": {
+            "command": [
+              "set_zone_par"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/zone-commands#set_zone_par--"
+        }
+      ]
+    },
+    {
+      "id": "zone-parameters",
+      "title": "Zone Parameters",
+      "service": "mapping_assets",
+      "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/zone-parameters",
+      "sha256": "a397d234def9f71986d571d48cf4e344db4c909d65da92e5eddb11444bf4a27d",
+      "sections": [
+        {
+          "anchor": "zone-parameters-450514",
+          "title": "Zone Parameters",
+          "symbols": {
+            "symbol": [
+              "$ZONE_PAR_HIGH_KEY",
+              "$ZONE_PAR_LOW_KEY",
+              "$ZONE_PAR_HIGH_VELO",
+              "$ZONE_PAR_LOW_VELO",
+              "$ZONE_PAR_ROOT_KEY",
+              "$ZONE_PAR_FADE_LOW_KEY",
+              "$ZONE_PAR_FADE_HIGH_KEY",
+              "$ZONE_PAR_FADE_LOW_VELO",
+              "$ZONE_PAR_FADE_HIGH_VELO",
+              "$ZONE_PAR_VOLUME",
+              "$ZONE_PAR_PAN",
+              "$ZONE_PAR_TUNE",
+              "$ZONE_PAR_GROUP",
+              "$ZONE_PAR_SAMPLE_START",
+              "$ZONE_PAR_SAMPLE_END",
+              "$ZONE_PAR_SAMPLE_MOD_RANGE",
+              "$ZONE_PAR_SAMPLE_RATE",
+              "$ZONE_PAR_SELECTED"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/zone-parameters#zone-parameters-450514"
+        },
+        {
+          "anchor": "loop-parameters",
+          "title": "Loop Parameters",
+          "symbols": {
+            "symbol": [
+              "$LOOP_PAR_MODE",
+              "$LOOP_PAR_START",
+              "$LOOP_PAR_LENGTH",
+              "$LOOP_PAR_XFADE",
+              "$LOOP_PAR_COUNT",
+              "$LOOP_PAR_TUNING"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/zone-parameters#loop-parameters"
+        },
+        {
+          "anchor": "sample-parameters",
+          "title": "Sample Parameters",
+          "symbols": {
+            "symbol": [
+              "$NI_FILE_NAME",
+              "$NI_FILE_FULL_PATH",
+              "$NI_FILE_FULL_PATH_OS",
+              "$NI_FILE_EXTENSION"
+            ]
+          },
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/zone-parameters#sample-parameters"
+        }
+      ]
+    }
+  ]
+}

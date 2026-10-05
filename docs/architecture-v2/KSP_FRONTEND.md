@@ -6,6 +6,9 @@ profile identifier is **`ksp-8.12-note-subset-v0`**. The source reference is the
 [KSP manual showing Kontakt 8.12](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/welcome-to-ksp),
 consulted 2026-10-05. This is partial V2-05/V2-14 evidence.
 
+The [full KSP completion map](KSP_PARITY.md) now inventories the entire functional
+manual surface. This subset is not the product's completion target.
+
 ## Accepted shape
 
 One `on note` callback must begin with `ignore_event($EVENT_ID)`. Following statements

@@ -249,6 +249,8 @@ unimplemented cases. Source inspection alone is not passing conformance evidence
 - Implement full Kontakt KSP language and service semantics against the new runtime:
   callbacks, builtins, asynchronous work, persistence, UI controls and engine services.
   Pin the target Kontakt/KSP version and inventory the complete reference surface.
+  [Kontakt 8.12 surface inventory](KSP_PARITY.md) now covers all functional manual
+  chapters; operand/context/alias review and actual parity evidence remain open.
 - **Done when:** the full pinned KSP surface has implementation and appropriate service/
   reference evidence. A supported subset is not completion; approximate, unsupported
   or unverified required semantics remain open obligations.
