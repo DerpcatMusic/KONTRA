@@ -240,3 +240,129 @@ fn init_only_controls_keep_native_attack_selection() {
         rt.flush_ended(|_| true);
     });
 }
+
+#[test]
+fn ui_handlers_wait_and_control_note_playback_without_fabricated_notes() {
+    let source = "on init make_perfview
+        declare ui_switch $enabled
+        declare ui_button $button
+        declare ui_slider $level(0,100)
+    end on
+    on ui_control($button)
+        $enabled := 0
+        wait(1000)
+        if ($level >= 50)
+            $enabled := 1
+        end if
+        $button := 0
+    end on
+    on note
+        ignore_event($EVENT_ID)
+        if ($enabled = 1)
+            play_note($EVENT_NOTE, 127, 0, 1000)
+        end if
+    end on";
+    let bindings = [
+        ("$enabled", ENABLED),
+        ("$button", BUTTON),
+        ("$level", LEVEL),
+    ];
+    let script = compile(source, 48000, limits(), &bindings).unwrap();
+    assert!(
+        script
+            .controls()
+            .iter()
+            .find(|c| c.variable == "$button")
+            .unwrap()
+            .callback
+            .is_some()
+    );
+    let mut rt = Runtime::new(
+        script.bind(plan()).unwrap(),
+        Limits {
+            notes: 2,
+            channels: 0,
+            performances: 1,
+            families: 2,
+            expressions: 2,
+            voices: 2,
+            decisions: 0,
+            commands: 4,
+            behaviors: 2,
+            behavior_fuel: 32,
+            behavior_cells: 4,
+            note_cells: 0,
+        },
+    )
+    .unwrap();
+    support::without_heap(|| {
+        let generation = rt.active_plan();
+        let (_, callback) = rt
+            .invoke_control(
+                generation,
+                Some(0),
+                ControlWrite {
+                    id: BUTTON,
+                    value: ControlValue::Integer(1),
+                },
+            )
+            .unwrap();
+        assert_eq!((rt.note_count(), rt.expression_count()), (0, 0));
+        rt.edit_controls(
+            generation,
+            None,
+            &[ControlWrite {
+                id: LEVEL,
+                value: ControlValue::Integer(75),
+            }],
+        )
+        .unwrap();
+        rt.render(&mut [[0.; 2]; 49]).unwrap();
+        assert_eq!(
+            rt.control_value(generation, ENABLED),
+            Ok(ControlValue::Integer(1))
+        );
+        assert_eq!(
+            rt.control_value(generation, BUTTON),
+            Ok(ControlValue::Integer(0))
+        );
+        assert_eq!(
+            rt.behavior_outcome(callback.unwrap()),
+            Ok(Some(Outcome::Finished))
+        );
+        rt.flush_behaviors(|_, owner, _| {
+            assert_eq!(owner, BehaviorOwner::Plan(generation));
+            true
+        });
+        let note = rt
+            .trigger(
+                Input {
+                    protocol: Protocol::Native,
+                    port: 0,
+                    group: 0,
+                    channel: 0,
+                    key: 60,
+                    external_id: None,
+                },
+                60,
+                1.,
+            )
+            .unwrap();
+        let mut output = [[0.; 2]; 49];
+        rt.render(&mut output).unwrap();
+        assert_eq!(output[..48], [[1.; 2]; 48]);
+        assert_eq!(output[48], [0.; 2]);
+        rt.release(note).unwrap();
+        rt.flush_behaviors(|_, _, _| true);
+        rt.flush_ended(|_| true);
+        assert_eq!(rt.note_count(), 0);
+    });
+    for invalid in [
+        "on init declare ui_button $button end on on ui_control($button) $button := $NOTE_HELD end on",
+        "on init declare ui_button $button declare polyphonic $p end on on ui_control($button) $p := 1 end on",
+        "on init declare ui_button $button end on on ui_control($button) end on on ui_control($button) end on",
+        "on init declare ui_button $button end on on ui_control($missing) end on",
+    ] {
+        assert!(compile(invalid, 48000, limits(), &[("$button", BUTTON)]).is_err());
+    }
+}

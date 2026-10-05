@@ -39,7 +39,8 @@ pub use performance::{Keyswitch, PerformanceId, SelectionPolicy, SelectionSnapsh
 mod behavior;
 use behavior::Continuation;
 pub use behavior::{
-    BehaviorId, Comparison, Duration, Instruction, Outcome, Program, Velocity, WaitLifetime,
+    BehaviorId, BehaviorOwner, Comparison, Duration, Instruction, Outcome, Program, Velocity,
+    WaitLifetime,
 };
 mod source;
 pub use source::{Direction, Loop, LoopMode, LoopShape, Playback};
@@ -416,6 +417,7 @@ impl Runtime {
             controls: control::ControlState::new(&plan),
             prepared: Box::new(plan),
             notes: 0,
+            callbacks: 0,
         })?);
         Ok(Self {
             rate,

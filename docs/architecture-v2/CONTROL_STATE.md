@@ -82,3 +82,31 @@ control state, release access, initialization and source rejection cases.
 
 Validation: all 187 tests across the four native crates pass in debug, release and
 Rust 1.92; strict all-target Clippy passes. Logs: `artifacts/controls-*`.
+
+## Instrument-owned UI callbacks
+
+A prepared `with_control_programs` table binds control identities to native programs.
+`invoke_control` admits the value write and callback together: lack of continuation
+capacity rejects before mutation. A handler fault after admission is a retained
+outcome, not a rollback of already executed operations. The queued `Invoke` operation
+returns the admitted `BehaviorId` with its acknowledgement. Plain edits, recall and
+script assignments do not recursively dispatch UI handlers.
+
+`BehaviorOwner` distinguishes `Note` from `Plan`. A plan-owned callback consumes the
+same fixed continuation/local/fuel/command budgets, but no note or expression owner.
+It explicitly retains the generation through waits and outcome backpressure. Note
+operands and gate-lifetime programs are rejected before admission. Channel sound-off
+does not cancel an unrelated UI handler; explicit abort and global panic cancel
+its pending work. Plan-handler faults do not release unrelated musical notes.
+`flush_behaviors` now returns this explicit owner, and release of a completed handler
+permits off-audio plan retirement. Script-instance subdivision and non-note generated
+musical events remain open; this is not fabricated-note dispatch.
+
+Additional native/source checks cover overlapping plan callbacks, exact local
+retention, edits rejected under callback saturation, MIDI cleanup isolation,
+replacement without any note pin, retained outcomes, stale slot reuse, fault/fuel
+cleanup, queued dispatch identity and KSP UI-driven playback. These use the heap guard.
+
+This callback extension passes all 190 native tests in debug, release and Rust 1.92,
+strict all-target Clippy and both root workspace boundary tests. Evidence is under
+`artifacts/ui-callbacks-*`; it does not establish rendered UI or vendor fidelity.

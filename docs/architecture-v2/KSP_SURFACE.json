@@ -83,6 +83,10 @@
     "make_perfview": {
       "implementation": "partial_native_subset",
       "evidence": "KSP_FRONTEND.md"
+    },
+    "on ui_control": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
     }
   },
   "chapters": [

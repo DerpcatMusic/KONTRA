@@ -5,6 +5,7 @@ use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
 #[derive(Debug)]
 pub enum ControlOperation {
+    Invoke(ControlWrite),
     Edit(Box<[ControlWrite]>),
     Recall(Box<[ControlWrite]>),
     Capture(Box<[ControlWrite]>),
@@ -12,6 +13,7 @@ pub enum ControlOperation {
 impl ControlOperation {
     fn len(&self) -> usize {
         match self {
+            Self::Invoke(_) => 1,
             Self::Edit(v) | Self::Recall(v) | Self::Capture(v) => v.len(),
         }
     }
@@ -26,6 +28,7 @@ pub struct ControlRequest {
 #[derive(Debug)]
 pub struct ControlReply {
     pub request: u64,
+    pub behavior: Option<crate::BehaviorId>,
     pub command: ControlRequest,
     /// (written/captured count, coherent revision), or an explicit rejection.
     /// Capture writes only the returned prefix. Error leaves its buffer untouched.
@@ -77,6 +80,7 @@ impl ControlClient {
         let request = self.sequence + 1;
         match self.pending.push(ControlReply {
             request,
+            behavior: None,
             command,
             result: Err(Error::InvalidInput),
         }) {
@@ -151,6 +155,12 @@ impl Runtime {
         // Share ordering with direct controls and the native musical timeline.
         self.apply_due();
         reply.result = match &mut command.operation {
+            ControlOperation::Invoke(write) => self
+                .invoke_control(command.plan, command.expected_revision, *write)
+                .map(|(revision, behavior)| {
+                    reply.behavior = behavior;
+                    (1, revision)
+                }),
             ControlOperation::Edit(writes) => self
                 .edit_controls_now(command.plan, command.expected_revision, writes)
                 .map(|rev| (writes.len(), rev)),

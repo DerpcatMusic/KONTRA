@@ -40,6 +40,7 @@ pub(super) struct Generation {
     pub request: u64,
     pub prepared: Box<Prepared>,
     pub notes: usize,
+    pub callbacks: usize,
     pub sequences: super::variation::SequenceState,
     pub controls: super::control::ControlState,
 }
@@ -171,7 +172,10 @@ impl Runtime {
         for index in 0..self.plans.slots.len() {
             let slot = &self.plans.slots[index];
             if index == self.active_plan.0.index
-                || !slot.value.as_ref().is_some_and(|g| g.notes == 0)
+                || !slot
+                    .value
+                    .as_ref()
+                    .is_some_and(|g| g.notes == 0 && g.callbacks == 0)
             {
                 continue;
             }
@@ -198,6 +202,7 @@ impl Runtime {
                             sequences: plan.sequences,
                             controls: plan.controls,
                             notes: 0,
+                            callbacks: 0,
                         },
                     );
                     break;
@@ -236,6 +241,7 @@ impl Runtime {
                     sequences: plan.sequences,
                     controls: plan.controls,
                     notes: 0,
+                    callbacks: 0,
                 })
                 .expect("reserved plan generation slot"),
         );

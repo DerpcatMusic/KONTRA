@@ -100,8 +100,14 @@ pub struct Program {
     pub(super) locals: usize,
     pub(super) note_cells: usize,
     pub(super) wait_lifetime: WaitLifetime,
+    pub(super) requires_note: bool,
 }
 impl Program {
+    /// Whether any instruction needs a musical note context, including dead code.
+    pub fn requires_note(&self) -> bool {
+        self.requires_note
+    }
+
     pub fn with_wait_lifetime(mut self, lifetime: WaitLifetime) -> Self {
         self.wait_lifetime = lifetime;
         self
@@ -146,7 +152,18 @@ impl Program {
                 note_cells = note_cells.max(usize::from(cell) + 1);
             }
         }
+        let requires_note = code.iter().any(|op| {
+            matches!(
+                op,
+                Instruction::Play { .. }
+                    | Instruction::ReadKey { .. }
+                    | Instruction::ReadKeyDown { .. }
+                    | Instruction::ReadNoteCell { .. }
+                    | Instruction::WriteNoteCell { .. }
+            )
+        });
         Ok(Self {
+            requires_note,
             code: code.into_boxed_slice(),
             locals,
             note_cells,
@@ -166,9 +183,23 @@ pub enum Outcome {
     Fault(Error),
 }
 
+/// A callback can retain an instrument generation without inventing a MIDI note.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BehaviorOwner {
+    Note(NoteId),
+    Plan(super::PlanId),
+}
+impl BehaviorOwner {
+    fn note(self) -> Result<NoteId, Error> {
+        match self {
+            Self::Note(note) => Ok(note),
+            Self::Plan(_) => Err(Error::InvalidInput),
+        }
+    }
+}
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Continuation {
-    pub note: NoteId,
+    pub owner: BehaviorOwner,
     pub program: usize,
     pub pc: usize,
     pub outcome: Option<Outcome>,
@@ -194,7 +225,7 @@ impl Runtime {
         }
         let work = n.work.checked_add(1).ok_or(Error::Capacity)?;
         let id = BehaviorId(self.behaviors.insert(Continuation {
-            note,
+            owner: BehaviorOwner::Note(note),
             program,
             pc: 0,
             outcome: None,
@@ -204,6 +235,67 @@ impl Runtime {
         self.behavior_locals[begin..begin + plan.programs[program].locals].fill(0);
         self.resume_behavior(id);
         Ok(id)
+    }
+
+    /// Execute an instrument-owned callback without reserving a note/voice. Note
+    /// operands and gate-lifetime waits are rejected before acquiring ownership.
+    pub fn start_plan_behavior(
+        &mut self,
+        plan: super::PlanId,
+        program: usize,
+    ) -> Result<BehaviorId, Error> {
+        self.apply_due();
+        self.start_plan_behavior_now(plan, program)
+    }
+
+    pub(super) fn validate_plan_behavior(
+        &self,
+        plan: super::PlanId,
+        program: usize,
+    ) -> Result<(), Error> {
+        let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        let program = generation
+            .prepared
+            .programs
+            .get(program)
+            .ok_or(Error::InvalidInput)?;
+        if program.requires_note || program.wait_lifetime != WaitLifetime::Callback {
+            return Err(Error::InvalidInput);
+        }
+        if self.behaviors.available() == 0 || generation.callbacks == usize::MAX {
+            return Err(Error::Capacity);
+        }
+        Ok(())
+    }
+
+    pub(super) fn start_plan_behavior_now(
+        &mut self,
+        plan: super::PlanId,
+        program: usize,
+    ) -> Result<BehaviorId, Error> {
+        self.validate_plan_behavior(plan, program)?;
+        let generation = self.plans.get_mut(plan.0).unwrap();
+        let id = BehaviorId(self.behaviors.insert(Continuation {
+            owner: BehaviorOwner::Plan(plan),
+            program,
+            pc: 0,
+            outcome: None,
+        })?);
+        generation.callbacks += 1;
+        let begin = id.0.index * self.behavior_stride;
+        self.behavior_locals[begin..begin + generation.prepared.programs[program].locals].fill(0);
+        self.resume_behavior(id);
+        Ok(id)
+    }
+
+    fn behavior_plan(&self, owner: BehaviorOwner) -> Result<super::PlanId, Error> {
+        match owner {
+            BehaviorOwner::Note(note) => self.note_plan(note),
+            BehaviorOwner::Plan(plan) => {
+                self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+                Ok(plan)
+            }
+        }
     }
 
     pub(super) fn run_release_behavior(&mut self, note: NoteId, musical: bool) {
@@ -238,7 +330,7 @@ impl Runtime {
         let local = usize::from(local);
         let plan = &self
             .plans
-            .get(self.notes.get(c.note.0).unwrap().plan.0)
+            .get(self.behavior_plan(c.owner).unwrap().0)
             .unwrap()
             .prepared;
         if local >= plan.programs[c.program].locals {
@@ -257,13 +349,18 @@ impl Runtime {
         let c = self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?;
         if c.outcome.is_none() {
             c.outcome = Some(Outcome::Cancelled);
-            let note = c.note;
-            self.release_now(note, super::ReleaseCause::BehaviorCancelled)?;
+            if let BehaviorOwner::Note(note) = c.owner {
+                self.release_now(note, super::ReleaseCause::BehaviorCancelled)?;
+            }
+            self.cancel_closed_work();
         }
         Ok(())
     }
 
-    pub fn flush_behaviors(&mut self, mut accept: impl FnMut(BehaviorId, NoteId, Outcome) -> bool) {
+    pub fn flush_behaviors(
+        &mut self,
+        mut accept: impl FnMut(BehaviorId, BehaviorOwner, Outcome) -> bool,
+    ) {
         for i in 0..self.behaviors.slots.len() {
             let Some(c) = self.behaviors.slots[i].value else {
                 continue;
@@ -272,32 +369,34 @@ impl Runtime {
                 continue;
             };
             let id = BehaviorId(self.behaviors.id(i));
-            if !accept(id, c.note, outcome) {
+            if !accept(id, c.owner, outcome) {
                 return;
             }
             self.behaviors.remove(id.0);
-            self.notes.get_mut(c.note.0).unwrap().work -= 1;
+            match c.owner {
+                BehaviorOwner::Note(note) => self.notes.get_mut(note.0).unwrap().work -= 1,
+                BehaviorOwner::Plan(plan) => self.plans.get_mut(plan.0).unwrap().callbacks -= 1,
+            }
         }
     }
 
     pub(super) fn resume_behavior(&mut self, id: BehaviorId) {
         for _ in 0..self.behavior_fuel {
-            let c = self.behaviors.get_mut(id.0).unwrap();
+            let c = *self.behaviors.get(id.0).unwrap();
             if c.outcome.is_some() {
                 return;
             }
             let plan = &self
                 .plans
-                .get(self.notes.get(c.note.0).unwrap().plan.0)
+                .get(self.behavior_plan(c.owner).unwrap().0)
                 .unwrap()
                 .prepared;
             let Some(op) = plan.programs[c.program].code.get(c.pc).copied() else {
-                c.outcome = Some(Outcome::Finished);
+                self.behaviors.get_mut(id.0).unwrap().outcome = Some(Outcome::Finished);
                 return;
             };
-            c.pc += 1;
-            let note = c.note;
-            match self.behavior_step(id, note, op) {
+            self.behaviors.get_mut(id.0).unwrap().pc += 1;
+            match self.behavior_step(id, c.owner, op) {
                 Ok(true) => return,
                 Ok(false) => {}
                 Err(error) => {
@@ -306,14 +405,14 @@ impl Runtime {
                 }
             }
         }
-        let c = self.behaviors.get_mut(id.0).unwrap();
+        let c = *self.behaviors.get(id.0).unwrap();
         let plan = &self
             .plans
-            .get(self.notes.get(c.note.0).unwrap().plan.0)
+            .get(self.behavior_plan(c.owner).unwrap().0)
             .unwrap()
             .prepared;
         if c.pc == plan.programs[c.program].code.len() {
-            c.outcome = Some(Outcome::Finished);
+            self.behaviors.get_mut(id.0).unwrap().outcome = Some(Outcome::Finished);
         } else {
             self.fail_behavior(id, Outcome::FuelExhausted);
         }
@@ -323,7 +422,7 @@ impl Runtime {
     fn behavior_step(
         &mut self,
         id: BehaviorId,
-        note: NoteId,
+        owner: BehaviorOwner,
         op: Instruction,
     ) -> Result<bool, Error> {
         match op {
@@ -333,6 +432,7 @@ impl Runtime {
                 *cell = cell.checked_add(value).ok_or(Error::ArithmeticOverflow)?;
             }
             Instruction::ReadKey { local } => {
+                let note = owner.note()?;
                 let key = self
                     .notes
                     .get(note.0)
@@ -342,10 +442,10 @@ impl Runtime {
                 *self.local_cell_mut(id, local)? = i64::from(key);
             }
             Instruction::ReadNoteCell { local, cell } => {
-                *self.local_cell_mut(id, local)? = self.note_cell(note, cell)?;
+                *self.local_cell_mut(id, local)? = self.note_cell(owner.note()?, cell)?;
             }
             Instruction::ReadKeyDown { local } => {
-                *self.local_cell_mut(id, local)? = i64::from(self.key_down(note)?);
+                *self.local_cell_mut(id, local)? = i64::from(self.key_down(owner.note()?)?);
             }
             Instruction::CompareLocal {
                 lhs,
@@ -364,18 +464,18 @@ impl Runtime {
                 });
             }
             Instruction::WriteNoteCell { cell, local } => {
-                let index = self.note_cell_index(note, cell)?;
+                let index = self.note_cell_index(owner.note()?, cell)?;
                 self.note_values[index] = *self.local_cell_mut(id, local)?;
             }
             Instruction::ReadControl { local, control } => {
-                let plan = self.note_plan(note)?;
+                let plan = self.behavior_plan(owner)?;
                 let super::ControlValue::Integer(value) = self.control_value(plan, control)? else {
                     return Err(Error::InvalidInput);
                 };
                 *self.local_cell_mut(id, local)? = value;
             }
             Instruction::WriteControl { control, local } => {
-                let plan = self.note_plan(note)?;
+                let plan = self.behavior_plan(owner)?;
                 let value = super::ControlValue::Integer(*self.local_cell_mut(id, local)?);
                 self.edit_controls_now(plan, None, &[super::ControlWrite { id: control, value }])?;
             }
@@ -409,6 +509,7 @@ impl Runtime {
                 inheritance,
                 duration,
             } => {
+                let note = owner.note()?;
                 let n = self.notes.get(note.0).unwrap();
                 let pitch = n.pitch.transpose(transpose)?;
                 let velocity = match velocity {
@@ -472,8 +573,10 @@ impl Runtime {
     fn fail_behavior(&mut self, id: BehaviorId, outcome: Outcome) {
         let c = self.behaviors.get_mut(id.0).unwrap();
         c.outcome = Some(outcome);
-        let note = c.note;
-        self.release_now(note, super::ReleaseCause::BehaviorFault)
-            .expect("continuation retains originating note");
+        if let BehaviorOwner::Note(note) = c.owner {
+            self.release_now(note, super::ReleaseCause::BehaviorFault)
+                .expect("continuation retains originating note");
+        }
+        self.cancel_closed_work();
     }
 }

@@ -255,3 +255,15 @@ suppression, EOF, original-plan replacement and generated-child non-reentry. An
 independent PCM check sums old/new generation release-generated audio exactly.
 Evidence uses `artifacts/release-behavior-*`; the [KSP frontend](KSP_FRONTEND.md) now
 executes note/release source callbacks and polyphonic scalar assignments on this path.
+
+## Non-note callback ownership
+
+`BehaviorOwner::Plan` retains the originating instrument generation independently
+of any musical note. These callbacks share continuation slots, locals, fuel,
+sample-time waits and retained outcomes with note callbacks. Context requirements
+are derived from all program instructions and checked before admission: note reads,
+polyphonic cells, note-relative playback and gate-lifetime waits require a note.
+A plan callback's fault/abort does not release an unrelated key. Global panic cancels
+both owner types; channel sound-off only cancels matching note-owned callbacks.
+Completion delivery now names the explicit `BehaviorOwner`, with no legacy wrapper.
+See [control interaction admission](CONTROL_STATE.md#instrument-owned-ui-callbacks).
