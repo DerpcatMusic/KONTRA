@@ -21,10 +21,21 @@ pub struct Region {
     pub playback: Playback,
 }
 
+/// Render-ready region: authoring bounds and playback metadata have been compiled.
+#[derive(Clone, Copy)]
+struct PreparedRegion {
+    sample: usize,
+    velocity_low: f64,
+    velocity_high: f64,
+    gain: f32,
+    envelope: Envelope,
+    cursor: super::source::Cursor,
+}
+
 pub struct Prepared {
     pub(super) rate: u32,
     pub(super) pcm: Box<[Pcm]>,
-    regions: Box<[Region]>,
+    regions: Box<[PreparedRegion]>,
     offsets: [usize; 129],
     candidates: Box<[usize]>,
     pub(super) programs: Box<[super::Program]>,
@@ -50,6 +61,7 @@ impl Prepared {
             return Err(Error::InvalidInput);
         }
         let mut count = 0usize;
+        let mut prepared_regions = Vec::new();
         for r in &regions {
             if r.sample >= pcm.len()
                 || r.key_low > r.key_high
@@ -64,7 +76,8 @@ impl Prepared {
             {
                 return Err(Error::InvalidInput);
             }
-            r.playback
+            let cursor = r
+                .playback
                 .cursor(pcm[r.sample].frames.len(), pcm[r.sample].rate, rate)?;
             count = count
                 .checked_add(usize::from(r.key_high - r.key_low) + 1)
@@ -72,6 +85,14 @@ impl Prepared {
             if count > max_candidates {
                 return Err(Error::Capacity);
             }
+            prepared_regions.push(PreparedRegion {
+                sample: r.sample,
+                velocity_low: r.velocity_low,
+                velocity_high: r.velocity_high,
+                gain: r.gain,
+                envelope: r.envelope,
+                cursor,
+            });
         }
         let mut offsets = [0; 129];
         let mut candidates = Vec::with_capacity(count);
@@ -88,7 +109,7 @@ impl Prepared {
         Ok(Self {
             rate,
             pcm: pcm.into_boxed_slice(),
-            regions: regions.into_boxed_slice(),
+            regions: prepared_regions.into_boxed_slice(),
             offsets,
             candidates: candidates.into_boxed_slice(),
             programs: Box::new([]),
@@ -124,7 +145,7 @@ impl Prepared {
         self.candidates.len()
     }
 
-    fn matches(&self, key: u8, velocity: f64) -> impl Iterator<Item = &Region> {
+    fn matches(&self, key: u8, velocity: f64) -> impl Iterator<Item = &PreparedRegion> {
         self.candidates[self.offsets[key as usize]..self.offsets[key as usize + 1]]
             .iter()
             .map(|&i| &self.regions[i])
@@ -212,13 +233,13 @@ impl Runtime {
             let prepared = &self.plans.get(plan.0).unwrap().prepared;
             let r = prepared.regions[prepared.candidates[i]];
             if r.velocity_low <= velocity && velocity <= r.velocity_high {
-                self.start_family(
+                self.admit_voice(
                     family,
                     r.sample,
                     self.now,
                     r.gain * velocity as f32,
                     r.envelope,
-                    r.playback,
+                    r.cursor,
                 )
                 .expect("prepared and preflighted source admission");
             }

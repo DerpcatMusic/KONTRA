@@ -532,8 +532,25 @@ impl Runtime {
             plan.pcm[sample].rate,
             self.rate,
         )?;
+        self.admit_voice(family, sample, at, gain, envelope, cursor)
+    }
+
+    // Inputs and cursor are validated either by Prepared or start_family. Both
+    // paths drain due work before reaching this sole voice admission boundary.
+    fn admit_voice(
+        &mut self,
+        family: FamilyId,
+        sample: usize,
+        at: u64,
+        gain: f32,
+        envelope: Envelope,
+        cursor: source::Cursor,
+    ) -> Result<VoiceId, Error> {
+        let f = self.families.get(family.0).ok_or(Error::StaleHandle)?;
+        if !f.open {
+            return Err(Error::ClosedFamily);
+        }
         let count = f.voices.checked_add(1).ok_or(Error::Capacity)?;
-        self.check_time(at)?;
         if at > self.now && self.commands.len() == self.command_limit {
             return Err(Error::Capacity);
         }

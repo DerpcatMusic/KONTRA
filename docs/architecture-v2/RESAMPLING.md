@@ -4,6 +4,10 @@ The native source renderer now combines the asset/output sample-rate ratio with
 `Playback::transpose_semitones`. Prepared assets may have different rates from the
 runtime. Preparation and direct source admission both validate the resulting step;
 invalid, nonfinite and unsupported ratios fail before taking a voice slot or command.
+Prepared regions retain fresh cursor templates rather than authoring playback objects.
+Selection copies that value into a voice; it does not repeat `exp2`, rate conversion
+or source-view validation at note-on. Both prepared selection and explicit manual
+source admission use one bounded voice-reservation function.
 The current supported step is 1/256 through 16 source frames per output frame.
 This is a declared implementation limit, not silent clamping or quality fallback.
 
