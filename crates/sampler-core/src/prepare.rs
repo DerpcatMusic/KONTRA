@@ -108,6 +108,7 @@ pub struct Prepared {
     candidates: Box<[Candidate]>,
     pub(super) programs: Box<[super::Program]>,
     note_program: Option<usize>,
+    pub(super) release_program: Option<usize>,
     pub(super) note_cells: usize,
     keyswitches: [Option<u32>; 128],
     articulated: bool,
@@ -227,6 +228,7 @@ impl Prepared {
             candidates: candidates.into_boxed_slice(),
             programs: Box::new([]),
             note_program: None,
+            release_program: None,
             note_cells: 0,
             keyswitches: [None; 128],
             articulated: false,
@@ -253,6 +255,22 @@ impl Prepared {
         self.note_cells = programs.iter().map(|p| p.note_cells).max().unwrap_or(0);
         self.programs = programs.into_boxed_slice();
         self.note_program = note_program;
+        self.release_program = None;
+        Ok(self)
+    }
+
+    /// Bind a physical-key release callback to triggered external inputs. It has
+    /// an independently reserved continuation and may wait beyond gate closure.
+    /// Replacing the complete program table clears this binding.
+    pub fn with_release_program(mut self, program: usize) -> Result<Self, Error> {
+        if !self
+            .programs
+            .get(program)
+            .is_some_and(|p| p.wait_lifetime == super::WaitLifetime::Callback)
+        {
+            return Err(Error::InvalidInput);
+        }
+        self.release_program = Some(program);
         Ok(self)
     }
 

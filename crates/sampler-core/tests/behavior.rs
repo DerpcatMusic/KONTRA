@@ -1202,3 +1202,285 @@ fn note_cell_layouts_follow_original_plans_and_children_start_with_zero_state() 
     });
     assert!(control.retired().is_some());
 }
+
+#[test]
+fn release_callbacks_reserve_capacity_and_share_state_across_waits_and_pedals() {
+    for block in [1, 2, 7] {
+        let plan = Prepared::new(48000, vec![], vec![], 0)
+            .unwrap()
+            .with_programs(
+                vec![
+                    Program::new(vec![
+                        Instruction::SetLocal {
+                            local: 0,
+                            value: 70,
+                        },
+                        Instruction::WriteNoteCell { cell: 0, local: 0 },
+                    ])
+                    .unwrap(),
+                    Program::new(vec![
+                        Instruction::ReadNoteCell { local: 0, cell: 0 },
+                        Instruction::AddLocal { local: 0, value: 1 },
+                        Instruction::WriteNoteCell { cell: 0, local: 0 },
+                        Instruction::Wait(2),
+                        Instruction::AddLocal { local: 0, value: 1 },
+                        Instruction::WriteNoteCell { cell: 0, local: 0 },
+                    ])
+                    .unwrap()
+                    .with_wait_lifetime(sampler_core::WaitLifetime::Callback),
+                ],
+                Some(0),
+            )
+            .unwrap()
+            .with_release_program(1)
+            .unwrap();
+        let mut rt = Runtime::new(
+            plan,
+            Limits {
+                behaviors: 2,
+                note_cells: 8,
+                ..limits()
+            },
+        )
+        .unwrap();
+        support::without_heap(|| {
+            let channel = rt.register_channel(input().channel_address()).unwrap();
+            rt.sustain(channel, true).unwrap();
+            let n = rt.trigger(input(), 60, 1.).unwrap();
+            assert_eq!(rt.note_cell(n, 0), Ok(70));
+            assert_eq!(rt.start_behavior(n, 0), Err(Error::Capacity));
+            assert_eq!(
+                rt.trigger(
+                    Input {
+                        external_id: Some(8),
+                        ..input()
+                    },
+                    60,
+                    1.
+                ),
+                Err(Error::Capacity)
+            );
+            assert_eq!(rt.note_count(), 1);
+            rt.key_up(n, None).unwrap();
+            assert_eq!(rt.note_cell(n, 0), Ok(71));
+            assert!(rt.note(n).unwrap().2);
+            rt.key_up(n, Some(0.4)).unwrap();
+            assert_eq!(rt.note_cell(n, 0), Ok(71));
+            rt.sustain(channel, false).unwrap();
+            assert!(!rt.note(n).unwrap().2);
+            for chunk in [[0.; 2]; 7].chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
+            assert_eq!(rt.note_cell(n, 0), Ok(72));
+            rt.flush_ended(|_| panic!("callbacks still retain their note"));
+            rt.flush_behaviors(|_, _, _| false);
+            assert_eq!(rt.note_cell(n, 0), Ok(72));
+            let mut callbacks = 0;
+            rt.flush_behaviors(|_, note, outcome| {
+                assert_eq!(note, n);
+                assert_eq!(outcome, Outcome::Finished);
+                callbacks += 1;
+                true
+            });
+            assert_eq!(callbacks, 2);
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.note_count(), 0);
+            // Reclaimed callback capacity admits another complete pair.
+            let next = rt.trigger(input(), 60, 1.).unwrap();
+            rt.all_sound_off(input().channel_address()).unwrap();
+            assert_eq!(rt.note_cell(next, 0), Ok(70));
+            assert_eq!(rt.key_down(next), Ok(true));
+            rt.key_up(next, None).unwrap();
+            assert_eq!(rt.note_cell(next, 0), Ok(70));
+            let mut callbacks = 0;
+            rt.flush_behaviors(|_, _, _| {
+                callbacks += 1;
+                true
+            });
+            assert_eq!(
+                callbacks, 1,
+                "hard silence suppresses pending release behavior"
+            );
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.note_count(), 0);
+        });
+    }
+}
+
+#[test]
+fn release_callback_fault_cannot_block_key_up_or_leak_its_reservation() {
+    let plan = Prepared::new(48000, vec![], vec![], 0)
+        .unwrap()
+        .with_programs(
+            vec![
+                Program::new(vec![Instruction::Wait(1)])
+                    .unwrap()
+                    .with_wait_lifetime(sampler_core::WaitLifetime::Callback),
+            ],
+            None,
+        )
+        .unwrap()
+        .with_release_program(0)
+        .unwrap();
+    let mut rt = Runtime::new(
+        plan,
+        Limits {
+            behaviors: 1,
+            commands: 1,
+            ..limits()
+        },
+    )
+    .unwrap();
+    support::without_heap(|| {
+        for _ in 0..32 {
+            let n = rt.trigger(input(), 60, 1.).unwrap();
+            rt.schedule_event(
+                rt.now() + 100,
+                Event::Controller(rt.performance(0).unwrap(), 1, 7),
+            )
+            .unwrap();
+            assert_eq!(rt.start_behavior(n, 0), Err(Error::Capacity));
+            rt.key_up(n, None).unwrap();
+            assert_eq!(rt.key_down(n), Ok(false));
+            assert!(!rt.note(n).unwrap().2);
+            let mut faults = 0;
+            rt.flush_behaviors(|_, note, outcome| {
+                assert_eq!(note, n);
+                assert_eq!(outcome, Outcome::Fault(Error::Capacity));
+                faults += 1;
+                true
+            });
+            assert_eq!(faults, 1);
+            rt.flush_ended(|_| true);
+            rt.panic();
+            assert_eq!((rt.note_count(), rt.pending_commands()), (0, 0));
+        }
+    });
+}
+
+#[test]
+fn release_callbacks_keep_the_original_plan_after_source_eof_and_do_not_reenter_children() {
+    let prepare = |level, value| {
+        Prepared::new(
+            48000,
+            vec![Pcm::new(48000, Box::from([[level; 2]; 2])).unwrap()],
+            vec![Region {
+                sample: 0,
+                key_low: 60,
+                key_high: 60,
+                root_key: None,
+                velocity_low: 0.,
+                velocity_high: 1.,
+                gain: 1.,
+                envelope: Envelope::default(),
+                playback: Playback::default(),
+            }],
+            1,
+        )
+        .unwrap()
+        .with_programs(
+            vec![
+                Program::new(vec![
+                    Instruction::SetLocal { local: 0, value },
+                    Instruction::WriteNoteCell { cell: 0, local: 0 },
+                    Instruction::Play {
+                        transpose: 0,
+                        velocity: sampler_core::Velocity::Fixed(0.25),
+                        inheritance: sampler_core::Inheritance::Independent,
+                        duration: sampler_core::Duration::Frames(2),
+                    },
+                ])
+                .unwrap()
+                .with_wait_lifetime(sampler_core::WaitLifetime::Callback),
+            ],
+            None,
+        )
+        .unwrap()
+        .with_release_program(0)
+        .unwrap()
+    };
+    assert!(prepare(1., 10).with_release_program(1).is_err());
+    assert!(
+        Prepared::new(48000, vec![], vec![], 0)
+            .unwrap()
+            .with_programs(vec![Program::new(vec![]).unwrap()], None)
+            .unwrap()
+            .with_release_program(0)
+            .is_err()
+    );
+    let (mut rt, mut control) = Runtime::with_plan_updates(
+        prepare(1., 10),
+        Limits {
+            behaviors: 2,
+            note_cells: 8,
+            ..limits()
+        },
+        2,
+        1,
+    )
+    .unwrap();
+    let mut old = None;
+    support::without_heap(|| {
+        let n = rt.trigger(input(), 60, 1.).unwrap();
+        rt.render(&mut [[0.; 2]; 2]).unwrap();
+        assert_eq!(rt.voice_count(), 0);
+        assert_eq!(rt.key_down(n), Ok(true));
+        old = Some(n);
+    });
+    let old = old.unwrap();
+    control.submit(Box::new(prepare(2., 20))).unwrap();
+    support::without_heap(|| {
+        rt.poll_plan_update().unwrap();
+        let new = rt
+            .trigger(
+                Input {
+                    external_id: Some(8),
+                    ..input()
+                },
+                60,
+                1.,
+            )
+            .unwrap();
+        rt.render(&mut [[0.; 2]; 2]).unwrap();
+        assert_eq!(rt.voice_count(), 0);
+        rt.key_up(old, None).unwrap();
+        assert_eq!(rt.note_cell(old, 0), Ok(10));
+        rt.all_notes_off(input().channel_address()).unwrap();
+        assert_eq!(rt.note_cell(new, 0), Ok(20));
+        assert_eq!(rt.voice_count(), 2);
+        let mut audio = [[0.; 2]; 4];
+        rt.render(&mut audio).unwrap();
+        assert_eq!(audio, [[0.75; 2], [0.75; 2], [0.; 2], [0.; 2]]);
+        let mut callbacks = 0;
+        rt.flush_behaviors(|_, _, outcome| {
+            assert_eq!(outcome, Outcome::Finished);
+            callbacks += 1;
+            true
+        });
+        assert_eq!(callbacks, 2);
+        let mut terminals = 0;
+        rt.flush_ended(|_| {
+            terminals += 1;
+            true
+        });
+        assert_eq!((terminals, rt.note_count(), rt.voice_count()), (2, 0, 0));
+        rt.collect_retired_plans();
+    });
+    assert!(control.retired().is_some());
+    // Table replacement clears old bindings rather than retaining an invalid index.
+    let plan = prepare(1., 10).with_programs(vec![], None).unwrap();
+    let mut rt = Runtime::new(
+        plan,
+        Limits {
+            behaviors: 0,
+            ..limits()
+        },
+    )
+    .unwrap();
+    support::without_heap(|| {
+        let n = rt.trigger(input(), 60, 1.).unwrap();
+        rt.key_up(n, None).unwrap();
+        rt.flush_ended(|_| true);
+        assert_eq!(rt.note_count(), 0);
+    });
+}

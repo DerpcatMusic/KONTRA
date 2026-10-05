@@ -44,8 +44,8 @@ native services. No compatibility path to the old KONTRA engine is introduced.
 - Polyphonic variables belong to note events and remain available in their release
   callbacks. Callback-local scratch is insufficient. The native implementation
   now has [bounded note-owned integer cells](BEHAVIOR.md#note-owned-integer-state)
-  shared across executions. KSP declarations, typed arithmetic and automatic release
-  dispatch still require implementation.
+  shared across executions and reserved native physical-release callbacks. KSP
+  declarations, typed arithmetic and source callback dispatch still require implementation.
   [NI variables](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#polyphonic----polyphonic-integer-).
 - Callback identity and event identity are separate; waits need retained callback
   context and cancellation. Controller callbacks must not require fabricated note

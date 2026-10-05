@@ -85,23 +85,26 @@ impl Runtime {
             self.selections[note.0.index].consumed_switch = true;
             return Ok(note);
         }
-        if let Some(program) = self
-            .plans
-            .get(self.active_plan.0)
-            .unwrap()
-            .prepared
-            .note_program
-        {
-            if self.behaviors.available() == 0 {
-                return Err(Error::Capacity);
-            }
-            let note = self.note_on_pitched_in(performance, input, pitch, velocity, expression)?;
+        let prepared = &self.plans.get(self.active_plan.0).unwrap().prepared;
+        let (on_note, on_release) = (prepared.note_program, prepared.release_program);
+        let callbacks = usize::from(on_note.is_some()) + usize::from(on_release.is_some());
+        if self.behaviors.available() < callbacks {
+            return Err(Error::Capacity);
+        }
+        let note = if on_note.is_some() {
+            self.note_on_pitched_in(performance, input, pitch, velocity, expression)?
+        } else {
+            self.select(NoteOrigin::Input(input, expression, index), pitch, velocity)?
+        };
+        if on_release.is_some() {
+            self.behaviors.reserve(1);
+            self.release_times[note.0.index].release_behavior = true;
+        }
+        if let Some(program) = on_note {
             self.start_behavior(note, program)
                 .expect("preflighted native behavior admission");
-            Ok(note)
-        } else {
-            self.select(NoteOrigin::Input(input, expression, index), pitch, velocity)
         }
+        Ok(note)
     }
 
     pub(crate) fn trigger_child(

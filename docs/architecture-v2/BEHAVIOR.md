@@ -106,7 +106,7 @@ and audio evidence is under ignored `artifacts/architecture-v2/behavior-*`.
 ## Still open
 
 Broader language parsing, shared/persistent state, real/array/string values, note-handle
-locals, release/controller callbacks, consumed controller projections, rich engine queries,
+locals, controller callbacks, consumed controller projections, rich engine queries,
 beat/transport waits, async services and compatibility profiles are not implemented.
 Their implementations must use these ownership/time services and extend the
 executable contracts. No old-VM fallback is present.
@@ -215,5 +215,39 @@ indices and allocation layouts fail before allocation. Native debug/release/MSRV
 and strict all-target Clippy evidence uses `artifacts/note-state-*`.
 
 These cells are native signed 64-bit storage. They do not implement KSP declarations,
-32-bit arithmetic, variable scopes or automatic release callback dispatch. The
+32-bit arithmetic or variable scopes. Native release dispatch is described below. The
 [KSP parity map](KSP_PARITY.md) retains those separate obligations.
+
+## Reserved physical-release callbacks
+
+`Prepared::with_release_program` binds a callback-lifetime program to each external
+input admitted through `trigger*`. Low-level `note_on*`, generated children and
+consumed keyswitches do not implicitly enter these bindings. With no note program,
+ordinary attack selection still occurs. Replacing the program table clears its
+release binding; invalid indices and gate-bound release programs are rejected.
+
+Admission preflights the note callback slot plus one future release callback slot,
+then reserves the latter in the existing continuation arena. Manual callbacks and
+other inputs cannot consume that capacity. The pending flag lives in cold release
+context; the note's original prepared generation owns the program identity. Source
+EOF does not discard the reservation. No extra per-note program copy is stored.
+
+First physical key-up (including native all-notes-off) records release context,
+consumes the callback reservation exactly once, runs the callback, and then selects
+key-release layers. Pedal/gate handling follows; the callback may wait beyond both.
+This is explicit native ordering, not verified Kontakt event-stage equivalence.
+Hard silence, panic, explicit abort and fault cleanup suppress pending callbacks
+and relinquish the reservation. A fault cannot recursively start another release
+callback. Executed callbacks retain their ordinary completion/fault ownership.
+
+Only callback admission is reserved: code still obeys command, generated-note and
+fuel budgets. A failed wait or generated-note command reports its retained fault
+without rolling back physical release or stranding the note. Release program bodies
+are not assumed to have statically predictable resource use.
+
+Heap-guarded tests cover saturated continuation and command pools, repeated key-up,
+pedal hold/up, callback/terminal backpressure, release-side waits, hard-silence
+suppression, EOF, original-plan replacement and generated-child non-reentry. An
+independent PCM check sums old/new generation release-generated audio exactly.
+Evidence uses `artifacts/release-behavior-*`; KSP source dispatch and declarations
+remain separate frontend work.

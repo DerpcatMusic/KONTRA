@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Reserve native physical-release callback capacity at triggered-input admission. Release handlers retain their original program and note state across EOF, pedals and plan replacement; faults remain observable without blocking physical release, and hard cleanup suppresses pending handlers.
+
 - Add bounded note-owned integer state shared across native callbacks and retained through release, terminal retry and plan replacement. Generated children and reused note slots start with zero state; KSP variable syntax and typed semantics remain open.
 
 - Compile full-resolution controller conjunctions into native attack/key/gate selection, with coherent onset/current policies, shared microphone predicates and transactional take decisions. Control-time interval projections bound controller release overlap without a Cartesian state table; correlated multi-controller cases can remain conservative.
