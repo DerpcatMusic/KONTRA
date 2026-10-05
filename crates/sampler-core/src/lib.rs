@@ -22,6 +22,7 @@ mod ownership;
 use modulation::RenderedExpression;
 pub use modulation::{Destination, ExpressionSource, Modulation, Route};
 mod pitch;
+pub use pitch::NotePitch;
 mod plans;
 mod prepare;
 mod render;
@@ -118,7 +119,7 @@ struct Note {
     parent: Option<NoteId>,
     linked_release: bool,
     release_checked: bool,
-    key: u8,
+    pitch: NotePitch,
     velocity: f64,
     gate: bool,
     key_down: bool,
@@ -349,6 +350,17 @@ impl Runtime {
         velocity: f64,
         expression: Expression,
     ) -> Result<NoteId, Error> {
+        self.note_on_pitched(input, NotePitch::Key(key), velocity, expression)
+    }
+
+    /// Admit inherent pitch independently of the physical address and expression.
+    pub fn note_on_pitched(
+        &mut self,
+        input: Input,
+        pitch: NotePitch,
+        velocity: f64,
+        expression: Expression,
+    ) -> Result<NoteId, Error> {
         self.apply_due();
         if input.channel >= 16 || input.group >= 16 || input.key >= 128 || !expression.valid() {
             return Err(Error::InvalidInput);
@@ -362,7 +374,7 @@ impl Runtime {
         {
             return Err(Error::DuplicateInput);
         }
-        self.admit(NoteOrigin::Input(input, expression), key, velocity)
+        self.admit(NoteOrigin::Input(input, expression), pitch, velocity)
     }
 
     /// Detached children do not release with their parent, but still retain its
@@ -375,6 +387,23 @@ impl Runtime {
         linked_release: bool,
         inheritance: Inheritance,
     ) -> Result<NoteId, Error> {
+        self.child_pitched(
+            parent,
+            NotePitch::Key(key),
+            velocity,
+            linked_release,
+            inheritance,
+        )
+    }
+
+    pub fn child_pitched(
+        &mut self,
+        parent: NoteId,
+        pitch: NotePitch,
+        velocity: f64,
+        linked_release: bool,
+        inheritance: Inheritance,
+    ) -> Result<NoteId, Error> {
         self.apply_due();
         let p = self.notes.get(parent.0).ok_or(Error::StaleHandle)?;
         if linked_release && !p.gate {
@@ -382,12 +411,17 @@ impl Runtime {
         }
         self.admit(
             NoteOrigin::Child(parent, linked_release, inheritance),
-            key,
+            pitch,
             velocity,
         )
     }
 
-    fn admit(&mut self, origin: NoteOrigin, key: u8, velocity: f64) -> Result<NoteId, Error> {
+    fn admit(
+        &mut self,
+        origin: NoteOrigin,
+        pitch: NotePitch,
+        velocity: f64,
+    ) -> Result<NoteId, Error> {
         let (input, parent, linked_release, inheritance, initial) = match origin {
             NoteOrigin::Input(input, expression) => (
                 Some(input),
@@ -404,7 +438,7 @@ impl Runtime {
                 Expression::default(),
             ),
         };
-        if key >= 128 || !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
+        if !pitch.valid() || !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
             return Err(Error::InvalidInput);
         }
         let order = self.order.checked_add(1).ok_or(Error::ClockOverflow)?;
@@ -447,7 +481,7 @@ impl Runtime {
             parent,
             linked_release,
             release_checked: false,
-            key,
+            pitch,
             velocity,
             gate: true,
             key_down: true,
@@ -476,7 +510,11 @@ impl Runtime {
 
     pub fn note(&self, id: NoteId) -> Result<(u8, f64, bool), Error> {
         let n = self.notes.get(id.0).ok_or(Error::StaleHandle)?;
-        Ok((n.key, n.velocity, n.gate))
+        Ok((n.pitch.key(), n.velocity, n.gate))
+    }
+
+    pub fn note_pitch(&self, id: NoteId) -> Result<NotePitch, Error> {
+        Ok(self.notes.get(id.0).ok_or(Error::StaleHandle)?.pitch)
     }
 
     /// A continuation pins logical ownership even after source completion/release.

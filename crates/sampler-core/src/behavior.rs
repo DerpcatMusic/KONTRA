@@ -254,7 +254,12 @@ impl Runtime {
                 *cell = cell.checked_add(value).ok_or(Error::ArithmeticOverflow)?;
             }
             Instruction::ReadKey { local } => {
-                let key = self.notes.get(note.0).ok_or(Error::StaleHandle)?.key;
+                let key = self
+                    .notes
+                    .get(note.0)
+                    .ok_or(Error::StaleHandle)?
+                    .pitch
+                    .key();
                 *self.local_cell_mut(id, local)? = i64::from(key);
             }
             Instruction::Jump { target } => {
@@ -288,10 +293,7 @@ impl Runtime {
                 duration,
             } => {
                 let n = self.notes.get(note.0).unwrap();
-                let key = i16::from(n.key) + i16::from(transpose);
-                if !(0..128).contains(&key) {
-                    return Err(Error::InvalidInput);
-                }
+                let pitch = n.pitch.transpose(transpose)?;
                 let velocity = match velocity {
                     Velocity::Scale(scale) => n.velocity * scale,
                     Velocity::Fixed(value) => value,
@@ -313,7 +315,7 @@ impl Runtime {
                 }
                 let linked = !matches!(duration, Duration::Frames(_));
                 self.reclaim_internal_notes();
-                let child = self.trigger_child(note, key as u8, velocity, linked, inheritance)?;
+                let child = self.trigger_child(note, pitch, velocity, linked, inheritance)?;
                 if let Some(at) = at {
                     self.release_at(child, at)?;
                 }

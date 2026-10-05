@@ -1,5 +1,7 @@
 //! Control-thread compilation of immutable resident assets and native mappings.
-use super::{Envelope, Error, Expression, Frame, Input, NoteId, NoteOrigin, Playback, Runtime};
+use super::{
+    Envelope, Error, Expression, Frame, Input, NoteId, NoteOrigin, NotePitch, Playback, Runtime,
+};
 
 /// Validated immutable resident PCM. Construct, clone and drop handles on the
 /// control side. Clones share the original sample buffer; rendering only borrows.
@@ -79,6 +81,8 @@ struct PreparedRegion {
     gain: f32,
     envelope: Envelope,
     cursor: super::source::Cursor,
+    root_key: Option<u8>,
+    transpose_semitones: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -164,6 +168,8 @@ impl Prepared {
                 gain: r.gain,
                 envelope: r.envelope,
                 cursor,
+                root_key: r.root_key,
+                transpose_semitones: r.playback.transpose_semitones,
             });
         }
         let mut offsets = [0; 129];
@@ -234,10 +240,32 @@ impl Prepared {
         self.candidates.len()
     }
 
-    fn matches(&self, key: u8, velocity: f64) -> impl Iterator<Item = (&PreparedRegion, f64)> {
+    fn step(&self, candidate: Candidate, pitch: NotePitch) -> f64 {
+        let r = &self.regions[candidate.region];
+        match (pitch, r.root_key) {
+            (NotePitch::Absolute(pitch), Some(root)) => {
+                let semitones = r.transpose_semitones + (pitch - f64::from(root));
+                f64::from(self.pcm[r.sample].sample_rate()) / f64::from(self.rate)
+                    * super::pitch::ratio(semitones)
+            }
+            _ => candidate.step,
+        }
+    }
+
+    fn matches(
+        &self,
+        pitch: NotePitch,
+        velocity: f64,
+    ) -> impl Iterator<Item = (&PreparedRegion, f64)> {
+        let key = pitch.key();
         self.candidates[self.offsets[key as usize]..self.offsets[key as usize + 1]]
             .iter()
-            .map(|candidate| (&self.regions[candidate.region], candidate.step))
+            .map(move |candidate| {
+                (
+                    &self.regions[candidate.region],
+                    self.step(*candidate, pitch),
+                )
+            })
             .filter(move |(r, _)| r.velocity_low <= velocity && velocity <= r.velocity_high)
     }
 }
@@ -260,6 +288,18 @@ impl Runtime {
         velocity: f64,
         expression: Expression,
     ) -> Result<NoteId, Error> {
+        self.trigger_pitched(input, NotePitch::Key(key), velocity, expression)
+    }
+
+    /// Select regions using inherent pitch, preserving the independent input address.
+    /// Absolute pitch bypasses per-key tuning; expression remains a relative offset.
+    pub fn trigger_pitched(
+        &mut self,
+        input: Input,
+        pitch: NotePitch,
+        velocity: f64,
+        expression: Expression,
+    ) -> Result<NoteId, Error> {
         self.apply_due();
         if !expression.valid() {
             return Err(Error::InvalidInput);
@@ -274,33 +314,38 @@ impl Runtime {
             if self.behaviors.available() == 0 {
                 return Err(Error::Capacity);
             }
-            let note = self.note_on_with_expression(input, key, velocity, expression)?;
+            let note = self.note_on_pitched(input, pitch, velocity, expression)?;
             self.start_behavior(note, program)
                 .expect("preflighted native behavior admission");
             Ok(note)
         } else {
-            self.select(NoteOrigin::Input(input, expression), key, velocity)
+            self.select(NoteOrigin::Input(input, expression), pitch, velocity)
         }
     }
 
     pub(super) fn trigger_child(
         &mut self,
         parent: NoteId,
-        key: u8,
+        pitch: NotePitch,
         velocity: f64,
         linked: bool,
         inheritance: super::Inheritance,
     ) -> Result<NoteId, Error> {
         self.select(
             NoteOrigin::Child(parent, linked, inheritance),
-            key,
+            pitch,
             velocity,
         )
     }
 
-    fn select(&mut self, origin: NoteOrigin, key: u8, velocity: f64) -> Result<NoteId, Error> {
+    fn select(
+        &mut self,
+        origin: NoteOrigin,
+        note_pitch: NotePitch,
+        velocity: f64,
+    ) -> Result<NoteId, Error> {
         self.apply_due();
-        if key >= 128 || !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
+        if !note_pitch.valid() || !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
             return Err(Error::InvalidInput);
         }
         let plan = match origin {
@@ -335,7 +380,7 @@ impl Runtime {
             .get(plan.0)
             .unwrap()
             .prepared
-            .matches(key, velocity)
+            .matches(note_pitch, velocity)
         {
             pitch.apply(step)?;
             count += 1;
@@ -345,10 +390,10 @@ impl Runtime {
         }
         let note = match origin {
             NoteOrigin::Input(input, expression) => {
-                self.note_on_with_expression(input, key, velocity, expression)?
+                self.note_on_pitched(input, note_pitch, velocity, expression)?
             }
             NoteOrigin::Child(parent, linked, inheritance) => {
-                self.child(parent, key, velocity, linked, inheritance)?
+                self.child_pitched(parent, note_pitch, velocity, linked, inheritance)?
             }
         };
         if count == 0 {
@@ -357,6 +402,7 @@ impl Runtime {
         // Everything below was validated by Prepared and preflight. No callbacks,
         // concurrent writers or newly due work can consume the reserved resources.
         let family = self.create_family(note).expect("preflight family capacity");
+        let key = note_pitch.key();
         let prepared = &self.plans.get(plan.0).unwrap().prepared;
         let begin = prepared.offsets[key as usize];
         let end = prepared.offsets[key as usize + 1];
@@ -365,13 +411,14 @@ impl Runtime {
             let candidate = prepared.candidates[i];
             let r = prepared.regions[candidate.region];
             if r.velocity_low <= velocity && velocity <= r.velocity_high {
+                let step = prepared.step(candidate, note_pitch);
                 self.admit_voice(
                     family,
                     r.sample,
                     self.now,
                     r.gain * velocity as f32,
                     r.envelope,
-                    r.cursor.with_step(candidate.step),
+                    r.cursor.with_step(step),
                 )
                 .expect("prepared and preflighted source admission");
             }

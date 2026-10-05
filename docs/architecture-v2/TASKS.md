@@ -33,6 +33,9 @@ Family/expression ownership and segmented rendering now have
 - [x] Compile native per-key tuning with explicit future-root adoption, retained
   descendant tuning and no render-time table lookup; external protocols and live
   retuning remain open. See [native tuning](RESAMPLING.md#prepared-native-tuning).
+- [x] Separate inherent absolute pitch from key tuning and live expression; consume
+  MIDI 2 Pitch 7.9 attributes with physical pairing intact and retain fractional
+  pitch through generated-note transposition. Per-note controllers remain open.
 - [x] Add bounded fixed-zone MPE note/pitch/pressure/timbre projection, physical key-up snapshots,
   runtime identity, whole-semitone RPN sensitivity, zone pedals and atomic gestures; [partial receiver scope](MIDI_INGRESS.md).
 
