@@ -517,3 +517,40 @@ All four native debug/release/MSRV/strict-Clippy checks and the root boundary pa
 nine controller tests include an independent multidimensional grid and exact-capacity
 exclusive releases at both unsigned endpoints. The source example now allocates
 `base_slots * 2` for this release case; only retained prior binaries use `* 65`.
+
+## Note state and release callback admission (2026-10-06)
+
+Compared the saved controller-bound executable (`5d6bab8`) with native note-state
+and release callback dispatch (`dd32ea2`). The first three paired CPU-2 runs found
+plain admission regressions around 20–33% while note-off/retirement stayed close.
+The unconfigured path was still doing callback preflight and an empty note-state
+clear. An early no-bindings return and zero-stride guard remove that unnecessary
+work without changing configured callback/state execution.
+
+A fresh three-pair alternating-order run after the correction gives the following
+median-of-medians, in microseconds. `conditioned` enables 64 exclusive CC groups,
+shuffle and release layers. Both executables check actual note/voice/decision counts,
+release reservations and terminals. The workload does not enable scripting; these
+measurements constrain its unconfigured overhead, not the cost of executing scripts.
+
+| Mode | Notes / reserved source slots | Admission before → corrected | Note-off before → corrected |
+| --- | --- | --- | --- |
+| plain | 16 / 64 | 2.940 → 2.930 | 2.210 → 2.220 |
+| plain | 64 / 256 | 11.680 → 11.560 | 19.571 → 19.851 |
+| plain | 256 / 1024 | 48.381 → 47.671 | 262.865 → 259.575 |
+| plain | 1024 / 4096 | 236.795 → 233.314 | 3911.503 → 3938.833 |
+| plain | 16 / 4096 | 2.950 → 2.990 | 61.081 → 60.521 |
+| conditioned | 16 / 128 | 22.100 → 22.131 | 13.191 → 13.180 |
+| conditioned | 64 / 512 | 86.122 → 86.062 | 64.721 → 64.511 |
+| conditioned | 256 / 2048 | 359.027 → 359.457 | 451.808 → 450.859 |
+| conditioned | 1024 / 8192 | 1461.698 → 1475.357 | 4819.400 → 4817.040 |
+| conditioned | 16 / 8192 | 22.031 → 21.981 | 72.691 → 72.091 |
+
+The corrected results are close to the before version; differences this small are
+not a general speedup claim. Large FIFO note-off bursts still approach 4–5 ms on
+this workload and remain an open performance concern. Runs were serial on CPU 2,
+with no local builds/tests concurrent; other system activity remains uncontrolled.
+This is not host deadline certification. CSVs use `artifacts/note-behavior-fast-*`;
+initial regressed data and binaries remain retained for comparison.
+
+Corrected executable SHA-256: `2ba447cab7e5879b23973cf2f88535877e948900143a886c2c2bf9b6215b3b50`.

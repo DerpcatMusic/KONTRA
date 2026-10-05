@@ -87,6 +87,9 @@ impl Runtime {
         }
         let prepared = &self.plans.get(self.active_plan.0).unwrap().prepared;
         let (on_note, on_release) = (prepared.note_program, prepared.release_program);
+        if on_note.is_none() && on_release.is_none() {
+            return self.select(NoteOrigin::Input(input, expression, index), pitch, velocity);
+        }
         let callbacks = usize::from(on_note.is_some()) + usize::from(on_release.is_some());
         if self.behaviors.available() < callbacks {
             return Err(Error::Capacity);
