@@ -94,7 +94,7 @@ fn family_choke_captures_each_layer_and_preserves_siblings_at_every_partition() 
             assert!(rt.note(note).unwrap().2 && rt.key_down(note).unwrap());
             rt.stop_family(sibling).unwrap();
             rt.flush_ended(|_| panic!("choking sources must not release their physical key"));
-            rt.note_off(input()).unwrap();
+            rt.note_off(input(), None).unwrap();
             rt.flush_ended(|_| false);
             assert_eq!(rt.note_count(), 1);
             rt.flush_ended(|_| true);
@@ -214,7 +214,7 @@ fn choke_preserves_loop_phase_and_muted_tail_duration() {
                 [0., 1., 2., 3., 3., 0., 0.25, 0.].map(|v| [v * gain; 2])
             );
             assert_eq!((rt.voice_count(), rt.family_count()), (0, 0));
-            rt.note_off(input()).unwrap();
+            rt.note_off(input(), None).unwrap();
             rt.flush_ended(|_| true);
             assert_eq!(rt.note_count(), 0);
         });
@@ -238,7 +238,7 @@ fn natural_completion_cancels_scheduled_choke_without_pinning_or_retargeting() {
         .unwrap();
         rt.finish_family(old).unwrap();
         rt.schedule_event(8, Event::ChokeFamily(old, 0)).unwrap();
-        rt.note_off(input()).unwrap();
+        rt.note_off(input(), None).unwrap();
         rt.render(&mut [[0.; 2]; 2]).unwrap();
         assert_eq!(rt.family_count(), 0);
         rt.flush_ended(|_| true);
@@ -270,7 +270,7 @@ fn natural_completion_cancels_scheduled_choke_without_pinning_or_retargeting() {
         assert_eq!(rt.pending_commands(), 0);
         rt.choke_family(replacement, 0).unwrap();
         assert_eq!(rt.family_count(), 0);
-        rt.note_off(input()).unwrap();
+        rt.note_off(input(), None).unwrap();
         rt.flush_ended(|_| true);
         assert_eq!(rt.note_count(), 0);
     });
@@ -306,7 +306,7 @@ fn equal_time_source_start_and_choke_obey_submission_order() {
                 (0, 0, 0)
             );
             assert!(rt.note(note).unwrap().2);
-            rt.note_off(input()).unwrap();
+            rt.note_off(input(), None).unwrap();
             rt.flush_ended(|_| true);
             assert_eq!(rt.note_count(), 0);
         });
@@ -343,7 +343,7 @@ fn immediate_choke_needs_no_queue_capacity_and_failed_scheduling_is_atomic() {
         let empty = rt.create_family(note).unwrap();
         rt.choke_family(empty, u32::MAX).unwrap();
         assert_eq!(rt.family_count(), 0);
-        rt.note_off(input()).unwrap();
+        rt.note_off(input(), None).unwrap();
         rt.flush_ended(|_| true);
         assert_eq!((rt.note_count(), rt.pending_commands()), (0, 0));
     });

@@ -3,7 +3,8 @@ use super::{ChannelId, Error, Expression, FamilyId, NoteId, Runtime, VoiceId};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
-    KeyUp(NoteId),
+    /// Physical key-up with optional normalized release velocity.
+    KeyUp(NoteId, Option<f64>),
     Release(NoteId),
     /// Fade a family over at most this many frames. Natural completion before
     /// execution cancels the action; it never pins or retargets a reused family.
@@ -37,13 +38,14 @@ impl Runtime {
             self.apply_due();
         }
         match event {
-            Event::KeyUp(id) => {
-                if !self.notes.get(id.0).ok_or(Error::StaleHandle)?.key_down {
+            Event::KeyUp(id, velocity) => {
+                super::release::validate_velocity(velocity)?;
+                if !self.notes.get(id.0).ok_or(Error::StaleHandle)?.key_down() {
                     return Err(Error::ClosedNote);
                 }
             }
             Event::Release(id) | Event::Expression(id, _) => {
-                if !self.notes.get(id.0).ok_or(Error::StaleHandle)?.gate {
+                if !self.notes.get(id.0).ok_or(Error::StaleHandle)?.gate() {
                     return Err(Error::ClosedNote);
                 }
             }
@@ -96,11 +98,11 @@ impl Runtime {
 
     fn apply_event(&mut self, event: Event) {
         match event {
-            Event::KeyUp(id) => {
-                self.key_up_now(id).unwrap();
+            Event::KeyUp(id, velocity) => {
+                self.key_up_now(id, velocity).unwrap();
             }
             Event::Release(id) => {
-                self.release_now(id).unwrap();
+                self.release_now(id, super::ReleaseCause::Explicit).unwrap();
             }
             Event::ChokeFamily(id, frames) => self.choke_family_now(id, frames),
             Event::Expression(id, value) => {
@@ -143,7 +145,7 @@ impl Runtime {
                 let c = self.behaviors.get_mut(id.0).unwrap();
                 if c.outcome.is_some() {
                     false
-                } else if notes.get(c.note.0).unwrap().gate
+                } else if notes.get(c.note.0).unwrap().gate()
                     || self
                         .plans
                         .get(notes.get(c.note.0).unwrap().plan.0)
@@ -160,12 +162,12 @@ impl Runtime {
                 }
             }
             Action::Start(v) => self.voices.get(v.0).is_some(),
-            Action::Event(Event::KeyUp(n)) => notes.get(n.0).is_some_and(|n| n.key_down),
-            Action::Event(Event::Release(n)) => notes.get(n.0).is_some_and(|n| n.gate),
+            Action::Event(Event::KeyUp(n, _)) => notes.get(n.0).is_some_and(|n| n.key_down()),
+            Action::Event(Event::Release(n)) => notes.get(n.0).is_some_and(|n| n.gate()),
             Action::Event(Event::ChokeFamily(id, _)) => self.families.get(id.0).is_some(),
             Action::Event(Event::Expression(id, _)) => {
                 let n = notes.get_mut(id.0).unwrap(); // Work pins cannot be consumed by public unpin().
-                if n.gate {
+                if n.gate() {
                     true
                 } else {
                     n.work -= 1;

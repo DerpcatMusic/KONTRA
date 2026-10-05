@@ -183,7 +183,7 @@ impl Runtime {
     pub fn create_family(&mut self, note: NoteId) -> Result<FamilyId, Error> {
         self.apply_due();
         let n = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
-        if !n.gate {
+        if !n.gate() {
             return Err(Error::ClosedNote);
         }
         let count = n.families.checked_add(1).ok_or(Error::Capacity)?;
@@ -349,8 +349,8 @@ impl Runtime {
         // Each removal visits its parent once. No recursion, scratch queue or
         // repeated pool scans: O(reserved slots + retired notes).
         while let Some(n) = self.notes.get(id.0).copied() {
-            if n.gate
-                || (n.input.is_some() && n.key_down)
+            if n.gate()
+                || (n.input.is_some() && n.key_down())
                 || n.pins != 0
                 || n.work != 0
                 || n.families != 0

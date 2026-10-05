@@ -127,7 +127,8 @@ fn member_pitch_freezes_at_physical_key_up_and_manager_still_reaches_tails() {
             );
             // A native scheduled key-up is authoritative too; the adapter keeps
             // no competing key state, and due work executes before the controller.
-            rt.schedule_event(8, Event::KeyUp(overlapping)).unwrap();
+            rt.schedule_event(8, Event::KeyUp(overlapping, None))
+                .unwrap();
             rt.render(&mut [[0.0; 2]; 8]).unwrap();
             assert_eq!(
                 apply(&mut mpe, &mut rt, bend(member, 8192)),
@@ -476,7 +477,7 @@ fn manager_pedals_capture_the_zone_once_and_member_pedals_are_ignored() {
                     external_id: None,
                 };
                 let outside = rt.trigger(input, 60, 1.0).unwrap();
-                rt.note_off(input).unwrap();
+                rt.note_off(input, None).unwrap();
                 assert!(!rt.note(outside).unwrap().2);
             }
             apply(&mut mpe, &mut rt, packet(0x80, a, 60, 0)).unwrap();
@@ -634,4 +635,34 @@ fn mpe_drives_prepared_native_modulation_and_muted_sources_keep_their_position()
             (0, 0, 0)
         );
     });
+}
+
+#[test]
+fn mpe_retains_release_velocity_for_both_zones_and_distinguishes_zero_note_on() {
+    for (zone, member) in [(Zone::Lower, 1), (Zone::Upper, 14)] {
+        let mut rt = runtime();
+        let mut mpe = Mpe::new(&rt, 7, 3, zone, 2, 8).unwrap();
+        support::without_heap(|| {
+            for (status, value, expected) in [
+                (0x80, 17, Some(17. / 127.)),
+                (0x80, 0, Some(0.)),
+                (0x90, 0, None),
+            ] {
+                let note = start(&mut mpe, &mut rt, member, 60);
+                let at = rt.now() + 2;
+                rt.render(&mut [[0.; 2]; 2]).unwrap();
+                apply(&mut mpe, &mut rt, packet(status, member, 60, value)).unwrap();
+                assert_eq!(
+                    rt.release_context(note).unwrap().key,
+                    Some(sampler_core::KeyRelease {
+                        at,
+                        velocity: expected,
+                        cause: sampler_core::ReleaseCause::KeyUp,
+                    })
+                );
+                rt.panic();
+                rt.flush_ended(|_| true);
+            }
+        });
+    }
 }

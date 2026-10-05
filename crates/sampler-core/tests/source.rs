@@ -151,7 +151,7 @@ fn release_at_loop_boundary_exits_without_extra_cycle_in_both_directions() {
                 ..Playback::default()
             });
             let n = rt.trigger(input(1), 60, 1.0).unwrap();
-            rt.schedule_event(at, Event::KeyUp(n)).unwrap();
+            rt.schedule_event(at, Event::KeyUp(n, None)).unwrap();
             let mut audio = [[0.; 2]; 10];
             for block in audio.chunks_mut(partition) {
                 rt.render(block).unwrap();

@@ -213,7 +213,10 @@ impl Mpe {
                 velocity,
                 attribute,
             } => Applied::Released {
-                note: runtime.note_off(Input { key, ..input })?,
+                note: runtime.note_off(
+                    Input { key, ..input },
+                    velocity.map(crate::Value::normalized),
+                )?,
                 velocity,
                 attribute,
             },

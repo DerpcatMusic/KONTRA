@@ -93,7 +93,10 @@ impl Ingress {
                 attribute,
             } => {
                 // Unknown release attributes must not strand a sounding note.
-                let note = runtime.note_off(Input { key, ..input })?;
+                let note = runtime.note_off(
+                    Input { key, ..input },
+                    velocity.map(crate::Value::normalized),
+                )?;
                 Applied::Released {
                     note,
                     velocity,

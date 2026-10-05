@@ -21,8 +21,10 @@ Floating-point projection happens only on an explicit consumer request.
 The current musical ingress applies ordinary notes, MIDI 2.0 Pitch 7.9 note attributes, sustain/sostenuto and
 zero-valued CC123 (All Notes Off) and CC120 (All Sound Off).
 Full input address and protocol reach the core's physical-note matching; note-off
-uses its FIFO overlap policy. Release velocity and attributes are returned to the
-caller. Unknown release attributes do not strand a note. Unsupported Note On
+uses its FIFO overlap policy. Optional normalized release velocity reaches the
+[note-owned release context](RELEASE_CONTEXT.md); raw velocity and attributes are
+also returned to the caller. Both ordinary ingress and fixed-zone MPE preserve
+missing velocity separately from zero. Unknown release attributes do not strand a note. Unsupported Note On
 attributes return `Unsupported` without creating a partial note.
 
 This is partial V2-02/V2-15 evidence, **not full MIDI 2.0 support**. Per-note and

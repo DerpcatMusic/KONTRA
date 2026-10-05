@@ -125,6 +125,9 @@ Family/expression ownership and segmented rendering now have
 
 - **Partial evidence:** binary sustain/sostenuto and physical/effective key separation
   now execute through the shared timeline; see [scheduling evidence](SCHEDULING_SLICE.md).
+  [Retained release context](RELEASE_CONTEXT.md) preserves sample times, optional
+  velocity and distinct musical/cleanup causes through source EOF, pedal hold,
+  plan replacement and terminal rejection. Release-family reserves remain open.
 
 - [ ] **P0; dependencies:** V2-03/04/05.
 - Separate physical key, gate, sostenuto capture and source release. Specify and

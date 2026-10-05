@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Retain logical admission, key-up and gate-closure times with distinct musical/cleanup causes in note-owned release context. MIDI 1/2 and MPE preserve optional release velocity through pedals, source EOF, plan replacement and terminal retry; key/gate state derives from these records. Automatic release-region selection remains open.
+
 - Add explicit seeded random, no-repeat and shuffle policies to native scoped take selection. Draws and bag swaps commit only after successful admission; shuffle storage is budgeted and prepared on control, with bounded callback work and original-generation ownership.
 
 - Add coordinated native sequential takes with global/key/channel/channel-key scopes, transactional multi-family admission and separately budgeted note-owned decision history. Mutable sequence state travels with prepared generations for off-audio retirement; old delayed children retain their original sequence after replacement.

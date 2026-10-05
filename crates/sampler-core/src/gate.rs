@@ -1,5 +1,5 @@
 //! Physical keys and effective gates. Pedal policy is native, not vendor emulation.
-use super::{Error, Handle, Input, NoteId, Protocol, Runtime};
+use super::{Error, Handle, Input, NoteId, Protocol, ReleaseCause, Runtime};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChannelAddress {
@@ -80,7 +80,7 @@ impl Runtime {
     }
 
     pub fn key_down(&self, note: NoteId) -> Result<bool, Error> {
-        Ok(self.notes.get(note.0).ok_or(Error::StaleHandle)?.key_down)
+        Ok(self.notes.get(note.0).ok_or(Error::StaleHandle)?.key_down())
     }
 
     pub fn sustain(&mut self, channel: ChannelId, down: bool) -> Result<(), Error> {
@@ -183,14 +183,15 @@ impl Runtime {
             let Some(note) = &mut self.notes.slots[i].value else {
                 continue;
             };
-            if note.key_down
+            if note.key_down()
                 && note
                     .input
                     .is_some_and(|input| input.channel_address() == address)
             {
-                note.key_down = false;
-                if !sustained && !note.sostenuto {
-                    self.close_gate(super::NoteId(self.notes.id(i)));
+                let held = sustained || note.sostenuto;
+                self.release_key(NoteId(self.notes.id(i)), ReleaseCause::AllNotesOff, None);
+                if !held {
+                    self.close_gate(super::NoteId(self.notes.id(i)), ReleaseCause::AllNotesOff);
                 }
                 released += 1;
             }
@@ -213,9 +214,9 @@ impl Runtime {
             {
                 note.sostenuto = false;
                 if note.input.is_none() {
-                    note.key_down = false;
+                    self.release_key(NoteId(self.notes.id(i)), ReleaseCause::AllSoundOff, None);
                 }
-                self.close_gate(super::NoteId(self.notes.id(i)));
+                self.close_gate(super::NoteId(self.notes.id(i)), ReleaseCause::AllSoundOff);
             }
         }
         for slot in &mut self.behaviors.slots {
@@ -245,13 +246,15 @@ impl Runtime {
         Ok(stopped)
     }
 
-    /// Physical key release respects pedals. Explicit release() bypasses them.
-    pub fn key_up(&mut self, note: NoteId) -> Result<(), Error> {
+    /// Key release respects pedals; velocity is normalized, None means absent.
+    /// Explicit release() bypasses pedals. Repeated key-up retains the first record.
+    pub fn key_up(&mut self, note: NoteId, velocity: Option<f64>) -> Result<(), Error> {
         self.apply_due();
-        self.key_up_now(note)
+        self.key_up_now(note, velocity)
     }
 
-    pub(super) fn key_up_now(&mut self, note: NoteId) -> Result<(), Error> {
+    pub(super) fn key_up_now(&mut self, note: NoteId, velocity: Option<f64>) -> Result<(), Error> {
+        super::release::validate_velocity(velocity)?;
         let n = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
         let sustained = n.input.is_some_and(|i| {
             self.channels.slots.iter().any(|s| {
@@ -260,9 +263,10 @@ impl Runtime {
             })
         });
         let held = sustained || n.sostenuto;
-        self.notes.get_mut(note.0).unwrap().key_down = false;
+        self.release_key(note, ReleaseCause::KeyUp, velocity);
         if !held {
-            self.release_now(note)?;
+            self.close_gate(note, ReleaseCause::KeyUp);
+            self.cleanup_closed_notes();
         } else {
             // Key-up may resolve a physically retained but already silenced input.
             // Remove later key-up commands before that owner can retire.
@@ -311,14 +315,14 @@ impl Runtime {
                 continue;
             };
             let bit = 1 << input.channel;
-            if rising & bit != 0 && n.key_down && n.gate {
+            if rising & bit != 0 && n.key_down() && n.gate() {
                 n.sostenuto = true;
             }
             if sostenuto && !down {
                 n.sostenuto = false;
             }
-            if !n.key_down && sustained & bit == 0 && !n.sostenuto {
-                self.close_gate(super::NoteId(self.notes.id(i)));
+            if !n.key_down() && sustained & bit == 0 && !n.sostenuto {
+                self.close_gate(super::NoteId(self.notes.id(i)), ReleaseCause::Pedal);
             }
         }
         self.cleanup_closed_notes();

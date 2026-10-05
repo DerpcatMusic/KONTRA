@@ -119,10 +119,13 @@ fn main() {
             let begin = Instant::now();
             for note in 0..notes {
                 black_box(
-                    rt.note_off(Input {
-                        external_id: identified.then_some(note as i32),
-                        ..input
-                    })
+                    rt.note_off(
+                        Input {
+                            external_id: identified.then_some(note as i32),
+                            ..input
+                        },
+                        None,
+                    )
                     .unwrap(),
                 );
             }
