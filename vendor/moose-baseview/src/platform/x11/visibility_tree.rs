@@ -233,6 +233,23 @@ impl AncestorVisibilityState {
         let mut rechecked_children = Vec::new();
 
         loop {
+            // Subscribe before taking the snapshot: a host can map an ancestor
+            // while its own parent has not yet been visited. StructureNotify
+            // observes that ancestor directly, closing the discovery race.
+            // The child already has its input mask; never replace it here.
+            let mut subscription_failed = false;
+            if ancestry.own_window_id().is_some_and(|id| id != current_window) {
+                if let Err(e) =
+                    connection.register_tree_structure_events_for_window(current_window)?.check()
+                {
+                    crate::warn!(
+                        "Could not register structure events for window {}: {}",
+                        current_window,
+                        e
+                    );
+                    subscription_failed = true;
+                }
+            }
             let Some((mut mapped, tree)) = fetch_window_info(connection, current_window)? else {
                 // We got a BadWindow while trying to get a window's info, it must have been destroyed.
                 // Try to go back a layer and fetch the window's state and parent again
@@ -265,6 +282,14 @@ impl AncestorVisibilityState {
                 continue;
             };
 
+            #[cfg(test)]
+            tests::after_snapshot(current_window);
+
+            if subscription_failed {
+                // Preserve the existing fallback when events cannot be selected.
+                mapped = true;
+            }
+
             if tree.parent == current_window.get() {
                 // Weird, but that might also mean we're at the end of the tree (or the window has no parent yet)
                 break;
@@ -293,20 +318,6 @@ impl AncestorVisibilityState {
                 }
             }
 
-            if ancestry.own_window_id().is_some_and(|id| id != current_window) {
-                // Despite what's documented, all windows down the parent tree must have the event mask
-                // bit set, otherwise events are not propagated through to us.
-                if let Err(e) =
-                    connection.register_tree_structure_events_for_window(current_window)?.check()
-                {
-                    crate::warn!(
-                        "Could not register SubstructureNotify event for window {}: {}",
-                        current_window,
-                        e
-                    );
-                    mapped = true; // Assume it is mapped, since we'll possibly not get any events from this window
-                }
-            }
 
             // All checks succeeded, now register the current window info and fetch info from the parent
             ancestry.push(Ancestor { id: current_window, mapped: mapped.into() });
@@ -364,4 +375,116 @@ fn fetch_window_info(
     };
 
     Ok(Some((mapped, tree)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::rc::Rc;
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{CreateWindowAux, EventMask, WindowClass};
+    use x11rb::protocol::Event;
+
+    type SnapshotHook = (NonZeroU32, Box<dyn FnOnce()>);
+    thread_local! {
+        static AFTER_SNAPSHOT: RefCell<Option<SnapshotHook>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn after_snapshot(window: NonZeroU32) {
+        let hook = AFTER_SNAPSHOT.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if slot.as_ref().is_some_and(|(target, _)| *target == window) {
+                slot.take().map(|(_, hook)| hook)
+            } else {
+                None
+            }
+        });
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    struct ResetHook;
+    impl Drop for ResetHook {
+        fn drop(&mut self) {
+            AFTER_SNAPSHOT.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+
+    fn create_window(host: &X11Connection, parent: NonZeroU32) -> NonZeroU32 {
+        let screen = host.default_screen();
+        let id = NonZeroU32::new(host.conn.generate_id().unwrap()).unwrap();
+        host.conn.create_window(
+            screen.root_depth, id.get(), parent.get(), 0, 0, 64, 64, 0,
+            WindowClass::INPUT_OUTPUT, screen.root_visual,
+            &CreateWindowAux::new().background_pixel(screen.black_pixel),
+        ).unwrap().check().unwrap();
+        id
+    }
+
+    #[test]
+    #[ignore = "requires an isolated X11 server; see external REAPER ancestor-race recipe"]
+    fn map_between_ancestor_snapshot_and_parent_subscription_is_not_lost() {
+        let host = Rc::new(X11Connection::new().unwrap());
+        let root = NonZeroU32::new(host.default_screen().root).unwrap();
+        let top = create_window(&host, root);
+        let parent = create_window(&host, top);
+        let child = create_window(&host, parent);
+        host.conn.map_window(top.get()).unwrap().check().unwrap();
+        assert_eq!(host.conn.get_window_attributes(top.get()).unwrap().reply().unwrap().map_state,
+            MapState::VIEWABLE);
+
+        let observer = X11Connection::new().unwrap();
+        observer.register_tree_structure_events().unwrap().check().unwrap();
+        // These are already selected by XcbWindow::new for a real editor.
+        let own_mask = EventMask::STRUCTURE_NOTIFY | EventMask::EXPOSURE | EventMask::KEY_PRESS;
+        observer.conn.change_window_attributes(child.get(),
+            &x11rb::protocol::xproto::ChangeWindowAttributesAux::new().event_mask(own_mask)
+        ).unwrap().check().unwrap();
+
+        let _reset = ResetHook;
+        let fired = Rc::new(Cell::new(false));
+        let fired_at_snapshot = Rc::clone(&fired);
+        let host_at_snapshot = Rc::clone(&host);
+        AFTER_SNAPSHOT.with(|slot| *slot.borrow_mut() = Some((parent, Box::new(move || {
+            // Actual production discovery has read parent=UNMAPPED. Its own
+            // parent has not been subscribed yet. A second client now maps it.
+            host_at_snapshot.conn.map_window(parent.get()).unwrap().check().unwrap();
+            assert_eq!(host_at_snapshot.conn.get_window_attributes(parent.get())
+                .unwrap().reply().unwrap().map_state, MapState::VIEWABLE);
+            fired_at_snapshot.set(true);
+        }))));
+        let visibility = AncestorVisibilityState::discover(&observer, child, true).unwrap();
+        assert!(fired.get(), "actual discovery must cross the targeted snapshot seam");
+
+        // This is the later show operation, after discover has returned.
+        host.conn.map_window(child.get()).unwrap().check().unwrap();
+        let server_state = host.conn.get_window_attributes(child.get()).unwrap().reply().unwrap().map_state;
+        assert_eq!(server_state, MapState::VIEWABLE, "host has made the real child viewable");
+        // A reply on the observing connection also drains preceding server events.
+        observer.conn.get_input_focus().unwrap().reply().unwrap();
+        let mut mapped_events = 0;
+        while let Some(event) = observer.conn.poll_for_event().unwrap() {
+            match event {
+                Event::MapNotify(e) => {
+                    mapped_events += 1;
+                    if let Some(id) = NonZeroU32::new(e.window) {
+                        visibility.window_mapped(id);
+                    }
+                }
+                Event::UnmapNotify(e) => {
+                    if let Some(id) = NonZeroU32::new(e.window) {
+                        visibility.window_unmapped(id);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let preserved_mask = observer.conn.get_window_attributes(child.get()).unwrap().reply().unwrap().your_event_mask;
+        assert_eq!(preserved_mask, own_mask, "ancestor subscription must preserve the child's input mask");
+        eprintln!("X11_ANCESTOR_RACE server={server_state:?} cached={} map_events={mapped_events} seam_fired={}",
+            visibility.own_window_is_viewable(), fired.get());
+        assert!(visibility.own_window_is_viewable(),
+            "a server-viewable child must not remain suppressed by a missed ancestor map");
+    }
 }

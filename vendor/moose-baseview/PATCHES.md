@@ -23,3 +23,25 @@ xvfb-run -a cargo test --locked -p kontra-native-host \
 The application MUI source patch consumes this package. New MUI parent-before/
 after-map pixel tests cover a different transition and must also pass before
 deployment. This local preservation does not claim complete DAW validation.
+
+## Nested ancestor map discovery race
+
+On Linux, the cached ancestor map state gates native `on_frame` and the first
+GPU initialization. In a nested root → outer → parent → editor tree, mapping
+an ancestor between its state snapshot and subscription on its own parent
+could lose `MapNotify` and suppress a server-viewable editor indefinitely.
+
+Foreign ancestors now select both `StructureNotify` and `SubstructureNotify`
+before their state/tree snapshot. The editor's own event mask and the root
+subscription are preserved. Existing root-reparent repair, subscription-error
+fallback, and native late-map/reparent tests remain in place.
+
+The ignored library regression
+`map_between_ancestor_snapshot_and_parent_subscription_is_not_lost` uses a
+second X11 connection and a test-only seam in the actual discovery function
+to force that map ordering. It checks server viewability, cached viewability,
+and preservation of the editor's input mask. Run it on a private X11 server,
+alongside the existing native integration tests. A controlled original/fixed
+run reproduced `VIEWABLE` with cached false before and cached true afterward;
+the dependency lock and stimulus were identical. This proves the discovery
+race and its fix, but does not establish the cause of a particular DAW session.
