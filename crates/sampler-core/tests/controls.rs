@@ -354,3 +354,179 @@ fn bounded_ui_handoff_retains_payloads_and_acknowledges_conflicts_without_heap()
     });
     drop(rt); // Unconsumed payloads destroyed off audio after processing stops.
 }
+
+#[test]
+fn plan_callbacks_are_independent_of_notes_and_retain_generations_until_acknowledged() {
+    let code = vec![
+        Instruction::ReadControl {
+            local: 0,
+            control: MODE,
+        },
+        Instruction::Wait(5),
+        Instruction::WriteControl {
+            control: MODE,
+            local: 0,
+        },
+        Instruction::End,
+    ];
+    let prepared = plan(definitions())
+        .with_programs(
+            vec![
+                Program::new(code)
+                    .unwrap()
+                    .with_wait_lifetime(WaitLifetime::Callback),
+            ],
+            None,
+        )
+        .unwrap()
+        .with_control_programs(vec![(MODE, 0)])
+        .unwrap();
+    let (rt, mut transfer) = Runtime::with_plan_updates(prepared, limits(), 2, 1).unwrap();
+    let (mut rt, mut client) = rt.with_control_updates(1, 1).unwrap();
+    let old = rt.active_plan();
+    client
+        .submit(ControlRequest {
+            plan: old,
+            expected_revision: Some(0),
+            operation: ControlOperation::Invoke(write(MODE, ControlValue::Integer(11))),
+        })
+        .unwrap();
+    support::without_heap(|| {
+        assert_eq!(rt.poll_control_update(), Ok(Some(1)));
+    });
+    let reply = client.reply().unwrap();
+    let first = reply.behavior.unwrap();
+    assert_eq!(reply.result, Ok((1, 1)));
+    drop(reply);
+    let mut second = None;
+    support::without_heap(|| {
+        second = rt
+            .invoke_control(old, Some(1), write(MODE, ControlValue::Integer(12)))
+            .unwrap()
+            .1;
+        assert_eq!(rt.note_count(), 0);
+        assert_eq!(rt.expression_count(), 0);
+        assert_eq!(rt.behavior_local(first, 0), Ok(11));
+        assert_eq!(rt.behavior_local(second.unwrap(), 0), Ok(12));
+        // Saturation cannot change the value even though the value itself is valid.
+        assert_eq!(
+            rt.invoke_control(old, None, write(MODE, ControlValue::Integer(99))),
+            Err(Error::Capacity)
+        );
+        assert_eq!(rt.control_value(old, MODE), Ok(ControlValue::Integer(12)));
+    });
+    transfer.submit(Box::new(plan(definitions()))).unwrap();
+    support::without_heap(|| {
+        rt.poll_plan_update().unwrap();
+        assert_eq!(rt.plan_count(), 2);
+        // MIDI channel cleanup cannot accidentally cancel a UI callback.
+        rt.all_sound_off(ChannelAddress {
+            protocol: Protocol::Native,
+            port: 0,
+            group: 0,
+            channel: 0,
+        })
+        .unwrap();
+        rt.render(&mut [[0.; 2]; 6]).unwrap();
+        assert_eq!(rt.behavior_outcome(first), Ok(Some(Outcome::Finished)));
+        assert_eq!(
+            rt.behavior_outcome(second.unwrap()),
+            Ok(Some(Outcome::Finished))
+        );
+        assert_eq!(rt.control_value(old, MODE), Ok(ControlValue::Integer(12)));
+        assert_eq!(rt.control_revision(old), Ok(4));
+        assert_eq!(
+            rt.control_value(rt.active_plan(), MODE),
+            Ok(ControlValue::Integer(3))
+        );
+        assert_eq!(rt.collect_retired_plans(), 0);
+        rt.flush_behaviors(|_, owner, _| {
+            assert_eq!(owner, BehaviorOwner::Plan(old));
+            false
+        });
+        assert_eq!(rt.collect_retired_plans(), 0);
+        rt.flush_behaviors(|_, _, _| true);
+        assert_eq!(rt.collect_retired_plans(), 1);
+        assert_eq!(rt.control_value(old, MODE), Err(Error::StaleHandle));
+        assert_eq!(rt.behavior_local(first, 0), Err(Error::StaleHandle));
+    });
+    drop(transfer.retired().unwrap());
+}
+
+#[test]
+fn plan_callback_faults_cancel_without_touching_musical_owners_or_leaking_work() {
+    let programs = vec![
+        Program::new(vec![Instruction::Wait(9), Instruction::End])
+            .unwrap()
+            .with_wait_lifetime(WaitLifetime::Callback),
+        Program::new(vec![Instruction::Jump { target: 0 }])
+            .unwrap()
+            .with_wait_lifetime(WaitLifetime::Callback),
+        Program::new(vec![
+            Instruction::SetLocal {
+                local: 0,
+                value: i64::MAX,
+            },
+            Instruction::AddLocal { local: 0, value: 1 },
+        ])
+        .unwrap()
+        .with_wait_lifetime(WaitLifetime::Callback),
+        Program::new(vec![Instruction::ReadKey { local: 0 }])
+            .unwrap()
+            .with_wait_lifetime(WaitLifetime::Callback),
+        Program::new(vec![Instruction::Wait(9)]).unwrap(),
+    ];
+    let prepared = plan(definitions()).with_programs(programs, None).unwrap();
+    let mut rt = Runtime::new(prepared, limits()).unwrap();
+    let generation = rt.active_plan();
+    support::without_heap(|| {
+        let note = rt
+            .note_on(
+                Input {
+                    protocol: Protocol::Native,
+                    port: 0,
+                    group: 0,
+                    channel: 0,
+                    key: 60,
+                    external_id: None,
+                },
+                60,
+                1.,
+            )
+            .unwrap();
+        for program in [3, 4, 5] {
+            assert_eq!(
+                rt.start_plan_behavior(generation, program),
+                Err(Error::InvalidInput)
+            );
+        }
+        for (program, expected) in [
+            (1, Outcome::FuelExhausted),
+            (2, Outcome::Fault(Error::ArithmeticOverflow)),
+        ] {
+            let id = rt.start_plan_behavior(generation, program).unwrap();
+            assert_eq!(rt.behavior_outcome(id), Ok(Some(expected)));
+            assert!(rt.note(note).unwrap().2);
+            rt.flush_behaviors(|_, owner, outcome| {
+                assert_eq!(owner, BehaviorOwner::Plan(generation));
+                assert_eq!(outcome, expected);
+                true
+            });
+        }
+        let id = rt.start_plan_behavior(generation, 0).unwrap();
+        assert_eq!(rt.pending_commands(), 1);
+        rt.cancel_behavior(id).unwrap();
+        assert_eq!(rt.pending_commands(), 0);
+        assert_eq!(rt.behavior_outcome(id), Ok(Some(Outcome::Cancelled)));
+        assert!(rt.note(note).unwrap().2);
+        rt.flush_behaviors(|_, _, _| true);
+        let next = rt.start_plan_behavior(generation, 0).unwrap();
+        assert_ne!(next, id);
+        rt.panic();
+        assert_eq!(rt.pending_commands(), 0);
+        assert_eq!(rt.behavior_outcome(next), Ok(Some(Outcome::Cancelled)));
+        rt.flush_behaviors(|_, _, _| true);
+        rt.flush_ended(|_| true);
+        assert_eq!(rt.note_count(), 0);
+    });
+}

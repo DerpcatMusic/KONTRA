@@ -9,7 +9,7 @@ production plugin remains on the old composition root. There is no v2 DAW build.
 | Source family | Required frontend behavior | Shared native services | Current v2 evidence |
 | --- | --- | --- | --- |
 | No authored UI | Generate useful controls and sample editing from semantic metadata | Stable controls, edit admission, state, assets, meters | Typed headless scalar controls; renderer pending |
-| Native KSP widgets | All widget types, source IDs, layout, accessibility and callbacks | Same controls and callback ownership | Knob/slider/button/switch declarations and integer state; no renderer/UI callback dispatch yet |
+| Native KSP widgets | All widget types, source IDs, layout, accessibility and callbacks | Same controls and callback ownership | Knob/slider/button/switch declarations and integer state; partial per-control callbacks; renderer pending |
 | Bitmap KSP | PNG plus companion metadata, sprite selection, wallpapers, geometry and interactions | Same KSP control values; shared image assets | Pending; v1 is reference material only |
 | Creator Tools GUI Designer | `.nckp` hierarchy and resource/control bindings; `.nckc` reusable authoring components | Same KSP semantic controls and presentation nodes | Pending |
 | Komplete UI | Typed Komplete Script, packages/components, reactive dependencies, layout/modifiers, fonts/assets and Kontakt bindings | Controls, state, async services and rendering primitives | Source architecture reviewed; runtime pending |
@@ -44,7 +44,8 @@ performance view. Source: [NI resource containers](https://docs.native-instrumen
 3. UI callbacks require an independent callback owner retaining its originating
    plan/script instance. Do not fabricate a MIDI note to execute a knob callback.
    Bounded locals, waits, cancellation, outcomes and generated-note relationships
-   must work with this owner before callback syntax is widened.
+   now work for plan-owned scalar handlers. Script-instance subdivision and
+   generated-note services for non-note contexts remain open.
 4. Presentation nodes reference semantic controls and assets. Stock, bitmap and
    native vector presentations can change without copying/resetting control values.
    Preserve explicit interaction contracts: momentary edges, drag gestures, focus,
@@ -68,8 +69,9 @@ its timing/dispatch contract must be demonstrated before claiming support.
 
 - Land stable controls, transactional edits/recall, bounded UI handoff and coherent
   capture. **Implemented for scalar native state**, including new KSP declarations.
-- Add non-note callback contexts and script-instance state, then `on ui_control`
-  dispatch, property/automation semantics and full typed widget values.
+- Plan-owned `on ui_control` dispatch is implemented on shared continuations. Add
+  script-instance state, the remaining UI callback family, property/automation
+  semantics and full typed widget values.
 - Bind a new native UI to those services; implement the sample editor against the
   same owned asset/source model. Validate closed/reopened UI and presentation changes.
 - Complete KSP widget/property/resource behavior and GUI Designer hierarchy import.

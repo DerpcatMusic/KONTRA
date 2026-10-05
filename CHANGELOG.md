@@ -10,7 +10,9 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
-- Add typed headless controls with stable identity, transactional edits/recall, coherent snapshots and bounded acknowledged UI transfers. KSP scalar knob/slider/button/switch declarations and callback access now use native generation-owned state without a window; UI rendering and interaction callbacks remain open.
+- Execute KSP scalar UI handlers through native plan-owned callbacks, sharing the bounded scheduler without fabricated notes. Control interaction admission is atomic with callback capacity; waits, generation replacement, fault isolation and outcome backpressure retain explicit ownership.
+
+- Add typed headless controls with stable identity, transactional edits/recall, coherent snapshots and bounded acknowledged UI transfers. KSP scalar knob/slider/button/switch declarations and callback access now use native generation-owned state without a window; UI rendering and the complete interaction callback family remain open.
 
 - Add native ping-pong loop topology with shared traversal/interpolation boundaries, exact endpoint visits and explicit outward release exits. Independent unrolled PCM and analytic fractional checks cover reverse starts, short loops, high rates, muted phase and block partitioning.
 

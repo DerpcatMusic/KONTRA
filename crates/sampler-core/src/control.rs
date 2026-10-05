@@ -84,6 +84,30 @@ impl Prepared {
         }
         self.controls = controls.into_boxed_slice();
         self.validate_program_controls(&self.programs)?;
+        for &(control, _) in &self.control_programs {
+            self.control_index(control)?;
+        }
+        Ok(self)
+    }
+
+    /// Bind one callback per control. Plain script writes/recall do not invoke it;
+    /// interaction dispatch is explicit. Replacing programs clears these bindings.
+    pub fn with_control_programs(
+        mut self,
+        mut callbacks: Vec<(ControlId, usize)>,
+    ) -> Result<Self, Error> {
+        callbacks.sort_unstable_by_key(|c| c.0);
+        if callbacks.windows(2).any(|c| c[0].0 == c[1].0) {
+            return Err(Error::InvalidInput);
+        }
+        for &(control, program) in &callbacks {
+            self.control_index(control)?;
+            let program = self.programs.get(program).ok_or(Error::InvalidInput)?;
+            if program.requires_note || program.wait_lifetime != super::WaitLifetime::Callback {
+                return Err(Error::InvalidInput);
+            }
+        }
+        self.control_programs = callbacks.into_boxed_slice();
         Ok(self)
     }
 
@@ -116,6 +140,34 @@ impl Prepared {
 }
 
 impl Runtime {
+    /// Apply an interaction and start its prepared handler as one admission. Full
+    /// callback capacity rejects before changing the value. Handler faults are
+    /// retained outcomes; a committed edit is not rolled back after execution.
+    /// Returns (resulting revision, callback identity), including synchronous work.
+    pub fn invoke_control(
+        &mut self,
+        plan: PlanId,
+        expected_revision: Option<u64>,
+        write: ControlWrite,
+    ) -> Result<(u64, Option<super::BehaviorId>), Error> {
+        self.apply_due();
+        let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        let bindings = &generation.prepared.control_programs;
+        let program = bindings
+            .binary_search_by_key(&write.id, |c| c.0)
+            .ok()
+            .map(|index| bindings[index].1);
+        if let Some(program) = program {
+            self.validate_plan_behavior(plan, program)?;
+        }
+        self.edit_controls_now(plan, expected_revision, &[write])?;
+        let callback = program.map(|program| {
+            self.start_plan_behavior_now(plan, program)
+                .expect("preflighted control callback admission")
+        });
+        Ok((self.control_revision(plan)?, callback))
+    }
+
     pub fn control_value(&self, plan: PlanId, id: ControlId) -> Result<ControlValue, Error> {
         let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
         Ok(generation.controls.values[generation.prepared.control_index(id)?])

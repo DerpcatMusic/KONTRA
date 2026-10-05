@@ -221,8 +221,8 @@ same native services as control clients. The source-name table and presentation
 metadata do not enter realtime execution. Source reads use the original plan's
 controls across waits and replacement.
 
-The UI renderer, UI callbacks, automation gestures, control properties and resource
-skins remain open. Declarations and numeric values are **partial widget support**,
+The UI renderer, complete callback family, automation gestures, control properties
+and resource skins remain open. Declarations and numeric values are **partial widget support**,
 not rendered-widget parity. In particular, a KSP button's mouse-up callback and
 host-automation restrictions must be preserved when that interaction layer lands;
 see [NI widgets](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-widgets).
@@ -233,3 +233,24 @@ control while a note callback waits, and independently checks exact generated PC
 release access and separate polyphonic values over blocks 1/7/64 under the heap guard.
 It also checks explicit identity mapping after declaration reordering, init-only
 native attack selection, signed bounds, invalid bindings and malformed declarations.
+
+## UI handler execution
+
+`on ui_control($variable)` now compiles supported scalar control handlers into the
+same native instruction IR. Each control accepts one declared handler. Unknown,
+non-control and duplicate targets fail compilation, as do note-dependent operations
+in the handler. Supported control reads/writes, scalar conditions/loops, `wait` and
+`exit` execute with a plan-owned continuation. This is distinct from note/release
+ownership and retains its own locals and original controls through replacement.
+
+Interactions enter through `Runtime::invoke_control` or the bounded `Invoke` control
+request. Handler capacity is reserved before the value changes. Source assignments
+inside a handler do not recursively invoke it. The [NI UI callback](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks#on-ui_control)
+reference establishes the per-widget callback; global `on ui_controls`,
+`on ui_update`, `$NI_UI_ID`, complete value types and widget-specific gesture order
+remain open. Those missing constructs are rejected rather than silently omitted.
+
+A source fixture changes a button, waits without any musical note, sets a switch
+from another control and subsequently changes native note playback. It independently
+checks exact PCM, retained outcomes and zero callback heap activity. This proves
+native service integration, not Kontakt scheduling/gesture equivalence.

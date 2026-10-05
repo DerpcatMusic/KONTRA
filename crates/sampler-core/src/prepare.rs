@@ -111,6 +111,7 @@ pub struct Prepared {
     pub(super) release_program: Option<usize>,
     pub(super) note_cells: usize,
     pub(super) controls: Box<[super::ControlDefinition]>,
+    pub(super) control_programs: Box<[(super::ControlId, usize)]>,
     keyswitches: [Option<u32>; 128],
     articulated: bool,
     conditions: Box<[Box<[ControllerCondition]>]>,
@@ -232,6 +233,7 @@ impl Prepared {
             release_program: None,
             note_cells: 0,
             controls: Box::new([]),
+            control_programs: Box::new([]),
             keyswitches: [None; 128],
             articulated: false,
             conditions: Box::new([]),
@@ -259,6 +261,7 @@ impl Prepared {
         self.programs = programs.into_boxed_slice();
         self.note_program = note_program;
         self.release_program = None;
+        self.control_programs = Box::new([]);
         Ok(self)
     }
 

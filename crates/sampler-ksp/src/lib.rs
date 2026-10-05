@@ -40,6 +40,7 @@ pub struct Control {
     pub variable: String,
     pub widget: Widget,
     pub definition: ControlDefinition,
+    pub callback: Option<usize>,
 }
 
 impl Script {
@@ -59,9 +60,16 @@ impl Script {
         if plan.sample_rate() != self.rate {
             return Err(sampler_core::Error::InvalidInput);
         }
+        let callbacks = self
+            .controls
+            .iter()
+            .filter_map(|c| c.callback.map(|program| (c.definition.id, program)))
+            .collect();
         let plan = plan.with_programs(Vec::new(), None)?;
         let plan = plan.with_controls(self.controls.into_iter().map(|c| c.definition).collect())?;
-        let plan = plan.with_programs(self.programs, self.on_note)?;
+        let plan = plan
+            .with_programs(self.programs, self.on_note)?
+            .with_control_programs(callbacks)?;
         match self.on_release {
             Some(program) => plan.with_release_program(program),
             None => Ok(plan),
@@ -338,6 +346,7 @@ impl<'a> Parser<'a> {
                         let index = self.controls.len();
                         self.controls.push(Control {
                             variable: name.to_owned(),
+                            callback: None,
                             widget,
                             definition: ControlDefinition {
                                 id,
@@ -726,6 +735,29 @@ pub fn compile(
             Kind::Word("init") if !initialized && programs.is_empty() => {
                 initialized = true;
                 p.declarations()?;
+            }
+            Kind::Word("ui_control") => {
+                p.symbol(b'(')?;
+                let name = p.next()?;
+                let Kind::Word(name) = name.kind else {
+                    return Err(p.error("expected UI control variable"));
+                };
+                let Variable::Control(index) = p.variable(name, token.offset)? else {
+                    return Err(p.error("UI callback requires a control variable"));
+                };
+                p.symbol(b')')?;
+                if p.controls[index].callback.is_some() {
+                    return Err(p.error("duplicate UI control callback"));
+                }
+                let program = p.callback(false)?;
+                if program.requires_note() {
+                    return Err(Error {
+                        offset: token.offset,
+                        message: "note-dependent operands are unsupported in UI callbacks",
+                    });
+                }
+                p.controls[index].callback = Some(programs.len());
+                programs.push(program);
             }
             Kind::Word(kind @ ("note" | "release")) => {
                 let binding = if kind == "note" {

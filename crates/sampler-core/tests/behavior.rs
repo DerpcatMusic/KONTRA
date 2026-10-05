@@ -100,7 +100,14 @@ fn native_waits_generated_notes_and_terminal_backpressure_are_sample_exact() {
             rt.flush_ended(|_| panic!("unaccepted completion retains original input"));
             let mut completed = 0;
             rt.flush_behaviors(|id, owner, outcome| {
-                assert_eq!((id, owner, outcome), (behavior, note, Outcome::Finished));
+                assert_eq!(
+                    (id, owner, outcome),
+                    (
+                        behavior,
+                        sampler_core::BehaviorOwner::Note(note),
+                        Outcome::Finished
+                    )
+                );
                 completed += 1;
                 true
             });
@@ -223,7 +230,10 @@ fn faults_and_fuel_are_observable_and_cannot_leave_partial_owned_work() {
             assert_eq!(rt.behavior_outcome(id), Ok(Some(outcome)));
             assert_eq!(rt.pending_commands(), 0);
             rt.flush_behaviors(|_, owner, result| {
-                assert_eq!((owner, result), (note, outcome));
+                assert_eq!(
+                    (owner, result),
+                    (sampler_core::BehaviorOwner::Note(note), outcome)
+                );
                 true
             });
             rt.flush_ended(|_| true);
@@ -315,7 +325,10 @@ fn bound_suppression_and_completion_capacity_do_not_publish_partial_inputs() {
         rt.release(note).unwrap();
         rt.flush_ended(|_| panic!("completion retains suppressed input"));
         rt.flush_behaviors(|id, owner, outcome| {
-            assert_eq!((owner, outcome), (note, Outcome::Finished));
+            assert_eq!(
+                (owner, outcome),
+                (sampler_core::BehaviorOwner::Note(note), Outcome::Finished)
+            );
             assert_eq!(other.behavior_outcome(id), Err(Error::StaleHandle));
             assert_eq!(other.cancel_behavior(id), Err(Error::StaleHandle));
             true
@@ -1277,7 +1290,7 @@ fn release_callbacks_reserve_capacity_and_share_state_across_waits_and_pedals() 
             assert_eq!(rt.note_cell(n, 0), Ok(72));
             let mut callbacks = 0;
             rt.flush_behaviors(|_, note, outcome| {
-                assert_eq!(note, n);
+                assert_eq!(note, sampler_core::BehaviorOwner::Note(n));
                 assert_eq!(outcome, Outcome::Finished);
                 callbacks += 1;
                 true
@@ -1345,7 +1358,7 @@ fn release_callback_fault_cannot_block_key_up_or_leak_its_reservation() {
             assert!(!rt.note(n).unwrap().2);
             let mut faults = 0;
             rt.flush_behaviors(|_, note, outcome| {
-                assert_eq!(note, n);
+                assert_eq!(note, sampler_core::BehaviorOwner::Note(n));
                 assert_eq!(outcome, Outcome::Fault(Error::Capacity));
                 faults += 1;
                 true

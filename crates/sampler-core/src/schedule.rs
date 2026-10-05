@@ -178,20 +178,21 @@ impl Runtime {
                 let c = self.behaviors.get_mut(id.0).unwrap();
                 if c.outcome.is_some() {
                     false
-                } else if notes.get(c.note.0).unwrap().gate()
-                    || self
-                        .plans
-                        .get(notes.get(c.note.0).unwrap().plan.0)
-                        .unwrap()
-                        .prepared
-                        .programs[c.program]
-                        .wait_lifetime
-                        == super::WaitLifetime::Callback
-                {
-                    true
                 } else {
-                    c.outcome = Some(super::Outcome::Cancelled);
-                    false
+                    let keep = match c.owner {
+                        super::BehaviorOwner::Plan(_) => true,
+                        super::BehaviorOwner::Note(note) => {
+                            let note = notes.get(note.0).unwrap();
+                            note.gate()
+                                || self.plans.get(note.plan.0).unwrap().prepared.programs[c.program]
+                                    .wait_lifetime
+                                    == super::WaitLifetime::Callback
+                        }
+                    };
+                    if !keep {
+                        c.outcome = Some(super::Outcome::Cancelled);
+                    }
+                    keep
                 }
             }
             Action::Start(v) => self.voices.get(v.0).is_some(),

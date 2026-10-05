@@ -254,7 +254,7 @@ unimplemented cases. Source inspection alone is not passing conformance evidence
 - **Partial evidence:** [typed headless scalar controls](CONTROL_STATE.md), stable
   IDs, atomic edits/full scalar recall, revision conflicts, bounded acknowledged
   UI handoff and coherent capture are implemented. KSP scalar widget declarations
-  use the shared state without a window. Complete instrument serialization,
+  and plan-owned UI handlers use the shared state without a window. Complete instrument serialization,
   script-instance state, non-scalar controls and host automation remain open.
 
 - [ ] **P0; dependencies:** V2-05/07/10.
@@ -292,7 +292,8 @@ unimplemented cases. Source inspection alone is not passing conformance evidence
 - **Required UI scope:** [UI_FRONTENDS.md](UI_FRONTENDS.md) covers generic native,
   stock/bitmap KSP, GUI Designer `.nckp`/`.nckc`, Komplete Script/Komplete UI,
   and Falcon Lua over shared controls, assets and native services. No family is
-  complete. Next: non-note UI callback ownership, then rendering/sample editing.
+  complete. Plan-owned scalar UI handlers now execute; remaining callback services
+  and rendering/sample editing are open.
 
 - **Partial evidence:** `sampler-native` renders supported WAV through the new core
   without legacy dependencies. Live audio, host adapters and UI remain open.

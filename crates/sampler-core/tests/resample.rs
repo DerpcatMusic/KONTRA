@@ -919,7 +919,10 @@ fn initial_expression_precedes_selection_and_immediate_snapshot_programs() {
             .set_expression(owner, Expression::default())
             .unwrap();
         scripted.flush_behaviors(|_, note, outcome| {
-            assert_eq!((note, outcome), (root, Outcome::Finished));
+            assert_eq!(
+                (note, outcome),
+                (sampler_core::BehaviorOwner::Note(root), Outcome::Finished)
+            );
             true
         });
         plain.render(&mut expected).unwrap();

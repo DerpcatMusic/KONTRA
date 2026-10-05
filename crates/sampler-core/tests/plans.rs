@@ -99,7 +99,13 @@ fn old_callbacks_and_tails_keep_their_plan_across_sample_exact_adoption() {
             assert_eq!(rt.collect_retired_plans(), 0);
             let mut callbacks = 0;
             rt.flush_behaviors(|_, origin, outcome| {
-                assert_eq!((origin, outcome), (old_note, Outcome::Finished));
+                assert_eq!(
+                    (origin, outcome),
+                    (
+                        sampler_core::BehaviorOwner::Note(old_note),
+                        Outcome::Finished
+                    )
+                );
                 callbacks += 1;
                 true
             });
@@ -215,7 +221,10 @@ fn plan_validation_and_reserved_callback_cells_are_control_side_contracts() {
         rt.render(&mut [[0.; 2]; 3]).unwrap();
         let mut completed = None;
         rt.flush_behaviors(|id, owner, outcome| {
-            assert_eq!((owner, outcome), (note, Outcome::Finished));
+            assert_eq!(
+                (owner, outcome),
+                (sampler_core::BehaviorOwner::Note(note), Outcome::Finished)
+            );
             completed = Some(id);
             false
         });
