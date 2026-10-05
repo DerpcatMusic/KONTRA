@@ -481,7 +481,7 @@ fn shot_scaled(part: &PartView, code: u8, to: &Path, device_scale: f64) -> anyho
         let size = [u32::from(width),u32::from(height)];
         let mut gpu = tests::GpuCapture::new(size,device_scale)?;
         if let Ok(case) = std::env::var("KONTRA_UI_GPU_ISOLATE") {
-            gpu.isolate(&original,&case,to)?;
+            gpu.isolate(&original,&rgba,&case,to)?;
             return Ok(());
         }
         gpu.original(&original,&rgba,to)?;
@@ -716,7 +716,7 @@ mod tests {
         }
         /// One externally selected scene-isolation case; no production mutation.
         pub(super) fn isolate(&mut self, original: &moose::mui::mui::scene::ResolvedScene,
-            case: &str, to: &Path) -> anyhow::Result<()> {
+            cpu_original: &[u8], case: &str, to: &Path) -> anyhow::Result<()> {
             use moose::mui::mui::scene::{Layer,Paint};
             let inventory:Vec<_> = original.paint.iter().enumerate().map(|(index,p)| {
                 let image = match &p.paint { Paint::Image { image,.. } => Some([image.width,image.height]),_=>None };
@@ -754,6 +754,27 @@ mod tests {
                     "no_text"=>scene.paint.retain(|p|p.text.is_none()),
                     "no_layers"=>scene.paint.retain(|p|!matches!(p.layer,
                         Layer::Clip|Layer::Unclip|Layer::Blend {..}|Layer::Unblend|Layer::Mask)),
+                    "no_clip"=>scene.paint.retain(|p|!matches!(p.layer,Layer::Clip|Layer::Unclip)),
+                    "no_blend"=>scene.paint.retain(|p|!matches!(p.layer,Layer::Blend {..}|Layer::Unblend)),
+                    "skip_zero_subtrees"=>{
+                        let mut depth = 0usize;
+                        scene.paint.retain(|p| {
+                            if depth>0 {
+                                match p.layer {
+                                    Layer::Clip|Layer::Blend {..}=>depth+=1,
+                                    Layer::Unclip|Layer::Unblend=>depth-=1,
+                                    _=>{},
+                                }
+                                return false;
+                            }
+                            if matches!(p.layer,Layer::Blend { mix:moose::mui::mui::scene::Mix::Normal,opacity } if opacity==0.) {
+                                depth=1;
+                                return false;
+                            }
+                            true
+                        });
+                        anyhow::ensure!(depth==0,"zero-opacity subtree did not close");
+                    },
                     "no_images"=>for p in &mut scene.paint {
                         if matches!(p.paint,Paint::Image {..}) {
                             p.paint = Paint::Solid(moose::mui::mui::scene::prelude::Color::oklcha(0.7,0.2,330.,1.));
@@ -762,6 +783,25 @@ mod tests {
                     "no_transforms"=>for p in &mut scene.paint { p.transform=moose::mui::mui::vello::kurbo::Affine::IDENTITY; },
                     _=>anyhow::bail!("unknown GPU scene case {case}"),
                 }
+            }
+            // Each projected scene has its own independent CPU pixel oracle.
+            use moose::mui::mui::vello::{self,vello_cpu::{Pixmap,RenderContext,Resources}};
+            let mut ctx = RenderContext::new(self.size[0] as u16,self.size[1] as u16);
+            let mut resources = Resources::default();
+            vello::paint(&mut vello::Cpu { ctx:&mut ctx,resources:&mut resources,
+                cache:&mut vello::Cache::default() },&scene,self.transform)
+                .map_err(|error|anyhow::anyhow!("{error:?}"))?;
+            ctx.flush();
+            let mut pix = Pixmap::new(self.size[0] as u16,self.size[1] as u16);
+            ctx.render(&mut pix,&mut resources);
+            let cpu_projected:Vec<u8> = pix.take_unpremultiplied().iter()
+                .flat_map(|p|[p.r,p.g,p.b,p.a]).collect();
+            let cpu_projection_diff = gpu_pixel_diff(cpu_original,&cpu_projected,self.size);
+            moose::core::screenshot::save_png(&to.with_extension("cpu-isolated.png"),&cpu_projected,self.size[0],self.size[1]);
+            // Pruning an exactly transparent Normal/SrcOver subtree must preserve every CPU pixel.
+            if case=="skip_zero_subtrees" {
+                anyhow::ensure!(cpu_original==cpu_projected.as_slice(),
+                    "zero-opacity subtree projection changed CPU pixels: {cpu_projection_diff}");
             }
             self.calibrate(to)?;
             let started = Instant::now();
@@ -776,6 +816,8 @@ mod tests {
                 "first_key":scene.paint.first().map(|p|p.key.as_str()),
                 "last_key":scene.paint.last().map(|p|p.key.as_str()),
                 "nontransparent_pixels":nontransparent,"nonblack_pixels":nonblack,
+                "original_cpu_vs_projected_cpu":cpu_projection_diff,
+                "projected_cpu_vs_gpu":gpu_pixel_diff(&cpu_projected,&pixels,self.size),
                 "renders":stats.renders,"rendered_pixels":stats.rendered_pixels,
                 "draw_readback_seconds":started.elapsed().as_secs_f64(),
                 "scope":"diagnostic actual-scene projection; not authored-layout or production conformance"});
