@@ -1423,6 +1423,43 @@
       ],
       "validation": "Fresh isolated f119048 passes locked all-targets/all-features check, optimized library/playback compilation and production builds. All 479 tracked source hashes remain unchanged. Frozen executables pass 600 library regressions (30 ignored), 89 playback regressions (4 ignored), all 59 reporter checks, manual export, seven saved-volume/phase gates, actual Logs/default-filter receipt UI, four primary-AHDSR gates and CLAP parent validation. Exact exported CLAP note/MIDI/pedal/home/MPE-zone and ten VST3 processing cases pass; strict C++ editor-attachment fixture passes. Final version metadata and hosted release checks are verified separately. No actual macOS DAW crash cause, genuine production issue roundtrip, GPU FPS or full-preset sonic equivalence is claimed.",
       "accepted": true
+    },
+    {
+      "id": "native-reachable-loop-sustain-admission",
+      "summary": "Preserve fixed-start sustain sources when later saved loop rows are unreachable, with native Normal crossfade rendering for the admitted domain",
+      "source_commits": [
+        "763e4250f5570f9236c028d8b5ed2011d907b080",
+        "be9fe2f83b66cf3a6125ac09803677da32dcab10"
+      ],
+      "validation": "Frozen 6292d33 passes reachable-row negative/overshoot guards, complete captured native Normal PCM and curved-forecast guards, all three saved native loop RAM/stream regressions, and the stricter 16-case actual Vista Cellos/Basses pedal matrix with all expected first-on layers, sticky stream-error checks, finite PCM, release lifecycle and zero callback allocations. General native fractional buffer-phase equivalence remains under investigation; no whole-library bitwise parity claim. Count the reachability defect once; new crossfade capability and follow-up commits do not add counts.",
+      "accepted": true
+    },
+    {
+      "id": "uvi-terminal-layer-sustain-routing",
+      "summary": "Preserve terminal Layer pedal ownership through script forwarding and generated-note paths",
+      "source_commits": [
+        "4ed21cb6d070f59cf9fd46f8ff2b40d6cf9256df"
+      ],
+      "validation": "Portable terminal-layer regression passes complete dry-reference release PCM for forwarded, dropped and synthetic controller routes; actual retained program capture and core pre-On pedal guards passed in centralized validation. This does not fix the separate intermittent native request-capacity failure or imply all UVI presets are admitted.",
+      "accepted": true
+    },
+    {
+      "id": "ksp-indexed-text-domain-preparation",
+      "summary": "Prepare complete indexed control text domains before persistence callbacks without realtime allocation",
+      "source_commits": [
+        "10f66d57bfc398ad584230758fd0fe9c87bbe9e3"
+      ],
+      "validation": "Actual Conflux metadata installation passes all three script slots, 48 genuine effect controls, 128-cell IR domains and 297 validated mapping completions without the reproduced persistence fault. Portable delayed-write zero-heap and atomic budget rejection guards pass. This does not claim implementation of every Conflux engine parameter or effect.",
+      "accepted": true
+    },
+    {
+      "id": "gpu-transparent-subtree-work-exhaustion",
+      "summary": "Omit invisible Normal blend subtrees from GPU encoding and backdrop replay while preserving retained scene identity",
+      "source_commits": [
+        "8513e4bfdf16d714bc4c1a9b24ae1c23b395b99a"
+      ],
+      "validation": "Full actual Conflux scene renders on RX6600/RADV after previously producing transparent pixels. CPU projection is byte-identical across all 2389500 pixels. Exact fresh/retained visibility and image ownership tests pass across five phases, masked/backdrop slot transitions and ancestor opacity guards pass, and the mui-vello cpu+gpu-effects portable subtree test passes. General nonzero deep-layer work-pool exhaustion remains a separate limit; no blanket GPU reliability claim.",
+      "accepted": true
     }
   ]
 }
