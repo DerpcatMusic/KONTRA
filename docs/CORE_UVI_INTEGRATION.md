@@ -88,10 +88,16 @@ Imported: distinct `kontra-native-host`, upstream accessibility/IME bridges,
 MUI822 native baseview/xim, X11 visibility fixes, oversized-row reveal and native
 CI checks. The Linux parent hook and cancellable picker runtime from the UI
 baseline are connected while retaining UVI preview-close/cancel behavior.
-`Shared` owns final picker-worker shutdown. Root MUI packages stay locked to
-`822b1922ad1872aaee15b371a31410b0f3580b88`. Local `mui-vello` is rebased to that
-revision with both dead-image sweeps and the image-to-vector CPU regression
-preserved; the MIDI-capable `moose-core` patch is also retained.
+`Shared` owns final picker-worker shutdown. Import initially used MUI822;
+adding the native-dialog dependency advanced Cargo's unqualified Git source to
+`1f1daadb0e77c16f30f394255121e7c2fb14b1f2` (upstream2026-10-05 01:51+0300).
+This was caught during the first optimized build. The latest-source follow-up
+rebases local `mui-vello` to that same revision, retaining both dead-image
+sweeps and the image-to-vector CPU regression while importing upstream partial
+backdrop/shadow reuse fixes. Relative to822, upstream native-host production
+sources are unchanged (only a Linux regression-test import changed). The
+MIDI-capable `moose-core` patch is retained. Use locked builds; Cargo.lock, not
+the historical candidate's revision, defines this combined dependency tree.
 
 New local results on the combined tree:
 
@@ -111,8 +117,10 @@ New local results on the combined tree:
 | License tooling self-test |Passed; reports existing unresolved ni-file redistribution permission |
 | Changed-source mechanical UI detector |No findings; not a visual/runtime proof |
 
-Logs use `/tmp/kontra-pi-ui-*`. Historical PR CI is not new CI for this merged
-core. Real DAW/editor interactions, native pixel readback and macOS/Windows
+Logs use `/tmp/kontra-pi-ui-*`. The latest-source follow-up reruns25 CPU renderer
+regressions (all passed),21 headless host cases,2 software-GL cases and2 X11
+cases, all passing without retries; logs use `/tmp/kontra-pi-latest-mui-*`.
+Historical PR CI is not new CI for this merged core. Real DAW/editor interactions, native pixel readback and macOS/Windows
 provider runtime remain unverified; the previously reported candidate X11
 intermittency is not erased by these local passes.
 

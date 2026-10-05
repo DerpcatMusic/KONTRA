@@ -1,7 +1,9 @@
 # KONTRA local native-window preservation
 
-Base: MUI `822b1922ad1872aaee15b371a31410b0f3580b88` vendored
-`moose-baseview`, with its unchanged local `../xim-rs` IME dependencies.
+Base: MUI `1f1daadb0e77c16f30f394255121e7c2fb14b1f2` vendored
+`moose-baseview`. Its unmodified `zed-xim` IME dependency comes from the same
+MUI Git source pinned by the application lock, including its parser and text
+packages; no local IME source copy is needed.
 
 Preserves KONTRA `c96ad3a` root-reparent visibility behavior while consuming
 the newer MUI display/accessibility integration:

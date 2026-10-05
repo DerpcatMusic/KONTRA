@@ -2,7 +2,7 @@
 name = "kontakto"
 version = "0.3.148"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.95"
 license = "Apache-2.0"
 description = "KONTRA: a Kontakt-compatible sampler (CLAP, VST3, standalone)"
 repository = "https://github.com/DerpcatMusic/KONTRA"
@@ -169,7 +169,7 @@ symphonia-format-riff = { path = "vendor/symphonia-format-riff" }
 
 [workspace]
 members = [".", "vendor/moose-core", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3", "vendor/mui-vello", "vendor/mui-baseview"]
-exclude = ["vendor/ni-file", "vendor/ncw", "vendor/vello", "vendor/moose-baseview", "vendor/xim-rs", "vendor/symphonia-format-riff", "vendor/derpcat-flight-recorder", "vendor/buffr-durable-file"]
+exclude = ["vendor/ni-file", "vendor/ncw", "vendor/vello", "vendor/moose-baseview", "vendor/symphonia-format-riff", "vendor/derpcat-flight-recorder", "vendor/buffr-durable-file"]
 resolver = "3"
 
 # Optimized CI keeps release semantics while avoiding cross-crate ThinLTO.
