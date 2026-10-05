@@ -40,8 +40,9 @@ impl State {
 
 pub(super) fn stop_receipt(p: &SamplerParams, receipt: &AtomicU64) {
     if let Ok(id) = receipt.try_update(Ordering::AcqRel, Ordering::Acquire,
-        |id| (id != CLOSED && id != CANCELED).then_some(0)) {
-        if id != 0 && id != CANCELED { p.stop_sample_preview(id); }
+        |id| (id != CLOSED && id != CANCELED).then_some(0))
+        && id != 0 && id != CANCELED {
+        p.stop_sample_preview(id);
     }
 }
 
@@ -52,8 +53,9 @@ pub(super) fn close_receipt(p: &SamplerParams, receipt: &AtomicU64) {
 
 pub(super) fn cancel_receipt(p: &SamplerParams, receipt: &AtomicU64) {
     if let Ok(id) = receipt.try_update(Ordering::AcqRel, Ordering::Acquire,
-        |id| (id != CLOSED).then_some(CANCELED)) {
-        if id != 0 && id != CANCELED { p.stop_sample_preview(id); }
+        |id| (id != CLOSED).then_some(CANCELED))
+        && id != 0 && id != CANCELED {
+        p.stop_sample_preview(id);
     }
 }
 

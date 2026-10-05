@@ -66,14 +66,14 @@ fn performance(quality: i32, partitions: &[usize]) -> [Vec<f32>; 2] {
     // Leave the next 256-point lookahead unfinished while consuming the
     // remaining127 ready points from the initial128-point onset packet.
     assert_eq!(crate::plugin::tests::allocations(|| {
-        let mut at = WAIT + 1;
-        for n in [127] {
+        let at = WAIT + 1;
+        let n = 127;
+        {
             actual.render_checked(&mut left[..n], &mut right[..n]).unwrap();
             oracle.render_checked(&mut reference_l[..n], &mut reference_r[..n]).unwrap();
             assert_eq!(&left[..n], &reference_l[..n]); assert_eq!(&right[..n], &reference_r[..n]);
             pcm[0][at..at + n].copy_from_slice(&left[..n]); pcm[1][at..at + n].copy_from_slice(&right[..n]);
             expected[0][at..at + n].copy_from_slice(&reference_l[..n]); expected[1][at..at + n].copy_from_slice(&reference_r[..n]);
-            at += n;
         }
     }), 0);
     assert_eq!(actual.underruns(), 0);
@@ -104,14 +104,14 @@ fn performance(quality: i32, partitions: &[usize]) -> [Vec<f32>; 2] {
         }
         let before = actual.player.voices[0].pos;
         assert_eq!(crate::plugin::tests::allocations(|| {
-            let mut at = STARTED;
-            for n in [1] {
+            let at = STARTED;
+            let n = 1;
+            {
                 actual.render_checked(&mut left[..n], &mut right[..n]).unwrap();
                 oracle.render_checked(&mut reference_l[..n], &mut reference_r[..n]).unwrap();
                 assert_eq!(&left[..n], &[0.; 128][..n]);
                 assert_eq!(&right[..n], &[0.; 128][..n]);
                 pcm[0][at..at + n].copy_from_slice(&left[..n]); pcm[1][at..at + n].copy_from_slice(&right[..n]);
-                at += n;
             }
         }), 0);
         assert_eq!(actual.player.voices[0].pos, before + 64., "Started underruns advance the actual source clock");

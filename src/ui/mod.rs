@@ -1141,10 +1141,9 @@ fn build_with_preview(
 
         let mapping_slot = (cx.state.tab == Tab::Mapping && cx.part().is_some()).then(|| cx.state.chosen()).flatten();
         cx.state.sample_preview.finish_frame(&p, mapping_slot);
-        if p.sample_preview_pending() {
-            if let Some(tasks) = bridge.context().and_then(|context| context.tasks::<crate::plugin::sample_preview::Prepare>()) {
-                tasks.spawn_coalescing(crate::plugin::sample_preview::Prepare);
-            }
+        if p.sample_preview_pending()
+            && let Some(tasks) = bridge.context().and_then(|context| context.tasks::<crate::plugin::sample_preview::Prepare>()) {
+            tasks.spawn_coalescing(crate::plugin::sample_preview::Prepare);
         }
         let ui_zoom = cx.settings.editor_scale();
         let Cx { mut selection, view, .. } = cx;
@@ -1208,9 +1207,8 @@ fn build_with_preview(
 fn picked(cx: &mut Cx) {
     match cx.state.picker.take() {
         Some(picker::Picked::DialogError(error)) => cx.state.notice = format!("The file picker could not open: {error}"),
-        Some(picker::Picked::Revealed(result)) => {
-            if let Err(error) = result { cx.state.notice = error; }
-        }
+        Some(picker::Picked::Revealed(Err(error))) => cx.state.notice = error,
+        Some(picker::Picked::Revealed(Ok(_))) => {}
         Some(picker::Picked::ScriptFile { part, epoch, slot, control, result }) => {
             cx.state.notice = match result {
                 Ok(path) if cx.p.shared.select_control_file(part, epoch, slot, control, &path) => String::new(),

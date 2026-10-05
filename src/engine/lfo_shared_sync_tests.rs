@@ -42,7 +42,7 @@ fn oracle(onset: usize, end: usize, source: &[(usize, usize, f64, f64)]) -> Vec<
     let mut tune = vec![0.; FINISH];
     let (mut previous, mut current, mut started) = (0., 0., false);
     let (mut entry, mut first_boundary) = (onset, onset);
-    for frame in onset..end {
+    for (frame, value) in tune.iter_mut().enumerate().take(end).skip(onset) {
         let age = frame - onset;
         if frame == onset || WINDOWS.contains(&frame) {
             entry = frame;
@@ -51,7 +51,7 @@ fn oracle(onset: usize, end: usize, source: &[(usize, usize, f64, f64)]) -> Vec<
         if (117..181).contains(&frame) {
             continue;
         }
-        if age % 32 == 0 || !started {
+        if age.is_multiple_of(32) || !started {
             let &(base, end, phase, delta) =
                 source.iter().find(|w| frame >= w.0 && frame < w.1).unwrap();
             let count = (end - base).div_ceil(32);
@@ -85,7 +85,7 @@ fn oracle(onset: usize, end: usize, source: &[(usize, usize, f64, f64)]) -> Vec<
                 started = true;
             }
         }
-        tune[frame] = previous + (current - previous) * (age % 32) as f32 / 32.;
+        *value = previous + (current - previous) * (age % 32) as f32 / 32.;
     }
     tune
 }

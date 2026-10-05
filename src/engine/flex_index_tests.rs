@@ -160,10 +160,10 @@ fn compatibility_flex_owns_full_vector_indices_and_complete_pcm_without_heap() {
                 assert_eq!(engine.host_note_end_at(second), Some(host_ends[1] as u64));
             }
         }), 0);
-        for index in 0..2 { for channel in 0..2 { for frame in 0..FRAMES {
+        for (index, voice) in pcm.iter().enumerate() { for channel in 0..2 { for frame in 0..FRAMES {
             let expected = reference[0][channel][frame] * level(frame, 713, mode)
                 + if frame >= 317 { reference[1][channel][frame] * level(frame - 317, 33, mode) } else { 0. };
-            assert!((pcm[index][channel][frame] - expected).abs() < 2e-6,
+            assert!((voice[channel][frame] - expected).abs() < 2e-6,
                 "full vector PCM mode={mode} shared={shared} mute={mute} partition={index} frame={frame}");
         }}}
         if mute { assert!(pcm.iter().all(|voice| voice.iter().all(|channel|

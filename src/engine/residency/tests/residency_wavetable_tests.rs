@@ -56,7 +56,7 @@ fn performance(partitions: &[usize]) -> [Vec<f32>; 2] {
     };
     let mut actual = make_engine(initial);
     let jobs: Vec<_> = [0, 1].map(|zone| actual.bank().unwrap().zone_job(ZoneEdit {
-        zone, par: ZonePar::Group, value: 0, slot: 0, id: zone as i32 + 1,
+        zone, par: ZonePar::Group, value: 0, slot: 0, id: zone + 1,
     }).unwrap()).into();
     let context = jobs[0].context.clone();
     let base = jobs[0].base.clone();

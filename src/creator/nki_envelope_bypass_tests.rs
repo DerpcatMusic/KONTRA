@@ -12,7 +12,7 @@ fn saved_bypassed_primary_envelopes_keep_raw_identity_and_only_sibling_pcm() {
     }
     fn source(param: &str, label: &str, bypass: bool, kind: u32, envelope: &[u8]) -> Vec<u8> {
         let mut private = 1u32.to_le_bytes().to_vec();
-        for text in [param] { private.extend((text.len() as u32).to_le_bytes()); private.extend(text.as_bytes()); }
+        private.extend((param.len() as u32).to_le_bytes()); private.extend(param.as_bytes());
         private.extend(1f32.to_le_bytes()); private.extend((-1i16).to_le_bytes());
         private.push(0x10); private.extend(0u16.to_le_bytes());
         private.extend((label.len() as u32).to_le_bytes()); private.extend(label.as_bytes());

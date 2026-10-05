@@ -247,7 +247,7 @@ mod tests {
             vec![Zone { group, ..Default::default() }],
             vec![(Default::default(), Sample { rate: 48_000, frames: vec![[0.25; 2]; 4096] })],
         ).unwrap());
-        let mut engine = Engine::default(); engine.attack = 0.;
+        let mut engine = Engine { attack: 0., ..Default::default() };
         engine.set_bank(Some(prepare(vec![Group::default()], 0)));
         assert!(engine.write(Address::Instrument(GroupPar::Volume), 0.25));
         engine.note_on(0, 60, 127);
@@ -355,7 +355,7 @@ mod tests {
         // An incompatible wider roster replaces the live state and returns all
         // old rows on the retired bank rather than truncating or reusing them.
         let incoming=prepare(48,512);
-        let mut fresh=Engine::default(); fresh.attack=0.; fresh.set_bank(Some(prepare(48,512)));
+        let mut fresh=Engine { attack: 0., ..Default::default() }; fresh.set_bank(Some(prepare(48,512)));
         assert_eq!(crate::plugin::tests::allocations(|| retired=engine.upgrade_bank(incoming)),0);
         assert_eq!(engine.active_voices(),0);
         assert_eq!(retired.as_ref().unwrap().route_spares.len(),MAX_VOICES);
@@ -501,9 +501,7 @@ mod tests {
         }
         let (runtime, errors) = load_scripts(&instrument, vec![], 48_000.);
         assert!(errors.is_empty(), "{errors:?}");
-        let mut engine = Engine::default();
-        engine.tune = -2.0;
-        engine.attack = 0.0;
+        let mut engine = Engine { tune: -2.0, attack: 0.0, ..Default::default() };
         let expected = InstrumentControls {
             gain: Address::Instrument(GroupPar::Volume).decode(250_000),
             pan: 0.5,
