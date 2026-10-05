@@ -99,6 +99,7 @@ struct Note {
     order: u64,
     expression: ExpressionId,
     families: usize,
+    children: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -359,6 +360,7 @@ impl Runtime {
             order,
             expression,
             families: 0,
+            children: 0,
         }) {
             Ok(id) => id,
             Err(error) => {
@@ -366,6 +368,10 @@ impl Runtime {
                 return Err(error);
             }
         };
+        if let Some(parent) = parent {
+            // Successful admission bounds this count by the allocated note slots.
+            self.notes.get_mut(parent.0).unwrap().children += 1;
+        }
         self.order = order;
         Ok(NoteId(id))
     }
@@ -581,34 +587,24 @@ impl Runtime {
     /// Consume terminal notifications only after acceptance. The sink must be bounded
     /// and non-allocating on an audio thread. A rejection stops retries for this call.
     pub fn flush_ended(&mut self, mut accept: impl FnMut(Input) -> bool) {
-        for _ in 0..self.notes.slots.len() {
-            let mut removed = false;
-            for i in 0..self.notes.slots.len() {
-                let Some(n) = self.notes.slots[i].value else {
-                    continue;
-                };
-                let id = NoteId(self.notes.id(i));
-                if n.gate
-                    || n.pins != 0
-                    || n.work != 0
-                    || n.families != 0
-                    || self
-                        .notes
-                        .slots
-                        .iter()
-                        .any(|s| s.value.is_some_and(|n| n.parent == Some(id)))
-                {
-                    continue;
+        for i in 0..self.notes.slots.len() {
+            let mut id = NoteId(self.notes.id(i));
+            // Each removal visits its parent once. No recursion, scratch queue or
+            // repeated pool scans: O(reserved slots + retired notes).
+            while let Some(n) = self.notes.get(id.0).copied() {
+                if n.gate || n.pins != 0 || n.work != 0 || n.families != 0 || n.children != 0 {
+                    break;
                 }
                 if n.input.is_some_and(|input| !accept(input)) {
                     return;
                 }
                 self.notes.remove(id.0);
                 self.drop_expression(n.expression);
-                removed = true;
-            }
-            if !removed {
-                break;
+                let Some(parent) = n.parent else {
+                    break;
+                };
+                self.notes.get_mut(parent.0).unwrap().children -= 1;
+                id = parent;
             }
         }
     }
