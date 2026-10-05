@@ -534,7 +534,7 @@ impl Session {
             mlua::HookTriggers::new().every_nth_instruction(10_000),
             move |_, _| {
                 if hook_fuel
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                    .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
                         n.checked_sub(10_000)
                     })
                     .is_err()
