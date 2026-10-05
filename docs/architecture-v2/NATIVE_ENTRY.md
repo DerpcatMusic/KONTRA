@@ -87,3 +87,32 @@ CLAP/VST3 plugin. Tracking/resampling, advanced loop/envelope behavior, richer m
 new scripting, streaming, live plan changes and MIDI 2.0 transport remain open.
 The next implementation extends native source/behavior services and the new host
 composition; it must not insert a legacy-engine fallback for missing functionality.
+
+## Scripted resident WAV audition
+
+The native script path can now use decoded resident audio:
+
+```sh
+CARGO_TARGET_DIR="$PWD/target-core" cargo run --locked --release -p sampler-native -- script instrument.ksp sample.wav audition.wav
+```
+
+Omitting `sample.wav` still uses the authored demo sine. The source compiler targets
+the decoded sample's rate; no sample-rate conversion is implied. The audition is
+exactly two seconds at that rate, independently of asset length. Its input note,
+pedals and AHDSR remain the documented audition controls; scripts waiting beyond
+the horizon are cancelled during explicit shutdown. Every mapped key plays the
+same fixed-pitch sample. This is an executable source/behavior path, not a full
+instrument authoring format or production host.
+
+Decoding, source compilation and output-format validation finish before creating
+the destination. `Prepared` then owns the decoded PCM; rendering reads no source
+file and borrows no frontend objects. Existing output and input paths cannot be
+overwritten. The process-level check writes an authored 10 ms mono PCM16 sample,
+executes the delayed KSP fixture at 44.1/48/96 kHz, and compares every output sample
+against an independent envelope/velocity calculation. It verifies the fixed output
+horizon, source-end silence, both channels, unchanged inputs/outputs on overwrite
+attempts, and no destination on malformed source or WAV input.
+
+`cargo test --locked -p sampler-native --test script_sample` runs that check. The
+new-core score remains 90, complete and authoritative, zero errors and 119 warnings.
+Local evidence uses `artifacts/architecture-v2/script-sample-*`.

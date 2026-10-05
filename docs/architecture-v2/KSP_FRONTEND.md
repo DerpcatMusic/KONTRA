@@ -77,3 +77,8 @@ Current new-core Doctor evidence is complete and authoritative: **90**, zero err
 118 warnings, with all rules retained. Logs, source hashes and rendered audio use
 ignored `artifacts/architecture-v2/ksp-*`. Full language/state/UI/host support remains
 open in [TASKS.md](TASKS.md).
+
+The same frontend can now audition a supported resident WAV instead of the demo
+sine: `sampler-native script INPUT.ksp SAMPLE.wav OUTPUT.wav`. Compilation uses the
+sample's rate and renders a fixed two-second window. See the
+[native sample path and process-level checks](NATIVE_ENTRY.md#scripted-resident-wav-audition).

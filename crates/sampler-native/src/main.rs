@@ -23,7 +23,12 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
     let demo = !matches!(&mode, Mode::Copy);
     let scripted = matches!(&mode, Mode::Script(_));
     let rate = sample.rate;
-    let count = sample.frames.len();
+    let count = if scripted {
+        usize::try_from(u64::from(rate) * 2)
+            .map_err(|_| io::Error::other("two-second render exceeds platform frame capacity"))?
+    } else {
+        sample.frames.len()
+    };
     let mut plan = Prepared::new(
         rate,
         vec![sample],
@@ -115,6 +120,8 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
         })
         .collect::<io::Result<Vec<_>>>()?;
     let mut next = 0;
+    // Validate the output representation before creating any destination.
+    wave::header(&mut io::sink(), rate, count)?;
     // Refuse overwrites, including an input path reused as output.
     let file = OpenOptions::new()
         .write(true)
@@ -213,28 +220,36 @@ fn run() -> io::Result<()> {
             render(wave::read(Path::new(input))?, Path::new(output), Mode::Copy)
         }
         [command, source, output] if command == "script" => {
-            let limits = sampler_ksp::Limits {
-                source_bytes: 1 << 20,
-                instructions: 65536,
-            };
-            let mut text = String::new();
-            std::fs::File::open(source)?
-                .take(limits.source_bytes as u64 + 1)
-                .read_to_string(&mut text)?;
-            let sample = demo_sample();
-            let program = sampler_ksp::compile(&text, sample.rate, limits).map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("{}: {e}", Path::new(source).display()),
-                )
-            })?;
-            render(sample, Path::new(output), Mode::Script(program))
+            render_script(demo_sample(), Path::new(source), Path::new(output))
         }
+        [command, source, input, output] if command == "script" => render_script(
+            wave::read(Path::new(input))?,
+            Path::new(source),
+            Path::new(output),
+        ),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: sampler-native demo OUTPUT.wav | echo OUTPUT.wav | render INPUT.wav OUTPUT.wav | script INPUT.ksp OUTPUT.wav",
+            "usage: sampler-native demo OUTPUT.wav | echo OUTPUT.wav | render INPUT.wav OUTPUT.wav | script INPUT.ksp [INPUT.wav] OUTPUT.wav",
         )),
     }
+}
+
+fn render_script(sample: Pcm, source: &Path, output: &Path) -> io::Result<()> {
+    let limits = sampler_ksp::Limits {
+        source_bytes: 1 << 20,
+        instructions: 65536,
+    };
+    let mut text = String::new();
+    std::fs::File::open(source)?
+        .take(limits.source_bytes as u64 + 1)
+        .read_to_string(&mut text)?;
+    let program = sampler_ksp::compile(&text, sample.rate, limits).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{}: {e}", source.display()),
+        )
+    })?;
+    render(sample, output, Mode::Script(program))
 }
 
 fn main() {

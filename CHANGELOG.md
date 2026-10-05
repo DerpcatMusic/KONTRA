@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Run authored KSP-subset scripts against resident WAV samples through the independent native executable. Compile at the source rate and render a fixed two-second audition; process-level checks compare exact expected audio at 44.1/48/96 kHz and preserve existing files.
+
 - Apply channel-scoped All Sound Off to native tails, generated descendants, delayed sources and retained callbacks. Silenced physical inputs retain same-key pairing until key-up; queued releases cannot resurrect work or target retired owners.
 
 - Apply MIDI 1.0/2.0 All Notes Off through bounded native gate cleanup. Sustain/sostenuto and input-domain isolation are preserved, with observable release counts and no dependence on spare channel or command capacity.
