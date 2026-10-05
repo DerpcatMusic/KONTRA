@@ -1,5 +1,9 @@
 use crate::articulate::{self, Articulate, In, Mpe, Route, Router};
 mod visual_assets;
+#[cfg(feature = "jam-audit")]
+mod universal_jam;
+#[cfg(feature = "jam-audit")]
+pub use universal_jam::run as run_universal_jam;
 pub(crate) use visual_assets::VisualDemand;
 use crate::{artwork, library};
 use crate::{

@@ -331,6 +331,19 @@ impl Registry {
     }
 
     /// Explicit support export only. One deadline bounds all rack workers.
+    /// Off-callback campaign observation: atomic counters and shared queue depths only.
+    #[cfg(feature = "jam-audit")]
+    pub(super) fn jam_metrics(&self) -> serde_json::Value {
+        serde_json::json!(self.controls.iter().map(|(&(epoch,generation),control)| {
+            serde_json::json!({"epoch":epoch,"generation":generation,"slot":control.slot,
+                "stats":control.worker.stats(),"queues":control.worker.jam_queue_depths()})
+        }).collect::<Vec<_>>())
+    }
+    #[cfg(feature = "jam-audit")]
+    pub(super) fn jam_join_workers(&mut self) {
+        for control in self.controls.values_mut() {control.worker.stop();}
+    }
+
     pub fn runtime_diagnostic_report(&self, timeout: std::time::Duration) -> serde_json::Value {
         self.report(Some(timeout))
     }

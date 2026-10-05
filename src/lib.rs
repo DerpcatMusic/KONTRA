@@ -39,6 +39,8 @@ mod routing;
 mod ui;
 #[cfg(feature="plugin")]
 pub use plugin::{Plugin, bench_host, bench_ui_control};
+#[cfg(feature = "jam-audit")]
+pub use plugin::run_universal_jam as universal_jam;
 /// `kontakto audit-ui`: see `ui::audit`.
 #[cfg(feature="plugin")]
 pub use ui::audit::run as audit_ui;
