@@ -10,24 +10,27 @@ it does not change the current package version or release policy.
 
 The proposed direction is one shared musical runtime with versioned format and
 behavior adapters. The immediate job is to make ownership, scheduling, preparation,
-and retirement independently testable, while preserving the existing Kontakt path.
+and retirement independently testable in a clean-sheet product. Explicit user direction
+on 2026-10-05 removes all 1.x compatibility, reuse and migration requirements.
+MIDI 2.0 is required from the event-model design onward. Third-party instrument
+compatibility remains a separate, evidence-backed capability.
 
 ## Working documents
 
 1. [Current architecture and ownership map](CURRENT_STATE.md): inspected source,
    existing safeguards, coupling, and unresolved risks.
-2. [Target architecture and migration plan](PLAN.md): boundaries, lifecycle
-   contracts, decisions, delivery gates, and rollback.
+2. [Clean-sheet target architecture and delivery plan](PLAN.md): boundaries, lifecycle
+   contracts, decisions, MIDI 2.0 scope and delivery gates.
 3. [Task list](TASKS.md): ordered work with dependencies and acceptance criteria.
 4. [Conformance allocation](CONFORMANCE_MAP.md): all 128 supplied scenario IDs
    assigned to implementation tasks, without claiming execution.
 5. [First implementation evidence](IMPLEMENTATION.md): runnable checks, actual scope,
    reproduced legacy defects, and remaining gates.
 
-Continue through **V2-01 → V2-02 → V2-03/V2-04** in the task list: close the confirmed
-baseline defects, settle the full native contract, and extend the experimental
-kernel beyond the current PCM/KSP fixtures. The early KSP probe already challenges
-the boundary; full production integration remains gated.
+Continue through **V2-01 → V2-02 → V2-03/V2-04**: define independent workload
+and protocol contracts, then implement families, expression and unified scheduling.
+The prototype may change freely. The old-VM KSP probe is historical evidence, not
+the new scripting implementation. Legacy defects do not block v2 delivery.
 
 ## Preserved source material
 
@@ -79,7 +82,6 @@ git diff --check -- . ':!docs/architecture-v2/references'
 The whitespace check excludes the references because the supplied originals contain
 trailing whitespace and are intentionally preserved unchanged. For staged changes,
 add `--cached` to that check. Keep references unchanged; record amendments in the working documents. Source
-line links in the map are anchored to the baseline commit above. Refresh them when
-the corresponding subsystem migrates. Task completion requires executable evidence;
+line links in the map are anchored to the baseline commit above. Keep them as historical evidence when the new implementation replaces that subsystem. Task completion requires executable evidence;
 an existing test name, a parsed JSON file, or a checked planning item is not a
 passing conformance result. Keep measured results separate from the original catalogue.

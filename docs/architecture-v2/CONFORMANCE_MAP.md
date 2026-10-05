@@ -23,7 +23,9 @@ Results should be stored separately with case ID, outcome (pass/fail/blocked/unv
 engine/build/profile, fixture hash, seed, rate, partition, command and artifact path.
 No fabricated vendor observations or compatibility percentages.
 
-V2-01 characterizes existing tests and reproduces risks before these implementations.
+Task IDs now refer to the clean-sheet task list. Legacy characterization is historical
+evidence, not a migration gate. New MIDI 2.0 protocol cases must supplement this catalogue.
+V2-01 establishes independent correctness and workload evidence.
 M1 exercises terminal admission/retry through a headless sink; V2-15 proves the actual
 host adapter. M1's minimum KSP slice maps to KSP_RUNTIME_01–03 and relevant identity/
 scheduling cases; the broader KSP probes belong to V2-14.
