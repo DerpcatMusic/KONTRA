@@ -1,7 +1,9 @@
 # Conformance scenario allocation
 
 This is a planning index of the supplied [catalogue](references/CONFORMANCE_SCENARIOS.json),
-not a test result. All **128 cases remain `specified_not_executed`**. The catalogue
+not a test result. All **128 original records retain `specified_not_executed`**; this
+preserves the supplied source rather than serving as a live result database.
+[Implementation evidence](IMPLEMENTATION.md) records the exercised subset separately. The catalogue
 contains 100 proposed native contracts, 15 documented profile rules and 13 reference
 probes. Its original bytes and statuses are preserved.
 

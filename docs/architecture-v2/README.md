@@ -1,7 +1,7 @@
 # KONTRA 2.0 architecture workbench
 
-Status: initial repository map and proposed migration plan, 2026-10-05. No runtime
-replacement or compatibility certification has been performed.
+Status: first experimental ownership/PCM kernel and authored KSP integration probe,
+2026-10-05. Production playback has not been replaced or certified.
 
 This work starts on `docs/plan-v2-architecture`, in the isolated T3 worktree
 `t3code-deca12d9`, at source commit
@@ -21,11 +21,13 @@ and retirement independently testable, while preserving the existing Kontakt pat
 3. [Task list](TASKS.md): ordered work with dependencies and acceptance criteria.
 4. [Conformance allocation](CONFORMANCE_MAP.md): all 128 supplied scenario IDs
    assigned to implementation tasks, without claiming execution.
+5. [First implementation evidence](IMPLEMENTATION.md): runnable checks, actual scope,
+   reproduced legacy defects, and remaining gates.
 
-Start implementation with **V2-01 → V2-02 → V2-03/V2-04** in the task list:
-characterize the current behavior, settle the native contract, then exercise a
-bounded note kernel through a tiny headless renderer. Bring a meaningful KSP
-fixture onto the same kernel in the first semantic milestone.
+Continue through **V2-01 → V2-02 → V2-03/V2-04** in the task list: close the confirmed
+baseline defects, settle the full native contract, and extend the experimental
+kernel beyond the current PCM/KSP fixtures. The early KSP probe already challenges
+the boundary; full production integration remains gated.
 
 ## Preserved source material
 
