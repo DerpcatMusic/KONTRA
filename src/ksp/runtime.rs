@@ -1019,6 +1019,8 @@ pub struct Runtime {
     /// Host-block budget survives internal render segments and MIDI splits.
     audio_block: bool,
     audio_time: Option<std::time::Duration>,
+    /// Actual callback or due timer work postponed by this block's budget.
+    budget_deferred: bool,
     /// Configured instrument channel for callbacks with no performance input.
     service_channel: u8,
 }
@@ -1050,6 +1052,7 @@ impl Runtime {
             changes: 0,
             audio_block: false,
             audio_time: None,
+            budget_deferred: false,
             service_channel: 0,
             fuel_cap: CALLBACK_FUEL,
             init_engine_pars: Vec::new(),
@@ -1129,6 +1132,7 @@ impl Runtime {
     /// rendering retains the large deterministic allowance without a timer.
     pub fn begin_audio_block(&mut self, frames: usize, parts: usize, offline: bool) {
         self.audio_block = true;
+        self.budget_deferred = false;
         self.env.deadline = None;
         self.env.block_fuel = if offline {
             BLOCK_FUEL
@@ -2877,9 +2881,9 @@ impl Runtime {
 
     /// Advance the outer clock and replenish a standalone budget exactly once.
     pub(crate) fn finish_process(&mut self, frames: u32) {
-        if self.env.block_fuel == 0 {
+        if std::mem::take(&mut self.budget_deferred) {
             self.env
-                .note("KSP instruction budget exhausted for a block; callbacks deferred");
+                .note("KSP audio-block budget exhausted; scheduled work deferred");
         }
         self.env.now += u64::from(frames);
         self.env.offset = 0;
@@ -2899,7 +2903,23 @@ impl Runtime {
 
     fn run_timers_floor(&mut self, engine: &mut dyn KspEngine, until: u64, minimum_offset: u32) {
         while let Some(&Reverse(t)) = self.env.timers.peek() {
-            if t.at >= until || self.env.block_fuel == 0 {
+            if t.at >= until {
+                break;
+            }
+            if self.env.block_fuel == 0 {
+                // A finished callback may spend the remaining budget. Only
+                // valid work due at this boundary proves a later deferral.
+                self.budget_deferred |= match t.kind {
+                    TimerKind::Resume { thread, generation } => self.threads
+                        .get(thread as usize)
+                        .is_some_and(|t| t.live && t.generation == generation),
+                    TimerKind::Release { event, .. } => self.env.events
+                        .get(event).is_some_and(|e| e.release_scheduled),
+                    TimerKind::Listener { slot, signal, generation } => self.states
+                        .get(slot as usize).is_some_and(|state| state.listener.generations[
+                            usize::from(signal == b::signal::TIMER_BEAT)
+                        ] == generation),
+                };
                 break;
             }
             self.env.timers.pop();
@@ -3510,13 +3530,15 @@ impl Runtime {
                 // Block budget spent: continue at the start of the next block.
                 let generation = self.threads[i as usize].generation;
                 let at = self.env.clock();
-                self.env.timer(
+                if self.env.timer(
                     at,
                     TimerKind::Resume {
                         thread: i,
                         generation,
                     },
-                );
+                ) {
+                    self.budget_deferred = true;
+                }
             }
             Err(f) => {
                 if self.threads[i as usize].ctx.cleanup {
