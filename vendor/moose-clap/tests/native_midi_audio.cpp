@@ -97,6 +97,9 @@ struct Session {
         std::ifstream file(state_path,std::ios::binary);
         Stream stream{{std::istreambuf_iterator<char>(file),std::istreambuf_iterator<char>()}};
         require(state && !stream.bytes.empty() && state->load(plugin,&stream.api),"actual CLAP state load");
+        // This functional gate fast-forwards the sample clock; let disk streams wait.
+        auto* render=static_cast<const clap_plugin_render_t*>(plugin->get_extension(plugin,CLAP_EXT_RENDER));
+        require(render && render->set && render->set(plugin,CLAP_RENDER_OFFLINE),"explicit offline functional render mode");
         auto* notes=static_cast<const clap_plugin_note_ports_t*>(plugin->get_extension(plugin,CLAP_EXT_NOTE_PORTS));
         clap_note_port_info_t note{};
         require(notes && notes->count(plugin,true)>0 && notes->get(plugin,0,true,&note),"declared note input");
