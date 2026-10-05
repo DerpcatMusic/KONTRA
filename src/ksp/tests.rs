@@ -436,26 +436,67 @@ end on"#;
 
 #[test]
 #[ignore = "requires the local Conflux instrument and its authored resources"]
-fn actual_conflux_persistence_prepares_effect_indexed_strings() {
+fn actual_conflux_metadata_install_reaches_persistence_indexed_strings() {
+    use super::engine::KspEngine;
     let path = std::path::PathBuf::from(std::env::var_os("KONTRA_CONFLUX_INSTRUMENT").expect("set KONTRA_CONFLUX_INSTRUMENT"));
     let instrument = crate::import::read(&path).unwrap();
     assert_eq!(instrument.scripts.len(), 3, "exercise all authored script slots");
+    assert_eq!(serde_json::to_value(&instrument.script_state[0]["%engine__fx__unit_id"]).unwrap(),
+        serde_json::json!([-1, -1, -1, 21]), "preserve the owned NKI's native fourth-slot IR state");
     let (rt, errors) = crate::engine::load_scripts(&instrument, instrument.script_state.clone(), 48_000.);
     assert!(errors.is_empty(), "{errors:?}");
     let mut rt = rt.expect("authored scripts must be admitted");
+    assert_eq!(rt.persistence().len(), 3, "retain all three admitted script states");
+
+    // Authored init assigns K1's ID plus0..11 to each slot's parameter array:
+    // eight knobs and four other controls. Names alone omit those four.
+    let initial = rt.interface(0);
+    let mut effect_ids = std::collections::BTreeSet::new();
+    for slot in 1..=4 {
+        let first = initial.controls.iter().find(|c| c.variable == format!("$FX__Slot{slot}__K1"))
+            .expect("authored first effect knob").id;
+        for offset in 0..12 {
+            let control = initial.controls.iter().find(|c| c.id == first + offset)
+                .expect("each init-assigned effect ID must identify a real control");
+            assert!(control.variable.starts_with(&format!("$FX__Slot{slot}__")), "{} escaped its authored slot", control.variable);
+            assert!(effect_ids.insert(control.id), "effect domains must be disjoint");
+        }
+    }
+    assert_eq!(effect_ids.len(), 48, "all four genuine12-control domains");
+
+    // Metadata installation proof, without loading a sample bank. ScriptSetup
+    // stages and validates mappings but intentionally leaves their async IDs
+    // pending. Apply the genuine accepted init requests to the installed setup
+    // before acknowledging them, as prepared bank installation does.
+    let pending: std::collections::BTreeSet<_> = rt.env.pending_async.iter().copied().collect();
+    let edits = rt.init_zone_edits.clone();
+    let edit_ids: std::collections::BTreeSet<_> = edits.iter().filter(|edit| edit.id >= 0)
+        .map(|edit| (edit.slot, edit.id)).collect();
+    assert!(!edit_ids.is_empty(), "authored persistence must await real mapping installation");
+    assert_eq!(edit_ids, pending, "complete only genuine pending mapping IDs");
     let mut engine = crate::engine::ScriptSetup::new(&instrument, 48_000.);
+    for &(parameter, value) in &rt.init_engine_pars {
+        assert!(engine.set_engine_par(0, parameter, value), "accepted init parameter must replay on install: {parameter:?}");
+    }
+    for &edit in &edits {
+        engine.request_zone_edit(edit).expect("validate every source mapping before acknowledging installation");
+    }
+    for &(slot, id) in &edit_ids {
+        assert!(rt.service_complete(&mut engine, slot, id, true), "validated mapping completion must fit the prepared queue");
+    }
     for _ in 0..100 { rt.process(&mut engine, 480); }
+    assert!(rt.env.pending_async.is_empty(), "persistence must not remain stalled on uninstalled metadata");
     assert!(rt.faults().next().is_none(), "{:?}", rt.diagnostics());
-    let ui = rt.interface(0);
-    let effects: Vec<_> = ui.controls.iter().filter(|c| c.variable.starts_with("$FX__Slot") && c.variable.contains("__K")).collect();
-    assert_eq!(effects.len(), 48, "all four authored effect-control domains");
+    let snapshots: Vec<_> = (0..3).map(|slot| rt.interface(slot)).collect();
+    let effects: Vec<_> = snapshots[0].controls.iter().filter(|c| effect_ids.contains(&c.id)).collect();
+    assert_eq!(effects.len(), 48, "all authored domains survive persistence publication");
     assert!(effects.iter().any(|control| control.properties.iter().any(|(key, value)| {
         key.starts_with("$CONTROL_PAR_NKS_STR_VALUES[") && matches!(value, Value::Text(text) if !text.is_empty())
     })), "authored persistence must populate labels, not just reserve empty slots");
     for control in effects {
         assert!(control.properties.contains_key("$CONTROL_PAR_NKS_STR_VALUES[127]"), "{} lacks its declared128-cell IR domain", control.variable);
     }
-    eprintln!("Conflux all3 slots,4×12 effect controls,128-cell IR domains and1-second persistence cadence: no runtime faults");
+    eprintln!("Conflux metadata install: all3 slots,4×12 genuine effect controls,128-cell IR domains,{} validated mapping completions and1-second persistence cadence: no runtime faults", edit_ids.len());
 }
 
 #[test]
