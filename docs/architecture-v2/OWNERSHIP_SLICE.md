@@ -153,3 +153,33 @@ These are an adversarial ownership microbenchmark, not audio throughput or a
 competitor comparison. Raw logs and source-hash scan evidence are under ignored
 `artifacts/architecture-v2/retire-*`. Release propagation is still a separate
 bounded repeated-scan path and remains a performance follow-up.
+
+## Linear linked-release propagation
+
+The repeated-scan follow-up is now implemented. A transient checked flag lets each
+propagation pass discover an open linked ancestor path once. A path reaching a
+closed ancestor is closed iteratively; an open independent child forms a release
+barrier. Every discovery step marks a note and every closing step closes one, so
+the pass is O(reserved slots + live notes), with no recursion, adjacency allocation
+or queue capacity requirement. Parent identity and expression inheritance remain
+separate from release linkage.
+
+The 512-note reverse-index test deliberately reuses slots from high to low. It
+checks the independent-child barrier, later explicit release, retained ancestry,
+exact terminal delivery and no callback allocations/frees. Full legacy workspace
+tests also pass, including both historical v2 boundary checks. Strict Clippy,
+new-crate release and MSRV checks pass; authoritative Doctor score remains 91 and
+the workspace comparison has no new errors.
+
+`retire_bench --release` times explicit release propagation through a reverse-index
+linked chain, excluding preparation, admission and final retirement. Same machine,
+build profile and nine samples as the retirement measurements:
+
+| Notes | Previous median, µs | New median, µs | New maximum, µs |
+| ---: | ---: | ---: | ---: |
+| 64 | 3.370 | 0.390 | 0.510 |
+| 256 | 47.421 | 1.500 | 1.960 |
+| 1024 | 957.308 | 6.321 | 8.310 |
+
+This fixture targets adverse arena ordering, not complete voice processing. Logs
+are under ignored `artifacts/architecture-v2/propagate-*`.

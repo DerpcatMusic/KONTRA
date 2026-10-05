@@ -323,3 +323,59 @@ fn deep_reused_slot_trees_retire_without_heap_and_preserve_retry_ownership() {
         );
     });
 }
+
+#[test]
+fn reverse_index_release_paths_stop_at_independent_children_without_heap() {
+    const COUNT: usize = 512;
+    let mut rt = Runtime::new(
+        sampler_core::Prepared::new(48000, vec![], vec![], 0).unwrap(),
+        Limits {
+            notes: COUNT,
+            channels: 1,
+            expressions: COUNT,
+            families: 0,
+            voices: 0,
+            commands: 0,
+        },
+    )
+    .unwrap();
+    let input = Input {
+        protocol: Protocol::Native,
+        port: 0,
+        group: 0,
+        channel: 0,
+        key: 60,
+        external_id: None,
+    };
+    let fillers: Vec<_> = (1..COUNT)
+        .map(|_| rt.note_on(input, 60, 1.).unwrap())
+        .collect();
+    let root = rt.note_on(input, 60, 1.).unwrap();
+    let mut children = Vec::with_capacity(COUNT - 1);
+    support::without_heap(|| {
+        let mut parent = root;
+        for (i, filler) in fillers.iter().rev().enumerate() {
+            rt.release(*filler).unwrap();
+            rt.flush_ended(|_| true);
+            parent = rt
+                .child(parent, 60, 1., i != 256, Inheritance::Linked)
+                .unwrap();
+            children.push(parent);
+        }
+        rt.release(root).unwrap();
+        for (i, child) in children.iter().enumerate() {
+            assert_eq!(rt.note(*child).unwrap().2, i >= 256);
+            assert_eq!(rt.key_down(*child).unwrap(), i >= 256);
+        }
+        rt.flush_ended(|_| panic!("independent child retains its ancestry"));
+        assert_eq!(rt.note_count(), COUNT);
+        rt.release(children[256]).unwrap();
+        assert!(children.iter().all(|id| !rt.note(*id).unwrap().2));
+        let mut ends = 0;
+        rt.flush_ended(|_| {
+            ends += 1;
+            true
+        });
+        assert_eq!((ends, rt.note_count(), rt.expression_count()), (1, 0, 0));
+    });
+}
