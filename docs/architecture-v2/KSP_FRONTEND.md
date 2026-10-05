@@ -11,14 +11,15 @@ manual surface. This subset is not the product's completion target.
 
 ## Accepted shape
 
-An optional first `on init` declares polyphonic integer variables. One `on note`
-and/or one `on release` follows; duplicate or misplaced callbacks fail compilation.
+An optional first `on init` declares polyphonic integer variables and supported scalar
+UI controls. Optional `on note` and/or `on release` follows; duplicate or misplaced callbacks fail compilation.
 A note callback must begin with `ignore_event($EVENT_ID)`. Release-only scripts keep
-ordinary native attack selection. Init currently accepts declarations only.
+ordinary native attack selection. Init accepts declarations, `make_perfview` and literal control initialization.
+Init-only instruments keep native attack selection.
 
 Note/release bodies accept literal `wait(...)` and bare `play_note(...)` calls,
 and assignments from signed 32-bit integer literals, `$EVENT_NOTE`, or another
-declared polyphonic integer, or `$NOTE_HELD`. Note-owned values start at zero and remain shared
+declared polyphonic/control integer, or `$NOTE_HELD`. Note-owned values start at zero and remain shared
 between the originating note and its release callback, including overlapping waits.
 Generated notes use `$EVENT_NOTE` with optional constant transposition, constant
 velocity 1–127, zero offset and positive constant duration. Brace comments and
@@ -195,3 +196,40 @@ ignored `artifacts/ksp-loops-*`.
 The loop slice passes frontend/CLI debug, release and Rust 1.92 tests, strict
 all-target Clippy for both affected crates, and byte-identical inventory
 regeneration. Native core code and its public contract are unchanged by this slice.
+
+## Shared scalar UI state
+
+`compile(source, rate, limits, control_bindings)` requires an explicit persistent
+`ControlId` for every declared UI variable. Missing, extra, duplicate-name and
+aliased-ID bindings fail compilation. Bindings are bounded by `Limits.variables`.
+No declaration-order hash or UI position becomes a persistent identity. The CLI
+currently passes no bindings and therefore still rejects scripts with UI declarations;
+the library integration tests exercise this path directly.
+
+Supported declarations are `ui_knob(min,max,display_ratio)`, `ui_slider(min,max)`,
+`ui_button` and `ui_switch`, with signed integer literal arguments. Knob display
+ratios may be negative but not zero. Bounds must be ordered. Native default policy
+is zero clamped to the declared range; literal init writes outside the range reject.
+These corner policies are not yet verified against Kontakt. `make_perfview` records
+presentation intent. `Script::controls()` exposes source-order metadata and stable
+bindings; `Script::has_performance_view()` preserves authored view intent.
+
+`Script::bind` replaces the complete script/control table off audio. It installs
+native [headless control state](CONTROL_STATE.md), separate from note-owned cells.
+Note/release assignments and conditions can read/write control integers through the
+same native services as control clients. The source-name table and presentation
+metadata do not enter realtime execution. Source reads use the original plan's
+controls across waits and replacement.
+
+The UI renderer, UI callbacks, automation gestures, control properties and resource
+skins remain open. Declarations and numeric values are **partial widget support**,
+not rendered-widget parity. In particular, a KSP button's mouse-up callback and
+host-automation restrictions must be preserved when that interaction layer lands;
+see [NI widgets](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-widgets).
+The complete frontend scope is tracked in [UI_FRONTENDS.md](UI_FRONTENDS.md).
+
+`tests/controls.rs` drops all presentation metadata before rendering, changes a
+control while a note callback waits, and independently checks exact generated PCM,
+release access and separate polyphonic values over blocks 1/7/64 under the heap guard.
+It also checks explicit identity mapping after declaration reordering, init-only
+native attack selection, signed bounds, invalid bindings and malformed declarations.

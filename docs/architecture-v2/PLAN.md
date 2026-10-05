@@ -114,6 +114,10 @@ and ABI stability need separate evidence before being promised.
 
 ## Three representations
 
+The [shared IR contract and Luau evaluation](SHARED_IR.md) make this boundary
+explicit for all format frontends. Shared instrument semantics and execution services
+do not require every language or declarative format to run through a Lua-family VM.
+
 1. **Source model:** preserves vendor hierarchy, object order/IDs, units, defaults,
    unknown material, and provenance. New frontends own these structures; do not rename the legacy Kontakt
    `Instrument` “universal” and inherit its assumptions.

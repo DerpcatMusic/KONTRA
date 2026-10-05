@@ -67,6 +67,15 @@ pub enum Instruction {
         cell: u16,
         local: u16,
     },
+    /// Read/write integer controls in the originating plan generation.
+    ReadControl {
+        local: u16,
+        control: super::ControlId,
+    },
+    WriteControl {
+        control: super::ControlId,
+        local: u16,
+    },
     Jump {
         target: usize,
     },
@@ -118,6 +127,8 @@ impl Program {
             }
             if let Instruction::SetLocal { local, .. }
             | Instruction::AddLocal { local, .. }
+            | Instruction::ReadControl { local, .. }
+            | Instruction::WriteControl { local, .. }
             | Instruction::ReadKey { local }
             | Instruction::ReadKeyDown { local }
             | Instruction::ReadNoteCell { local, .. }
@@ -355,6 +366,18 @@ impl Runtime {
             Instruction::WriteNoteCell { cell, local } => {
                 let index = self.note_cell_index(note, cell)?;
                 self.note_values[index] = *self.local_cell_mut(id, local)?;
+            }
+            Instruction::ReadControl { local, control } => {
+                let plan = self.note_plan(note)?;
+                let super::ControlValue::Integer(value) = self.control_value(plan, control)? else {
+                    return Err(Error::InvalidInput);
+                };
+                *self.local_cell_mut(id, local)? = value;
+            }
+            Instruction::WriteControl { control, local } => {
+                let plan = self.note_plan(note)?;
+                let value = super::ControlValue::Integer(*self.local_cell_mut(id, local)?);
+                self.edit_controls_now(plan, None, &[super::ControlWrite { id: control, value }])?;
             }
             Instruction::Jump { target } => {
                 self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?.pc = target

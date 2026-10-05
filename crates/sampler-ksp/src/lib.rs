@@ -2,7 +2,8 @@
 //! Clean-sheet, control-thread KSP 8.12 source subset. No vendor VM dependency.
 //! Native sample-time lowering is explicit; this is not a Kontakt fidelity claim.
 use sampler_core::{
-    Comparison, Duration, Inheritance, Instruction, Prepared, Program, Velocity, WaitLifetime,
+    Comparison, ControlDefinition, ControlDomain, ControlId, ControlValue, Duration, Inheritance,
+    Instruction, Prepared, Program, Velocity, WaitLifetime,
 };
 use std::collections::BTreeMap;
 
@@ -15,16 +16,40 @@ pub struct Limits {
     pub variables: usize,
 }
 
-/// Control-owned executable callbacks and their declared note-state layout.
+/// Control-owned executable callbacks, UI metadata and declared state layout.
 pub struct Script {
     programs: Vec<Program>,
     on_note: Option<usize>,
     on_release: Option<usize>,
     rate: u32,
     note_cells: usize,
+    controls: Vec<Control>,
+    performance_view: bool,
+}
+
+/// Authored presentation metadata; changing presentation never replaces the value owner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Widget {
+    Knob { display_ratio: i32 },
+    Slider,
+    Button,
+    Switch,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct Control {
+    pub variable: String,
+    pub widget: Widget,
+    pub definition: ControlDefinition,
 }
 
 impl Script {
+    pub fn has_performance_view(&self) -> bool {
+        self.performance_view
+    }
+    pub fn controls(&self) -> &[Control] {
+        &self.controls
+    }
+
     pub fn note_cells(&self) -> usize {
         self.note_cells
     }
@@ -34,6 +59,8 @@ impl Script {
         if plan.sample_rate() != self.rate {
             return Err(sampler_core::Error::InvalidInput);
         }
+        let plan = plan.with_programs(Vec::new(), None)?;
+        let plan = plan.with_controls(self.controls.into_iter().map(|c| c.definition).collect())?;
         let plan = plan.with_programs(self.programs, self.on_note)?;
         match self.on_release {
             Some(program) => plan.with_release_program(program),
@@ -72,6 +99,12 @@ enum Block {
     If { branch: usize, has_else: bool },
     While { start: usize, branch: usize },
 }
+#[derive(Clone, Copy)]
+enum Variable {
+    Note(u16),
+    Control(usize),
+}
+
 struct Parser<'a> {
     source: &'a str,
     offset: usize,
@@ -79,7 +112,11 @@ struct Parser<'a> {
     limit: usize,
     emitted: usize,
     code: Vec<Instruction>,
-    variables: BTreeMap<&'a str, u16>,
+    variables: BTreeMap<&'a str, Variable>,
+    bindings: BTreeMap<&'a str, ControlId>,
+    controls: Vec<Control>,
+    note_cells: usize,
+    performance_view: bool,
     variable_limit: usize,
 }
 impl<'a> Parser<'a> {
@@ -218,11 +255,15 @@ impl<'a> Parser<'a> {
             let token = self.next()?;
             match token.kind {
                 Kind::Word("end") => return self.expect(Kind::Word("on"), "expected end on"),
+                Kind::Word("make_perfview") => self.performance_view = true,
                 Kind::Word("declare") => {
-                    self.expect(
-                        Kind::Word("polyphonic"),
-                        "only polyphonic integer declarations are supported",
-                    )?;
+                    let kind = self.next()?;
+                    let Kind::Word(
+                        kind @ ("polyphonic" | "ui_knob" | "ui_slider" | "ui_button" | "ui_switch"),
+                    ) = kind.kind
+                    else {
+                        return Err(self.error("unsupported declaration type"));
+                    };
                     let token = self.next()?;
                     let Kind::Word(name) = token.kind else {
                         return Err(Error {
@@ -257,24 +298,86 @@ impl<'a> Parser<'a> {
                             message: "duplicate variable declaration",
                         });
                     }
-                    let cell = u16::try_from(self.variables.len())
-                        .map_err(|_| self.error("native note-cell index range exceeded"))?;
                     if self.variables.len() >= self.variable_limit {
                         return Err(self.error("variable budget exceeded"));
                     }
-                    self.variables.insert(name, cell);
+                    let variable = if kind == "polyphonic" {
+                        let cell = u16::try_from(self.note_cells)
+                            .map_err(|_| self.error("native note-cell index range exceeded"))?;
+                        self.note_cells += 1;
+                        Variable::Note(cell)
+                    } else {
+                        let id = self.bindings.remove(name).ok_or_else(|| {
+                            self.error("UI control requires a persistent identity binding")
+                        })?;
+                        let (min, max, widget) = match kind {
+                            "ui_button" => (0, 1, Widget::Button),
+                            "ui_switch" => (0, 1, Widget::Switch),
+                            _ => {
+                                self.symbol(b'(')?;
+                                let min = self.integer()?;
+                                self.symbol(b',')?;
+                                let max = self.integer()?;
+                                if min > max {
+                                    return Err(self.error("reversed control range"));
+                                }
+                                let widget = if kind == "ui_knob" {
+                                    self.symbol(b',')?;
+                                    let display_ratio = self.integer()?;
+                                    if display_ratio == 0 {
+                                        return Err(self.error("zero knob display ratio"));
+                                    }
+                                    Widget::Knob { display_ratio }
+                                } else {
+                                    Widget::Slider
+                                };
+                                self.symbol(b')')?;
+                                (min, max, widget)
+                            }
+                        };
+                        let index = self.controls.len();
+                        self.controls.push(Control {
+                            variable: name.to_owned(),
+                            widget,
+                            definition: ControlDefinition {
+                                id,
+                                domain: ControlDomain::Integer {
+                                    min: i64::from(min),
+                                    max: i64::from(max),
+                                },
+                                default: ControlValue::Integer(i64::from(0.clamp(min, max))),
+                            },
+                        });
+                        Variable::Control(index)
+                    };
+                    self.variables.insert(name, variable);
+                }
+                Kind::Word(name) if name.starts_with('$') => {
+                    let Variable::Control(index) = self.variable(name, token.offset)? else {
+                        return Err(self.error("polyphonic state cannot be initialized in on init"));
+                    };
+                    self.symbol(b':')?;
+                    let value = i64::from(self.integer()?);
+                    let control = &mut self.controls[index].definition;
+                    let ControlDomain::Integer { min, max } = control.domain else {
+                        unreachable!()
+                    };
+                    if !(min..=max).contains(&value) {
+                        return Err(self.error("initial control value outside declared range"));
+                    }
+                    control.default = ControlValue::Integer(value);
                 }
                 _ => {
                     return Err(Error {
                         offset: token.offset,
-                        message: "only declarations are supported in on init",
+                        message: "only declarations and literal control initialization are supported in on init",
                     });
                 }
             }
         }
     }
 
-    fn variable(&self, name: &str, offset: usize) -> Result<u16, Error> {
+    fn variable(&self, name: &str, offset: usize) -> Result<Variable, Error> {
         self.variables.get(name).copied().ok_or(Error {
             offset,
             message: "undeclared or unsupported variable",
@@ -282,10 +385,44 @@ impl<'a> Parser<'a> {
     }
 
     fn assignment(&mut self, name: &str, offset: usize) -> Result<(), Error> {
-        let cell = self.variable(name, offset)?;
+        let variable = self.variable(name, offset)?;
         self.symbol(b':')?;
         self.scalar(0)?;
-        self.emit(Instruction::WriteNoteCell { cell, local: 0 })
+        self.emit(match variable {
+            Variable::Note(cell) => Instruction::WriteNoteCell { cell, local: 0 },
+            Variable::Control(index) => Instruction::WriteControl {
+                control: self.controls[index].definition.id,
+                local: 0,
+            },
+        })
+    }
+
+    fn integer(&mut self) -> Result<i32, Error> {
+        let token = self.next()?;
+        self.integer_token(token)
+    }
+    fn integer_token(&mut self, token: Token<'a>) -> Result<i32, Error> {
+        let (token, negative) = match token.kind {
+            Kind::Symbol(sign @ (b'-' | b'+')) => (self.next()?, sign == b'-'),
+            _ => (token, false),
+        };
+        let Kind::Number(value) = token.kind else {
+            return Err(Error {
+                offset: token.offset,
+                message: "expected integer literal",
+            });
+        };
+        if value > i32::MAX as u64 + u64::from(negative) {
+            return Err(Error {
+                offset: token.offset,
+                message: "literal exceeds KSP signed 32-bit range",
+            });
+        }
+        Ok(if negative {
+            -(value as i64)
+        } else {
+            value as i64
+        } as i32)
     }
 
     fn scalar(&mut self, local: u16) -> Result<(), Error> {
@@ -293,36 +430,17 @@ impl<'a> Parser<'a> {
         let read = match token.kind {
             Kind::Word("$EVENT_NOTE") => Instruction::ReadKey { local },
             Kind::Word("$NOTE_HELD") => Instruction::ReadKeyDown { local },
-            Kind::Word(name) => Instruction::ReadNoteCell {
-                local,
-                cell: self.variable(name, token.offset)?,
-            },
-            kind => {
-                let (token, negative) = match kind {
-                    Kind::Symbol(sign @ (b'-' | b'+')) => (self.next()?, sign == b'-'),
-                    _ => (token, false),
-                };
-                let Kind::Number(value) = token.kind else {
-                    return Err(Error {
-                        offset: token.offset,
-                        message: "expected integer literal or variable",
-                    });
-                };
-                if value > i32::MAX as u64 + u64::from(negative) {
-                    return Err(Error {
-                        offset: token.offset,
-                        message: "literal exceeds KSP signed 32-bit range",
-                    });
-                }
-                Instruction::SetLocal {
+            Kind::Word(name) => match self.variable(name, token.offset)? {
+                Variable::Note(cell) => Instruction::ReadNoteCell { local, cell },
+                Variable::Control(index) => Instruction::ReadControl {
                     local,
-                    value: if negative {
-                        -(value as i64)
-                    } else {
-                        value as i64
-                    },
-                }
-            }
+                    control: self.controls[index].definition.id,
+                },
+            },
+            _ => Instruction::SetLocal {
+                local,
+                value: i64::from(self.integer_token(token)?),
+            },
         };
         self.emit(read)
     }
@@ -530,7 +648,12 @@ impl<'a> Parser<'a> {
 /// Note callbacks require leading ignore_event($EVENT_ID). Bodies accept scalar
 /// assignment, scalar conditionals, exit, literal waits and fixed-velocity play_note.
 /// Microseconds round upward to frames; broader expressions/services are rejected.
-pub fn compile(source: &str, rate: u32, limits: Limits) -> Result<Script, Error> {
+pub fn compile(
+    source: &str,
+    rate: u32,
+    limits: Limits,
+    controls: &[(&str, ControlId)],
+) -> Result<Script, Error> {
     if source.len() > limits.source_bytes {
         return Err(Error {
             offset: 0,
@@ -543,6 +666,22 @@ pub fn compile(source: &str, rate: u32, limits: Limits) -> Result<Script, Error>
             message: "sample rate must be positive",
         });
     }
+    if controls.len() > limits.variables {
+        return Err(Error {
+            offset: 0,
+            message: "control binding budget exceeded",
+        });
+    }
+    let mut bindings = BTreeMap::new();
+    let mut identities = std::collections::BTreeSet::new();
+    for &(name, id) in controls {
+        if bindings.insert(name, id).is_some() || !identities.insert(id) {
+            return Err(Error {
+                offset: 0,
+                message: "duplicate control name or persistent identity",
+            });
+        }
+    }
     let mut p = Parser {
         source,
         offset: 0,
@@ -551,6 +690,10 @@ pub fn compile(source: &str, rate: u32, limits: Limits) -> Result<Script, Error>
         emitted: 0,
         code: Vec::new(),
         variables: BTreeMap::new(),
+        bindings,
+        controls: Vec::new(),
+        note_cells: 0,
+        performance_view: false,
         variable_limit: limits.variables,
     };
     let mut programs = Vec::new();
@@ -558,13 +701,18 @@ pub fn compile(source: &str, rate: u32, limits: Limits) -> Result<Script, Error>
     let mut initialized = false;
     loop {
         let token = p.next()?;
-        if token.kind == Kind::End && !programs.is_empty() {
+        if token.kind == Kind::End && (initialized || !programs.is_empty()) {
+            if !p.bindings.is_empty() {
+                return Err(p.error("unused control identity binding"));
+            }
             return Ok(Script {
                 programs,
                 on_note,
                 on_release,
                 rate,
-                note_cells: p.variables.len(),
+                note_cells: p.note_cells,
+                controls: p.controls,
+                performance_view: p.performance_view,
             });
         }
         if token.kind != Kind::Word("on") {

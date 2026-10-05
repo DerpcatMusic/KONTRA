@@ -251,6 +251,12 @@ unimplemented cases. Source inspection alone is not passing conformance evidence
 
 ### V2-13 — Build headless controls and coherent v2 state
 
+- **Partial evidence:** [typed headless scalar controls](CONTROL_STATE.md), stable
+  IDs, atomic edits/full scalar recall, revision conflicts, bounded acknowledged
+  UI handoff and coherent capture are implemented. KSP scalar widget declarations
+  use the shared state without a window. Complete instrument serialization,
+  script-instance state, non-scalar controls and host automation remain open.
+
 - [ ] **P0; dependencies:** V2-05/07/10.
 - New stable automation/control IDs, coherent bounded capture, state schema and UI
   command/view model. Plan v2 schema evolution; no 1.x conversion requirement.
@@ -283,6 +289,11 @@ unimplemented cases. Source inspection alone is not passing conformance evidence
 
 ### V2-16 — Ship an independent v2 composition root and application
 
+- **Required UI scope:** [UI_FRONTENDS.md](UI_FRONTENDS.md) covers generic native,
+  stock/bitmap KSP, GUI Designer `.nckp`/`.nckc`, Komplete Script/Komplete UI,
+  and Falcon Lua over shared controls, assets and native services. No family is
+  complete. Next: non-note UI callback ownership, then rendering/sample editing.
+
 - **Partial evidence:** `sampler-native` renders supported WAV through the new core
   without legacy dependencies. Live audio, host adapters and UI remain open.
 
@@ -304,6 +315,10 @@ unimplemented cases. Source inspection alone is not passing conformance evidence
   Claims about real banks require authorized readable fixtures; metadata is not playback.
 
 ### V2-18 — Implement bounded UVI behavior semantics
+
+- **2026-10-06 direction:** evaluate Luau against UVI's Lua 5.1/API and realtime
+  requirements; preserve the [shared IR/service boundary](SHARED_IR.md). No per-format
+  note engine and no forced script execution for declarative SFZ/DSP graphs.
 
 - [ ] **P2; dependencies:** V2-05/12/13/17.
 - Select a language implementation against concrete dispatch/coroutine/widget/async

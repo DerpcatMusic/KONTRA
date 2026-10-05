@@ -29,6 +29,11 @@ struct Siblings {
     next: Option<Index>,
 }
 
+mod control;
+pub use control::{
+    ControlClient, ControlDefinition, ControlDomain, ControlId, ControlOperation,
+    ControlQueueError, ControlReply, ControlRequest, ControlValue, ControlWrite, RejectedControls,
+};
 mod performance;
 pub use performance::{Keyswitch, PerformanceId, SelectionPolicy, SelectionSnapshot};
 mod behavior;
@@ -122,6 +127,7 @@ pub enum Error {
     PastEvent,
     ClockOverflow,
     ArithmeticOverflow,
+    RevisionConflict,
     /// Unbiased selection exceeded its fixed draw budget; no decision was committed.
     RandomBudget,
 }
@@ -333,6 +339,7 @@ pub struct Runtime {
     plans: Arena<Generation>,
     active_plan: PlanId,
     plan_queues: Option<PlanQueues>,
+    control_queues: Option<control::ControlQueues>,
     notes: Arena<Note>,
     release_times: Box<[release::ReleaseTimes]>,
     closed_notes: Vec<NoteId>,
@@ -406,6 +413,7 @@ impl Runtime {
         let active_plan = PlanId(plans.insert(Generation {
             request: 0,
             sequences: variation::SequenceState::new(&plan),
+            controls: control::ControlState::new(&plan),
             prepared: Box::new(plan),
             notes: 0,
         })?);
@@ -414,6 +422,7 @@ impl Runtime {
             plans,
             active_plan,
             plan_queues: None,
+            control_queues: None,
             notes: Arena::new(id, limits.notes),
             closed_notes: Vec::with_capacity(limits.notes),
             channels: Arena::new(id, limits.channels),

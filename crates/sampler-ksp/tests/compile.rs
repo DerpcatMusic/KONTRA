@@ -2,7 +2,14 @@ use sampler_core::{
     Envelope, Event, Expression, Input, Limits as CoreLimits, Outcome, Pcm, Playback, Prepared,
     Protocol, Region, Runtime,
 };
-use sampler_ksp::{Limits, compile};
+use sampler_ksp::Limits;
+fn compile(
+    source: &str,
+    rate: u32,
+    limits: Limits,
+) -> Result<sampler_ksp::Script, sampler_ksp::Error> {
+    sampler_ksp::compile(source, rate, limits, &[])
+}
 #[path = "../../sampler-core/tests/support/mod.rs"]
 mod support;
 fn limits() -> Limits {
@@ -119,7 +126,6 @@ fn authored_script_uses_new_native_ownership_after_input_release_without_heap() 
 fn unsupported_and_malformed_source_fails_explicitly_with_a_valid_offset() {
     let bodies = [
         "",
-        "on init end on",
         "on note end on",
         "on release ignore_event($EVENT_ID) end on",
         "on note ignore_event($EVENT_ID) message(1) end on",
