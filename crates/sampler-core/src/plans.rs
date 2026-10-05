@@ -10,6 +10,7 @@ pub enum PlanError {
     Capacity,
     SampleRate,
     LocalCapacity,
+    NoteStateCapacity,
     Disconnected,
     SequenceExhausted,
     Disabled,
@@ -53,6 +54,7 @@ pub struct PlanControl {
     retired: Consumer<PlanTransfer>,
     rate: u32,
     locals: usize,
+    note_cells: usize,
     sequence: u64,
 }
 
@@ -65,6 +67,8 @@ impl PlanControl {
             Some(PlanError::SampleRate)
         } else if prepared.programs.iter().any(|p| p.locals > self.locals) {
             Some(PlanError::LocalCapacity)
+        } else if prepared.note_cells > self.note_cells {
+            Some(PlanError::NoteStateCapacity)
         } else if self.sequence == u64::MAX {
             Some(PlanError::SequenceExhausted)
         } else if self.pending.is_full() {
@@ -127,6 +131,7 @@ impl Runtime {
             retired: outgoing,
             rate: runtime.rate,
             locals: runtime.behavior_stride,
+            note_cells: runtime.note_stride,
             sequence: 0,
         };
         runtime.plan_queues = Some(PlanQueues {

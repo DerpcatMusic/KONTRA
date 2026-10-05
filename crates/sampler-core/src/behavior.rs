@@ -48,6 +48,15 @@ pub enum Instruction {
     ReadKey {
         local: u16,
     },
+    /// Copy between callback-local registers and the originating note's state.
+    ReadNoteCell {
+        local: u16,
+        cell: u16,
+    },
+    WriteNoteCell {
+        cell: u16,
+        local: u16,
+    },
     Jump {
         target: usize,
     },
@@ -60,6 +69,7 @@ pub enum Instruction {
 pub struct Program {
     pub(super) code: Box<[Instruction]>,
     pub(super) locals: usize,
+    pub(super) note_cells: usize,
     pub(super) wait_lifetime: WaitLifetime,
 }
 impl Program {
@@ -70,6 +80,7 @@ impl Program {
 
     pub fn new(code: Vec<Instruction>) -> Result<Self, Error> {
         let mut locals = 0;
+        let mut note_cells = 0;
         for op in &code {
             match *op {
                 Instruction::Play {
@@ -88,14 +99,22 @@ impl Program {
             if let Instruction::SetLocal { local, .. }
             | Instruction::AddLocal { local, .. }
             | Instruction::ReadKey { local }
+            | Instruction::ReadNoteCell { local, .. }
+            | Instruction::WriteNoteCell { local, .. }
             | Instruction::JumpIfZero { local, .. } = *op
             {
                 locals = locals.max(usize::from(local) + 1);
+            }
+            if let Instruction::ReadNoteCell { cell, .. }
+            | Instruction::WriteNoteCell { cell, .. } = *op
+            {
+                note_cells = note_cells.max(usize::from(cell) + 1);
             }
         }
         Ok(Self {
             code: code.into_boxed_slice(),
             locals,
+            note_cells,
             wait_lifetime: WaitLifetime::Gate,
         })
     }
@@ -262,6 +281,13 @@ impl Runtime {
                     .key();
                 *self.local_cell_mut(id, local)? = i64::from(key);
             }
+            Instruction::ReadNoteCell { local, cell } => {
+                *self.local_cell_mut(id, local)? = self.note_cell(note, cell)?;
+            }
+            Instruction::WriteNoteCell { cell, local } => {
+                let index = self.note_cell_index(note, cell)?;
+                self.note_values[index] = *self.local_cell_mut(id, local)?;
+            }
             Instruction::Jump { target } => {
                 self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?.pc = target
             }
@@ -327,6 +353,21 @@ impl Runtime {
             }
         }
         Ok(false)
+    }
+
+    /// Note-owned integer state survives callback completion and release until the
+    /// logical note retires. Its original prepared plan defines the cell bounds.
+    pub fn note_cell(&self, note: NoteId, cell: u16) -> Result<i64, Error> {
+        let index = self.note_cell_index(note, cell)?;
+        Ok(self.note_values[index])
+    }
+
+    fn note_cell_index(&self, note: NoteId, cell: u16) -> Result<usize, Error> {
+        let n = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        if usize::from(cell) >= self.plans.get(n.plan.0).unwrap().prepared.note_cells {
+            return Err(Error::InvalidInput);
+        }
+        Ok(note.0.index * self.note_stride + usize::from(cell))
     }
 
     fn local_cell_mut(&mut self, id: BehaviorId, local: u16) -> Result<&mut i64, Error> {

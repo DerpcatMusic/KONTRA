@@ -108,6 +108,7 @@ pub struct Prepared {
     candidates: Box<[Candidate]>,
     pub(super) programs: Box<[super::Program]>,
     note_program: Option<usize>,
+    pub(super) note_cells: usize,
     keyswitches: [Option<u32>; 128],
     articulated: bool,
     conditions: Box<[Box<[ControllerCondition]>]>,
@@ -226,6 +227,7 @@ impl Prepared {
             candidates: candidates.into_boxed_slice(),
             programs: Box::new([]),
             note_program: None,
+            note_cells: 0,
             keyswitches: [None; 128],
             articulated: false,
             conditions: Box::new([]),
@@ -248,6 +250,7 @@ impl Prepared {
         if note_program.is_some_and(|index| index >= programs.len()) {
             return Err(Error::InvalidInput);
         }
+        self.note_cells = programs.iter().map(|p| p.note_cells).max().unwrap_or(0);
         self.programs = programs.into_boxed_slice();
         self.note_program = note_program;
         Ok(self)

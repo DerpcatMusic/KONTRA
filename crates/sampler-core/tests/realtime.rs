@@ -19,6 +19,7 @@ fn ownership_pressure_render_and_retirement_do_no_heap_work() {
             behaviors: 0,
             behavior_fuel: 0,
             behavior_cells: 0,
+            note_cells: 0,
         },
     )
     .unwrap();
@@ -117,6 +118,7 @@ fn pedal_and_expression_timeline_pressure_do_no_heap_work() {
             behaviors: 0,
             behavior_fuel: 0,
             behavior_cells: 0,
+            note_cells: 0,
         },
     )
     .unwrap();
@@ -210,6 +212,7 @@ fn prepared_native_selection_and_owned_asset_retirement_do_no_heap_work() {
             behaviors: 0,
             behavior_fuel: 0,
             behavior_cells: 0,
+            note_cells: 0,
         },
     )
     .unwrap();
@@ -256,6 +259,7 @@ fn deep_reused_slot_trees_retire_without_heap_and_preserve_retry_ownership() {
             behaviors: 0,
             behavior_fuel: 0,
             behavior_cells: 0,
+            note_cells: 0,
         },
     )
     .unwrap();
@@ -354,6 +358,7 @@ fn reverse_index_release_paths_stop_at_independent_children_without_heap() {
             behaviors: 0,
             behavior_fuel: 0,
             behavior_cells: 0,
+            note_cells: 0,
         },
     )
     .unwrap();
@@ -419,6 +424,7 @@ fn sparse_voice_words_preserve_slot_order_reuse_and_eof_without_heap() {
             behaviors: 0,
             behavior_fuel: 0,
             behavior_cells: 0,
+            note_cells: 0,
         },
     )
     .unwrap();

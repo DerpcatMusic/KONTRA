@@ -18,6 +18,7 @@ fn limits() -> Limits {
         behaviors: 2,
         behavior_fuel: 16,
         behavior_cells: 0,
+        note_cells: 0,
     }
 }
 fn input(id: Option<i32>, channel: u8, key: u8) -> Input {

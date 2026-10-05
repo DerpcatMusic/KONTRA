@@ -49,8 +49,9 @@ Rendering uses the existing prepared programs, bounded continuations and fuel.
 Capability status is deliberately separated: the declared syntax parses and lowers;
 independent native scheduling/audio/ownership tests pass; Kontakt behavioral and audio
 fidelity remain **unverified**. No Kontakt binary comparison has been performed.
-There is no new KSP global/polyphonic variable model yet; native callback locals must
-not be presented as complete KSP variable semantics.
+There is no new KSP global/polyphonic variable model yet; native callback locals and
+[note-owned integer cells](BEHAVIOR.md#note-owned-integer-state) must not be presented
+as complete KSP variable semantics.
 
 ## Audition and evidence
 

@@ -55,6 +55,7 @@ fn runtime_with_modulation(channels: usize, modulation: sampler_core::Modulation
             behaviors: 0,
             behavior_fuel: 0,
             behavior_cells: 0,
+            note_cells: 0,
         },
     )
     .unwrap()
@@ -764,6 +765,7 @@ fn articulation_switch_on_one_member_routes_all_members_without_changing_express
             behaviors: 0,
             behavior_fuel: 0,
             behavior_cells: 0,
+            note_cells: 0,
         },
     )
     .unwrap();

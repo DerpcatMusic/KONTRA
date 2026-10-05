@@ -22,10 +22,12 @@ The current instructions are deliberately concrete:
 - `End`: finish the callback. Reaching the instruction array's end also finishes.
 - `SetLocal` / `AddLocal`: callback-local signed 64-bit integers with checked addition.
 - `ReadKey`: read the originating note's logical key into a local.
+- `ReadNoteCell` / `WriteNoteCell`: transfer a local to/from note-owned integer state.
 - `Jump` / `JumpIfZero`: validated instruction targets; all branches consume fuel.
 
-Transposition currently changes region selection; the resident source renderer
-still runs at unity rate. This is not a pitch-resampling claim.
+Transposition changes logical pitch and region selection; resident sources use the
+prepared tuning and bounded [resampler](RESAMPLING.md). Fixed-pitch regions remain
+independent of key pitch.
 
 Generated children select linked, snapshot or independent expression inheritance,
 and fixed or scaled velocity, separately from their explicit duration:
@@ -184,3 +186,34 @@ simultaneous live owners still require sufficient declared capacity.
 
 Evidence: `artifacts/architecture-v2/reclaim-*`. The authoritative new-core scan is
 90, complete, zero errors and 118 warnings, with no rule suppression.
+
+## Note-owned integer state
+
+`Limits.note_cells` reserves a separate, cold integer slab, evenly divided across
+logical note slots. Preparation derives each program's referenced note-cell width;
+the plan owns the maximum width across its programs. Runtime construction and
+plan submission reject widths exceeding the reserved stride before activation.
+No additional reference count, allocation or hot-note field is required.
+
+Each successfully admitted note clears its plan's logical cell range. Failed
+admission cannot overwrite an existing owner's cells. All callbacks on the same
+note share this state, including callback-lifetime execution after key/gate release.
+Completing or accepting a callback does not erase it. Public pins, descendants and
+terminal backpressure retain the note and therefore its cells. Logical retirement
+invalidates the generational handle; slot reuse clears the new plan's declared range.
+Generated children start with zero state independently of expression inheritance.
+
+`note_cell` checks runtime identity, generation and the original plan's logical bound.
+Held notes and children keep their original layout across plan replacement; an
+active narrower layout cannot expose leftover physical cells. `ReadNoteCell` and
+`WriteNoteCell` use the same owner checks and instruction fuel as other operations.
+
+Two heap-guarded regressions cover repeated same-key notes, completion and terminal
+rejection, post-release waits, pins, saturation, foreign/stale handles, slot reuse,
+child isolation, old/new layouts and rejected replacement ownership. Oversized cell
+indices and allocation layouts fail before allocation. Native debug/release/MSRV
+and strict all-target Clippy evidence uses `artifacts/note-state-*`.
+
+These cells are native signed 64-bit storage. They do not implement KSP declarations,
+32-bit arithmetic, variable scopes or automatic release callback dispatch. The
+[KSP parity map](KSP_PARITY.md) retains those separate obligations.

@@ -17,6 +17,7 @@ fn limits() -> Limits {
         behaviors: 2,
         behavior_fuel: 8,
         behavior_cells: 2,
+        note_cells: 0,
     }
 }
 fn input(id: i32) -> Input {

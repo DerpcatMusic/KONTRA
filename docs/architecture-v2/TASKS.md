@@ -124,7 +124,9 @@ unimplemented cases. Source inspection alone is not passing conformance evidence
   and retained completion/fault outcomes. A [new KSP source subset](KSP_FRONTEND.md)
   now compiles into these services. Completed generated notes reclaim internal slots
   under pressure without consuming host terminals; repeated-note audio is independent
-  of block size and terminal backpressure. Broader language/state/controller work stays open.
+  of block size and terminal backpressure. Bounded note-owned integer cells now
+  survive callbacks, release and plan replacement separately from callback locals.
+  KSP typed variables and broader language/state/controller work stay open.
 
 - [ ] **P0; dependencies:** V2-03/04.
 - Build command/query services, continuations, callback contexts, cancellation and

@@ -26,6 +26,7 @@ fn limits() -> Limits {
         behaviors: 4,
         behavior_fuel: 8,
         behavior_cells: 16,
+        note_cells: 0,
     }
 }
 fn runtime(code: Vec<Instruction>, limits: Limits) -> Runtime {
@@ -190,6 +191,7 @@ fn faults_and_fuel_are_observable_and_cannot_leave_partial_owned_work() {
             Limits {
                 behavior_fuel: 1,
                 behavior_cells: 0,
+                note_cells: 0,
                 ..limits()
             },
             Outcome::FuelExhausted,
@@ -241,6 +243,7 @@ fn faults_and_fuel_are_observable_and_cannot_leave_partial_owned_work() {
         Limits {
             behavior_fuel: 1,
             behavior_cells: 0,
+            note_cells: 0,
             ..limits()
         },
     );
@@ -465,6 +468,7 @@ fn local_storage_is_budgeted_and_zeroed_on_callback_slot_reuse() {
         Limits {
             behaviors: 1,
             behavior_cells: 1,
+            note_cells: 0,
             ..limits()
         },
     )
@@ -1007,4 +1011,194 @@ fn generated_source_pitch_preflight_preserves_accepted_future_expression() {
             );
         });
     }
+}
+
+#[test]
+fn note_cells_outlive_callbacks_and_remain_isolated_until_logical_retirement() {
+    let plan = Prepared::new(48000, vec![], vec![], 0)
+        .unwrap()
+        .with_programs(
+            vec![
+                Program::new(vec![
+                    Instruction::ReadKey { local: 0 },
+                    Instruction::WriteNoteCell { cell: 0, local: 0 },
+                ])
+                .unwrap(),
+                Program::new(vec![
+                    Instruction::ReadNoteCell { local: 0, cell: 0 },
+                    Instruction::Wait(2),
+                    Instruction::AddLocal { local: 0, value: 1 },
+                    Instruction::WriteNoteCell { cell: 0, local: 0 },
+                ])
+                .unwrap()
+                .with_wait_lifetime(sampler_core::WaitLifetime::Callback),
+            ],
+            None,
+        )
+        .unwrap();
+    let mut rt = Runtime::new(
+        plan,
+        Limits {
+            notes: 2,
+            note_cells: 2,
+            ..limits()
+        },
+    )
+    .unwrap();
+    let foreign = {
+        let mut other = runtime(vec![], limits());
+        other.note_on(input(), 60, 1.).unwrap()
+    };
+    let address = Input {
+        external_id: None,
+        ..input()
+    };
+    support::without_heap(|| {
+        assert_eq!(rt.note_cell(foreign, 0), Err(Error::StaleHandle));
+        for _ in 0..64 {
+            let a = rt.note_on(address, 60, 1.).unwrap();
+            let b = rt.note_on(address, 60, 1.).unwrap();
+            assert_eq!(rt.note_cell(a, 0), Ok(0));
+            assert_eq!(rt.note_cell(b, 0), Ok(0));
+            assert_eq!(rt.note_cell(a, 1), Err(Error::InvalidInput));
+            let writer = rt.start_behavior(a, 0).unwrap();
+            assert_eq!(rt.note_cell(a, 0), Ok(60));
+            assert_eq!(rt.note_cell(b, 0), Ok(0));
+            assert_eq!(rt.note_on(address, 60, 1.), Err(Error::Capacity));
+            assert_eq!(rt.note_cell(a, 0), Ok(60));
+            rt.flush_behaviors(|_, _, _| true);
+            assert_eq!(rt.behavior_local(writer, 0), Err(Error::StaleHandle));
+            rt.note_off(address, None).unwrap();
+            rt.pin(a).unwrap();
+            let reader = rt.start_behavior(a, 1).unwrap();
+            let other = rt.start_behavior(b, 1).unwrap();
+            assert_eq!(rt.behavior_local(reader, 0), Ok(60));
+            assert_eq!(rt.behavior_local(other, 0), Ok(0));
+            rt.render(&mut [[0.; 2]; 2]).unwrap();
+            assert_eq!(rt.note_cell(a, 0), Ok(60));
+            rt.render(&mut []).unwrap();
+            assert_eq!(rt.note_cell(a, 0), Ok(61));
+            assert_eq!(rt.note_cell(b, 0), Ok(1));
+            rt.flush_behaviors(|_, _, _| false);
+            assert_eq!(rt.behavior_local(reader, 0), Ok(61));
+            rt.flush_behaviors(|_, _, _| true);
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.note_cell(a, 0), Ok(61));
+            rt.unpin(a).unwrap();
+            rt.flush_ended(|_| false);
+            assert_eq!(rt.note_cell(a, 0), Ok(61));
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.note_cell(a, 0), Err(Error::StaleHandle));
+            rt.note_off(address, None).unwrap();
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.note_cell(b, 0), Err(Error::StaleHandle));
+            assert_eq!(rt.note_count(), 0);
+        }
+    });
+}
+
+#[test]
+fn note_cell_layouts_follow_original_plans_and_children_start_with_zero_state() {
+    let prepare = |cell| {
+        Prepared::new(48000, vec![], vec![], 0)
+            .unwrap()
+            .with_programs(
+                vec![
+                    Program::new(vec![
+                        Instruction::ReadKey { local: 0 },
+                        Instruction::WriteNoteCell { cell, local: 0 },
+                    ])
+                    .unwrap(),
+                ],
+                None,
+            )
+            .unwrap()
+    };
+    assert!(matches!(
+        Runtime::new(prepare(0), limits()),
+        Err(Error::Capacity)
+    ));
+    assert!(matches!(
+        Runtime::new(
+            prepare(u16::MAX),
+            Limits {
+                note_cells: 8,
+                ..limits()
+            }
+        ),
+        Err(Error::Capacity)
+    ));
+    assert!(matches!(
+        Runtime::new(
+            prepare(0),
+            Limits {
+                note_cells: usize::MAX,
+                ..limits()
+            }
+        ),
+        Err(Error::Capacity)
+    ));
+    let (mut rt, mut control) = Runtime::with_plan_updates(
+        prepare(1),
+        Limits {
+            note_cells: 16,
+            ..limits()
+        },
+        2,
+        1,
+    )
+    .unwrap();
+    let rejected = Box::new(prepare(2));
+    let pointer = std::ptr::from_ref(rejected.as_ref());
+    let rejected = control.submit(rejected).unwrap_err();
+    assert_eq!(rejected.reason, sampler_core::PlanError::NoteStateCapacity);
+    assert_eq!(std::ptr::from_ref(rejected.prepared.as_ref()), pointer);
+    let mut old = None;
+    support::without_heap(|| {
+        let note = rt.note_on(input(), 60, 1.).unwrap();
+        rt.start_behavior(note, 0).unwrap();
+        rt.flush_behaviors(|_, _, _| true);
+        old = Some(note);
+    });
+    let old = old.unwrap();
+    assert_eq!(control.submit(Box::new(prepare(0))).unwrap(), 1);
+    support::without_heap(|| {
+        assert_eq!(rt.poll_plan_update(), Ok(Some(1)));
+        assert_eq!(rt.note_cell(old, 1), Ok(60));
+        let new = rt
+            .note_on(
+                Input {
+                    external_id: Some(8),
+                    ..input()
+                },
+                61,
+                1.,
+            )
+            .unwrap();
+        assert_eq!(rt.note_cell(new, 0), Ok(0));
+        assert_eq!(rt.note_cell(new, 1), Err(Error::InvalidInput));
+        rt.start_behavior(new, 0).unwrap();
+        assert_eq!(rt.note_cell(new, 0), Ok(61));
+        for inheritance in [
+            sampler_core::Inheritance::Independent,
+            sampler_core::Inheritance::Snapshot,
+            sampler_core::Inheritance::Linked,
+        ] {
+            let child = rt.child(old, 62, 1., false, inheritance).unwrap();
+            assert_eq!(rt.note_plan(child), rt.note_plan(old));
+            assert_eq!(rt.note_cell(child, 1), Ok(0));
+            rt.start_behavior(child, 0).unwrap();
+            assert_eq!(rt.note_cell(child, 1), Ok(62));
+            assert_eq!(rt.note_cell(old, 1), Ok(60));
+            rt.release(child).unwrap();
+            rt.flush_behaviors(|_, _, _| true);
+            rt.flush_ended(|_| true);
+        }
+        rt.release(old).unwrap();
+        rt.release(new).unwrap();
+        rt.flush_ended(|_| true);
+        assert_eq!(rt.note_count(), 0);
+        assert_eq!(rt.collect_retired_plans(), 1);
+    });
+    assert!(control.retired().is_some());
 }
