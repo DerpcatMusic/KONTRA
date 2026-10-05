@@ -1209,6 +1209,9 @@ impl Builder {
                                 Err("counted or ordered loops outside ordinary sampler source")
                             } else if group.mods.iter().any(|m| super::params::loop_control_supported(group, m)) {
                                 Err("counted or ordered loop geometry modulation")
+                            } else if zone.start_mod.unwrap_or(0) == 0 {
+                                super::counted_loop::Rows::prepare_at(&zone.native_loops, frames, map.end,
+                                    nonreflecting_single_pass_alternating(group, sampling_profile), u64::from(zone.start))
                             } else { super::counted_loop::Rows::prepare(&zone.native_loops, frames, map.end,
                                 nonreflecting_single_pass_alternating(group, sampling_profile)) };
                         // Preserve finite fallback on unsupported active metadata;

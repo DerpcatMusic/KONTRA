@@ -19,23 +19,30 @@ fn saved_native_high_ultra_loop_pcm_matches_prepared_native_producer_in_ram_and_
     // points and loop domains; exercise both saved identities through real loading.
     for source_mode in [0,3] {
       for (case_index,case) in CASES.iter().chain(NORMAL_CASES).enumerate() {
-       for unreachable_fade in [false,true] {
-        if unreachable_fade && case.name != "continuous" { continue; }
+       for unreachable_tail in [0,1,2] {
+        if unreachable_tail != 0 && case.name != "continuous" { continue; }
         let domain = &case.domain;
+        let saved_end=domain.end-usize::from(unreachable_tail==2);
         let source_name = format!("Samples/native-{source_mode}-{case_index}.wav");
         let source:Vec<_> = (0..domain.frames).map(|i| [(((i*73)%257) as f32-128.)/1024.;2]).collect();
         wave(&dir.path().join(&source_name),domain.rate,&source);
         let mut rows:Vec<_> = case.rows.iter().map(|&(slot,mode,start,length,count)| NativeLoop {
             slot,mode,start,length,count,alternating:false,tuning:1.,crossfade:0 }).collect();
-        if unreachable_fade {
+        if unreachable_tail == 1 {
             // The pinned continuous native source stays in row zero, including
             // after key-up. This later saved fade must not reject its source.
             rows.push(NativeLoop { slot:3,mode:1,start:768,length:256,count:0,
                 alternating:false,tuning:1.,crossfade:127 });
         }
+        if unreachable_tail == 2 {
+            // This saved row ends one point beyond the crop, exactly as Vista
+            // dyn2. Permanent row zero keeps all captured native PCM unchanged.
+            rows.push(NativeLoop { slot:3,mode:1,start:domain.end as i32-4,length:4,count:0,
+                alternating:false,tuning:1.,crossfade:0 });
+        }
         let groups=[Group { source_mode:Some(source_mode),interp_quality:case.quality,..Default::default() }];
         let zones=[Zone { sample:source_name.clone().into(),native_loops:rows.clone(),
-            start:domain.start,end:domain.end as i32-domain.frames as i32,
+            start:domain.start,end:saved_end as i32-domain.frames as i32,
             start_mod:(case.offset_us!=0).then_some((domain.end-domain.start-1) as u32),..Default::default() }];
         let samples=[SampleFile { relative:source_name,rate:domain.rate,channels:2,bits:32,
             frames:domain.frames as u64,modified:0 }];
@@ -50,7 +57,7 @@ fn saved_native_high_ultra_loop_pcm_matches_prepared_native_producer_in_ram_and_
         assert_eq!(imported.groups[0].interp_quality,case.quality);
         assert_eq!(imported.zones[0].native_loops,rows);
         assert_eq!(imported.zones[0].start,domain.start);
-        assert_eq!(imported.zones[0].end,domain.end as i32-domain.frames as i32);
+        assert_eq!(imported.zones[0].end,saved_end as i32-domain.frames as i32);
         assert_eq!(imported.zones[0].start_mod,zones[0].start_mod,
             "the authored public offset must retain its saved admission range");
         crate::cache::store(&cache,&path,0,&imported);

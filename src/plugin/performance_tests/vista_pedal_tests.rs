@@ -41,6 +41,21 @@ fn snapshot(
     instrument: &Instrument,
     label: &str,
 ) -> Vec<(u32, u32, u8, u8, u32, bool)> {
+    // Sampler drains the Engine source latch into these sticky journal owners.
+    // Read/report outside the callback; a drained Engine cell is not success.
+    let journal=p.params.diagnostic_report();
+    p.stages.push(json!({"source_checkpoint":label,"journal":journal,
+        "sticky_stream_failure":format!("{:?}",p.dsp.stream_failure),
+        "sticky_part_stream_errors":format!("{:?}",p.dsp.stream_errors)}));
+    if p.dsp.stream_failure.is_some() {
+        save_pcm(p,"vista-failed-source");
+        let dir=PathBuf::from(std::env::var_os("KONTRA_PERFORMANCE_ARTIFACT_DIR").unwrap());
+        std::fs::write(dir.join("vista-failed-source.json"),serde_json::to_vec_pretty(&json!({
+            "instrument":instrument.path,"input":p.input,"stages":p.stages,
+        })).unwrap()).unwrap();
+    }
+    assert!(p.dsp.stream_failure.is_none() && p.dsp.stream_errors.iter().all(Option::is_none),
+        "{label}: sticky source failure {:?}; part errors {:?}",p.dsp.stream_failure,p.dsp.stream_errors);
     let engine = p.dsp.rack.parts[0].instrument().unwrap();
     assert!(
         engine.take_stream_error().is_none(),
@@ -118,6 +133,9 @@ fn performance(
         0,
     );
     let first = snapshot(&mut p, instrument, "first-on");
+    let mut groups:Vec<_>=first.iter().map(|r|r.1).collect();groups.sort_unstable();
+    assert_eq!(groups,(0..8).chain(32..40).collect::<Vec<_>>(),
+        "all authored first-on attack+sustain dynamic layers must instantiate");
     assert!(
         first.iter().any(|r| family(r.1, 0)),
         "missing authored attack"

@@ -73,6 +73,15 @@ pub(super) struct Rows {
 
 impl Rows {
     pub fn prepare(saved: &[NativeLoop], frames: u64, end: u64, nonreflecting_single_pass: bool) -> Result<Self, &'static str> {
+        Self::prepare_start(saved, frames, end, nonreflecting_single_pass, None)
+    }
+
+    /// Fixed admission cannot leave a selected permanent UntilEnd row.
+    pub fn prepare_at(saved: &[NativeLoop], frames: u64, end: u64, nonreflecting_single_pass: bool, position: u64) -> Result<Self, &'static str> {
+        Self::prepare_start(saved, frames, end, nonreflecting_single_pass, Some(position))
+    }
+
+    fn prepare_start(saved: &[NativeLoop], frames: u64, end: u64, nonreflecting_single_pass: bool, mut position: Option<u64>) -> Result<Self, &'static str> {
         if saved.len() > 8 || saved.iter().any(|l| l.slot >= 8)
             || saved.windows(2).any(|w| w[0].slot >= w[1].slot) {
             return Err("invalid saved loop slot order");
@@ -96,6 +105,12 @@ impl Rows {
             let xfade = i64::from(l.crossfade).clamp(0, (length - 1).min(start) as i64) as u64;
             result.rows[result.len] = Row { start, end: loop_end, count:l.count, until_release:l.mode == 2, xfade };
             result.len += 1;
+            // Only the initially selected row is a barrier: a preceding finite
+            // row can overshoot later permanent rows when it exhausts.
+            if position.is_some_and(|p| p < loop_end) {
+                if l.mode == 1 && l.count <= 0 { break; }
+                position = None;
+            }
         }
         Ok(result)
     }
@@ -237,5 +252,50 @@ impl Cursor {
             }
             if tap < 0 || tap as u64 >= data.frames { u64::MAX } else { tap as u64 }
         })
+    }
+}
+
+#[cfg(test)]
+mod preparation_tests {
+    use super::*;
+
+    #[test]
+    fn fixed_permanent_row_excludes_only_unreachable_cropped_tail_geometry() {
+        let permanent = NativeLoop { slot:0, mode:1, start:256, length:256, count:0,
+            alternating:false, tuning:1., crossfade:0 };
+        let bad_tail = NativeLoop { slot:3, mode:1, start:4092, length:4, count:0,
+            alternating:false, tuning:1., crossfade:0 };
+        let saved = [permanent.clone(), bad_tail.clone()];
+        assert!(Rows::prepare(&saved,4096,4095,false).is_err());
+        let rows=Rows::prepare_at(&saved,4096,4095,false,0).unwrap();
+        assert_eq!(rows.len,1);
+        let mut cursor=Cursor::new(0,&rows,0.,false);
+        cursor.advance(&rows,10000.).unwrap();
+        cursor.release(&rows);
+        cursor.advance(&rows,10000.).unwrap();
+        assert_eq!(cursor.index,0);
+        assert_eq!(cursor.remaining,0);
+        assert!((256. ..512.).contains(&cursor.position));
+        assert!(Rows::prepare_at(&saved,4096,4095,false,512).is_err(),"start can skip first row");
+        for (mode,count) in [(1,1),(2,0)] {
+            let mut reachable=saved.clone();reachable[0].mode=mode;reachable[0].count=count;
+            assert!(Rows::prepare_at(&reachable,4096,4095,false,0).is_err(),"reachable tail must fail");
+        }
+        let finite = NativeLoop { count:1, ..permanent.clone() };
+        let later = NativeLoop { slot:1, start:768, ..permanent.clone() };
+        let overshoot = [finite, later, bad_tail.clone()];
+        assert!(Rows::prepare_at(&overshoot,4096,4095,false,0).is_err(),
+            "selected finite row can overshoot later permanent row");
+        let full=Rows::prepare(&overshoot,4096,4096,false).unwrap();
+        let mut skipped=Cursor::new(0,&full,0.,false);
+        skipped.advance(&full,2048.).unwrap();
+        assert_eq!(skipped.index,2,"finite final crossing skips later permanent row");
+        assert_eq!(Rows::prepare_at(&overshoot,4096,4095,false,512).unwrap().len,2,
+            "initially skipped finite row cannot cause a later overshoot");
+        let mut first_bad=saved.clone();first_bad[0].length=4096;
+        assert!(Rows::prepare_at(&first_bad,4096,4095,false,0).is_err(),"selected bad row must fail");
+        let mut disorder=saved.clone();disorder[1].slot=0;
+        assert!(Rows::prepare_at(&disorder,4096,4095,false,0).is_err(),"saved slot identity remains strict");
+        assert_eq!(saved[1].start+saved[1].length,4096,"saved suffix is unchanged");
     }
 }
