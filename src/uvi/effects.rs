@@ -1340,6 +1340,8 @@ mod tests {
 
     #[test]
     fn authored_effects_impulse_eq_and_fragmentation() {
+        #[expect(clippy::approx_constant, reason = "Authored native fixture Q input; FRAC_1_SQRT_2 changes its f64 bits.")]
+        const NATIVE_Q: f64 = 0.70710678;
         let mut resources = HashMap::new();
         resources.insert("fixture".into(), impulse(12));
         let mut stereo = vec![0.; 48_000];
@@ -1416,36 +1418,46 @@ mod tests {
                 }
             }
         }
-        for block in [1, 7, 64, 131] {
-            let mut fx =
-                EffectProcessor::new(&node, 12, 48000., 64, Arc::clone(&resources)).unwrap();
-            let retained = fx.memory_bytes();
-            assert!(retained > 3 * 12 * std::mem::size_of::<f32>());
-            let mut actual = input.clone();
-            for chunk in actual.chunks_mut(block) {
-                fx.process(chunk).unwrap();
+        for max_block in [1, 64] {
+            for block in [1, 7, 64, 131] {
+                let mut fx =
+                    EffectProcessor::new(&node, 12, 48000., max_block, Arc::clone(&resources)).unwrap();
+                let retained = fx.memory_bytes();
+                assert!(retained > 3 * 12 * std::mem::size_of::<f32>());
+                let mut actual = input.clone();
+                assert_eq!(
+                    crate::test_support::allocations(|| {
+                        for chunk in actual.chunks_mut(block) {
+                            fx.process(chunk).unwrap();
+                        }
+                    }),
+                    0
+                );
+                assert_eq!(fx.memory_bytes(), retained);
+                for (a, b) in actual.iter().flatten().zip(expected.iter().flatten()) {
+                    assert!((a - b).abs() < 1e-4, "convolution {block}: {a} != {b}");
+                }
+                fx.set_parameter("Bypass", &ParameterValue::Boolean(true))
+                    .unwrap();
+                let mut bypass = input.clone();
+                fx.process(&mut bypass).unwrap();
+                assert_eq!(bypass, input);
             }
-            assert_eq!(fx.memory_bytes(), retained);
-            for (a, b) in actual.iter().flatten().zip(expected.iter().flatten()) {
-                assert!((a - b).abs() < 1e-4, "convolution {block}: {a} != {b}");
-            }
-            fx.set_parameter("Bypass", &ParameterValue::Boolean(true))
-                .unwrap();
-            let mut bypass = input.clone();
-            fx.process(&mut bypass).unwrap();
-            assert_eq!(bypass, input);
-        }
-        let mut narrower =
-            EffectProcessor::new(&node, 6, 48000., 64, Arc::clone(&resources)).unwrap();
-        let mut native_mapping = input.clone();
-        narrower.process(&mut native_mapping).unwrap();
-        for (actual, expected) in native_mapping.iter().zip(&expected) {
-            assert!(
-                actual[..6]
-                    .iter()
-                    .zip(&expected[..6])
-                    .all(|(a, b)| (a - b).abs() < 1e-4)
+            let mut narrower =
+                EffectProcessor::new(&node, 6, 48000., max_block, Arc::clone(&resources)).unwrap();
+            let mut native_mapping = input.clone();
+            assert_eq!(
+                crate::test_support::allocations(|| narrower.process(&mut native_mapping).unwrap()),
+                0
             );
+            for (actual, expected) in native_mapping.iter().zip(&expected) {
+                assert!(
+                    actual[..6]
+                        .iter()
+                        .zip(&expected[..6])
+                        .all(|(a, b)| (a - b).abs() < 1e-4)
+                );
+            }
         }
         let mut fx = EffectProcessor::new(
             &effect(r#"<ThreeBandShelves GainLow="6" GainMid="6" GainHigh="6"/>"#),
@@ -1540,14 +1552,14 @@ mod tests {
             );
         }
         for (slope, q, first) in [
-            (0, 0.70710678, 0.06151176989078522),
-            (2, 0.70710678, 0.00024700083304196596),
+            (0, NATIVE_Q, 0.06151176989078522),
+            (2, NATIVE_Q, 0.00024700083304196596),
             (3, 0.3, 1.4908267075952608e-5),
             (3, 2., 1.5937812349875458e-5),
-            (4, 0.70710678, 6.155352849646079e-8),
-            (5, 0.70710678, 2.4344495863637405e-10),
-            (6, 0.70710678, 3.805212929827587e-15),
-            (7, 0.70710678, 5.945665029340912e-20),
+            (4, NATIVE_Q, 6.155352849646079e-8),
+            (5, NATIVE_Q, 2.4344495863637405e-10),
+            (6, NATIVE_Q, 3.805212929827587e-15),
+            (7, NATIVE_Q, 5.945665029340912e-20),
         ] {
             eq_node.attributes.insert("Type1".into(), "0".into());
             eq_node
@@ -1593,7 +1605,7 @@ mod tests {
             (5, 0, 0.3, 0.23886579275131226),
             (5, 2, 2., 0.24414311349391937),
             (6, 2, 0.3, 0.12927746772766113),
-            (6, 7, 0.70710678, 0.1275651901960373),
+            (6, 7, NATIVE_Q, 0.1275651901960373),
         ] {
             eq_node.attributes.insert("Type1".into(), shape.to_string());
             eq_node
@@ -1686,99 +1698,117 @@ mod tests {
                 }
             }
         }
-        let reverb = effect(
-            r#"<SampledReverb SamplePath="fixture" NormalizePower="0" Time="1" PreDelay="1" Dry="0" Wet="1"/>"#,
-        );
-        let mut fx = EffectProcessor::new(&reverb, 12, 48000., 64, Arc::clone(&resources)).unwrap();
-        let mut output = input.clone();
-        fx.process(&mut output).unwrap();
-        assert!(output[..48].iter().flatten().all(|x| x.abs() < 1e-5));
-        assert!((output[48][11] - 7.2).abs() < 1e-4);
-        assert!(
-            fx.set_parameter("DampingHigh", &ParameterValue::Number(0.1))
-                .is_err()
-        );
-        // Official native authored PCM16 basis captures: normalization is
-        // after the sequential width transform, and Wet/Dry remain linear.
-        for (kind, width, norm, left, right) in [
-            ("Convolver", 0., 1, 0.3162277638912201, 0.15811388194561005),
-            ("SampledReverb", 0., 0, 0.015625, 0.0078125),
-            (
-                "SampledReverb",
-                1.,
-                1,
-                0.42515498399734497,
-                0.12064718455076218,
-            ),
-            (
-                "SampledReverb",
-                -1.,
-                1,
-                0.3062463104724884,
-                0.3186309337615967,
-            ),
-        ] {
-            let extra = if kind == "SampledReverb" {
-                format!(" Time=\"1\" PreDelay=\"0\" Width=\"{width}\" SampledReverbVersion=\"1\"")
-            } else {
-                String::new()
-            };
-            let node = effect(&format!(
-                "<{kind} SamplePath=\"native_stereo\" Dry=\"0\" Wet=\"1\" NormalizePower=\"{norm}\"{extra}/>"
-            ));
-            for fragments in [1, 7, 64] {
-                let mut fx =
-                    EffectProcessor::new(&node, 2, 48000., 64, Arc::clone(&resources)).unwrap();
-                let mut response = vec![[0.; MAX_CHANNELS]; 97];
-                response[0][0] = 0.25;
-                response[0][1] = 0.25;
-                for block in response.chunks_mut(fragments) {
-                    fx.process(block).unwrap();
+        for max_block in [1, 64] {
+            let reverb = effect(
+                r#"<SampledReverb SamplePath="fixture" NormalizePower="0" Time="1" PreDelay="1" Dry="0" Wet="1"/>"#,
+            );
+            let mut fx = EffectProcessor::new(&reverb, 12, 48000., max_block, Arc::clone(&resources)).unwrap();
+            let mut output = input.clone();
+            assert_eq!(
+                crate::test_support::allocations(|| fx.process(&mut output).unwrap()),
+                0
+            );
+            assert!(output[..48].iter().flatten().all(|x| x.abs() < 1e-5));
+            assert!((output[48][11] - 7.2).abs() < 1e-4);
+            assert!(
+                fx.set_parameter("DampingHigh", &ParameterValue::Number(0.1))
+                    .is_err()
+            );
+            // Official native authored PCM16 basis captures: normalization is
+            // after the sequential width transform, and Wet/Dry remain linear.
+            for (kind, width, norm, left, right) in [
+                ("Convolver", 0., 1, 0.3162277638912201, 0.15811388194561005),
+                ("SampledReverb", 0., 0, 0.015625, 0.0078125),
+                (
+                    "SampledReverb",
+                    1.,
+                    1,
+                    0.42515498399734497,
+                    0.12064718455076218,
+                ),
+                (
+                    "SampledReverb",
+                    -1.,
+                    1,
+                    0.3062463104724884,
+                    0.3186309337615967,
+                ),
+            ] {
+                let extra = if kind == "SampledReverb" {
+                    format!(" Time=\"1\" PreDelay=\"0\" Width=\"{width}\" SampledReverbVersion=\"1\"")
+                } else {
+                    String::new()
+                };
+                let node = effect(&format!(
+                    "<{kind} SamplePath=\"native_stereo\" Dry=\"0\" Wet=\"1\" NormalizePower=\"{norm}\"{extra}/>"
+                ));
+                for fragments in [1, 7, 64] {
+                    let mut fx =
+                        EffectProcessor::new(&node, 2, 48000., max_block, Arc::clone(&resources)).unwrap();
+                    let mut response = vec![[0.; MAX_CHANNELS]; 97];
+                    response[0][0] = 0.25;
+                    response[0][1] = 0.25;
+                    assert_eq!(
+                        crate::test_support::allocations(|| {
+                            for block in response.chunks_mut(fragments) {
+                                fx.process(block).unwrap();
+                            }
+                        }),
+                        0
+                    );
+                    assert!((f64::from(response[0][0]) - left).abs() < 8e-8);
+                    assert!((f64::from(response[0][1]) - right).abs() < 8e-8);
+                    assert!(response[1..].iter().flatten().all(|x| x.abs() < 1e-6));
                 }
-                assert!((f64::from(response[0][0]) - left).abs() < 8e-8);
-                assert!((f64::from(response[0][1]) - right).abs() < 8e-8);
+            }
+            let damping = effect(
+                r#"<SampledReverb SamplePath="native_damping" Dry="0" Wet="1" NormalizePower="0" PreDelay="0" SampledReverbVersion="1"/>"#,
+            );
+            let mut fx = EffectProcessor::new(&damping, 2, 48000., max_block, Arc::clone(&resources)).unwrap();
+            fx.set_parameter("DampingLow", &ParameterValue::Number(-0.5))
+                .unwrap();
+            let mut response = vec![[0.; MAX_CHANNELS]; 1100];
+            response[0][0] = 0.25;
+            response[0][1] = 0.25;
+            assert_eq!(
+                crate::test_support::allocations(|| {
+                    for block in response.chunks_mut(7) {
+                        fx.process(block).unwrap();
+                    }
+                }),
+                0
+            );
+            for (frame, native) in response[997..1004].iter().zip([
+                0.00018013461158261634,
+                0.00045085424062563106,
+                0.0011284296488156542,
+                0.01844931044615805,
+                0.0011310198169667274,
+                0.0004529259240371175,
+                0.00018137769075110555,
+            ]) {
+                assert!((f64::from(frame[0]) - native).abs() < 4e-9);
+            }
+            for (predelay, left, right) in [(0., 0.025, 0.00625), (10., 0., 0.)] {
+                let empty_first = effect(&format!(
+                    "<SampledReverb SamplePath=\"zero_first\" Dry=\"0\" Wet=\"1\" NormalizePower=\"0\" PreDelay=\"{predelay}\" SampledReverbVersion=\"1\"/>"
+                ));
+                let mut fx =
+                    EffectProcessor::new(&empty_first, 2, 48000., max_block, Arc::clone(&resources)).unwrap();
+                let mut response = vec![[0.; MAX_CHANNELS]; 1600];
+                response[0][0] = 0.25;
+                assert_eq!(
+                    crate::test_support::allocations(|| fx.process(&mut response).unwrap()),
+                    0
+                );
+                assert!((response[0][0] - left).abs() < 1e-8);
+                assert!((response[0][1] - right).abs() < 1e-8);
                 assert!(response[1..].iter().flatten().all(|x| x.abs() < 1e-6));
             }
-        }
-        let damping = effect(
-            r#"<SampledReverb SamplePath="native_damping" Dry="0" Wet="1" NormalizePower="0" PreDelay="0" SampledReverbVersion="1"/>"#,
-        );
-        let mut fx = EffectProcessor::new(&damping, 2, 48000., 64, Arc::clone(&resources)).unwrap();
-        fx.set_parameter("DampingLow", &ParameterValue::Number(-0.5))
-            .unwrap();
-        let mut response = vec![[0.; MAX_CHANNELS]; 1100];
-        response[0][0] = 0.25;
-        response[0][1] = 0.25;
-        for block in response.chunks_mut(7) {
-            fx.process(block).unwrap();
-        }
-        for (frame, native) in response[997..1004].iter().zip([
-            0.00018013461158261634,
-            0.00045085424062563106,
-            0.0011284296488156542,
-            0.01844931044615805,
-            0.0011310198169667274,
-            0.0004529259240371175,
-            0.00018137769075110555,
-        ]) {
-            assert!((f64::from(frame[0]) - native).abs() < 4e-9);
-        }
-        for (predelay, left, right) in [(0., 0.025, 0.00625), (10., 0., 0.)] {
-            let empty_first = effect(&format!(
-                "<SampledReverb SamplePath=\"zero_first\" Dry=\"0\" Wet=\"1\" NormalizePower=\"0\" PreDelay=\"{predelay}\" SampledReverbVersion=\"1\"/>"
-            ));
+            let missing = effect(r#"<Convolver/>"#);
             let mut fx =
-                EffectProcessor::new(&empty_first, 2, 48000., 64, Arc::clone(&resources)).unwrap();
-            let mut response = vec![[0.; MAX_CHANNELS]; 1600];
-            response[0][0] = 0.25;
-            fx.process(&mut response).unwrap();
-            assert!((response[0][0] - left).abs() < 1e-8);
-            assert!((response[0][1] - right).abs() < 1e-8);
-            assert!(response[1..].iter().flatten().all(|x| x.abs() < 1e-6));
+                EffectProcessor::new(&missing, 12, 48000., max_block, Arc::clone(&resources)).unwrap();
+            assert!(fx.process(&mut [[0.; MAX_CHANNELS]]).is_err());
         }
-        let missing = effect(r#"<Convolver/>"#);
-        let mut fx =
-            EffectProcessor::new(&missing, 12, 48000., 64, Arc::clone(&resources)).unwrap();
-        assert!(fx.process(&mut [[0.; MAX_CHANNELS]]).is_err());
     }
 }
