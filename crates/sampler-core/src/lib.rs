@@ -3,8 +3,8 @@
 //!
 //! Construction/destruction are control-thread operations. After preparation, methods
 //! do not allocate or free. Prepared PCM is owned by the runtime. This slice
-//! supports resident stereo PCM at unity rate, native linear envelopes and
-//! sample-time commands; it does not claim resampling or vendor fidelity.
+//! supports resident stereo PCM with bounded rate conversion, native linear envelopes
+//! and sample-time commands; vendor fidelity requires separate conformance evidence.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -57,7 +57,7 @@ pub use release::{
 mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
-pub use prepare::{Pcm, Prepared, Region, Tuning};
+pub use prepare::{ControllerCondition, Pcm, Prepared, Region, Tuning};
 mod schedule;
 mod variation;
 use gate::Channel;

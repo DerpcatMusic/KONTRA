@@ -24,21 +24,27 @@ fn main() {
     let phases = if with_releases { 2 } else { 1 };
     let articulated = args.iter().any(|arg| arg == "--articulations");
     let articulations = if articulated { 64 } else { 1 };
+    let controlled = args.iter().any(|arg| arg == "--controllers");
+    let controllers = if controlled { 64 } else { 1 };
+    let reserved_phases = 1 + usize::from(with_releases) * controllers;
     if args.len()
         != usize::from(identified)
             + usize::from(variation)
             + usize::from(with_releases)
             + usize::from(articulated)
+            + usize::from(controlled)
     {
         eprintln!(
-            "usage: admission_workload [--ids] [--releases] [--articulations] [--variation | --random | --no-repeat | --shuffle]"
+            "usage: admission_workload [--ids] [--releases] [--articulations] [--controllers] [--variation | --random | --no-repeat | --shuffle]"
         );
         std::process::exit(1);
     }
     let per_articulation = if variation { 12 } else { 4 };
-    let per_phase = per_articulation * articulations;
+    let per_phase = per_articulation * articulations * controllers;
     let candidates = per_phase * phases;
-    eprintln!("release selection: {with_releases}; articulations: {articulations}");
+    eprintln!(
+        "release selection: {with_releases}; articulations: {articulations}; controller groups: {controllers}"
+    );
     println!(
         "variation,external_ids,notes,voices,reserved_voices,median_us,p99_us,note_off_median_us,note_off_p99_us,retire_median_us,retire_p99_us"
     );
@@ -110,11 +116,29 @@ fn main() {
         let plan = if articulated {
             plan.with_articulations(
                 (0..candidates)
-                    .map(|i| Some(((i % per_phase) / per_articulation) as u32))
+                    .map(|i| Some((((i % per_phase) / per_articulation) % articulations) as u32))
                     .collect(),
                 vec![],
                 sampler_core::SelectionPolicy::Onset,
                 sampler_core::SelectionPolicy::Onset,
+            )
+            .unwrap()
+        } else {
+            plan
+        };
+        let plan = if controlled {
+            plan.with_controllers(
+                (0..candidates)
+                    .map(|i| {
+                        let value = ((i % per_phase) / (per_articulation * articulations)) as u32;
+                        vec![sampler_core::ControllerCondition {
+                            controller: 1,
+                            low: value,
+                            high: value,
+                        }]
+                    })
+                    .collect(),
+                candidates,
             )
             .unwrap()
         } else {
@@ -129,7 +153,7 @@ fn main() {
                 families: reserved / 4 * phases,
                 decisions: if variation { reserved / 4 * phases } else { 0 },
                 expressions: reserved / 4,
-                voices: reserved * phases,
+                voices: reserved * reserved_phases,
                 commands: 0,
                 behaviors: 0,
                 behavior_fuel: 0,
@@ -138,6 +162,8 @@ fn main() {
         )
         .unwrap();
         rt.set_articulation(rt.performance(0).unwrap(), (articulations - 1) as u32)
+            .unwrap();
+        rt.set_controller(rt.performance(0).unwrap(), 1, (controllers - 1) as u32)
             .unwrap();
         let input = Input {
             protocol: Protocol::Native,
@@ -212,7 +238,7 @@ fn main() {
         println!(
             "{variation},{identified},{notes},{},{},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3}",
             notes * 4,
-            reserved * phases,
+            reserved * reserved_phases,
             times[64] as f64 / 1000.0,
             times[126] as f64 / 1000.0,
             releases[64] as f64 / 1000.0,

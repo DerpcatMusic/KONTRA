@@ -9,7 +9,7 @@ struct Selection {
     velocity: f64,
     address: crate::ChannelAddress,
     trigger: Trigger,
-    articulation: u32,
+    snapshot: usize,
 }
 
 impl Runtime {
@@ -163,7 +163,7 @@ impl Runtime {
             NoteOrigin::Input(_, _, performance) => performance,
             NoteOrigin::Child(parent, ..) => self.selections[parent.0.index].performance,
         };
-        let articulation = self.performance_state.current(performance).articulation;
+        let snapshot = self.performance_state.current[performance];
         let key = note_pitch.key();
         let attack = self.preflight_selection(
             Selection {
@@ -172,7 +172,7 @@ impl Runtime {
                 velocity,
                 address,
                 trigger: Trigger::Attack,
-                articulation,
+                snapshot,
             },
             pitch,
         )?;
@@ -186,13 +186,13 @@ impl Runtime {
                     trigger,
                     pitch,
                     prepared.release_velocity(trigger, velocity, false, None),
-                    prepared.pending_articulation(trigger, articulation),
+                    prepared.pending_selection(trigger, &self.performance_state.states[snapshot]),
                 )?;
                 let generation = self.plans.get(plan.0).unwrap();
                 for sequence in prepared.sequence_groups(
                     key,
                     trigger,
-                    prepared.pending_articulation(trigger, articulation),
+                    prepared.pending_selection(trigger, &self.performance_state.states[snapshot]),
                     prepared.release_velocity(trigger, velocity, false, None),
                 ) {
                     generation.sequences.check_owner(
@@ -234,7 +234,7 @@ impl Runtime {
                 for sequence in prepared.sequence_groups(
                     key,
                     trigger,
-                    prepared.pending_articulation(trigger, articulation),
+                    prepared.pending_selection(trigger, &self.performance_state.states[snapshot]),
                     prepared.release_velocity(trigger, velocity, false, None),
                 ) {
                     generation
@@ -243,7 +243,7 @@ impl Runtime {
                 }
             }
         }
-        self.commit_selection(note, Trigger::Attack, velocity, articulation);
+        self.commit_selection(note, Trigger::Attack, velocity, snapshot);
         Ok(note)
     }
 
@@ -270,7 +270,7 @@ impl Runtime {
             velocity,
             address,
             trigger,
-            articulation,
+            snapshot,
         } = selection;
         let key = note_pitch.key();
         let generation = self.plans.get(plan.0).unwrap();
@@ -280,18 +280,19 @@ impl Runtime {
         let mut from = range.start;
         while from < range.end {
             let until = prepared.group_end(from, range.end);
-            let ranges = prepared.active_ranges(from..until, articulation);
-            let choice = prepared.choose(
-                ranges.clone(),
-                velocity,
-                address,
-                key,
-                &generation.sequences,
-            )?;
+            let state = &self.performance_state.states[snapshot];
+            let ranges = prepared.active_ranges(from..until, state.articulation);
+            let mut matching = super::Matching::new(ranges);
+            let first = matching.next(prepared, Some(state), Some(velocity));
+            let choice = prepared.choose(first, address, key, &generation.sequences)?;
+            let mut candidate = first;
             let mut count = 0;
-            for candidate in prepared.matches(ranges, velocity, choice.map(|c| c.take)) {
-                pitch.apply(prepared.step(candidate, note_pitch))?;
-                count += 1;
+            while let Some(c) = candidate {
+                if prepared.regions[c.region].take == choice.map(|c| c.take) {
+                    pitch.apply(prepared.step(c, note_pitch))?;
+                    count += 1;
+                }
+                candidate = matching.next(prepared, Some(state), Some(velocity));
             }
             required.voices += count;
             required.families += usize::from(count != 0);
@@ -311,13 +312,7 @@ impl Runtime {
         Ok(required)
     }
 
-    fn commit_selection(
-        &mut self,
-        note: NoteId,
-        trigger: Trigger,
-        velocity: f64,
-        articulation: u32,
-    ) {
+    fn commit_selection(&mut self, note: NoteId, trigger: Trigger, velocity: f64, snapshot: usize) {
         let n = self.notes.get(note.0).unwrap();
         let (plan, note_pitch, address) = (n.plan, n.pitch, n.address);
         let key = note_pitch.key();
@@ -330,27 +325,26 @@ impl Runtime {
             let generation = self.plans.get(plan.0).unwrap();
             let prepared = &generation.prepared;
             let until = prepared.group_end(from, end);
-            let ranges = prepared.active_ranges(from..until, articulation);
+            let state = &self.performance_state.states[snapshot];
+            let ranges = prepared.active_ranges(from..until, state.articulation);
+            let mut matching = super::Matching::new(ranges);
+            let mut first = matching.next(prepared, Some(state), Some(velocity));
             let choice = prepared
-                .choose(
-                    ranges.clone(),
-                    velocity,
-                    address,
-                    key,
-                    &generation.sequences,
-                )
+                .choose(first, address, key, &generation.sequences)
                 .expect("preflighted take decision");
             let decision = choice.map(|c| self.record_take(note, trigger, c.take));
             let mut family = None;
-            let [common, selected] = ranges;
-            for i in common.chain(selected) {
+            loop {
                 let prepared = &self.plans.get(plan.0).unwrap().prepared;
-                let candidate = prepared.candidates[i];
+                let state = &self.performance_state.states[snapshot];
+                let Some(candidate) = first
+                    .take()
+                    .or_else(|| matching.next(prepared, Some(state), Some(velocity)))
+                else {
+                    break;
+                };
                 let r = prepared.regions[candidate.region];
-                if r.velocity_low > velocity
-                    || velocity > r.velocity_high
-                    || r.take != choice.map(|c| c.take)
-                {
+                if r.take != choice.map(|c| c.take) {
                     continue;
                 }
                 let step = prepared.step(candidate, note_pitch);
@@ -413,7 +407,7 @@ impl Runtime {
                 self.release_times[note.0.index].velocity,
             )
             .unwrap();
-        let articulation = self.release_articulation(note, trigger);
+        let snapshot = self.release_selection(note, trigger);
         let result = if musical {
             self.pitch_range(owner, true).and_then(|pitch| {
                 self.preflight_selection(
@@ -423,7 +417,7 @@ impl Runtime {
                         velocity,
                         address,
                         trigger,
-                        articulation,
+                        snapshot,
                     },
                     pitch,
                 )
@@ -438,7 +432,7 @@ impl Runtime {
             Ok(required) => {
                 self.check_selection_capacity(required)
                     .expect("owned release reservation");
-                self.commit_selection(note, trigger, velocity, articulation);
+                self.commit_selection(note, trigger, velocity, snapshot);
                 ReleaseStatus::Selected
             }
         };
