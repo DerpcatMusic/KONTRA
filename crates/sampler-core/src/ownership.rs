@@ -60,7 +60,8 @@ impl Expression {
 #[derive(Clone, Copy)]
 pub(super) struct ExpressionOwner {
     pub value: Expression,
-    pub pitch_ratio: f64,
+    pub rendered: super::RenderedExpression,
+    pub program: Option<super::PlanId>,
     pub notes: usize,
 }
 
@@ -111,23 +112,21 @@ impl Runtime {
                 return Err(Error::InvalidInput);
             }
             let owner = self.expressions.get(id.0).ok_or(Error::StaleHandle)?;
-            let proposed = &mut self.expression_changes[id.0.index];
-            if proposed.is_some() {
+            if self.expression_changes[id.0.index].is_some() {
                 return Err(Error::InvalidInput);
             }
-            *proposed = Some(if owner.value.pitch_semitones == value.pitch_semitones {
-                owner.pitch_ratio
-            } else {
-                pitch_changed = true;
-                super::pitch::ratio(value.pitch_semitones)
-            });
+            let rendered = self.project_expression(owner.program, value, Some(owner))?;
+            pitch_changed |= rendered.ratio != owner.rendered.ratio;
+            self.expression_changes[id.0.index] = Some(rendered);
         }
         if pitch_changed {
-            self.validate_source_pitches(|id| self.expression_changes[id.0.index])?;
+            self.validate_source_pitches(|id| {
+                self.expression_changes[id.0.index].map(|rendered| rendered.ratio)
+            })?;
         }
         for &(id, value) in changes {
             let owner = self.expressions.get_mut(id.0).unwrap();
-            owner.pitch_ratio = self.expression_changes[id.0.index].unwrap();
+            owner.rendered = self.expression_changes[id.0.index].unwrap();
             owner.value = value;
         }
         Ok(())
@@ -141,10 +140,10 @@ impl Runtime {
         if !value.valid() {
             return Err(Error::InvalidInput);
         }
-        let pitch_ratio = self.validate_pitch_change(id, value.pitch_semitones)?;
+        let rendered = self.validate_expression_change(id, value)?;
         let owner = self.expressions.get_mut(id.0).unwrap();
         owner.value = value;
-        owner.pitch_ratio = pitch_ratio;
+        owner.rendered = rendered;
         Ok(())
     }
 
@@ -159,7 +158,8 @@ impl Runtime {
         }
         let new = ExpressionId(self.expressions.insert(ExpressionOwner {
             value: owner.value,
-            pitch_ratio: owner.pitch_ratio,
+            rendered: owner.rendered,
+            program: owner.program,
             notes: 1,
         })?);
         self.expressions.get_mut(old.0).unwrap().notes -= 1;

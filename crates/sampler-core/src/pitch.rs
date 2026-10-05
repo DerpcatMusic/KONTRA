@@ -41,49 +41,35 @@ impl PitchRange {
 impl Runtime {
     pub(super) fn pitch_range(&self, id: ExpressionId, pending: bool) -> Result<PitchRange, Error> {
         let owner = self.expressions.get(id.0).ok_or(Error::StaleHandle)?;
-        if !pending {
-            return Ok(PitchRange::constant(owner.pitch_ratio));
-        }
-        let pitch = owner.value.pitch_semitones;
-        let (mut low, mut high) = (pitch, pitch);
-        for command in &self.commands {
-            if let Action::Event(Event::Expression(note, value)) = command.action
-                && self.notes.get(note.0).unwrap().expression == id
-            {
-                low = low.min(value.pitch_semitones);
-                high = high.max(value.pitch_semitones);
+        let mut range = PitchRange::constant(owner.rendered.ratio);
+        if pending {
+            for command in &self.commands {
+                if let Action::Event(Event::Expression(note, value)) = command.action
+                    && self.notes.get(note.0).unwrap().expression == id
+                {
+                    let ratio = self
+                        .project_expression(owner.program, value, Some(owner))?
+                        .ratio;
+                    range.minimum = range.minimum.min(ratio);
+                    range.maximum = range.maximum.max(ratio);
+                }
             }
         }
-        Ok(PitchRange {
-            current: owner.pitch_ratio,
-            minimum: if low == pitch {
-                owner.pitch_ratio
-            } else {
-                ratio(low)
-            },
-            maximum: if high == pitch {
-                owner.pitch_ratio
-            } else {
-                ratio(high)
-            },
-        })
+        Ok(range)
     }
 
-    /// Both scheduling and immediate application validate all admitted sources,
-    /// including delayed starts. Later source admission checks the pending queue,
-    /// so an accepted expression cannot become invalid before its execution.
-    pub(super) fn validate_pitch_change(
+    /// Preflight the complete projected pitch, including controller modulation.
+    pub(super) fn validate_expression_change(
         &self,
         id: ExpressionId,
-        semitones: f64,
-    ) -> Result<f64, Error> {
+        value: crate::Expression,
+    ) -> Result<crate::RenderedExpression, Error> {
         let owner = self.expressions.get(id.0).ok_or(Error::StaleHandle)?;
-        if owner.value.pitch_semitones == semitones {
-            return Ok(owner.pitch_ratio);
+        let rendered = self.project_expression(owner.program, value, Some(owner))?;
+        if rendered.ratio != owner.rendered.ratio {
+            self.validate_source_pitches(|owner| (owner == id).then_some(rendered.ratio))?;
         }
-        let pitch_ratio = ratio(semitones);
-        self.validate_source_pitches(|owner| (owner == id).then_some(pitch_ratio))?;
-        Ok(pitch_ratio)
+        Ok(rendered)
     }
 
     pub(super) fn validate_source_pitches(

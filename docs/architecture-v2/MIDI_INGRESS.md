@@ -164,7 +164,7 @@ owner; explicit snapshot/independent inheritance keeps its native meaning.
 
 `Runtime::set_expressions` preflights all owners and source rates before committing
 a gesture. Invalid/stale/duplicate owners reject the complete batch. Scratch is
-allocated with the expression arena (one `Option<f64>` per reserved owner); a batch
+allocated with the expression arena (one optional projected-expression record per reserved owner); a batch
 clears that bounded storage, projects each owner once, and scans occupied voices
 once. An unchanged-pitch batch skips voice validation. Failed batches do not
 publish expression or adapter controller state. Due work runs before preflight,
@@ -204,8 +204,8 @@ As with pitch, member pressure/timbre freezes at physical key-up, and new notes 
 current idle controller state. Manager controls combine with each retained member
 snapshot, including tails. Each gesture writes only its own expression dimension;
 it cannot overwrite native gain, pan, pitch or another controller dimension.
-Pressure/timbre are stored modulation inputs, not hardwired gain/filter shortcuts;
-audible modulation destinations remain pending. Tests cover both zones, initial
+Pressure/timbre are modulation inputs, not hardwired gain/filter shortcuts;
+[prepared native programs](MODULATION.md) can now map them to gain, balance and pitch. Tests cover both zones, initial
 state, saturation, tail/reuse isolation, manager combination and preservation of
 unrelated expression under heap guards.
 

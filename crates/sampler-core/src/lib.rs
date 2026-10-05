@@ -17,7 +17,10 @@ mod envelope;
 pub use envelope::Envelope;
 use envelope::EnvelopeState;
 mod gate;
+mod modulation;
 mod ownership;
+use modulation::RenderedExpression;
+pub use modulation::{Destination, ExpressionSource, Modulation, Route};
 mod pitch;
 mod plans;
 mod prepare;
@@ -236,7 +239,7 @@ pub struct Runtime {
     kernel: &'static resample::Kernel,
     families: Arena<Family>,
     expressions: Arena<ExpressionOwner>,
-    expression_changes: Box<[Option<f64>]>,
+    expression_changes: Box<[Option<RenderedExpression>]>,
     commands: Vec<Scheduled>,
     behaviors: Arena<Continuation>,
     behavior_fuel: usize,
@@ -421,19 +424,18 @@ impl Runtime {
                 id
             }
             (policy, parent) => {
-                let (value, pitch_ratio) = if policy == Inheritance::Snapshot {
-                    parent
-                        .map(|p| {
-                            let owner = self.expressions.get(p.0).unwrap();
-                            (owner.value, owner.pitch_ratio)
-                        })
-                        .unwrap_or((Expression::default(), 1.0))
-                } else {
-                    (initial, pitch::ratio(initial.pitch_semitones))
-                };
+                let program = self.modulation_plan(plan);
+                let (value, rendered) =
+                    if let (Inheritance::Snapshot, Some(parent)) = (policy, parent) {
+                        let owner = self.expressions.get(parent.0).unwrap();
+                        (owner.value, owner.rendered)
+                    } else {
+                        (initial, self.project_expression(program, initial, None)?)
+                    };
                 ExpressionId(self.expressions.insert(ExpressionOwner {
                     value,
-                    pitch_ratio,
+                    rendered,
+                    program,
                     notes: 1,
                 })?)
             }

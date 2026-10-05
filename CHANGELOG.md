@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Make native pressure/timbre modulation audible through bounded prepared routes to gain, stereo balance and semitone pitch. Canonical inputs stay intact; event-time projection is cached per expression owner, retains original plans across adoption and participates in every source-rate preflight. Real UMP tests cover MPE playback and muted-source continuity.
+
 - Apply MPE manager sustain/sostenuto through native channel scopes, with atomic pedal-down reservation and capacity-independent pedal-up. Physical input domains remain isolated; repeated sostenuto and ignored member pedals preserve capture semantics.
 
 - Apply whole-semitone MPE RPN 0 sensitivity transactionally: independent manager range, shared member range, retained raw bends and frozen released-note pitch. Selector/null/NRPN isolation and failed-rate rollback preserve existing notes and future controller state.
