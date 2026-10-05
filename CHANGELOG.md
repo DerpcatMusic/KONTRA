@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Maintain arena capacity and occupancy during ownership changes instead of scanning reservations for every admission. Plan transfer rollback preserves counters and generations; a new burst workload measures the remaining insertion cost explicitly.
+
 - Admit native absolute note pitch separately from tuning and live expression, and consume MIDI 2.0 Pitch 7.9 attributes without changing physical note pairing. Generated notes retain fractional pitch through transposition; source-rate failures remain transactional.
 
 - Compile native per-key semitone tuning into prepared source rates. Plan replacement tunes new inputs while held notes and later generated children retain their original tuning; live expression stays independent and fixed-pitch regions remain exempt.

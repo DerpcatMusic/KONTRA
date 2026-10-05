@@ -187,7 +187,10 @@ fn boundary_order_overflow_and_handle_domains_are_explicit() {
     rt.panic();
     rt.flush_ended(|_| true);
     assert_eq!(rt.note_count(), 0);
-    rt.notes.slots[0].generation = u64::MAX;
+    rt.notes.slots[0].generation = u64::MAX - 1;
+    rt.note_on(input(Some(3)), 60, 1.0).unwrap();
+    rt.panic();
+    rt.flush_ended(|_| true);
     let fresh = rt.note_on(input(Some(3)), 60, 1.0).unwrap();
     assert_ne!(
         fresh.0.index, 0,
@@ -512,11 +515,88 @@ fn input_groups_and_new_handle_domains_do_not_alias() {
     );
     rt.panic();
     rt.flush_ended(|_| true);
-    rt.families.slots[0].generation = u64::MAX;
-    rt.expressions.slots[0].generation = u64::MAX;
+    rt.families.slots[0].generation = u64::MAX - 1;
+    rt.expressions.slots[0].generation = u64::MAX - 1;
+    let last = rt.note_on(a, 60, 1.0).unwrap();
+    rt.create_family(last).unwrap();
+    rt.panic();
+    rt.flush_ended(|_| true);
     let n = rt.note_on(a, 60, 1.0).unwrap();
     assert_ne!(rt.expression_id(n).unwrap().0.index, 0);
     assert_ne!(rt.create_family(n).unwrap().0.index, 0);
+}
+
+#[test]
+fn arena_capacity_matches_slots_through_quarantine_and_transfer_rollback() {
+    for capacity in [0, 1, 65] {
+        let mut arena = Arena::new(73, capacity);
+        if capacity != 0 {
+            arena.slots[0].generation = u64::MAX - 1;
+            let last = arena.insert(19usize).unwrap();
+            assert_eq!(last.generation, u64::MAX);
+            let value = arena.take(last).unwrap();
+            assert_eq!((arena.count(), arena.available()), (0, capacity - 1));
+            arena.restore(last, value);
+            assert_eq!(arena.get(last), Some(&19));
+            assert_eq!((arena.count(), arena.available()), (1, capacity - 1));
+            arena.remove(last);
+            arena.remove(last); // Repeated/stale removal cannot free capacity twice.
+        }
+        let mut seed = 11u64;
+        for value in 0..4096 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let index = (seed >> 32) as usize % (capacity + 1);
+            let id = Handle {
+                runtime: 73,
+                index,
+                generation: arena.slots.get(index).map_or(0, |slot| slot.generation),
+            };
+            match seed % 4 {
+                0 => {
+                    let expected = arena
+                        .slots
+                        .iter()
+                        .position(|slot| slot.value.is_none() && slot.generation < u64::MAX);
+                    let result = arena.insert(value);
+                    assert_eq!(result.as_ref().ok().map(|id| id.index), expected);
+                    if expected.is_none() {
+                        assert_eq!(result, Err(Error::Capacity));
+                    }
+                }
+                1 => arena.remove(id),
+                2 => {
+                    if let Some(value) = arena.take(id) {
+                        assert!(arena.get(id).is_none());
+                        arena.restore(id, value);
+                        assert_eq!(arena.get(id), Some(&value));
+                    }
+                }
+                _ => {
+                    assert!(arena.take(Handle { runtime: 74, ..id }).is_none());
+                    arena.remove(Handle {
+                        generation: id.generation.wrapping_sub(1),
+                        ..id
+                    });
+                }
+            }
+            assert_eq!(
+                arena.count(),
+                arena
+                    .slots
+                    .iter()
+                    .filter(|slot| slot.value.is_some())
+                    .count()
+            );
+            assert_eq!(
+                arena.available(),
+                arena
+                    .slots
+                    .iter()
+                    .filter(|slot| slot.value.is_none() && slot.generation < u64::MAX)
+                    .count()
+            );
+        }
+    }
 }
 
 #[test]

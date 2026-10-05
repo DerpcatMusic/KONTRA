@@ -107,9 +107,7 @@ impl Runtime {
         let mut slots = Arena::new(runtime.plans.runtime, generations);
         let initial = runtime
             .plans
-            .slots
-            .get_mut(0)
-            .and_then(|s| s.value.take())
+            .take(runtime.active_plan.0)
             .ok_or(Error::StaleHandle)?;
         runtime.active_plan = PlanId(slots.insert(initial)?);
         runtime.plans = slots;
@@ -152,7 +150,8 @@ impl Runtime {
             return 0;
         }
         let mut count = 0;
-        for (index, slot) in self.plans.slots.iter_mut().enumerate() {
+        for index in 0..self.plans.slots.len() {
+            let slot = &self.plans.slots[index];
             if index == self.active_plan.0.index
                 || !slot.value.as_ref().is_some_and(|g| g.notes == 0)
             {
@@ -161,7 +160,8 @@ impl Runtime {
             if queues.retired.is_full() {
                 break;
             }
-            let Some(generation) = slot.value.take() else {
+            let id = self.plans.id(index);
+            let Some(generation) = self.plans.take(id) else {
                 continue;
             };
             match queues.retired.push(PlanTransfer {
@@ -170,11 +170,14 @@ impl Runtime {
             }) {
                 Ok(()) => count += 1,
                 Err(PushError::Full(plan)) => {
-                    slot.value = Some(Generation {
-                        request: plan.request,
-                        prepared: plan.prepared,
-                        notes: 0,
-                    });
+                    self.plans.restore(
+                        id,
+                        Generation {
+                            request: plan.request,
+                            prepared: plan.prepared,
+                            notes: 0,
+                        },
+                    );
                     break;
                 }
             }
