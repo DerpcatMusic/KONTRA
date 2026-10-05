@@ -27,7 +27,7 @@ pub fn scan(libraries: &[crate::library::Library]) -> HashMap<String, Arc<Image>
                 });
             }
             let mut candidates = vec![folder.join("wallpaper.png")];
-            if let Ok(entries) = std::fs::read_dir(&folder) {
+            if let Ok(entries) = std::fs::read_dir(folder) {
                 let mut containers: Vec<_> = entries
                     .flatten()
                     .map(|e| e.path())
@@ -60,10 +60,9 @@ pub fn scan(libraries: &[crate::library::Library]) -> HashMap<String, Arc<Image>
                     .enumerate()
                     .filter(|(_, b)| *b == b"\x89PNG\r\n\x1a\n")
                 {
-                    if let Some(image) = decode(&bytes[start..]) {
-                        if image.width >= 180 && image.height >= 60 {
-                            return Some((name, Arc::new(image)));
-                        }
+                    if let Some(image) = decode(&bytes[start..])
+                        && image.width >= 180 && image.height >= 60 {
+                        return Some((name, Arc::new(image)));
                     }
                 }
             }
@@ -207,7 +206,7 @@ impl PictureMetadata {
         let frame = picture.frames.first()?;
         Some(Self { size: picture.atlas.unwrap_or([frame.width, frame.height]),
             stretch: picture.stretch, frames: picture.frames.len(),
-            clear: picture.frames.iter().all(|f| f.rgba.chunks_exact(4).all(|pixel| pixel[3] == 0)) })
+            clear: picture.frames.iter().all(|f| f.rgba.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 0)) })
     }
     pub fn size(&self, w: f64, h: f64) -> (f64, f64) {
         (if self.stretch[0] { w } else { f64::from(self.size[0]) },
@@ -374,7 +373,7 @@ pub fn picture_metadata_report<'a>(path: &Path, names: impl IntoIterator<Item = 
                 fw = starts[1]; fh = image.height - 1;
             }
             // Conservatively classify only entirely transparent pictures as clear.
-            let clear = image.rgba.chunks_exact(4).all(|pixel| pixel[3] == 0);
+            let clear = image.rgba.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 0);
             Ok(PictureMetadata { size: [fw, fh], stretch: layout.stretch,
                 frames: if font.is_some() { 256 } else { layout.frames as usize }, clear })
         })();
@@ -469,7 +468,7 @@ fn wallpaper(scripts: &[String]) -> Option<String> {
             let end = line.rfind('"')?;
             Some(line[start..end].to_owned())
         })
-        .last()
+        .next_back()
         .filter(|name| !name.is_empty())
 }
 pub(crate) fn decode(bytes: &[u8]) -> Option<Image> {
@@ -532,7 +531,7 @@ pub(crate) fn decode_native(bytes: &[u8]) -> Result<Image, String> {
         resvg::render(&tree, resvg::tiny_skia::Transform::identity(), &mut pixels.as_mut());
         // tiny-skia stores premultiplied pixels; MUI takes straight RGBA.
         let mut data = pixels.take();
-        for pixel in data.chunks_exact_mut(4) {
+        for pixel in data.as_chunks_mut::<4>().0 {
             let c = resvg::tiny_skia::PremultipliedColorU8::from_rgba(pixel[0], pixel[1], pixel[2], pixel[3])
                 .ok_or("Invalid SVG premultiplied pixels")?.demultiply();
             pixel.copy_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
@@ -762,7 +761,7 @@ pub fn tint(image: &Image) -> Option<f32> {
     const BINS: usize = 36;
     let mut weight = [0f32; BINS];
     let mut sums = [(0f32, 0f32); BINS];
-    let pixels = image.rgba.chunks_exact(4);
+    let pixels = image.rgba.as_chunks::<4>().0.iter();
     // A few thousand samples decide it as well as every pixel would.
     let step = (pixels.len() / 20_000).max(1);
     for px in pixels.step_by(step) {
@@ -858,7 +857,7 @@ mod tests {
             let decoded = super::decode_native(&bytes).unwrap();
             assert_eq!((decoded.width, decoded.height), (3, 2));
             let expected = if color == image_webp::ColorType::Rgb8 {
-                vec![12, 34, 56, 255, 200, 100, 50, 255, 1, 2, 3, 255].repeat(2)
+                [12, 34, 56, 255, 200, 100, 50, 255, 1, 2, 3, 255].repeat(2)
             } else { rgba.clone() };
             assert_eq!(decoded.rgba.as_ref(), expected);
         }
@@ -951,8 +950,7 @@ mod tests {
         for (name, bytes, alpha) in [("wall.PNG", png.as_slice(), 78), ("wall.jpg", jpeg.as_slice(), 255), ("wall.jpeg", jpeg.as_slice(), 255)] {
             std::fs::write(folder.join(name), bytes).unwrap();
             std::fs::write(folder.join("wall.txt"), "Number of Animations: 2\nHorizontal Animation: yes\nHorizontal Resizable: yes\n").unwrap();
-            let mut ui = crate::ksp::Interface::default();
-            ui.wallpaper = name.into();
+            let ui = crate::ksp::Interface { wallpaper: name.into(), ..Default::default() };
             let wall = super::performance(&instrument, Some(&ui)).unwrap().unwrap();
             assert_eq!(wall.atlas, Some([1, 2]), "{name}: the stem's sidecar is read even for .jpeg");
             assert_eq!(wall.stretch, [true, false]);

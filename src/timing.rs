@@ -376,10 +376,9 @@ impl Scheduler {
             }
             return None;
         }
-        if let In::HostOn(note, ..) = ev {
-            if self.host.len() == self.host.capacity() || (note.id != -1 && self.host.iter().any(|o| o.note == note)) {
-                self.overflows = self.overflows.saturating_add(1); return None;
-            }
+        if let In::HostOn(note, ..) = ev
+            && (self.host.len() == self.host.capacity() || (note.id != -1 && self.host.iter().any(|o| o.note == note))) {
+            self.overflows = self.overflows.saturating_add(1); return None;
         }
         let frames = |row, legato, velocity| holds.frames(row, legato, velocity, rate);
         let lane = |channel: u8| if !external && router.by_channel() { usize::from(channel & 15) } else { 0 };
@@ -1306,11 +1305,12 @@ mod tests {
         assert_eq!(drain(&mut s), [(200, In::NoteOn(0, 60, 100)), (200, In::NoteOn(0, 62, 100))]);
         // A detached note stays detached: a note due sooner than the release
         // before it waits for that release.
-        let mut s = Scheduler::default();
-        s.art = 0;
-        let mut t = Timing::default();
-        t.loaded = Delay { first: [Some(200.0); 3], legato: [Some(250.0); 3], ..Delay::default() };
-        t.arts = vec![Delay { name: "Short".into(), first: [Some(20.0); 3], legato: [Some(20.0); 3] }];
+        let mut s = Scheduler { art: 0, ..Default::default() };
+        let t = Timing {
+            loaded: Delay { first: [Some(200.0); 3], legato: [Some(250.0); 3], ..Delay::default() },
+            arts: vec![Delay { name: "Short".into(), first: [Some(20.0); 3], legato: [Some(20.0); 3] }],
+            ..Default::default()
+        };
         let h = Holds::of(&t, &["Short"], 250.0);
         s.arrive(In::NoteOn(0, 60, 100), 0, &h, RATE, &r);
         s.arrive(In::NoteOff(0, 60), 100 * 48, &h, RATE, &r);
@@ -1343,11 +1343,10 @@ mod tests {
         a.mode = Mode::Channel;
         let mut r = Router::default();
         r.set_route(Route::new("lib.nki", &a, &Mpe::default()));
-        let mut t = Timing::default();
-        t.arts = vec![
+        let t = Timing { arts: vec![
             Delay { name: "Legato".into(), first: [Some(50.0); 3], legato: [Some(250.0); 3] },
             Delay { name: "Pizz".into(), first: [Some(20.0); 3], legato: [Some(20.0); 3] },
-        ];
+        ], ..Default::default() };
         let h = Holds::of(&t, &["Legato", "Pizz"], 250.0);
         let mut s = Scheduler::default();
         s.arrive(In::NoteOn(1, 40, 100), 0, &h, RATE, &r);
@@ -1386,11 +1385,10 @@ mod tests {
         a.mode = Mode::Channel;
         let mut r = Router::default();
         r.set_route(Route::new("lib.nki", &a, &Mpe::default()));
-        let mut t = Timing::default();
-        t.arts = vec![
+        let t = Timing { arts: vec![
             Delay { name: "Legato".into(), first: [Some(50.0); 3], legato: [Some(250.0); 3] },
             Delay { name: "Short".into(), first: [Some(250.0); 3], legato: [Some(250.0); 3] },
-        ];
+        ], ..Default::default() };
         let h = Holds::of(&t, &["Legato", "Short"], 250.0);
         let mut s = Scheduler::default();
         s.arrive(In::NoteOn(0, 60, 100), 0, &h, RATE, &r);

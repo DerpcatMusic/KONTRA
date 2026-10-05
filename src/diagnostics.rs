@@ -900,13 +900,12 @@ impl Journal {
     fn close(&mut self) {
         self.file.take();
         self.session_lock.take();
-        if let Some(root) = self.path.parent() {
-            if let Err(error) = retain_sessions(root, Path::new("")) {
-                let mut history = lock(&self.history);
-                history.status.retention_errors += 1;
-                history.status.last_error = Some(format!("Log retention: {error}"));
-                REVISION.fetch_add(1, Ordering::Release);
-            }
+        if let Some(root) = self.path.parent()
+            && let Err(error) = retain_sessions(root, Path::new("")) {
+            let mut history = lock(&self.history);
+            history.status.retention_errors += 1;
+            history.status.last_error = Some(format!("Log retention: {error}"));
+            REVISION.fetch_add(1, Ordering::Release);
         }
     }
 }
@@ -1056,15 +1055,14 @@ pub fn request_export(destination: PathBuf, mut context: Value) -> Result<u64, S
             return Err("Four diagnostic exports are already queued".into());
         }
         // Finished job statuses are bounded; running jobs are never evicted.
-        if exports.len() >= 32 {
-            if let Some(oldest) = exports
+        if exports.len() >= 32
+            && let Some(oldest) = exports
                 .iter()
                 .filter(|(_, v)| !matches!(v, ExportStatus::Running))
                 .map(|(id, _)| *id)
                 .min()
-            {
-                exports.remove(&oldest);
-            }
+        {
+            exports.remove(&oldest);
         }
         exports.insert(id, ExportStatus::Running);
     }
@@ -1074,7 +1072,7 @@ pub fn request_export(destination: PathBuf, mut context: Value) -> Result<u64, S
             path: destination,
             context,
             snapshot,
-        })
+        }).map_err(|_| ())
     });
     match result {
         Some(Ok(())) => {
@@ -1405,11 +1403,10 @@ pub(crate) fn clean(value: &mut Value, redact_paths: bool) {
                         || key == "requested"
                         || key == "directory"
                         || key == "root")
+                    && let Some(s) = value.as_str()
                 {
-                    if let Some(s) = value.as_str() {
-                        *value = Value::String(redact_path(s));
-                        continue;
-                    }
+                    *value = Value::String(redact_path(s));
+                    continue;
                 }
                 clean(value, redact_paths);
             }
@@ -1419,10 +1416,8 @@ pub(crate) fn clean(value: &mut Value, redact_paths: bool) {
                 clean(value, redact_paths);
             }
         }
-        Value::String(text) => {
-            if redact_paths {
-                *text = redact_text(text);
-            }
+        Value::String(text) if redact_paths => {
+            *text = redact_text(text);
         }
         _ => {}
     }
@@ -1449,9 +1444,8 @@ fn redact_text(text: &str) -> String {
         let boundary =
             previous.is_none_or(|p| p.is_whitespace() || matches!(p, '\'' | '"' | '(' | '=' | ':'));
         let windows = ch.is_ascii_alphabetic()
-            && text[at..].as_bytes().get(1) == Some(&b':')
-            && text[at..]
-                .as_bytes()
+            && text.as_bytes()[at..].get(1) == Some(&b':')
+            && text.as_bytes()[at..]
                 .get(2)
                 .is_some_and(|b| matches!(b, b'/' | b'\\'));
         let unc = ch == '\\' && text[at..].starts_with("\\\\");

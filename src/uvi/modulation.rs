@@ -147,7 +147,7 @@ fn controllers_valid(controllers: &[u8; 128]) -> bool {
         // chunk; unaligned loads require no additional array alignment.
         unsafe {
             let mut bits = _mm_setzero_si128();
-            for chunk in controllers.chunks_exact(16) {
+            for chunk in controllers.as_chunks::<16>().0 {
                 bits = _mm_or_si128(bits, _mm_loadu_si128(chunk.as_ptr().cast()));
             }
             _mm_movemask_epi8(bits) == 0
@@ -2899,14 +2899,13 @@ impl ModulationGraph {
             if let Some(value) = cached.number {
                 return Ok(value);
             }
-        } else if let Overrides::External(live) = live {
-            if let Some((_, value)) = live
+        } else if let Overrides::External(live) = live
+            && let Some((_, value)) = live
                 .iter()
                 .find(|((id, parameter), _)| *id == node && parameter == name)
-            {
-                // Public live overrides may introduce a field absent from XML.
-                return Ok(*value);
-            }
+        {
+            // Public live overrides may introduce a field absent from XML.
+            return Ok(*value);
         }
         number(&self.bases[node], name, default)
     }
@@ -3290,11 +3289,9 @@ impl ModulationGraph {
             }
             Source::Node(n) => {
                 let cache_source = matches!(self.kinds[n].as_str(), "ConstantModulation" | "ScriptEventModulation" | "LFO");
-                if cache_source {
-                    if let Some(&value) = memo.sources.get(&n) {
-                        ensure!(depth + 1 + usize::from(self.kinds[n] == "LFO") < DEPTH, "UVI modulation evaluation depth exceeds limit");
-                        return Ok(value);
-                    }
+                if cache_source && let Some(&value) = memo.sources.get(&n) {
+                    ensure!(depth + 1 + usize::from(self.kinds[n] == "LFO") < DEPTH, "UVI modulation evaluation depth exceeds limit");
+                    return Ok(value);
                 }
                 let bipolar = self.boolean(
                     n,
@@ -5066,7 +5063,8 @@ mod tests {
                 values.insert(key.clone(), value.to_bits());
             }).map(|_| values).map_err(|error| format!("{error:#}"))
         }
-        fn state(graph: &ModulationGraph) -> BTreeMap<SourceStateKey, (u64, u32, u64, u64, u64, u32, u32, u32)> {
+        type ClockBits = (u64, u32, u64, u64, u64, u32, u32, u32);
+        fn state(graph: &ModulationGraph) -> BTreeMap<SourceStateKey, ClockBits> {
             graph.constant_clocks.borrow().iter().map(|(key, clock)| (*key,
                 (clock.rate.to_bits(), clock.block_frames, clock.frame, clock.integrated,
                  clock.point_frame, clock.current.to_bits(), clock.point.to_bits(), clock.target.to_bits())))
@@ -5170,10 +5168,10 @@ mod tests {
             };
             if let Some(value) = value { return Ok(value); }
             if let Some(value) = cached.number { return Ok(value); }
-        } else if let Overrides::External(values) = live {
-            if let Some((_, value)) = values.iter().find(|((id, parameter), _)| *id == node && parameter == name) {
-                return Ok(*value);
-            }
+        } else if let Overrides::External(values) = live
+            && let Some((_, value)) = values.iter().find(|((id, parameter), _)| *id == node && parameter == name)
+        {
+            return Ok(*value);
         }
         number(&graph.bases[node], name, default)
     }
@@ -5247,7 +5245,8 @@ mod tests {
     }
     #[test]
     fn bound_connection_setting_slots_preserve_source_state_and_failure_order() {
-        fn state(graph: &ModulationGraph) -> BTreeMap<SourceStateKey, (u64, u32, u64, u64, u64, u32, u32, u32)> {
+        type ClockBits = (u64, u32, u64, u64, u64, u32, u32, u32);
+        fn state(graph: &ModulationGraph) -> BTreeMap<SourceStateKey, ClockBits> {
             graph.constant_clocks.borrow().iter().map(|(key, clock)| (*key,
                 (clock.rate.to_bits(), clock.block_frames, clock.frame, clock.integrated,
                  clock.point_frame, clock.current.to_bits(), clock.point.to_bits(), clock.target.to_bits())))
@@ -7029,8 +7028,7 @@ mod registered_proof {
     fn controller_predicate_matches_scalar_for_every_position_and_byte() {
         let graph = ModulationGraph::new(&fixture()).unwrap();
         let empty = HashMap::new();
-        let mut input = Inputs::default();
-        input.controllers = std::array::from_fn(|i| (i % 128) as u8);
+        let mut input = Inputs { controllers: std::array::from_fn(|i| (i % 128) as u8), ..Inputs::default() };
         let check = |input: &Inputs| {
             let expected = input.controllers.iter().all(|cc| *cc < 128);
             assert_eq!(controllers_valid(&input.controllers), expected);
@@ -7482,7 +7480,8 @@ mod registered_proof {
         let mut graph = ModulationGraph::new(&p).unwrap();
         let valid = Inputs::default();
         let empty = HashMap::new();
-        let cases: Vec<(&str, fn(&mut Inputs))> = vec![
+        type InvalidInputCase = (&'static str, fn(&mut Inputs));
+        let cases: Vec<InvalidInputCase> = vec![
             ("key", |i| i.key = 128),
             ("velocity", |i| i.velocity = 128),
             ("unrelated controller", |i| i.controllers[127] = 128),
@@ -7954,8 +7953,7 @@ impl ReferenceConstantClock {
         let mut queried = ModulationGraph::new(&relative).unwrap();
         let baseline = ModulationGraph::new(&relative).unwrap();
         let mut live = HashMap::new();
-        let mut input = Inputs::default();
-        input.voice = Some(7);
+        let mut input = Inputs { voice: Some(7), ..Inputs::default() };
         for frame in 0..96 {
             input.time_seconds = f64::from(frame) / input.sample_rate;
             input.voice_time_seconds = input.time_seconds;
