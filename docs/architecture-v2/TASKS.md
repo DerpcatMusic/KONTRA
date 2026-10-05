@@ -1,7 +1,9 @@
 # 2.0 task list
 
-Status at 2026-10-05: documentation baseline only. All implementation tasks below
-are **not started**. Priority is execution order, not a delivery-date estimate.
+Status at 2026-10-05: first experimental slice implemented; see
+[implementation evidence](IMPLEMENTATION.md). V2-01 through V2-05 have partial
+progress; none of their full gates is closed. Later tasks are not started.
+Priority is execution order, not a delivery-date estimate.
 Task ownership means subsystem responsibility; no individuals or permanent file
 locks are assigned. [PLAN.md](PLAN.md) defines the contracts and milestone gates.
 
@@ -17,6 +19,9 @@ locks are assigned. [PLAN.md](PLAN.md) defines the contracts and milestone gates
 
 ### V2-01 — Capture current behavior and reproduce ownership risks
 
+- **Progress:** focused regressions pass; both flagged defects reproduced. Exact
+  reproducers are retained in `probes/legacy.rs`. Production fixes and workload
+  timing/memory baselines remain required before closing this task.
 - [ ] **P0; depends on:** no implementation task. **Boundary:** conformance/legacy.
 - Run the focused host ownership, MPE reuse, stale completion, async KSP and
   persistence regressions identified in [CURRENT_STATE.md](CURRENT_STATE.md).
@@ -32,6 +37,8 @@ locks are assigned. [PLAN.md](PLAN.md) defines the contracts and milestone gates
 
 ### V2-02 — Ratify identities, native policies, and resource budgets
 
+- **Progress:** prototype contract and fixture capacities recorded in IMPLEMENTATION;
+  all-domain queue inventory, production budgets and full profile decisions remain open.
 - [ ] **P0; depends on:** V2-01. **Boundary:** core contract.
 - Specify the native defaults proposed in PLAN, tagged/signed external IDs,
   generational handle behavior, raw/projected state, unit domains and lifecycle states.
@@ -48,6 +55,9 @@ locks are assigned. [PLAN.md](PLAN.md) defines the contracts and milestone gates
 
 ### V2-03 — Introduce the bounded logical-note kernel
 
+- **Progress:** independent crate, note/voice generations, provenance, children,
+  continuation pins, FIFO fallback and terminal retention implemented/tested. Explicit
+  family identity, expression inheritance and richer lifecycle states remain open.
 - [ ] **P0; depends on:** V2-02. **Boundary:** `sampler-core`, first functional commit.
 - Add typed input/note/family/voice handles, original/transformed addresses, ownership
   admission, parent links, expression policy and cleanup. Test slot reuse and near-wrap
@@ -62,6 +72,9 @@ locks are assigned. [PLAN.md](PLAN.md) defines the contracts and milestone gates
 
 ### V2-04 — Build the deterministic event/PCM harness
 
+- **Progress:** resident unity-rate stereo PCM, delayed start/release and cancellation
+  pass regular/irregular/zero partition checks at 44.1/48 kHz. Unified external-event
+  and continuation scheduling, trace tooling and projected CC state remain open.
 - [ ] **P0; depends on:** V2-03. **Boundary:** core scheduling/headless tests.
 - Reuse/extract the smallest pure PCM playback primitives needed for an impulse fixture.
   Merge external, scheduled and continuation boundaries with a bounded equal-time loop.
@@ -74,6 +87,9 @@ locks are assigned. [PLAN.md](PLAN.md) defines the contracts and milestone gates
 
 ### V2-05 — Put the first real KSP behavior on the kernel
 
+- **Progress:** authored KSP suppression/children/wait/release fixture uses the new
+  kernel with no measured callback heap operations. Bridge is test-only and handles
+  one root; production mapping, fault cleanup, expression and readback remain open.
 - [ ] **P0; depends on:** V2-03/04. **Boundary:** KSP service adapter.
 - Adapt existing KSP operations for suppress/create/wait/release, polyphonic variables,
   callback identity and child expression to shared services. Keep the existing parser/VM.

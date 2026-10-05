@@ -2,6 +2,7 @@
 
 Status: proposed implementation contract. Baseline and evidence are in
 [CURRENT_STATE.md](CURRENT_STATE.md); execution work is in [TASKS.md](TASKS.md).
+The first experimental subset and its checks are recorded in [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 ## Outcome
 
