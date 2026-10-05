@@ -678,3 +678,242 @@ fn source_comparisons_select_the_correct_branch_at_signed_boundaries() {
         }
     }
 }
+
+#[test]
+fn repeating_source_loops_stop_per_owner_at_key_up_and_cancel_without_heap() {
+    let source = include_str!("fixtures/held-loop.ksp");
+    for (rate, delay) in [(44100, 6usize), (48000, 6), (96000, 12)] {
+        for block in [1, 3, 7, 16] {
+            let script = compile(source, rate, limits()).unwrap();
+            let plan = script
+                .bind(
+                    Prepared::new(
+                        rate,
+                        vec![Pcm::new(rate, Box::from([[1.; 2]; 64])).unwrap()],
+                        vec![Region {
+                            sample: 0,
+                            key_low: 60,
+                            key_high: 61,
+                            root_key: None,
+                            velocity_low: 0.,
+                            velocity_high: 1.,
+                            gain: 1.,
+                            envelope: Envelope::default(),
+                            playback: Playback::default(),
+                        }],
+                        2,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            let mut rt = Runtime::new(
+                plan,
+                CoreLimits {
+                    notes: 4,
+                    channels: 1,
+                    performances: 1,
+                    families: 4,
+                    expressions: 4,
+                    voices: 4,
+                    decisions: 0,
+                    commands: 8,
+                    behaviors: 2,
+                    behavior_fuel: 32,
+                    behavior_cells: 4,
+                    note_cells: 8,
+                },
+            )
+            .unwrap();
+            let input = Input {
+                protocol: Protocol::Native,
+                port: 0,
+                group: 0,
+                channel: 0,
+                key: 60,
+                external_id: None,
+            };
+            let mut audio = [[0.; 2]; 64];
+            support::without_heap(|| {
+                let a = rt.trigger(input, 60, 0.).unwrap();
+                let b = rt.trigger(input, 61, 0.).unwrap();
+                let channel = rt.register_channel(input.channel_address()).unwrap();
+                rt.sustain(channel, true).unwrap();
+                rt.schedule_event((delay + 2) as u64, Event::KeyUp(a, None))
+                    .unwrap();
+                rt.schedule_event((3 * delay + 2) as u64, Event::KeyUp(b, None))
+                    .unwrap();
+                rt.schedule_event((5 * delay) as u64, Event::Sustain(channel, false))
+                    .unwrap();
+                for chunk in audio.chunks_mut(block) {
+                    rt.render(chunk).unwrap();
+                    rt.render(&mut []).unwrap();
+                }
+                assert_eq!((rt.note_cell(a, 1), rt.note_cell(b, 1)), (Ok(1), Ok(1)));
+                let mut completed = 0;
+                rt.flush_behaviors(|_, _, outcome| {
+                    assert_eq!(outcome, Outcome::Finished);
+                    completed += 1;
+                    true
+                });
+                rt.flush_ended(|_| true);
+                assert_eq!(
+                    (
+                        completed,
+                        rt.note_count(),
+                        rt.voice_count(),
+                        rt.pending_commands()
+                    ),
+                    (2, 0, 0, 0)
+                );
+                let fresh = rt.trigger(input, 60, 1.).unwrap();
+                assert_eq!(rt.note_cell(fresh, 1), Ok(0));
+                rt.panic();
+                rt.flush_behaviors(|_, _, outcome| {
+                    assert_eq!(outcome, Outcome::Cancelled);
+                    true
+                });
+                rt.flush_ended(|_| true);
+                assert_eq!((rt.note_count(), rt.pending_commands()), (0, 0));
+            });
+            for (frame, actual) in audio.iter().enumerate() {
+                let layers = if (delay..2 * delay).contains(&frame) {
+                    2.
+                } else if (3 * delay..4 * delay).contains(&frame) {
+                    1.
+                } else {
+                    0.
+                };
+                assert_eq!(
+                    *actual, [layers; 2],
+                    "rate {rate}, block {block}, frame {frame}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn loops_obey_fuel_and_continue_targets_the_innermost_loop() {
+    for (body, expected) in [
+        ("while (1 = 1) end while", Outcome::FuelExhausted),
+        (
+            "while (1 = 1) wait(0) continue end while",
+            Outcome::FuelExhausted,
+        ),
+        (
+            "$a := 1 while ($a = 1) $b := 1 while ($b = 1) $b := 0 continue $result := -1 end while $result := 7 $a := 0 end while",
+            Outcome::Finished,
+        ),
+        (
+            "$a := 0 while ($a = 1) $result := -1 end while $result := 7",
+            Outcome::Finished,
+        ),
+        (
+            "while (1 = 1) if (1 = 1) exit end if end while $result := -1",
+            Outcome::Finished,
+        ),
+    ] {
+        let source = format!(
+            "on init declare polyphonic $a declare polyphonic $b declare polyphonic $result end on on note ignore_event($EVENT_ID) {body} end on"
+        );
+        let script = compile(
+            &source,
+            48000,
+            Limits {
+                instructions: 64,
+                ..limits()
+            },
+        )
+        .unwrap();
+        let plan = script
+            .bind(Prepared::new(48000, vec![], vec![], 0).unwrap())
+            .unwrap();
+        let mut rt = Runtime::new(
+            plan,
+            CoreLimits {
+                notes: 1,
+                channels: 1,
+                performances: 1,
+                families: 0,
+                expressions: 1,
+                voices: 0,
+                decisions: 0,
+                commands: 0,
+                behaviors: 1,
+                behavior_fuel: 64,
+                behavior_cells: 2,
+                note_cells: 3,
+            },
+        )
+        .unwrap();
+        support::without_heap(|| {
+            let input = Input {
+                protocol: Protocol::Native,
+                port: 0,
+                group: 0,
+                channel: 0,
+                key: 60,
+                external_id: None,
+            };
+            let note = rt.trigger(input, 60, 1.).unwrap();
+            if body.starts_with("$a") {
+                assert_eq!(rt.note_cell(note, 2), Ok(7));
+            }
+            if body.contains("exit") {
+                assert_eq!(rt.note_cell(note, 2), Ok(0));
+            }
+            assert_eq!(rt.pending_commands(), 0);
+            let mut outcomes = 0;
+            rt.flush_behaviors(|_, _, outcome| {
+                assert_eq!(outcome, expected);
+                outcomes += 1;
+                false
+            });
+            assert_eq!(outcomes, 1);
+            rt.flush_ended(|_| panic!("retained outcome owns the note"));
+            rt.flush_behaviors(|_, _, outcome| {
+                assert_eq!(outcome, expected);
+                true
+            });
+            rt.panic();
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.note_count(), 0);
+        });
+    }
+    for body in [
+        "continue",
+        "while (1 = 1) else end while",
+        "while (1 = 1) end if",
+        "if (1 = 1) end while",
+        "while (1 = 1) if (1 = 1) end while end if",
+        "while (1 = 1) end on",
+        "end while",
+        "while (1 = 0) end while continue",
+    ] {
+        let source = format!("on release {body} end on");
+        assert!(compile(&source, 48000, limits()).is_err(), "{body}");
+    }
+    let source = "on release while (1 = 0) end while end on";
+    assert!(
+        compile(
+            source,
+            48000,
+            Limits {
+                instructions: 6,
+                ..limits()
+            }
+        )
+        .is_ok()
+    );
+    assert!(
+        compile(
+            source,
+            48000,
+            Limits {
+                instructions: 5,
+                ..limits()
+            }
+        )
+        .is_err()
+    );
+}

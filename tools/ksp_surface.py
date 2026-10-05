@@ -175,6 +175,7 @@ for source in sources:
             ('general-commands', 'play_note()'), ('general-commands', 'exit'),
             ('control-statements', 'Boolean Operators'),
             ('control-statements', 'if ... else ... end if'),
+            ('control-statements', 'continue'), ('control-statements', 'while ()'),
             ('time-related-commands', 'wait()'), ('event-commands', 'ignore_event()'),
         ]:
             section['implementation'] = 'partial_native_subset'
@@ -221,7 +222,7 @@ result = {
     'default_status': {'implementation': 'missing', 'kontakt_fidelity': 'unverified'},
     'symbol_overrides': {
         name: {'implementation': 'partial_native_subset', 'evidence': 'KSP_FRONTEND.md'}
-        for name in ['on note', 'on release', 'on init', 'play_note', 'wait', 'ignore_event', '$EVENT_ID', '$EVENT_NOTE', '$NOTE_HELD', 'exit']
+        for name in ['on note', 'on release', 'on init', 'play_note', 'wait', 'ignore_event', '$EVENT_ID', '$EVENT_NOTE', '$NOTE_HELD', 'exit', 'if', 'while', 'continue']
     },
     'chapters': chapters,
 }

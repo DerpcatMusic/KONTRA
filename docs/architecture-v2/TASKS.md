@@ -130,7 +130,7 @@ unimplemented cases. Source inspection alone is not passing conformance evidence
   source EOF and suppress safely under hard cleanup.
   The new KSP frontend now lowers polyphonic declarations, scalar assignment and
   note/release callbacks onto those services. Physical held-state reads, nested
-  scalar conditionals and callback exit now execute with bounded code/registers
+  scalar conditionals, while/continue and callback exit now execute with bounded code/registers
   and heap-checked overlapping-owner fixtures. Full typed arithmetic and broader
   language/state/controller work stay open.
 

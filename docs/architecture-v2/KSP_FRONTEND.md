@@ -42,7 +42,7 @@ exposes fixed/scaled velocity and expression inheritance as separate native choi
 ## Explicit rejection and limits
 
 The compiler rejects arithmetic expressions, dynamic command arguments (including
-`$EVENT_VELOCITY`), globals, arrays, real/string values, loops, compound Boolean expressions, other
+`$EVENT_VELOCITY`), globals, arrays, real/string values, select/case, compound Boolean expressions, other
 callbacks, implicit note forwarding, nested comments,
 nonzero sample offsets, input-linked negative duration and whole-source duration zero.
 Some primitives already exist natively; that alone does not establish their KSP
@@ -166,3 +166,32 @@ logs are under ignored `artifacts/ksp-branches-*`; Kontakt fidelity remains unve
 This slice passes all four native crates in debug, release and Rust 1.92 tests,
 strict all-target Clippy, the two root workspace boundary tests, and byte-identical
 regeneration of the 25-chapter interface inventory.
+
+## Repeating callbacks
+
+Scalar conditions also drive `while (...) ... end while`; `continue` returns to
+its innermost loop's condition, including from nested `if` blocks. The same bounded
+control-side patch stack lowers both constructs into existing jumps. No new runtime
+stack or scheduler was introduced. Every condition is evaluated again, so
+`$NOTE_HELD` observes key-up after a resumed wait while other owners can continue.
+
+All executed instructions consume the existing per-resume fuel. Positive waits
+suspend onto the sample queue; zero waits do not reset fuel. Exhaustion retains
+`Outcome::FuelExhausted`, releases the originating musical ownership according to
+the native abort policy, and cannot strand an unreported callback. This is a native
+realtime bound, **not** emulation of the NI manual's documented
+[10-million-iteration loop guard](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-statements#while---).
+Full vendor loop-limit/cancellation behavior remains an explicit fidelity gap.
+
+`held-loop.ksp` independently repeats two same-key owners through alternating
+continue/wait paths; exact PCM ends separately after their physical key-ups while
+sustain remains down. Tests cover three rates/four block sizes, fixed child lifetime,
+callback/terminal retirement, slot reuse and panic cancellation without heap activity.
+Nested-loop continue, early exit, zero-time infinite loops, malformed block nesting
+and code-budget boundaries have executable checks. The WAV CLI also renders two
+expected repeat pulses and stops on key-up before pedal-up. Logs are retained under
+ignored `artifacts/ksp-loops-*`.
+
+The loop slice passes frontend/CLI debug, release and Rust 1.92 tests, strict
+all-target Clippy for both affected crates, and byte-identical inventory
+regeneration. Native core code and its public contract are unchanged by this slice.

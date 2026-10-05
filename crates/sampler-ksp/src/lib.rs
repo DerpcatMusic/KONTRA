@@ -68,6 +68,10 @@ struct Token<'a> {
     kind: Kind<'a>,
     offset: usize,
 }
+enum Block {
+    If { branch: usize, has_else: bool },
+    While { start: usize, branch: usize },
+}
 struct Parser<'a> {
     source: &'a str,
     offset: usize,
@@ -348,7 +352,8 @@ impl<'a> Parser<'a> {
                 }
                 Kind::Word("play_note") => self.play()?,
                 Kind::Word("exit") => self.emit(Instruction::End)?,
-                Kind::Word("if") => {
+                Kind::Word(kind @ ("if" | "while")) => {
+                    let start = self.code.len();
                     self.symbol(b'(')?;
                     self.scalar(0)?;
                     let token = self.next()?;
@@ -370,10 +375,28 @@ impl<'a> Parser<'a> {
                         local: 0,
                         target: 0,
                     })?;
-                    branches.push((branch, false));
+                    branches.push(if kind == "if" {
+                        Block::If {
+                            branch,
+                            has_else: false,
+                        }
+                    } else {
+                        Block::While { start, branch }
+                    });
+                }
+                Kind::Word("continue") => {
+                    let start = branches
+                        .iter()
+                        .rev()
+                        .find_map(|block| match block {
+                            Block::While { start, .. } => Some(*start),
+                            _ => None,
+                        })
+                        .ok_or_else(|| self.error("continue outside while"))?;
+                    self.emit(Instruction::Jump { target: start })?;
                 }
                 Kind::Word("else") => {
-                    let Some((branch, has_else)) = branches.last_mut() else {
+                    let Some(Block::If { branch, has_else }) = branches.last_mut() else {
                         return Err(self.error("else without if"));
                     };
                     if *has_else {
@@ -392,7 +415,7 @@ impl<'a> Parser<'a> {
                 Kind::Word("end") => {
                     let token = self.next()?;
                     if token.kind == Kind::Word("if") {
-                        let Some((branch, has_else)) = branches.pop() else {
+                        let Some(Block::If { branch, has_else }) = branches.pop() else {
                             return Err(self.error("end if without if"));
                         };
                         let target = self.code.len();
@@ -403,10 +426,21 @@ impl<'a> Parser<'a> {
                         };
                         continue;
                     }
+                    if token.kind == Kind::Word("while") {
+                        let Some(Block::While { start, branch }) = branches.pop() else {
+                            return Err(self.error("end while without matching while"));
+                        };
+                        self.emit(Instruction::Jump { target: start })?;
+                        self.code[branch] = Instruction::JumpIfZero {
+                            local: 0,
+                            target: self.code.len(),
+                        };
+                        continue;
+                    }
                     if token.kind != Kind::Word("on") || !branches.is_empty() {
                         return Err(Error {
                             offset: token.offset,
-                            message: "expected matching end if or end on",
+                            message: "expected matching end if, end while or end on",
                         });
                     }
                     self.emit(Instruction::End)?;

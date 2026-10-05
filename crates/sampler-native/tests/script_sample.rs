@@ -59,6 +59,17 @@ fn authored_script_renders_owned_wav_at_its_rate_and_refuses_invalid_or_existing
     )
     .unwrap();
     let executable = env!("CARGO_BIN_EXE_sampler-native");
+    let loop_source = directory.join("loop.ksp");
+    fs::write(
+        &loop_source,
+        "on note ignore_event($EVENT_ID)
+        while ($NOTE_HELD = 1)
+            play_note($EVENT_NOTE, 96, 0, 125000)
+            wait(300000)
+        end while
+        end on",
+    )
+    .unwrap();
     for rate in [44100u32, 48000, 96000] {
         let frames = rate / 100;
         // Authored 10 ms mono PCM16 constant; no decoder or engine serves as oracle.
@@ -154,6 +165,32 @@ fn authored_script_renders_owned_wav_at_its_rate_and_refuses_invalid_or_existing
                 *actual, expected,
                 "conditional PCM at rate {rate}, frame {i}"
             );
+        }
+        let loop_output = directory.join(format!("loop-{rate}.wav"));
+        let loop_render = Command::new(executable)
+            .arg("script")
+            .args([&loop_source, &input, &loop_output])
+            .output()
+            .unwrap();
+        assert!(
+            loop_render.status.success(),
+            "{}",
+            String::from_utf8_lossy(&loop_render.stderr)
+        );
+        let loop_audio = fs::read(loop_output).unwrap();
+        assert_eq!(loop_audio.len(), result.len());
+        for (i, actual) in loop_audio[58..].as_chunks::<8>().0.iter().enumerate() {
+            let pulse_start = if i < rate as usize * 3 / 10 {
+                0
+            } else {
+                rate as usize * 3 / 10
+            };
+            let expected = if i - pulse_start < frames as usize {
+                result[58..].as_chunks::<8>().0[rate as usize * 5 / 4 + i - pulse_start]
+            } else {
+                [0; 8]
+            };
+            assert_eq!(*actual, expected, "loop PCM at rate {rate}, frame {i}");
         }
         let overwrite = Command::new(executable)
             .arg("script")
