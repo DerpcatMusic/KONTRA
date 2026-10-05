@@ -20,8 +20,8 @@ then converted to the float audio gain domain. PCM must match the prepared rate.
 constructor is removed. There is no leaked storage or self-referential lifetime
 workaround. Construction/destruction remain control-side operations. This establishes
 one-plan ownership. [Bounded plan replacement](PLAN_ADOPTION.md) now extends the
-core with retained generations and off-audio retirement; this command-line path
-still prepares a single instrument.
+core with retained generations and off-audio retirement; the replacement audition
+below exercises both generations through this executable.
 
 `trigger` preflights the complete matching layer set before admitting ownership.
 Capacity failure cannot sound a partial family. A valid unmapped input still creates
@@ -118,3 +118,34 @@ attempts, and no destination on malformed source or WAV input.
 `cargo test --locked -p sampler-native --test script_sample` runs that check. The
 new-core score remains 90, complete and authoritative, zero errors and 119 warnings.
 Local evidence uses `artifacts/architecture-v2/script-sample-*`.
+
+## Resident plan-replacement audition
+
+```sh
+CARGO_TARGET_DIR="$PWD/target-core" cargo run --locked --release -p sampler-native -- replace FIRST.wav SECOND.wav OUTPUT.wav
+```
+
+Both resident WAVs are decoded and prepared before output creation. Their rates
+must match; the command does not resample. Over a two-second window, the first
+note starts at zero. At the half-second sample boundary, the driver adopts the
+queued replacement before admitting a second same-key note. FIFO key-ups occur
+at one and one-and-a-half seconds. Each note uses its original sample and AHDSR;
+the old release tail overlaps the replacement without changing source identity.
+Sources can also end naturally before their key-up.
+
+The block driver splits its usual 256-frame buffer at the explicit adoption
+boundary, drains accepted note terminals after each block, and collects retired
+plans. Returned asset destruction runs outside core/MIDI rendering. Completion
+requires two accepted terminals, zero logical notes and one active generation.
+The offline driver performs preparation and retirement between audio operations;
+separate-thread ownership is additionally checked in the core adoption tests.
+
+The process-level test writes independent constant PCM fixtures at 44.1/48/96 kHz
+and checks every output sample against the sum of two independently calculated
+AHDSR curves, including both tails and final silence. Mismatched rates fail before
+creating output. A one-Hz input is explicitly rejected because its half-second
+boundary collides with the first note's sample. The code still uses fixed-pitch
+resident playback and a fixed audition timeline; this is not live host integration.
+
+Evidence uses `artifacts/architecture-v2/replace-*`; the authoritative new-core
+score remains 90 with zero errors and 138 warnings.
