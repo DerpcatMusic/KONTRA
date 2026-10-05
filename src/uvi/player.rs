@@ -454,6 +454,7 @@ impl<'a> Player<'a> {
         hosted: &[HostedInput],
         frames: usize,
     ) -> Result<Rendered> {
+        let _ftz = crate::engine::FlushDenormals::new();
         self.packet_activity = PacketActivity::default();
         ensure!(
             !self.failed,
@@ -624,5 +625,183 @@ impl<'a> Player<'a> {
 
     pub(crate) fn script_activity(&self) -> script::ScriptActivity {
         self.session.script_activity()
+    }
+}
+
+#[cfg(test)]
+mod denormal_tests {
+    use super::*;
+    use crate::uvi::library::Library;
+    use std::rc::Rc;
+
+    struct CallerMode {
+        #[cfg(target_arch = "x86_64")]
+        saved: u32,
+    }
+
+    impl CallerMode {
+        #[allow(deprecated)]
+        fn gradual_underflow() -> Self {
+            #[cfg(target_arch = "x86_64")]
+            {
+                // SAFETY: SSE is baseline; only this thread's FTZ/DAZ bits change.
+                let saved = unsafe { std::arch::x86_64::_mm_getcsr() };
+                unsafe { std::arch::x86_64::_mm_setcsr(saved & !0x8040) };
+                Self { saved }
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            Self {}
+        }
+    }
+
+    impl Drop for CallerMode {
+        #[allow(deprecated)]
+        fn drop(&mut self) {
+            #[cfg(target_arch = "x86_64")]
+            // SAFETY: restores this thread's register captured at construction.
+            unsafe {
+                std::arch::x86_64::_mm_setcsr(self.saved)
+            };
+        }
+    }
+
+    #[allow(deprecated)]
+    fn caller_bits() -> u32 {
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: SSE is baseline; reads only this thread's register.
+        return unsafe { std::arch::x86_64::_mm_getcsr() };
+        #[cfg(not(target_arch = "x86_64"))]
+        0
+    }
+
+    fn script(fail: bool) -> String {
+        let probe = if cfg!(target_arch = "x86_64") {
+            // A normal f64 divided by two becomes subnormal. Evaluate in the
+            // real Lua callback, so omitting the Player guard fails this probe.
+            "assert(tonumber('2.2250738585072014e-308') / 2 == 0)"
+        } else {
+            ""
+        };
+        let action = if fail {
+            "error('authored render failure')"
+        } else {
+            "postEvent(e)"
+        };
+        format!("function onNote(e) assert(1.25 * 0.5 == 0.625); {probe}; {action} end")
+    }
+
+    #[test]
+    fn direct_and_hosted_render_keep_complete_native_normal_pcm_and_caller_mode() {
+        let _mode = CallerMode::gradual_underflow();
+        let (config, _) = crate::uvi::worker::tests::authored_bank_with_script(&script(false));
+        {
+            let library =
+                Rc::new(Library::open(&config.bank, &config.metadata_namespace, None).unwrap());
+            let loaded = library
+                .program(&config.member, &config.program_namespace)
+                .unwrap();
+            let input = script::Input {
+                frame: 0,
+                kind: script::InputKind::NoteOn {
+                    channel: 0,
+                    note: 60,
+                    velocity: 100,
+                },
+            };
+            for hosted in [false, true] {
+                let resources = BankResources::new(
+                    library.clone(),
+                    &loaded.path,
+                    library.samples(&loaded).unwrap(),
+                )
+                .unwrap();
+                let mut player = if hosted {
+                    Player::new_hosted(&loaded.program, Default::default(), resources, 48000, 1, 1)
+                        .unwrap()
+                } else {
+                    Player::new(&loaded.program, Default::default(), resources, 48000).unwrap()
+                };
+                for chunk in 0..4 {
+                    let before = caller_bits();
+                    let rendered = if hosted {
+                        let inputs = [HostedInput::On {
+                            root: script::HostRoot {
+                                epoch: 1,
+                                generation: 1,
+                                token: 1,
+                            },
+                            input,
+                        }];
+                        player
+                            .render_hosted(&[], if chunk == 0 { &inputs } else { &[] }, 16)
+                            .unwrap()
+                    } else {
+                        player
+                            .render(
+                                if chunk == 0 {
+                                    std::slice::from_ref(&input)
+                                } else {
+                                    &[]
+                                },
+                                16,
+                            )
+                            .unwrap()
+                    };
+                    assert_eq!(caller_bits(), before);
+                    assert_eq!(rendered.audio.len(), 16);
+                    assert_eq!(player.current_frame(), (chunk + 1) * 16);
+                    for (index, frame) in rendered.audio.iter().enumerate() {
+                        // Same native sine phase/frequency oracle as the authored
+                        // playback observation, with the fixture's Program Gain .5.
+                        let at = chunk as usize * 16 + index;
+                        let expected = -0.125
+                            * (std::f64::consts::TAU
+                                * (0.25 + at as f64 * 261.6255653005986 / 48000.))
+                                .sin() as f32;
+                        assert!((frame[0] - expected).abs() < 1e-6, "frame {at}: {frame:?}");
+                        assert_eq!(frame[0], frame[1]);
+                    }
+                }
+            }
+        }
+        std::fs::remove_file(&config.bank).unwrap();
+    }
+
+    #[test]
+    fn authored_render_error_restores_caller_mode() {
+        let _mode = CallerMode::gradual_underflow();
+        let (config, _) = crate::uvi::worker::tests::authored_bank_with_script(&script(true));
+        {
+            let library =
+                Rc::new(Library::open(&config.bank, &config.metadata_namespace, None).unwrap());
+            let loaded = library
+                .program(&config.member, &config.program_namespace)
+                .unwrap();
+            let resources = BankResources::new(
+                library.clone(),
+                &loaded.path,
+                library.samples(&loaded).unwrap(),
+            )
+            .unwrap();
+            let mut player =
+                Player::new(&loaded.program, Default::default(), resources, 48000).unwrap();
+            let input = script::Input {
+                frame: 0,
+                kind: script::InputKind::NoteOn {
+                    channel: 0,
+                    note: 60,
+                    velocity: 100,
+                },
+            };
+            let before = caller_bits();
+            let error = player.render(&[input], 16).unwrap_err();
+            assert_eq!(caller_bits(), before);
+            assert!(
+                format!("{error:#}").contains("authored render failure"),
+                "{error:#}"
+            );
+            assert_eq!(player.current_frame(), 0);
+        }
+        std::fs::remove_file(&config.bank).unwrap();
     }
 }
