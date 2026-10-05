@@ -203,9 +203,14 @@ fn finish(answer: &Answer, operation: &Arc<Operation>, picked: Option<Picked>) {
     {
         return;
     }
-    *lock(&answer.picked) = picked;
+    // Keep completion and the answer under the same publication lock.
+    let mut published = lock(&answer.picked);
+    *published = picked;
+    #[cfg(test)]
+    answer.pause_publication();
     *current = None;
     answer.open.store(false, Ordering::Release);
+    drop(published);
     crate::ui::logs::wake_worker();
 }
 
