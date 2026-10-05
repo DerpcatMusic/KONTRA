@@ -9,6 +9,7 @@ fn limits() -> Limits {
     Limits {
         source_bytes: 4096,
         instructions: 32,
+        variables: 8,
     }
 }
 
@@ -34,9 +35,8 @@ fn authored_script_uses_new_native_ownership_after_input_release_without_heap() 
                 }],
                 1,
             )
-            .unwrap()
-            .with_programs(vec![program], None)
             .unwrap();
+            let plan = program.bind(plan).unwrap();
             let mut rt = Runtime::new(
                 plan,
                 CoreLimits {
@@ -230,4 +230,203 @@ fn compilation_obeys_source_instruction_and_clock_budgets_without_panics() {
             .collect();
         let _ = compile(&text, 48000, limits());
     }
+}
+
+#[test]
+fn polyphonic_source_state_reaches_release_callbacks_without_heap_or_note_aliasing() {
+    let source = include_str!("fixtures/polyphonic-release.ksp");
+    for (rate, delay) in [(44100, 6), (48000, 6), (96000, 12)] {
+        for block in [1, 3, 7, 16] {
+            let script = compile(source, rate, limits()).unwrap();
+            assert_eq!(script.note_cells(), 3);
+            let plan = script
+                .bind(
+                    Prepared::new(
+                        rate,
+                        vec![Pcm::new(rate, Box::from([[1.; 2]; 64])).unwrap()],
+                        vec![Region {
+                            sample: 0,
+                            key_low: 60,
+                            key_high: 61,
+                            root_key: None,
+                            velocity_low: 0.,
+                            velocity_high: 1.,
+                            gain: 1.,
+                            envelope: Envelope::default(),
+                            playback: Playback::default(),
+                        }],
+                        2,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            let mut rt = Runtime::new(
+                plan,
+                CoreLimits {
+                    notes: 4,
+                    channels: 1,
+                    performances: 1,
+                    families: 4,
+                    expressions: 4,
+                    voices: 4,
+                    decisions: 0,
+                    commands: 8,
+                    behaviors: 4,
+                    behavior_fuel: 16,
+                    behavior_cells: 4,
+                    note_cells: 12,
+                },
+            )
+            .unwrap();
+            let input = Input {
+                protocol: Protocol::Native,
+                port: 0,
+                group: 0,
+                channel: 0,
+                key: 60,
+                external_id: None,
+            };
+            let mut audio = [[0.; 2]; 48];
+            support::without_heap(|| {
+                // The physical key is deliberately the same; identity is per note,
+                // while logical pitch/state differs on these two overlapping inputs.
+                let a = rt.trigger(input, 60, 0.).unwrap();
+                let b = rt.trigger(input, 61, 0.).unwrap();
+                assert_eq!((rt.note_cell(a, 0), rt.note_cell(b, 0)), (Ok(60), Ok(61)));
+                assert_eq!(rt.note_cell(a, 2), Ok(i64::from(i32::MIN)));
+                let channel = rt.register_channel(input.channel_address()).unwrap();
+                rt.sustain(channel, true).unwrap();
+                rt.schedule_event(2, Event::KeyUp(a, None)).unwrap();
+                rt.schedule_event(4, Event::KeyUp(b, None)).unwrap();
+                rt.schedule_event(5, Event::Sustain(channel, false))
+                    .unwrap();
+                for chunk in audio.chunks_mut(block) {
+                    rt.render(chunk).unwrap();
+                    rt.render(&mut []).unwrap();
+                }
+                assert_eq!((rt.note_cell(a, 1), rt.note_cell(b, 1)), (Ok(60), Ok(61)));
+                assert_eq!(rt.note_cell(a, 2), Ok(i64::from(i32::MAX)));
+                assert_eq!(rt.note_cell(b, 2), Ok(i64::from(i32::MAX)));
+                rt.flush_ended(|_| panic!("unaccepted callbacks retain the two inputs"));
+                let mut callbacks = 0;
+                rt.flush_behaviors(|_, _, outcome| {
+                    assert_eq!(outcome, Outcome::Finished);
+                    callbacks += 1;
+                    true
+                });
+                assert_eq!(callbacks, 4);
+                let mut ends = 0;
+                rt.flush_ended(|_| {
+                    ends += 1;
+                    true
+                });
+                assert_eq!(
+                    (
+                        ends,
+                        rt.note_count(),
+                        rt.voice_count(),
+                        rt.pending_commands()
+                    ),
+                    (2, 0, 0, 0)
+                );
+            });
+            for (frame, actual) in audio.iter().enumerate() {
+                let layers = usize::from((2 + delay..2 + 2 * delay).contains(&frame))
+                    + usize::from((4 + delay..4 + 2 * delay).contains(&frame));
+                assert_eq!(
+                    *actual,
+                    [layers as f32 * (64. / 127.); 2],
+                    "rate {rate}, block {block}, frame {frame}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn polyphonic_declarations_and_callback_tables_reject_invalid_scopes_and_budgets() {
+    let init = "on init declare polyphonic $a end on";
+    for source in [
+        format!("{init} on note ignore_event($EVENT_ID) $a := 2147483648 end on"),
+        format!("{init} on release $a := -2147483649 end on"),
+        format!("{init} on release $a := 1 + 2 end on"),
+        format!("{init} on release $a : = 1 end on"),
+        format!("{init} on release $a := $missing end on"),
+        format!("{init} on release $missing := 1 end on"),
+        format!("{init} on release end on on release end on"),
+        format!("{init} on note ignore_event($EVENT_ID) end on {init}"),
+        "on init declare polyphonic $a declare polyphonic $a end on on release end on".into(),
+        "on init declare polyphonic $NI_bad end on on release end on".into(),
+        "on init declare polyphonic $EVENT_ID end on on release end on".into(),
+        "on init declare polyphonic $a $a := 1 end on on release end on".into(),
+        "on init declare polyphonic $a := 1 end on on release end on".into(),
+        "on init declare $a end on on release end on".into(),
+        "on init declare polyphonic $ end on on release end on".into(),
+    ] {
+        let error = compile(&source, 48000, limits())
+            .err()
+            .expect("invalid source accepted");
+        assert!(source.is_char_boundary(error.offset));
+    }
+    let source = format!("{init} on release $a := -2147483648 end on");
+    assert!(
+        compile(
+            &source,
+            48000,
+            Limits {
+                variables: 0,
+                ..limits()
+            }
+        )
+        .is_err()
+    );
+    assert!(
+        compile(
+            &source,
+            48000,
+            Limits {
+                variables: 1,
+                instructions: 3,
+                ..limits()
+            }
+        )
+        .is_ok()
+    );
+    assert!(
+        compile(
+            &source,
+            48000,
+            Limits {
+                instructions: 2,
+                ..limits()
+            }
+        )
+        .is_err()
+    );
+    let source = "on release end on on note ignore_event($EVENT_ID) end on";
+    assert!(
+        compile(
+            source,
+            48000,
+            Limits {
+                instructions: 1,
+                ..limits()
+            }
+        )
+        .is_err()
+    );
+    let script = compile(
+        source,
+        48000,
+        Limits {
+            instructions: 2,
+            ..limits()
+        },
+    )
+    .unwrap();
+    assert!(
+        script
+            .bind(Prepared::new(44100, vec![], vec![], 0).unwrap())
+            .is_err()
+    );
 }

@@ -2,21 +2,28 @@
 
 `sampler-ksp` is a new control-thread compiler depending only on `sampler-core`.
 It has no dependency on the existing parser/VM, plugin or import model. Its explicit
-profile identifier is **`ksp-8.12-note-subset-v0`**. The source reference is the
+profile identifier is **`ksp-8.12-note-release-subset-v1`**. The source reference is the
 [KSP manual showing Kontakt 8.12](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/welcome-to-ksp),
-consulted 2026-10-05. This is partial V2-05/V2-14 evidence.
+consulted 2026-10-06. This is partial V2-05/V2-14 evidence.
 
 The [full KSP completion map](KSP_PARITY.md) now inventories the entire functional
 manual surface. This subset is not the product's completion target.
 
 ## Accepted shape
 
-One `on note` callback must begin with `ignore_event($EVENT_ID)`. Following statements
-may be literal `wait(...)` calls and bare `play_note(...)` calls. A generated note
-uses `$EVENT_NOTE`, optionally transposed by a constant, constant velocity 1–127,
-zero sample offset and positive constant duration. Ordinary brace comments and
-whitespace are accepted. Integer literals are restricted to the positive signed
-32-bit range documented by [NI](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables).
+An optional first `on init` declares polyphonic integer variables. One `on note`
+and/or one `on release` follows; duplicate or misplaced callbacks fail compilation.
+A note callback must begin with `ignore_event($EVENT_ID)`. Release-only scripts keep
+ordinary native attack selection. Init currently accepts declarations only.
+
+Note/release bodies accept literal `wait(...)` and bare `play_note(...)` calls,
+and assignments from signed 32-bit integer literals, `$EVENT_NOTE`, or another
+declared polyphonic integer. Note-owned values start at zero and remain shared
+between the originating note and its release callback, including overlapping waits.
+Generated notes use `$EVENT_NOTE` with optional constant transposition, constant
+velocity 1–127, zero offset and positive constant duration. Brace comments and
+whitespace are accepted. Literal assignment covers -2147483648 through 2147483647;
+wait/play operands retain their explicit nonnegative/positive command ranges.
 
 This subset follows documented command units and distinguishes fixed duration from
 input-linked playback. [Generated notes](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands)
@@ -34,13 +41,16 @@ exposes fixed/scaled velocity and expression inheritance as separate native choi
 
 ## Explicit rejection and limits
 
-The compiler rejects dynamic expressions (including `$EVENT_VELOCITY`), assignments,
-variables, conditionals/loops, other callbacks, implicit forwarding, nested comments,
+The compiler rejects arithmetic expressions, dynamic command arguments (including
+`$EVENT_VELOCITY`), globals, arrays, real/string values, conditionals/loops, other
+callbacks, implicit note forwarding, nested comments,
 nonzero sample offsets, input-linked negative duration and whole-source duration zero.
 Some primitives already exist natively; that alone does not establish their KSP
 semantics. Unknown syntax is never ignored and never sent to the old VM.
 
-`Limits.source_bytes` and `Limits.instructions` bound source and emitted code.
+`Limits.source_bytes`, `Limits.instructions` and `Limits.variables` bound source,
+total emitted code across callbacks and declarations. Symbol resolution happens on
+control using a bounded standard-library map; names do not enter audio execution.
 The parser walks input directly without recursion or a token-array allocation.
 Malformed input returns a byte offset and a specific diagnostic; it never publishes
 an executable partial program. Compilation/allocation happen before runtime creation.
@@ -49,9 +59,12 @@ Rendering uses the existing prepared programs, bounded continuations and fuel.
 Capability status is deliberately separated: the declared syntax parses and lowers;
 independent native scheduling/audio/ownership tests pass; Kontakt behavioral and audio
 fidelity remain **unverified**. No Kontakt binary comparison has been performed.
-There is no new KSP global/polyphonic variable model yet; native callback locals and
-[note-owned integer cells](BEHAVIOR.md#note-owned-integer-state) must not be presented
-as complete KSP variable semantics.
+Polyphonic declarations and scalar assignments now lower into
+[note-owned integer cells](BEHAVIOR.md#note-owned-integer-state). Full typed arithmetic,
+global/script-instance state and the other language/value services remain open.
+Native storage is signed 64-bit; this compiler admits only signed 32-bit values,
+key reads and copies. It does not lower KSP arithmetic into native checked-64-bit
+addition or claim vendor overflow behavior.
 
 ## Audition and evidence
 
@@ -68,7 +81,7 @@ with a 50 ms release tail. At 48 kHz the verified sound occupies frames
 60,000–68,399, with exact silence outside that interval. One original-input terminal
 is accepted. Invalid source is rejected before creating output; overwrites are refused.
 
-Three frontend checks cover malformed/unsupported constructs, source/instruction/
+Frontend checks cover malformed/unsupported constructs, source/instruction/
 clock limits, deterministic arbitrary text, precise diagnostic offsets, and native
 execution at 44.1/48/96 kHz over block sizes 1–16. The execution fixture transposes
 selection, emits a fixed velocity from a silent original input, isolates expression,
@@ -86,3 +99,28 @@ The same frontend can now audition a supported resident WAV instead of the demo
 sine: `sampler-native script INPUT.ksp SAMPLE.wav OUTPUT.wav`. Compilation uses the
 sample's rate and renders a fixed two-second window. See the
 [native sample path and process-level checks](NATIVE_ENTRY.md#scripted-resident-wav-audition).
+
+## Note/release state integration
+
+`compile` returns an owned `Script`, containing its complete callback table and
+declared note-cell count. `Script::bind` installs it on a same-rate prepared
+instrument; a rate mismatch is rejected before activation. This replaces the
+one-program return type without an old-API shim. The CLI sizes note storage from
+the declaration count and has capacity for simultaneous note/release callbacks.
+
+The core reserves a release continuation at triggered-input admission. Physical
+key-up dispatches it once, independently of pedal-held gate closure, retaining
+the original plan and state. Hard cleanup suppresses pending handlers. This
+uses the documented [note-off callback](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks#on-release)
+and [polyphonic lifetime](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#polyphonic----polyphonic-integer-)
+requirements; detailed Kontakt cancellation, forwarding and rounding remain unverified.
+
+`polyphonic-release.ksp` runs two overlapping physical same-key inputs with distinct
+logical notes. Tests independently check retained values, both signed literal limits,
+waits overlapping key-up and pedal-up, exact generated PCM, callback/terminal ownership
+and zero heap activity at 44.1/48/96 kHz across blocks 1, 3, 7 and 16 with empty calls.
+Negative checks cover scope/order, duplicate/unknown declarations and callbacks,
+reserved prefixes, invalid assignment tokens, literal overflow, total code/variable
+budgets and mismatched preparation rate. The real CLI also renders the release
+fixture from WAV and checks its onset, stereo equality and source EOF. Evidence is
+under `artifacts/ksp-state-*`; no Kontakt executable was used.

@@ -12,6 +12,7 @@ before any reuse; the review below copies no implementation into the native core
 
 | Reference | Revision | Inspected scope |
 | --- | --- | --- |
+| [LinuxSampler historical mirror](https://github.com/linuxsampler/linuxsampler/tree/104e4535d9546deb78bbe0d981aac3b4a5766dcc) | `104e4535d9546deb78bbe0d981aac3b4a5766dcc` (2020-05-19; not current upstream) | `src/scriptvm/tree.h:705–748`, `tree.cpp:366–393`, `src/engines/EngineBase.h:978–1012,1070–1090,1128–1148`, `common/InstrumentScriptVM.cpp:113–145`; pooled contexts and note/release state retention |
 | [sfizz](https://github.com/sfztools/sfizz/tree/f5c6e29f23b8057867c08e88f5f6ac6738baa30b) | `f5c6e29f23b8057867c08e88f5f6ac6738baa30b` | `src/sfizz/Layer.cpp`, `MidiState.cpp`, `RegionStateful.cpp`, `tests/MidiStateT.cpp:22–108`; controller, release, reset and block-state code/tests |
 | [Shortcircuit XT](https://github.com/surge-synthesizer/shortcircuit-xt/tree/8785f09acd9f93682ce4f754fac1d3c62e5b1a9a) | `8785f09acd9f93682ce4f754fac1d3c62e5b1a9a` | `src/scxt-core/dsp/generator.cpp`; sample windows and fractional crossfade reads |
 
@@ -51,3 +52,23 @@ protocol and Kontakt/KSP documentation plus reference observations for vendor
 semantics; open-source similarity cannot establish full KSP parity. Keep original
 reference documents and all 128 scenario records unchanged, and record actual
 execution evidence separately in the subsystem documents and conformance map.
+
+## Script-state reference review
+
+The historical LinuxSampler mirror allocates execution contexts when loading a
+script, separates resetting execution from resetting polyphonic data, and retains
+completed note-handler contexts when their data is needed by release handlers.
+Its [release dispatch](https://github.com/linuxsampler/linuxsampler/blob/104e4535d9546deb78bbe0d981aac3b4a5766dcc/src/engines/EngineBase.h#L978)
+walks retained per-key script events; this is an inspected historical policy, not
+a statement about current upstream or Kontakt. No external engine test was run.
+Source and its COPYING file were inspected; no implementation was copied.
+
+Architecture §12.1–12.2 and the NI manual govern the new implementation. Native
+polyphonic storage belongs to a generational logical note, independently of callback
+slot completion. A physical input pairs with that note, including repeated keys,
+ports and performance domains. Release admission uses its reserved continuation;
+it does not recycle a still-running note callback or infer identity from key alone.
+Tests in `sampler-core/tests/behavior.rs` and `sampler-ksp/tests/compile.rs` cover
+concurrent note/release waits, same-key distinct owners, source EOF, completion
+backpressure, slot reuse, plan replacement and bounded failure. NKSP's broader
+local/real variable extensions are not treated as KSP features.

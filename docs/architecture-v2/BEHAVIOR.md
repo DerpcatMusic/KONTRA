@@ -214,8 +214,9 @@ child isolation, old/new layouts and rejected replacement ownership. Oversized c
 indices and allocation layouts fail before allocation. Native debug/release/MSRV
 and strict all-target Clippy evidence uses `artifacts/note-state-*`.
 
-These cells are native signed 64-bit storage. They do not implement KSP declarations,
-32-bit arithmetic or variable scopes. Native release dispatch is described below. The
+These cells are native signed 64-bit storage. The KSP frontend now validates and
+lowers polyphonic declarations and 32-bit scalar assignments; full arithmetic and
+variable scopes remain open. Native release dispatch is described below. The
 [KSP parity map](KSP_PARITY.md) retains those separate obligations.
 
 ## Reserved physical-release callbacks
@@ -249,5 +250,5 @@ Heap-guarded tests cover saturated continuation and command pools, repeated key-
 pedal hold/up, callback/terminal backpressure, release-side waits, hard-silence
 suppression, EOF, original-plan replacement and generated-child non-reentry. An
 independent PCM check sums old/new generation release-generated audio exactly.
-Evidence uses `artifacts/release-behavior-*`; KSP source dispatch and declarations
-remain separate frontend work.
+Evidence uses `artifacts/release-behavior-*`; the [KSP frontend](KSP_FRONTEND.md) now
+executes note/release source callbacks and polyphonic scalar assignments on this path.

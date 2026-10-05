@@ -16,6 +16,14 @@
       "implementation": "partial_native_subset",
       "evidence": "KSP_FRONTEND.md"
     },
+    "on release": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "on init": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
     "play_note": {
       "implementation": "partial_native_subset",
       "evidence": "KSP_FRONTEND.md"
@@ -502,7 +510,9 @@
               "on init"
             ]
           },
-          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks#on-init"
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks#on-init",
+          "implementation": "partial_native_subset",
+          "evidence": "KSP_FRONTEND.md"
         },
         {
           "anchor": "on-listener",
@@ -574,7 +584,9 @@
               "on release"
             ]
           },
-          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks#on-release"
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks#on-release",
+          "implementation": "partial_native_subset",
+          "evidence": "KSP_FRONTEND.md"
         },
         {
           "anchor": "on-rpn-nrpn",
@@ -4237,7 +4249,9 @@
           "anchor": "polyphonic----polyphonic-integer-",
           "title": "polyphonic $ (polyphonic integer)",
           "symbols": {},
-          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#polyphonic----polyphonic-integer-"
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#polyphonic----polyphonic-integer-",
+          "implementation": "partial_native_subset",
+          "evidence": "KSP_FRONTEND.md"
         },
         {
           "anchor": "make_instr_persistent--",

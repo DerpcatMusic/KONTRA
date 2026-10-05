@@ -37,6 +37,12 @@ fn authored_script_renders_owned_wav_at_its_rate_and_refuses_invalid_or_existing
         include_str!("../../sampler-ksp/tests/fixtures/delayed-note.ksp"),
     )
     .unwrap();
+    let release_source = directory.join("release.ksp");
+    fs::write(
+        &release_source,
+        include_str!("../../sampler-ksp/tests/fixtures/polyphonic-release.ksp"),
+    )
+    .unwrap();
     let executable = env!("CARGO_BIN_EXE_sampler-native");
     for rate in [44100u32, 48000, 96000] {
         let frames = rate / 100;
@@ -82,6 +88,30 @@ fn authored_script_renders_owned_wav_at_its_rate_and_refuses_invalid_or_existing
                     "rate {rate}, frame {i}: {actual} != {expected}"
                 );
             }
+        }
+        let release_output = directory.join(format!("release-{rate}.wav"));
+        let release_render = Command::new(executable)
+            .arg("script")
+            .args([&release_source, &input, &release_output])
+            .output()
+            .unwrap();
+        assert!(
+            release_render.status.success(),
+            "{}",
+            String::from_utf8_lossy(&release_render.stderr)
+        );
+        let release_audio = fs::read(&release_output).unwrap();
+        let start = rate as usize / 2 + (u64::from(rate) * 125).div_ceil(1_000_000) as usize;
+        for (i, frame) in release_audio[58..].as_chunks::<8>().0.iter().enumerate() {
+            let left = f32::from_le_bytes(frame[..4].try_into().unwrap());
+            let right = f32::from_le_bytes(frame[4..].try_into().unwrap());
+            assert_eq!(left, right);
+            assert!(left.is_finite());
+            assert_eq!(
+                left > 0.,
+                (start + 1..start + frames as usize).contains(&i),
+                "release timing at rate {rate}, frame {i}"
+            );
         }
         let overwrite = Command::new(executable)
             .arg("script")

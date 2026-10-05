@@ -1,14 +1,43 @@
 #![forbid(unsafe_code)]
 //! Clean-sheet, control-thread KSP 8.12 source subset. No vendor VM dependency.
 //! Native sample-time lowering is explicit; this is not a Kontakt fidelity claim.
-use sampler_core::{Duration, Inheritance, Instruction, Program, Velocity, WaitLifetime};
+use sampler_core::{Duration, Inheritance, Instruction, Prepared, Program, Velocity, WaitLifetime};
+use std::collections::BTreeMap;
 
-pub const PROFILE: &str = "ksp-8.12-note-subset-v0";
+pub const PROFILE: &str = "ksp-8.12-note-release-subset-v1";
 
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub source_bytes: usize,
     pub instructions: usize,
+    pub variables: usize,
+}
+
+/// Control-owned executable callbacks and their declared note-state layout.
+pub struct Script {
+    programs: Vec<Program>,
+    on_note: Option<usize>,
+    on_release: Option<usize>,
+    rate: u32,
+    note_cells: usize,
+}
+
+impl Script {
+    pub fn note_cells(&self) -> usize {
+        self.note_cells
+    }
+
+    /// Install the complete script on a prepared instrument of the compiled rate.
+    pub fn bind(self, plan: Prepared) -> Result<Prepared, sampler_core::Error> {
+        if plan.sample_rate() != self.rate {
+            return Err(sampler_core::Error::InvalidInput);
+        }
+        let plan = plan.with_programs(self.programs, self.on_note)?;
+        match self.on_release {
+            Some(program) => plan.with_release_program(program),
+            None => Ok(plan),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,7 +70,10 @@ struct Parser<'a> {
     offset: usize,
     rate: u32,
     limit: usize,
+    emitted: usize,
     code: Vec<Instruction>,
+    variables: BTreeMap<&'a str, u16>,
+    variable_limit: usize,
 }
 impl<'a> Parser<'a> {
     fn error(&self, message: &'static str) -> Error {
@@ -110,6 +142,9 @@ impl<'a> Parser<'a> {
                 offset: start,
                 message: "integer exceeds 64-bit literal range",
             })?)
+        } else if byte == b':' && bytes.get(start + 1) == Some(&b'=') {
+            self.offset += 2;
+            Kind::Symbol(b':')
         } else if b"(),+-".contains(&byte) {
             self.offset += 1;
             Kind::Symbol(byte)
@@ -152,12 +187,164 @@ impl<'a> Parser<'a> {
         )
     }
     fn emit(&mut self, op: Instruction) -> Result<(), Error> {
-        if self.code.len() == self.limit {
+        if self.emitted == self.limit {
             return Err(self.error("instruction budget exceeded"));
         }
         self.code.push(op);
+        self.emitted += 1;
         Ok(())
     }
+    fn declarations(&mut self) -> Result<(), Error> {
+        loop {
+            let token = self.next()?;
+            match token.kind {
+                Kind::Word("end") => return self.expect(Kind::Word("on"), "expected end on"),
+                Kind::Word("declare") => {
+                    self.expect(
+                        Kind::Word("polyphonic"),
+                        "only polyphonic integer declarations are supported",
+                    )?;
+                    let token = self.next()?;
+                    let Kind::Word(name) = token.kind else {
+                        return Err(Error {
+                            offset: token.offset,
+                            message: "expected polyphonic variable name",
+                        });
+                    };
+                    if !name.strip_prefix('$').is_some_and(|name| {
+                        name.as_bytes()
+                            .first()
+                            .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+                    }) || matches!(name, "$EVENT_NOTE" | "$EVENT_ID")
+                        || [
+                            "$NI_",
+                            "$CONTROL_PAR_",
+                            "$EVENT_PAR_",
+                            "$ENGINE_PAR_",
+                            "$ZONE_PAR_",
+                            "$LOOP_PAR_",
+                        ]
+                        .iter()
+                        .any(|prefix| name.starts_with(prefix))
+                    {
+                        return Err(Error {
+                            offset: token.offset,
+                            message: "invalid or reserved variable name",
+                        });
+                    }
+                    if self.variables.contains_key(name) {
+                        return Err(Error {
+                            offset: token.offset,
+                            message: "duplicate variable declaration",
+                        });
+                    }
+                    let cell = u16::try_from(self.variables.len())
+                        .map_err(|_| self.error("native note-cell index range exceeded"))?;
+                    if self.variables.len() >= self.variable_limit {
+                        return Err(self.error("variable budget exceeded"));
+                    }
+                    self.variables.insert(name, cell);
+                }
+                _ => {
+                    return Err(Error {
+                        offset: token.offset,
+                        message: "only declarations are supported in on init",
+                    });
+                }
+            }
+        }
+    }
+
+    fn variable(&self, name: &str, offset: usize) -> Result<u16, Error> {
+        self.variables.get(name).copied().ok_or(Error {
+            offset,
+            message: "undeclared or unsupported variable",
+        })
+    }
+
+    fn assignment(&mut self, name: &str, offset: usize) -> Result<(), Error> {
+        let cell = self.variable(name, offset)?;
+        self.symbol(b':')?;
+        let token = self.next()?;
+        let read = match token.kind {
+            Kind::Word("$EVENT_NOTE") => Instruction::ReadKey { local: 0 },
+            Kind::Word(name) => Instruction::ReadNoteCell {
+                local: 0,
+                cell: self.variable(name, token.offset)?,
+            },
+            kind => {
+                let (token, negative) = match kind {
+                    Kind::Symbol(sign @ (b'-' | b'+')) => (self.next()?, sign == b'-'),
+                    _ => (token, false),
+                };
+                let Kind::Number(value) = token.kind else {
+                    return Err(Error {
+                        offset: token.offset,
+                        message: "expected integer literal or variable",
+                    });
+                };
+                if value > i32::MAX as u64 + u64::from(negative) {
+                    return Err(Error {
+                        offset: token.offset,
+                        message: "literal exceeds KSP signed 32-bit range",
+                    });
+                }
+                Instruction::SetLocal {
+                    local: 0,
+                    value: if negative {
+                        -(value as i64)
+                    } else {
+                        value as i64
+                    },
+                }
+            }
+        };
+        self.emit(read)?;
+        self.emit(Instruction::WriteNoteCell { cell, local: 0 })
+    }
+
+    fn callback(&mut self, note: bool) -> Result<Program, Error> {
+        if note {
+            self.expect(Kind::Word("ignore_event"),
+                "explicit leading ignore_event($EVENT_ID) is required; implicit forwarding is unsupported")?;
+            self.symbol(b'(')?;
+            self.expect(
+                Kind::Word("$EVENT_ID"),
+                "only suppression of the originating event is supported",
+            )?;
+            self.symbol(b')')?;
+        }
+        loop {
+            let token = self.next()?;
+            match token.kind {
+                Kind::Word("wait") => {
+                    self.symbol(b'(')?;
+                    let (micros, offset) = self.number()?;
+                    self.symbol(b')')?;
+                    self.emit(Instruction::Wait(self.frames(micros, offset)?))?;
+                }
+                Kind::Word("play_note") => self.play()?,
+                Kind::Word(name) if name.starts_with('$') => self.assignment(name, token.offset)?,
+                Kind::Word("end") => {
+                    self.expect(Kind::Word("on"), "expected end on")?;
+                    self.emit(Instruction::End)?;
+                    return Program::new(std::mem::take(&mut self.code))
+                        .map(|p| p.with_wait_lifetime(WaitLifetime::Callback))
+                        .map_err(|_| Error {
+                            offset: token.offset,
+                            message: "invalid lowered native program",
+                        });
+                }
+                _ => {
+                    return Err(Error {
+                        offset: token.offset,
+                        message: "unsupported statement or missing end on",
+                    });
+                }
+            }
+        }
+    }
+
     fn frames(&self, micros: u64, offset: usize) -> Result<u32, Error> {
         let frames = (u128::from(micros) * u128::from(self.rate)).div_ceil(1_000_000);
         u32::try_from(frames).map_err(|_| Error {
@@ -223,11 +410,11 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// Supported shape: one note callback beginning with ignore_event($EVENT_ID),
-/// then literal waits and fixed-velocity, positive-duration play_note commands.
-/// Microseconds round upward to engine frames. Negative/whole-source duration,
-/// variable expressions, additional callbacks and implicit forwarding are rejected.
-pub fn compile(source: &str, rate: u32, limits: Limits) -> Result<Program, Error> {
+/// Compile optional polyphonic declarations followed by note/release callbacks.
+/// Note callbacks require leading ignore_event($EVENT_ID). Bodies accept scalar
+/// assignment, literal waits and fixed-velocity, positive-duration play_note.
+/// Microseconds round upward to frames; broader expressions/services are rejected.
+pub fn compile(source: &str, rate: u32, limits: Limits) -> Result<Script, Error> {
     if source.len() > limits.source_bytes {
         return Err(Error {
             offset: 0,
@@ -245,48 +432,56 @@ pub fn compile(source: &str, rate: u32, limits: Limits) -> Result<Program, Error
         offset: 0,
         rate,
         limit: limits.instructions,
+        emitted: 0,
         code: Vec::new(),
+        variables: BTreeMap::new(),
+        variable_limit: limits.variables,
     };
-    p.expect(Kind::Word("on"), "expected on note callback")?;
-    p.expect(Kind::Word("note"), "only one on note callback is supported")?;
-    p.expect(
-        Kind::Word("ignore_event"),
-        "explicit leading ignore_event($EVENT_ID) is required; implicit forwarding is unsupported",
-    )?;
-    p.symbol(b'(')?;
-    p.expect(
-        Kind::Word("$EVENT_ID"),
-        "only suppression of the originating event is supported",
-    )?;
-    p.symbol(b')')?;
+    let mut programs = Vec::new();
+    let (mut on_note, mut on_release) = (None, None);
+    let mut initialized = false;
     loop {
         let token = p.next()?;
+        if token.kind == Kind::End && !programs.is_empty() {
+            return Ok(Script {
+                programs,
+                on_note,
+                on_release,
+                rate,
+                note_cells: p.variables.len(),
+            });
+        }
+        if token.kind != Kind::Word("on") {
+            return Err(Error {
+                offset: token.offset,
+                message: "expected note or release callback",
+            });
+        }
+        let token = p.next()?;
         match token.kind {
-            Kind::Word("wait") => {
-                p.symbol(b'(')?;
-                let (micros, offset) = p.number()?;
-                p.symbol(b')')?;
-                p.emit(Instruction::Wait(p.frames(micros, offset)?))?;
+            Kind::Word("init") if !initialized && programs.is_empty() => {
+                initialized = true;
+                p.declarations()?;
             }
-            Kind::Word("play_note") => p.play()?,
-            Kind::Word("end") => {
-                p.expect(Kind::Word("on"), "expected end on")?;
-                p.expect(
-                    Kind::End,
-                    "additional callbacks or trailing tokens are unsupported",
-                )?;
-                p.emit(Instruction::End)?;
-                return Program::new(p.code)
-                    .map(|p| p.with_wait_lifetime(WaitLifetime::Callback))
-                    .map_err(|_| Error {
+            Kind::Word(kind @ ("note" | "release")) => {
+                let binding = if kind == "note" {
+                    &mut on_note
+                } else {
+                    &mut on_release
+                };
+                if binding.is_some() {
+                    return Err(Error {
                         offset: token.offset,
-                        message: "invalid lowered native program",
+                        message: "duplicate callback",
                     });
+                }
+                *binding = Some(programs.len());
+                programs.push(p.callback(kind == "note")?);
             }
             _ => {
                 return Err(Error {
                     offset: token.offset,
-                    message: "unsupported statement or missing end on",
+                    message: "unsupported callback or misplaced on init",
                 });
             }
         }
