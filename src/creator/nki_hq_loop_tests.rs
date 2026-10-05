@@ -19,12 +19,20 @@ fn saved_native_high_ultra_loop_pcm_matches_prepared_native_producer_in_ram_and_
     // points and loop domains; exercise both saved identities through real loading.
     for source_mode in [0,3] {
       for (case_index,case) in CASES.iter().chain(NORMAL_CASES).enumerate() {
+       for unreachable_fade in [false,true] {
+        if unreachable_fade && case.name != "continuous" { continue; }
         let domain = &case.domain;
         let source_name = format!("Samples/native-{source_mode}-{case_index}.wav");
         let source:Vec<_> = (0..domain.frames).map(|i| [(((i*73)%257) as f32-128.)/1024.;2]).collect();
         wave(&dir.path().join(&source_name),domain.rate,&source);
-        let rows:Vec<_> = case.rows.iter().map(|&(slot,mode,start,length,count)| NativeLoop {
+        let mut rows:Vec<_> = case.rows.iter().map(|&(slot,mode,start,length,count)| NativeLoop {
             slot,mode,start,length,count,alternating:false,tuning:1.,crossfade:0 }).collect();
+        if unreachable_fade {
+            // The pinned continuous native source stays in row zero, including
+            // after key-up. This later saved fade must not reject its source.
+            rows.push(NativeLoop { slot:3,mode:1,start:768,length:256,count:0,
+                alternating:false,tuning:1.,crossfade:127 });
+        }
         let groups=[Group { source_mode:Some(source_mode),interp_quality:case.quality,..Default::default() }];
         let zones=[Zone { sample:source_name.clone().into(),native_loops:rows.clone(),
             start:domain.start,end:domain.end as i32-domain.frames as i32,
@@ -132,6 +140,7 @@ fn saved_native_high_ultra_loop_pcm_matches_prepared_native_producer_in_ram_and_
                 .map(|(a,b)|(a-b).abs()).fold(0.,f32::max);
             assert!(error<2e-6,"native {} mode{source_mode} quality{} engine{index}: {error}",case.name,case.quality);
         }
+       }
       }
     }
 }
