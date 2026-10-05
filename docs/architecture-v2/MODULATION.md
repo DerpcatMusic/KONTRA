@@ -52,8 +52,9 @@ unchanged. Accepted queued changes constrain later voices before publication. A
 failed gesture changes neither canonical nor cached expression. Batch scratch is
 allocated with the expression arena, and occupied voices are checked once per batch.
 
-Zero gain does not retire or rewind a source. Its cursor/envelope continue, so later
-expression restores the correctly advanced sound. All preparation/destruction stays
+Zero gain does not retire or rewind a source. Its cursor/envelope continue through
+the [silent advancement path](RESAMPLING.md), which skips unnecessary PCM/filter
+work, so later expression restores the correctly advanced sound. All preparation/destruction stays
 off audio; event projection, rendering and retirement use existing bounded storage.
 
 ## Evidence and remaining costs

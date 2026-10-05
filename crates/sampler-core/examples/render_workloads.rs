@@ -8,7 +8,14 @@ use std::{hint::black_box, time::Instant};
 const LAYERS: usize = 4;
 const TRIALS: usize = 512;
 
-fn prepare(rate: u32, voices: usize, reserved: usize, shaped: bool, transpose: f64) -> Runtime {
+fn prepare(
+    rate: u32,
+    voices: usize,
+    reserved: usize,
+    shaped: bool,
+    transpose: f64,
+    muted: bool,
+) -> Runtime {
     let notes = voices / LAYERS;
     let samples = (0..LAYERS)
         .map(|layer| {
@@ -60,7 +67,7 @@ fn prepare(rate: u32, voices: usize, reserved: usize, shaped: bool, transpose: f
     )
     .unwrap();
     for id in 0..notes {
-        rt.trigger(
+        rt.trigger_with_expression(
             Input {
                 protocol: Protocol::Native,
                 port: 0,
@@ -71,6 +78,10 @@ fn prepare(rate: u32, voices: usize, reserved: usize, shaped: bool, transpose: f
             },
             60,
             1.,
+            sampler_core::Expression {
+                gain: if muted { 0.0 } else { 1.0 },
+                ..sampler_core::Expression::default()
+            },
         )
         .unwrap();
     }
@@ -78,14 +89,27 @@ fn prepare(rate: u32, voices: usize, reserved: usize, shaped: bool, transpose: f
     rt
 }
 
-fn measure(rate: u32, block: usize, voices: usize, reserved: usize, shaped: bool, transpose: f64) {
-    let mut rt = prepare(rate, voices, reserved, shaped, transpose);
+fn measure(
+    rate: u32,
+    block: usize,
+    voices: usize,
+    reserved: usize,
+    shaped: bool,
+    transpose: f64,
+    muted: bool,
+) {
+    let mut rt = prepare(rate, voices, reserved, shaped, transpose, muted);
     let mut audio = vec![[0.; 2]; block];
     for _ in 0..64 {
         rt.render(&mut audio).unwrap();
     }
     let mut times = [0u128; TRIALS];
     let expected = (voices / LAYERS) as f32 * 10. / 4096. * if shaped { 0.5 } else { 1. };
+    let expected = if muted {
+        [0.0; 2]
+    } else {
+        [expected, -expected]
+    };
     for elapsed in &mut times {
         let begin = Instant::now();
         black_box(&mut rt).render(black_box(&mut audio)).unwrap();
@@ -94,7 +118,7 @@ fn measure(rate: u32, block: usize, voices: usize, reserved: usize, shaped: bool
         assert!(
             audio
                 .iter()
-                .all(|frame| frame.map(f32::to_bits) == [expected, -expected].map(f32::to_bits))
+                .all(|frame| frame.map(f32::to_bits) == expected.map(f32::to_bits))
         );
     }
     times.sort_unstable();
@@ -104,7 +128,7 @@ fn measure(rate: u32, block: usize, voices: usize, reserved: usize, shaped: bool
     let deadline = block as f64 * 1_000_000. / f64::from(rate);
     let envelope = if shaped { "sustain" } else { "unity" };
     println!(
-        "{envelope},{rate},{block},{LAYERS},{},{voices},{reserved},{median:.3},{p99:.3},{maximum:.3},{:.2},{:.3}",
+        "{muted},{envelope},{rate},{block},{LAYERS},{},{voices},{reserved},{median:.3},{p99:.3},{maximum:.3},{:.2},{:.3}",
         voices / LAYERS,
         p99 / deadline * 100.,
         median * 1000. / (voices * block) as f64
@@ -125,20 +149,24 @@ fn main() {
         std::env::consts::OS
     );
     println!(
-        "envelope,rate,block,layers,notes,voices,reserved_voices,median_us,p99_us,max_us,p99_deadline_percent,median_ns_per_voice_frame"
+        "muted,envelope,rate,block,layers,notes,voices,reserved_voices,median_us,p99_us,max_us,p99_deadline_percent,median_ns_per_voice_frame"
     );
-    let args: Vec<_> = std::env::args().skip(1).collect();
+    let mut args: Vec<_> = std::env::args().skip(1).collect();
+    let muted = args.last().is_some_and(|arg| arg == "--muted");
+    if muted {
+        args.pop();
+    }
     if !args.is_empty() {
         assert!(
             args.len() == 2 && args[0] == "--transpose",
-            "expected --transpose SEMITONES"
+            "expected [--transpose SEMITONES] [--muted]"
         );
         let transpose: f64 = args[1].parse().expect("numeric semitones");
         assert!((-48.0..=48.0).contains(&transpose));
         eprintln!("transposition: {transpose} semitones");
         for block in [64, 256] {
             for voices in [4, 16, 64] {
-                measure(48000, block, voices, voices, false, transpose);
+                measure(48000, block, voices, voices, false, transpose, muted);
             }
         }
         return;
@@ -147,7 +175,7 @@ fn main() {
         for rate in [48000, 96000] {
             for block in [64, 256] {
                 for (voices, reserved) in [(64, 64), (256, 256), (1024, 1024), (64, 4096)] {
-                    measure(rate, block, voices, reserved, shaped, 0.0);
+                    measure(rate, block, voices, reserved, shaped, 0.0, muted);
                 }
             }
         }

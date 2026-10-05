@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Skip PCM/filter evaluation for explicitly zero-gain voices while preserving exact source phase, envelope transitions, loop exits and retirement. Muted +7-semitone workloads measured 41.5–44.1× faster locally; reference PCM and audible-path checks guard the optimization.
+
 - Make native pressure/timbre modulation audible through bounded prepared routes to gain, stereo balance and semitone pitch. Canonical inputs stay intact; event-time projection is cached per expression owner, retains original plans across adoption and participates in every source-rate preflight. Real UMP tests cover MPE playback and muted-source continuity.
 
 - Apply MPE manager sustain/sostenuto through native channel scopes, with atomic pedal-down reservation and capacity-independent pedal-up. Physical input domains remain isolated; repeated sostenuto and ignored member pedals preserve capture semantics.

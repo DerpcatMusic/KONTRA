@@ -727,3 +727,115 @@ fn controller_batches_reject_every_change_if_any_owner_or_source_is_invalid() {
         }
     });
 }
+
+#[test]
+fn muted_sources_match_audible_phase_envelopes_and_loop_exits_when_restored() {
+    for direction in [Direction::Forward, Direction::Reverse] {
+        for mode in [LoopMode::Continuous, LoopMode::UntilRelease] {
+            for transpose_semitones in [0.0, -12.0, 7.0, 48.0] {
+                for partition in [1, 11, 128] {
+                    let make = || {
+                        runtime(
+                            Prepared::new(
+                                48000,
+                                vec![tone()],
+                                vec![Region {
+                                    sample: 0,
+                                    key_low: 60,
+                                    key_high: 60,
+                                    root_key: None,
+                                    velocity_low: 0.0,
+                                    velocity_high: 1.0,
+                                    gain: 1.0,
+                                    envelope: Envelope::new(7, 3, 9, 0.4, 80).unwrap(),
+                                    playback: Playback {
+                                        start: 4,
+                                        end: Some(256),
+                                        direction,
+                                        loop_range: Some(Loop {
+                                            start: 16,
+                                            end: 24,
+                                            mode,
+                                        }),
+                                        transpose_semitones,
+                                    },
+                                }],
+                                1,
+                            )
+                            .unwrap(),
+                        )
+                    };
+                    let mut muted = make();
+                    let mut audible = make();
+                    let mut actual = [[0.0; 2]; 128];
+                    let mut expected = actual;
+                    support::without_heap(|| {
+                        let note = muted
+                            .trigger_with_expression(
+                                input(),
+                                60,
+                                1.0,
+                                Expression {
+                                    gain: 0.0,
+                                    ..Expression::default()
+                                },
+                            )
+                            .unwrap();
+                        let reference = audible.trigger(input(), 60, 1.0).unwrap();
+                        let owner = muted.expression_id(note).unwrap();
+                        let mut silent = true;
+                        let mut begin = 0;
+                        for (end, control) in [
+                            (7, 1),
+                            (23, 0),
+                            (37, 1),
+                            (42, -1),
+                            (53, 0),
+                            (60, 1),
+                            (128, 2),
+                        ] {
+                            for (a, b) in actual[begin..end]
+                                .chunks_mut(partition)
+                                .zip(expected[begin..end].chunks_mut(partition))
+                            {
+                                muted.render(a).unwrap();
+                                audible.render(b).unwrap();
+                                if silent {
+                                    b.fill([0.0; 2]);
+                                }
+                                assert_eq!(
+                                    a, b,
+                                    "{direction:?}/{mode:?}/{transpose_semitones}/{partition}"
+                                );
+                            }
+                            assert_eq!(muted.voice_count(), audible.voice_count());
+                            if control == -1 {
+                                muted.key_up(note).unwrap();
+                                audible.key_up(reference).unwrap();
+                            } else if control < 2 {
+                                silent = control == 0;
+                                muted
+                                    .set_expression(
+                                        owner,
+                                        Expression {
+                                            gain: f64::from(control),
+                                            ..Expression::default()
+                                        },
+                                    )
+                                    .unwrap();
+                            }
+                            begin = end;
+                        }
+                        for rt in [&mut muted, &mut audible] {
+                            rt.flush_ended(|_| true);
+                            assert_eq!(
+                                (rt.note_count(), rt.expression_count(), rt.voice_count()),
+                                (0, 0, 0)
+                            );
+                        }
+                    });
+                }
+            }
+        }
+    }
+}

@@ -97,3 +97,10 @@ The mixed-ownership test checks every bitmap bit against actual slot occupancy.
 A heap-audited test crosses slots 63/64, creates holes, reuses slot zero, checks
 order-sensitive cancellation, and exercises EOF, stale handles and panic. Rendering
 lives in its own module while admission and retirement retain bitmap ownership.
+
+
+The workload also accepts trailing `--muted`, including after `--transpose 7`.
+A `muted` CSV column distinguishes explicit zero note gain. Preparation/admission
+remain untimed, the output oracle checks exact zero, and [resampling evidence](RESAMPLING.md)
+records phase/envelope continuity and audible-path comparisons for the silent
+advancement optimization. This does not bypass ownership or stop muted voices.
