@@ -30,7 +30,7 @@ Family/expression ownership and segmented rendering now have
 - [x] Compile native root-key tracking and apply live note-scoped pitch, with queued
   expression/source admission invariants and initial expression installed before
   bound programs/source selection. Pitch ramps remain open.
-- [x] Add bounded fixed-zone MPE note/pitch projection, physical key-up snapshots,
+- [x] Add bounded fixed-zone MPE note/pitch/pressure/timbre projection, physical key-up snapshots,
   runtime identity and atomic whole-zone gestures; [partial receiver scope](MIDI_INGRESS.md).
 
 ## M0 — contracts and measurable targets
