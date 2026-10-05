@@ -1,10 +1,13 @@
 //! One stable sample-time queue for source starts and native musical changes.
-use super::{ChannelId, Error, Expression, NoteId, Runtime, VoiceId};
+use super::{ChannelId, Error, Expression, FamilyId, NoteId, Runtime, VoiceId};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
     KeyUp(NoteId),
     Release(NoteId),
+    /// Fade a family over at most this many frames. Natural completion before
+    /// execution cancels the action; it never pins or retargets a reused family.
+    ChokeFamily(FamilyId, u32),
     /// Resolves the note's expression owner at execution, including explicit detach.
     Expression(NoteId, Expression),
     Sustain(ChannelId, bool),
@@ -46,6 +49,9 @@ impl Runtime {
             }
             Event::Sustain(id, _) | Event::Sostenuto(id, _) => {
                 self.channels.get(id.0).ok_or(Error::StaleHandle)?;
+            }
+            Event::ChokeFamily(id, _) => {
+                self.families.get(id.0).ok_or(Error::StaleHandle)?;
             }
         }
         if let Event::Expression(note, e) = event {
@@ -96,6 +102,7 @@ impl Runtime {
             Event::Release(id) => {
                 self.release_now(id).unwrap();
             }
+            Event::ChokeFamily(id, frames) => self.choke_family_now(id, frames),
             Event::Expression(id, value) => {
                 let owner = self.notes.get(id.0).unwrap().expression;
                 self.set_expression_now(owner, value).unwrap();
@@ -155,6 +162,7 @@ impl Runtime {
             Action::Start(v) => self.voices.get(v.0).is_some(),
             Action::Event(Event::KeyUp(n)) => notes.get(n.0).is_some_and(|n| n.key_down),
             Action::Event(Event::Release(n)) => notes.get(n.0).is_some_and(|n| n.gate),
+            Action::Event(Event::ChokeFamily(id, _)) => self.families.get(id.0).is_some(),
             Action::Event(Event::Expression(id, _)) => {
                 let n = notes.get_mut(id.0).unwrap(); // Work pins cannot be consumed by public unpin().
                 if n.gate {

@@ -65,7 +65,8 @@ compatibility remains a separate, evidence-backed capability.
 ## Implemented and still open
 
 - Native core: generational note/family/voice/expression ownership, physical versus
-  effective gates, direct ownership release traversal, bounded scheduling/behaviors, resident selection, AHDSR,
+  effective gates, direct ownership release traversal, bounded scheduling/behaviors,
+  resident selection, AHDSR and scheduled family chokes,
   source views/loops, bandlimited rate conversion, root-key/native tuning and live pitch,
   initial expression, transactional multi-owner gestures and prepared event-rate
   pressure/timbre modulation to gain, balance and pitch.

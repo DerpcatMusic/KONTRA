@@ -21,6 +21,9 @@ Family/expression ownership and segmented rendering now have
 - [x] Meet and enforce user-selected new-core score >=90 plus no new workspace errors (90, authoritative, complete; no rules disabled).
 - [x] Review callback ownership/index invariants before expanding DSP; [evidence and remaining review](ENVELOPES.md).
 - [x] Implement native linear AHDSR and retained release tails with independent timing/heap tests.
+- [x] Add immediate/scheduled family chokes with per-source level capture, bounded
+  non-extending fades, delayed-start cancellation and generational targeting;
+  [evidence](ENVELOPES.md#timed-family-choking). Automatic stealing remains open.
 - [x] Implement independent source ranges, forward/reverse playback and continuous/until-release loops; [evidence](SOURCE_VIEWS.md).
 - [x] Replace release ownership scans with direct child/family/source lists and a
   prepared closure stack; validate slot reuse, linked/independent descendants, tails

@@ -86,6 +86,21 @@ impl EnvelopeState {
         }
     }
 
+    /// Fade from the next sample's level, without extending an existing tail.
+    pub(super) fn choke(&mut self, frames: u32) {
+        if self.releasing.is_some() && frames as usize >= self.remaining() {
+            return;
+        }
+        let level = match self.releasing {
+            Some((level, age)) => {
+                (f64::from(level) * (1.0 - f64::from(age) / f64::from(self.shape.release))) as f32
+            }
+            None => self.held(),
+        };
+        self.shape.release = frames;
+        self.releasing = Some((level, 0));
+    }
+
     pub(super) fn done(&self) -> bool {
         self.releasing
             .is_some_and(|(_, age)| age == self.shape.release)

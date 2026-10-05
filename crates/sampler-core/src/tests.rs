@@ -681,7 +681,11 @@ fn ownership_counters_match_reachable_state_under_mixed_operations() {
                 rt.render(&mut [[0.0; 2]; 7]).unwrap();
             }
             9 => {
-                let _ = rt.stop_family(family);
+                if (seed >> 16) & 1 == 0 {
+                    let _ = rt.stop_family(family);
+                } else {
+                    let _ = rt.choke_family(family, ((seed >> 17) % 8) as u32);
+                }
             }
             10 => rt.panic(),
             _ => {
