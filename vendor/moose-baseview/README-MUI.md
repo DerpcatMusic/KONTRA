@@ -24,9 +24,9 @@ changing the caret cannot repeatedly disable/enable an active composition.
 * Windows uses IMM32 result/preedit strings and UTF-16 caret conversion,
   associates/disassociates the thread input context only on enable changes,
   positions composition/candidate windows, and serves `IMR_DOCUMENTFEED`.
-* X11 uses the maintained MIT-licensed `zed-xim` fork of xim-rs, pinned to
-  `16f35a2c881b815a2b6cdfd6687988e84f8447d8`, vendored at `../xim-rs` with an
-  acknowledgement callback hook and required preedit-start reply. Its transport shares the original
+* X11 uses the maintained MIT-licensed `zed-xim` fork of xim-rs, from MUI's
+  application-locked Git source, with an acknowledgement callback hook and
+  required preedit-start reply. Its transport shares the original
   owned XCB connection, replaces the input context when field identity or focus
   changes, and processes incremental preedit/caret callbacks. Retired ICs remain
   rejected until their destruction reply; fresh creation waits for that reply.
@@ -58,25 +58,22 @@ plugin keyboard hooks, parent-window behavior, original display connection and
 handler-before-native-window teardown. Keep native callbacks outside MUI's model
 lock. Do not silently replace these APIs with no-ops on an OS.
 
-The standalone `Cargo.lock` files here and in `../xim-rs` pin the regression
-builds separately from MUI's workspace lockfiles. `tools/verify.sh root-test`
-runs both library suites on Linux; CI also runs baseview's native library suite
-on Windows and macOS. CI fetches each standalone lock before testing offline,
-so XIM's test-only dependencies do not depend on a developer's Cargo cache.
-Update and commit the corresponding standalone lock when changing these manifests.
+KONTRA's application `Cargo.lock` pins the IME packages and shared MUI bridges
+together. The redundant local IME tree is removed; its production sources
+matched the locked MUI copy. Native host and X11 integration tests use that
+application lock. Standalone baseview checks may generate an ignored library
+lock and do not replace application verification.
 
 Run the vendored unit tests and platform checks separately:
 
 ```
-cargo fetch --manifest-path vendor/moose-baseview/Cargo.toml --locked
-cargo fetch --manifest-path vendor/xim-rs/Cargo.toml --locked
-cargo test --manifest-path vendor/moose-baseview/Cargo.toml --lib --locked --offline
-cargo test --manifest-path vendor/xim-rs/Cargo.toml -p zed-xim --lib --features x11rb-client,x11rb-xcb --locked --offline
+cargo test --locked -p kontra-native-host
+xvfb-run -a cargo test --locked -p kontra-native-host --test x11_visibility -- --ignored --test-threads=1
+cargo test --manifest-path vendor/moose-baseview/Cargo.toml --lib
 cargo check --manifest-path vendor/moose-baseview/Cargo.toml --target x86_64-pc-windows-gnu
 cargo check --manifest-path vendor/moose-baseview/Cargo.toml --target x86_64-pc-windows-msvc
 cargo check --manifest-path vendor/moose-baseview/Cargo.toml --target x86_64-apple-darwin
 cargo check --manifest-path vendor/moose-baseview/Cargo.toml --target aarch64-apple-darwin
-cargo test -p mui-baseview
 ```
 
 ## Native acceptance recipe

@@ -32,7 +32,6 @@ categories = [
 ]
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/linebender/vello"
-resolver = "2"
 
 [package.metadata.docs.rs]
 all-features = true
@@ -98,6 +97,8 @@ version = "2.0.18"
 default-features = false
 
 [dependencies.vello_encoding]
+# MUI's hint-instance cache; use the application's locked MUI source.
+git = "https://github.com/Matari-Audio/MUI"
 version = "0.10.0"
 
 [dependencies.vello_shaders]
@@ -138,4 +139,3 @@ unused_import_braces = "warn"
 unused_lifetimes = "warn"
 unused_macro_rules = "warn"
 unused_qualifications = "warn"
-

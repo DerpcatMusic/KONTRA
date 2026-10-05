@@ -130,21 +130,21 @@ impl Requests {
     #[cfg(target_os = "linux")]
     fn notify_x11_window(&self) {
         let hook = self.x11_hook.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-        if let Some(hook) = hook {
-            if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Some(hook) = hook
+            && let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 hook.lock().unwrap_or_else(std::sync::PoisonError::into_inner)(self.x11_window());
-            })) {
-                let line = format!("mui-baseview: panic in native X11 parent hook: {}", panic_message(payload.as_ref()));
-                eprintln!("{line}");
-                let log = self.log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-                if let Some(log) = log {
-                    let mut sink = match log.try_lock() {
-                        Ok(sink) => sink,
-                        Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-                        Err(std::sync::TryLockError::WouldBlock) => return,
-                    };
-                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink(&line)));
-                }
+            }))
+        {
+            let line = format!("mui-baseview: panic in native X11 parent hook: {}", panic_message(payload.as_ref()));
+            eprintln!("{line}");
+            let log = self.log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+            if let Some(log) = log {
+                let mut sink = match log.try_lock() {
+                    Ok(sink) => sink,
+                    Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+                    Err(std::sync::TryLockError::WouldBlock) => return,
+                };
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink(&line)));
             }
         }
     }
@@ -561,8 +561,8 @@ impl<V: View> Handler<V> {
             window.set_ime_configuration(ime_configuration.clone());
             self.applied_ime = Some(ime_configuration);
         }
-        if self.gpu.is_none() {
-            if let Some(sample) = sample { sample.outcome = NativeFrameOutcome::NoGpu; }
+        if self.gpu.is_none() && let Some(sample) = sample {
+            sample.outcome = NativeFrameOutcome::NoGpu;
         }
         if let (Some(gpu), Some(scene)) = (self.gpu.as_mut(), scene) {
             let resize_at = sample.as_ref().map(|_| Instant::now());

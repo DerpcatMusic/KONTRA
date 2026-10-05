@@ -1661,9 +1661,62 @@ mod snapshot {
         assert!(below.a < 40, "the shadow went opaque black: {below:?}");
     }
 
-    /// A welded outline's shadow is the union of its children's blurs: soft
-    /// under the weld, falling off with distance, and nowhere near the
-    /// outline's own alpha -- which is what a sharp copy would have given.
+    /// The final rounded contour leaves no square shadow in its cutout.
+    #[test]
+    fn a_welded_drop_shadow_follows_the_rounded_outline_at_its_cutout() {
+        let shadow = Shadow {
+            dy: 1.,
+            fill: Color::srgba(0., 0., 0., 0.4).into(),
+            ..Shadow::soft(2.)
+        };
+        let spec = |body| SceneSpec::new(stack![body].pad(20.)).offered(Size::new(120., 80.));
+        let welded = resolve(&spec(
+            row([block(40., 40.).radius(0.), block(40., 40.).radius(0.)])
+                .gap(0.)
+                .union(Color::srgb(1., 1., 1.))
+                .radius(18.)
+                .shadow(shadow.clone())
+                .id("rounded"),
+        ))
+        .unwrap();
+        let outline = welded
+            .paint
+            .iter()
+            .find(|p| p.key.as_str() == "rounded" && p.layer == Layer::Fill)
+            .unwrap()
+            .path
+            .clone();
+        // An independently authored copy of the final shape is the shadow
+        // reference: the weld's original square participants cannot back it.
+        let expected = pixels(
+            &spec(
+                block(80., 40.)
+                    .outline(move |_| (*outline).clone())
+                    .fill(Color::srgb(1., 1., 1.))
+                    .shadow(shadow),
+            ),
+            120,
+            80,
+        );
+        let actual = pixels_scene(&welded, 120, 80);
+        let at = |pix: &Pixmap, x: usize, y: usize| pix.data()[y * 120 + x].a;
+        assert!(at(&expected, 98, 22) < 10, "rounded cutout is clear");
+        assert_eq!(
+            at(&actual, 98, 22),
+            at(&expected, 98, 22),
+            "a square backing filled the rounded cutout"
+        );
+        assert!(at(&actual, 60, 62) > 0, "the soft offset shadow remains");
+        assert_eq!(
+            actual.data(),
+            expected.data(),
+            "shadow follows the final outline"
+        );
+    }
+
+    /// A welded outline's shadow is soft under the weld, falls off with
+    /// distance, and stays nowhere near the outline's own alpha -- which
+    /// is what a sharp copy would have given.
     #[test]
     fn a_welded_shadow_blurs() {
         let root = row([block(20., 20.).id("a"), block(20., 40.).id("b")])

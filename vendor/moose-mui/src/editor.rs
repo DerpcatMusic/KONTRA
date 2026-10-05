@@ -14,6 +14,7 @@ use crate::window::{self, Requests, Shared, View, lock};
 type Build<P> = Box<dyn FnMut(&mut Ui, &mut Bridge<P>) -> El + Send>;
 type FileDrop = Box<dyn FnMut(&Ui, mui::prelude::Point, &[std::path::PathBuf], bool) -> bool + Send>;
 type Changed = Box<dyn FnMut() -> bool + Send>;
+type UiCancelHook = Box<dyn FnMut(&Ui) + Send>;
 
 /// The model half: the app's build closure and the parameters it binds.
 pub(crate) struct Session<P: Params> {
@@ -22,7 +23,7 @@ pub(crate) struct Session<P: Params> {
     /// [`MuiEditor::changed`]: model state outside the bridge.
     changed: Option<Changed>,
     file_drop: Option<FileDrop>,
-    cancel: Option<Box<dyn FnMut(&Ui) + Send>>,
+    cancel: Option<UiCancelHook>,
     /// Native window/renderer diagnostics, outside painting and audio.
     log: Option<window::LogHook>,
     /// The size `build` was designed at, fitted to the window; `None` is
@@ -113,6 +114,8 @@ pub struct MuiEditor<P: Params> {
     /// [`MuiEditor::hide_pointer`], handed to each window it opens.
     pointer: Option<window::PointerHook>,
     timing: Option<window::NativeTimingHook>,
+    #[cfg(target_os = "linux")]
+    x11_hook: Option<window::X11WindowHook>,
 }
 
 /// Whole logical points, as the host's window API takes them.
@@ -170,6 +173,8 @@ impl<P: Params> MuiEditor<P> {
             keys: None,
             pointer: None,
             timing: None,
+            #[cfg(target_os = "linux")]
+            x11_hook: None,
         }
     }
 
@@ -221,8 +226,10 @@ impl<P: Params> MuiEditor<P> {
     /// Publish a safe portal parent at creation; cancel dialogs before native close.
     #[cfg(target_os = "linux")]
     #[must_use]
-    pub fn on_x11_window(self, f: impl FnMut(Option<u32>) + Send + 'static) -> Self {
-        self.requests.on_x11_window(Arc::new(Mutex::new(f)));
+    pub fn on_x11_window(mut self, f: impl FnMut(Option<u32>) + Send + 'static) -> Self {
+        let hook: window::X11WindowHook = Arc::new(Mutex::new(f));
+        self.requests.on_x11_window(Arc::clone(&hook));
+        self.x11_hook = Some(hook);
         self
     }
 
@@ -311,6 +318,10 @@ impl<P: Params> Editor for MuiEditor<P> {
         }
         if let Some(timing) = &self.timing {
             self.requests.on_native_timing(Arc::clone(timing));
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(hook) = &self.x11_hook {
+            self.requests.on_x11_window(Arc::clone(hook));
         }
         self.window = window::open(
             &ParentWindow(parent),

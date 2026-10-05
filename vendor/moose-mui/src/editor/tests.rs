@@ -546,6 +546,39 @@ fn closing_the_editor_reaches_the_cancel_callback() {
     assert_eq!(called.load(Ordering::Relaxed), 1, "a close releases app-owned gestures");
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn native_parent_hook_survives_open_and_reopen_without_a_display() {
+    let params = Arc::new(Synth::new());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&seen);
+    let mut editor = editor(&params);
+    let model = Arc::downgrade(&editor.shared);
+    editor = editor.on_x11_window(move |parent| {
+        let model = model.upgrade().expect("test model is still alive");
+        assert!(model.try_lock().is_ok(), "native parent callback holds no model lock");
+        observed.lock().unwrap().push(parent);
+    });
+
+    for _ in 0..2 {
+        let previous = Arc::clone(&editor.requests);
+        // An invalid parent exercises Editor::open without entering native code.
+        editor.open(RawWindowHandle::X11(0), context(&params).0);
+        assert!(!Arc::ptr_eq(&previous, &editor.requests));
+        assert!(editor.window.is_none());
+        let handler = Handler::new(
+            Arc::clone(&editor.shared),
+            Arc::clone(&editor.requests),
+            (400, 300),
+            1.0,
+        );
+        editor.close();
+        drop(handler);
+    }
+
+    assert_eq!(*seen.lock().unwrap(), [None, None]);
+}
+
 #[test]
 fn user_zoom_is_independent_of_host_dpi_and_resize() {
     use std::sync::atomic::{AtomicU64, Ordering};

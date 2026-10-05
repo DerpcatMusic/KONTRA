@@ -1,14 +1,14 @@
 # Native visibility preservation and browser reveal
 
-This change builds on UI integration `1a1931d` and keeps the MUI lock at
-`822b1922ad1872aaee15b371a31410b0f3580b88`.
+This change builds on UI integration `1a1931d`. The combined core/UVI tree
+uses MUI `1f1daadb0e77c16f30f394255121e7c2fb14b1f2` in Cargo.lock.
 
 The newer framework integration had lost KONTRA's `c96ad3a` X11 visibility
 behavior. The vendored native baseview retains the child while discarding its
 former parent ancestry and refreshes cached visibility when reparented to root.
 The application's MUI source patch consumes this baseview through its existing
-local kontra-native-host. Its sibling xim-rs path dependencies are included with
-upstream licenses and provenance. The generated baseview library lock is ignored;
+local kontra-native-host. Its unmodified IME packages resolve directly from
+that same locked MUI Git source. The generated baseview library lock is ignored;
 the application Cargo.lock remains authoritative for the plugin.
 
 The browser's custom reveal path now follows MUI ListState's nearest-item rule:
