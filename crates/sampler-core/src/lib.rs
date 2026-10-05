@@ -89,6 +89,7 @@ struct Note {
     input: Option<Input>,
     parent: Option<NoteId>,
     linked_release: bool,
+    release_checked: bool,
     key: u8,
     velocity: f64,
     gate: bool,
@@ -350,6 +351,7 @@ impl Runtime {
             input,
             parent,
             linked_release,
+            release_checked: false,
             key,
             velocity,
             gate: true,
@@ -508,25 +510,46 @@ impl Runtime {
     }
 
     fn propagate_release(&mut self) {
-        // ponytail: bounded O(notes²) tree propagation; maintain child adjacency if profiling requires it.
-        for _ in 0..self.notes.slots.len() {
-            let mut changed = false;
-            for i in 0..self.notes.slots.len() {
-                if let Some(n) = self.notes.slots[i].value
-                    && n.gate
-                    && n.linked_release
-                    && n.parent
-                        .is_some_and(|p| self.notes.get(p.0).is_some_and(|p| !p.gate))
-                {
-                    let n = self.notes.slots[i].value.as_mut().unwrap();
+        for slot in &mut self.notes.slots {
+            if let Some(note) = &mut slot.value {
+                note.release_checked = false;
+            }
+        }
+        for i in 0..self.notes.slots.len() {
+            if self.notes.slots[i].value.is_none() {
+                continue;
+            }
+            let start = NoteId(self.notes.id(i));
+            let mut id = start;
+            // Mark each open linked path once. A previously checked open path
+            // reaches an open root or an independent child, so it cannot close.
+            let closes = loop {
+                let n = self.notes.get_mut(id.0).unwrap();
+                if !n.gate {
+                    break true;
+                }
+                if n.release_checked || !n.linked_release {
+                    break false;
+                }
+                n.release_checked = true;
+                let Some(parent) = n.parent else {
+                    break false;
+                };
+                id = parent;
+            };
+            if closes {
+                id = start;
+                loop {
+                    let n = self.notes.get_mut(id.0).unwrap();
+                    if !n.gate {
+                        break;
+                    }
                     n.gate = false;
                     n.key_down = false;
                     n.sostenuto = false;
-                    changed = true;
+                    // The discovery walk proved a closed ancestor on this path.
+                    id = n.parent.unwrap();
                 }
-            }
-            if !changed {
-                break;
             }
         }
     }

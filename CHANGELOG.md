@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Make linked-release propagation linear even across reverse-order reused slots. Independent children retain their gate and ancestry until explicitly released; deep-chain heap checks and a before/after microbenchmark cover the change.
+
 - Replace repeated descendant-retirement scans with counted child ownership and an iterative parent walk. Deep reused-slot trees, pinned descendants, failed admission and terminal backpressure preserve ownership without callback heap work; an independent benchmark records the scaling improvement.
 
 - Share bounded sample-offset UMP block processing with the native executable. Validate whole-batch timing before mutation, preserve stable event order, and keep processing releases after per-event admission failures; partition and heap checks cover the callback.
