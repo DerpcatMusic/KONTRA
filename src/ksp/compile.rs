@@ -423,6 +423,20 @@ fn revision_owners(vars: &[Var], ty: Ty) -> (Arc<[u32]>, usize) {
     (owners.into(), vars.len())
 }
 
+/// Authored domains for indexed strings that may first be assigned after a wait.
+#[derive(Clone, Copy, Debug)]
+pub enum IndexedTextTarget {
+    Control(VarId),
+    IdArray(VarId),
+}
+
+#[derive(Clone, Debug)]
+pub struct IndexedText {
+    pub target: IndexedTextTarget,
+    pub parameter: i32,
+    pub len: u32,
+}
+
 /// Immutable compiled script.
 #[derive(Debug, Default)]
 pub struct Program {
@@ -436,6 +450,7 @@ pub struct Program {
     /// A pictured label selected by a direct literal-prefix + ui_menu value.
     /// Conflicting or unknown direct assignments leave it unclassified.
     pub picture_menus: HashMap<VarId, Option<VarId>>,
+    pub indexed_text: Vec<IndexedText>,
     /// `(slot, length)` per `VarId`, scalars as length 1: the interpreter's
     /// bounds checks, without `Var`'s other fields in the cache.
     pub elems: Vec<(u32, u32)>,
@@ -1713,6 +1728,38 @@ impl<'a> Compiler<'a> {
             self.p.picture_menus.entry(label).and_modify(|saved| {
                 if *saved != menu { *saved = None; }
             }).or_insert(menu);
+        }
+        if b == Builtin::SetControlParStrArr
+            && let [target, parameter, text, index] = args
+            && let Some(Const::Int(parameter)) = self.fold(parameter)
+            && parameter != builtins::CONTROL_PAR_VALUE
+            && parameter != builtins::CONTROL_PAR_NONE
+        {
+            let target = match target {
+                Expr::Call(name, args) if self.name(*name) == "get_ui_id" => {
+                    if let [Expr::Var(sym, None)] = args.as_slice() {
+                        self.var(*sym).map(IndexedTextTarget::Control)
+                    } else { None }
+                }
+                Expr::Var(sym, Some(_)) => self.var(*sym).filter(|&v| {
+                    let var = &self.p.vars[v as usize];
+                    var.ty == Ty::Int && var.len.is_some() && !var.poly
+                }).map(IndexedTextTarget::IdArray),
+                _ => None,
+            };
+            let len = match self.fold(index) {
+                Some(Const::Int(index)) if (0..4096).contains(&index) => Some(index as u32 + 1),
+                _ => match text {
+                    Expr::Var(sym, Some(_)) => self.var(*sym).and_then(|v| {
+                        let var = &self.p.vars[v as usize];
+                        (var.ty == Ty::Str).then_some(var.len).flatten()
+                    }),
+                    _ => None,
+                },
+            };
+            if let (Some(target), Some(len)) = (target, len) {
+                self.p.indexed_text.push(IndexedText { target, parameter, len });
+            }
         }
         self.emit(Op::Builtin(b, args.len() as u8));
         let ret = match sig.ret {
