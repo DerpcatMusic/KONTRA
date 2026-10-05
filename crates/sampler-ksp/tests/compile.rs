@@ -430,3 +430,251 @@ fn polyphonic_declarations_and_callback_tables_reject_invalid_scopes_and_budgets
             .is_err()
     );
 }
+
+#[test]
+fn held_key_branches_survive_waits_and_keep_overlapping_owners_distinct() {
+    let source = include_str!("fixtures/held-branches.ksp");
+    for (rate, delay) in [(44100, 6usize), (48000, 6), (96000, 12)] {
+        for block in [1, 3, 7, 16] {
+            let script = compile(
+                source,
+                rate,
+                Limits {
+                    instructions: 128,
+                    ..limits()
+                },
+            )
+            .unwrap();
+            let plan = script
+                .bind(
+                    Prepared::new(
+                        rate,
+                        vec![Pcm::new(rate, Box::from([[1.; 2]; 64])).unwrap()],
+                        vec![Region {
+                            sample: 0,
+                            key_low: 60,
+                            key_high: 61,
+                            root_key: None,
+                            velocity_low: 0.,
+                            velocity_high: 1.,
+                            gain: 1.,
+                            envelope: Envelope::default(),
+                            playback: Playback::default(),
+                        }],
+                        2,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            let mut rt = Runtime::new(
+                plan,
+                CoreLimits {
+                    notes: 4,
+                    channels: 1,
+                    performances: 1,
+                    families: 4,
+                    expressions: 4,
+                    voices: 4,
+                    decisions: 0,
+                    commands: 8,
+                    behaviors: 4,
+                    behavior_fuel: 64,
+                    behavior_cells: 8,
+                    note_cells: 16,
+                },
+            )
+            .unwrap();
+            let input = Input {
+                protocol: Protocol::Native,
+                port: 0,
+                group: 0,
+                channel: 0,
+                key: 60,
+                external_id: None,
+            };
+            let mut audio = [[0.; 2]; 48];
+            support::without_heap(|| {
+                let a = rt.trigger(input, 60, 0.).unwrap();
+                let b = rt.trigger(input, 61, 0.).unwrap();
+                assert_eq!((rt.note_cell(a, 0), rt.note_cell(b, 0)), (Ok(1), Ok(1)));
+                let channel = rt.register_channel(input.channel_address()).unwrap();
+                rt.sustain(channel, true).unwrap();
+                rt.schedule_event(2, Event::KeyUp(a, None)).unwrap();
+                rt.schedule_event((delay + 2) as u64, Event::KeyUp(b, None))
+                    .unwrap();
+                rt.schedule_event((3 * delay) as u64, Event::Sustain(channel, false))
+                    .unwrap();
+                for chunk in audio.chunks_mut(block) {
+                    rt.render(chunk).unwrap();
+                    rt.render(&mut []).unwrap();
+                }
+                assert_eq!((rt.note_cell(a, 1), rt.note_cell(b, 1)), (Ok(0), Ok(1)));
+                assert_eq!(
+                    (rt.note_cell(a, 2), rt.note_cell(b, 2)),
+                    (Ok(i64::from(i32::MIN)), Ok(i64::from(i32::MAX)))
+                );
+                assert_eq!((rt.note_cell(a, 3), rt.note_cell(b, 3)), (Ok(1), Ok(1)));
+                let mut callbacks = 0;
+                rt.flush_behaviors(|_, _, outcome| {
+                    assert_eq!(outcome, Outcome::Finished);
+                    callbacks += 1;
+                    false
+                });
+                assert_eq!(callbacks, 1, "backpressure retains remaining callbacks");
+                rt.flush_ended(|_| panic!("callbacks retain their owners"));
+                rt.flush_behaviors(|_, _, outcome| {
+                    assert_eq!(outcome, Outcome::Finished);
+                    true
+                });
+                let mut ends = 0;
+                rt.flush_ended(|_| {
+                    ends += 1;
+                    true
+                });
+                assert_eq!(
+                    (
+                        ends,
+                        rt.note_count(),
+                        rt.voice_count(),
+                        rt.pending_commands()
+                    ),
+                    (2, 0, 0, 0)
+                );
+            });
+            for (frame, actual) in audio.iter().enumerate() {
+                assert_eq!(
+                    *actual,
+                    [if (delay..2 * delay).contains(&frame) {
+                        1.
+                    } else {
+                        0.
+                    }; 2],
+                    "rate {rate}, block {block}, frame {frame}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn conditional_syntax_is_bounded_and_never_hides_invalid_dead_code() {
+    for body in [
+        "else",
+        "end if",
+        "if (0 = 0)",
+        "if (0 = 0) end on end if",
+        "if (0 = 0) else else end if",
+        "if (0 == 0) end if",
+        "if (0 != 0) end if",
+        "if (0 < = 0) end if",
+        "if (0 > = 0) end if",
+        "if ($missing = 0) end if",
+        "if (2147483648 = 0) end if",
+        "if (0 = 0) unsupported() end if",
+        "exit unsupported()",
+        "if (0) end if",
+        "if (0 = 0 and 1 = 1) end if",
+        "if (0 = 0) end while",
+        "exit()",
+    ] {
+        let source = format!("on release {body} end on");
+        let error = compile(&source, 48000, limits())
+            .err()
+            .expect("bad conditional accepted");
+        assert!(source.is_char_boundary(error.offset));
+    }
+    assert!(
+        compile(
+            "on init declare polyphonic $NOTE_HELD end on on release end on",
+            48000,
+            limits()
+        )
+        .is_err()
+    );
+    // Parse deeply nested source iteratively, and account for unreachable code too.
+    let source = format!(
+        "on release {}exit {}end on",
+        "if (-2147483648 < 2147483647) ".repeat(1024),
+        "end if ".repeat(1024)
+    );
+    let budget = Limits {
+        source_bytes: source.len(),
+        instructions: 4098,
+        variables: 0,
+    };
+    assert!(compile(&source, 48000, budget).is_ok());
+    assert!(
+        compile(
+            &source,
+            48000,
+            Limits {
+                instructions: 4097,
+                ..budget
+            }
+        )
+        .is_err()
+    );
+    for op in ["=", "#", "<", "<=", ">", ">="] {
+        let source = format!("on release if (0 {op} -1) else end if end on");
+        assert!(compile(&source, 48000, limits()).is_ok());
+    }
+}
+
+#[test]
+fn source_comparisons_select_the_correct_branch_at_signed_boundaries() {
+    for (left, right, expected) in [
+        (i32::MIN, i32::MAX, [false, true, true, true, false, false]),
+        (i32::MAX, i32::MIN, [false, true, false, false, true, true]),
+        (-1, -1, [true, false, false, true, false, true]),
+    ] {
+        for (operator, expected) in ["=", "#", "<", "<=", ">", ">="].into_iter().zip(expected) {
+            let source = format!("on init declare polyphonic $result end on
+                on release if ({left} {operator} {right}) $result := 1 else $result := 2 end if end on");
+            let plan = compile(&source, 48000, limits())
+                .unwrap()
+                .bind(Prepared::new(48000, vec![], vec![], 0).unwrap())
+                .unwrap();
+            let mut rt = Runtime::new(
+                plan,
+                CoreLimits {
+                    notes: 1,
+                    channels: 1,
+                    performances: 1,
+                    families: 0,
+                    expressions: 1,
+                    voices: 0,
+                    decisions: 0,
+                    commands: 0,
+                    behaviors: 1,
+                    behavior_fuel: 16,
+                    behavior_cells: 2,
+                    note_cells: 1,
+                },
+            )
+            .unwrap();
+            support::without_heap(|| {
+                let input = Input {
+                    protocol: Protocol::Native,
+                    port: 0,
+                    group: 0,
+                    channel: 0,
+                    key: 60,
+                    external_id: None,
+                };
+                let note = rt.trigger(input, 60, 1.).unwrap();
+                rt.note_off(input, None).unwrap();
+                assert_eq!(
+                    rt.note_cell(note, 0),
+                    Ok(if expected { 1 } else { 2 }),
+                    "{left} {operator} {right}"
+                );
+                rt.flush_behaviors(|_, _, outcome| {
+                    assert_eq!(outcome, Outcome::Finished);
+                    true
+                });
+                rt.flush_ended(|_| true);
+                assert_eq!(rt.note_count(), 0);
+            });
+        }
+    }
+}

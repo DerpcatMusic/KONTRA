@@ -43,6 +43,14 @@
     "$EVENT_NOTE": {
       "implementation": "partial_native_subset",
       "evidence": "KSP_FRONTEND.md"
+    },
+    "$NOTE_HELD": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "exit": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
     }
   },
   "chapters": [
@@ -1008,7 +1016,9 @@
               "in_range"
             ]
           },
-          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-statements#boolean-operators"
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-statements#boolean-operators",
+          "implementation": "partial_native_subset",
+          "evidence": "KSP_FRONTEND.md"
         },
         {
           "anchor": "continue",
@@ -1026,7 +1036,9 @@
           "anchor": "if-----else-----end-if",
           "title": "if ... else ... end if",
           "symbols": {},
-          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-statements#if-----else-----end-if"
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-statements#if-----else-----end-if",
+          "implementation": "partial_native_subset",
+          "evidence": "KSP_FRONTEND.md"
         },
         {
           "anchor": "select---",
@@ -2613,7 +2625,9 @@
               "exit"
             ]
           },
-          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands#exit"
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands#exit",
+          "implementation": "partial_native_subset",
+          "evidence": "KSP_FRONTEND.md"
         },
         {
           "anchor": "ignore_controller",

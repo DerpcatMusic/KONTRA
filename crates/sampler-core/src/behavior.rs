@@ -48,6 +48,16 @@ pub enum Instruction {
     ReadKey {
         local: u16,
     },
+    /// Physical key state of this owner, independently of its sustained gate.
+    ReadKeyDown {
+        local: u16,
+    },
+    /// Compare signed locals without subtraction/overflow; replace lhs with 0 or 1.
+    CompareLocal {
+        lhs: u16,
+        rhs: u16,
+        comparison: Comparison,
+    },
     /// Copy between callback-local registers and the originating note's state.
     ReadNoteCell {
         local: u16,
@@ -64,6 +74,16 @@ pub enum Instruction {
         local: u16,
         target: usize,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Comparison {
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
 }
 
 pub struct Program {
@@ -99,11 +119,15 @@ impl Program {
             if let Instruction::SetLocal { local, .. }
             | Instruction::AddLocal { local, .. }
             | Instruction::ReadKey { local }
+            | Instruction::ReadKeyDown { local }
             | Instruction::ReadNoteCell { local, .. }
             | Instruction::WriteNoteCell { local, .. }
             | Instruction::JumpIfZero { local, .. } = *op
             {
                 locals = locals.max(usize::from(local) + 1);
+            }
+            if let Instruction::CompareLocal { lhs, rhs, .. } = *op {
+                locals = locals.max(usize::from(lhs.max(rhs)) + 1);
             }
             if let Instruction::ReadNoteCell { cell, .. }
             | Instruction::WriteNoteCell { cell, .. } = *op
@@ -308,6 +332,25 @@ impl Runtime {
             }
             Instruction::ReadNoteCell { local, cell } => {
                 *self.local_cell_mut(id, local)? = self.note_cell(note, cell)?;
+            }
+            Instruction::ReadKeyDown { local } => {
+                *self.local_cell_mut(id, local)? = i64::from(self.key_down(note)?);
+            }
+            Instruction::CompareLocal {
+                lhs,
+                rhs,
+                comparison,
+            } => {
+                let right = *self.local_cell_mut(id, rhs)?;
+                let left = self.local_cell_mut(id, lhs)?;
+                *left = i64::from(match comparison {
+                    Comparison::Equal => *left == right,
+                    Comparison::NotEqual => *left != right,
+                    Comparison::Less => *left < right,
+                    Comparison::LessEqual => *left <= right,
+                    Comparison::Greater => *left > right,
+                    Comparison::GreaterEqual => *left >= right,
+                });
             }
             Instruction::WriteNoteCell { cell, local } => {
                 let index = self.note_cell_index(note, cell)?;

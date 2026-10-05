@@ -18,7 +18,7 @@ ordinary native attack selection. Init currently accepts declarations only.
 
 Note/release bodies accept literal `wait(...)` and bare `play_note(...)` calls,
 and assignments from signed 32-bit integer literals, `$EVENT_NOTE`, or another
-declared polyphonic integer. Note-owned values start at zero and remain shared
+declared polyphonic integer, or `$NOTE_HELD`. Note-owned values start at zero and remain shared
 between the originating note and its release callback, including overlapping waits.
 Generated notes use `$EVENT_NOTE` with optional constant transposition, constant
 velocity 1–127, zero offset and positive constant duration. Brace comments and
@@ -42,7 +42,7 @@ exposes fixed/scaled velocity and expression inheritance as separate native choi
 ## Explicit rejection and limits
 
 The compiler rejects arithmetic expressions, dynamic command arguments (including
-`$EVENT_VELOCITY`), globals, arrays, real/string values, conditionals/loops, other
+`$EVENT_VELOCITY`), globals, arrays, real/string values, loops, compound Boolean expressions, other
 callbacks, implicit note forwarding, nested comments,
 nonzero sample offsets, input-linked negative duration and whole-source duration zero.
 Some primitives already exist natively; that alone does not establish their KSP
@@ -63,7 +63,7 @@ Polyphonic declarations and scalar assignments now lower into
 [note-owned integer cells](BEHAVIOR.md#note-owned-integer-state). Full typed arithmetic,
 global/script-instance state and the other language/value services remain open.
 Native storage is signed 64-bit; this compiler admits only signed 32-bit values,
-key reads and copies. It does not lower KSP arithmetic into native checked-64-bit
+key/held-state reads, comparisons and copies. It does not lower KSP arithmetic into native checked-64-bit
 addition or claim vendor overflow behavior.
 
 ## Audition and evidence
@@ -124,3 +124,45 @@ reserved prefixes, invalid assignment tokens, literal overflow, total code/varia
 budgets and mismatched preparation rate. The real CLI also renders the release
 fixture from WAV and checks its onset, stereo equality and source EOF. Evidence is
 under `artifacts/ksp-state-*`; no Kontakt executable was used.
+
+## Conditional callback execution
+
+Note/release callbacks now accept nested `if (<scalar> <comparison> <scalar>)`,
+optional `else`, matching `end if`, and `exit`. Scalars use the same checked i32
+literal/built-in/polyphonic resolution as assignments. All six documented integer
+comparisons (`=`, `#`, `<`, `<=`, `>`, `>=`) lower to native signed comparisons,
+without subtraction overflow. Arithmetic/compound Boolean expressions remain open.
+See [NI control statements](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-statements).
+
+`$NOTE_HELD` reads the originating owner's current physical key state. It is zero
+in the physical-release callback even when sustain still holds the effective gate;
+a different same-key owner's key-up cannot change it. It is read again after a
+wait rather than captured as a global key flag. The [NI built-in reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/built-in-variables-and-constants)
+defines the query in relation to the key causing the callback. Generated callback
+contexts and hard-cleanup equivalence still require separate vendor evidence.
+
+`exit` finishes this callback through the existing retained outcome path. It does
+not release the original key or cancel the independently reserved release handler.
+[NI function-local exit](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands#exit)
+will need a call-frame return when functions land; functions are currently rejected.
+
+The parser uses an iterative control-side branch-patch stack bounded by already
+emitted instructions and source bytes. It does not recurse with source nesting.
+Both sides, including code after `exit`, are validated and charged against the
+instruction budget. Two preallocated callback registers suffice for these scalar
+comparisons. Waits retain only the existing program counter/owner/local state;
+there is no runtime syntax tree, branch stack, name lookup or allocation.
+
+`held-branches.ksp` checks overlapping same-key owners, nested alternatives, early
+exit, simultaneous note/release waits and key-up under sustain at three sample
+rates and four block sizes. Tests independently verify exact generated PCM,
+retained cells and completion backpressure without heap activity. Native signed
+comparisons cover i64 extrema, aliasing and both register bounds; source comparisons
+cover i32 extrema and all six operators. Malformed/dead branches and 1,024 levels
+of nesting exercise structural and total-budget validation. The actual WAV CLI
+also executes delayed conditional playback between key-up and pedal-up. Validation
+logs are under ignored `artifacts/ksp-branches-*`; Kontakt fidelity remains unverified.
+
+This slice passes all four native crates in debug, release and Rust 1.92 tests,
+strict all-target Clippy, the two root workspace boundary tests, and byte-identical
+regeneration of the 25-chapter interface inventory.
