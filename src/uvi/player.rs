@@ -543,8 +543,8 @@ impl<'a> Player<'a> {
                                 HostedInput::On { root, input } => {
                                     self.session.host_note_on(root, input)?
                                 }
-                                HostedInput::Off { root, frame } => {
-                                    self.session.host_note_off(root, frame)?
+                                HostedInput::Off { root, frame, velocity } => {
+                                    self.session.host_note_off(root, frame, velocity)?
                                 }
                                 HostedInput::Choke { root, frame } => {
                                     self.session.host_note_choke(root, frame)?

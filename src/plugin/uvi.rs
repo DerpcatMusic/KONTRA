@@ -391,6 +391,7 @@ pub(crate) struct Slot {
     underruns: u64,
     discarded_packets: u64,
     host_tempo: f64,
+    host_time_signature: (u8, u8),
     host_beat: f64,
     host_playing: bool,
     host_transport_frame: Option<u64>,
@@ -419,6 +420,7 @@ impl Slot {
             underruns: 0,
             discarded_packets: 0,
             host_tempo: 120.,
+            host_time_signature: (4, 4),
             host_beat: 0.,
             host_playing: false,
             host_transport_frame: None,
@@ -520,7 +522,7 @@ impl Slot {
             .push_hosted(event)
             .map_err(|error| self.fail(Error::Bridge(error)))
     }
-    fn release_pattern(&mut self, pattern: HostPattern) -> Result<(), Error> {
+    fn release_pattern(&mut self, pattern: HostPattern, velocity: crate::midi::Velocity) -> Result<(), Error> {
         let frame = self.frame;
         let failed = self.error.is_some();
         let bridge = &mut self.bridge;
@@ -531,7 +533,7 @@ impl Slot {
                     Ok(())
                 } else {
                     bridge
-                        .push_hosted(HostedInput::Off { root, frame })
+                        .push_hosted(HostedInput::Off { root, frame, velocity })
                         .map_err(Error::Bridge)
                 }
             },
@@ -612,9 +614,8 @@ impl Slot {
             In::NoteOn(channel, key, 0) | In::Midi1NoteOn(channel, key, 0) => {
                 return self.feed(In::NoteOff(channel, key), port, reached, mpe);
             }
-            In::HostOff(pattern) => return self.release_pattern(pattern),
-            // UVI's current hosted Off has no release-velocity field.
-            In::HostOffVelocity(pattern, _) => return self.release_pattern(pattern),
+            In::HostOff(pattern) => return self.release_pattern(pattern, crate::midi::Velocity::ZERO),
+            In::HostOffVelocity(pattern, velocity) => return self.release_pattern(pattern, velocity),
             In::HostChoke(pattern) => {
                 return self.choke_matching(|owner| {
                     owner.host.is_some_and(|note| pattern.matches(note))
@@ -625,10 +626,16 @@ impl Slot {
                 if channel >= 16 || key >= 128 {
                     return Err(Error::InvalidInput);
                 }
+                let velocity = match event {
+                    In::Midi1NoteOff(_, _, velocity) if velocity < 128 => crate::midi::Velocity::from_midi1(velocity),
+                    In::Midi1NoteOff(..) => return Err(Error::InvalidInput),
+                    _ => crate::midi::Velocity::ZERO,
+                };
                 if let Some(root) = self.notes.release_typed(port, channel, key) {
                     self.send(HostedInput::Off {
                         root,
                         frame: self.frame,
+                        velocity,
                     })?;
                     if self.error.is_some() {
                         self.notes.abort();
@@ -682,7 +689,7 @@ impl Slot {
                                         Ok(())
                                     } else {
                                         bridge
-                                            .push_hosted(HostedInput::Off { root, frame })
+                                            .push_hosted(HostedInput::Off { root, frame, velocity: crate::midi::Velocity::ZERO })
                                             .map_err(Error::Bridge)
                                     }
                                 },
@@ -769,6 +776,7 @@ impl Slot {
         playing: bool,
         beat: f64,
         tempo: f64,
+        signature: (u8, u8),
     ) -> Result<(), Error> {
         let elapsed = self.frame - self.host_transport_frame.unwrap_or(self.frame);
         let predicted = self.host_beat
@@ -783,12 +791,18 @@ impl Slot {
             self.host_tempo
         };
         let beat = if beat.is_finite() { beat } else { predicted };
+        let signature = if signature.0 > 0 && signature.1.is_power_of_two() {
+            signature
+        } else {
+            self.host_time_signature
+        };
         // Host beat calculations can reassociate the same sample-rate arithmetic.
         // Permit only floating rounding, not a sample-sized seek/deviation.
         let rounding = 8. * f64::EPSILON * predicted.abs().max(beat.abs()).max(1.);
         if self.host_transport_frame.is_some()
             && playing == self.host_playing
             && tempo == self.host_tempo
+            && signature == self.host_time_signature
             && (beat - predicted).abs() <= rounding
         {
             return Ok(());
@@ -797,10 +811,13 @@ impl Slot {
             playing,
             beat,
             tempo,
+            time_sig_num: signature.0,
+            time_sig_den: signature.1,
         })?;
         self.host_playing = playing;
         self.host_beat = beat;
         self.host_tempo = tempo;
+        self.host_time_signature = signature;
         self.host_transport_frame = Some(self.frame);
         Ok(())
     }
@@ -955,6 +972,43 @@ mod tests {
             path,
             processor,
         )
+    }
+    #[test]
+    fn host_and_midi1_release_velocity_reaches_lua_and_generated_samples_without_callback_heap() {
+        let (config, _) = crate::uvi::worker::tests::authored_bank_with_script(r#"
+            local releases = 0
+            local expected = {16, 96, 0}
+            function onNote(e) end
+            function onRelease(e)
+                releases = releases + 1
+                assert(e.velocity == expected[releases])
+                if e.velocity > 0 then playNote(e.note, e.velocity, 10) end
+            end
+        "#);
+        let path = config.bank.clone();
+        let mut worker = crate::uvi::worker::Worker::start_hosted(config, 7, 9).unwrap();
+        worker.wait_ready(std::time::Duration::from_secs(5)).unwrap();
+        let bridge = Bridge::new(worker.take_audio_port().unwrap(), 7, 9, 256, 1).unwrap();
+        let mut slot = Slot::new(bridge, 7, 9, 48000).unwrap();
+        let pattern = HostPattern { port: 0, channel: 2, key: 60, id: 10, clap: true };
+        let releases = [
+            (In::HostOn(note(10), crate::midi::Velocity::from_midi1(100), 0.),
+             In::HostOffVelocity(pattern, crate::midi::Velocity::new(0.123456789123).unwrap())),
+            (In::Midi1NoteOn(2, 60, 100), In::Midi1NoteOff(2, 60, 96)),
+            (In::Midi1NoteOn(2, 60, 100), In::Midi1ZeroNoteOff(2, 60)),
+        ];
+        for (index, (on, off)) in releases.into_iter().enumerate() {
+            assert_eq!(crate::test_support::allocations(|| {
+                slot.feed(on, 0, true, false).unwrap();
+                // Release resolves its original target even after a route change.
+                slot.feed(off, 0, false, false).unwrap();
+            }), 0);
+            assert_eq!(render_slot(&mut slot, 6), index < 2);
+            assert!(slot.error().is_none() && slot.bridge.failure().is_none());
+        }
+        drop(slot);
+        worker.stop();
+        std::fs::remove_file(path).unwrap();
     }
     fn render_slot(slot: &mut Slot, blocks: usize) -> bool {
         let mut audible = false;
@@ -1413,7 +1467,7 @@ mod tests {
                 let mut r = [0.];
                 assert_eq!(
                     crate::test_support::allocations(|| {
-                        slot.set_host_transport(playing, beat, 120.).unwrap();
+                        slot.set_host_transport(playing, beat, 120., (4, 4)).unwrap();
                         if [0, 127, 255].contains(&frame) {
                             slot.feed(In::NoteOn(0, 60, 100), 0, true, false).unwrap()
                         }
@@ -1442,9 +1496,13 @@ mod tests {
  function onTransport(p)changes=changes+1 end
  function onNote(e)
   local stage=e.note-60
+  local num,den=getTimeSignature()
+  local expected={{4,4,2000},{3,4,1500},{6,8,1500},{7,8,7000/3},{7,8,7000/3},{7,8,2100},{3,4,1800}}
+  local meter=expected[stage+1]
+  assert(num==meter[1] and den==meter[2] and math.abs(getBarDuration()-meter[3])<1e-9)
   if stage==0 then assert(changes==1 and getBeatTime()==4 and getTempo()==120)
   elseif stage==1 then assert(changes==1 and math.abs(getBeatTime()-(4+1/24000))<1e-12)
-  elseif stage==2 then assert(changes==1 and math.abs(getBeatTime()-(4+3/24000))<1e-12)
+  elseif stage==2 then assert(changes==1 and math.abs(getBeatTime()-(4+2/24000))<1e-12)
   elseif stage==3 then assert(changes==1 and getBeatTime()==9 and getTempo()==90)
   elseif stage==4 then assert(changes==2 and getBeatTime()==10)
   else assert(changes==2 and getBeatTime()==11 and getTempo()==100)end
@@ -1459,20 +1517,23 @@ mod tests {
             .unwrap();
         let bridge = Bridge::new(worker.take_audio_port().unwrap(), 7, 9, 1, 1).unwrap();
         let mut slot = Slot::new(bridge, 7, 9, 48000).unwrap();
-        for (frame, playing, beat, tempo) in [
-            (0, true, 4., 120.),
-            (1, true, f64::NAN, 0.),
-            (2, true, 4. + 3. / 24000., 120.),
-            (3, true, 9., 90.),
-            (4, false, 10., 90.),
-            (5, false, 11., 100.),
+        for (frame, playing, beat, tempo, signature) in [
+            (0, true, 4., 120., (0, 0)),
+            (1, true, f64::NAN, 0., (3, 4)),
+            (2, true, 4. + 2. / 24000., 120., (6, 8)),
+            (3, true, 9., 90., (7, 8)),
+            (4, false, 10., 90., (7, 8)),
+            (5, false, 11., 100., (2, 3)),
+            (6, false, 11., 100., (3, 4)),
         ] {
-            slot.set_host_transport(playing, beat, tempo).unwrap();
-            slot.feed(In::NoteOn(0, 60 + frame as u8, 100), 0, true, false)
-                .unwrap();
-            slot.process_mode(&mut [0.], &mut [0.], true).unwrap();
+            assert_eq!(crate::test_support::allocations(|| {
+                slot.set_host_transport(playing, beat, tempo, signature).unwrap();
+                slot.feed(In::NoteOn(0, 60 + frame as u8, 100), 0, true, false)
+                    .unwrap();
+                slot.process_mode(&mut [0.], &mut [0.], true).unwrap();
+            }), 0);
         }
-        for _ in 6..1024 {
+        for _ in 7..1024 {
             slot.process_mode(&mut [0.], &mut [0.], true).unwrap();
         }
         assert_eq!(slot.error(), None);

@@ -162,6 +162,8 @@ pub enum InputKind {
     NoteOff {
         channel: u8,
         note: u8,
+        #[serde(default)]
+        velocity: u8,
     },
     PitchBend {
         channel: u8,
@@ -180,6 +182,10 @@ pub enum InputKind {
         playing: bool,
         beat: f64,
         tempo: f64,
+        #[serde(default = "default_time_signature")]
+        time_sig_num: u8,
+        #[serde(default = "default_time_signature")]
+        time_sig_den: u8,
     },
     Controller {
         channel: u8,
@@ -194,6 +200,10 @@ pub struct Input {
     pub kind: InputKind,
 }
 
+fn default_time_signature() -> u8 {
+    4
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum HostedInput {
     On {
@@ -203,6 +213,8 @@ pub enum HostedInput {
     Off {
         root: HostRoot,
         frame: u64,
+        /// Original host/wire value; projected only at the Lua MIDI boundary.
+        velocity: crate::midi::Velocity,
     },
     /// Stop this backend root without synthesizing a Lua release callback.
     Choke {
@@ -388,7 +400,7 @@ pub fn parse_notes_at_rate(list: &str, sample_rate: u32) -> Result<Vec<Input>> {
         });
         inputs.push(Input {
             frame: off,
-            kind: InputKind::NoteOff { channel: 0, note },
+            kind: InputKind::NoteOff { channel: 0, note, velocity: 0 },
         });
     }
     // Preserve authored order within each class; release before attack at a tie.
@@ -533,6 +545,7 @@ struct State {
     sample_rate: u32,
     program_layers: Option<Vec<NodeId>>,
     tempo: f64,
+    time_signature: (u8, u8),
     beat: f64,
     running_beat: f64,
     playing: bool,
@@ -1202,8 +1215,10 @@ end
 function beat2ms(beats) return beats * 60000 / getTempo() end
 function ms2beat(ms) return ms * getTempo() / 60000 end
 function getBeatDuration() return beat2ms(1) end
-function getBarDuration() return beat2ms(4) end
-function getTimeSignature() return 4, 4 end
+function getBarDuration()
+    local num, den = getTimeSignature()
+    return beat2ms(num * 4 / den)
+end
 function waitForRelease() while isNoteHeld() do wait(1) end end
 function table.copy(t) local r = {}; for k,v in pairs(t) do r[k] = v end; return r end
 coroutine, dofile, loadfile, load, loadstring, newproxy = nil, nil, nil, nil, nil, nil
@@ -1662,6 +1677,7 @@ impl Runtime {
         lua.set_memory_limit(32 << 20)?;
         let state = Rc::new(RefCell::new(State {
             tempo: TEMPO,
+            time_signature: (4, 4),
             sample_rate,
             program_layers: program.map(|p| p.layers.clone()),
             ..State::default()
@@ -1885,6 +1901,11 @@ impl Runtime {
         globals.set(
             "getTempo",
             lua.create_function(move |_, ()| Ok(clock.borrow().tempo))?,
+        )?;
+        let clock = state.clone();
+        globals.set(
+            "getTimeSignature",
+            lua.create_function(move |_, ()| Ok(clock.borrow().time_signature))?,
         )?;
         globals.set(
             "getSamplingRate",
@@ -2490,6 +2511,8 @@ impl Runtime {
             playing,
             beat,
             tempo,
+            time_sig_num,
+            time_sig_den,
         } = input.kind
         {
             ensure!(
@@ -2501,6 +2524,7 @@ impl Runtime {
             s.playing = playing;
             s.beat = beat;
             s.tempo = tempo;
+            s.time_signature = (time_sig_num, time_sig_den);
             s.emit(
                 input.frame,
                 Action::Transport {
@@ -2573,8 +2597,8 @@ impl Runtime {
                     event.set("tune", 0.)?;
                     ("onNote", None)
                 }
-                InputKind::NoteOff { channel, note } => {
-                    ensure!(channel < 16 && note < 128, "Invalid UVI MIDI input");
+                InputKind::NoteOff { channel, note, velocity } => {
+                    ensure!(channel < 16 && note < 128 && velocity < 128, "Invalid UVI MIDI input");
                     let id = if let Some(root) = root {
                         let selected = s.roots[&root].id;
                         let queue = s
@@ -2605,12 +2629,8 @@ impl Runtime {
                     event.set("type", 128)?;
                     event.set("id", voice_handle(&self.lua, id)?)?;
                     event.set("note", note)?;
-                    event.set(
-                        "velocity",
-                        s.input_velocities
-                            .remove(&id)
-                            .context("Missing UVI input velocity")?,
-                    )?;
+                    s.input_velocities.remove(&id).context("Missing UVI input velocity")?;
+                    event.set("velocity", velocity)?;
                     event.set("channel", channel + 1)?;
                     event.set("vol", 1.)?;
                     event.set("pan", 0.)?;
@@ -2907,7 +2927,7 @@ impl Session {
         }
         self.runtime.input_rooted(input, Some(root))
     }
-    pub fn host_note_off(&mut self, root: HostRoot, frame: u64) -> Result<()> {
+    pub fn host_note_off(&mut self, root: HostRoot, frame: u64, velocity: crate::midi::Velocity) -> Result<()> {
         ensure!(
             frame >= self.current_frame(),
             "Hosted note off precedes clock"
@@ -2929,6 +2949,7 @@ impl Session {
                 kind: InputKind::NoteOff {
                     channel: owner.channel,
                     note: owner.note,
+                    velocity: velocity.midi1(),
                 },
             },
             Some(root),
@@ -3379,7 +3400,7 @@ pub(crate) fn input_is_valid(input: &Input) -> bool {
             note,
             velocity,
         } => channel < 16 && note <= 127 && (1..=127).contains(&velocity),
-        InputKind::NoteOff { channel, note } => channel < 16 && note <= 127,
+        InputKind::NoteOff { channel, note, velocity } => channel < 16 && note <= 127 && velocity <= 127,
         InputKind::Controller {
             channel,
             controller,
@@ -3394,8 +3415,18 @@ pub(crate) fn input_is_valid(input: &Input) -> bool {
             note,
             value,
         } => channel < 16 && note <= 127 && value <= 127,
-        InputKind::Transport { beat, tempo, .. } => {
-            beat.is_finite() && tempo.is_finite() && tempo > 0.
+        InputKind::Transport {
+            beat,
+            tempo,
+            time_sig_num,
+            time_sig_den,
+            ..
+        } => {
+            beat.is_finite()
+                && tempo.is_finite()
+                && tempo > 0.
+                && time_sig_num > 0
+                && time_sig_den.is_power_of_two()
         }
     }
 }
@@ -4232,6 +4263,8 @@ mod tests {
                         playing: true,
                         beat: 4.,
                         tempo: 120.,
+                        time_sig_num: 4,
+                        time_sig_den: 4,
                     },
                 })
                 .unwrap();
@@ -4575,6 +4608,7 @@ mod tests {
                     kind: InputKind::NoteOff {
                         channel: 0,
                         note: 60,
+                        velocity: 0,
                     },
                 });
                 frame += 2;
@@ -4743,11 +4777,18 @@ mod tests {
             r#"[
           {"frame":0,"kind":{"NoteOn":{"channel":15,"note":127,"velocity":127}}},
           {"frame":1,"kind":{"PitchBend":{"channel":15,"bend":-1.0}}},
-          {"frame":2,"kind":{"Transport":{"playing":true,"beat":-4.0,"tempo":0.1}}}
+          {"frame":2,"kind":{"Transport":{"playing":true,"beat":-4.0,"tempo":0.1}}},
+          {"frame":3,"kind":{"Transport":{"playing":false,"beat":7.25,"tempo":120,"time_sig_num":7,"time_sig_den":8}}}
         ]"#,
         )
         .unwrap();
-        assert!(validate_inputs(&inputs, 2).is_ok());
+        assert!(validate_inputs(&inputs, 3).is_ok());
+        assert!(matches!(inputs[2].kind, InputKind::Transport {
+            time_sig_num: 4, time_sig_den: 4, ..
+        }));
+        assert!(matches!(inputs[3].kind, InputKind::Transport {
+            time_sig_num: 7, time_sig_den: 8, ..
+        }));
         let invalid = [
             InputKind::NoteOn {
                 channel: 0,
@@ -4767,6 +4808,7 @@ mod tests {
             InputKind::NoteOff {
                 channel: 0,
                 note: 128,
+                velocity: 0,
             },
             InputKind::Controller {
                 channel: 0,
@@ -4804,16 +4846,43 @@ mod tests {
                 playing: true,
                 beat: f64::INFINITY,
                 tempo: 120.,
+                time_sig_num: 4,
+                time_sig_den: 4,
             },
             InputKind::Transport {
                 playing: true,
                 beat: 0.,
                 tempo: 0.,
+                time_sig_num: 4,
+                time_sig_den: 4,
             },
             InputKind::Transport {
                 playing: true,
                 beat: 0.,
                 tempo: f64::NAN,
+                time_sig_num: 4,
+                time_sig_den: 4,
+            },
+            InputKind::Transport {
+                playing: true,
+                beat: 0.,
+                tempo: 120.,
+                time_sig_num: 0,
+                time_sig_den: 4,
+            },
+            InputKind::Transport {
+                playing: true,
+                beat: 0.,
+                tempo: 120.,
+                time_sig_num: 3,
+                time_sig_den: 0,
+            },
+            InputKind::Transport {
+                playing: true,
+                beat: 0.,
+                tempo: 120.,
+                time_sig_num: 3,
+                time_sig_den: 3,
             },
         ];
         for kind in invalid {
@@ -5174,6 +5243,8 @@ mod tests {
                     playing: true,
                     beat: 4.,
                     tempo: 120.,
+                    time_sig_num: 4,
+                    time_sig_den: 4,
                 },
             },
             Input {
@@ -5211,6 +5282,7 @@ mod tests {
                 kind: InputKind::NoteOff {
                     channel: 1,
                     note: 60,
+                    velocity: 0,
                 },
             },
             Input {
@@ -5219,6 +5291,8 @@ mod tests {
                     playing: false,
                     beat: 12.,
                     tempo: 90.,
+                    time_sig_num: 4,
+                    time_sig_den: 4,
                 },
             },
         ];
@@ -5429,7 +5503,10 @@ mod tests {
             Program:setParameter('Gain',0.2)
             function onLoad(s)assert(Program:getParameter('Gain')==0.2)end
             function onEvent(e)
-              assert(e.pan==0 and e.vol==1 and e.tune==0 and e.velocity==100)
+              assert(e.pan==0 and e.vol==1 and e.tune==0)
+              assert((e.type==Event.NoteOn and e.velocity==100) or
+                (e.type==Event.NoteOff and ((e.note==60 and e.velocity==0) or
+                  ((e.note==72 or e.note==74) and e.velocity==100))))
               if e.type==Event.NoteOn then assert(Program:getParameter('Gain')==0.2);e.note=e.note+1 end
               postEvent(e)
             end
@@ -5506,6 +5583,8 @@ mod tests {
                 playing: true,
                 beat: 0.,
                 tempo: 0.,
+                time_sig_num: 4,
+                time_sig_den: 4,
             },
         ] {
             assert!(
@@ -5546,8 +5625,18 @@ mod tests {
         let p = session_program(
             r#"
           local changes=0
+          function onInit()
+            local num,den=getTimeSignature()
+            assert(num==4 and den==4 and getBarDuration()==2000)
+          end
           function onTransport(playing) changes=changes+1 end
           function onNote(e)
+            local num,den=getTimeSignature()
+            local expected={{3,4,1500},{6,8,1500},{7,8,7000/3},{7,8,7000/3},{3,4,1800}}
+            local meter=expected[e.note-59]
+            assert(num==meter[1] and den==meter[2])
+            assert(math.abs(getBarDuration()-meter[3])<1e-9)
+            assert(math.abs(getBeatDuration()-60000/getTempo())<1e-9)
             if e.note==60 then assert(changes==0 and getBeatTime()==4 and getTempo()==120)
             elseif e.note==61 then assert(changes==1 and getBeatTime()==8)
             elseif e.note==62 then assert(changes==1 and getBeatTime()==42 and getTempo()==90)
@@ -5557,12 +5646,12 @@ mod tests {
         "#,
         );
         let mut s = Session::new_program_chain(&p, BTreeMap::new(), None, 48000).unwrap();
-        for (frame, playing, beat, tempo, note) in [
-            (0, false, 4., 120., 60),
-            (1, true, 8., 120., 61),
-            (2, true, 42., 90., 62),
-            (3, false, 43., 90., 63),
-            (4, false, 44., 100., 64),
+        for (frame, playing, beat, tempo, note, signature) in [
+            (0, false, 4., 120., 60, (3, 4)),
+            (1, true, 8., 120., 61, (6, 8)),
+            (2, true, 42., 90., 62, (7, 8)),
+            (3, false, 43., 90., 63, (7, 8)),
+            (4, false, 44., 100., 64, (3, 4)),
         ] {
             s.input(Input {
                 frame,
@@ -5570,6 +5659,8 @@ mod tests {
                     playing,
                     beat,
                     tempo,
+                    time_sig_num: signature.0,
+                    time_sig_den: signature.1,
                 },
             })
             .unwrap();
@@ -5655,7 +5746,7 @@ mod hosted_tests {
         s.host_note_on(root(1), on(0, 100)).unwrap();
         s.host_note_choke(root(1), 48).unwrap();
         s.host_note_choke(root(1), 48).unwrap();
-        s.host_note_off(root(1), 48).unwrap();
+        s.host_note_off(root(1), 48, crate::midi::Velocity::ZERO).unwrap();
         s.advance(12000).unwrap();
         let out = s.drain().unwrap();
         assert_eq!(out.commands.len(), 2);
@@ -5885,12 +5976,13 @@ mod hosted_tests {
             HostedInput::Off {
                 root: root(1),
                 frame: 11,
+                velocity: crate::midi::Velocity::ZERO,
             },
         ];
         s.validate_hosted_inputs(&events).unwrap();
         s.host_note_on(root(1), on(10, 100)).unwrap();
         s.host_note_choke(root(1), 11).unwrap();
-        s.host_note_off(root(1), 11).unwrap();
+        s.host_note_off(root(1), 11, crate::midi::Velocity::ZERO).unwrap();
         assert_eq!(s.runtime.state.borrow().roots.len(), 1);
         assert!(s.runtime.state.borrow().roots[&root(1)].choked);
     }
@@ -5899,7 +5991,7 @@ mod hosted_tests {
         let mut s =
             session("function onNote(e)postEvent(e)end function onRelease(e)postEvent(e)end");
         s.host_note_on(root(1), on(0, 100)).unwrap();
-        s.host_note_off(root(1), 1).unwrap();
+        s.host_note_off(root(1), 1, crate::midi::Velocity::ZERO).unwrap();
         s.drain().unwrap();
         assert_eq!(s.complete_host_roots(2, &[]).unwrap().len(), 1);
         let prefix = HostedInput::On {
@@ -5948,10 +6040,12 @@ mod hosted_tests {
             HostedInput::Off {
                 root: root(99),
                 frame: 11,
+                velocity: crate::midi::Velocity::ZERO,
             },
             HostedInput::Off {
                 root: root(1),
                 frame: 11,
+                velocity: crate::midi::Velocity::ZERO,
             },
             HostedInput::Off {
                 root: HostRoot {
@@ -5959,10 +6053,12 @@ mod hosted_tests {
                     ..root(2)
                 },
                 frame: 11,
+                velocity: crate::midi::Velocity::ZERO,
             },
             HostedInput::Off {
                 root: root(2),
                 frame: 9,
+                velocity: crate::midi::Velocity::ZERO,
             },
             HostedInput::On {
                 root: root(3),
@@ -5971,6 +6067,7 @@ mod hosted_tests {
                     kind: InputKind::NoteOff {
                         channel: 0,
                         note: 60,
+                        velocity: 0,
                     },
                 },
             },
@@ -5984,6 +6081,7 @@ mod hosted_tests {
                 kind: InputKind::NoteOff {
                     channel: 0,
                     note: 60,
+                    velocity: 0,
                 },
             }),
             HostedInput::Event(Input {
@@ -6022,10 +6120,12 @@ mod hosted_tests {
             HostedInput::Off {
                 root: root(2),
                 frame: 11,
+                velocity: crate::midi::Velocity::ZERO,
             },
             HostedInput::Off {
                 root: root(2),
                 frame: 12,
+                velocity: crate::midi::Velocity::ZERO,
             },
         ];
         s.validate_hosted_inputs(&valid).unwrap();
@@ -6033,7 +6133,7 @@ mod hosted_tests {
         for event in valid {
             match event {
                 HostedInput::On { root, input } => s.host_note_on(root, input).unwrap(),
-                HostedInput::Off { root, frame } => s.host_note_off(root, frame).unwrap(),
+                HostedInput::Off { root, frame, velocity } => s.host_note_off(root, frame, velocity).unwrap(),
                 HostedInput::Choke { root, frame } => s.host_note_choke(root, frame).unwrap(),
                 HostedInput::Event(input) => s.input(input).unwrap(),
             }
@@ -6071,6 +6171,7 @@ mod hosted_tests {
             let off = HostedInput::Off {
                 root: root(1),
                 frame: 1,
+                velocity: crate::midi::Velocity::ZERO,
             };
             let packet = [
                 HostedInput::On {
@@ -6084,7 +6185,7 @@ mod hosted_tests {
             for event in packet {
                 match event {
                     HostedInput::On { root, input } => s.host_note_on(root, input).unwrap(),
-                    HostedInput::Off { root, frame } => s.host_note_off(root, frame).unwrap(),
+                    HostedInput::Off { root, frame, velocity } => s.host_note_off(root, frame, velocity).unwrap(),
                     HostedInput::Choke { root, frame } => s.host_note_choke(root, frame).unwrap(),
                     HostedInput::Event(input) => s.input(input).unwrap(),
                 }
@@ -6135,7 +6236,7 @@ mod hosted_tests {
         for event in packet {
             match event {
                 HostedInput::On { root, input } => s.host_note_on(root, input).unwrap(),
-                HostedInput::Off { root, frame } => s.host_note_off(root, frame).unwrap(),
+                HostedInput::Off { root, frame, velocity } => s.host_note_off(root, frame, velocity).unwrap(),
                 HostedInput::Choke { root, frame } => s.host_note_choke(root, frame).unwrap(),
                 HostedInput::Event(input) => s.input(input).unwrap(),
             }
@@ -6162,7 +6263,7 @@ mod hosted_tests {
         for token in 1..HOST_ROOT_CAPACITY as u64 {
             s.host_note_on(root(token), on(0, 100)).unwrap();
         }
-        s.host_note_off(root(1), 1).unwrap();
+        s.host_note_off(root(1), 1, crate::midi::Velocity::ZERO).unwrap();
         s.drain().unwrap();
         assert_eq!(s.complete_host_roots(2, &[]).unwrap().len(), 1);
         let next = HOST_ROOT_CAPACITY as u64;
@@ -6174,6 +6275,7 @@ mod hosted_tests {
             HostedInput::Off {
                 root: root(next),
                 frame: 11,
+                velocity: crate::midi::Velocity::ZERO,
             },
             HostedInput::On {
                 root: root(next + 1),
@@ -6188,7 +6290,8 @@ mod hosted_tests {
         let oversized = vec![
             HostedInput::Off {
                 root: root(2),
-                frame: 10
+                frame: 10,
+                velocity: crate::midi::Velocity::ZERO,
             };
             HOST_ROOT_CAPACITY + 1
         ];
@@ -6251,7 +6354,7 @@ mod hosted_tests {
         let mut s = session("function onNote(e)end");
         s.host_note_on(root(1), on(0, 100)).unwrap();
         s.host_note_on(root(2), on(0, 100)).unwrap();
-        s.host_note_off(root(1), 1).unwrap();
+        s.host_note_off(root(1), 1, crate::midi::Velocity::ZERO).unwrap();
         s.drain().unwrap();
         let expected = [HostCompletion {
             root: root(1),
@@ -6275,7 +6378,7 @@ mod hosted_tests {
             assert_eq!(s.runtime.state.borrow().roots.len(), 2);
             assert_eq!(s.complete_host_roots(2, &[]).unwrap(), expected);
         }
-        assert!(s.host_note_off(root(1), 100).is_err());
+        assert!(s.host_note_off(root(1), 100, crate::midi::Velocity::ZERO).is_err());
         assert_eq!(s.current_frame(), 1);
         s.acknowledge_host_completions(&[root(1)]).unwrap();
         assert!(s.acknowledge_host_completions(&[root(1)]).is_err());
@@ -6288,13 +6391,14 @@ mod hosted_tests {
             session("function onNote(e)postEvent(e)end function onRelease(e)postEvent(e)end");
         s.host_note_on(root(1), on(0, 100)).unwrap();
         s.host_note_on(root(2), on(0, 80)).unwrap();
-        s.host_note_off(root(2), 1).unwrap();
+        s.host_note_off(root(2), 1, crate::midi::Velocity::ZERO).unwrap();
         s.input(on(1, 90)).unwrap();
         s.input(Input {
             frame: 2,
             kind: InputKind::NoteOff {
                 channel: 0,
                 note: 60,
+                velocity: 0,
             },
         })
         .unwrap();
@@ -6320,7 +6424,7 @@ mod hosted_tests {
         s.host_note_on(root(1), on(0, 100)).unwrap();
         assert!(s.drain().unwrap().commands.is_empty());
         assert!(done(&mut s, 1, &[]).unwrap().is_empty());
-        s.host_note_off(root(1), 2).unwrap();
+        s.host_note_off(root(1), 2, crate::midi::Velocity::ZERO).unwrap();
         let out = s.drain().unwrap();
         assert_eq!(out.command_roots, [Some(root(1))]);
         assert_eq!(done(&mut s, 3, &[]).unwrap(), [root(1)]);
@@ -6339,7 +6443,7 @@ mod hosted_tests {
         "#,
         );
         s.host_note_on(root(1), on(0, 100)).unwrap();
-        s.host_note_off(root(1), 48).unwrap();
+        s.host_note_off(root(1), 48, crate::midi::Velocity::ZERO).unwrap();
         s.drain().unwrap();
         assert!(done(&mut s, 49, &[]).unwrap().is_empty());
         s.advance(4800).unwrap();
@@ -6385,7 +6489,7 @@ mod hosted_tests {
         let mut s =
             Session::new_hosted_program_chain(&p, BTreeMap::new(), None, 48000, 7, 9).unwrap();
         s.host_note_on(root(1), on(0, 100)).unwrap();
-        s.host_note_off(root(1), 1).unwrap();
+        s.host_note_off(root(1), 1, crate::midi::Velocity::ZERO).unwrap();
         let out = s.drain().unwrap();
         assert_eq!(
             out.commands
@@ -6435,7 +6539,7 @@ mod hosted_tests {
         let mut s =
             Session::new_hosted_program_chain(&p, BTreeMap::new(), None, 48000, 7, 9).unwrap();
         s.host_note_on(root(1), on(0, 100)).unwrap();
-        s.host_note_off(root(1), 1).unwrap();
+        s.host_note_off(root(1), 1, crate::midi::Velocity::ZERO).unwrap();
         s.advance(50).unwrap();
         s.drain().unwrap();
         assert_eq!(done(&mut s, 51, &[]).unwrap(), [root(1)]);
@@ -6497,10 +6601,10 @@ mod hosted_tests {
         );
         assert!(s.host_note_on(root(1), on(100, 100)).is_err());
         assert_eq!(s.current_frame(), 0);
-        s.host_note_off(root(1), 1).unwrap();
+        s.host_note_off(root(1), 1, crate::midi::Velocity::ZERO).unwrap();
         s.drain().unwrap();
         assert_eq!(done(&mut s, 2, &[]).unwrap(), [root(1)]);
-        assert!(s.host_note_off(root(1), 100).is_err());
+        assert!(s.host_note_off(root(1), 100, crate::midi::Velocity::ZERO).is_err());
         assert_eq!(s.current_frame(), 1);
         s.host_note_on(root(HOST_ROOT_CAPACITY as u64 + 1), on(2, 100))
             .unwrap();
@@ -6519,8 +6623,8 @@ mod hosted_tests {
             out.command_roots,
             [Some(root(1)), Some(root(1)), Some(root(2)), Some(root(2))]
         );
-        s.host_note_off(root(1), 1).unwrap();
-        s.host_note_off(root(2), 1).unwrap();
+        s.host_note_off(root(1), 1, crate::midi::Velocity::ZERO).unwrap();
+        s.host_note_off(root(2), 1, crate::midi::Velocity::ZERO).unwrap();
         s.drain().unwrap();
         assert!(done(&mut s, 2, &[root(1), root(2)]).unwrap().is_empty());
         assert_eq!(done(&mut s, 2, &[root(2)]).unwrap(), [root(1)]);
@@ -6534,7 +6638,7 @@ mod hosted_tests {
         for id in 1..=HOST_ROOT_CAPACITY as u64 {
             s.host_note_on(root(id), on(0, 100)).unwrap();
         }
-        s.host_note_off(root(1), 1).unwrap();
+        s.host_note_off(root(1), 1, crate::midi::Velocity::ZERO).unwrap();
         s.drain().unwrap();
         let expected = HostCompletion {
             root: root(1),

@@ -112,6 +112,7 @@ fn hosted_packet(frame: u64, token: u64) -> HostedRequest {
             HostedInput::Off {
                 root: root(token),
                 frame: frame + 4,
+                velocity: crate::midi::Velocity::ZERO,
             },
         ],
     )
@@ -136,6 +137,7 @@ fn played_end(player: &mut Player<'_>) -> super::super::player::Rendered {
                 HostedInput::Off {
                     root: root(1),
                     frame: 4,
+                    velocity: crate::midi::Velocity::ZERO,
                 },
             ],
             BLOCK_FRAMES,
@@ -533,12 +535,14 @@ fn completion_rooted_packet_validation_is_bounded_and_does_not_admit_tokens() {
                 bad.roots[1] = HostedInput::Off {
                     root: root(1),
                     frame: 256,
+                    velocity: crate::midi::Velocity::ZERO,
                 }
             }
             3 => {
                 bad.roots[0] = HostedInput::Off {
                     root: root(0),
                     frame: 0,
+                    velocity: crate::midi::Velocity::ZERO,
                 }
             }
             _ => {
@@ -571,7 +575,8 @@ fn completion_rooted_packet_validation_is_bounded_and_does_not_admit_tokens() {
             Request::new(stamp(0), &[]).unwrap(),
             &[HostedInput::Off {
                 root: root(999),
-                frame: 0
+                frame: 0,
+                velocity: crate::midi::Velocity::ZERO,
             }]
         )
         .is_ok()
@@ -613,6 +618,7 @@ fn completion_authoritative_unknown_off_aborts_worker_without_executing_valid_pr
             HostedInput::Off {
                 root: root(999),
                 frame: 4,
+                velocity: crate::midi::Velocity::ZERO,
             },
         ],
     )
@@ -657,6 +663,7 @@ fn completion_untransferred_suffix_survives_authoritative_census_refresh() {
                 HostedInput::Off {
                     root: root(token),
                     frame: frame + 4,
+                    velocity: crate::midi::Velocity::ZERO,
                 },
             ]
         })
@@ -693,6 +700,7 @@ fn completion_untransferred_suffix_survives_authoritative_census_refresh() {
                 HostedInput::Off {
                     root: root(4),
                     frame: 304,
+                    velocity: crate::midi::Velocity::ZERO,
                 },
             ],
             256,
@@ -787,6 +795,7 @@ fn completion_real_start_hosted_merges_ui_rooted_and_ordinary_inputs_once() {
                 kind: InputKind::NoteOff {
                     channel: 0,
                     note: 60,
+                    velocity: 0,
                 },
             },
             Input {
@@ -947,6 +956,8 @@ fn completion_hosted_control_validation_rejects_malformed_packet_before_submissi
                 playing: true,
                 beat: 4.,
                 tempo: 1000.,
+                time_sig_num: 4,
+                time_sig_den: 4,
             },
         ),
     ];
@@ -965,6 +976,7 @@ fn completion_hosted_control_validation_rejects_malformed_packet_before_submissi
             InputKind::NoteOff {
                 channel: 0,
                 note: 60,
+                velocity: 0,
             },
         ),
         event(
@@ -1019,6 +1031,8 @@ fn completion_hosted_control_validation_rejects_malformed_packet_before_submissi
                 playing: false,
                 beat: 0.,
                 tempo: 0.5,
+                time_sig_num: 4,
+                time_sig_den: 4,
             },
         ),
         event(
@@ -1027,6 +1041,8 @@ fn completion_hosted_control_validation_rejects_malformed_packet_before_submissi
                 playing: false,
                 beat: 0.,
                 tempo: 1001.,
+                time_sig_num: 4,
+                time_sig_den: 4,
             },
         ),
         event(
@@ -1035,6 +1051,8 @@ fn completion_hosted_control_validation_rejects_malformed_packet_before_submissi
                 playing: false,
                 beat: f64::NAN,
                 tempo: 120.,
+                time_sig_num: 4,
+                time_sig_den: 4,
             },
         ),
         event(
@@ -1131,6 +1149,7 @@ fn completion_hosted_controls_keep_same_frame_wire_order_around_release() {
         let off = HostedInput::Off {
             root: root(1),
             frame: 4,
+            velocity: crate::midi::Velocity::ZERO,
         };
         let entries = if control_before_release {
             [down, off]
@@ -1222,6 +1241,7 @@ fn completion_hosted_controller_and_bend_precede_same_frame_note_callback() {
         HostedInput::Off {
             root: root(1),
             frame: 4,
+            velocity: crate::midi::Velocity::ZERO,
         },
     ];
     port.realtime()
@@ -1386,6 +1406,7 @@ fn actual_worker_active_voice_count_tracks_on_off_and_clears_on_shutdown() {
     let off = HostedInput::Off {
         root: root(1),
         frame: 256,
+        velocity: crate::midi::Velocity::ZERO,
     };
     port.realtime()
         .try_submit_hosted(

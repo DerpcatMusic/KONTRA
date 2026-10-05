@@ -841,6 +841,7 @@ mod tests {
                 kind: InputKind::NoteOff {
                     channel: 0,
                     note: 60,
+                    velocity: 0,
                 },
             },
         ];
@@ -864,6 +865,8 @@ mod tests {
                     playing: true,
                     beat: 0.,
                     tempo,
+                    time_sig_num: 4,
+                    time_sig_den: 4,
                 },
             };
             assert!(partitioned.render(&[note(0), transport], 2).is_err());
