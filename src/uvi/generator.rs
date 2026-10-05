@@ -871,18 +871,18 @@ fn blep(phase: f64, step: f64) -> f64 {
 /// Odd counts start with the center oscillator, then negative/positive pairs;
 /// even counts contain pairs only. Pair magnitudes increase toward both edges.
 fn unison_position(index: usize, count: usize) -> f64 {
-    if count == 1 || (count % 2 != 0 && index == 0) {
+    if count == 1 || (!count.is_multiple_of(2) && index == 0) {
         return 0.;
     }
-    let pair = if count % 2 == 0 {
+    let pair = if count.is_multiple_of(2) {
         index / 2 + 1
     } else {
         index.div_ceil(2)
     };
-    let negative = if count % 2 == 0 {
-        index % 2 == 0
+    let negative = if count.is_multiple_of(2) {
+        index.is_multiple_of(2)
     } else {
-        index % 2 != 0
+        !index.is_multiple_of(2)
     };
     pair as f64 / (count / 2) as f64 * if negative { -1. } else { 1. }
 }
@@ -891,9 +891,9 @@ fn unison_position(index: usize, count: usize) -> f64 {
 /// sequence; odd counts retain a centered first oscillator. Native authored
 /// sine fixtures distinguish this from simply alternating left/right pairs.
 fn unison_pan(index: usize, count: usize, mode: f64) -> f64 {
-    if mode == 0. || count == 1 || (count % 2 != 0 && index == 0) {
+    if mode == 0. || count == 1 || (!count.is_multiple_of(2) && index == 0) {
         unison_position(index, count)
-    } else if (8 - count + index).count_ones() % 2 == 0 {
+    } else if (8 - count + index).count_ones().is_multiple_of(2) {
         -1.
     } else {
         1.
@@ -1234,7 +1234,7 @@ mod tests {
                     .all(|(a, b)| a.to_bits() == b.to_bits())
             );
             let rgba: Vec<u8> = pixels
-                .chunks_exact(3)
+                .as_chunks::<3>().0.iter()
                 .flat_map(|pixel| pixel.iter().copied().chain([255]))
                 .collect();
             let opaque = image_pixels(width, height, 4, &rgba).unwrap();

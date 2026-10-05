@@ -222,7 +222,7 @@ impl Control {
             self.settle_begin = None;
         }
         let increment = (target - self.future) * alpha;
-        if frame % block == 0 && target != self.future && increment.abs() < 1e-6 {
+        if frame.is_multiple_of(block) && target != self.future && increment.abs() < 1e-6 {
             self.future = target;
             if interpolate {
                 self.settle_begin = Some(frame);
@@ -397,8 +397,8 @@ impl XpanderFilter {
             self.cutoff_point = self.parameters["Freq"];
             self.pending_drive = Some(self.parameters["Drive"]);
         }
-        if control.is_some() && (self.processed || matrix) {
-            self.controls[control.unwrap()].settle_begin = None;
+        if let Some(index) = control && (self.processed || matrix) {
+            self.controls[index].settle_begin = None;
             return Ok(());
         }
         // Bypass freezes audio state; scalar re-enable synchronizes pending values.
@@ -494,7 +494,7 @@ impl XpanderFilter {
             0.,
         ));
         let elapsed = self.frame - begin;
-        if elapsed % span != 0 {
+        if !elapsed.is_multiple_of(span) {
             return Ok(());
         }
         self.configure_frequency(self.parameters["Freq"])?;
@@ -638,8 +638,8 @@ impl XpanderFilter {
         let mut next_frequency = self.frequency_ramp;
         let mut next_q = self.q_ramp;
         for _ in 0..32 * phases {
-            for i in 0..3 {
-                next_frequency[i] += self.frequency_increment[i];
+            for (next, increment) in next_frequency.iter_mut().zip(self.frequency_increment) {
+                *next += increment;
             }
             next_q += self.q_increment;
         }
@@ -759,8 +759,7 @@ impl XpanderFilter {
                 let mut output = 0.;
                 // Algorithm I forces 2x through 48 kHz, honors the toggle above;
                 // Algorithm II honors the toggle at every measured rate.
-                for phase in 0..phases {
-                    let coeff = phase_coeffs[phase];
+                for (phase, &coeff) in phase_coeffs[..phases].iter().enumerate() {
                     let [
                         stage_gain,
                         pole,
@@ -2344,8 +2343,9 @@ mod tests {
         // Initially bypassed filters retain their zero-coefficient cold start.
         #[rustfmt::skip]
         const POINTS:[usize;28]=[16384,16385,16386,16391,16415,16416,16447,16448,16511,16512,16546,16548,16575,16576,16604,16622,16637,16639,16640,16699,16701,16896,17000,18000,19442,21845,22212,23495];
+        type ResumeCase<'a> = (u8, &'a str, &'a str, &'a [(&'a str, f64)], f32, [f32; 28]);
         #[rustfmt::skip]
-        let cases:[(u8,&str,&str,&[(&str,f64)],f32,[f32;28]);14]=[
+        let cases:[ResumeCase<'_>;14]=[
             (1,"Freq",r#"Freq="1000" DistortionType="2""#,&[("Freq",5000.0)],1.1e-06,[1.121_365_9e-1,6.831_220_5e-2,2.853_494_9e-2,-8.992_232e-2,3.455_404_6e-2,1.406_271_5e-3,1.067_777_3e-1,7.327_542_5e-2,2.236_816_4e-1,2.125_954_8e-1,2.244_772e-1,1.870_541_3e-1,1.768_679_8e-1,2.025_690_4e-1,-4.163_762e-2,1.205_226_3e-2,-1.095_725_6e-1,-2.608_799_7e-2,1.766_579e-2,-2.327_559_3e-1,-2.405_845_2e-1,1.796_502_6e-1,1.914_607_3e-1,1.210_507e-1,-1.667_598e-2,-7.056_327e-2,1.304_412_5e-1,-7.420_494e-2]),
             (1,"Q",r#"Freq="18000" DistortionType="2""#,&[("Q",0.75)],3e-07,[-1.030_676_44e-1,-3.007_455e-1,-2.272_285_5e-1,-1.533_425_7e-1,-1.346_374_9e-1,-1.708_671_7e-1,-2.011_485_8e-2,-6.479_671e-2,1.977_234_2e-1,1.666_947_3e-1,1.912_009_1e-1,1.211_230_75e-1,2.368_467_5e-1,2.478_765_7e-1,4.757_767_5e-2,-7.437_728e-2,-3.299_28e-2,5.706_976e-2,9.998_288e-2,-2.504_089e-1,-2.284_341_3e-1,1.209_805_46e-1,1.373_548e-1,1.901_455_7e-1,-9.875_155e-2,-1.481_934e-1,1.974_265_9e-1,5.810_762e-3]),
             (1,"FreqQ",r#"Freq="1000" DistortionType="2""#,&[("Freq",18000.0),("Q",0.5)],8e-07,[1.121_365_9e-1,6.713_136e-2,2.333_703_8e-2,-1.181_148_44e-1,-1.083_109_3e-1,-1.575_148_7e-1,-2.607_644e-2,-7.234_842e-2,1.957_907_4e-1,1.639_453_2e-1,1.887_194_7e-1,1.182_149_5e-1,2.374_200_5e-1,2.483_308_6e-1,4.663_196_6e-2,-7.231_761_5e-2,-3.582_008_6e-2,5.404_400_5e-2,9.706_103e-2,-2.506_087e-1,-2.297_626_1e-1,1.237_331_5e-1,1.400_197e-1,1.881_493_8e-1,-9.587_935e-2,-1.456_548_7e-1,1.955_040_2e-1,2.686_424_2e-3]),
