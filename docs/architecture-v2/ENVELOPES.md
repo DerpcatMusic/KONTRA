@@ -21,6 +21,42 @@ the logical identity. Pedals act on the effective gate, so a sustained key-up
 does not begin release. Explicit voice/family stops and panic remain hard stops.
 These operations require no queue capacity or callback heap work.
 
+## Timed family choking
+
+`choke_family(family, frames)` seals that family's admissions, cancels its delayed
+starts and fades each sounding source from its next envelope sample's level. It
+uses the existing linear release state; no extra per-voice state or render branch
+is added. An already releasing source keeps its trajectory if its remaining tail
+is shorter than the requested duration. A shorter choke captures the current level
+and reaches zero at the new exclusive end. Repeated commands cannot prolong tails.
+Zero frames uses the same hard-stop path as `stop_family`.
+
+Choking does not close a logical gate, consume a physical key, cancel note behaviors
+or affect sibling families. It also does not reset playback or exit an until-release
+loop: the source continues beneath the fade, unless a later gate closure changes
+that loop. Source EOF may finish earlier. Tail ownership and terminal retry use the
+normal family/note path; a faded-out physical note still waits for its key-up.
+
+`Event::ChokeFamily(family, frames)` schedules the same operation in sample time.
+Equal-time source starts and chokes follow submission order: an earlier choke
+cancels an unstarted source; an earlier start is sounding when the choke captures
+its level. Immediate choking works with a full queue; future scheduling can return
+capacity without modifying the family. Stale/foreign targets fail admission.
+
+A future choke does not pin the family or its note. If the family ends naturally,
+the queued command is discarded by subsequent cleanup or becomes a no-op when due.
+Its full generational identity prevents it targeting a replacement slot. This is a
+native choke primitive, not automatic victim selection, voice-stealing reserves,
+exclusive-group mapping or a vendor fade-curve interpretation.
+
+Six heap-audited tests in `tests/choke.rs` independently check per-layer attack and
+release levels, unequal envelope phases, siblings, full queues, delayed/equal-time
+starts, natural EOF, stale/reused/foreign IDs, loop phase, silent advancement and
+physical/terminal ownership. Regular, irregular and zero-size render partitions
+agree exactly. Mixed-operation ownership invariants now also exercise timed chokes.
+All four native crates pass debug/release/MSRV tests and strict all-target Clippy;
+the root historical boundary tests remain a separate validation check.
+
 `start_family` now takes an explicit envelope for manually admitted sources;
 `trigger` uses each prepared region's envelope. The single-source `start`
 convenience uses the constant envelope. The native demo exercises a 5 ms attack,
@@ -77,6 +113,6 @@ misses for the same three workloads. These are uncontrolled local measurements,
 not a worst-case execution-time proof.
 
 Still open: envelope curves, tempo-relative durations, live envelope modulation,
-repedaling, loop/source views, resampling, release-trigger mapping, and audio-host
+repedaling, automatic stealing/reserves, release-trigger mapping, and audio-host
 integration. The native linear envelope is not a compatibility interpretation
 of Kontakt/HISE/Falcon or other engines.

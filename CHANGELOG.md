@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Add immediate and sample-scheduled family chokes using native envelope state. Fades capture each source's level without extending existing tails, preserve loop phase and sibling/physical-note ownership, and cancel delayed starts; naturally retired targets cannot affect reused family slots.
+
 - Follow direct child/family/source ownership links during release and family stops, with a preallocated closure stack and no recursive traversal. Independent descendants, envelope tails, failed admission and terminal retries retain their lifetime rules; phase workloads measure admission, note-off and retirement separately.
 
 - Allocate arena slots through control-prepared free bitmaps, preserving lowest-slot order, generation quarantine and exact transfer rollback. No callback allocation or free-list ordering change is introduced.

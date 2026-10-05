@@ -227,20 +227,36 @@ impl Runtime {
     /// Stop only this family's voices and delayed starts. Sibling families and the
     /// logical note are unaffected. This cleanup requires no queue capacity.
     pub fn stop_family(&mut self, id: FamilyId) -> Result<(), Error> {
-        self.apply_due();
-        self.families.get(id.0).ok_or(Error::StaleHandle)?;
-        while let Some(first) = self.families.get(id.0).and_then(|f| f.first_voice) {
-            self.end_voice(VoiceId(self.voices.id(first.get())));
+        self.choke_family(id, 0)
+    }
+
+    /// Seal this family, cancel delayed starts and fade each sounding source from
+    /// its current envelope level over at most `frames`. Existing shorter tails
+    /// are unchanged. Playback continues; logical gates and sibling families are
+    /// unaffected. Zero frames is a hard stop. No queue capacity is required.
+    pub fn choke_family(&mut self, id: FamilyId, frames: u32) -> Result<(), Error> {
+        self.schedule_event(self.now, super::Event::ChokeFamily(id, frames))
+    }
+
+    pub(super) fn choke_family_now(&mut self, id: FamilyId, frames: u32) {
+        // A scheduled choke does not retain a naturally completed family. The
+        // generation check makes its later execution harmless after slot reuse.
+        let Some(family) = self.families.get_mut(id.0) else {
+            return;
+        };
+        family.open = false;
+        let mut voice = family.first_voice;
+        while let Some(index) = voice {
+            let state = self.voices.at_mut(index);
+            voice = state.siblings.next;
+            if frames == 0 || !state.started {
+                self.end_voice(VoiceId(self.voices.id(index.get())));
+            } else {
+                state.envelope.choke(frames);
+            }
         }
-        self.commands.retain(
-            |c| !matches!(c.action, super::Action::Start(v) if self.voices.get(v.0).is_none()),
-        );
-        // end_voice can retire an already sealed family when its last voice ends.
-        if let Some(f) = self.families.get_mut(id.0) {
-            f.open = false;
-            self.retire_family(id);
-        }
-        Ok(())
+        self.retire_family(id);
+        self.cancel_closed_work();
     }
 
     pub(super) fn retire_family(&mut self, id: FamilyId) {
