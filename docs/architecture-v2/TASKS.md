@@ -22,6 +22,9 @@ Family/expression ownership and segmented rendering now have
 - [x] Review callback ownership/index invariants before expanding DSP; [evidence and remaining review](ENVELOPES.md).
 - [x] Implement native linear AHDSR and retained release tails with independent timing/heap tests.
 - [x] Implement independent source ranges, forward/reverse playback and continuous/until-release loops; [evidence](SOURCE_VIEWS.md).
+- [x] Replace release ownership scans with direct child/family/source lists and a
+  prepared closure stack; validate slot reuse, linked/independent descendants, tails
+  and terminal retries. Full stealing/overload policy remains open.
 
 - [x] Pin UMP v1.1.2 and implement allocation-free framing/channel-voice decoding plus native note/pedal ingress; [partial scope and evidence](MIDI_INGRESS.md).
 

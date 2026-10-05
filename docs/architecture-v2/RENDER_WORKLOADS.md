@@ -110,9 +110,10 @@ advancement optimization. This does not bypass ownership or stop muted voices.
 `cargo run --release --locked -p sampler-core --example admission_workload` times
 bursts of 16/64/256/1,024 same-key notes with four prepared layers each, plus 16
 notes in a 4,096-voice reservation. Each configuration uses 32 warmups and 128 timed
-bursts. Preparation, panic, accepted terminals and counter assertions are outside
-timing. Inputs have no external host ID, so duplicate-ID lookup is not included.
-This isolates admission; it does not measure total block work or cleanup.
+bursts. The original workload timed admission alone; the current version separately
+times note admission, paired note-off and accepted terminal retirement. Preparation
+and counter assertions stay outside timing. Inputs have no external host ID by
+default, so duplicate-ID lookup is not included unless `--ids` is supplied.
 
 Arena capacity and occupancy are now maintained at insertion/removal rather than
 reconstructed by scanning reserved slots. Plan transfers use the same accounting:
@@ -180,3 +181,40 @@ The largest synthetic burst improved 37.66× over counters alone and 64.22× ove
 the original allocator. Raw data and binary hashes use `artifacts/admission-bitmap-*`.
 This does not include external-ID duplicate checks, streaming, rendering, script
 bursts or cleanup; it is not a production deadline guarantee.
+
+
+## Note release and terminal retirement
+
+The same example now reports separate note-off and accepted-terminal medians/p99s.
+Each burst starts four zero-release-envelope layers per note, releases every input,
+then verifies exactly one accepted terminal per root and no retained notes/voices.
+No rendering occurs in these phase timings. Nonzero tails, delayed starts, independent
+children and pedal semantics are covered by separate correctness/heap tests.
+
+Release follows direct note/child/family/source links and a preallocated closed-note
+stack. Private links are unlinked before slot reuse; public handles remain
+runtime/slot/generation identities. This removes ownership-wide release scans,
+including family-stop scans, without changing terminal delivery or mixing order.
+Input pairing still scans reserved notes and queued-work cancellation still scans
+commands; this is not constant-time end-to-end release.
+
+Three alternating CPU-2 comparisons against `fa80b36` (with the same extended phase
+workload) used Rust 1.99 release on the local Ryzen 7800X3D, with builds/scans finished.
+Median-of-median times in microseconds, with no external IDs:
+
+| Notes | Reserved voices | Admission before | Admission after | Note-off before | Note-off after | Retirement before | Retirement after |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 16 | 64 | 1.890 | 2.000 | 3.620 | 1.960 | 0.080 | 0.110 |
+| 64 | 256 | 7.660 | 8.120 | 56.421 | 18.921 | 0.350 | 0.410 |
+| 256 | 1,024 | 31.731 | 33.111 | 913.057 | 259.685 | 1.450 | 1.730 |
+| 1,024 | 4,096 | 167.813 | 174.183 | 16,286.933 | 4,011.935 | 7.470 | 7.380 |
+| 16 | 4,096 | 1.960 | 2.030 | 136.872 | 61.491 | 0.940 | 1.070 |
+
+The largest no-ID release burst improved 4.06×; with distinct external IDs it fell
+from 14,550.672 to 2,313.113 microseconds (6.29×). Sparse-reservation input pairing
+remains expensive. Links add fixed memory and insertion/removal writes: the table
+shows the admission/retirement tradeoff. Across the 32 resident render configurations,
+the median after/before time ratio was 1.033, range 0.978–1.153. The measured render
+cost is retained explicitly rather than claiming the added ownership metadata is free.
+No host deadline or competitor claim follows from these synthetic workloads.
+Raw CSVs and binary hashes use ignored `artifacts/release-final-*`.

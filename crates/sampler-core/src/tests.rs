@@ -615,6 +615,27 @@ fn arena_capacity_matches_slots_through_quarantine_and_transfer_rollback() {
 
 #[test]
 fn ownership_counters_match_reachable_state_under_mixed_operations() {
+    fn check_links<T>(
+        arena: &Arena<T>,
+        mut next: Option<Index>,
+        expected: usize,
+        links: impl Fn(&T) -> Siblings,
+        owned: impl Fn(&T) -> bool,
+    ) {
+        let mut previous = None;
+        let mut count = 0;
+        while let Some(index) = next {
+            assert!(count < expected, "cycle or duplicate ownership link");
+            let item = arena.slots[index.get()].value.as_ref().unwrap();
+            assert!(owned(item));
+            let siblings = links(item);
+            assert_eq!(siblings.previous, previous);
+            previous = Some(index);
+            next = siblings.next;
+            count += 1;
+        }
+        assert_eq!(count, expected, "unreachable owned slot");
+    }
     let pcm = [Pcm::new(48000, Box::from([[0.25; 2]; 31])).unwrap()];
     let mut rt = fixture_runtime(48000, &pcm, limits()).unwrap();
     let mut seed = 12345u64;
@@ -624,7 +645,7 @@ fn ownership_counters_match_reachable_state_under_mixed_operations() {
         let note = NoteId(rt.notes.id(index));
         let family = FamilyId(rt.families.id(index));
         let voice = VoiceId(rt.voices.id(index));
-        match seed % 10 {
+        match seed % 12 {
             0 => {
                 let _ = rt.note_on(input(None), 60, 1.0);
             }
@@ -659,10 +680,15 @@ fn ownership_counters_match_reachable_state_under_mixed_operations() {
             8 => {
                 rt.render(&mut [[0.0; 2]; 7]).unwrap();
             }
+            9 => {
+                let _ = rt.stop_family(family);
+            }
+            10 => rt.panic(),
             _ => {
                 rt.flush_ended(|_| step % 3 == 0);
             }
         }
+        assert!(rt.closed_notes.is_empty());
         for (i, slot) in rt.voices.slots.iter().enumerate() {
             assert_eq!(
                 rt.voice_activity[i / 64] & (1 << (i % 64)) != 0,
@@ -674,6 +700,24 @@ fn ownership_counters_match_reachable_state_under_mixed_operations() {
                 let id = NoteId(rt.notes.id(i));
                 assert!(rt.expressions.get(n.expression.0).is_some());
                 assert!(n.parent.is_none_or(|p| rt.notes.get(p.0).is_some()));
+                if n.parent.is_none() {
+                    assert_eq!(n.siblings.previous, None);
+                    assert_eq!(n.siblings.next, None);
+                }
+                check_links(
+                    &rt.notes,
+                    n.first_child,
+                    n.children,
+                    |child| child.siblings,
+                    |child| child.parent == Some(id),
+                );
+                check_links(
+                    &rt.families,
+                    n.first_family,
+                    n.families,
+                    |family| family.siblings,
+                    |family| family.note == id,
+                );
                 assert_eq!(
                     n.children,
                     rt.notes
@@ -695,6 +739,13 @@ fn ownership_counters_match_reachable_state_under_mixed_operations() {
         for (i, slot) in rt.families.slots.iter().enumerate() {
             if let Some(f) = slot.value {
                 assert!(rt.notes.get(f.note.0).is_some());
+                check_links(
+                    &rt.voices,
+                    f.first_voice,
+                    f.voices,
+                    |voice| voice.siblings,
+                    |voice| voice.family == FamilyId(rt.families.id(i)),
+                );
                 assert_eq!(
                     f.voices,
                     rt.voices

@@ -1,4 +1,4 @@
-//! Prepared four-layer note bursts; cleanup is outside timing. Run with --release.
+//! Prepared four-layer note lifecycles, timed by phase. Run with --release.
 use sampler_core::{Envelope, Input, Limits, Pcm, Playback, Prepared, Protocol, Region, Runtime};
 use std::{hint::black_box, time::Instant};
 
@@ -16,7 +16,9 @@ fn main() {
             std::process::exit(1);
         }
     };
-    println!("external_ids,notes,voices,reserved_voices,median_us,p99_us");
+    println!(
+        "external_ids,notes,voices,reserved_voices,median_us,p99_us,note_off_median_us,note_off_p99_us,retire_median_us,retire_p99_us"
+    );
     for (notes, reserved) in [(16, 64), (64, 256), (256, 1024), (1024, 4096), (16, 4096)] {
         let plan = Prepared::new(
             48000,
@@ -62,6 +64,8 @@ fn main() {
             external_id: None,
         };
         let mut times = [0u128; 128];
+        let mut releases = times;
+        let mut retirements = times;
         for iteration in 0..160 {
             let begin = Instant::now();
             for note in 0..notes {
@@ -76,20 +80,45 @@ fn main() {
             if iteration >= 32 {
                 times[iteration - 32] = elapsed;
             }
-            rt.panic();
+            let begin = Instant::now();
+            for note in 0..notes {
+                black_box(
+                    rt.note_off(Input {
+                        external_id: identified.then_some(note as i32),
+                        ..input
+                    })
+                    .unwrap(),
+                );
+            }
+            let elapsed = begin.elapsed().as_nanos();
+            assert_eq!((rt.note_count(), rt.voice_count()), (notes, 0));
+            if iteration >= 32 {
+                releases[iteration - 32] = elapsed;
+            }
             let mut ended = 0;
+            let begin = Instant::now();
             rt.flush_ended(|_| {
                 ended += 1;
                 true
             });
+            let elapsed = begin.elapsed().as_nanos();
+            if iteration >= 32 {
+                retirements[iteration - 32] = elapsed;
+            }
             assert_eq!((ended, rt.note_count(), rt.voice_count()), (notes, 0, 0));
         }
         times.sort_unstable();
+        releases.sort_unstable();
+        retirements.sort_unstable();
         println!(
-            "{identified},{notes},{},{reserved},{:.3},{:.3}",
+            "{identified},{notes},{},{reserved},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3}",
             notes * 4,
             times[64] as f64 / 1000.0,
-            times[126] as f64 / 1000.0
+            times[126] as f64 / 1000.0,
+            releases[64] as f64 / 1000.0,
+            releases[126] as f64 / 1000.0,
+            retirements[64] as f64 / 1000.0,
+            retirements[126] as f64 / 1000.0,
         );
     }
 }
