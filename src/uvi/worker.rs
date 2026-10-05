@@ -898,6 +898,20 @@ impl Worker {
     pub fn stats(&self) -> Stats {
         self.shared.stats()
     }
+    /// Shared queues only; detached AudioPort cursors and Session-local roots are excluded.
+    #[cfg(feature = "jam-audit")]
+    pub(crate) fn jam_queue_depths(&self) -> serde_json::Value {
+        let shared=&self.shared;
+        serde_json::json!({
+            "requests":shared.requests.len(),"request_capacity":shared.requests.capacity(),
+            "outputs":shared.outputs.len(),"output_capacity":shared.outputs.capacity(),
+            "hosted_requests":shared.hosted.as_ref().map(|hosted|hosted.requests.len()),
+            "hosted_request_capacity":shared.hosted.as_ref().map(|hosted|hosted.requests.capacity()),
+            "completions":shared.hosted.as_ref().map(|hosted|hosted.completions.len()),
+            "completion_capacity":shared.hosted.as_ref().map(|hosted|hosted.completions.capacity())
+        })
+    }
+
 
     /// Control thread only: private diagnostics may contain instrument paths or
     /// script data. Retain the handle under the mutex and copy its text afterward.
