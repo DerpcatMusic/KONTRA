@@ -480,6 +480,10 @@ fn shot_scaled(part: &PartView, code: u8, to: &Path, device_scale: f64) -> anyho
             "scope":"exact resolved full-app Conflux scene, no renderer fixture"}));
         let size = [u32::from(width),u32::from(height)];
         let mut gpu = tests::GpuCapture::new(size,device_scale)?;
+        if let Ok(case) = std::env::var("KONTRA_UI_GPU_ISOLATE") {
+            gpu.isolate(&original,&case,to)?;
+            return Ok(());
+        }
         gpu.original(&original,&rgba,to)?;
         let note = original.paint.iter().filter_map(|paint|
             paint.key.as_str().strip_prefix("key-").and_then(|name|name.parse::<usize>().ok()))
@@ -709,6 +713,76 @@ mod tests {
                 anyhow::ensure!(correct,"GPU readback failed exact red-clear calibration");
                 Ok(())
             })
+        }
+        /// One externally selected scene-isolation case; no production mutation.
+        pub(super) fn isolate(&mut self, original: &moose::mui::mui::scene::ResolvedScene,
+            case: &str, to: &Path) -> anyhow::Result<()> {
+            use moose::mui::mui::scene::{Layer,Paint};
+            let inventory:Vec<_> = original.paint.iter().enumerate().map(|(index,p)| {
+                let image = match &p.paint { Paint::Image { image,.. } => Some([image.width,image.height]),_=>None };
+                serde_json::json!({"index":index,"key":p.key.as_str(),"layer":format!("{:?}",p.layer),
+                    "path_commands":p.path.commands.len(),"offset":[p.offset.x,p.offset.y],
+                    "transform":p.transform.as_coeffs(),"width":p.width,"blur":p.blur,
+                    "glyphs":p.text.as_ref().map_or(0,|text|text.glyphs.len()),"image_size":image})
+            }).collect();
+            std::fs::write(to.with_extension("paint-inventory.json"),serde_json::to_vec_pretty(&inventory)?)?;
+            let mut scene = original.clone();
+            if let Some(end) = case.strip_prefix("prefix:") {
+                let end:usize = end.parse()?;
+                anyhow::ensure!(end>0 && end<=scene.paint.len(),"prefix must be1..={}",scene.paint.len());
+                scene.paint.truncate(end);
+                let mut close = Vec::new();
+                for p in &scene.paint {
+                    match p.layer {
+                        Layer::Clip | Layer::Blend {..} => {
+                            let mut closing = p.clone();
+                            closing.layer = if p.layer==Layer::Clip { Layer::Unclip } else { Layer::Unblend };
+                            close.push(closing);
+                        }
+                        Layer::Unclip | Layer::Unblend => {
+                            let closing = close.pop().ok_or_else(||anyhow::anyhow!("unbalanced source at{}",p.key.as_str()))?;
+                            anyhow::ensure!(closing.layer==p.layer,"mismatched source layer at{}",p.key.as_str());
+                        }
+                        _=>{}
+                    }
+                }
+                scene.paint.extend(close.into_iter().rev());
+            } else {
+                match case {
+                    "full"=>{},
+                    "no_blur"=>scene.paint.retain(|p|!matches!(p.layer,Layer::Shadow(_)|Layer::Backdrop)),
+                    "no_text"=>scene.paint.retain(|p|p.text.is_none()),
+                    "no_layers"=>scene.paint.retain(|p|!matches!(p.layer,
+                        Layer::Clip|Layer::Unclip|Layer::Blend {..}|Layer::Unblend|Layer::Mask)),
+                    "no_images"=>for p in &mut scene.paint {
+                        if matches!(p.paint,Paint::Image {..}) {
+                            p.paint = Paint::Solid(moose::mui::mui::scene::prelude::Color::oklcha(0.7,0.2,330.,1.));
+                        }
+                    },
+                    "no_transforms"=>for p in &mut scene.paint { p.transform=moose::mui::mui::vello::kurbo::Affine::IDENTITY; },
+                    _=>anyhow::bail!("unknown GPU scene case {case}"),
+                }
+            }
+            self.calibrate(to)?;
+            let started = Instant::now();
+            let stats = gpu_checked(&self.device,"isolated_scene_draw",||Ok(
+                self.renderer.render(&scene,self.transform,&self.view)?))?;
+            let pixels = gpu_checked(&self.device,"isolated_scene_readback",||self.readback())?;
+            let nontransparent = pixels.chunks_exact(4).filter(|pixel|pixel[3]!=0).count();
+            let nonblack = pixels.chunks_exact(4).filter(|pixel|pixel[..3].iter().any(|&c|c!=0)).count();
+            moose::core::screenshot::save_png(&to.with_extension("gpu-isolated.png"),&pixels,self.size[0],self.size[1]);
+            let receipt = serde_json::json!({"case":case,"size":self.size,
+                "source_paint_entries":original.paint.len(),"isolated_paint_entries":scene.paint.len(),
+                "first_key":scene.paint.first().map(|p|p.key.as_str()),
+                "last_key":scene.paint.last().map(|p|p.key.as_str()),
+                "nontransparent_pixels":nontransparent,"nonblack_pixels":nonblack,
+                "renders":stats.renders,"rendered_pixels":stats.rendered_pixels,
+                "draw_readback_seconds":started.elapsed().as_secs_f64(),
+                "scope":"diagnostic actual-scene projection; not authored-layout or production conformance"});
+            println!("UI_GPU_ISOLATION {receipt}");
+            std::fs::write(to.with_extension("gpu-isolation.json"),serde_json::to_vec_pretty(&receipt)?)?;
+            // Transparency is the diagnostic outcome, not an assertion that hides receipts.
+            Ok(())
         }
         pub(super) fn original(&mut self, scene: &moose::mui::mui::scene::ResolvedScene,
             cpu: &[u8], to: &Path) -> anyhow::Result<()> {
