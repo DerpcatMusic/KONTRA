@@ -358,6 +358,62 @@ fn repeated_equal_table_cell_assignments_do_not_consume_live_array_copy_budget()
 
 
 #[test]
+fn indexed_text_preparation_rejects_whole_oversized_domains_without_callbacks() {
+    let key_heavy = format!("$CONTROL_PAR_{}", "X".repeat(2048));
+    let cases = [
+        ("4097", "$CONTROL_PAR_NKS_STR_VALUES".to_owned(), "", "4096 indices"),
+        ("4096", "$CONTROL_PAR_NKS_STR_VALUES".to_owned(),
+         "set_control_par_str_arr(get_ui_id($button),$CONTROL_PAR_TEXT,\"another property\",0)", "4096 cells per control"),
+        ("4096", key_heavy, "", "16 MiB"),
+    ];
+    for (len, parameter, extra, expected) in cases {
+        let source = format!(r#"on init
+SET_CONDITION(REJECTED)
+declare ui_button $button
+declare !names[{len}]
+declare $index
+end on
+function remap
+set_control_par_str_arr(get_ui_id($button),{parameter},!names[$index],$index)
+{extra}
+end function
+on persistence_changed
+wait(100000)
+call remap
+end on"#);
+        let mut engine = LogEngine::new(Vec::new(), 48000.0);
+        let (mut rt, errors) = Runtime::with_scripts(&[&source], &mut engine, 8, Vec::new());
+        assert!(errors[0].as_ref().is_some_and(|error| error.contains(expected)), "{errors:?}");
+        assert!(!rt.condition("REJECTED"));
+        assert!(rt.interface(0).controls.iter().all(|control| control.properties.keys().all(|key| !key.ends_with(']'))));
+        rt.process(&mut engine, 48000);
+        assert!(rt.faults().next().is_none(), "{:?}", rt.diagnostics());
+    }
+    // A third complete 4096-cell domain fits neither the combined source/
+    // generic/native text headroom nor the key allowance. No earlier domain
+    // from this rejected slot may be admitted as a prefix.
+    let source = r#"on init
+declare ui_button $first
+declare ui_button $second
+declare ui_button $third
+declare %ids[3]
+%ids[0] := get_ui_id($first)
+%ids[1] := get_ui_id($second)
+%ids[2] := get_ui_id($third)
+declare !names[4096]
+declare $index
+end on
+on persistence_changed
+wait(100000)
+set_control_par_str_arr(%ids[0],$CONTROL_PAR_NKS_STR_VALUES,!names[$index],$index)
+end on"#;
+    let mut engine = LogEngine::new(Vec::new(), 48000.0);
+    let (rt, errors) = Runtime::with_scripts(&[source], &mut engine, 8, Vec::new());
+    assert!(errors[0].as_ref().is_some_and(|error| error.contains("16 MiB")), "{errors:?}");
+    assert!(rt.interface(0).controls.iter().all(|control| control.properties.keys().all(|key| !key.ends_with(']'))));
+}
+
+#[test]
 fn delayed_indexed_effect_strings_are_prepared_and_published_without_heap() {
     // Effect controls are remapped after persistence waits, as in Conflux.
     // Lexical keys 0,1,10,11,2 must still map to the correct numeric cells.
