@@ -1,5 +1,5 @@
 //! Musical ownership, independent of host channel reuse and render voice lifetime.
-use super::{Error, Handle, NoteId, Runtime, VoiceId};
+use super::{Error, Handle, Input, NoteId, Runtime, VoiceId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FamilyId(pub(super) Handle);
@@ -205,5 +205,51 @@ impl Runtime {
         self.voices.remove(id.0);
         self.families.get_mut(v.family.0).unwrap().voices -= 1;
         self.retire_family(v.family);
+    }
+
+    /// Consume terminal notifications only after acceptance. The sink must be bounded
+    /// and non-allocating on an audio thread. A rejection stops retries for this call.
+    pub fn flush_ended(&mut self, mut accept: impl FnMut(Input) -> bool) {
+        for i in 0..self.notes.slots.len() {
+            if !self.retire_note_chain(NoteId(self.notes.id(i)), &mut accept) {
+                break;
+            }
+        }
+    }
+
+    // Completed internal notes have no terminal sink. Reclaim them under admission
+    // pressure, skipping external owners whose notifications still need acceptance.
+    pub(super) fn reclaim_internal_notes(&mut self) {
+        if self.notes.available() != 0 && self.expressions.available() != 0 {
+            return;
+        }
+        for i in 0..self.notes.slots.len() {
+            self.retire_note_chain(NoteId(self.notes.id(i)), &mut |_| false);
+        }
+    }
+
+    fn retire_note_chain(
+        &mut self,
+        mut id: NoteId,
+        accept: &mut impl FnMut(Input) -> bool,
+    ) -> bool {
+        // Each removal visits its parent once. No recursion, scratch queue or
+        // repeated pool scans: O(reserved slots + retired notes).
+        while let Some(n) = self.notes.get(id.0).copied() {
+            if n.gate || n.pins != 0 || n.work != 0 || n.families != 0 || n.children != 0 {
+                break;
+            }
+            if n.input.is_some_and(|input| !accept(input)) {
+                return false;
+            }
+            self.notes.remove(id.0);
+            self.drop_expression(n.expression);
+            let Some(parent) = n.parent else {
+                break;
+            };
+            self.notes.get_mut(parent.0).unwrap().children -= 1;
+            id = parent;
+        }
+        true
     }
 }

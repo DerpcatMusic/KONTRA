@@ -715,3 +715,91 @@ fn independent_duration_keeps_ownership_after_callback_fault_until_its_release()
         assert_eq!((ends, rt.note_count(), rt.pending_commands()), (1, 0, 0));
     });
 }
+
+#[test]
+fn generated_note_slots_are_reused_inside_a_block_without_consuming_host_terminals() {
+    for (block, notes, expressions) in [1, 7, 64, 256]
+        .into_iter()
+        .flat_map(|block| [(block, 3, 8), (block, 8, 3)])
+    {
+        let mut budget = limits();
+        budget.notes = notes;
+        budget.expressions = expressions;
+        let mut rt = runtime(
+            vec![
+                Instruction::SetLocal {
+                    local: 0,
+                    value: 100,
+                },
+                Instruction::Play {
+                    transpose: 0,
+                    velocity: sampler_core::Velocity::Fixed(0.5),
+                    inheritance: sampler_core::Inheritance::Independent,
+                    duration: sampler_core::Duration::Frames(1),
+                },
+                Instruction::Wait(2),
+                Instruction::AddLocal {
+                    local: 0,
+                    value: -1,
+                },
+                Instruction::JumpIfZero {
+                    local: 0,
+                    target: 6,
+                },
+                Instruction::Jump { target: 1 },
+                Instruction::End,
+            ],
+            budget,
+        );
+        let mut audio = [[0.; 2]; 256];
+        support::without_heap(|| {
+            // A rejected host terminal in the lowest slot must neither be consumed
+            // nor prevent reclaiming an unrelated completed generated child.
+            let earlier = Input {
+                external_id: Some(6),
+                ..input()
+            };
+            let pending = rt.note_on(earlier, 60, 1.).unwrap();
+            rt.release(pending).unwrap();
+            let root = rt.note_on(input(), 60, 1.).unwrap();
+            let behavior = rt.start_behavior(root, 0).unwrap();
+            for chunk in audio.chunks_mut(block) {
+                rt.render(chunk).unwrap();
+                rt.flush_ended(|_| false);
+            }
+            assert_eq!(rt.behavior_outcome(behavior), Ok(Some(Outcome::Finished)));
+            assert!(
+                rt.note(pending).is_ok(),
+                "host terminal must still own its slot"
+            );
+            rt.release(root).unwrap();
+            let mut completions = 0;
+            rt.flush_behaviors(|_, _, outcome| {
+                assert_eq!(outcome, Outcome::Finished);
+                completions += 1;
+                true
+            });
+            let mut terminals = [None; 2];
+            let mut count = 0;
+            rt.flush_ended(|origin| {
+                terminals[count] = Some(origin);
+                count += 1;
+                true
+            });
+            assert_eq!(terminals, [Some(earlier), Some(input())]);
+            assert_eq!((completions, count, rt.note_count()), (1, 2, 0));
+            assert_eq!(
+                (rt.family_count(), rt.expression_count(), rt.voice_count()),
+                (0, 0, 0)
+            );
+        });
+        for (frame, actual) in audio.iter().enumerate() {
+            let expected = if frame < 200 && frame % 2 == 0 {
+                0.5
+            } else {
+                0.
+            };
+            assert_eq!(*actual, [expected; 2], "block {block}, frame {frame}");
+        }
+    }
+}
