@@ -47,7 +47,7 @@ pub struct ProgramPublicParams {
 }
 
 impl ProgramPublicParams {
-    pub fn read<R: ReadBytesExt>(mut reader: R, version: u16) -> Result<Self, Error> {
+    pub fn read<R: ReadBytesExt>(mut reader: R, _version: u16) -> Result<Self, Error> {
         Ok(Self {
             name: reader.read_widestring_utf16()?,
             num_bytes_samples_total: reader.read_f64_le()?,
@@ -72,16 +72,8 @@ impl ProgramPublicParams {
             instrument_cat1: reader.read_i16_le()?,
             instrument_cat2: reader.read_i16_le()?,
             instrument_cat3: reader.read_i16_le()?,
-            resource_container_filename: {
-                match version {
-                    _ => None,
-                }
-            },
-            wallpaper_filename: {
-                match version {
-                    _ => None,
-                }
-            },
+            resource_container_filename: None,
+            wallpaper_filename: None,
         })
     }
 }
@@ -117,7 +109,7 @@ impl Program {
     pub fn zone_list(&self) -> Option<Result<ZoneList, Error>> {
         self.0
             .find_first(0x34)
-            .map(|chunk| ZoneList::try_from(chunk))
+            .map(ZoneList::try_from)
     }
 
     pub fn children(&self) -> &Vec<Chunk> {

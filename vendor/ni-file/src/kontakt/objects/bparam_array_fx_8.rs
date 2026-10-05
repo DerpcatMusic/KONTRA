@@ -60,11 +60,12 @@ impl BParamArrayBParFX8 {
     }
 
     pub fn len(&self) -> usize {
-        self.items
-            .iter()
-            .filter(|p| p.is_some())
-            .collect::<Vec<&Option<_>>>()
-            .len()
+        self.items.iter().filter(|p| p.is_some()).count()
+    }
+
+    /// Whether the array has no occupied effect slots.
+    pub fn is_empty(&self) -> bool {
+        self.items.iter().all(Option::is_none)
     }
 }
 
@@ -91,6 +92,18 @@ mod tests {
     use crate::Error;
 
     use super::*;
+
+    #[test]
+    fn length_and_emptiness_count_only_occupied_slots() {
+        for (items, count) in [
+            (Vec::new(), 0),
+            (vec![None, None], 0),
+            (vec![None, Some(Chunk { id: 0, data: Vec::new() })], 1),
+        ] {
+            let array = BParamArrayBParFX8 { version: 0x12, items };
+            assert_eq!((array.len(), array.is_empty()), (count, count == 0));
+        }
+    }
 
     #[test]
     fn test_bparam_array_v10() -> Result<(), Error> {

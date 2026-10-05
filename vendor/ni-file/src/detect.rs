@@ -43,7 +43,7 @@ impl NIFileType {
     pub(crate) fn read_with_nis<R: ReadBytesExt>(
         mut reader: R,
     ) -> Result<(Self, Option<ItemContainer>), Error> {
-        let magic: u32 = reader.read_le()?;
+        let magic: u32 = ReadBytesExt::read_le(&mut reader)?;
 
         if let Some(nks) = NKSFileType::detect(magic) {
             return Ok((NIFileType::NKSContainer(nks), None));
@@ -91,54 +91,60 @@ mod tests {
 
     #[test]
     fn test_kontakt_1() -> Result<(), Error> {
-        Ok(assert_eq!(
+        assert_eq!(
             NIFileType::read(File::open("tests/filetype/NKS/KontaktV1/000-crunchy.nki")?)?,
             NIFileType::NKSContainer(NKSFileType::NKSv1LE)
-        ))
+        );
+        Ok(())
     }
 
     #[test]
     fn test_kontakt_nkm() -> Result<(), Error> {
-        Ok(assert_eq!(
+        assert_eq!(
             NIFileType::read(File::open("test-data/NKM/000.nkm")?)?,
             NIFileType::KontaktMultiV1
-        ))
+        );
+        Ok(())
     }
 
     #[test]
     fn test_kontakt_2() -> Result<(), Error> {
-        Ok(assert_eq!(
+        assert_eq!(
             NIFileType::read(File::open(
                 "tests/filetype/NKS/KontaktV2/KontaktV2-000.nki"
             )?)?,
             NIFileType::NKSContainer(NKSFileType::NKSv2LE)
-        ))
+        );
+        Ok(())
     }
 
     #[test]
     fn test_kontakt_42() -> Result<(), Error> {
-        Ok(assert_eq!(
+        assert_eq!(
             NIFileType::read(File::open(
                 "tests/filetype/NKS/KontaktV42/KontaktV42-000.nki"
             )?)?,
             NIFileType::NKSContainer(NKSFileType::NKSv2LE)
-        ))
+        );
+        Ok(())
     }
 
     #[test]
     fn test_ncw() -> Result<(), Error> {
-        Ok(assert_eq!(
+        assert_eq!(
             NIFileType::read(File::open("test-data/NCW/16-bit.ncw")?)?,
             NIFileType::NICompressedWave
-        ))
+        );
+        Ok(())
     }
 
     #[test]
     fn test_kontakt_7() -> Result<(), Error> {
         let file = File::open("tests/filetype/NISD/kontakt/7.1.3.0/000-default.nki")?;
-        Ok(assert_eq!(
+        assert_eq!(
             NIFileType::read(file)?,
             NIFileType::NISContainer
-        ))
+        );
+        Ok(())
     }
 }

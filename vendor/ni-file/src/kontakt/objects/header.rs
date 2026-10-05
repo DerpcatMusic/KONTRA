@@ -236,7 +236,7 @@ impl BPatchHeaderV42 {
         let data = reader.read_bytes(212)?; // 222 - 10
         let mut reader = Cursor::new(data);
 
-        let magic: u32 = reader.read_le()?;
+        let magic: u32 = ReadBytesExt::read_le(&mut reader)?;
         if magic != 0xEA37631A {
             return Err(NKSError::InvalidMagicNumber(magic));
         }
@@ -318,7 +318,7 @@ impl BPatchHeaderV42 {
             pcm_data_len,
             is_monolith,
             min_supported_version,
-            /// Almost always 0, 1 in Rise and Hit Library
+            // Almost always 0, 1 in Rise and Hit Library
             u_c,
             cat_icon_idx,
             instrument_author,

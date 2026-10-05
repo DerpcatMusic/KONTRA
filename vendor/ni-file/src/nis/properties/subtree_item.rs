@@ -202,6 +202,17 @@ impl SubtreeItem {
     }
 }
 
+/// A caller-supplied keystream for encrypted presets and archive members.
+/// ni-file derives no keys; implementations live outside this crate.
+pub trait LibraryKey: Send + Sync {
+    /// XOR the symmetric keystream into bytes starting `offset` bytes into the resource.
+    /// Applying the same stream twice restores the original bytes.
+    fn apply_at(&self, offset: u64, bytes: &mut [u8]);
+    fn apply(&self, bytes: &mut [u8]) {
+        self.apply_at(0, bytes);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{fs::File, io::Read};
@@ -244,16 +255,5 @@ mod tests {
         assert_eq!(buf.len(), 0, "Excess data found");
 
         Ok(())
-    }
-}
-
-/// A caller-supplied keystream for encrypted presets and archive members.
-/// ni-file derives no keys; implementations live outside this crate.
-pub trait LibraryKey: Send + Sync {
-    /// XOR the symmetric keystream into bytes starting `offset` bytes into the resource.
-    /// Applying the same stream twice restores the original bytes.
-    fn apply_at(&self, offset: u64, bytes: &mut [u8]);
-    fn apply(&self, bytes: &mut [u8]) {
-        self.apply_at(0, bytes);
     }
 }

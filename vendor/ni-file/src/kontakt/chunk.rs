@@ -35,7 +35,7 @@ impl Chunk {
     }
 
     pub fn into_object(&self) -> Result<KontaktObject, Error> {
-        Ok(KontaktObject::try_from(self)?)
+        KontaktObject::try_from(self)
     }
 }
 

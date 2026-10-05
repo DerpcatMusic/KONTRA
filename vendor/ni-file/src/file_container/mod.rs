@@ -119,7 +119,7 @@ mod tests {
             bytes.extend((index as u64).to_le_bytes());
             bytes.extend([0; 16]);
             let mut filename = [0; 600];
-            for (dest, unit) in filename.chunks_exact_mut(2).zip("authored.ncw".encode_utf16()) {
+            for (dest, unit) in filename.chunks_mut(2).zip("authored.ncw".encode_utf16()) {
                 dest.copy_from_slice(&unit.to_le_bytes());
             }
             bytes.extend(filename);

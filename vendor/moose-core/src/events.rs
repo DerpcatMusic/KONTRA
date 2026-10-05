@@ -18,6 +18,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_EVENT_LIST_OWNER: AtomicU64 = AtomicU64::new(1);
 
+#[expect(
+    deprecated,
+    reason = "try_update requires Rust 1.95, newer than the declared Rust 1.92 MSRV"
+)]
 fn allocate_event_list_owner() -> u64 {
     NEXT_EVENT_LIST_OWNER
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |owner| {
