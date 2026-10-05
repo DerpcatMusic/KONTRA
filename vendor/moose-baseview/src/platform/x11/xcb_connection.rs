@@ -125,7 +125,8 @@ impl X11Connection {
     ) -> core::result::Result<VoidCookie<'_, XCBConnection>, ConnectionError> {
         self.conn.change_window_attributes(
             window_id.get(),
-            &ChangeWindowAttributesAux::new().event_mask(EventMask::SUBSTRUCTURE_NOTIFY),
+            &ChangeWindowAttributesAux::new()
+                .event_mask(EventMask::STRUCTURE_NOTIFY | EventMask::SUBSTRUCTURE_NOTIFY),
         )
     }
 }
