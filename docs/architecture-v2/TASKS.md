@@ -7,7 +7,8 @@ but legacy extraction/migration requirements are superseded here.
 
 The existing kernel is an experiment with partial V2-03/04 evidence. Its old-VM KSP
 bridge is historical boundary evidence, not progress toward a new scripting runtime.
-No full implementation gate is closed. The four supplied references remain intact.
+Family/expression ownership and segmented rendering now have
+[additional executable evidence](OWNERSHIP_SLICE.md). No full implementation gate is closed. The four supplied references remain intact.
 
 ## Completed groundwork
 
@@ -50,8 +51,9 @@ No full implementation gate is closed. The four supplied references remain intac
 - **Done when:** admission is transactional; stale/cross-runtime handles fail; steals,
   child cancellation, source completion and continuation pins cannot orphan ownership;
   terminal delivery retries exactly once to acceptance without premature ID reuse.
-- Current evidence covers note/voice generations and basic child/terminal retention;
-  families and expression are still missing. No legacy type dependencies allowed.
+- Current evidence covers note/family/voice/expression generations, separate capacities,
+  child inheritance/detachment and terminal retention. Full gate/pedal/continuation
+  semantics remain open. No legacy type dependencies allowed.
 
 ### V2-04 — Build unified sample-time execution and PCM conformance
 

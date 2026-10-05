@@ -2,52 +2,11 @@
 //! Exercises the existing VM through KspEngine against the independent v2 kernel.
 use kontakto::ksp::{self, EnginePar, EventId, Fade, KspEngine, NoteLength, NoteSpec, VoicePar};
 use sampler_core::{Input, Limits, NoteId, Pcm, Protocol, Runtime, VoiceId};
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
 
 // Same thread-local allocation/free check used by the legacy plugin unit tests.
-struct Counting;
-thread_local! {
-    static COUNTING: Cell<bool> = const { Cell::new(false) };
-    static CALLS: Cell<usize> = const { Cell::new(0) };
-}
-fn count() {
-    if COUNTING.get() {
-        CALLS.set(CALLS.get() + 1);
-    }
-}
-// SAFETY: forwards allocation and deallocation unchanged to System.
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        count();
-        unsafe { System.alloc(layout) }
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        count();
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
-#[global_allocator]
-static GLOBAL: Counting = Counting;
-
-fn without_heap(f: impl FnOnce()) {
-    struct Guard;
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            COUNTING.set(false);
-        }
-    }
-    let before = CALLS.get();
-    COUNTING.set(true);
-    let guard = Guard;
-    f();
-    drop(guard);
-    assert_eq!(
-        CALLS.get() - before,
-        0,
-        "callback allocated or freed memory"
-    );
-}
+#[path = "../crates/sampler-core/tests/support/mod.rs"]
+mod support;
+use support::without_heap;
 
 struct Binding {
     note: NoteId,
@@ -94,6 +53,7 @@ impl KspEngine for Bridge<'_> {
                 n.note,
                 f64::from(n.velocity) / 127.0,
                 n.owner.is_some(),
+                sampler_core::Inheritance::Snapshot,
             )
             .ok()?;
         let at = self.core.now().checked_add(u64::from(at))?;
@@ -159,6 +119,8 @@ fn v2_ksp_suppression_children_wait_and_release_share_the_native_kernel_without_
         &pcm,
         Limits {
             notes: 8,
+            families: 8,
+            expressions: 8,
             voices: 8,
             commands: 8,
         },
@@ -187,6 +149,7 @@ end on"#;
     let original = Input {
         protocol: Protocol::Clap,
         port: 3,
+        group: 0,
         channel: 0,
         key: 48,
         external_id: Some(7),
@@ -254,6 +217,8 @@ fn v2_native_saturation_reset_and_terminal_retry_do_not_allocate_or_free() {
         &pcm,
         Limits {
             notes: 4,
+            families: 4,
+            expressions: 4,
             voices: 2,
             commands: 2,
         },
@@ -262,6 +227,7 @@ fn v2_native_saturation_reset_and_terminal_retry_do_not_allocate_or_free() {
     let input = Input {
         protocol: Protocol::Native,
         port: 0,
+        group: 0,
         channel: 0,
         key: 60,
         external_id: None,
@@ -269,7 +235,9 @@ fn v2_native_saturation_reset_and_terminal_retry_do_not_allocate_or_free() {
     without_heap(|| {
         for _ in 0..100 {
             let a = core.note_on(input, 60, 1.0).unwrap();
-            let b = core.child(a, 64, 1.0, true).unwrap();
+            let b = core
+                .child(a, 64, 1.0, true, sampler_core::Inheritance::Snapshot)
+                .unwrap();
             core.start(a, 0, core.now() + 1, 1.0).unwrap();
             core.start(b, 0, core.now() + 2, 1.0).unwrap();
             assert_eq!(

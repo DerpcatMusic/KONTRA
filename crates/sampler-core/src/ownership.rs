@@ -1,0 +1,196 @@
+//! Musical ownership, independent of host channel reuse and render voice lifetime.
+use super::{Error, Handle, NoteId, Runtime, VoiceId};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FamilyId(pub(super) Handle);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExpressionId(pub(super) Handle);
+
+/// Child expression policy is independent of whether release follows the parent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Inheritance {
+    Linked,
+    Snapshot,
+    Independent,
+}
+
+/// Canonical note expression. Integer controls retain all 32 bits. Only gain and
+/// stereo balance are consumed by the current PCM fixture; pitch/pressure/timbre
+/// await the modulation/source compiler. No MIDI packet decoder is implied.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Expression {
+    pub gain: f64,
+    pub pan: f64,
+    pub pitch_semitones: f64,
+    pub pressure: u32,
+    pub timbre: u32,
+}
+
+impl Default for Expression {
+    fn default() -> Self {
+        Self {
+            gain: 1.0,
+            pan: 0.0,
+            pitch_semitones: 0.0,
+            pressure: 0,
+            timbre: 0,
+        }
+    }
+}
+
+impl Expression {
+    fn valid(self) -> bool {
+        self.gain.is_finite()
+            && (0.0..=1.0).contains(&self.gain)
+            && self.pan.is_finite()
+            && (-1.0..=1.0).contains(&self.pan)
+            && self.pitch_semitones.is_finite()
+    }
+
+    pub(super) fn gains(self) -> [f32; 2] {
+        // Stereo balance, not an equal-power mono panner. Preserve center unity.
+        [
+            (self.gain * (1.0 - self.pan.max(0.0))) as f32,
+            (self.gain * (1.0 + self.pan.min(0.0))) as f32,
+        ]
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ExpressionOwner {
+    pub value: Expression,
+    pub notes: usize,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct Family {
+    pub note: NoteId,
+    pub voices: usize,
+    pub open: bool,
+}
+
+impl Runtime<'_> {
+    pub fn family_count(&self) -> usize {
+        self.families.count()
+    }
+    pub fn expression_count(&self) -> usize {
+        self.expressions.count()
+    }
+
+    pub fn expression_id(&self, note: NoteId) -> Result<ExpressionId, Error> {
+        Ok(self.notes.get(note.0).ok_or(Error::StaleHandle)?.expression)
+    }
+
+    pub fn expression(&self, id: ExpressionId) -> Result<Expression, Error> {
+        Ok(self.expressions.get(id.0).ok_or(Error::StaleHandle)?.value)
+    }
+
+    /// Changes the owner, including all explicitly linked children. Adapters retain
+    /// this handle per admitted note; they must never retarget tails by channel alone.
+    pub fn set_expression(&mut self, id: ExpressionId, value: Expression) -> Result<(), Error> {
+        if !value.valid() {
+            return Err(Error::InvalidInput);
+        }
+        self.expressions
+            .get_mut(id.0)
+            .ok_or(Error::StaleHandle)?
+            .value = value;
+        Ok(())
+    }
+
+    /// Freeze a shared note at its current expression. Capacity failure leaves its
+    /// previous link intact; a uniquely owned expression needs no replacement slot.
+    pub fn detach_expression(&mut self, note: NoteId) -> Result<ExpressionId, Error> {
+        let old = self.expression_id(note)?;
+        let owner = *self.expressions.get(old.0).unwrap();
+        if owner.notes == 1 {
+            return Ok(old);
+        }
+        let new = ExpressionId(self.expressions.insert(ExpressionOwner {
+            value: owner.value,
+            notes: 1,
+        })?);
+        self.expressions.get_mut(old.0).unwrap().notes -= 1;
+        self.notes.get_mut(note.0).unwrap().expression = new;
+        Ok(new)
+    }
+
+    pub(super) fn drop_expression(&mut self, id: ExpressionId) {
+        let owner = self.expressions.get_mut(id.0).unwrap();
+        owner.notes -= 1;
+        if owner.notes == 0 {
+            self.expressions.remove(id.0);
+        }
+    }
+
+    /// A family coordinates source admissions for one selection decision. The caller
+    /// seals it with finish_family after adding all layers; an open family is retained.
+    pub fn create_family(&mut self, note: NoteId) -> Result<FamilyId, Error> {
+        let n = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        if !n.gate {
+            return Err(Error::ClosedNote);
+        }
+        let count = n.families.checked_add(1).ok_or(Error::Capacity)?;
+        let family = FamilyId(self.families.insert(Family {
+            note,
+            voices: 0,
+            open: true,
+        })?);
+        self.notes.get_mut(note.0).unwrap().families = count;
+        Ok(family)
+    }
+
+    pub fn family_note(&self, id: FamilyId) -> Result<NoteId, Error> {
+        Ok(self.families.get(id.0).ok_or(Error::StaleHandle)?.note)
+    }
+
+    pub fn family_voice_count(&self, id: FamilyId) -> Result<usize, Error> {
+        Ok(self.families.get(id.0).ok_or(Error::StaleHandle)?.voices)
+    }
+
+    /// Seal admissions; already admitted sources (including delayed starts) continue.
+    /// Empty sealed families retire immediately. Sealing does not release a note.
+    pub fn finish_family(&mut self, id: FamilyId) -> Result<(), Error> {
+        self.families.get_mut(id.0).ok_or(Error::StaleHandle)?.open = false;
+        self.retire_family(id);
+        Ok(())
+    }
+
+    /// Stop only this family's voices and delayed starts. Sibling families and the
+    /// logical note are unaffected. This cleanup requires no queue capacity.
+    pub fn stop_family(&mut self, id: FamilyId) -> Result<(), Error> {
+        self.families.get(id.0).ok_or(Error::StaleHandle)?;
+        for i in 0..self.voices.slots.len() {
+            if self.voices.slots[i].value.is_some_and(|v| v.family == id) {
+                self.end_voice(VoiceId(self.voices.id(i)));
+            }
+        }
+        self.commands.retain(
+            |c| !matches!(c.action, super::Action::Start(v) if self.voices.get(v.0).is_none()),
+        );
+        // end_voice can retire an already sealed family when its last voice ends.
+        if let Some(f) = self.families.get_mut(id.0) {
+            f.open = false;
+            self.retire_family(id);
+        }
+        Ok(())
+    }
+
+    pub(super) fn retire_family(&mut self, id: FamilyId) {
+        if let Some(f) = self.families.get(id.0).copied()
+            && !f.open
+            && f.voices == 0
+        {
+            self.notes.get_mut(f.note.0).unwrap().families -= 1;
+            self.families.remove(id.0);
+        }
+    }
+
+    pub(super) fn end_voice(&mut self, id: VoiceId) {
+        let v = *self.voices.get(id.0).unwrap();
+        self.voices.remove(id.0);
+        self.families.get_mut(v.family.0).unwrap().voices -= 1;
+        self.retire_family(v.family);
+    }
+}

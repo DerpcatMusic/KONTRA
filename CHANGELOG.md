@@ -8,6 +8,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ## Unreleased
 
+### Experimental v2 development
+
+- Add independent generational family/expression ownership, explicit child inheritance and bounded cleanup to the new sampler core. Render resident PCM in event-delimited segments and include a reproducible microbenchmark and core-only allocation/free checks. This remains experimental; it does not change production playback or establish MIDI 2.0 device support.
+
 ### Accepted 0.3.148 — primary envelope processing and visible crash receipts
 
 Two reviewed logical fixes advance the accepted counter from 0.3.146.
