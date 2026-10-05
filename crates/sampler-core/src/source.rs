@@ -37,6 +37,10 @@ pub struct Playback {
 }
 
 impl Playback {
+    pub(super) fn step(self, source_rate: u32, output_rate: u32) -> f64 {
+        f64::from(source_rate) / f64::from(output_rate) * (self.transpose_semitones / 12.0).exp2()
+    }
+
     pub(super) fn cursor(
         self,
         frames: usize,
@@ -44,8 +48,7 @@ impl Playback {
         output_rate: u32,
     ) -> Result<Cursor, Error> {
         let end = self.end.unwrap_or(frames);
-        let step = f64::from(source_rate) / f64::from(output_rate)
-            * (self.transpose_semitones / 12.0).exp2();
+        let step = self.step(source_rate, output_rate);
         if self.start >= end
             || end > frames
             || source_rate == 0
@@ -87,6 +90,17 @@ pub(super) struct Cursor {
 }
 
 impl Cursor {
+    pub(super) fn step(&self) -> f64 {
+        self.step
+    }
+
+    // Only the prepared compiler supplies this validated candidate rate.
+    pub(super) fn with_step(mut self, step: f64) -> Self {
+        debug_assert!((MIN_STEP..=MAX_STEP).contains(&step));
+        self.step = step;
+        self
+    }
+
     fn first_boundary(&self, loop_range: Loop) -> u64 {
         match self.direction {
             Direction::Forward => (loop_range.end - self.start) as u64,

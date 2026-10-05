@@ -980,6 +980,7 @@ fn prepared_selection_matches_independent_linear_reference() {
             sample: i % 2,
             key_low: a.min(b),
             key_high: a.max(b),
+            root_key: None,
             velocity_low: if i % 2 == 0 { 0.0 } else { 0.5 },
             velocity_high: 1.0,
             gain: (i % 4) as f32 / 4.0,
@@ -1052,6 +1053,7 @@ fn prepared_validation_and_layer_admission_are_transactional() {
         sample: 0,
         key_low: 60,
         key_high: 60,
+        root_key: None,
         velocity_low: 0.0,
         velocity_high: 1.0,
         gain: 1.0,
@@ -1070,6 +1072,7 @@ fn prepared_validation_and_layer_admission_are_transactional() {
         Region {
             playback: crate::Playback::default(),
             key_high: 128,
+            root_key: None,
             ..region
         },
         Region {

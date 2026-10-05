@@ -28,6 +28,7 @@ fn authored_script_uses_new_native_ownership_after_input_release_without_heap() 
                     sample: 0,
                     key_low: 61,
                     key_high: 61,
+                    root_key: None,
                     velocity_low: 0.,
                     velocity_high: 1.,
                     gain: 1.,

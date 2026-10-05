@@ -1,11 +1,20 @@
 # Resident fractional playback and rate conversion
 
 The native source renderer now combines the asset/output sample-rate ratio with
-`Playback::transpose_semitones`. Prepared assets may have different rates from the
+`Playback::transpose_semitones` and optional `Region::root_key` tracking.
+Prepared assets may have different rates from the
 runtime. Preparation and direct source admission both validate the resulting step;
 invalid, nonfinite and unsupported ratios fail before taking a voice slot or command.
 Prepared regions retain fresh cursor templates rather than authoring playback objects.
-Selection copies that value into a voice; it does not repeat `exp2`, rate conversion
+The prepared key-candidate index stores each selected key's complete playback step.
+`root_key: None` is fixed pitch; `Some(key)` adds equal-tempered key displacement.
+Each step is computed directly from authored tuning and key displacement, preserving
+exact unity at the root rather than multiplying rounded adjacent-key ratios.
+Every mapped key must satisfy the declared rate bounds; an unmapped root need not.
+The candidate budget now bounds records containing a region index and an f64 step
+(16 bytes per candidate on 64-bit targets). Logical playback keys select these
+records; physical input addresses remain unchanged for key-up and terminal pairing.
+Selection copies the template and compiled step into a voice; it does not repeat `exp2`, rate conversion
 or source-view validation at note-on. Both prepared selection and explicit manual
 source admission use one bounded voice-reservation function.
 The current supported step is 1/256 through 16 source frames per output frame.
@@ -84,7 +93,7 @@ its normal invocation remains the original unity workload. Exact binary DC outpu
 is checked outside timed callbacks. Local evidence uses ignored
 `artifacts/architecture-v2/resample-*`.
 
-Live expression-to-pitch consumption, root-key tracking, pitch ramps, broader rate
+Live expression-to-pitch consumption, pitch ramps, broader rate
 ranges, quality tiers, streaming demand windows, ping-pong and crossfade loops remain
 open. The host plugin and UI have not been switched to this core. Imported formats
 will lower into these native source and expression contracts rather than selecting
