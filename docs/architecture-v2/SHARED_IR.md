@@ -43,9 +43,9 @@ asset services, controls and DSP remain shared.
 Official documentation reviewed 2026-10-06:
 
 - [Luau compatibility](https://luau.org/compatibility/): based on Lua 5.1, with
-  sandbox removals and documented semantic differences. Numeric values do not gain
-  a Lua 5.3-style integer type; exact integers above 2^53 cannot be treated as plain
-  script numbers. Native IDs remain opaque checked handles. UVI's `bit` API is not
+  sandbox removals and documented semantic differences. Ordinary script numbers
+  do not preserve every integer above 2^53. The pinned source now also exposes a
+  separate exact-int64 C API, verified below; do not conflate the two value types. Native IDs remain opaque checked handles. UVI's `bit` API is not
   automatically equivalent to Luau's `bit32` API.
 - [UVI Lua runtime](https://lua.uvi.net/_lua_reference.html): Lua 5.1 plus a custom
   API, coroutine model and preallocated realtime memory pool. Source-language
@@ -70,3 +70,47 @@ KSP retains its own exact numeric and callback semantics. Komplete Script retain
 its typed/reactive component semantics. SFZ declarative instruments compile directly
 into the instrument IR without an artificial script. Even if Luau is adopted for
 Lua execution, these frontends still bind the same native services and prepared DSP.
+
+## Pinned executable Luau probe
+
+Evaluated upstream `luau-lang/luau` commit
+`421cc8158a752c8933a3d73555fd79df631a90b6`, with its MIT license inspected.
+No Luau dependency was added to the plugin or any native crate. The isolated
+[`tools/luau_probe.cpp`](../../tools/luau_probe.cpp) checks ordinary Lua-style
+closures/tables, two independently yielding callbacks resumed out of order through
+an embedded host function, Luau annotations/compound assignment, coroutine close,
+protected errors and bytecode-loop interruption.
+
+All assertions pass. Ordinary numbers lose `+1` at 2^53; the pinned source's separate
+`lua_pushinteger64`/`lua_tointeger64` API roundtrips 2^53+1 exactly. The public
+compatibility page and evolving source do not expose an identical numeric surface,
+so production selection must pin a reviewed version and its enabled features.
+
+A deliberately allocating callback creating 10,000 retained tables made **62 calls**
+to the supplied realloc allocator (Luau internally pools smaller objects). Total
+probe peak was 1,498,320 bytes; closing the VM returned live bytes to zero. This
+measures allocator entry, not GC pause bounds or sampler performance. Ordinary
+VM use is therefore not automatically an allocation-free audio callback. The probe
+also verifies that stock `bit`, `class` and `table.copy` UVI-facing names are absent;
+they require explicit vendor service/library semantics.
+
+Loop interruption uses Luau's `gc == -1` execution safepoints; nonnegative values
+identify GC phases. A first probe incorrectly treated that flag as Boolean and was
+terminated; the corrected probe runs with an external timeout. This is not a bound
+on long native functions, nor a replacement for script admission and cost limits.
+
+Reproduce with the pinned source checked out under ignored
+`artifacts/luau-evaluation`:
+
+```sh
+cmake -S artifacts/luau-evaluation -B artifacts/luau-evaluation/build -DCMAKE_BUILD_TYPE=Release -DLUAU_BUILD_CLI=OFF -DLUAU_BUILD_TESTS=OFF
+cmake --build artifacts/luau-evaluation/build --target Luau.Compiler Luau.VM -j 4
+c++ -std=c++17 -O2 -I artifacts/luau-evaluation/VM/include -I artifacts/luau-evaluation/Compiler/include tools/luau_probe.cpp artifacts/luau-evaluation/build/libLuau.Compiler.a artifacts/luau-evaluation/build/libLuau.Ast.a artifacts/luau-evaluation/build/libLuau.Bytecode.a artifacts/luau-evaluation/build/libLuau.VM.a artifacts/luau-evaluation/build/libLuau.Common.a -o artifacts/luau-probe
+timeout 20s artifacts/luau-probe
+```
+
+Current conclusion: retain Luau as a strong candidate for the Lua-family frontend.
+UVI's complete API, preallocated allocation/GC strategy, native callback service
+binding and actual library compatibility remain required work. Do not translate
+all other formats through Luau solely to obtain a shared engine; the native IR
+already supplies that engine boundary.
