@@ -72,6 +72,7 @@ pub(super) struct Family {
     pub open: bool,
     pub siblings: super::Siblings,
     pub first_voice: Option<super::Index>,
+    pub decision: Option<super::Index>,
 }
 
 impl Runtime {
@@ -196,6 +197,7 @@ impl Runtime {
                 next: next_sibling,
             },
             first_voice: None,
+            decision: None,
         })?);
         let index = super::Index::new(family.0.index);
         if let Some(next) = next_sibling {
@@ -209,6 +211,27 @@ impl Runtime {
 
     pub fn family_note(&self, id: FamilyId) -> Result<NoteId, Error> {
         Ok(self.families.get(id.0).ok_or(Error::StaleHandle)?.note)
+    }
+
+    /// Borrow the note's currently retained families without exposing slot indices.
+    pub fn note_families(
+        &self,
+        note: NoteId,
+    ) -> Result<impl Iterator<Item = FamilyId> + '_, Error> {
+        let mut next = self
+            .notes
+            .get(note.0)
+            .ok_or(Error::StaleHandle)?
+            .first_family;
+        Ok(std::iter::from_fn(move || {
+            let index = next?;
+            next = self.families.slots[index.get()]
+                .value
+                .unwrap()
+                .siblings
+                .next;
+            Some(FamilyId(self.families.id(index.get())))
+        }))
     }
 
     pub fn family_voice_count(&self, id: FamilyId) -> Result<usize, Error> {
@@ -306,8 +329,11 @@ impl Runtime {
 
     // Completed internal notes have no terminal sink. Reclaim them under admission
     // pressure, skipping external owners whose notifications still need acceptance.
-    pub(super) fn reclaim_internal_notes(&mut self) {
-        if self.notes.available() != 0 && self.expressions.available() != 0 {
+    pub(super) fn reclaim_internal_notes(&mut self, decisions: usize) {
+        if self.notes.available() != 0
+            && self.expressions.available() != 0
+            && self.decisions.available() >= decisions
+        {
             return;
         }
         for i in 0..self.notes.slots.len() {
@@ -345,6 +371,11 @@ impl Runtime {
                 if let Some(next) = n.siblings.next {
                     self.notes.at_mut(next).siblings.previous = n.siblings.previous;
                 }
+            }
+            let mut decision = n.first_decision;
+            while let Some(index) = decision {
+                decision = self.decisions.slots[index.get()].value.unwrap().next;
+                self.decisions.remove(self.decisions.id(index.get()));
             }
             self.notes.remove(id.0);
             self.drop_expression(n.expression);

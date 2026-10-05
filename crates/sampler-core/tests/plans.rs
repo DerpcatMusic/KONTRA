@@ -9,6 +9,7 @@ fn limits() -> Limits {
         notes: 16,
         channels: 2,
         families: 16,
+        decisions: 0,
         expressions: 16,
         voices: 16,
         commands: 16,
@@ -243,7 +244,16 @@ fn plan_validation_and_reserved_callback_cells_are_control_side_contracts() {
 
 #[test]
 fn control_thread_destroys_returned_assets_while_audio_only_moves_ownership() {
-    let (mut rt, mut control) = Runtime::with_plan_updates(plan(0., None), limits(), 2, 1).unwrap();
+    let (mut rt, mut control) = Runtime::with_plan_updates(
+        plan(0., None),
+        Limits {
+            decisions: 1,
+            ..limits()
+        },
+        2,
+        1,
+    )
+    .unwrap();
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
     let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
     let timeout = std::time::Duration::from_secs(5);
@@ -252,7 +262,22 @@ fn control_thread_destroys_returned_assets_while_audio_only_moves_ownership() {
             for request in 1..=64 {
                 assert_eq!(
                     control
-                        .submit(Box::new(plan(request as f32 / 64., None)))
+                        .submit(Box::new(
+                            plan(request as f32 / 64., None)
+                                .with_variation(
+                                    vec![sampler_core::Sequence {
+                                        takes: 2,
+                                        scope: sampler_core::SequenceScope::Global,
+                                        capacity: 1
+                                    }],
+                                    vec![Some(sampler_core::Take {
+                                        sequence: 0,
+                                        index: 0
+                                    })],
+                                    1,
+                                )
+                                .unwrap()
+                        ))
                         .unwrap(),
                     request
                 );

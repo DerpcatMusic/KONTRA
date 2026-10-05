@@ -54,6 +54,7 @@ fn prepare(
             notes,
             channels: 0,
             families: notes,
+            decisions: 0,
             expressions: notes,
             voices: reserved,
             commands: 0,

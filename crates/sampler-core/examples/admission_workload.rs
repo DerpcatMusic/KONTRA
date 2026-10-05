@@ -1,5 +1,8 @@
 //! Prepared four-layer note lifecycles, timed by phase. Run with --release.
-use sampler_core::{Envelope, Input, Limits, Pcm, Playback, Prepared, Protocol, Region, Runtime};
+use sampler_core::{
+    Envelope, Input, Limits, Pcm, Playback, Prepared, Protocol, Region, Runtime, Sequence,
+    SequenceScope, Take,
+};
 use std::{hint::black_box, time::Instant};
 
 fn main() {
@@ -8,16 +11,15 @@ fn main() {
         std::process::exit(1);
     }
     let args: Vec<_> = std::env::args().skip(1).collect();
-    let identified = match args.as_slice() {
-        [] => false,
-        [flag] if flag == "--ids" => true,
-        _ => {
-            eprintln!("usage: admission_workload [--ids]");
-            std::process::exit(1);
-        }
-    };
+    let identified = args.iter().any(|arg| arg == "--ids");
+    let variation = args.iter().any(|arg| arg == "--variation");
+    if args.len() != usize::from(identified) + usize::from(variation) {
+        eprintln!("usage: admission_workload [--ids] [--variation]");
+        std::process::exit(1);
+    }
+    let candidates = if variation { 12 } else { 4 };
     println!(
-        "external_ids,notes,voices,reserved_voices,median_us,p99_us,note_off_median_us,note_off_p99_us,retire_median_us,retire_p99_us"
+        "variation,external_ids,notes,voices,reserved_voices,median_us,p99_us,note_off_median_us,note_off_p99_us,retire_median_us,retire_p99_us"
     );
     for (notes, reserved) in [(16, 64), (64, 256), (256, 1024), (1024, 4096), (16, 4096)] {
         let plan = Prepared::new(
@@ -35,17 +37,39 @@ fn main() {
                     envelope: Envelope::default(),
                     playback: Playback::default(),
                 };
-                4
+                candidates
             ],
-            4,
+            candidates,
         )
         .unwrap();
+        let plan = if variation {
+            plan.with_variation(
+                vec![Sequence {
+                    takes: 3,
+                    scope: SequenceScope::Global,
+                    capacity: 1,
+                }],
+                (0..candidates)
+                    .map(|i| {
+                        Some(Take {
+                            sequence: 0,
+                            index: (i / 4) as u32,
+                        })
+                    })
+                    .collect(),
+                1,
+            )
+            .unwrap()
+        } else {
+            plan
+        };
         let mut rt = Runtime::new(
             plan,
             Limits {
                 notes: reserved / 4,
                 channels: 1,
                 families: reserved / 4,
+                decisions: if variation { reserved / 4 } else { 0 },
                 expressions: reserved / 4,
                 voices: reserved,
                 commands: 0,
@@ -77,6 +101,7 @@ fn main() {
             }
             let elapsed = begin.elapsed().as_nanos();
             assert_eq!((rt.note_count(), rt.voice_count()), (notes, notes * 4));
+            assert_eq!(rt.decision_count(), if variation { notes } else { 0 });
             if iteration >= 32 {
                 times[iteration - 32] = elapsed;
             }
@@ -106,12 +131,13 @@ fn main() {
                 retirements[iteration - 32] = elapsed;
             }
             assert_eq!((ended, rt.note_count(), rt.voice_count()), (notes, 0, 0));
+            assert_eq!(rt.decision_count(), 0);
         }
         times.sort_unstable();
         releases.sort_unstable();
         retirements.sort_unstable();
         println!(
-            "{identified},{notes},{},{reserved},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3}",
+            "{variation},{identified},{notes},{},{reserved},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3}",
             notes * 4,
             times[64] as f64 / 1000.0,
             times[126] as f64 / 1000.0,

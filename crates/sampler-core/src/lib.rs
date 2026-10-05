@@ -52,12 +52,14 @@ use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{Pcm, Prepared, Region, Tuning};
 mod schedule;
+mod variation;
 use gate::Channel;
 pub use gate::{ChannelAddress, ChannelId, ChannelScope};
 pub use ownership::{Expression, ExpressionId, FamilyId, Inheritance};
 use ownership::{ExpressionOwner, Family};
 pub use schedule::Event;
 use schedule::{Action, Scheduled};
+pub use variation::{Sequence, SequenceScope, Take};
 
 pub type Frame = [f32; 2];
 
@@ -120,6 +122,8 @@ pub struct Limits {
     pub families: usize,
     pub expressions: usize,
     pub voices: usize,
+    /// Retained take decisions, independently of source/family and note capacities.
+    pub decisions: usize,
     pub commands: usize,
     pub behaviors: usize,
     pub behavior_fuel: usize,
@@ -142,6 +146,7 @@ struct Note {
     siblings: Siblings,
     first_child: Option<Index>,
     first_family: Option<Index>,
+    first_decision: Option<Index>,
     pitch: NotePitch,
     velocity: f64,
     gate: bool,
@@ -308,6 +313,7 @@ pub struct Runtime {
     voice_activity: Box<[u64]>,
     kernel: &'static resample::Kernel,
     families: Arena<Family>,
+    decisions: Arena<variation::Decision>,
     expressions: Arena<ExpressionOwner>,
     expression_changes: Box<[Option<RenderedExpression>]>,
     commands: Vec<Scheduled>,
@@ -354,6 +360,7 @@ impl Runtime {
         let mut plans = Arena::new(id, 1);
         let active_plan = PlanId(plans.insert(Generation {
             request: 0,
+            sequences: variation::SequenceState::new(plan.sequence_cells),
             prepared: Box::new(plan),
             notes: 0,
         })?);
@@ -369,6 +376,7 @@ impl Runtime {
             voice_activity: vec![0; limits.voices.div_ceil(64)].into_boxed_slice(),
             kernel: resample::Kernel::shared(),
             families: Arena::new(id, limits.families),
+            decisions: Arena::new(id, limits.decisions),
             expressions: Arena::new(id, limits.expressions),
             expression_changes: vec![None; limits.expressions].into_boxed_slice(),
             commands: Vec::with_capacity(limits.commands),
@@ -557,6 +565,7 @@ impl Runtime {
             },
             first_child: None,
             first_family: None,
+            first_decision: None,
             pitch,
             velocity,
             gate: true,

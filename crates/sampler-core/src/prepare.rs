@@ -83,6 +83,7 @@ struct PreparedRegion {
     cursor: super::source::Cursor,
     root_key: Option<u8>,
     transpose_semitones: f64,
+    take: Option<super::Take>,
 }
 
 #[derive(Clone, Copy)]
@@ -100,6 +101,8 @@ pub struct Prepared {
     pub(super) programs: Box<[super::Program]>,
     note_program: Option<usize>,
     pub(super) modulation: super::Modulation,
+    pub(super) sequences: Box<[super::variation::PreparedSequence]>,
+    pub(super) sequence_cells: usize,
 }
 
 impl Prepared {
@@ -170,6 +173,7 @@ impl Prepared {
                 cursor,
                 root_key: r.root_key,
                 transpose_semitones: r.playback.transpose_semitones,
+                take: None,
             });
         }
         let mut offsets = [0; 129];
@@ -203,6 +207,8 @@ impl Prepared {
             programs: Box::new([]),
             note_program: None,
             modulation: super::Modulation::default(),
+            sequences: Box::new([]),
+            sequence_cells: 0,
         })
     }
 
@@ -252,26 +258,120 @@ impl Prepared {
         }
     }
 
+    /// Attach one optional take to each region in its original authoring order.
+    /// Candidates are grouped by sequence without expanding a key/channel/take
+    /// Cartesian product. Every sequence advances once per accepted eligible note,
+    /// including a deliberately unmapped take; completely unmatched notes do not.
+    pub fn with_variation(
+        mut self,
+        sequences: Vec<super::Sequence>,
+        region_takes: Vec<Option<super::Take>>,
+        max_states: usize,
+    ) -> Result<Self, Error> {
+        if region_takes.len() != self.regions.len() {
+            return Err(Error::InvalidInput);
+        }
+        let mut prepared = Vec::with_capacity(sequences.len());
+        let mut cells = 0usize;
+        for mut spec in sequences {
+            if spec.takes == 0 || spec.capacity == 0 {
+                return Err(Error::InvalidInput);
+            }
+            spec.capacity = match spec.scope {
+                super::SequenceScope::Global => 1,
+                super::SequenceScope::Key => spec.capacity.min(128),
+                _ => spec.capacity,
+            };
+            let offset = cells;
+            cells = cells.checked_add(spec.capacity).ok_or(Error::Capacity)?;
+            if cells > max_states {
+                return Err(Error::Capacity);
+            }
+            prepared.push(super::variation::PreparedSequence { spec, offset });
+        }
+        super::variation::SequenceState::check_size(cells)?;
+        for (r, take) in self.regions.iter_mut().zip(region_takes) {
+            if let Some(take) = take
+                && prepared
+                    .get(take.sequence)
+                    .is_none_or(|s| take.index >= s.spec.takes)
+            {
+                return Err(Error::InvalidInput);
+            }
+            r.take = take;
+        }
+        for key in 0..128 {
+            self.candidates[self.offsets[key]..self.offsets[key + 1]].sort_by_key(|candidate| {
+                (
+                    self.regions[candidate.region].take.map(|t| t.sequence),
+                    candidate.region,
+                )
+            });
+        }
+        self.sequences = prepared.into_boxed_slice();
+        self.sequence_cells = cells;
+        Ok(self)
+    }
+
+    fn group_end(&self, begin: usize, end: usize) -> usize {
+        if self.sequences.is_empty() {
+            return end;
+        }
+        let sequence = self.regions[self.candidates[begin].region]
+            .take
+            .map(|t| t.sequence);
+        begin
+            + self.candidates[begin..end]
+                .partition_point(|c| self.regions[c.region].take.map(|t| t.sequence) == sequence)
+    }
+
+    fn choose(
+        &self,
+        range: std::ops::Range<usize>,
+        velocity: f64,
+        address: super::ChannelAddress,
+        key: u8,
+        state: &super::variation::SequenceState,
+    ) -> Result<Option<super::variation::PendingTake>, Error> {
+        if self.sequences.is_empty() {
+            return Ok(None);
+        }
+        let sequence = self.regions[self.candidates[range.start].region]
+            .take
+            .map(|t| t.sequence);
+        let Some(sequence) = sequence else {
+            return Ok(None);
+        };
+        if !self.candidates[range].iter().any(|c| {
+            let r = self.regions[c.region];
+            r.velocity_low <= velocity && velocity <= r.velocity_high
+        }) {
+            return Ok(None);
+        }
+        state
+            .choose(sequence, &self.sequences[sequence], address, key)
+            .map(Some)
+    }
+
     fn matches(
         &self,
-        pitch: NotePitch,
+        range: std::ops::Range<usize>,
         velocity: f64,
-    ) -> impl Iterator<Item = (&PreparedRegion, f64)> {
-        let key = pitch.key();
-        self.candidates[self.offsets[key as usize]..self.offsets[key as usize + 1]]
+        take: Option<super::Take>,
+    ) -> impl Iterator<Item = Candidate> + '_ {
+        self.candidates[range]
             .iter()
-            .map(move |candidate| {
-                (
-                    &self.regions[candidate.region],
-                    self.step(*candidate, pitch),
-                )
+            .copied()
+            .filter(move |candidate| {
+                let r = self.regions[candidate.region];
+                r.velocity_low <= velocity && velocity <= r.velocity_high && r.take == take
             })
-            .filter(move |(r, _)| r.velocity_low <= velocity && velocity <= r.velocity_high)
     }
 }
 
 impl Runtime {
-    /// Select all matching native layers and admit them as one family. Preflight
+    /// Select matching native layers, coordinating one family per take sequence
+    /// and one for unconditioned layers. Preflight
     /// reserves the entire selection conceptually before publishing the note; no
     /// partial layer set sounds when capacity is exhausted. No match is a logical
     /// no-source note, still paired with its key-up and terminal acceptance.
@@ -374,18 +474,40 @@ impl Runtime {
                 self.pitch_range(owner, inheritance == super::Inheritance::Linked)?
             }
         };
-        let mut count = 0;
-        for (_, step) in self
-            .plans
-            .get(plan.0)
-            .unwrap()
-            .prepared
-            .matches(note_pitch, velocity)
-        {
-            pitch.apply(step)?;
-            count += 1;
+        let address = match origin {
+            NoteOrigin::Input(input, _) => input.channel_address(),
+            NoteOrigin::Child(parent, ..) => self.notes.get(parent.0).unwrap().address,
+        };
+        let key = note_pitch.key();
+        let generation = self.plans.get(plan.0).unwrap();
+        let prepared = &generation.prepared;
+        let begin = prepared.offsets[key as usize];
+        let end = prepared.offsets[key as usize + 1];
+        let mut voices = 0;
+        let mut families = 0;
+        let mut decisions = 0;
+        let mut from = begin;
+        while from < end {
+            let until = prepared.group_end(from, end);
+            let choice =
+                prepared.choose(from..until, velocity, address, key, &generation.sequences)?;
+            let mut count = 0;
+            for candidate in prepared.matches(from..until, velocity, choice.map(|c| c.take)) {
+                pitch.apply(prepared.step(candidate, note_pitch))?;
+                count += 1;
+            }
+            voices += count;
+            families += usize::from(count != 0);
+            decisions += usize::from(choice.is_some());
+            from = until;
         }
-        if count > self.voices.available() || (count != 0 && self.families.available() == 0) {
+        if decisions > self.decisions.available() {
+            self.reclaim_internal_notes(decisions);
+        }
+        if voices > self.voices.available()
+            || families > self.families.available()
+            || decisions > self.decisions.available()
+        {
             return Err(Error::Capacity);
         }
         let note = match origin {
@@ -396,22 +518,37 @@ impl Runtime {
                 self.child_pitched(parent, note_pitch, velocity, linked, inheritance)?
             }
         };
-        if count == 0 {
+        if voices == 0 && decisions == 0 {
             return Ok(note);
         }
         // Everything below was validated by Prepared and preflight. No callbacks,
         // concurrent writers or newly due work can consume the reserved resources.
-        let family = self.create_family(note).expect("preflight family capacity");
-        let key = note_pitch.key();
-        let prepared = &self.plans.get(plan.0).unwrap().prepared;
-        let begin = prepared.offsets[key as usize];
-        let end = prepared.offsets[key as usize + 1];
-        for i in begin..end {
-            let prepared = &self.plans.get(plan.0).unwrap().prepared;
-            let candidate = prepared.candidates[i];
-            let r = prepared.regions[candidate.region];
-            if r.velocity_low <= velocity && velocity <= r.velocity_high {
+        let mut from = begin;
+        while from < end {
+            let generation = self.plans.get(plan.0).unwrap();
+            let prepared = &generation.prepared;
+            let until = prepared.group_end(from, end);
+            let choice = prepared
+                .choose(from..until, velocity, address, key, &generation.sequences)
+                .expect("preflighted sequence scope capacity");
+            let decision = choice.map(|c| self.record_take(note, c.take));
+            let mut family = None;
+            for i in from..until {
+                let prepared = &self.plans.get(plan.0).unwrap().prepared;
+                let candidate = prepared.candidates[i];
+                let r = prepared.regions[candidate.region];
+                if r.velocity_low > velocity
+                    || velocity > r.velocity_high
+                    || r.take != choice.map(|c| c.take)
+                {
+                    continue;
+                }
                 let step = prepared.step(candidate, note_pitch);
+                let family = *family.get_or_insert_with(|| {
+                    let family = self.create_family(note).expect("preflight family capacity");
+                    self.families.get_mut(family.0).unwrap().decision = decision;
+                    family
+                });
                 self.admit_voice(
                     family,
                     r.sample,
@@ -422,8 +559,20 @@ impl Runtime {
                 )
                 .expect("prepared and preflighted source admission");
             }
+            if let Some(family) = family {
+                self.finish_family(family).expect("admitted family");
+            }
+            if let Some(choice) = choice {
+                let generation = self.plans.get_mut(plan.0).unwrap();
+                generation.sequences.commit(
+                    choice,
+                    generation.prepared.sequences[choice.take.sequence]
+                        .spec
+                        .takes,
+                );
+            }
+            from = until;
         }
-        self.finish_family(family).expect("admitted family");
         Ok(note)
     }
 }

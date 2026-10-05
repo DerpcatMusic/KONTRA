@@ -47,6 +47,7 @@ fn runtime_with_modulation(channels: usize, modulation: sampler_core::Modulation
             notes: 8,
             channels,
             families: 8,
+            decisions: 0,
             expressions: 8,
             voices: 8,
             commands: 8,

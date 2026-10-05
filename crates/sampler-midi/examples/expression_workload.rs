@@ -73,6 +73,7 @@ fn main() {
                     channels: 1,
                     expressions: reserved,
                     families: reserved,
+                    decisions: 0,
                     voices: reserved,
                     commands: 0,
                     behaviors: 0,
