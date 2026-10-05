@@ -1,5 +1,5 @@
 //! Control-thread compilation of immutable resident assets and native mappings.
-use super::{Envelope, Error, Frame, Input, NoteId, Playback, Runtime};
+use super::{Envelope, Error, Expression, Frame, Input, NoteId, NoteOrigin, Playback, Runtime};
 
 #[derive(Clone, Debug)]
 pub struct Pcm {
@@ -173,18 +173,28 @@ impl Prepared {
     }
 }
 
-enum Origin {
-    Input(Input),
-    Child(NoteId, bool, super::Inheritance),
-}
-
 impl Runtime {
     /// Select all matching native layers and admit them as one family. Preflight
     /// reserves the entire selection conceptually before publishing the note; no
     /// partial layer set sounds when capacity is exhausted. No match is a logical
     /// no-source note, still paired with its key-up and terminal acceptance.
     pub fn trigger(&mut self, input: Input, key: u8, velocity: f64) -> Result<NoteId, Error> {
+        self.trigger_with_expression(input, key, velocity, Expression::default())
+    }
+
+    /// Admit a complete initial expression before selection or a bound note program.
+    /// Failed native source preflight publishes neither an input nor partial layers.
+    pub fn trigger_with_expression(
+        &mut self,
+        input: Input,
+        key: u8,
+        velocity: f64,
+        expression: Expression,
+    ) -> Result<NoteId, Error> {
         self.apply_due();
+        if !expression.valid() {
+            return Err(Error::InvalidInput);
+        }
         if let Some(program) = self
             .plans
             .get(self.active_plan.0)
@@ -195,12 +205,12 @@ impl Runtime {
             if self.behaviors.available() == 0 {
                 return Err(Error::Capacity);
             }
-            let note = self.note_on(input, key, velocity)?;
+            let note = self.note_on_with_expression(input, key, velocity, expression)?;
             self.start_behavior(note, program)
                 .expect("preflighted native behavior admission");
             Ok(note)
         } else {
-            self.select(Origin::Input(input), key, velocity)
+            self.select(NoteOrigin::Input(input, expression), key, velocity)
         }
     }
 
@@ -212,23 +222,32 @@ impl Runtime {
         linked: bool,
         inheritance: super::Inheritance,
     ) -> Result<NoteId, Error> {
-        self.select(Origin::Child(parent, linked, inheritance), key, velocity)
+        self.select(
+            NoteOrigin::Child(parent, linked, inheritance),
+            key,
+            velocity,
+        )
     }
 
-    fn select(&mut self, origin: Origin, key: u8, velocity: f64) -> Result<NoteId, Error> {
+    fn select(&mut self, origin: NoteOrigin, key: u8, velocity: f64) -> Result<NoteId, Error> {
         self.apply_due();
         if key >= 128 || !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
             return Err(Error::InvalidInput);
         }
         let plan = match origin {
-            Origin::Input(_) => self.active_plan,
-            Origin::Child(parent, ..) => self.notes.get(parent.0).ok_or(Error::StaleHandle)?.plan,
+            NoteOrigin::Input(..) => self.active_plan,
+            NoteOrigin::Child(parent, ..) => {
+                self.notes.get(parent.0).ok_or(Error::StaleHandle)?.plan
+            }
         };
         let pitch = match origin {
-            Origin::Input(_) | Origin::Child(_, _, super::Inheritance::Independent) => {
+            NoteOrigin::Input(_, expression) => {
+                super::pitch::PitchRange::constant(super::pitch::ratio(expression.pitch_semitones))
+            }
+            NoteOrigin::Child(_, _, super::Inheritance::Independent) => {
                 super::pitch::PitchRange::constant(1.0)
             }
-            Origin::Child(parent, _, inheritance) => {
+            NoteOrigin::Child(parent, _, inheritance) => {
                 let owner = self.notes.get(parent.0).unwrap().expression;
                 self.pitch_range(owner, inheritance == super::Inheritance::Linked)?
             }
@@ -248,8 +267,10 @@ impl Runtime {
             return Err(Error::Capacity);
         }
         let note = match origin {
-            Origin::Input(input) => self.note_on(input, key, velocity)?,
-            Origin::Child(parent, linked, inheritance) => {
+            NoteOrigin::Input(input, expression) => {
+                self.note_on_with_expression(input, key, velocity, expression)?
+            }
+            NoteOrigin::Child(parent, linked, inheritance) => {
                 self.child(parent, key, velocity, linked, inheritance)?
             }
         };

@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Admit initial native expression before source selection and bound note programs. Immediate snapshot children retain the supplied pitch/gain/pan; invalid expression and unsupported source rates fail without partial native layer ownership.
+
 - Apply live native note-scoped pitch without resetting source phase. Immediate/queued expression and later source admissions validate one another's rate constraints, including delayed voices and linked children; detached/snapshot owners stay isolated and failed generated sources leave no partial ownership.
 
 - Add optional equal-tempered root-key tracking to native regions. Preparation compiles and validates the rate for every mapped key; playback preserves exact root unity and keeps logical pitch separate from physical note addressing.
