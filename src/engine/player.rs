@@ -1425,9 +1425,10 @@ impl Player {
                     state.lfo_timings.group(voice.group as usize));
             }
         }
-        let cx = Context::new(bank, state, &self.midi, &self.host_notes, &self.per_note,
+        let mut cx = Context::new(bank, state, &self.midi, &self.host_notes, &self.per_note,
             self.voice_controls(state), self.native_mpe_pressure, self.rate as f32,
             self.tempo, &self.stream_error, self.now, blocking, tune);
+        cx.source_window = self.release_counter.span_at(self.now);
         let n = left.len();
         // Plan every voice, then take them lane by lane: voices sharing one
         // sum into its window, the rest (and lanes of one) render alone.
