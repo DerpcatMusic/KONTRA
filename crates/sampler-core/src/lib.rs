@@ -94,6 +94,7 @@ pub struct Limits {
 #[derive(Clone, Copy, Debug)]
 struct Note {
     input: Option<Input>,
+    address: ChannelAddress,
     parent: Option<NoteId>,
     linked_release: bool,
     release_checked: bool,
@@ -351,7 +352,14 @@ impl Runtime {
             return Err(Error::InvalidInput);
         }
         let order = self.order.checked_add(1).ok_or(Error::ClockOverflow)?;
-        let parent_expression = parent.map(|p| self.notes.get(p.0).unwrap().expression);
+        let parent_note = parent
+            .map(|p| self.notes.get(p.0).ok_or(Error::StaleHandle))
+            .transpose()?;
+        let address = input
+            .map(Input::channel_address)
+            .or_else(|| parent_note.map(|n| n.address))
+            .ok_or(Error::InvalidInput)?;
+        let parent_expression = parent_note.map(|n| n.expression);
         let expression = match (inheritance, parent_expression) {
             (Inheritance::Linked, Some(id)) => {
                 let owner = self.expressions.get_mut(id.0).unwrap();
@@ -374,6 +382,7 @@ impl Runtime {
         };
         let id = match self.notes.insert(Note {
             input,
+            address,
             parent,
             linked_release,
             release_checked: false,

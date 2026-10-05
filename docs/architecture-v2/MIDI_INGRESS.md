@@ -19,7 +19,7 @@ management flags. Unsupported packet types remain inspectable as raw words.
 Floating-point projection happens only on an explicit consumer request.
 
 The current musical ingress applies un-attributed notes, sustain/sostenuto and
-zero-valued CC123 (All Notes Off).
+zero-valued CC123 (All Notes Off) and CC120 (All Sound Off).
 Full input address and protocol reach the core's physical-note matching; note-off
 uses its FIFO overlap policy. Release velocity and attributes are returned to the
 caller. Unknown release attributes do not strand a note. Unsupported Note On
@@ -91,8 +91,8 @@ and the [MIDI Association message summary](https://midi.org/summary-of-midi-1-0-
 The native gate policy respects sustain and captured sostenuto and starts ordinary
 release envelopes only when the effective gate closes. Linked children follow that
 gate. Independent generated-note durations and callback-retained waits keep their
-explicit policies. This command is not hard silence: CC120 All Sound Off remains
-unsupported. Pedal state is unchanged.
+explicit policies. This command is not hard silence; CC120 has the separate contract below. Pedal
+state is unchanged.
 
 The core scans bounded note/channel storage once, then uses its existing release
 propagation and cleanup. It neither registers a channel nor enqueues a command, so
@@ -105,3 +105,34 @@ allocation/free checked.
 
 The complete authoritative new-core scan remains 90 with zero errors and 119
 warnings. Evidence uses `artifacts/architecture-v2/notes-off-*`.
+
+## Channel-scoped All Sound Off
+
+Zero-valued CC120 hard-stops every admitted source voice in the input domain,
+including release tails and delayed starts. Native pending callbacks in that domain
+are cancelled even when their wait lifetime is callback-retained; completion/fault
+records still require acceptance. Independent generated descendants are included.
+Other domains and pedal controller values remain unchanged. `Applied::AllSoundOff`
+reports stopped voice reservations, including delayed sources. Nonzero values are
+unsupported. This implements the immediate-silence purpose described in the
+[MIDI Association summary](https://midi.org/summary-of-midi-1-0-messages); callback
+cancellation and resource reporting are explicit native policies.
+
+Every note now retains its immutable originating channel address, inherited on
+child admission independently of logical transposition and expression inheritance.
+Scope matching therefore uses bounded linear arena scans without repeatedly walking
+ancestry. Sources, pending work and controllers keep their separate owners.
+
+Hard silence closes musical gates but preserves physical input keys until key-up
+(or an explicit release/panic). Such input owners cannot emit NOTE_END early. A new
+same-key note therefore cannot steal the older silenced note's FIFO key-up. A queued
+physical key-up survives silence; an earlier actual key-up cancels that queued work
+before the input can retire, including while sustain remains down. This distinction
+is necessary even when no voices or behavior records remain.
+
+Checks cover saturated queues, multi-generation independent descendants, release
+tails, delayed starts, retained callbacks, unaffected channel execution, unchanged
+pedals and exact audio across partitions. MIDI 1.0/2.0 checks exercise same-key reuse,
+late scheduled key-up cancellation, unsupported values and exactly-once terminals.
+Actual work remains allocation/free checked. The authoritative score remains 90,
+zero errors and 119 warnings. Evidence uses `artifacts/architecture-v2/sound-off-*`.

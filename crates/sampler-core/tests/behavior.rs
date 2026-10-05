@@ -803,3 +803,117 @@ fn generated_note_slots_are_reused_inside_a_block_without_consuming_host_termina
         }
     }
 }
+
+#[test]
+fn scoped_hard_silence_cancels_descendants_and_retained_waits_but_keeps_physical_keys() {
+    use sampler_core::{Duration, Expression, Inheritance, Velocity, WaitLifetime};
+    for block in [1, 3, 16] {
+        let generated = Instruction::Play {
+            transpose: 0,
+            velocity: Velocity::Fixed(0.5),
+            inheritance: Inheritance::Independent,
+            duration: Duration::Frames(100),
+        };
+        let mut rt = runtime_with_lifetime(
+            vec![generated, Instruction::Wait(8), generated, Instruction::End],
+            limits(),
+            WaitLifetime::Callback,
+        );
+        support::without_heap(|| {
+            let root = rt.note_on(input(), 60, 1.).unwrap();
+            let other_input = Input {
+                channel: 1,
+                ..input()
+            };
+            let other = rt.note_on(other_input, 60, 1.).unwrap();
+            let own_callback = rt.start_behavior(root, 0).unwrap();
+            let other_callback = rt.start_behavior(other, 0).unwrap();
+            let tail = rt
+                .child(root, 60, 1., false, Inheritance::Independent)
+                .unwrap();
+            let family = rt.create_family(tail).unwrap();
+            rt.start_family(
+                family,
+                0,
+                0,
+                1.,
+                Envelope::new(0, 0, 0, 1., 32).unwrap(),
+                Playback::default(),
+            )
+            .unwrap();
+            rt.finish_family(family).unwrap();
+            let delayed = rt
+                .child(tail, 60, 1., false, Inheritance::Independent)
+                .unwrap();
+            rt.start(delayed, 0, 4, 1.).unwrap();
+            let channel = rt.register_channel(input().channel_address()).unwrap();
+            rt.sustain(channel, true).unwrap();
+            rt.schedule_event(10, Event::KeyUp(root)).unwrap();
+            rt.schedule_event(12, Event::Expression(root, Expression::default()))
+                .unwrap();
+            rt.schedule_event(12, Event::Expression(other, Expression::default()))
+                .unwrap();
+            assert_eq!(rt.pending_commands(), 8);
+            rt.render(&mut [[0.; 2]; 1]).unwrap();
+            rt.release(tail).unwrap();
+            assert_eq!(
+                rt.voice_count(),
+                4,
+                "tail and delayed descendant still own voices"
+            );
+            assert_eq!(rt.all_sound_off(input().channel_address()), Ok(3));
+            assert_eq!(rt.all_sound_off(input().channel_address()), Ok(0));
+            assert_eq!(rt.voice_count(), 1);
+            assert_eq!(
+                rt.pending_commands(),
+                4,
+                "physical key-up survives hard silence"
+            );
+            assert_eq!(
+                rt.behavior_outcome(own_callback),
+                Ok(Some(Outcome::Cancelled))
+            );
+            assert_eq!(rt.behavior_outcome(other_callback), Ok(None));
+            rt.flush_behaviors(|id, _, outcome| {
+                assert_eq!((id, outcome), (own_callback, Outcome::Cancelled));
+                true
+            });
+            rt.flush_ended(|_| panic!("silenced physical key must remain paired"));
+            assert_eq!(rt.key_down(root), Ok(true));
+            assert!(!rt.note(root).unwrap().2);
+            assert_eq!(rt.pedals(channel), Ok((true, false)));
+            let mut audio = [[0.; 2]; 16];
+            let mut terminals = 0;
+            for chunk in audio.chunks_mut(block) {
+                rt.render(chunk).unwrap();
+                rt.flush_ended(|origin| {
+                    assert_eq!(origin, input());
+                    terminals += 1;
+                    true
+                });
+            }
+            assert_eq!(terminals, 1);
+            for (frame, sample) in audio.iter().enumerate() {
+                assert_eq!(*sample, [if frame < 7 { 0.5 } else { 1. }; 2]);
+            }
+            assert_eq!(
+                rt.behavior_outcome(other_callback),
+                Ok(Some(Outcome::Finished))
+            );
+            rt.panic();
+            rt.flush_behaviors(|_, _, _| true);
+            rt.flush_ended(|origin| {
+                assert_eq!(origin, other_input);
+                true
+            });
+            assert_eq!(
+                (
+                    rt.note_count(),
+                    rt.expression_count(),
+                    rt.pending_commands()
+                ),
+                (0, 0, 0)
+            );
+        });
+    }
+}

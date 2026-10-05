@@ -106,6 +106,52 @@ impl Runtime {
         Ok(released)
     }
 
+    /// Hard-silence one input domain, including descendants and pending callbacks.
+    /// Physical input keys remain owned until key-up; pedals and other domains remain.
+    /// Returns the number of stopped source voices, including delayed starts.
+    pub fn all_sound_off(&mut self, address: ChannelAddress) -> Result<usize, Error> {
+        if address.group >= 16 || address.channel >= 16 {
+            return Err(Error::InvalidInput);
+        }
+        self.apply_due();
+        for slot in &mut self.notes.slots {
+            if let Some(note) = &mut slot.value
+                && note.address == address
+            {
+                note.gate = false;
+                note.sostenuto = false;
+                if note.input.is_none() {
+                    note.key_down = false;
+                }
+            }
+        }
+        for slot in &mut self.behaviors.slots {
+            if let Some(callback) = &mut slot.value
+                && callback.outcome.is_none()
+                && self
+                    .notes
+                    .get(callback.note.0)
+                    .is_some_and(|n| n.address == address)
+            {
+                callback.outcome = Some(super::Outcome::Cancelled);
+            }
+        }
+        let mut stopped = 0;
+        for i in 0..self.voices.slots.len() {
+            let matches = self.voices.slots[i]
+                .value
+                .and_then(|v| self.families.get(v.family.0))
+                .and_then(|f| self.notes.get(f.note.0))
+                .is_some_and(|n| n.address == address);
+            if matches {
+                self.end_voice(super::VoiceId(self.voices.id(i)));
+                stopped += 1;
+            }
+        }
+        self.cleanup_closed_notes();
+        Ok(stopped)
+    }
+
     /// Physical key release respects pedals. Explicit release() bypasses them.
     pub fn key_up(&mut self, note: NoteId) -> Result<(), Error> {
         self.apply_due();
@@ -124,6 +170,10 @@ impl Runtime {
         self.notes.get_mut(note.0).unwrap().key_down = false;
         if !held {
             self.release_now(note)?;
+        } else {
+            // Key-up may resolve a physically retained but already silenced input.
+            // Remove later key-up commands before that owner can retire.
+            self.cancel_closed_work();
         }
         Ok(())
     }

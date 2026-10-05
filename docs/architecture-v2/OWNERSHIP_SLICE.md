@@ -183,3 +183,12 @@ build profile and nine samples as the retirement measurements:
 
 This fixture targets adverse arena ordering, not complete voice processing. Logs
 are under ignored `artifacts/architecture-v2/propagate-*`.
+
+## Silent physical input ownership
+
+Channel hard silence may close a musical gate while its original physical key is
+still down. Terminal eligibility therefore also requires physical key-up for input
+owners. A silent old same-key input retains FIFO pairing until that release; it does
+not borrow a voice or a public pin for this lifetime. Descendants inherit immutable
+input-channel provenance at admission so scoped cleanup remains linear. See the
+[All Sound Off contract and evidence](MIDI_INGRESS.md#channel-scoped-all-sound-off).

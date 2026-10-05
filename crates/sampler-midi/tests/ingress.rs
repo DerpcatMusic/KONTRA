@@ -429,3 +429,84 @@ fn all_notes_off_needs_no_spare_capacity_and_preserves_other_input_domains() {
         assert_eq!((rt.note_count(), rt.pending_commands()), (0, 0));
     });
 }
+
+#[test]
+fn all_sound_off_keeps_fifo_pairing_and_late_key_cleanup_without_resurrection() {
+    use sampler_core::Event;
+    for version in [Version::Midi1, Version::Midi2] {
+        let (on, off, pedal_on, pedal_off, silence, invalid) = match version {
+            Version::Midi1 => (
+                [0x2090_3c7f, 0],
+                [0x2080_3c00, 0],
+                [0x20b0_407f, 0],
+                [0x20b0_4000, 0],
+                [0x20b0_7800, 0],
+                [0x20b0_7801, 0],
+            ),
+            Version::Midi2 => (
+                [0x4090_3c00, 0xffff_0000],
+                [0x4080_3c00, 0],
+                [0x40b0_4000, u32::MAX],
+                [0x40b0_4000, 0],
+                [0x40b0_7800, 0],
+                [0x40b0_7800, 1],
+            ),
+        };
+        let mut groups = [None; 16];
+        groups[0] = Some(version);
+        let ingress = Ingress::new(0, groups);
+        let mut rt = runtime();
+        support::without_heap(|| {
+            let Applied::Started(old) = apply(&ingress, &mut rt, &on).unwrap() else {
+                panic!()
+            };
+            apply(&ingress, &mut rt, &pedal_on).unwrap();
+            rt.render(&mut [[0.; 2]; 2]).unwrap();
+            assert_eq!(apply(&ingress, &mut rt, &invalid), Ok(Applied::Unsupported));
+            assert_eq!(rt.voice_count(), 1);
+            assert_eq!(
+                apply(&ingress, &mut rt, &silence),
+                Ok(Applied::AllSoundOff { stopped: 1 })
+            );
+            rt.flush_ended(|_| panic!("physical input must survive hard silence"));
+            assert_eq!(rt.key_down(old), Ok(true));
+            assert_eq!(rt.voice_count(), 0);
+            // A key-up can still be scheduled for a silent, physically held input.
+            rt.schedule_event(20, Event::KeyUp(old)).unwrap();
+            let Applied::Started(new) = apply(&ingress, &mut rt, &on).unwrap() else {
+                panic!()
+            };
+            assert!(
+                matches!(apply(&ingress, &mut rt, &off), Ok(Applied::Released { note, .. }) if note == old)
+            );
+            assert_eq!(rt.key_down(new), Ok(true));
+            assert_eq!(
+                rt.pending_commands(),
+                0,
+                "early physical release cancels later stale key-up even with sustain down"
+            );
+            let mut ends = 0;
+            rt.flush_ended(|_| {
+                ends += 1;
+                true
+            });
+            assert_eq!(ends, 1);
+            let mut audio = [[0.; 2]; 24];
+            rt.render(&mut audio).unwrap();
+            assert_eq!(audio, [[1.; 2]; 24]);
+            assert!(
+                matches!(apply(&ingress, &mut rt, &off), Ok(Applied::Released { note, .. }) if note == new)
+            );
+            assert!(
+                rt.note(new).unwrap().2,
+                "pedal state remains active for new notes"
+            );
+            apply(&ingress, &mut rt, &pedal_off).unwrap();
+            rt.flush_ended(|_| {
+                ends += 1;
+                true
+            });
+            assert_eq!((ends, rt.note_count(), rt.voice_count()), (2, 0, 0));
+        });
+    }
+}
