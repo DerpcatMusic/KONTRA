@@ -3630,10 +3630,18 @@ name = "sampler-core"
 version = "0.1.0"
 
 [[package]]
+name = "sampler-midi"
+version = "0.1.0"
+dependencies = [
+ "sampler-core",
+]
+
+[[package]]
 name = "sampler-native"
 version = "0.1.0"
 dependencies = [
  "sampler-core",
+ "sampler-midi",
 ]
 
 [[package]]

@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 sampler-core = { path = "../sampler-core" }
+sampler-midi = { path = "../sampler-midi" }
 
 [lints.rust]
 unsafe_code = "forbid"
