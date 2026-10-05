@@ -29,7 +29,9 @@ Family/expression ownership and segmented rendering now have
   transposition with ratio-dependent filtering; [evidence and open quality work](RESAMPLING.md).
 - [x] Compile native root-key tracking and apply live note-scoped pitch, with queued
   expression/source admission invariants and initial expression installed before
-  bound programs/source selection. MPE routing and pitch ramps remain open.
+  bound programs/source selection. Pitch ramps remain open.
+- [x] Add bounded fixed-zone MPE note/pitch projection, physical key-up snapshots,
+  runtime identity and atomic whole-zone gestures; [partial receiver scope](MIDI_INGRESS.md).
 
 ## M0 — contracts and measurable targets
 

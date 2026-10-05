@@ -46,6 +46,10 @@ struct Handle {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NoteId(Handle);
 
+/// Process-local ownership domain. Remains stable across moves and plan changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuntimeId(u64);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VoiceId(Handle);
 
@@ -232,6 +236,7 @@ pub struct Runtime {
     kernel: &'static resample::Kernel,
     families: Arena<Family>,
     expressions: Arena<ExpressionOwner>,
+    expression_changes: Box<[Option<f64>]>,
     commands: Vec<Scheduled>,
     behaviors: Arena<Continuation>,
     behavior_fuel: usize,
@@ -245,6 +250,10 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    pub fn id(&self) -> RuntimeId {
+        RuntimeId(self.notes.runtime)
+    }
+
     pub fn new(plan: Prepared, limits: Limits) -> Result<Self, Error> {
         if limits.notes == 0 {
             return Err(Error::InvalidInput);
@@ -287,6 +296,7 @@ impl Runtime {
             kernel: resample::Kernel::shared(),
             families: Arena::new(id, limits.families),
             expressions: Arena::new(id, limits.expressions),
+            expression_changes: vec![None; limits.expressions].into_boxed_slice(),
             commands: Vec::with_capacity(limits.commands),
             behaviors: Arena::new(id, limits.behaviors),
             behavior_fuel: limits.behavior_fuel,

@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Add fixed-zone MPE note/pitch projection with generational tail bindings, initial controller state and atomic whole-zone gestures. Member expression freezes at physical key-up while manager pitch reaches retained owners; bounded heap-free batches validate occupied voices once. Dynamic configuration and remaining MPE controls are still unsupported.
+
 - Admit initial native expression before source selection and bound note programs. Immediate snapshot children retain the supplied pitch/gain/pan; invalid expression and unsupported source rates fail without partial native layer ownership.
 
 - Apply live native note-scoped pitch without resetting source phase. Immediate/queued expression and later source admissions validate one another's rate constraints, including delayed voices and linked children; detached/snapshot owners stay isolated and failed generated sources leave no partial ownership.

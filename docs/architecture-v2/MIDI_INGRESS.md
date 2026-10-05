@@ -26,8 +26,9 @@ caller. Unknown release attributes do not strand a note. Unsupported Note On
 attributes return `Unsupported` without creating a partial note.
 
 This is partial V2-02/V2-15 evidence, **not full MIDI 2.0 support**. Per-note and
-channel expression, management, attribute pitch, program selection, MIDI-CI,
-SysEx, JR timestamps, device transport and MPE remain unimplemented. Decoding a
+channel expression in ordinary ingress, management, attribute pitch, program selection, MIDI-CI,
+SysEx, JR timestamps and device transport remain unimplemented. The separate fixed-zone
+MPE note/pitch projection below is partial receiver work. Decoding a
 message does not imply that the instrument consumes it. `Applied::Unsupported`
 is observable; there is no approximation through the old engine.
 
@@ -136,3 +137,54 @@ pedals and exact audio across partitions. MIDI 1.0/2.0 checks exercise same-key 
 late scheduled key-up cancellation, unsupported values and exactly-once terminals.
 Actual work remains allocation/free checked. The authoritative score remains 90,
 zero errors and 119 warnings. Evidence uses `artifacts/architecture-v2/sound-off-*`.
+
+## Fixed-zone MPE note/pitch projection
+
+The separate `Mpe` adapter pins [M1-100-UM MPE v1.1, 14-Apr-2022](https://midi.org/mpe-midi-polyphonic-expression),
+sections 2.2.4–2.2.6 and Appendix C. Construction binds one runtime identity,
+port/group and lower or upper zone with 1–15 members. Runtime identity survives
+moves and plan adoption; a foreign runtime is rejected before any mutation.
+Construction allocates explicit note-binding and gesture budgets off the audio
+thread. Apply performs no heap work. One adapter owns admission within its input
+domain. Raw-event interception precedes this projection; consumed messages must
+not reach it. A raw scripting interception API is still pending.
+
+Current support is MIDI 1.0 UMP note-on/off and pitch bend, with fixed default
+manager/member ranges of 2/48 semitones. Manager and member bends add; projection
+uses a piecewise bipolar scale with exact center and endpoints. Both channel values
+are retained while idle and installed before source selection or note programs.
+Multiple active notes on a member share its gestures. Each admitted root retains
+its own generational binding and member-pitch snapshot. The core's physical
+`key_down` state decides which members can change: a released note freezes its
+member pitch immediately, including under sustain, while manager pitch continues
+to reach the retained owner. Native scheduled key-up follows the same rule.
+Channel reuse cannot retarget an earlier tail. Linked generated notes share their
+owner; explicit snapshot/independent inheritance keeps its native meaning.
+
+`Runtime::set_expressions` preflights all owners and source rates before committing
+a gesture. Invalid/stale/duplicate owners reject the complete batch. Scratch is
+allocated with the expression arena (one `Option<f64>` per reserved owner); a batch
+clears that bounded storage, projects each owner once, and scans occupied voices
+once. An unchanged-pitch batch skips voice validation. Failed batches do not
+publish expression or adapter controller state. Due work runs before preflight,
+as for other immediate core operations. The MPE binding budget includes tails and
+unaccepted terminal notes; stale bindings are reclaimed without pinning owners.
+
+Checks cover both zones, overlapping same-key notes, held tails, scheduled key-up,
+member reuse, manager propagation, failed gesture rollback, full binding budgets,
+terminal rejection, foreign runtime/group/channel isolation, exact audio across
+1/7/64/256/512-frame partitions, and allocation/deallocation guards.
+
+`cargo run --release -p sampler-midi --example expression_workload` measures a
+whole-zone gesture separately from resampling and admission. One idle CPU-2 run
+on the local Ryzen 7800X3D measured medians 0.85/3.38/13.78 microseconds for
+64/256/1024 notes, about 13.2–13.5 ns per note. With 64 active and 4096 reserved,
+the median was 1.62 microseconds. These are local observations, not deadlines or
+full audio callback guarantees; CSV is `artifacts/mpe-expression-workload.csv`.
+
+RPN/MCM configuration, other bend sensitivities, zone pedals/modes, pressure,
+CC74 and ordinary MIDI 2.0 expression routing remain unsupported. Do not forward
+unsupported zone controls to ordinary channel ingress as a substitute. Source
+rate limits can reject otherwise valid MPE pitches; the current 1/256..16 source
+step range does not establish full MPE compliance. No importer-specific MPE code
+or old-core runtime is involved, and no live host/UI is connected yet.
