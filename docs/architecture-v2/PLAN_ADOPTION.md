@@ -88,3 +88,11 @@ The authoritative complete new-core score is 90, zero errors and 138 warnings,
 with all rules retained. Local evidence uses `artifacts/architecture-v2/plans-*`.
 This is ownership/correctness evidence, not a worst-case latency certification or
 asset-streaming implementation.
+
+## Native executable integration
+
+`sampler-native replace FIRST.wav SECOND.wav OUTPUT.wav` now drives this ownership
+path at a half-second boundary inside normal 256-frame processing. The old note
+and tail continue while a same-key input uses the new generation. The executable
+accepts both terminals and destroys the returned old plan outside rendering.
+See the [audition timeline and independent audio checks](NATIVE_ENTRY.md#resident-plan-replacement-audition).

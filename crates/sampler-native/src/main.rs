@@ -1,6 +1,8 @@
 //! Independent offline composition root; no legacy application or engine dependency.
 mod wave;
-use sampler_core::{Instruction, Limits, Outcome, Pcm, Prepared, Program, Region, Runtime};
+use sampler_core::{
+    Instruction, Limits, Outcome, Pcm, PlanControl, Prepared, Program, Region, Runtime,
+};
 use sampler_midi::{Applied, Ingress, Packets, TimedPacket, Version};
 use std::{
     fs::OpenOptions,
@@ -17,19 +19,18 @@ enum Mode {
     Demo,
     Echo,
     Script(Program),
+    Replace(Pcm),
 }
 
-fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
-    let demo = !matches!(&mode, Mode::Copy);
-    let scripted = matches!(&mode, Mode::Script(_));
+struct Replacement {
+    at: usize,
+    request: u64,
+    control: PlanControl,
+}
+
+fn prepare_sample(sample: Pcm, scripted: bool, demo: bool) -> io::Result<Prepared> {
     let rate = sample.rate;
-    let count = if scripted {
-        usize::try_from(u64::from(rate) * 2)
-            .map_err(|_| io::Error::other("two-second render exceeds platform frame capacity"))?
-    } else {
-        sample.frames.len()
-    };
-    let mut plan = Prepared::new(
+    Prepared::new(
         rate,
         vec![sample],
         vec![Region {
@@ -49,7 +50,28 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
         }],
         if scripted { 128 } else { 1 },
     )
-    .map_err(core)?;
+    .map_err(core)
+}
+
+fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
+    let demo = !matches!(&mode, Mode::Copy);
+    let scripted = matches!(&mode, Mode::Script(_));
+    let replacing = matches!(&mode, Mode::Replace(_));
+    let rate = sample.rate;
+    if replacing && rate < 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "sample rate cannot represent a distinct half-second replacement boundary",
+        ));
+    }
+    let count = if scripted || replacing {
+        usize::try_from(u64::from(rate) * 2)
+            .map_err(|_| io::Error::other("two-second render exceeds platform frame capacity"))?
+    } else {
+        sample.frames.len()
+    };
+    let mut plan = prepare_sample(sample, scripted, demo)?;
+    let mut replacement_sample = None;
     let program = match mode {
         Mode::Echo => {
             let play = Instruction::Play {
@@ -77,35 +99,61 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
             Some(program)
         }
         Mode::Script(program) => Some(program),
+        Mode::Replace(sample) => {
+            replacement_sample = Some(sample);
+            None
+        }
         _ => None,
     };
     if let Some(program) = program {
         plan = plan.with_programs(vec![program], Some(0)).map_err(core)?;
     }
-    let mut rt = Runtime::new(
-        plan,
-        Limits {
-            notes: 32,
-            channels: 16,
-            expressions: 32,
-            families: 32,
-            voices: 64,
-            commands: 64,
-            behaviors: 1,
-            behavior_fuel: 8,
-            behavior_cells: 1,
-        },
-    )
-    .map_err(core)?;
+    let limits = Limits {
+        notes: 32,
+        channels: 16,
+        expressions: 32,
+        families: 32,
+        voices: 64,
+        commands: 64,
+        behaviors: 1,
+        behavior_fuel: 8,
+        behavior_cells: 1,
+    };
+    let (rt, replacement) = if let Some(sample) = replacement_sample {
+        let prepared = prepare_sample(sample, false, true)?;
+        let (rt, mut control) = Runtime::with_plan_updates(plan, limits, 2, 1).map_err(core)?;
+        let request = control
+            .submit(Box::new(prepared))
+            .map_err(|e| io::Error::other(format!("replacement plan: {:?}", e.reason)))?;
+        (
+            rt,
+            Some(Replacement {
+                at: rate as usize / 2,
+                request,
+                control,
+            }),
+        )
+    } else {
+        (Runtime::new(plan, limits).map_err(core)?, None)
+    };
     let mut groups = [None; 16];
     groups[0] = Some(Version::Midi2);
     let ingress = Ingress::new(0, groups);
-    let events = [
-        (0, [0x4090_3c00, 0xffff_0000]),
-        (u64::from(rate) / 4, [0x40b0_4000, u32::MAX]),
-        (u64::from(rate) / 2, [0x4080_3c00, 0x8000_0000]),
-        (u64::from(rate), [0x40b0_4000, 0]),
-    ];
+    let events = if replacing {
+        [
+            (0, [0x4090_3c00, 0xffff_0000]),
+            (u64::from(rate) / 2, [0x4090_3c00, 0xffff_0000]),
+            (u64::from(rate), [0x4080_3c00, 0]),
+            (u64::from(rate) * 3 / 2, [0x4080_3c00, 0]),
+        ]
+    } else {
+        [
+            (0, [0x4090_3c00, 0xffff_0000]),
+            (u64::from(rate) / 4, [0x40b0_4000, u32::MAX]),
+            (u64::from(rate) / 2, [0x4080_3c00, 0x8000_0000]),
+            (u64::from(rate), [0x40b0_4000, 0]),
+        ]
+    };
     let packets = events[..if demo { 4 } else { 1 }]
         .iter()
         .map(|(at, words)| {
@@ -119,6 +167,20 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
             })
         })
         .collect::<io::Result<Vec<_>>>()?;
+    write_render(rt, output, count, &packets, &ingress, replacement)
+}
+
+fn write_render(
+    mut rt: Runtime,
+    output: &Path,
+    count: usize,
+    packets: &[TimedPacket<'_>],
+    ingress: &Ingress,
+    mut replacement: Option<Replacement>,
+) -> io::Result<()> {
+    let rate = rt.sample_rate();
+    let expected_terminals = if replacement.is_some() { 2 } else { 1 };
+    let mut terminals = 0;
     let mut next = 0;
     // Validate the output representation before creating any destination.
     wave::header(&mut io::sink(), rate, count)?;
@@ -132,8 +194,22 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
     let mut buffer = [[0.0; 2]; 256];
     let mut remaining = count;
     while remaining > 0 {
-        let len = remaining.min(buffer.len());
+        let mut len = remaining.min(buffer.len());
         let begin = count - remaining;
+        if let Some(replacement) = &replacement {
+            if begin == replacement.at {
+                let applied = rt
+                    .poll_plan_update()
+                    .map_err(|e| io::Error::other(format!("plan adoption: {e:?}")))?;
+                if applied != Some(replacement.request) {
+                    return Err(io::Error::other(
+                        "replacement was not adopted at its boundary",
+                    ));
+                }
+            } else if begin < replacement.at {
+                len = len.min(replacement.at - begin);
+            }
+        }
         let mut batch = [packets[0]; 4];
         let mut event_count = 0;
         while next < packets.len() && packets[next].offset < begin + len {
@@ -174,21 +250,34 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
         if let Some(outcome) = behavior_failure {
             return Err(io::Error::other(format!("native behavior: {outcome:?}")));
         }
+        rt.flush_ended(|_| {
+            terminals += 1;
+            true
+        });
+        rt.collect_retired_plans();
+        if let Some(replacement) = &mut replacement {
+            // Outside audio execution: destroy returned assets on the control side.
+            drop(replacement.control.retired());
+        }
         wave::frames(&mut out, &buffer[..len])?;
         remaining -= len;
     }
     rt.panic();
     rt.flush_behaviors(|_, _, outcome| matches!(outcome, Outcome::Finished | Outcome::Cancelled));
-    let mut terminals = 0;
     rt.flush_ended(|_| {
         terminals += 1;
         true
     });
-    if terminals != 1 || rt.note_count() != 0 {
+    if terminals != expected_terminals || rt.note_count() != 0 {
         return Err(io::Error::other("incomplete note retirement"));
     }
+    if replacement.is_some() && rt.plan_count() != 1 {
+        return Err(io::Error::other("incomplete plan retirement"));
+    }
     out.flush()?;
-    println!("rendered {count} frames at {rate} Hz through sampler-core; one terminal accepted");
+    println!(
+        "rendered {count} frames at {rate} Hz through sampler-core; {terminals} terminals accepted"
+    );
     Ok(())
 }
 
@@ -219,6 +308,11 @@ fn run() -> io::Result<()> {
         [command, input, output] if command == "render" => {
             render(wave::read(Path::new(input))?, Path::new(output), Mode::Copy)
         }
+        [command, first, second, output] if command == "replace" => render(
+            wave::read(Path::new(first))?,
+            Path::new(output),
+            Mode::Replace(wave::read(Path::new(second))?),
+        ),
         [command, source, output] if command == "script" => {
             render_script(demo_sample(), Path::new(source), Path::new(output))
         }
@@ -229,7 +323,7 @@ fn run() -> io::Result<()> {
         ),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: sampler-native demo OUTPUT.wav | echo OUTPUT.wav | render INPUT.wav OUTPUT.wav | script INPUT.ksp [INPUT.wav] OUTPUT.wav",
+            "usage: sampler-native demo OUTPUT.wav | echo OUTPUT.wav | render INPUT.wav OUTPUT.wav | script INPUT.ksp [INPUT.wav] OUTPUT.wav | replace FIRST.wav SECOND.wav OUTPUT.wav",
         )),
     }
 }

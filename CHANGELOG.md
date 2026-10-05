@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Exercise resident plan replacement in `sampler-native replace`: adopt a second WAV between overlapping notes, preserve each original source and tail, and retire the old plan outside rendering. Independent process-level audio checks pass at 44.1/48/96 kHz.
+
 - Add bounded prepared-plan replacement with generational note ownership and control-side retirement. Existing notes, tails and callbacks keep original PCM/programs while new inputs use the active plan; saturated queues retain ownership, and audio-thread heap checks cover cross-thread transfers.
 
 - Run authored KSP-subset scripts against resident WAV samples through the independent native executable. Compile at the source rate and render a fixed two-second audition; process-level checks compare exact expected audio at 44.1/48/96 kHz and preserve existing files.
