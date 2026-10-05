@@ -26,10 +26,10 @@ fn live_volume_lfo_depth_keeps_native_units_lag_phase_and_ordered_restore_in_com
     // The retained native source/target identity survives the existing wire cache.
     let group: Group = serde_json::from_slice(&serde_json::to_vec(&group).unwrap()).unwrap();
     let par = |id, target| EnginePar { id, group: 0, slot: 7, generic: target };
-    let signed = Address::resolve(par(id::MOD_TARGET_MP_INTENSITY, 4), &[group.clone()]).unwrap();
-    let unsigned = Address::resolve(par(id::MOD_TARGET_INTENSITY, 4), &[group.clone()]).unwrap();
+    let signed = Address::resolve(par(id::MOD_TARGET_MP_INTENSITY, 4), std::slice::from_ref(&group)).unwrap();
+    let unsigned = Address::resolve(par(id::MOD_TARGET_INTENSITY, 4), std::slice::from_ref(&group)).unwrap();
     for target in [0, 1, 2, 3, 5] {
-        assert!(Address::resolve(par(id::MOD_TARGET_MP_INTENSITY, target), &[group.clone()]).is_none());
+        assert!(Address::resolve(par(id::MOD_TARGET_MP_INTENSITY, target), std::slice::from_ref(&group)).is_none());
     }
     let script = "on init
         declare $seed := get_engine_par($ENGINE_PAR_MOD_TARGET_MP_INTENSITY,0,7,4)

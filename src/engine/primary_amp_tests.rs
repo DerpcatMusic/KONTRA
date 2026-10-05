@@ -87,8 +87,9 @@ fn saved_primary_bypass_pauses_source_and_has_independent_complete_pcm_and_engin
             let step=-1f32/479.;
             // Reference owns source clocks and raw f32 fade arithmetic, with no
             // production PrimaryAmplitude state or bypass API in its engines.
-            for frame in 0..FRAMES {
-                for note in 0..2 {
+            let [first_levels, second_levels] = &mut levels;
+            for (frame, (first_level, second_level)) in first_levels.iter_mut().zip(second_levels).enumerate() {
+                for (note, level_out) in [first_level, second_level].into_iter().enumerate() {
                     let onset=if note==0 {0} else {317}; let off=if note==0 {713} else {853};
                     if frame<onset {continue;}
                     let bypass=(151..317).contains(&frame)||frame>=529;
@@ -104,7 +105,7 @@ fn saved_primary_bypass_pauses_source_and_has_independent_complete_pcm_and_engin
                         if frame<off+480 {value[0]*=fading[note];fading[note]=(fading[note]+step).clamp(0.,1.);}
                         else {value[0]=0.;}
                     }
-                    levels[note][frame]=value[0];
+                    *level_out=value[0];
                 }
             }
             let mut pcm=[[[0.;FRAMES];2];4]; let mut unmodulated=[[[0.;FRAMES];2];2];
@@ -160,10 +161,10 @@ fn saved_primary_bypass_pauses_source_and_has_independent_complete_pcm_and_engin
                     assert_eq!(engine.host_note_end_at(second),Some(1333));
                 }
             }),0);
-            for index in 0..3 {for channel in 0..2 {for frame in 0..FRAMES {
+            for (index, voice) in pcm.iter().enumerate().take(3) {for channel in 0..2 {for frame in 0..FRAMES {
                 let expected=unmodulated[0][channel][frame]*levels[0][frame]
                     +unmodulated[1][channel][frame]*levels[1][frame];
-                assert!((pcm[index][channel][frame]-expected).abs()<2e-6,
+                assert!((voice[channel][frame]-expected).abs()<2e-6,
                     "complete independent PCM flex={flex} shared={shared} mute={mute} index={index} frame={frame}");
             }}}
             assert!(pcm[0].iter().flatten().zip(pcm[3].iter().flatten()).any(|(a,b)|(a-b).abs()>1e-5),"ordinary source-owned release differs from bypassed10ms stop");
@@ -184,7 +185,7 @@ fn saved_primary_bypass_pauses_source_and_has_independent_complete_pcm_and_engin
         assert_eq!(setup.engine_par(par),None);assert!(!setup.set_engine_par(0,par,1));
         let bank=Bank::from_samples(vec![restored.clone()],vec![Zone::default()],vec![(Default::default(),Sample {
             rate:48000,frames:vec![[0.25;2];4096]})]).unwrap();
-        assert!(bank.with_prepared_settings(|rows|rows[0].native_volume_env=!rows[0].native_volume_env).is_err());
+        assert!(bank.with_prepared_settings(|rows|rows[0].native_volume_env = !rows[0].native_volume_env).is_err());
         let mut remap=Bank::from_samples(vec![restored.clone(),Group::default()],vec![Zone::default(),
             Zone {group:1,loop_range:Some(Loop {start:0,end:4096,crossfade:0,alternating:false,until_release:false}),
                 ..Default::default()}],vec![(Default::default(),Sample {rate:48000,frames:vec![[0.25;2];4096]})]).unwrap();

@@ -94,7 +94,7 @@ impl SparseRequest {
 
 fn kernel_words<'a>(points: &[super::hq::Point], words: &'a mut [u64; SPARSE_TAPS]) -> Result<&'a [u64], StreamErrorKind> {
     if points.is_empty() || points.len() > SPARSE_TAPS / 4 { return Err(StreamErrorKind::UnsupportedWindow); }
-    for (point, words) in points.iter().zip(words.chunks_exact_mut(4)) {
+    for (point, words) in points.iter().zip(words.as_chunks_mut::<4>().0) {
         point.validate()?;
         words.copy_from_slice(&point.raw());
     }
@@ -131,7 +131,7 @@ impl Default for SparsePacket {
 /// lookahead. Only the worker can change cached taps; its stamp is rechecked
 /// by the caller after this scan.
 fn sparse_offset(taps: &[u64], saved: &[AtomicU64; SPARSE_TAPS], len: usize) -> Option<usize> {
-    if taps.is_empty() || taps.len() > len || taps.len() % 4 != 0 { return None; }
+    if taps.is_empty() || taps.len() > len || !taps.len().is_multiple_of(4) { return None; }
     let frames = taps.len() / 4;
     let frame = |i: usize| &taps[i * 4..i * 4 + 4];
     let mut prefix = [0; SPARSE_TAPS / 4];
@@ -391,7 +391,7 @@ impl Slot {
         if config & 1 != 0 || tag(config) != generation || self.sample.load(Ordering::Relaxed) == NO_SAMPLE {
             return Err(StreamErrorKind::Canceled);
         }
-        if taps.is_empty() || taps.len() > SPARSE_TAPS || taps.len() % 4 != 0 { return Err(StreamErrorKind::UnsupportedWindow); }
+        if taps.is_empty() || taps.len() > SPARSE_TAPS || !taps.len().is_multiple_of(4) { return Err(StreamErrorKind::UnsupportedWindow); }
         Ok(config)
     }
 
@@ -1054,7 +1054,7 @@ impl Worker {
                     }
                 }
             } else {
-                for (i, words) in taps[..len].chunks_exact(4).enumerate() {
+                for (i, words) in taps[..len].as_chunks::<4>().0.iter().enumerate() {
                     let point = super::hq::Point::from_raw([words[0], words[1], words[2], words[3]]);
                     // The per-point terminal belongs to the source clock,
                     // including crops whose counted stream config spans the
@@ -1489,7 +1489,7 @@ pub(super) mod tests {
         let source = instrument(&dir.path().join("cancel.wav"),false);
         let bank = Bank::load_bare(&source).unwrap();
         let shared = pause(&bank);
-        let mut engine = Engine::default(); engine.attack = 0.;
+        let mut engine = Engine { attack: 0., ..Default::default() };
         engine.set_bank(Some(Box::new(bank)));
         let (mut left,mut right) = ([0.;128],[0.;128]);
         let note = HostNote { port:0, channel:0, key:60, id:19, clap:true };
@@ -1537,7 +1537,7 @@ pub(super) mod tests {
         released.groups[0].release_trigger = true;
         let bank = Bank::load_bare(&released).unwrap();
         let release_shared = pause(&bank);
-        let mut release = Engine::default(); release.attack = 0.;
+        let mut release = Engine { attack: 0., ..Default::default() };
         release.set_bank(Some(Box::new(bank)));
         assert_eq!(crate::plugin::tests::allocations(|| {
             release.note_on(0,60,127);
@@ -1563,7 +1563,7 @@ pub(super) mod tests {
             let source = instrument(&path,silent);
             let bank = Bank::load_bare(&source).unwrap();
             if !silent { std::fs::remove_file(&path).unwrap(); }
-            let mut engine = Engine::default(); engine.blocking_streams = true;
+            let mut engine = Engine { blocking_streams: true, ..Default::default() };
             engine.set_bank(Some(Box::new(bank)));
             let (mut left,mut right) = ([1.;128],[1.;128]);
             let mut outcome = Ok(());

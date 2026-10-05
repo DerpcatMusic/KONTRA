@@ -87,7 +87,7 @@ fn read_file_path(path: &str) -> Result<Vec<u8>, String> {
     use std::path::{Component, Path, PathBuf};
     let path = Path::new(path);
     match crate::resources::read_file(path) {
-        Ok(bytes) => return Ok(bytes),
+        Ok(bytes) => Ok(bytes),
         Err(original) => {
             let mut at = PathBuf::new();
             for part in path.components() {

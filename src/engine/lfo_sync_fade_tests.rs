@@ -21,15 +21,13 @@ fn oracle(onset: usize, raw_install: bool) -> Vec<f32> {
     // Neither may inherit the first voice's mutable countdown.
     let mut remaining = prepared_points(if onset == FRESH {
         100.
-    } else if onset == SECOND {
-        120.0005
-    } else if raw_install {
+    } else if onset == SECOND || raw_install {
         120.0005
     } else {
         120.
     });
     let (mut previous, mut current, mut started) = (0., 0., false);
-    for frame in onset..END {
+    for (frame, value) in tune.iter_mut().enumerate().skip(onset) {
         if (137..229).contains(&frame)
             || (479..613).contains(&frame)
             || (1509..1601).contains(&frame)
@@ -37,7 +35,7 @@ fn oracle(onset: usize, raw_install: bool) -> Vec<f32> {
             continue;
         }
         let age = frame - onset;
-        if age % 32 == 0 || !started {
+        if age.is_multiple_of(32) || !started {
             // Global reload529; ignored raw1409 change does not reload a prototype.
             // Group bypass1509/resume1601 do prepare at current raw BPM.
             let prepared_tempo = if frame >= 1701 {
@@ -77,7 +75,7 @@ fn oracle(onset: usize, raw_install: bool) -> Vec<f32> {
                 phase -= 1.;
             }
         }
-        tune[frame] = previous + (current - previous) * (age % 32) as f32 / 32.;
+        *value = previous + (current - previous) * (age % 32) as f32 / 32.;
     }
     tune
 }
