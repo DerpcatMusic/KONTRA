@@ -19,6 +19,8 @@ fn limits() -> Limits {
         expressions: 8,
         voices: 8,
         commands: 8,
+        behaviors: 0,
+        behavior_fuel: 0,
     }
 }
 
@@ -95,6 +97,8 @@ fn cleanup_does_not_need_queue_space_and_no_source_notes_retry() {
             expressions: 2,
             voices: 1,
             commands: 1,
+            behaviors: 0,
+            behavior_fuel: 0,
         },
     )
     .unwrap();
@@ -436,6 +440,8 @@ fn separate_budgets_reject_without_partial_ownership() {
             expressions: 1,
             voices: 1,
             commands: 1,
+            behaviors: 0,
+            behavior_fuel: 0,
         },
     )
     .unwrap();
@@ -732,6 +738,8 @@ fn mixed_timeline_is_partition_invariant_and_immediate_changes_follow_due_work()
             &pcm,
             Limits {
                 commands: 16,
+                behaviors: 0,
+                behavior_fuel: 0,
                 ..limits()
             },
         )
@@ -830,6 +838,8 @@ fn scheduled_expression_has_private_lifetime_pins_and_cancellation() {
         &[],
         Limits {
             commands: 1,
+            behaviors: 0,
+            behavior_fuel: 0,
             ..limits()
         },
     )
@@ -889,6 +899,8 @@ fn full_queue_cannot_drop_pedal_up_and_channel_domains_are_bounded() {
         Limits {
             channels: 1,
             commands: 1,
+            behaviors: 0,
+            behavior_fuel: 0,
             ..limits()
         },
     )
@@ -1096,6 +1108,38 @@ fn prepared_validation_and_layer_admission_are_transactional() {
     let no_source = rt.trigger(input(Some(1)), 61, 1.0).unwrap();
     assert_eq!(rt.voice_count(), 0);
     rt.release(no_source).unwrap();
+    rt.flush_ended(|_| true);
+    assert_eq!(rt.note_count(), 0);
+}
+
+#[test]
+fn native_wait_clock_overflow_faults_without_scheduling_or_losing_ownership() {
+    let plan = Prepared::new(48000, vec![], vec![], 0)
+        .unwrap()
+        .with_programs(
+            vec![crate::Program::new(vec![crate::Instruction::Wait(2)]).unwrap()],
+            None,
+        )
+        .unwrap();
+    let mut rt = Runtime::new(
+        plan,
+        Limits {
+            behaviors: 1,
+            behavior_fuel: 2,
+            ..limits()
+        },
+    )
+    .unwrap();
+    rt.now = u64::MAX - 1;
+    let note = rt.note_on(input(Some(9)), 60, 1.).unwrap();
+    let id = rt.start_behavior(note, 0).unwrap();
+    assert_eq!(
+        rt.behavior_outcome(id),
+        Ok(Some(crate::Outcome::Fault(Error::ClockOverflow)))
+    );
+    assert_eq!(rt.pending_commands(), 0);
+    rt.flush_ended(|_| panic!("fault still owns the original identity"));
+    rt.flush_behaviors(|_, _, _| true);
     rt.flush_ended(|_| true);
     assert_eq!(rt.note_count(), 0);
 }

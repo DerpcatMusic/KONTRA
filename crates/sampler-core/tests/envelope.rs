@@ -42,6 +42,8 @@ fn runtime(envelope: Envelope, frames: usize) -> Runtime {
             families: 2,
             voices: 2,
             commands: 4,
+            behaviors: 0,
+            behavior_fuel: 0,
         },
     )
     .unwrap()

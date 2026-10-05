@@ -27,6 +27,8 @@ pub struct Prepared {
     regions: Box<[Region]>,
     offsets: [usize; 129],
     candidates: Box<[usize]>,
+    pub(super) programs: Box<[super::Program]>,
+    note_program: Option<usize>,
 }
 
 impl Prepared {
@@ -88,7 +90,24 @@ impl Prepared {
             regions: regions.into_boxed_slice(),
             offsets,
             candidates: candidates.into_boxed_slice(),
+            programs: Box::new([]),
+            note_program: None,
         })
+    }
+
+    /// Replace the complete program table and optional note binding atomically on
+    /// the control thread. Generated children select regions without re-entry.
+    pub fn with_programs(
+        mut self,
+        programs: Vec<super::Program>,
+        note_program: Option<usize>,
+    ) -> Result<Self, Error> {
+        if note_program.is_some_and(|index| index >= programs.len()) {
+            return Err(Error::InvalidInput);
+        }
+        self.programs = programs.into_boxed_slice();
+        self.note_program = note_program;
+        Ok(self)
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -112,12 +131,41 @@ impl Prepared {
     }
 }
 
+enum Origin {
+    Input(Input),
+    Child(NoteId),
+}
+
 impl Runtime {
     /// Select all matching native layers and admit them as one family. Preflight
     /// reserves the entire selection conceptually before publishing the note; no
     /// partial layer set sounds when capacity is exhausted. No match is a logical
     /// no-source note, still paired with its key-up and terminal acceptance.
     pub fn trigger(&mut self, input: Input, key: u8, velocity: f64) -> Result<NoteId, Error> {
+        self.apply_due();
+        if let Some(program) = self.plan.note_program {
+            if self.behaviors.available() == 0 {
+                return Err(Error::Capacity);
+            }
+            let note = self.note_on(input, key, velocity)?;
+            self.start_behavior(note, program)
+                .expect("preflighted native behavior admission");
+            Ok(note)
+        } else {
+            self.select(Origin::Input(input), key, velocity)
+        }
+    }
+
+    pub(super) fn trigger_child(
+        &mut self,
+        parent: NoteId,
+        key: u8,
+        velocity: f64,
+    ) -> Result<NoteId, Error> {
+        self.select(Origin::Child(parent), key, velocity)
+    }
+
+    fn select(&mut self, origin: Origin, key: u8, velocity: f64) -> Result<NoteId, Error> {
         self.apply_due();
         if key >= 128 || !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
             return Err(Error::InvalidInput);
@@ -126,7 +174,12 @@ impl Runtime {
         if count > self.voices.available() || (count != 0 && self.families.available() == 0) {
             return Err(Error::Capacity);
         }
-        let note = self.note_on(input, key, velocity)?;
+        let note = match origin {
+            Origin::Input(input) => self.note_on(input, key, velocity)?,
+            Origin::Child(parent) => {
+                self.child(parent, key, velocity, true, super::Inheritance::Linked)?
+            }
+        };
         if count == 0 {
             return Ok(note);
         }

@@ -17,6 +17,8 @@ fn ownership_pressure_render_and_retirement_do_no_heap_work() {
             families: 4,
             voices: 4,
             commands: 4,
+            behaviors: 0,
+            behavior_fuel: 0,
         },
     )
     .unwrap();
@@ -113,6 +115,8 @@ fn pedal_and_expression_timeline_pressure_do_no_heap_work() {
             families: 4,
             voices: 4,
             commands: 4,
+            behaviors: 0,
+            behavior_fuel: 0,
         },
     )
     .unwrap();
@@ -202,6 +206,8 @@ fn prepared_native_selection_and_owned_asset_retirement_do_no_heap_work() {
             families: 4,
             voices: 2,
             commands: 4,
+            behaviors: 0,
+            behavior_fuel: 0,
         },
     )
     .unwrap();
@@ -243,6 +249,8 @@ fn deep_reused_slot_trees_retire_without_heap_and_preserve_retry_ownership() {
             families: 0,
             voices: 0,
             commands: 0,
+            behaviors: 0,
+            behavior_fuel: 0,
         },
     )
     .unwrap();
@@ -336,6 +344,8 @@ fn reverse_index_release_paths_stop_at_independent_children_without_heap() {
             families: 0,
             voices: 0,
             commands: 0,
+            behaviors: 0,
+            behavior_fuel: 0,
         },
     )
     .unwrap();

@@ -15,6 +15,7 @@ pub enum Event {
 pub(super) enum Action {
     Start(VoiceId),
     Event(Event),
+    Resume(super::BehaviorId),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -98,9 +99,15 @@ impl Runtime {
     }
 
     pub(super) fn apply_due(&mut self) {
-        // Finite queue; these actions never recursively generate new commands.
+        if self.executing_due {
+            return;
+        }
+        self.executing_due = true;
+        // Resumes have finite instruction fuel and only enqueue strictly future waits.
+        // Immediate native operations cannot recursively drain later equal-time work.
         while self.commands.first().is_some_and(|c| c.at <= self.now) {
             match self.commands.remove(0).action {
+                Action::Resume(id) => self.resume_behavior(id),
                 Action::Start(id) => {
                     self.voices.get_mut(id.0).unwrap().started = true;
                 }
@@ -112,11 +119,23 @@ impl Runtime {
                 }
             }
         }
+        self.executing_due = false;
     }
 
     pub(super) fn cancel_closed_work(&mut self) {
         let notes = &mut self.notes;
         self.commands.retain(|c| match c.action {
+            Action::Resume(id) => {
+                let c = self.behaviors.get_mut(id.0).unwrap();
+                if c.outcome.is_some() {
+                    false
+                } else if notes.get(c.note.0).unwrap().gate {
+                    true
+                } else {
+                    c.outcome = Some(super::Outcome::Cancelled);
+                    false
+                }
+            }
             Action::Start(v) => self.voices.get(v.0).is_some(),
             Action::Event(Event::KeyUp(n) | Event::Release(n)) => {
                 notes.get(n.0).is_some_and(|n| n.gate)
