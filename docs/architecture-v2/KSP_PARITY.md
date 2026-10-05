@@ -46,7 +46,9 @@ native services. No compatibility path to the old KONTRA engine is introduced.
   now has [bounded note-owned integer cells](BEHAVIOR.md#note-owned-integer-state)
   shared across executions and reserved native physical-release callbacks. KSP
   polyphonic declarations, scalar assignment and note/release source dispatch now
-  exercise these services. Typed arithmetic and remaining state semantics stay open.
+  exercise these services. Native physical-held queries and signed comparisons
+  also back nested scalar conditionals and callback exit, with retained waits.
+  Typed arithmetic and remaining state semantics stay open.
   [NI variables](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#polyphonic----polyphonic-integer-).
 - Callback identity and event identity are separate; waits need retained callback
   context and cancellation. Controller callbacks must not require fabricated note

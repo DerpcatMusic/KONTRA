@@ -22,6 +22,9 @@ The current instructions are deliberately concrete:
 - `End`: finish the callback. Reaching the instruction array's end also finishes.
 - `SetLocal` / `AddLocal`: callback-local signed 64-bit integers with checked addition.
 - `ReadKey`: read the originating note's logical key into a local.
+- `ReadKeyDown`: read that owner's physical key state, independently of its gate.
+- `CompareLocal`: compare two signed locals and replace the left with 0/1; all six
+  equality/order relations work at i64 extrema without subtracting or wrapping.
 - `ReadNoteCell` / `WriteNoteCell`: transfer a local to/from note-owned integer state.
 - `Jump` / `JumpIfZero`: validated instruction targets; all branches consume fuel.
 

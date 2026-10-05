@@ -1484,3 +1484,73 @@ fn release_callbacks_keep_the_original_plan_after_source_eof_and_do_not_reenter_
         assert_eq!(rt.note_count(), 0);
     });
 }
+
+#[test]
+fn signed_comparisons_cover_extremes_aliasing_and_both_register_bounds() {
+    use sampler_core::Comparison::*;
+    for (left, right, expected) in [
+        (i64::MIN, i64::MAX, [false, true, true, true, false, false]),
+        (i64::MAX, i64::MIN, [false, true, false, false, true, true]),
+        (-1, -1, [true, false, false, true, false, true]),
+        (0, 0, [true, false, false, true, false, true]),
+    ] {
+        for (comparison, expected) in [Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual]
+            .into_iter()
+            .zip(expected)
+        {
+            for alias in [false, true] {
+                let mut rt = runtime(
+                    vec![
+                        Instruction::SetLocal {
+                            local: 0,
+                            value: left,
+                        },
+                        Instruction::SetLocal {
+                            local: 3,
+                            value: right,
+                        },
+                        Instruction::CompareLocal {
+                            lhs: 0,
+                            rhs: if alias { 0 } else { 3 },
+                            comparison,
+                        },
+                    ],
+                    limits(),
+                );
+                support::without_heap(|| {
+                    let note = rt.note_on(input(), 60, 1.).unwrap();
+                    let callback = rt.start_behavior(note, 0).unwrap();
+                    let expected = if alias {
+                        matches!(comparison, Equal | LessEqual | GreaterEqual)
+                    } else {
+                        expected
+                    };
+                    assert_eq!(rt.behavior_local(callback, 0), Ok(i64::from(expected)));
+                    assert_eq!(rt.behavior_local(callback, 3), Ok(right));
+                    assert_eq!(rt.behavior_outcome(callback), Ok(Some(Outcome::Finished)));
+                    rt.panic();
+                    rt.flush_behaviors(|_, _, _| true);
+                    rt.flush_ended(|_| true);
+                    assert_eq!(rt.note_count(), 0);
+                });
+            }
+        }
+    }
+    for (lhs, rhs) in [(0, u16::MAX), (u16::MAX, 0)] {
+        let plan = Prepared::new(48000, vec![], vec![], 0)
+            .unwrap()
+            .with_programs(
+                vec![
+                    Program::new(vec![Instruction::CompareLocal {
+                        lhs,
+                        rhs,
+                        comparison: Equal,
+                    }])
+                    .unwrap(),
+                ],
+                None,
+            )
+            .unwrap();
+        assert!(matches!(Runtime::new(plan, limits()), Err(Error::Capacity)));
+    }
+}

@@ -1,7 +1,9 @@
 #![forbid(unsafe_code)]
 //! Clean-sheet, control-thread KSP 8.12 source subset. No vendor VM dependency.
 //! Native sample-time lowering is explicit; this is not a Kontakt fidelity claim.
-use sampler_core::{Duration, Inheritance, Instruction, Prepared, Program, Velocity, WaitLifetime};
+use sampler_core::{
+    Comparison, Duration, Inheritance, Instruction, Prepared, Program, Velocity, WaitLifetime,
+};
 use std::collections::BTreeMap;
 
 pub const PROFILE: &str = "ksp-8.12-note-release-subset-v1";
@@ -58,6 +60,7 @@ enum Kind<'a> {
     Word(&'a str),
     Number(u64),
     Symbol(u8),
+    Comparison(Comparison),
     End,
 }
 #[derive(Clone, Copy)]
@@ -145,6 +148,18 @@ impl<'a> Parser<'a> {
         } else if byte == b':' && bytes.get(start + 1) == Some(&b'=') {
             self.offset += 2;
             Kind::Symbol(b':')
+        } else if b"=#<>".contains(&byte) {
+            self.offset += 1;
+            let equal = matches!(byte, b'<' | b'>') && bytes.get(self.offset) == Some(&b'=');
+            self.offset += usize::from(equal);
+            Kind::Comparison(match (byte, equal) {
+                (b'=', _) => Comparison::Equal,
+                (b'#', _) => Comparison::NotEqual,
+                (b'<', false) => Comparison::Less,
+                (b'<', true) => Comparison::LessEqual,
+                (b'>', false) => Comparison::Greater,
+                _ => Comparison::GreaterEqual,
+            })
         } else if b"(),+-".contains(&byte) {
             self.offset += 1;
             Kind::Symbol(byte)
@@ -215,7 +230,7 @@ impl<'a> Parser<'a> {
                         name.as_bytes()
                             .first()
                             .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
-                    }) || matches!(name, "$EVENT_NOTE" | "$EVENT_ID")
+                    }) || matches!(name, "$EVENT_NOTE" | "$EVENT_ID" | "$NOTE_HELD")
                         || [
                             "$NI_",
                             "$CONTROL_PAR_",
@@ -265,11 +280,17 @@ impl<'a> Parser<'a> {
     fn assignment(&mut self, name: &str, offset: usize) -> Result<(), Error> {
         let cell = self.variable(name, offset)?;
         self.symbol(b':')?;
+        self.scalar(0)?;
+        self.emit(Instruction::WriteNoteCell { cell, local: 0 })
+    }
+
+    fn scalar(&mut self, local: u16) -> Result<(), Error> {
         let token = self.next()?;
         let read = match token.kind {
-            Kind::Word("$EVENT_NOTE") => Instruction::ReadKey { local: 0 },
+            Kind::Word("$EVENT_NOTE") => Instruction::ReadKey { local },
+            Kind::Word("$NOTE_HELD") => Instruction::ReadKeyDown { local },
             Kind::Word(name) => Instruction::ReadNoteCell {
-                local: 0,
+                local,
                 cell: self.variable(name, token.offset)?,
             },
             kind => {
@@ -290,7 +311,7 @@ impl<'a> Parser<'a> {
                     });
                 }
                 Instruction::SetLocal {
-                    local: 0,
+                    local,
                     value: if negative {
                         -(value as i64)
                     } else {
@@ -299,8 +320,7 @@ impl<'a> Parser<'a> {
                 }
             }
         };
-        self.emit(read)?;
-        self.emit(Instruction::WriteNoteCell { cell, local: 0 })
+        self.emit(read)
     }
 
     fn callback(&mut self, note: bool) -> Result<Program, Error> {
@@ -314,6 +334,9 @@ impl<'a> Parser<'a> {
             )?;
             self.symbol(b')')?;
         }
+        // Each open branch has already emitted budgeted instructions. This
+        // control-only patch stack is bounded by code/source limits, not recursion.
+        let mut branches = Vec::new();
         loop {
             let token = self.next()?;
             match token.kind {
@@ -324,9 +347,68 @@ impl<'a> Parser<'a> {
                     self.emit(Instruction::Wait(self.frames(micros, offset)?))?;
                 }
                 Kind::Word("play_note") => self.play()?,
+                Kind::Word("exit") => self.emit(Instruction::End)?,
+                Kind::Word("if") => {
+                    self.symbol(b'(')?;
+                    self.scalar(0)?;
+                    let token = self.next()?;
+                    let Kind::Comparison(comparison) = token.kind else {
+                        return Err(Error {
+                            offset: token.offset,
+                            message: "expected scalar comparison",
+                        });
+                    };
+                    self.scalar(1)?;
+                    self.symbol(b')')?;
+                    self.emit(Instruction::CompareLocal {
+                        lhs: 0,
+                        rhs: 1,
+                        comparison,
+                    })?;
+                    let branch = self.code.len();
+                    self.emit(Instruction::JumpIfZero {
+                        local: 0,
+                        target: 0,
+                    })?;
+                    branches.push((branch, false));
+                }
+                Kind::Word("else") => {
+                    let Some((branch, has_else)) = branches.last_mut() else {
+                        return Err(self.error("else without if"));
+                    };
+                    if *has_else {
+                        return Err(self.error("duplicate else"));
+                    }
+                    let end_jump = self.code.len();
+                    self.emit(Instruction::Jump { target: 0 })?;
+                    self.code[*branch] = Instruction::JumpIfZero {
+                        local: 0,
+                        target: self.code.len(),
+                    };
+                    *branch = end_jump;
+                    *has_else = true;
+                }
                 Kind::Word(name) if name.starts_with('$') => self.assignment(name, token.offset)?,
                 Kind::Word("end") => {
-                    self.expect(Kind::Word("on"), "expected end on")?;
+                    let token = self.next()?;
+                    if token.kind == Kind::Word("if") {
+                        let Some((branch, has_else)) = branches.pop() else {
+                            return Err(self.error("end if without if"));
+                        };
+                        let target = self.code.len();
+                        self.code[branch] = if has_else {
+                            Instruction::Jump { target }
+                        } else {
+                            Instruction::JumpIfZero { local: 0, target }
+                        };
+                        continue;
+                    }
+                    if token.kind != Kind::Word("on") || !branches.is_empty() {
+                        return Err(Error {
+                            offset: token.offset,
+                            message: "expected matching end if or end on",
+                        });
+                    }
                     self.emit(Instruction::End)?;
                     return Program::new(std::mem::take(&mut self.code))
                         .map(|p| p.with_wait_lifetime(WaitLifetime::Callback))
@@ -412,7 +494,7 @@ impl<'a> Parser<'a> {
 
 /// Compile optional polyphonic declarations followed by note/release callbacks.
 /// Note callbacks require leading ignore_event($EVENT_ID). Bodies accept scalar
-/// assignment, literal waits and fixed-velocity, positive-duration play_note.
+/// assignment, scalar conditionals, exit, literal waits and fixed-velocity play_note.
 /// Microseconds round upward to frames; broader expressions/services are rejected.
 pub fn compile(source: &str, rate: u32, limits: Limits) -> Result<Script, Error> {
     if source.len() > limits.source_bytes {

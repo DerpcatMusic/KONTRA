@@ -33,7 +33,9 @@ mod performance;
 pub use performance::{Keyswitch, PerformanceId, SelectionPolicy, SelectionSnapshot};
 mod behavior;
 use behavior::Continuation;
-pub use behavior::{BehaviorId, Duration, Instruction, Outcome, Program, Velocity, WaitLifetime};
+pub use behavior::{
+    BehaviorId, Comparison, Duration, Instruction, Outcome, Program, Velocity, WaitLifetime,
+};
 mod source;
 pub use source::{Direction, Loop, LoopMode, Playback};
 mod envelope;

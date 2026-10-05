@@ -43,6 +43,21 @@ fn authored_script_renders_owned_wav_at_its_rate_and_refuses_invalid_or_existing
         include_str!("../../sampler-ksp/tests/fixtures/polyphonic-release.ksp"),
     )
     .unwrap();
+    let branch_source = directory.join("branch.ksp");
+    fs::write(
+        &branch_source,
+        "on note ignore_event($EVENT_ID)
+        wait(750000)
+        if ($NOTE_HELD = 0)
+            play_note($EVENT_NOTE, 96, 0, 125000)
+            exit
+        else
+            play_note($EVENT_NOTE, 1, 0, 125000)
+        end if
+        play_note($EVENT_NOTE, 127, 0, 125000)
+        end on",
+    )
+    .unwrap();
     let executable = env!("CARGO_BIN_EXE_sampler-native");
     for rate in [44100u32, 48000, 96000] {
         let frames = rate / 100;
@@ -111,6 +126,33 @@ fn authored_script_renders_owned_wav_at_its_rate_and_refuses_invalid_or_existing
                 left > 0.,
                 (start + 1..start + frames as usize).contains(&i),
                 "release timing at rate {rate}, frame {i}"
+            );
+        }
+        let branch_output = directory.join(format!("branch-{rate}.wav"));
+        let branch_render = Command::new(executable)
+            .arg("script")
+            .args([&branch_source, &input, &branch_output])
+            .output()
+            .unwrap();
+        assert!(
+            branch_render.status.success(),
+            "{}",
+            String::from_utf8_lossy(&branch_render.stderr)
+        );
+        let branch_audio = fs::read(branch_output).unwrap();
+        assert_eq!(branch_audio.len(), result.len());
+        // The original independent expected waveform above is shifted 0.5 s.
+        // Key-up was at 0.5 s, but sustain still holds the gate until 1 s.
+        for (i, actual) in branch_audio[58..].as_chunks::<8>().0.iter().enumerate() {
+            let expected = result[58..]
+                .as_chunks::<8>()
+                .0
+                .get(i + rate as usize / 2)
+                .copied()
+                .unwrap_or([0; 8]);
+            assert_eq!(
+                *actual, expected,
+                "conditional PCM at rate {rate}, frame {i}"
             );
         }
         let overwrite = Command::new(executable)
