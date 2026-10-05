@@ -28,14 +28,40 @@ impl Pcm {
     }
 }
 
-/// Native resident region with optional equal-tempered root-key tracking.
+/// Native tuning offsets in semitones from the nominal 12-tone equal-tempered
+/// pitch of each logical key. Zero preserves authored tuning. Compile off audio;
+/// adoption affects new roots, while existing notes and children keep their plan.
+#[derive(Clone, Debug)]
+pub struct Tuning([f64; 128]);
+
+impl Tuning {
+    pub fn new(offsets_semitones: [f64; 128]) -> Result<Self, Error> {
+        if offsets_semitones.iter().any(|offset| !offset.is_finite()) {
+            return Err(Error::InvalidInput);
+        }
+        Ok(Self(offsets_semitones))
+    }
+
+    pub fn offsets_semitones(&self) -> &[f64; 128] {
+        &self.0
+    }
+}
+
+impl Default for Tuning {
+    fn default() -> Self {
+        Self([0.0; 128])
+    }
+}
+
+/// Native resident region with optional tuned root-key tracking.
 /// PCM can be shared by regions with independent ranges, directions and loops.
 #[derive(Clone, Copy, Debug)]
 pub struct Region {
     pub sample: usize,
     pub key_low: u8,
     pub key_high: u8,
-    /// Equal-tempered key tracking; None keeps the source at its authored pitch.
+    /// Nominal recorded root key. Tracking includes the played key's tuning offset;
+    /// None keeps the source at its authored pitch and bypasses the tuning table.
     pub root_key: Option<u8>,
     pub velocity_low: f64,
     pub velocity_high: f64,
@@ -82,6 +108,19 @@ impl Prepared {
         regions: Vec<Region>,
         max_candidates: usize,
     ) -> Result<Self, Error> {
+        Self::new_tuned(rate, pcm, regions, max_candidates, &Tuning::default())
+    }
+
+    /// Compile a tuning table into key candidates, with no table lookup or pitch
+    /// calculation added to rendering. The recorded root remains nominal: tuning
+    /// a played root key changes its pitch too. Fixed-pitch regions are exempt.
+    pub fn new_tuned(
+        rate: u32,
+        pcm: Vec<Pcm>,
+        regions: Vec<Region>,
+        max_candidates: usize,
+        tuning: &Tuning,
+    ) -> Result<Self, Error> {
         if rate == 0 {
             return Err(Error::InvalidInput);
         }
@@ -104,7 +143,8 @@ impl Prepared {
             }
             let mut playback = r.playback;
             if let Some(root) = r.root_key {
-                playback.transpose_semitones += f64::from(r.key_low) - f64::from(root);
+                playback.transpose_semitones +=
+                    f64::from(r.key_low) - f64::from(root) + tuning.0[r.key_low as usize];
             }
             let cursor = playback.cursor(
                 pcm[r.sample].frames().len(),
@@ -134,7 +174,8 @@ impl Prepared {
                 if r.key_low <= key && key <= r.key_high {
                     let step = if let Some(root) = r.root_key {
                         let mut playback = r.playback;
-                        playback.transpose_semitones += f64::from(key) - f64::from(root);
+                        playback.transpose_semitones +=
+                            f64::from(key) - f64::from(root) + tuning.0[key as usize];
                         playback.step(pcm[r.sample].sample_rate(), rate)
                     } else {
                         prepared_regions[region].cursor.step()

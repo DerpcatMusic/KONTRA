@@ -7,7 +7,8 @@ runtime. Preparation and direct source admission both validate the resulting ste
 invalid, nonfinite and unsupported ratios fail before taking a voice slot or command.
 Prepared regions retain fresh cursor templates rather than authoring playback objects.
 The prepared key-candidate index stores each selected key's complete playback step.
-`root_key: None` is fixed pitch; `Some(key)` adds equal-tempered key displacement.
+`root_key: None` is fixed pitch; `Some(key)` adds key displacement and optional
+native tuning offsets described below.
 Each step is computed directly from authored tuning and key displacement, preserving
 exact unity at the root rather than multiplying rounded adjacent-key ratios.
 Every mapped key must satisfy the declared rate bounds; an unmapped root need not.
@@ -161,7 +162,7 @@ These native services now support the separate [fixed-zone MPE adapter](MIDI_ING
 including member-channel reuse and frozen released-member expression. Full MPE/MIDI
 2.0 receiver behavior and raw-versus-consumed scripting stages remain pending. Vendor
 imports will use that shared service rather than defining the engine's expression
-limits. Pitch ramps and custom tuning remain separate pending work.
+limits. Pitch ramps and external tuning protocols remain separate pending work.
 
 The unmodulated resident workload was repeated after live pitch was connected:
 three paired CPU-2 runs against the preserved pre-expression renderer measured
@@ -182,6 +183,35 @@ snapshot child, changes the parent before rendering, and checks analytic pitch,
 gain and stereo balance. It also verifies exact 32-bit pressure/timbre retention,
 invalid initial values, failed source-rate admission, and complete cleanup.
 
+
+## Prepared native tuning
+
+`Tuning::new([f64; 128])` validates a native table of finite semitone offsets from
+each logical key's nominal twelve-tone equal-tempered pitch. Zero is the default.
+`Prepared::new_tuned` compiles these offsets directly into existing key candidates;
+the runtime retains neither a tuning table nor a second pitch lookup. PCM handles
+can be shared with the preceding plan. Every mapped source rate still must lie
+within 1/256–16; unsupported values fail preparation instead of being clamped.
+Unused keys need not satisfy a particular region's rate constraint.
+
+For tracked regions, the compiled semitone displacement is authored transpose plus
+played key minus recorded root key plus the **played key's** tuning offset. The
+recorded root remains nominal, so tuning the root key changes its sound as well.
+Nonmonotonic tables are supported. Fixed-pitch regions (`root_key: None`) bypass
+the table. Live note expression remains an additional independent displacement;
+neither the logical key nor the physical input address is rewritten.
+
+Changes use the existing prepared-plan adoption boundary: new root inputs use the
+new tuning, while already-admitted notes and their later generated descendants
+keep their original plan's tuning. This is deliberately a future-root policy,
+not live retuning of held notes. Scala/MTS adapters, unmapped-key semantics and
+live retuning are not implemented by this native table.
+
+Heap-guarded tests compare analytic tones for irregular/nonmonotonic offsets,
+fixed-pitch exemption and live expression across block sizes 1/7/64/256. They
+reject nonfinite tables and invalid later key candidates. Plan-adoption tests
+compare overlapping generations and delayed generated children against separate
+statically transposed reference runtimes, then verify control-side retirement.
 
 ## Silent source advancement
 

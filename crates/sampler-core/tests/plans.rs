@@ -351,3 +351,104 @@ fn shared_pcm_keeps_its_buffer_across_plan_adoption_and_control_side_retirement(
         assert!(matches!(Pcm::new(rate, frames), Err(Error::InvalidInput)));
     }
 }
+
+#[test]
+fn tuning_adoption_preserves_held_notes_and_later_generated_children() {
+    use sampler_core::Tuning;
+    let pcm = Pcm::new(
+        48000,
+        (0..4096)
+            .map(|i| {
+                let x = (i as f64 * 0.07).sin() as f32 * 0.25;
+                [x, -x]
+            })
+            .collect(),
+    )
+    .unwrap();
+    let prepare = |offset, tracked: bool| {
+        let tuning = Tuning::new([offset; 128]).unwrap();
+        Prepared::new_tuned(
+            48000,
+            vec![pcm.clone()],
+            vec![Region {
+                sample: 0,
+                key_low: 60,
+                key_high: 60,
+                root_key: tracked.then_some(60),
+                velocity_low: 0.0,
+                velocity_high: 1.0,
+                gain: 1.0,
+                envelope: Envelope::default(),
+                playback: Playback {
+                    start: 512,
+                    transpose_semitones: if tracked { 0.0 } else { offset },
+                    ..Playback::default()
+                },
+            }],
+            1,
+            &tuning,
+        )
+        .unwrap()
+        .with_programs(
+            vec![
+                Program::new(vec![
+                    Instruction::Wait(16),
+                    Instruction::Play {
+                        transpose: 0,
+                        velocity: Velocity::Fixed(1.0),
+                        inheritance: Inheritance::Independent,
+                        duration: Duration::Frames(64),
+                    },
+                    Instruction::End,
+                ])
+                .unwrap(),
+            ],
+            None,
+        )
+        .unwrap()
+    };
+    for partition in [1, 7, 64, 256] {
+        let (mut rt, mut control) =
+            Runtime::with_plan_updates(prepare(0.25, true), limits(), 2, 1).unwrap();
+        let mut old_reference = Runtime::new(prepare(0.25, false), limits()).unwrap();
+        let mut new_reference = Runtime::new(prepare(-0.5, false), limits()).unwrap();
+        let request = control.submit(Box::new(prepare(-0.5, true))).unwrap();
+        support::without_heap(|| {
+            let old = rt.trigger(input(1), 60, 1.0).unwrap();
+            let reference = old_reference.trigger(input(1), 60, 1.0).unwrap();
+            rt.render(&mut [[0.0; 2]; 32]).unwrap();
+            old_reference.render(&mut [[0.0; 2]; 32]).unwrap();
+            assert_eq!(rt.poll_plan_update(), Ok(Some(request)));
+            rt.trigger(input(2), 60, 1.0).unwrap();
+            new_reference.trigger(input(2), 60, 1.0).unwrap();
+            rt.start_behavior(old, 0).unwrap();
+            old_reference.start_behavior(reference, 0).unwrap();
+            let mut audio = [[0.0; 2]; 256];
+            let mut expected_old = [[0.0; 2]; 256];
+            let mut expected_new = [[0.0; 2]; 256];
+            for ((out, a), b) in audio
+                .chunks_mut(partition)
+                .zip(expected_old.chunks_mut(partition))
+                .zip(expected_new.chunks_mut(partition))
+            {
+                rt.render(out).unwrap();
+                old_reference.render(a).unwrap();
+                new_reference.render(b).unwrap();
+            }
+            for ((out, a), b) in audio.iter().zip(expected_old).zip(expected_new) {
+                for c in 0..2 {
+                    assert!((out[c] - (a[c] + b[c])).abs() < 0.000001);
+                }
+            }
+            assert_eq!(rt.collect_retired_plans(), 0);
+            rt.panic();
+            rt.flush_behaviors(|_, _, outcome| {
+                assert_eq!(outcome, Outcome::Finished);
+                true
+            });
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.collect_retired_plans(), 1);
+        });
+        drop(control.retired().unwrap());
+    }
+}

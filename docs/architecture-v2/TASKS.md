@@ -30,6 +30,9 @@ Family/expression ownership and segmented rendering now have
 - [x] Compile native root-key tracking and apply live note-scoped pitch, with queued
   expression/source admission invariants and initial expression installed before
   bound programs/source selection. Pitch ramps remain open.
+- [x] Compile native per-key tuning with explicit future-root adoption, retained
+  descendant tuning and no render-time table lookup; external protocols and live
+  retuning remain open. See [native tuning](RESAMPLING.md#prepared-native-tuning).
 - [x] Add bounded fixed-zone MPE note/pitch/pressure/timbre projection, physical key-up snapshots,
   runtime identity, whole-semitone RPN sensitivity, zone pedals and atomic gestures; [partial receiver scope](MIDI_INGRESS.md).
 
