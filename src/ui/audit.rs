@@ -525,6 +525,15 @@ mod tests {
         let size = [192,144];
         let mut capture = GpuCapture::new(size,1.5).unwrap();
         capture.calibrate(&out.join("solid.png")).unwrap();
+        let direct_target = capture.device.create_texture(&wgpu::TextureDescriptor {
+            label:Some("direct Vello compute-only solid target"),
+            size:wgpu::Extent3d { width:size[0],height:size[1],depth_or_array_layers:1 },
+            mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,
+            format:wgpu::TextureFormat::Rgba8Unorm,
+            usage:wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats:&[],
+        });
+        let direct_view = direct_target.create_view(&Default::default());
         let mut direct_scene = vello::vello::Scene::new();
         direct_scene.fill(vello::vello::peniko::Fill::NonZero,vello::kurbo::Affine::IDENTITY,
             vello::vello::peniko::Color::WHITE,None,
@@ -538,11 +547,11 @@ mod tests {
                 use_cpu:false,antialiasing_support:vello::vello::AaSupport::area_only(),..Default::default()
             })?)).unwrap();
         gpu_checked(&capture.device,"direct_solid_draw",||Ok(direct.render_to_texture(
-            &capture.device,&capture.queue,&direct_scene,&capture.view,&vello::vello::RenderParams {
+            &capture.device,&capture.queue,&direct_scene,&direct_view,&vello::vello::RenderParams {
                 base_color:vello::vello::peniko::Color::TRANSPARENT,width:size[0],height:size[1],
                 antialiasing_method:vello::vello::AaConfig::Area,
             })?)).unwrap();
-        let compute = gpu_checked(&capture.device,"direct_solid_readback",||capture.readback()).unwrap();
+        let compute = gpu_checked(&capture.device,"direct_solid_readback",||capture.readback_texture(&direct_target)).unwrap();
         moose::core::screenshot::save_png(&out.join("direct-vello-solid.png"),&compute,size[0],size[1]);
         let scene = moose::mui::mui::scene::resolve(&SceneSpec::new(
             block(128.,96.).radius(0.).fill(Color::oklcha(1.,0.,0.,1.)))
@@ -648,6 +657,9 @@ mod tests {
             Ok(Self { device, queue, renderer, target, view, size, transform:vello::kurbo::Affine::scale(scale) })
         }
         fn readback(&self) -> anyhow::Result<Vec<u8>> {
+            self.readback_texture(&self.target)
+        }
+        fn readback_texture(&self, texture: &moose::mui::mui::vello::vello::wgpu::Texture) -> anyhow::Result<Vec<u8>> {
             use moose::mui::mui::vello::vello::wgpu;
             let stride = (self.size[0] * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
             let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -655,7 +667,7 @@ mod tests {
                 usage:wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,mapped_at_creation:false,
             });
             let mut encoder = self.device.create_command_encoder(&Default::default());
-            encoder.copy_texture_to_buffer(self.target.as_image_copy(), wgpu::TexelCopyBufferInfo {
+            encoder.copy_texture_to_buffer(texture.as_image_copy(), wgpu::TexelCopyBufferInfo {
                 buffer:&buffer,layout:wgpu::TexelCopyBufferLayout {
                     offset:0,bytes_per_row:Some(stride),rows_per_image:Some(self.size[1]),
                 },
