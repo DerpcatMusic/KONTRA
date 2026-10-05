@@ -805,7 +805,7 @@ impl Voice {
         if self.native_hq(cx).is_some() && (self.map.looped.is_some() || self.map.reverse
             || self.counted.is_some_and(|cursor| {
                 let rows = &cx.bank.counted_loops[cursor.rows as usize];
-                rows.crossfaded() || rows.terminal() != self.map.end
+                cursor.crossfaded(rows) || rows.terminal() != self.map.end
             })) {
             // Wide HQ stencils require the current physical loop/direction domain,
             // not historical virtual runs. Never substitute a quartet kernel.
@@ -828,7 +828,7 @@ impl Voice {
             && cx.bank.groups()[self.group as usize].source_mode == Some(3)
             && (self.map.reverse
                 || self.map.looped.is_some_and(|row| row.alternating || row.xfade != 0)
-                || self.counted.is_some_and(|cursor| cx.bank.counted_loops[cursor.rows as usize].crossfaded())) {
+                || self.counted.is_some_and(|cursor| cursor.crossfaded(&cx.bank.counted_loops[cursor.rows as usize]))) {
             return Err(self.source_error(super::stream::StreamErrorKind::UnsupportedWindow));
         }
         if let Some(primary) = &mut self.primary_amp {
@@ -980,7 +980,7 @@ impl Voice {
             for &offset in &positions[..n] {
                 end_cursor.advance(data, offset.checked_sub(prior).ok_or_else(overflow)? as f64 / FIXED_ONE)
                     .ok_or_else(overflow)?;
-                if data.crossfaded() && end_cursor.position.fract() != 0. {
+                if end_cursor.crossfaded(data) && end_cursor.position.fract() != 0. {
                     return Err(self.source_error(super::stream::StreamErrorKind::UnsupportedWindow));
                 }
                 prior = offset;
@@ -989,7 +989,7 @@ impl Voice {
                 .ok_or_else(overflow)?;
             // Fractional crossfade support depends on a native producer quantum
             // that is not yet mapped. Fail before PCM or retained clock mutation.
-            if data.crossfaded() && end_cursor.position.fract() != 0. {
+            if end_cursor.crossfaded(data) && end_cursor.position.fract() != 0. {
                 return Err(self.source_error(super::stream::StreamErrorKind::UnsupportedWindow));
             }
             counted_cursor = Some(end_cursor);
