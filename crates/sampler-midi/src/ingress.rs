@@ -29,6 +29,9 @@ pub enum Applied {
         attribute: Attribute,
     },
     Pedal,
+    AllNotesOff {
+        released: usize,
+    },
     Unsupported,
 }
 
@@ -95,6 +98,12 @@ impl Ingress {
                 }
                 Applied::Pedal
             }
+            Message::Control {
+                index: 123,
+                value: Value::Bits7(0) | Value::Bits32(0),
+            } => Applied::AllNotesOff {
+                released: runtime.all_notes_off(input.channel_address())?,
+            },
             _ => Applied::Unsupported,
         })
     }
