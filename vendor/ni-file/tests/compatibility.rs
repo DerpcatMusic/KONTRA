@@ -1118,3 +1118,53 @@ fn modern_source_identity_retains_opaque_bytes_and_keeps_snapshot_codec_strict()
     assert_eq!(group.source_identity().unwrap().version, 0x102);
     assert!(group.source_state().is_ok());
 }
+
+#[test]
+fn generic_nis_read_rejects_excessive_container_and_data_nesting() {
+    use ni_file::NIFile;
+    fn data(inner: Option<Vec<u8>>) -> Vec<u8> {
+        let length = 20 + inner.as_ref().map_or(0, Vec::len);
+        let mut out = (length as u64).to_le_bytes().to_vec();
+        out.extend(b"DSIN");
+        out.extend(if inner.is_some() { 0x9876u32 } else { 1 }.to_le_bytes());
+        out.extend(1u32.to_le_bytes());
+        if let Some(inner) = inner { out.extend(inner); }
+        out
+    }
+    fn item(data: &[u8], child: Option<Vec<u8>>) -> Vec<u8> {
+        let length = 40 + data.len() + 8 + child.as_ref().map_or(0, |child| 12 + child.len());
+        let mut out = (length as u64).to_le_bytes().to_vec();
+        out.extend(1u32.to_le_bytes());
+        out.extend(b"hsin");
+        out.extend([0; 24]);
+        out.extend(data);
+        out.extend(1u32.to_le_bytes());
+        out.extend(u32::from(child.is_some()).to_le_bytes());
+        if let Some(child) = child { out.extend([0; 12]); out.extend(child); }
+        out
+    }
+    for (containers, layers, expected) in [
+        (64, 1, "NIS container nesting exceeds 64 levels"),
+        (1, 64, "NIS item data nesting exceeds 64 levels"),
+    ] {
+        let fixture = |containers, layers| {
+            let mut layer = data(None);
+            for _ in 1..layers { layer = data(Some(layer)); }
+            let mut tree = item(&layer, None);
+            for _ in 1..containers { tree = item(&layer, Some(tree)); }
+            tree
+        };
+        let valid = fixture(containers, layers);
+        let parsed = NIFile::read(Cursor::new(&valid)).unwrap();
+        let mut roundtrip = Vec::new();
+        parsed.write(&mut roundtrip).unwrap();
+        assert_eq!(roundtrip, valid, "the allowed boundary retains all native bytes");
+        let excessive = fixture(containers + usize::from(containers > 1),
+            layers + usize::from(layers > 1));
+        let error = NIFile::read(Cursor::new(excessive)).err()
+            .expect("the generic parser must reject nesting before risking the loader stack");
+        let message = error.to_string();
+        assert!(message.contains(expected), "{message}");
+        assert!(message.contains("offset"), "retain decoder position context: {message}");
+    }
+}
