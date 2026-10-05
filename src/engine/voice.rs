@@ -2836,7 +2836,7 @@ mod tests {
                         engine.render_checked(&mut left[0][at..at+n],&mut right[0][at..at+n]).unwrap();
                         at+=n;block+=1;
                     }
-                    assert_eq!(engine.underruns(),0);
+                    assert_eq!(engine.underruns(),0,"source readiness {policy:?} quality{quality} rate{rate} loop{looped} filter{filtered} engine{index}");
                 }
             }),0);
             assert!(pcm[4].iter().flatten().any(|x|x.abs()>0.001));
@@ -2967,7 +2967,8 @@ mod tests {
     #[test]
     fn wide_stream_mute_keeps_started_clock_and_renews_unmute_packet_without_heap() {
         use crate::{audio::Sample, engine::Engine, import::{Group, Instrument, Zone}};
-        const FRAMES: usize = 8448;
+        // The 20 ms coefficient reaches the -80 dB release endpoint after ~1280 frames.
+        const FRAMES: usize = 8832;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("wide-mute.wav");
         let frames: Vec<_> = (0..589824).map(|i|
@@ -4038,7 +4039,8 @@ mod tests {
                             engine.render_checked(&mut empty_left,&mut empty_right).unwrap();
                             at += n; fragment += 1;
                         }
-                        let expected = usize::from(end < 432) + usize::from(end >= 237 && end < 669);
+                        // The second attack is delivered at the next interval's start237.
+                        let expected = usize::from(end < 432) + usize::from(end > 237 && end < 669);
                         assert_eq!(engine.active_voices(), expected, "exact finite point boundaries");
                         if index < 2 && end == 66 {
                             assert!(engine.player.voices.iter().all(|voice| voice.released && !voice.held),

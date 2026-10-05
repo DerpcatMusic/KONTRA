@@ -773,6 +773,7 @@ mod tests {
                 (1004,1008,1000,Some((1000,1004,false,false))),(1008,8196,1004,None)], 0,1.,0,false),
         ];
         let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("Samples")).unwrap();
         let sample = dir.path().join("counted.wav");
         let source: Vec<_> = (0..8192).map(|i| {
             let x = 0.15 * (i as f32 * 0.03125).sin() + (i % 29) as f32 / 1024.; [x,-x*0.75]
@@ -1087,7 +1088,7 @@ mod tests {
             wav.write_sample(value).unwrap(); wav.write_sample(value).unwrap();
         }
         wav.finalize().unwrap();
-        let script = "on init\ndeclare ui_button $restore\ndeclare ui_button $reset_pitch_pan\ndeclare $saved := get_engine_par($ENGINE_PAR_VOLUME,-1,-1,-1)\ndeclare $saved_pan := get_engine_par($ENGINE_PAR_PAN,-1,-1,-1)\ndeclare $saved_tune := get_engine_par($ENGINE_PAR_TUNE,-1,-1,-1)\nmake_persistent($saved)\nmake_persistent($saved_pan)\nmake_persistent($saved_tune)\nend on\non ui_control($restore)\nset_engine_par($ENGINE_PAR_VOLUME,630859,-1,-1,-1)\nend on\non ui_control($reset_pitch_pan)\nset_engine_par($ENGINE_PAR_PAN,250000,-1,-1,-1)\nset_engine_par($ENGINE_PAR_TUNE,500000,-1,-1,-1)\n$saved_pan := get_engine_par($ENGINE_PAR_PAN,-1,-1,-1)\n$saved_tune := get_engine_par($ENGINE_PAR_TUNE,-1,-1,-1)\nend on";
+        let script = "on init\ndeclare ui_button $restore\ndeclare ui_button $reset_pitch_pan\ndeclare $saved := get_engine_par($ENGINE_PAR_VOLUME,-1,-1,-1)\ndeclare $saved_pan := get_engine_par($ENGINE_PAR_PAN,-1,-1,-1)\ndeclare $saved_tune := get_engine_par($ENGINE_PAR_TUNE,-1,-1,-1)\nmake_persistent($saved)\nmake_persistent($saved_pan)\nmake_persistent($saved_tune)\nend on\non ui_control($restore)\nset_engine_par($ENGINE_PAR_VOLUME,500000,-1,-1,-1)\n$saved := get_engine_par($ENGINE_PAR_VOLUME,-1,-1,-1)\nend on\non ui_control($reset_pitch_pan)\nset_engine_par($ENGINE_PAR_PAN,250000,-1,-1,-1)\nset_engine_par($ENGINE_PAR_TUNE,500000,-1,-1,-1)\n$saved_pan := get_engine_par($ENGINE_PAR_PAN,-1,-1,-1)\n$saved_tune := get_engine_par($ENGINE_PAR_TUNE,-1,-1,-1)\nend on";
         let sequence = std::cell::Cell::new(0_u32);
         let import_program = |controls: [f32; 3], transpose: i8, group: crate::import::Group, zone: crate::import::Zone| {
             let id = sequence.get(); sequence.set(id + 1);
@@ -1153,29 +1154,43 @@ mod tests {
             engine.set_script(runtime);
             engine
         };
-        let (mut actual, mut oracle) = (load(import(0.)), load(import(1.)));
+        let muted = import(0.);
+        assert_eq!(muted.program.gain, 0.);
+        assert_eq!(muted.zones[0].gain, 1., "saved program volume remains independently writable");
+        let (mut actual, mut oracle) = (load(muted), load(import(1.)));
         let readback = actual.script().unwrap().persistence()[0]["$saved"].clone();
         actual.note_on(0, 60, 127); oracle.note_on(0, 60, 127);
         let (mut l, mut r, mut expected_l, mut expected_r) = ([0.; 128], [0.; 128], [0.; 128], [0.; 128]);
-        for _ in 0..3 { actual.render(&mut l, &mut r); oracle.render(&mut expected_l, &mut expected_r); }
-        for engine in [&mut actual, &mut oracle] { engine.ui_control(0, 0, 1); }
-        for _ in 0..3 { actual.render(&mut l, &mut r); oracle.render(&mut expected_l, &mut expected_r); }
+        for _ in 0..3 {
+            actual.render(&mut l, &mut r); oracle.render(&mut expected_l, &mut expected_r);
+            assert!(l.iter().chain(&r).all(|&x| x == 0.), "saved zero volume must silence complete PCM");
+        }
+        actual.ui_control(0, 0, 1);
+        // Native 500000 is exactly 4 * 0.5^3 = 0.5. The retained
+        // CProgram::Process contract emits the old gain before each 1/1800 step.
+        let (mut gain, mut error) = (0f32, 0f32);
+        for _ in 0..3 {
+            actual.render(&mut l, &mut r); oracle.render(&mut expected_l, &mut expected_r);
+            for frame in 0..128 {
+                error = error.max((l[frame] - expected_l[frame] * gain).abs())
+                    .max((r[frame] - expected_r[frame] * gain).abs());
+                gain += (0.5 - gain) * (1f32 / 1800.);
+            }
+        }
         let peak = expected_l.iter().chain(&expected_r).map(|x| x.abs()).fold(0f32, f32::max);
-        let error = l.iter().chain(&r).zip(expected_l.iter().chain(&expected_r))
-            .map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
         eprintln!("saved program volume: readback={readback:?}, restored PCM error={error}, oracle peak={peak}");
         assert!(peak > 0.2, "the imported oracle must sound after the authored restore");
         assert!(readback == Value::Int(0) && error < 1e-6,
             "saved program volume was baked into zones instead of the writable instrument control");
+        assert_eq!(actual.script().unwrap().persistence()[0]["$saved"], Value::Int(500000));
+        assert!(l.iter().chain(&r).any(|&x| x.abs() > 0.02), "live restoration must make the muted program audible");
 
         use crate::fx::{Chain, Effect, Kind, Params, params::{Field, Value as FxValue, SendLevels, StereoModeller}};
         let effect = |slot, kind, params| Effect {
             slot, kind, params, version: 0, bypass: false, output_gain: 1., dry_level: 0.,
         };
-        // The creator writes empty FX. Augment each real imported program with
-        // supported DSP, retaining its decoded Amplifier position (slot6).
-        // The oracle folds volume into raw zone gain as the previous importer
-        // did; scaling the completed unity output is a deliberately wrong stage.
+        // Native program gain follows complete program output, including sends.
+        // A zone-folded negative oracle distinguishes that stage through nonlinear FX.
         for (nonlinear_slot, tap_slot) in [(0, 1), (6, 7)] {
             let augment = |mut instrument: crate::import::Instrument| {
                 assert_eq!(instrument.groups[0].amp_split_slot, Some(6));
@@ -1202,62 +1217,69 @@ mod tests {
             let (mut actual, mut oracle, mut unity) = (load(authored), load(folded), load(augment(import(1.))));
             let (mut a, mut ar, mut b, mut br, mut u, mut ur) = ([0.; 128], [0.; 128], [0.; 128], [0.; 128], [0.; 128], [0.; 128]);
             let (mut authored_error, mut misplaced_error, mut restore_error) = (0f32, 0f32, 0f32);
+            let mut gain = 0.25f32;
             assert_eq!(crate::plugin::tests::allocations(|| {
                 for engine in [&mut actual, &mut oracle, &mut unity] { engine.note_on(0, 60, 127); }
                 for _ in 0..4 {
                     actual.render(&mut a, &mut ar); oracle.render(&mut b, &mut br); unity.render(&mut u, &mut ur);
-                    authored_error = authored_error.max(a.iter().chain(&ar).zip(b.iter().chain(&br))
+                    authored_error = authored_error.max(a.iter().chain(&ar).zip(u.iter().chain(&ur))
+                        .map(|(a,u)| (a-0.25*u).abs()).fold(0., f32::max));
+                    misplaced_error = misplaced_error.max(a.iter().chain(&ar).zip(b.iter().chain(&br))
                         .map(|(a,b)| (a-b).abs()).fold(0., f32::max));
                 }
-                misplaced_error = a.iter().chain(&ar).zip(u.iter().chain(&ur))
-                    .map(|(a,u)| (a-0.25*u).abs()).fold(0., f32::max);
-                for engine in [&mut actual, &mut unity] { engine.ui_control(0, 0, 1); }
-                for _ in 0..3 { actual.render(&mut a, &mut ar); unity.render(&mut u, &mut ur); }
-                restore_error = a.iter().chain(&ar).zip(u.iter().chain(&ur))
-                    .map(|(a,u)| (a-u).abs()).fold(0., f32::max);
+                actual.ui_control(0, 0, 1);
+                for _ in 0..3 {
+                    actual.render(&mut a, &mut ar); unity.render(&mut u, &mut ur);
+                    for frame in 0..128 {
+                        restore_error = restore_error.max((a[frame] - u[frame] * gain).abs())
+                            .max((ar[frame] - ur[frame] * gain).abs());
+                        gain += (0.5 - gain) * (1f32 / 1800.);
+                    }
+                }
             }), 0);
-            eprintln!("imported program Amplifier placement: nonlinear slot{nonlinear_slot}, send slot{tap_slot}: authored error{authored_error}, final-output error{misplaced_error}, live restore error{restore_error}");
+            eprintln!("imported program Amplifier placement: nonlinear slot{nonlinear_slot}, send slot{tap_slot}: authored error{authored_error}, zone-folded error{misplaced_error}, live restore error{restore_error}");
             assert!(authored_error < 1e-6 && restore_error < 1e-6,
-                "authored and live program gain must use the decoded Amplifier stage");
-            assert!(misplaced_error > 0.01, "the fixture must distinguish a final-output multiplier");
+                "authored and live program gain must follow complete program output");
+            assert!(misplaced_error > 0.01, "the fixture must distinguish gain baked into zones");
         }
 
-        // Saved zone/program pan clips before adding the group's pan. The
-        // instrument getter exposes its own +0.5, not the clipped zone sum.
+        // Program pan balances complete output independently of zone/group pan.
         let group = || crate::import::Group { pan: -0.25, ..Default::default() };
         let zone = || crate::import::Zone { sample: "tone.wav".into(), pan: 0.75, ..Default::default() };
         let authored = import_program([1., 0.5, 2.], -12, group(), zone());
         assert_eq!(authored.program.pan, 0.5);
         assert_eq!(authored.program.tune, 12.);
         assert_eq!(authored.transpose, -12);
+        assert_eq!(authored.groups[0].pan, -0.25);
         assert_eq!(authored.zones[0].pan, 0.75);
         assert_eq!(authored.zones[0].tune, 1.);
-        let mut folded = import_program([1., 0., 1.], 0, group(), zone());
-        // Independent previous import pipeline: clip zone pan + saved pan,
-        // and multiply native tune ratio2 by fixed transpose ratio0.5.
-        folded.zones[0].pan = 1.; folded.zones[0].tune = 1.;
-        let (mut actual, mut oracle, mut restored) = (load(authored), load(folded),
-            load(import_program([1., -0.5, 1.], -12, group(), zone())));
+        let (mut actual, mut oracle) = (load(authored),
+            load(import_program([1., 0., 1.], 0, group(), zone())));
         let saved = &actual.script().unwrap().persistence()[0];
         assert_eq!(saved["$saved_pan"], Value::Int(750000));
         assert_eq!(saved["$saved_tune"], Value::Int(666667), "fixed transpose is not editable tune");
         assert_eq!(crate::plugin::tests::allocations(|| {
-            for engine in [&mut actual, &mut oracle, &mut restored] { engine.note_on(0, 60, 127); }
+            for engine in [&mut actual, &mut oracle] { engine.note_on(0, 60, 127); }
             for _ in 0..4 {
                 actual.render(&mut l, &mut r); oracle.render(&mut expected_l, &mut expected_r);
-                restored.render(&mut [0.; 128], &mut [0.; 128]);
-                assert_eq!(l, expected_l, "saved pan uses the previous nested clip");
+                assert!(l.iter().zip(&expected_l).all(|(l,x)| (l - 0.5*x).abs() < 1e-6),
+                    "saved program pan balances completed neutral-program PCM");
                 assert_eq!(r, expected_r);
             }
             assert!(r.iter().copied().fold(0f32, f32::max) > 0.1);
             assert!(l.iter().zip(&r).all(|(l,r)| (4.*l-r).abs() < 1e-6),
-                "pan +0.75 keeps a quarter of the left channel; a flattened sum would mute it");
+                "the separate program balance retains a quarter of the left channel");
             actual.ui_control(0, 1, 1);
-            for _ in 0..6 {
-                actual.render(&mut l, &mut r); restored.render(&mut expected_l, &mut expected_r);
+            let mut pan = 0.5f32;
+            for _ in 0..20 {
+                actual.render(&mut l, &mut r); oracle.render(&mut expected_l, &mut expected_r);
+                for frame in 0..128 {
+                    assert!((l[frame] - expected_l[frame] * (1. - pan.max(0.))).abs() < 1e-6
+                        && (r[frame] - expected_r[frame] * (1. + pan.min(0.))).abs() < 1e-6,
+                        "live program pan follows the old-pan-first native slew at frame {frame}");
+                    pan = (pan - 20f32 / 48_000.).max(-0.5);
+                }
             }
-            assert!(l.iter().chain(&r).zip(expected_l.iter().chain(&expected_r))
-                .all(|(a,b)| (a-b).abs() < 1e-6), "live pan replaces the authored value");
             assert!(l.iter().zip(&r).all(|(l,r)| (l-r).abs() < 1e-6), "the replacement centers this zone");
         }), 0);
         let saved = &actual.script().unwrap().persistence()[0];
@@ -1268,9 +1290,8 @@ mod tests {
         // independently of the engine's tuning/step calculation.
         let pitch_zone = || crate::import::Zone { sample: "pitch.wav".into(), ..Default::default() };
         let authored = import_program([1., 0.5, 2.], -12, crate::import::Group::default(), pitch_zone());
-        let mut folded = import_program([1., 0., 1.], 0, crate::import::Group::default(), pitch_zone());
-        folded.zones[0].pan = 0.5; folded.zones[0].tune = 1.;
-        let (mut actual, mut oracle) = (load(authored), load(folded));
+        let neutral = import_program([1., 0., 1.], 0, crate::import::Group::default(), pitch_zone());
+        let (mut actual, mut oracle) = (load(authored), load(neutral));
         let (mut initial, mut changed) = (Vec::with_capacity(4096), Vec::with_capacity(4096));
         assert_eq!(crate::plugin::tests::allocations(|| {
             actual.note_on(0, 60, 127); oracle.note_on(0, 60, 127);
@@ -1281,8 +1302,9 @@ mod tests {
                 actual.render(&mut l, &mut r); oracle.render(&mut expected_l, &mut expected_r);
                 initial.extend_from_slice(&r);
             }), 0);
-            assert_eq!(l, expected_l, "saved/folded imported pitch PCM differs at captured block{block}");
-            assert_eq!(r, expected_r, "saved/folded imported pitch PCM differs at captured block{block}");
+            assert!(l.iter().zip(&expected_l).all(|(l,x)| (l - 0.5*x).abs() < 1e-6),
+                "saved tune and program balance differ at captured block{block}");
+            assert_eq!(r, expected_r, "saved/neutral imported pitch PCM differs at captured block{block}");
         }
         assert_eq!(crate::plugin::tests::allocations(|| {
             actual.ui_control(0, 1, 1);

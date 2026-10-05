@@ -2,7 +2,7 @@
 
 use crate::{
     audio::Sample,
-    engine::{Bank, Engine, HostNote, params::{Address, GroupPar}},
+    engine::{Bank, Engine, HostNote, HostPattern, params::{Address, GroupPar}},
     import::{Ahdsr, Group, Zone},
 };
 
@@ -87,9 +87,19 @@ fn performance(rate: u32, frames: usize, fragments: &[usize]) -> [[Vec<f32>; 2];
         for engine in [&mut actual, &mut expected] {
             engine.mark_host_notes();
             assert_eq!(engine.host_note_end_at(old),Some(SWITCH as u64));
-            assert_eq!(engine.host_note_end_at(new),Some(source_end));
+            assert_eq!(engine.host_audio_end_at(new),Some(source_end));
             assert_eq!(engine.active_voices(),0);
             assert_eq!(engine.underruns(),0);
+            // Source EOF closes audio; the physical key still owns NOTE_END.
+            assert!(engine.host_note_pending(new));
+            assert_eq!(engine.host_note_end_at(new),None);
+            engine.host_note_off(HostPattern {
+                port:i32::from(new.port), channel:i32::from(new.channel), key:i32::from(new.key),
+                id:new.id, clap:new.clap,
+            });
+            engine.mark_host_notes();
+            assert!(!engine.host_note_pending(new));
+            assert_eq!(engine.host_note_end_at(new),Some(END as u64));
         }
     }),0);
     let error = pcm[0].iter().flatten().zip(pcm[1].iter().flatten())

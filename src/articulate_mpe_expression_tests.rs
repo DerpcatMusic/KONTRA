@@ -171,10 +171,12 @@ fn performance(scripted: bool, sizes: &[usize]) -> ([[f32; FRAMES]; 2], [u64; 3]
             (&mut reference, &mut r_route, 11)]
         {
             for event in [In::NoteOff(6, 60), In::HostOff(pattern(survivor)),
-                In::NoteOff(8, 64), In::NoteOff(9, 65), In::NoteOff(10, 66)]
+                In::NoteOff(8, 64), In::NoteOff(9, 65)]
             {
                 feed(route, engine, event, home);
             }
+            // This note bypassed Router on admission and has no captured route.
+            engine.note_off_from(home, 10, 66);
         }
         render(&mut actual, &mut pcm, 2048, FRAMES, sizes);
         render(&mut reference, &mut oracle, 2048, FRAMES, sizes);
@@ -182,6 +184,8 @@ fn performance(scripted: bool, sizes: &[usize]) -> ([[f32; FRAMES]; 2], [u64; 3]
         assert_eq!(reference.active_voices(), 0);
         assert_eq!(actual.dropped_commands(), 0);
         assert_eq!(reference.dropped_commands(), 0);
+        actual.mark_host_notes();
+        reference.mark_host_notes();
     }), 0);
     assert!(oracle.iter().flatten().any(|value| value.abs() > 0.02));
     let error = pcm.iter().flatten().zip(oracle.iter().flatten())

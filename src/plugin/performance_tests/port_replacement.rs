@@ -236,7 +236,10 @@ fn performance(partition: &'static [usize], scripted: bool) -> Performance {
     assert_eq!(actual.dsp.unsupported_host_expression, 0);
     assert_eq!(actual.dsp.unsupported_note_brightness, 0);
     assert_eq!(actual.dsp.host_note_end_rejections, 1);
-    assert!(actual.dsp.rack.parts[0].instrument().unwrap().script().is_none_or(|rt| rt.diagnostics().is_empty()));
+    if let Some(rt) = actual.dsp.rack.parts[0].instrument().unwrap().script() {
+        let diagnostics = rt.diagnostics();
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
     actual
 }
 

@@ -55,8 +55,9 @@ fn imported() -> (tempfile::TempDir, Instrument) {
         private.push(0x10);
         private.extend(0u16.to_le_bytes());
         name(&mut private, param);
-        private.extend([0, 0]);
+        private.push(0); // Group targets have inversion, but no module slot byte.
     }
+    private.extend([0; 2]); // Shaper flags follow the complete target roster.
     private.extend([0, 0, 0, 0]);
     private.extend(0u32.to_le_bytes());
     name(&mut private, "Shared Clock");
@@ -249,20 +250,19 @@ fn trajectories() -> [[Vec<f32>; 2]; 5] {
             } else {
                 old_gain + (gain - old_gain) * fraction
             };
-            if index == 0 && (101..149).contains(&frame) {
-                out[1][frame] = 0.;
-            }
         }
         out
     })
 }
 fn performance(i: &Instrument, fragments: &[usize]) -> ([Vec<f32>; 2], [Option<u64>; 5]) {
-    let (mut actual, mut expected) = (engine(i, false), engine(i, true));
+    let mut actual = engine(i, false);
+    let mut expected: [Engine; 5] = std::array::from_fn(|_| engine(i, true));
     let reference = trajectories();
     let mut incoming = Some(bank(i, false));
     let mut reset = Some(bank(i, false));
-    let mut reset_plain = Some(bank(i, true));
-    let (mut retired_fill, mut retired_reset, mut retired_plain) = (None, None, None);
+    let mut reset_plain: [Option<Box<Bank>>; 5] = std::array::from_fn(|_| Some(bank(i, true)));
+    let (mut retired_fill, mut retired_reset) = (None, None);
+    let mut retired_plain: [Option<Box<Bank>>; 5] = Default::default();
     let mut pcm = [vec![0.; END], vec![0.; END]];
     let mut oracle = [vec![0.; END], vec![0.; END]];
     let (mut at, mut fragment, mut window) = (0, 0, 0);
@@ -274,7 +274,7 @@ fn performance(i: &Instrument, fragments: &[usize]) -> ([Vec<f32>; 2], [Option<u
                 if at == WINDOWS[window] {
                     let width = WINDOWS[window + 1] - at;
                     actual.begin_audio_block(width, 1, false);
-                    expected.begin_audio_block(width, 1, false);
+                    for engine in &mut expected { engine.begin_audio_block(width, 1, false); }
                     window += 1;
                 }
                 if at == 450 {
@@ -299,20 +299,22 @@ fn performance(i: &Instrument, fragments: &[usize]) -> ([Vec<f32>; 2], [Option<u
                 }
                 if at == 1474 {
                     retired_reset = actual.set_bank(reset.take());
-                    retired_plain = expected.set_bank(reset_plain.take());
+                    for index in 0..5 {
+                        retired_plain[index] = expected[index].set_bank(reset_plain[index].take());
+                    }
                     assert_eq!(
                         actual.state.shared_lfos.rows[0].state.get().phase,
                         0.,
                         "destructive installation resets shared source phase"
                     );
                     actual.mark_host_notes();
-                    expected.mark_host_notes();
+                    for engine in &mut expected { engine.mark_host_notes(); }
                     assert_eq!(actual.host_note_end_at(host(3)), Some(1474));
-                    assert_eq!(expected.host_note_end_at(host(3)), Some(1474));
+                    assert_eq!(expected[3].host_note_end_at(host(3)), Some(1474));
                 }
                 for (index, start) in STARTS.into_iter().enumerate() {
                     if at == start {
-                        for e in [&mut actual, &mut expected] {
+                        for e in [&mut actual, &mut expected[index]] {
                             assert!(e.host_note_on(
                                 host(index),
                                 host(index).channel,
@@ -331,10 +333,12 @@ fn performance(i: &Instrument, fragments: &[usize]) -> ([Vec<f32>; 2], [Option<u
                     }
                 }
                 if at == 101 || at == 149 {
-                    actual.host_expression(
-                        pattern(host(0)),
-                        HostExpression::Gain(if at == 101 { 0. } else { 1. }),
-                    );
+                    for engine in [&mut actual, &mut expected[0]] {
+                        engine.host_expression(
+                            pattern(host(0)),
+                            HostExpression::Gain(if at == 101 { 0. } else { 1. }),
+                        );
+                    }
                 }
                 if at == 117 || at == 181 {
                     assert!(actual.write(
@@ -355,7 +359,7 @@ fn performance(i: &Instrument, fragments: &[usize]) -> ([Vec<f32>; 2], [Option<u
                 }
                 for (index, off) in [(0, 450), (1, 512), (2, 512), (3, 1320), (4, 1731)] {
                     if at == off {
-                        for e in [&mut actual, &mut expected] {
+                        for e in [&mut actual, &mut expected[index]] {
                             e.host_note_off(pattern(host(index)));
                         }
                     }
@@ -395,33 +399,32 @@ fn performance(i: &Instrument, fragments: &[usize]) -> ([Vec<f32>; 2], [Option<u
                     );
                 }
                 for frame in at..at + n {
-                    for index in 0..5 {
+                    for (index, engine) in expected.iter_mut().enumerate() {
                         if frame >= STARTS[index] {
-                            expected.host_expression(
+                            engine.host_expression(
                                 pattern(host(index)),
                                 HostExpression::Tune(reference[index][0][frame]),
                             );
-                            expected.host_expression(
-                                pattern(host(index)),
-                                HostExpression::Gain(reference[index][1][frame]),
-                            );
                         }
+                        // Source gain belongs after the plain amplifier, while
+                        // physical host gain retains its independent 5 ms ramp.
+                        let (mut left, mut right) = ([0.; 1], [0.; 1]);
+                        engine.render_checked(&mut left, &mut right).unwrap();
+                        let gain = reference[index][1][frame];
+                        oracle[0][frame] += left[0] * gain;
+                        oracle[1][frame] += right[0] * gain;
                     }
-                    let [l, r] = &mut oracle;
-                    expected
-                        .render_checked(&mut l[frame..frame + 1], &mut r[frame..frame + 1])
-                        .unwrap();
                 }
                 at += n;
                 fragment += 1;
             }
             actual.mark_host_notes();
-            expected.mark_host_notes();
+            for engine in &mut expected { engine.mark_host_notes(); }
         }),
         0
     );
     let actual_ends = std::array::from_fn(|index| actual.host_note_end_at(host(index)));
-    let expected_ends = std::array::from_fn(|index| expected.host_note_end_at(host(index)));
+    let expected_ends = std::array::from_fn(|index| expected[index].host_note_end_at(host(index)));
     assert_eq!(actual_ends, expected_ends);
     assert!(actual_ends.iter().all(Option::is_some));
     let error = pcm
@@ -571,32 +574,21 @@ fn older_actual_cold_stream_cannot_nominate_before_ready_younger_shared_voice() 
     let mut plain = instrument.groups.clone();
     plain[0].pitch_lfos.clear();
     plain[0].volume_lfos.clear();
-    let resident = Bank::from_samples(
-        plain,
-        instrument.zones.clone(),
-        paths
-            .into_iter()
-            .zip(frames)
-            .map(|(path, frames)| {
-                (
-                    path,
-                    Sample {
-                        rate: 48000,
-                        frames,
-                    },
-                )
-            })
-            .collect(),
-    )
-    .unwrap();
-    let (mut actual, mut expected) = (Engine::default(), Engine::default());
-    for e in [&mut actual, &mut expected] {
-        e.reset(48000.);
-        e.attack = 0.;
-        e.release = 0.005;
-    }
+    let mut expected: [Engine; 2] = std::array::from_fn(|_| {
+        let resident = Bank::from_samples(
+            plain.clone(),
+            instrument.zones.clone(),
+            paths.iter().cloned().zip(frames.iter().cloned())
+                .map(|(path, frames)| (path, Sample { rate:48000, frames })).collect(),
+        ).unwrap();
+        let mut engine = Engine::default();
+        engine.reset(48000.); engine.attack = 0.; engine.release = 0.005;
+        engine.set_bank(Some(Box::new(resident)));
+        engine
+    });
+    let mut actual = Engine::default();
+    actual.reset(48000.); actual.attack = 0.; actual.release = 0.005;
     actual.set_bank(Some(Box::new(streamed)));
-    expected.set_bank(Some(Box::new(resident)));
     let cold = HostNote {
         key: 59,
         id: 201,
@@ -605,8 +597,8 @@ fn older_actual_cold_stream_cannot_nominate_before_ready_younger_shared_voice() 
     let ready = HostNote { id: 202, ..host(1) };
     let mut pcm = [[0.; 707]; 2];
     let mut oracle = [[0.; 707]; 2];
-    let (mut old_admission, mut young_admission, mut cold_slot) = (None, None, None);
-    let mut cold_started = None;
+    let (mut old_admission, mut young_admission, mut cold_slot, mut ready_slot) = (None, None, None, None);
+    let (mut cold_started, mut ready_started) = (None, None);
     let (mut cold_curve, mut ready_curve) = (ColdReference::default(), ColdReference::default());
     for frame in 0..707 {
         if frame == 0 || frame == 257 || frame == 450 {
@@ -617,38 +609,44 @@ fn older_actual_cold_stream_cannot_nominate_before_ready_younger_shared_voice() 
             } else {
                 257
             };
-            for e in [&mut actual, &mut expected] {
+            for e in std::iter::once(&mut actual).chain(expected.iter_mut()) {
                 e.begin_audio_block(width, 1, false);
             }
         }
         assert_eq!(
             crate::plugin::tests::allocations(|| {
                 if frame == 0 {
-                    // Live high tuning demands actual taps outside the resident
-                    // head; it is not a forged Pending enum or fabricated packet.
+                    // The bare bank has no resident PCM. Live high tuning
+                    // requests genuine wide taps without a fabricated packet.
                     assert!(actual.host_note_on(cold, 4, 59, 127, 72.));
                     actual.host_expression(pattern(cold), HostExpression::Pan(-1.));
                     old_admission = Some(actual.player.voices[0].admission);
                     cold_slot = Some(actual.player.voices[0].stream.unwrap().slot);
                 }
                 if frame == 1 {
-                    for e in [&mut actual, &mut expected] {
+                    for e in [&mut actual, &mut expected[1]] {
                         assert!(e.host_note_on(ready, 7, 60, 127, 0.));
                         e.host_expression(pattern(ready), HostExpression::Pan(1.));
                     }
                     young_admission = Some(actual.player.voices[1].admission);
+                    ready_slot = Some(actual.player.voices[1].stream.unwrap().slot);
                 }
                 if frame == 129 {
-                    for e in [&mut actual, &mut expected] {
-                        e.host_note_off(pattern(cold));
-                        e.host_note_off(pattern(ready));
+                    actual.host_note_off(pattern(cold));
+                    actual.host_note_off(pattern(ready));
+                    for (engine, owner) in expected.iter_mut().zip([cold, ready]) {
+                        engine.host_note_off(pattern(owner));
                     }
                 }
             }),
             0
         );
         // Decoder publication belongs to the fixture's sole off-callback
-        // worker. Until64 only the resident younger voice can become ready.
+        // worker. Serve the younger voice's configured request before its
+        // first render; the older stream remains wholly unpublished until64.
+        if frame >= 1 {
+            worker.serve(ready_slot.unwrap());
+        }
         if frame >= 64 {
             worker.serve(cold_slot.unwrap());
         }
@@ -666,11 +664,15 @@ fn older_actual_cold_stream_cannot_nominate_before_ready_younger_shared_voice() 
                     assert_eq!(owner.producer, None);
                 }
                 if frame == 1 {
+                    assert!(actual.player.voices[1].onset == crate::engine::voice::Onset::Started);
+                    ready_started = Some(frame);
                     let owner = actual.state.shared_lfos.rows[0].state.get();
                     assert_eq!(owner.producer, young_admission);
                     assert_ne!(young_admission, old_admission);
-                    assert_eq!((owner.base, owner.end, owner.count), (1, 257, 8));
-                    assert!((owner.phase - 8. * step()).abs() < 1e-14);
+                    let base = ready_started.unwrap() as u64;
+                    let frames = 257 - base;
+                    assert_eq!((owner.base, owner.end, u64::from(owner.count)), (base, 257, frames.div_ceil(32)));
+                    assert!((owner.phase - frames as f64 / 32. * step()).abs() < 1e-14);
                 }
                 if cold_started.is_none()
                     && actual.player.voices.iter().any(|voice| {
@@ -685,22 +687,23 @@ fn older_actual_cold_stream_cannot_nominate_before_ready_younger_shared_voice() 
                     // I/O completion is observed, not inferred from source clocks.
                     // From this onset onward a full resident source supplies an
                     // independent musical reference with the same exact root.
-                    assert!(expected.host_note_on(cold, 4, 59, 127, 0.));
+                    assert!(expected[0].host_note_on(cold, 4, 59, 127, 0.));
                     // Independent octave ratio stays separate from the small
                     // per-sample expression; adding72 in f32 would discard
                     // precision that the actual source clock retains.
-                    expected.player.voices.last_mut().unwrap().tune *= 64.;
-                    expected.host_expression(pattern(cold), HostExpression::Pan(-1.));
+                    expected[0].player.voices.last_mut().unwrap().tune *= 64.;
+                    expected[0].host_expression(pattern(cold), HostExpression::Pan(-1.));
                 }
-                if frame >= 1 {
-                    let (tune, gain) = ready_curve.point(frame, 1);
-                    expected.host_expression(pattern(ready), HostExpression::Tune(tune));
-                    expected.host_expression(pattern(ready), HostExpression::Gain(gain));
+                let mut source_gain = [1.; 2];
+                if let Some(start) = ready_started {
+                    let (tune, gain) = ready_curve.point(frame, start);
+                    expected[1].host_expression(pattern(ready), HostExpression::Tune(tune));
+                    source_gain[1] = gain;
                 }
                 if let Some(start) = cold_started {
                     let (tune, gain) = cold_curve.point(frame, start);
-                    expected.host_expression(pattern(cold), HostExpression::Tune(tune));
-                    expected.host_expression(pattern(cold), HostExpression::Gain(gain));
+                    expected[0].host_expression(pattern(cold), HostExpression::Tune(tune));
+                    source_gain[0] = gain;
                 }
                 if frame == 257 {
                     let owner = actual.state.shared_lfos.rows[0].state.get();
@@ -710,21 +713,23 @@ fn older_actual_cold_stream_cannot_nominate_before_ready_younger_shared_voice() 
                     );
                     assert!((owner.phase - (8. + 193f64 / 32.) * step()).abs() < 1e-14);
                 }
-                let [l, r] = &mut oracle;
-                expected
-                    .render_checked(&mut l[frame..frame + 1], &mut r[frame..frame + 1])
-                    .unwrap();
+                for (engine, gain) in expected.iter_mut().zip(source_gain) {
+                    let (mut left, mut right) = ([0.; 1], [0.; 1]);
+                    engine.render_checked(&mut left, &mut right).unwrap();
+                    oracle[0][frame] += left[0] * gain;
+                    oracle[1][frame] += right[0] * gain;
+                }
             }),
             0
         );
     }
     assert!(cold_started.is_some());
     actual.mark_host_notes();
-    expected.mark_host_notes();
-    for owner in [cold, ready] {
+    for engine in &mut expected { engine.mark_host_notes(); }
+    for (engine, owner) in expected.iter().zip([cold, ready]) {
         assert_eq!(
             actual.host_note_end_at(owner),
-            expected.host_note_end_at(owner)
+            engine.host_note_end_at(owner)
         );
         assert!(actual.host_note_end_at(owner).is_some());
     }

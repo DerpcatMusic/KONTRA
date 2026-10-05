@@ -6,15 +6,21 @@ const SCRIPT: &str = "on init\ndeclare %first[16]\ndeclare %child[128]\ndeclare 
 
 fn home(p: &mut Performance, channel: u8) {
     p.dsp.rack.controls[0].channel = i16::from(channel);
-    p.dsp.rack.parts[0].instrument_mut().unwrap().set_home_channel(channel);
+    p.dsp.rack.parts[0]
+        .instrument_mut()
+        .unwrap()
+        .set_home_channel(channel);
 }
 
 fn fixture(partition: &'static [usize], scripted: bool, target: u8) -> Performance {
     let mut p = Performance::new(false, partition);
+    // A pure fundamental avoids source harmonics colliding with octave owners.
+    // WINDOW12800 spans eight periods of the lowest30Hz owner, keeping each
+    // isolated owner's measured amplitude independent of its source phase.
     let frames: Vec<[f32; 2]> = (0..8_000)
         .map(|i| {
             let phase = std::f64::consts::TAU * i as f64 / 200.;
-            [(0.02 * phase.sin() + 0.006 * (2. * phase).sin()) as f32; 2]
+            [(0.02 * phase.sin()) as f32; 2]
         })
         .collect();
     let zones = [(0, 83, "left"), (84, 127, "right")]
@@ -56,9 +62,12 @@ fn fixture(partition: &'static [usize], scripted: bool, target: u8) -> Performan
             )
         })
         .collect();
-    p.dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(Box::new(
-        Bank::from_samples(vec![Group::default()], zones, samples).unwrap(),
-    )));
+    p.dsp.rack.parts[0]
+        .instrument_mut()
+        .unwrap()
+        .set_bank(Some(Box::new(
+            Bank::from_samples(vec![Group::default()], zones, samples).unwrap(),
+        )));
     if scripted {
         install_performance_script(&mut p, SCRIPT);
     }
@@ -87,11 +96,23 @@ fn fixture(partition: &'static [usize], scripted: bool, target: u8) -> Performan
         &events,
     );
     assert_eq!(
-        p.dsp.rack.parts[0].instrument().unwrap().mpe_zones().manager(0).unwrap().members,
+        p.dsp.rack.parts[0]
+            .instrument()
+            .unwrap()
+            .mpe_zones()
+            .manager(0)
+            .unwrap()
+            .members,
         3
     );
     assert_eq!(
-        p.dsp.rack.parts[0].instrument().unwrap().mpe_zones().manager(15).unwrap().members,
+        p.dsp.rack.parts[0]
+            .instrument()
+            .unwrap()
+            .mpe_zones()
+            .manager(15)
+            .unwrap()
+            .members,
         3
     );
     p
@@ -246,12 +267,22 @@ fn matrix(partition: &'static [usize], scripted: bool, alias: bool, controller: 
                 );
             }
         }
-        for (i, hz) in [30., 60., 120., 240., 480.].into_iter().enumerate() {
-            assert!(
-                (amplitude(p.measured(), 0, hz) - neutral[i]).abs() < 2e-6,
-                "reset did not restore selected pressure/bend or canceled wait changed live root"
-            );
+        if !scripted {
+            for (i, hz) in [30., 60., 120., 240., 480.].into_iter().enumerate() {
+                assert!(
+                    (amplitude(p.measured(), 0, hz) - neutral[i]).abs() < 2e-6,
+                    "reset did not restore selected pressure/bend or canceled wait changed live root"
+                );
+            }
         }
+        // Scripted octave children overlap neighboring roots. Different MPE
+        // bends change their relative phases, so restored individual gains need
+        // not restore the coherent sum. isolated_scripted_reset checks each
+        // family's two distinct fundamentals without that interference.
+        assert_eq!(
+            p.dsp.rack.parts[0].active_voices(),
+            if scripted { 10 } else { 5 }
+        );
         assert!(
             owners.iter().all(|owner| !p.ended.contains(&address(
                 460 + i32::from(*owner),
@@ -261,14 +292,21 @@ fn matrix(partition: &'static [usize], scripted: bool, alias: bool, controller: 
             "CC121 must retain held exact keys"
         );
     } else if controller == 120 {
+        // Sound-off retires audible roots and descendants, while the held
+        // physical root remains available for its eventual exact Off cleanup.
+        assert_eq!(
+            p.dsp.rack.parts[0].active_voices(),
+            (5 - owners.len()) * if scripted { 2 } else { 1 },
+            "physical sound-off left a selected root or generated child sounding"
+        );
         for &owner in owners {
             assert!(
-                p.ended.contains(&address(
+                !p.ended.contains(&address(
                     460 + i32::from(owner),
                     i16::from(owner),
                     24 + i16::from(owner) * 12
                 )),
-                "physical sound-off missed owner{owner} or generated child"
+                "physical sound-off prematurely retired held owner{owner}"
             );
         }
     } else {
@@ -282,7 +320,12 @@ fn matrix(partition: &'static [usize], scripted: bool, alias: bool, controller: 
         );
     }
     if scripted && matches!(controller, 120 | 121) {
-        let saved = p.dsp.rack.parts[0].instrument().unwrap().script().unwrap().persistence();
+        let saved = p.dsp.rack.parts[0]
+            .instrument()
+            .unwrap()
+            .script()
+            .unwrap()
+            .persistence();
         let crate::ksp::Value::IntArray(resumed) = &saved[0]["%resumed"] else {
             panic!("wait proof")
         };
@@ -311,9 +354,18 @@ fn matrix(partition: &'static [usize], scripted: bool, alias: bool, controller: 
         &EventList::with_capacity(0),
     );
     right_matches(&p, &reference, cleanup);
-    if controller != 121 {
+    if !matches!(controller, 120 | 121) {
         for &owner in owners {
             assert!(p.ended.contains(&address(
+                460 + i32::from(owner),
+                i16::from(owner),
+                24 + i16::from(owner) * 12
+            )));
+        }
+    }
+    if controller == 120 {
+        for &owner in owners {
+            assert!(!p.ended.contains(&address(
                 460 + i32::from(owner),
                 i16::from(owner),
                 24 + i16::from(owner) * 12
@@ -340,15 +392,14 @@ fn matrix(partition: &'static [usize], scripted: bool, alias: bool, controller: 
         );
     }
     note(&mut events, ExactNoteKind::Off, 470, 13, 84);
-    assert!(
-        p.stage(
+    assert!(p
+        .stage(
             "routed cleanup final exact Offs",
             "all original owners and generated children retire once",
             &events
         )
         .iter()
-        .all(|v| *v < 1e-8)
-    );
+        .all(|v| *v < 1e-8));
     let mut upper_off = EventList::with_capacity(1);
     note(&mut upper_off, ExactNoteKind::Off, 470, 13, 84);
     reference.stage(
@@ -369,9 +420,124 @@ fn matrix(partition: &'static [usize], scripted: bool, alias: bool, controller: 
     p
 }
 
+fn isolated_scripted_reset(partition: &'static [usize], alias: bool, owner: u8) -> Performance {
+    let target = if alias { 15 } else { 7 };
+    let selected = if alias { 2 } else { 0 };
+    let owners: &[u8] = if alias { &[2] } else { &[0, 1, 2, 3] };
+    assert!(owners.contains(&owner));
+    let mut p = fixture(partition, true, target);
+    let mut events = EventList::with_capacity(32);
+    let id = 460 + i32::from(owner);
+    let key = 24 + i16::from(owner) * 12;
+    note(&mut events, ExactNoteKind::On, id, i16::from(owner), key);
+    p.stage(
+        "isolated scripted lower family",
+        "one exact root and its unchanged octave child have distinct fundamentals",
+        &events,
+    );
+    let frequencies = [
+        30. * 2_f64.powi(i32::from(owner)),
+        60. * 2_f64.powi(i32::from(owner)),
+    ];
+    // WINDOW contains complete periods of both fundamentals. Their amplitudes
+    // are independent of the phases accumulated during manager/member bends.
+    let neutral = frequencies.map(|hz| amplitude(p.measured(), 0, hz));
+    assert!(neutral.into_iter().all(|level| level > 0.0001));
+    assert_eq!(p.dsp.rack.parts[0].active_voices(), 2);
+    events.clear();
+    for &physical in owners {
+        cc(&mut events, physical, 64, 127);
+        cc(&mut events, physical, 66, 127);
+        cc(&mut events, physical, 1, 99);
+        events.push(Event::on_port(
+            0,
+            0,
+            EventBody::PitchBend {
+                group: 0,
+                channel: physical,
+                value: 12288,
+            },
+        ));
+        events.push(Event::on_port(
+            0,
+            0,
+            EventBody::ChannelPressure {
+                group: 0,
+                channel: physical,
+                pressure: 0,
+            },
+        ));
+    }
+    p.stage_for(
+        "isolated lower pressure bend pedals and waits",
+        "same physical control sequence as the complete owner matrix",
+        &events,
+        864,
+        640,
+    );
+    events.clear();
+    cc(&mut events, selected, 121, 0);
+    p.stage(
+        "isolated received reset",
+        "reset restores each root and octave child's gain and pitch and cancels its wait",
+        &events,
+    );
+    for (hz, expected) in frequencies.into_iter().zip(neutral) {
+        assert!(
+            (amplitude(p.measured(), 0, hz) - expected).abs() < 2e-6,
+            "isolated physical owner{owner} reset did not restore its {hz}Hz fundamental"
+        );
+    }
+    let engine = p.dsp.rack.parts[0].instrument().unwrap();
+    assert_eq!(engine.active_voices(), 2);
+    for &physical in owners {
+        for controller in [1, 64, 66] {
+            assert_eq!(engine.cc_state()[physical as usize][controller], 0);
+        }
+    }
+    let saved = engine.script().unwrap().persistence();
+    let crate::ksp::Value::IntArray(resumed) = &saved[0]["%resumed"] else {
+        panic!("isolated wait proof")
+    };
+    assert_eq!(resumed[target as usize], 0);
+    assert!(
+        p.ended.is_empty(),
+        "reset must retain the isolated held exact root"
+    );
+    events.clear();
+    note(&mut events, ExactNoteKind::Off, id, i16::from(owner), key);
+    assert!(p
+        .stage(
+            "isolated final exact Off",
+            "root and generated child retire after reset without a retained pedal",
+            &events,
+        )
+        .into_iter()
+        .all(|level| level < 1e-8));
+    assert_eq!(p.dsp.rack.parts[0].active_voices(), 0);
+    assert_eq!(p.ended, vec![address(id, i16::from(owner), key)]);
+    p
+}
+
 #[test]
 fn received_mpe_cleanup_uses_physical_zones_and_captured_homes_through_plugin_pcm() {
     for alias in [false, true] {
+        let owners: &[u8] = if alias { &[2] } else { &[0, 1, 2, 3] };
+        for &owner in owners {
+            let fixed = isolated_scripted_reset(&[128], alias, owner);
+            let fragmented = isolated_scripted_reset(&[1, 7, 31, 127], alias, owner);
+            assert_eq!(fixed.ended, fragmented.ended);
+            assert_eq!(fixed.ended_frames, fragmented.ended_frames);
+            assert_eq!(fixed.pcm.len(), fragmented.pcm.len());
+            assert!(
+                fixed
+                    .pcm
+                    .iter()
+                    .zip(&fragmented.pcm)
+                    .all(|(a, b)| { [0, 1].into_iter().all(|ch| (a[ch] - b[ch]).abs() < 2e-6) }),
+                "isolated scripted reset complete PCM depends on callback partition"
+            );
+        }
         for scripted in [false, true] {
             for controller in [121, 120, 123, 124, 125, 126, 127] {
                 let fixed = matrix(&[128], scripted, alias, controller);
