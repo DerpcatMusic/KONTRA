@@ -27,7 +27,7 @@ const COUNTED_FADE_POINTS: usize = 6 * MAX_BLOCK + 1;
 /// Checked 32.32 source increment, without a pitch ceiling or saturating cast.
 pub(super) fn sample_clock(step: f64) -> Option<u64> {
     let fixed = step * FIXED_ONE;
-    (fixed.is_finite() && fixed >= 0. && fixed < u64::MAX as f64).then(|| fixed as u64)
+    (fixed.is_finite() && fixed >= 0. && fixed < u64::MAX as f64).then_some(fixed as u64)
 }
 /// Seconds a voice stays muted before its stream pauses.
 const PAUSE_AFTER: f32 = 0.1;
@@ -847,7 +847,7 @@ impl Voice {
         let member = cx.midi.mpe.member(input).filter(|_| self.frozen_expression.is_none());
         let member_tune = member.map_or(0., |zone|
             cx.midi.bend[input as usize].dsp() * cx.midi.channel_bend_range[input as usize].map(|range| range.semitones())
-                .unwrap_or_else(|| f64::from(zone.member_range.semitones())) as f32);
+                .unwrap_or_else(|| zone.member_range.semitones()) as f32);
         let member_gain = if member.is_some() && cx.native_mpe_pressure
             && cx.midi.pressure_active[input as usize] {
             10f32.powf((cx.midi.pressure[input as usize].dsp() - 1.) * 12. / 20.)
@@ -855,7 +855,7 @@ impl Voice {
         let zone = cx.midi.mpe.zone(input);
         let master = zone.and_then(|zone| {
             cx.midi.channel_bend_range[zone.manager as usize].map(|range| range.semitones())
-                .or_else(|| zone.manager_range.map(|range| f64::from(range.semitones())))
+                .or_else(|| zone.manager_range.map(|range| range.semitones()))
                 .map(|range| (zone.manager, cx.midi.bend[zone.manager as usize].dsp(), range as f32))
         });
         let channel_tune = if zone.is_none() {
@@ -1797,10 +1797,9 @@ impl Voice {
             let stride = if data.crossfaded() { 8 } else { 4 };
             let mut packet = [[0.; 2]; MAX_BLOCK * 8];
             let sparse = self.stream.and_then(|stream| stream.sparse.map(|request| (stream, request)));
-            if let Some((stream, request)) = sparse {
-                if !cx.slots[stream.slot as usize].copy_sparse(stream.tag, request, &mut packet[..self.plan.n * stride]) {
-                    *underrun = true;
-                }
+            if let Some((stream, request)) = sparse
+                && !cx.slots[stream.slot as usize].copy_sparse(stream.tag, request, &mut packet[..self.plan.n * stride]) {
+                *underrun = true;
             }
             let sample = &cx.bank.samples[self.sample as usize];
             let mut fade_gains = [super::counted_loop::Gain::default(), super::counted_loop::Gain::default()];
@@ -1850,12 +1849,11 @@ impl Voice {
             let direct = !self.plan.curved_pitch && (base | self.plan.step) as u32 == 0;
             let mut packet = [[0.; 2]; MAX_BLOCK * 4];
             let sparse = self.stream.and_then(|stream| stream.sparse.map(|request| (stream, request)));
-            if let Some((stream, request)) = sparse {
-                if !cx.slots[stream.slot as usize]
+            if let Some((stream, request)) = sparse
+                && !cx.slots[stream.slot as usize]
                     .copy_sparse(stream.tag, request, &mut packet[..self.plan.n * 4]) {
-                    packet[..self.plan.n * 4].fill([0.; 2]);
-                    *underrun = true;
-                }
+                packet[..self.plan.n * 4].fill([0.; 2]);
+                *underrun = true;
             }
             for i in 0..self.plan.n {
                 let offset = if self.plan.curved_pitch { positions[i] } else { self.plan.step * i as u64 };
@@ -2932,8 +2930,8 @@ mod tests {
                 zones:vec![zone.clone()], ..Default::default() }).unwrap() }
             else { Bank::from_samples(vec![group.clone()],vec![zone.clone()],
                 vec![(path.clone(),Sample { rate:48000, frames:frames.clone() })]).unwrap() };
-            let mut engine = Engine::default(); engine.attack=0.; engine.release=0.02;
-            engine.blocking_streams=true; engine.player.shared=false;
+            let mut engine = Engine { attack:0., release:0.02, blocking_streams:true, ..Engine::default() };
+            engine.player.shared=false;
             engine.set_bank(Some(Box::new(bank))); engine.note_on(0,127,127); engine
         };
         let mut engines = [create(false),create(false),create(true),create(true)];
@@ -3041,7 +3039,7 @@ mod tests {
     #[test]
     fn unrepresentable_live_pitch_fails_before_stale_plan_pcm_without_heap() {
         use crate::{audio::Sample, engine::{Engine, HostNote, HostPattern, StreamErrorKind}, import::{Group, Zone}};
-        let mut engine = Engine::default(); engine.attack=0.; engine.release=0.02;
+        let mut engine = Engine { attack:0., release:0.02, ..Engine::default() };
         engine.set_bank(Some(Box::new(Bank::from_samples(vec![Group::default()],vec![Zone::default()],
             vec![(Default::default(),Sample { rate:48000,frames:vec![[0.25;2];4096] })]).unwrap())));
         let note = HostNote { port:0, channel:0, key:60, id:91, clap:true };
@@ -3078,7 +3076,7 @@ mod tests {
                     start_phase:0.23, slot:0, count:1., note_value:1./24., sine:0.5,
                     fade_ms:0., depth:0.25, targets:vec![], bypassed:false,
                 }] } else { vec![] }, ..Group::default() };
-                let mut engine = Engine::default(); engine.attack=0.; engine.release=0.02;
+                let mut engine = Engine { attack:0., release:0.02, ..Engine::default() };
                 engine.set_bank(Some(Box::new(Bank::from_samples(vec![group],vec![Zone::default()],
                     vec![(Default::default(),Sample { rate:48000,frames:samples.clone() })]).unwrap())));
                 engine.state.controls.tune=2.;
@@ -3864,12 +3862,12 @@ mod tests {
                             assert!(channel[at].is_finite());
                         }
                     }
-                    for channel in 0..2 {
+                    for (channel, reference) in pcm[0].iter().enumerate() {
                         for index in 1..4 {
-                            partition = partition.max((pcm[0][channel][at] - pcm[index][channel][at]).abs());
+                            partition = partition.max((reference[at] - pcm[index][channel][at]).abs());
                         }
                         for index in 4..6 {
-                            previous = previous.max(f64::from((pcm[0][channel][at] - pcm[index][channel][at]).abs()));
+                            previous = previous.max(f64::from((reference[at] - pcm[index][channel][at]).abs()));
                         }
                     }
                 }
@@ -4005,7 +4003,7 @@ mod tests {
         for shared in [false, true] { for mute in [false, true] {
             let mut engines = [create(&group, shared, 256, true), create(&group, shared, 256, true),
                 create(&group, shared, 256, true)];
-            let mut dry_group = Group::default(); dry_group.gain = group.gain;
+            let dry_group = Group { gain:group.gain, ..Group::default() };
             let mut dry = [create(&dry_group, false, 256, true), create(&dry_group, false, 256, true)];
             let mut pcm = [[[0.; FRAMES]; 2]; 3]; let mut unmodulated = [[[0.; FRAMES]; 2]; 2];
             assert_eq!(crate::plugin::tests::allocations(|| {

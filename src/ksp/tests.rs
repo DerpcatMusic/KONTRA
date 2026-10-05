@@ -397,7 +397,7 @@ end on"#;
         rig.rt.refresh_live(&mut live);
     };
     #[cfg(feature = "plugin")]
-    assert_eq!(crate::test_support::allocations(|| exercise()), 0);
+    assert_eq!(crate::test_support::allocations(&mut exercise), 0);
     #[cfg(not(feature = "plugin"))]
     exercise();
     assert!(rig.rt.diagnostics().is_empty(), "{:?}", rig.rt.diagnostics());
@@ -1427,7 +1427,7 @@ end on"#);
                 engine.now=rt.now();
             };
             #[cfg(feature="plugin")]
-            assert_eq!(crate::test_support::allocations(||start()),0);
+            assert_eq!(crate::test_support::allocations(&mut start),0);
             #[cfg(not(feature="plugin"))]
             start();
             let saved=rt.persistence();
@@ -1442,7 +1442,7 @@ end on"#);
                 engine.now=rt.now();
             };
             #[cfg(feature="plugin")]
-            assert_eq!(crate::test_support::allocations(||resume()),0);
+            assert_eq!(crate::test_support::allocations(&mut resume),0);
             #[cfg(not(feature="plugin"))]
             resume();
             let saved=rt.persistence();
@@ -1971,7 +1971,7 @@ fn listener_faults_preserve_command_signal_parameter_and_distinct_runtime_values
         rig.rt.refresh_diagnostics(&mut live);
     };
     #[cfg(feature = "plugin")]
-    assert_eq!(crate::test_support::allocations(|| exercise()),0);
+    assert_eq!(crate::test_support::allocations(&mut exercise),0);
     #[cfg(not(feature = "plugin"))]
     exercise();
     assert_eq!(live.faults.len(),2);
@@ -2001,7 +2001,7 @@ fn headless_fault_context_preserves_array_action_and_source_without_audio_alloca
             rig.rt.refresh_diagnostics(&mut live);
         };
         #[cfg(feature = "plugin")]
-        assert_eq!(crate::test_support::allocations(|| exercise()), 0);
+        assert_eq!(crate::test_support::allocations(&mut exercise), 0);
         #[cfg(not(feature = "plugin"))]
         exercise();
         assert_eq!(live.faults.len(), 1, "new event IDs must not grow retained fault locations");
@@ -2042,7 +2042,7 @@ fn note_fault_context_is_bounded_distinct_and_does_not_leak_to_another_callback(
         rig.rt.refresh_diagnostics(&mut live);
     };
     #[cfg(feature = "plugin")]
-    assert_eq!(crate::test_support::allocations(|| exercise()),0);
+    assert_eq!(crate::test_support::allocations(&mut exercise),0);
     #[cfg(not(feature = "plugin"))]
     exercise();
     assert_eq!(live.faults.len(),3);
@@ -2072,7 +2072,7 @@ fn omitted_fault_executions_are_counted_without_growing_audio_storage() {
         rig.rt.refresh_diagnostics(&mut live);
     };
     #[cfg(feature = "plugin")]
-    assert_eq!(crate::test_support::allocations(|| exercise()), 0, "fault retention, overflow and snapshot copying must not allocate");
+    assert_eq!(crate::test_support::allocations(&mut exercise), 0, "fault retention, overflow and snapshot copying must not allocate");
     #[cfg(not(feature = "plugin"))]
     exercise();
     assert_eq!(live.faults.len(), capacity);
@@ -2521,7 +2521,7 @@ end on"#,root.display(),if success { "ready" } else { "missing" });
                 rig.rt.set_midi_channel(9);
             };
             #[cfg(feature = "plugin")]
-            assert_eq!(crate::test_support::allocations(|| start()),0);
+            assert_eq!(crate::test_support::allocations(&mut start),0);
             #[cfg(not(feature = "plugin"))]
             start();
             let mut request = rig.rt.pop_array_job().unwrap();
@@ -2532,7 +2532,7 @@ end on"#,root.display(),if success { "ready" } else { "missing" });
                 rig.rt.async_complete(&mut rig.engine,1,request.id,true);
             };
             #[cfg(feature = "plugin")]
-            assert_eq!(crate::test_support::allocations(|| delay()),0);
+            assert_eq!(crate::test_support::allocations(&mut delay),0);
             #[cfg(not(feature = "plugin"))]
             delay();
             assert_eq!(state(&rig.rt)["$order"],Value::Int(1));
@@ -2542,14 +2542,14 @@ end on"#,root.display(),if success { "ready" } else { "missing" });
                 rig.rt.process(&mut rig.engine,128);
             };
             #[cfg(feature = "plugin")]
-            assert_eq!(crate::test_support::allocations(|| install()),0);
+            assert_eq!(crate::test_support::allocations(install),0);
             #[cfg(not(feature = "plugin"))]
             install();
             if success {
                 assert_eq!(state(&rig.rt)["$order"],Value::Int(1),"600 cells do not install in one block");
                 let mut finish = || { rig.rt.process(&mut rig.engine,128); rig.rt.process(&mut rig.engine,128); };
                 #[cfg(feature = "plugin")]
-                assert_eq!(crate::test_support::allocations(|| finish()),0);
+                assert_eq!(crate::test_support::allocations(&mut finish),0);
                 #[cfg(not(feature = "plugin"))]
                 finish();
             }
@@ -3304,7 +3304,7 @@ fn note_duration_selects_actual_release_sample_audio_after_wait_and_pedal() {
             actual.render(&mut a,&mut b);oracle.render(&mut x,&mut y);
         };
         #[cfg(feature="plugin")]
-        assert_eq!(crate::plugin::tests::allocations(|| exercise()),0);
+        assert_eq!(crate::plugin::tests::allocations(&mut exercise),0);
         #[cfg(not(feature="plugin"))]
         exercise();
         assert_eq!(a,x,"selected PCM differs from independently authored release group {group}");

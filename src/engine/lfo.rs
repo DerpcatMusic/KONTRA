@@ -613,14 +613,13 @@ impl Clock {
             return Some((0, 0));
         }
         self.sync_fades(lfos, volume_lfos, timings, rate, tempo);
-        if let Some(view) = shared {
-            if let Some(epoch) = view.epoch() {
-                if self.shared_window != epoch {
-                    self.shared_window = epoch;
-                    self.shared_entry = view.now;
-                    self.shared_entry_offset = self.offset;
-                }
-            }
+        if let Some(view) = shared
+            && let Some(epoch) = view.epoch()
+            && self.shared_window != epoch
+        {
+            self.shared_window = epoch;
+            self.shared_entry = view.now;
+            self.shared_entry_offset = self.offset;
         }
         // Source geometry is immutable for the note. Keep the existing
         // LFO-only arithmetic; Glide groups use native normalized octaves.
@@ -942,7 +941,7 @@ mod tests {
             }
         };
         #[cfg(feature = "plugin")]
-        assert_eq!(crate::plugin::tests::allocations(|| exercise()), 0);
+        assert_eq!(crate::plugin::tests::allocations(&mut exercise), 0);
         #[cfg(not(feature = "plugin"))]
         exercise();
         // Independent closed form, never calling Fade/Clock/Target. The native
@@ -952,7 +951,7 @@ mod tests {
         let (mut active_frames, mut ticks, mut position) = (0usize, 0usize, 0u64);
         let (mut previous, mut current, mut target) = ((0., 1.), (0., 1.), 0.5_f64);
         let (mut oracle_error, mut partition, mut shared_error) = (0_f64, 0_f32, 0_f32);
-        for at in 0..END {
+        for (at, &reference_right) in pcm[5][1][..END].iter().enumerate() {
             let bypass = (141..205).contains(&at);
             if !bypass && at % 32 == 0 {
                 let fade = if ticks < 60 { (start * (1. + 1. / start).powf(ticks as f64 / 60.)).min(1.) - start } else { 1. };
@@ -967,19 +966,23 @@ mod tests {
             let fraction = (at % 32) as f64 / 32.;
             let pitch = if bypass { 0. } else { previous.0 + (current.0 - previous.0) * fraction };
             let gain = if bypass { 1. } else { previous.1 + (current.1 - previous.1) * fraction };
-            let amplitude = f64::from(pcm[5][1][at]) / 0.125;
+            let amplitude = f64::from(reference_right) / 0.125;
             let expected_left = amplitude * (0.125 + position as f64 / FIXED_ONE / 16384.) * gain;
-            let expected_right = f64::from(pcm[5][1][at]) * gain;
-            for index in 0..3 {
-                oracle_error = oracle_error.max((f64::from(pcm[index][0][at]) - expected_left).abs());
-                oracle_error = oracle_error.max((f64::from(pcm[index][1][at]) - expected_right).abs());
-                for channel in 0..2 { partition = partition.max((pcm[index][channel][at] - pcm[0][channel][at]).abs()); }
+            let expected_right = f64::from(reference_right) * gain;
+            for actual in &pcm[..3] {
+                oracle_error = oracle_error.max((f64::from(actual[0][at]) - expected_left).abs());
+                oracle_error = oracle_error.max((f64::from(actual[1][at]) - expected_right).abs());
+                for (channel, reference) in actual.iter().zip(&pcm[0]) {
+                    partition = partition.max((channel[at] - reference[at]).abs());
+                }
             }
-            for index in 3..5 {
-                oracle_error = oracle_error.max((f64::from(pcm[index][1][at]) - expected_right).abs());
-                shared_error = shared_error.max((pcm[index][1][at] - pcm[0][1][at]).abs());
+            for actual in &pcm[3..5] {
+                oracle_error = oracle_error.max((f64::from(actual[1][at]) - expected_right).abs());
+                shared_error = shared_error.max((actual[1][at] - pcm[0][1][at]).abs());
             }
-            for channel in 0..2 { partition = partition.max((pcm[3][channel][at] - pcm[4][channel][at]).abs()); }
+            for (channel, reference) in pcm[3].iter().zip(&pcm[4]) {
+                partition = partition.max((channel[at] - reference[at]).abs());
+            }
             position += (2f64.powf(pitch / 12.) * FIXED_ONE) as u64;
             if !bypass { active_frames += 1; }
         }
@@ -1088,7 +1091,7 @@ mod tests {
             }
         };
         #[cfg(feature = "plugin")]
-        assert_eq!(crate::plugin::tests::allocations(|| exercise()), 0);
+        assert_eq!(crate::plugin::tests::allocations(&mut exercise), 0);
         #[cfg(not(feature = "plugin"))]
         exercise();
         // Independent closed form, never calling Fade/Clock/Target. The native
@@ -1101,7 +1104,7 @@ mod tests {
         let (mut ticks, mut position) = (0usize, 0u64);
         let (mut previous, mut current, mut target) = ((0., 1.), (0., 1.), 0.5_f64);
         let (mut oracle_error, mut partition, mut shared_error) = (0_f64, 0_f32, 0_f32);
-        for at in 0..END {
+        for (at, &reference_right) in pcm[5][1][..END].iter().enumerate() {
             let bypass = (141..205).contains(&at);
             if !bypass && at % 32 == 0 {
                 let fade = if ticks < scaled_points { (start * (1. + 1. / start).powf(ticks as f64 / scaled_points as f64)).min(1.) - start } else { 1. };
@@ -1127,19 +1130,23 @@ mod tests {
             let fraction = (at % 32) as f64 / 32.;
             let pitch = if bypass { 0. } else { previous.0 + (current.0 - previous.0) * fraction };
             let gain = if bypass { 1. } else { previous.1 + (current.1 - previous.1) * fraction };
-            let amplitude = f64::from(pcm[5][1][at]) / 0.125;
+            let amplitude = f64::from(reference_right) / 0.125;
             let expected_left = amplitude * (0.125 + position as f64 / FIXED_ONE / 16384.) * gain;
-            let expected_right = f64::from(pcm[5][1][at]) * gain;
-            for index in 0..3 {
-                oracle_error = oracle_error.max((f64::from(pcm[index][0][at]) - expected_left).abs());
-                oracle_error = oracle_error.max((f64::from(pcm[index][1][at]) - expected_right).abs());
-                for channel in 0..2 { partition = partition.max((pcm[index][channel][at] - pcm[0][channel][at]).abs()); }
+            let expected_right = f64::from(reference_right) * gain;
+            for actual in &pcm[..3] {
+                oracle_error = oracle_error.max((f64::from(actual[0][at]) - expected_left).abs());
+                oracle_error = oracle_error.max((f64::from(actual[1][at]) - expected_right).abs());
+                for (channel, reference) in actual.iter().zip(&pcm[0]) {
+                    partition = partition.max((channel[at] - reference[at]).abs());
+                }
             }
-            for index in 3..5 {
-                oracle_error = oracle_error.max((f64::from(pcm[index][1][at]) - expected_right).abs());
-                shared_error = shared_error.max((pcm[index][1][at] - pcm[0][1][at]).abs());
+            for actual in &pcm[3..5] {
+                oracle_error = oracle_error.max((f64::from(actual[1][at]) - expected_right).abs());
+                shared_error = shared_error.max((actual[1][at] - pcm[0][1][at]).abs());
             }
-            for channel in 0..2 { partition = partition.max((pcm[3][channel][at] - pcm[4][channel][at]).abs()); }
+            for (channel, reference) in pcm[3].iter().zip(&pcm[4]) {
+                partition = partition.max((channel[at] - reference[at]).abs());
+            }
             position += (2f64.powf(pitch / 12.) * FIXED_ONE) as u64;
         }
         assert!(oracle_error < 2e-5, "faded final PCM vs independent source/target law: {oracle_error}");
@@ -1193,7 +1200,7 @@ mod tests {
                     assert_eq!(engine.host_note_end_at(owner), Some(released_at));
                 };
                 #[cfg(feature = "plugin")]
-                assert_eq!(crate::plugin::tests::allocations(|| fail()), 0);
+                assert_eq!(crate::plugin::tests::allocations(&mut fail), 0);
                 #[cfg(not(feature = "plugin"))]
                 fail();
                 assert_eq!(error.unwrap().kind, crate::engine::StreamErrorKind::UnrepresentablePitch);
@@ -1358,7 +1365,7 @@ mod tests {
                 }
             };
             #[cfg(feature = "plugin")]
-            assert_eq!(crate::plugin::tests::allocations(|| exercise()), 0);
+            assert_eq!(crate::plugin::tests::allocations(&mut exercise), 0);
             #[cfg(not(feature = "plugin"))]
             exercise();
             let partition_error = a

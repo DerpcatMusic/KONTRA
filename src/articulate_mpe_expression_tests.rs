@@ -59,7 +59,7 @@ fn pattern(note: HostNote) -> HostPattern {
 }
 
 fn expression(router: &mut Router, engine: &mut Engine, home: u8,
-    input: u8, key: u8, gain: f32, tune: f32, pan: f32, brightness: u8)
+    input: u8, key: u8, (gain, tune, pan): (f32, f32, f32), brightness: u8)
 {
     for event in [In::NoteGain(input, key, gain), In::NoteTune(input, key, tune),
         In::NotePan(input, key, pan), In::NoteBrightness(input, key,
@@ -98,9 +98,9 @@ fn performance(scripted: bool, sizes: &[usize]) -> ([[f32; FRAMES]; 2], [u64; 3]
             (&mut reference, &mut r_route, 11)]
         {
             feed(route, engine, In::NoteOn(6, 60, 127), home);
-            expression(route, engine, home, 6, 60, 0.4, 3., -0.75, 64);
+            expression(route, engine, home, 6, 60, (0.4, 3., -0.75), 64);
             feed(route, engine, In::HostOn(survivor, Velocity::from_midi1(127), 0.), home);
-            expression(route, engine, home, 7, 62, 0.7, -2., 0.5, 100);
+            expression(route, engine, home, 7, 62, (0.7, -2., 0.5), 100);
             feed(route, engine, In::HostOn(reassigned, Velocity::from_midi1(100), 0.), home);
             // The direct Engine API retains explicitly authored destination
             // expression until changed. It does not perform Router's On reset.
@@ -115,7 +115,7 @@ fn performance(scripted: bool, sizes: &[usize]) -> ([[f32; FRAMES]; 2], [u64; 3]
             // A physical8 root survives while its callback waits; the source
             // starts after reconfiguration and must read its retained route.
             feed(route, engine, In::NoteOn(8, 64, 127), home);
-            expression(route, engine, home, 8, 64, 0.55, 7., -0.25, 80);
+            expression(route, engine, home, 8, 64, (0.55, 7., -0.25), 80);
             feed(route, engine, In::HostOn(canceled_wait, Velocity::from_midi1(127), 0.), home);
             for (cc, value) in [(101, 0), (100, 6), (6, 4)] {
                 feed(route, engine, In::Cc(0, cc, value), home);
@@ -142,7 +142,7 @@ fn performance(scripted: bool, sizes: &[usize]) -> ([[f32; FRAMES]; 2], [u64; 3]
         // Only the actual destination has stale, authored pre-note expression.
         // An ordinary new note must replace it with the same default baseline
         // used by the untouched oracle destination.
-        expression(&mut a_route, &mut actual, 4, 9, 65, 0.2, -9., -1., 127);
+        expression(&mut a_route, &mut actual, 4, 9, 65, (0.2, -9., -1.), 127);
         for (engine, route, home) in [(&mut actual, &mut a_route, 4),
             (&mut reference, &mut r_route, 11)]
         {
