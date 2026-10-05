@@ -356,7 +356,7 @@ fn sampler(bytes: &[u8], metadata: &mut Metadata) -> Result<()> {
         "Duplicate RIFF sampler metadata"
     );
     metadata.unity_note = Some(u32le(&bytes[12..]));
-    for entry in bytes[36..36 + loops * 24].chunks_exact(24) {
+    for entry in bytes[36..36 + loops * 24].as_chunks::<24>().0 {
         metadata.loops.push(SampleLoop {
             id: u32le(entry),
             kind: u32le(&entry[4..]),
@@ -918,7 +918,7 @@ mod tests {
                     padded[34..36].copy_from_slice(&32u16.to_le_bytes());
                     padded[64..68].copy_from_slice(&((expected.len() * 4) as u32).to_le_bytes());
                     let end = 68 + u32le(&bytes[64..]) as usize;
-                    for word in bytes[68..end].chunks_exact(3) {
+                    for word in bytes[68..end].as_chunks::<3>().0 {
                         let value = (u32::from(word[0]) << 8)
                             | (u32::from(word[1]) << 16)
                             | (u32::from(word[2]) << 24);

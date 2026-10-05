@@ -480,9 +480,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         let replaced = vector && (super::vector::native_control(shown, c)
             || shown.kind == Kind::Label && plans[n].face == VFace::Clear);
         let name = prop(c, "$CONTROL_PAR_PICTURE");
-        if !name.is_empty() {
-            if !replaced { demand.pictures.push(name.to_owned()); }
-        }
+        if !name.is_empty() && !replaced { demand.pictures.push(name.to_owned()); }
         if !replaced {
             // Retain every font state of this visible control, including hover
             // and pressed states, without fetching unused script-page fonts.
@@ -1394,7 +1392,6 @@ mod tests {
                         let input = Input { pointer: PointerInput {
                             pos: Some(at), buttons: Buttons::PRIMARY,
                             mods: Mods { shift: fine, ..Default::default() },
-                            ..Default::default()
                         }, ..Default::default() };
                         ui.frame(root(), Some(size), input, (tick + 1) as f64 / 60.).unwrap();
                         drive(&mut ui, "slider", &mut value, &(0. ..=1_000_000.), distance, vertical, 0.);
@@ -1430,7 +1427,7 @@ mod tests {
                             let at = if vertical { Point::new(400., 400. - delta) } else { Point::new(400. + delta, 400.) };
                             let input = Input { pointer: PointerInput {
                                 pos: Some(at), buttons: Buttons::PRIMARY,
-                                mods: Mods { shift: fine, ..Default::default() }, ..Default::default()
+                                mods: Mods { shift: fine, ..Default::default() },
                             }, ..Default::default() };
                             ui.frame(root(), Some(size), input, 0.012).unwrap();
                             drive(&mut ui, "macro", &mut value, &(0. ..=1_000_000.), 734., vertical, 0.);

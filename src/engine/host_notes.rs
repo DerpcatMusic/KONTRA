@@ -146,7 +146,7 @@ impl Owners {
     pub(super) fn detach_terminal_refs(&mut self, ended:&mut Vec<HostRef>)->bool {
         if ended.capacity()-ended.len()<self.active.len()
             || self.active.iter().any(|id|self.storage.terminal(*id).is_none()) { return false; }
-        ended.extend(self.active.drain(..));
+        ended.append(&mut self.active);
         true
     }
 
@@ -388,7 +388,7 @@ mod tests {
                     assert_eq!(actual.host_note_end_at(owner), oracle.host_note_end_at(owner));
                 };
                 #[cfg(feature = "plugin")]
-                assert_eq!(crate::plugin::tests::allocations(|| exercise()), 0);
+                assert_eq!(crate::plugin::tests::allocations(&mut exercise), 0);
                 #[cfg(not(feature = "plugin"))]
                 exercise();
                 let error = a.iter().zip(&b).chain(ar.iter().zip(&br)).fold(0_f32,
@@ -520,7 +520,7 @@ mod tests {
                                 }
                             };
                             #[cfg(feature = "plugin")]
-                            assert_eq!(crate::plugin::tests::allocations(|| exercise()), 0);
+                            assert_eq!(crate::plugin::tests::allocations(&mut exercise), 0);
                             #[cfg(not(feature = "plugin"))]
                             exercise();
                             let error = a.iter().zip(&b).chain(ar.iter().zip(&br))

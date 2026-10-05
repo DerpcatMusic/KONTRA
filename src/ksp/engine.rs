@@ -165,7 +165,7 @@ pub trait KspEngine {
     fn zone_count(&self) -> usize { 0 }
     /// Stable zero-based source identity, independent of loaded-zone compaction.
     fn zone_id(&self, index: usize) -> Option<i32> {
-        (index < self.zone_count()).then(|| index as i32)
+        (index < self.zone_count()).then_some(index as i32)
     }
     fn zone_par(&self, _zone: i32, _par: ZonePar) -> Option<i32> { None }
     /// Accepted edits remain pending until their prepared mapping is installed.

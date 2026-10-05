@@ -44,8 +44,7 @@ impl Performance {
         params.attack.set_value(0.0001);
         params.release.set_value(0.05);
         params.snap_smoothers();
-        let mut dsp = Dsp::default();
-        dsp.until_poll = usize::MAX;
+        let mut dsp = Dsp { until_poll: usize::MAX, ..Dsp::default() };
         let engine = dsp.rack.parts[0].instrument_mut().unwrap();
         engine.reset(RATE as f64);
         let frames = (0..8_000)
@@ -148,20 +147,19 @@ impl Performance {
                 "{name}: process allocated or freed"
             );
             for event in output.lossless_iter() {
-                if let LosslessEventRef::Exact(event) = event {
-                    if let ExactEventBody::Note {
+                if let LosslessEventRef::Exact(event) = event
+                    && let ExactEventBody::Note {
                         kind: ExactNoteKind::End,
                         address,
                         ..
                     } = *event.body()
-                    {
-                        assert!(
-                            !self.ended.contains(&address),
-                            "duplicate NOTE_END for {address:?}"
-                        );
-                        self.ended.push(address);
-                        self.ended_frames.push(self.pcm.len() + event.sample_offset() as usize);
-                    }
+                {
+                    assert!(
+                        !self.ended.contains(&address),
+                        "duplicate NOTE_END for {address:?}"
+                    );
+                    self.ended.push(address);
+                    self.ended_frames.push(self.pcm.len() + event.sample_offset() as usize);
                 }
             }
             output.clear();
@@ -1609,8 +1607,8 @@ fn midi2_upper_bit_script_projections_preserve_original_continuous_pcm_values() 
         events.clear();let bend_raw=(8193u32<<18)|0x3ffff;
         events.push(Event::on_port(0,0,EventBody::PitchBend2 {group:0,channel:4,value:bend_raw}));
         bend.stage("MIDI2 bend upper fourteen bits","rawupper14=8193 gives KSPcentered1 and selects octave rather than rounded two octaves",&events);
-        let crossings:Vec<f64>=bend.measured().windows(2).enumerate().filter_map(|(i,p)|
-            (p[0][0]<=0. && p[1][0]>0.).then(||i as f64-f64::from(p[0][0])/f64::from(p[1][0]-p[0][0]))).collect();
+        let crossings:Vec<f64>=bend.measured().windows(2).enumerate().filter(|&(_,p)|
+            p[0][0]<=0. && p[1][0]>0.).map(|(i,p)|i as f64-f64::from(p[0][0])/f64::from(p[1][0]-p[0][0])).collect();
         let pcm_f0=(crossings.len()-1) as f64*RATE as f64/(crossings.last().unwrap()-crossings[0]);
         let census=bend.dsp.rack.parts[0].instrument().unwrap().voice_census();
         eprintln!("upper-bit bend diagnostic: raw={bend_raw:#x}, unsigned_upper14={}, expected centered=1, PCM F0={pcm_f0}, authored expected F0=480, RMS={:?}, source step={:?}, amplitudes240/480/960={:?}, script={:?}",
@@ -1982,9 +1980,9 @@ fn native_channel_tuning_precision(partition:&'static [usize]) -> Performance {
     p.stage("native channel tuning low bits","sameupper14 fine controls retain different low18 bits on independent physical roots",&events);
     unchanged.stage("native coarse low-bit reference","matching original fine controls and coarse12",&events);
     let expected=fine.map(|raw|240.*2f64.powf((12.+(raw as f64-2147483648.)/2147483648.)/12.));
-    for ch in 0..2 {
+    for (ch, &expected) in expected.iter().enumerate() {
         let observed=pcm_fundamental(p.measured(),ch);
-        assert!((observed-expected[ch]).abs()<1e-5,"native fine frequency{observed} expected independent f64 value{}",expected[ch]);
+        assert!((observed-expected).abs()<1e-5,"native fine frequency{observed} expected independent f64 value{}",expected);
     }
     assert!((pcm_fundamental(p.measured(),1)-pcm_fundamental(p.measured(),0)).abs()>0.003,
         "same upper14 native fine words must remain audibly distinct in phase/frequency");
@@ -1995,7 +1993,7 @@ fn native_channel_tuning_precision(partition:&'static [usize]) -> Performance {
     let error=p.measured().iter().zip(unchanged.measured()).flat_map(|(a,b)|
         [(a[0]-b[0]).abs(),(a[1]-b[1]).abs()]).fold(0f32,f32::max);
     assert!(error<1e-6,"native coarse lower25 bits changed PCM:{error}");
-    for ch in 0..2 {assert!((pcm_fundamental(p.measured(),ch)-expected[ch]).abs()<1e-5);}
+    for (ch, &expected) in expected.iter().enumerate() {assert!((pcm_fundamental(p.measured(),ch)-expected).abs()<1e-5);}
     for (id,channel) in [(282,4),(283,7)] {note(&mut events,ExactNoteKind::Off,id,channel,60);}
     let silence=p.stage("native channel tuning exact ends","full32bit configuration does not pin physical roots",&events);
     assert!(silence.iter().all(|v|*v<1e-8));assert_eq!(p.ended,[address(282,4,60),address(283,7,60)]);

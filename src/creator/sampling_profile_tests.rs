@@ -197,18 +197,18 @@ fn saved_sampling_profile_migration_and_cold_ni_cache_select_independent_pcm() {
         "{:?}",
         imported.dependencies
     );
-    crate::cache::store(&cache, &nki, 0, &imported);
+    crate::cache::store(cache, &nki, 0, &imported);
     assert!(
         crate::cache::current(&imported.dependencies),
         "cache writes must not change library dependencies"
     );
     assert_eq!(
-        crate::cache::load(&cache, &nki, 0)
+        crate::cache::load(cache, &nki, 0)
             .unwrap()
             .sampling_profile,
         SamplingProfile::Kontakt
     );
-    let entry = std::fs::read_dir(&cache)
+    let entry = std::fs::read_dir(cache)
         .unwrap()
         .map(|e| e.unwrap().path())
         .find(|p| p.extension().is_some_and(|x| x == "instrument"))
@@ -220,15 +220,15 @@ fn saved_sampling_profile_migration_and_cold_ni_cache_select_independent_pcm() {
     let old = [b"KONTRA instrument ".as_slice(), body].concat();
     std::fs::write(&entry, old).unwrap();
     assert!(
-        crate::cache::load(&cache, &nki, 0).is_none(),
+        crate::cache::load(cache, &nki, 0).is_none(),
         "old cache must reimport source identity"
     );
     let cold =
-        crate::cache::load(&cache, &nki, 0).unwrap_or_else(|| crate::import::read(&nki).unwrap());
+        crate::cache::load(cache, &nki, 0).unwrap_or_else(|| crate::import::read(&nki).unwrap());
     assert_eq!(cold.sampling_profile, SamplingProfile::Kontakt);
-    crate::cache::store(&cache, &nki, 0, &cold);
+    crate::cache::store(cache, &nki, 0, &cold);
     assert_eq!(
-        crate::cache::load(&cache, &nki, 0)
+        crate::cache::load(cache, &nki, 0)
             .unwrap()
             .sampling_profile,
         SamplingProfile::Kontakt

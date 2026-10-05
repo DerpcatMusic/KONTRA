@@ -122,8 +122,8 @@ fn decoded_filmstrip_demand_releases_pixels_rejects_stale_publication_and_restor
         for (i, frame) in strip.frames.iter().enumerate() {
             assert!(frame
                 .rgba
-                .chunks_exact(4)
-                .all(|pixel| pixel == [32 + i as u8 * 64, 96, 176, 255]));
+                .as_chunks::<4>().0.iter()
+                .all(|pixel| *pixel == [32 + i as u8 * 64, 96, 176, 255]));
         }
         assert_eq!(
             view.parts[0].interface.as_ref().unwrap().controls[0].properties["$CONTROL_PAR_VALUE"],

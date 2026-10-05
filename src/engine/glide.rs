@@ -47,7 +47,6 @@ impl Source {
             level: if interval < 0 { 1. } else { -1. },
             step: if interval < 0 { -step } else { step },
             scale: distance * (1. / 12.),
-            ..Self::default()
         })
     }
 

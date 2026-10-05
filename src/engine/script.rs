@@ -365,7 +365,7 @@ impl KspEngine for Host<'_> {
         let bank = self.bank?;
         if n.force_completion {
             let mut zones = bank.matching_zones(n.channel, n.note, n.velocity, false, n.groups).peekable();
-            if zones.peek().is_none() { return None; }
+            zones.peek()?;
             if self.player.completion_has_release(bank, n.channel, n.note, n.velocity, n.groups, matches!(n.length, NoteLength::Sample))
                 || zones.any(|z| !self.player.completion_supported(bank, self.state, z)) {
                 self.player.unsupported_native_controls = self.player.unsupported_native_controls.saturating_add(1);
@@ -402,7 +402,7 @@ impl KspEngine for Host<'_> {
         let active = voice.and_then(|id| self.player.voices.iter().find(|v| v.event == id));
         let logical = active.map(|v| v.channel).or_else(|| queued.map(|c| c.channel)).unwrap_or(channel);
         let physical = active.and_then(|v| v.input_channel).or_else(|| queued.and_then(|c| c.input_channel)).or(input_channel).unwrap_or(channel);
-        if self.player.midi.mpe.member(physical).is_none() { return None; }
+        self.player.midi.mpe.member(physical)?;
         let key = active.and_then(|v| v.owner).map_or(note, |(_, key)| key);
         active.and_then(|v| v.frozen_expression)
             .or_else(|| queued.and_then(|c| self.commands.start(c)).and_then(|n| n.expression))
@@ -1065,11 +1065,9 @@ impl KspEngine for ScriptSetup<'_> {
         }
         match address {
             Address::GroupType(g, s) => return params::group_type(self.groups, g, s) == Some(v),
-            Address::Fx(rack, slot, FxParam::Type) if self.fx.param(rack, slot, FxParam::Type) != Some(v) => {
-                if !self.load_kind(rack, slot, v) {
-                    return false;
-                }
-            }
+            Address::Fx(rack, slot, FxParam::Type)
+                if self.fx.param(rack, slot, FxParam::Type) != Some(v)
+                    && !self.load_kind(rack, slot, v) => return false,
             _ => {}
         }
         match address {

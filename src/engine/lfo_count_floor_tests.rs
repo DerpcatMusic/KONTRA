@@ -7,7 +7,7 @@ fn oracle(fade_mode: Option<bool>) -> Vec<f32> {
     let (mut previous, mut current, mut started) = (0., 0., false);
     let (mut remaining, mut level) = (60usize, 0.3f32);
     let factor = (1. + 1. / f64::from(0.3f32)).powf(1. / 60.) as f32;
-    for frame in 0..END {
+    for (frame, value) in tune.iter_mut().enumerate() {
         if (137..229).contains(&frame) {
             continue;
         }
@@ -47,7 +47,7 @@ fn oracle(fade_mode: Option<bool>) -> Vec<f32> {
                 phase -= 1.;
             }
         }
-        tune[frame] = previous + (current - previous) * (frame % 32) as f32 / 32.;
+        *value = previous + (current - previous) * (frame % 32) as f32 / 32.;
     }
     tune
 }

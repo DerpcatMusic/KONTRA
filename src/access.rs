@@ -109,7 +109,7 @@ fn field<const N: usize>(bytes: &[u8], tag: &[u8]) -> Option<[u8; N]> {
         return None;
     }
     let mut out = [0; N];
-    for (dest, pair) in out.iter_mut().zip(text.chunks_exact(2)) {
+    for (dest, pair) in out.iter_mut().zip(text.as_chunks::<2>().0.iter()) {
         *dest = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
     }
     Some(out)
@@ -136,7 +136,7 @@ impl Keystream {
                 counter = counter.wrapping_add(1);
             }
             cipher.encrypt_blocks(&mut blocks);
-            for (chunk, block) in run.chunks_exact_mut(16).zip(&blocks) {
+            for (chunk, block) in run.as_chunks_mut::<16>().0.iter_mut().zip(&blocks) {
                 for (out, value) in chunk.iter_mut().zip(block) {
                     seed = seed.wrapping_mul(0x343fd).wrapping_add(0x269ec3);
                     *out = *value ^ (seed >> 16) as u8;
@@ -180,7 +180,7 @@ mod tests {
             let mut counter = u128::from_be_bytes(iv);
             let mut expected = vec![0u8; 65536];
             let mut seed = 0x608da0a2u32;
-            for chunk in expected.chunks_exact_mut(16) {
+            for chunk in expected.as_chunks_mut::<16>().0.iter_mut() {
                 let mut block = counter.to_be_bytes().into();
                 cipher.encrypt_block(&mut block);
                 for (out, value) in chunk.iter_mut().zip(block) {

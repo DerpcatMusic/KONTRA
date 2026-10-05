@@ -29,7 +29,7 @@ fn saved_native_high_ultra_loop_pcm_matches_prepared_native_producer_in_ram_and_
         let zones=[Zone { sample:source_name.clone().into(),native_loops:rows.clone(),
             start:domain.start,end:domain.end as i32-domain.frames as i32,
             start_mod:(case.offset_us!=0).then_some((domain.end-domain.start-1) as u32),..Default::default() }];
-        let samples=[SampleFile { relative:source_name.into(),rate:domain.rate,channels:2,bits:32,
+        let samples=[SampleFile { relative:source_name,rate:domain.rate,channels:2,bits:32,
             frames:domain.frames as u64,modified:0 }];
         let program=Program { name:"Native loop source",author:"Test",groups:&groups,zones:&zones,
             samples:&samples,script:None,native_private:None,default_key_switch:None };

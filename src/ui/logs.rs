@@ -181,28 +181,26 @@ impl State {
         if let Some(picker::Picked::Revealed(result)) = self.folder_picker.take() {
             self.folder_error = result.err();
         }
-        if self.copy_thread.is_some() {
-            if let Some(answer) = super::lock(&self.copy_answer).take() {
-                let _ = self.copy_thread.take().unwrap().join();
-                match answer {
-                    Ok(text) => self.copy_ready = Some(text),
-                    Err(error) => {
-                        self.copy_message = None;
-                        self.copy_error = Some(error);
-                    }
+        if self.copy_thread.is_some()
+            && let Some(answer) = super::lock(&self.copy_answer).take() {
+            let _ = self.copy_thread.take().unwrap().join();
+            match answer {
+                Ok(text) => self.copy_ready = Some(text),
+                Err(error) => {
+                    self.copy_message = None;
+                    self.copy_error = Some(error);
                 }
             }
         }
-        if self.export_thread.is_some() {
-            if let Some(answer) = super::lock(&self.export_answer).take() {
-                let _ = self.export_thread.take().unwrap().join();
-                match answer {
-                    Ok(id) => {
-                        self.export = Some(id);
-                        self.export_error = None;
-                    }
-                    Err(error) => self.export_error = Some(error),
+        if self.export_thread.is_some()
+            && let Some(answer) = super::lock(&self.export_answer).take() {
+            let _ = self.export_thread.take().unwrap().join();
+            match answer {
+                Ok(id) => {
+                    self.export = Some(id);
+                    self.export_error = None;
                 }
+                Err(error) => self.export_error = Some(error),
             }
         }
         if self.reader.ready.swap(false, Ordering::AcqRel) {

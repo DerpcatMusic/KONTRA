@@ -59,9 +59,9 @@ macro_rules! builtins {
 
 impl Builtin {
     pub fn from_name(name: &str) -> Option<Self> {
-        Self::lookup(name).or_else(|| match name {
+        Self::lookup(name).or_else(|| {
             // Kontakt 2's underscore spellings (`_set_engine_par`, `_pgs_key_exists`, ...).
-            _ => Self::lookup(name.strip_prefix('_').filter(|n| !n.starts_with(['_', '#']))?),
+            Self::lookup(name.strip_prefix('_').filter(|n| !n.starts_with(['_', '#']))?)
         })
     }
 }

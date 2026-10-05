@@ -413,7 +413,7 @@ fn a_header_is_one_line_at_any_width() {
         h.press("preset-next-0");
         assert_eq!(read(&p.selection).parts[0].path,"/virtual/Library/Zeta.nki","preset navigation remains interactive");
         h.press("more-0");
-        let last = (0..64).filter(|n| h.ui.scene().unwrap().surface(&format!("menu-item-{n}")).is_some()).last().unwrap();
+        let last = (0..64).filter(|n| h.ui.scene().unwrap().surface(&format!("menu-item-{n}")).is_some()).next_back().unwrap();
         h.press(&format!("menu-item-{last}"));
         assert!(read(&p.selection).parts[0].path.is_empty(),"Remove remains reachable from the Part menu at {width}");
     }
@@ -1649,7 +1649,7 @@ fn screenshot() {
     // per capture repeatedly decodes every snapshot instead of testing the UI.
     let catalog = std::cell::OnceCell::new();
     for &(state, loaded, presses) in states
-        .into_iter()
+        .iter()
         // Without the owner's library (CI), only the states with no instrument.
         .filter(|(s, loaded, _)| wanted(s) && (*s != "sticky" || sticky_ok) && (!loaded || !instruments.is_empty()))
     {
@@ -2269,7 +2269,7 @@ fn original_tables_render_dense_values_at_the_declared_range() {
     assert!(memos.len() >= 2 && memos.last().unwrap().1 && memos[..memos.len()-1].iter().any(|(_, reused)| !reused),
         "the table publication rebuilds its stage while retaining the unchanged knob: {memos:?}");
     let filled = pixels(&h.ui, 1180, 760);
-    let changed = empty.chunks_exact(4).zip(filled.chunks_exact(4)).filter(|(a,b)| a != b).count();
+    let changed = empty.as_chunks::<4>().0.iter().zip(filled.as_chunks::<4>().0.iter()).filter(|(a,b)| a != b).count();
     assert!(changed > 4000, "the numeric table paints bars, including its negative half: {changed}");
     publish_interface(&p, |i| {
         i.controls[0].properties.insert(

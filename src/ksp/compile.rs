@@ -1405,26 +1405,23 @@ impl<'a> Compiler<'a> {
         let code = &self.p.code;
         let n = code.len();
         let unary = matches!(op, Op::INeg | Op::INot | Op::IBitNot);
-        if unary && n > self.barrier {
-            if let Op::PushI(a) = code[n - 1] {
-                let v = match op {
-                    Op::INeg => a.wrapping_neg(),
-                    Op::INot => (a == 0) as i32,
-                    _ => !a,
-                };
-                self.p.code[n - 1] = Op::PushI(v);
-                return;
-            }
+        if unary && n > self.barrier
+            && let Op::PushI(a) = code[n - 1] {
+            let v = match op {
+                Op::INeg => a.wrapping_neg(),
+                Op::INot => (a == 0) as i32,
+                _ => !a,
+            };
+            self.p.code[n - 1] = Op::PushI(v);
+            return;
         }
-        if !unary && n >= 2 && n - 2 >= self.barrier {
-            if let (Op::PushI(a), Op::PushI(b)) = (code[n - 2], code[n - 1]) {
-                if let Some(v) = int_op(op).and_then(|bop| fold_int(bop, a, b)) {
-                    self.p.code.truncate(n - 1);
-                    self.p.lines.truncate(n - 1);
-                    self.p.code[n - 2] = Op::PushI(v);
-                    return;
-                }
-            }
+        if !unary && n >= 2 && n - 2 >= self.barrier
+            && let (Op::PushI(a), Op::PushI(b)) = (code[n - 2], code[n - 1])
+            && let Some(v) = int_op(op).and_then(|bop| fold_int(bop, a, b)) {
+            self.p.code.truncate(n - 1);
+            self.p.lines.truncate(n - 1);
+            self.p.code[n - 2] = Op::PushI(v);
+            return;
         }
         self.emit(op);
     }
@@ -1697,26 +1694,25 @@ impl<'a> Compiler<'a> {
             (Builtin::Signbit, Some(Ty::Real)) => Builtin::SignbitReal,
             _ => b,
         };
-        if b == Builtin::SetControlParStr {
-            if let [Expr::Call(get_id, target), par, picture] = args
-                && self.name(*get_id) == "get_ui_id"
-                && matches!(self.fold(par), Some(Const::Int(p)) if p == builtins::CONTROL_PAR_PICTURE)
-                && let [Expr::Var(label, None)] = target.as_slice()
-                && let Some(&label) = self.var_ids.get(label)
-                && self.p.vars[label as usize].ui.as_deref() == Some("ui_label")
-            {
-                let menu = match picture {
-                    Expr::Binary(BinOp::Concat, prefix, source) if matches!(prefix.as_ref(), Expr::Str(_)) => {
-                        if let Expr::Var(menu, None) = source.as_ref() {
-                            self.var_ids.get(menu).copied().filter(|&v| self.p.vars[v as usize].ui.as_deref() == Some("ui_menu"))
-                        } else { None }
-                    }
-                    _ => None,
-                };
-                self.p.picture_menus.entry(label).and_modify(|saved| {
-                    if *saved != menu { *saved = None; }
-                }).or_insert(menu);
-            }
+        if b == Builtin::SetControlParStr
+            && let [Expr::Call(get_id, target), par, picture] = args
+            && self.name(*get_id) == "get_ui_id"
+            && matches!(self.fold(par), Some(Const::Int(p)) if p == builtins::CONTROL_PAR_PICTURE)
+            && let [Expr::Var(label, None)] = target.as_slice()
+            && let Some(&label) = self.var_ids.get(label)
+            && self.p.vars[label as usize].ui.as_deref() == Some("ui_label")
+        {
+            let menu = match picture {
+                Expr::Binary(BinOp::Concat, prefix, source) if matches!(prefix.as_ref(), Expr::Str(_)) => {
+                    if let Expr::Var(menu, None) = source.as_ref() {
+                        self.var_ids.get(menu).copied().filter(|&v| self.p.vars[v as usize].ui.as_deref() == Some("ui_menu"))
+                    } else { None }
+                }
+                _ => None,
+            };
+            self.p.picture_menus.entry(label).and_modify(|saved| {
+                if *saved != menu { *saved = None; }
+            }).or_insert(menu);
         }
         self.emit(Op::Builtin(b, args.len() as u8));
         let ret = match sig.ret {

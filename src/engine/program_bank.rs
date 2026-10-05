@@ -412,7 +412,7 @@ impl ProgramBank {
                 let requested_control = received.control;
                 let unsupported_parameter = received
                     .parameter
-                    .is_some_and(|p| !p.registered || !matches!(p.address, 0 | 1 | 2));
+                    .is_some_and(|p| !p.registered || !matches!(p.address, 0..=2));
                 if let Some(index) = target {
                     // Configuration and accepted playback share the same decoded receipt.
                     let mut baseline = None;

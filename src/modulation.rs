@@ -308,8 +308,8 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                                 && w.public_data == [0; 4] && w.children.len() == 1
                                 && w.children[0].id == 0x3f);
                     let default_time = env.unknown_tail.len() == 52
-                        && env.unknown_tail.chunks_exact(13).all(|r|
-                            r == [0, 0, 128, 191, 0, 0, 0, 0, 0, 0, 128, 63, 0]);
+                        && env.unknown_tail.as_chunks::<13>().0.iter().all(|r|
+                            *r == [0, 0, 128, 191, 0, 0, 0, 0, 0, 0, 128, 63, 0]);
                     let plain = native_wrapper && params.targets.len() == 1 && params.targets.iter().all(|t|
                         t.param == "volume" && t.slot.is_none() && t.intensity == 1.
                         && t.unknown_i16 == -1 && t.unknown_flags == 0x10 && !t.invert && t.lag_ms == 0
@@ -374,8 +374,8 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                                 && w.public_data == [0; 4] && w.children.len() == 1
                                 && w.children[0].id == 0x3f);
                     let native_ahd_only = native_wrapper && env.unknown_flag == 1
-                        && env.unknown_tail.len() == 52 && env.unknown_tail.chunks_exact(13).all(|r|
-                            r == [0, 0, 128, 191, 0, 0, 0, 0, 0, 0, 128, 63, 0])
+                        && env.unknown_tail.len() == 52 && env.unknown_tail.as_chunks::<13>().0.iter().all(|r|
+                            *r == [0, 0, 128, 191, 0, 0, 0, 0, 0, 0, 128, 63, 0])
                         && params.unknown_flags[0] <= 1 && params.unknown_flags[1] <= 1
                         && params.unknown_flags[2..] == [1, 0]
                         && !params.targets.is_empty() && params.targets.iter().all(|t|
@@ -395,8 +395,8 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                     let targets: Vec<_> = params
                         .targets
                         .iter()
-                        .filter_map(|t| {
-                            Some(ModAssignment {
+                        .map(|t| {
+                            ModAssignment {
                                 cc_default: None,
                                 name: params.name.clone(),
                                 source: ModSource::Unassigned,
@@ -412,7 +412,7 @@ fn read_group_impl(group: &RawGroup, recover: Option<(usize, &str)>) -> Result<G
                                 invert: t.invert,
                                 lag_ms: t.lag_ms,
                                 shaper: t.shaper.clone().filter(|s| s.enabled).map(|s| s.curve),
-                            })
+                            }
                         })
                         .collect();
                     out.envelopes.push(ModEnvelope { env, targets, native_ahd_only });
@@ -1022,7 +1022,7 @@ mod tests {
                 }
             };
             #[cfg(feature = "plugin")]
-            assert_eq!(crate::plugin::tests::allocations(|| exercise()), 0);
+            assert_eq!(crate::plugin::tests::allocations(&mut exercise), 0);
             #[cfg(not(feature = "plugin"))]
             exercise();
             // Independent phase integral and native 32-frame interpolation;

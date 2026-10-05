@@ -194,8 +194,8 @@ fn perform(parts: &[usize]) -> Vec<[[f32; 2]; 4]> {
     let mut rack = Box::new(Rack::with_slots(2));
     let scripts = [script(3), script(2)];
     let mut reference = [create(0, None, 64), create(1, None, 127)];
-    for p in 0..2 {
-        rack.parts[p] = create(p, Some(&scripts[p]), if p == 0 { 64 } else { 127 }).into();
+    for (p, script) in scripts.iter().enumerate() {
+        rack.parts[p] = create(p, Some(script), if p == 0 { 64 } else { 127 }).into();
         rack.controls[p].output = p as u8;
         rack.controls[p].aux = 3;
         rack.controls[p].aux_gain = 0.3;
@@ -213,12 +213,12 @@ fn perform(parts: &[usize]) -> Vec<[[f32; 2]; 4]> {
     let mut direct = dry;
     assert_eq!(
         crate::plugin::tests::allocations(|| {
-            for p in 0..2 {
-                for i in 0..10 {
+            for (p, (ids, reference)) in ids.iter_mut().zip(&mut reference).enumerate() {
+                for (i, id) in ids.iter_mut().enumerate() {
                     assert!(rack
                         .with_instrument(p, |e| e.host_note_on(owner(p, i), 0, 60 + i as u8, 127, 0.))
                         .unwrap());
-                    ids[p][i] = reference[p].start_event(&NoteEvent {
+                    *id = reference.start_event(&NoteEvent {
                         input_channel: Some(4),
                         ..NoteEvent::new(0, 60 + i as u8, 127)
                     });
@@ -231,10 +231,10 @@ fn perform(parts: &[usize]) -> Vec<[[f32; 2]; 4]> {
                 // Literal exterior event times, not Rack's chosen global boundaries.
                 match at {
                     64 => {
-                        for p in 0..2 {
-                            for i in (if p == 0 { 3 } else { 2 })..10 {
+                        for (p, (ids, reference)) in ids.iter().zip(&mut reference).enumerate() {
+                            for (i, id) in ids.iter().enumerate().skip(if p == 0 { 3 } else { 2 }) {
                                 rack.with_instrument(p, |e| off(e, owner(p, i)));
-                                reference[p].release_event(ids[p][i].unwrap());
+                                reference.release_event(id.unwrap());
                             }
                         }
                     }
@@ -257,9 +257,9 @@ fn perform(parts: &[usize]) -> Vec<[[f32; 2]; 4]> {
                         }
                     }
                     384 => {
-                        for p in 0..2 {
+                        for (p, reference) in reference.iter_mut().enumerate() {
                             rack.with_instrument(p, |e| e.cc_from(0, 4, 64, 127));
-                            reference[p].cc_from(0, 4, 64, 127);
+                            reference.cc_from(0, 4, 64, 127);
                         }
                     }
                     400 => {
@@ -269,15 +269,15 @@ fn perform(parts: &[usize]) -> Vec<[[f32; 2]; 4]> {
                         }
                     }
                     640 => {
-                        for p in 0..2 {
+                        for (p, reference) in reference.iter_mut().enumerate() {
                             rack.with_instrument(p, |e| e.cc_from(0, 4, 64, 0));
-                            reference[p].cc_from(0, 4, 64, 0);
+                            reference.cc_from(0, 4, 64, 0);
                         }
                     }
                     800 => {
-                        for p in 0..2 {
+                        for (p, reference) in reference.iter_mut().enumerate() {
                             rack.with_instrument(p, |e| e.cc_from(0, 4, 120, 0));
-                            reference[p].cc_from(0, 4, 120, 0);
+                            reference.cc_from(0, 4, 120, 0);
                         }
                     }
                     _ => {}
