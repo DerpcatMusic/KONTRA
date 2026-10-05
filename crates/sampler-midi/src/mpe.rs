@@ -1,4 +1,4 @@
-//! Fixed-zone MPE 1.1 note/pitch projection after raw-event interception.
+//! Fixed-zone MPE 1.1 note/expression projection after raw-event interception.
 use crate::{Applied, ApplyError, Message, Packet, Value, Version};
 use sampler_core::{Error, Expression, ExpressionId, Input, NoteId, Protocol, Runtime, RuntimeId};
 
@@ -23,14 +23,56 @@ impl Zone {
 struct Binding {
     note: NoteId,
     channel: u8,
-    member_pitch: f64,
+    member: Controls,
+}
+
+#[derive(Clone, Copy)]
+struct Controls {
+    pitch: f64,
+    pressure: u8,
+    timbre: u8,
+}
+impl Default for Controls {
+    fn default() -> Self {
+        Self {
+            pitch: 0.0,
+            pressure: 0,
+            timbre: 64,
+        }
+    }
+}
+impl Controls {
+    fn expression(self, manager: Self) -> Expression {
+        Expression {
+            pitch_semitones: self.pitch + manager.pitch,
+            pressure: expand(self.pressure.max(manager.pressure)),
+            timbre: expand(
+                (i16::from(self.timbre) + i16::from(manager.timbre) - 64).clamp(0, 127) as u8,
+            ),
+            ..Expression::default()
+        }
+    }
+    fn with(mut self, control: Control) -> Self {
+        match control {
+            Control::Pitch(value) => self.pitch = value,
+            Control::Pressure(value) => self.pressure = value,
+            Control::Timbre(value) => self.timbre = value,
+        }
+        self
+    }
+}
+#[derive(Clone, Copy)]
+enum Control {
+    Pitch(f64),
+    Pressure(u8),
+    Timbre(u8),
 }
 
 /// One explicitly configured MIDI 1.0 zone in one runtime/port/group domain.
 /// Construct and drop on the control thread. The binding budget includes tails
 /// and unaccepted terminal notes. No pins are added and no heap work occurs in apply.
 ///
-/// This is not a complete MPE receiver: RPN/MCM, pedals, pressure and CC74 are
+/// This is not a complete MPE receiver: RPN/MCM, pedals and other channel modes are
 /// reported Unsupported. Do not forward those messages to ordinary channel
 /// ingress as a substitute for zone semantics. Raw-event consumers run before
 /// this adapter; a consumed message must not be passed to apply.
@@ -41,7 +83,7 @@ pub struct Mpe {
     zone: Zone,
     members: u8,
     limit: usize,
-    bends: [u16; 16],
+    controls: [Controls; 16],
     bindings: Vec<Binding>,
     changes: Vec<(ExpressionId, Expression)>,
 }
@@ -72,7 +114,7 @@ impl Mpe {
             zone,
             members,
             limit: notes,
-            bends: [8192; 16],
+            controls: [Controls::default(); 16],
             bindings,
             changes,
         })
@@ -120,16 +162,12 @@ impl Mpe {
                 if self.bindings.len() == self.limit {
                     return Err(Error::Capacity.into());
                 }
-                let member_pitch = if voice.channel == self.zone.manager() {
-                    0.0
+                let member = if voice.channel == self.zone.manager() {
+                    Controls::default()
                 } else {
-                    pitch(self.bends[usize::from(voice.channel)], 48.0)
+                    self.controls[usize::from(voice.channel)]
                 };
-                let expression = Expression {
-                    pitch_semitones: member_pitch
-                        + pitch(self.bends[usize::from(self.zone.manager())], 2.0),
-                    ..Expression::default()
-                };
+                let expression = member.expression(self.controls[usize::from(self.zone.manager())]);
                 let note = runtime.trigger_with_expression(
                     Input { key, ..input },
                     key,
@@ -139,7 +177,7 @@ impl Mpe {
                 self.bindings.push(Binding {
                     note,
                     channel: voice.channel,
-                    member_pitch,
+                    member,
                 });
                 Applied::Started(note)
             }
@@ -152,45 +190,68 @@ impl Mpe {
                 velocity,
                 attribute,
             },
-            Message::PitchBend(Value::Bits14(value)) => self.bend(runtime, voice.channel, value)?,
+            Message::PitchBend(Value::Bits14(value)) => {
+                let range = if voice.channel == self.zone.manager() {
+                    2.0
+                } else {
+                    48.0
+                };
+                self.control(runtime, voice.channel, Control::Pitch(pitch(value, range)))?
+            }
+            Message::ChannelPressure(Value::Bits7(value)) => {
+                self.control(runtime, voice.channel, Control::Pressure(value))?
+            }
+            Message::Control {
+                index: 74,
+                value: Value::Bits7(value),
+            } => self.control(runtime, voice.channel, Control::Timbre(value))?,
             _ => Applied::Unsupported,
         })
     }
 
-    fn bend(&mut self, runtime: &mut Runtime, channel: u8, value: u16) -> Result<Applied, Error> {
+    fn control(
+        &mut self,
+        runtime: &mut Runtime,
+        channel: u8,
+        control: Control,
+    ) -> Result<Applied, Error> {
         let manager = channel == self.zone.manager();
-        let manager_pitch = pitch(
-            if manager {
-                value
-            } else {
-                self.bends[usize::from(self.zone.manager())]
-            },
-            2.0,
-        );
-        let member_pitch = pitch(value, 48.0);
+        let manager_controls = self.controls[usize::from(self.zone.manager())];
+        let manager_controls = if manager {
+            manager_controls.with(control)
+        } else {
+            manager_controls
+        };
         self.changes.clear();
         for binding in &self.bindings {
             let active_member = binding.channel == channel && runtime.key_down(binding.note)?;
             if manager || active_member {
                 let owner = runtime.expression_id(binding.note)?;
                 let mut expression = runtime.expression(owner)?;
-                expression.pitch_semitones = manager_pitch
-                    + if !manager && active_member {
-                        member_pitch
-                    } else {
-                        binding.member_pitch
-                    };
+                let member = if !manager && active_member {
+                    binding.member.with(control)
+                } else {
+                    binding.member
+                };
+                let combined = member.expression(manager_controls);
+                // Each gesture owns only its dimension. Preserve native gain,
+                // pan and all expression fields not addressed by this control.
+                match control {
+                    Control::Pitch(_) => expression.pitch_semitones = combined.pitch_semitones,
+                    Control::Pressure(_) => expression.pressure = combined.pressure,
+                    Control::Timbre(_) => expression.timbre = combined.timbre,
+                }
                 self.changes.push((owner, expression));
             }
         }
         // Controller state and per-note snapshots commit only after every owner
         // accepts the gesture. Rejected pitch must not leak into the next note.
         runtime.set_expressions(&self.changes)?;
-        self.bends[usize::from(channel)] = value;
+        self.controls[usize::from(channel)] = self.controls[usize::from(channel)].with(control);
         if !manager {
             for binding in &mut self.bindings {
                 if binding.channel == channel && runtime.key_down(binding.note)? {
-                    binding.member_pitch = member_pitch;
+                    binding.member = binding.member.with(control);
                 }
             }
         }
@@ -204,4 +265,10 @@ fn pitch(value: u16, range: f64) -> f64 {
     let centered = f64::from(value) - 8192.0;
     // Exact center and endpoints; MPE permits meaningful receiver combination.
     range * centered / if value < 8192 { 8192.0 } else { 8191.0 }
+}
+
+// Exact integer projection to the native full-scale domain, not UMP bit-depth
+// translation. Original 7-bit values remain in the adapter's channel snapshots.
+fn expand(value: u8) -> u32 {
+    (u64::from(value) * u64::from(u32::MAX) / 127) as u32
 }

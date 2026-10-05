@@ -28,7 +28,7 @@ attributes return `Unsupported` without creating a partial note.
 This is partial V2-02/V2-15 evidence, **not full MIDI 2.0 support**. Per-note and
 channel expression in ordinary ingress, management, attribute pitch, program selection, MIDI-CI,
 SysEx, JR timestamps and device transport remain unimplemented. The separate fixed-zone
-MPE note/pitch projection below is partial receiver work. Decoding a
+MPE note/expression projection below is partial receiver work. Decoding a
 message does not imply that the instrument consumes it. `Applied::Unsupported`
 is observable; there is no approximation through the old engine.
 
@@ -138,10 +138,10 @@ late scheduled key-up cancellation, unsupported values and exactly-once terminal
 Actual work remains allocation/free checked. The authoritative score remains 90,
 zero errors and 119 warnings. Evidence uses `artifacts/architecture-v2/sound-off-*`.
 
-## Fixed-zone MPE note/pitch projection
+## Fixed-zone MPE note/expression projection
 
 The separate `Mpe` adapter pins [M1-100-UM MPE v1.1, 14-Apr-2022](https://midi.org/mpe-midi-polyphonic-expression),
-sections 2.2.4–2.2.6 and Appendix C. Construction binds one runtime identity,
+sections 2.2.4–2.2.8 and Appendices C/D. Construction binds one runtime identity,
 port/group and lower or upper zone with 1–15 members. Runtime identity survives
 moves and plan adoption; a foreign runtime is rejected before any mutation.
 Construction allocates explicit note-binding and gesture budgets off the audio
@@ -149,7 +149,8 @@ thread. Apply performs no heap work. One adapter owns admission within its input
 domain. Raw-event interception precedes this projection; consumed messages must
 not reach it. A raw scripting interception API is still pending.
 
-Current support is MIDI 1.0 UMP note-on/off and pitch bend, with fixed default
+Current support is MIDI 1.0 UMP note-on/off, pitch bend, channel pressure and CC74,
+with fixed default
 manager/member ranges of 2/48 semitones. Manager and member bends add; projection
 uses a piecewise bipolar scale with exact center and endpoints. Both channel values
 are retained while idle and installed before source selection or note programs.
@@ -182,9 +183,34 @@ on the local Ryzen 7800X3D measured medians 0.85/3.38/13.78 microseconds for
 the median was 1.62 microseconds. These are local observations, not deadlines or
 full audio callback guarantees; CSV is `artifacts/mpe-expression-workload.csv`.
 
-RPN/MCM configuration, other bend sensitivities, zone pedals/modes, pressure,
-CC74 and ordinary MIDI 2.0 expression routing remain unsupported. Do not forward
+RPN/MCM configuration, other bend sensitivities, zone pedals/modes and ordinary
+MIDI 2.0 expression routing remain unsupported. Do not forward
 unsupported zone controls to ordinary channel ingress as a substitute. Source
 rate limits can reject otherwise valid MPE pitches; the current 1/256..16 source
 step range does not establish full MPE compliance. No importer-specific MPE code
 or old-core runtime is involved, and no live host/UI is connected yet.
+
+### Pressure and timbre
+
+Channel pressure combines by maximum; CC74 combines as member plus manager minus
+64, saturated to 0..127. Manager defaults are pressure 0 and CC74 64, leaving the
+member unchanged. Manager notes use neutral member values, avoiding double
+application. These are explicit native receiver choices under Appendix D, not
+claims that every vendor instrument uses the same mappings. Original 7-bit values
+remain in channel/member snapshots. Native expression receives the exact integer
+projection `floor(value * u32::MAX / 127)`; this is not UMP bit-depth translation.
+
+As with pitch, member pressure/timbre freezes at physical key-up, and new notes use
+current idle controller state. Manager controls combine with each retained member
+snapshot, including tails. Each gesture writes only its own expression dimension;
+it cannot overwrite native gain, pan, pitch or another controller dimension.
+Pressure/timbre are stored modulation inputs, not hardwired gain/filter shortcuts;
+audible modulation destinations remain pending. Tests cover both zones, initial
+state, saturation, tail/reuse isolation, manager combination and preservation of
+unrelated expression under heap guards.
+
+The workload now includes all three gestures. One local run measured 1024-note
+medians of 14.58 microseconds for pitch, 10.45 for pressure and 10.37 for timbre.
+The pressure run included a 2.39 ms maximum scheduler outlier, reinforcing that
+these process timings are observations rather than realtime guarantees. Evidence
+uses `artifacts/mpe-controls-*`; filtering/rendering remains outside this workload.

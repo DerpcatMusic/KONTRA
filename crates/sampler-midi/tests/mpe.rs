@@ -231,3 +231,94 @@ fn mpe_audio_is_identical_across_host_partitions() {
         assert!(audio[480..].iter().all(|frame| *frame == [0.0; 2]));
     }
 }
+
+#[test]
+fn pressure_and_timbre_keep_member_snapshots_and_preserve_unrelated_expression() {
+    let scaled = |value: u32| (u64::from(value) * u64::from(u32::MAX) / 127) as u32;
+    for (zone, manager, member) in [(Zone::Lower, 0, 1), (Zone::Upper, 15, 14)] {
+        let mut rt = runtime();
+        let mut mpe = Mpe::new(&rt, 7, 3, zone, 2, 8).unwrap();
+        support::without_heap(|| {
+            apply(&mut mpe, &mut rt, packet(0xd0, manager, 32, 0)).unwrap();
+            apply(&mut mpe, &mut rt, packet(0xd0, member, 64, 0)).unwrap();
+            apply(&mut mpe, &mut rt, packet(0xb0, manager, 74, 70)).unwrap();
+            apply(&mut mpe, &mut rt, packet(0xb0, member, 74, 80)).unwrap();
+            let old = start(&mut mpe, &mut rt, member, 60);
+            assert_eq!(
+                (expression(&rt, old).pressure, expression(&rt, old).timbre),
+                (scaled(64), scaled(86))
+            );
+            let owner = rt.expression_id(old).unwrap();
+            let authored = Expression {
+                gain: 0.5,
+                pan: -0.25,
+                pitch_semitones: 7.0,
+                ..expression(&rt, old)
+            };
+            rt.set_expression(owner, authored).unwrap();
+            apply(&mut mpe, &mut rt, packet(0xd0, member, 95, 0)).unwrap();
+            assert_eq!(
+                expression(&rt, old),
+                Expression {
+                    pressure: scaled(95),
+                    ..authored
+                }
+            );
+            apply(&mut mpe, &mut rt, packet(0x80, member, 60, 0)).unwrap();
+            assert_eq!(
+                apply(&mut mpe, &mut rt, packet(0xd0, member, 10, 0)),
+                Ok(Applied::Expression { owners: 0 })
+            );
+            apply(&mut mpe, &mut rt, packet(0xb0, member, 74, 0)).unwrap();
+            assert_eq!(
+                expression(&rt, old),
+                Expression {
+                    pressure: scaled(95),
+                    ..authored
+                }
+            );
+            let new = start(&mut mpe, &mut rt, member, 60);
+            assert_eq!(
+                (expression(&rt, new).pressure, expression(&rt, new).timbre),
+                (scaled(32), scaled(6))
+            );
+            apply(&mut mpe, &mut rt, packet(0xd0, manager, 100, 0)).unwrap();
+            assert_eq!(
+                (expression(&rt, old).pressure, expression(&rt, new).pressure),
+                (scaled(100), scaled(100))
+            );
+            apply(&mut mpe, &mut rt, packet(0xb0, manager, 74, 0)).unwrap();
+            assert_eq!(
+                (expression(&rt, old).timbre, expression(&rt, new).timbre),
+                (scaled(16), 0)
+            );
+            apply(&mut mpe, &mut rt, packet(0xb0, member, 74, 127)).unwrap();
+            assert_eq!(expression(&rt, new).timbre, scaled(63));
+            apply(&mut mpe, &mut rt, packet(0xb0, manager, 74, 127)).unwrap();
+            assert_eq!(
+                (expression(&rt, old).timbre, expression(&rt, new).timbre),
+                (u32::MAX, u32::MAX)
+            );
+            apply(&mut mpe, &mut rt, packet(0xd0, member, 0, 0)).unwrap();
+            apply(&mut mpe, &mut rt, packet(0xd0, manager, 0, 0)).unwrap();
+            assert_eq!(
+                (expression(&rt, old).pressure, expression(&rt, new).pressure),
+                (scaled(95), 0)
+            );
+            assert_eq!(
+                (
+                    expression(&rt, old).gain,
+                    expression(&rt, old).pan,
+                    expression(&rt, old).pitch_semitones
+                ),
+                (0.5, -0.25, 7.0)
+            );
+            rt.panic();
+            rt.flush_ended(|_| true);
+            assert_eq!(
+                (rt.note_count(), rt.expression_count(), rt.voice_count()),
+                (0, 0, 0)
+            );
+        });
+    }
+}
