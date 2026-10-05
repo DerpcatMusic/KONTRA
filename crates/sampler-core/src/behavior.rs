@@ -1,13 +1,31 @@
 //! Native bounded musical instructions, independent of any vendor language VM.
 use super::{Action, Error, Handle, NoteId, Runtime};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Duration {
+    /// Releases only when the originating note's effective gate closes.
+    Gate,
+    /// Independent duration; can outlive the originating gate.
+    Frames(u32),
+    /// Native bounded duration that also follows the originating gate.
+    FramesOrGate(u32),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WaitLifetime {
+    #[default]
+    Gate,
+    /// The continuation retains its input until completion or explicit cancellation.
+    Callback,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum Instruction {
-    /// Generate a mapped child linked to the originating note's effective gate.
+    /// Generate a mapped child with an explicit release policy.
     Play {
         transpose: i8,
         velocity_scale: f64,
-        duration: u32,
+        duration: Duration,
     },
     /// Sample-clock wait. Zero advances inline and still consumes instruction fuel.
     Wait(u32),
@@ -35,8 +53,14 @@ pub enum Instruction {
 pub struct Program {
     pub(super) code: Box<[Instruction]>,
     pub(super) locals: usize,
+    pub(super) wait_lifetime: WaitLifetime,
 }
 impl Program {
+    pub fn with_wait_lifetime(mut self, lifetime: WaitLifetime) -> Self {
+        self.wait_lifetime = lifetime;
+        self
+    }
+
     pub fn new(code: Vec<Instruction>) -> Result<Self, Error> {
         let mut locals = 0;
         for op in &code {
@@ -64,6 +88,7 @@ impl Program {
         Ok(Self {
             code: code.into_boxed_slice(),
             locals,
+            wait_lifetime: WaitLifetime::Gate,
         })
     }
 }
@@ -97,7 +122,7 @@ impl Runtime {
             return Err(Error::InvalidInput);
         }
         let n = self.notes.get_mut(note.0).ok_or(Error::StaleHandle)?;
-        if !n.gate {
+        if !n.gate && self.plan.programs[program].wait_lifetime == WaitLifetime::Gate {
             return Err(Error::ClosedNote);
         }
         let work = n.work.checked_add(1).ok_or(Error::Capacity)?;
@@ -243,15 +268,26 @@ impl Runtime {
                     return Err(Error::InvalidInput);
                 }
                 let velocity = n.velocity * velocity_scale;
-                let at = self
-                    .now
-                    .checked_add(u64::from(duration))
-                    .ok_or(Error::ClockOverflow)?;
-                if duration != 0 && self.commands.len() == self.command_limit {
+                let frames = match duration {
+                    Duration::Gate => None,
+                    Duration::Frames(frames) | Duration::FramesOrGate(frames) => Some(frames),
+                };
+                let at = frames
+                    .map(|frames| {
+                        self.now
+                            .checked_add(u64::from(frames))
+                            .ok_or(Error::ClockOverflow)
+                    })
+                    .transpose()?;
+                if at.is_some_and(|at| at != self.now) && self.commands.len() == self.command_limit
+                {
                     return Err(Error::Capacity);
                 }
-                let child = self.trigger_child(note, key as u8, velocity)?;
-                self.release_at(child, at)?;
+                let linked = !matches!(duration, Duration::Frames(_));
+                let child = self.trigger_child(note, key as u8, velocity, linked)?;
+                if let Some(at) = at {
+                    self.release_at(child, at)?;
+                }
             }
         }
         Ok(false)

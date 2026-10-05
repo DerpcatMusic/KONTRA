@@ -47,7 +47,7 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
         let play = Instruction::Play {
             transpose: 0,
             velocity_scale: 0.75,
-            duration: rate / 8,
+            duration: sampler_core::Duration::FramesOrGate(rate / 8),
         };
         let program = Program::new(vec![
             Instruction::SetLocal { local: 0, value: 2 },

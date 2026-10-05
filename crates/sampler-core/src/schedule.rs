@@ -129,7 +129,9 @@ impl Runtime {
                 let c = self.behaviors.get_mut(id.0).unwrap();
                 if c.outcome.is_some() {
                     false
-                } else if notes.get(c.note.0).unwrap().gate {
+                } else if notes.get(c.note.0).unwrap().gate
+                    || self.plan.programs[c.program].wait_lifetime == super::WaitLifetime::Callback
+                {
                     true
                 } else {
                     c.outcome = Some(super::Outcome::Cancelled);

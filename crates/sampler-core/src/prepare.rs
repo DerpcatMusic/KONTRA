@@ -133,7 +133,7 @@ impl Prepared {
 
 enum Origin {
     Input(Input),
-    Child(NoteId),
+    Child(NoteId, bool),
 }
 
 impl Runtime {
@@ -161,8 +161,9 @@ impl Runtime {
         parent: NoteId,
         key: u8,
         velocity: f64,
+        linked: bool,
     ) -> Result<NoteId, Error> {
-        self.select(Origin::Child(parent), key, velocity)
+        self.select(Origin::Child(parent, linked), key, velocity)
     }
 
     fn select(&mut self, origin: Origin, key: u8, velocity: f64) -> Result<NoteId, Error> {
@@ -176,8 +177,8 @@ impl Runtime {
         }
         let note = match origin {
             Origin::Input(input) => self.note_on(input, key, velocity)?,
-            Origin::Child(parent) => {
-                self.child(parent, key, velocity, true, super::Inheritance::Linked)?
+            Origin::Child(parent, linked) => {
+                self.child(parent, key, velocity, linked, super::Inheritance::Linked)?
             }
         };
         if count == 0 {
