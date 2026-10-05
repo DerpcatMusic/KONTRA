@@ -29,8 +29,8 @@ impl Default for SelectionStore {
 impl PersistField for SelectionStore {
     fn persist_write(&self, buf: &mut Vec<u8>) { self.value.persist_write(buf); }
     fn persist_read(&self, cursor: &mut StateCursor) {
-        // Use the unchanged migration codec. None rejects; Some, including an
-        // admitted default/partial legacy document, is a restoration transaction.
+        // Positional state rejects; an admitted framed keyed document, including
+        // one whose fields default, is a restoration transaction.
         if let Some(value) = Selection::read_field(cursor) { self.replace(value); }
     }
 }
@@ -329,13 +329,13 @@ mod tests {
         let mut original = Vec::new(); store.persist_write(&mut original);
         let mut raw = Vec::new(); store.read().unwrap().write_field(&mut raw);
         assert_eq!(original, raw, "coordinator adds no persisted bytes");
-        for rejected in [vec![], vec![4, 0, 0, 0, 0], vec![0, 0, 0, 0]] {
+        for rejected in [vec![], vec![4, 0, 0, 0, 0], vec![0, 0, 0, 0], vec![4, 0, 0, 0, 0, 0, 0, 0]] {
             assert!(Selection::read_field(&mut StateCursor::new(&rejected)).is_none());
             store.persist_read(&mut StateCursor::new(&rejected));
             assert!(store.control.current(id)); assert!(*store.read().unwrap() == owner());
         }
-        // The existing legacy decoder admits zero stored fields as defaults.
-        let admitted: Vec<u8> = [4u32, 0].into_iter().flat_map(u32::to_le_bytes).collect();
+        // A keyed v1 document with zero stored fields restores the defaults.
+        let admitted: Vec<u8> = [8u32, 0xFFFF_FF01, 0].into_iter().flat_map(u32::to_le_bytes).collect();
         assert!(Selection::read_field(&mut StateCursor::new(&admitted)) == Some(Selection::default()));
         store.persist_read(&mut StateCursor::new(&admitted));
         assert!(!store.control.current(id)); assert!(*store.read().unwrap() == Selection::default());

@@ -41,8 +41,7 @@
 //! every surviving field's value. A field absent from an older blob loads
 //! as its `Default`; a field present in the blob but no longer declared is
 //! ignored. Two fields whose names collide under the key hash are rejected
-//! at compile time. Pre-keyed blobs (saved by an older moose) still load
-//! through a legacy positional path, so existing sessions are unaffected.
+//! at compile time. Pre-keyed positional blobs are unsupported.
 
 /// Re-exported so plugin authors name the lock-free `#[persist]` cell
 /// as `AtomicCell` through the prelude, without depending on crossbeam.
@@ -72,33 +71,6 @@ impl<'a> StateCursor<'a> {
         let slice = &self.data[self.pos..self.pos + n];
         self.pos += n;
         Some(slice)
-    }
-
-    /// Skip the next field (reads its encoded size and advances past it).
-    /// Returns false if the data is malformed.
-    ///
-    /// # Panics
-    ///
-    /// Does not panic - the `expect` inside is unreachable because
-    /// `read_bytes(4)` only returns `Some` when the slice is exactly
-    /// 4 bytes long.
-    pub fn skip_field(&mut self) -> bool {
-        // Fields are prefixed with a u32 byte length by the derive macro.
-        if let Some(bytes) = self.read_bytes(4) {
-            // `read_bytes(4)` returns `Some(slice of length 4)` or
-            // `None`, so the `try_into::<[u8; 4]>()` here cannot fail.
-            // The `expect` documents that invariant for readers.
-            let len = u32::from_le_bytes(
-                bytes
-                    .try_into()
-                    .expect("read_bytes(4) returned a slice of unexpected length"),
-            ) as usize;
-            if self.pos + len <= self.data.len() {
-                self.pos += len;
-                return true;
-            }
-        }
-        false
     }
 }
 
