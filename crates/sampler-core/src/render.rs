@@ -70,7 +70,7 @@ impl Runtime {
         // within immutable PCM; looping never changes asset ownership.
         let pcm = &self.plans.get(n.plan.0).unwrap().prepared.pcm[v.sample].frames;
         v.cursor
-            .render(pcm, segment, &mut v.envelope, v.gain, gains);
+            .render(pcm, segment, &mut v.envelope, v.gain, gains, self.kernel);
         if v.cursor.done() || v.envelope.done() {
             self.end_voice(VoiceId(self.voices.id(i)));
         }

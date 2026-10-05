@@ -111,6 +111,7 @@ fn forward_reverse_and_loops_match_explicit_sequences_at_every_partition() {
                 end: Some(7),
                 direction,
                 loop_range,
+                ..Playback::default()
             });
             rt.trigger(input(1), 60, 1.0).unwrap();
             let mut audio = [[0.0; 2]; 10];

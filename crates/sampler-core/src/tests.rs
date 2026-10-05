@@ -226,7 +226,7 @@ fn invalid_preparation_and_atomic_failed_start() {
         frames: Box::from([[1.0; 2]; 4]),
     }];
     assert!(matches!(
-        fixture_runtime(44100, &samples, limits()),
+        fixture_runtime(0, &samples, limits()),
         Err(Error::InvalidInput)
     ));
     let mut rt = fixture_runtime(48000, &samples, limits()).unwrap();

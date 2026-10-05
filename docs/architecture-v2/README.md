@@ -11,7 +11,9 @@ it does not change the current package version or release policy.
 The proposed direction is one shared musical runtime with versioned format and
 behavior adapters. The immediate job is to make ownership, scheduling, preparation,
 and retirement independently testable in a clean-sheet product. Explicit user direction
-on 2026-10-05 removes all 1.x compatibility, reuse and migration requirements.
+on 2026-10-05 removes all 1.x compatibility requirements. Later direction permits
+selective reuse and porting after native foundations are ready, without carrying
+forward the old core or redundant ownership; see the current priority in PLAN.md.
 MIDI 2.0 is required from the event-model design onward. Third-party instrument
 compatibility remains a separate, evidence-backed capability.
 
@@ -116,3 +118,6 @@ add `--cached` to that check. Keep references unchanged; record amendments in th
 line links in the map are anchored to the baseline commit above. Keep them as historical evidence when the new implementation replaces that subsystem. Task completion requires executable evidence;
 an existing test name, a parsed JSON file, or a checked planning item is not a
 passing conformance result. Keep measured results separate from the original catalogue.
+
+[Resident resampling foundation](RESAMPLING.md) records fractional traversal,
+static transposition, filter evidence and the remaining live-pitch work.

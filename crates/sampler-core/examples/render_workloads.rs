@@ -1,4 +1,4 @@
-//! Resident unity-rate rendering workload. Setup, validation and sorting are untimed.
+//! Resident rendering workload; optional `--transpose SEMITONES` tests the filtered path. Setup, validation and sorting are untimed.
 //! Run in release mode; this reports local measurements, not a realtime guarantee.
 use sampler_core::{
     Envelope, Input, Limits, Loop, LoopMode, Pcm, Playback, Prepared, Protocol, Region, Runtime,
@@ -8,7 +8,7 @@ use std::{hint::black_box, time::Instant};
 const LAYERS: usize = 4;
 const TRIALS: usize = 512;
 
-fn prepare(rate: u32, voices: usize, reserved: usize, shaped: bool) -> Runtime {
+fn prepare(rate: u32, voices: usize, reserved: usize, shaped: bool, transpose: f64) -> Runtime {
     let notes = voices / LAYERS;
     let samples = (0..LAYERS)
         .map(|layer| {
@@ -33,6 +33,7 @@ fn prepare(rate: u32, voices: usize, reserved: usize, shaped: bool) -> Runtime {
                 Envelope::default()
             },
             playback: Playback {
+                transpose_semitones: transpose,
                 loop_range: Some(Loop {
                     start: 0,
                     end: 4096,
@@ -76,8 +77,8 @@ fn prepare(rate: u32, voices: usize, reserved: usize, shaped: bool) -> Runtime {
     rt
 }
 
-fn measure(rate: u32, block: usize, voices: usize, reserved: usize, shaped: bool) {
-    let mut rt = prepare(rate, voices, reserved, shaped);
+fn measure(rate: u32, block: usize, voices: usize, reserved: usize, shaped: bool, transpose: f64) {
+    let mut rt = prepare(rate, voices, reserved, shaped, transpose);
     let mut audio = vec![[0.; 2]; block];
     for _ in 0..64 {
         rt.render(&mut audio).unwrap();
@@ -125,11 +126,27 @@ fn main() {
     println!(
         "envelope,rate,block,layers,notes,voices,reserved_voices,median_us,p99_us,max_us,p99_deadline_percent,median_ns_per_voice_frame"
     );
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    if !args.is_empty() {
+        assert!(
+            args.len() == 2 && args[0] == "--transpose",
+            "expected --transpose SEMITONES"
+        );
+        let transpose: f64 = args[1].parse().expect("numeric semitones");
+        assert!((-48.0..=48.0).contains(&transpose));
+        eprintln!("transposition: {transpose} semitones");
+        for block in [64, 256] {
+            for voices in [4, 16, 64] {
+                measure(48000, block, voices, voices, false, transpose);
+            }
+        }
+        return;
+    }
     for shaped in [false, true] {
         for rate in [48000, 96000] {
             for block in [64, 256] {
                 for (voices, reserved) in [(64, 64), (256, 256), (1024, 1024), (64, 4096)] {
-                    measure(rate, block, voices, reserved, shaped);
+                    measure(rate, block, voices, reserved, shaped, 0.0);
                 }
             }
         }
