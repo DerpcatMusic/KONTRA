@@ -189,7 +189,7 @@ fn selection_differences(expected: &Selection, readback: &Selection) -> Vec<Stri
         };
     }
     compare_fields!(expected, readback;
-        root, order, midi_thru, multi, favorites, recent, qwerty, browser_width,
+        order, midi_thru, multi, favorites, recent, qwerty, browser_width,
         browser_split, appearance, sharp_artwork, sticky_off, buses, streaming,
         auto_align, align_transport_only, outputs,
         uvi_favorites, uvi_recent, uvi_requested,

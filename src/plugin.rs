@@ -106,7 +106,7 @@ pub struct Part {
     pub program: u32,
     /// Script persistent variables as JSON (`Vec<Persisted>`); empty uses the instrument's saved values.
     pub script_state: String,
-    /// Requested convolution controls; old host states default to the authored values.
+    /// Requested convolution controls; empty uses the authored values.
     pub ir_settings: Vec<crate::fx::IrSlotSettings>,
     /// The name the player gave the part; empty shows the instrument's.
     pub name: String,
@@ -143,17 +143,15 @@ pub struct Part {
     /// vectorized ([`crate::library::ViewMode`]).
     pub view: u8,
     /// Snapshot applied to `path`, which remains its explicit base NKI.
-    /// Appended so pre-keyed host states keep their positional field order.
     pub snapshot: String,
     /// Supported engine edits applied by authored callbacks, in last-write order.
     pub engine_state: Vec<crate::ksp::engine::NativeEdit>,
-    /// Coupled Delay Time/unit caches, appended for older positional host states.
+    /// Coupled Delay Time/unit caches.
     pub delay_state: Vec<crate::fx::DelayState>,
-    /// Native bank/member identity; appended to retain positional host states.
+    /// Native bank/member identity.
     /// An absent backend remains identifiable when its feature is disabled.
     pub uvi: Option<library::UviSource>,
     /// Opaque native program state, retained even by builds without UVI.
-    /// Appended for positional host-state compatibility.
     pub uvi_state: NativeState,
 }
 impl Part {
@@ -327,9 +325,6 @@ impl Bus {
 }
 #[derive(State, Default, Clone, PartialEq)]
 pub struct Selection {
-    /// The library folder projects once kept; the app's settings keep the
-    /// library folders now ([`library::Settings`]). Kept so old projects open.
-    pub root: String,
     pub parts: Vec<Part>,
     pub order: Vec<u32>,
     pub midi_thru: bool,
@@ -366,7 +361,6 @@ pub struct Selection {
     pub align_transport_only: bool,
     /// How parts are routed to buses and host ports ([`routing::Outputs`]).
     pub outputs: u8,
-    /// Appended: pre-keyed Kontakt sessions retain positional field ordering.
     pub uvi_favorites: Vec<library::UviSource>,
     pub uvi_recent: Vec<library::UviSource>,
     /// Requested, not loaded: retained while the live adapter is unavailable.
@@ -6532,7 +6526,7 @@ pub(crate) mod tests {
 
 
     #[test]
-    fn snapshot_requests_validate_before_mutating_and_preserve_older_host_state() {
+    fn snapshot_requests_validate_before_mutating_and_round_trip_keyed_state() {
         use moose::core::custom_state::State;
         let part = Part { path: "/unavailable-kontakto/base.nki".into(), program: 0,
             script_state: r#"[{"retained":1}]"#.into(), gain: -4., channel: 3,
@@ -6547,8 +6541,7 @@ pub(crate) mod tests {
             frames.push(bytes[at..at + 8 + len].to_vec());
             at += 8 + len;
         }
-        // Fields before snapshot retain their original positional order.
-        // Later appended fields also default when restoring that older state.
+        // Keyed fields can be omitted without changing surviving values.
         let mut snapshot_field = Vec::new();
         part.snapshot.write_field(&mut snapshot_field);
         let old_count = frames.iter().position(|frame| frame[8..] == snapshot_field).unwrap();
@@ -6559,7 +6552,7 @@ pub(crate) mod tests {
         for frame in frames { old_keyed.extend(&frame); legacy.extend(&frame[4..]); }
         let mut old = part.clone(); old.snapshot.clear();
         assert!(Part::deserialize(&old_keyed) == Some(old.clone()));
-        assert!(Part::deserialize(&legacy) == Some(old));
+        assert!(Part::deserialize(&legacy).is_none(), "positional host state is unsupported");
         assert!(serde_json::from_str::<Part>("{}").unwrap().snapshot.is_empty());
 
         let p = SamplerParams::new();
@@ -7891,7 +7884,7 @@ for i=1,10000000 do local x=i+i end]]></script></ScriptProcessor></EventProcesso
     }
 
     #[test]
-    fn uvi_requests_round_trip_without_changing_legacy_kontakt_state() {
+    fn uvi_requests_round_trip_and_keep_keyed_kontakt_fields() {
         use moose::core::custom_state::State;
         let source = library::UviSource { bank: "/banks/original.ufs".into(), bank_uuid: [7; 16], member: "Root/Keys/Piano.uvip".into() };
         let selection = Selection {
@@ -7916,14 +7909,13 @@ for i=1,10000000 do local x=i+i end]]></script></ScriptProcessor></EventProcesso
         let mut old = selection;
         old.uvi_favorites.clear(); old.uvi_recent.clear(); old.uvi_requested = None;
         assert!(Selection::deserialize(&old_keyed) == Some(old.clone()));
-        assert!(Selection::deserialize(&legacy) == Some(old));
+        assert!(Selection::deserialize(&legacy).is_none(), "positional rack state is unsupported");
     }
 
     #[test]
     fn rack_state_round_trip() {
         use moose::core::custom_state::State;
         let state = Selection {
-            root: "/libraries".into(),
             multi: String::new(),
             parts: vec![
                 Part {
@@ -7980,6 +7972,18 @@ for i=1,10000000 do local x=i+i end]]></script></ScriptProcessor></EventProcesso
             ],
         };
         assert!(Selection::deserialize(&state.serialize()).unwrap() == state);
+        // A removed keyed field must not displace any current rack setting.
+        let mut previous = state.serialize();
+        let count = u32::from_le_bytes(previous[4..8].try_into().unwrap());
+        previous[4..8].copy_from_slice(&(count + 1).to_le_bytes());
+        let root_hash = b"root".iter().fold(0x811c_9dc5u32, |hash, &byte|
+            (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193));
+        let mut root = Vec::new();
+        "/former/project/library".to_owned().write_field(&mut root);
+        previous.extend_from_slice(&root_hash.to_le_bytes());
+        previous.extend_from_slice(&(root.len() as u32).to_le_bytes());
+        previous.extend_from_slice(&root);
+        assert!(Selection::deserialize(&previous).unwrap() == state);
         assert_eq!(rack_controls(&state)[0].tune, -3.5, "the part's tune reaches the engine");
         let mix = mix(&state);
         assert_eq!(mix.buses[0], BusControls::on(0), "untouched buses play through their own port");
@@ -8010,7 +8014,6 @@ for i=1,10000000 do local x=i+i end]]></script></ScriptProcessor></EventProcesso
         let root = std::env::temp_dir().join(format!("kontakto-multi-{}", std::process::id()));
         let path = root.join("Multis").join("Evening.kontra-multi");
         let rack = Selection {
-            root: root.to_string_lossy().into_owned(),
             parts: vec![
                 Part {
                     path: "/libraries/Keys/Piano.nki".into(),
@@ -8041,7 +8044,6 @@ for i=1,10000000 do local x=i+i end]]></script></ScriptProcessor></EventProcesso
         assert_eq!(import::presets(&root).unwrap(), std::slice::from_ref(&path), "the browser lists it");
 
         let p = SamplerParams::new();
-        p.selection.write().unwrap().root = rack.root.clone();
         p.shared.queue_multi(path.to_string_lossy().into_owned());
         Load.run(&p);
         let loaded = p.selection.read().unwrap().clone();
@@ -8220,7 +8222,7 @@ end on"#.into()], fx: crate::fx::ProgramFx { insert: Chain { slots: vec![Effect 
         assert_eq!(saved.delay_state,delays,"real snapshot worker publishes physical state");
         let binary=State::serialize(&saved);
         let read=Part::deserialize(&binary).unwrap();
-        assert!(read==saved,"host binary keeps appended physical state");
+        assert!(read==saved,"host binary keeps physical state");
         let count=u32::from_le_bytes(binary[4..8].try_into().unwrap());
         let mut at=8; let mut older=binary[..8].to_vec();
         let mut positional=(count-3).to_le_bytes().to_vec();
@@ -8231,7 +8233,7 @@ end on"#.into()], fx: crate::fx::ProgramFx { insert: Chain { slots: vec![Effect 
         older[4..8].copy_from_slice(&(count-3).to_le_bytes());
         let mut old_expected=saved.clone(); old_expected.delay_state.clear(); old_expected.uvi=None; old_expected.uvi_state.clear();
         assert!(Part::deserialize(&older)==Some(old_expected.clone()),"older keyed state defaults new caches");
-        assert!(Part::deserialize(&positional)==Some(old_expected),"older positional state retains prior fields");
+        assert!(Part::deserialize(&positional).is_none(),"positional host state is unsupported");
         let saved:Part=serde_json::from_str(&serde_json::to_string(&read).unwrap()).unwrap();
         let (rt,_,errors)=scripts_with_delays(&i,&saved.script_state,&saved.ir_settings,&saved.engine_state,&saved.delay_state,48000.0);
         assert!(errors.is_empty(),"{errors:?}");

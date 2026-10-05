@@ -3253,8 +3253,7 @@ pub fn derive_param_enum(input: TokenStream) -> TokenStream {
 /// removing, and reordering fields all preserve each surviving field's
 /// value. A field absent from a blob loads as its `Default`; an unknown
 /// stored field is ignored. Two field names that collide under the key
-/// hash are a compile error. Pre-keyed blobs still load via a legacy
-/// positional path (existing sessions are unaffected).
+/// hash are a compile error. Pre-keyed positional blobs are unsupported.
 ///
 /// Supported field types: `u8`, `u16`, `u32`, `u64`, `i8`, `i16`, `i32`, `i64`,
 /// `f32`, `f64`, `bool`, `String`, `Vec<T>`, `Option<T>`, and nested `State` types.
@@ -3272,7 +3271,7 @@ pub fn derive_param_enum(input: TokenStream) -> TokenStream {
 /// Panics if `syn` fails to parse the input token stream - same
 /// "rustc-already-rejected" condition as [`derive_params`].
 #[proc_macro_derive(State)]
-// One linear pass building the keyed serialize / dual-path deserialize
+// One linear pass building the keyed serialize / deserialize
 // codegen; splitting it would scatter the token-stream construction.
 #[allow(clippy::too_many_lines)]
 pub fn derive_state(input: TokenStream) -> TokenStream {
@@ -3374,46 +3373,11 @@ pub fn derive_state(input: TokenStream) -> TokenStream {
         })
         .collect::<Vec<_>>();
 
-    // Legacy positional read (pre-keyed blobs): assign the i-th stored
-    // field to the i-th declared field. Kept verbatim so old sessions /
-    // presets still load; new saves always use the keyed format above.
-    let legacy_read_fields: Vec<_> = field_idents.iter().map(|ident| {
-        quote! {
-            if field_idx < stored_count {
-                // `cursor.read_bytes(4)` returns a 4-byte slice when
-                // `Some` (or `None` if the cursor is short). The
-                // `try_into` to `[u8; 4]` therefore can't fail when
-                // we're inside the `if let Some(_)` arm - but
-                // routing through `.ok()` instead of `.unwrap()`
-                // keeps the panic path closed for the case where a
-                // future change to `read_bytes` relaxes its
-                // length-guarantee. Matches the `stored_count` site
-                // a few lines down.
-                if let Some(len_bytes) = cursor.read_bytes(4)
-                    && let Ok(len_arr) = <[u8; 4]>::try_from(len_bytes)
-                {
-                    let field_len = u32::from_le_bytes(len_arr) as usize;
-                    let pos_before = cursor.remaining();
-                    if let Some(val) = ::moose::core::custom_state::StateField::read_field(&mut cursor) {
-                        result.#ident = val;
-                    }
-                    let consumed = pos_before - cursor.remaining();
-                    if consumed < field_len {
-                        let _ = cursor.read_bytes(field_len - consumed);
-                    }
-                }
-                field_idx += 1;
-            }
-        }
-    }).collect();
-
     let expanded = quote! {
         impl ::moose::core::custom_state::State for #name {
             fn serialize_into(&self, buf: &mut Vec<u8>) {
                 buf.clear();
-                // Keyed format: a leading magic (`0xFFFFFF00 | version`)
-                // that a legacy positional blob's small field-count first
-                // word can never be, so `deserialize` distinguishes them.
+                // Keyed format: a leading magic (`0xFFFFFF00 | version`).
                 buf.extend_from_slice(&0xFFFF_FF01u32.to_le_bytes());
                 buf.extend_from_slice(&#field_count.to_le_bytes());
                 #(#write_fields)*
@@ -3423,70 +3387,49 @@ pub fn derive_state(input: TokenStream) -> TokenStream {
                 let mut cursor = ::moose::core::custom_state::StateCursor::new(data);
                 let tag_bytes = cursor.read_bytes(4)?;
                 let tag = u32::from_le_bytes(tag_bytes.try_into().ok()?);
+                // Field changes retain v1's keyed frame layout. Reject
+                // unsupported layouts and pre-keyed positional state.
+                if tag != 0xFFFF_FF01 {
+                    return None;
+                }
                 let mut result = Self::default();
-
-                if (tag & 0xFFFF_FF00) == 0xFFFF_FF00 {
-                    // Keyed format. The low byte is the frame-layout version.
-                    // Field evolution (add / remove / reorder / shrink) stays
-                    // on v1 - the per-field hash + length absorbs it - so the
-                    // version only bumps for an incompatible change to the
-                    // frame layout itself. An unknown version is therefore
-                    // something this build can't parse: fail cleanly to
-                    // defaults rather than misread a v2 frame as v1.
-                    if (tag & 0xFF) != 1 {
-                        return None;
+                // Each field is `[name_hash:4][len:4][value]`; match by
+                // hash, so add / remove / reorder are all safe.
+                let count_bytes = cursor.read_bytes(4)?;
+                // Each keyed field is >= 8 bytes (hash + len), so bound
+                // the count by remaining/8 to reject a hostile count.
+                let stored_count = (u32::from_le_bytes(count_bytes.try_into().ok()?) as usize)
+                    .min(cursor.remaining() / 8 + #field_count as usize);
+                let mut kf: usize = 0;
+                while kf < stored_count {
+                    let Some(hb) = cursor.read_bytes(4) else { break };
+                    let Ok(harr) = <[u8; 4]>::try_from(hb) else { break };
+                    let hash = u32::from_le_bytes(harr);
+                    let Some(lb) = cursor.read_bytes(4) else { break };
+                    let Ok(larr) = <[u8; 4]>::try_from(lb) else { break };
+                    let field_len = u32::from_le_bytes(larr) as usize;
+                    // Consume exactly this field's bytes from the main
+                    // cursor up front, then parse them in a sub-cursor
+                    // bounded to `field_len`. A field whose *type* changed
+                    // (say u32 -> String) reads a garbage length; bounding
+                    // it here makes that fail to Default for this field
+                    // alone instead of running into - and corrupting -
+                    // every field after it. A short/malformed frame stops
+                    // the loop.
+                    let Some(field_bytes) = cursor.read_bytes(field_len) else { break };
+                    // The read arms below read from `cursor`; shadow it
+                    // with the bounded sub-cursor for the match. The allow
+                    // covers a zero-field struct, where no arm uses it.
+                    #[allow(unused_mut, unused_variables)]
+                    let mut cursor =
+                        ::moose::core::custom_state::StateCursor::new(field_bytes);
+                    match hash {
+                        #(#keyed_read_arms)*
+                        // Unknown key (a since-removed field): the frame is
+                        // already consumed from the main cursor.
+                        _ => {}
                     }
-                    // Each field is `[name_hash:4][len:4][value]`; match by
-                    // hash, so add / remove / reorder are all safe.
-                    let count_bytes = cursor.read_bytes(4)?;
-                    // Each keyed field is >= 8 bytes (hash + len), so bound
-                    // the count by remaining/8 to reject a hostile count.
-                    let stored_count = (u32::from_le_bytes(count_bytes.try_into().ok()?) as usize)
-                        .min(cursor.remaining() / 8 + #field_count as usize);
-                    let mut kf: usize = 0;
-                    while kf < stored_count {
-                        let Some(hb) = cursor.read_bytes(4) else { break };
-                        let Ok(harr) = <[u8; 4]>::try_from(hb) else { break };
-                        let hash = u32::from_le_bytes(harr);
-                        let Some(lb) = cursor.read_bytes(4) else { break };
-                        let Ok(larr) = <[u8; 4]>::try_from(lb) else { break };
-                        let field_len = u32::from_le_bytes(larr) as usize;
-                        // Consume exactly this field's bytes from the main
-                        // cursor up front, then parse them in a sub-cursor
-                        // bounded to `field_len`. A field whose *type* changed
-                        // (say u32 -> String) reads a garbage length; bounding
-                        // it here makes that fail to Default for this field
-                        // alone instead of running into - and corrupting -
-                        // every field after it. A short/malformed frame stops
-                        // the loop.
-                        let Some(field_bytes) = cursor.read_bytes(field_len) else { break };
-                        // The read arms below read from `cursor`; shadow it
-                        // with the bounded sub-cursor for the match. The allow
-                        // covers a zero-field struct, where no arm uses it.
-                        #[allow(unused_mut, unused_variables)]
-                        let mut cursor =
-                            ::moose::core::custom_state::StateCursor::new(field_bytes);
-                        match hash {
-                            #(#keyed_read_arms)*
-                            // Unknown key (a since-removed field): the frame is
-                            // already consumed from the main cursor.
-                            _ => {}
-                        }
-                        kf += 1;
-                    }
-                } else {
-                    // Legacy positional format: `tag` is the field count.
-                    // Assign the i-th stored field to the i-th declared one
-                    // (append-only-safe; the keyed path above supersedes it
-                    // for anything saved by this build).
-                    let stored_count = (tag as usize)
-                        .min(cursor.remaining() / 4 + #field_count as usize);
-                    let mut field_idx: usize = 0;
-                    #(#legacy_read_fields)*
-                    while field_idx < stored_count {
-                        if !cursor.skip_field() { break; }
-                        field_idx += 1;
-                    }
+                    kf += 1;
                 }
                 Some(result)
             }
