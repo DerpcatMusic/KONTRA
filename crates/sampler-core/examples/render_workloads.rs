@@ -42,6 +42,7 @@ fn prepare(
                 loop_range: Some(Loop {
                     start: 0,
                     end: 4096,
+                    shape: sampler_core::LoopShape::Wrap,
                     mode: LoopMode::Continuous,
                 }),
                 ..Playback::default()

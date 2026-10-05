@@ -336,6 +336,7 @@ fn looped_release_owns_its_duration_and_works_at_empty_and_exclusive_end_boundar
     r.playback.loop_range = Some(Loop {
         start: 0,
         end: 1,
+        shape: sampler_core::LoopShape::Wrap,
         mode: LoopMode::Continuous,
     });
     r.envelope = Envelope::new(0, 0, 0, 1., 2).unwrap();
@@ -848,6 +849,7 @@ fn manual_family_release_and_choke_cancel_owned_timers_without_releasing_sibling
     r.playback.loop_range = Some(Loop {
         start: 0,
         end: 1,
+        shape: sampler_core::LoopShape::Wrap,
         mode: LoopMode::Continuous,
     });
     r.envelope = Envelope::new(0, 0, 0, 1., 2).unwrap();

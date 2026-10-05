@@ -74,6 +74,7 @@ fn forward_reverse_and_loops_match_explicit_sequences_at_every_partition() {
             Some(Loop {
                 start: 2,
                 end: 5,
+                shape: sampler_core::LoopShape::Wrap,
                 mode: LoopMode::Continuous,
             }),
             [1., 2., 3., 4., 2., 3., 4., 2., 3., 4.],
@@ -83,6 +84,7 @@ fn forward_reverse_and_loops_match_explicit_sequences_at_every_partition() {
             Some(Loop {
                 start: 2,
                 end: 5,
+                shape: sampler_core::LoopShape::Wrap,
                 mode: LoopMode::Continuous,
             }),
             [6., 5., 4., 3., 2., 4., 3., 2., 4., 3.],
@@ -92,6 +94,7 @@ fn forward_reverse_and_loops_match_explicit_sequences_at_every_partition() {
             Some(Loop {
                 start: 3,
                 end: 4,
+                shape: sampler_core::LoopShape::Wrap,
                 mode: LoopMode::Continuous,
             }),
             [1., 2., 3., 3., 3., 3., 3., 3., 3., 3.],
@@ -101,6 +104,7 @@ fn forward_reverse_and_loops_match_explicit_sequences_at_every_partition() {
             Some(Loop {
                 start: 3,
                 end: 4,
+                shape: sampler_core::LoopShape::Wrap,
                 mode: LoopMode::Continuous,
             }),
             [6., 5., 4., 3., 3., 3., 3., 3., 3., 3.],
@@ -148,6 +152,7 @@ fn release_at_loop_boundary_exits_without_extra_cycle_in_both_directions() {
                 loop_range: Some(Loop {
                     start: 2,
                     end: 5,
+                    shape: sampler_core::LoopShape::Wrap,
                     mode: LoopMode::UntilRelease,
                 }),
                 ..Playback::default()
@@ -174,6 +179,7 @@ fn shared_pcm_views_and_loop_release_are_independent_without_heap_work() {
         loop_range: Some(Loop {
             start: 2,
             end: 5,
+            shape: sampler_core::LoopShape::Wrap,
             mode: LoopMode::Continuous,
         }),
         ..Playback::default()
@@ -241,6 +247,7 @@ fn invalid_views_are_rejected_before_any_admission() {
             loop_range: Some(Loop {
                 start: 4,
                 end: 4,
+                shape: sampler_core::LoopShape::Wrap,
                 mode: LoopMode::Continuous,
             }),
             ..Playback::default()
@@ -250,6 +257,7 @@ fn invalid_views_are_rejected_before_any_admission() {
             loop_range: Some(Loop {
                 start: 2,
                 end: 5,
+                shape: sampler_core::LoopShape::Wrap,
                 mode: LoopMode::Continuous,
             }),
             ..Playback::default()
@@ -259,6 +267,7 @@ fn invalid_views_are_rejected_before_any_admission() {
             loop_range: Some(Loop {
                 start: 2,
                 end: 6,
+                shape: sampler_core::LoopShape::Wrap,
                 mode: LoopMode::Continuous,
             }),
             ..Playback::default()
@@ -279,5 +288,131 @@ fn invalid_views_are_rejected_before_any_admission() {
         );
         assert_eq!((rt.voice_count(), rt.pending_commands()), (0, 0));
         assert_eq!(rt.family_voice_count(family), Ok(0));
+    }
+}
+
+#[test]
+fn ping_pong_visits_each_endpoint_once_in_both_directions_without_heap() {
+    use sampler_core::LoopShape;
+    for (direction, start, end, expected) in [
+        (
+            Direction::Forward,
+            2,
+            5,
+            [1., 2., 3., 4., 3., 2., 3., 4., 3., 2.],
+        ),
+        (
+            Direction::Reverse,
+            2,
+            5,
+            [6., 5., 4., 3., 2., 3., 4., 3., 2., 3.],
+        ),
+        (
+            Direction::Forward,
+            2,
+            4,
+            [1., 2., 3., 2., 3., 2., 3., 2., 3., 2.],
+        ),
+        (
+            Direction::Reverse,
+            2,
+            4,
+            [6., 5., 4., 3., 2., 3., 2., 3., 2., 3.],
+        ),
+        (
+            Direction::Forward,
+            3,
+            4,
+            [1., 2., 3., 3., 3., 3., 3., 3., 3., 3.],
+        ),
+        (
+            Direction::Reverse,
+            3,
+            4,
+            [6., 5., 4., 3., 3., 3., 3., 3., 3., 3.],
+        ),
+    ] {
+        for partition in 1..=10 {
+            let mut rt = runtime(Playback {
+                start: 1,
+                end: Some(7),
+                direction,
+                loop_range: Some(Loop {
+                    start,
+                    end,
+                    mode: LoopMode::Continuous,
+                    shape: LoopShape::PingPong,
+                }),
+                ..Playback::default()
+            });
+            let mut audio = [[0.; 2]; 10];
+            support::without_heap(|| {
+                rt.trigger(input(1), 60, 1.).unwrap();
+                for chunk in audio.chunks_mut(partition) {
+                    rt.render(chunk).unwrap();
+                    rt.render(&mut []).unwrap();
+                }
+                rt.panic();
+                rt.flush_ended(|_| true);
+                assert_eq!(rt.note_count(), 0);
+            });
+            assert_eq!(audio.map(|f| f[0]), expected);
+            assert!(audio.iter().all(|f| f[0] == -f[1]));
+        }
+    }
+}
+
+#[test]
+fn ping_pong_release_finishes_the_return_leg_then_exits_in_the_initial_direction() {
+    use sampler_core::LoopShape;
+    for (direction, release, expected) in [
+        (
+            Direction::Forward,
+            5,
+            [0., 1., 2., 3., 4., 5., 5.25, 5.25, 0., 0., 0., 0.],
+        ),
+        (
+            Direction::Forward,
+            6,
+            [0., 1., 2., 3., 4., 3., 2., 2.625, 3., 3.125, 3., 2.625],
+        ),
+        (
+            Direction::Reverse,
+            6,
+            [7., 6., 5., 4., 3., 2., 1., 0., 0., 0., 0., 0.],
+        ),
+        (
+            Direction::Reverse,
+            7,
+            [7., 6., 5., 4., 3., 2., 3., 4., 2.625, 1.5, 0.625, 0.],
+        ),
+    ] {
+        for partition in 1..=12 {
+            let mut rt = runtime(Playback {
+                direction,
+                loop_range: Some(Loop {
+                    start: 2,
+                    end: 5,
+                    mode: LoopMode::UntilRelease,
+                    shape: LoopShape::PingPong,
+                }),
+                ..Playback::default()
+            });
+            let mut audio = [[0.; 2]; 12];
+            support::without_heap(|| {
+                let n = rt.trigger(input(1), 60, 1.).unwrap();
+                rt.schedule_event(release, Event::KeyUp(n, None)).unwrap();
+                for chunk in audio.chunks_mut(partition) {
+                    rt.render(chunk).unwrap();
+                }
+                rt.flush_ended(|_| true);
+                assert_eq!((rt.note_count(), rt.voice_count()), (0, 0));
+            });
+            assert_eq!(
+                audio.map(|f| f[0]),
+                expected,
+                "{direction:?}, release {release}"
+            );
+        }
     }
 }

@@ -96,10 +96,16 @@ is checked outside timed callbacks. Local evidence uses ignored
 `artifacts/architecture-v2/resample-*`.
 
 Pitch ramps, broader rate
-ranges, quality tiers, streaming demand windows, ping-pong and crossfade loops remain
+ranges, quality tiers, streaming demand windows and crossfade loops remain
 open. The host plugin and UI have not been switched to this core. Imported formats
 will lower into these native source and expression contracts rather than selecting
 another format-specific playback engine.
+
+Native [ping-pong traversal](SOURCE_VIEWS.md#ping-pong-topology) now uses the same
+positive fractional traversal clock for both reflected legs and all interpolation
+guards. Independent unrolled PCM verifies one-frame/short/long loops, both initial
+directions and rates through multiple turns per frame; no mirrored fractional-phase
+approximation or reversed asset copy is needed.
 
 ## Local performance evidence
 

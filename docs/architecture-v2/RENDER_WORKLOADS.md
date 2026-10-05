@@ -554,3 +554,41 @@ This is not host deadline certification. CSVs use `artifacts/note-behavior-fast-
 initial regressed data and binaries remain retained for comparison.
 
 Corrected executable SHA-256: `2ba447cab7e5879b23973cf2f88535877e948900143a886c2c2bf9b6215b3b50`.
+
+## Ping-pong source topology (2026-10-06)
+
+Compared fresh release binaries from `58c2bfe` with the reflected-loop change, on
+CPU 2 of the same Ryzen 7 7800X3D, in three alternating-order pairs. Initial
+ordinary wrap-loop medians regressed about 9–15%. Inlining span helpers reduced
+some cost; moving the reflected-exit clamp into only the reflected path removed
+unnecessary work from plain/wrap playback. A final fresh three-pair run gave:
+
+| Workload | Active / reserved | Median us before → final |
+| --- | --- | --- |
+| Plain, 48 kHz / 64 frames | 16 / 64 | 0.440 → 0.440 |
+| Plain, 48 kHz / 64 frames | 256 / 256 | 6.390 → 6.460 |
+| 127-frame wrap, 48 kHz / 64 frames | 16 / 64 | 0.520 → 0.520 |
+| 127-frame wrap, 48 kHz / 64 frames | 256 / 256 | 7.410 → 7.690 |
+| Layered resident unity, 48 kHz / 64 frames | 256 / 256 | 6.751 → 6.780 |
+| Layered resident unity, 48 kHz / 64 frames | 1024 / 1024 | 26.751 → 26.440 |
+| Layered resident sustain, 48 kHz / 64 frames | 1024 / 1024 | 26.141 → 27.090 |
+| Filtered +7 semitones, 48 kHz / 64 frames | 64 / 64 | 966.968 → 966.998 |
+| Filtered +7 semitones, 48 kHz / 256 frames | 64 / 64 | 3858.093 → 3873.003 |
+
+Values are medians of each run's median. Across the full resident matrix, differences
+range from -4.9% to +6.3%; the largest relative increase is 1.590 → 1.690 us at
+96 kHz / 64 frames / 64 unity voices. Filtered differences range -0.5% to +0.7%.
+These small differences and residual overhead are recorded, not called a speedup.
+No local build/test process ran during timing; other system load remains uncontrolled.
+
+The newly enabled `render_bench --ping-pong` mode measures a 127-frame reflected
+loop at unity rate. Median-of-medians for 16/64, 16/4096 and 256/256 voices are
+0.550, 0.600 and 8.710 us, respectively, with zero observed deadline misses and
+matching expected constant-source checksums. This does not characterize filtered
+short-loop worst cases, streaming, arbitrary modulation or host deadline safety.
+
+Artifacts include initial `ping-pong-*-{before,after}-*.csv`, intermediate
+`ping-pong-inline-*`, final `ping-pong-fast-*`, saved binaries and
+`ping-pong-binaries.sha256` under ignored `artifacts/`. Existing bit-exact output
+checks run outside the timed callbacks. Native unrolled/analytic reflected-loop
+checks are described in [SOURCE_VIEWS.md](SOURCE_VIEWS.md#ping-pong-topology).

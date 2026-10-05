@@ -197,6 +197,12 @@ unimplemented cases. Source inspection alone is not passing conformance evidence
 
 ### V2-09 — Implement source/DSP kernels with explicit state scope
 
+- **Partial evidence:** native [source views](SOURCE_VIEWS.md) now include explicit
+  wrap/ping-pong topology, fractional reflected guards and outward release exits.
+  Independent unrolled PCM, analytic released interpolation, muted phase and
+  heap-checked retirement cover both initial directions and short/high-rate loops.
+  Crossfades, finite loop counts, filters/effects and broader graph services remain open.
+
 - [ ] **P1; dependencies:** V2-04/07/08.
 - New playback/resampling/loop/envelope/filter/modulation execution; declare units,
   rate, voice/family/bus scope, latency, tails, demand windows and quality modes.
