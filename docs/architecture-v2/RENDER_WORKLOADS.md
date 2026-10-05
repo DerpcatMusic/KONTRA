@@ -104,3 +104,36 @@ A `muted` CSV column distinguishes explicit zero note gain. Preparation/admissio
 remain untimed, the output oracle checks exact zero, and [resampling evidence](RESAMPLING.md)
 records phase/envelope continuity and audible-path comparisons for the silent
 advancement optimization. This does not bypass ownership or stop muted voices.
+
+## Prepared note admission
+
+`cargo run --release --locked -p sampler-core --example admission_workload` times
+bursts of 16/64/256/1,024 same-key notes with four prepared layers each, plus 16
+notes in a 4,096-voice reservation. Each configuration uses 32 warmups and 128 timed
+bursts. Preparation, panic, accepted terminals and counter assertions are outside
+timing. This isolates admission; it does not measure total block work or cleanup.
+
+Arena capacity and occupancy are now maintained at insertion/removal rather than
+reconstructed by scanning reserved slots. Plan transfers use the same accounting:
+failed publication restores the exact generation, and an exhausted generation is
+never returned to available capacity. A deterministic mixed-operation test compares
+the counters with a full slot reconstruction, including stale/foreign handles and
+final-generation transfer rollback. Existing runtime and cross-thread plan tests
+continue to audit audio-thread allocation and destruction.
+
+Three paired CPU-2 runs against `b56b38c`, with no concurrent builds, measured these
+median-of-median admission times in microseconds:
+
+| Notes | Reserved voices | Before | After | Speedup |
+| ---: | ---: | ---: | ---: | ---: |
+| 16 | 64 | 4.870 | 2.810 | 1.73× |
+| 64 | 256 | 39.791 | 26.730 | 1.49× |
+| 256 | 1,024 | 592.161 | 375.847 | 1.58× |
+| 1,024 | 4,096 | 10,005.507 | 6,083.934 | 1.64× |
+| 16 | 4,096 | 63.971 | 4.840 | 13.22× |
+
+The largest burst remains too expensive for a 256-frame/48 kHz block before any
+rendering. Slot insertion still searches linearly; removing count scans does not
+claim to complete admission optimization. Local binaries, hashes and CSVs use
+`artifacts/admission-*`. Scheduling outliers and these synthetic bursts are not a
+production polyphony guarantee.

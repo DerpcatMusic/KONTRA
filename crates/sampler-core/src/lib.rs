@@ -152,12 +152,16 @@ struct Slot<T> {
 struct Arena<T> {
     runtime: u64,
     slots: Box<[Slot<T>]>,
+    occupied: usize,
+    available: usize,
 }
 
 impl<T> Arena<T> {
     fn new(runtime: u64, capacity: usize) -> Self {
         Self {
             runtime,
+            occupied: 0,
+            available: capacity,
             slots: std::iter::repeat_with(|| Slot {
                 generation: 0,
                 value: None,
@@ -168,6 +172,9 @@ impl<T> Arena<T> {
     }
 
     fn insert(&mut self, value: T) -> Result<Handle, Error> {
+        if self.available == 0 {
+            return Err(Error::Capacity);
+        }
         // ponytail: bounded linear scan; add a free list if measured admission cost warrants it.
         let (index, slot) = self
             .slots
@@ -177,6 +184,8 @@ impl<T> Arena<T> {
             .ok_or(Error::Capacity)?;
         slot.generation += 1; // Exhausted generations are quarantined, never wrapped.
         slot.value = Some(value);
+        self.occupied += 1;
+        self.available -= 1;
         Ok(Handle {
             runtime: self.runtime,
             index,
@@ -201,9 +210,28 @@ impl<T> Arena<T> {
     }
 
     fn remove(&mut self, id: Handle) {
-        if self.get(id).is_some() {
-            self.slots[id.index].value = None;
-        }
+        drop(self.take(id));
+    }
+
+    fn take(&mut self, id: Handle) -> Option<T> {
+        self.get(id)?;
+        let slot = &mut self.slots[id.index];
+        let value = slot.value.take();
+        self.occupied -= 1;
+        self.available += usize::from(slot.generation < u64::MAX);
+        value
+    }
+
+    /// Roll back a failed ownership transfer into the exact slot, without
+    /// allocating another generation or making the old handle stale.
+    fn restore(&mut self, id: Handle, value: T) {
+        let slot = &mut self.slots[id.index];
+        assert!(
+            id.runtime == self.runtime && id.generation == slot.generation && slot.value.is_none()
+        );
+        slot.value = Some(value);
+        self.occupied += 1;
+        self.available -= usize::from(slot.generation < u64::MAX);
     }
 
     fn id(&self, index: usize) -> Handle {
@@ -215,14 +243,11 @@ impl<T> Arena<T> {
     }
 
     fn available(&self) -> usize {
-        self.slots
-            .iter()
-            .filter(|s| s.value.is_none() && s.generation < u64::MAX)
-            .count()
+        self.available
     }
 
     fn count(&self) -> usize {
-        self.slots.iter().filter(|s| s.value.is_some()).count()
+        self.occupied
     }
 }
 
