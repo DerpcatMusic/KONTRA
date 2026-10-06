@@ -599,6 +599,8 @@ impl Runtime {
                 let state = self.voices.get_mut(voice.0).unwrap();
                 state.chain = r.chain;
                 state.group = group;
+                self.enforce_voice_limits(plan, group, voice);
+                let state = self.voices.get_mut(voice.0).unwrap();
                 state.bus = r.bus;
                 if r.chain.is_some() {
                     self.plans.get_mut(plan.0).unwrap().dsp.reset(voice.0.index);
