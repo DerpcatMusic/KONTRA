@@ -4,7 +4,36 @@
 //! `purge_group`). Writes apply at the instruction's sample time; voices ramp
 //! gain changes across their next render chunk. The targets reuse
 //! [`ModTarget`]'s laws so a script layer composes with per-voice modulation.
-use crate::{Error, ModTarget, Runtime};
+//!
+//! Group layers hold absolute values that start at the authored
+//! [`GroupParams`]; the authored values are already baked into each region,
+//! so voices apply only the difference.
+use crate::{Error, ModTarget, Prepared, Runtime};
+
+/// A group's authored volume, pan and tune. Scripts read these back and set
+/// them absolutely (KSP `get_engine_par`/`set_engine_par`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GroupParams {
+    pub decibels: f64,
+    /// -1 (left) ..= 1 (right).
+    pub pan: f64,
+    pub semitones: f64,
+}
+
+impl Prepared {
+    /// One [`GroupParams`] per group of [`Prepared::with_groups`].
+    pub fn with_group_params(mut self, params: Vec<GroupParams>) -> Result<Self, Error> {
+        if params.len() != self.group_count as usize
+            || params
+                .iter()
+                .any(|p| !(p.decibels.is_finite() && p.pan.is_finite() && p.semitones.is_finite()))
+        {
+            return Err(Error::InvalidInput);
+        }
+        self.group_params = params.into_boxed_slice();
+        Ok(self)
+    }
+}
 
 /// Which layer a [`crate::Instruction::WriteParam`] edits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,6 +90,25 @@ impl Layer {
             _ => 0.0,
         })
         .round() as i64
+    }
+
+    fn authored(p: GroupParams) -> Self {
+        Self {
+            decibels: p.decibels,
+            pan: p.pan.clamp(-1.0, 1.0),
+            pitch: p.semitones,
+            attenuate: 1.0,
+        }
+    }
+
+    /// This layer relative to `base` (attenuation is never authored).
+    fn since(self, base: Self) -> Self {
+        Self {
+            decibels: self.decibels - base.decibels,
+            pan: self.pan - base.pan,
+            pitch: self.pitch - base.pitch,
+            attenuate: self.attenuate,
+        }
     }
 
     pub fn stack(self, other: Self) -> Self {
@@ -128,16 +176,27 @@ pub enum EnvelopeStage {
 pub(crate) struct EngineLayers {
     pub instrument: Layer,
     pub groups: Box<[Layer]>,
+    authored: Box<[Layer]>,
     /// Per group, script envelope stages indexed like `EnvelopeStage`.
     envelopes: Box<[[Option<u32>; 5]]>,
 }
 
 impl EngineLayers {
-    pub fn new(groups: u32) -> Self {
+    pub fn new(prepared: &Prepared) -> Self {
+        let count = prepared.group_count as usize;
+        let authored: Box<[Layer]> = (0..count)
+            .map(|g| {
+                prepared
+                    .group_params
+                    .get(g)
+                    .map_or(Layer::default(), |p| Layer::authored(*p))
+            })
+            .collect();
         Self {
             instrument: Layer::default(),
-            groups: vec![Layer::default(); groups as usize].into_boxed_slice(),
-            envelopes: vec![[None; 5]; groups as usize].into_boxed_slice(),
+            groups: authored.clone(),
+            authored,
+            envelopes: vec![[None; 5]; count].into_boxed_slice(),
         }
     }
 
@@ -162,8 +221,10 @@ impl EngineLayers {
 
     pub fn layer(&self, group: Option<u32>) -> Layer {
         group
-            .and_then(|g| self.groups.get(g as usize))
-            .map_or(self.instrument, |g| self.instrument.stack(*g))
+            .and_then(|g| Some((self.groups.get(g as usize)?, self.authored[g as usize])))
+            .map_or(self.instrument, |(g, base)| {
+                self.instrument.stack(g.since(base))
+            })
     }
 }
 
