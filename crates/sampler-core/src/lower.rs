@@ -264,6 +264,27 @@ pub fn lower_with(
             .and_then(|p| p.with_group_params(params))
             .map_err(core(Stage::Regions, "groups"))?;
     }
+    if instrument.voice_limit.is_some() || !instrument.voice_limits.is_empty() {
+        let limit = |l: &ir::VoiceLimit| crate::VoiceLimit {
+            voices: l.voices,
+            kill: match l.kill {
+                ir::Kill::Any => crate::Kill::Any,
+                ir::Kill::Oldest => crate::Kill::Oldest,
+                ir::Kill::Newest => crate::Kill::Newest,
+                ir::Kill::Highest => crate::Kill::Highest,
+                ir::Kill::Lowest => crate::Kill::Lowest,
+            },
+            prefer_released: l.prefer_released,
+            fade: lowering.frames(l.fade),
+        };
+        plan = plan
+            .with_voice_limits(
+                instrument.voice_limit.as_ref().map(limit),
+                instrument.voice_limits.iter().map(limit).collect(),
+                instrument.groups.iter().map(|g| g.voice_limit).collect(),
+            )
+            .map_err(core(Stage::Regions, "voice limits"))?;
+    }
     if !chains.is_empty() {
         plan = plan
             .with_voice_chains(chains, chain_of)
@@ -712,6 +733,9 @@ impl Lowering<'_> {
             ir::ModulationSource::Timbre => ModSource::Timbre,
             ir::ModulationSource::Random => ModSource::Random,
             ir::ModulationSource::Constant => ModSource::Constant,
+            ir::ModulationSource::ReleaseCounter(t) => ModSource::ReleaseCounter {
+                frames: self.frames(*t).max(1),
+            },
             ir::ModulationSource::PitchBend => {
                 return Err(unsupported(owner, Feature::PitchBendSource));
             }

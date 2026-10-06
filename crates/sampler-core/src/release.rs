@@ -66,6 +66,12 @@ pub(super) struct ReleaseTimes {
     pub cleanup_hard: bool,
 }
 
+impl ReleaseTimes {
+    pub(super) fn held(&self, key_down: bool, now: u64) -> u64 {
+        if key_down { now } else { self.key_at }.saturating_sub(self.admitted_at)
+    }
+}
+
 pub(super) fn validate_velocity(velocity: Option<f64>) -> Result<(), Error> {
     if velocity.is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v)) {
         Err(Error::InvalidInput)
@@ -75,6 +81,12 @@ pub(super) fn validate_velocity(velocity: Option<f64>) -> Result<(), Error> {
 }
 
 impl Runtime {
+    /// Frames the note's key has been held: admission to key-up, or to now.
+    pub(super) fn held_frames(&self, id: NoteId) -> u64 {
+        let down = self.notes.get(id.0).is_none_or(Note::key_down);
+        self.release_times[id.0.index].held(down, self.now)
+    }
+
     pub(super) fn release_key(
         &mut self,
         id: NoteId,

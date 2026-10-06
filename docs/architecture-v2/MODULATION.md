@@ -119,12 +119,20 @@ second scope beside the event-rate note projection above, with its own rate.
   retriggered per voice or free-running on the runtime clock), extra
   delay-attack-hold-decay-sustain-release envelopes gated by the voice's family,
   velocity, key, controller (effective performance CC), note pressure, note
-  timbre, per-voice random and constant. LFOs are bipolar, the rest unipolar.
+  timbre, per-voice random and constant, breakpoint envelopes (Kontakt flex),
+  and the release-trigger counter `clamp(1 − held / T, 0, 1)` (`held` from
+  admission to key-up, or to now while the key is down; Kontakt manual,
+  Source module "T"). LFOs are bipolar, the rest unipolar.
 - **Route pipeline**: invert (unipolar `1 − v`, bipolar `−v`), piecewise-linear
   shape, one-pole lag reaching 99% in the authored time (Kontakt's lag law).
   An optional route scale multiplies the depth by `shape(x)` of a second
   source's unipolar value (modulator × modulator products such as Falcon's
   LFO depth by mod wheel or ratio by key).
+- **Kontakt shapers and invert**: an enabled shaper replaces the invert flag
+  (Vista Full Strings stores shaped crossfade copies differing only in the
+  flag that must play alike; v1 corpus audit). Breakpoint shaper segment
+  curvature (-1..1) has no known law: segments are linear and each curved one
+  is reported as UnknownLaw.
 - **Controllers** start at the MIDI RP-015 reset state (CC11 expression full),
   so expression-to-volume routes are identity until the controller moves.
 - **Targets and laws**: attenuate `gain × (1 − d(1 − u))` (Kontakt volume),

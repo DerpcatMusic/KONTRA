@@ -66,6 +66,10 @@ pub struct Instrument {
     pub buses: Vec<Bus>,
     pub controls: Vec<Control>,
     pub behaviors: Vec<Behavior>,
+    /// Polyphony of the whole instrument.
+    pub voice_limit: Option<VoiceLimit>,
+    /// Polyphony of voice groups; [`Group::voice_limit`] indexes this.
+    pub voice_limits: Vec<VoiceLimit>,
     /// Source meaning this description does not carry. Lowering never reads it;
     /// it exists so a caller can show or reject what was not translated.
     pub unsupported: Vec<Unsupported>,
@@ -130,6 +134,30 @@ pub struct Group {
     /// Group-scope chain; its processors see the sum of this group's voices.
     pub chain: Option<ChainRef>,
     pub output: Output,
+    /// Index into [`Instrument::voice_limits`] shared by this group's voices.
+    pub voice_limit: Option<usize>,
+}
+
+/// Past `voices` sounding voices, starting another fades one out over
+/// `fade`: a released one first when `prefer_released`, else by `kill`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VoiceLimit {
+    pub voices: u32,
+    pub kill: Kill,
+    pub prefer_released: bool,
+    pub fade: Time,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Kill {
+    /// The quietest.
+    Any,
+    #[default]
+    Oldest,
+    Newest,
+    /// Highest note.
+    Highest,
+    Lowest,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -494,6 +522,10 @@ pub enum ModulationSource {
     Random,
     /// Always 1.
     Constant,
+    /// Kontakt's release-trigger counter: the share of `T` left when the key
+    /// was released, `clamp((T − held) / T, 0, 1)`, where `held` runs from
+    /// note-on to key-up (to now while the key is down).
+    ReleaseCounter(Time),
 }
 
 impl ModulationSource {
