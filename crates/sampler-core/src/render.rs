@@ -43,8 +43,14 @@ impl Runtime {
             self.render_voices(output, self.now);
             return;
         }
-        for (chunk, output) in output.chunks_mut(super::dsp::BLOCK).enumerate() {
-            let at = self.now + (chunk * super::dsp::BLOCK) as u64;
+        // Chunks end on the absolute BLOCK grid, where voice modulation
+        // evaluates, so host block sizes do not move control points.
+        let mut at = self.now;
+        let mut rest = output;
+        while !rest.is_empty() {
+            let len = (super::voice_mod::CELL - at % super::voice_mod::CELL) as usize;
+            let (output, tail) = rest.split_at_mut(len.min(rest.len()));
+            rest = tail;
             for g in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
                 g.dsp.buses.begin();
             }
@@ -53,6 +59,7 @@ impl Runtime {
                 let faults = g.dsp.buses.render(&g.prepared.buses, output, at);
                 self.nonfinite_frames = self.nonfinite_frames.saturating_add(faults);
             }
+            at += output.len() as u64;
         }
     }
 
@@ -108,27 +115,24 @@ impl Runtime {
             let clock = super::voice_mod::Clock {
                 rate: f64::from(self.rate),
                 tempo: self.tempo,
-                now: at + segment.len() as u64,
+                now: at,
             };
-            let (from, to) = plan.modulation.advance(
-                &plan.prepared.voice_modulation,
-                i,
-                &inputs,
-                clock,
-                segment.len() as u32,
-            );
+            let ramp = plan
+                .modulation
+                .advance(&plan.prepared.voice_modulation, i, &inputs, clock);
+            let (from, to) = (ramp.from, ramp.to);
             plan.dsp.filters.modulation = [
                 (from.filter[0] + to.filter[0]) * 0.5,
                 (from.filter[1] + to.filter[1]) * 0.5,
             ];
-            (from, to)
+            ramp
         });
         v.cursor = v.cursor.with_step(match points {
             None => v.base_step * expression.rendered.ratio,
-            Some((from, to)) => {
-                (v.base_step * expression.rendered.ratio * ((from.pitch + to.pitch) / 24.0).exp2())
-                    .clamp(super::resample::MIN_STEP, super::resample::MAX_STEP)
-            }
+            Some(ramp) => (v.base_step
+                * expression.rendered.ratio
+                * ((ramp.from.pitch + ramp.to.pitch) / 24.0).exp2())
+            .clamp(super::resample::MIN_STEP, super::resample::MAX_STEP),
         });
         let asset = &plan.prepared.pcm[v.sample];
         let bus = v.bus;
@@ -173,10 +177,10 @@ impl Runtime {
             };
             render_source(v, &source, segment, chain, states, context, &self.kernel)
         };
-        if let (Some((from, to)), Some(target)) = (points, mixed) {
+        if let (Some(ramp), Some(target)) = (points, mixed) {
             plan.dsp.filters.modulation = [1.0; 2];
             plan.modulation
-                .mix(i, segment, target, from, to, f64::from(self.rate));
+                .mix(i, segment, target, ramp, at, f64::from(self.rate));
         }
         self.nonfinite_frames = self.nonfinite_frames.saturating_add(faults);
         self.stream_underruns = self.stream_underruns.saturating_add(u64::from(underrun));

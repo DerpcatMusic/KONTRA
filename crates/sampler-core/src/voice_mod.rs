@@ -489,6 +489,10 @@ pub(crate) struct VoiceModState {
     seed: Box<[u64]>,
     age: Box<[u32]>,
     outputs: Box<[Outputs]>,
+    /// The control point before `outputs`.
+    previous: Box<[Outputs]>,
+    /// Runtime frames of `previous` and `outputs`.
+    times: Box<[[u64; 2]]>,
     /// Tone filter state: two integrator pairs (left/right).
     tone: Box<[[[f64; 2]; 2]]>,
     phase: Box<[f64]>,
@@ -511,6 +515,8 @@ impl VoiceModState {
             seed: crate::dsp::allocate(voices)?,
             age: crate::dsp::allocate(voices)?,
             outputs: crate::dsp::allocate(voices)?,
+            previous: crate::dsp::allocate(voices)?,
+            times: crate::dsp::allocate(voices)?,
             tone: crate::dsp::allocate(voices)?,
             phase: crate::dsp::allocate(slots(modulation.sources)?)?,
             values: crate::dsp::allocate(slots(modulation.sources)?)?,
@@ -532,6 +538,8 @@ impl VoiceModState {
             seed: Box::new([]),
             age: Box::new([]),
             outputs: Box::new([]),
+            previous: Box::new([]),
+            times: Box::new([]),
             tone: Box::new([]),
             phase: Box::new([]),
             values: Box::new([]),
@@ -575,6 +583,8 @@ impl VoiceModState {
             self.envelope[voice * self.envelopes + i] = EnvelopeState::new(*envelope);
         }
         self.outputs[voice] = self.evaluate(p, voice, inputs, clock, 0, true);
+        self.previous[voice] = self.outputs[voice];
+        self.times[voice] = [clock.now; 2];
     }
 
     pub fn release(&mut self, modulation: &VoiceModulation, voice: usize) {
@@ -592,24 +602,41 @@ impl VoiceModState {
         }
     }
 
-    /// Advance a voice by `frames` and return its control points at the
-    /// chunk's start (the previous result) and end.
+    /// The control ramp covering a segment starting at `clock.now`. Points
+    /// sit on the absolute `CELL` grid (and the voice onset), so a segment
+    /// entering a new cell evaluates its end once and segments inside a cell
+    /// reuse it: output does not depend on how the host splits blocks.
+    /// Segments must not cross a grid line.
     pub fn advance(
         &mut self,
         modulation: &VoiceModulation,
         voice: usize,
         inputs: &Inputs<'_>,
-        clock: Clock,
-        frames: u32,
-    ) -> (Outputs, Outputs) {
-        let previous = self.outputs[voice];
-        let Some(program) = self.program(voice) else {
-            return (previous, previous);
-        };
-        let p = &modulation.programs[program as usize];
-        let next = self.evaluate(p, voice, inputs, clock, frames, false);
-        self.outputs[voice] = next;
-        (previous, next)
+        mut clock: Clock,
+    ) -> Ramp {
+        let [begin, end] = self.times[voice];
+        if let (Some(program), true) = (self.program(voice), clock.now >= end) {
+            let p = &modulation.programs[program as usize];
+            let target = (clock.now / CELL + 1) * CELL;
+            clock.now = target;
+            let next = self.evaluate(p, voice, inputs, clock, (target - end) as u32, false);
+            self.previous[voice] = std::mem::replace(&mut self.outputs[voice], next);
+            self.times[voice] = [end, target];
+        } else if clock.now >= end {
+            return Ramp {
+                from: self.outputs[voice],
+                to: self.outputs[voice],
+                begin,
+                end,
+            };
+        }
+        let [begin, end] = self.times[voice];
+        Ramp {
+            from: self.previous[voice],
+            to: self.outputs[voice],
+            begin,
+            end,
+        }
     }
 
     fn evaluate(
@@ -700,17 +727,24 @@ impl VoiceModState {
         out
     }
 
-    /// Mix one rendered chunk into `output`, ramping gains from `from` to `to`
-    /// and running the voice's tone filter at `tone` semitones when closed.
+    /// Mix one rendered segment starting at runtime frame `at` into `output`,
+    /// ramping gains along `ramp` and running the voice's tone filter at the
+    /// ramp's midpoint when closed.
     pub fn mix(
         &mut self,
         voice: usize,
         chunk: &mut [crate::Frame],
         output: &mut [crate::Frame],
-        from: Outputs,
-        to: Outputs,
+        ramp: Ramp,
+        at: u64,
         rate: f64,
     ) {
+        let Ramp {
+            from,
+            to,
+            begin,
+            end,
+        } = ramp;
         let tone = (from.tone + to.tone) * 0.5;
         if tone < 0.0 {
             let hz = (TONE_OPEN * rate * (tone / 12.0).exp2()).max(10.0);
@@ -738,17 +772,31 @@ impl VoiceModState {
             // Open: the filter passes its input, so its integrators follow it.
             self.tone[voice] = [[0.0; 2]; 2];
         }
-        let len = chunk.len() as f32;
+        let len = end.saturating_sub(begin).max(1) as f32;
         let step = [
             (to.gains[0] - from.gains[0]) / len,
             (to.gains[1] - from.gains[1]) / len,
         ];
+        let offset = at.saturating_sub(begin) as f32;
         for (i, (out, frame)) in output.iter_mut().zip(chunk.iter()).enumerate() {
-            let at = (i + 1) as f32;
+            let at = offset + (i + 1) as f32;
             out[0] += frame[0] * (from.gains[0] + step[0] * at);
             out[1] += frame[1] * (from.gains[1] + step[1] * at);
         }
     }
+}
+
+/// Control grid on the runtime clock, in frames.
+pub(crate) const CELL: u64 = crate::dsp::BLOCK as u64;
+
+/// Control points around a segment: `from` at runtime frame `begin`, `to` at
+/// `end`. Gains ramp between them; pitch, cutoff, Q and tone hold the midpoint.
+#[derive(Clone, Copy)]
+pub(crate) struct Ramp {
+    pub from: Outputs,
+    pub to: Outputs,
+    pub begin: u64,
+    pub end: u64,
 }
 
 /// The tone filter's open cutoff as a fraction of the sample rate.
