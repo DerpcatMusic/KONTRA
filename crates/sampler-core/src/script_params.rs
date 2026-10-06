@@ -342,11 +342,15 @@ impl Runtime {
         let (Ok(event), Ok(id)) = (i32::try_from(event), u16::try_from(id)) else {
             return Ok(());
         };
-        if id > 1000 {
+        let user = (crate::USER_EVENT_PAR..crate::USER_EVENT_PAR + 4).contains(&id);
+        if id > 1000 && !user {
             return Ok(());
         }
         if let Some(note) = self.resolve_source_event(plan, event)? {
-            let value = value.clamp(-1_000_000, 1_000_000) as i32;
+            // Modulator values are normalized to +-1e6; user parameters keep
+            // any integer (a script stores event ids in them).
+            let limit = if user { i64::from(i32::MAX) } else { 1_000_000 };
+            let value = value.clamp(-limit, limit) as i32;
             self.note_params[note.0.index].mods.set(id, value);
         }
         Ok(())
