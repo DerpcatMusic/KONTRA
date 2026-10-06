@@ -577,13 +577,19 @@ impl Runtime {
                     self.families.get_mut(family.0).unwrap().decision = decision;
                     family
                 });
+                let envelope = self
+                    .plans
+                    .get(plan.0)
+                    .unwrap()
+                    .script
+                    .envelope(group, r.envelope);
                 let voice = self
                     .admit_voice(
                         family,
                         r.sample,
                         self.now,
                         r.gain * r.velocity_curve.amplitude(velocity),
-                        r.envelope,
+                        envelope,
                         cursor.with_step(step),
                     )
                     .expect("prepared and preflighted source admission");

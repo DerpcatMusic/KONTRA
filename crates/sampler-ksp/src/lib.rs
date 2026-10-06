@@ -38,6 +38,24 @@ pub struct Limits {
     pub array_cells: usize,
 }
 
+impl Limits {
+    /// For scripts from installed libraries: about four times the largest
+    /// seen across the installed Kontakt libraries (sampler-kontakt's
+    /// `examples/library_scan.rs`).
+    pub const LIBRARY: Self = Self {
+        source_bytes: LIBRARY_LIMITS[0],
+        instructions: LIBRARY_LIMITS[1],
+        variables: LIBRARY_LIMITS[2],
+        array_cells: LIBRARY_LIMITS[3],
+    };
+}
+
+/// About 4 × the largest seen (2,741 NKIs, 52 distinct scripts, 2026-10):
+/// 19,264,696 source bytes and 2,881,448 array cells (Areia "Pyramid"),
+/// 8,662,930 instructions and 2,039 variables (Analog Strings).
+/// Refresh from the scan when libraries are added.
+const LIBRARY_LIMITS: [usize; 4] = [80 << 20, 40_000_000, 1 << 16, 1 << 24];
+
 /// Presentation of a host-owned control.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Widget {
@@ -97,9 +115,14 @@ pub struct Script {
     coverage: Vec<(&'static str, Coverage, usize)>,
     symbols: Vec<String>,
     slot: u8,
+    usage: Limits,
 }
 
 impl Script {
+    /// What this script used of each limit it compiled under.
+    pub fn usage(&self) -> Limits {
+        self.usage
+    }
     /// The interface as format-neutral UI IR, validated. `picture` gives the
     /// metadata of a library-relative image path, e.g. from
     /// [`ui::picture_meta`] over the picture's `.txt`.
@@ -260,7 +283,11 @@ pub fn compile_with(
         message: message.into(),
     };
     if source.len() > limits.source_bytes {
-        return Err(error("source byte budget exceeded"));
+        return Err(error(&format!(
+            "source byte budget exceeded: {} bytes, limit {}",
+            source.len(),
+            limits.source_bytes
+        )));
     }
     if rate == 0 {
         return Err(error("sample rate must be positive"));
@@ -346,6 +373,7 @@ pub fn compile_with(
         pgs: &pgs,
         slot: environment.slot,
         budget: limits.instructions,
+        limit: limits.instructions,
         services: Vec::new(),
         coverage: BTreeMap::new(),
         warnings: Vec::new(),
@@ -459,5 +487,16 @@ pub fn compile_with(
         coverage,
         symbols: hir.symbols.iter().map(|s| s.to_string()).collect(),
         slot: environment.slot,
+        usage: Limits {
+            source_bytes: source.len(),
+            instructions: limits.instructions - unit.budget,
+            variables: hir.vars.len(),
+            array_cells: hir
+                .vars
+                .iter()
+                .filter_map(|v| v.len)
+                .map(|n| n as usize)
+                .sum(),
+        },
     })
 }
