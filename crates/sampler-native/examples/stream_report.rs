@@ -30,12 +30,17 @@ fn main() {
     );
     let seconds: f64 = args.get(1).map_or(30.0, |s| s.parse().unwrap());
     let voices: usize = args.get(2).map_or(256, |s| s.parse().unwrap());
+    // SCRIPTS=0 loads without the instrument's KSP.
+    let options = sampler_kontakt::Options {
+        scripts: std::env::var("SCRIPTS").map_or(true, |v| v != "0"),
+        ..Default::default()
+    };
     let begin = Instant::now();
     let policy = sampler_kontakt::StreamPolicy {
         voices,
         ..Default::default()
     };
-    let streamed = sampler_kontakt::load_streamed(path, &Default::default(), &policy, |_| {})
+    let streamed = sampler_kontakt::load_streamed(path, &options, &policy, |_| {})
         .unwrap_or_else(|e| panic!("{e}"));
     let report = streamed.report;
     println!(
@@ -126,6 +131,7 @@ fn main() {
     let (mut next, mut times, mut refused, mut purged) = (0, Vec::new(), 0, 0);
     let (mut peak, mut most) = (0.0f32, 0);
     let (mut pending, mut service_errors) = (0, std::collections::BTreeMap::new());
+    let mut outcomes = std::collections::BTreeMap::<String, usize>::new();
     let play = Instant::now();
     for start in (0..frames + 3 * rate as usize).step_by(buffer.len()) {
         let mut batch = Vec::new();
@@ -148,14 +154,25 @@ fn main() {
             Err(e) => *service_errors.entry(format!("{e:?}")).or_insert(0) += 1,
         }
         ingress
-            .render(&mut rt, &mut buffer, &batch, batch.len(), |_, result| {
-                if let Err(e) = &result {
-                    if refused < 5 {
-                        eprintln!("refused: {e:?}");
+            .render(
+                &mut rt,
+                &mut buffer,
+                &batch,
+                batch.len(),
+                |_, result| match &result {
+                    Err(e) => {
+                        if refused < 5 {
+                            eprintln!("refused: {e:?}");
+                        }
+                        refused += 1;
                     }
-                    refused += 1;
-                }
-            })
+                    Ok(applied) => {
+                        let kind = format!("{applied:?}");
+                        let kind = kind.split([' ', '(', '{']).next().unwrap_or("").to_string();
+                        *outcomes.entry(kind).or_insert(0) += 1;
+                    }
+                },
+            )
             .unwrap();
         times.push(t.elapsed().as_secs_f64() * 1e6);
         most = most.max(rt.stats().voices);
@@ -209,6 +226,7 @@ fn main() {
         })
         .sum();
     println!("service: {pending} blocks with pages pending, errors {service_errors:?}");
+    println!("events applied: {outcomes:?}");
     println!(
         "decode threads busy {:.1} s over {:.1} s of playback",
         decode_ticks as f64 / 100.0,
