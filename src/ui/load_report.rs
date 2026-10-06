@@ -159,6 +159,8 @@ pub enum Runtime {
     InputNarrowed { count: u64 },
     /// Messages the instrument does not play (per-note controllers, program changes).
     InputIgnored { count: u64 },
+    /// Voices faded out to make room at full polyphony.
+    VoicesStolen { count: u64 },
 }
 
 impl Runtime {
@@ -186,6 +188,10 @@ impl Runtime {
             Self::InputIgnored { count } => (
                 format!("{count} MIDI messages ignored"),
                 "This instrument does not respond to them yet.".into(),
+            ),
+            Self::VoicesStolen { count } => (
+                format!("{count} voices stolen"),
+                "Polyphony was full: released, then the quietest voices faded out to make room.".into(),
             ),
         }
     }

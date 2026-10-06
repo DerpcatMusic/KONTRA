@@ -101,6 +101,7 @@ pub fn report(cx: &Cx, slot: usize) -> lr::Report {
         (p.nonfinite, lr::Runtime::NonFinite { count: p.nonfinite }),
         (p.narrowed_input, lr::Runtime::InputNarrowed { count: p.narrowed_input }),
         (p.ignored_input, lr::Runtime::InputIgnored { count: p.ignored_input }),
+        (p.stolen_voices, lr::Runtime::VoicesStolen { count: p.stolen_voices }),
     ];
     r.runtime.extend(counts.into_iter().filter(|(n, _)| *n > 0).map(|(_, r)| r));
     r
