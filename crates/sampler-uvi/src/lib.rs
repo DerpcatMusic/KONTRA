@@ -195,6 +195,7 @@ fn translate_with(text: &str, source: Source) -> Result<(ir::Instrument, Vec<Str
         modulator_index: HashMap::new(),
         route_index: HashMap::new(),
         shape_index: HashMap::new(),
+        shared_sources: std::collections::HashSet::new(),
         used: Vec::new(),
     };
     out.program(program).map_err(Translate::Invalid)?;
@@ -308,6 +309,9 @@ struct Translation {
     modulator_index: HashMap<String, ir::ModulatorRef>,
     route_index: HashMap<String, ir::RouteRef>,
     shape_index: HashMap<String, ir::ShapeRef>,
+    /// Program- and layer-level source nodes already given their shared-state
+    /// report entry.
+    shared_sources: std::collections::HashSet<roxmltree::NodeId>,
     /// Nodes whose meaning was carried into the IR.
     used: Vec<roxmltree::NodeId>,
 }
