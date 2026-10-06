@@ -47,8 +47,8 @@ fn center(ui: &Ui, id: &str) -> Point {
 
 type Build = Box<dyn FnMut(&mut Ui, &mut Bridge<SamplerParams>) -> El>;
 
-struct Harness {
-    ui: Ui,
+pub(super) struct Harness {
+    pub(super) ui: Ui,
     build: Build,
     bridge: Bridge<SamplerParams>,
     size: Size,
@@ -57,7 +57,7 @@ struct Harness {
 }
 
 impl Harness {
-    fn new(p: &Arc<SamplerParams>, width: f64, height: f64) -> Self {
+    pub(super) fn new(p: &Arc<SamplerParams>, width: f64, height: f64) -> Self {
         let computer = Arc::<computer::Computer>::default();
         let art = Arc::<art::Art>::default();
         let mut h = Self {
@@ -91,14 +91,14 @@ impl Harness {
         self.idle(2);
     }
 
-    fn idle(&mut self, frames: usize) {
+    pub(super) fn idle(&mut self, frames: usize) {
         for _ in 0..frames {
             self.tick(Input::default());
         }
     }
 
     /// Focus `id` and press Enter, then let the result settle.
-    fn press(&mut self, id: &str) {
+    pub(super) fn press(&mut self, id: &str) {
         self.ui.focus(id);
         self.tick(enter());
         self.idle(3);
