@@ -261,6 +261,9 @@ impl PreparedVoiceChain {
         self.pre.len() + self.post.len()
     }
 
+    /// Render one voice block by block: every stage runs over the whole block
+    /// before the next, with its coefficients and response chosen once. A
+    /// nonfinite block drops that voice's block and resets its processor state.
     pub(super) fn render(
         &self,
         voice: &mut Voice,
@@ -273,11 +276,11 @@ impl PreparedVoiceChain {
         let mut faults = 0;
         let mut rendered = 0;
         let mut unity = EnvelopeState::new(Envelope::default());
-        for (chunk_index, chunk) in output.chunks_mut(64).enumerate() {
+        for (chunk_index, chunk) in output.chunks_mut(BLOCK).enumerate() {
             if self.done(voice) {
                 break;
             }
-            let mut raw = [[0.; 2]; 64];
+            let mut raw = [[0.; 2]; BLOCK];
             let count = chunk
                 .len()
                 .min(voice.envelope.remaining())
@@ -294,67 +297,83 @@ impl PreparedVoiceChain {
                     kernel,
                 )
             };
-            for (index, frame) in chunk.iter_mut().enumerate() {
-                let at = context.at + (chunk_index * 64 + index) as u64;
-                let ended = index >= produced || voice.envelope.done();
-                if ended && voice.tail_remaining.is_none() {
-                    voice.tail_remaining = Some(self.tail_frames);
-                }
-                if voice.tail_remaining == Some(0) {
-                    break;
-                }
-                let (pre, post) = states.split_at_mut(self.pre.len());
-                let mut value = process(
-                    &self.pre,
-                    pre,
-                    if ended {
-                        [0.; 2]
-                    } else {
-                        raw[index].map(f64::from)
-                    },
-                    context.parameters,
-                    at,
-                    context.delay,
-                    &mut context.filters,
-                );
-                let level = voice
-                    .envelope
-                    .constant_level()
-                    .unwrap_or_else(|| voice.envelope.next());
-                value = value.map(|v| v * f64::from(level));
-                value = process(
-                    &self.post,
-                    post,
-                    value,
-                    context.parameters,
-                    at,
-                    context.delay,
-                    &mut context.filters,
-                );
-                let fade = voice.dsp_fade.map_or(1., |(total, initial)| {
-                    f64::from(initial) * f64::from(voice.tail_remaining.unwrap()) / f64::from(total)
-                });
-                let result = std::array::from_fn::<_, 2, _>(|channel| {
-                    (value[channel] * f64::from(context.expression[channel]) * fade) as f32
-                });
-                if result.iter().all(|v| v.is_finite()) && states.iter().all(ProcessorState::finite)
-                {
-                    for channel in 0..2 {
-                        frame[channel] += if result[channel].is_subnormal() {
-                            0.
-                        } else {
-                            result[channel]
-                        };
-                    }
-                } else {
-                    states.fill(ProcessorState::default());
-                    faults += 1;
-                }
-                rendered += 1;
-                if let Some(remaining) = &mut voice.tail_remaining {
-                    *remaining -= 1;
-                }
+            // Frames past the source's output are its zero-input tail, which
+            // starts at the first of them and runs for at most `tail_frames`.
+            let tail = voice
+                .tail_remaining
+                .or_else(|| (produced < chunk.len()).then_some(self.tail_frames));
+            let len = match (voice.tail_remaining, tail) {
+                (Some(t), _) => chunk.len().min(t as usize),
+                (None, Some(t)) => produced + (chunk.len() - produced).min(t as usize),
+                (None, None) => chunk.len(),
+            };
+            let mut block = [[0.; BLOCK]; 2];
+            for (i, frame) in raw[..produced.min(len)].iter().enumerate() {
+                block[0][i] = f64::from(frame[0]);
+                block[1][i] = f64::from(frame[1]);
             }
+            let at = context.at + (chunk_index * BLOCK) as u64;
+            let (pre, post) = states.split_at_mut(self.pre.len());
+            let mut fault = process(
+                &self.pre,
+                pre,
+                &mut block,
+                len,
+                context.parameters,
+                at,
+                context.delay,
+                &mut context.filters,
+            );
+            let [left, right] = &mut block;
+            for (l, r) in left[..len].iter_mut().zip(&mut right[..len]) {
+                let level = f64::from(
+                    voice
+                        .envelope
+                        .constant_level()
+                        .unwrap_or_else(|| voice.envelope.next()),
+                );
+                *l *= level;
+                *r *= level;
+            }
+            fault |= process(
+                &self.post,
+                post,
+                &mut block,
+                len,
+                context.parameters,
+                at,
+                context.delay,
+                &mut context.filters,
+            );
+            let mut result = [[0f32; 2]; BLOCK];
+            for (i, frame) in result[..len].iter_mut().enumerate() {
+                // A DSP fade exists only with a running tail: its count at frame i.
+                let fade = voice.dsp_fade.map_or(1., |(total, initial)| {
+                    let remaining = voice.tail_remaining.expect("fading tail") - i as u32;
+                    f64::from(initial) * f64::from(remaining) / f64::from(total)
+                });
+                *frame = std::array::from_fn(|channel| {
+                    (block[channel][i] * f64::from(context.expression[channel]) * fade) as f32
+                });
+            }
+            if !fault
+                && result[..len].iter().flatten().all(|v| v.is_finite())
+                && states.iter().all(ProcessorState::finite)
+            {
+                for (frame, result) in chunk.iter_mut().zip(&result[..len]) {
+                    for channel in 0..2 {
+                        frame[channel] += flush32(result[channel]);
+                    }
+                }
+            } else {
+                states.fill(ProcessorState::default());
+                faults += 1;
+            }
+            rendered += len;
+            voice.tail_remaining = match voice.tail_remaining {
+                Some(t) => Some(t - len as u32),
+                None => tail.map(|t| t - (len - produced) as u32),
+            };
         }
         (rendered, faults)
     }
@@ -363,6 +382,22 @@ impl PreparedVoiceChain {
         voice.tail_remaining == Some(0)
             || (self.tail_frames == 0 && (voice.cursor.done() || voice.envelope.done()))
     }
+}
+
+/// Frames per processing block. Render segmentation never presents a voice or
+/// bus more than this many frames from one start.
+pub(super) const BLOCK: usize = 64;
+/// Left and right channels of one block, in double precision.
+pub(super) type Planar = [[f64; BLOCK]; 2];
+
+/// Zero a subnormal state or sample: run once per block on retained state.
+#[inline(always)]
+pub(super) fn flush(v: f64) -> f64 {
+    if v.is_subnormal() { 0. } else { v }
+}
+#[inline(always)]
+fn flush32(v: f32) -> f32 {
+    if v.is_subnormal() { 0. } else { v }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -376,51 +411,71 @@ impl ProcessorState {
         self.z.iter().flatten().all(|v| v.is_finite())
     }
 }
+
+/// Run `len` frames of `block` through each stage in turn. Returns whether a
+/// stage observed a nonfinite value it does not keep in visible state.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn process(
     stages: &[PreparedProcessor],
     states: &mut [ProcessorState],
-    mut value: [f64; 2],
+    block: &mut Planar,
+    len: usize,
     parameters: &[ControlRamp],
     at: u64,
     delay_samples: &mut [[f64; 2]],
     filters: &mut svf::FilterContext<'_>,
-) -> [f64; 2] {
+) -> bool {
+    let mut fault = false;
     for (stage, state) in stages.iter().zip(states) {
         match stage {
             PreparedProcessor::StateVariable(index) => {
-                value = filters.process(*index, &mut state.z, value, parameters, at);
+                filters.process(*index, &mut state.z, block, len, parameters, at);
             }
             PreparedProcessor::Delay { delay, offset } => {
-                value = delay.process(
+                fault |= delay.process(
                     state,
                     &mut delay_samples[*offset..*offset + delay.frames as usize],
-                    value,
+                    block,
+                    len,
                 );
             }
-            PreparedProcessor::Gain(gain) => value = value.map(|v| v * gain),
-            PreparedProcessor::StereoMatrix(matrix) => {
-                value = matrix.map(|row| row[0] * value[0] + row[1] * value[1]);
+            PreparedProcessor::Gain(gain) => {
+                for channel in block.iter_mut() {
+                    channel[..len].iter_mut().for_each(|v| *v *= gain);
+                }
+            }
+            PreparedProcessor::StereoMatrix(m) => {
+                let [left, right] = block;
+                for (l, r) in left[..len].iter_mut().zip(&mut right[..len]) {
+                    (*l, *r) = (m[0][0] * *l + m[0][1] * *r, m[1][0] * *l + m[1][1] * *r);
+                }
             }
             PreparedProcessor::ControlGain(lane) => {
-                let gain = parameters[*lane].value(at);
-                value = value.map(|v| v * gain);
+                let ramp = parameters[*lane];
+                let [left, right] = block;
+                for (i, (l, r)) in left[..len].iter_mut().zip(&mut right[..len]).enumerate() {
+                    let gain = ramp.value(at + i as u64);
+                    *l *= gain;
+                    *r *= gain;
+                }
             }
             PreparedProcessor::Biquad(filter) => {
-                for (sample, z) in value.iter_mut().zip(&mut state.z) {
-                    let output = filter.b[0] * *sample + z[0];
-                    z[0] = filter.b[1] * *sample - filter.a[0] * output + z[1];
-                    z[1] = filter.b[2] * *sample - filter.a[1] * output;
-                    for cell in z {
-                        if cell.is_subnormal() {
-                            *cell = 0.;
-                        }
-                    }
-                    *sample = output;
+                let ([b0, b1, b2], [a1, a2]) = (filter.b, filter.a);
+                let [mut zl, mut zr] = state.z;
+                let [left, right] = block;
+                for (l, r) in left[..len].iter_mut().zip(&mut right[..len]) {
+                    let (x, y) = (*l, b0 * *l + zl[0]);
+                    zl = [b1 * x - a1 * y + zl[1], b2 * x - a2 * y];
+                    *l = y;
+                    let (x, y) = (*r, b0 * *r + zr[0]);
+                    zr = [b1 * x - a1 * y + zr[1], b2 * x - a2 * y];
+                    *r = y;
                 }
+                state.z = [zl.map(flush), zr.map(flush)];
             }
         }
     }
-    value
+    fault
 }
 
 pub(super) fn allocate<T: Default>(count: usize) -> Result<Box<[T]>, Error> {
@@ -476,6 +531,24 @@ impl DspState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One frame through `stages` as a one-frame block.
+    fn process(
+        stages: &[PreparedProcessor],
+        states: &mut [ProcessorState],
+        value: [f64; 2],
+        parameters: &[ControlRamp],
+        at: u64,
+        delay: &mut [[f64; 2]],
+        filters: &mut svf::FilterContext<'_>,
+    ) -> [f64; 2] {
+        let mut block = [[0.; BLOCK]; 2];
+        (block[0][0], block[1][0]) = (value[0], value[1]);
+        assert!(!super::process(
+            stages, states, &mut block, 1, parameters, at, delay, filters
+        ));
+        [block[0][0], block[1][0]]
+    }
 
     #[test]
     fn biquad_impulses_match_independent_difference_equations_and_named_responses() {

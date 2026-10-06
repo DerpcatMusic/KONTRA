@@ -28,30 +28,14 @@ pub use engine::{
     NoteLength, NoteSpec, VoicePar, engine_par_name,
 };
 pub use inventory::requirements;
-pub use runtime::{FaultAction, FaultContext, Live, LiveFault, MAX_SLOTS, Persisted, Refresh, Runtime, settle_persistence};
+pub use runtime::{FaultAction, FaultContext, Live, LiveFault, MAX_SLOTS, Runtime, settle_persistence};
+/// Plain script-view data now owned by the core seam; re-exported for the runtime.
+pub use crate::sound::view::{Control, Interface, KeyState, Persisted, Refresh, Value};
 pub(crate) use runtime::{EVENT_CAPACITY, reset_controller_value};
 
 use anyhow::Result;
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet};
-
-#[derive(Clone, Debug, PartialEq, Serialize, serde::Deserialize)]
-#[serde(untagged)]
-pub enum Value {
-    Int(i32),
-    /// Native Kontakt persistence stores a menu's entry position, whereas
-    /// KONTRA host state stores its assigned value. Keep the origin until the
-    /// declared control and its entries are available; ordinary scalars use it
-    /// as an integer. The object shape survives the imported instrument cache.
-    NativeInt { native_int: i32 },
-    Real(f64),
-    Text(String),
-    /// Dense snapshots keep numeric tables at their native element size.
-    /// Untagged serialization preserves the existing JSON array format.
-    IntArray(Vec<i32>),
-    RealArray(Vec<f64>),
-    Array(Vec<Value>),
-}
+use std::collections::BTreeMap;
 
 /// Instrument-level services shared by all script slots (program global storage and
 /// the keyboard display). Never process-global.
@@ -63,18 +47,6 @@ pub struct HostState {
     pub script_pressed: bool,
     /// `set_keyrange` entries (lowest key, highest key, name); they never overlap.
     pub keyranges: Vec<(u8, u8, String)>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-pub struct KeyState {
-    pub name: String,
-    pub color: Option<Value>,
-    pub kind: Option<Value>,
-    pub pressed: bool,
-    #[serde(skip)]
-    pub color_buffer: String,
-    #[serde(skip)]
-    pub kind_buffer: String,
 }
 
 impl KeyState {
@@ -103,58 +75,6 @@ impl KeyState {
             *value = Some(Value::Int(number));
         }
         Ok(())
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct Control {
-    /// Its UI ID (`get_ui_id`): what `$CONTROL_PAR_PARENT_PANEL` names.
-    pub id: i32,
-    pub variable: String,
-    pub kind: String,
-    pub properties: BTreeMap<String, Value>,
-    pub menu: Vec<(String, i32)>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct Interface {
-    pub performance: bool,
-    pub width: i32,
-    pub height: i32,
-    pub title: String,
-    pub wallpaper: String,
-    #[serde(default)]
-    pub wallpaper_state: i32,
-    /// Authored performance-view background, packed as 0xRRGGBB.
-    #[serde(default)]
-    pub background_color: Option<u32>,
-    /// Vertical background offset in pixels, independent of picture state.
-    #[serde(default)]
-    pub skin_offset: i32,
-    /// Init-only named bitmap fonts; IDs are 26 + their slot-local index.
-    #[serde(default)]
-    pub fonts: Vec<String>,
-    pub controls: Vec<Control>,
-    pub diagnostics: BTreeSet<String>,
-    pub listeners: BTreeMap<String, i32>,
-}
-
-impl Default for Interface {
-    fn default() -> Self {
-        Self {
-            performance: false,
-            width: 632,
-            height: 350,
-            title: String::new(),
-            wallpaper: String::new(),
-            wallpaper_state: 0,
-            background_color: None,
-            skin_offset: 0,
-            fonts: Vec::new(),
-            controls: Vec::new(),
-            diagnostics: BTreeSet::new(),
-            listeners: BTreeMap::new(),
-        }
     }
 }
 

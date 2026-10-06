@@ -538,9 +538,6 @@ impl crate::Runtime {
         for requesting in [false, true] {
             for (index, slot) in self.voices.slots.iter().enumerate() {
                 let Some(voice) = &slot.value else { continue };
-                if voice.cursor.starved() {
-                    continue;
-                }
                 let family = self.families.get(voice.family.0).unwrap();
                 let note = self.notes.get(family.note.0).unwrap();
                 let asset = &self.plans.get(note.plan.0).unwrap().prepared.pcm[voice.sample];

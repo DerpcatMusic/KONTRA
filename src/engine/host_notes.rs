@@ -2,41 +2,12 @@
 use super::{EventId, Expression};
 const _: () = assert!(crate::ksp::EVENT_CAPACITY <= u16::MAX as usize);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct HostNote {
-    pub port: u8,
-    pub channel: u8,
-    pub key: u8,
-    pub id: i32,
-    /// CLAP supports a plugin-to-host NOTE_END; VST3 does not.
-    pub clap: bool,
-}
-
-/// Each -1 axis is a host wildcard. Invalid axes never match an owner.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct HostPattern {
-    pub port: i32,
-    pub channel: i32,
-    pub key: i32,
-    pub id: i32,
-    pub clap: bool,
-}
-
-impl HostPattern {
-    pub fn matches(self, note: HostNote) -> bool {
-        self.clap == note.clap && (self.port == -1 || self.port == i32::from(note.port))
-            && (self.channel == -1 || self.channel == i32::from(note.channel))
-            && (self.key == -1 || self.key == i32::from(note.key))
-            && (self.id == -1 || self.id == note.id)
-    }
-}
+pub use crate::sound::event::{HostExpression, HostNote, HostPattern};
 
 /// An internal generation, never a host-provided note ID or a key index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HostRef { index: u16, generation: u32 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum HostExpression { Gain(f32), Tune(f32), Pan(f32) }
 
 #[derive(Clone, Copy)]
 pub(super) struct Owner {

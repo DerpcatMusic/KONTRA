@@ -1,8 +1,6 @@
 //! Prepared stereo bus DAGs. A bus owns summed-signal history, never note identity.
-use crate::dsp::{ControlRamp, PreparedProcessor, ProcessorState, allocate};
+use crate::dsp::{BLOCK, ControlRamp, PreparedProcessor, ProcessorState, allocate};
 use crate::{ControlRange, Error, Frame, Prepared, Processor};
-
-const BLOCK: usize = 64;
 
 /// One post-processing send. `None` targets the runtime's stereo output.
 #[derive(Clone, Copy, Debug)]
@@ -176,43 +174,60 @@ impl BusState {
     }
     pub fn render(&mut self, graph: &PreparedBuses, output: &mut [Frame], at: u64) -> u64 {
         let mut faults = 0;
-        self.filters.begin(at);
         for &index in &graph.order {
             let node = &graph.nodes[index];
             let buffer = &mut self.buffers[index];
             let states = &mut self.cells[node.states.clone()];
-            let mut produced = 0;
-            for (frame_index, frame) in buffer.samples[..output.len()].iter_mut().enumerate() {
-                if frame_index < buffer.input_frames {
-                    buffer.remaining = node.tail_frames;
-                } else if buffer.remaining != 0 {
-                    buffer.remaining -= 1;
-                } else {
-                    states.fill(ProcessorState::default());
-                    break;
+            // Input frames hold the tail at its maximum; it then counts down
+            // over zero input until it ends, which clears the bus's history.
+            let len = output.len();
+            let input = buffer.input_frames.min(len);
+            let tail = if input > 0 {
+                node.tail_frames
+            } else {
+                buffer.remaining
+            };
+            let produced = input + (tail as usize).min(len - input);
+            buffer.remaining = tail - (produced - input) as u32;
+            if produced > 0 {
+                let mut block = [[0.; BLOCK]; 2];
+                for (i, frame) in buffer.samples[..produced].iter().enumerate() {
+                    block[0][i] = f64::from(frame[0]);
+                    block[1][i] = f64::from(frame[1]);
                 }
-                let value = crate::dsp::process(
+                let fault = crate::dsp::process(
                     &node.processors,
                     states,
-                    frame.map(f64::from),
+                    &mut block,
+                    produced,
                     &self.parameters,
-                    at + frame_index as u64,
+                    at,
                     &mut self.delay_samples,
                     &mut crate::dsp::svf::FilterContext {
                         bank: &mut self.filters,
                         expression: None,
                     },
                 );
-                let result = value.map(|v| v as f32);
-                if result.iter().all(|v| v.is_finite()) && states.iter().all(ProcessorState::finite)
-                {
-                    *frame = result.map(|v| if v.is_subnormal() { 0. } else { v });
+                let finite = !fault
+                    && block
+                        .iter()
+                        .all(|c| c[..produced].iter().all(|v| (*v as f32).is_finite()))
+                    && states.iter().all(ProcessorState::finite);
+                if finite {
+                    for (i, frame) in buffer.samples[..produced].iter_mut().enumerate() {
+                        *frame = [block[0][i], block[1][i]]
+                            .map(|v| v as f32)
+                            .map(|v| if v.is_subnormal() { 0. } else { v });
+                    }
                 } else {
-                    *frame = [0.; 2];
+                    buffer.samples[..produced].fill([0.; 2]);
                     states.fill(ProcessorState::default());
                     faults += 1;
                 }
-                produced += 1;
+            }
+            // The tail ended inside this block: nothing carries over.
+            if produced < len {
+                states.fill(ProcessorState::default());
             }
             // Copy one bounded block so fan-out never aliases destination state.
             let samples = buffer.samples;
