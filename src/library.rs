@@ -473,7 +473,7 @@ fn list(dir: &Path) -> Listing {
         match ext {
             "nicnt" => out.nicnt = out.nicnt.take().or(Some(path)),
             "nkx" | "nkc" | "nkr" => out.monolith = true,
-            "nki" | MULTI => out.presets += 1,
+            "nki" | "nkm" | "ufs" | "uvip" | MULTI => out.presets += 1,
             "wav" | "ncw" | "aif" | "aiff" | "flac" | "ogg" => out.audio += 1,
             _ => {}
         }
@@ -664,6 +664,12 @@ fn presets(dir: &Path, progress: &Progress) -> Vec<PathBuf> {
         if !e.file_type().is_file() { continue; }
         if is_preset(path) {
             out.push(e.into_path());
+        } else if path.extension().is_some_and(|x| x.eq_ignore_ascii_case("ufs")) {
+            // A UVI bank lists its programs as `bank.ufs/program.uvip`.
+            match sampler_uvi::Bank::open(path) {
+                Ok(bank) => out.extend(bank.programs().into_iter().map(|member| path.join(member))),
+                Err(e) => trace.issue("catalog", "bank_unreadable", e.to_string()),
+            }
         }
     }
     // ponytail: snapshots (.nksn) are not listed until the v2 loader applies them.
@@ -1331,5 +1337,25 @@ mod tests {
         assert_eq!(names.len(), 2, "{names:?}");
         assert_eq!(shelf.of(Path::new("/b/Piano/Instruments/Grand.nki")).unwrap().vendor, "Soniccouture");
         assert!(shelf.of(Path::new("/c/Other.nki")).is_none());
+    }
+}
+
+#[cfg(test)]
+mod uvi_bank_tests {
+    use super::*;
+
+    /// A UVI bank lists its programs as virtual files. Needs the installed bank.
+    #[test]
+    fn a_ufs_bank_lists_its_programs() {
+        let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
+        let Some(dir) = std::env::split_paths(&roots)
+            .map(|r| r.parent().unwrap_or(&r).join("UVI/VWinds - Clarinets"))
+            .find(|d| d.is_dir())
+        else {
+            return;
+        };
+        let found = presets(&dir, &Progress::default());
+        let program = found.iter().find(|p| p.to_string_lossy().contains(".ufs/")).expect("a bank program");
+        assert!(is_instrument(program));
     }
 }
