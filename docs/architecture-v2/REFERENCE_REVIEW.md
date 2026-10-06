@@ -237,3 +237,16 @@ architecture distinguishes vendor groups/keygroups and their hierarchy from shar
 selection primitives; the new masks follow that separation. No legacy VM path or
 implementation is imported. Existing automatic release selection still uses native
 policies, and Kontakt timing/system-script parity remains unverified.
+
+
+## Select and combined conditions
+
+Read the [NI control statements reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-statements)
+for inclusive cases, first-match dispatch, Boolean operators and signed hexadecimal
+fallback examples. Inspected legacy `src/ksp/compile.rs:1082–1110` and
+`1459–1496`, `src/ksp/parser.rs:144–158` and `563–617`, and
+`src/ksp/calls.rs:219–225`. These show normalized descending case ranges, Boolean
+precedence/short-circuiting and non-normalized `in_range` bounds. The new compiler
+reuses its native register/jump IR and shared numeric operations; it does not call
+or copy the old compiler/VM. Native tests validate these explicit policies; vendor
+numeric corner cases and evaluation equivalence remain unverified.

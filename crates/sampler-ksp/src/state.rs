@@ -6,9 +6,26 @@ impl Parser<'_> {
     pub(super) fn constant(&mut self) -> Result<i32, Error> {
         let start = self.code.len();
         self.scalar(0)?;
-        let mut values = Vec::new();
+        // Reject runtime reads even when short-circuiting would skip them.
         for op in &self.code[start..] {
-            match *op {
+            if !matches!(
+                op,
+                Instruction::SetLocal { .. }
+                    | Instruction::Binary32 { .. }
+                    | Instruction::Unary32 { .. }
+                    | Instruction::CompareLocal { .. }
+                    | Instruction::Jump { .. }
+                    | Instruction::JumpIfZero { .. }
+            ) {
+                return Err(self.error("constant integer expression required"));
+            }
+        }
+        let mut values = Vec::new();
+        let mut pc = start;
+        while pc < self.code.len() {
+            let op = self.code[pc];
+            pc += 1;
+            match op {
                 Instruction::SetLocal { local, value } => {
                     values.resize(values.len().max(usize::from(local) + 1), 0);
                     values[usize::from(local)] = i32::try_from(value)
@@ -26,7 +43,29 @@ impl Parser<'_> {
                     let value = &mut values[usize::from(local)];
                     *value = operation.apply(*value);
                 }
-                _ => return Err(self.error("constant integer expression required")),
+                Instruction::CompareLocal {
+                    lhs,
+                    rhs,
+                    comparison,
+                } => {
+                    values[usize::from(lhs)] = i32::from(comparison.apply(
+                        i64::from(values[usize::from(lhs)]),
+                        i64::from(values[usize::from(rhs)]),
+                    ));
+                }
+                Instruction::Jump { target } | Instruction::JumpIfZero { target, .. } => {
+                    // Lowered expressions only contain forward branches, bounding
+                    // preparation work by emitted code even if lowering regresses.
+                    if target < pc || target > self.code.len() {
+                        return Err(self.error("invalid constant-expression branch"));
+                    }
+                    if matches!(op, Instruction::Jump { .. })
+                        || matches!(op, Instruction::JumpIfZero { local, .. } if values[usize::from(local)] == 0)
+                    {
+                        pc = target;
+                    }
+                }
+                _ => unreachable!("validated constant instruction"),
             }
         }
         let result = values[0];

@@ -176,6 +176,18 @@ pub enum Comparison {
     Greater,
     GreaterEqual,
 }
+impl Comparison {
+    pub fn apply(self, left: i64, right: i64) -> bool {
+        match self {
+            Self::Equal => left == right,
+            Self::NotEqual => left != right,
+            Self::Less => left < right,
+            Self::LessEqual => left <= right,
+            Self::Greater => left > right,
+            Self::GreaterEqual => left >= right,
+        }
+    }
+}
 
 pub struct Program {
     pub(super) code: Box<[Instruction]>,
@@ -676,14 +688,7 @@ impl Runtime {
             } => {
                 let right = *self.local_cell_mut(id, rhs)?;
                 let left = self.local_cell_mut(id, lhs)?;
-                *left = i64::from(match comparison {
-                    Comparison::Equal => *left == right,
-                    Comparison::NotEqual => *left != right,
-                    Comparison::Less => *left < right,
-                    Comparison::LessEqual => *left <= right,
-                    Comparison::Greater => *left > right,
-                    Comparison::GreaterEqual => *left >= right,
-                });
+                *left = i64::from(comparison.apply(*left, right));
             }
             Instruction::WriteNoteCell { cell, local } => {
                 let index = self.note_cell_index(owner.note()?, cell)?;

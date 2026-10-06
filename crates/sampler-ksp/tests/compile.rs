@@ -570,8 +570,6 @@ fn conditional_syntax_is_bounded_and_never_hides_invalid_dead_code() {
         "if (2147483648 = 0) end if",
         "if (0 = 0) unsupported() end if",
         "exit unsupported()",
-        "if (0) end if",
-        "if (0 = 0 and 1 = 1) end if",
         "if (0 = 0) end while",
         "exit()",
     ] {

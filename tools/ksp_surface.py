@@ -183,6 +183,7 @@ for source in sources:
             ('general-commands', 'play_note()'), ('general-commands', 'exit'),
             ('control-statements', 'Boolean Operators'),
             ('control-statements', 'if ... else ... end if'),
+            ('control-statements', 'select ()'),
             ('control-statements', 'continue'), ('control-statements', 'while ()'),
             ('time-related-commands', 'wait()'), ('event-commands', 'ignore_event()'),
             ('event-commands', 'change_note()'), ('event-commands', 'change_velo()'),
@@ -231,7 +232,7 @@ result = {
     'default_status': {'implementation': 'missing', 'kontakt_fidelity': 'unverified'},
     'symbol_overrides': {
         name: {'implementation': 'partial_native_subset', 'evidence': 'KSP_FRONTEND.md'}
-        for name in ['on note', 'on release', 'on init', 'play_note', 'wait', 'ignore_event', 'change_note', 'change_velo', '$EVENT_ID', '$EVENT_NOTE', '$EVENT_VELOCITY', '$NOTE_HELD', 'exit', 'if', 'while', 'continue', 'ui_knob', 'ui_slider', 'ui_button', 'ui_switch', 'make_perfview', 'on ui_control', 'abs', 'sgn', 'signbit', 'inc', 'dec', 'num_elements', 'allow_group', 'disallow_group', '$ALL_GROUPS', '$NUM_GROUPS']
+        for name in ['on note', 'on release', 'on init', 'play_note', 'wait', 'ignore_event', 'change_note', 'change_velo', '$EVENT_ID', '$EVENT_NOTE', '$EVENT_VELOCITY', '$NOTE_HELD', 'exit', 'if', 'while', 'continue', 'ui_knob', 'ui_slider', 'ui_button', 'ui_switch', 'make_perfview', 'on ui_control', 'abs', 'sgn', 'signbit', 'inc', 'dec', 'num_elements', 'allow_group', 'disallow_group', '$ALL_GROUPS', '$NUM_GROUPS', 'select', 'in_range']
     },
     'chapters': chapters,
 }

@@ -10,6 +10,11 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Lower KSP select/case, Boolean expressions, range checks and hexadecimal integers
+  onto shared native operations. First-match dispatch survives waits; short-circuit
+  guards skip invalid array reads while dead source still validates. Constant and
+  runtime evaluation share numeric semantics; vendor parity remains unverified.
+
 - Add prepared region groups with per-note editable and committed masks, inherited
   generated-note selections and off-audio generation retirement. KSP group commands
   now route attacks and release layers, including pedal-held release snapshots.

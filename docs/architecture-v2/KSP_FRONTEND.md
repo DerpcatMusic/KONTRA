@@ -44,8 +44,7 @@ exposes fixed/scaled velocity and expression inheritance as separate native choi
 
 ## Explicit rejection and limits
 
-The compiler rejects real-valued expressions, real/string arrays and values, select/case,
-compound Boolean expressions, other callbacks, multi-slot event forwarding, nested
+The compiler rejects real-valued expressions, real/string arrays and values, other callbacks, multi-slot event forwarding, nested
 comments and nonzero sample offsets. Evaluated out-of-range command arguments fault
 at execution before publishing a child or timer. Durations below `-1` are invalid.
 Input-linked generation requires the originating effective gate to remain open;
@@ -140,7 +139,8 @@ Note/release callbacks now accept nested `if (<scalar> <comparison> <scalar>)`,
 optional `else`, matching `end if`, and `exit`. Scalars use the same checked i32
 literal/built-in/polyphonic resolution as assignments. All six documented integer
 comparisons (`=`, `#`, `<`, `<=`, `>`, `>=`) lower to native signed comparisons,
-without subtraction overflow. Arithmetic/compound Boolean expressions remain open.
+without subtraction overflow. Compound conditions and arithmetic are now supported
+through the expression lowering described below.
 See [NI control statements](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-statements).
 
 `$NOTE_HELD` reads the originating owner's current physical key state. It is zero
@@ -316,7 +316,7 @@ malformed/deep expressions and variable updates. A heap-audited alternating-note
 sequence computes its branch across waits after physical release and renders exact
 PCM across blocks 1/7/64. The process-level WAV fixture now also computes a nested
 global expression before waiting, then branches after key-up at 44.1/48/96 kHz.
-Shifts, compound Boolean expressions, full init execution and other value types
+Shifts, full init execution and other value types
 remain required; this is not full-language parity.
 
 Integer-expression validation: all 206 native tests pass in debug, release and Rust
@@ -544,3 +544,42 @@ remain required work. Falcon hierarchy semantics are not inferred from Kontakt g
 
 Group-selection validation: 246 native tests pass in debug, release and Rust 1.92;
 strict all-target Clippy and both root boundary tests pass. Logs: `artifacts/groups-*`.
+
+
+## Select dispatch, Boolean expressions and hexadecimal integers
+
+`select (expression)` supports constant cases and inclusive constant ranges, nested
+select/if/while, empty selects and `continue` targeting the enclosing loop. The selector
+is evaluated once. Only the first matching case executes; waits resume inside that
+body and jump past later cases. Existing native comparison/jump/local instructions
+suffice, with no new dispatch table or runtime owner. Case constants use the same
+bounded preparation evaluator as declarations. Descending bounds are normalized to
+the range they name, following the legacy implementation pending vendor verification.
+There is no `else`/`default` case. A signed full-range case can serve as a fallback.
+
+Expressions now include integer comparisons, `and`, `or`, `xor`, `not`, and inclusive
+`in_range(value, low, high)`. Nonzero integers are true and Boolean results are 0/1.
+`and`/`or` short-circuit; `xor` evaluates both operands. `not` covers its comparison
+but binds before `and`; `and` binds before equally ranked, left-associative `or`/`xor`.
+Arithmetic and bitwise operations bind before comparisons. These precedence and
+short-circuit policies follow the recorded v1 reference and still need vendor probes.
+`in_range` evaluates all arguments and returns false for descending bounds.
+
+KSP hexadecimal integers require a leading zero and `H`/`h` suffix. Up to 32 value
+bits are accepted, interpreted as signed two's-complement; unary negation wraps just
+like native signed-32 operations. Constant preparation evaluates pure comparisons,
+ranges and forward short-circuit branches using native arithmetic/comparison helpers.
+Runtime reads are rejected in constants even behind a branch that would skip them.
+
+The [NI control statements reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-statements)
+defines the operators, inclusive ranges, first-match selection and absence of a
+default branch. Authored checks cover overlapping/descending/full-signed cases,
+hex limits, nested waits and exact PCM at blocks 1/7/64, loop continue, guarded and
+unguarded invalid array accesses, constant/runtime equivalence and numeric precedence.
+A 1,024-level statement nesting fixture remains iterative; expressions keep their
+64-level bound. A thousand-case unmatched dispatch exhausts bounded runtime fuel,
+while an early match skips the remaining cases. Dead source branches still validate.
+Full initialization, functions, typed values and vendor differential parity remain open.
+
+Control-flow validation: 251 native tests pass in debug, release and Rust 1.92;
+strict all-target Clippy and both root boundary tests pass. Logs: `artifacts/control-flow-*`.
