@@ -363,14 +363,6 @@ impl Translation {
             return Ok(None);
         }
         let not_modeled = ir::Reason::NotModeled;
-        if v.release_trigger && v.rls_trig_counter != 0 {
-            self.unsupported(
-                &at,
-                "release trigger counter decay",
-                v.rls_trig_counter,
-                not_modeled,
-            );
-        }
         if v.release_trigger && v.release_trigger_note_monophonic {
             self.unsupported(&at, "monophonic release trigger", true, not_modeled);
         }
@@ -558,6 +550,13 @@ impl Translation {
                     ModSource::MonoAftertouch => ir::ModulationSource::ChannelPressure,
                     ModSource::PolyAftertouch => ir::ModulationSource::PolyPressure,
                     ModSource::Constant => ir::ModulationSource::Constant,
+                    // Kontakt manual (Source module, T): counts down from T ms
+                    // at note-on and holds its value at note-off.
+                    ModSource::ReleaseTriggerCounter if v.rls_trig_counter > 0 => {
+                        ir::ModulationSource::ReleaseCounter(ir::Time::Milliseconds(f64::from(
+                            v.rls_trig_counter,
+                        )))
+                    }
                     ModSource::RandomUnipolar => ir::ModulationSource::Random,
                     ModSource::Unassigned => continue,
                     other => {
@@ -668,15 +667,14 @@ impl Translation {
             "pan" => return report(self, "pan modulation", ir::Reason::UnknownLaw),
             _ => return report(self, "modulation target", ir::Reason::NotModeled),
         };
-        let shape = match target.shaper.as_ref().filter(|s| s.enabled) {
+        // The invert flag does not act through an enabled shaper: Vista Full
+        // Strings stores identical shaped crossfade copies (mic `cl`/`dc`,
+        // `BALANCE_COMP`) that differ only in the flag and must play alike,
+        // and no inversion order makes both play the same.
+        let shaper = target.shaper.as_ref().filter(|s| s.enabled);
+        let invert = target.invert && shaper.is_none();
+        let shape = match shaper {
             None => None,
-            Some(_) if target.invert => {
-                return report(
-                    self,
-                    "inverted shaped modulation (order)",
-                    ir::Reason::UnknownLaw,
-                );
-            }
             Some(shaper) => {
                 use ni_file::kontakt::objects::ShaperCurve;
                 let points: Vec<(f64, f64)> = match &shaper.curve {
@@ -688,15 +686,22 @@ impl Translation {
                             .map(|(n, y)| (n as f64 / last, f64::from(*y)))
                             .collect()
                     }
-                    ShaperCurve::Breakpoints(points)
-                        if !points.is_empty() && points.iter().all(|p| p.curve == 0.0) =>
-                    {
+                    ShaperCurve::Breakpoints(points) if !points.is_empty() => {
+                        if points.iter().any(|p| p.curve != 0.0) {
+                            // Segment curvature (-1..1) has no known law.
+                            self.unsupported(
+                                at,
+                                "curved modulation shaper segment (linear used)",
+                                &target.param,
+                                ir::Reason::UnknownLaw,
+                            );
+                        }
                         points
                             .iter()
                             .map(|p| (f64::from(p.x), f64::from(p.y)))
                             .collect()
                     }
-                    _ => return report(self, "curved modulation shaper", ir::Reason::UnknownLaw),
+                    _ => return report(self, "empty modulation shaper", ir::Reason::UnknownLaw),
                 };
                 self.ir.shapes.push(ir::Shape { points });
                 Some(ir::ShapeRef(self.ir.shapes.len() - 1))
@@ -706,7 +711,7 @@ impl Translation {
             source,
             target: route_target,
             depth,
-            invert: target.invert,
+            invert,
             shape,
             smoothing: ir::Time::Milliseconds(f64::from(target.lag_ms)),
             scale: None,
@@ -1177,14 +1182,24 @@ fn saved(entries: &[String]) -> Vec<(String, ir::Saved)> {
 mod saved_tests {
     #[test]
     fn saved_values_keep_their_types_and_skip_arrays() {
-        let entries = ["$level 17", "~mix 0.5", "@label two words", "%table 1 2 3", "$bad x"].map(String::from);
+        let entries = [
+            "$level 17",
+            "~mix 0.5",
+            "@label two words",
+            "%table 1 2 3",
+            "$bad x",
+        ]
+        .map(String::from);
         let saved = super::saved(&entries);
         assert_eq!(
             saved,
             [
                 ("$level".to_owned(), sampler_ir::Saved::Int(17)),
                 ("~mix".to_owned(), sampler_ir::Saved::Real(0.5)),
-                ("@label".to_owned(), sampler_ir::Saved::Text("two words".into())),
+                (
+                    "@label".to_owned(),
+                    sampler_ir::Saved::Text("two words".into())
+                ),
             ]
         );
     }
