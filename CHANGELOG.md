@@ -10,6 +10,9 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Add prepared low/high shelving EQ to the shared voice biquad processor, with
+  explicit resonance semantics, stability checks and boost/cut response evidence.
+
 - Reuse retained note performance/channel context for KSP CC reads and generated
   controller writes, including overlapping note/release callbacks after waits.
 

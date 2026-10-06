@@ -8,7 +8,7 @@ Multiple regions may reference one chain; each admitted voice has separate stere
 history. `VoiceChain` specifies ordered processors before and after the amplitude
 envelope and an explicit maximum tail duration in output frames. Current processors
 are finite static/control-driven linear gain (including polarity inversion) and prepared native biquads:
-low-pass, high-pass, unity-peak band-pass, notch, all-pass and peaking EQ.
+low-pass, high-pass, unity-peak band-pass, notch, all-pass, peaking and low/high-shelf EQ.
 
 ## Ownership and execution
 
@@ -42,7 +42,7 @@ Coefficients follow the [RBJ Audio EQ Cookbook published by W3C](https://www.w3.
 with normalized double-precision transposed direct-form II state. Frequency must
 lie strictly inside `(0, sample_rate/2)` and Q must be positive. Prepared filters
 must match the plan rate. Nonfinite parameters and rounded coefficients that fail
-strict second-order stability conditions are rejected. Half-angle numerator
+strict second-order stability conditions are rejected. Low/high-pass half-angle numerator
 identities avoid cancellation near DC/Nyquist. These native parameters are not
 proprietary resonance/drive controls and must not be reported as vendor emulation.
 
@@ -151,3 +151,28 @@ timestamped values now use `Event::Control`, described in [CONTROL_STATE.md](CON
 Control/DSP validation: all 229 native tests pass in debug, release and Rust 1.92;
 strict all-target Clippy and both root boundary tests pass. Logs use
 `artifacts/control-dsp-{debug,release,msrv,clippy,boundary}.log`.
+
+
+## Native shelving EQ
+
+Low/high shelves use the same immutable biquad coefficients and independent stereo
+voice histories. Gain is in decibels, frequency is the shelf midpoint, and Q controls
+resonance. Q=1/sqrt(2) corresponds to RBJ shelf slope S=1 (monotonic); larger Q can
+overshoot. Import profiles must translate their source slope/resonance semantics
+explicitly. Invalid/nonfinite or rounded-unstable filters fail preparation. No new
+processor runtime, per-frame coefficient calculation or allocation is introduced.
+
+The W3C/RBJ formulas and pinned sfizz
+[`rbj_filters.dsp`](https://github.com/sfztools/sfizz/blob/f5c6e29f23b8057867c08e88f5f6ac6738baa30b/src/sfizz/dsp/filters/rbj_filters.dsp#L122)
+were reviewed as references. sfizz's wrapper clamps Q/frequency; the native prepared
+API retains its explicit validation. No SFZ frontend work is involved.
+
+Checks extend the independent recurrence and DC/midpoint/Nyquist response targets
+to positive/negative shelves at 44.1/48/96 kHz. A second check cascades opposite-gain
+shelves across 40 Hz, 1 kHz and 0.49 times sample rate, low/normal/resonant Q, zero/
+6/24 dB and independent stereo inputs. The result matches a wire within 2e-9;
+unit-slope frequency grids remain monotonic within numerical tolerance. These test
+native EQ semantics, not a Kontakt/Falcon processor model.
+
+Shelf validation: 281 native debug/release tests and strict all-target Clippy pass
+(`artifacts/shelf-eq-*`).

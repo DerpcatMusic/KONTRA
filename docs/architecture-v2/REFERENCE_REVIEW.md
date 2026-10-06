@@ -301,3 +301,15 @@ internal closures and governs FIFO matching, terminal eligibility and MPE member
 tracking. Tests preserve physical deadlines across source rescheduling and exercise
 both MPE zones and suppressed-release timing. This is native ownership evidence;
 precise vendor held-state projection remains an explicit differential-test obligation.
+
+
+### Shelf EQ reference check
+
+Reviewed pinned sfizz `f5c6e29...`
+[`src/sfizz/dsp/filters/rbj_filters.dsp:122–151`](https://github.com/sfztools/sfizz/blob/f5c6e29f23b8057867c08e88f5f6ac6738baa30b/src/sfizz/dsp/filters/rbj_filters.dsp#L122)
+alongside the [W3C/RBJ formulas](https://www.w3.org/TR/audio-eq-cookbook/). Both shelf
+responses can use Q; source slope is not interchangeable with Q, and importer
+translation must preserve that distinction. The new native shelf code follows the
+public equations, validates preparation and reuses voice-local filter state.
+Opposite-gain cancellation and unit-slope monotonicity now have executable evidence;
+nonlinear vendor response and dynamic-coefficient behavior remain separate work.
