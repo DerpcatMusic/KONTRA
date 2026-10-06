@@ -125,6 +125,9 @@ pub struct Loaded<P> {
     /// The part's output tree, node 0 being the instrument.
     pub tree: tree::MixTree,
     pub report: report::LoadReport,
+    /// The source's script interfaces, in script order; their image assets
+    /// carry the library's own metadata.
+    pub interfaces: Vec<sampler_ui_ir::Interface>,
 }
 
 /// Browser-facing facts about a source, read without preparing it.
