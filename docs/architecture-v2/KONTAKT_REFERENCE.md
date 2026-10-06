@@ -147,3 +147,19 @@ Same noise instrument. Times in seconds from note-off (release, sustain 1.0) or 
 | 787,400 | decay | 0.195 | 0.587 | 1.117 | 2.146 | 2.860 | 3.172 | |
 
 Decay to sustain 0 and release from sustain 1 have the same shape. Above v ~ 0.39e6 times grow exponentially with v (about x3.8 per +157,480, i.e. ln T slope 8.5 per unit v/1e6; +78,740 doubles it); below that they flatten to millisecond floors. Level versus normalised time u = t / T(-40 dB) for release at v = 708,660: u .1 .74, .2 .55, .3 .45, .4 .33, .5 .22, .6 .16, .7 .11, .8 .07, .9 .03 (amplitude, 1.0 at u = 0); same within a few percent for v 551k-787k. The envelope shape is neither linear nor linear in dB: fast initial fall, long convex tail.
+
+## 10. Flexible envelope segment curve (STAGE_SLOPE) and curvature-to-k map
+
+Measured on a 1 s segment from level 0 to 1 (flex envelope on Volume, `scenarios/flex.ksp`), slope s = CC*7874/1e6 (0.5 linear, as in the manual). Fraction of the final level versus time, fitted with the normalised exponential `a(u) = (e^{ku}-1)/(e^k-1)` for concave (s < 0.5, slow start) and the mirror `(1-e^{-ku})/(1-e^{-k})` for convex (s > 0.5), u = t / 1 s:
+
+| s - 0.5 | k | k / abs(s - 0.5) | rms error |
+|---|---|---|---|
+| -0.375 | 6.97 | 18.6 | 0.012 |
+| -0.250 | 3.72 | 14.9 | 0.019 |
+| -0.120 | 1.67 | 13.9 | 0.013 |
+| +0.005 | 0.34 | | 0.021 |
+| +0.130 | 2.21 | 17.0 | 0.027 |
+| +0.255 | 4.05 | 15.9 | 0.027 |
+| +0.380 | 7.22 | 19.0 | 0.026 |
+
+So k is about K * abs(s - 0.5) with K between about 14 and 19 (slightly increasing with abs(s - 0.5); the Vista g37 shaper sweep and Una g98 fit K 15-18). Slope value 0 (CC 0) acts as linear, not as the most concave curve. The positive (convex) side sets the final level quickly: s - 0.5 = +0.38 reaches 90% at 0.28 s. Level reaches the target by the end of the stage.
