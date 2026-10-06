@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Execute evaluated KSP sample offsets through native generated-note admission,
+  preserving per-asset source time and fractional phase across reverse/looped
+  playback, with explicit exhausted-source cleanup and atomic argument rejection.
+
 - Preserve exact controller input addresses separately from downstream channel
   masks. Native callbacks can read their original port/group/channel across waits
   and plan replacement, including full-zone MPE manager remaps.

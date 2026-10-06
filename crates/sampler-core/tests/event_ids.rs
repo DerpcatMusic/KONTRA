@@ -100,6 +100,7 @@ fn queued_note_ends_retain_silent_generated_notes_and_cancel_without_leaking_pin
                             value: 127,
                         },
                         Instruction::PlayMidi {
+                            offset_micros: None,
                             key: 0,
                             velocity: 1,
                             inheritance: Inheritance::Independent,
@@ -264,6 +265,7 @@ fn generated_result_aliases_are_preflighted_and_do_not_pin_completed_children() 
                 value: 127,
             },
             Instruction::PlayMidi {
+                offset_micros: None,
                 key: 0,
                 velocity: 1,
                 duration: DurationValue::Fixed(Duration::UntilSilent),

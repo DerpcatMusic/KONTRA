@@ -330,7 +330,9 @@ source semantics and checksum/authentication validation are still required.
   through native bounded services; gate-linked and whole-source duration policies
   now share native ownership/retirement. Generation-scoped source aliases and
   generated-note return IDs now survive scalar/array storage without pinning notes.
-  Offsets, full event-targeted commands and
+  Resident source-time offsets now preserve per-asset fractional positions and
+  explicit loop/end behavior; DFD limits and vendor profile fidelity remain open.
+  Full event-targeted commands and
   ordered multi-slot/controller forwarding remain open. Single-stage suppressed
   releases now resume through native pedal-aware services. Original note
   forwarding now commits once on the same identity before KSP wait/exit/completion.

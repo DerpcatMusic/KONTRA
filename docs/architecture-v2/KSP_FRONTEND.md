@@ -22,8 +22,7 @@ expressions and the control flow described below. Expressions can read signed
 32-bit literals, `$EVENT_ID`, `$EVENT_NOTE`, `$EVENT_VELOCITY`, `$NOTE_HELD` and declared
 global/polyphonic/control integers, constants and indexed integer arrays. Note-owned values remain shared between the
 originating note and its release callback, including overlapping waits. Generated
-note key, velocity and duration accept evaluated integer expressions; sample offset
-currently requires literal zero. Supported key/velocity ranges are 0–127 and 1–127,
+note key, velocity, source offset and duration accept evaluated integer expressions. Supported key/velocity ranges are 0–127 and 1–127,
 with positive microsecond duration, `-1` for the originating effective gate, or `0`
 for independent whole-source lifetime. Waits accept nonnegative microseconds.
 
@@ -45,7 +44,7 @@ exposes fixed/scaled velocity and expression inheritance as separate native choi
 ## Explicit rejection and limits
 
 The compiler rejects real-valued expressions, real/string arrays and values, other callbacks, multi-slot event forwarding, nested
-comments and nonzero sample offsets. Evaluated out-of-range command arguments fault
+comments. Evaluated out-of-range command arguments fault
 at execution before publishing a child or timer. Durations below `-1` are invalid.
 Input-linked generation requires the originating effective gate to remain open;
 independent fixed/whole-source notes can be generated after its release.
@@ -461,7 +460,7 @@ quota recovery before host-terminal acceptance and no runtime heap operations.
 Current policy follows the parent's effective gate (including pedal holds); precise
 Kontakt pedal/special-duration behavior remains a differential-test obligation.
 Source note-end control is described below; broader event-targeted commands, sample
-offsets and ordered script stages remain open. No vendor-fidelity claim is added.
+DFD offset limits and ordered script stages remain open. No vendor-fidelity claim is added.
 
 Generated-lifetime validation: all 224 native tests pass in debug, release and
 Rust 1.92; strict all-target Clippy and both root boundary tests pass. Logs use
@@ -778,3 +777,33 @@ with source/vendor fidelity outside this native subset.
 
 Function validation: 286 native tests pass in debug/release/Rust 1.92, strict
 all-target Clippy and both root boundary tests pass (`artifacts/ksp-functions-*`).
+
+
+## Generated-note source offsets
+
+The third `play_note` argument now accepts nonnegative evaluated microseconds and
+lowers to the existing native child admission path. Every attack source converts
+the captured value with its own asset rate, retaining fractional sample phase;
+playback pitch and output sample rate do not change the selected source time.
+Literal zero keeps the existing instruction/register footprint. Invalid evaluated
+values fault before a child, source alias or duration command is published.
+
+The native policy measures from the original view's leading edge in its playback
+direction. Starting within a loop retains its boundaries and pass count. Starting
+at/past its outward edge bypasses it; at/past the source end produces silence and
+normal retirement. Offsets do not advance the event clock or envelope and do not
+shift later automatic release-source starts. This is resident-source behavior.
+
+The [NI command reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands)
+specifies microseconds and separately documents DFD's zone Sample Mod limit. That
+streaming rule, source-engine rounding and loop/release details still require
+profile implementation and vendor fixtures; this change does not claim them.
+
+Authored fixtures compare offset playback with independently elapsed native PCM
+for both directions, two asset/output rates, octave shifts, finite wrap/reflected/
+crossfaded loops, bypassed loops and exhausted views at blocks 1/7/64. A fractional
+1.5-frame onset checks retained interpolation history. Negative/overflowed source
+expressions fail without partial child/timer publication, under heap guards.
+
+Validation: 303 native release/Rust 1.92 tests and strict all-target Clippy pass
+(`artifacts/source-offset-*`).

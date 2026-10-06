@@ -13,6 +13,7 @@ pub(super) struct NoteEvent {
     pub current: NoteProperties,
     /// The generated event was admitted with a positive/fixed duration policy.
     pub fixed_duration: bool,
+    pub source_offset_micros: u32,
     source_id: Option<i32>,
 }
 
@@ -23,6 +24,7 @@ impl NoteEvent {
             initial,
             current: initial,
             fixed_duration: false,
+            source_offset_micros: 0,
             source_id: None,
         }
     }

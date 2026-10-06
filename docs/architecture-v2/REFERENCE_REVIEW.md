@@ -338,3 +338,15 @@ control laws separate from the shared mixing primitive. The new native static
 matrix stage expresses coefficients explicitly; it does not import sfizz's lookup
 table, assume its law matches Kontakt/Falcon, or add an SFZ frontend. Independent
 matrix/impulse fixtures cover order, channel identity and retained filter tails.
+
+
+### Initial source offsets and loop boundaries
+
+Reviewed pinned Shortcircuit XT
+[`voice.cpp:475–506`](https://github.com/surge-synthesizer/shortcircuit-xt/blob/8785f09acd9f93682ce4f754fac1d3c62e5b1a9a/src/scxt-core/voice/voice.cpp#L475).
+Its initial position uses playback direction and view bounds; the surrounding
+comment explicitly leaves loop/end crossings unfinished. The new native offset
+path therefore has explicit exhausted-view and loop-bypass rules, tested against
+independently elapsed PCM, rather than adopting that placeholder as an oracle.
+KSP's documented microsecond unit and distinct DFD Sample Mod limit are tracked
+in the frontend contract. No source-engine equivalence is inferred from this read.

@@ -321,21 +321,6 @@ impl<'a> Parser<'a> {
         }
         Ok(())
     }
-    fn number(&mut self) -> Result<(u64, usize), Error> {
-        let token = self.next()?;
-        match token.kind {
-            Kind::Number(value) if value <= i32::MAX as u64 => Ok((value, token.offset)),
-            Kind::Hex(value) if value <= i32::MAX as u32 => Ok((u64::from(value), token.offset)),
-            Kind::Number(_) => Err(Error {
-                offset: token.offset,
-                message: "positive literal exceeds KSP signed 32-bit range",
-            }),
-            _ => Err(Error {
-                offset: token.offset,
-                message: "expected unsigned integer literal; dynamic expressions are unsupported",
-            }),
-        }
-    }
     fn symbol(&mut self, symbol: u8) -> Result<(), Error> {
         self.expect(
             Kind::Symbol(symbol),
@@ -957,21 +942,30 @@ impl<'a> Parser<'a> {
 
     fn play(&mut self, local: u16, result: bool, depth: u8) -> Result<(), Error> {
         let velocity = self.temporary(local)?;
-        let frames = self.temporary(velocity)?;
-        let scratch = self.temporary(frames)?;
+        let offset = self.temporary(velocity)?;
         let result = result.then_some(local);
         self.symbol(b'(')?;
         self.expression(local, 0, depth + 1)?;
         self.symbol(b',')?;
         self.expression(velocity, 0, depth + 1)?;
         self.symbol(b',')?;
-        let (sample_offset, offset) = self.number()?;
-        if sample_offset != 0 {
-            return Err(Error {
-                offset,
-                message: "sample offsets are unsupported",
-            });
-        }
+        let offset_start = self.code.len();
+        self.expression(offset, 0, depth + 1)?;
+        let offset_micros = if matches!(self.code[offset_start..],
+            [Instruction::SetLocal { local: register, value: 0 }] if register == offset
+        ) {
+            self.code.pop();
+            self.emitted -= 1;
+            None
+        } else {
+            Some(offset)
+        };
+        let frames = if offset_micros.is_some() {
+            self.temporary(offset)?
+        } else {
+            offset
+        };
+        let scratch = self.temporary(frames)?;
         self.symbol(b',')?;
         let duration_start = self.code.len();
         self.expression(frames, 0, depth + 1)?;
@@ -992,7 +986,7 @@ impl<'a> Parser<'a> {
                     sampler_core::DurationValue::Frames(frames)
                 }
             };
-            return self.play_duration(local, velocity, duration, result);
+            return self.play_duration(local, velocity, duration, offset_micros, result);
         }
         // Translate sentinel lifetimes without clobbering earlier arguments or
         // the enclosing expression/array index in lower-numbered registers.
@@ -1019,6 +1013,7 @@ impl<'a> Parser<'a> {
                 local,
                 velocity,
                 sampler_core::DurationValue::Fixed(duration),
+                offset_micros,
                 result,
             )?;
             *exit = self.code.len();
@@ -1033,6 +1028,7 @@ impl<'a> Parser<'a> {
             local,
             velocity,
             sampler_core::DurationValue::Frames(frames),
+            offset_micros,
             result,
         )?;
         for exit in exits {
@@ -1048,6 +1044,7 @@ impl<'a> Parser<'a> {
         key: u16,
         velocity: u16,
         duration: sampler_core::DurationValue,
+        offset_micros: Option<u16>,
         result: Option<u16>,
     ) -> Result<(), Error> {
         self.emit(Instruction::PlayMidi {
@@ -1055,6 +1052,7 @@ impl<'a> Parser<'a> {
             key,
             velocity,
             duration,
+            offset_micros,
             inheritance: Inheritance::Independent,
         })
     }
