@@ -221,6 +221,16 @@ For example, VWinds `Clarinet A` has saved zero layer gains that need its Lua
 initialization; its samples decode but its current translated render is silent.
 Those mappings remain with the IR frontend owner.
 
+Kontakt's `Content/...` sample references can resolve from its local player
+native Windows installation's Native Instruments and VST3 folders. Wine
+player discovery is superseded by the native-only policy; no Wine prefix is searched.
+Discovery is bounded and cached; `KONTRA_KONTAKT_CONTENT` overrides it with a
+path list of `Content` directories. Lookups cannot ascend or leave those roots.
+Multiple player copies must contain byte-identical assets (comparison bounded
+to 32 MiB). The installed Conflux multi census improved from 20/50 to 50/50
+decoding by reading the actual Chords/Phrases tool WAVs, without synthesizing
+or bundling replacements. `Samples` keeps its existing public API.
+
 ## Verification on the shared machine
 
 Run every Cargo command and real-library census/render with
