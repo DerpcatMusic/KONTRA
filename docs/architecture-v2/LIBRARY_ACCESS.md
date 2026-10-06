@@ -219,7 +219,8 @@ are resolved. The census stores status only, without program or sample bytes.
 
 Protected `render-uvi` checks produced finite, nonzero audio for Augmented
 Orchestra's `V Strings Bartok` (note 60) and `BSS Phased Flatterzunge` (note 35).
-`render-kontakt` also rendered `Una Corda Pure` (note 60). Each check rendered
+`render-kontakt` also rendered `Una Corda Pure` and `Conflux` (note 60;
+Conflux with `--no-scripts`). Each check rendered
 158,400 stereo frames at 48 kHz. The opt-in UVI integration test additionally
 renders directly into RAM. Rendered note performances are verification outputs;
 no original programs, pictures, samples or access state are extracted.
