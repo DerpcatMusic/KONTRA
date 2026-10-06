@@ -44,6 +44,11 @@ pub enum ValidationError {
         take: u32,
         takes: u32,
     },
+    /// Articulation switching that cannot select unambiguously.
+    Switching {
+        owner: String,
+        reason: &'static str,
+    },
 }
 
 impl fmt::Display for ValidationError {
@@ -65,6 +70,7 @@ impl fmt::Display for ValidationError {
             Self::TakeOutOfSequence { zone, take, takes } => {
                 write!(f, "zone {zone}: take {take} of a {takes}-take sequence")
             }
+            Self::Switching { owner, reason } => write!(f, "{owner}: {reason}"),
         }
     }
 }
@@ -291,6 +297,7 @@ impl Instrument {
                 check.exists(Reference::Route(route.0))?;
             }
         }
+        self.validate_switching(&mut check)?;
         for (i, modulator) in self.modulators.iter().enumerate() {
             check.owner = format!("modulator {i}");
             check.scope(modulator.scope)?;
@@ -355,6 +362,97 @@ impl Instrument {
             for send in &bus.sends {
                 check.output(send.to)?;
                 check.gain(send.gain, "send")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Instrument {
+    fn validate_switching(&self, check: &mut Check) -> Result<(), ValidationError> {
+        use crate::{Driver, SwitchKeys, SwitchOwner};
+        let switching = self.switching;
+        let fail = |owner: &str, reason| {
+            Err(ValidationError::Switching {
+                owner: owner.into(),
+                reason,
+            })
+        };
+        if self.articulations.iter().filter(|a| a.default).count() > 1 {
+            return fail("articulations", "more than one default");
+        }
+        if switching.owner == SwitchOwner::Behavior {
+            if switching.keys == SwitchKeys::Play {
+                return fail(
+                    "switching",
+                    "behavior-owned switch keys cannot be freed to play",
+                );
+            }
+            if let Some(i) = self.zones.iter().position(|z| z.articulation.is_some()) {
+                return fail(
+                    &format!("zone {i}"),
+                    "behavior-owned switching tags no zones",
+                );
+            }
+        }
+        let mut keys = [false; 128];
+        for (i, a) in self.articulations.iter().enumerate() {
+            check.owner = format!("articulation {i}");
+            for &key in &a.switch_keys {
+                check.within(f64::from(key), 0.0..=127.0, "switch key")?;
+                if std::mem::replace(&mut keys[usize::from(key)], true) {
+                    return fail(&check.owner, "switch key shared with another articulation");
+                }
+            }
+            let alt = a.alternatives;
+            if let Some(v) = alt.velocities {
+                check.range(v.low, v.high, "velocities")?;
+                check.within(f64::from(v.low), 1.0..=127.0, "velocities")?;
+                check.within(f64::from(v.high), 1.0..=127.0, "velocities")?;
+            }
+            if let Some(channel) = alt.channel {
+                check.within(f64::from(channel), 0.0..=15.0, "channel")?;
+            }
+            if let Some(c) = alt.controller {
+                check.within(f64::from(c.controller), 0.0..=119.0, "controller")?;
+                check.range(c.low, c.high, "controller")?;
+                check.within(f64::from(c.high), 0.0..=127.0, "controller")?;
+            }
+            if let Some(program) = alt.program {
+                check.within(f64::from(program), 0.0..=127.0, "program")?;
+            }
+            let needed = match switching.driver {
+                Driver::Keys => true,
+                Driver::Velocity => alt.velocities.is_some(),
+                Driver::Channel => alt.channel.is_some(),
+                Driver::Controller => alt.controller.is_some(),
+                Driver::Program => alt.program.is_some(),
+            };
+            if !needed {
+                return fail(&check.owner, "no value for the active driver");
+            }
+            if switching.owner == SwitchOwner::Behavior && a.switch_keys.is_empty() {
+                return fail(
+                    &check.owner,
+                    "behavior-owned articulation has no key to tap",
+                );
+            }
+            for b in &self.articulations[..i] {
+                let (x, y) = (alt, b.alternatives);
+                let overlap = |l1: u8, h1: u8, l2: u8, h2: u8| l1 <= h2 && l2 <= h1;
+                let clash = match switching.driver {
+                    Driver::Keys => false,
+                    Driver::Velocity => matches!((x.velocities, y.velocities),
+                        (Some(p), Some(q)) if overlap(p.low, p.high, q.low, q.high)),
+                    Driver::Channel => x.channel == y.channel,
+                    Driver::Controller => matches!((x.controller, y.controller),
+                        (Some(p), Some(q)) if p.controller == q.controller
+                            && overlap(p.low, p.high, q.low, q.high)),
+                    Driver::Program => x.program == y.program,
+                };
+                if clash {
+                    return fail(&check.owner, "driver value overlaps another articulation");
+                }
             }
         }
         Ok(())
@@ -450,5 +548,63 @@ mod tests {
         assert_eq!(Pitch::Cents(-250.0).semitones(), -2.5);
         assert!((Pitch::Ratio(2.0).semitones() - 12.0).abs() < 1e-12);
         assert_eq!(Time::Milliseconds(5.0).seconds(), 0.005);
+    }
+
+    #[test]
+    fn alternatives_follow_key_order_and_switching_is_checked() {
+        let mut ir = one_zone();
+        ir.articulations = [36u8, 24, 30]
+            .map(|key| Articulation {
+                name: format!("{key}"),
+                switch_keys: vec![key],
+                ..Default::default()
+            })
+            .to_vec();
+        ir.assign_alternatives(32);
+        let alt = |i: usize| ir.articulations[i].alternatives;
+        assert_eq!(
+            (alt(1).program, alt(2).program, alt(0).program),
+            (Some(0), Some(1), Some(2))
+        );
+        assert_eq!(alt(2).channel, Some(1));
+        assert_eq!(
+            alt(0).controller,
+            Some(ControllerRange {
+                controller: 32,
+                low: 2,
+                high: 2
+            })
+        );
+        let v = [1, 2, 0].map(|i| alt(i).velocities.unwrap());
+        assert_eq!((v[0].low, v[0].high, v[1].low, v[2].high), (1, 42, 43, 127));
+        for driver in [
+            Driver::Keys,
+            Driver::Velocity,
+            Driver::Channel,
+            Driver::Controller,
+            Driver::Program,
+        ] {
+            ir.switching.driver = driver;
+            assert_eq!(ir.validate(), Ok(()));
+        }
+        ir.articulations[0].alternatives.program = Some(0);
+        assert!(matches!(
+            ir.validate(),
+            Err(ValidationError::Switching { .. })
+        ));
+        ir.assign_alternatives(32);
+        ir.switching.owner = SwitchOwner::Behavior;
+        ir.switching.keys = SwitchKeys::Play;
+        assert!(matches!(
+            ir.validate(),
+            Err(ValidationError::Switching { .. })
+        ));
+        ir.switching.keys = SwitchKeys::Swallow;
+        assert_eq!(ir.validate(), Ok(()));
+        ir.zones[0].articulation = Some(ArticulationRef(0));
+        assert!(matches!(
+            ir.validate(),
+            Err(ValidationError::Switching { .. })
+        ));
     }
 }
