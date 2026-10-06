@@ -224,3 +224,16 @@ vendor oracle. The new compiler instead prepares constant values off audio and
 uses bounded views into the existing native instance bank. No legacy VM is called
 and no external implementation was copied. Zero-length rejection and invalid-index
 fault behavior require vendor probes; native memory safety and ownership are tested.
+
+
+## Group allow state and release forwarding
+
+Read the [NI group commands reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/group-commands)
+and inspected legacy `src/ksp/calls.rs:706–718` and `1890–1900`,
+`src/ksp/builtins.rs:414`, and generated-child group inheritance in
+`src/ksp/runtime.rs:796–866`. Legacy code restricts note edits after engine entry,
+allows release-callback edits and snapshots group state into children. The supplied
+architecture distinguishes vendor groups/keygroups and their hierarchy from shared
+selection primitives; the new masks follow that separation. No legacy VM path or
+implementation is imported. Existing automatic release selection still uses native
+policies, and Kontakt timing/system-script parity remains unverified.

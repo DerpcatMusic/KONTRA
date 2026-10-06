@@ -56,6 +56,7 @@ use modulation::RenderedExpression;
 pub use modulation::{Destination, ExpressionSource, Modulation, Route};
 mod pitch;
 pub use pitch::NotePitch;
+mod groups;
 mod note_event;
 pub use note_event::NoteProperties;
 mod plans;
@@ -440,6 +441,7 @@ impl Runtime {
             controls: control::ControlState::new(&plan),
             scripts: plan.script_initial.clone(),
             dsp: dsp::VoiceDspState::new(&plan, limits.voices)?,
+            groups: groups::GroupState::new(plan.group_count, limits.notes)?,
             prepared: Box::new(plan),
             notes: 0,
             callbacks: 0,
@@ -724,6 +726,11 @@ impl Runtime {
             ..release::ReleaseTimes::default()
         };
         self.note_events[id.index] = note_event::NoteEvent::new(pitch, velocity);
+        self.plans
+            .get_mut(plan.0)
+            .unwrap()
+            .groups
+            .admit(id.index, parent.map(|p| p.0.index));
         if let Some(parent) = parent {
             let index = Index::new(id.index);
             if let Some(next) = next_sibling {

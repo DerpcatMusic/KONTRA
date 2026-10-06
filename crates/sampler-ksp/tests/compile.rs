@@ -384,7 +384,7 @@ fn polyphonic_declarations_and_callback_tables_reject_invalid_scopes_and_budgets
             Limits {
                 variables: 1,
                 array_cells: 0,
-                instructions: 3,
+                instructions: 4,
                 ..limits()
             }
         )
@@ -395,7 +395,7 @@ fn polyphonic_declarations_and_callback_tables_reject_invalid_scopes_and_budgets
             &source,
             48000,
             Limits {
-                instructions: 2,
+                instructions: 3,
                 ..limits()
             }
         )
@@ -417,7 +417,7 @@ fn polyphonic_declarations_and_callback_tables_reject_invalid_scopes_and_budgets
         source,
         48000,
         Limits {
-            instructions: 4,
+            instructions: 5,
             ..limits()
         },
     )
@@ -597,7 +597,7 @@ fn conditional_syntax_is_bounded_and_never_hides_invalid_dead_code() {
     );
     let budget = Limits {
         source_bytes: source.len(),
-        instructions: 4098,
+        instructions: 4100,
         variables: 0,
         array_cells: 0,
     };
@@ -607,7 +607,7 @@ fn conditional_syntax_is_bounded_and_never_hides_invalid_dead_code() {
             &source,
             48000,
             Limits {
-                instructions: 4097,
+                instructions: 4099,
                 ..budget
             }
         )
@@ -898,7 +898,7 @@ fn loops_obey_fuel_and_continue_targets_the_innermost_loop() {
             source,
             48000,
             Limits {
-                instructions: 6,
+                instructions: 7,
                 ..limits()
             }
         )
@@ -909,7 +909,7 @@ fn loops_obey_fuel_and_continue_targets_the_innermost_loop() {
             source,
             48000,
             Limits {
-                instructions: 5,
+                instructions: 6,
                 ..limits()
             }
         )

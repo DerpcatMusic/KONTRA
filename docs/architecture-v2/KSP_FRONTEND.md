@@ -509,3 +509,38 @@ Kontakt fidelity remains unverified.
 
 Validation: 239 native tests pass in debug/release and Rust 1.92; strict all-target Clippy and both
 root boundary tests pass. Logs: `artifacts/script-arrays-*`.
+
+
+## Per-note group selection
+
+`allow_group(expression)` and `disallow_group(expression)` now lower onto native
+per-note masks. `$ALL_GROUPS` can be used in integer expressions; `$NUM_GROUPS`
+reads the originating prepared generation in executable callbacks. It is not yet
+available during the frontend's constant-only init preparation. Group indices are
+zero-based. UI/init group mutations are rejected. Invalid indices fault before a
+mask write; invalid-index behavior still needs vendor comparison.
+
+Note-callback edits stop taking effect after attack forwarding. Suppressed notes
+can still configure the selection inherited by their generated children. Release
+callbacks edit the same note's draft and commit its automatic release selection at
+first wait, exit or completion. This commit occurs once; a later edit can configure
+another generated child but cannot rewrite an already selected release or the
+snapshot waiting for pedal-up. This is partial release forwarding: event suppression,
+ordered source slots and full Kontakt system-script behavior remain open.
+
+The [NI group commands reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/group-commands)
+documents note/release contexts, zero-based indices and restrictions on running
+voices. First-yield release selection and the opaque numeric encoding of
+`$ALL_GROUPS` (0x3fffffff) use the recorded legacy reference pending vendor probes;
+the native IR uses an explicit all-groups target, not this sentinel.
+
+Tests render independently expected overlapping attack/release layers at blocks
+1/7/64, ignored late note edits, separately generated release children, malformed
+indices and pedal-held release selection. Native tests cover multiword masks,
+per-note isolation, slot reuse, failed-admission retry, ungrouped layers, take-history
+eligibility and old-generation ownership. This is not full Kontakt group support:
+names/lookup, purge, `%GROUPS_AFFECTED`, event-targeted group writes and source import
+remain required work. Falcon hierarchy semantics are not inferred from Kontakt groups.
+
+Group-selection validation: 246 native tests pass in debug, release and Rust 1.92;
+strict all-target Clippy and both root boundary tests pass. Logs: `artifacts/groups-*`.

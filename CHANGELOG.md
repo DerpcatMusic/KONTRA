@@ -10,6 +10,11 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Add prepared region groups with per-note editable and committed masks, inherited
+  generated-note selections and off-audio generation retirement. KSP group commands
+  now route attacks and release layers, including pedal-held release snapshots.
+  Complete source group/import and vendor parity remain open.
+
 - Add KSP integer constants and bounded arrays through native script-instance banks.
   Indexed reads/writes, inc/dec and num_elements preserve generation ownership and
   reject invalid accesses before adjacent state can change. Million-element source

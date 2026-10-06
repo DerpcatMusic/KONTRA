@@ -36,6 +36,7 @@ pub struct PlanTransfer {
     controls: super::control::ControlState,
     scripts: Box<[Box<[i64]>]>,
     dsp: super::dsp::VoiceDspState,
+    groups: super::groups::GroupState,
 }
 
 pub(super) struct Generation {
@@ -47,6 +48,7 @@ pub(super) struct Generation {
     pub controls: super::control::ControlState,
     pub scripts: Box<[Box<[i64]>]>,
     pub dsp: super::dsp::VoiceDspState,
+    pub groups: super::groups::GroupState,
 }
 
 pub(super) struct PlanQueues {
@@ -63,6 +65,7 @@ pub struct PlanControl {
     locals: usize,
     note_cells: usize,
     voices: usize,
+    notes: usize,
     sequence: u64,
 }
 
@@ -96,6 +99,15 @@ impl PlanControl {
                 });
             }
         };
+        let groups = match super::groups::GroupState::new(prepared.group_count, self.notes) {
+            Ok(groups) => groups,
+            Err(_) => {
+                return Err(RejectedPlan {
+                    reason: PlanError::Capacity,
+                    prepared,
+                });
+            }
+        };
         let request = self.sequence + 1;
         let sequences = super::variation::SequenceState::new(&prepared);
         let controls = super::control::ControlState::new(&prepared);
@@ -107,6 +119,7 @@ impl PlanControl {
             controls,
             scripts,
             dsp,
+            groups,
         }) {
             Ok(()) => {
                 self.sequence = request;
@@ -155,6 +168,7 @@ impl Runtime {
             locals: runtime.behavior_stride,
             note_cells: runtime.note_stride,
             voices: limits.voices,
+            notes: limits.notes,
             sequence: 0,
         };
         runtime.plan_queues = Some(PlanQueues {
@@ -211,6 +225,7 @@ impl Runtime {
                 controls: generation.controls,
                 scripts: generation.scripts,
                 dsp: generation.dsp,
+                groups: generation.groups,
             }) {
                 Ok(()) => count += 1,
                 Err(PushError::Full(plan)) => {
@@ -223,6 +238,7 @@ impl Runtime {
                             controls: plan.controls,
                             scripts: plan.scripts,
                             dsp: plan.dsp,
+                            groups: plan.groups,
                             notes: 0,
                             callbacks: 0,
                         },
@@ -264,6 +280,7 @@ impl Runtime {
                     controls: plan.controls,
                     scripts: plan.scripts,
                     dsp: plan.dsp,
+                    groups: plan.groups,
                     notes: 0,
                     callbacks: 0,
                 })

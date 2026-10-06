@@ -109,6 +109,11 @@ impl<'a> Parser<'a> {
                     value: i64::from(array.len),
                 }
             }
+            Kind::Word("$ALL_GROUPS") => Instruction::SetLocal {
+                local,
+                value: super::ALL_GROUPS,
+            },
+            Kind::Word("$NUM_GROUPS") => Instruction::ReadGroupCount { local },
             Kind::Word("$EVENT_VELOCITY") => Instruction::ReadVelocity7 { local },
             Kind::Word("$EVENT_NOTE") => Instruction::ReadKey { local },
             Kind::Word("$NOTE_HELD") => Instruction::ReadKeyDown { local },

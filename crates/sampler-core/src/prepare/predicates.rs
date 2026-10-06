@@ -157,6 +157,28 @@ impl Matching {
         }
     }
 
+    pub fn next_in_groups(
+        &mut self,
+        prepared: &Prepared,
+        state: &State,
+        velocity: f64,
+        groups: Option<&[u64]>,
+    ) -> Option<Candidate> {
+        loop {
+            let candidate = self.next(prepared, Some(state), Some(velocity))?;
+            if groups.is_none_or(|mask| {
+                prepared
+                    .region_groups
+                    .get(candidate.region)
+                    .copied()
+                    .flatten()
+                    .is_none_or(|group| mask[group as usize / 64] & (1 << (group % 64)) != 0)
+            }) {
+                return Some(candidate);
+            }
+        }
+    }
+
     #[inline]
     pub fn next(
         &mut self,

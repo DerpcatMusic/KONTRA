@@ -9,6 +9,9 @@ use std::collections::BTreeMap;
 mod expression;
 mod state;
 
+// Opaque source constant; numeric value retained from the recorded v1 reference.
+const ALL_GROUPS: i64 = 0x3fff_ffff;
+
 pub const PROFILE: &str = "ksp-8.12-note-release-subset-v1";
 
 #[derive(Clone, Copy, Debug)]
@@ -120,6 +123,12 @@ struct Token<'a> {
     kind: Kind<'a>,
     offset: usize,
 }
+enum CallbackKind {
+    Note,
+    Release,
+    Control,
+}
+
 enum Block {
     If { branch: usize, has_else: bool },
     While { start: usize, branch: usize },
@@ -327,6 +336,8 @@ impl<'a> Parser<'a> {
                                 | "$EVENT_VELOCITY"
                                 | "$EVENT_ID"
                                 | "$NOTE_HELD"
+                                | "$ALL_GROUPS"
+                                | "$NUM_GROUPS"
                                 | "%CC"
                                 | "%CC_TOUCHED"
                                 | "%KEY_DOWN"
@@ -547,7 +558,16 @@ impl<'a> Parser<'a> {
         } as i32)
     }
 
-    fn callback(&mut self, note: bool) -> Result<Program, Error> {
+    fn forward(&mut self, kind: &CallbackKind) -> Result<(), Error> {
+        match kind {
+            CallbackKind::Note => self.emit(Instruction::ForwardAttack),
+            CallbackKind::Release => self.emit(Instruction::ForwardReleaseGroups),
+            CallbackKind::Control => Ok(()),
+        }
+    }
+
+    fn callback(&mut self, kind: CallbackKind) -> Result<Program, Error> {
+        let note = matches!(kind, CallbackKind::Note);
         // Each open branch has already emitted budgeted instructions. This
         // control-only patch stack is bounded by code/source limits, not recursion.
         let mut branches = Vec::new();
@@ -583,17 +603,16 @@ impl<'a> Parser<'a> {
                     self.scalar(0)?;
                     self.symbol(b')')?;
                     self.emit(Instruction::MicrosToFrames { local: 0 })?;
-                    if note {
-                        self.emit(Instruction::ForwardAttack)?;
-                    }
+                    self.forward(&kind)?;
                     self.emit(Instruction::WaitLocal { local: 0 })?;
                 }
                 Kind::Word("play_note") => self.play()?,
+                Kind::Word(command @ ("allow_group" | "disallow_group")) => {
+                    self.group(command == "allow_group", note)?
+                }
                 Kind::Word(command @ ("inc" | "dec")) => self.increment(command == "inc")?,
                 Kind::Word("exit") => {
-                    if note {
-                        self.emit(Instruction::ForwardAttack)?;
-                    }
+                    self.forward(&kind)?;
                     self.emit(Instruction::End)?;
                 }
                 Kind::Word(kind @ ("if" | "while")) => {
@@ -689,9 +708,7 @@ impl<'a> Parser<'a> {
                             message: "expected matching end if, end while or end on",
                         });
                     }
-                    if note {
-                        self.emit(Instruction::ForwardAttack)?;
-                    }
+                    self.forward(&kind)?;
                     self.emit(Instruction::End)?;
                     return Program::new(std::mem::take(&mut self.code))
                         .map(|p| p.with_wait_lifetime(WaitLifetime::Callback))
@@ -708,6 +725,46 @@ impl<'a> Parser<'a> {
                 }
             }
         }
+    }
+
+    fn group(&mut self, allowed: bool, pending_only: bool) -> Result<(), Error> {
+        self.symbol(b'(')?;
+        self.scalar(0)?;
+        self.symbol(b')')?;
+        self.emit(Instruction::SetLocal {
+            local: 1,
+            value: ALL_GROUPS,
+        })?;
+        self.emit(Instruction::CompareLocal {
+            lhs: 1,
+            rhs: 0,
+            comparison: sampler_core::Comparison::Equal,
+        })?;
+        let branch = self.code.len();
+        self.emit(Instruction::JumpIfZero {
+            local: 1,
+            target: 0,
+        })?;
+        self.emit(Instruction::WriteGroup {
+            group: None,
+            allowed,
+            pending_only,
+        })?;
+        let end = self.code.len();
+        self.emit(Instruction::Jump { target: 0 })?;
+        self.code[branch] = Instruction::JumpIfZero {
+            local: 1,
+            target: self.code.len(),
+        };
+        self.emit(Instruction::WriteGroup {
+            group: Some(0),
+            allowed,
+            pending_only,
+        })?;
+        self.code[end] = Instruction::Jump {
+            target: self.code.len(),
+        };
+        Ok(())
     }
 
     fn play(&mut self) -> Result<(), Error> {
@@ -883,7 +940,7 @@ pub fn compile(
                 if p.controls[index].callback.is_some() {
                     return Err(p.error("duplicate UI control callback"));
                 }
-                let program = p.callback(false)?;
+                let program = p.callback(CallbackKind::Control)?;
                 if program.requires_note() {
                     return Err(Error {
                         offset: token.offset,
@@ -906,7 +963,11 @@ pub fn compile(
                     });
                 }
                 *binding = Some(programs.len());
-                programs.push(p.callback(kind == "note")?);
+                programs.push(p.callback(if kind == "note" {
+                    CallbackKind::Note
+                } else {
+                    CallbackKind::Release
+                })?);
             }
             _ => {
                 return Err(Error {
