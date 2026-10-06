@@ -383,6 +383,58 @@ pub(crate) enum Scope {
     Bus,
 }
 
+/// How one Kontakt filter type (the `kind` stored in a Filter slot) maps to
+/// an IR filter: the response, and the laws taking its normalized cutoff and
+/// resonance (0..=1) to Hz and Q.
+struct FilterType {
+    kind: sampler_ir::FilterKind,
+    hertz: fn(f32) -> f64,
+    q: fn(f32) -> f64,
+}
+
+/// Kontakt's SV filters: the knob is 25 Hz * 800^x, and resonance r gives
+/// k = 1/Q = (2 - 0.013) * (1 - r)^3.1 + 0.013 (measured on SV LP2 against
+/// Kontakt 8). The IR has no passband-gain field, so the measured loss at
+/// high resonance (-6 dB at r = 1) is not reproduced.
+fn sv_hertz(x: f32) -> f64 {
+    25.0 * 800f64.powf(f64::from(x))
+}
+
+fn sv_q(r: f32) -> f64 {
+    1.0 / ((2.0 - 0.013) * (1.0 - f64::from(r)).powf(3.1) + 0.013)
+}
+
+/// The types with a map to a Kontakt 8 filter name (read from its GUI):
+/// 52 SV LP2, 54 SV HP2, 55 SV LP4, 57 SV HP4. Only SV LP2's laws were
+/// measured; the other three are taken to share them (same family, same
+/// knobs). Other types are reported by number, not guessed: 3 is "Legacy
+/// HP1" whose stored cutoff is 0 and which a modulator or script drives, 90 is
+/// Formant I (not a low pass), and 106 "AR LP2/4" has a cutoff law that
+/// differs from SV (stored 0.5135 reads 603 Hz, SV would give 774 Hz).
+const FILTER_TYPES: &[(i32, FilterType)] = &[
+    (52, FilterType { kind: sampler_ir::FilterKind::LowPass { poles: 2 }, hertz: sv_hertz, q: sv_q }),
+    (54, FilterType { kind: sampler_ir::FilterKind::HighPass { poles: 2 }, hertz: sv_hertz, q: sv_q }),
+    (55, FilterType { kind: sampler_ir::FilterKind::LowPass { poles: 4 }, hertz: sv_hertz, q: sv_q }),
+    (57, FilterType { kind: sampler_ir::FilterKind::HighPass { poles: 4 }, hertz: sv_hertz, q: sv_q }),
+];
+
+fn filter_type(kind: i32) -> Option<&'static FilterType> {
+    FILTER_TYPES
+        .iter()
+        .find(|(k, _)| *k == kind)
+        .map(|(_, t)| t)
+}
+
+/// A Filter slot as an IR filter, or `None` for a type without a table entry.
+fn filter(kind: i32, cutoff: f32, resonance: f32) -> Option<sampler_ir::Processor> {
+    let t = filter_type(kind)?;
+    Some(sampler_ir::Processor::Filter(sampler_ir::Filter {
+        kind: t.kind,
+        cutoff: sampler_ir::Frequency::Hertz((t.hertz)(cutoff)),
+        resonance: sampler_ir::Resonance::Q((t.q)(resonance)),
+    }))
+}
+
 /// A rack as serial processors plus the levels its Send Levels slots feed
 /// into the instrument's send slots, and what it leaves out.
 #[derive(Default)]
@@ -450,6 +502,25 @@ pub(crate) fn chain_with(
                 }
                 combined = product(gain, combined);
             }
+            Some(Params::Filter {
+                kind,
+                cutoff,
+                resonance,
+                ..
+            }) => match filter(*kind, *cutoff, *resonance) {
+                Some(f) => {
+                    filters.push(f);
+                    combined = product(gain, combined);
+                }
+                None => {
+                    notes.push((
+                        "filter type".into(),
+                        format!("{kind} cutoff {cutoff} resonance {resonance}"),
+                        sampler_ir::Reason::NotModeled,
+                    ));
+                    modelled = false;
+                }
+            },
             Some(Params::Reverb(values)) if scope == Scope::Bus => {
                 flush(&mut combined, &mut filters, &mut out);
                 out.processors
@@ -753,6 +824,16 @@ fn eq_band(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sv_filters_follow_the_measured_laws() {
+        let sampler_ir::Processor::Filter(f) = filter(52, 0.293, 0.0).unwrap() else { panic!() };
+        let sampler_ir::Frequency::Hertz(hz) = f.cutoff else { panic!() };
+        assert!((hz / 25.0 / 800f64.powf(0.293) - 1.0).abs() < 1e-6);
+        let sampler_ir::Resonance::Q(q) = f.resonance else { panic!() };
+        assert!((q - 1.0 / 2.0).abs() < 1e-9, "r = 0 is k = 1.987 + 0.013 = 2");
+        assert!(filter(3, 0.0, 0.0).is_none() && filter(106, 0.5, 0.5).is_none());
+    }
+
     use super::*;
 
     fn slot(module: u16, public: Vec<u8>, gain: f32) -> Slot {

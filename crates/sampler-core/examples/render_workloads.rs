@@ -156,6 +156,9 @@ fn prepare(
         },
     )
     .unwrap();
+    if let Some(n) = std::env::var("THREADS").ok().and_then(|n| n.parse().ok()) {
+        rt.set_threads(sampler_core::Threads::Fixed(n));
+    }
     for id in 0..notes {
         rt.trigger_with_expression(
             Input {
@@ -177,6 +180,50 @@ fn prepare(
     }
     assert_eq!(rt.voice_count(), voices);
     (rt, kept)
+}
+
+/// CPU time of every thread of this process, in ms (scheduler nanoseconds).
+fn process_cpu_ms() -> f64 {
+    let Ok(tasks) = std::fs::read_dir("/proc/self/task") else {
+        return 0.;
+    };
+    tasks
+        .flatten()
+        .filter_map(|t| std::fs::read_to_string(t.path().join("schedstat")).ok())
+        .filter_map(|s| s.split_whitespace().next()?.parse::<f64>().ok())
+        .sum::<f64>()
+        / 1e6
+}
+
+/// `--idle THREADS NOTES`: render 64-frame blocks at real-time pace for four
+/// seconds and report the CPU the process spent, as a share of one core.
+fn idle(threads: usize, notes: usize) {
+    let (mut rt, _samples) = prepare(
+        48000,
+        notes.max(1) * LAYERS,
+        1024,
+        false,
+        Processing { filters: 1, automated: true, ..Processing::default() },
+        false,
+    );
+    rt.set_threads(sampler_core::Threads::Fixed(threads));
+    if notes == 0 {
+        rt.panic();
+    }
+    let mut audio = vec![[0.; 2]; 64];
+    let period = std::time::Duration::from_micros(64 * 1_000_000 / 48000);
+    let (cpu, start) = (process_cpu_ms(), Instant::now());
+    let mut next = start;
+    while start.elapsed().as_secs() < 4 {
+        rt.render(&mut audio).unwrap();
+        next += period;
+        std::thread::sleep(next.saturating_duration_since(Instant::now()));
+    }
+    let wall = start.elapsed().as_secs_f64() * 1000.;
+    println!(
+        "idle threads {threads} notes {notes}: {:.2}% of one core",
+        (process_cpu_ms() - cpu) / wall * 100.
+    );
 }
 
 fn measure(
@@ -208,6 +255,7 @@ fn measure(
     } else {
         [expected, -expected]
     };
+    let cpu_before = process_cpu_ms();
     for (iteration, elapsed) in times.iter_mut().enumerate() {
         if processing.automated {
             rt.edit_controls(
@@ -235,6 +283,14 @@ fn measure(
                 .all(|frame| frame.map(f32::to_bits) == expected.map(f32::to_bits))
         });
     }
+    // Thread CPU over all threads (workers included), per voice and block.
+    let cpu = process_cpu_ms() - cpu_before;
+    eprintln!(
+        "threads {}: {cpu:.0} ms cpu over {TRIALS} blocks = {:.1} us/block, {:.1} ns/voice-block",
+        rt.threads(),
+        cpu * 1000. / TRIALS as f64,
+        cpu * 1e6 / (TRIALS * voices) as f64
+    );
     times.sort_unstable();
     let median = times[TRIALS / 2] as f64 / 1000.;
     let p99 = times[(TRIALS - 1) * 99 / 100] as f64 / 1000.;
@@ -311,6 +367,10 @@ fn main() {
                 );
             }
         }
+        return;
+    }
+    if args.first().is_some_and(|arg| arg == "--idle") {
+        idle(args[1].parse().unwrap(), args[2].parse().unwrap());
         return;
     }
     if args.first().is_some_and(|arg| arg == "--case") {
