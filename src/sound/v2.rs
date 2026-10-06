@@ -64,22 +64,47 @@ pub struct Part {
     grower: Option<Grower>,
 }
 
+/// Bytes the system could give a new allocation without swapping, from
+/// `/proc/meminfo`; `None` where that is unavailable.
+fn mem_available() -> Option<usize> {
+    let info = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let line = info.lines().find(|l| l.starts_with("MemAvailable:"))?;
+    let kib: usize = line.split_whitespace().nth(1)?.parse().ok()?;
+    kib.checked_mul(1024)
+}
+
+/// A growth may take at most this share of available memory.
+const GROWTH_SHARE: usize = 4;
+
 /// A thread that sleeps until the audio side reports a nearly full voice pool
-/// (or a growth coming back), then doubles the pool up to `ceiling`.
+/// (or a growth coming back), then doubles the pool while the new voices fit a
+/// quarter of the memory available at that moment (and note capacity, sized
+/// for `ceiling` voices, allows). Past that, only stealing is left.
 struct Grower {
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Grower {
-    fn start(runtime: &mut Runtime, mut control: PlanControl, ceiling: usize) -> std::io::Result<Self> {
+    fn start(
+        runtime: &mut Runtime,
+        mut control: PlanControl,
+        ceiling: usize,
+        per_voice: usize,
+    ) -> std::io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let thread = std::thread::Builder::new().name("sampler-grow".into()).spawn({
             let stop = stop.clone();
             move || {
                 while !stop.load(Ordering::Relaxed) {
-                    if control.voice_pressure() && control.voice_capacity() < ceiling {
-                        let _ = control.grow_voices((control.voice_capacity() * 2).min(ceiling));
+                    let capacity = control.voice_capacity();
+                    if control.voice_pressure() && capacity < ceiling {
+                        let next = (capacity * 2).min(ceiling);
+                        let fits = mem_available()
+                            .is_none_or(|free| (next - capacity).saturating_mul(per_voice) <= free / GROWTH_SHARE);
+                        if fits {
+                            let _ = control.grow_voices(next);
+                        }
                     }
                     std::thread::park();
                 }
@@ -619,13 +644,15 @@ fn render_threads() -> Threads {
 
 /// Memory a part preallocates for per-voice state. Voices start sized to this,
 /// not to a fixed polyphony, and the pool doubles off the audio thread (see
-/// `Grower`) past three quarters full, up to `GROWTH` times as many. A note is
+/// `Grower`) past three quarters full, up to `GROWTH` times as many if memory allows. A note is
 /// refused only when that is exhausted too, and it is counted
 /// (`RuntimeStats::voice_drops`).
 const VOICE_BUDGET: usize = 256 << 20;
 const MIN_VOICES: usize = 512;
 const MAX_VOICES: usize = 16384;
-const GROWTH: usize = 4;
+const GROWTH: usize = 8;
+/// Per-voice bytes beyond the plan's state: voice slot, activity bit, parallel scratch.
+const VOICE_OVERHEAD: usize = 4096;
 
 /// Capacities of a part, sized for its plan's script state and voice cost, and
 /// the voice count the pool may grow to. Notes, families and decisions are
@@ -634,13 +661,14 @@ fn limits(plan: &Prepared) -> (Limits, usize) {
     let voices = (VOICE_BUDGET / plan.voice_state_bytes().max(1)).clamp(MIN_VOICES, MAX_VOICES);
     let ceiling = voices * GROWTH;
     // Notes outlive their voices only in release, and each holds a few voices.
-    let notes = (ceiling / 4).max(NOTES);
+    // Capped: script cells are allocated per note.
+    let notes = (ceiling / 4).clamp(NOTES, 16384);
     let limits = Limits {
         notes,
         channels: 16,
         performances: 1,
-        families: (ceiling / 2).max(256),
-        decisions: (ceiling / 2).max(256),
+        families: (ceiling / 2).clamp(256, 32768),
+        decisions: (ceiling / 2).clamp(256, 32768),
         expressions: notes,
         voices,
         commands: 256,
@@ -829,6 +857,7 @@ impl CoreLoader for V2Loader {
             .map(|c| (sampler_ui_ir::ControlId(c.id.0), number(c.default)))
             .collect();
         let (limits, ceiling) = limits(&prepared);
+        let per_voice = prepared.voice_state_bytes() + VOICE_OVERHEAD;
         let (runtime, control) = Runtime::with_plan_updates(prepared, limits, 2, 1).map_err(core)?;
         let mut runtime = runtime.with_threads(render_threads());
         if runtime.bus_count() + 1 != tree.nodes.len() && tree.nodes.len() > 1 {
@@ -838,7 +867,7 @@ impl CoreLoader for V2Loader {
                 runtime.bus_count()
             )));
         }
-        let grower = Grower::start(&mut runtime, control, ceiling)
+        let grower = Grower::start(&mut runtime, control, ceiling, per_voice)
             .map_err(|e| CoreError::Invalid(e.to_string()))?;
         let mut part = Part::new(runtime, tree.clone())?;
         part.grower = Some(grower);
