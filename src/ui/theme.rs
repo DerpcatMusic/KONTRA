@@ -1274,28 +1274,17 @@ pub fn dial_face(at: f64, from: f64, lift: f32, focused: bool) -> El {
         let (start, sweep) = (0.75 * PI, 1.5 * PI);
         let mut draw = vec![
             Draw::fill(circle(cx, cy, r - weight * 1.5), Role::Raised.alpha(1.)),
-            Draw::stroke(
-                arc(cx, cy, r, start, sweep),
-                Role::Ink.alpha(0.14 + 0.06 * lift),
-                weight,
-            ),
+            Draw::stroke(arc(cx, cy, r, start, sweep), Role::Ink.alpha(0.14 + 0.06 * lift), weight),
         ];
         let (a, b) = if at < from { (at, from) } else { (from, at) };
         if b - a > 0.002 {
-            draw.push(Draw::stroke(
-                arc(cx, cy, r, start + sweep * a, sweep * (b - a)),
-                value_ink(0.),
-                weight,
-            ));
+            draw.push(Draw::stroke(arc(cx, cy, r, start + sweep * a, sweep * (b - a)), value_ink(0.), weight));
         }
         let angle = start + sweep * at;
         let (inner, outer) = (r * 0.2, r - weight * 2.);
         draw.push(Draw::stroke(
             DrawPath::polyline(
-                [
-                    Point::new(cx + angle.cos() * inner, cy + angle.sin() * inner),
-                    Point::new(cx + angle.cos() * outer, cy + angle.sin() * outer),
-                ],
+                [Point::new(cx + angle.cos() * inner, cy + angle.sin() * inner), Point::new(cx + angle.cos() * outer, cy + angle.sin() * outer)],
                 false,
             ),
             value_ink(lift),
@@ -1307,3 +1296,4 @@ pub fn dial_face(at: f64, from: f64, lift: f32, focused: bool) -> El {
         draw
     })
 }
+
