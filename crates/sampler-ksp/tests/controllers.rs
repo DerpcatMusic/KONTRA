@@ -950,3 +950,29 @@ fn dynamic_durations_in_shared_functions_use_the_real_note_ui_or_controller_cont
     .unwrap();
     assert!(!script.warnings().is_empty());
 }
+
+#[test]
+fn cc_touched_marks_the_controller_of_this_callback() {
+    let source = "on init declare $touched declare $other declare $none end on
+        on controller
+            $touched := %CC_TOUCHED[$CC_NUM]
+            $other := %CC_TOUCHED[$CC_NUM + 1]
+            $none := search(%CC_TOUCHED, 1)
+        end on";
+    let prepared = sampler_ksp::bind_controller_chain(
+        vec![compile(source).unwrap()],
+        Prepared::new(48000, vec![], vec![], 0).unwrap(),
+    )
+    .unwrap();
+    let budget = limits(&prepared);
+    let mut rt = Runtime::new(prepared, budget).unwrap();
+    let generation = rt.active_plan();
+    let domain = rt.performance(1).unwrap();
+    rt.dispatch_controller(domain, origin(), 1 << 3, 7, u32::MAX)
+        .unwrap();
+    let cell = |rt: &Runtime, i| rt.script_cell(generation, ScriptInstanceId(0), i);
+    assert_eq!(
+        (cell(&rt, 0), cell(&rt, 1), cell(&rt, 2)),
+        (Ok(1), Ok(0), Ok(7))
+    );
+}

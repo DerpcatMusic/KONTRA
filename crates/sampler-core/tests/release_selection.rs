@@ -110,6 +110,32 @@ fn phases(shared: bool) -> Prepared {
 }
 
 #[test]
+fn release_stealing_admits_an_attack_by_suppressing_the_oldest_pending_release() {
+    let mut rt = Runtime::new(
+        phases(false),
+        Limits {
+            voices: 14,
+            families: 7,
+            decisions: 7,
+            ..limits()
+        },
+    )
+    .unwrap();
+    rt.set_release_stealing(true);
+    support::without_heap(|| {
+        let a = rt.trigger(input(1), 60, 1.).unwrap();
+        let b = rt.trigger(input(2), 60, 1.).unwrap();
+        // Reservations of a and b leave no room for c's attack and releases.
+        let c = rt.trigger(input(3), 60, 1.).unwrap();
+        for trigger in [Trigger::KeyRelease, Trigger::GateRelease] {
+            assert_eq!(rt.release_status(a, trigger), Ok(ReleaseStatus::Suppressed));
+            assert_eq!(rt.release_status(b, trigger), Ok(ReleaseStatus::Pending));
+            assert_eq!(rt.release_status(c, trigger), Ok(ReleaseStatus::Pending));
+        }
+    });
+}
+
+#[test]
 fn full_capacity_pedal_burst_preserves_complete_mics_and_independent_phase_history() {
     let mut rt = Runtime::new(
         phases(false),
@@ -328,6 +354,55 @@ fn key_velocity_unknown_and_zero_are_distinct_and_synthetic_key_uses_fallback() 
         assert_eq!(block, [[0.75; 2]; 2]);
         rt.flush_ended(|_| true);
     });
+}
+
+/// Kontakt release groups in AHD mode loop their sample under an envelope that
+/// ends by itself: such a release is bounded without a release duration, and
+/// its voice ends with the envelope while the loop would run forever.
+#[test]
+fn looped_release_under_a_one_shot_envelope_is_bounded_by_the_envelope() {
+    let mut r = region(0);
+    r.playback.loop_range = Some(Loop {
+        passes: None,
+        start: 0,
+        end: 1,
+        shape: sampler_core::LoopShape::Wrap,
+        mode: LoopMode::Continuous,
+    });
+    r.envelope = Envelope::one_shot(0, 3, 2);
+    let plan = prepared(
+        vec![r],
+        vec![Trigger::KeyRelease],
+        ReleaseOptions::default(),
+        1,
+    );
+    let mut rt = Runtime::new(plan, limits()).unwrap();
+    let note = rt.trigger(input(0), 60, 1.).unwrap();
+    rt.key_up(note, None).unwrap();
+    assert_eq!(rt.voice_count(), 1);
+    let mut block = [[0.; 2]; 8];
+    rt.render(&mut block).unwrap();
+    assert_eq!(block[..3], [[1.; 2]; 3]);
+    assert_eq!(block[5..], [[0.; 2]; 3]);
+    assert_eq!(rt.voice_count(), 0);
+    // A gate-held hold stage is not bounded: the plain loop is still rejected.
+    let mut held = r;
+    held.envelope = Envelope::one_shot(0, u32::MAX, 0);
+    assert!(matches!(
+        Prepared::new(
+            48000,
+            vec![Pcm::new(48000, Box::from([[1.; 2]])).unwrap()],
+            vec![held],
+            1
+        )
+        .unwrap()
+        .with_releases(
+            vec![Trigger::KeyRelease],
+            ReleaseOptions::default(),
+            ReleaseOptions::default()
+        ),
+        Err(Error::InvalidInput)
+    ));
 }
 
 #[test]

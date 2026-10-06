@@ -173,7 +173,7 @@ pub fn resolved(face: &Interface) -> Interface {
 /// `page` at `scale` points per source pixel; `face` already [`resolved`].
 pub fn view(ui: &mut Ui, face: &Interface, page: PageRef, assets: &Assets, presentation: Presentation, scale: f64, values: &mut Values) -> El {
     let Some(p) = face.pages.get(page.0) else { return caption("No interface").fill(secondary()) };
-    let (w, h) = (f64::from(p.size.width) * scale, f64::from(p.size.height) * scale);
+    let (w, h) = (f64::from(p.size.width) * scale, f64::from(height(face, page)) * scale);
     let mut layers = Vec::new();
     let ground = block(w, h).radius(0).fill(p.background.color.map_or(Fill::from(Role::Field), |c| Fill::from(colour(c))));
     layers.push(ground.at(0., 0.));
@@ -193,6 +193,13 @@ pub fn view(ui: &mut Ui, face: &Interface, page: PageRef, assets: &Assets, prese
     stack(layers).w(w).h(h).shrink(0).clip().a11y(A11y::Group).named("Instrument interface").id("ir-view")
 }
 
+/// The page's height, reaching down to its lowest visible control: a control
+/// the source placed past the page edge is drawn whole, not cut.
+pub fn height(face: &Interface, page: PageRef) -> u32 {
+    let bottom = face.draw_order(page).into_iter().filter(|&n| face.visible(n)).map(|n| face.page_rect(n)).map(|r| (r.y + r.height as i32).max(0) as u32).max();
+    face.pages[page.0].size.height.max(bottom.unwrap_or(0))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn widget(
     ui: &mut Ui,
@@ -208,7 +215,7 @@ fn widget(
     let wd = &face.widgets[n.0];
     let id = format!("ir-{}", n.0);
     let bitmap = presentation == Presentation::Bitmap;
-    let strip = wd.image(Use::Strip).filter(|_| bitmap).and_then(|a| assets.get(a));
+    let strip = wd.image(Use::Strip).filter(|_| bitmap || wd.label_in_image()).and_then(|a| assets.get(a));
     let fixed = wd.images.iter().find(|i| i.role == Use::Strip).and_then(|i| i.frame).map(|f| f as usize);
     let control = match wd.binding {
         Binding::Control(c) => Some(c),
@@ -220,8 +227,20 @@ fn widget(
     };
     let mut v = control.and_then(|c| values.get(&c).copied()).unwrap_or(default);
     let text_size = wd.style.and_then(|s| face.styles[s.0].size).map_or(SMALL, f64::from) * scale;
-    let ink = wd.style.map_or(Fill::from(Role::Ink), |s| Fill::from(colour(face.styles[s.0].color)));
+    // Text on our own (dark) control faces is ours; the source's colour is for
+    // text on its art: labels, and controls drawn by their pictures.
+    let own_face = strip.is_none() && !matches!(wd.kind, Kind::Label);
+    let ink = match wd.style {
+        // A transparent colour is one the source left to its font (a custom bitmap font).
+        Some(s) if !own_face && face.styles[s.0].color.a > 0 => Fill::from(colour(face.styles[s.0].color)),
+        _ => Fill::from(Role::Ink),
+    };
     let words = |t: String| caption(t).text_size(text_size).fill(ink.clone()).lines(1);
+    let number = |x: f64, d: &ir::Display| {
+        let x = x / if d.ratio == 0. { 1. } else { d.ratio };
+        let x = if x.fract() == 0. { format!("{x}") } else { format!("{x:.2}") };
+        format!("{x} {}", d.unit).trim().to_owned()
+    };
 
     let face_el: El = match &wd.kind {
         Kind::Knob { range, .. } | Kind::Slider { range, .. } => {
@@ -232,7 +251,25 @@ fn widget(
             match strip {
                 Some(p) => block(w, h).radius(0).fill(picture(p, fixed.unwrap_or_else(|| frame(v, range.min, range.max, p.frames.len()))).unwrap_or(Fill::from(Role::Field))),
                 // A slider about as tall as wide was drawn as a knob by its strip.
-                None if matches!(wd.kind, Kind::Knob { .. }) || (0.75..=1.33).contains(&(w / h.max(1.))) => dial_face(unit(v), unit(range.min.max(0.).min(range.max)), lift, ui.focus_visible(&id)),
+                // Kontakt's stock knob: its name over the dial, the value under it.
+                None if matches!(wd.kind, Kind::Knob { .. }) => {
+                    let value = match (&wd.kind, &wd.value_text) {
+                        // The script's own label, even an empty one, replaces the number.
+                        (_, Some(t)) => t.clone(),
+                        (Kind::Knob { display, .. }, _) => number(v, display),
+                        _ => String::new(),
+                    };
+                    let mut parts = Vec::new();
+                    if !wd.hide.title && !wd.text.is_empty() {
+                        parts.push(words(wd.text.clone()));
+                    }
+                    parts.push(dial_face(unit(v), unit(range.min.max(0.).min(range.max)), lift, ui.focus_visible(&id)).flex(1).min_h(0).w(Len::Pct(100.)));
+                    if !wd.hide.value && !value.is_empty() {
+                        parts.push(words(value));
+                    }
+                    col(parts).gap(0).align(Align::Center)
+                }
+                None if (0.75..=1.33).contains(&(w / h.max(1.))) => dial_face(unit(v), unit(range.min.max(0.).min(range.max)), lift, ui.focus_visible(&id)),
                 None => fader_face(unit(v), 0., None, vertical, lift, ui.focus_visible(&id)),
             }
             .cursor(if vertical { Cursor::ResizeV } else { Cursor::ResizeH })
@@ -268,7 +305,11 @@ fn widget(
         }
         Kind::Menu { items } => {
             let shown: Vec<&ir::MenuItem> = items.iter().filter(|i| i.visible).collect();
-            let at = shown.iter().position(|i| f64::from(i.value) == v);
+            // A value no entry has shows the first, as Kontakt does.
+            let at = shown.iter().position(|i| f64::from(i.value) == v).or((!shown.is_empty()).then_some(0));
+            if let Some(a) = at {
+                v = f64::from(shown[a].value);
+            }
             // ponytail: click steps to the next entry; a floating list belongs with the shared menu once it leaves v1 targets.
             if ui.get(id.as_str()).activated() && !shown.is_empty() {
                 v = f64::from(shown[at.map_or(0, |a| (a + 1) % shown.len())].value);
@@ -286,10 +327,17 @@ fn widget(
         }
         Kind::ValueEdit { range, display, .. } => {
             drive(ui, &id, &mut v, &(range.min..=range.max), TRAVEL, true, range.default);
-            let shown = v / if display.ratio == 0. { 1. } else { display.ratio };
-            row![words(format!("{shown} {}", display.unit).trim().to_owned())]
+            // Kontakt's value edit: its name, then the value.
+            let mut parts = Vec::new();
+            if !wd.hide.title && !wd.text.is_empty() {
+                parts.push(words(wd.text.clone()).fill(secondary()).flex(1).min_w(0));
+            }
+            parts.push(words(wd.value_text.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| number(v, display))));
+            row(parts)
+                .gap(TIGHT * scale)
                 .align(Align::Center)
                 .justify(Justify::Center)
+                .pad((TIGHT * scale, 0.))
                 .fill(Role::Ink.alpha(0.06))
                 .cursor(Cursor::ResizeV)
                 .focusable()
@@ -313,8 +361,10 @@ fn widget(
     if let Some(c) = control {
         values.insert(c, v);
     }
-    // Our faces are light-on-dark; over light art they sit on a dark plate.
-    let plate = !bitmap
+    // Our faces are light-on-dark: a control without its own picture sits on
+    // a dark plate (Kontakt's stock controls are dark too), in either mode,
+    // wherever the art under it is light.
+    let plate = strip.is_none()
         && !matches!(wd.kind, Kind::Label | Kind::Panel | Kind::Image | Kind::MouseArea)
         && light_under(face, assets, n);
     let face_el = if plate { face_el.radius(2).fill(Color::oklch(0.2, 0., 0.).with_alpha(0.85)) } else { face_el };

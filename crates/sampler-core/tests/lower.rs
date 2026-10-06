@@ -136,6 +136,46 @@ fn layers_round_robin_pan_gain_and_release_zones_render() {
     assert!((loud[1] - 0.3 * ir::Gain::Decibels(6.0).linear() as f32).abs() < 1e-4);
 }
 
+/// An AHD (one-shot) envelope on a looped release zone lowers, ignores the
+/// gate and ends its voice after the decay; the loop never sounds past it.
+#[test]
+fn one_shot_envelope_bounds_a_looped_release_zone() {
+    let mut ir = instrument();
+    ir.zones.truncate(1);
+    ir.zones[0].selection = None;
+    ir.sequences.clear();
+    let mut release = ir.zones[0].clone();
+    release.asset = ir::AssetRef(3);
+    release.trigger = ir::Trigger::KeyRelease;
+    release.playback.looping = ir::Looping::Continuous(ir::LoopRange {
+        start: 0,
+        end: 480,
+        crossfade: ir::Span::Frames(0),
+        alternating: false,
+    });
+    ir.modulators.push(ir::Modulator {
+        scope: ir::Scope::Voice,
+        source: ir::ModulationSource::Envelope(ir::Envelope {
+            hold: ir::Time::Milliseconds(1.0),
+            decay: ir::Time::Milliseconds(1.0),
+            sustain: 1.0,
+            release: ir::Time::Seconds(10.0),
+            one_shot: true,
+            ..ir::Envelope::default()
+        }),
+    });
+    release.amplitude = Some(ir::ModulatorRef(0));
+    ir.zones.push(release);
+    let pcm = vec![constant(0.1), constant(0.2), constant(0.3), constant(0.05)];
+    let mut rt = Runtime::new(lower(&ir, 48000, pcm, no_behaviors).unwrap(), limits()).unwrap();
+    assert_eq!(play(&mut rt, 60, 0.3), [0.1; 2]);
+    let mut tail = [[0.0; 2]; 192];
+    rt.render(&mut tail).unwrap();
+    assert_eq!(tail[24], [0.05; 2], "hold at full level");
+    assert_eq!(tail[120], [0.0; 2], "silent after the decay");
+    assert_eq!(rt.voice_count(), 0);
+}
+
 #[test]
 fn amplitude_envelope_converts_source_time_to_frames() {
     let mut ir = instrument();
@@ -269,23 +309,21 @@ fn zone_routes_lower_to_voice_modulation() {
         ir::Route::new(
             ir::ModulatorRef(1),
             ir::Target::Pitch,
-            ir::Depth::Pitch(ir::Pitch::Cents(200.0)),
+            ir::Depth::Pitch(ir::Pitch::Cents(1200.0)),
         ),
     ];
     let plan = lower(&ir, 48000, vec![constant(0.5)], no_behaviors).unwrap();
+    // The authored bend depth is the plain-MIDI default range.
+    assert_eq!(plan.bend_range(), 12.0);
     let mut rt = Runtime::new(plan, limits()).unwrap();
+    assert_eq!(rt.bend_range(), 12.0);
     let out = play(&mut rt, 60, 0.5);
     assert!((out[0] - 0.25).abs() < 1e-6, "{out:?}");
 
     ir.routes[1].target = ir::Target::Pan;
     ir.routes[1].depth = ir::Depth::Normalized(1.0);
-    assert!(matches!(
-        rejected(&ir, vec![constant(0.5)]),
-        LowerError::Unsupported {
-            feature: Feature::PitchBendSource,
-            ..
-        }
-    ));
+    // Bend anywhere else is a bipolar voice modulation source.
+    assert!(lower(&ir, 48000, vec![constant(0.5)], no_behaviors).is_ok());
 }
 
 #[test]
@@ -385,4 +423,39 @@ fn group_voice_limits_fade_out_the_oldest_member_instead_of_rejecting() {
     // Group 0 is now 48 and 36; 84 replaces 48 there.
     let (voices, _) = note(&mut rt, 84);
     assert_eq!(voices, 5);
+}
+
+#[test]
+fn monophonic_release_groups_cut_the_same_notes_earlier_voices_only() {
+    let zone = |group| ir::Zone {
+        keys: ir::KeyRange { low: 0, high: 127 },
+        pitch: ir::KeyTracking::Fixed,
+        velocity: ir::VelocityResponse::None,
+        group: Some(ir::GroupRef(group)),
+        ..ir::Zone::new(ir::AssetRef(group))
+    };
+    let ir = ir::Instrument {
+        assets: ["a", "b"].map(asset).to_vec(),
+        groups: vec![
+            ir::Group {
+                monophonic_release: true,
+                ..Default::default()
+            },
+            ir::Group::default(),
+        ],
+        zones: vec![zone(0), zone(1)],
+        ..ir::Instrument::default()
+    };
+    let plan = lower(&ir, 48000, vec![constant(0.1), constant(0.2)], no_behaviors).unwrap();
+    let mut rt = Runtime::new(plan, limits()).unwrap();
+    let mut voices = |rt: &mut Runtime, key| {
+        rt.trigger(input(key), key, 1.).unwrap();
+        rt.render(&mut [[0.0; 2]; 1024]).unwrap();
+        rt.voice_count()
+    };
+    assert_eq!(voices(&mut rt, 60), 2);
+    // Repeating the note cuts its earlier group-0 voice, not group 1's.
+    assert_eq!(voices(&mut rt, 60), 3);
+    // Another key leaves both alone.
+    assert_eq!(voices(&mut rt, 72), 5);
 }

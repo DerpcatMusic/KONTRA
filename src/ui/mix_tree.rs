@@ -286,7 +286,7 @@ fn level(ui: &mut Ui, tree: &mut Tree, n: usize, levels: &Levels) -> El {
     col![
         pan_el,
         row![fader, meter].gap(TIGHT).justify(Justify::Center).flex(1).min_h(CONTROL * 2.),
-        caption(super::mixer::db_short(f64::from(node.gain_db))).text_size(SMALL).fill(secondary()).lines(1)
+        caption(db_short(f64::from(node.gain_db))).text_size(SMALL).fill(secondary()).lines(1)
     ]
     .gap(TIGHT)
     .align(Align::Center)
@@ -297,7 +297,7 @@ fn level(ui: &mut Ui, tree: &mut Tree, n: usize, levels: &Levels) -> El {
 fn output_text(o: Output) -> String {
     match o {
         Output::Parent => "Up".into(),
-        Output::Pair(p) => super::mixer::port_text(usize::from(p)),
+        Output::Pair(p) => port_text(usize::from(p)),
     }
 }
 
@@ -326,7 +326,7 @@ fn output_list(ui: &mut Ui, tree: &mut Tree, state: &mut State, n: usize, pairs:
     if tree.nodes[n].parent.is_some() {
         choices.push((Some(Output::Parent), "Into parent".into()));
     }
-    choices.extend((0..pairs).map(|p| (Some(Output::Pair(p)), format!("Host {}", super::mixer::port_text(usize::from(p))))));
+    choices.extend((0..pairs).map(|p| (Some(Output::Pair(p)), format!("Host {}", port_text(usize::from(p))))));
     if tree.nodes[n].parent.is_none() {
         choices.push((None, "Automatic".into()));
     }
@@ -349,6 +349,22 @@ fn output_list(ui: &mut Ui, tree: &mut Tree, state: &mut State, n: usize, pairs:
         rows.push(el);
     }
     col(rows).gap(1).align(Align::Stretch).scroll().flex(1).min_h(0).id(format!("mt-picks-{key}"))
+}
+
+/// Host stereo port `n` as a DAW lists it: "1/2", "3/4".
+pub fn port_text(n: usize) -> String {
+    format!("{}/{}", 2 * n + 1, 2 * n + 2)
+}
+
+/// A fader readout, signed and short: "+0.2", "-10.0", "-inf".
+pub fn db_short(db: f64) -> String {
+    if db <= -59.95 {
+        "-inf".into()
+    } else if db.abs() < 0.05 {
+        "0.0".into()
+    } else {
+        format!("{db:+.1}")
+    }
 }
 
 #[cfg(test)]

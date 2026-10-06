@@ -7,24 +7,34 @@
 
 #[cfg(feature = "library-access")]
 mod access;
+mod container;
+mod effects;
 pub mod keyswitch;
 mod library;
 mod load;
 mod mapping;
 pub mod nis;
 mod nks;
+mod resource_container;
 mod resources;
 mod samples;
 mod script;
+mod stream;
 #[cfg(feature = "library-access")]
 pub use access::library_key;
-pub use library::{Kontakt, read};
-pub use load::{Loaded, Options, Progress, finish, load, load_cancelable, load_read, prepare};
+pub use container::{Multi, read_chunks, read_multi};
+pub use library::{Kontakt, read, read_program};
+pub use load::{
+    Loaded, Options, Progress, finish, load, load_cancelable, load_read, load_read_streamed,
+    load_streamed, prepare,
+};
 pub use mapping::{Group, LoopSlot, Loops, Zone};
 pub use nks::Nks42;
+pub use resource_container::ResourceContainer;
 pub use resources::Resources;
-pub use samples::{Decoded, Samples, decode};
+pub use samples::{Decoded, Samples, Source, decode};
 pub use script::{Script, Strings};
+pub use stream::{SampleReader, StreamPolicy, StreamReport, Streamed, Streamer};
 
 /// Without the `library-access` feature, encrypted content is refused.
 #[cfg(not(feature = "library-access"))]
