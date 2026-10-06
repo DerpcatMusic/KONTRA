@@ -38,12 +38,12 @@ struct PcmData {
 type LevelData = Box<[Box<[Frame]>]>;
 /// Resident ranges of a streamed asset: (first frame, frames), ascending and
 /// disjoint.
-pub type Ranges = Box<[(usize, Box<[Frame]>)]>;
+pub type Ranges = Box<[(usize, crate::Packed)]>;
 
 /// Calls `f` with each part of `range` outside `ranges`, in order, until it
 /// returns false; returns whether every call returned true.
 pub(crate) fn uncovered(
-    ranges: &[(usize, Box<[Frame]>)],
+    ranges: &[(usize, crate::Packed)],
     range: std::ops::Range<usize>,
     mut f: impl FnMut(std::ops::Range<usize>) -> bool,
 ) -> bool {
@@ -111,6 +111,8 @@ impl Pcm {
     /// page; empty purges them. Ranges ascend, disjoint and non-empty. Returns
     /// the old ranges to drop here, off audio. A start that finds its frames
     /// missing fails `NotReady` and marks the asset cold (`take_cold`).
+    /// Frames are kept packed ([`crate::Packed`]): 16/24-bit, mono when both
+    /// channels match, whenever that reads back bit-exactly.
     pub fn set_ranges(&self, ranges: Vec<(usize, Box<[Frame]>)>) -> Result<Ranges, Error> {
         let valid = self.0.frames.is_none()
             && ranges.windows(2).all(|w| w[0].0 + w[0].1.len() <= w[1].0)
@@ -124,14 +126,19 @@ impl Pcm {
         if !valid {
             return Err(Error::InvalidInput);
         }
-        Ok(std::mem::replace(
-            &mut *lock(&self.0.head),
-            ranges.into_boxed_slice(),
-        ))
+        let ranges = ranges
+            .into_iter()
+            .map(|(start, frames)| (start, crate::Packed::new(&frames)))
+            .collect();
+        Ok(std::mem::replace(&mut *lock(&self.0.head), ranges))
     }
     /// Frames in resident ranges.
     pub fn head_frames(&self) -> usize {
         lock(&self.0.head).iter().map(|(_, f)| f.len()).sum()
+    }
+    /// Bytes resident ranges hold, packed.
+    pub fn head_bytes(&self) -> usize {
+        lock(&self.0.head).iter().map(|(_, f)| f.bytes()).sum()
     }
     /// Whether a start was refused for a missing head since the last call.
     pub fn take_cold(&self) -> bool {
