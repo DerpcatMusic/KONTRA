@@ -46,6 +46,9 @@ pub struct Loaded {
     /// including scripts that did not compile.
     pub instrument: ir::Instrument,
     pub plan: Prepared,
+    /// The bound scripts' interfaces, in script order. Image assets carry
+    /// default metadata: the caller, which knows the library, reads theirs.
+    pub interfaces: Vec<sampler_ui_ir::Interface>,
 }
 
 /// Load the Kontakt instrument at `path` as a plan at `options.rate`.
@@ -58,6 +61,17 @@ pub fn load(path: &Path, options: &Options, progress: impl FnMut(Progress)) -> R
 pub fn load_cancelable(
     path: &Path,
     options: &Options,
+    progress: impl FnMut(Progress),
+    canceled: impl Fn() -> bool,
+) -> Result<Loaded, LoadError> {
+    load_read(read(path)?, options, progress, canceled)
+}
+
+/// [`load_cancelable`] for an instrument already [`read`], so a caller can
+/// reshape its IR (say, give each group a bus) before samples are decoded.
+pub fn load_read(
+    kontakt: Kontakt,
+    options: &Options,
     mut progress: impl FnMut(Progress),
     canceled: impl Fn() -> bool,
 ) -> Result<Loaded, LoadError> {
@@ -65,7 +79,7 @@ pub fn load_cancelable(
         mut instrument,
         locations,
         mut samples,
-    } = read(path)?;
+    } = kontakt;
     let (low, high) = (*options.keys.start(), *options.keys.end());
     let kept = instrument.retain_zones(|z| z.keys.low <= high && z.keys.high >= low);
     progress(Progress::Translated {
@@ -244,22 +258,58 @@ pub fn prepare(
     };
     let mut compiled = Vec::new();
     let mut failed = Vec::new();
-    for behavior in &instrument.behaviors {
+    let mut notes = Vec::new();
+    let groups: Vec<String> = instrument.groups.iter().map(|g| g.name.clone()).collect();
+    for (slot, behavior) in instrument.behaviors.iter().enumerate() {
+        // ponytail: script order stands in for the Kontakt slot; bypassed or
+        // empty slots before a script shift it.
+        let environment = sampler_ksp::Environment {
+            groups: groups.clone(),
+            slot: slot.min(u8::MAX.into()) as u8,
+            ..Default::default()
+        };
         let result = match behavior.language {
             _ if !scripts => Err("scripts disabled".to_string()),
             ir::Language::Ksp => {
-                sampler_ksp::compile(&behavior.source, rate, limits, &[]).map_err(|e| e.to_string())
+                sampler_ksp::compile_with(&behavior.source, rate, limits, &[], &environment)
+                    .map_err(|e| e.to_string())
             }
             ref other => Err(format!("{other:?} has no frontend")),
         };
         match result {
-            Ok(script) => compiled.push(script),
+            Ok(script) => {
+                notes.extend(script.warnings().iter().map(|w| ir::Unsupported {
+                    location: format!("{} line {}", behavior.name, w.line),
+                    feature: match w.builtin {
+                        Some(builtin) => format!("script {:?}: {builtin}", w.kind),
+                        None => format!("script {:?}", w.kind),
+                    },
+                    value: w.message.clone(),
+                    reason: ir::Reason::NotModeled,
+                }));
+                compiled.push(script);
+            }
             Err(error) => failed.push(ir::Unsupported {
                 location: behavior.name.clone(),
                 feature: "script".into(),
                 value: error,
                 reason: ir::Reason::NotModeled,
             }),
+        }
+    }
+    instrument.unsupported.append(&mut notes);
+    let mut interfaces = Vec::new();
+    if failed.is_empty() {
+        for (script, behavior) in compiled.iter().zip(&instrument.behaviors) {
+            match script.ui(&|_| None) {
+                Ok(ui) => interfaces.push(ui),
+                Err(e) => instrument.unsupported.push(ir::Unsupported {
+                    location: behavior.name.clone(),
+                    feature: "script interface".into(),
+                    value: format!("{e:?}"),
+                    reason: ir::Reason::InvalidValue,
+                }),
+            }
         }
     }
     let lowered = if failed.is_empty() {
@@ -279,5 +329,6 @@ pub fn prepare(
     Ok(Loaded {
         plan: lowered.map_err(LoadError::Lower)?,
         instrument,
+        interfaces,
     })
 }
