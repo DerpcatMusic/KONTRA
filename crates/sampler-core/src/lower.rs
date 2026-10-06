@@ -425,6 +425,12 @@ impl Lowering<'_> {
         let envelope = if one_shot {
             // Plays to the end of the audio whatever the gate does.
             Envelope::one_shot(self.frames(e.attack), u32::MAX, 0)
+        } else if e.one_shot {
+            Envelope::one_shot(
+                self.frames(e.attack),
+                self.frames(e.hold),
+                self.frames(e.decay),
+            )
         } else {
             Envelope::new(
                 self.frames(e.attack),

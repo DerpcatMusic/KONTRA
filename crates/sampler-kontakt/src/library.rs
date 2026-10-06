@@ -316,6 +316,27 @@ struct Translation {
     )>,
 }
 
+/// Kontakt AHDSR stage laws as native `expm1(k·t)/expm1(k)` curves (decoded
+/// from Kontakt's engine in v1, `src/engine/ahdsr.rs`, control rate rate/32):
+/// decay and release fall geometrically to 3/43 of `1.075` above a `0.075`
+/// floor, which is exactly k = ln(3/43); the attack runs a geometric segment
+/// with base b = e^((1 − |c|)·ln 500000 − ln 20000) for authored curve c in
+/// −1..1: k = ln(b / (1 + b)) for c > 0 (fast start), ln((1 + b) / b) else.
+fn ahdsr_curves(curve: f32) -> (ir::Curve, ir::Curve) {
+    let c = f64::from(curve.clamp(-1.0, 1.0));
+    // The engine rounds the base to f32 before its power.
+    let b = f64::from(((1.0 - c.abs()) * 500_000f64.ln() - 20_000f64.ln()).exp() as f32);
+    let attack = if c > 0.0 {
+        (b / (1.0 + b)).ln()
+    } else {
+        ((1.0 + b) / b).ln()
+    };
+    (
+        ir::Curve::Exponential(attack),
+        ir::Curve::Exponential((3.0f64 / 43.0).ln()),
+    )
+}
+
 impl Translation {
     fn unsupported(
         &mut self,
@@ -409,32 +430,19 @@ impl Translation {
                         && !t.shaper.as_ref().is_some_and(|s| s.enabled));
                 let source = match params.modulator {
                     Modulator::Ahdsr(env) => {
-                        if env.unknown_flag != 0 {
-                            self.unsupported(
-                                &at,
-                                "AHD-only envelope mode",
-                                env.unknown_flag,
-                                not_modeled,
-                            );
-                            continue;
-                        }
-                        // Kontakt's stages are exponential (decay and release
-                        // fall to 3/43 in their stage time; the attack bends
-                        // with its curve). The IR states the authored times;
-                        // the stage law is reported, not guessed.
-                        self.unsupported(
-                            &at,
-                            "AHDSR stage law",
-                            format!("attack curve {}", env.attack_curve),
-                            not_modeled,
-                        );
                         let ms = |ms: f32| ir::Time::Milliseconds(f64::from(ms.max(0.0)));
+                        let (attack_shape, fall) = ahdsr_curves(env.attack_curve);
                         ir::ModulationSource::Envelope(ir::Envelope {
                             attack: ms(env.attack_ms),
                             hold: ms(env.hold_ms),
                             decay: ms(env.decay_ms),
                             sustain: f64::from(env.sustain.clamp(0.0, 1.0)),
                             release: ms(env.release_ms),
+                            attack_shape,
+                            decay_shape: fall,
+                            release_shape: fall,
+                            // The AHD-only switch (v1: `ahd_only = flag != 0`).
+                            one_shot: env.unknown_flag != 0,
                             ..Default::default()
                         })
                     }
@@ -1106,6 +1114,29 @@ mod survey {
 mod modulation {
     use super::*;
     use ni_file::kontakt::objects::{Lfo, LfoRecord, ModTarget};
+
+    #[test]
+    fn ahdsr_stage_laws_are_native_exponential_curves() {
+        let curve = |k: ir::Curve, t: f64| match k {
+            ir::Curve::Exponential(k) => (k * t).exp_m1() / k.exp_m1(),
+            ir::Curve::Linear => t,
+        };
+        let (attack, fall) = ahdsr_curves(0.5);
+        // Decay: 1.075·(3/43)^t − 0.075 falls from 1 to 0.
+        for t in [0.25, 0.5, 0.9] {
+            let kontakt = 1.075 * (3.0f64 / 43.0).powf(t) - 0.075;
+            assert!((1.0 - curve(fall, t) - kontakt).abs() < 2e-3, "{t}");
+        }
+        // Positive curve: geometric from 1 + b down to b, read as start − state.
+        let b = f64::from(((0.5 * 500_000f64.ln() - 20_000f64.ln()).exp()) as f32);
+        for t in [0.1, 0.5] {
+            let kontakt = (1.0 + b) * (1.0 - (b / (1.0 + b)).powf(t));
+            assert!((curve(attack, t) - kontakt).abs() < 1e-9, "{t}");
+        }
+        // Negative curves start slowly.
+        let (attack, _) = ahdsr_curves(-0.5);
+        assert!(curve(attack, 0.5) < 0.5);
+    }
 
     fn translation() -> Translation {
         Translation {
