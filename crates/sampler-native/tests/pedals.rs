@@ -424,12 +424,13 @@ fn sane(run: &Run, name: &str) {
                 .iter()
                 .filter(|p| p.id.is_some())
                 .map(|p| (p.key, p.channel, p.on, p.key_at, p.gate_at))
-                .chain(
-                    run.gens
-                        .iter()
-                        .filter(|g| g.id.is_some())
-                        .map(|g| (g.key, 255, g.admitted as usize, g.key_at, g.gate_at))
-                )
+                .chain(run.gens.iter().filter(|g| g.id.is_some()).map(|g| (
+                    g.key,
+                    255,
+                    g.admitted as usize,
+                    g.key_at,
+                    g.gate_at
+                )))
                 .collect::<Vec<_>>()
         )
     });
@@ -980,7 +981,11 @@ fn voice_limit(setup: Setup) {
     assert!(run.peak_voices <= voices);
     assert_eq!(run.other, [], "{name}: no admission is rejected");
     let admitted: Vec<u8> = run.played.iter().map(|p| p.key).collect();
-    assert_eq!(admitted, [a, a + 2, a + 4, a + 7, a], "{name}: admitted keys");
+    assert_eq!(
+        admitted,
+        [a, a + 2, a + 4, a + 7, a],
+        "{name}: admitted keys"
+    );
     // Stolen voices fade: they outlive the stealing block, and every one is
     // gone within the fade (plus the block it started in and the next).
     let fade = Stealing::for_limits(RATE as u32, voices).fade as usize;
@@ -1263,4 +1268,3 @@ fn scripted(setup: Setup) {
 fn block_of(frame: usize) -> usize {
     frame / BLOCK * BLOCK
 }
-

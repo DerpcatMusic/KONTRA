@@ -194,6 +194,37 @@ pub struct Zone {
 }
 
 impl Instrument {
+    /// The controllers that scale zone amplitude, most zones first (ties by
+    /// number): the instrument's dynamics or volume sources, so a host can
+    /// show "dynamics: CC1" and an expression layer can target it. Counts zones
+    /// carrying a route from `Controller(cc)` to [`Target::Amplitude`] with a
+    /// nonzero depth.
+    pub fn amplitude_controllers(&self) -> Vec<u8> {
+        let mut zones = [0usize; 128];
+        for zone in &self.zones {
+            let mut seen = [false; 128];
+            for route in zone.routes.iter().map(|r| &self.routes[r.0]) {
+                let ModulationSource::Controller(cc) = self.modulators[route.source.0].source
+                else {
+                    continue;
+                };
+                let live = match route.depth {
+                    Depth::Normalized(d) => d != 0.0,
+                    Depth::Gain(_) | Depth::Pitch(_) => true,
+                };
+                if route.target == Target::Amplitude && live && cc < 128 {
+                    seen[usize::from(cc)] = true;
+                }
+            }
+            for (n, seen) in seen.iter().enumerate() {
+                zones[n] += usize::from(*seen);
+            }
+        }
+        let mut ccs: Vec<u8> = (0..128u8).filter(|&n| zones[usize::from(n)] > 0).collect();
+        ccs.sort_by_key(|&n| std::cmp::Reverse(zones[usize::from(n)]));
+        ccs
+    }
+
     /// Keep only the zones `keep` accepts and the assets they use, renumbering
     /// assets in their original order. Returns the original index of each
     /// remaining asset, so a caller can load just those.
