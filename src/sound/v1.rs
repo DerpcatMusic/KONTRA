@@ -192,6 +192,8 @@ impl Core for V1Core {
     fn begin_block(&mut self, block: &BlockInfo) {
         let scripted = self.rack.parts.iter().filter(|e| e.script().is_some()).count();
         for engine in &mut self.rack.parts {
+            // Offline, a render waits for the disk and keeps every tail.
+            engine.blocking_streams = block.offline;
             engine.begin_audio_block(block.frames, scripted, block.offline);
         }
         self.set_transport(block.transport);
@@ -232,6 +234,10 @@ impl Core for V1Core {
 
     fn owns(&self, note: HostNote) -> bool {
         self.align.host_note_waiting(note) || self.rack.parts.iter().any(|e| e.host_note_present(note))
+    }
+
+    fn underruns(&self, part: usize) -> u64 {
+        self.engine(part).map_or(0, Engine::underruns)
     }
 
     fn latency(&self) -> u32 {
@@ -313,6 +319,12 @@ impl Core for V1Core {
         self.routers[part].forget();
         let picked = self.routers[part].articulation_of_control(slot, control);
         self.align.picked(part, picked);
+    }
+
+    fn ui_file_selection(&mut self, part: usize, slot: usize, control: usize, path: &str) {
+        if let Some(engine) = self.rack.parts.get_mut(part) {
+            engine.ui_file_selection(slot, control, path);
+        }
     }
 
     fn script_revision(&self, part: usize) -> u64 {

@@ -3432,9 +3432,6 @@ impl PluginLogic for Sampler {
         // Offline, a render waits for the disk and keeps every tail; live,
         // tails go before the deadline does.
         let offline = cx.process_mode.is_offline();
-        for engine in &mut s.core.rack.parts {
-            engine.blocking_streams = offline;
-        }
         if s.until_poll <= frames {
             if let Some(tasks) = cx.tasks::<Load>() {
                 tasks.spawn_coalescing(Load);
@@ -3537,10 +3534,9 @@ impl PluginLogic for Sampler {
         }
         while let Some(e) = p.shared.file_selections.pop() {
             if e.epoch != 0 && s.script_epoch.get(e.part) == Some(&e.epoch)
-                && let Some(engine) = s.core.rack.parts.get_mut(e.part)
                 && let Ok(path) = std::str::from_utf8(&e.path[..e.len])
             {
-                engine.ui_file_selection(e.slot, e.control, path);
+                s.core.ui_file_selection(e.part, e.slot, e.control, path);
             }
         }
         while let Some(e) = p.shared.edits.pop() {
@@ -3783,8 +3779,8 @@ impl PluginLogic for Sampler {
         p.shared.voices.store(voices.active as u64, Ordering::Relaxed);
         p.shared.audible.store(voices.audible as u64, Ordering::Relaxed);
         p.shared.dropouts.store(voices.dropouts, Ordering::Relaxed);
-        for (slot, e) in s.core.rack.parts.iter().enumerate() {
-            part_atoms(&s.shared_parts, &p.shared, slot).unwrap().underruns.store(e.underruns(), Ordering::Relaxed);
+        for slot in 0..s.core.parts() {
+            part_atoms(&s.shared_parts, &p.shared, slot).unwrap().underruns.store(s.core.underruns(slot), Ordering::Relaxed);
         }
         if frames > 0 && rate > 0. {
             // Positive `f32` bits order like the values: the UI swaps out the peak since it last looked.

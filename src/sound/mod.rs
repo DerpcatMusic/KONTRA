@@ -216,6 +216,8 @@ pub trait Core: Send {
 
     /// A user edit of script control `control` in script slot `slot`.
     fn ui_control(&mut self, part: usize, slot: usize, control: usize, value: i32);
+    /// A file chosen for a script file-selector control; the path is already validated.
+    fn ui_file_selection(&mut self, part: usize, slot: usize, control: usize, path: &str);
     /// Changes whenever a part's script memory may have changed; 0 without scripts.
     fn script_revision(&self, part: usize) -> u64;
     /// Copy persistent script values into `saved`, about `budget` at a time.
@@ -227,6 +229,8 @@ pub trait Core: Send {
     fn refresh_live(&self, part: usize, live: &mut Self::Live, at: &mut view::Refresh, budget: usize, unchanged: bool) -> bool;
 
     fn voices(&self) -> Voices;
+    /// `part`'s cumulative stream underruns.
+    fn underruns(&self, part: usize) -> u64;
     /// Output latency in frames that the core reports to the host.
     fn latency(&self) -> u32;
 }
