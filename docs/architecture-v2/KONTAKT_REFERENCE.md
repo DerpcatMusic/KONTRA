@@ -38,3 +38,23 @@ All through Kontakt standalone, group insert filter on a noise sample, spectra f
 - Retrigger pedal on Vista 3 Cellos: Kontakt ends all notes (quiet release tail, silent from 2.7 s through a 40 s tail), including those created by `play_note` with duration 0 inside the script. KONTRA cut at 1.4 s with script Fault(InvalidInput).
 - Loudness KONTRA minus Kontakt (raw peak): Vista Cellos +3.4 dB, Vista Basses +3.2, Una Corda -3.0/-3.2/-1.0 (vel 64/100/127), Barbarian Brass -4.3/-4.4. No consistent offset.
 - Pedal suite (8 pedals.rs scenarios) recorded for Vista 3 Cellos, Una Corda Pure, ANALOG STRINGS: Kontakt ends every note (cellos release 2-3 s, Una ~5 s, ANALOG STRINGS ~12 s). KONTRA renders silent after ~1.5 s (cellos Fault(InvalidInput), Una Fault(Capacity) with stuck voices in later scenarios, ANALOG STRINGS renders silence).
+
+## 3. Group insert filter kind ids (nki slot kind -> Kontakt GUI module)
+
+Read by opening the instrument, selecting the group (0-based list position in the Group Editor) and reading the slot tile / module panel.
+
+| kind | GUI module | where | stored values |
+|---|---|---|---|
+| 3 | Legacy HP1 | Vista - 3 Violins FFF Overlay, g16 slot 5 | cutoff 0.0 stored, GUI shows 36.1 Hz (modulated/script-set) |
+| 52 | SV LP2 | Una Corda Cotton, g110 slot 0 | cutoff 0.293 |
+| 54 | SV HP2 | Una Corda Cotton, g103 slot 2 | cutoff 0.578 |
+| 55 | SV LP4 | Areia - 01 Pads, g0 slot 3 | cutoff 1.0 |
+| 57 | SV HP4 | Areia - 01 Pads, g0 slot 5 | cutoff 0.0 |
+| 90 | Formant I | ANALOG STRINGS, g9 slot 1 | Talk/Sharp/Size 50 % (stored 0.5/0.5) |
+| 106 | AR LP2/4 | ANALOG STRINGS, g9 slot 0 | cutoff 0.5135 -> GUI 603.1 Hz, reso 0.5946 -> 59.5 % |
+
+Note: SV cutoff law `25*800^x` predicts 774 Hz for x = 0.5135, the AR LP2/4 module shows 603.1 Hz (modulators on Cutoff in that group may add an offset).
+
+## 4. Group solo levels (Kontakt, allow_group handler, vel 100, held 3 s)
+
+Vista - 3 Cellos key 48 (CC1 = 127, CC11 = 127): g37 -46.6 pk / -60.8 rms, g36 -50.7 / -65.6, g33 -50.9 / -64.9, g5/g4/g1 silent. Barbarian Brass key 55: g8 -29.2 / -43.1, g32 -26.0 / -39.7, g52 -26.2 / -44.9, g0/g4 silent (g0 trace -94). Group ids 0-based.
