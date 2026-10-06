@@ -13,6 +13,7 @@ fn main() {
     };
     let playback = Playback {
         loop_range: matches!(mode.as_deref(), Some("--loop" | "--ping-pong")).then_some(Loop {
+            passes: None,
             start: 0,
             end: 127,
             shape: if mode.as_deref() == Some("--ping-pong") {

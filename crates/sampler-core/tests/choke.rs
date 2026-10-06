@@ -200,6 +200,7 @@ fn choke_preserves_loop_phase_and_muted_tail_duration() {
                 Envelope::default(),
                 Playback {
                     loop_range: Some(Loop {
+                        passes: None,
                         start: 0,
                         end: 5,
                         shape: sampler_core::LoopShape::Wrap,
@@ -258,6 +259,7 @@ fn natural_completion_cancels_scheduled_choke_without_pinning_or_retargeting() {
             Envelope::default(),
             Playback {
                 loop_range: Some(Loop {
+                    passes: None,
                     start: 0,
                     end: 2,
                     shape: sampler_core::LoopShape::Wrap,

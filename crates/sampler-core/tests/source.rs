@@ -72,6 +72,7 @@ fn forward_reverse_and_loops_match_explicit_sequences_at_every_partition() {
         (
             Direction::Forward,
             Some(Loop {
+                passes: None,
                 start: 2,
                 end: 5,
                 shape: sampler_core::LoopShape::Wrap,
@@ -82,6 +83,7 @@ fn forward_reverse_and_loops_match_explicit_sequences_at_every_partition() {
         (
             Direction::Reverse,
             Some(Loop {
+                passes: None,
                 start: 2,
                 end: 5,
                 shape: sampler_core::LoopShape::Wrap,
@@ -92,6 +94,7 @@ fn forward_reverse_and_loops_match_explicit_sequences_at_every_partition() {
         (
             Direction::Forward,
             Some(Loop {
+                passes: None,
                 start: 3,
                 end: 4,
                 shape: sampler_core::LoopShape::Wrap,
@@ -102,6 +105,7 @@ fn forward_reverse_and_loops_match_explicit_sequences_at_every_partition() {
         (
             Direction::Reverse,
             Some(Loop {
+                passes: None,
                 start: 3,
                 end: 4,
                 shape: sampler_core::LoopShape::Wrap,
@@ -150,6 +154,7 @@ fn release_at_loop_boundary_exits_without_extra_cycle_in_both_directions() {
             let mut rt = runtime(Playback {
                 direction,
                 loop_range: Some(Loop {
+                    passes: None,
                     start: 2,
                     end: 5,
                     shape: sampler_core::LoopShape::Wrap,
@@ -177,6 +182,7 @@ fn shared_pcm_views_and_loop_release_are_independent_without_heap_work() {
         start: 2,
         end: Some(5),
         loop_range: Some(Loop {
+            passes: None,
             start: 2,
             end: 5,
             shape: sampler_core::LoopShape::Wrap,
@@ -245,6 +251,7 @@ fn invalid_views_are_rejected_before_any_admission() {
         },
         Playback {
             loop_range: Some(Loop {
+                passes: None,
                 start: 4,
                 end: 4,
                 shape: sampler_core::LoopShape::Wrap,
@@ -255,6 +262,7 @@ fn invalid_views_are_rejected_before_any_admission() {
         Playback {
             start: 3,
             loop_range: Some(Loop {
+                passes: None,
                 start: 2,
                 end: 5,
                 shape: sampler_core::LoopShape::Wrap,
@@ -265,6 +273,7 @@ fn invalid_views_are_rejected_before_any_admission() {
         Playback {
             end: Some(5),
             loop_range: Some(Loop {
+                passes: None,
                 start: 2,
                 end: 6,
                 shape: sampler_core::LoopShape::Wrap,
@@ -338,6 +347,7 @@ fn ping_pong_visits_each_endpoint_once_in_both_directions_without_heap() {
                 end: Some(7),
                 direction,
                 loop_range: Some(Loop {
+                    passes: None,
                     start,
                     end,
                     mode: LoopMode::Continuous,
@@ -391,6 +401,7 @@ fn ping_pong_release_finishes_the_return_leg_then_exits_in_the_initial_direction
             let mut rt = runtime(Playback {
                 direction,
                 loop_range: Some(Loop {
+                    passes: None,
                     start: 2,
                     end: 5,
                     mode: LoopMode::UntilRelease,
@@ -413,6 +424,76 @@ fn ping_pong_release_finishes_the_return_leg_then_exits_in_the_initial_direction
                 expected,
                 "{direction:?}, release {release}"
             );
+        }
+    }
+}
+
+#[test]
+fn counted_loops_finish_their_tail_without_releasing_the_physical_key() {
+    use sampler_core::LoopShape;
+    for (direction, shape, expected) in [
+        (
+            Direction::Forward,
+            LoopShape::Wrap,
+            vec![0., 1., 2., 3., 4., 2., 3., 4., 5., 6., 7.],
+        ),
+        (
+            Direction::Reverse,
+            LoopShape::Wrap,
+            vec![7., 6., 5., 4., 3., 2., 4., 3., 2., 1., 0.],
+        ),
+        (
+            Direction::Forward,
+            LoopShape::PingPong,
+            vec![0., 1., 2., 3., 4., 3., 2., 3., 4., 5., 6., 7.],
+        ),
+        (
+            Direction::Reverse,
+            LoopShape::PingPong,
+            vec![7., 6., 5., 4., 3., 2., 3., 4., 3., 2., 1., 0.],
+        ),
+    ] {
+        for passes in [1, 2] {
+            for block in [1, 3, 16] {
+                let mut rt = runtime(Playback {
+                    direction,
+                    loop_range: Some(Loop {
+                        start: 2,
+                        end: 5,
+                        mode: LoopMode::Continuous,
+                        shape,
+                        passes: std::num::NonZeroU32::new(passes),
+                    }),
+                    ..Playback::default()
+                });
+                let mut output = [[0.; 2]; 16];
+                support::without_heap(|| {
+                    let note = rt.trigger(input(1), 60, 1.).unwrap();
+                    for chunk in output.chunks_mut(block) {
+                        rt.render(chunk).unwrap();
+                    }
+                    assert_eq!(rt.voice_count(), 0);
+                    rt.flush_ended(|_| panic!("source EOF must not release the physical key"));
+                    assert_eq!(rt.key_down(note), Ok(true));
+                    rt.key_up(note, None).unwrap();
+                    rt.flush_ended(|_| true);
+                    assert_eq!(rt.note_count(), 0);
+                });
+                let one: Vec<_> = if direction == Direction::Forward {
+                    (0..8).map(|i| i as f32).collect()
+                } else {
+                    (0..8).rev().map(|i| i as f32).collect()
+                };
+                let reference = if passes == 1 { &one } else { &expected };
+                for (i, frame) in output.iter().enumerate() {
+                    let value = reference.get(i).copied().unwrap_or(0.);
+                    assert_eq!(
+                        *frame,
+                        [value, -value],
+                        "{direction:?} {shape:?} count {passes} block {block} at {i}"
+                    );
+                }
+            }
         }
     }
 }

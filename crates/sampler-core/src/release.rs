@@ -140,7 +140,7 @@ pub enum ReleaseVelocity {
 pub struct ReleaseOptions {
     pub velocity: ReleaseVelocity,
     /// Frames until the family's own envelope/loop release. None requires finite,
-    /// unlooped sources. Zero releases immediately using each source's envelope.
+    /// sources (including counted loops). Zero releases immediately using each source's envelope.
     pub duration: Option<u32>,
 }
 

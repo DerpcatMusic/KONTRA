@@ -32,6 +32,9 @@ pub struct Loop {
     pub end: usize,
     pub mode: LoopMode,
     pub shape: LoopShape,
+    /// Total outward passes. One traverses the loop once without repeating;
+    /// ping-pong adds a round trip per further pass. None repeats indefinitely.
+    pub passes: Option<std::num::NonZeroU32>,
 }
 
 impl Loop {
@@ -101,7 +104,7 @@ impl Playback {
         {
             return Err(Error::InvalidInput);
         }
-        Ok(Cursor {
+        let mut cursor = Cursor {
             start: self.start,
             end,
             direction: self.direction,
@@ -110,7 +113,25 @@ impl Playback {
             fraction: 0.0,
             step,
             exit: None,
-        })
+        };
+        if let Some(range) = self.loop_range
+            && let Some(passes) = range.passes
+        {
+            let repeated = range
+                .period()
+                .checked_mul(u64::from(passes.get() - 1))
+                .ok_or(Error::InvalidInput)?;
+            ((end - self.start) as u64)
+                .checked_add(repeated)
+                .ok_or(Error::InvalidInput)?;
+            cursor.exit = Some(
+                cursor
+                    .first_boundary(range)
+                    .checked_add(repeated)
+                    .ok_or(Error::InvalidInput)?,
+            );
+        }
+        Ok(cursor)
     }
 }
 
@@ -130,8 +151,8 @@ pub(super) struct Cursor {
 }
 
 impl Cursor {
-    pub(super) fn looping(&self) -> bool {
-        self.loop_range.is_some()
+    pub(super) fn unbounded_loop(&self) -> bool {
+        self.loop_range.is_some() && self.exit.is_none()
     }
 
     pub(super) fn step(&self) -> f64 {
@@ -155,7 +176,7 @@ impl Cursor {
     pub(super) fn release(&mut self) {
         if let Some(r) = self.loop_range
             && r.mode == LoopMode::UntilRelease
-            && self.exit.is_none()
+            && self.exit.is_none_or(|exit| self.position < exit)
         {
             let first = self.first_boundary(r);
             let length = r.period();
@@ -165,7 +186,8 @@ impl Cursor {
                     !distance.is_multiple_of(length)
                         || self.fraction != 0.0 && self.position >= first,
                 );
-            self.exit = Some(first.saturating_add(cycles.saturating_mul(length)));
+            let exit = first.saturating_add(cycles.saturating_mul(length));
+            self.exit = Some(self.exit.map_or(exit, |finite| finite.min(exit)));
         }
     }
 
@@ -414,6 +436,7 @@ mod tests {
     fn fractional_phase_survives_large_positions_and_guard_mapping() {
         let mut cursor = Playback {
             loop_range: Some(Loop {
+                passes: None,
                 start: 0,
                 end: 1,
                 shape: LoopShape::Wrap,
@@ -442,6 +465,7 @@ mod tests {
             let mut cursor = Playback {
                 direction,
                 loop_range: Some(Loop {
+                    passes: None,
                     start: 0,
                     end: 4,
                     mode: LoopMode::Continuous,
@@ -472,6 +496,7 @@ mod tests {
         if let Ok(length) = usize::try_from(u64::MAX / 2 + 2) {
             let playback = Playback {
                 loop_range: Some(Loop {
+                    passes: None,
                     start: 0,
                     end: length,
                     mode: LoopMode::Continuous,
@@ -483,6 +508,65 @@ mod tests {
                 playback.cursor(length, 48000, 48000),
                 Err(Error::InvalidInput)
             ));
+        }
+    }
+    #[test]
+    fn counted_exit_can_shorten_but_never_extend_or_restart_and_rejects_clock_overflow() {
+        for shape in [LoopShape::Wrap, LoopShape::PingPong] {
+            for direction in [Direction::Forward, Direction::Reverse] {
+                let playback = Playback {
+                    direction,
+                    loop_range: Some(Loop {
+                        start: 2,
+                        end: 5,
+                        mode: LoopMode::UntilRelease,
+                        shape,
+                        passes: std::num::NonZeroU32::new(3),
+                    }),
+                    ..Playback::default()
+                };
+                let original = playback.cursor(8, 48000, 48000).unwrap();
+                let range = playback.loop_range.unwrap();
+                let first = original.first_boundary(range);
+                let exit = original.exit.unwrap();
+                assert_eq!(exit, first + 2 * range.period());
+                for (position, fraction, expected) in [
+                    (0, 0., first),
+                    (first, 0., first),
+                    (first, 0.5, first + range.period()),
+                    (exit - 1, 0.5, exit),
+                    (exit, 0., exit),
+                    (exit + 1, 0., exit),
+                ] {
+                    let mut cursor = original;
+                    cursor.position = position;
+                    cursor.fraction = fraction;
+                    cursor.release();
+                    assert_eq!(cursor.exit, Some(expected));
+                    assert_eq!(cursor.limit(), Some(expected + 8 - first));
+                    let saved = cursor.exit;
+                    cursor.release();
+                    assert_eq!(cursor.exit, saved);
+                }
+            }
+        }
+        if let Ok(end) = usize::try_from(u64::MAX / 2 + 1) {
+            for count in [2, 3] {
+                let playback = Playback {
+                    loop_range: Some(Loop {
+                        start: 0,
+                        end,
+                        shape: LoopShape::Wrap,
+                        mode: LoopMode::Continuous,
+                        passes: std::num::NonZeroU32::new(count),
+                    }),
+                    ..Playback::default()
+                };
+                assert!(matches!(
+                    playback.cursor(end, 48000, 48000),
+                    Err(Error::InvalidInput)
+                ));
+            }
         }
     }
 }

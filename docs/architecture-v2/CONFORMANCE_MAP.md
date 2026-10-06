@@ -172,3 +172,9 @@ execution/retirement; source EOF and logical terminal ownership remain separate.
 See [SOURCE_VIEWS.md](SOURCE_VIEWS.md#ping-pong-topology). This supplements the
 unchanged supplied scenario record; it does not mark all sample-source scenarios
 or vendor conformance complete. Crossfade dual-demand `SAMPLE_SOURCES_06` remains open.
+
+Finite native loop-count evidence additionally covers both source directions and
+wrap/reflected topology, exact finite interpolation guards, overflow rejection and
+natural-EOF release layers without command reservation. See
+[SOURCE_VIEWS.md](SOURCE_VIEWS.md#finite-pass-counts); external-format count conventions
+remain frontend/profile obligations. The supplied scenario JSON is unchanged.
