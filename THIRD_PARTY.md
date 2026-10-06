@@ -45,7 +45,7 @@ The NKX/NKR archive layout was implemented with
 Both are **GPL-3.0**, and no files from them are included. The
 encoded-offset constant in `vendor/ni-file/src/nkr/archive.rs` is the
 same as nkxtract's.
-The keystream in `src/access.rs` (the `library-access` feature) uses the
+The keystream in `crates/sampler-kontakt/src/access.rs` (the `library-access` feature) uses the
 same algorithm and constants as nkxtract's `Nks.cs`.
 The 2026-10-02 focused comparison of `Nks.cs::FileDecryptStream` and
 `src/access.rs::Keystream::new` confirms the 64 KiB stream, LCG recurrence,
