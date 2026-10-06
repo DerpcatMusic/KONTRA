@@ -59,19 +59,18 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
     let params = program
         .params()
         .map_err(|e| decode("program parameters", e))?;
-    let table = match chunks.find_first(FILE_TABLE) {
+    let (table, others) = match chunks.find_first(FILE_TABLE) {
         Some(chunk) => {
-            FNTableImpl::try_from(chunk)
-                .map_err(|e| decode("sample file table", e))?
-                .sample_filetable
+            let t = FNTableImpl::try_from(chunk).map_err(|e| decode("sample file table", e))?;
+            (t.sample_filetable, t.other_filetable)
         }
         None => {
             let chunk = chunks
                 .find_first(LEGACY_FILE_TABLE)
                 .ok_or_else(|| invalid("missing sample file table"))?;
-            FileNameListPreK51::try_from(chunk)
-                .map_err(|e| decode("legacy file table", e))?
-                .sample_filetable
+            let t =
+                FileNameListPreK51::try_from(chunk).map_err(|e| decode("legacy file table", e))?;
+            (t.sample_filetable, t.other_filetable)
         }
     };
     let mut out = Translation {
@@ -96,16 +95,6 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
     let mut translated = Vec::new();
     for (index, group) in groups.groups.iter().enumerate() {
         translated.push(out.group(index, group).map_err(|e| decode("group", e))?);
-    }
-    let racks = crate::effects::program_racks(&program);
-    for (at, (slot, feature, value, reason)) in
-        crate::effects::instrument_buses(&mut out.ir, &racks)
-    {
-        out.unsupported(&format!("{at} slot {slot}"), &feature, value, reason);
-    }
-    // Bus racks are not modelled yet.
-    for (at, slots) in racks.into_iter().filter(|(at, _)| at.starts_with("bus")) {
-        out.effects(&at, slots);
     }
     for (slot, chunk) in program
         .0
@@ -163,6 +152,31 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
         .find(|p| p.join("Samples").is_dir())
         .unwrap_or(parent);
     let mut samples = Samples::new(root);
+    let racks = crate::effects::program_racks(&program);
+    {
+        // Convolution impulse responses are named by the other-files table.
+        let mut load = |index: i32| -> Result<crate::effects::Decoded, String> {
+            let name = u32::try_from(index)
+                .ok()
+                .and_then(|i| others.get(&i))
+                .ok_or_else(|| format!("index {index} is not in the file table"))?;
+            let at = samples
+                .resolve(parent, name)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("{name} was not found"))?;
+            let decoded = samples.decode(&at).map_err(|e| e.to_string())?;
+            Ok((decoded.rate, decoded.frames))
+        };
+        for (at, (slot, feature, value, reason)) in
+            crate::effects::instrument_buses(&mut out.ir, &racks, &mut load)
+        {
+            out.unsupported(&format!("{at} slot {slot}"), &feature, value, reason);
+        }
+    }
+    // Bus racks are not modelled yet.
+    for (at, slots) in racks.into_iter().filter(|(at, _)| at.starts_with("bus")) {
+        out.effects(&at, slots);
+    }
     let mut resolved = HashMap::new();
     let data = &program
         .0

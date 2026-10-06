@@ -480,6 +480,7 @@ impl Runtime {
                 bank: &mut plan.dsp.filters,
                 expression: Some((n.expression, expression.value)),
                 reverbs: &mut [],
+                convolutions: &mut [],
             },
             at,
         };

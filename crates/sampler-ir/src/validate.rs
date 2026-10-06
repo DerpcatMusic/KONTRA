@@ -18,6 +18,7 @@ pub enum Reference {
     Control(usize),
     Route(usize),
     Shape(usize),
+    Impulse(usize),
     Processor { chain: usize, index: usize },
 }
 
@@ -96,6 +97,7 @@ impl Check<'_> {
             Reference::Control(i) => i < ir.controls.len(),
             Reference::Route(i) => i < ir.routes.len(),
             Reference::Shape(i) => i < ir.shapes.len(),
+            Reference::Impulse(i) => i < ir.impulses.len(),
             Reference::Processor { chain, index } => ir
                 .chains
                 .get(chain)
@@ -214,6 +216,11 @@ impl Check<'_> {
                         self.finite(v, field)?;
                     }
                 }
+                Processor::Convolution { impulse, dry, wet } => {
+                    self.exists(Reference::Impulse(impulse.0))?;
+                    self.finite(dry, "convolution dry")?;
+                    self.finite(wet, "convolution wet")?;
+                }
                 Processor::StereoMatrix(matrix) => {
                     for x in matrix.as_flattened() {
                         self.finite(*x, "stereo matrix")?;
@@ -247,6 +254,23 @@ impl Instrument {
             ir: self,
             owner: String::new(),
         };
+        for (i, impulse) in self.impulses.iter().enumerate() {
+            check.owner = format!("impulse {i}");
+            check.within(f64::from(impulse.rate), 1.0..=f64::from(u32::MAX), "rate")?;
+            check.within(
+                impulse.left.len() as f64,
+                1.0..=f64::from(1u32 << 24),
+                "frames",
+            )?;
+            check.within(
+                impulse.right.len() as f64,
+                impulse.left.len() as f64..=impulse.left.len() as f64,
+                "right frames",
+            )?;
+            for x in impulse.left.iter().chain(&impulse.right) {
+                check.finite(f64::from(*x), "sample")?;
+            }
+        }
         for (i, group) in self.groups.iter().enumerate() {
             check.owner = format!("group {i}");
             check.gain(group.gain, "gain")?;
