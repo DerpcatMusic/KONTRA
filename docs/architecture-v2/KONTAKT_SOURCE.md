@@ -2,7 +2,8 @@
 
 `sampler-kontakt` is a new, dependency-free source decoder. `Chunks::parse` takes an
 **already expanded Kontakt chunk payload**. `Nks42` separately opens the bounded
-non-monolithic NKS 4.2 container profile described below. Neither decoder calls
+non-monolithic NKS 4.2 container profile; `nis::Item` opens modern NIS framing.
+None of these decoders calls
 the v1 importer or vendor decoder. The owning worker holds one immutable byte
 buffer; all decoded records borrow that buffer and retain absolute source offsets.
 No source buffer or vendor structure enters the audio runtime.
@@ -56,7 +57,7 @@ cargo run --locked -p sampler-native -- inspect-kontakt-chunks EXPANDED.bin
 ```
 
 The inspection commands are deliberately named for their input and report playback
-as unadmitted. Remaining NKS profiles and NIS wrappers, complete
+as unadmitted. Remaining container profiles/wrappers, complete
 source schemas, asset resolution, group/DSP/control lowering, linked resources,
 ordered script slots, saved state, UI generations and complete capability
 diagnostics remain required. Falcon must contribute its own source model to the
@@ -95,6 +96,40 @@ and expanded-input inspection produce the same source report without editing inp
 cargo run --locked -p sampler-native -- inspect-kontakt-nks INPUT.nki
 ```
 
-This is container/source decoding evidence, not Kontakt audio/UI fidelity. Modern
-NIS containers, old NKS zlib profiles, monoliths, assets and semantic lowering are
+This is container/source decoding evidence, not Kontakt audio/UI fidelity. Remaining
+NIS profiles, old NKS zlib profiles, monoliths, assets and semantic lowering are
 still open. No second engine or v1 importer was added.
+
+## Modern NIS source views
+
+`nis::Item` decodes version-1 item headers, nested data layers and child tables
+without allocating a tree. It retains UUIDs, flags, reserved words, child
+descriptors, trailing bytes and properties in the original source buffer. FOURCC
+identities are exposed in logical order while their original encoding remains
+accessible. Declared 64-bit extents are checked before narrowing or slicing.
+
+Data layers are validated in a loop with a caller-supplied count limit. Child
+extents are validated before iteration; opening a child validates its own layers
+and table and can return an error. This deliberately avoids claiming the whole
+subtree is valid merely because its outer frame is valid. A traversal caller must
+bound total work/depth; the current CLI follows a fixed preset path and rejects
+missing or ambiguous required children.
+
+An explicitly unencrypted `EncryptionItem → SubtreeItem` path exposes either
+borrowed uncompressed bytes or an owned bounded FastLZ expansion using the same
+decoder as NKS. A protected marker returns `AccessRequired` before decompression.
+No library key discovery or decryption is implemented. The inner `PresetChunkItem`
+exposes its exact chunk payload; checksum/authentication fields remain retained
+but unverified. AppSpecific wrappers and other application schemas are not guessed.
+
+Authored fixtures cover opaque/duplicate records, source offsets, child failures,
+64-bit length corruption, limits and a 4,097-layer chain without recursive stack
+growth. Clear compressed/plain subtrees yield identical bytes, while malformed
+and protected sources fail explicitly. The CLI fixture runs the fixed
+RepositoryRoot → BNISoundPreset → EncryptionItem → PresetChunkItem profile and
+compares its source report to expanded/NKS input. It also rejects duplicate
+encryption children. These remain parsing/ownership checks, not library fidelity.
+
+```sh
+cargo run --locked -p sampler-native -- inspect-kontakt-nis INPUT.nki
+```

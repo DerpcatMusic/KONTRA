@@ -29,7 +29,7 @@ impl<'a> Script<'a> {
         if !matches!(object.version, 0x50 | 0x60) {
             return Err(object
                 .raw
-                .error(ErrorKind::UnsupportedVersion(object.version)));
+                .error(ErrorKind::UnsupportedVersion(u32::from(object.version))));
         }
         let mut r = Reader(object.public);
         let text = r.optional()?;

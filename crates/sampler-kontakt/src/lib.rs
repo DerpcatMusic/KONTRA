@@ -5,6 +5,7 @@
 //! Decoding a source record does not admit its semantics for native playback.
 #![forbid(unsafe_code)]
 
+pub mod nis;
 mod nks;
 mod script;
 pub use nks::Nks42;
@@ -25,12 +26,13 @@ pub enum ErrorKind {
     TrailingData,
     InvalidBoolean,
     UnsupportedLayout,
-    UnsupportedVersion(u16),
+    UnsupportedVersion(u32),
     IncorrectId { expected: u16, actual: u16 },
     InvalidMagic,
     InvalidCompression,
     LengthMismatch,
     Allocation,
+    AccessRequired,
 }
 
 /// Byte position in the source buffer being decoded, never a nested relative offset.
@@ -100,6 +102,24 @@ impl<'a> Reader<'a> {
     fn u32(&mut self) -> Result<u32, Error> {
         let b = self.take(4)?.data;
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+    fn u64(&mut self) -> Result<u64, Error> {
+        let b = self.take(8)?.data;
+        Ok(u64::from_le_bytes([
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+        ]))
+    }
+    fn record64(&mut self, minimum: usize) -> Result<Bytes<'a>, Error> {
+        let start = self.0;
+        let length = usize::try_from(self.u64()?).map_err(|_| start.error(ErrorKind::Limit))?;
+        if length < minimum {
+            return Err(start.error(ErrorKind::LengthMismatch));
+        }
+        self.take(length - 8)?;
+        Ok(Bytes {
+            data: &start.data[..length],
+            offset: start.offset,
+        })
     }
     fn boolean(&mut self) -> Result<bool, Error> {
         let at = self.0;

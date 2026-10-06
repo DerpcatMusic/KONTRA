@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Read modern NIS item/layer/child framing as borrowed views and decode clear
+  preset subtrees through the shared bounded codec. Preserve unknown metadata,
+  reject malformed/ambiguous profiles, and keep protected inputs explicit.
+
 - Decode the non-monolithic NKS 4.2 container profile with a bounded native
   FastLZ reader. Validate tokens and exact expansion size before allocation;
   retain raw header/metadata and inspect decoded records without old-core code.
