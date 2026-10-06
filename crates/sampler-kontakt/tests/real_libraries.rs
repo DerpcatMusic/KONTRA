@@ -110,6 +110,12 @@ fn una_corda_pure_renders_from_its_encrypted_monolith() {
         ir.unsupported.iter().any(|u| u.feature == "script"),
         "uncompiled scripts are reported"
     );
+    // Two 20-voice, 50 ms voice groups, each used by one group (1-based).
+    assert_eq!(ir.voice_limits.len(), 2);
+    let mut used: Vec<_> = ir.groups.iter().filter_map(|g| g.voice_limit).collect();
+    used.sort();
+    assert_eq!(used, [0, 1]);
+    assert_eq!(ir.voice_limit.map(|l| l.voices), Some(240));
     assert!(peak > 0.01, "audible: peak {peak}");
 }
 
