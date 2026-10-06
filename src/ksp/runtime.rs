@@ -1396,13 +1396,26 @@ impl Runtime {
     /// about `budget` values from where `at` stands. True once `saved` is
     /// whole again; `at.changed` then says whether anything differed. Scripts
     /// keep megabytes of persistent tables, too much for one audio block.
+    ///
+    /// A finished `saved` holds one callback boundary's memory: if anything
+    /// ran since the pass began, the pass restarts with twice the budget, so
+    /// a busy script still finishes, at worst in a single call.
     pub fn refresh_persistence_within(
         &self,
         saved: &mut [Persisted],
         at: &mut Refresh,
         budget: usize,
     ) -> bool {
-        let mut left = budget;
+        // ponytail: `changes` also counts callbacks that write no persistent
+        // value, so busy scripts escalate to whole copies; track persistent
+        // writes in the VM if large tables make that a measurable stall.
+        if at.pass != Some(self.changes) {
+            if at.pass.is_some() {
+                at.scale = at.scale.saturating_add(1);
+            }
+            (at.pass, at.slot, at.item, at.at) = (Some(self.changes), 0, 0, 0);
+        }
+        let mut left = budget.saturating_mul(1usize.checked_shl(at.scale).unwrap_or(usize::MAX));
         let slots = self.programs.len().min(self.states.len()).min(saved.len());
         while at.slot < slots {
             let (prog, state) = (&self.programs[at.slot], &self.states[at.slot]);
@@ -3109,6 +3122,10 @@ pub struct Refresh {
     slot: usize,
     item: usize,
     at: usize,
+    /// [`Runtime::changes`] when this persistence pass began.
+    pass: Option<u64>,
+    /// Restarts so far; each doubles the budget.
+    scale: u32,
     /// Something differed from the buffer so far.
     pub changed: bool,
 }
