@@ -21,6 +21,7 @@
 //! hands the replaced part back as [`Core::Retired`] instead of dropping it.
 
 pub mod event;
+pub mod mics;
 pub mod mix;
 pub mod report;
 pub mod tree;
@@ -117,6 +118,9 @@ pub struct LoadRequest {
     /// Program index inside a bank/multi file.
     pub program: u32,
     pub sample_rate: f64,
+    /// Per-note pressure and timbre reach every zone (louder, brighter), for
+    /// MPE controllers; otherwise only routes the instrument authored do.
+    pub mpe: bool,
 }
 
 /// A prepared part with what the shell shows of it.
@@ -131,6 +135,88 @@ pub struct Loaded<P> {
     /// The part's host-visible controls and their defaults, in id order;
     /// what [`Core::set_control`] accepts and [`Core::control_value`] reads.
     pub controls: Vec<(sampler_ui_ir::ControlId, f64)>,
+    /// The translated instrument the part plays, for the views that show
+    /// its articulations, mapping and sound; `None` for plain audio files.
+    pub instrument: Option<std::sync::Arc<sampler_ir::Instrument>>,
+    /// The script interfaces' models, for runtime UI changes.
+    pub scripts: ScriptUi,
+    /// The streamed samples, when the part reads them from disk as it plays.
+    pub stream: Option<std::sync::Arc<Stream>>,
+}
+
+/// A part's streamed samples: their decode threads and resident start data.
+pub struct Stream {
+    pub streamer: sampler_kontakt::Streamer,
+    pub assets: Vec<sampler_core::Pcm>,
+    pub report: sampler_kontakt::StreamReport,
+}
+
+impl Stream {
+    /// Bytes held in memory: start data plus the page pool.
+    pub fn resident_bytes(&self) -> u64 {
+        let heads: usize = self.assets.iter().map(sampler_core::Pcm::resident_bytes).sum();
+        (heads + self.report.pool_bytes) as u64
+    }
+
+    /// Drop the start data of samples not played since `before` (the part's
+    /// [`Core::clock`]), least recently played first, until the rest fit in
+    /// `budget` bytes; they read again from disk when next played.
+    pub fn trim(&self, budget: u64, before: u64) -> usize {
+        let pool = self.report.pool_bytes as u64;
+        self.streamer.trim(&self.assets, budget.saturating_sub(pool).try_into().unwrap_or(usize::MAX), before)
+    }
+}
+
+/// One key as the scripts show it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct KeyLook {
+    /// A `$KEY_COLOR_*` index.
+    pub color: Option<u8>,
+    pub name: Option<String>,
+    /// A keyswitch or other control key rather than a playing key.
+    pub control: bool,
+}
+
+/// A part's script interfaces as its scripts change them at run time.
+#[derive(Default)]
+pub struct ScriptUi {
+    /// By script instance ([`sampler_core::ScriptInstanceId`]).
+    pub views: Vec<sampler_ksp::ScriptView>,
+    pub resources: Option<sampler_kontakt::Resources>,
+}
+
+impl ScriptUi {
+    /// Apply an effect script `instance` emitted; true when it changed a view.
+    pub fn apply(&mut self, instance: usize, effect: &sampler_core::Effect) -> bool {
+        self.views.get_mut(instance).is_some_and(|v| v.apply_ui_effect(effect))
+    }
+
+    /// The keyboard as the scripts colour and name it, 128 keys; a later
+    /// script's settings win.
+    pub fn keys(&self) -> std::sync::Arc<[KeyLook]> {
+        let mut keys = vec![KeyLook::default(); 128];
+        for view in &self.views {
+            for (look, key) in keys.iter_mut().zip(&view.model().interface.keys) {
+                if let Some(color) = key.color.and_then(|c| u8::try_from(c).ok()) {
+                    look.color = Some(color);
+                }
+                if let Some(name) = key.name.as_ref().filter(|n| !n.is_empty()) {
+                    look.name = Some(name.clone());
+                }
+                if let Some(kind) = key.kind {
+                    look.control = kind == 1; // $NI_KEY_TYPE_CONTROL
+                }
+            }
+        }
+        keys.into()
+    }
+
+    /// The interfaces as they stand, like [`Loaded::interfaces`].
+    pub fn interfaces(&mut self) -> Vec<sampler_ui_ir::Interface> {
+        let resources = std::cell::RefCell::new(&mut self.resources);
+        let picture = |path: &str| resources.borrow_mut().as_mut()?.picture(path);
+        self.views.iter().filter_map(|v| v.ui(&picture).ok()).collect()
+    }
 }
 
 /// Browser-facing facts about a source, read without preparing it.
@@ -202,10 +288,18 @@ pub trait Core: Send {
     fn set_control(&mut self, part: usize, control: sampler_ui_ir::ControlId, value: f64) -> bool;
     /// The control's current value, which scripts may also change.
     fn control_value(&self, part: usize, control: sampler_ui_ir::ControlId) -> Option<f64>;
+    /// Hand `part`'s queued script effects to `each` with their script
+    /// instance, in order, until it returns false; the rest stay queued.
+    fn take_effects(&mut self, part: usize, each: &mut dyn FnMut(usize, &sampler_core::Effect) -> bool);
 
     fn voices(&self) -> Voices;
     /// `part`'s runtime problems since it was installed.
     fn problems(&self, part: usize) -> report::RuntimeProblems;
+    /// The articulation `part` plays, by index in its instrument, when the
+    /// runtime rather than a script holds it.
+    fn articulation(&self, part: usize) -> Option<usize>;
+    /// `part`'s clock in frames, as [`Stream::trim`] counts it.
+    fn clock(&self, part: usize) -> u64;
     /// Output latency in frames that the core reports to the host.
     fn latency(&self) -> u32;
 }

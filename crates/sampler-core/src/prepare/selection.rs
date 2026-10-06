@@ -110,7 +110,7 @@ impl Runtime {
                 .iter()
                 .filter(|stage| stage.release.is_some())
                 .count();
-        if self.behaviors.available() < callbacks {
+        if !self.behavior_room(callbacks) {
             return Err(Error::Capacity);
         }
         let note = self.note_on_pitched_in(performance, input, pitch, velocity, expression)?;
@@ -139,6 +139,14 @@ impl Runtime {
             }
         };
         let entry = source_stage.map_or(0, |stage| stage.index() + 1);
+        // As in Kontakt, a note a module's note callback plays skips that note
+        // callback but its release runs the module's release callback too (Una
+        // Corda sustains its own notes there). Notes played by a release
+        // callback do not re-enter it.
+        let release_entry = match source_stage {
+            Some(crate::behavior::NoteStage::Attack(stage)) => stage,
+            _ => entry,
+        };
         let prepared = &self.plans.get(plan.0).unwrap().prepared;
         let routed =
             source_stage.is_some() && prepared.stages[entry..].iter().any(|s| s.note.is_some());
@@ -149,14 +157,14 @@ impl Runtime {
             .count();
         let callbacks = usize::from(routed) * callbacks
             + if release_route {
-                prepared.stages[entry..]
+                prepared.stages[release_entry..]
                     .iter()
                     .filter(|s| s.release.is_some())
                     .count()
             } else {
                 0
             };
-        if self.behaviors.available() < callbacks {
+        if !self.behavior_room(callbacks) {
             return Err(Error::Capacity);
         }
         let pitch = match origin {
@@ -249,7 +257,7 @@ impl Runtime {
         );
         self.project_note(note, origin_stage, entry);
         if release_route {
-            self.reserve_release_callbacks(note, entry);
+            self.reserve_release_callbacks(note, release_entry);
         }
         if routed {
             self.begin_note_stages(note, entry);
@@ -375,6 +383,7 @@ impl Runtime {
         let required = attack.plus(release);
         self.reclaim_internal_notes(required);
         self.steal_release_reserves(required);
+        self.steal_voices(required.voices);
         self.check_selection_capacity(required)?;
         Ok(release)
     }
@@ -587,11 +596,14 @@ impl Runtime {
                 let step = prepared.step(candidate, note_pitch);
                 let seed =
                     self.now ^ ((note.0.index as u64) << 40) ^ ((candidate.region as u64) << 20);
+                let held = self.held_frames(note);
                 let n = self.notes.get(note.0).unwrap();
                 let inputs = crate::voice_mod::Inputs::new(
                     n,
                     self.expressions.get(n.expression.0).unwrap().value,
                     &state.controllers,
+                    held,
+                    self.note_params[note.0.index].mods,
                 );
                 let start = prepared
                     .voice_modulation
@@ -635,16 +647,21 @@ impl Runtime {
                 let state = self.voices.get_mut(voice.0).unwrap();
                 state.chain = r.chain;
                 state.group = group;
+                self.enforce_voice_limits(plan, group, voice);
+                let state = self.voices.get_mut(voice.0).unwrap();
                 state.bus = r.bus;
                 if r.chain.is_some() {
                     self.plans.get_mut(plan.0).unwrap().dsp.reset(voice.0.index);
                 }
+                let held = self.held_frames(note);
                 let n = self.notes.get(note.0).unwrap();
                 let controllers = &self.performance_state.states[snapshot].controllers;
                 let inputs = crate::voice_mod::Inputs::new(
                     n,
                     self.expressions.get(n.expression.0).unwrap().value,
                     controllers,
+                    held,
+                    self.note_params[note.0.index].mods,
                 );
                 let clock = crate::voice_mod::Clock {
                     rate: f64::from(self.rate),
@@ -694,6 +711,7 @@ impl Runtime {
         let n = self.notes.get(note.0).unwrap();
         let (plan, note_pitch, address, owner) = (n.plan, n.pitch, n.address, n.expression);
         let prepared = &self.plans.get(plan.0).unwrap().prepared;
+        let musical = musical && !prepared.script_release_triggers;
         let reserve = prepared.release_reserves[note_pitch.key() as usize][index];
         let velocity = prepared
             .release_velocity(

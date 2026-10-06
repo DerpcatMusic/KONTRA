@@ -1,7 +1,7 @@
 //! Checks and screenshots for the v2 views: the nested mixer, the load report
 //! and the UI-IR renderer. Shots land in `artifacts/v2-ui/`.
 
-use super::{ir_view, load_report as lr, mix_tree as mt, theme, tests::pixels};
+use super::{ir_view, load_report as lr, mix_tree as mt, theme, tests::{Harness, pixels}};
 use super::ir_view::Picture;
 use moose::mui::mui::prelude::*;
 use moose::mui::mui::scene::Image;
@@ -178,7 +178,7 @@ const NO_LIMITS: sampler_ksp::Limits =
 fn both_modes(face: &ir::Interface, load: &mut dyn FnMut(&ir::Asset) -> Option<Arc<Picture>>, dir: &str, stem: &str) -> [usize; 2] {
     let face = ir_view::resolved(face);
     let page = &face.pages[0];
-    let (w, h) = (page.size.width.clamp(1, 1200) as u16, page.size.height.clamp(1, 900) as u16);
+    let (w, h) = (page.size.width.clamp(1, 1200) as u16, ir_view::height(&face, ir::PageRef(0)).clamp(1, 900) as u16);
     let mut values = ir_view::Values::default();
     let mut assets = ir_view::Assets::default();
     let mut bytes = [0; 2];
@@ -223,7 +223,7 @@ fn ir_view_draws_the_ksp_corpus() {
 fn ir_view_real_instrument_memory() {
     let patch = std::path::PathBuf::from(std::env::var_os("KONTRA_UI_IR_PATCH").expect("KONTRA_UI_IR_PATCH"));
     // Only key 0's samples: the interfaces are what this measures.
-    let options = sampler_kontakt::Options { keys: 0..=0, ..Default::default() };
+    let options = sampler_kontakt::Options { keys: 0..=0, library: Some(patch.clone()), ..Default::default() };
     let loaded = sampler_kontakt::load(&patch, &options, |_| {}).unwrap();
     let mut face = loaded.interfaces.into_iter().max_by_key(|u| u.widgets.len()).expect("a script with an interface");
     // A wallpaper the saved state does not name can be given a stand-in to measure.
@@ -233,6 +233,13 @@ fn ir_view_real_instrument_memory() {
         face.assets[a.0].path = format!("Resources/pictures/{n}.png");
     }
     let mut source = super::pictures::Source::of(&patch);
+    if std::env::var_os("DUMP_WIDGETS").is_some() {
+        let r = ir_view::resolved(&face);
+        for (n, w) in r.widgets.iter().enumerate() {
+            eprintln!("W{n} {} {:?} {:?} vis={} hide={:?} text={:?} val={:?} imgs={:?} parent={:?}", w.name, kind_name(&w.kind), r.page_rect(ir::WidgetRef(n)), r.visible(ir::WidgetRef(n)), w.hide, w.text, w.value_text, w.images.iter().map(|i| (r.assets[i.asset.0].path.clone(), i.role)).collect::<Vec<_>>(), w.parent);
+        }
+        eprintln!("PAGE {:?} {:?}", r.pages[0], r.unsupported);
+    }
     let stem = Path::new(&patch).file_stem().unwrap().to_string_lossy().replace(' ', "_");
     let bytes = both_modes(&face, &mut |a| source.load(a), "real", &stem);
     eprintln!(
@@ -244,4 +251,115 @@ fn ir_view_real_instrument_memory() {
         bytes[1] / 1024
     );
     assert!(bytes[1] <= bytes[0]);
+}
+
+/// The editor with a real instrument in the rack, drawn from the v2 Kontakt
+/// loader's data: its interface in both presentations, the mixer tree and
+/// the load report. Opt-in: `KONTRA_UI_IR_PATCH=/path/to/patch.nki`.
+#[test]
+#[ignore = "set KONTRA_UI_IR_PATCH to a locally owned instrument"]
+fn editor_with_a_real_instrument() {
+    use crate::sound::{report::LoadReport, tree::MixTree};
+    let patch = std::path::PathBuf::from(std::env::var_os("KONTRA_UI_IR_PATCH").expect("KONTRA_UI_IR_PATCH"));
+    let options = sampler_kontakt::Options { rate: 48000, keys: 0..=127, scripts: true, library: Some(patch.clone()), ..Default::default() };
+    let loaded = sampler_kontakt::load(&patch, &options, |_| {}).unwrap();
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    p.selection.write().unwrap().parts.push(crate::plugin::Part { path: patch.to_string_lossy().into_owned(), ..Default::default() });
+    {
+        let mut v = p.shared.view.lock().unwrap();
+        if v.parts.is_empty() {
+            v.parts.push(Default::default());
+        }
+        let part = &mut v.parts[0];
+        part.active = loaded.instrument.name.clone();
+        part.report = Some(Arc::new(LoadReport::of(&loaded.instrument, &patch, loaded.plan.sample_count())));
+        part.tree = Some(Arc::new(MixTree::instrument(&loaded.instrument.name)));
+        part.interfaces = loaded.interfaces.into();
+        part.instrument = Some(Arc::new(loaded.instrument));
+    }
+    let stem = patch.file_stem().unwrap().to_string_lossy().replace(' ', "_");
+    let mut h = Harness::new(&p, 1180., 780.);
+    h.idle(40);
+    let shot = |h: &Harness, name: &str| shoot(&h.ui, 1180, 780, &format!("app/{stem}-{name}.png"));
+    if h.ui.scene().unwrap().surface("face-original-0").is_some() {
+        h.press("face-original-0");
+        h.idle(20);
+        shot(&h, "rack-original");
+        h.press("face-vector-0");
+        h.idle(20);
+        shot(&h, "rack-vector");
+    } else {
+        shot(&h, "rack");
+    }
+    for view in ["Articulations", "Mapping", "Sound", "Info"] {
+        let id = format!("view-0-{view}");
+        if h.ui.scene().unwrap().surface(&id).is_some() {
+            h.press(&id);
+            h.idle(4);
+            shot(&h, &view.to_lowercase());
+        }
+    }
+    h.press("tab-mixer");
+    shot(&h, "mixer");
+    h.press("tab-report");
+    shot(&h, "report");
+}
+
+fn kind_name(k: &ir::Kind) -> String {
+    let s = format!("{k:?}");
+    s.chars().take(60).collect()
+}
+
+/// A part with keyswitched articulations: the list switches by tapping a
+/// row's key, follows the keys as they are played, and marks them on the
+/// keyboard. Shoots `artifacts/v2-ui/app/synthetic-{articulations,mapping}.png`.
+#[test]
+fn articulations_switch_by_their_keys() {
+    use sampler_ir as sir;
+    use std::sync::atomic::Ordering;
+    let mut inst = sir::Instrument { name: "Strings".into(), ..Default::default() };
+    for (n, name) in ["Legato", "Sustain", "Staccato", "Pizzicato", "Tremolo"].into_iter().enumerate() {
+        inst.groups.push(sir::Group { name: name.into(), ..Default::default() });
+        inst.articulations.push(sir::Articulation { name: name.into(), switch_keys: vec![24 + n as u8], default: n == 0, alternatives: Default::default() });
+        for (v, (lo, hi)) in [(1, 63), (64, 127)].into_iter().enumerate() {
+            let mut z = sir::Zone::new(sir::AssetRef(0));
+            z.group = Some(sir::GroupRef(n));
+            z.keys = sir::KeyRange { low: 36 + v as u8 * 3, high: 84 - n as u8 * 4 };
+            z.velocities = sir::VelocityRange { low: lo, high: hi };
+            inst.zones.push(z);
+        }
+    }
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    p.selection.write().unwrap().parts.push(crate::plugin::Part { path: "/x/Strings.nki".into(), ..Default::default() });
+    {
+        let mut v = p.shared.view.lock().unwrap();
+        if v.parts.is_empty() {
+            v.parts.push(Default::default());
+        }
+        v.parts[0].active = "Strings".into();
+        v.parts[0].instrument = Some(Arc::new(inst));
+    }
+    let mut h = Harness::new(&p, 1180., 780.);
+    h.idle(4);
+    h.press("view-0-Articulations");
+    h.idle(2);
+    let lit = |h: &Harness, n: usize| h.ui.scene().unwrap().surface(&format!("art-0-{n}")).is_some();
+    assert!(lit(&h, 4), "every articulation has a row");
+    while p.shared.keyboard.pop().is_some() {}
+    h.press("art-0-2");
+    h.idle(2);
+    let sent: Vec<String> = std::iter::from_fn(|| p.shared.keyboard.pop()).map(|(slot, play)| format!("{slot} {play:?}")).collect();
+    assert_eq!(sent, ["0 Note(26, 1)", "0 Note(26, 0)"], "a row taps its key and lets it go");
+    p.shared.heard[27].store(90, Ordering::Relaxed);
+    h.idle(2);
+    p.shared.heard[27].store(0, Ordering::Relaxed);
+    h.idle(2);
+    shoot(&h.ui, 1180, 780, "app/synthetic-articulations.png");
+    h.press("remap-0-Channel");
+    h.idle(2);
+    shoot(&h.ui, 1180, 780, "app/synthetic-articulations-channel.png");
+    h.press("view-0-Mapping");
+    h.press("map-group-0-1");
+    h.idle(2);
+    shoot(&h.ui, 1180, 780, "app/synthetic-mapping.png");
 }

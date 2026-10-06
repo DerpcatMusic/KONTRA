@@ -107,7 +107,7 @@ fn main() {
         });
     let mut groups = [None; 16];
     groups[0] = Some(Version::Midi1);
-    let ingress = Ingress::new(0, groups);
+    let mut ingress = Ingress::new(0, groups);
     // A new note every 125 ms, held 2 s: about 16 notes sound at once.
     let span = u32::from(high.saturating_sub(low)) + 1;
     let frames = (seconds * f64::from(rate)) as usize;

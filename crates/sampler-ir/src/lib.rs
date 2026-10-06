@@ -64,8 +64,14 @@ pub struct Instrument {
     pub shapes: Vec<Shape>,
     pub chains: Vec<Chain>,
     pub buses: Vec<Bus>,
+    /// Impulse responses bus convolutions refer to.
+    pub impulses: Vec<Impulse>,
     pub controls: Vec<Control>,
     pub behaviors: Vec<Behavior>,
+    /// Polyphony of the whole instrument.
+    pub voice_limit: Option<VoiceLimit>,
+    /// Polyphony of voice groups; [`Group::voice_limit`] indexes this.
+    pub voice_limits: Vec<VoiceLimit>,
     /// Source meaning this description does not carry. Lowering never reads it;
     /// it exists so a caller can show or reject what was not translated.
     pub unsupported: Vec<Unsupported>,
@@ -130,6 +136,30 @@ pub struct Group {
     /// Group-scope chain; its processors see the sum of this group's voices.
     pub chain: Option<ChainRef>,
     pub output: Output,
+    /// Index into [`Instrument::voice_limits`] shared by this group's voices.
+    pub voice_limit: Option<usize>,
+}
+
+/// Past `voices` sounding voices, starting another fades one out over
+/// `fade`: a released one first when `prefer_released`, else by `kill`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VoiceLimit {
+    pub voices: u32,
+    pub kill: Kill,
+    pub prefer_released: bool,
+    pub fade: Time,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Kill {
+    /// The quietest.
+    Any,
+    #[default]
+    Oldest,
+    Newest,
+    /// Highest note.
+    Highest,
+    Lowest,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -357,6 +387,35 @@ pub struct Switching {
     pub keys: SwitchKeys,
 }
 
+impl Switching {
+    /// One byte for a saved part: owner, driver and key policy. A remap
+    /// survives reload exactly through `from_bits(to_bits())`.
+    pub fn to_bits(self) -> u8 {
+        self.owner as u8 | (self.driver as u8) << 1 | (self.keys as u8) << 4
+    }
+
+    /// `None` for a byte `to_bits` never produces.
+    pub fn from_bits(bits: u8) -> Option<Self> {
+        Some(Self {
+            owner: [SwitchOwner::Native, SwitchOwner::Behavior]
+                .get(usize::from(bits & 1))
+                .copied()?,
+            driver: [
+                Driver::Keys,
+                Driver::Velocity,
+                Driver::Channel,
+                Driver::Controller,
+                Driver::Program,
+            ]
+            .get(usize::from(bits >> 1 & 7))
+            .copied()?,
+            keys: [SwitchKeys::Keep, SwitchKeys::Play, SwitchKeys::Swallow]
+                .get(usize::from(bits >> 4))
+                .copied()?,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SwitchOwner {
     /// The runtime holds the articulation; zones name the one they belong to.
@@ -462,7 +521,8 @@ pub enum Scope {
     /// One instance per group, over the sum of its voices.
     Group(GroupRef),
     Bus(BusRef),
-    /// The instrument output.
+    /// The instrument output; for a modulator, one instance for the whole
+    /// instrument (an LFO only; see [`Lfo::retrigger`]).
     Master,
 }
 
@@ -478,6 +538,8 @@ pub struct Modulator {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ModulationSource {
     Envelope(Envelope),
+    /// A multi-segment envelope (Kontakt flex), gated like `Envelope`.
+    Breakpoints(Breakpoints),
     Lfo(Lfo),
     Controller(u8),
     Velocity,
@@ -492,6 +554,14 @@ pub enum ModulationSource {
     Random,
     /// Always 1.
     Constant,
+    /// Kontakt's release-trigger counter: the share of `T` left when the key
+    /// was released, `clamp((T − held) / T, 0, 1)`, where `held` runs from
+    /// note-on to key-up (to now while the key is down).
+    ReleaseCounter(Time),
+    /// A script-set per-event value, `id` as KSP's "from script" modulator
+    /// index: `set_event_par_arr(event, $EVENT_PAR_MOD_VALUE_ID, v, id)`,
+    /// read as `clamp(v / 1_000_000, -1, 1)`; 0 until set.
+    Script(u16),
 }
 
 impl ModulationSource {
@@ -499,6 +569,24 @@ impl ModulationSource {
     pub fn bipolar(&self) -> bool {
         matches!(self, Self::Lfo(_) | Self::PitchBend)
     }
+}
+
+/// Glides from 0 through `points`, each reached `time` after the previous;
+/// holds at `points[sustain]` while gated; a release glides from the current
+/// level through the points after `sustain` (jumping there when not yet
+/// reached) and the last level holds.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Breakpoints {
+    pub points: Vec<Breakpoint>,
+    pub sustain: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Breakpoint {
+    pub time: Time,
+    /// 0.0..=1.0 of full scale.
+    pub level: f64,
+    pub shape: Curve,
 }
 
 /// Delay-attack-hold-decay-sustain-release.
@@ -514,6 +602,9 @@ pub struct Envelope {
     pub attack_shape: Curve,
     pub decay_shape: Curve,
     pub release_shape: Curve,
+    /// Attack-hold-decay only: decays to zero, ignores note-off, then ends
+    /// (`sustain` and `release` are unused).
+    pub one_shot: bool,
 }
 
 impl Default for Envelope {
@@ -528,6 +619,7 @@ impl Default for Envelope {
             attack_shape: Curve::Linear,
             decay_shape: Curve::Linear,
             release_shape: Curve::Linear,
+            one_shot: false,
         }
     }
 }
@@ -538,6 +630,8 @@ pub enum Curve {
     Linear,
     /// expm1(k·t)/expm1(k); positive starts slowly.
     Exponential(f64),
+    /// Holds the starting level until the stage ends, then steps.
+    Step,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -553,6 +647,8 @@ pub struct Lfo {
     pub phase: f64,
     /// Each voice starts its own cycle at `phase`; otherwise one free-running
     /// cycle, at `phase` when the instrument starts, is shared by all voices.
+    /// A [`Scope::Master`] retriggered LFO is one cycle shared by all voices
+    /// and restarted at `phase` (with its delay and fade) by every voice start.
     pub retrigger: bool,
 }
 
@@ -679,7 +775,56 @@ pub enum Processor {
     Gain(Gain),
     Pan(Pan),
     Filter(Filter),
-    Delay { time: Time, feedback: f64, mix: f64 },
+    Delay {
+        time: Time,
+        feedback: f64,
+        mix: f64,
+    },
+    /// Linear stereo mix: rows are output left/right, columns input
+    /// left/right. Width, balance, polarity and channel swaps.
+    StereoMatrix([[f64; 2]; 2]),
+    /// Algorithmic stereo reverb over a summed signal: bus and master scope.
+    Reverb(Reverb),
+    /// `dry * input + wet * (input * impulse)` over a summed signal: bus and
+    /// master scope. Convolution adds no latency.
+    Convolution {
+        impulse: ImpulseRef,
+        dry: f64,
+        wet: f64,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImpulseRef(pub usize);
+
+/// A stereo impulse response, already shaped (reversed, predelayed, enveloped,
+/// gain-scaled) by the importing profile. A mono response repeats in both
+/// channels; the channels have the same length.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Impulse {
+    pub rate: u32,
+    pub left: Vec<f32>,
+    pub right: Vec<f32>,
+}
+
+/// Physical reverb settings; an importing profile maps its own controls
+/// here. Wet signal only: the dry path is the bus's other send.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Reverb {
+    /// Seconds for the tail to fall 60 dB.
+    pub decay_seconds: f64,
+    /// Room size as a scale of the reference line lengths, 0.05..=1.5.
+    pub size: f64,
+    pub damping_hz: f64,
+    pub modulation_seconds: f64,
+    /// Input diffusion, 0..=0.75.
+    pub diffusion: f64,
+    pub predelay_seconds: f64,
+    pub input_cutoff_hz: f64,
+    /// Wet low-frequency change in dB (zero or negative).
+    pub low_shelf_db: f64,
+    /// 0 mono .. 1 full width.
+    pub width: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -65,6 +65,10 @@ pub fn run(instrument: &Path, output: &Path, notes: &[Note], scripts: bool) -> i
         }
     })
     .map_err(|e| io::Error::other(e.to_string()))?;
+    render(loaded, output, notes)
+}
+
+pub fn render(loaded: sampler_kontakt::Loaded, output: &Path, notes: &[Note]) -> io::Result<()> {
     let ir = &loaded.instrument;
     eprintln!(
         "{:?}: {} groups, {} zones, {} envelopes, {} scripts, {} unsupported",
@@ -111,6 +115,11 @@ pub fn run(instrument: &Path, output: &Path, notes: &[Note], scripts: bool) -> i
     };
     let mut rt =
         Runtime::new(plan, limits).map_err(|e| io::Error::other(format!("native core: {e}")))?;
+    rt.set_voice_stealing(Some(sampler_core::Stealing::for_limits(
+        rt.sample_rate(),
+        limits.voices,
+    )))
+    .map_err(|e| io::Error::other(format!("native core: {e}")))?;
     let frame = |seconds: f64| (seconds * f64::from(rate)).round() as usize;
     let mut events: Vec<(usize, u32)> = notes
         .iter()
@@ -138,7 +147,7 @@ pub fn run(instrument: &Path, output: &Path, notes: &[Note], scripts: bool) -> i
     let count = events.last().map_or(0, |e| e.0) + frame(3.0);
     let mut groups = [None; 16];
     groups[0] = Some(Version::Midi1);
-    let ingress = Ingress::new(0, groups);
+    let mut ingress = Ingress::new(0, groups);
     let mut out = BufWriter::new(
         OpenOptions::new()
             .write(true)

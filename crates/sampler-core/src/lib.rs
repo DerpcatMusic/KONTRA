@@ -63,18 +63,25 @@ pub use bus::{Bus, BusMix, BusSend};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
-    Biquad, ControlRange, Delay, FilterKind, Parameter, Processor, StateVariableFilter, SvfMode,
-    VoiceChain,
+    Biquad, ControlRange, Delay, FilterKind, Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor,
+    ReverbSettings, StateVariableFilter, SvfMode, VoiceChain,
 };
 mod envelope;
 use envelope::EnvelopeState;
 pub use envelope::{Envelope, EnvelopeCurve};
 mod gate;
 mod modulation;
+mod plan_programs;
 mod script_params;
+mod steal;
 mod voice_mod;
+pub use plan_programs::{PlanProgram, SignalProgram};
 pub use script_params::{EnvelopeStage, GroupParams, ParamScope};
-pub use voice_mod::{Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModScale, ModSource, ModTarget};
+pub use steal::{Kill, Stealing, VoiceLimit};
+pub use voice_mod::{
+    Breakpoint, Breakpoints, Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModScale, ModSource,
+    ModTarget,
+};
 mod ownership;
 use modulation::RenderedExpression;
 pub use modulation::{Destination, ExpressionSource, Modulation, Route};
@@ -231,6 +238,48 @@ impl Limits {
     /// library scripts: all but two finish every callback within it; the
     /// other two need up to five blocks.
     pub const DEFAULT_BEHAVIOR_FUEL: usize = 10_000;
+
+    /// Keys a part's scripts are sized to run at once (chords, pedalled runs).
+    pub const SCRIPT_KEYS: usize = 32;
+    /// Cap on script callback state per part: 4M cells, 32 MB.
+    pub const SCRIPT_CELLS: usize = 1 << 22;
+
+    /// Script callbacks a plan can have running at once: each note of
+    /// [`Self::SCRIPT_KEYS`] keys runs a release callback in every stage and
+    /// notes the scripts play pass the later stages too (about four per
+    /// stage), plus one listener per stage; within [`Self::SCRIPT_CELLS`].
+    /// 16 for a plan without stages.
+    pub fn script_capacity(plan: &Prepared) -> usize {
+        let stages = plan.stage_count();
+        if stages == 0 {
+            return 16;
+        }
+        let wanted = (4 * stages * Self::SCRIPT_KEYS + stages).clamp(16, 4096);
+        wanted
+            .min(Self::SCRIPT_CELLS / plan.behavior_local_count().max(1))
+            .max(16)
+    }
+
+    /// Capacities for playing `plan`: `notes` held at once and `voices`,
+    /// with script state sized by [`Self::script_capacity`]. Hosts and test
+    /// harnesses share this so a plan that plays in one plays in the other.
+    pub fn for_plan(plan: &Prepared, notes: usize, voices: usize) -> Self {
+        let behaviors = Self::script_capacity(plan);
+        Self {
+            notes,
+            channels: 16,
+            performances: 1,
+            families: 256,
+            decisions: 256,
+            expressions: notes,
+            voices,
+            commands: 256,
+            behaviors,
+            behavior_fuel: 1 << 20,
+            behavior_cells: plan.behavior_local_count().saturating_mul(behaviors),
+            note_cells: plan.note_cell_count().saturating_mul(notes),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -295,10 +344,12 @@ struct Voice {
     envelope: EnvelopeState,
     gain: f32,
     started: bool,
+    /// Admission order, for oldest-first stealing.
+    born: u64,
+    /// Fading out after being stolen; no longer counts against polyphony.
+    stolen: bool,
     /// The region's group, for script group layers.
     group: Option<u32>,
-    /// Script-layer gains at the end of the last rendered chunk.
-    script_gains: Option<[f32; 2]>,
     /// Frames a releasing voice's gain bound has stayed under `render::INAUDIBLE`.
     quiet: u32,
 }
@@ -491,6 +542,11 @@ pub struct Runtime {
     channels: Arena<Channel>,
     voices: Arena<Voice>,
     voice_activity: Box<[u64]>,
+    stealing: Option<steal::Stealing>,
+    stolen: usize,
+    /// Voices stolen since the runtime started.
+    steals: u64,
+    voice_order: u64,
     /// Worker pool and scratch for multicore rendering; None renders on the audio thread.
     parallel: Option<parallel::Parallel>,
     /// Render lanes new plans size their filter caches for.
@@ -523,6 +579,8 @@ pub struct Runtime {
     preemptions: u64,
     longest_preempted: u64,
     dispatching_behavior: bool,
+    /// The plan whose plan programs have started.
+    started_plan: Option<PlanId>,
     behavior_fuel: usize,
     behavior_stride: usize,
     behavior_locals: Box<[i64]>,
@@ -532,6 +590,9 @@ pub struct Runtime {
     /// Set once a script writes a voice parameter; voices then render in chunks.
     // ponytail: sticky for the runtime's life; count live layers if chunking costs show up.
     script_params: bool,
+    /// Keys whose latest physical event was a note-on: one note-off clears the
+    /// key however many presses stacked, as `%KEY_DOWN` does in Kontakt.
+    input_keys: u128,
     executing_due: bool,
     command_limit: usize,
     reserved_commands: usize,
@@ -635,6 +696,10 @@ impl Runtime {
             channels: Arena::new(id, limits.channels),
             voices: Arena::new(id, limits.voices),
             voice_activity: vec![0; limits.voices.div_ceil(64)].into_boxed_slice(),
+            stealing: None,
+            stolen: 0,
+            steals: 0,
+            voice_order: 0,
             parallel: None,
             lanes: Arc::new(std::sync::atomic::AtomicUsize::new(1)),
             kernel: resample::Kernel::new(ResampleQuality::default()),
@@ -660,6 +725,7 @@ impl Runtime {
             preemptions: 0,
             longest_preempted: 0,
             dispatching_behavior: false,
+            started_plan: None,
             behavior_fuel: limits.behavior_fuel,
             behavior_stride,
             behavior_locals: vec![0; cells].into_boxed_slice(),
@@ -676,6 +742,7 @@ impl Runtime {
             note_params: vec![script_params::NoteParams::default(); limits.notes]
                 .into_boxed_slice(),
             script_params: false,
+            input_keys: 0,
             release_times: vec![release::ReleaseTimes::default(); limits.notes].into_boxed_slice(),
             note_events: vec![note_event::NoteEvent::new(NotePitch::Key(0), 0.); limits.notes]
                 .into_boxed_slice(),
@@ -935,6 +1002,9 @@ impl Runtime {
                 })?)
             }
         };
+        if let Some(input) = input {
+            self.input_keys |= 1 << (input.key & 127);
+        }
         let id = match self.notes.insert(Note {
             input,
             input_down: input.is_some(),
@@ -1070,6 +1140,7 @@ impl Runtime {
             .min_by_key(|(_, order)| *order)
             .map(|(i, _)| NoteId(self.notes.id(i)))
             .ok_or(Error::StaleHandle)?;
+        self.input_keys &= !(1 << (input.key & 127));
         self.key_up_now(id, velocity)?;
         Ok(id)
     }
@@ -1154,6 +1225,7 @@ impl Runtime {
         let asset = &self.plans.get(note.plan.0).unwrap().prepared.pcm[sample];
         let cold = self.check_source_ready(asset, cursor, envelope)?;
         f.voices.checked_add(1).ok_or(Error::Capacity)?;
+        self.steal_voices(1);
         if at > self.now && self.available_commands() == 0 {
             return Err(Error::Capacity);
         }
@@ -1194,11 +1266,13 @@ impl Runtime {
             envelope: EnvelopeState::new(envelope),
             gain,
             started: at == self.now,
+            born: self.voice_order,
+            stolen: false,
             group: None,
-            script_gains: None,
             quiet: 0,
         })?);
         self.cold_started += u64::from(cold);
+        self.voice_order += 1;
         self.voice_activity[id.0.index / 64] |= 1 << (id.0.index % 64);
         let index = Index::new(id.0.index);
         if let Some(next) = next_sibling {
