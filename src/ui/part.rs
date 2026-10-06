@@ -68,7 +68,7 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
                     ir::Source::Ksp { slot } => format!("Script {}", slot + 1),
                     _ => format!("View {}", n + 1),
                 };
-                let (hit, el) = latch(ui, &format!("face-{slot}-{n}"), &label, "Show this script's view", face.shown == n);
+                let (hit, el) = latch(ui, format!("face-{slot}-{n}"), &label, "Show this script's view", face.shown == n);
                 if hit {
                     pick = Some(n);
                 }
@@ -79,8 +79,8 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
     }
     bar.push(spacer());
     let original = face.presentation == Presentation::Bitmap;
-    let (a, orig) = latch(ui, &format!("face-original-{slot}"), "Original", "The library's own artwork", original);
-    let (b, vect) = latch(ui, &format!("face-vector-{slot}"), "Vector", "The library's background with KONTRA's controls; frees the control pictures", !original);
+    let (a, orig) = latch(ui, format!("face-original-{slot}"), "Original", "The library's own artwork", original);
+    let (b, vect) = latch(ui, format!("face-vector-{slot}"), "Vector", "The library's background with KONTRA's controls; frees the control pictures", !original);
     bar.push(segmented(vec![orig, vect]));
     if let Some(n) = pick.filter(|&n| n != face.shown) {
         let presentation = face.presentation;
