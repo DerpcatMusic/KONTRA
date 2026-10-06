@@ -10,7 +10,7 @@ func require(_ condition: Bool, _ message: String) {
     guard condition else { fputs(message + "\n", stderr); exit(1) }
 }
 
-require(CommandLine.arguments.count == 5 && CommandLine.arguments[1] == "--register", "Pass --register KONTRA.app CLAP VST3 paths")
+require(CommandLine.arguments.count == 5 && CommandLine.arguments[1] == "--register", "Pass --register KONTRA2.app CLAP VST3 paths")
 let registrar = URL(fileURLWithPath: CommandLine.arguments[2]).standardizedFileURL
 require(Bundle(url: registrar)?.infoDictionary?["CFBundlePackageType"] as? String == "APPL", "Missing owned application")
 require(LSRegisterURL(registrar as CFURL, true) == noErr, "Application type registration failed")
@@ -49,7 +49,7 @@ for path in CommandLine.arguments.dropFirst(3) {
         guard let info = descriptor(plugins, 0) else { fatalError("Missing CLAP descriptor") }
         let name = String(cString: info.advanced(by: 24).load(as: UnsafePointer<CChar>.self))
         let version = String(cString: info.advanced(by: 64).load(as: UnsafePointer<CChar>.self))
-        require(name == "KONTRA" && version == (bundle.infoDictionary?["KONTRAVersion"] as? String), "CLAP identity differs from bundle")
+        require(name == "KONTRA 2" && version == (bundle.infoDictionary?["KONTRAVersion"] as? String), "CLAP identity differs from bundle")
     } else {
         require(url.pathExtension == "vst3", "Unexpected plug-in format")
         typealias Entry = @convention(c) (UnsafeRawPointer?) -> Bool

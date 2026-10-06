@@ -1,4 +1,5 @@
 //! Script-instance integer state. Storage travels with its prepared generation.
+use crate::ops::{ScriptBank, ScriptResources};
 use crate::{BehaviorId, Error, PlanId, Prepared, Program, Runtime};
 
 /// Dense instance identity scoped to a prepared plan, not a callback or note.
@@ -39,9 +40,40 @@ impl Prepared {
         {
             return Err(Error::Capacity);
         }
-        let instances: Box<[_]> = instances.into_iter().map(Vec::into_boxed_slice).collect();
+        let instances: Box<[_]> = instances
+            .into_iter()
+            .map(|cells| ScriptBank {
+                cells: cells.into_boxed_slice(),
+                ..Default::default()
+            })
+            .collect();
         validate(&self.programs, &instances)?;
         self.script_initial = instances;
+        Ok(self)
+    }
+
+    /// Text, keyed-state and control-table resources, one per script instance in
+    /// `with_script_instances` order. Replaces earlier resources.
+    pub fn with_script_resources(mut self, resources: Vec<ScriptResources>) -> Result<Self, Error> {
+        if resources.len() != self.script_initial.len() {
+            return Err(Error::InvalidInput);
+        }
+        let mut banks = self.script_initial.to_vec();
+        for (bank, resources) in banks.iter_mut().zip(resources) {
+            resources.apply(bank)?;
+        }
+        let banks = banks.into_boxed_slice();
+        validate(&self.programs, &banks)?;
+        for control in banks.iter().flat_map(|b| b.controls.iter().flatten()) {
+            let index = self.control_index(*control)?;
+            if !matches!(
+                self.controls[index].domain,
+                crate::ControlDomain::Integer { .. }
+            ) {
+                return Err(Error::InvalidInput);
+            }
+        }
+        self.script_initial = banks;
         Ok(self)
     }
 
@@ -50,14 +82,17 @@ impl Prepared {
     }
 }
 
-fn validate(programs: &[Program], instances: &[Box<[i64]>]) -> Result<(), Error> {
+fn validate(programs: &[Program], instances: &[ScriptBank]) -> Result<(), Error> {
     for program in programs {
+        if program.texts.len() < program.text_constants {
+            return Err(Error::InvalidInput);
+        }
         match program.script_instance {
             Some(id)
-                if instances
-                    .get(usize::from(id.0))
-                    .is_some_and(|v| v.len() >= program.script_cells) => {}
-            None if program.script_cells == 0 => {}
+                if instances.get(usize::from(id.0)).is_some_and(|v| {
+                    v.cells.len() >= program.script_cells && v.texts.len() >= program.script_texts
+                }) => {}
+            None if program.script_cells == 0 && program.script_texts == 0 => {}
             _ => return Err(Error::InvalidInput),
         }
     }
@@ -79,7 +114,7 @@ impl Runtime {
             .ok_or(Error::StaleHandle)?
             .scripts
             .get(usize::from(instance.0))
-            .and_then(|bank| bank.get(cell))
+            .and_then(|bank| bank.cells.get(cell))
             .copied()
             .ok_or(Error::InvalidInput)
     }
@@ -100,7 +135,7 @@ impl Runtime {
         generation
             .scripts
             .get_mut(usize::from(instance.0))
-            .and_then(|bank| bank.get_mut(cell))
+            .and_then(|bank| bank.cells.get_mut(cell))
             .ok_or(Error::InvalidInput)
     }
 }

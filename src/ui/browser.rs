@@ -14,7 +14,7 @@
 //! shown come back with the editor.
 
 use super::{Cx, RackDrag, menu, theme::*};
-use crate::import;
+use crate::library as import;
 use crate::library::{Folder, Library};
 use moose::mui::mui::prelude::*;
 use moose::mui::mui::scene::Fit;

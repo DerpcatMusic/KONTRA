@@ -574,14 +574,16 @@ fn remapped_pedals_use_the_shared_gate_while_consumed_pedals_leave_it_alone() {
             assert_eq!((rt.note_count(), rt.voice_count()), (0, 0));
         });
     }
-    for invalid in [
+    assert!(compile("on note $CC_NUM end on").is_err());
+    // v2: operations outside their event context compile like Kontakt, with
+    // a warning, and do nothing (or fault at runtime for play_note -1).
+    for warned in [
         "on note ignore_controller end on",
         "on controller play_note(60,127,0,-1) end on",
         "on controller ignore_event($EVENT_ID) end on",
         "on init set_controller(1,1) end on",
-        "on note $CC_NUM end on",
     ] {
-        assert!(compile(invalid).is_err(), "{invalid}");
+        assert!(!compile(warned).unwrap().warnings().is_empty(), "{warned}");
     }
 }
 
@@ -668,7 +670,9 @@ fn note_and_release_controller_operations_retain_the_original_domain_across_wait
             assert_eq!((rt.note_count(), rt.pending_commands()), (0, 0));
         });
     }
-    assert!(compile("on note set_controller(7,$CC_NUM) end on").is_err());
+    // v2: $CC_NUM outside on controller reads 0 with a warning.
+    let script = compile("on note set_controller(7,$CC_NUM) end on").unwrap();
+    assert!(!script.warnings().is_empty());
 }
 
 fn control_context(rt: &sampler_core::Runtime) -> sampler_core::ControlContext {
@@ -936,12 +940,13 @@ fn dynamic_durations_in_shared_functions_use_the_real_note_ui_or_controller_cont
             true
         });
     });
-    assert!(
-        compile_bound(
-            "on init declare ui_button $fire end on
+    // v2: a constant parent-gate duration outside a note callback warns at
+    // compile time and faults at runtime before publishing a note.
+    let script = compile_bound(
+        "on init declare ui_button $fire end on
         on ui_control($fire) play_note(60,127,0,-1) end on",
-            &[("$fire", button)]
-        )
-        .is_err()
-    );
+        &[("$fire", button)],
+    )
+    .unwrap();
+    assert!(!script.warnings().is_empty());
 }
