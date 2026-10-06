@@ -258,3 +258,27 @@ fn behavior_owned_switching_is_tapped_once_per_change() {
     });
     assert_eq!(tapped, [25, 26]);
 }
+
+#[test]
+fn a_driver_remap_takes_effect_without_reloading_the_plan() {
+    // Loaded with keyswitches only; Remap all then moves it to velocity.
+    let mut rig = Rig::new(runtime(Driver::Keys, SwitchKeys::Keep, Vec::new(), true));
+    assert_eq!(rig.level(note_on(0, 60, 1)), LEVELS[0]);
+    rig.rt
+        .set_switching(
+            Switching::new(
+                Driver::Velocity,
+                SwitchKeys::Play,
+                24..=26,
+                selectors(Driver::Velocity, false),
+            )
+            .unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+    for a in 0..3u8 {
+        assert_eq!(rig.level(note_on(0, 60, 1 + a * 42)), LEVELS[usize::from(a)]);
+    }
+    // Freed keys play their own zone instead of switching.
+    assert_eq!(rig.level(note_on(0, 24, 100)), 1.0);
+}
