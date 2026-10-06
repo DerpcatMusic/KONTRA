@@ -86,6 +86,7 @@ use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{AssetId, ControllerCondition, Pcm, Prepared, Region, Tuning, VelocityCurve};
 mod integer;
+pub mod lower;
 pub use integer::{IntegerBinary, IntegerUnary};
 mod script;
 pub use script::{ScriptArray, ScriptInstanceId};
@@ -157,6 +158,27 @@ pub enum Error {
     /// Unbiased selection exceeded its fixed draw budget; no decision was committed.
     RandomBudget,
 }
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Capacity => "a prepared capacity is exhausted",
+            Self::InvalidInput => "invalid input",
+            Self::NotReady => "required source data is not resident",
+            Self::StaleHandle => "the handle no longer refers to a live object",
+            Self::DuplicateInput => "the input is already held",
+            Self::ClosedNote => "the note's gate is closed",
+            Self::ClosedFamily => "the family is sealed",
+            Self::PastEvent => "the event time is in the past",
+            Self::ClockOverflow => "the sample clock would overflow",
+            Self::ArithmeticOverflow => "arithmetic overflow",
+            Self::RevisionConflict => "the revision changed",
+            Self::RandomBudget => "random selection exceeded its draw budget",
+        })
+    }
+}
+
+impl std::error::Error for Error {}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
