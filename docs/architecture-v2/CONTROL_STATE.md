@@ -110,3 +110,22 @@ cleanup, queued dispatch identity and KSP UI-driven playback. These use the heap
 This callback extension passes all 190 native tests in debug, release and Rust 1.92,
 strict all-target Clippy and both root workspace boundary tests. Evidence is under
 `artifacts/ui-callbacks-*`; it does not establish rendered UI or vendor fidelity.
+
+
+## Shared values and native DSP
+
+Prepared `GainControl` bindings now project scalar values into voice processing.
+The existing atomic edit path updates both raw values and generation-owned smoothing
+trajectories after validation; failed/revision-conflicting batches change neither.
+Scripts, queued UI operations and full scalar recall all use this path. Stable IDs
+remain valid when definitions are reordered, and missing bound IDs prevent preparing
+a replacement schema. Multiple processors can bind one control with independent
+amplitude endpoints/ramp lengths while sharing its single raw value owner.
+
+Gain ramps use absolute sample time and are shared by the generation's voices.
+New voices join the running trajectory; unchanged writes do not restart it. Rendering
+does not mutate control values. The implemented mapping is native linear amplitude;
+vendor units/curves and broader destination types remain explicit future work.
+[VOICE_DSP.md](VOICE_DSP.md#shared-controls-driving-gain) records semantics and tests,
+including a waiting KSP UI callback controlling an already-running native voice.
+This does not mean the production window or host automation adapter has been ported.

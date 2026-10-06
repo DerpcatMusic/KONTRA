@@ -76,7 +76,12 @@ impl Runtime {
             let chain = &plan.prepared.voice_chains[index];
             let begin = i * plan.dsp.stride;
             let states = &mut plan.dsp.cells[begin..begin + chain.stages()];
-            let faults = chain.render(v, pcm, segment, states, gains, self.kernel);
+            let context = super::dsp::RenderContext {
+                expression: gains,
+                gains: &plan.dsp.gains,
+                at: self.now,
+            };
+            let faults = chain.render(v, pcm, segment, states, context, self.kernel);
             self.nonfinite_frames = self.nonfinite_frames.saturating_add(faults);
             chain.done(v)
         } else {

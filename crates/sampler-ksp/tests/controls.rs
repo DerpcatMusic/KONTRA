@@ -577,3 +577,123 @@ fn arithmetic_drives_a_waiting_sequence_through_native_audio_after_physical_rele
         });
     }
 }
+
+#[test]
+fn waiting_ui_callback_controls_live_dsp_through_shared_values_without_a_window() {
+    let source = "on init
+        declare ui_slider $level(0,100)
+        declare ui_button $button
+        $level := 100
+    end on
+    on ui_control($button)
+        $level := 0
+        wait(125)
+        $level := 100
+    end on";
+    for block in [1, 7, 64] {
+        let prepared = compile(
+            source,
+            48000,
+            limits(),
+            &[("$level", LEVEL), ("$button", BUTTON)],
+        )
+        .unwrap()
+        .bind(plan())
+        .unwrap()
+        .with_voice_chains(
+            vec![
+                sampler_core::VoiceChain::new(
+                    vec![],
+                    vec![sampler_core::VoiceProcessor::ControlGain(
+                        sampler_core::GainControl {
+                            control: LEVEL,
+                            low: 0.,
+                            high: 1.,
+                            ramp_frames: 4,
+                        },
+                    )],
+                    0,
+                )
+                .unwrap(),
+            ],
+            vec![Some(0)],
+        )
+        .unwrap();
+        let cells = prepared.behavior_local_count();
+        let mut rt = Runtime::new(
+            prepared,
+            Limits {
+                notes: 2,
+                channels: 0,
+                performances: 1,
+                families: 2,
+                expressions: 2,
+                voices: 2,
+                decisions: 0,
+                commands: 2,
+                behaviors: 1,
+                behavior_fuel: 32,
+                behavior_cells: cells,
+                note_cells: 0,
+            },
+        )
+        .unwrap();
+        support::without_heap(|| {
+            let note = rt
+                .trigger(
+                    Input {
+                        protocol: Protocol::Native,
+                        port: 0,
+                        group: 0,
+                        channel: 0,
+                        key: 60,
+                        external_id: Some(1),
+                    },
+                    60,
+                    1.,
+                )
+                .unwrap();
+            let (_, callback) = rt
+                .invoke_control(
+                    rt.active_plan(),
+                    None,
+                    ControlWrite {
+                        id: BUTTON,
+                        value: ControlValue::Integer(1),
+                    },
+                )
+                .unwrap();
+            let callback = callback.unwrap();
+            assert_eq!(
+                rt.note_count(),
+                1,
+                "UI callbacks have no fabricated note owner"
+            );
+            let mut audio = [[0.; 2]; 12];
+            for chunk in audio.chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
+            for (actual, expected) in audio
+                .iter()
+                .zip([1., 0.75, 0.5, 0.25, 0., 0., 0., 0.25, 0.5, 0.75, 1., 1.])
+            {
+                assert_eq!(*actual, [expected; 2], "block {block}");
+            }
+            assert_eq!(
+                rt.behavior_outcome(callback),
+                Ok(Some(sampler_core::Outcome::Finished))
+            );
+            assert_eq!(
+                rt.control_value(rt.active_plan(), LEVEL),
+                Ok(ControlValue::Integer(100))
+            );
+            rt.key_up(note, None).unwrap();
+            rt.flush_behaviors(|_, _, _| true);
+            rt.flush_ended(|_| true);
+            assert_eq!(
+                (rt.note_count(), rt.voice_count(), rt.pending_commands()),
+                (0, 0, 0)
+            );
+        });
+    }
+}

@@ -218,7 +218,8 @@ No SFZ frontend has been implemented. Shared primitives remain format independen
   release loops without duration commands. Native DAHDSR delay, independent stage
   curves and one-shot AHD now share source ownership and bounded rendering. Vendor
   curve/clock profiles remain unverified. [Native voice chains](VOICE_DSP.md) now run
-  independent stereo biquads and gain stages before/after the envelope, with retained
+  independent stereo biquads and gain stages before/after the envelope, including
+  shared-control gain ramps on the sample clock, with retained
   DSP tails, whole-chain choke and generation-owned state. Crossfades, nonlinear
   effects, automated filters and broader routing/scopes remain open.
 
@@ -272,7 +273,8 @@ No SFZ frontend has been implemented. Shared primitives remain format independen
 
 - **Partial evidence:** [typed headless scalar controls](CONTROL_STATE.md), stable
   IDs, atomic edits/full scalar recall, revision conflicts, bounded acknowledged
-  UI handoff and coherent capture are implemented. KSP scalar widget declarations
+  UI handoff and coherent capture are implemented. Shared scalar values now drive
+  native gain ramps through the same atomic edit/recall path. KSP scalar widget declarations
   and plan-owned UI handlers use the shared state without a window. Complete instrument serialization,
   script-instance state, non-scalar controls and host automation remain open.
 

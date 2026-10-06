@@ -464,3 +464,14 @@ stages remain open. No new vendor-fidelity claim or manual override count is add
 Generated-lifetime validation: all 224 native tests pass in debug, release and
 Rust 1.92; strict all-target Clippy and both root boundary tests pass. Logs use
 `artifacts/note-lifetimes-{debug,release,msrv,clippy,boundary}.log`.
+
+
+## Live DSP from headless UI callbacks
+
+A prepared instrument can now bind its KSP scalar control identity to a native
+`GainControl` processor. The end-to-end fixture invokes a plan-owned UI callback,
+sets the gain control, waits 125 microseconds, then changes it again while a physical
+note continues sounding. Both assignments update the existing shared control owner
+and its native gain ramp. Independent expected PCM matches blocks 1/7/64 with no
+heap work and no synthetic UI note. The production UI and vendor engine-parameter
+commands are still separate open tasks; no widget renderer is claimed here.

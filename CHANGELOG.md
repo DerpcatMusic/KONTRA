@@ -10,6 +10,11 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Connect shared controls to native voice gain processors with generation-owned,
+  sample-clock smoothing. Script assignments, queued edits and recall drive the
+  same DSP state; new voices join existing ramps. A waiting KSP UI callback now
+  controls live native audio headlessly. Production UI/host integration remains open.
+
 - Support evaluated KSP gate-linked (`-1`) and whole-source (`0`) note durations
   through explicit native policies. Whole-source notes retain layers/tails and
   return unused release reservations without fabricating note-off audio; loops

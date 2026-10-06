@@ -7,7 +7,7 @@ It does not establish Kontakt/Falcon filter equivalence or complete the DSP grap
 Multiple regions may reference one chain; each admitted voice has separate stereo
 history. `VoiceChain` specifies ordered processors before and after the amplitude
 envelope and an explicit maximum tail duration in output frames. Current processors
-are finite linear gain (including polarity inversion) and prepared native biquads:
+are finite static/control-driven linear gain (including polarity inversion) and prepared native biquads:
 low-pass, high-pass, unity-peak band-pass, notch, all-pass and peaking EQ.
 
 ## Ownership and execution
@@ -32,8 +32,8 @@ This path is measured separately, with no automatic quality downgrade.
 The current pipeline is stereo, serial and voice-local. It has no additional buffered
 algorithmic latency; filter phase response is not a constant-delay compensation
 claim. Bus/family/master scopes, sends, channel-layout conversion, oversampling,
-nonlinear processors, time-varying filter controls and sample-accurate destination
-smoothing remain required graph work. The model does not move filters across the
+nonlinear processors, time-varying filter controls and broader destination
+modulation/smoothing remain required graph work. The model does not move filters across the
 envelope or sum independent voice histories to save work.
 
 ## Numerical and tail policy
@@ -107,3 +107,47 @@ all-target Clippy and both root ownership/KSP boundary tests pass. All unprocess
 one-filter and four-filter workload output assertions pass. Logs use
 `artifacts/voice-dsp-{debug,release,msrv,clippy,boundary}.log`. No DAW plugin was
 replaced, no production UI was switched and no broader conformance gate was closed.
+
+
+## Shared controls driving gain
+
+`VoiceProcessor::ControlGain(GainControl)` binds a stable `ControlId` to linear
+amplitude endpoints and an explicit ramp length in output sample frames. A control's
+declared integer/real range maps to the endpoints; toggles map false/true, and a
+constant domain maps to the low endpoint. Raw typed values remain intact. Integer
+projection subtracts in i128, real projection handles spans wider than f64::MAX,
+and endpoint values are exact. Gains and their difference must be finite; interpolation
+stays inside the endpoint range. This is a native linear-amplitude contract, not a
+claim about Kontakt/Falcon decibel curves or smoothing rates.
+
+Preparation compiles authored chains into indexed processors, validates referenced
+controls and builds a sorted control-to-binding index. Replacing the control schema
+revalidates those identities. Neither rendering nor control writes search voices or
+resolve source names. Control updates visit only the matching binding range after
+all batch values/revision checks pass.
+
+A gain trajectory belongs to the retained generation, once per DSP binding, shared
+by all voices using it. It is evaluated at absolute sample time, so additional voices
+and block partitions cannot advance it again or restart it. A write at T with ramp N
+uses the current gain at T, reaches the target at T+N, and changes immediately for
+N=0. Retargeting begins from the interpolated gain at that timestamp. Repeating an
+unchanged target preserves the existing trajectory. Control reads expose the authored
+target immediately; the DSP trajectory does not overwrite script/UI state.
+
+The existing atomic edit function drives direct writes, script assignments, recall,
+and acknowledged UI requests. A new generation starts at its own default values;
+old voices retain the old values/trajectories through terminal backpressure and
+retirement. No per-voice gain-ramp allocation, lock, callback into a UI, or new value
+owner is introduced. Control banks still exist with no window open.
+
+`tests/control_dsp.rs` checks independent PCM, overlapping voices, ramp reversal,
+repeated values, rejection atomicity, multiple bindings, stable IDs after schema
+reordering, extreme numeric domains, queued recall and retained generations.
+`sampler-ksp/tests/controls.rs` executes a waiting plan-owned UI handler that changes
+live DSP through the same state, at blocks 1/7/64 under the heap guard. This is
+headless integration; production UI/CLAP wiring and timestamped host automation
+remain open. No vendor DSP/performance parity is inferred.
+
+Control/DSP validation: all 229 native tests pass in debug, release and Rust 1.92;
+strict all-target Clippy and both root boundary tests pass. Logs use
+`artifacts/control-dsp-{debug,release,msrv,clippy,boundary}.log`.
