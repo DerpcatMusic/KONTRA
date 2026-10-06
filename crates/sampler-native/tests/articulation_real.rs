@@ -432,6 +432,90 @@ fn probe_instrument() {
             &b.state[..b.state.len().min(40)]
         );
     }
+    if std::env::var_os("KONTRA_PROBE_GAINS").is_some() {
+        let vel: u8 = std::env::var("KONTRA_PROBE_VEL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100);
+        let ir = &d.instrument;
+        eprintln!(
+            "GAIN instrument gain? name {} voice_limit {:?}",
+            ir.name, ir.voice_limit
+        );
+        for (i, z) in ir
+            .zones
+            .iter()
+            .enumerate()
+            .filter(|(_, z)| (z.velocities.low..=z.velocities.high).contains(&vel))
+        {
+            let g = z.group.map(|g| &ir.groups[g.0]);
+            eprintln!(
+                "GAIN zone {i} grp {:?} zone gain {:?} pan {:?} group gain {:?} group pan {:?} vel {:?} keys {:?}-{:?} trig {:?}",
+                z.group,
+                z.gain,
+                z.pan,
+                g.map(|g| g.gain),
+                g.map(|g| g.pan),
+                z.velocity,
+                z.keys.low,
+                z.keys.high,
+                z.trigger
+            );
+        }
+    }
+    if std::env::var_os("KONTRA_PROBE_SOLO").is_some() {
+        let vel: u8 = std::env::var("KONTRA_PROBE_VEL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100);
+        let mut groups: Vec<_> = d
+            .instrument
+            .zones
+            .iter()
+            .filter_map(|z| z.group)
+            .map(|g| g.0)
+            .collect();
+        groups.sort();
+        groups.dedup();
+        let db = |x: f64| 20.0 * (x + 1e-12).log10();
+        for g in groups {
+            let mut ir = d.instrument.clone();
+            ir.behaviors.clear();
+            ir.switching.driver = ir::Driver::Keys;
+            let kept = ir.retain_zones(|z| {
+                z.group.is_some_and(|x| x.0 == g)
+                    && (z.velocities.low..=z.velocities.high).contains(&vel)
+                    && z.trigger == ir::Trigger::Attack
+            });
+            if ir.zones.is_empty() {
+                continue;
+            }
+            let pcm: Vec<_> = kept.iter().map(|&a| d.pcm[a].clone()).collect();
+            let labels: Vec<_> = kept.iter().map(|&a| d.labels[a].clone()).collect();
+            let zones = ir.zones.len();
+            let loaded = sampler_kontakt::finish(ir, pcm, labels, &d.options).unwrap();
+            let mut words = vec![
+                0x2000_0000,
+                0x2090_0000 | u32::from(key) << 8 | u32::from(vel),
+            ];
+            words.resize(1500, 0x2000_0000);
+            let out = render(loaded, &words);
+            let sr = 48000;
+            let seg = &out[sr / 2..2 * sr];
+            let rms = (seg
+                .iter()
+                .map(|f| f64::from(f[0]).powi(2) + f64::from(f[1]).powi(2))
+                .sum::<f64>()
+                / (2.0 * seg.len() as f64))
+                .sqrt();
+            let pk = out.iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+            eprintln!(
+                "SOLO group {g} zones {zones} peak {:.1} rms {:.1}",
+                db(f64::from(pk)),
+                db(rms)
+            );
+        }
+    }
     let mut tags = std::collections::BTreeMap::<String, usize>::new();
     for z in z
         .iter()
@@ -463,7 +547,9 @@ fn probe_instrument() {
     let mut warns = std::collections::BTreeMap::<String, usize>::new();
     for u in &loaded.instrument.unsupported {
         if u.feature.starts_with("script") {
-            *warns.entry(format!("{} {}", u.feature, u.value)).or_default() += 1;
+            *warns
+                .entry(format!("{} {}", u.feature, u.value))
+                .or_default() += 1;
         }
     }
     for (w, n) in warns.iter().take(60) {
