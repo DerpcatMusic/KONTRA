@@ -478,6 +478,8 @@ pub struct Modulator {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ModulationSource {
     Envelope(Envelope),
+    /// A multi-segment envelope (Kontakt flex), gated like `Envelope`.
+    Breakpoints(Breakpoints),
     Lfo(Lfo),
     Controller(u8),
     Velocity,
@@ -501,6 +503,24 @@ impl ModulationSource {
     }
 }
 
+/// Glides from 0 through `points`, each reached `time` after the previous;
+/// holds at `points[sustain]` while gated; a release glides from the current
+/// level through the points after `sustain` (jumping there when not yet
+/// reached) and the last level holds.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Breakpoints {
+    pub points: Vec<Breakpoint>,
+    pub sustain: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Breakpoint {
+    pub time: Time,
+    /// 0.0..=1.0 of full scale.
+    pub level: f64,
+    pub shape: Curve,
+}
+
 /// Delay-attack-hold-decay-sustain-release.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Envelope {
@@ -514,8 +534,8 @@ pub struct Envelope {
     pub attack_shape: Curve,
     pub decay_shape: Curve,
     pub release_shape: Curve,
-    /// Attack, hold and decay to silence whatever the gate does, then the
-    /// voice ends; sustain and release are unused (Kontakt's AHD mode).
+    /// Attack-hold-decay only: decays to zero, ignores note-off, then ends
+    /// (`sustain` and `release` are unused).
     pub one_shot: bool,
 }
 
@@ -542,6 +562,8 @@ pub enum Curve {
     Linear,
     /// expm1(k·t)/expm1(k); positive starts slowly.
     Exponential(f64),
+    /// Holds the starting level until the stage ends, then steps.
+    Step,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

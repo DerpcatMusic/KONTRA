@@ -374,6 +374,7 @@ impl Runtime {
         }
         let required = attack.plus(release);
         self.reclaim_internal_notes(required);
+        self.steal_voices(required.voices);
         self.check_selection_capacity(required)?;
         Ok(release)
     }
