@@ -423,3 +423,32 @@ compact group-dependent bounds should only replace it with equivalent proof.
 The all-groups operation and child/forward snapshot copies are O(ceil(groups/64));
 there is no hardcoded Kontakt group maximum in the native mask layout. Other vendor
 hierarchies and source event stages still require explicit translators/profiles.
+
+
+## Source-visible event identities
+
+`source_event_id(NoteId)` exports a positive signed-32 alias. `resolve_source_event`
+requires the original `PlanId`, validates its runtime/generation, then checks the full
+native note handle. Unknown/retired integers resolve to no note; a stale plan errors.
+Aliases contain no borrowed memory or ownership pin. Host note IDs are unchanged.
+`ReadEventId` and optional `PlayMidi.result` use this same service. Return registers
+participate in dead-code layout validation and can alias argument registers because
+all arguments are captured before the result write.
+
+The alias index is a standard vector reserved to note capacity during construction.
+Binary search is O(log N); monotonically issued IDs normally append. Dead entries
+remain safe through their full generational note handles and compact only when the
+index fills. Compaction is O(N) with no allocation/destruction of owned resources.
+This admission-time cost is explicitly marked for replacement by a bounded hash index
+if churn benchmarks make it material; no competitive throughput claim is made.
+One alias per live note guarantees room after compaction. A guarded insert cannot
+silently allocate even if that invariant regresses.
+
+The runtime-wide counter is monotonic across panic and prepared replacements.
+`Prepared::with_source_event_limit` lets a frontend reserve integer selector space;
+the default maximum is i32::MAX. Exhaustion returns Capacity, never wraps/reuses an ID,
+and does not constrain native full-width handle admission. Result-bearing generation
+reserves an ID before child publication; a later admission failure can leave a numeric
+gap. A note keeps its assigned alias until retirement and repeated reads consume no
+additional IDs. A fresh runtime resets its own namespace; plan validation prevents
+cross-runtime API lookup. Persistent source integers are not native ownership handles.

@@ -17,9 +17,9 @@ A note callback may suppress its original attack with `ignore_event($EVENT_ID)`.
 ordinary native attack selection. Init accepts declarations, `make_perfview` and constant-expression initialization, including inline `declare $name := value`.
 Init-only instruments keep native attack selection.
 
-Note/release bodies accept `wait` and bare `play_note` calls, assignments, integer
+Note/release bodies accept `wait`, bare or value-returning `play_note` calls, assignments, integer
 expressions and the control flow described below. Expressions can read signed
-32-bit literals, `$EVENT_NOTE`, `$EVENT_VELOCITY`, `$NOTE_HELD` and declared
+32-bit literals, `$EVENT_ID`, `$EVENT_NOTE`, `$EVENT_VELOCITY`, `$NOTE_HELD` and declared
 global/polyphonic/control integers, constants and indexed integer arrays. Note-owned values remain shared between the
 originating note and its release callback, including overlapping waits. Generated
 note key, velocity and duration accept evaluated integer expressions; sample offset
@@ -460,7 +460,7 @@ ends, unmapped notes, effects-tail retention, muted/infinite loops, panic, exact
 quota recovery before host-terminal acceptance and no runtime heap operations.
 Current policy follows the parent's effective gate (including pedal holds); precise
 Kontakt pedal/special-duration behavior remains a differential-test obligation.
-Generated event handles, explicit source `note_off`, offsets and ordered script
+Full event-targeted commands, explicit source `note_off`, offsets and ordered script
 stages remain open. No new vendor-fidelity claim or manual override count is added.
 
 Generated-lifetime validation: all 224 native tests pass in debug, release and
@@ -583,3 +583,35 @@ Full initialization, functions, typed values and vendor differential parity rema
 
 Control-flow validation: 251 native tests pass in debug, release and Rust 1.92;
 strict all-target Clippy and both root boundary tests pass. Logs: `artifacts/control-flow-*`.
+
+
+## Source event identities and generated-note results
+
+`$EVENT_ID` now evaluates to a stable source identity. `play_note(...)` can return
+its generated event ID in an integer expression, including array writes and larger
+arithmetic expressions. Arguments use checked temporary registers without clobbering
+enclosing expressions or array indices. Nested calls share the 64-level expression
+bound. Bare calls need no ID export; short-circuited calls generate no child.
+
+The [NI general commands reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands)
+documents retaining a generated ID for later event operations. New source IDs resolve
+through the native generation-scoped alias service described in [BEHAVIOR.md](BEHAVIOR.md).
+They are separate from host IDs and native slot indices. Aliases do not pin notes:
+retirement invalidates them even if a variable/array still contains their integer.
+Original and generated IDs remain distinct across overlapping callbacks and release.
+
+The frontend bounds exports to 0x0fffffff, reserving upper bits for future source
+selectors. This is an explicit implementation namespace, not a claim that Kontakt
+assigns the same numbers. The counter never repeats within a runtime. Export exhaustion
+fails before publishing a result-bearing child; failed admission can consume an opaque
+ID without publishing it. Existing aliases and full-width native handles remain valid.
+Native direct API calls can resolve an ID only against its originating plan generation.
+
+Tests cover IDs in scalar/array expressions, native result/argument register aliasing,
+all three generated lifetimes, independent PCM at blocks 1/7/64, original release IDs,
+short-circuit suppression, bounded nesting, slot reuse, panic, rejected terminal
+acceptance, plan replacement and exhaustion. Event enumeration/status, targeted source
+mutations, `note_off`, marks/selectors, fades and ordered source stages remain open.
+
+Event-ID validation: 257 native tests pass in debug, release and Rust 1.92; strict
+all-target Clippy and both root boundary tests pass. Logs: `artifacts/event-ids-*`.

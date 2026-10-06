@@ -33,7 +33,7 @@ impl<'a> Parser<'a> {
         self.expression(local, 0, 0)
     }
 
-    fn expression(&mut self, local: u16, minimum: u8, depth: u8) -> Result<(), Error> {
+    pub(super) fn expression(&mut self, local: u16, minimum: u8, depth: u8) -> Result<(), Error> {
         if depth == 64 {
             return Err(self.error("integer expression nesting limit exceeded"));
         }
@@ -177,7 +177,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn temporary(&self, local: u16) -> Result<u16, Error> {
+    pub(super) fn temporary(&self, local: u16) -> Result<u16, Error> {
         local
             .checked_add(1)
             .ok_or_else(|| self.error("integer register range exceeded"))
@@ -198,6 +198,8 @@ impl<'a> Parser<'a> {
 
     fn operand(&mut self, token: Token<'a>, local: u16, depth: u8) -> Result<(), Error> {
         let instruction = match token.kind {
+            Kind::Word("play_note") => return self.play(local, true, depth),
+            Kind::Word("$EVENT_ID") => Instruction::ReadEventId { local },
             Kind::Word("num_elements") => {
                 self.symbol(b'(')?;
                 let token = self.next()?;

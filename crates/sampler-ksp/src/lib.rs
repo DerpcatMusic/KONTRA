@@ -79,7 +79,9 @@ impl Script {
             .collect();
         let plan = plan
             .with_programs(Vec::new(), None)?
-            .with_script_instances(vec![self.globals])?;
+            .with_script_instances(vec![self.globals])?
+            // Keep the upper source-ID bits available for marked/all-event selectors.
+            .with_source_event_limit(0x0fff_ffff)?;
         let plan = plan.with_controls(self.controls.into_iter().map(|c| c.definition).collect())?;
         let plan = plan
             .with_programs(
@@ -653,7 +655,7 @@ impl<'a> Parser<'a> {
                     self.forward(&kind)?;
                     self.emit(Instruction::WaitLocal { local: 0 })?;
                 }
-                Kind::Word("play_note") => self.play()?,
+                Kind::Word("play_note") => self.play(0, false, 0)?,
                 Kind::Word(command @ ("allow_group" | "disallow_group")) => {
                     self.group(command == "allow_group", note)?
                 }
@@ -890,11 +892,15 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn play(&mut self) -> Result<(), Error> {
+    fn play(&mut self, local: u16, result: bool, depth: u8) -> Result<(), Error> {
+        let velocity = self.temporary(local)?;
+        let frames = self.temporary(velocity)?;
+        let scratch = self.temporary(frames)?;
+        let result = result.then_some(local);
         self.symbol(b'(')?;
-        self.scalar(0)?;
+        self.expression(local, 0, depth + 1)?;
         self.symbol(b',')?;
-        self.scalar(1)?;
+        self.expression(velocity, 0, depth + 1)?;
         self.symbol(b',')?;
         let (sample_offset, offset) = self.number()?;
         if sample_offset != 0 {
@@ -905,47 +911,67 @@ impl<'a> Parser<'a> {
         }
         self.symbol(b',')?;
         let duration_start = self.code.len();
-        self.scalar(2)?;
+        self.expression(frames, 0, depth + 1)?;
         self.symbol(b')')?;
-        if let [Instruction::SetLocal { local: 2, value }] = self.code[duration_start..] {
+        if let [
+            Instruction::SetLocal {
+                local: register,
+                value,
+            },
+        ] = self.code[duration_start..]
+            && register == frames
+        {
             let duration = match value {
                 0 => sampler_core::DurationValue::Fixed(sampler_core::Duration::UntilSilent),
                 -1 => sampler_core::DurationValue::Fixed(sampler_core::Duration::Gate),
                 _ => {
-                    self.emit(Instruction::MicrosToFrames { local: 2 })?;
-                    sampler_core::DurationValue::Frames(2)
+                    self.emit(Instruction::MicrosToFrames { local: frames })?;
+                    sampler_core::DurationValue::Frames(frames)
                 }
             };
-            return self.play_duration(duration);
+            return self.play_duration(local, velocity, duration, result);
         }
-        // Translate KSP sentinel values into explicit native lifetime policies.
-        // Keep key/velocity registers intact while testing the duration.
+        // Translate sentinel lifetimes without clobbering earlier arguments or
+        // the enclosing expression/array index in lower-numbered registers.
         let mut exits = [0; 2];
         for (exit, (value, duration)) in exits.iter_mut().zip([
             (0, sampler_core::Duration::UntilSilent),
             (-1, sampler_core::Duration::Gate),
         ]) {
-            self.emit(Instruction::SetLocal { local: 3, value })?;
+            self.emit(Instruction::SetLocal {
+                local: scratch,
+                value,
+            })?;
             self.emit(Instruction::CompareLocal {
-                lhs: 3,
-                rhs: 2,
+                lhs: scratch,
+                rhs: frames,
                 comparison: sampler_core::Comparison::Equal,
             })?;
             let branch = self.code.len();
             self.emit(Instruction::JumpIfZero {
-                local: 3,
+                local: scratch,
                 target: 0,
             })?;
-            self.play_duration(sampler_core::DurationValue::Fixed(duration))?;
+            self.play_duration(
+                local,
+                velocity,
+                sampler_core::DurationValue::Fixed(duration),
+                result,
+            )?;
             *exit = self.code.len();
             self.emit(Instruction::Jump { target: 0 })?;
             self.code[branch] = Instruction::JumpIfZero {
-                local: 3,
+                local: scratch,
                 target: self.code.len(),
             };
         }
-        self.emit(Instruction::MicrosToFrames { local: 2 })?;
-        self.play_duration(sampler_core::DurationValue::Frames(2))?;
+        self.emit(Instruction::MicrosToFrames { local: frames })?;
+        self.play_duration(
+            local,
+            velocity,
+            sampler_core::DurationValue::Frames(frames),
+            result,
+        )?;
         for exit in exits {
             self.code[exit] = Instruction::Jump {
                 target: self.code.len(),
@@ -954,10 +980,17 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn play_duration(&mut self, duration: sampler_core::DurationValue) -> Result<(), Error> {
+    fn play_duration(
+        &mut self,
+        key: u16,
+        velocity: u16,
+        duration: sampler_core::DurationValue,
+        result: Option<u16>,
+    ) -> Result<(), Error> {
         self.emit(Instruction::PlayMidi {
-            key: 0,
-            velocity: 1,
+            result,
+            key,
+            velocity,
             duration,
             inheritance: Inheritance::Independent,
         })

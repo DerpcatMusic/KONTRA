@@ -1627,6 +1627,7 @@ fn evaluated_time_and_note_arguments_validate_before_publishing_work_without_hea
                 value: frames,
             },
             Instruction::PlayMidi {
+                result: None,
                 key: 0,
                 velocity: 1,
                 duration: sampler_core::DurationValue::Frames(2),
@@ -1661,6 +1662,7 @@ fn evaluated_time_and_note_arguments_validate_before_publishing_work_without_hea
         let program = Program::new(vec![
             Instruction::End,
             Instruction::PlayMidi {
+                result: None,
                 key,
                 velocity,
                 duration: sampler_core::DurationValue::Frames(frames),

@@ -365,6 +365,8 @@ pub struct Runtime {
     notes: Arena<Note>,
     release_times: Box<[release::ReleaseTimes]>,
     note_events: Box<[note_event::NoteEvent]>,
+    source_ids: Vec<(i32, NoteId)>,
+    last_source_id: i32,
     closed_notes: Vec<NoteId>,
     channels: Arena<Channel>,
     voices: Arena<Voice>,
@@ -422,6 +424,7 @@ impl Runtime {
         std::alloc::Layout::array::<i64>(cells).map_err(|_| Error::Capacity)?;
         std::alloc::Layout::array::<release::ReleaseTimes>(limits.notes)
             .map_err(|_| Error::Capacity)?;
+        std::alloc::Layout::array::<(i32, NoteId)>(limits.notes).map_err(|_| Error::Capacity)?;
         std::alloc::Layout::array::<note_event::NoteEvent>(limits.notes)
             .map_err(|_| Error::Capacity)?;
         std::alloc::Layout::array::<performance::NoteSelection>(limits.notes)
@@ -454,6 +457,8 @@ impl Runtime {
             control_queues: None,
             notes: Arena::new(id, limits.notes),
             closed_notes: Vec::with_capacity(limits.notes),
+            source_ids: Vec::with_capacity(limits.notes),
+            last_source_id: 0,
             channels: Arena::new(id, limits.channels),
             voices: Arena::new(id, limits.voices),
             voice_activity: vec![0; limits.voices.div_ceil(64)].into_boxed_slice(),
