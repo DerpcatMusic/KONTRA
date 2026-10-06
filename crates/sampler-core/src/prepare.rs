@@ -373,6 +373,7 @@ pub struct Prepared {
     pub(super) source_event_limit: i32,
     /// CC64 holds no gate: a behavior implements sustain itself.
     pub(super) script_sustain: bool,
+    pub(super) script_release_triggers: bool,
     pub(super) region_groups: Box<[Option<u32>]>,
     pub(super) voice_limit: Option<super::VoiceLimit>,
     pub(super) voice_limits: Box<[super::VoiceLimit]>,
@@ -534,6 +535,7 @@ impl Prepared {
             group_count: 0,
             source_event_limit: i32::MAX,
             script_sustain: false,
+            script_release_triggers: false,
             region_groups: Box::new([]),
             voice_limit: None,
             voice_limits: Box::new([]),
