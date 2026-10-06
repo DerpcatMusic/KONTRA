@@ -742,3 +742,39 @@ retained performance domain and source channel. They remain valid across waits
 and physical key-up; polyphonic captures stay separate on overlapping notes.
 No controller event or fake note is created to supply a missing context. Plain
 plan/UI callbacks reject these operands until an explicit performance binding exists.
+
+
+## User-defined functions
+
+Top-level `function name ... end function` definitions and `call name` now lower
+into native instructions. Empty parentheses are optional; arguments/return values
+are not part of this source form. Definitions must precede calls, following the
+[NI function syntax](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-defined-functions).
+Nested calls to earlier definitions expand without a runtime call stack. Branch and
+loop targets relocate to each call site; normal return falls through without an
+event-forwarding barrier. An explicit exit still ends its callback.
+
+Each function prepares valid templates for the supported callback contexts using
+the same statement parser and operand checks. Note/release suppression and waits
+therefore retain their caller semantics; controller/UI calls do not acquire fake
+notes. Shared globals, polyphonic cells, controls, fuel and wait lifetime remain
+owned by the existing native plan/note/continuation. No second function scheduler
+or variable store is added.
+
+Unused bodies still validate, and invalid definitions/contexts, duplicate names,
+forward calls, recursion and arguments fail compilation. The sum of maximal
+per-function template widths is bounded by the instruction limit; at most four
+context templates are retained. Final expanded callback instructions share the
+existing total limit. Excessive expansion is reported before activation. If real
+libraries exceed this storage policy, shared bytecode calls need explicit bounded
+return storage; code size is not silently allowed to grow without limit.
+
+Fixtures execute nested calls, loop/continue/select relocation, polyphonic state,
+callback exit, and overlapping waits from all four supported callback contexts.
+A note-edit fixture proves function return does not prematurely forward the event.
+Malformed/dead functions and exponential call expansion reject during compilation.
+Function calls in init and additional callback/language contexts remain open, along
+with source/vendor fidelity outside this native subset.
+
+Function validation: 286 native tests pass in debug/release/Rust 1.92, strict
+all-target Clippy and both root boundary tests pass (`artifacts/ksp-functions-*`).

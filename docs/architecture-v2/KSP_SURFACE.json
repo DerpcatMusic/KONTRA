@@ -12,6 +12,14 @@
     "kontakt_fidelity": "unverified"
   },
   "symbol_overrides": {
+    "function": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "call": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
     "on note": {
       "implementation": "partial_native_subset",
       "evidence": "KSP_FRONTEND.md"
@@ -3769,7 +3777,9 @@
           "anchor": "",
           "title": "User-defined Functions",
           "symbols": {},
-          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-defined-functions"
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-defined-functions",
+          "implementation": "partial_native_subset",
+          "evidence": "KSP_FRONTEND.md"
         }
       ]
     },

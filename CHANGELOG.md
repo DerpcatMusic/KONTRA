@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Compile KSP user functions into bounded native instructions with nested calls,
+  relocated branches and caller-specific waits/forwarding. Invalid definitions and
+  excessive expansion fail before activation; no audio-thread call stack is added.
+
 - Add native forward/reverse loop crossfades with phase-aligned resampling guards,
   explicit view validation and release completion. Finite passes retain their source
   tails and match independently preblended assets across block sizes and rates.
