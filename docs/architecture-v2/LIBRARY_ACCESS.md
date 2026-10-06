@@ -281,6 +281,13 @@ different container profile. A bounded metadata search of mounted storage
 found no alternate Areia bank or installer (14,643 directories and 234,516
 files checked; the Projects root reached its directory budget). These checks
 do not establish that the source audio is corrupt.
+A subsequent full Areia sample audit checked all 241,820 NCW members across
+all 40 NKX archives, continuing past errors. It decoded 241,802 members;
+all 18 failures are in `Areia_0.nkx`: the NCW tail above and 17 members with
+invalid NKX member signatures. The other 39 archives decode completely.
+The program census counts remain unchanged because it records each program's
+first failure. The audit retained only counts/reasons; its log, temporary
+probe and worktree scratch build were deleted after recording the verdict.
 
 Installed container coverage is 781 NKI and 54 NKM NIS v1 files, 270 NKX
 archives (56 version 0x110; 214 version 0x111), and 12 NKR archives (two version
