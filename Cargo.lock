@@ -3675,6 +3675,7 @@ dependencies = [
  "sampler-core",
  "sampler-ir",
  "sampler-ksp",
+ "sampler-ui-ir",
 ]
 
 [[package]]
