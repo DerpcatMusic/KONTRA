@@ -16,6 +16,8 @@ use std::{
     rc::Rc,
 };
 
+mod ui;
+
 const PRELUDE: &str = include_str!("script_prelude.lua");
 /// Instructions between two budget checks of the VM hook.
 const TICK: u32 = 10_000;
@@ -23,6 +25,12 @@ const TICK: u32 = 10_000;
 /// Where `require` finds a module: a bank's script members.
 pub trait Files {
     fn script(&self, module: &str) -> Option<String>;
+}
+
+impl<T: Files> Files for std::rc::Rc<T> {
+    fn script(&self, module: &str) -> Option<String> {
+        (**self).script(module)
+    }
 }
 
 /// A bank's Lua members, by path.
