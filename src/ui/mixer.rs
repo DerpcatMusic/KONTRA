@@ -19,8 +19,8 @@
 //! depends on a level: [`super::Watch`] asks for frames only while a meter
 //! is moving.
 
-use super::{Cx, RackDrag, chain, instrument, menu, spectrum, theme::*};
-use crate::engine::BUSES;
+use super::{Cx, RackDrag, menu, spectrum, theme::*};
+use crate::sound::BUSES;
 use crate::plugin::{Bus, Meters, P, SCOPE_MASTER, SamplerParams};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use moose::mui::{Bridge, mui::prelude::*};
@@ -144,14 +144,36 @@ pub fn db_short(db: f64) -> String {
     }
 }
 
-/// Parts playing (or sending, or with a mic) through bus `n`.
+/// A strip's insert effects by name, `rows` lines always.
+fn inserts(names: &[String], rows: usize) -> El {
+    let mut lines: Vec<El> = (names.iter().take(rows))
+        .map(|name| caption(name.clone()).lines(1).min_w(0).h(SMALL + TIGHT).shrink(0).tip(name.clone()))
+        .collect();
+    if names.len() > rows {
+        lines[rows - 1] =
+            caption(format!("+{} more", names.len() - rows + 1)).fill(secondary()).lines(1).h(SMALL + TIGHT).shrink(0);
+    }
+    if lines.is_empty() {
+        lines.push(caption("No inserts").fill(secondary()).lines(1).h(SMALL + TIGHT).shrink(0));
+    }
+    // Every strip keeps the same room, so the faders below line up.
+    while lines.len() < rows {
+        lines.push(block(Len::Pct(100.), SMALL + TIGHT).shrink(0));
+    }
+    col(lines).gap(0).align(Align::Stretch).min_w(0).shrink(0)
+}
+
+/// Parts playing (or sending, or with a node) through bus `n`.
 fn sources(cx: &Cx, n: usize) -> usize {
     let n16 = n as i16;
     cx.selection
         .parts
         .iter()
         .filter(|p| !p.path.is_empty())
-        .map(|p| usize::from(usize::from(p.output) == n || p.aux == n16) + p.mic_buses.iter().filter(|&&b| b == n16).count())
+        .map(|p| {
+            let direct = |m: &crate::sound::tree::NodeMix| m.output == crate::sound::tree::NodeOutput::Pair(n as u8);
+            usize::from(usize::from(p.output) == n || p.aux == n16) + p.nodes.iter().filter(|m| direct(m)).count()
+        })
         .sum()
 }
 
@@ -427,7 +449,10 @@ fn part_strip(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     }
     let mut aux_gain = f64::from(part.aux_gain);
     let send_el = send_level(ui, &format!("mix-send-{slot}"), &mut aux_gain, part.aux >= 0);
-    let inserts = wide.then(|| chain::inserts(instrument::instrument_of(cx, slot).map(|i| &**i), INSERTS));
+    let inserts = wide.then(|| {
+        let tree = cx.view.parts.get(slot).and_then(|v| v.tree.as_ref());
+        inserts(tree.map_or(&[][..], |t| &t.nodes[0].inserts[..]), INSERTS)
+    });
     let out = usize::from(part.output);
     let (output, output_el) = route(
         ui,
@@ -685,8 +710,9 @@ fn rename(cx: &mut Cx, strip: Strip, text: String) {
     match strip {
         Strip::Part(slot) => {
             let part = &cx.selection.parts[slot];
-            let default = instrument::instrument_of(cx, slot)
-                .map_or_else(|| super::header::stem(&part.path), |i| i.name.clone());
+            let default = Some(&cx.view.parts[slot].active)
+                .filter(|n| !n.is_empty())
+                .map_or_else(|| super::header::stem(&part.path), Clone::clone);
             cx.selection.parts[slot].name = if text == default { String::new() } else { text };
         }
         Strip::Bus(n) => {

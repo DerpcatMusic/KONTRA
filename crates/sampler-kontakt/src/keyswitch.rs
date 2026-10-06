@@ -130,7 +130,15 @@ pub(crate) fn translate(
             value,
             reason: ir::Reason::NotModeled,
         };
-        match detect(&behavior.source, &behavior.state) {
+        let saved: Vec<(String, i64)> = behavior
+            .state
+            .iter()
+            .filter_map(|(name, value)| match value {
+                ir::Saved::Int(n) => Some((name.clone(), *n)),
+                _ => None,
+            })
+            .collect();
+        match detect(&behavior.source, &saved) {
             Detection::None => {}
             Detection::Unrecognized(why) => instrument.unsupported.push(unsupported(why)),
             Detection::Found(found) if !instrument.articulations.is_empty() => {
@@ -161,19 +169,6 @@ pub(crate) fn translate(
         }
     }
     instrument.assign_alternatives(CONTROLLER);
-}
-
-/// Saved scalar values from a script's persistent table (`"<name> <value>"`
-/// entries); arrays and strings are left out.
-pub(crate) fn saved_scalars(entries: &[String]) -> Vec<(String, i64)> {
-    entries
-        .iter()
-        .filter_map(|entry| {
-            let mut words = entry.split_whitespace();
-            let (name, value) = (words.next()?, words.next()?.parse().ok()?);
-            (name.starts_with('$') && words.next().is_none()).then(|| (name.to_string(), value))
-        })
-        .collect()
 }
 
 fn keys(found: &Detected) -> Vec<u8> {

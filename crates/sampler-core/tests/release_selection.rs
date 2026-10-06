@@ -771,7 +771,10 @@ fn cancelled_and_faulted_parents_suppress_descendant_release_audio() {
             let behavior = rt.start_behavior(root, 0).unwrap();
             assert_eq!(rt.release_reserve().voices, 2);
             if fault {
-                rt.render(&mut [[0.; 2]; 2]).unwrap();
+                // v2: preempted every block; ends as a runaway after a second.
+                for _ in 0..12 {
+                    rt.render(&mut [[0.; 2]; 4800]).unwrap();
+                }
             } else {
                 rt.cancel_behavior(behavior).unwrap();
             }

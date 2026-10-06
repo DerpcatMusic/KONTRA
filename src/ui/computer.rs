@@ -70,6 +70,7 @@ impl Computer {
             return false;
         };
         let step = |a: &AtomicU8, f: &dyn Fn(u8) -> u8| {
+            #[allow(deprecated, reason = "try_update is newer than the MSRV")]
             let _ = a.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| Some(f(v)));
         };
         match c {

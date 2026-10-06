@@ -1836,7 +1836,6 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 name = "kontakto"
 version = "0.3.148"
 dependencies = [
- "aes",
  "anyhow",
  "blake3",
  "buffr-durable-file",
@@ -1865,6 +1864,9 @@ dependencies = [
  "sampler-core",
  "sampler-ir",
  "sampler-kontakt",
+ "sampler-ksp",
+ "sampler-midi",
+ "sampler-ui-ir",
  "serde",
  "serde_json",
  "sha2",
@@ -3675,6 +3677,7 @@ dependencies = [
  "sampler-core",
  "sampler-ir",
  "sampler-ksp",
+ "sampler-ui-ir",
 ]
 
 [[package]]
@@ -3682,6 +3685,8 @@ name = "sampler-ksp"
 version = "0.1.0"
 dependencies = [
  "sampler-core",
+ "sampler-ui-ir",
+ "serde_json",
 ]
 
 [[package]]
@@ -3701,6 +3706,10 @@ dependencies = [
  "sampler-ksp",
  "sampler-midi",
 ]
+
+[[package]]
+name = "sampler-ui-ir"
+version = "0.1.0"
 
 [[package]]
 name = "sampler-uvi"

@@ -123,6 +123,30 @@ impl Envelope {
         self.one_shot && self.hold != u32::MAX
     }
 
+    /// Replace one stage's frames (or Sustain's 0..=1000 level), keeping
+    /// the stage's curvature. Script engine parameters; see `script_params`.
+    pub(crate) fn with_stage(mut self, stage: crate::EnvelopeStage, value: u32) -> Self {
+        use crate::EnvelopeStage as S;
+        let recurve = |curve: Curve, frames| Curve::new(EnvelopeCurve(curve.curvature), frames);
+        match stage {
+            S::Attack => {
+                self.attack = value;
+                self.curves[0] = recurve(self.curves[0], value);
+            }
+            S::Hold => self.hold = value,
+            S::Decay => {
+                self.decay = value;
+                self.curves[1] = recurve(self.curves[1], value);
+            }
+            S::Sustain => self.sustain = (value.min(1000) as f32) / 1000.0,
+            S::Release => {
+                self.release = value;
+                self.curves[2] = recurve(self.curves[2], value);
+            }
+        }
+        self
+    }
+
     pub fn with_delay(mut self, frames: u32) -> Self {
         self.delay = frames;
         self

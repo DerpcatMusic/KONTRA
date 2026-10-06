@@ -111,11 +111,12 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
         match script.text {
             _ if script.bypass => {}
             Some(text) if !text.trim().is_empty() => {
-                if !script.persistent.is_empty() {
+                let state = saved(&script.persistent);
+                if state.len() < script.persistent.len() {
                     out.unsupported(
                         &location,
-                        "saved persistent values",
-                        script.persistent.len(),
+                        "saved persistent arrays",
+                        script.persistent.len() - state.len(),
                         ir::Reason::NotModeled,
                     );
                 }
@@ -126,7 +127,8 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
                         .unwrap_or(location),
                     language: ir::Language::Ksp,
                     source: text,
-                    state: crate::keyswitch::saved_scalars(&script.persistent),
+                    slot: Some(slot.min(usize::from(u8::MAX)) as u8),
+                    state,
                     requires: Vec::new(),
                 });
             }
@@ -1102,6 +1104,42 @@ mod survey {
             println!("{n:6} {k}\n         e.g. {f}");
         }
         println!("{} files", files.len());
+    }
+}
+
+/// A script slot's saved persistent values, from Kontakt's `"<name> <value>"`
+/// entries: `$` integers, `~` reals, `@` strings. Arrays (`%`, `?`, `!`) are
+/// left out.
+fn saved(entries: &[String]) -> Vec<(String, ir::Saved)> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let (name, rest) = entry.split_once(' ').unwrap_or((entry, ""));
+            let value = match name.as_bytes().first()? {
+                b'$' => ir::Saved::Int(rest.trim().parse().ok()?),
+                b'~' => ir::Saved::Real(rest.trim().parse().ok()?),
+                b'@' => ir::Saved::Text(rest.to_owned()),
+                _ => return None,
+            };
+            Some((name.to_owned(), value))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod saved_tests {
+    #[test]
+    fn saved_values_keep_their_types_and_skip_arrays() {
+        let entries = ["$level 17", "~mix 0.5", "@label two words", "%table 1 2 3", "$bad x"].map(String::from);
+        let saved = super::saved(&entries);
+        assert_eq!(
+            saved,
+            [
+                ("$level".to_owned(), sampler_ir::Saved::Int(17)),
+                ("~mix".to_owned(), sampler_ir::Saved::Real(0.5)),
+                ("@label".to_owned(), sampler_ir::Saved::Text("two words".into())),
+            ]
+        );
     }
 }
 
