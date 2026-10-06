@@ -55,19 +55,18 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
     let params = program
         .params()
         .map_err(|e| decode("program parameters", e))?;
-    let table = match chunks.find_first(FILE_TABLE) {
+    let (table, others) = match chunks.find_first(FILE_TABLE) {
         Some(chunk) => {
-            FNTableImpl::try_from(chunk)
-                .map_err(|e| decode("sample file table", e))?
-                .sample_filetable
+            let t = FNTableImpl::try_from(chunk).map_err(|e| decode("sample file table", e))?;
+            (t.sample_filetable, t.other_filetable)
         }
         None => {
             let chunk = chunks
                 .find_first(LEGACY_FILE_TABLE)
                 .ok_or_else(|| invalid("missing sample file table"))?;
-            FileNameListPreK51::try_from(chunk)
-                .map_err(|e| decode("legacy file table", e))?
-                .sample_filetable
+            let t =
+                FileNameListPreK51::try_from(chunk).map_err(|e| decode("legacy file table", e))?;
+            (t.sample_filetable, t.other_filetable)
         }
     };
     let mut out = Translation {
@@ -154,6 +153,31 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
         .find(|p| p.join("Samples").is_dir())
         .unwrap_or(parent);
     let mut samples = Samples::new(root);
+    let racks = crate::effects::program_racks(&program);
+    {
+        // Convolution impulse responses are named by the other-files table.
+        let mut load = |index: i32| -> Result<crate::effects::Decoded, String> {
+            let name = u32::try_from(index)
+                .ok()
+                .and_then(|i| others.get(&i))
+                .ok_or_else(|| format!("index {index} is not in the file table"))?;
+            let at = samples
+                .resolve(parent, name)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("{name} was not found"))?;
+            let decoded = samples.decode(&at).map_err(|e| e.to_string())?;
+            Ok((decoded.rate, decoded.frames))
+        };
+        for (at, (slot, feature, value, reason)) in
+            crate::effects::instrument_buses(&mut out.ir, &racks, &mut load)
+        {
+            out.unsupported(&format!("{at} slot {slot}"), &feature, value, reason);
+        }
+    }
+    // Bus racks are not modelled yet.
+    for (at, slots) in racks.into_iter().filter(|(at, _)| at.starts_with("bus")) {
+        out.effects(&at, slots);
+    }
     let mut resolved = HashMap::new();
     let data = &program
         .0
@@ -229,6 +253,8 @@ struct GroupInfo {
     velocity: ir::VelocityResponse,
     /// Modulation routes every zone of the group carries.
     routes: Vec<ir::RouteRef>,
+    /// Its insert rack as a voice chain.
+    chain: Option<ir::ChainRef>,
 }
 
 struct Translation {
@@ -359,6 +385,25 @@ impl Translation {
         });
     }
 
+    /// Report a rack's active effects (none are modelled yet).
+    fn effects(&mut self, at: &str, slots: Vec<crate::effects::Slot>) {
+        for fx in slots.iter().filter(|fx| !fx.bypass) {
+            self.unsupported(
+                &format!("{at} slot {}", fx.slot),
+                "effect",
+                format!(
+                    "{} v{:#x} {:?} wet {} dry {}",
+                    crate::effects::module_name(fx.module),
+                    fx.version,
+                    fx.params(),
+                    fx.output_gain,
+                    fx.dry_level
+                ),
+                ir::Reason::NotModeled,
+            );
+        }
+    }
+
     /// A group's settings, or `None` for a muted group.
     fn group(&mut self, index: usize, group: &Group) -> Result<Option<GroupInfo>, ni_file::Error> {
         let v = group.params()?;
@@ -403,19 +448,21 @@ impl Translation {
             Ok(_) => {}
             Err(error) => self.unsupported(&at, "source module", error, ir::Reason::Unknown),
         }
-        if let Ok(fx) = group.insert_fx().and_then(|fx| fx.fx_items()) {
-            for (slot, fx) in fx.iter().enumerate() {
-                if let Ok(params) = fx.params()
-                    && !params.bypass
-                {
-                    let kind = fx.effect().map_or(0, |c| c.id);
-                    self.unsupported(
-                        &format!("{at} insert slot {slot}"),
-                        "insert effect (serialization type)",
-                        format!("{kind:#x}"),
-                        not_modeled,
-                    );
-                }
+        let mut chain = None;
+        if let Ok(array) = group.insert_fx() {
+            let c =
+                crate::effects::chain(&crate::effects::rack(&array), crate::effects::Scope::Voice);
+            let processors = c.processors;
+            for (slot, feature, value, reason) in c.notes {
+                self.unsupported(&format!("{at} insert slot {slot}"), &feature, value, reason);
+            }
+            if !processors.is_empty() {
+                self.ir.chains.push(ir::Chain {
+                    scope: ir::Scope::Voice,
+                    pre_amplitude: processors,
+                    post_amplitude: Vec::new(),
+                });
+                chain = Some(ir::ChainRef(self.ir.chains.len() - 1));
             }
         }
         let mut envelope = None;
@@ -627,6 +674,7 @@ impl Translation {
             envelope,
             velocity,
             routes,
+            chain,
         }))
     }
 
@@ -928,6 +976,7 @@ impl Translation {
             },
             amplitude: group.envelope,
             routes: group.routes.clone(),
+            chain: group.chain,
             ..ir::Zone::new(asset)
         });
     }

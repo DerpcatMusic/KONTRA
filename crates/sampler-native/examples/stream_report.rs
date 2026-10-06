@@ -53,8 +53,13 @@ fn main() {
         report.head_frames,
     );
     println!(
-        "resident: heads {:.1} MB + page pool {:.1} MB ({} pages); full decode would be {:.1} MB; RSS {}",
+        "resident: heads {:.1} MB packed ({:.1} MB as f32 stereo) + page pool {:.1} MB ({} pages); full decode would be {:.1} MB; RSS {}",
         mb(report.head_bytes as u64),
+        mb(streamed
+            .assets
+            .iter()
+            .map(|p| p.head_frames() as u64 * 8)
+            .sum::<u64>()),
         mb(report.pool_bytes as u64),
         report.pool_pages,
         mb(report.full_bytes),
@@ -133,6 +138,7 @@ fn main() {
     let (mut pending, mut service_errors) = (0, std::collections::BTreeMap::new());
     let mut outcomes = std::collections::BTreeMap::<String, usize>::new();
     let play = Instant::now();
+    let (mut cpu, mut services) = (Vec::new(), Vec::new());
     for start in (0..frames + 3 * rate as usize).step_by(buffer.len()) {
         let mut batch = Vec::new();
         while next < packets.len() && packets[next].offset < start + buffer.len() {
@@ -148,11 +154,14 @@ fn main() {
             std::thread::sleep(wait);
         }
         let t = Instant::now();
+        let cpu0 = thread_cpu_ns();
+        let service = Instant::now();
         match rt.service_streaming(horizon) {
             Ok(true) => {}
             Ok(false) => pending += 1,
             Err(e) => *service_errors.entry(format!("{e:?}")).or_insert(0) += 1,
         }
+        services.push(service.elapsed().as_secs_f64() * 1e6);
         ingress
             .render(
                 &mut rt,
@@ -175,6 +184,7 @@ fn main() {
             )
             .unwrap();
         times.push(t.elapsed().as_secs_f64() * 1e6);
+        cpu.push((thread_cpu_ns() - cpu0) as f64 / 1e3);
         most = most.max(rt.stats().voices);
         rt.flush_behaviors(|_, _, _| true);
         rt.flush_ended(|_| true);
@@ -186,6 +196,17 @@ fn main() {
         }
     }
     times.sort_by(f64::total_cmp);
+    cpu.sort_by(f64::total_cmp);
+    services.sort_by(f64::total_cmp);
+    let p = |v: &[f64], q: usize| v[v.len() * q / 100];
+    println!(
+        "thread CPU per block median {:.0} us, p99 {:.0} us, max {:.0} us (wall minus CPU is preemption); service alone p99 {:.0} us, max {:.0} us",
+        p(&cpu, 50),
+        p(&cpu, 99),
+        cpu.last().unwrap(),
+        p(&services, 99),
+        services.last().unwrap(),
+    );
     let stats = rt.stats();
     let budget = 64e6 / f64::from(rate);
     println!(
@@ -240,4 +261,12 @@ fn main() {
         mb(freed as u64),
         mb(heads as u64)
     );
+}
+
+/// This thread's CPU time (ns), from schedstat.
+fn thread_cpu_ns() -> u64 {
+    std::fs::read_to_string("/proc/thread-self/schedstat")
+        .ok()
+        .and_then(|s| s.split_whitespace().next()?.parse().ok())
+        .unwrap_or(0)
 }

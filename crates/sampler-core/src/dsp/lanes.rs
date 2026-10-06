@@ -111,6 +111,9 @@ pub(crate) fn process(
                 }
             }
             PreparedProcessor::Delay { .. } => unreachable!("delay chains render per voice"),
+            PreparedProcessor::Reverb(_) | PreparedProcessor::Convolution(_) => {
+                unreachable!("reverbs and convolutions are bus processors")
+            }
         }
     }
 }
