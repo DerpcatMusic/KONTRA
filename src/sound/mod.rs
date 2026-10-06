@@ -169,6 +169,9 @@ pub trait Core: Send {
     fn release_due(&mut self, at: usize, limit: usize) -> usize;
     /// Render `frames` (≤ [`MAX_BLOCK`]) onto the buses.
     fn render(&mut self, frames: usize) -> Rendered<'_>;
+    /// Whether anything still owns exact host note `note`. A note-on that
+    /// created no owner (an unmatched route, a consumed key switch) ends at once.
+    fn owns(&self, note: event::HostNote) -> bool;
     /// Finish a block of `frames`: offer every ended host note to `end`, which
     /// returns false once the host refuses more. Returns refused notes.
     fn end_block(&mut self, frames: usize, end: &mut dyn FnMut(event::HostNote) -> bool) -> u64;
@@ -181,9 +184,13 @@ pub trait Core: Send {
     /// True once `saved` holds one coherent callback boundary.
     fn refresh_persistence(&self, part: usize, saved: &mut [view::Persisted], at: &mut view::Refresh, budget: usize) -> bool;
     /// Refresh the script view in place, about `budget` at a time; true once whole.
-    fn refresh_live(&self, part: usize, live: &mut Self::Live, at: &mut view::Refresh, budget: usize) -> bool;
+    /// `unchanged`: the shell saw no [`script_revision`](Self::script_revision)
+    /// change since `live` was last whole, so only diagnostics need copying.
+    fn refresh_live(&self, part: usize, live: &mut Self::Live, at: &mut view::Refresh, budget: usize, unchanged: bool) -> bool;
 
     fn voices(&self) -> Voices;
+    /// Output latency in frames that the core reports to the host.
+    fn latency(&self) -> u32;
 }
 
 /// Prepares parts for a [`Core`] on worker threads.
