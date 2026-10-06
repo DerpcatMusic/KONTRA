@@ -12,16 +12,22 @@
 
 #[cfg(feature = "library-access")]
 mod access;
+mod access_error;
 mod audio;
 #[cfg(feature = "library-access")]
 mod bank;
 #[cfg(feature = "library-access")]
 mod crypto;
+#[cfg(not(feature = "library-access"))]
+mod no_access;
 #[cfg(feature = "library-access")]
 mod ufs;
 
+pub use access_error::AccessError;
 #[cfg(feature = "library-access")]
 pub use bank::Bank;
+#[cfg(not(feature = "library-access"))]
+pub use no_access::Bank;
 
 use roxmltree::{Document, Node, ParsingOptions};
 use sampler_ir as ir;
@@ -678,10 +684,32 @@ impl Translation {
     }
 }
 
-/// Load a clear `.uvip` program (loose WAV/FLAC/AIFF samples) as a plan at
-/// `rate`. For an encrypted bank program use [`load_program`]. Lua scripts have
-/// no frontend yet and are reported in the instrument, not run.
+/// Load a loose program, a virtual `bank.ufs/member.uvip` path, or the first
+/// program in a UFS bank. [`load_program`] selects a specific bank member.
+/// Protected programs use the installed reader behind `library-access`.
 pub fn load(path: &Path, rate: u32) -> Result<sampler_kontakt::Loaded, Box<dyn std::error::Error>> {
+    if let Some(bank_path) = path
+        .ancestors()
+        .find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ufs")))
+    {
+        let bank = Bank::open(bank_path)?;
+        let member = path
+            .strip_prefix(bank_path)?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let member = if member.is_empty() {
+            bank.programs()
+                .into_iter()
+                .next()
+                .ok_or_else(|| Error::Invalid {
+                    path: bank_path.into(),
+                    reason: "bank has no programs".into(),
+                })?
+        } else {
+            member
+        };
+        return load_program(&bank, &member, rate);
+    }
     let (instrument, locations) = translate_with(
         &read_text(path)?,
         Source::Disk(path.parent().unwrap_or(Path::new(".")).into()),
@@ -700,7 +728,6 @@ pub fn load(path: &Path, rate: u32) -> Result<sampler_kontakt::Loaded, Box<dyn s
 
 /// Load a program inside an installed UVI bank. `bank` is an open [`Bank`]; `program`
 /// is a member path from [`Bank::programs`]. Samples are read from the bank.
-#[cfg(feature = "library-access")]
 pub fn load_program(
     bank: &Bank,
     program: &str,
@@ -713,6 +740,7 @@ pub fn load_program(
         .iter()
         .map(|authored| {
             bank.resource(&program_path, authored)
+                .map_err(|e| e.to_string())
                 .and_then(|parts| audio::decode(&parts).map(|(d, _)| d))
         })
         .collect();
@@ -730,6 +758,15 @@ fn read_text(path: &Path) -> Result<String, Error> {
             reason: "program exceeds 32 MiB".into(),
         });
     }
+    #[cfg(feature = "library-access")]
+    {
+        let bytes = std::fs::read(path).map_err(io)?;
+        bank::program_text(&bytes).map_err(|e| Error::Invalid {
+            path: path.into(),
+            reason: e.to_string(),
+        })
+    }
+    #[cfg(not(feature = "library-access"))]
     std::fs::read_to_string(path).map_err(io)
 }
 

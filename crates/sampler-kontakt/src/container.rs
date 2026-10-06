@@ -8,6 +8,83 @@ use ni_file::{
 };
 use std::{io::Cursor, path::Path};
 
+/// Programs and sample names in a Kontakt multi. Slot order is retained;
+/// translation and MIDI-channel routing belong to the IR frontend.
+pub struct Multi {
+    pub programs: Vec<(u16, ni_file::kontakt::objects::Program)>,
+    pub sample_names: Vec<String>,
+}
+
+pub fn read_multi(path: &Path) -> Result<Multi, LoadError> {
+    use ni_file::kontakt::objects::{Bank, GroupList, ZoneList};
+    let chunks = read_chunks(path)?;
+    let error = |e| LoadError::decode(path, "multi", e);
+    let bank = Bank::try_from(chunks.find_first(3).ok_or_else(|| LoadError::Invalid {
+        path: path.into(),
+        reason: "missing multi bank".into(),
+    })?)
+    .map_err(error)?;
+    let mut slots: Vec<_> = bank.slot_list().map_err(error)?.slots.into_iter().collect();
+    slots.sort_by_key(|(slot, _)| *slot);
+    let mut programs = Vec::new();
+    for (slot, container) in slots {
+        for program in container.program_list().map_err(error)?.programs {
+            programs.push((slot, program));
+        }
+    }
+    let table = chunks
+        .filename_table()
+        .ok_or_else(|| LoadError::Invalid {
+            path: path.into(),
+            reason: "missing multi sample table".into(),
+        })?
+        .map_err(error)?;
+    let mut sample_names = Vec::new();
+    for (_, program) in &programs {
+        let groups = GroupList::try_from(
+            program
+                .0
+                .find_first(0x33)
+                .ok_or_else(|| error(ni_file::Error::Static("Missing multi program groups")))?,
+        )
+        .map_err(error)?;
+        let muted = groups
+            .groups
+            .iter()
+            .map(|g| g.params().map(|p| p.muted))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(error)?;
+        let zones = ZoneList::try_from(
+            program
+                .0
+                .find_first(0x34)
+                .ok_or_else(|| error(ni_file::Error::Static("Missing multi program zones")))?,
+        )
+        .map_err(error)?;
+        for (zone, group) in zones.zones().iter().zip(&zones.group_ids) {
+            if *muted
+                .get(*group as usize)
+                .ok_or_else(|| error(ni_file::Error::Static("Invalid multi zone group")))?
+            {
+                continue;
+            }
+            let id = zone.filename_id().map_err(error)? as u32;
+            let name = table.get(&id).ok_or_else(|| {
+                error(ni_file::Error::Static(
+                    "Missing multi zone sample reference",
+                ))
+            })?;
+            sample_names.push(name.clone());
+        }
+    }
+    sample_names.sort();
+    sample_names.dedup();
+    Ok(Multi {
+        programs,
+        sample_names,
+    })
+}
+
 /// The Kontakt chunk stream inside an NKS or NIS (Kontakt 5+) container.
 pub fn read_chunks(path: &Path) -> Result<KontaktChunks, LoadError> {
     let decode = |what, error| LoadError::decode(path, what, error);

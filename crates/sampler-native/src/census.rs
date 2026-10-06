@@ -86,6 +86,10 @@ fn roots(args: &[OsString]) -> Vec<PathBuf> {
 }
 
 fn collect(dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
+    if dir.is_file() {
+        files.push(dir.to_owned());
+        return Ok(());
+    }
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let kind = entry.file_type()?;
@@ -149,6 +153,13 @@ pub fn run(args: &[OsString]) -> io::Result<()> {
                 )
             });
         let counts = libraries.entry(library).or_default();
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("nkm"))
+        {
+            multi(&path, counts, &mut decoded);
+            continue;
+        }
         match sampler_kontakt::read(&path) {
             Err(e) => counts.record(
                 "kontakt",
@@ -191,6 +202,47 @@ pub fn run(args: &[OsString]) -> io::Result<()> {
     Ok(())
 }
 
+fn multi(path: &Path, counts: &mut Counts, decoded: &mut HashMap<PathBuf, Result<(), String>>) {
+    let result = sampler_kontakt::read_multi(path);
+    let opens = result.is_ok();
+    let mut samples = 0;
+    let result = result.map_err(|e| e.to_string()).and_then(|multi| {
+        let parent = path.parent().unwrap_or(Path::new("."));
+        let root = parent
+            .ancestors()
+            .find(|p| p.join("Samples").is_dir())
+            .unwrap_or(parent);
+        let mut resolver = sampler_kontakt::Samples::new(root);
+        samples = multi.sample_names.len();
+        for name in &multi.sample_names {
+            let location = resolver
+                .resolve(parent, name)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("missing sample: {name}"))?;
+            decoded
+                .entry(location.clone())
+                .or_insert_with(|| {
+                    resolver
+                        .decode(&location)
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
+                })
+                .clone()?;
+        }
+        if samples == 0 {
+            return Err("no sample references in multi".into());
+        }
+        Ok(())
+    });
+    counts.record(
+        "kontakt-multi",
+        &path.to_string_lossy(),
+        opens,
+        samples,
+        result.err(),
+    );
+}
+
 #[cfg(feature = "library-access")]
 fn bank(path: &Path) {
     let bank = match sampler_uvi::Bank::open(path) {
@@ -198,7 +250,7 @@ fn bank(path: &Path) {
         Err(error) => {
             println!(
                 "{}",
-                json!({"kind": "uvi-bank", "path": path, "opens": false, "failure": error})
+                json!({"kind": "uvi-bank", "path": path, "opens": false, "failure": error.to_string()})
             );
             return;
         }
@@ -208,7 +260,7 @@ fn bank(path: &Path) {
     for program in bank.programs() {
         let mut samples = 0;
         let result = (|| -> Result<(), String> {
-            let (text, member) = bank.program(&program)?;
+            let (text, member) = bank.program(&program).map_err(|e| e.to_string())?;
             let document = roxmltree::Document::parse_with_options(
                 &text,
                 roxmltree::ParsingOptions {
@@ -226,7 +278,11 @@ fn bank(path: &Path) {
                 let key = format!("{}/{sample}", member.rsplit_once('/').map_or("", |p| p.0));
                 decoded
                     .entry(key)
-                    .or_insert_with(|| bank.decode_resource(&member, sample).map(|_| ()))
+                    .or_insert_with(|| {
+                        bank.decode_resource(&member, sample)
+                            .map(|_| ())
+                            .map_err(|e| e.to_string())
+                    })
                     .clone()?;
             }
             if samples == 0 {
