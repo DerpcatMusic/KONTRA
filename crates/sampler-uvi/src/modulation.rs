@@ -212,6 +212,8 @@ impl Translation {
             _ => return Ok(Err(gap("modulation destination", "", NotModeled))),
         };
         let mut ratio = number(connection, "Ratio", 1.0)?;
+        // At most one live Ratio input: the route's depth × its factor law.
+        let mut scale = None;
         // A nested connection modulates Ratio with the factor law.
         for nested in live_inputs(connection)? {
             if nested.attribute("Destination") != Some("Ratio") {
@@ -223,9 +225,22 @@ impl Translation {
             }
             match self.signal(connection, nested)? {
                 Err(gap) => return Ok(Err(gap)),
+                Ok(Signal::Live {
+                    modulator,
+                    curve,
+                    bipolar,
+                }) if scale.is_none() => {
+                    let r = number(nested, "Ratio", 1.0)?.clamp(-1.0, 1.0);
+                    let factor = |m: f64| 1.0 - r.max(0.0) + r * Mapper::position(m, bipolar);
+                    let points = match self.live_points(nested, &curve, bipolar, factor)? {
+                        Ok(points) => points,
+                        Err(gap) => return Ok(Err(gap)),
+                    };
+                    scale = Some((modulator, points));
+                }
                 Ok(Signal::Live { .. }) => {
                     return Ok(Err(gap(
-                        "ratio modulated by a live source (a product of sources)",
+                        "ratio modulated by several live sources",
                         describe(&[nested]),
                         NotModeled,
                     )));
@@ -252,6 +267,13 @@ impl Translation {
             Err(gap) => return Ok(Err(gap)),
         };
         match signal {
+            Signal::Fixed { .. } if scale.is_some() => {
+                return Ok(Err(gap(
+                    "constant source with a live-modulated ratio",
+                    "",
+                    NotModeled,
+                )));
+            }
             Signal::Fixed { value, bipolar } => {
                 let value = match self.stage(connection, value, bipolar)? {
                     Ok(value) => value,
@@ -280,51 +302,15 @@ impl Translation {
                     )));
                 }
                 let ir_bipolar = self.ir.modulators[modulator.0].source.bipolar();
-                let mapper = match self.connection_mapper(connection)? {
-                    Ok(mapper) => mapper,
+                let points = match self.live_points(connection, &curve, bipolar, |m| match law {
+                    Law::Factor if ratio >= 0.0 => Mapper::position(m, bipolar),
+                    Law::Factor => 1.0 - Mapper::position(m, bipolar),
+                    Law::Add(_) if ir_bipolar => (m + 1.0) * 0.5,
+                    Law::Add(_) => m,
+                })? {
+                    Ok(points) => points,
                     Err(gap) => return Ok(Err(gap)),
                 };
-                let inverted = number(connection, "Inverted", 0.0)? != 0.0;
-                let invert = |s: f64| match (inverted, bipolar) {
-                    (false, _) => s,
-                    (true, true) => -s,
-                    (true, false) => 1.0 - s,
-                };
-                // Breakpoints: the source curve's, plus where the mapper's
-                // table knots fall inside each of its segments.
-                let mut inputs: Vec<f64> = curve.iter().map(|p| p.0).collect();
-                if let Some(mapper) = &mapper {
-                    for pair in curve.windows(2) {
-                        let (w0, w1) = (pair[0].0, pair[1].0);
-                        let p0 = Mapper::position(invert(pair[0].1), bipolar);
-                        let p1 = Mapper::position(invert(pair[1].1), bipolar);
-                        if p0 == p1 {
-                            continue;
-                        }
-                        for knot in mapper.knots() {
-                            let t = (knot - p0) / (p1 - p0);
-                            if t > 0.0 && t < 1.0 {
-                                inputs.push(w0 + t * (w1 - w0));
-                            }
-                        }
-                    }
-                }
-                inputs.sort_by(f64::total_cmp);
-                inputs.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
-                let points: Vec<(f64, f64)> = inputs
-                    .into_iter()
-                    .map(|w| {
-                        let s = invert(interpolate(&curve, w));
-                        let m = mapper.as_ref().map_or(s, |m| m.apply(s, bipolar));
-                        let y = match law {
-                            Law::Factor if ratio >= 0.0 => Mapper::position(m, bipolar),
-                            Law::Factor => 1.0 - Mapper::position(m, bipolar),
-                            Law::Add(_) if ir_bipolar => (m + 1.0) * 0.5,
-                            Law::Add(_) => m,
-                        };
-                        (w, y)
-                    })
-                    .collect();
                 let (target, depth) = match law {
                     Law::Factor => (ir::Target::Amplitude, ir::Depth::Normalized(ratio.abs())),
                     Law::Add(ir::Target::Pitch) => (
@@ -333,11 +319,62 @@ impl Translation {
                     ),
                     Law::Add(target) => (target, ir::Depth::Normalized(ratio)),
                 };
-                let route = self.route(modulator, target, depth, points);
+                let route = self.route(modulator, target, depth, points, scale);
                 out.routes.push(route);
             }
         }
         Ok(Ok(()))
+    }
+
+    /// Breakpoints `(w, f(m))` of a live source through `node`'s inversion and
+    /// mapper: the source curve's knots plus where mapper knots fall inside it.
+    fn live_points(
+        &mut self,
+        node: Node,
+        curve: &[(f64, f64)],
+        bipolar: bool,
+        f: impl Fn(f64) -> f64,
+    ) -> Result<Result<Vec<(f64, f64)>, Gap>, String> {
+        let mapper = match self.connection_mapper(node)? {
+            Ok(mapper) => mapper,
+            Err(gap) => return Ok(Err(gap)),
+        };
+        let inverted = number(node, "Inverted", 0.0)? != 0.0;
+        let invert = |s: f64| match (inverted, bipolar) {
+            (false, _) => s,
+            (true, true) => -s,
+            (true, false) => 1.0 - s,
+        };
+        // Breakpoints: the source curve's, plus where the mapper's
+        // table knots fall inside each of its segments.
+        let mut inputs: Vec<f64> = curve.iter().map(|p| p.0).collect();
+        if let Some(mapper) = &mapper {
+            for pair in curve.windows(2) {
+                let (w0, w1) = (pair[0].0, pair[1].0);
+                let p0 = Mapper::position(invert(pair[0].1), bipolar);
+                let p1 = Mapper::position(invert(pair[1].1), bipolar);
+                if p0 == p1 {
+                    continue;
+                }
+                for knot in mapper.knots() {
+                    let t = (knot - p0) / (p1 - p0);
+                    if t > 0.0 && t < 1.0 {
+                        inputs.push(w0 + t * (w1 - w0));
+                    }
+                }
+            }
+        }
+        inputs.sort_by(f64::total_cmp);
+        inputs.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+        let points: Vec<(f64, f64)> = inputs
+            .into_iter()
+            .map(|w| {
+                let s = invert(interpolate(curve, w));
+                let m = mapper.as_ref().map_or(s, |m| m.apply(s, bipolar));
+                (w, f(m))
+            })
+            .collect();
+        Ok(Ok(points))
     }
 
     /// Inversion and mapper of a constant value.
@@ -366,29 +403,35 @@ impl Translation {
         target: ir::Target,
         depth: ir::Depth,
         points: Vec<(f64, f64)>,
+        scale: Option<(ir::ModulatorRef, Vec<(f64, f64)>)>,
     ) -> ir::RouteRef {
         let near = |f: &dyn Fn(f64) -> f64| points.iter().all(|&(w, y)| (y - f(w)).abs() < 1e-9);
         let mut route = ir::Route::new(source, target, depth);
         if near(&|w| 1.0 - w) && !near(&|w| w) {
             route.invert = true;
         } else if !near(&|w| w) {
-            let key = format!("{points:?}");
-            let shape = match self.shape_index.get(&key) {
-                Some(&shape) => shape,
-                None => {
-                    self.ir.shapes.push(ir::Shape { points });
-                    let shape = ir::ShapeRef(self.ir.shapes.len() - 1);
-                    self.shape_index.insert(key, shape);
-                    shape
-                }
-            };
-            route.shape = Some(shape);
+            route.shape = Some(self.shape(points));
         }
+        route.scale = scale.map(|(source, points)| ir::RouteScale {
+            source,
+            shape: (!points.iter().all(|&(w, y)| (y - w).abs() < 1e-9)).then(|| self.shape(points)),
+        });
         let key = format!("{route:?}");
         *self.route_index.entry(key).or_insert_with(|| {
             self.ir.routes.push(route);
             ir::RouteRef(self.ir.routes.len() - 1)
         })
+    }
+
+    fn shape(&mut self, points: Vec<(f64, f64)>) -> ir::ShapeRef {
+        let key = format!("{points:?}");
+        if let Some(&shape) = self.shape_index.get(&key) {
+            return shape;
+        }
+        self.ir.shapes.push(ir::Shape { points });
+        let shape = ir::ShapeRef(self.ir.shapes.len() - 1);
+        self.shape_index.insert(key, shape);
+        shape
     }
 
     /// One IR modulator per distinct built-in source or source node.
@@ -861,13 +904,16 @@ mod tests {
                     "pitch bend outside pitch (bend is native note expression)",
                     ir::Reason::NotModeled
                 ),
-                (
-                    "ratio modulated by a live source (a product of sources)",
-                    ir::Reason::NotModeled
-                ),
             ]
         );
         assert_eq!(ir.unsupported[0].value, "$Program/S -> Gain: StepEnvelope");
-        assert!(ir.zones[0].routes.is_empty());
+        assert_eq!(ir.zones[0].routes.len(), 1);
+        // LFO pitch depth × (1 − key position): a modulator × modulator product.
+        let route = &ir.routes[ir.zones[0].routes[0].0];
+        let scale = route.scale.expect("ratio by key is a route scale");
+        assert_eq!(ir.modulators[scale.source.0].source, ir::ModulationSource::Key);
+        let points = &ir.shapes[scale.shape.unwrap().0].points;
+        assert_eq!(points.first(), Some(&(0.0, 1.0)));
+        assert_eq!(points.last(), Some(&(1.0, 0.0)));
     }
 }
