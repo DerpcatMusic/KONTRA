@@ -33,6 +33,11 @@ pub struct Articulator {
     /// Last key tapped into behavior-owned switching; behaviors keep their own
     /// state, so a repeat selection is not tapped again.
     tapped: Option<u8>,
+    /// Keys whose switch note-on was swallowed / forwarded, so a remap while
+    /// held cannot strand the release or leave a note on.
+    // ponytail: per key, not per channel; two channels on one switch key share a bit.
+    swallowed: u128,
+    played: u128,
 }
 
 impl Articulator {
@@ -43,6 +48,8 @@ impl Articulator {
             performance,
             port,
             tapped: None,
+            swallowed: 0,
+            played: 0,
         })
     }
 
@@ -60,6 +67,29 @@ impl Articulator {
         };
         let switching = runtime.switching();
         let driver = switching.driver();
+        // A switch key's release follows its press, whatever the driver is now.
+        match voice.message {
+            Message::NoteOff { key, .. } if key < 128 => {
+                let bit = 1u128 << key;
+                if self.swallowed & bit != 0 {
+                    self.swallowed &= !bit;
+                    return Ok(Intercept::Consumed(Applied::Ignored));
+                }
+                if self.played & bit != 0 {
+                    self.played &= !bit;
+                    return Ok(Intercept::Forward);
+                }
+            }
+            Message::NoteOn { key, .. } if switching.is_switch_key(key) => {
+                let bit = 1u128 << key;
+                if driver != Driver::Keys && switching.keys() == SwitchKeys::Swallow {
+                    self.swallowed |= bit;
+                } else {
+                    self.played |= bit;
+                }
+            }
+            _ => {}
+        }
         if driver == Driver::Keys {
             return Ok(Intercept::Forward);
         }

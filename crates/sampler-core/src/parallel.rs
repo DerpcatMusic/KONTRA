@@ -268,7 +268,7 @@ impl Runtime {
                         modulation.mix(i, &mut scratch[0][..frames], target, ramp, at, f64::from(self.rate));
                     }
                     Some((false, ramp)) => {
-                        super::render::ramp_mix(&scratch[0][..frames], target, ramp.from.gains, ramp.to.gains);
+                        super::render::ramp_mix(&scratch[0][..frames], target, ramp, at);
                     }
                     None => {
                         for (out, x) in target.iter_mut().zip(&scratch[0][..frames]) {
@@ -350,6 +350,8 @@ impl View<'_> {
             filters: FilterContext {
                 bank: &mut bank[0],
                 expression: Some((n.expression, expression.value)),
+                reverbs: &mut [],
+                convolutions: &mut [],
             },
             at: self.at,
         };

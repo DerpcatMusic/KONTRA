@@ -133,3 +133,27 @@ impl Runtime {
             .switching
     }
 }
+
+impl Runtime {
+    /// Replace the active plan's articulation drivers and native keyswitch
+    /// keys, as a driver remap does. Playing notes keep their snapshots.
+    pub fn set_switching(
+        &mut self,
+        switching: Switching,
+        switches: Vec<crate::Keyswitch>,
+    ) -> Result<(), Error> {
+        let mut keys = [None; 128];
+        for switch in switches {
+            let slot = keys
+                .get_mut(usize::from(switch.key))
+                .ok_or(Error::InvalidInput)?;
+            if slot.replace(switch.articulation).is_some() {
+                return Err(Error::InvalidInput);
+            }
+        }
+        let plan = &mut self.plans.get_mut(self.active_plan.0).unwrap().prepared;
+        plan.keyswitches = keys;
+        plan.switching = switching;
+        Ok(())
+    }
+}

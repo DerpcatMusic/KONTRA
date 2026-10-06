@@ -120,6 +120,15 @@ pub enum Processor {
     ControlGain(ControlRange),
     Delay(Delay),
     StateVariable(StateVariableFilter),
+    /// Stereo reverb; bus scope only (it owns megabytes of state).
+    Reverb(ReverbSettings),
+    /// `dry * x + wet * (x * impulse)`; bus scope only. `impulse` indexes
+    /// the table given to [`crate::Prepared::with_impulses`].
+    Convolution {
+        impulse: usize,
+        dry: f64,
+        wet: f64,
+    },
 }
 
 impl Processor {
@@ -129,18 +138,26 @@ impl Processor {
             Processor::StereoMatrix(matrix) => matrix.iter().flatten().all(|v| v.is_finite()),
             Processor::ControlGain(binding) => binding.valid(),
             Processor::StateVariable(filter) => filter.valid(),
+            Processor::Reverb(settings) => settings.valid(),
+            Processor::Convolution { dry, wet, .. } => dry.is_finite() && wet.is_finite(),
             Processor::Biquad(_) | Processor::Delay(_) => true,
         }
     }
 }
 
 pub(super) mod control;
+mod convolution;
 mod delay;
 pub(super) mod lanes;
+mod reverb;
 pub(super) mod svf;
 pub(super) use control::ControlRamp;
 pub use control::{ControlRange, Parameter};
+pub(super) use convolution::{Convolution, tail_frames as impulse_tail_frames};
+pub use convolution::{Impulse, MAX_IMPULSE_FRAMES};
 pub use delay::Delay;
+pub(super) use reverb::Reverb;
+pub use reverb::ReverbSettings;
 pub use svf::{StateVariableFilter, SvfMode};
 
 pub(super) enum PreparedProcessor {
@@ -148,8 +165,15 @@ pub(super) enum PreparedProcessor {
     StereoMatrix([[f64; 2]; 2]),
     Biquad(Biquad),
     ControlGain(usize),
-    Delay { delay: Delay, offset: usize },
+    Delay {
+        delay: Delay,
+        offset: usize,
+    },
     StateVariable(usize),
+    /// Index into the bus graph's reverbs.
+    Reverb(usize),
+    /// Index into the bus graph's convolutions.
+    Convolution(usize),
 }
 
 pub(super) struct PreparedVoiceChain {
@@ -206,8 +230,24 @@ impl VoiceChain {
     ) -> Result<PreparedVoiceChain, Error> {
         let mut delay_frames = 0;
         Ok(PreparedVoiceChain {
-            pre: compile_processors(self.pre, rate, bindings, &mut delay_frames, filters)?,
-            post: compile_processors(self.post, rate, bindings, &mut delay_frames, filters)?,
+            pre: compile_processors(
+                self.pre,
+                rate,
+                bindings,
+                &mut delay_frames,
+                filters,
+                None,
+                None,
+            )?,
+            post: compile_processors(
+                self.post,
+                rate,
+                bindings,
+                &mut delay_frames,
+                filters,
+                None,
+                None,
+            )?,
             tail_frames: self.tail_frames,
             delay_frames,
         })
@@ -219,6 +259,8 @@ pub(super) fn compile_processors(
     bindings: &mut Vec<ControlRange>,
     delay_frames: &mut usize,
     filters: &mut Vec<svf::PreparedFilter>,
+    mut reverbs: Option<&mut Vec<(ReverbSettings, u32)>>,
+    mut convolutions: Option<&mut Vec<(usize, f64, f64)>>,
 ) -> Result<Box<[PreparedProcessor]>, Error> {
     if stages.iter().any(|stage| !stage.valid()) {
         return Err(Error::InvalidInput);
@@ -239,6 +281,16 @@ pub(super) fn compile_processors(
                         .checked_add(delay.frames as usize)
                         .ok_or(Error::Capacity)?;
                     PreparedProcessor::Delay { delay, offset }
+                }
+                Processor::Reverb(settings) => {
+                    let reverbs = reverbs.as_deref_mut().ok_or(Error::InvalidInput)?;
+                    reverbs.push((settings, 0));
+                    PreparedProcessor::Reverb(reverbs.len() - 1)
+                }
+                Processor::Convolution { impulse, dry, wet } => {
+                    let all = convolutions.as_deref_mut().ok_or(Error::InvalidInput)?;
+                    all.push((impulse, dry, wet));
+                    PreparedProcessor::Convolution(all.len() - 1)
                 }
                 Processor::Gain(gain) => PreparedProcessor::Gain(gain),
                 Processor::StereoMatrix(matrix) => PreparedProcessor::StereoMatrix(matrix),
@@ -515,6 +567,40 @@ pub(super) fn process(
             PreparedProcessor::StateVariable(index) => {
                 filters.process(*index, &mut state.z, block, len, parameters, at);
             }
+            PreparedProcessor::Reverb(index) => {
+                let mut wet = [[0f32; BLOCK]; 2];
+                for (w, v) in wet.iter_mut().zip(block.iter()) {
+                    w[..len]
+                        .iter_mut()
+                        .zip(&v[..len])
+                        .for_each(|(w, v)| *w = *v as f32);
+                }
+                let [left, right] = &mut wet;
+                filters.reverbs[*index].process(&mut left[..len], &mut right[..len]);
+                for (v, w) in block.iter_mut().zip(&wet) {
+                    v[..len]
+                        .iter_mut()
+                        .zip(&w[..len])
+                        .for_each(|(v, w)| *v = f64::from(*w));
+                }
+            }
+            PreparedProcessor::Convolution(index) => {
+                let mut wet = [[0f32; BLOCK]; 2];
+                for (w, v) in wet.iter_mut().zip(block.iter()) {
+                    w[..len]
+                        .iter_mut()
+                        .zip(&v[..len])
+                        .for_each(|(w, v)| *w = *v as f32);
+                }
+                let [left, right] = &mut wet;
+                filters.convolutions[*index].process([&mut left[..len], &mut right[..len]]);
+                for (v, w) in block.iter_mut().zip(&wet) {
+                    v[..len]
+                        .iter_mut()
+                        .zip(&w[..len])
+                        .for_each(|(v, w)| *v = f64::from(*w));
+                }
+            }
             PreparedProcessor::Delay { delay, offset } => {
                 fault |= delay.process(
                     state,
@@ -767,6 +853,8 @@ mod tests {
                         &mut [],
                         &mut svf::FilterContext {
                             bank: &mut filters,
+                            reverbs: &mut [],
+                            convolutions: &mut [],
                             expression: None,
                         },
                     );
@@ -845,6 +933,8 @@ mod tests {
                                     &mut [],
                                     &mut svf::FilterContext {
                                         bank: &mut filters,
+                                        reverbs: &mut [],
+                                        convolutions: &mut [],
                                         expression: None,
                                     },
                                 );

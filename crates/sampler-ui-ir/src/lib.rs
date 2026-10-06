@@ -168,6 +168,13 @@ impl Widget {
     pub fn image(&self, role: Role) -> Option<AssetRef> {
         self.images.iter().find(|i| i.role == role).map(|i| i.asset)
     }
+
+    /// A button or switch with no text: its picture carries the label (an
+    /// icon, baked words) or is a deliberately invisible hit area, so a
+    /// vector presentation keeps it rather than draw a blank box.
+    pub fn label_in_image(&self) -> bool {
+        matches!(self.kind, Kind::Button { .. } | Kind::Switch) && self.text.trim().is_empty() && self.image(Role::Strip).is_some()
+    }
 }
 
 /// How a widget's position is given.
@@ -526,7 +533,7 @@ impl Interface {
         let vector = presentation == Presentation::Vector;
         for w in &self.widgets {
             for i in &w.images {
-                if !(vector && i.role.replaced_by_vector()) {
+                if !(vector && i.role.replaced_by_vector() && !w.label_in_image()) {
                     mark(i.asset);
                 }
             }

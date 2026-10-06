@@ -8,9 +8,8 @@ fn runtime(source: &str) -> Runtime {
     authored(source, GroupParams::default())
 }
 
-/// Group 0 authored at `group0`, baked into its region's gain as lowering does.
-fn authored(source: &str, group0: GroupParams) -> Runtime {
-    let script = sampler_ksp::compile(
+fn compile(source: &str) -> sampler_ksp::Script {
+    sampler_ksp::compile(
         source,
         48000,
         sampler_ksp::Limits {
@@ -21,8 +20,16 @@ fn authored(source: &str, group0: GroupParams) -> Runtime {
         },
         &[],
     )
-    .unwrap();
-    let note_cells = script.note_cells() * 8;
+    .unwrap()
+}
+
+/// Group 0 authored at `group0`, baked into its region's gain as lowering does.
+fn authored(source: &str, group0: GroupParams) -> Runtime {
+    modules(vec![compile(source)], group0)
+}
+
+fn modules(scripts: Vec<sampler_ksp::Script>, group0: GroupParams) -> Runtime {
+    let note_cells = scripts.iter().map(|s| s.note_cells()).sum::<usize>() * 8;
     let pcm = [0.5, 0.25].map(|v| Pcm::new(48000, Box::from([[v; 2]; 48000])).unwrap());
     let regions = (0..2)
         .map(|sample| Region {
@@ -41,15 +48,15 @@ fn authored(source: &str, group0: GroupParams) -> Runtime {
             playback: Playback::default(),
         })
         .collect();
-    let plan = script
-        .bind(
-            Prepared::new(48000, pcm.into(), regions, 2)
-                .unwrap()
-                .with_groups(2, vec![Some(0), Some(1)])
-                .and_then(|p| p.with_group_params(vec![group0, GroupParams::default()]))
-                .unwrap(),
-        )
-        .unwrap();
+    let plan = sampler_ksp::bind_modules(
+        scripts,
+        Prepared::new(48000, pcm.into(), regions, 2)
+            .unwrap()
+            .with_groups(2, vec![Some(0), Some(1)])
+            .and_then(|p| p.with_group_params(vec![group0, GroupParams::default()]))
+            .unwrap(),
+    )
+    .unwrap();
     let behavior_cells = plan.behavior_local_count() * 8;
     Runtime::new(
         plan,
@@ -172,4 +179,157 @@ fn engine_volume_reads_the_authored_value_and_sets_it_absolutely() {
     );
     rt.trigger(input(60), 60, 1.).unwrap();
     assert!(close(level(&mut rt), [0.5; 2]), "{:?}", level(&mut rt));
+}
+
+#[test]
+fn timer_listener_plays_notes_on_its_period() {
+    let mut rt = runtime(
+        "on init
+           declare $n
+           set_listener($NI_SIGNAL_TIMER_MS, 10000)
+         end on
+         on listener
+           if ($NI_SIGNAL_TYPE = $NI_SIGNAL_TIMER_MS)
+             inc($n)
+             if ($n = 2)
+               { The second tick stops the timer. }
+               change_listener_par($NI_SIGNAL_TIMER_MS, 0)
+             end if
+             play_note(60, 100, 0, 100000)
+           end if
+         end on",
+    );
+    // 10 ms is 480 frames: silent before the first tick, sounding after.
+    assert_eq!(level(&mut rt), [0.0; 2]);
+
+    level(&mut rt);
+    // Velocity 100: 0.5 · 100/127.
+    assert!(close(level(&mut rt), [0.3937; 2]));
+    for _ in 0..25 {
+        level(&mut rt);
+    }
+    // Two 100 ms notes, then no more ticks.
+    assert_eq!(level(&mut rt), [0.0; 2]);
+    assert_eq!(rt.voice_count(), 0);
+}
+
+#[test]
+fn pgs_writes_reach_every_slot_and_run_pgs_changed() {
+    let writer = compile(
+        "on note
+           ignore_event($EVENT_ID)
+           pgs_set_key_val(SHARED, 0, 5)
+         end on",
+    );
+    let reader = compile(
+        "on init
+           pgs_create_key(SHARED, 1)
+         end on
+         on pgs_changed
+           if (pgs_key_exists(SHARED) and pgs_get_key_val(SHARED, 0) = 5)
+             play_note(61, 127, 0, 100000)
+           end if
+         end on",
+    );
+    let mut rt = modules(vec![writer, reader], GroupParams::default());
+    rt.trigger(input(60), 60, 1.).unwrap();
+    // Only the reader's note 61 sounds.
+    assert!(close(level(&mut rt), [0.25; 2]), "{:?}", level(&mut rt));
+}
+
+#[test]
+fn sort_and_array_equal_run_at_runtime() {
+    let mut rt = runtime(
+        "on init
+           declare %a[4] := (59, 61, 58, 60)
+           declare %b[4] := (61, 60, 59, 58)
+         end on
+         on note
+           ignore_event($EVENT_ID)
+           sort(%a, 1)
+           if (array_equal(%a, %b))
+             sort(%a, 0, 1, 3)
+             { 61, 58, 59, 60 }
+             if (%a[1] = 58 and %a[3] = 60)
+               play_note(61, 127, 0, 100000)
+             end if
+           end if
+         end on",
+    );
+    rt.trigger(input(60), 60, 1.).unwrap();
+    assert!(close(level(&mut rt), [0.25; 2]), "{:?}", level(&mut rt));
+}
+
+#[test]
+fn runtime_ui_requests_update_the_model() {
+    let source = "on init
+           declare ui_label $offline(1, 1)
+           set_listener($NI_SIGNAL_TIMER_MS, 10000)
+         end on
+         on listener
+           set_control_par(get_ui_id($offline), $CONTROL_PAR_HIDE, $HIDE_WHOLE_CONTROL)
+           set_control_par_str(get_ui_id($offline), $CONTROL_PAR_PICTURE, \"online\")
+           set_key_color(60, $KEY_COLOR_CYAN)
+         end on";
+    let mut model = compile(source);
+    let mut rt = runtime(source);
+    for _ in 0..3 {
+        level(&mut rt);
+    }
+    let mut view = model.view();
+    let mut applied = 0;
+    rt.drain_effects(|e| {
+        applied += usize::from(model.apply_ui_effect(e));
+        assert!(view.apply_ui_effect(e));
+        true
+    });
+    assert_eq!(view.ui(&|_| None).unwrap(), model.ui(&|_| None).unwrap());
+    let w = &model.model().interface.widgets[0];
+    assert_eq!(applied, 3);
+    assert_eq!(view.model().interface.keys[60].color, Some(8));
+    assert_eq!(w.int("$CONTROL_PAR_HIDE"), Some(16));
+    assert_eq!(
+        w.properties.get("$CONTROL_PAR_PICTURE"),
+        Some(&sampler_ksp::model::Value::Text("online".into()))
+    );
+}
+
+#[test]
+fn key_down_reads_held_input_keys() {
+    let mut rt = runtime(
+        "on note
+           ignore_event($EVENT_ID)
+           if (%KEY_DOWN[60] = 1 and %KEY_DOWN[61] = 0 and search(%KEY_DOWN, 1) = 60)
+             play_note(61, 127, 0, 100000)
+           end if
+         end on",
+    );
+    rt.trigger(input(60), 60, 1.).unwrap();
+    assert!(close(level(&mut rt), [0.25; 2]), "{:?}", level(&mut rt));
+}
+
+/// Fades start off the 64-frame grid; the output must not depend on how the
+/// host splits the render into blocks.
+#[test]
+fn a_script_fade_renders_identically_for_every_block_size() {
+    let render = |block: usize| {
+        let mut rt = runtime(
+            "on note
+               wait(10000)
+               fade_out($EVENT_ID, 20000, 1)
+             end on",
+        );
+        rt.trigger(input(60), 60, 1.).unwrap();
+        let mut out = vec![[0.0; 2]; 4096];
+        for chunk in out.chunks_mut(block) {
+            rt.render(chunk).unwrap();
+        }
+        assert_eq!(rt.voice_count(), 0);
+        out
+    };
+    let reference = render(64);
+    assert!(reference[600] != [0.0; 2], "the fade is audible");
+    for block in [7, 61] {
+        assert!(render(block) == reference, "block {block} differs");
+    }
 }

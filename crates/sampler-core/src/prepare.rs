@@ -363,6 +363,7 @@ pub struct Prepared {
     pub(super) rate: u32,
     pub(super) pcm: Box<[Pcm]>,
     pub(super) buses: super::bus::PreparedBuses,
+    pub(super) impulses: Vec<std::sync::Arc<super::dsp::Impulse>>,
     pub(super) voice_chains: Box<[super::dsp::PreparedVoiceChain]>,
     pub(super) filters: Box<[super::dsp::svf::PreparedFilter]>,
     pub(super) dsp_bindings: Box<[super::ControlRange]>,
@@ -370,7 +371,13 @@ pub struct Prepared {
     regions: Box<[PreparedRegion]>,
     pub(super) group_count: u32,
     pub(super) source_event_limit: i32,
+    /// CC64 holds no gate: a behavior implements sustain itself.
+    pub(super) script_sustain: bool,
+    pub(super) script_release_triggers: bool,
     pub(super) region_groups: Box<[Option<u32>]>,
+    pub(super) voice_limit: Option<super::VoiceLimit>,
+    pub(super) voice_limits: Box<[super::VoiceLimit]>,
+    pub(super) group_voice_limits: Box<[Option<usize>]>,
     pub(super) group_params: Box<[super::GroupParams]>,
     offsets: [usize; 129],
     phase_offsets: [[usize; 2]; 128],
@@ -383,9 +390,13 @@ pub struct Prepared {
     pub(super) note_cells: usize,
     pub(super) controls: Box<[super::ControlDefinition]>,
     pub(super) control_programs: Box<[super::ControlCallback]>,
-    keyswitches: [Option<u32>; 128],
+    pub(super) plan_programs: Box<[super::PlanProgram]>,
+    pub(super) signal_programs: Box<[super::SignalProgram]>,
+    pub(super) shared_store: (Box<[([i32; super::STORE_KEY], i64)]>, usize),
+    pub(super) keyswitches: [Option<u32>; 128],
     articulated: bool,
     pub(super) switching: super::Switching,
+    bend_range: f64,
     conditions: Box<[Box<[ControllerCondition]>]>,
     condition_ends: Box<[usize]>,
     pub(super) release_selection: [super::SelectionPolicy; 2],
@@ -515,6 +526,7 @@ impl Prepared {
             rate,
             pcm: pcm.into_boxed_slice(),
             buses: super::bus::PreparedBuses::default(),
+            impulses: Vec::new(),
             voice_chains: Box::new([]),
             dsp_bindings: Box::new([]),
             filters: Box::new([]),
@@ -522,7 +534,12 @@ impl Prepared {
             regions: prepared_regions.into_boxed_slice(),
             group_count: 0,
             source_event_limit: i32::MAX,
+            script_sustain: false,
+            script_release_triggers: false,
             region_groups: Box::new([]),
+            voice_limit: None,
+            voice_limits: Box::new([]),
+            group_voice_limits: Box::new([]),
             group_params: Box::new([]),
             phase_offsets: std::array::from_fn(|key| [offsets[key + 1]; 2]),
             release_options: [super::ReleaseOptions::default(); 2],
@@ -535,9 +552,13 @@ impl Prepared {
             note_cells: 0,
             controls: Box::new([]),
             control_programs: Box::new([]),
+            plan_programs: Box::new([]),
+            signal_programs: Box::new([]),
+            shared_store: (Box::new([]), 0),
             keyswitches: [None; 128],
             articulated: false,
             switching: Default::default(),
+            bend_range: 2.0,
             conditions: Box::new([]),
             condition_ends: Box::new([]),
             release_selection: [super::SelectionPolicy::Onset; 2],
@@ -563,6 +584,7 @@ impl Prepared {
         }
         self.validate_program_controls(&programs)?;
         self.validate_program_scripts(&programs)?;
+        super::plan_programs::validate_starts(&programs)?;
         // One polyphonic bank per script instance, plus the unbound native bank.
         // Resolve offsets off audio; callback execution never scans other scripts.
         let bank = |p: &super::Program| p.script_instance.map_or(0, |id| usize::from(id.0) + 1);
@@ -586,6 +608,8 @@ impl Prepared {
             ..super::Stage::default()
         }]);
         self.control_programs = Box::new([]);
+        self.plan_programs = Box::new([]);
+        self.signal_programs = Box::new([]);
         Ok(self)
     }
 
@@ -642,6 +666,10 @@ impl Prepared {
             .map(|program| program.locals)
             .max()
             .unwrap_or(0)
+    }
+    /// Script modules a note passes through, in order.
+    pub fn stage_count(&self) -> usize {
+        self.stages.len()
     }
     /// Bytes one voice slot costs under this plan: the voice itself, its chain
     /// and delay state, and its modulation state. Control side, for sizing
@@ -769,6 +797,7 @@ impl Prepared {
             if let Some(index) = trigger.release_index()
                 && self.release_options[index].duration.is_none()
                 && region.cursor.unbounded_loop()
+                && !region.envelope.finite()
             {
                 return Err(Error::InvalidInput);
             }
@@ -1142,6 +1171,13 @@ impl Prepared {
 }
 
 impl Prepared {
+    /// The impulse responses [`super::Processor::Convolution`] indexes; set
+    /// before [`Prepared::with_buses`].
+    pub fn with_impulses(mut self, impulses: Vec<super::Impulse>) -> Self {
+        self.impulses = impulses.into_iter().map(std::sync::Arc::new).collect();
+        self
+    }
+
     /// Bind each region to a bus, or directly to stereo output (`None`).
     /// Graph construction, cycle validation and coefficient compilation run off audio.
     pub fn with_buses(
@@ -1154,11 +1190,38 @@ impl Prepared {
         {
             return Err(Error::InvalidInput);
         }
-        self.buses = super::bus::PreparedBuses::new(self.rate, buses)?;
+        self.buses = super::bus::PreparedBuses::new(self.rate, buses, &self.impulses)?;
         self.validate_dsp_controls()?;
         for (region, bus) in self.regions.iter_mut().zip(bindings) {
             region.bus = bus;
         }
         Ok(self)
+    }
+}
+
+impl Prepared {
+    /// Default channel pitch-bend range in semitones (either direction) for
+    /// plain MIDI bend; an RPN 0 on the channel overrides it.
+    pub fn with_bend_range(mut self, semitones: f64) -> Result<Self, Error> {
+        if !(semitones.is_finite() && (0.0..=96.0).contains(&semitones)) {
+            return Err(Error::InvalidInput);
+        }
+        self.bend_range = semitones;
+        Ok(self)
+    }
+
+    pub fn bend_range(&self) -> f64 {
+        self.bend_range
+    }
+}
+
+impl super::Runtime {
+    /// The active plan's default channel pitch-bend range in semitones.
+    pub fn bend_range(&self) -> f64 {
+        self.plans
+            .get(self.active_plan.0)
+            .unwrap()
+            .prepared
+            .bend_range
     }
 }

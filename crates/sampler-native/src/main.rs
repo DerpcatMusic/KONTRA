@@ -1,6 +1,8 @@
 //! Independent offline composition root; no legacy application or engine dependency.
+mod census;
 mod kontakt;
 mod render_kontakt;
+mod render_uvi;
 mod wave;
 use sampler_core::{
     Instruction, Limits, Outcome, Pcm, PlanControl, Prepared, Program, Region, Runtime,
@@ -153,7 +155,7 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
     };
     let mut groups = [None; 16];
     groups[0] = Some(Version::Midi2);
-    let ingress = Ingress::new(0, groups);
+    let mut ingress = Ingress::new(0, groups);
     let events = if replacing {
         [
             (0, [0x4090_3c00, 0xffff_0000]),
@@ -182,7 +184,7 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
             })
         })
         .collect::<io::Result<Vec<_>>>()?;
-    write_render(rt, output, count, &packets, &ingress, replacement)
+    write_render(rt, output, count, &packets, &mut ingress, replacement)
 }
 
 fn write_render(
@@ -190,7 +192,7 @@ fn write_render(
     output: &Path,
     count: usize,
     packets: &[TimedPacket<'_>],
-    ingress: &Ingress,
+    ingress: &mut Ingress,
     mut replacement: Option<Replacement>,
 ) -> io::Result<()> {
     let rate = rt.sample_rate();
@@ -311,6 +313,22 @@ fn demo_sample() -> Pcm {
 fn run() -> io::Result<()> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     match args.as_slice() {
+        [command, roots @ ..] if command == "census" => census::run(roots),
+        [command, bank, program, output, rest @ ..]
+            if command == "render-uvi" && rest.len() <= 1 =>
+        {
+            let sequence = rest
+                .first()
+                .map_or(Some(render_kontakt::DEFAULT_SEQUENCE), |s| s.to_str());
+            let notes = render_kontakt::parse(sequence.unwrap_or(""))
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+            render_uvi::run(
+                Path::new(bank),
+                program.to_str().unwrap_or(""),
+                Path::new(output),
+                &notes,
+            )
+        }
         [command, input]
             if command == "inspect-kontakt-chunks"
                 || command == "inspect-kontakt-nks"
@@ -362,7 +380,7 @@ fn run() -> io::Result<()> {
         }
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: sampler-native render-kontakt INPUT.nki OUTPUT.wav [KEY:VEL:START:LENGTH,...] [--no-scripts] | demo OUTPUT.wav | echo OUTPUT.wav | render INPUT.wav OUTPUT.wav | script INPUT.ksp [INPUT.wav] OUTPUT.wav | replace FIRST.wav SECOND.wav OUTPUT.wav | inspect-kontakt-chunks EXPANDED.bin | inspect-kontakt-nks INPUT.nki | inspect-kontakt-nis INPUT.nki",
+            "usage: sampler-native census [ROOT ...] | render-uvi BANK.ufs PROGRAM.uvip OUTPUT.wav [KEY:VEL:START:LENGTH,...] | render-kontakt INPUT.nki OUTPUT.wav [KEY:VEL:START:LENGTH,...] [--no-scripts] | demo OUTPUT.wav | echo OUTPUT.wav | render INPUT.wav OUTPUT.wav | script INPUT.ksp [INPUT.wav] OUTPUT.wav | replace FIRST.wav SECOND.wav OUTPUT.wav | inspect-kontakt-chunks EXPANDED.bin | inspect-kontakt-nks INPUT.nki | inspect-kontakt-nis INPUT.nki",
         )),
     }
 }
@@ -416,7 +434,7 @@ mod tests {
         .unwrap();
         let mut groups = [None; 16];
         groups[0] = Some(Version::Midi2);
-        let ingress = Ingress::new(0, groups);
+        let mut ingress = Ingress::new(0, groups);
         // A note, four sustain-pedal changes and its release, all in the first block.
         let words = [
             [0x4090_3c00, 0xffff_0000],
@@ -440,7 +458,7 @@ mod tests {
             std::thread::current().id()
         ));
         let _ = std::fs::remove_file(&output);
-        let result = write_render(rt, &output, 48000, &packets, &ingress, None);
+        let result = write_render(rt, &output, 48000, &packets, &mut ingress, None);
         let _ = std::fs::remove_file(&output);
         result.unwrap();
     }

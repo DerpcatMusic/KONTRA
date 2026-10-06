@@ -3,7 +3,7 @@
 //! player's settings (`~/.config/kontra/settings.json`), as v1 finds them.
 //! Nothing read here is written anywhere.
 
-use sampler_core::{Input, Limits, Protocol, Runtime};
+use sampler_core::{Input, Limits, Protocol, Runtime, Stealing};
 use std::path::{Path, PathBuf};
 
 fn roots() -> Vec<PathBuf> {
@@ -110,6 +110,12 @@ fn una_corda_pure_renders_from_its_encrypted_monolith() {
         ir.unsupported.iter().any(|u| u.feature == "script"),
         "uncompiled scripts are reported"
     );
+    // Two 20-voice, 50 ms voice groups, each used by one group (1-based).
+    assert_eq!(ir.voice_limits.len(), 2);
+    let mut used: Vec<_> = ir.groups.iter().filter_map(|g| g.voice_limit).collect();
+    used.sort();
+    assert_eq!(used, [0, 1]);
+    assert_eq!(ir.voice_limit.map(|l| l.voices), Some(240));
     assert!(peak > 0.01, "audible: peak {peak}");
 }
 
@@ -258,6 +264,9 @@ fn survey_modulated_instruments_lower_and_render() {
                         continue;
                     }
                 };
+                // As the product plays: steal at capacity rather than reject.
+                rt.set_voice_stealing(Some(Stealing::for_limits(48000, limits().voices)))
+                    .unwrap();
                 if let Err(error) = rt.trigger(input(60), 60, 0.8) {
                     println!("TRIGGER {}: {error:?}", path.display());
                     continue;
@@ -317,4 +326,79 @@ fn afflatus_keyswitch_script_yields_an_articulation_map() {
     let mut driven = ir.clone();
     driven.switching.driver = sampler_ir::Driver::Velocity;
     assert_eq!(driven.validate(), Ok(()));
+}
+
+/// Every report feature across the installed instruments, as (instruments,
+/// entries). Translation only, nothing written: run with --ignored.
+#[test]
+#[ignore]
+fn survey_reported_features() {
+    let mut instruments = Vec::new();
+    for root in roots() {
+        collect(&root, &mut instruments);
+    }
+    instruments.sort();
+    let mut features = std::collections::BTreeMap::<String, (usize, usize)>::new();
+    for path in &instruments {
+        let Ok(kontakt) = sampler_kontakt::read(path) else {
+            continue;
+        };
+        let mut seen = std::collections::HashSet::new();
+        for u in &kontakt.instrument.unsupported {
+            let key = format!("{:?} {}", u.reason, u.feature);
+            let entry = features.entry(key.clone()).or_default();
+            entry.1 += 1;
+            if seen.insert(key) {
+                entry.0 += 1;
+            }
+        }
+    }
+    let mut sorted: Vec<_> = features.into_iter().collect();
+    sorted.sort_by_key(|(_, (n, _))| std::cmp::Reverse(*n));
+    for (feature, (n, entries)) in sorted {
+        println!("{n:6} {entries:9} {feature}");
+    }
+    println!("{} instruments", instruments.len());
+}
+
+/// Remapping Afflatus to each driver gives every articulation a selector that
+/// taps its own switch key (the script owns the switching), and the driver's
+/// value selects it.
+#[test]
+fn afflatus_remaps_to_every_driver() {
+    use sampler_core::{Driver as D, Switch};
+    use sampler_ir::Driver;
+    let Some(path) =
+        find("Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/2 Horns KS.nki")
+    else {
+        return;
+    };
+    let mut ir = sampler_kontakt::read(&path).unwrap().instrument;
+    ir.assign_alternatives(32);
+    for (driver, core) in [
+        (Driver::Velocity, D::Velocity),
+        (Driver::Channel, D::Channel),
+        (Driver::Controller, D::Controller),
+        (Driver::Program, D::Program),
+    ] {
+        ir.switching.driver = driver;
+        assert_eq!(ir.validate(), Ok(()));
+        let (_, switching) = sampler_core::lower::switching(&ir, ir.switching).unwrap();
+        assert_eq!(switching.driver(), core);
+        for a in &ir.articulations {
+            let alt = a.alternatives;
+            let (controller, value) = match driver {
+                Driver::Velocity => (0, alt.velocities.unwrap().low),
+                Driver::Channel => (0, alt.channel.unwrap()),
+                Driver::Controller => (32, alt.controller.unwrap().low),
+                _ => (0, alt.program.unwrap()),
+            };
+            assert_eq!(
+                switching.select(controller, value),
+                Some(Switch::Tap(a.switch_keys[0])),
+                "{driver:?} {}",
+                a.name
+            );
+        }
+    }
 }
