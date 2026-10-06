@@ -85,6 +85,7 @@ pub struct Retired {
 
 /// A part's saved state: persistent script values, IR slot settings and
 /// native engine edits, refreshed in place on the audio thread.
+#[derive(Clone)]
 pub(crate) struct PersistenceSnapshot {
     pub(crate) script: Vec<Persisted>,
     /// Worker-prepared slot list: audio updates values in place, including
@@ -94,24 +95,25 @@ pub(crate) struct PersistenceSnapshot {
 }
 
 impl V1Core {
-    /// Refresh `saved` from `part`, about `budget` values at a time.
-    /// `Some(changed)` once whole; IR slot settings are folded in then.
-    pub(crate) fn refresh_state(&self, part: usize, saved: &mut PersistenceSnapshot, at: &mut Refresh, budget: usize) -> Option<bool> {
-        let engine = self.engine(part)?;
-        let whole = engine.script().is_none_or(|rt| {
+    /// Refresh `saved` from `part`'s scripts and native edits, about `budget`
+    /// values at a time. True once whole (or the part has no scripts).
+    pub(crate) fn refresh_state(&self, part: usize, saved: &mut PersistenceSnapshot, at: &mut Refresh, budget: usize) -> bool {
+        self.engine(part).and_then(Engine::script).is_none_or(|rt| {
             rt.refresh_persistence_within(&mut saved.script, at, budget) && rt.native_state.refresh(&mut saved.native, 256)
-        });
-        if !whole {
-            return None;
-        }
-        let mut changed = at.changed || saved.native.changed;
+        })
+    }
+
+    /// Fold `part`'s current IR slot settings into `saved`; true if any changed.
+    pub(crate) fn fold_ir_settings(&self, part: usize, saved: &mut PersistenceSnapshot) -> bool {
+        let Some(engine) = self.engine(part) else { return false };
+        let mut changed = false;
         for value in &mut saved.ir {
             if let Some(settings) = engine.fx().ir_settings(value.rack, value.slot) {
                 changed |= value.settings != settings;
                 value.settings = settings;
             }
         }
-        Some(changed)
+        changed
     }
 }
 
@@ -227,6 +229,14 @@ impl Core for V1Core {
         refused
     }
 
+    fn owns(&self, note: HostNote) -> bool {
+        self.align.host_note_waiting(note) || self.rack.parts.iter().any(|e| e.host_note_present(note))
+    }
+
+    fn latency(&self) -> u32 {
+        self.align.plan.latency(self.sample_rate())
+    }
+
     fn ui_control(&mut self, part: usize, slot: usize, control: usize, value: i32) {
         let Some(engine) = self.rack.parts.get_mut(part) else { return };
         engine.ui_control(slot, control, value);
@@ -243,8 +253,11 @@ impl Core for V1Core {
         self.engine(part).and_then(Engine::script).is_none_or(|rt| rt.refresh_persistence_within(saved, at, budget))
     }
 
-    fn refresh_live(&self, part: usize, live: &mut Live, at: &mut Refresh, budget: usize) -> bool {
-        self.engine(part).and_then(Engine::script).is_none_or(|rt| rt.refresh_live_within(live, at, budget))
+    fn refresh_live(&self, part: usize, live: &mut Live, at: &mut Refresh, budget: usize, unchanged: bool) -> bool {
+        self.engine(part).and_then(Engine::script).is_none_or(|rt| {
+            rt.refresh_diagnostics(live);
+            (unchanged && live.refresh_interface && live.interface_current) || rt.refresh_live_within(live, at, budget)
+        })
     }
 
     fn voices(&self) -> Voices {
@@ -259,7 +272,7 @@ impl Core for V1Core {
 impl V1Core {
     /// Offer each ended host note once nothing still owns it: every part's
     /// voices and scripts, and any input the alignment holds back.
-    fn finish_host_notes(&mut self, end: &mut dyn FnMut(HostNote) -> bool) -> u64 {
+    pub(crate) fn finish_host_notes(&mut self, end: &mut dyn FnMut(HostNote) -> bool) -> u64 {
         for e in &mut self.rack.parts {
             e.mark_host_notes();
         }
@@ -295,11 +308,6 @@ impl V1Core {
         0
     }
 
-    /// Whether an exact host note-on created no owner anywhere (an unmatched
-    /// route or a consumed key switch): its end is due at once.
-    pub fn host_note_unowned(&self, note: HostNote) -> bool {
-        !self.align.host_note_waiting(note) && !self.rack.parts.iter().any(|e| e.host_note_present(note))
-    }
 }
 
 /// Prepares v1 parts: Kontakt import, scripts, effects and a bare bank.
