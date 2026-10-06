@@ -125,3 +125,23 @@ pub enum PanLaw {
 
 /// Sample frames of the referenced asset at its own rate.
 pub type SourceFrames = u64;
+
+/// A length within an asset, as its source authored it: SFZ in seconds,
+/// Kontakt in frames of the asset's own rate.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Span {
+    Time(Time),
+    Frames(SourceFrames),
+}
+
+impl Span {
+    pub const ZERO: Self = Self::Frames(0);
+
+    /// Frames at `rate`, the asset's own sample rate.
+    pub fn frames(self, rate: f64) -> SourceFrames {
+        match self {
+            Self::Time(time) => (time.seconds() * rate).round() as SourceFrames,
+            Self::Frames(frames) => frames,
+        }
+    }
+}

@@ -273,7 +273,9 @@ impl Instrument {
             if let Looping::Continuous(range) | Looping::UntilRelease(range) = zone.playback.looping
             {
                 check.range(range.start, range.end, "loop")?;
-                check.time(range.crossfade, "loop crossfade")?;
+                if let crate::Span::Time(time) = range.crossfade {
+                    check.time(time, "loop crossfade")?;
+                }
             }
             if let Some(chain) = zone.chain {
                 check.exists(Reference::Chain(chain.0))?;
@@ -342,6 +344,17 @@ mod tests {
             zones: vec![Zone::new(AssetRef(0))],
             ..Instrument::default()
         }
+    }
+
+    #[test]
+    fn retaining_zones_drops_and_renumbers_unused_assets() {
+        let mut ir = one_zone();
+        ir.assets.extend([ir.assets[0].clone(), ir.assets[0].clone()]);
+        ir.zones = (0..3).map(|i| Zone::new(AssetRef(i))).collect();
+        ir.zones[2].keys = KeyRange { low: 10, high: 10 };
+        assert_eq!(ir.retain_zones(|z| z.keys.high != 127 || z.asset.0 == 1), [1, 2]);
+        assert_eq!(ir.zones.iter().map(|z| z.asset.0).collect::<Vec<_>>(), [0, 1]);
+        assert_eq!((ir.assets.len(), ir.validate()), (2, Ok(())));
     }
 
     #[test]
