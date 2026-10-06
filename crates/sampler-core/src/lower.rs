@@ -422,7 +422,13 @@ impl Lowering<'_> {
                 EnvelopeCurve::exponential(k).map_err(core(Stage::Envelope, owner))
             }
         };
-        let envelope = if one_shot {
+        let envelope = if e.one_shot {
+            Envelope::one_shot(
+                self.frames(e.attack),
+                self.frames(e.hold),
+                self.frames(e.decay),
+            )
+        } else if one_shot {
             // Plays to the end of the audio whatever the gate does.
             Envelope::one_shot(self.frames(e.attack), u32::MAX, 0)
         } else {
