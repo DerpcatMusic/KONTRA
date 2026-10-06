@@ -377,6 +377,9 @@ enum Look {
     Unmapped,
     /// Plays, tinted in its part's hue.
     Mapped(f32),
+    /// Switches articulation: deep in its part's hue, brighter while the
+    /// articulation it picks is the one playing.
+    Switch(f32, bool),
 }
 
 /// The lowest and highest keys that play notes.
@@ -386,11 +389,20 @@ fn playable(looks: &[Look; 128]) -> Option<(usize, usize)> {
     Some((low, looks.iter().rposition(plays).unwrap_or(low)))
 }
 
-/// Part `slot`'s keys: those its zones map play, in its hue.
-// TODO(v2): script key colors and articulation keyswitch marks.
-fn part_looks(cx: &Cx, slot: usize) -> [Look; 128] {
+/// Part `slot`'s keys: those its zones map play, in its hue; its
+/// articulations' switch keys stand out in it.
+fn part_looks(cx: &mut Cx, slot: usize) -> [Look; 128] {
     let hue = part_color(slot).hue();
-    mapped(cx, slot).map(|m| if m { Look::Mapped(hue) } else { Look::Unmapped })
+    let mut looks = mapped(cx, slot).map(|m| if m { Look::Mapped(hue) } else { Look::Unmapped });
+    if let Some(inst) = super::inside::switch_keys(cx, slot) {
+        let active = super::inside::active(cx, slot);
+        for (n, a) in inst.articulations.iter().enumerate() {
+            for &k in &a.switch_keys {
+                looks[usize::from(k & 127)] = Look::Switch(hue, active == Some(n));
+            }
+        }
+    }
+    looks
 }
 
 /// The shown parts' keys together.
@@ -497,6 +509,7 @@ fn key(
         (Look::Mapped(hue), true) => Color::oklch(0.33, 0.075, hue),
         (Look::Unmapped, false) => Color::oklch(0.56, 0., 0.),
         (Look::Unmapped, true) => Color::oklch(0.24, 0., 0.),
+        (Look::Switch(hue, on), _) => Color::oklch(if on { 0.8 } else { 0.6 }, 0.13, hue),
     };
     // A sounding key lights like an LED under its top edge: neutral, strong
     // there and fading down the key, stronger the harder it is played. Dark

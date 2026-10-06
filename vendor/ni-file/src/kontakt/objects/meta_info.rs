@@ -17,7 +17,7 @@ impl BPatchMetaInfoHeader {
         // reader.read_to_end(&mut buf)?;
         // std::fs::write("header", buf)?;
 
-        let magic: u32 = reader.read_le()?;
+        let magic: u32 = ReadBytesExt::read_le(&mut reader)?;
         if magic != 0xB00EE1AE { return Err(NKSError::InvalidMetadataMagic(magic)); }
         // match magic {
         //     0xB00EE1AE => {},

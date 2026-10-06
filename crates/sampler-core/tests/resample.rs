@@ -1,6 +1,6 @@
 use sampler_core::{
     Direction, Envelope, Error, Event, Expression, Inheritance, Input, Limits, Loop, LoopMode, Pcm,
-    Playback, Prepared, Protocol, Region, ResampleQuality, Runtime,
+    Playback, Prepared, Protocol, Region, ResampleQuality, Runtime, service_mipmaps,
 };
 use std::f64::consts::PI;
 mod support;
@@ -1599,4 +1599,48 @@ fn crossfade_guards_match_a_preblended_asset_at_fractional_and_multi_wrap_rates(
             );
         }
     }
+}
+
+#[test]
+fn lazy_octave_levels_build_only_for_played_assets_within_a_budget() {
+    let tone: Box<[[f32; 2]]> = (0..16384)
+        .map(|i| {
+            let angle = 2.0 * PI * 0.005 * i as f64;
+            [angle.cos() as f32, angle.sin() as f32]
+        })
+        .collect();
+    let render = |pcm: &Pcm| {
+        let playback = Playback {
+            start: 2048,
+            transpose_semitones: 12.0 * 5.0_f64.log2(),
+            ..Playback::default()
+        };
+        let mut rt = realtime(prepare(pcm.clone(), 48000, playback).unwrap());
+        let mut audio = [[0.0; 2]; 256];
+        support::without_heap(|| {
+            rt.trigger(input(), 60, 1.0).unwrap();
+            rt.render(&mut [[0.0; 2]; 128]).unwrap();
+            for block in audio.chunks_mut(7) {
+                rt.render(block).unwrap();
+            }
+        });
+        audio
+    };
+    let eager = render(&Pcm::mipmapped(48000, tone.clone()).unwrap());
+    let (played, idle) = (
+        Pcm::new(48000, tone.clone()).unwrap(),
+        Pcm::new(48000, tone).unwrap(),
+    );
+    let plain = render(&played);
+    assert_ne!(plain, eager);
+    let assets = [played.clone(), idle.clone()];
+    // Step 5 wants levels 1 and 2 only: a quarter fewer bytes than all four.
+    let levels = (8192 + 4096) * 8;
+    assert_eq!(service_mipmaps(&assets, levels - 1, 0), 0);
+    assert_eq!(service_mipmaps(&assets, levels, 0), levels);
+    assert_eq!(played.resident_bytes(), 16384 * 8 + levels);
+    assert_eq!(idle.resident_bytes(), 16384 * 8);
+    assert_eq!(render(&played), eager);
+    assert_eq!(service_mipmaps(&assets, 0, 0), 0);
+    assert_eq!(played.resident_bytes(), 16384 * 8);
 }

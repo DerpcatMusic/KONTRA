@@ -37,7 +37,7 @@ fn support_cache_path() -> PathBuf {
             }
             dirs::data_local_dir()
                 .unwrap_or_else(std::env::temp_dir)
-                .join("KONTRA")
+                .join("KONTRA2")
         });
     root.join("support-cache.json")
 }

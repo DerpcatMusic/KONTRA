@@ -87,6 +87,11 @@ impl Runtime {
         self.stolen
     }
 
+    /// Voices stolen since the runtime started.
+    pub fn steals(&self) -> u64 {
+        self.steals
+    }
+
     /// Make room for `required` new voices within polyphony. Victims, in
     /// order: released voices, oldest first; then the quietest sounding voice.
     pub(crate) fn steal_voices(&mut self, required: usize) {
@@ -100,6 +105,7 @@ impl Runtime {
             };
             self.voices.at_mut(victim).stolen = true;
             self.stolen += 1;
+            self.steals += 1;
             self.choke_voice(victim, stealing.fade);
         }
         while self.voices.available() < required {

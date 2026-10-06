@@ -23,21 +23,27 @@ impl NIFileContainer {
         // NI FC MTD
         // Native Instruments FileContainer MetaData
         let mtd_magic = reader.read_bytes(16)?;
-        debug_assert_eq!(
-            mtd_magic, FC_MTD_MARKER_START,
-            "Monolith header tag not found."
-        );
+        if mtd_magic != FC_MTD_MARKER_START {
+            return Err(Error::Static("Invalid NI FileContainer metadata marker"));
+        }
 
         let _header_chunk = reader.read_bytes(256)?;
         let file_count = reader.read_u64_le()?;
         let total_size = reader.read_u64_le()?;
-        dbg!(total_size);
+        let position = reader.stream_position()?;
+        let length = reader.seek(std::io::SeekFrom::End(0))?;
+        reader.seek(std::io::SeekFrom::Start(position))?;
+        if file_count > 100_000 || file_count > length.saturating_sub(position) / 640 {
+            return Err(Error::Static("Invalid NI FileContainer file count"));
+        }
 
         // NI FC TOC
         // Native Instruments FileContainer Table Of Contents
         // Table 1
         let mtd_magic = reader.read_bytes(16)?;
-        debug_assert_eq!(mtd_magic, b"/\\ NI FC TOC  /\\");
+        if mtd_magic != b"/\\ NI FC TOC  /\\" {
+            return Err(Error::Static("Invalid NI FileContainer table marker"));
+        }
 
         let _header_chunk = reader.read_bytes(600)?;
 
@@ -54,7 +60,9 @@ impl NIFileContainer {
 
             let file_start_offset = offset;
             let file_end_offset = reader.read_u64_le()?;
-            let file_size = file_end_offset - file_start_offset;
+            let file_size = file_end_offset.checked_sub(file_start_offset)
+                .filter(|_| file_end_offset <= total_size)
+                .ok_or(Error::Static("Invalid NI FileContainer member range"))?;
             offset = file_end_offset;
 
             items.push(FileContainerItem {
@@ -66,7 +74,9 @@ impl NIFileContainer {
         }
 
         let end_marker = reader.read_u64_le()?;
-        assert_eq!(end_marker, FC_TOC_MARKER_END);
+        if end_marker != FC_TOC_MARKER_END {
+            return Err(Error::Static("Invalid NI FileContainer table end"));
+        }
 
         let _pad = reader.read_bytes(16)?;
 
@@ -74,11 +84,16 @@ impl NIFileContainer {
         // Native Instruments FileContainer Table Of Contents
         // Table 2
         let mtd_magic = reader.read_bytes(16)?;
-        debug_assert_eq!(mtd_magic, b"/\\ NI FC TOC  /\\");
+        if mtd_magic != b"/\\ NI FC TOC  /\\" {
+            return Err(Error::Static("Invalid NI FileContainer table marker"));
+        }
 
         let _header_chunk = reader.read_bytes(592)?;
 
         let file_section_offset = reader.stream_position()?;
+        if offset != total_size || total_size > length.saturating_sub(file_section_offset) {
+            return Err(Error::Static("Truncated NI FileContainer file section"));
+        }
 
         Ok(Self {
             file_section_offset,

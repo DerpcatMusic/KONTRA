@@ -3,8 +3,11 @@
 V2-11 is in progress. Resident and paged assets now render through the same native
 source/DSP path. The bounded cache/worker protocol, initial source readiness and
 observable source failure, a seekable WAV decoder and explicit bounded demand
-servicing and a bounded starvation fade are executable. Cold-onset policy, optional
-recovery, storage deadline evidence and distinct offline preparation are still open; this is not yet a production disk-streaming service.
+servicing and a bounded starvation fade are executable. A Kontakt streaming service
+(resident start ranges sized from measured latency, decode threads, purge, trim and
+reload) runs real instruments; cold-onset policy for purged assets (a purged start is
+refused until reloaded), optional recovery and distinct offline preparation are
+still open.
 
 ## Asset identity
 
@@ -53,6 +56,30 @@ The next implementation must provide bounded page/storage admission, owner-stamp
 worker messages, eviction/retirement without audio-thread destruction, exact paged
 reads, visible not-ready/underrun outcomes and distinct live/offline contracts.
 It must integrate these services into actual rendering before V2-11 can close.
+
+## Resident ranges, service and the Kontakt streamer
+
+A streamed asset can hold resident frame ranges (`Pcm::set_ranges`: ascending,
+disjoint, any offset). Voices read them before the page cache; the service requests
+and protects only pages a demand reads outside them, and a start is ready when its
+first window is resident or cached. Purging (empty ranges) makes the next start
+fail `NotReady` and marks the asset cold for reload.
+
+`service_streaming` visits each page once per run of demand at its first deadline.
+Voices whose horizon maps linearly (no loop boundary or crossfade within reach)
+visit their pages directly, without walking every output frame. The horizon must
+cover the start ranges' latency budget plus one block; a page's worth is the
+practical choice, as it bounds only service work, not memory.
+
+`sampler_kontakt::load_streamed` opens every sample as a random-access reader
+(loose WAV/NCW or encrypted archive members), times reads on a probe of them, and
+keeps per zone start `(p95 latency + slack) x rate x zone step + guards` frames
+resident, where the zone step comes from its highest key, tuning, sample rate and
+`StreamPolicy::headroom` semitones of bend. A pool of decode threads
+(`StreamPolicy::decoders`) fills cache pages; `Streamer::purge`/`trim` drop idle
+start ranges least recently played first under a byte budget and `reload` restores
+cold ones. `crates/sampler-native/examples/stream_report.rs` plays a real
+instrument in real time and reports resident bytes, block time, underruns and RSS.
 
 ## Evidence and references
 
@@ -129,15 +156,18 @@ frame guarantee only: worker horizons must still cover subsequent reads and late
 pitch/release changes. Scheduled manual sources can lose readiness before start;
 rendering checks actual reads again.
 
-The live failure contract stops reading the unavailable source and increments
-`Runtime::stream_underruns()` once. It renders a linear fade from the last complete
-resampled frame over `ceil(output_rate / 1000)` output frames (one millisecond,
-rounded up), ending at zero. This is an explicit native starvation fallback, not
-reconstructed library audio. Envelope and expression processing continue normally;
-voice DSP receives the fade and then drains its declared zero-input tail across
-callback boundaries. Natural envelope/choke completion can shorten the fallback.
-Late pages never restart a failed source, demand stops for it, and musical time never
-waits or replays delayed samples. Host key pairing remains until real note-off; bus
+The live failure contract increments `Runtime::stream_underruns()` once per miss and
+renders a linear fade from the last complete resampled frame over
+`ceil(output_rate / 1000)` output frames (one millisecond, rounded up), ending at
+zero. This is an explicit native starvation fallback, not reconstructed library audio.
+Envelope and expression processing continue normally; voice DSP receives the fade.
+Natural envelope/choke completion can shorten the fallback. The cursor keeps
+advancing in musical time while the voice waits silently, and it keeps demanding the
+window at its current position. When that window is resident again the source fades
+back in over the same millisecond, in time; delayed samples are never replayed. A
+waiting voice that reaches its source end finishes normally. When the voice pool is
+full, a new start reclaims a started voice that is waiting before it is rejected;
+rejected starts count in `Runtime::stats().voice_drops`. Host key pairing remains until real note-off; bus
 tails retain their separate ownership. A first-read miss after a delayed admission
 has no prior source value and fades zero. Immediate not-ready onsets remain rejected
 before source admission and emit no fallback.

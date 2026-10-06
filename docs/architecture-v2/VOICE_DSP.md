@@ -70,9 +70,13 @@ immediately. A finite choke fades the complete chain output, preserving the curr
 fade level if shortened, and can never extend an existing choke or shorter tail.
 
 Double-precision subnormal state and subnormal f32 output are zeroed locally; no
-thread-wide floating-point environment is changed. Nonfinite/unrepresentable output
-or poisoned processor state clears that voice's chain state, suppresses the affected
-frame and increments the existing fault counter. Other voices keep their state.
+thread-wide floating-point environment is changed. Chains run in blocks of up to 64
+frames. Nonfinite/unrepresentable output or poisoned processor state in a block clears
+that voice's chain state, suppresses the voice's whole block and increments the fault
+counter once. Other voices keep their state. Consecutive voices (slot order) running
+the same delay-free chain process each stage together in f64 lanes, eight stereo
+voices at a time, with the scalar operation order, so output is bit-identical to
+rendering each voice alone.
 This fault counter remains observable; overflow is not silently clipped to full scale.
 
 ## Evidence

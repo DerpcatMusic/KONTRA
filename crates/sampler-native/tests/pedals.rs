@@ -72,6 +72,11 @@ struct Setup {
     instrument: &'static str,
     keys: (u8, u8),
     scripts: bool,
+    /// The instrument's scripts own the pedals and its note lifetimes
+    /// (NO_SYS_SCRIPT_PEDAL): they ignore the host notes and play their own.
+    /// Per-note gates are then asserted on those generated notes and on what
+    /// is audible, not on the silent host note.
+    owned: bool,
     port: Port,
     voices: usize,
     block: usize,
@@ -84,6 +89,7 @@ impl Setup {
             instrument,
             keys,
             scripts: true,
+            owned: false,
             port: Port::Channel,
             voices: 1024,
             block: BLOCK,
@@ -106,8 +112,20 @@ struct Played {
     release_trigger: Option<Trigger>,
 }
 
+/// A note a script generated: observed each block while it lives.
+#[derive(Debug)]
+struct Gen {
+    id: Option<NoteId>,
+    key: u8,
+    admitted: u64,
+    key_at: Option<u64>,
+    gate_at: Option<u64>,
+}
+
 #[derive(Debug)]
 struct Run {
+    gens: Vec<Gen>,
+    owned: bool,
     out: Vec<[f32; 2]>,
     played: Vec<Played>,
     /// Message, frame and outcome for everything not Started/Released/Pedal.
@@ -149,20 +167,7 @@ impl Run {
 }
 
 fn limits(plan: &sampler_core::Prepared, voices: usize) -> Limits {
-    Limits {
-        notes: 64,
-        channels: 16,
-        performances: 1,
-        expressions: 64,
-        families: 256,
-        decisions: 256,
-        voices,
-        commands: 256,
-        behaviors: 16,
-        behavior_fuel: 1 << 20,
-        behavior_cells: plan.behavior_local_count().saturating_mul(16),
-        note_cells: plan.note_cell_count().saturating_mul(64),
-    }
+    Limits::for_plan(plan, 64, voices)
 }
 
 /// `sampler_kontakt::load` with the instrument's scripts replaced by `source`.
@@ -261,6 +266,8 @@ fn play(setup: Setup, events: &[(f64, Msg)]) -> Option<Run> {
     let end = last_event + at(TAIL);
 
     let mut run = Run {
+        gens: Vec::new(),
+        owned: setup.owned && setup.scripts && setup.script.is_none(),
         out: Vec::new(),
         played: Vec::new(),
         other: Vec::new(),
@@ -346,6 +353,33 @@ fn play(setup: Setup, events: &[(f64, Msg)]) -> Option<Run> {
                 played.fired.push(begin);
             }
         }
+        for note in &mut run.gens {
+            let Some(id) = note.id else { continue };
+            match rt.release_context(id) {
+                Ok(context) => {
+                    note.key_at = context.key.map(|k| k.at);
+                    note.gate_at = context.gate.map(|g| g.at);
+                }
+                Err(_) => note.id = None,
+            }
+        }
+        for id in rt.live_notes().collect::<Vec<_>>() {
+            if run.played.iter().any(|p| p.id == Some(id))
+                || run.gens.iter().any(|g| g.id == Some(id))
+            {
+                continue;
+            }
+            let (Ok(context), Ok((key, ..))) = (rt.release_context(id), rt.note(id)) else {
+                continue;
+            };
+            run.gens.push(Gen {
+                id: Some(id),
+                key,
+                admitted: context.admitted_at,
+                key_at: context.key.map(|k| k.at),
+                gate_at: context.gate.map(|g| g.at),
+            });
+        }
         rt.flush_behaviors(|_, _, outcome| {
             if !matches!(outcome, Outcome::Finished | Outcome::Cancelled) {
                 run.script_outcomes.push(format!("{outcome:?}"));
@@ -390,6 +424,12 @@ fn sane(run: &Run, name: &str) {
                 .iter()
                 .filter(|p| p.id.is_some())
                 .map(|p| (p.key, p.channel, p.on, p.key_at, p.gate_at))
+                .chain(
+                    run.gens
+                        .iter()
+                        .filter(|g| g.id.is_some())
+                        .map(|g| (g.key, 255, g.admitted as usize, g.key_at, g.gate_at))
+                )
                 .collect::<Vec<_>>()
         )
     });
@@ -402,8 +442,9 @@ fn sane(run: &Run, name: &str) {
             "{name}: note {} never saw key-up",
             p.key
         );
+        // An owned note's host copy is silent and retires with its children.
         assert!(
-            p.gate_at.is_some(),
+            run.owned || p.gate_at.is_some(),
             "{name}: note {} gate never closed",
             p.key
         );
@@ -442,6 +483,9 @@ fn expected_release(p: &Played) -> usize {
 }
 
 fn assert_gate(run: &Run, name: &str, key: u8, nth: usize, key_up: f64, gate: f64) {
+    if run.owned {
+        return assert_audible(run, name, key, nth, key_up, gate);
+    }
     let p = run.note(key, nth);
     assert_eq!(
         (p.key_at, p.gate_at),
@@ -453,6 +497,40 @@ fn assert_gate(run: &Run, name: &str, key: u8, nth: usize, key_up: f64, gate: f6
             p.fired,
             [expected_release(p) / run.block * run.block],
             "{name}: note {key}#{nth} release trigger timing"
+        );
+    }
+}
+
+/// What a script-owned instrument must do for a press: a note it generated for
+/// that press lets go when the native core would have closed the gate (it
+/// implements the pedal itself), and the sound lasts until then.
+fn assert_audible(run: &Run, name: &str, key: u8, nth: usize, key_up: f64, gate: f64) {
+    let p = run.note(key, nth);
+    let next = run
+        .played
+        .iter()
+        .filter(|q| q.key == key)
+        .nth(nth + 1)
+        .map_or(usize::MAX, |q| q.on);
+    let (key_up, gate) = (at(key_up), at(gate));
+    let gates: Vec<_> = run
+        .gens
+        .iter()
+        .filter(|g| g.key == key && g.admitted as usize >= p.on && (g.admitted as usize) < next)
+        .map(|g| g.gate_at)
+        .collect();
+    let tolerance = 4 * run.block;
+    assert!(
+        gates
+            .iter()
+            .flatten()
+            .any(|&g| (g as usize).abs_diff(gate) <= tolerance),
+        "{name}: note {key}#{nth}: no generated note released near frame {gate}; gates {gates:?}"
+    );
+    if gate > key_up + at(0.1) {
+        assert!(
+            run.energy(key_up + at(0.02), gate - at(0.01)) > 0.0,
+            "{name}: note {key}#{nth}: silent between key-up and {gate}"
         );
     }
 }
@@ -696,10 +774,12 @@ fn channel_mode(setup: Setup) {
     assert_gate(&run, name, a, 0, 0.2, 0.4);
     assert_gate(&run, name, b, 0, 0.3, 0.4);
     let p = run.note(c, 0);
-    assert_eq!(
-        (p.key_at, p.gate_at),
-        (Some(at(1.0) as u64), Some(at(0.9) as u64))
-    );
+    if !run.owned {
+        assert_eq!(
+            (p.key_at, p.gate_at),
+            (Some(at(1.0) as u64), Some(at(0.9) as u64))
+        );
+    }
     assert!(
         p.fired.is_empty(),
         "{name}: release phase after All Sound Off"
@@ -942,6 +1022,7 @@ fn determinism(setup: Setup) {
     );
     let Some(unbound) = sustain_run(Setup {
         scripts: false,
+        owned: false,
         ..setup
     }) else {
         return;
@@ -977,7 +1058,7 @@ mod una_corda_pure {
     // not apply to the silent host notes. Script-driven pedal behaviour is
     // the sampler-ksp suite's; these scenarios exercise the native layers.
     const SETUP: Setup = Setup {
-        scripts: false,
+        owned: true,
         ..Setup::new(UNA_CORDA, (60, 67))
     };
 
@@ -1006,7 +1087,7 @@ mod vista_3_cellos {
     // search(%KEY_DOWN, 1), which sampler-ksp does not maintain yet (reads 0,
     // -1): bound, it never plays. Exercise the native release-trigger path.
     const SETUP: Setup = Setup {
-        scripts: false,
+        owned: true,
         ..Setup::new(CELLOS, (48, 55))
     };
 
@@ -1016,14 +1097,12 @@ mod vista_3_cellos {
             return;
         };
         record("Vista 3 Cellos", &plain);
-        // Kontakt release-trigger groups lower to GateRelease: one release
-        // phase per released key, when the pedal lets the note go, not at
-        // key-up (Kontakt's system pedal script holds the note-off).
+        // The script sets NO_SYS_SCRIPT_RLS_TRIG (line 20): it, not the
+        // engine, plays the release samples, so the native Kontakt
+        // release-trigger groups (GateRelease zones) never fire.
         assert!(plain.release_zones);
         for p in &plain.played {
-            assert_eq!(p.release_trigger, Some(Trigger::GateRelease));
-            assert!(p.key_at < p.gate_at);
-            assert_eq!(p.fired, [block_of(p.gate_at.unwrap() as usize)]);
+            assert!(p.fired.is_empty(), "native release fired at {:?}", p.fired);
         }
         assert!(plain.peak() < 1.5, "peak {}", plain.peak());
     }
@@ -1043,7 +1122,7 @@ mod analog_strings {
     // yet): exercise the native layers.
     const SETUP: Setup = Setup {
         voices: 4096,
-        scripts: false,
+        owned: true,
         ..Setup::new(ANALOG, (60, 67))
     };
 

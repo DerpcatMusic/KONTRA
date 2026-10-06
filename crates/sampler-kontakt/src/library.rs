@@ -4,16 +4,12 @@
 //! in [`ir::Instrument::unsupported`] with its source location.
 
 use crate::{LoadError, Samples};
-use ni_file::{
-    NIFile,
-    kontakt::{
-        KontaktChunks, StructuredObject,
-        objects::{
-            BParScript, ExternalModArray32, FNTableImpl, FileNameListPreK51, Group, GroupList,
-            InternalModArray16, LoopArray, ModSource, Modulator, Program,
-        },
+use ni_file::kontakt::{
+    StructuredObject,
+    objects::{
+        BParScript, ExternalModArray32, FNTableImpl, FileNameListPreK51, Group, GroupList,
+        InternalModArray16, LoopArray, ModSource, Modulator, Program,
     },
-    nis::schema::{NISObject, PresetChunkItem, Repository},
 };
 use sampler_ir as ir;
 use std::{
@@ -44,7 +40,7 @@ pub struct Kontakt {
 /// and reported; a malformed container or zone table is an error.
 pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
     let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
-    let chunks = chunks(&path)?;
+    let chunks = crate::read_chunks(&path)?;
     let invalid = |reason: &str| LoadError::Invalid {
         path: path.clone(),
         reason: reason.into(),
@@ -56,24 +52,70 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
             .ok_or_else(|| invalid("not a single-instrument preset"))?,
     )
     .map_err(|e| decode("program", e))?;
-    let params = program
-        .params()
-        .map_err(|e| decode("program parameters", e))?;
-    let table = match chunks.find_first(FILE_TABLE) {
+    let (table, others) = match chunks.find_first(FILE_TABLE) {
         Some(chunk) => {
-            FNTableImpl::try_from(chunk)
-                .map_err(|e| decode("sample file table", e))?
-                .sample_filetable
+            let t = FNTableImpl::try_from(chunk).map_err(|e| decode("sample file table", e))?;
+            (t.sample_filetable, t.other_filetable)
         }
         None => {
             let chunk = chunks
                 .find_first(LEGACY_FILE_TABLE)
                 .ok_or_else(|| invalid("missing sample file table"))?;
-            FileNameListPreK51::try_from(chunk)
-                .map_err(|e| decode("legacy file table", e))?
-                .sample_filetable
+            let t =
+                FileNameListPreK51::try_from(chunk).map_err(|e| decode("legacy file table", e))?;
+            (t.sample_filetable, t.other_filetable)
         }
     };
+    translate(path, program, table, others)
+}
+
+/// Translate program `index` (0-based, in slot order) of the multi at `path`;
+/// the programs of a `.nkm` are the instruments of a rack.
+pub fn read_program(path: &Path, index: usize) -> Result<Kontakt, LoadError> {
+    use ni_file::kontakt::objects::Bank;
+    let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
+    let chunks = crate::read_chunks(&path)?;
+    let invalid = |reason: &str| LoadError::Invalid {
+        path: path.clone(),
+        reason: reason.into(),
+    };
+    let decode = |what, error| LoadError::decode(&path, what, error);
+    let bank = Bank::try_from(chunks.find_first(3).ok_or_else(|| invalid("missing multi bank"))?)
+        .map_err(|e| decode("multi bank", e))?;
+    let mut slots: Vec<_> = bank.slot_list().map_err(|e| decode("multi slots", e))?.slots.into_iter().collect();
+    slots.sort_by_key(|(slot, _)| *slot);
+    let mut programs = Vec::new();
+    for (_, container) in slots {
+        programs.extend(container.program_list().map_err(|e| decode("multi programs", e))?.programs);
+    }
+    let program = programs.into_iter().nth(index).ok_or_else(|| invalid("the multi has no such program"))?;
+    let (table, others) = match chunks.filename_tables().map_err(|e| decode("multi file table", e))? {
+        Some(t) => (t.sample_filetable, t.other_filetable),
+        None => (
+            chunks
+                .filename_table()
+                .ok_or_else(|| invalid("missing multi sample table"))?
+                .map_err(|e| decode("multi file table", e))?,
+            Default::default(),
+        ),
+    };
+    translate(path, program, table, others)
+}
+
+fn translate(
+    path: PathBuf,
+    program: Program,
+    table: HashMap<u32, String>,
+    others: HashMap<u32, String>,
+) -> Result<Kontakt, LoadError> {
+    let invalid = |reason: &str| LoadError::Invalid {
+        path: path.clone(),
+        reason: reason.into(),
+    };
+    let decode = |what, error| LoadError::decode(&path, what, error);
+    let params = program
+        .params()
+        .map_err(|e| decode("program parameters", e))?;
     let mut out = Translation {
         ir: ir::Instrument {
             name: params.name.clone(),
@@ -158,6 +200,31 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
         .find(|p| p.join("Samples").is_dir())
         .unwrap_or(parent);
     let mut samples = Samples::new(root);
+    let racks = crate::effects::program_racks(&program);
+    {
+        // Convolution impulse responses are named by the other-files table.
+        let mut load = |index: i32| -> Result<crate::effects::Decoded, String> {
+            let name = u32::try_from(index)
+                .ok()
+                .and_then(|i| others.get(&i))
+                .ok_or_else(|| format!("index {index} is not in the file table"))?;
+            let at = samples
+                .resolve(parent, name)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("{name} was not found"))?;
+            let decoded = samples.decode(&at).map_err(|e| e.to_string())?;
+            Ok((decoded.rate, decoded.frames))
+        };
+        for (at, (slot, feature, value, reason)) in
+            crate::effects::instrument_buses(&mut out.ir, &racks, &mut load)
+        {
+            out.unsupported(&format!("{at} slot {slot}"), &feature, value, reason);
+        }
+    }
+    // Bus racks are not modelled yet.
+    for (at, slots) in racks.into_iter().filter(|(at, _)| at.starts_with("bus")) {
+        out.effects(&at, slots);
+    }
     let mut resolved = HashMap::new();
     let data = &program
         .0
@@ -222,83 +289,6 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
     })
 }
 
-/// The Kontakt chunk stream inside an NKS or NIS (Kontakt 5+) container.
-fn chunks(path: &Path) -> Result<KontaktChunks, LoadError> {
-    let decode = |what, error| LoadError::decode(path, what, error);
-    let mut file = std::fs::File::open(path).map_err(|e| LoadError::io(path, e))?;
-    if file.metadata().map_err(|e| LoadError::io(path, e))?.len() > 128 << 20 {
-        return Err(LoadError::Invalid {
-            path: path.into(),
-            reason: "instrument exceeds 128 MiB".into(),
-        });
-    }
-    let bytes = match NIFile::read(&mut file).map_err(|e| decode("container", e))? {
-        NIFile::NKSContainer(nks) => nks
-            .decompressed_preset()
-            .map_err(|e| decode("NKS preset", e))?,
-        NIFile::NISoundContainer(nis) => nis_payload(nis, path, 0)?,
-        _ => {
-            return Err(LoadError::Invalid {
-                path: path.into(),
-                reason: "not an instrument container".into(),
-            });
-        }
-    };
-    KontaktChunks::read(Cursor::new(bytes)).map_err(|e| decode("Kontakt chunks", e))
-}
-
-fn nis_payload(
-    container: ni_file::nis::ItemContainer,
-    path: &Path,
-    depth: usize,
-) -> Result<Vec<u8>, LoadError> {
-    let decode = |what, error| LoadError::decode(path, what, error);
-    if depth > 3 {
-        return Err(LoadError::Invalid {
-            path: path.into(),
-            reason: "too many nested NIS wrappers".into(),
-        });
-    }
-    if let Some(data) = container.find_data(&ni_file::nis::ItemType::AppSpecific) {
-        let app = ni_file::nis::AppSpecificProperties::try_from(data)
-            .map_err(|e| decode("NIS app wrapper", e))?;
-        return nis_payload(
-            app.subtree_item
-                .item()
-                .map_err(|e| decode("NIS subtree", e))?,
-            path,
-            depth + 1,
-        );
-    }
-    let NISObject::BNISoundPreset(preset) = Repository::from(container).infer_schema() else {
-        return Err(LoadError::Invalid {
-            path: path.into(),
-            reason: "unsupported NIS preset structure".into(),
-        });
-    };
-    let key = match preset.is_encrypted().map_err(|e| decode("NIS preset", e))? {
-        true => Some(
-            crate::library_key(path).map_err(|reason| LoadError::Access {
-                path: path.into(),
-                reason,
-            })?,
-        ),
-        false => None,
-    };
-    let item = preset
-        .encryption_item_with_key(key.as_deref())
-        .map_err(|e| decode("NIS preset subtree", e))?;
-    let chunk = PresetChunkItem::from(
-        item.subtree
-            .item()
-            .map_err(|e| decode("NIS preset subtree", e))?,
-    );
-    Ok(chunk
-        .properties()
-        .map_err(|e| decode("NIS preset chunk", e))?
-        .0)
-}
-
 /// Group settings every zone of the group inherits.
 struct GroupInfo {
     index: usize,
@@ -310,6 +300,8 @@ struct GroupInfo {
     velocity: ir::VelocityResponse,
     /// Modulation routes every zone of the group carries.
     routes: Vec<ir::RouteRef>,
+    /// Its insert rack as a voice chain.
+    chain: Option<ir::ChainRef>,
 }
 
 struct Translation {
@@ -440,6 +432,25 @@ impl Translation {
         });
     }
 
+    /// Report a rack's active effects (none are modelled yet).
+    fn effects(&mut self, at: &str, slots: Vec<crate::effects::Slot>) {
+        for fx in slots.iter().filter(|fx| !fx.bypass) {
+            self.unsupported(
+                &format!("{at} slot {}", fx.slot),
+                "effect",
+                format!(
+                    "{} v{:#x} {:?} wet {} dry {}",
+                    crate::effects::module_name(fx.module),
+                    fx.version,
+                    fx.params(),
+                    fx.output_gain,
+                    fx.dry_level
+                ),
+                ir::Reason::NotModeled,
+            );
+        }
+    }
+
     /// A group's settings, or `None` for a muted group.
     fn group(&mut self, index: usize, group: &Group) -> Result<Option<GroupInfo>, ni_file::Error> {
         let v = group.params()?;
@@ -484,19 +495,21 @@ impl Translation {
             Ok(_) => {}
             Err(error) => self.unsupported(&at, "source module", error, ir::Reason::Unknown),
         }
-        if let Ok(fx) = group.insert_fx().and_then(|fx| fx.fx_items()) {
-            for (slot, fx) in fx.iter().enumerate() {
-                if let Ok(params) = fx.params()
-                    && !params.bypass
-                {
-                    let kind = fx.effect().map_or(0, |c| c.id);
-                    self.unsupported(
-                        &format!("{at} insert slot {slot}"),
-                        "insert effect (serialization type)",
-                        format!("{kind:#x}"),
-                        not_modeled,
-                    );
-                }
+        let mut chain = None;
+        if let Ok(array) = group.insert_fx() {
+            let c =
+                crate::effects::chain(&crate::effects::rack(&array), crate::effects::Scope::Voice);
+            let processors = c.processors;
+            for (slot, feature, value, reason) in c.notes {
+                self.unsupported(&format!("{at} insert slot {slot}"), &feature, value, reason);
+            }
+            if !processors.is_empty() {
+                self.ir.chains.push(ir::Chain {
+                    scope: ir::Scope::Voice,
+                    pre_amplitude: processors,
+                    post_amplitude: Vec::new(),
+                });
+                chain = Some(ir::ChainRef(self.ir.chains.len() - 1));
             }
         }
         let mut envelope = None;
@@ -708,6 +721,7 @@ impl Translation {
             envelope,
             velocity,
             routes,
+            chain,
         }))
     }
 
@@ -1009,6 +1023,7 @@ impl Translation {
             },
             amplitude: group.envelope,
             routes: group.routes.clone(),
+            chain: group.chain,
             ..ir::Zone::new(asset)
         });
     }
@@ -1143,7 +1158,7 @@ mod survey {
         files.sort();
         let mut seen = std::collections::BTreeMap::<String, (usize, String)>::new();
         for f in &files {
-            let Ok(chunks) = chunks(f) else { continue };
+            let Ok(chunks) = crate::read_chunks(f) else { continue };
             let Some(program) = chunks.find_first(PROGRAM) else {
                 continue;
             };
@@ -1445,5 +1460,21 @@ mod modulation {
                 .is_none()
         );
         assert_eq!(t.ir.unsupported.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod multi_tests {
+    #[test]
+    fn a_multi_program_translates() {
+        let Ok(root) = std::env::var("KONTRA_KONTAKT_LIBRARIES") else { return };
+        let path = std::path::Path::new(&root)
+            .join("Audio Imperia CHORUS/Multis/10 Chorus - Ensemble - Traditional Syllables.nkm");
+        if !path.exists() {
+            return;
+        }
+        let k = super::read_program(&path, 0).expect("first program");
+        assert!(!k.instrument.groups.is_empty());
+        assert!(super::read_program(&path, 999).is_err());
     }
 }

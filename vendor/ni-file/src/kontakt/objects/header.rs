@@ -318,7 +318,7 @@ impl BPatchHeaderV42 {
             pcm_data_len,
             is_monolith,
             min_supported_version,
-            /// Almost always 0, 1 in Rise and Hit Library
+            // Almost always 0, 1 in Rise and Hit Library
             u_c,
             cat_icon_idx,
             instrument_author,

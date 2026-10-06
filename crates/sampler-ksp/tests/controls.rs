@@ -388,6 +388,7 @@ fn globals_are_shared_across_waiting_callbacks_while_polyphonic_values_remain_pe
     let source = "on init
         declare $shared := -2147483648
         declare $seen
+        declare $played
         $shared := 0
         declare polyphonic $owned
         declare ui_button $button
@@ -399,7 +400,7 @@ fn globals_are_shared_across_waiting_callbacks_while_polyphonic_values_remain_pe
         wait(1000)
         if ($owned = 0)
             if ($shared = 7)
-                play_note($EVENT_NOTE, 127, 0, 1000)
+                $played := play_note($EVENT_NOTE, 127, 0, 1000)
             end if
         end if
     end on
@@ -409,11 +410,14 @@ fn globals_are_shared_across_waiting_callbacks_while_polyphonic_values_remain_pe
         $seen := $shared
     end on
     on release
-        $seen := $owned
+        { Kontakt also runs this for the script's own generated note. }
+        if ($EVENT_ID # $played)
+            $seen := $owned
+        end if
     end on";
     for block in [1, 7, 64] {
         let script = compile(source, 48000, limits(), &[("$button", BUTTON)]).unwrap();
-        assert_eq!(script.global_cells(), 2);
+        assert_eq!(script.global_cells(), 3);
         assert_eq!(script.note_cells(), 1);
         let presentation = script.controls().to_vec();
         let mut rt = Runtime::new(

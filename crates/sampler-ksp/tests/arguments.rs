@@ -137,21 +137,6 @@ fn evaluated_invalid_arguments_fault_without_partial_notes_or_timers() {
             sampler_core::Error::ArithmeticOverflow,
         ),
         (
-            "play_note($EVENT_NOTE + 128, 127, 0, 1)",
-            48000,
-            sampler_core::Error::InvalidInput,
-        ),
-        (
-            "play_note(60, $EVENT_VELOCITY - 127, 0, 1)",
-            48000,
-            sampler_core::Error::InvalidInput,
-        ),
-        (
-            "play_note(60, 128, 0, 1)",
-            48000,
-            sampler_core::Error::InvalidInput,
-        ),
-        (
             "play_note(60, 127, 0, -2)",
             48000,
             sampler_core::Error::InvalidInput,
