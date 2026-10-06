@@ -287,3 +287,49 @@ fn zone_routes_lower_to_voice_modulation() {
         }
     ));
 }
+
+#[test]
+fn native_mpe_defaults_are_identity_at_rest_and_follow_pressure_and_timbre() {
+    use sampler_core::{
+        Expression,
+        lower::{Options, lower_with},
+    };
+    let ir = ir::Instrument {
+        assets: vec![asset("a")],
+        zones: vec![ir::Zone {
+            keys: ir::KeyRange { low: 60, high: 60 },
+            pitch: ir::KeyTracking::Fixed,
+            velocity: ir::VelocityResponse::None,
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
+        ..Default::default()
+    };
+    // Alternating samples: all energy at Nyquist, which the tone filter removes.
+    let nyquist = || {
+        let frames = (0..4800).map(|i| [if i % 2 == 0 { 0.25 } else { -0.25 }; 2]);
+        Pcm::new(48000, frames.collect()).unwrap()
+    };
+    let play = |options: &Options, expression: Expression| {
+        let plan = lower_with(&ir, 48000, vec![nyquist()], options, no_behaviors).unwrap();
+        let mut rt = Runtime::new(plan, limits()).unwrap();
+        rt.trigger_with_expression(input(60), 60, 1.0, expression)
+            .unwrap();
+        let mut out = [[0.0; 2]; 512];
+        rt.render(&mut out).unwrap();
+        out[256..].iter().map(|f| f[0].abs()).fold(0f32, f32::max)
+    };
+    let on = Options::default();
+    let off = Options { mpe: None };
+    let rest = Expression::default();
+    assert_eq!(play(&on, rest), 0.25);
+    assert_eq!(play(&off, rest), 0.25);
+    let pressed = Expression {
+        pressure: u32::MAX,
+        ..rest
+    };
+    assert!((play(&on, pressed) - 0.25 * 10f32.powf(6.0 / 20.0)).abs() < 1e-5);
+    assert_eq!(play(&off, pressed), 0.25);
+    let dark = Expression { timbre: 0, ..rest };
+    assert!(play(&on, dark) < 0.001, "{}", play(&on, dark));
+    assert_eq!(play(&off, dark), 0.25);
+}

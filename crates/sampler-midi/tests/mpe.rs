@@ -938,6 +938,7 @@ fn mpe_filter_destinations_follow_captured_notes_across_member_channel_reuse() {
             };
             let original = Expression {
                 pressure: u32::MAX,
+                timbre: 0,
                 ..Expression::default()
             };
             let old_reference = expected

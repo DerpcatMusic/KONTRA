@@ -141,15 +141,64 @@ fn core(stage: Stage, owner: impl Into<String>) -> impl FnOnce(Error) -> LowerEr
     }
 }
 
+/// Native per-note expression every lowered zone receives on top of its
+/// authored modulation. Pitch bend needs no route: the note's expression bend
+/// (sampler-midi's MPE member-channel bend, or a host's per-note tuning) is
+/// always native. Both laws are identity at rest (zero pressure, centre
+/// timbre), so non-MPE playing is unchanged.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MpeDefaults {
+    /// Gain boost at full pressure in decibels; 0 disables.
+    pub pressure_db: f64,
+    /// How far a per-voice low-pass closes, in semitones below fully open, as
+    /// timbre falls from centre (CC74 64) to 0; 0 disables.
+    pub timbre_semitones: f64,
+}
+
+impl Default for MpeDefaults {
+    fn default() -> Self {
+        Self {
+            pressure_db: 6.0,
+            timbre_semitones: 60.0,
+        }
+    }
+}
+
+/// Lowering choices that are not part of the instrument.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Options {
+    /// `None` leaves pressure and timbre to authored routes only.
+    pub mpe: Option<MpeDefaults>,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            mpe: Some(MpeDefaults::default()),
+        }
+    }
+}
+
+/// [`lower_with`] default [`Options`]: native MPE on every zone.
+pub fn lower(
+    instrument: &ir::Instrument,
+    rate: u32,
+    pcm: Vec<Pcm>,
+    bind_behaviors: impl FnOnce(&[ir::Behavior], Prepared) -> Result<Prepared, LowerError>,
+) -> Result<Prepared, LowerError> {
+    lower_with(instrument, rate, pcm, &Options::default(), bind_behaviors)
+}
+
 /// Lower `instrument` for output at `rate`. `pcm[i]` is the decoded audio of
 /// `instrument.assets[i]`. `bind_behaviors` receives every behavior module and
 /// the plan built so far; it compiles them with its language frontend (for
 /// KSP, `sampler_ksp`) and returns the bound plan. It is not called when the
 /// instrument has no behaviors.
-pub fn lower(
+pub fn lower_with(
     instrument: &ir::Instrument,
     rate: u32,
     pcm: Vec<Pcm>,
+    options: &Options,
     bind_behaviors: impl FnOnce(&[ir::Behavior], Prepared) -> Result<Prepared, LowerError>,
 ) -> Result<Prepared, LowerError> {
     instrument.validate().map_err(LowerError::Invalid)?;
@@ -166,6 +215,9 @@ pub fn lower(
         ir: instrument,
         rate,
         pcm: &pcm,
+        mpe: options
+            .mpe
+            .filter(|m| m.pressure_db != 0.0 || m.timbre_semitones != 0.0),
     };
     let mut regions = Vec::with_capacity(instrument.zones.len());
     let mut chains = Vec::new();
@@ -228,6 +280,7 @@ struct Lowering<'a> {
     ir: &'a ir::Instrument,
     rate: u32,
     pcm: &'a [Pcm],
+    mpe: Option<MpeDefaults>,
 }
 
 impl Lowering<'_> {
@@ -391,14 +444,14 @@ impl Lowering<'_> {
 
     /// One voice modulation program per distinct zone route list.
     fn modulation(&self, plan: Prepared) -> Result<Prepared, LowerError> {
-        if self.ir.zones.iter().all(|z| z.routes.is_empty()) {
+        if self.mpe.is_none() && self.ir.zones.iter().all(|z| z.routes.is_empty()) {
             return Ok(plan);
         }
         let mut programs: Vec<ModProgram> = Vec::new();
         let mut known = std::collections::HashMap::new();
         let mut bindings = Vec::with_capacity(self.ir.zones.len());
         for (i, zone) in self.ir.zones.iter().enumerate() {
-            if zone.routes.is_empty() {
+            if self.mpe.is_none() && zone.routes.is_empty() {
                 bindings.push(None);
                 continue;
             }
@@ -493,6 +546,31 @@ impl Lowering<'_> {
                 shape,
                 lag: self.frames(route.smoothing),
             });
+        }
+        if let Some(mpe) = self.mpe {
+            if mpe.pressure_db != 0.0 {
+                program.sources.push(ModSource::Pressure);
+                program.routes.push(ModRoute::new(
+                    program.sources.len() - 1,
+                    ModTarget::Decibels,
+                    mpe.pressure_db,
+                ));
+            }
+            if mpe.timbre_semitones != 0.0 {
+                // -1 at timbre 0, 0 from centre up: only darker than centre.
+                program
+                    .shapes
+                    .push(vec![(0.0, -1.0), (0.5, 0.0), (1.0, 0.0)]);
+                program.sources.push(ModSource::Timbre);
+                program.routes.push(ModRoute {
+                    shape: Some(program.shapes.len() - 1),
+                    ..ModRoute::new(
+                        program.sources.len() - 1,
+                        ModTarget::Tone,
+                        mpe.timbre_semitones,
+                    )
+                });
+            }
         }
         Ok(program)
     }
