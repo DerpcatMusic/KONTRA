@@ -232,6 +232,48 @@ impl Limits {
     /// library scripts: all but two finish every callback within it; the
     /// other two need up to five blocks.
     pub const DEFAULT_BEHAVIOR_FUEL: usize = 10_000;
+
+    /// Keys a part's scripts are sized to run at once (chords, pedalled runs).
+    pub const SCRIPT_KEYS: usize = 32;
+    /// Cap on script callback state per part: 4M cells, 32 MB.
+    pub const SCRIPT_CELLS: usize = 1 << 22;
+
+    /// Script callbacks a plan can have running at once: each note of
+    /// [`Self::SCRIPT_KEYS`] keys runs a release callback in every stage and
+    /// notes the scripts play pass the later stages too (about four per
+    /// stage), plus one listener per stage; within [`Self::SCRIPT_CELLS`].
+    /// 16 for a plan without stages.
+    pub fn script_capacity(plan: &Prepared) -> usize {
+        let stages = plan.stage_count();
+        if stages == 0 {
+            return 16;
+        }
+        let wanted = (4 * stages * Self::SCRIPT_KEYS + stages).clamp(16, 4096);
+        wanted
+            .min(Self::SCRIPT_CELLS / plan.behavior_local_count().max(1))
+            .max(16)
+    }
+
+    /// Capacities for playing `plan`: `notes` held at once and `voices`,
+    /// with script state sized by [`Self::script_capacity`]. Hosts and test
+    /// harnesses share this so a plan that plays in one plays in the other.
+    pub fn for_plan(plan: &Prepared, notes: usize, voices: usize) -> Self {
+        let behaviors = Self::script_capacity(plan);
+        Self {
+            notes,
+            channels: 16,
+            performances: 1,
+            families: 256,
+            decisions: 256,
+            expressions: notes,
+            voices,
+            commands: 256,
+            behaviors,
+            behavior_fuel: 1 << 20,
+            behavior_cells: plan.behavior_local_count().saturating_mul(behaviors),
+            note_cells: plan.note_cell_count().saturating_mul(notes),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
