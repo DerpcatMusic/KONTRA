@@ -11,7 +11,7 @@ struct Selection {
     address: crate::ChannelAddress,
     trigger: Trigger,
     snapshot: usize,
-    groups: Option<(usize, usize, bool)>,
+    groups: Option<(usize, crate::groups::GroupView)>,
 }
 
 impl Runtime {
@@ -137,7 +137,7 @@ impl Runtime {
         note_pitch: NotePitch,
         velocity: f64,
         offset_micros: u32,
-        source_stage: Option<usize>,
+        source_stage: Option<crate::behavior::NoteStage>,
     ) -> Result<NoteId, Error> {
         self.apply_due();
         if !note_pitch.valid() || !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
@@ -150,7 +150,7 @@ impl Runtime {
                 self.notes.get(parent.0).ok_or(Error::StaleHandle)?.plan
             }
         };
-        let entry = source_stage.map_or(0, |stage| stage + 1);
+        let entry = source_stage.map_or(0, |stage| stage.index() + 1);
         let prepared = &self.plans.get(plan.0).unwrap().prepared;
         let routed =
             source_stage.is_some() && prepared.stages[entry..].iter().any(|s| s.note.is_some());
@@ -201,9 +201,11 @@ impl Runtime {
                     snapshot,
                     groups: match origin {
                         NoteOrigin::Input(..) | NoteOrigin::Generated(..) => None,
-                        NoteOrigin::Child(parent, ..) => {
-                            Some((parent.0.index, source_stage.unwrap_or(0), false))
-                        }
+                        NoteOrigin::Child(parent, ..) => Some((
+                            parent.0.index,
+                            source_stage
+                                .map_or(crate::groups::GroupView::Note(0), |stage| stage.groups()),
+                        )),
                     },
                 },
                 pitch,
@@ -224,7 +226,7 @@ impl Runtime {
         };
         let event = &mut self.note_events[note.0.index];
         event.source_offset_micros = offset_micros;
-        let origin_stage = source_stage.unwrap_or(0);
+        let origin_stage = source_stage.map_or(0, |stage| stage.index());
         event.entry = origin_stage;
         let generation = self.plans.get_mut(plan.0).unwrap();
         generation.projections.admit(
@@ -239,7 +241,10 @@ impl Runtime {
             note.0.index,
             origin_stage,
             match origin {
-                NoteOrigin::Child(parent, ..) => Some((parent.0.index, source_stage.unwrap_or(0))),
+                NoteOrigin::Child(parent, ..) => Some((
+                    parent.0.index,
+                    source_stage.map_or(crate::groups::GroupView::Note(0), |stage| stage.groups()),
+                )),
                 _ => None,
             },
         );
@@ -297,7 +302,7 @@ impl Runtime {
             address: n.address,
             trigger: Trigger::Attack,
             snapshot,
-            groups: Some((note.0.index, stage, false)),
+            groups: Some((note.0.index, crate::groups::GroupView::Note(stage))),
         };
         let pitch = self.pitch_range(n.expression, true)?;
         let release = self.preflight_attack(selection, pitch)?;
@@ -440,13 +445,7 @@ impl Runtime {
         let generation = self.plans.get(plan.0).unwrap();
         let prepared = &generation.prepared;
         let range = prepared.range(key, trigger);
-        let groups = groups.map(|(index, stage, committed)| {
-            if committed {
-                generation.groups.view(index, true)
-            } else {
-                generation.groups.view_at(index, stage)
-            }
-        });
+        let groups = groups.map(|(index, view)| generation.groups.view(index, view));
         let mut required = ReleaseReserve::default();
         let mut from = range.start;
         while from < range.end {
@@ -499,7 +498,11 @@ impl Runtime {
             let state = &self.performance_state.states[snapshot];
             let ranges = prepared.active_ranges(from..until, state.articulation);
             let mut matching = super::Matching::new(ranges);
-            let groups = Some(generation.groups.view(note.0.index, true));
+            let groups = Some(
+                generation
+                    .groups
+                    .view(note.0.index, crate::groups::GroupView::Committed),
+            );
             let mut first = matching.next_in_groups(prepared, state, velocity, groups);
             let choice = prepared
                 .choose(first, address, key, &generation.sequences)
@@ -509,7 +512,11 @@ impl Runtime {
             loop {
                 let generation = self.plans.get(plan.0).unwrap();
                 let prepared = &generation.prepared;
-                let groups = Some(generation.groups.view(note.0.index, true));
+                let groups = Some(
+                    generation
+                        .groups
+                        .view(note.0.index, crate::groups::GroupView::Committed),
+                );
                 let state = &self.performance_state.states[snapshot];
                 let Some(candidate) = first
                     .take()
@@ -605,7 +612,7 @@ impl Runtime {
                         address,
                         trigger,
                         snapshot,
-                        groups: Some((note.0.index, 0, true)),
+                        groups: Some((note.0.index, crate::groups::GroupView::Committed)),
                     },
                     pitch,
                 )

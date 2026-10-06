@@ -498,13 +498,32 @@ impl BehaviorOwner {
     }
 }
 #[derive(Clone, Copy, Debug)]
+pub(super) enum NoteStage {
+    Attack(usize),
+    Release(usize),
+}
+impl NoteStage {
+    pub fn index(self) -> usize {
+        match self {
+            Self::Attack(stage) | Self::Release(stage) => stage,
+        }
+    }
+    pub fn groups(self) -> super::groups::GroupView {
+        match self {
+            Self::Attack(stage) => super::groups::GroupView::Note(stage),
+            Self::Release(stage) => super::groups::GroupView::Release(stage),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub(super) struct Continuation {
     pub owner: BehaviorOwner,
     pub program: usize,
     pub pc: usize,
     pub outcome: Option<Outcome>,
     pub controller: Option<super::controller_event::ControllerEvent>,
-    pub note_stage: Option<usize>,
+    pub note_stage: Option<NoteStage>,
 }
 
 #[derive(Clone, Copy)]
@@ -530,7 +549,7 @@ impl Runtime {
         &mut self,
         note: NoteId,
         program: usize,
-        note_stage: Option<usize>,
+        note_stage: Option<NoteStage>,
     ) -> Result<BehaviorId, Error> {
         let n = self.notes.get_mut(note.0).ok_or(Error::StaleHandle)?;
         let plan = &self.plans.get(n.plan.0).unwrap().prepared;
@@ -633,6 +652,7 @@ impl Runtime {
     pub(super) fn behavior_stage(&self, id: BehaviorId) -> Result<usize, Error> {
         let c = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
         Ok(c.note_stage
+            .map(|stage| stage.index())
             .or(c.controller.map(|e| e.stage))
             .unwrap_or_else(|| match c.owner {
                 BehaviorOwner::Note(note) => self.note_events[note.0.index].entry,
@@ -662,7 +682,13 @@ impl Runtime {
             let program = self.plans.get(plan.0).unwrap().prepared.stages[0]
                 .release
                 .unwrap();
-            self.start_note_context(note, program, Some(0))
+            self.plans
+                .get_mut(plan.0)
+                .unwrap()
+                .groups
+                .begin_release(note.0.index, 0);
+            self.release_times[note.0.index].release_stage = Some(0);
+            self.start_note_context(note, program, Some(NoteStage::Release(0)))
                 .expect("owned release continuation reservation");
         }
     }
@@ -863,7 +889,7 @@ impl Runtime {
             Instruction::ForwardAttack => {
                 let note = owner.note()?;
                 if let Some(stage) = self.behaviors.get(id.0).unwrap().note_stage {
-                    self.forward_note_stage(note, stage)?;
+                    self.forward_note_stage(note, stage.index())?;
                 } else {
                     self.forward_attack(note)?;
                 }
@@ -880,7 +906,7 @@ impl Runtime {
                         .get(self.notes.get(note.0).unwrap().plan.0)
                         .unwrap()
                         .projections
-                        .get(note.0.index, stage)
+                        .get(note.0.index, stage.index())
                         .unwrap()
                         .forwarded
                 }) {
@@ -902,7 +928,7 @@ impl Runtime {
                         .get(self.notes.get(note.0).unwrap().plan.0)
                         .unwrap()
                         .projections
-                        .get(note.0.index, stage)?
+                        .get(note.0.index, stage.index())?
                         .forwarded
                 } else {
                     self.notes.get(note.0).ok_or(Error::StaleHandle)?.attack
@@ -915,7 +941,11 @@ impl Runtime {
                                 .map_err(|_| Error::InvalidInput)
                         })
                         .transpose()?;
-                    self.set_note_group_at(note, self.behavior_stage(id)?, group, allowed)?;
+                    let view = self.behaviors.get(id.0).unwrap().note_stage.map_or(
+                        super::groups::GroupView::Note(self.behavior_stage(id)?),
+                        |stage| stage.groups(),
+                    );
+                    self.set_group_view(note, view, group, allowed)?;
                 }
             }
             Instruction::ReadGroupCount { local } => {
@@ -1213,7 +1243,9 @@ impl Runtime {
         }
         let linked = matches!(duration, Duration::Gate | Duration::FramesOrGate(_));
         let callback = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
-        let source_stage = callback.note_stage.or(callback.controller.map(|e| e.stage));
+        let source_stage = callback
+            .note_stage
+            .or(callback.controller.map(|e| NoteStage::Attack(e.stage)));
         let origin = match callback.owner {
             BehaviorOwner::Note(note) => super::NoteOrigin::Child(note, linked, inheritance),
             BehaviorOwner::Plan(plan) => {

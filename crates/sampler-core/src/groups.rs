@@ -20,6 +20,13 @@ impl Prepared {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum GroupView {
+    Note(usize),
+    Release(usize),
+    Committed,
+}
+
 pub(super) struct GroupState {
     words: usize,
     stages: usize,
@@ -34,7 +41,12 @@ impl GroupState {
             .div_ceil(64);
         let stages = stages.checked_add(1).ok_or(Error::Capacity)?;
         let len = words
-            .checked_mul(stages.checked_add(1).ok_or(Error::Capacity)?)
+            .checked_mul(
+                stages
+                    .checked_mul(2)
+                    .and_then(|n| n.checked_add(1))
+                    .ok_or(Error::Capacity)?,
+            )
             .and_then(|n| n.checked_mul(notes))
             .ok_or(Error::Capacity)?;
         let mut cells = Vec::new();
@@ -47,19 +59,25 @@ impl GroupState {
         })
     }
 
-    fn range(&self, note: usize, stage: usize) -> std::ops::Range<usize> {
-        let start = (note * (self.stages + 1) + stage) * self.words;
+    fn range(&self, note: usize, view: GroupView) -> std::ops::Range<usize> {
+        let stage = match view {
+            GroupView::Note(stage) => stage,
+            GroupView::Release(stage) => self.stages + stage,
+            GroupView::Committed => self.stages * 2,
+        };
+        let start = (note * (self.stages * 2 + 1) + stage) * self.words;
         start..start + self.words
     }
 
-    pub fn view(&self, note: usize, committed: bool) -> &[u64] {
-        &self.cells[self.range(note, if committed { self.stages } else { 0 })]
+    pub fn view(&self, note: usize, view: GroupView) -> &[u64] {
+        &self.cells[self.range(note, view)]
     }
 
     pub fn admit(&mut self, note: usize, parent: Option<usize>) {
-        let draft = self.range(note, 0);
+        let draft = self.range(note, GroupView::Note(0));
         if let Some(parent) = parent {
-            self.cells.copy_within(self.range(parent, 0), draft.start);
+            self.cells
+                .copy_within(self.range(parent, GroupView::Note(0)), draft.start);
         } else {
             self.cells[draft].fill(u64::MAX);
         }
@@ -71,11 +89,11 @@ impl GroupState {
     }
 
     pub fn view_at(&self, note: usize, stage: usize) -> &[u64] {
-        &self.cells[self.range(note, stage)]
+        &self.cells[self.range(note, GroupView::Note(stage))]
     }
 
-    pub fn inherit(&mut self, note: usize, entry: usize, parent: Option<(usize, usize)>) {
-        let target = self.range(note, entry);
+    pub fn inherit(&mut self, note: usize, entry: usize, parent: Option<(usize, GroupView)>) {
+        let target = self.range(note, GroupView::Note(entry));
         if let Some((parent, stage)) = parent {
             self.cells
                 .copy_within(self.range(parent, stage), target.start);
@@ -86,18 +104,36 @@ impl GroupState {
 
     pub fn forward(&mut self, note: usize, from: usize, through: usize) {
         for stage in from + 1..=through {
-            self.cells
-                .copy_within(self.range(note, from), self.range(note, stage).start);
+            self.cells.copy_within(
+                self.range(note, GroupView::Note(from)),
+                self.range(note, GroupView::Note(stage)).start,
+            );
         }
     }
 
     pub fn commit_at(&mut self, note: usize, stage: usize) {
-        self.cells
-            .copy_within(self.range(note, stage), self.range(note, self.stages).start);
+        self.cells.copy_within(
+            self.range(note, GroupView::Note(stage)),
+            self.range(note, GroupView::Committed).start,
+        );
     }
 
-    fn edit(&mut self, note: usize, stage: usize, group: Option<u32>, allowed: bool) {
-        let range = self.range(note, stage);
+    pub fn begin_release(&mut self, note: usize, stage: usize) {
+        self.cells.copy_within(
+            self.range(note, GroupView::Note(stage)),
+            self.range(note, GroupView::Release(stage)).start,
+        );
+    }
+
+    pub fn commit_release(&mut self, note: usize, stage: usize) {
+        self.cells.copy_within(
+            self.range(note, GroupView::Release(stage)),
+            self.range(note, GroupView::Committed).start,
+        );
+    }
+
+    pub fn edit(&mut self, note: usize, view: GroupView, group: Option<u32>, allowed: bool) {
+        let range = self.range(note, view);
         let cells = &mut self.cells[range];
         if let Some(group) = group {
             let bit = 1 << (group % 64);
@@ -123,11 +159,12 @@ impl Runtime {
         {
             return Ok(false);
         }
-        self.plans
-            .get_mut(n.plan.0)
-            .unwrap()
-            .groups
-            .commit_at(note.0.index, self.note_events[note.0.index].entry);
+        let groups = &mut self.plans.get_mut(n.plan.0).unwrap().groups;
+        if let Some(stage) = self.release_times[note.0.index].release_stage {
+            groups.commit_release(note.0.index, stage);
+        } else {
+            groups.commit_at(note.0.index, self.note_events[note.0.index].entry);
+        }
         self.release_times[note.0.index].groups_forwarded = true;
         Ok(true)
     }
@@ -152,8 +189,22 @@ impl Runtime {
         group: Option<u32>,
         allowed: bool,
     ) -> Result<(), Error> {
+        self.set_group_view(note, GroupView::Note(stage), group, allowed)
+    }
+
+    pub(super) fn set_group_view(
+        &mut self,
+        note: NoteId,
+        view: GroupView,
+        group: Option<u32>,
+        allowed: bool,
+    ) -> Result<(), Error> {
         self.apply_due();
         let plan = self.notes.get(note.0).ok_or(Error::StaleHandle)?.plan;
+        let stage = match view {
+            GroupView::Note(stage) | GroupView::Release(stage) => stage,
+            GroupView::Committed => return Err(Error::InvalidInput),
+        };
         let generation = self.plans.get_mut(plan.0).unwrap();
         if generation
             .projections
@@ -166,7 +217,7 @@ impl Runtime {
         if group.is_some_and(|group| group >= generation.prepared.group_count) {
             return Err(Error::InvalidInput);
         }
-        generation.groups.edit(note.0.index, stage, group, allowed);
+        generation.groups.edit(note.0.index, view, group, allowed);
         Ok(())
     }
 

@@ -63,6 +63,7 @@ pub(super) struct ReleaseTimes {
     pub velocity: Option<f64>,
     pub selection: [super::ReleaseStatus; 2],
     pub release_behavior: bool,
+    pub release_stage: Option<usize>,
 }
 
 pub(super) fn validate_velocity(velocity: Option<f64>) -> Result<(), Error> {

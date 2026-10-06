@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Separate release callback group drafts from waiting note callback views;
+  release-generated children inherit the release selection without overwriting
+  the original note module state.
+
 - Route native/KSP note modules with independent event and group projections,
   reserved callbacks and downstream generated notes/controllers. Waiting callbacks
   keep their module view and original plan; ordered release routing remains open.
