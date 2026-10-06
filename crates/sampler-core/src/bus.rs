@@ -9,6 +9,25 @@ pub struct BusSend {
     pub gain: f64,
 }
 
+/// How the host mixes one bus at run time, after its processors and before
+/// its sends. The first send is the bus's own output (lowering's convention);
+/// `output` redirects that send to one of the extra outputs given to
+/// [`crate::Runtime::render_split`], leaving the remaining sends in place.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BusMix {
+    /// Left and right gain: fader, pan and mute folded together.
+    pub gain: [f32; 2],
+    pub output: Option<usize>,
+}
+impl Default for BusMix {
+    fn default() -> Self {
+        Self {
+            gain: [1.0; 2],
+            output: None,
+        }
+    }
+}
+
 /// One summed-signal processing scope. Use separate nodes for pre/post-insert taps.
 /// Tails are explicit maximum zero-input durations, in output sample frames.
 pub struct Bus {
@@ -139,6 +158,7 @@ pub(super) struct BusState {
     delay_samples: Box<[[f64; 2]]>,
     pub parameters: Box<[ControlRamp]>,
     filters: crate::dsp::svf::FilterBank,
+    pub mix: Box<[BusMix]>,
 }
 impl BusState {
     pub fn new(plan: &Prepared) -> Result<Self, Error> {
@@ -148,6 +168,7 @@ impl BusState {
             delay_samples: allocate(plan.buses.delay_frames)?,
             filters: crate::dsp::svf::FilterBank::new(&plan.buses.filters, 0)?,
             parameters: crate::dsp::control::initial_parameters(plan, &plan.buses.parameters),
+            mix: vec![BusMix::default(); plan.buses.len()].into_boxed_slice(),
         })
     }
     pub fn begin(&mut self) {
@@ -172,7 +193,15 @@ impl BusState {
             buffer.remaining = 0;
         }
     }
-    pub fn render(&mut self, graph: &PreparedBuses, output: &mut [Frame], at: u64) -> u64 {
+    /// `outs` are whole-render buffers; this block starts at `offset` in them.
+    pub fn render(
+        &mut self,
+        graph: &PreparedBuses,
+        output: &mut [Frame],
+        outs: &mut [&mut [Frame]],
+        offset: usize,
+        at: u64,
+    ) -> u64 {
         let mut faults = 0;
         for &index in &graph.order {
             let node = &graph.nodes[index];
@@ -229,10 +258,21 @@ impl BusState {
             if produced < len {
                 states.fill(ProcessorState::default());
             }
+            let mix = self.mix[index];
+            if mix.gain != [1.0; 2] {
+                for frame in &mut buffer.samples[..produced] {
+                    frame[0] *= mix.gain[0];
+                    frame[1] *= mix.gain[1];
+                }
+            }
             // Copy one bounded block so fan-out never aliases destination state.
             let samples = buffer.samples;
-            for send in &node.sends {
-                let target = if let Some(bus) = send.bus {
+            for (n, send) in node.sends.iter().enumerate() {
+                // Out-of-range outputs fall back to the bus's own target.
+                let direct = mix.output.filter(|&out| n == 0 && out < outs.len());
+                let target = if let Some(out) = direct {
+                    &mut outs[out][offset..offset + produced]
+                } else if let Some(bus) = send.bus {
                     self.fed(bus, produced);
                     self.input(bus, produced)
                 } else {
