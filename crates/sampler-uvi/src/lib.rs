@@ -737,11 +737,7 @@ pub fn load(path: &Path, rate: u32) -> Result<sampler_kontakt::Loaded, Box<dyn s
     .map_err(|e| describe(path, e))?;
     let decoded = locations
         .iter()
-        .map(|location| {
-            std::fs::read(location)
-                .map_err(|e| e.to_string())
-                .and_then(|bytes| audio::decode(&[bytes]).map(|(d, _)| d))
-        })
+        .map(|location| decode_sample(Path::new(location)).map_err(|e| e.to_string()))
         .collect();
     assemble(
         instrument,
@@ -752,6 +748,25 @@ pub fn load(path: &Path, rate: u32) -> Result<sampler_kontakt::Loaded, Box<dyn s
             ..Default::default()
         },
     )
+}
+
+/// Decode one loose WAV, AIFF or FLAC sample to in-memory stereo frames.
+/// Both the encoded input and decoded audio are bounded to 512 MiB.
+pub fn decode_sample(path: &Path) -> Result<sampler_kontakt::Decoded, Error> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|file| file.take((512 << 20) + 1).read_to_end(&mut bytes))
+        .map_err(|error| Error::Io {
+            path: path.into(),
+            error,
+        })?;
+    audio::decode(&[bytes])
+        .map(|(audio, _)| audio)
+        .map_err(|reason| Error::Invalid {
+            path: path.into(),
+            reason,
+        })
 }
 
 /// Load a program inside an installed UVI bank. `bank` is an open [`Bank`]; `program`

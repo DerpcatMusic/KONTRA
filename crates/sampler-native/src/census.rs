@@ -135,6 +135,7 @@ pub fn run(args: &[OsString]) -> io::Result<()> {
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("uvip"))
         {
+            loose_program(&path);
             continue;
         }
         let library = path
@@ -144,13 +145,13 @@ pub fn run(args: &[OsString]) -> io::Result<()> {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| {
                 let root = roots.iter().find(|r| path.starts_with(r)).unwrap();
-                root.join(
-                    path.strip_prefix(root)
-                        .unwrap()
-                        .components()
-                        .next()
-                        .unwrap(),
-                )
+                if root.is_file() {
+                    return path.parent().unwrap_or(Path::new(".")).into();
+                }
+                path.strip_prefix(root)
+                    .ok()
+                    .and_then(|relative| relative.components().next())
+                    .map_or_else(|| root.clone(), |component| root.join(component))
             });
         let counts = libraries.entry(library).or_default();
         if path
@@ -243,6 +244,39 @@ fn multi(path: &Path, counts: &mut Counts, decoded: &mut HashMap<PathBuf, Result
     );
 }
 
+fn loose_program(path: &Path) {
+    let mut counts = Counts::default();
+    match sampler_uvi::read(path) {
+        Err(error) => counts.record(
+            "uvi-program",
+            &path.to_string_lossy(),
+            false,
+            0,
+            Some(error.to_string()),
+        ),
+        Ok(program) => {
+            let missing = program
+                .instrument
+                .unsupported
+                .iter()
+                .find(|u| u.feature == "missing sample")
+                .map(|u| format!("missing sample: {}", u.value));
+            let failure = program.locations.iter().find_map(|sample| {
+                sampler_uvi::decode_sample(sample)
+                    .err()
+                    .map(|e| e.to_string())
+            });
+            counts.record(
+                "uvi-program",
+                &path.to_string_lossy(),
+                true,
+                program.locations.len(),
+                missing.or(failure),
+            );
+        }
+    }
+}
+
 #[cfg(feature = "library-access")]
 fn bank(path: &Path) {
     let bank = match sampler_uvi::Bank::open(path) {
@@ -273,7 +307,7 @@ fn bank(path: &Path) {
                     .or_insert_with(|| {
                         bank.decode_resource(&member, sample)
                             .map(|_| ())
-                            .map_err(|e| e.to_string())
+                            .map_err(|e| format!("{sample}: {e}"))
                     })
                     .clone()?;
             }
