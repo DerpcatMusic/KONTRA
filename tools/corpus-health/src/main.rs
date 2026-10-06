@@ -305,6 +305,7 @@ enum Rig {
 }
 
 struct Sound {
+    selection: Value,
     perf: Value,
     note: String,
     peak: f32,
@@ -315,7 +316,35 @@ struct Sound {
     faults: Vec<String>,
 }
 
-fn play(subject: Subject, pick: Pick) -> Result<Sound, String> {
+/// Per-reason counts over every candidate region, plus the first records.
+fn selection_summary(records: Vec<sampler_core::SelectionRecord>) -> Value {
+    let mut counts = BTreeMap::<String, usize>::new();
+    let (mut suppressed, mut unmapped) = (0, 0);
+    for r in &records {
+        suppressed += usize::from(r.suppressed);
+        unmapped += usize::from(r.candidates.is_empty() && !r.suppressed);
+        for c in &r.candidates {
+            let reason = c.rejected.map_or("accepted".to_string(), |x| format!("{x:?}"));
+            *counts.entry(reason).or_default() += 1;
+        }
+    }
+    let first: Vec<Value> = records
+        .iter()
+        .take(3)
+        .map(|r| {
+            let candidates: Vec<Value> = r
+                .candidates
+                .iter()
+                .take(6)
+                .map(|c| json!({"region": c.region, "group": c.group, "rejected": c.rejected.map(|x| format!("{x:?}"))}))
+                .collect();
+            json!({"key": r.key, "velocity": r.velocity, "trigger": format!("{:?}", r.trigger), "suppressed": r.suppressed, "candidates": r.candidates.len(), "first": candidates})
+        })
+        .collect();
+    json!({"records": records.len(), "suppressed": suppressed, "key_unmapped": unmapped, "verdicts": counts, "first": first})
+}
+
+fn play(subject: Subject, pick: Pick, diagnose: bool) -> Result<Sound, String> {
     let (plan_rate, behavior_locals, note_cells) = match &subject {
         Subject::Plan(l) => (
             l.plan.sample_rate(),
@@ -348,6 +377,7 @@ fn play(subject: Subject, pick: Pick) -> Result<Sound, String> {
                 limits.voices,
             )))
             .map_err(|e| format!("prepare: runtime: {e}"))?;
+            rt.record_selections(diagnose);
             let mut groups = [None; 16];
             groups[0] = Some(Version::Midi1);
             Rig::Midi(Box::new(rt), Ingress::new(0, groups))
@@ -490,6 +520,10 @@ fn play(subject: Subject, pick: Pick) -> Result<Sound, String> {
             }
         }
     }
+    let selection = match &mut rig {
+        Rig::Midi(rt, _) if diagnose => selection_summary(rt.take_selection_records()),
+        _ => Value::Null,
+    };
     let rt: &Runtime = match &rig {
         Rig::Midi(rt, _) => rt,
         Rig::Scripted(p) => p.runtime(),
@@ -514,6 +548,7 @@ fn play(subject: Subject, pick: Pick) -> Result<Sound, String> {
         "stream_cache_bytes": st.stream_cache_bytes,
     });
     Ok(Sound {
+        selection,
         perf,
         note,
         peak,
@@ -688,7 +723,22 @@ fn check(item: &Item) -> Value {
         record["scripts"] = scripts(&loaded);
         record["unsupported"] = json!(categories(&loaded.instrument().unsupported));
         record["unsupported_total"] = json!(loaded.instrument().unsupported.len());
-        match play(loaded, pick) {
+        let silent = |s: &Sound| s.peak <= 1e-4 || s.note != "started";
+        let first = play(loaded, pick, false);
+        let first = match first {
+            Ok(mut s) if silent(&s) && item.kind() == "kontakt" => {
+                // Selection records allocate, so they only run on a second pass
+                // over an item that was silent.
+                if let (_, Some((again, pick))) = load_item(item) {
+                    if let Ok(d) = play(again, pick, true) {
+                        s.selection = d.selection;
+                    }
+                }
+                Ok(s)
+            }
+            other => other,
+        };
+        match first {
             Ok(s) => {
                 let db = |p: f32| {
                     if p > 0.0 {
@@ -699,6 +749,7 @@ fn check(item: &Item) -> Value {
                 };
                 record["sound"] = json!({
                     "perf": s.perf,
+                    "selection": s.selection,
                     "note": s.note,
                     "peak_db": db(s.peak),
                     "sounds": s.peak > 1e-4,
