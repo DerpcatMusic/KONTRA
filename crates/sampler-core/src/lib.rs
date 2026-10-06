@@ -104,7 +104,7 @@ mod schedule;
 mod variation;
 use gate::Channel;
 pub use gate::{ChannelAddress, ChannelId, ChannelScope};
-pub use ownership::{Expression, ExpressionId, FamilyId, Inheritance};
+pub use ownership::{Expression, ExpressionId, FamilyId, Inheritance, MAX_EXPRESSION_GAIN};
 use ownership::{ExpressionOwner, Family};
 pub use schedule::Event;
 use schedule::{Action, Scheduled};
