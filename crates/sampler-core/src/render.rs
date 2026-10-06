@@ -5,6 +5,20 @@ impl Runtime {
     /// Events at the exclusive block end stay pending until the next render (including
     /// an empty block). Overflow is rejected before any output/state mutation.
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Error> {
+        self.render_split(output, &mut [])
+    }
+
+    /// [`Self::render`], with buses whose [`crate::BusMix::output`] names one
+    /// of `outs` summed there instead of into `output`. Each of `outs` must be
+    /// at least `output.len()` long; they are added to, not cleared.
+    pub fn render_split(
+        &mut self,
+        output: &mut [Frame],
+        outs: &mut [&mut [Frame]],
+    ) -> Result<(), Error> {
+        if outs.iter().any(|o| o.len() < output.len()) {
+            return Err(Error::InvalidInput);
+        }
         let end = self
             .now
             .checked_add(output.len() as u64)
@@ -17,7 +31,7 @@ impl Runtime {
             let boundary = self.commands.first().map_or(end, |c| c.at.min(end));
             let len = (boundary - self.now) as usize;
             let segment = &mut output[offset..offset + len];
-            self.render_segment(segment);
+            self.render_segment(segment, outs, offset);
             for frame in segment {
                 if !frame.iter().all(|x| x.is_finite()) {
                     *frame = [0.0; 2];
@@ -31,7 +45,7 @@ impl Runtime {
         Ok(())
     }
 
-    fn render_segment(&mut self, output: &mut [Frame]) {
+    fn render_segment(&mut self, output: &mut [Frame], outs: &mut [&mut [Frame]], offset: usize) {
         let chunked = self.plans.slots.iter().any(|s| {
             s.value
                 .as_ref()
@@ -48,7 +62,11 @@ impl Runtime {
             }
             self.render_voices(output, at);
             for g in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
-                let faults = g.dsp.buses.render(&g.prepared.buses, output, at);
+                let start = offset + chunk * super::dsp::BLOCK;
+                let faults = g
+                    .dsp
+                    .buses
+                    .render(&g.prepared.buses, output, outs, start, at);
                 self.nonfinite_frames = self.nonfinite_frames.saturating_add(faults);
             }
         }

@@ -355,3 +355,67 @@ fn bus_tail_starts_after_the_last_voice_processor_frame_not_the_host_block() {
         });
     }
 }
+
+#[test]
+fn bus_mix_scales_a_bus_and_redirects_only_its_own_output() {
+    let bus = |sends| Bus {
+        processors: vec![],
+        sends,
+        tail_frames: 0,
+    };
+    // Bus 0 outputs to bus 1 and sends half to the main output; bus 1 is the parent.
+    let prepared = plan(vec![[1., 1.]; 4], 1)
+        .with_buses(
+            vec![
+                bus(vec![send(Some(1), 1.), send(None, 0.5)]),
+                bus(vec![send(None, 1.)]),
+            ],
+            vec![Some(0)],
+        )
+        .unwrap();
+    let mut rt = Runtime::new(prepared, limits()).unwrap();
+    assert_eq!(rt.bus_count(), 2);
+    rt.set_bus_mix(
+        0,
+        BusMix {
+            gain: [0.5, 0.25],
+            output: Some(0),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        rt.set_bus_mix(2, BusMix::default()),
+        Err(Error::InvalidInput)
+    );
+    assert_eq!(
+        rt.set_bus_mix(
+            0,
+            BusMix {
+                gain: [f32::NAN, 1.],
+                output: None
+            }
+        ),
+        Err(Error::InvalidInput)
+    );
+    rt.trigger(input(1), 60, 1.).unwrap();
+    let (mut main, mut out) = ([[0.; 2]; 2], [[0.; 2]; 2]);
+    rt.render_split(&mut main, &mut [&mut out]).unwrap();
+    // The redirected output skips bus 1; the aux send still reaches the main output.
+    assert_eq!(out[0], [0.5, 0.25]);
+    assert_eq!(main[0], [0.25, 0.125]);
+    assert_eq!(
+        rt.render_split(&mut main, &mut [&mut [[0.; 2]; 1]]),
+        Err(Error::InvalidInput)
+    );
+    // An output beyond those given falls back to the bus's own target.
+    rt.set_bus_mix(
+        0,
+        BusMix {
+            gain: [1.; 2],
+            output: Some(3),
+        },
+    )
+    .unwrap();
+    rt.render(&mut main).unwrap();
+    assert_eq!(main[0], [1.5, 1.5]);
+}

@@ -23,10 +23,10 @@ fn main() -> anyhow::Result<()> {
     presets.sort();
     let (mut read, mut failed, mut seen) = (0, 0, BTreeSet::new());
     for preset in &presets {
-        match kontakto::import::read(preset) {
-            Ok(instrument) => {
+        match sampler_kontakt::read(preset) {
+            Ok(loaded) => {
                 read += 1;
-                for (slot, text) in instrument.scripts.iter().enumerate() {
+                for (slot, text) in loaded.instrument.behaviors.iter().map(|b| &b.source).enumerate() {
                     if text.trim().is_empty() || !seen.insert(*blake3::hash(text.as_bytes()).as_bytes()) {
                         continue;
                     }
