@@ -629,12 +629,12 @@ pub fn is_multi(path: &Path) -> bool {
 
 /// What plays as one rack part: a Kontakt instrument or a sample.
 pub fn is_instrument(path: &Path) -> bool {
-    path.extension().is_some_and(|x| ["nki", "nkm", "wav"].iter().any(|e| x.eq_ignore_ascii_case(e)))
+    path.extension().is_some_and(|x| ["nki", "nkm", "uvip", "wav"].iter().any(|e| x.eq_ignore_ascii_case(e)))
 }
 
 /// What the browser lists and the rack opens: Kontakt instruments and saved racks.
 pub fn is_preset(path: &Path) -> bool {
-    is_multi(path) || path.extension().is_some_and(|x| ["nki", "nkm"].iter().any(|e| x.eq_ignore_ascii_case(e)))
+    is_multi(path) || path.extension().is_some_and(|x| ["nki", "nkm", "uvip"].iter().any(|e| x.eq_ignore_ascii_case(e)))
 }
 
 /// Presets in a library folder, its sample folders left unread.

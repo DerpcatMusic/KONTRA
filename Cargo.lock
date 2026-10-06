@@ -1867,6 +1867,7 @@ dependencies = [
  "sampler-ksp",
  "sampler-midi",
  "sampler-ui-ir",
+ "sampler-uvi",
  "serde",
  "serde_json",
  "sha2",
