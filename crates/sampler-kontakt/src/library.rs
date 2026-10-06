@@ -1127,14 +1127,24 @@ fn saved(entries: &[String]) -> Vec<(String, ir::Saved)> {
 mod saved_tests {
     #[test]
     fn saved_values_keep_their_types_and_skip_arrays() {
-        let entries = ["$level 17", "~mix 0.5", "@label two words", "%table 1 2 3", "$bad x"].map(String::from);
+        let entries = [
+            "$level 17",
+            "~mix 0.5",
+            "@label two words",
+            "%table 1 2 3",
+            "$bad x",
+        ]
+        .map(String::from);
         let saved = super::saved(&entries);
         assert_eq!(
             saved,
             [
                 ("$level".to_owned(), sampler_ir::Saved::Int(17)),
                 ("~mix".to_owned(), sampler_ir::Saved::Real(0.5)),
-                ("@label".to_owned(), sampler_ir::Saved::Text("two words".into())),
+                (
+                    "@label".to_owned(),
+                    sampler_ir::Saved::Text("two words".into())
+                ),
             ]
         );
     }

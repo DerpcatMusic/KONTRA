@@ -285,6 +285,12 @@ impl Cursor {
         self.starvation.is_some()
     }
 
+    /// Start silent, waiting for its stream window (a cold start).
+    pub(super) fn cold(mut self) -> Self {
+        self.starvation = Some(0);
+        self
+    }
+
     /// Faded out and silently waiting for its stream window.
     pub(super) fn waiting(&self) -> bool {
         self.starvation == Some(0)
@@ -730,14 +736,36 @@ impl Cursor {
         {
             return 0;
         }
-        let Some(span) = pcm.span(left..right + 1) else {
-            return 0;
+        // A window across pages or resident ranges is gathered on the stack.
+        let mut gathered = [[0.0f32; 2]; GATHER];
+        let span = match pcm.span(left..right + 1) {
+            Some(span) => span,
+            None if right + 1 - left <= GATHER => {
+                let out = &mut gathered[..right + 1 - left];
+                if !pcm.copy(left..right + 1, out) {
+                    return 0;
+                }
+                &*out
+            }
+            None => return 0,
         };
         let output = &mut output[..count];
         match bank {
-            Some(bank) => self.run(span, width, output, envelope, gain, gains, |f, w| {
-                bank.dot(f, w)
-            }),
+            Some(bank) => sampler_simd::dispatch(
+                #[inline(always)]
+                || {
+                    self.run(
+                        span,
+                        width,
+                        output,
+                        envelope,
+                        gain,
+                        gains,
+                        #[inline(always)]
+                        |f, w| bank.dot(f, w),
+                    )
+                },
+            ),
             None => {
                 let step = self.step;
                 self.run(span, width, output, envelope, gain, gains, |f, w| {
@@ -775,8 +803,8 @@ impl Cursor {
                 frame[channel] += source[channel] * gain * gains[channel] * level;
             }
             let phase = fraction + step;
-            let whole = phase as i64 as f64;
-            fraction = phase - whole;
+            let whole = phase as i64;
+            fraction = phase - whole as f64;
             offset += whole as usize;
         }
         self.fraction = fraction;
@@ -1189,9 +1217,28 @@ mod demand;
 pub use demand::SampleDemand;
 
 /// Borrowed decoded data. Missing physical frames differ from out-of-view zeros.
+/// Largest window `render_run` gathers across storage boundaries.
+const GATHER: usize = 1024;
+
 pub(super) trait ReadFrames {
     fn frame(&self, index: usize) -> Option<Frame>;
     fn span(&self, range: std::ops::Range<usize>) -> Option<&[Frame]>;
+    /// Copy `range` into `out` (its length), across storage boundaries;
+    /// `false` if any frame is missing.
+    fn copy(&self, range: std::ops::Range<usize>, out: &mut [Frame]) -> bool {
+        match self.span(range.clone()) {
+            Some(span) => out.copy_from_slice(span),
+            None => {
+                for (index, frame) in range.zip(out) {
+                    let Some(value) = self.frame(index) else {
+                        return false;
+                    };
+                    *frame = value;
+                }
+            }
+        }
+        true
+    }
     /// Pre-decimated octave levels, level 1 first.
     fn levels(&self) -> &[Box<[Frame]>] {
         &[]
@@ -1249,5 +1296,31 @@ impl ReadFrames for PagedFrames<'_> {
             return frames.get(range.start - start..range.end - start);
         }
         self.cache.span(self.asset, range)
+    }
+    fn copy(&self, range: std::ops::Range<usize>, out: &mut [Frame]) -> bool {
+        let mut at = range.start;
+        while at < range.end {
+            let o = at - range.start;
+            let (part, end) = match self.range(at) {
+                Some((start, frames)) => {
+                    let end = (start + frames.len()).min(range.end);
+                    (&frames[at - start..end - start], end)
+                }
+                None => {
+                    // Up to the page end or the next resident range.
+                    let next = self.head.partition_point(|(start, _)| *start <= at);
+                    let end = ((at / crate::PAGE_FRAMES + 1) * crate::PAGE_FRAMES)
+                        .min(range.end)
+                        .min(self.head.get(next).map_or(usize::MAX, |(start, _)| *start));
+                    match self.cache.span(self.asset, at..end) {
+                        Some(part) => (part, end),
+                        None => return false,
+                    }
+                }
+            };
+            out[o..o + part.len()].copy_from_slice(part);
+            at = end;
+        }
+        true
     }
 }
