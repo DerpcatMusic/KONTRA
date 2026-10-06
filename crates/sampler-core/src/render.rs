@@ -33,13 +33,14 @@ impl Runtime {
     }
 
     fn render_segment(&mut self, output: &mut [Frame]) {
-        let chunked = self.plans.slots.iter().any(|s| {
-            s.value.as_ref().is_some_and(|g| {
-                g.prepared.buses.len() != 0
-                    || !g.dsp.filters.is_empty()
-                    || !g.prepared.voice_modulation.is_empty()
-            })
-        });
+        let chunked = self.script_params
+            || self.plans.slots.iter().any(|s| {
+                s.value.as_ref().is_some_and(|g| {
+                    g.prepared.buses.len() != 0
+                        || !g.dsp.filters.is_empty()
+                        || !g.prepared.voice_modulation.is_empty()
+                })
+            });
         if !chunked {
             self.render_voices(output, self.now);
             return;
@@ -99,6 +100,7 @@ impl Runtime {
         // Modulated voices render at most one BLOCK chunk per call (render_segment
         // chunks whenever a plan has programs) into scratch, then mix with ramps.
         let mut scratch = [[0.0; 2]; super::dsp::BLOCK];
+        let modulated = plan.modulation.program(i).is_some();
         let points = plan.modulation.program(i).map(|_| {
             let performance = self.selections[f.note.0.index].performance;
             let inputs = super::voice_mod::Inputs::new(
@@ -124,6 +126,30 @@ impl Runtime {
             ];
             (from, to)
         });
+        // Script layers (render_segment chunks once a script writes one).
+        let mut stop = false;
+        let points = if self.script_params {
+            let params = self.note_params[f.note.0.index];
+            let layer = plan.script.layer(v.group).stack(params.layer);
+            let end = at + segment.len() as u64;
+            let fade = |t| {
+                params
+                    .fade
+                    .map_or(1.0, |f: super::script_params::Fade| f.at(t))
+            };
+            let to = layer.gains(fade(end));
+            let from = v.script_gains.unwrap_or_else(|| layer.gains(fade(at)));
+            v.script_gains = Some(to);
+            stop = params.fade.is_some_and(|f| f.stop && f.done(end));
+            let (mut a, mut b) = points.unwrap_or_default();
+            for (o, g) in [(&mut a, from), (&mut b, to)] {
+                o.gains = [o.gains[0] * g[0], o.gains[1] * g[1]];
+                o.pitch += layer.semitones();
+            }
+            Some((a, b))
+        } else {
+            points
+        };
         v.cursor = v.cursor.with_step(match points {
             None => v.base_step * expression.rendered.ratio,
             Some((from, to)) => {
@@ -176,9 +202,14 @@ impl Runtime {
         };
         if let (Some((from, to)), Some(target)) = (points, mixed) {
             plan.dsp.filters.modulation = [1.0; 2];
-            plan.modulation
-                .mix(i, segment, target, from, to, f64::from(self.rate));
+            if modulated {
+                plan.modulation
+                    .mix(i, segment, target, from, to, f64::from(self.rate));
+            } else {
+                ramp_mix(segment, target, from.gains, to.gains);
+            }
         }
+        let done = done || stop;
         self.nonfinite_frames = self.nonfinite_frames.saturating_add(faults);
         self.stream_underruns = self.stream_underruns.saturating_add(u64::from(underrun));
         if let Some(bus) = bus {
@@ -187,6 +218,17 @@ impl Runtime {
         if done {
             self.end_voice(VoiceId(self.voices.id(i)));
         }
+    }
+}
+
+/// Mix `chunk` into `output`, ramping per-channel gains from `from` to `to`.
+fn ramp_mix(chunk: &[Frame], output: &mut [Frame], from: [f32; 2], to: [f32; 2]) {
+    let len = chunk.len() as f32;
+    let step = [(to[0] - from[0]) / len, (to[1] - from[1]) / len];
+    for (i, (out, frame)) in output.iter_mut().zip(chunk).enumerate() {
+        let at = (i + 1) as f32;
+        out[0] += frame[0] * (from[0] + step[0] * at);
+        out[1] += frame[1] * (from[1] + step[1] * at);
     }
 }
 

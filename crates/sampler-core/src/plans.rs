@@ -40,6 +40,7 @@ pub struct PlanTransfer {
     controllers: super::controller_event::ControllerState,
     projections: super::note_event::NoteProjections,
     modulation: super::voice_mod::VoiceModState,
+    script: super::script_params::EngineLayers,
 }
 
 pub(super) struct Generation {
@@ -55,6 +56,7 @@ pub(super) struct Generation {
     pub controllers: super::controller_event::ControllerState,
     pub projections: super::note_event::NoteProjections,
     pub modulation: super::voice_mod::VoiceModState,
+    pub script: super::script_params::EngineLayers,
 }
 
 pub(super) struct PlanQueues {
@@ -151,6 +153,7 @@ impl PlanControl {
                 }
             };
         let request = self.sequence + 1;
+        let group_count = prepared.group_count;
         let sequences = super::variation::SequenceState::new(&prepared);
         let controls = super::control::ControlState::new(&prepared);
         let scripts = prepared.script_initial.clone();
@@ -165,6 +168,7 @@ impl PlanControl {
             controllers,
             projections,
             modulation,
+            script: super::script_params::EngineLayers::new(group_count),
         }) {
             Ok(()) => {
                 self.sequence = request;
@@ -278,6 +282,7 @@ impl Runtime {
                 controllers: generation.controllers,
                 projections: generation.projections,
                 modulation: generation.modulation,
+                script: generation.script,
             }) {
                 Ok(()) => count += 1,
                 Err(PushError::Full(plan)) => {
@@ -294,6 +299,7 @@ impl Runtime {
                             controllers: plan.controllers,
                             projections: plan.projections,
                             modulation: plan.modulation,
+                            script: plan.script,
                             notes: 0,
                             callbacks: 0,
                         },
@@ -339,6 +345,7 @@ impl Runtime {
                     controllers: plan.controllers,
                     projections: plan.projections,
                     modulation: plan.modulation,
+                    script: plan.script,
                     notes: 0,
                     callbacks: 0,
                 })
