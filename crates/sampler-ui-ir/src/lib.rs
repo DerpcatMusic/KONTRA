@@ -48,6 +48,10 @@ pub struct Interface {
     pub widgets: Vec<Widget>,
     pub assets: Vec<Asset>,
     pub styles: Vec<TextStyle>,
+    /// The instrument's icon in the host's rack header (KSP `$INST_ICON_ID`).
+    pub icon: Option<AssetRef>,
+    /// The source hides the instrument icon (KSP `$INST_ICON_ID` `HIDE`).
+    pub icon_hidden: bool,
     pub unsupported: Vec<Unsupported>,
 }
 
@@ -69,7 +73,11 @@ pub enum Source {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Page {
     pub name: String,
+    /// Width, and height unless [`Page::height_rows`] is set.
     pub size: Size,
+    /// Height in the source's grid rows (KSP `set_ui_height`); the renderer
+    /// converts it with its grid geometry.
+    pub height_rows: Option<u32>,
     pub background: Background,
 }
 
@@ -92,7 +100,13 @@ pub struct Widget {
     pub page: PageRef,
     /// Containing panel; geometry is relative to it.
     pub parent: Option<WidgetRef>,
+    /// Position and size in pixels. Position is ignored for
+    /// [`Placement::Grid`]; size is ignored when [`Widget::auto_size`].
     pub rect: Rect,
+    pub placement: Placement,
+    /// The source did not size the widget; the renderer uses its default
+    /// size for the kind and source.
+    pub auto_size: bool,
     /// Stacking among siblings; higher draws later.
     pub z: i32,
     /// Hidden as a whole (`HIDE_WHOLE_CONTROL`, Lua `visible = false`).
@@ -102,11 +116,20 @@ pub struct Widget {
     pub enabled: bool,
     pub kind: Kind,
     pub binding: Binding,
-    /// Caption, button text or label text; lines split on `\n`.
+    /// Caption, button text or label text; lines split on `\n` (KSP
+    /// per-index label lines are joined with `\n`).
     pub text: String,
+    /// Vertical offset of the text inside the widget, in pixels (KSP
+    /// `TEXTPOS_Y`); `None` centres it.
+    pub text_y: Option<i32>,
+    /// Shown instead of the formatted value (KSP knob `LABEL`).
+    pub value_text: Option<String>,
     pub tooltip: String,
-    /// Name the host shows for automation, when it differs from `text`.
-    pub automation_name: Option<String>,
+    pub automation: Automation,
+    /// How a drag changes the value; `None` for the renderer's default.
+    pub drag: Option<Drag>,
+    /// Colours the source sets on its stock drawing; unset ones are the renderer's.
+    pub colors: Colors,
     pub style: Option<StyleRef>,
     /// Bitmaps the source draws this widget with, by role.
     pub images: Vec<ImageUse>,
@@ -121,6 +144,8 @@ impl Widget {
             page,
             parent: None,
             rect,
+            placement: Placement::Pixels,
+            auto_size: false,
             z: 0,
             hidden: false,
             hide: Parts::default(),
@@ -128,8 +153,12 @@ impl Widget {
             kind,
             binding: Binding::None,
             text: String::new(),
+            text_y: None,
+            value_text: None,
             tooltip: String::new(),
-            automation_name: None,
+            automation: Automation::default(),
+            drag: None,
+            colors: Colors::default(),
             style: None,
             images: Vec::new(),
         }
@@ -139,6 +168,58 @@ impl Widget {
     pub fn image(&self, role: Role) -> Option<AssetRef> {
         self.images.iter().find(|i| i.role == role).map(|i| i.asset)
     }
+}
+
+/// How a widget's position is given.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Placement {
+    /// [`Widget::rect`]'s `x`/`y`.
+    #[default]
+    Pixels,
+    /// A cell of the source's layout grid, 1-based (KSP `move_control`).
+    Grid { column: u32, row: u32 },
+}
+
+/// How the host sees a control.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Automation {
+    /// Name in the host's automation list, when it differs from the text.
+    pub name: Option<String>,
+    /// Abbreviation for narrow host displays (KSP `SHORT_NAME`).
+    pub short_name: Option<String>,
+    /// Whether the host may automate it (KSP `ALLOW_AUTOMATION`).
+    pub allowed: bool,
+    /// Fixed automation slot (KSP `AUTOMATION_ID`, 0..=2047).
+    pub id: Option<u32>,
+}
+
+impl Default for Automation {
+    fn default() -> Self {
+        Self { name: None, short_name: None, allowed: true, id: None }
+    }
+}
+
+/// The drag gesture of a continuous control (KSP `MOUSE_BEHAVIOUR`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Drag {
+    pub axis: Orientation,
+    /// Source units: KSP's magnitude, larger is finer.
+    pub sensitivity: u32,
+}
+
+/// Colours of the stock drawing (KSP `*_COLOR` control parameters).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Colors {
+    pub background: Option<Rgba>,
+    pub on: Option<Rgba>,
+    pub off: Option<Rgba>,
+    pub bar: Option<Rgba>,
+    pub peak: Option<Rgba>,
+    pub overload: Option<Rgba>,
+    pub zero_line: Option<Rgba>,
+    pub wave: Option<Rgba>,
+    pub wave_cursor: Option<Rgba>,
+    pub slice_markers: Option<Rgba>,
 }
 
 /// Parts of a control hidden individually (KSP `HIDE_PART_*`).
@@ -164,13 +245,23 @@ pub enum Kind {
     Switch,
     Menu { items: Vec<MenuItem> },
     Label,
-    ValueEdit { range: Range, display: Display },
-    Table { columns: u32, range: Range, bipolar: bool },
-    Xy { cursors: u32 },
+    /// `arrows`: step buttons beside the value (KSP `SHOW_ARROWS`).
+    ValueEdit { range: Range, display: Display, arrows: bool },
+    /// `cells`: initial values, one per column (may be shorter than `columns`);
+    /// `steps_shown`: value steps drawn as grid lines (KSP `set_table_steps_shown`).
+    Table { columns: u32, range: Range, bipolar: bool, cells: Vec<i32>, steps_shown: Option<u32> },
+    /// `sensitivity`: per-axis drag sensitivity in source units (KSP
+    /// `MOUSE_BEHAVIOUR_X`/`_Y`); `mouse_mode`: the source's pointer mode,
+    /// verbatim (KSP `MOUSE_MODE`), until its meanings are verified.
+    Xy { cursors: u32, sensitivity: [Option<u32>; 2], mouse_mode: Option<i32> },
     Waveform,
-    Wavetable,
+    /// `view_mode`: the source's display mode, verbatim (KSP `WT_VIS_MODE`);
+    /// `parallax`: 3D depth offset in pixels (KSP `PARALLAX_X`/`_Y`).
+    Wavetable { view_mode: Option<i32>, parallax: [i32; 2] },
     LevelMeter { orientation: Orientation },
-    FileSelector,
+    /// `base_path`: the folder it opens at (KSP `BASEPATH`); `files`: what it lists;
+    /// `column_width`: list column width in pixels.
+    FileSelector { base_path: Option<String>, files: Files, column_width: Option<u32> },
     TextEdit,
     /// A static picture (Lua `Image`); KSP pictures on labels are [`Kind::Label`].
     Image,
@@ -210,6 +301,17 @@ impl Default for Display {
     }
 }
 
+/// Which files a file selector lists (KSP `FILE_TYPE`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Files {
+    #[default]
+    Any,
+    Audio,
+    Midi,
+    /// Saved arrays / script data (KSP `$NI_FILE_TYPE_ARRAY`).
+    Data,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Orientation {
     #[default]
@@ -244,6 +346,14 @@ pub enum Binding {
 pub struct ImageUse {
     pub asset: AssetRef,
     pub role: Role,
+    /// A fixed frame (KSP `PICTURE_STATE`); `None` lets the value choose.
+    pub frame: Option<u32>,
+}
+
+impl ImageUse {
+    pub const fn new(asset: AssetRef, role: Role) -> Self {
+        Self { asset, role, frame: None }
+    }
 }
 
 /// What an image does for its widget; decides what [`Presentation::Vector`] keeps.
@@ -288,13 +398,20 @@ pub struct ImageMeta {
     /// Direction the frames are stacked in.
     pub axis: Orientation,
     pub alpha: bool,
-    /// Nine-slice margins when the source stretches the image.
-    pub stretch: Option<Margins>,
+    /// One frame's pixel size, from the image file's header. A control
+    /// showing the image takes this size along each axis it does not
+    /// stretch, whatever size the source gave it (Kontakt's rule).
+    pub size: Option<Size>,
+    /// Stretches to the control across, down (Kontakt's sidecar
+    /// "Horizontal"/"Vertical Resizable").
+    pub stretch: [bool; 2],
+    /// Nine-slice fixed edges along the axes it stretches.
+    pub margins: Margins,
 }
 
 impl Default for ImageMeta {
     fn default() -> Self {
-        Self { frames: 1, axis: Orientation::Vertical, alpha: true, stretch: None }
+        Self { frames: 1, axis: Orientation::Vertical, alpha: true, size: None, stretch: [false; 2], margins: Margins::default() }
     }
 }
 
@@ -403,10 +520,8 @@ impl Interface {
                 *k = true;
             }
         };
-        for page in &self.pages {
-            if let Some(a) = page.background.image {
-                mark(a);
-            }
+        for a in self.pages.iter().filter_map(|p| p.background.image).chain(self.icon) {
+            mark(a);
         }
         let vector = presentation == Presentation::Vector;
         for w in &self.widgets {
@@ -440,7 +555,8 @@ impl Interface {
         false
     }
 
-    /// `widget`'s rectangle in page coordinates.
+    /// `widget`'s rectangle in page coordinates. Uses [`Widget::rect`] as
+    /// is: resolve [`Placement::Grid`] and [`Widget::auto_size`] first.
     pub fn page_rect(&self, widget: WidgetRef) -> Rect {
         let mut rect = self.widgets[widget.0].rect;
         let mut parent = self.widgets[widget.0].parent;
@@ -493,6 +609,9 @@ impl Interface {
             if let Font::Bitmap(a) = s.font {
                 asset(a, false)?;
             }
+        }
+        if let Some(a) = self.icon {
+            asset(a, true)?;
         }
         for (n, w) in self.widgets.iter().enumerate() {
             let at = WidgetRef(n);
@@ -579,7 +698,7 @@ mod tests {
     fn sample() -> Interface {
         let page = PageRef(0);
         let mut panel = Widget::new("$panel", page, Rect::new(10, 20, 200, 100), Kind::Panel);
-        panel.images.push(ImageUse { asset: AssetRef(1), role: Role::Background });
+        panel.images.push(ImageUse::new(AssetRef(1), Role::Background));
         panel.z = 1;
         let mut knob = Widget::new(
             "$cutoff",
@@ -589,7 +708,7 @@ mod tests {
         );
         knob.parent = Some(WidgetRef(0));
         knob.binding = Binding::Control(ControlId(7));
-        knob.images.push(ImageUse { asset: AssetRef(2), role: Role::Strip });
+        knob.images.push(ImageUse::new(AssetRef(2), Role::Strip));
         let label = Widget::new("$title", page, Rect::new(0, 0, 100, 20), Kind::Label);
         Interface {
             source: Source::Ksp { slot: 0 },
@@ -597,11 +716,11 @@ mod tests {
                 name: "Main".into(),
                 size: Size { width: 633, height: 400 },
                 background: Background { image: Some(AssetRef(0)), ..Background::default() },
+                ..Page::default()
             }],
             widgets: vec![panel, knob, label],
             assets: vec![image("wallpaper.png", 1), image("panel_bg.png", 1), image("knob.png", 101)],
-            styles: vec![],
-            unsupported: vec![],
+            ..Interface::default()
         }
     }
 

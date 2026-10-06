@@ -296,7 +296,7 @@ fn part(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool, near: bool, shape: &
     if room.is_none_or(|r| r >= 0.5) {
         let body = if near {
             let mut body: Vec<El> = instrument::notices(cx, slot).into_iter().collect();
-            let stage = instrument::stage(cx, slot);
+            let stage = instrument::interface(ui, cx, slot).unwrap_or_else(|| instrument::stage(cx, slot));
             body.push(behind(cx, slot, stage));
             col(body).gap(0).align(Align::Stretch).shrink(0).id(format!("body-{slot}"))
         } else {
