@@ -677,7 +677,8 @@ pub(super) enum Ready {
 impl Runtime {
     /// Run against an existing logical note. A caller can suppress default playback
     /// by admitting with note_on instead of trigger. Completion owns a private pin
-    /// until flush_behaviors accepts it, including synchronous completion/failure.
+    /// until flush_behaviors accepts it, including synchronous completion/failure,
+    /// except that admission may reclaim a finished one (see behavior_room).
     pub fn start_behavior(&mut self, note: NoteId, program: usize) -> Result<BehaviorId, Error> {
         self.apply_due();
         self.start_behavior_now(note, program)
@@ -712,7 +713,13 @@ impl Runtime {
         if !n.gate() && plan.programs[program].wait_lifetime == WaitLifetime::Gate {
             return Err(Error::ClosedNote);
         }
-        let work = n.work.checked_add(1).ok_or(Error::Capacity)?;
+        n.work.checked_add(1).ok_or(Error::Capacity)?;
+        if !self.behavior_room(1) {
+            return Err(Error::Capacity);
+        }
+        let n = self.notes.get_mut(note.0).unwrap();
+        let work = n.work + 1;
+        let plan = &self.plans.get(n.plan.0).unwrap().prepared;
         let id = BehaviorId(self.behaviors.insert(Continuation {
             owner: BehaviorOwner::Note(note),
             context: PlanContext::Bare,
@@ -741,7 +748,7 @@ impl Runtime {
     }
 
     pub(super) fn validate_plan_context(
-        &self,
+        &mut self,
         plan: super::PlanId,
         program: usize,
         context: PlanContext,
@@ -759,7 +766,10 @@ impl Runtime {
         {
             return Err(Error::InvalidInput);
         }
-        if self.behaviors.available() == 0 || generation.callbacks == usize::MAX {
+        if generation.callbacks == usize::MAX {
+            return Err(Error::Capacity);
+        }
+        if !self.behavior_room(1) {
             return Err(Error::Capacity);
         }
         Ok(())
@@ -881,6 +891,47 @@ impl Runtime {
         }
     }
 
+    /// Finished work has nothing to report, so admission takes its slot rather
+    /// than fail: a chord through chained scripts never waits on the host's
+    /// flush. Finished outcomes stay observable while there is room; faults and
+    /// cancellations always wait for flush_behaviors. Allocation-free; the scan
+    /// runs only when the arena is short.
+    pub(super) fn behavior_room(&mut self, needed: usize) -> bool {
+        let available = self.behaviors.available();
+        if available >= needed {
+            return true;
+        }
+        // A refused admission reclaims nothing.
+        let finished = self
+            .behaviors
+            .slots
+            .iter()
+            .filter(|s| {
+                s.value
+                    .is_some_and(|c| c.outcome == Some(Outcome::Finished))
+            })
+            .count();
+        if available + finished < needed {
+            return false;
+        }
+        let mut i = 0;
+        while self.behaviors.available() < needed && i < self.behaviors.slots.len() {
+            if let Some(c) = self.behaviors.slots[i].value
+                && c.outcome == Some(Outcome::Finished)
+            {
+                let id = BehaviorId(self.behaviors.id(i));
+                self.release_controller_reserve(id);
+                self.behaviors.remove(id.0);
+                match c.owner {
+                    BehaviorOwner::Note(note) => self.notes.get_mut(note.0).unwrap().work -= 1,
+                    BehaviorOwner::Plan(plan) => self.plans.get_mut(plan.0).unwrap().callbacks -= 1,
+                }
+            }
+            i += 1;
+        }
+        self.behaviors.available() >= needed
+    }
+
     pub(super) fn resume_behavior(&mut self, id: BehaviorId) {
         self.queue_behavior(id);
         self.drain_behavior();
@@ -930,7 +981,11 @@ impl Runtime {
                     continue;
                 }
             };
-            let c = *self.behaviors.get(id.0).unwrap();
+            // A finished callback retires at once; a stale entry is skipped.
+            let Some(c) = self.behaviors.get(id.0).copied() else {
+                self.behavior_ready.pop();
+                continue;
+            };
             if c.outcome.is_some() {
                 self.release_controller_reserve(id);
                 self.behavior_ready.pop();

@@ -290,9 +290,17 @@ fn resumed_commands_finish_before_later_equal_time_events_and_end_is_exclusive()
 
 #[test]
 fn bound_suppression_and_completion_capacity_do_not_publish_partial_inputs() {
+    // A live (waiting) callback holds its slot; a finished one would be reclaimed.
     let plan = Prepared::new(48000, vec![], vec![], 0)
         .unwrap()
-        .with_programs(vec![Program::new(vec![]).unwrap()], Some(0))
+        .with_programs(
+            vec![
+                Program::new(vec![Instruction::Wait(1)])
+                    .unwrap()
+                    .with_wait_lifetime(sampler_core::WaitLifetime::Callback),
+            ],
+            Some(0),
+        )
         .unwrap();
     let mut rt = Runtime::new(
         plan,
@@ -320,6 +328,7 @@ fn bound_suppression_and_completion_capacity_do_not_publish_partial_inputs() {
         assert_eq!(rt.note_count(), 1);
         rt.release(note).unwrap();
         rt.flush_ended(|_| panic!("completion retains suppressed input"));
+        rt.render(&mut [[0.; 2]; 2]).unwrap();
         rt.flush_behaviors(|id, owner, outcome| {
             assert_eq!(
                 (owner, outcome),
@@ -1270,7 +1279,7 @@ fn release_callbacks_reserve_capacity_and_share_state_across_waits_and_pedals() 
             rt.sustain(channel, true).unwrap();
             let n = rt.trigger(input(), 60, 1.).unwrap();
             assert_eq!(rt.note_cell(n, 0), Ok(70));
-            assert_eq!(rt.start_behavior(n, 0), Err(Error::Capacity));
+            // The finished attack callback is reclaimable; the release reserve is not.
             assert_eq!(
                 rt.trigger(
                     Input {
