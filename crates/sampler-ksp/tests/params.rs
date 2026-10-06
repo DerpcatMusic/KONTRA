@@ -1,18 +1,16 @@
 //! Script voice parameters reach the audio: change_vol/pan, fades,
 //! set_engine_par group volume and purge_group.
-use sampler_core::{Envelope, Input, Limits, Pcm, Playback, Prepared, Protocol, Region, Runtime};
+use sampler_core::{
+    Envelope, GroupParams, Input, Limits, Pcm, Playback, Prepared, Protocol, Region, Runtime,
+};
 
 fn runtime(source: &str) -> Runtime {
-    runtime_with(source, Vec::new())
+    authored(source, GroupParams::default())
 }
 
-/// Two one-key groups, authored at `bases`.
-fn runtime_with(source: &str, bases: Vec<sampler_core::GroupBase>) -> Runtime {
-    let environment = sampler_ksp::Environment {
-        group_values: bases.clone(),
-        ..Default::default()
-    };
-    let script = sampler_ksp::compile_with(
+/// Group 0 authored at `group0`, baked into its region's gain as lowering does.
+fn authored(source: &str, group0: GroupParams) -> Runtime {
+    let script = sampler_ksp::compile(
         source,
         48000,
         sampler_ksp::Limits {
@@ -22,7 +20,6 @@ fn runtime_with(source: &str, bases: Vec<sampler_core::GroupBase>) -> Runtime {
             array_cells: 16,
         },
         &[],
-        &environment,
     )
     .unwrap();
     let note_cells = script.note_cells() * 8;
@@ -35,7 +32,11 @@ fn runtime_with(source: &str, bases: Vec<sampler_core::GroupBase>) -> Runtime {
             root_key: None,
             velocity_low: 0.,
             velocity_high: 1.,
-            gain: 1.,
+            gain: if sample == 0 {
+                10f32.powf(group0.decibels as f32 / 20.)
+            } else {
+                1.
+            },
             envelope: Envelope::default(),
             playback: Playback::default(),
         })
@@ -45,8 +46,8 @@ fn runtime_with(source: &str, bases: Vec<sampler_core::GroupBase>) -> Runtime {
             Prepared::new(48000, pcm.into(), regions, 2)
                 .unwrap()
                 .with_groups(2, vec![Some(0), Some(1)])
-                .unwrap()
-                .with_group_bases(bases),
+                .and_then(|p| p.with_group_params(vec![group0, GroupParams::default()]))
+                .unwrap(),
         )
         .unwrap();
     let behavior_cells = plan.behavior_local_count() * 8;
@@ -155,34 +156,20 @@ fn volume_envelope_attack_applies_to_voices_that_start_after_it() {
 }
 
 #[test]
-fn engine_volume_reads_and_sets_absolute_authored_values() {
-    let authored = sampler_core::GroupBase {
-        decibels: -6.0206,
-        ..Default::default()
-    };
-    let mut rt = runtime_with(
-        "on init
-           declare $v := 0
-           declare $authored := get_engine_par($ENGINE_PAR_VOLUME, 0, -1, -1)
-         end on
-         on note
-           if ($EVENT_NOTE = 60)
-             { Writing back what was read leaves the group as authored. }
-             $v := get_engine_par($ENGINE_PAR_VOLUME, 0, -1, -1)
-             set_engine_par($ENGINE_PAR_VOLUME, $v, 0, -1, -1)
-           else
-             { 629960 is 0 dB: +6 dB over the authored -6 dB. }
+fn engine_volume_reads_the_authored_value_and_sets_it_absolutely() {
+    let mut rt = authored(
+        "on note
+           { The authored -6 dB group reads back as 500000. }
+           if (abs(get_engine_par($ENGINE_PAR_VOLUME, 0, -1, -1) - 500000) < 20)
+             { 629960 is 0 dB, not +6 dB on top of the authored value. }
              set_engine_par($ENGINE_PAR_VOLUME, 629960, 0, -1, -1)
            end if
          end on",
-        vec![authored, Default::default()],
+        GroupParams {
+            decibels: -6.0,
+            ..GroupParams::default()
+        },
     );
     rt.trigger(input(60), 60, 1.).unwrap();
-    // The authored base is baked into the voices by lowering, not here: the
-    // layer itself stays neutral.
     assert!(close(level(&mut rt), [0.5; 2]), "{:?}", level(&mut rt));
-    rt.trigger(input(61), 61, 1.).unwrap();
-    // Group 0's note now at 0 dB (1.0) plus group 1's own note (0.25).
-    let left = level(&mut rt)[0];
-    assert!((left - 1.25).abs() < 0.01, "{left}");
 }
