@@ -23,6 +23,7 @@ mod modulation;
 mod no_access;
 pub mod script;
 pub mod scripted;
+mod stream;
 #[cfg(feature = "library-access")]
 mod ufs;
 
@@ -986,6 +987,96 @@ pub fn decode_sample(path: &Path) -> Result<sampler_kontakt::Decoded, Error> {
             path: path.into(),
             reason,
         })
+}
+
+/// Load a clear `.uvip` program streamed: only the frames where zones start
+/// and a page pool are resident (see [`sampler_kontakt::stream_instrument`]).
+pub fn load_streamed(
+    path: &Path,
+    rate: u32,
+    policy: &sampler_kontakt::StreamPolicy,
+) -> Result<sampler_kontakt::Streamed, Box<dyn std::error::Error>> {
+    let folder = path.parent().unwrap_or(Path::new("."));
+    let (instrument, locations) =
+        translate_with(&read_text(path)?, Source::Disk(folder.into())).map_err(|e| describe(path, e))?;
+    let sources = locations
+        .iter()
+        .map(|location| stream::source(vec![stream::Origin::File(location.into())]))
+        .collect();
+    assemble_streamed(instrument, locations, sources, rate, policy)
+}
+
+/// [`load_program`], streamed.
+#[cfg(feature = "library-access")]
+pub fn load_program_streamed(
+    bank: &Bank,
+    program: &str,
+    rate: u32,
+    policy: &sampler_kontakt::StreamPolicy,
+) -> Result<sampler_kontakt::Streamed, Box<dyn std::error::Error>> {
+    let (text, program_path) = bank.program(program)?;
+    let (instrument, locations) =
+        translate_bank(&text).map_err(|e| describe(Path::new(program), e))?;
+    let sources = locations
+        .iter()
+        .map(|authored| bank.stream_source(&program_path, authored))
+        .collect();
+    assemble_streamed(instrument, locations, sources, rate, policy)
+}
+
+/// Compare streamed reads of a bank resource with a full decode at assorted
+/// ranges (start, middle, end, backward). Returns its frame count.
+#[doc(hidden)]
+#[cfg(feature = "library-access")]
+pub fn check_stream(bank: &Bank, program_path: &str, path: &str) -> Result<usize, String> {
+    use sampler_kontakt::AssetSource;
+    let full = audio::decode(&bank.resource(program_path, path).map_err(|e| e.to_string())?)?.0.frames;
+    let mut reader = bank.stream_source(program_path, path)?.open().map_err(|e| e.to_string())?;
+    if reader.frames() != full.len() {
+        return Err(format!("{} streamed frames, {} decoded", reader.frames(), full.len()));
+    }
+    let n = full.len();
+    for range in [0..n.min(5000), n / 2..(n / 2 + 9000).min(n), n.saturating_sub(7000)..n, 100.min(n)..300.min(n), 0..n.min(30000)] {
+        let mut out = vec![[0.0; 2]; range.len()];
+        reader.read(range.start, &mut out).map_err(|e| e.to_string())?;
+        if out != full[range.clone()] {
+            return Err(format!("frames {range:?} differ"));
+        }
+    }
+    Ok(n)
+}
+
+type AssetSources = Vec<Result<std::sync::Arc<dyn sampler_kontakt::AssetSource>, String>>;
+
+/// [`assemble`] for streamed samples: zones whose sample cannot be opened are dropped (reported).
+fn assemble_streamed(
+    mut instrument: ir::Instrument,
+    locations: Vec<String>,
+    sources: AssetSources,
+    rate: u32,
+    policy: &sampler_kontakt::StreamPolicy,
+) -> Result<sampler_kontakt::Streamed, Box<dyn std::error::Error>> {
+    for (location, result) in locations.iter().zip(&sources) {
+        if let Err(reason) = result {
+            instrument.unsupported.push(ir::Unsupported {
+                location: location.clone(),
+                feature: "unreadable sample, zone dropped".into(),
+                value: reason.clone(),
+                reason: ir::Reason::InvalidValue,
+            });
+        }
+    }
+    let usable: Vec<bool> = sources.iter().map(Result::is_ok).collect();
+    let kept = instrument.retain_zones(|z| usable[z.asset.0]);
+    let mut sources: Vec<_> = sources.into_iter().map(Result::ok).collect();
+    let sources = kept.iter().map(|&a| sources[a].take().expect("usable")).collect();
+    let labels = kept.iter().map(|&a| locations[a].clone()).collect();
+    let options = sampler_kontakt::Options {
+        rate,
+        scripts: true,
+        ..Default::default()
+    };
+    Ok(sampler_kontakt::stream_instrument(instrument, sources, labels, &options, policy)?)
 }
 
 /// Load a program inside an installed UVI bank. `bank` is an open [`Bank`]; `program`

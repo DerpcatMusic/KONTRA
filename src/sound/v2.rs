@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use sampler_core::{
     BusMix, ChannelAddress, ControlContext, ControlDefinition, ControlDomain, ControlValue, ControlWrite, Envelope, Expression, Frame, Input, Limits, NoteId, PAGE_FRAMES, Pcm, Playback, Prepared, Protocol,
-    Region, Runtime, Stealing, StreamCache,
+    Region, Runtime, Stealing, StreamCache, Threads,
 };
 use sampler_ir as ir;
 use sampler_midi::{ApplyError, Articulator, Intercept, Mpe, Packets, Zone};
@@ -687,9 +687,33 @@ fn number(value: ControlValue) -> f64 {
 #[derive(Default)]
 pub struct V2Loader;
 
-/// Capacities of a part, sized for its plan's script state.
+/// Voice-rendering threads per part: `KONTRA_THREADS` is `auto` or a count.
+/// One (the audio thread alone) unless set.
+fn render_threads() -> Threads {
+    match std::env::var("KONTRA_THREADS").as_deref() {
+        Ok("auto") => Threads::Auto,
+        Ok(n) => Threads::Fixed(n.parse().unwrap_or(1)),
+        Err(_) => Threads::Fixed(1),
+    }
+}
+
+/// Memory a part may spend on per-voice state. Voices are sized to this, not
+/// to a fixed polyphony: a note is refused only past thousands of voices, and
+/// that is counted (`RuntimeStats::voice_drops`).
+const VOICE_BUDGET: usize = 256 << 20;
+const MIN_VOICES: usize = 512;
+const MAX_VOICES: usize = 16384;
+
+/// Capacities of a part, sized for its plan's script state and voice cost.
 fn limits(plan: &Prepared) -> Limits {
-    Limits::for_plan(plan, NOTES, 512)
+    let voices = (VOICE_BUDGET / plan.voice_state_bytes().max(1)).clamp(MIN_VOICES, MAX_VOICES);
+    // Notes outlive their voices only in release, and each holds a few voices.
+    let notes = (voices / 4).max(NOTES);
+    Limits {
+        families: (voices / 2).max(256),
+        decisions: (voices / 2).max(256),
+        ..Limits::for_plan(plan, notes, voices)
+    }
 }
 
 fn is_wav(path: &Path) -> bool {
@@ -961,7 +985,7 @@ impl CoreLoader for V2Loader {
         let limits = limits(&prepared);
         report.decoded.script_callbacks = limits.behaviors;
         let voices = limits.voices;
-        let mut runtime = Runtime::new(prepared, limits).map_err(core)?;
+        let mut runtime = Runtime::new(prepared, limits).map_err(core)?.with_threads(render_threads());
         let streams = cache.is_some();
         if let Some(cache) = cache {
             runtime = runtime.with_stream_cache(cache);
