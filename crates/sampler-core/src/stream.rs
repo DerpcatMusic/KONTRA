@@ -552,33 +552,80 @@ impl crate::Runtime {
                 let head = asset.try_head();
                 let head = head.as_deref().map_or(&[][..], |h| h);
                 let mut failure = None;
-                let complete = self
-                    .visit_voice_demand(crate::VoiceId(self.voices.id(index)), frames, |demand| {
-                        crate::prepare::uncovered(head, demand.frames, |frames| {
-                            if !requesting {
-                                cache
-                                    .protect(asset, frames)
-                                    .expect("validated source demand");
-                                return true;
+                // Visit each page once per run of demand on it, at its first
+                // (earliest) deadline.
+                let mut last = None;
+                let mut visit = |frames: std::ops::Range<usize>, deadline: u64| {
+                    crate::prepare::uncovered(head, frames, |frames| {
+                        for page in frames.start / PAGE_FRAMES..=(frames.end - 1) / PAGE_FRAMES {
+                            if last.replace(page) == Some(page) {
+                                continue;
                             }
-                            for page in frames.start / PAGE_FRAMES..=(frames.end - 1) / PAGE_FRAMES
-                            {
-                                match cache.request(asset, page, demand.deadline) {
-                                    Ok(status) => ready &= status == PageStatus::Ready,
-                                    Err(error) => {
-                                        failure = Some(error);
-                                        return false;
-                                    }
+                            if !requesting {
+                                let start = page * PAGE_FRAMES;
+                                let end = (start + PAGE_FRAMES).min(asset.frame_count());
+                                cache
+                                    .protect(asset, start..end)
+                                    .expect("validated source demand");
+                                continue;
+                            }
+                            match cache.request(asset, page, deadline) {
+                                Ok(status) => ready &= status == PageStatus::Ready,
+                                Err(error) => {
+                                    failure = Some(error);
+                                    return false;
                                 }
                             }
-                            true
-                        })
+                        }
+                        true
                     })
-                    .expect("live voice and validated horizon");
+                };
+                let Some(demand) = self
+                    .voice_demand(crate::VoiceId(self.voices.id(index)), frames)
+                    .expect("live voice and validated horizon")
+                else {
+                    continue;
+                };
+                let cursor = demand.cursor;
+                if let Some((reach, direction, lead)) = cursor.linear_reach(demand.frames) {
+                    // A plain stretch: whole pages in traversal order, without
+                    // walking every output frame.
+                    let deadline =
+                        |index| demand.at + u64::from(cursor.first_use(index, direction, lead));
+                    let mut part = match direction {
+                        crate::Direction::Forward => reach.start..reach.start,
+                        crate::Direction::Reverse => reach.end..reach.end,
+                    };
+                    loop {
+                        let (frames, first) = match direction {
+                            crate::Direction::Forward if part.end < reach.end => {
+                                let end =
+                                    ((part.end / PAGE_FRAMES + 1) * PAGE_FRAMES).min(reach.end);
+                                part = part.end..end;
+                                (part.clone(), part.start)
+                            }
+                            crate::Direction::Reverse if part.start > reach.start => {
+                                let start =
+                                    ((part.start - 1) / PAGE_FRAMES * PAGE_FRAMES).max(reach.start);
+                                part = start..part.start;
+                                (part.clone(), part.end - 1)
+                            }
+                            _ => break,
+                        };
+                        if !visit(frames, deadline(first)) {
+                            break;
+                        }
+                    }
+                } else {
+                    let complete =
+                        cursor.visit_demand(demand.frames, demand.envelope, |offset, frames| {
+                            visit(frames, demand.at + u64::from(offset))
+                        });
+                    debug_assert!(complete || failure.is_some());
+                }
                 if let Some(error) = failure {
                     return Err(error);
                 }
-                debug_assert!(complete);
             }
         }
         Ok(ready)

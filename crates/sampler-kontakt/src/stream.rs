@@ -204,7 +204,8 @@ pub struct StreamReport {
     pub latency_p50: Duration,
     pub latency_p95: Duration,
     pub latency_p99: Duration,
-    /// Source frames each start keeps resident per unit of step (at step 1).
+    /// Output frames each start keeps resident (times its zone's step in
+    /// source frames): the measured latency budget.
     pub head_frames: usize,
     pub head_bytes: usize,
     /// Bytes every asset would take fully decoded, as `load` holds them.
@@ -545,7 +546,9 @@ fn decode(mut worker: StreamWorker, sources: &HashMap<AssetId, Source>, stop: &A
 
 /// A streamed load: the plan's assets hold only heads; `cache` goes to the
 /// runtime (`Runtime::with_stream_cache`), which must call
-/// `service_streaming` every block with a horizon of at least one page.
+/// `service_streaming` every block with a horizon of at least
+/// `report.head_frames` plus the block length: a page is then requested no
+/// later than the latency budget before a voice reads it.
 pub struct Streamed {
     pub loaded: crate::Loaded,
     pub assets: Vec<Pcm>,
