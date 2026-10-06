@@ -420,7 +420,7 @@ impl Runtime {
         // repeated pool scans: O(reserved slots + retired notes).
         while let Some(n) = self.notes.get(id.0).copied() {
             if (n.gate() && !n.retire_when_silent)
-                || (n.input.is_some() && n.key_down())
+                || n.input_down
                 || n.pins != 0
                 || n.work != 0
                 || n.families != 0

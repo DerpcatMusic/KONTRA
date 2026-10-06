@@ -154,6 +154,8 @@ fn forwarding_is_once_per_original_note_and_failed_capacity_is_retryable_without
             assert_eq!(outcome, sampler_core::Outcome::Fault(Error::Capacity));
             true
         });
+        assert!(rt.input_held(note).unwrap());
+        assert_eq!(rt.note_off(input(5), None), Ok(note));
         rt.flush_ended(|_| true);
         assert_eq!(rt.note_count(), 0);
     });

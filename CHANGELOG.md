@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Separate raw host key ownership from scripted note ends and callback faults.
+  Late note-offs retain same-key FIFO pairing, source timers preserve host deadlines,
+  and MPE member expression follows physical key ownership through script completion.
+
 - Add release-event suppression and delayed forwarding through the native gate,
   pedal and release-layer owners. KSP release callbacks can wait and resume their
   original event without losing key-up context, group snapshots or reserved capacity.

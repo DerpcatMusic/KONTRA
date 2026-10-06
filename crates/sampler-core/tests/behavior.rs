@@ -175,6 +175,10 @@ fn wait_cancellation_panic_and_explicit_abort_need_no_queue_space() {
             rt.render(&mut audio).unwrap();
             assert_eq!(audio, [[0.; 2]; 32]);
             rt.flush_ended(|_| panic!("completion owns a private pin"));
+            assert_eq!(rt.input_held(note), Ok(action == 2));
+            if action == 2 {
+                assert_eq!(rt.note_off(input(), None), Ok(note));
+            }
             rt.flush_behaviors(|_, _, _| true);
             rt.flush_ended(|_| true);
             assert_eq!((rt.note_count(), rt.expression_count()), (0, 0));
@@ -236,6 +240,8 @@ fn faults_and_fuel_are_observable_and_cannot_leave_partial_owned_work() {
                 );
                 true
             });
+            assert!(rt.input_held(note).unwrap());
+            assert_eq!(rt.note_off(input(), None), Ok(note));
             rt.flush_ended(|_| true);
             assert_eq!(
                 (
@@ -378,6 +384,8 @@ fn deferred_fault_is_reported_at_the_resume_boundary() {
         );
         assert_eq!(rt.pending_commands(), 0);
         rt.flush_behaviors(|_, _, _| true);
+        assert!(rt.input_held(note).unwrap());
+        assert_eq!(rt.note_off(input(), None), Ok(note));
         rt.flush_ended(|_| true);
         assert_eq!(rt.note_count(), 0);
     });
@@ -561,6 +569,8 @@ fn branching_loops_obey_fuel_and_integer_arithmetic_never_wraps() {
             assert_eq!(rt.behavior_outcome(id), Ok(Some(outcome)));
             assert_eq!(rt.pending_commands(), 0);
             rt.flush_behaviors(|_, _, _| true);
+            assert!(rt.input_held(note).unwrap());
+            assert_eq!(rt.note_off(input(), None), Ok(note));
             rt.flush_ended(|_| true);
             assert_eq!(rt.note_count(), 0);
         });
@@ -735,6 +745,8 @@ fn independent_duration_keeps_ownership_after_callback_fault_until_its_release()
             Ok(Some(Outcome::Fault(Error::Capacity)))
         );
         rt.flush_behaviors(|_, _, _| true);
+        assert!(rt.input_held(note).unwrap());
+        assert_eq!(rt.note_off(input(), None), Ok(note));
         rt.flush_ended(|_| panic!("independent duration still retains its input ancestor"));
         let mut audio = [[0.; 2]; 8];
         rt.render(&mut audio).unwrap();
@@ -1600,6 +1612,8 @@ fn evaluated_time_and_note_arguments_validate_before_publishing_work_without_hea
             assert_eq!(rt.behavior_local(id, 0), Ok(value));
             assert_eq!((rt.pending_commands(), rt.voice_count()), (0, 0));
             rt.flush_behaviors(|_, _, _| true);
+            assert!(rt.input_held(note).unwrap());
+            assert_eq!(rt.note_off(input(), None), Ok(note));
             rt.flush_ended(|_| true);
             assert_eq!(rt.note_count(), 0);
         });
@@ -1652,6 +1666,8 @@ fn evaluated_time_and_note_arguments_validate_before_publishing_work_without_hea
                 (0, 0, 0, 1)
             );
             rt.flush_behaviors(|_, _, _| true);
+            assert!(rt.input_held(note).unwrap());
+            assert_eq!(rt.note_off(input(), None), Ok(note));
             rt.flush_ended(|_| true);
             assert_eq!(rt.note_count(), 0);
         });

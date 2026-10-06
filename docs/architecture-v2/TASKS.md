@@ -157,6 +157,9 @@ No SFZ frontend has been implemented. Shared primitives remain format independen
   through shared, retained key-up scheduling, including plan-owned UI callbacks.
   Release callbacks can suppress and later forward the same note, preserving physical
   key-up context, group selection, pedal holds and owned release-layer reservations.
+  Raw external key pairing now survives downstream script note-off and callback
+  fault/cancellation; logical held-state and MPE's physical input projection are
+  separate, including same-key FIFO and independent host/script deadlines.
   Marked/all-event targets, broader mutation/status services and ordered script slots
   remain open; individual-ID fixtures are not full vendor-command parity.
 

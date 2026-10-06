@@ -332,7 +332,7 @@ impl Mpe {
         for binding in &self.bindings {
             let active_member = binding.channel != self.zone.manager()
                 && channel.is_none_or(|channel| binding.channel == channel)
-                && runtime.key_down(binding.note)?;
+                && runtime.input_held(binding.note)?;
             if manager || active_member {
                 let owner = runtime.expression_id(binding.note)?;
                 let mut expression = runtime.expression(owner)?;
@@ -360,7 +360,7 @@ impl Mpe {
             for binding in &mut self.bindings {
                 if binding.channel != self.zone.manager()
                     && channel.is_none_or(|channel| binding.channel == channel)
-                    && runtime.key_down(binding.note)?
+                    && runtime.input_held(binding.note)?
                 {
                     binding.member = controls[usize::from(binding.channel)];
                 }

@@ -12,6 +12,8 @@ pub enum Event {
     Controller(super::PerformanceId, u8, u32),
     /// Physical key-up with optional normalized release velocity.
     KeyUp(NoteId, Option<f64>),
+    /// Downstream logical key-up; retains the independent host input pairing.
+    ScriptKeyUp(NoteId),
     /// Forward a script-suppressed key release without another key-up callback.
     ForwardRelease(NoteId),
     Release(NoteId),
@@ -40,8 +42,14 @@ pub(super) struct Scheduled {
 }
 
 impl Scheduled {
-    fn ends_note(&self, note: NoteId) -> bool {
-        matches!(self.action, Action::Event(Event::KeyUp(id, _) | Event::Release(id) | Event::ForwardRelease(id)) if id == note)
+    fn ends_note(&self, note: NoteId, physical: bool) -> bool {
+        match self.action {
+            Action::Event(Event::KeyUp(id, _)) => physical && id == note,
+            Action::Event(
+                Event::ScriptKeyUp(id) | Event::Release(id) | Event::ForwardRelease(id),
+            ) => id == note,
+            _ => false,
+        }
     }
 }
 
@@ -70,7 +78,14 @@ impl Runtime {
             }
             Event::KeyUp(id, velocity) => {
                 super::release::validate_velocity(velocity)?;
-                if !self.notes.get(id.0).ok_or(Error::StaleHandle)?.key_down() {
+                let n = self.notes.get(id.0).ok_or(Error::StaleHandle)?;
+                if !n.input_down && !n.key_down() {
+                    return Err(Error::ClosedNote);
+                }
+            }
+            Event::ScriptKeyUp(id) => {
+                let n = self.notes.get(id.0).ok_or(Error::StaleHandle)?;
+                if !n.key_down() && !(n.gate() && self.release_times[id.0.index].held) {
                     return Err(Error::ClosedNote);
                 }
             }
@@ -114,6 +129,7 @@ impl Runtime {
         }
         if let Event::Expression(id, _)
         | Event::KeyUp(id, _)
+        | Event::ScriptKeyUp(id)
         | Event::Release(id)
         | Event::ForwardRelease(id) = event
         {
@@ -150,6 +166,11 @@ impl Runtime {
         self.replace_note_end_at(note, at, Event::ForwardRelease(note))
     }
 
+    /// Replace downstream note-end deadlines without consuming scheduled host key-ups.
+    pub fn replace_script_key_up_at(&mut self, note: NoteId, at: u64) -> Result<(), Error> {
+        self.replace_note_end_at(note, at, Event::ScriptKeyUp(note))
+    }
+
     fn replace_note_end_at(&mut self, note: NoteId, at: u64, event: Event) -> Result<(), Error> {
         self.check_time(at)?;
         if at == self.now {
@@ -157,14 +178,22 @@ impl Runtime {
         }
         let n = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
         let ready = match event {
-            Event::KeyUp(..) => n.key_down(),
+            Event::KeyUp(..) => n.input_down || n.key_down(),
+            Event::ScriptKeyUp(..) => {
+                n.key_down() || (n.gate() && self.release_times[note.0.index].held)
+            }
             Event::ForwardRelease(..) => n.gate() && self.release_times[note.0.index].held,
             _ => return Err(Error::InvalidInput),
         };
         if !ready {
             return Err(Error::ClosedNote);
         }
-        let replaced = self.commands.iter().filter(|c| c.ends_note(note)).count();
+        let physical = matches!(event, Event::KeyUp(..));
+        let replaced = self
+            .commands
+            .iter()
+            .filter(|c| c.ends_note(note, physical))
+            .count();
         let future = usize::from(at != self.now);
         if future != 0 && replaced == 0 && self.available_commands() == 0 {
             return Err(Error::Capacity);
@@ -174,7 +203,8 @@ impl Runtime {
             .checked_sub(replaced)
             .and_then(|n| n.checked_add(future))
             .ok_or(Error::Capacity)?;
-        self.commands.retain(|command| !command.ends_note(note));
+        self.commands
+            .retain(|command| !command.ends_note(note, physical));
         self.notes.get_mut(note.0).unwrap().work = work;
         if future != 0 {
             self.queue(at, Action::Event(event));
@@ -215,6 +245,14 @@ impl Runtime {
             Event::KeyUp(id, velocity) => {
                 self.key_up_now(id, velocity).unwrap();
             }
+            Event::ScriptKeyUp(id) => {
+                if self.release_times[id.0.index].held {
+                    self.resume_release(id).unwrap();
+                } else {
+                    self.key_up_with_cause(id, None, super::ReleaseCause::Script)
+                        .unwrap();
+                }
+            }
             Event::Release(id) => {
                 self.release_now(id, super::ReleaseCause::Explicit).unwrap();
             }
@@ -251,6 +289,7 @@ impl Runtime {
                 Action::Event(event) => {
                     if let Event::Expression(id, _)
                     | Event::KeyUp(id, _)
+                    | Event::ScriptKeyUp(id)
                     | Event::Release(id)
                     | Event::ForwardRelease(id) = event
                     {
@@ -298,12 +337,16 @@ impl Runtime {
             Action::Event(
                 event @ (Event::Expression(id, _)
                 | Event::KeyUp(id, _)
+                | Event::ScriptKeyUp(id)
                 | Event::Release(id)
                 | Event::ForwardRelease(id)),
             ) => {
                 let n = notes.get_mut(id.0).unwrap(); // Work pins cannot be consumed by public unpin().
                 let keep = match event {
-                    Event::KeyUp(..) => n.key_down(),
+                    Event::KeyUp(..) => n.input_down || n.key_down(),
+                    Event::ScriptKeyUp(..) => {
+                        n.key_down() || (n.gate() && self.release_times[id.0.index].held)
+                    }
                     Event::ForwardRelease(..) => n.gate() && self.release_times[id.0.index].held,
                     _ => n.gate(),
                 };

@@ -289,3 +289,15 @@ gate, group and reservation owners; no legacy VM or timer heap is reused. Exact 
 pedals before/after forwarding, late group edits, full timeline capacity, callback
 fault and panic are executable fixtures. Legacy hard-stop continuation cleanup and
 ordered downstream script propagation remain explicit future conformance work.
+
+
+## Raw input ownership versus script event completion
+
+Applied supplied architecture sections 4.3 and 5.3: physical input, logical gate and
+stage-visible held state are separate facts. Found that source note-off and native
+callback faults had reused the physical key transition; a later anonymous host off
+could therefore select a newer repeated key. Raw input ownership now survives those
+internal closures and governs FIFO matching, terminal eligibility and MPE member
+tracking. Tests preserve physical deadlines across source rescheduling and exercise
+both MPE zones and suppressed-release timing. This is native ownership evidence;
+precise vendor held-state projection remains an explicit differential-test obligation.

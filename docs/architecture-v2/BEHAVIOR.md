@@ -510,3 +510,20 @@ the held gate, owns a work pin and cancels when that hold ends. Both deadline-re
 APIs share one capacity/clock/ownership transaction. Replacing, consuming or cancelling
 commands returns pins exactly once. Native callback and source tests cover this path
 without allocation, including automatic key-release and gate-release layers together.
+
+
+## Input pairing survives downstream script completion
+
+The native note keeps raw `input_down` separately from its logical key/gate records.
+`input_held` queries that raw fact; `key_down`/`ReadKeyDown` query downstream event
+state. Script key-up, callback faults and cancellation never consume the raw input.
+FIFO matching and terminal retirement therefore cannot transfer a late input note-off
+to a replacement same-key event. Physical key-up/all-notes-off, explicit native owner
+abort and panic consume the input bit even if the logical key was already closed.
+
+`ScriptKeyUp` records `ReleaseCause::Script`, using the same pedal/release services,
+and is separately scheduled from physical `KeyUp`. Script deadline replacement leaves
+physical commands intact; both retain their complete target handles. A pending script
+key-up can also resume a subsequently suppressed release without another callback.
+All-sound-off retains raw keys as before. MPE member expression now consults the same
+raw projection, with no parallel adapter-side ownership table.

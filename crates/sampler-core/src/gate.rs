@@ -79,8 +79,15 @@ impl Runtime {
         Ok((c.sustain, c.sostenuto))
     }
 
+    /// Downstream logical key state. For raw host ownership, use input_held.
     pub fn key_down(&self, note: NoteId) -> Result<bool, Error> {
         Ok(self.notes.get(note.0).ok_or(Error::StaleHandle)?.key_down())
+    }
+
+    /// Raw external key ownership, independent of downstream script note-off,
+    /// callback faults, source EOF and gate state. Generated notes have no input.
+    pub fn input_held(&self, note: NoteId) -> Result<bool, Error> {
+        Ok(self.notes.get(note.0).ok_or(Error::StaleHandle)?.input_down)
     }
 
     pub fn sustain(&mut self, channel: ChannelId, down: bool) -> Result<(), Error> {
@@ -209,7 +216,7 @@ impl Runtime {
             let Some(note) = &mut self.notes.slots[i].value else {
                 continue;
             };
-            if note.key_down()
+            if note.input_down
                 && note
                     .input
                     .is_some_and(|input| input.channel_address() == address)
@@ -278,6 +285,15 @@ impl Runtime {
     }
 
     pub(super) fn key_up_now(&mut self, note: NoteId, velocity: Option<f64>) -> Result<(), Error> {
+        self.key_up_with_cause(note, velocity, ReleaseCause::KeyUp)
+    }
+
+    pub(super) fn key_up_with_cause(
+        &mut self,
+        note: NoteId,
+        velocity: Option<f64>,
+        cause: ReleaseCause,
+    ) -> Result<(), Error> {
         super::release::validate_velocity(velocity)?;
         let n = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
         let sustained = n.input.is_some_and(|i| {
@@ -287,9 +303,9 @@ impl Runtime {
             })
         });
         let held = !self.selections[note.0.index].consumed_switch && (sustained || n.sostenuto);
-        self.release_key(note, ReleaseCause::KeyUp, velocity);
+        self.release_key(note, cause, velocity);
         if !held && !self.release_times[note.0.index].held {
-            self.close_gate(note, ReleaseCause::KeyUp);
+            self.close_gate(note, cause);
             self.cleanup_closed_notes();
         } else {
             // Key-up may resolve a physically retained but already silenced input.
@@ -339,7 +355,7 @@ impl Runtime {
                 continue;
             };
             let bit = 1 << input.channel;
-            if rising & bit != 0 && n.key_down() && n.gate() && !self.selections[i].consumed_switch
+            if rising & bit != 0 && n.input_down && n.gate() && !self.selections[i].consumed_switch
             {
                 n.sostenuto = true;
             }

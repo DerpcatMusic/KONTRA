@@ -210,6 +210,8 @@ fn array_bounds_fault_without_overwriting_adjacent_state_or_assignment_destinati
                 assert_eq!(outcome, Outcome::Fault(Error::InvalidInput));
                 true
             });
+            rt.flush_ended(|_| panic!("faults preserve input pairing"));
+            rt.note_off(input(1, 60), None).unwrap();
             rt.flush_ended(|_| true);
             assert_eq!(
                 (rt.note_count(), rt.voice_count(), rt.pending_commands()),

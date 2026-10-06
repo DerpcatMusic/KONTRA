@@ -241,6 +241,8 @@ fn ui_can_stop_stored_events_and_stale_ids_cannot_stop_a_reused_slot() {
             assert_eq!(outcome, Outcome::Finished);
             true
         });
+        assert!(rt.input_held(original).unwrap());
+        assert_eq!(rt.note_off(input(60), None), Ok(original));
         rt.flush_ended(|_| true);
         let fresh = rt.note_on(input(60), 60, 1.).unwrap();
         rt.invoke_control(
