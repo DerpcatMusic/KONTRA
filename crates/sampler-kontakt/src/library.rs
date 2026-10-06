@@ -414,6 +414,7 @@ impl Translation {
             }
         }
         let mut envelope = None;
+        let mut flex_release = None;
         let mut routes = Vec::new();
         if let Some(chunk) = group.0.find_first(INTERNAL_MODS) {
             for (slot, modulator) in InternalModArray16::try_from(chunk)?.slots()? {
@@ -450,14 +451,42 @@ impl Translation {
                         Some(lfo) => ir::ModulationSource::Lfo(lfo),
                         None => continue,
                     },
-                    Modulator::Flex(_) => {
-                        self.unsupported(
-                            &at,
-                            "flex envelope modulation",
-                            &params.name,
-                            not_modeled,
-                        );
-                        continue;
+                    Modulator::Flex(flex) => {
+                        // Point times are deltas from the previous point and
+                        // levels linear gain (audits/MODULATION.md, medium).
+                        // The curve parameter's law is not established: 0.5
+                        // is linear, other values play linear and are reported.
+                        if flex.points.iter().any(|p| p.curve != 0.5) {
+                            self.unsupported(
+                                &at,
+                                "flex envelope segment curve (linear used)",
+                                &params.name,
+                                ir::Reason::UnknownLaw,
+                            );
+                        }
+                        let sustain = flex.sustain as usize;
+                        if volume {
+                            // Held until the release segments end.
+                            let after: f32 = flex
+                                .points
+                                .iter()
+                                .skip(sustain + 1)
+                                .map(|p| p.time_ms.max(0.0))
+                                .sum();
+                            flex_release = Some(flex_release.unwrap_or(0.0f32).max(after));
+                        }
+                        ir::ModulationSource::Breakpoints(ir::Breakpoints {
+                            points: flex
+                                .points
+                                .iter()
+                                .map(|p| ir::Breakpoint {
+                                    time: ir::Time::Milliseconds(f64::from(p.time_ms.max(0.0))),
+                                    level: f64::from(p.level.clamp(0.0, 1.0)),
+                                    shape: ir::Curve::Linear,
+                                })
+                                .collect(),
+                            sustain: Some(sustain),
+                        })
                     }
                     Modulator::Other { chunk_id } => {
                         self.unsupported(
@@ -483,6 +512,19 @@ impl Translation {
                     routes.extend(self.route(&at, modulator, envelope_source, target));
                 }
             }
+        }
+        if let (None, Some(release_ms)) = (envelope, flex_release) {
+            // A flex volume envelope without an AHDSR plays against a gate
+            // that holds through the flex release, then ends the voice.
+            self.ir.modulators.push(ir::Modulator {
+                scope: ir::Scope::Voice,
+                source: ir::ModulationSource::Envelope(ir::Envelope {
+                    release: ir::Time::Milliseconds(f64::from(release_ms)),
+                    release_shape: ir::Curve::Step,
+                    ..Default::default()
+                }),
+            });
+            envelope = Some(ir::ModulatorRef(self.ir.modulators.len() - 1));
         }
         let mut velocity = ir::VelocityResponse::None;
         if let Some(chunk) = group.0.find_first(EXTERNAL_MODS) {
@@ -1119,7 +1161,7 @@ mod modulation {
     fn ahdsr_stage_laws_are_native_exponential_curves() {
         let curve = |k: ir::Curve, t: f64| match k {
             ir::Curve::Exponential(k) => (k * t).exp_m1() / k.exp_m1(),
-            ir::Curve::Linear => t,
+            ir::Curve::Linear | ir::Curve::Step => t,
         };
         let (attack, fall) = ahdsr_curves(0.5);
         // Decay: 1.075·(3/43)^t − 0.075 falls from 1 to 0.

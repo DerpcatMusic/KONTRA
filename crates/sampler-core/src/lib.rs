@@ -71,7 +71,10 @@ mod modulation;
 mod steal;
 mod voice_mod;
 pub use steal::Stealing;
-pub use voice_mod::{Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModScale, ModSource, ModTarget};
+pub use voice_mod::{
+    Breakpoint, Breakpoints, Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModScale, ModSource,
+    ModTarget,
+};
 mod ownership;
 use modulation::RenderedExpression;
 pub use modulation::{Destination, ExpressionSource, Modulation, Route};
