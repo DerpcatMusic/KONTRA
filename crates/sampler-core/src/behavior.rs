@@ -1484,16 +1484,18 @@ impl Runtime {
                 let plan = self.behavior_plan(owner)?;
                 let key = *self.local_cell_mut(id, local)?;
                 // ponytail: scans every note slot; a per-key count if notes grow large.
-                let held = self
-                    .notes
-                    .slots
-                    .iter()
-                    .filter_map(|s| s.value.as_ref())
-                    .any(|n| {
-                        n.plan == plan
-                            && n.key_down()
-                            && n.input.is_some_and(|i| i64::from(i.key) == key)
-                    });
+                let held = (0..128).contains(&key)
+                    && self.input_keys >> key & 1 == 1
+                    && self
+                        .notes
+                        .slots
+                        .iter()
+                        .filter_map(|s| s.value.as_ref())
+                        .any(|n| {
+                            n.plan == plan
+                                && n.key_down()
+                                && n.input.is_some_and(|i| i64::from(i.key) == key)
+                        });
                 *self.local_cell_mut(id, local)? = i64::from(held);
             }
             Instruction::Signal { signal } => {

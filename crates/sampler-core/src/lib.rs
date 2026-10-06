@@ -344,8 +344,6 @@ struct Voice {
     stolen: bool,
     /// The region's group, for script group layers.
     group: Option<u32>,
-    /// Script-layer gains at the end of the last rendered chunk.
-    script_gains: Option<[f32; 2]>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -544,6 +542,9 @@ pub struct Runtime {
     /// Set once a script writes a voice parameter; voices then render in chunks.
     // ponytail: sticky for the runtime's life; count live layers if chunking costs show up.
     script_params: bool,
+    /// Keys whose latest physical event was a note-on: one note-off clears the
+    /// key however many presses stacked, as `%KEY_DOWN` does in Kontakt.
+    input_keys: u128,
     executing_due: bool,
     command_limit: usize,
     reserved_commands: usize,
@@ -687,6 +688,7 @@ impl Runtime {
             note_params: vec![script_params::NoteParams::default(); limits.notes]
                 .into_boxed_slice(),
             script_params: false,
+            input_keys: 0,
             release_times: vec![release::ReleaseTimes::default(); limits.notes].into_boxed_slice(),
             note_events: vec![note_event::NoteEvent::new(NotePitch::Key(0), 0.); limits.notes]
                 .into_boxed_slice(),
@@ -946,6 +948,9 @@ impl Runtime {
                 })?)
             }
         };
+        if let Some(input) = input {
+            self.input_keys |= 1 << (input.key & 127);
+        }
         let id = match self.notes.insert(Note {
             input,
             input_down: input.is_some(),
@@ -1081,6 +1086,7 @@ impl Runtime {
             .min_by_key(|(_, order)| *order)
             .map(|(i, _)| NoteId(self.notes.id(i)))
             .ok_or(Error::StaleHandle)?;
+        self.input_keys &= !(1 << (input.key & 127));
         self.key_up_now(id, velocity)?;
         Ok(id)
     }
@@ -1208,7 +1214,6 @@ impl Runtime {
             born: self.voice_order,
             stolen: false,
             group: None,
-            script_gains: None,
         })?);
         self.cold_started += u64::from(cold);
         self.voice_order += 1;
