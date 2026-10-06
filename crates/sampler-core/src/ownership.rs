@@ -490,6 +490,34 @@ impl Runtime {
         }
     }
 
+    /// A note whose release a script holds (`ignore_event` in `on release`),
+    /// with nothing of its own sounding and every child's gate closed: its
+    /// sound is its children's, so its gate follows theirs.
+    pub(super) fn held_silent(&self, id: NoteId) -> bool {
+        let Some(n) = self.notes.get(id.0) else {
+            return false;
+        };
+        if n.input_down
+            || n.pins != 0
+            || n.work != 0
+            || n.families != 0
+            || !n.gate()
+            || n.key_down()
+            || !self.release_times[id.0.index].held
+        {
+            return false;
+        }
+        let mut child = n.first_child;
+        while let Some(index) = child {
+            let c = self.notes.slots[index.get()].value.as_ref().unwrap();
+            if c.gate() {
+                return false;
+            }
+            child = c.siblings.next;
+        }
+        true
+    }
+
     fn retire_note_chain(
         &mut self,
         mut id: NoteId,
@@ -498,13 +526,7 @@ impl Runtime {
         // Each removal visits its parent once. No recursion, scratch queue or
         // repeated pool scans: O(reserved slots + retired notes).
         while let Some(n) = self.notes.get(id.0).copied() {
-            let quiet = !n.input_down && n.pins == 0 && n.work == 0 && n.families == 0;
-            if quiet
-                && n.children == 0
-                && n.gate()
-                && !n.key_down()
-                && self.release_times[id.0.index].held
-            {
+            if self.held_silent(id) {
                 // Nothing can resume an audible release: close the held gate
                 // without release triggers and retire below.
                 // ponytail: a script that kept this ID to note_off it later

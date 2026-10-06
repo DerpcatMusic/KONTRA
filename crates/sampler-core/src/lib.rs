@@ -1238,6 +1238,11 @@ impl Runtime {
             // Forced closure must return any suppressed physical-release quota.
             self.run_release(id, Trigger::KeyRelease, false);
             self.run_release(id, Trigger::GateRelease, cause.musical());
+            if let Some(parent) = self.notes.get(id.0).and_then(|n| n.parent)
+                && self.held_silent(parent)
+            {
+                self.close_gate(parent, ReleaseCause::Silent);
+            }
         }
     }
 
