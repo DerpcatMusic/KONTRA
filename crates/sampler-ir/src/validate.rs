@@ -18,6 +18,7 @@ pub enum Reference {
     Control(usize),
     Route(usize),
     Shape(usize),
+    VoiceLimit(usize),
     Processor { chain: usize, index: usize },
 }
 
@@ -96,6 +97,7 @@ impl Check<'_> {
             Reference::Control(i) => i < ir.controls.len(),
             Reference::Route(i) => i < ir.routes.len(),
             Reference::Shape(i) => i < ir.shapes.len(),
+            Reference::VoiceLimit(i) => i < ir.voice_limits.len(),
             Reference::Processor { chain, index } => ir
                 .chains
                 .get(chain)
@@ -236,6 +238,19 @@ impl Instrument {
                 check.exists(Reference::Chain(chain.0))?;
             }
             check.output(group.output)?;
+            if let Some(limit) = group.voice_limit {
+                check.exists(Reference::VoiceLimit(limit))?;
+            }
+        }
+        for (i, limit) in self
+            .voice_limit
+            .iter()
+            .chain(&self.voice_limits)
+            .enumerate()
+        {
+            check.owner = format!("voice limit {i}");
+            check.within(f64::from(limit.voices), 1.0..=f64::from(u32::MAX), "voices")?;
+            check.time(limit.fade, "fade")?;
         }
         for (i, zone) in self.zones.iter().enumerate() {
             check.owner = format!("zone {i}");
@@ -303,6 +318,15 @@ impl Instrument {
             check.scope(modulator.scope)?;
             match &modulator.source {
                 ModulationSource::Envelope(envelope) => check.envelope(envelope)?,
+                ModulationSource::Breakpoints(b) => {
+                    for point in &b.points {
+                        check.time(point.time, "breakpoint time")?;
+                        check.within(point.level, 0.0..=1.0, "breakpoint level")?;
+                    }
+                    if b.sustain.is_some_and(|s| s >= b.points.len()) {
+                        check.within(f64::NAN, 0.0..=0.0, "sustain point")?;
+                    }
+                }
                 ModulationSource::Lfo(lfo) => {
                     let rate = match lfo.rate {
                         crate::Frequency::Hertz(hz) => hz,

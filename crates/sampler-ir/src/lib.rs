@@ -66,6 +66,10 @@ pub struct Instrument {
     pub buses: Vec<Bus>,
     pub controls: Vec<Control>,
     pub behaviors: Vec<Behavior>,
+    /// Polyphony of the whole instrument.
+    pub voice_limit: Option<VoiceLimit>,
+    /// Polyphony of voice groups; [`Group::voice_limit`] indexes this.
+    pub voice_limits: Vec<VoiceLimit>,
     /// Source meaning this description does not carry. Lowering never reads it;
     /// it exists so a caller can show or reject what was not translated.
     pub unsupported: Vec<Unsupported>,
@@ -130,6 +134,30 @@ pub struct Group {
     /// Group-scope chain; its processors see the sum of this group's voices.
     pub chain: Option<ChainRef>,
     pub output: Output,
+    /// Index into [`Instrument::voice_limits`] shared by this group's voices.
+    pub voice_limit: Option<usize>,
+}
+
+/// Past `voices` sounding voices, starting another fades one out over
+/// `fade`: a released one first when `prefer_released`, else by `kill`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VoiceLimit {
+    pub voices: u32,
+    pub kill: Kill,
+    pub prefer_released: bool,
+    pub fade: Time,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Kill {
+    /// The quietest.
+    Any,
+    #[default]
+    Oldest,
+    Newest,
+    /// Highest note.
+    Highest,
+    Lowest,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -478,6 +506,8 @@ pub struct Modulator {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ModulationSource {
     Envelope(Envelope),
+    /// A multi-segment envelope (Kontakt flex), gated like `Envelope`.
+    Breakpoints(Breakpoints),
     Lfo(Lfo),
     Controller(u8),
     Velocity,
@@ -492,6 +522,10 @@ pub enum ModulationSource {
     Random,
     /// Always 1.
     Constant,
+    /// Kontakt's release-trigger counter: the share of `T` left when the key
+    /// was released, `clamp((T − held) / T, 0, 1)`, where `held` runs from
+    /// note-on to key-up (to now while the key is down).
+    ReleaseCounter(Time),
 }
 
 impl ModulationSource {
@@ -499,6 +533,24 @@ impl ModulationSource {
     pub fn bipolar(&self) -> bool {
         matches!(self, Self::Lfo(_) | Self::PitchBend)
     }
+}
+
+/// Glides from 0 through `points`, each reached `time` after the previous;
+/// holds at `points[sustain]` while gated; a release glides from the current
+/// level through the points after `sustain` (jumping there when not yet
+/// reached) and the last level holds.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Breakpoints {
+    pub points: Vec<Breakpoint>,
+    pub sustain: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Breakpoint {
+    pub time: Time,
+    /// 0.0..=1.0 of full scale.
+    pub level: f64,
+    pub shape: Curve,
 }
 
 /// Delay-attack-hold-decay-sustain-release.
@@ -514,6 +566,9 @@ pub struct Envelope {
     pub attack_shape: Curve,
     pub decay_shape: Curve,
     pub release_shape: Curve,
+    /// Attack-hold-decay only: decays to zero, ignores note-off, then ends
+    /// (`sustain` and `release` are unused).
+    pub one_shot: bool,
 }
 
 impl Default for Envelope {
@@ -528,6 +583,7 @@ impl Default for Envelope {
             attack_shape: Curve::Linear,
             decay_shape: Curve::Linear,
             release_shape: Curve::Linear,
+            one_shot: false,
         }
     }
 }
@@ -538,6 +594,8 @@ pub enum Curve {
     Linear,
     /// expm1(k·t)/expm1(k); positive starts slowly.
     Exponential(f64),
+    /// Holds the starting level until the stage ends, then steps.
+    Step,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

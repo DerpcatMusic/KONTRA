@@ -370,7 +370,12 @@ pub struct Prepared {
     regions: Box<[PreparedRegion]>,
     pub(super) group_count: u32,
     pub(super) source_event_limit: i32,
+    /// CC64 holds no gate: a behavior implements sustain itself.
+    pub(super) script_sustain: bool,
     pub(super) region_groups: Box<[Option<u32>]>,
+    pub(super) voice_limit: Option<super::VoiceLimit>,
+    pub(super) voice_limits: Box<[super::VoiceLimit]>,
+    pub(super) group_voice_limits: Box<[Option<usize>]>,
     pub(super) group_params: Box<[super::GroupParams]>,
     offsets: [usize; 129],
     phase_offsets: [[usize; 2]; 128],
@@ -389,6 +394,7 @@ pub struct Prepared {
     keyswitches: [Option<u32>; 128],
     articulated: bool,
     pub(super) switching: super::Switching,
+    bend_range: f64,
     conditions: Box<[Box<[ControllerCondition]>]>,
     condition_ends: Box<[usize]>,
     pub(super) release_selection: [super::SelectionPolicy; 2],
@@ -525,7 +531,11 @@ impl Prepared {
             regions: prepared_regions.into_boxed_slice(),
             group_count: 0,
             source_event_limit: i32::MAX,
+            script_sustain: false,
             region_groups: Box::new([]),
+            voice_limit: None,
+            voice_limits: Box::new([]),
+            group_voice_limits: Box::new([]),
             group_params: Box::new([]),
             phase_offsets: std::array::from_fn(|key| [offsets[key + 1]; 2]),
             release_options: [super::ReleaseOptions::default(); 2],
@@ -544,6 +554,7 @@ impl Prepared {
             keyswitches: [None; 128],
             articulated: false,
             switching: Default::default(),
+            bend_range: 2.0,
             conditions: Box::new([]),
             condition_ends: Box::new([]),
             release_selection: [super::SelectionPolicy::Onset; 2],
@@ -770,6 +781,7 @@ impl Prepared {
             if let Some(index) = trigger.release_index()
                 && self.release_options[index].duration.is_none()
                 && region.cursor.unbounded_loop()
+                && !region.envelope.finite()
             {
                 return Err(Error::InvalidInput);
             }
@@ -1161,5 +1173,32 @@ impl Prepared {
             region.bus = bus;
         }
         Ok(self)
+    }
+}
+
+impl Prepared {
+    /// Default channel pitch-bend range in semitones (either direction) for
+    /// plain MIDI bend; an RPN 0 on the channel overrides it.
+    pub fn with_bend_range(mut self, semitones: f64) -> Result<Self, Error> {
+        if !(semitones.is_finite() && (0.0..=96.0).contains(&semitones)) {
+            return Err(Error::InvalidInput);
+        }
+        self.bend_range = semitones;
+        Ok(self)
+    }
+
+    pub fn bend_range(&self) -> f64 {
+        self.bend_range
+    }
+}
+
+impl super::Runtime {
+    /// The active plan's default channel pitch-bend range in semitones.
+    pub fn bend_range(&self) -> f64 {
+        self.plans
+            .get(self.active_plan.0)
+            .unwrap()
+            .prepared
+            .bend_range
     }
 }

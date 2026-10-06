@@ -3,11 +3,12 @@
 //! execute exactly is rejected with [`LowerError::Unsupported`], never
 //! approximated silently.
 use crate::{
-    Biquad, Bus, BusSend, ControllerCondition, Direction, Driver, Envelope, EnvelopeCurve, Error,
-    FilterKind, GroupParams, Keyswitch, Lfo, LfoRate, LfoShape, Loop, LoopMode, LoopShape,
-    ModProgram, ModRoute, ModScale, ModSource, ModTarget, Parameter, Pcm, Playback, Prepared,
-    Processor, Region, SelectionPolicy, Selector, Sequence, SequenceScope, StateVariableFilter,
-    SvfMode, Switch, SwitchKeys, Switching, Take, TakePolicy, Trigger, VelocityCurve, VoiceChain,
+    Biquad, Breakpoint, Breakpoints, Bus, BusSend, ControllerCondition, Direction, Driver,
+    Envelope, EnvelopeCurve, Error, FilterKind, GroupParams, Keyswitch, Lfo, LfoRate, LfoShape,
+    Loop, LoopMode, LoopShape, ModProgram, ModRoute, ModScale, ModSource, ModTarget, Parameter,
+    Pcm, Playback, Prepared, Processor, Region, SelectionPolicy, Selector, Sequence, SequenceScope,
+    StateVariableFilter, SvfMode, Switch, SwitchKeys, Switching, Take, TakePolicy, Trigger,
+    VelocityCurve, VoiceChain,
 };
 use sampler_ir as ir;
 use std::fmt;
@@ -263,6 +264,27 @@ pub fn lower_with(
             .and_then(|p| p.with_group_params(params))
             .map_err(core(Stage::Regions, "groups"))?;
     }
+    if instrument.voice_limit.is_some() || !instrument.voice_limits.is_empty() {
+        let limit = |l: &ir::VoiceLimit| crate::VoiceLimit {
+            voices: l.voices,
+            kill: match l.kill {
+                ir::Kill::Any => crate::Kill::Any,
+                ir::Kill::Oldest => crate::Kill::Oldest,
+                ir::Kill::Newest => crate::Kill::Newest,
+                ir::Kill::Highest => crate::Kill::Highest,
+                ir::Kill::Lowest => crate::Kill::Lowest,
+            },
+            prefer_released: l.prefer_released,
+            fade: lowering.frames(l.fade),
+        };
+        plan = plan
+            .with_voice_limits(
+                instrument.voice_limit.as_ref().map(limit),
+                instrument.voice_limits.iter().map(limit).collect(),
+                instrument.groups.iter().map(|g| g.voice_limit).collect(),
+            )
+            .map_err(core(Stage::Regions, "voice limits"))?;
+    }
     if !chains.is_empty() {
         plan = plan
             .with_voice_chains(chains, chain_of)
@@ -292,6 +314,25 @@ pub fn lower_with(
     plan = lowering.releases(plan)?;
     plan = lowering.articulations(plan)?;
     plan = lowering.controllers(plan)?;
+    // The instrument's own bend depth (Kontakt's pitch-bend modulator) is the
+    // plain MIDI default range; without one, the MIDI default of 2 semitones.
+    if let Some(range) = instrument
+        .routes
+        .iter()
+        .filter(|r| {
+            r.target == ir::Target::Pitch
+                && instrument.modulators[r.source.0].source == ir::ModulationSource::PitchBend
+        })
+        .filter_map(|r| match r.depth {
+            ir::Depth::Pitch(p) => Some(p.semitones().abs()),
+            _ => None,
+        })
+        .reduce(f64::max)
+    {
+        plan = plan
+            .with_bend_range(range)
+            .map_err(core(Stage::Modulation, "pitch-bend range"))?;
+    }
     if instrument.behaviors.is_empty() {
         Ok(plan)
     } else {
@@ -444,10 +485,17 @@ impl Lowering<'_> {
             ir::Curve::Exponential(k) => {
                 EnvelopeCurve::exponential(k).map_err(core(Stage::Envelope, owner))
             }
+            ir::Curve::Step => Ok(EnvelopeCurve::step()),
         };
         let envelope = if one_shot {
             // Plays to the end of the audio whatever the gate does.
             Envelope::one_shot(self.frames(e.attack), u32::MAX, 0)
+        } else if e.one_shot {
+            Envelope::one_shot(
+                self.frames(e.attack),
+                self.frames(e.hold),
+                self.frames(e.decay),
+            )
         } else {
             Envelope::new(
                 self.frames(e.attack),
@@ -556,7 +604,8 @@ impl Lowering<'_> {
                 if m.scope != ir::Scope::Voice {
                     return Err(unsupported(owner.clone(), Feature::ModulatorScope(m.scope)));
                 }
-                program.sources.push(self.mod_source(&owner, &m.source)?);
+                let source = self.mod_source(&owner, &m.source, program)?;
+                program.sources.push(source);
                 sources.insert(modulator, program.sources.len() - 1);
                 Ok(program.sources.len() - 1)
             };
@@ -649,9 +698,30 @@ impl Lowering<'_> {
         &self,
         owner: &str,
         source: &ir::ModulationSource,
+        program: &mut ModProgram,
     ) -> Result<ModSource, LowerError> {
         Ok(match source {
             ir::ModulationSource::Envelope(e) => ModSource::Envelope(self.adsr(owner, e, false)?),
+            ir::ModulationSource::Breakpoints(b) => {
+                let mut points = Vec::with_capacity(b.points.len());
+                for p in &b.points {
+                    points.push(Breakpoint {
+                        frames: self.frames(p.time),
+                        level: p.level as f32,
+                        curve: match p.shape {
+                            ir::Curve::Linear => EnvelopeCurve::default(),
+                            ir::Curve::Step => EnvelopeCurve::step(),
+                            ir::Curve::Exponential(k) => EnvelopeCurve::exponential(k)
+                                .map_err(core(Stage::Envelope, owner))?,
+                        },
+                    });
+                }
+                program.breakpoints.push(Breakpoints {
+                    points,
+                    sustain: b.sustain,
+                });
+                ModSource::Breakpoints(program.breakpoints.len() - 1)
+            }
             ir::ModulationSource::Lfo(lfo) => ModSource::Lfo(Lfo {
                 shape: match lfo.shape {
                     ir::LfoShape::Sine => LfoShape::Sine,
@@ -682,6 +752,9 @@ impl Lowering<'_> {
             ir::ModulationSource::Timbre => ModSource::Timbre,
             ir::ModulationSource::Random => ModSource::Random,
             ir::ModulationSource::Constant => ModSource::Constant,
+            ir::ModulationSource::ReleaseCounter(t) => ModSource::ReleaseCounter {
+                frames: self.frames(*t).max(1),
+            },
             ir::ModulationSource::PitchBend => {
                 return Err(unsupported(owner, Feature::PitchBendSource));
             }

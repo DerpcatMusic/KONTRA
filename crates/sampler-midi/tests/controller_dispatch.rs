@@ -79,7 +79,7 @@ fn midi1_and_midi2_dispatch_before_pedals_or_downstream_controller_projection() 
     for version in [Version::Midi1, Version::Midi2] {
         for remap in [false, true] {
             let mut rt = runtime(remap);
-            let ingress = Ingress::new(2, [Some(version); 16]);
+            let mut ingress = Ingress::new(2, [Some(version); 16]);
             support::without_heap(|| {
                 let domain = rt.performance(1).unwrap();
                 let len = if version == Version::Midi1 { 1 } else { 2 };
