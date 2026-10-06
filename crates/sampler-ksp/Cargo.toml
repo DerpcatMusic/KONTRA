@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 sampler-core = { path = "../sampler-core" }
+sampler-ui-ir = { path = "../sampler-ui-ir" }
 
 [lints.rust]
 unsafe_code = "deny"
