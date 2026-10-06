@@ -55,7 +55,7 @@ mod source;
 pub use source::{Direction, Loop, LoopMode, LoopShape, Playback, SampleDemand};
 mod bus;
 pub use bus::{Bus, BusSend};
-pub use resample::ResampleQuality;
+pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
     Biquad, ControlRange, Delay, FilterKind, Parameter, Processor, StateVariableFilter, SvfMode,

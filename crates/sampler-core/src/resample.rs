@@ -7,6 +7,12 @@ pub(super) const MAX_STEP: f64 = 16.0;
 pub(super) const OCTAVES: usize = 4;
 const RADIUS: usize = 48;
 const SHORT_RADIUS: usize = 12;
+
+/// Source frames any quality reads on each side of a voice's position at
+/// `step`: what a resident range around a start needs beyond its frames.
+pub fn read_radius(step: f64) -> usize {
+    Kernel::radius(step) as usize
+}
 const RESOLUTION: usize = 1024;
 
 /// Rate-conversion quality. Realtime interpolates upsampled and unity-rate

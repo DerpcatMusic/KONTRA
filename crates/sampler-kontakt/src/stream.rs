@@ -254,9 +254,6 @@ pub(crate) fn head_frames(latency: Duration, rate: u32, policy: &StreamPolicy) -
     ((latency + policy.slack).as_secs_f64() * f64::from(rate)).ceil() as usize
 }
 
-/// Kernel guard frames around a start, beyond the widest resampling window.
-const GUARD: u64 = 128;
-
 /// Fastest a zone reads its asset, in source frames per output frame: its
 /// highest key plus `policy.headroom`, its and its group's tuning, and the
 /// asset's rate against the engine's.
@@ -294,13 +291,15 @@ pub(crate) fn start_ranges(
         let pcm = &assets[asset];
         let ratio = f64::from(pcm.sample_rate()) / f64::from(rate);
         let step = zone_step(zone, &instrument.groups, ratio, policy);
-        let frames = (head as f64 * step).ceil() as u64 + 2 * GUARD;
+        // The resampling window reads this far either side of the position.
+        let guard = sampler_core::read_radius(step) as u64 + 1;
+        let frames = (head as f64 * step).ceil() as u64 + 2 * guard;
         let length = pcm.frame_count() as u64;
         let end = playback.end.unwrap_or(length).min(length);
         let (from, to) = if playback.reverse {
             (end.saturating_sub(frames), end)
         } else {
-            let from = playback.start.min(length).saturating_sub(GUARD);
+            let from = playback.start.min(length).saturating_sub(guard);
             (from, (from + frames).min(length))
         };
         if from < to {
