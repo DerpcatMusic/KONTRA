@@ -7,7 +7,7 @@ const PROGRAM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <UVI4>
   <Program Name="Fixture" Gain="0.5">
     <ControlSignalSources>
-      <DAHDSR Name="Amp Env" AttackTime="0.01" DecayTime="0.2" SustainLevel="0.5" ReleaseTime="0.3" VelocitySens="0.5"/>
+      <DAHDSR Name="Amp Env" AttackTime="0.01" DecayTime="0.2" SustainLevel="0.5" ReleaseTime="0.3" VelocitySens="0.5" DecayCurve="0.5"/>
       <LFO Name="Vibrato" Rate="5"/>
     </ControlSignalSources>
     <EventProcessors>
@@ -100,6 +100,13 @@ fn authored_program_translates_loads_and_renders() {
         })
     ));
     assert!(zone.amplitude.is_some());
+    let ir::ModulationSource::Envelope(env) = &ir.modulators[zone.amplitude.unwrap().0].source
+    else {
+        panic!()
+    };
+    let k = 2.0 * ((1.5_f64) / (0.5)).ln();
+    assert_eq!(env.decay_shape, ir::Curve::Exponential(k));
+    assert_eq!(env.attack_shape, ir::Curve::Linear);
     assert_eq!(ir.behaviors.len(), 1);
     assert_eq!(ir.behaviors[0].language, ir::Language::Lua);
     let features: Vec<&str> = ir.unsupported.iter().map(|u| u.feature.as_str()).collect();
