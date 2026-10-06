@@ -52,6 +52,7 @@ fn plan(frames: usize, envelope: Envelope) -> Prepared {
 }
 fn program(sources: Vec<ModSource>, routes: Vec<ModRoute>) -> ModProgram {
     ModProgram {
+        breakpoints: vec![],
         sources,
         routes,
         shapes: vec![],
@@ -355,6 +356,7 @@ fn measure_modulation_cost_per_voice() {
         })
     };
     let mpe = || ModProgram {
+        breakpoints: vec![],
         sources: vec![ModSource::Pressure, ModSource::Timbre],
         routes: vec![
             ModRoute::new(0, ModTarget::Decibels, 6.),
@@ -366,6 +368,7 @@ fn measure_modulation_cost_per_voice() {
         shapes: vec![vec![(0., -1.), (0.5, 0.), (1., 0.)]],
     };
     let full = ModProgram {
+        breakpoints: vec![],
         sources: vec![
             lfo(LfoShape::Sine, 5.),
             ModSource::Envelope(Envelope::new(4800, 0, 9600, 0.5, 4800).unwrap()),
@@ -403,6 +406,7 @@ fn a_second_source_scales_route_depth() {
     // Constant +6 dB, depth scaled by velocity (0.5) through a shape doubling it
     // past 0.25: multiplier 0.5 + (0.5 - 0.25) = 0.75 => +4.5 dB.
     let program = ModProgram {
+        breakpoints: vec![],
         sources: vec![ModSource::Constant, ModSource::Velocity],
         routes: vec![ModRoute {
             scale: Some(ModScale {
@@ -425,4 +429,57 @@ fn a_second_source_scales_route_depth() {
         audio.iter().all(|f| (f[1] - expected).abs() < 1e-5),
         "{audio:?}"
     );
+}
+
+#[test]
+fn breakpoint_envelope_glides_holds_at_sustain_and_releases() {
+    use sampler_core::{Breakpoint, Breakpoints, EnvelopeCurve};
+    let point = |frames, level| Breakpoint {
+        frames,
+        level,
+        curve: EnvelopeCurve::default(),
+    };
+    // 0 -> 1 over 64 frames, hold at 1, then down to 0 over 128 on release.
+    let mut program = program(
+        vec![ModSource::Breakpoints(0)],
+        vec![ModRoute::new(0, ModTarget::Attenuate, 1.)],
+    );
+    program.breakpoints = vec![Breakpoints {
+        points: vec![point(64, 1.), point(128, 0.)],
+        sustain: Some(0),
+    }];
+    let mut rt = Runtime::new(
+        modulated(
+            plan(
+                4096,
+                // The gate holds through the breakpoint release (a step release).
+                Envelope::new(0, 0, 0, 1., 512).unwrap().with_curves(
+                    EnvelopeCurve::default(),
+                    EnvelopeCurve::default(),
+                    EnvelopeCurve::step(),
+                ),
+            ),
+            program,
+            0,
+        ),
+        limits(),
+    )
+    .unwrap();
+    {
+        rt.trigger(input(1), 60, 1.).unwrap();
+        let audio = render(&mut rt, 256, 61);
+        for (i, frame) in audio[..64].iter().enumerate() {
+            assert!((frame[1] - 0.5 * (i + 1) as f32 / 64.).abs() < 1e-6, "{i}");
+        }
+        assert!(audio[64..].iter().all(|f| (f[1] - 0.5).abs() < 1e-6));
+        rt.note_off(input(1), None).unwrap();
+        let audio = render(&mut rt, 192, 7);
+        for (i, frame) in audio[..128].iter().enumerate() {
+            assert!(
+                (frame[1] - 0.5 * (1. - (i + 1) as f32 / 128.)).abs() < 1e-6,
+                "{i}"
+            );
+        }
+        assert!(audio[128..].iter().all(|f| f[1].abs() < 1e-6));
+    }
 }
