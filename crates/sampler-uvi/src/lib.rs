@@ -1272,13 +1272,26 @@ pub fn load_program_scripted_with_options(
     let loaded = assemble(instrument, locations, decoded, options)?;
     let host = script::ScriptHost::new(&text, bank.scripts(), script::Config::default())?;
     let mut instrument = loaded.instrument;
+    note_script(&host, &mut instrument);
+    Ok(scripted::Program {
+        instrument,
+        plan: loaded.plan,
+        host,
+        groups,
+        stream: None,
+    })
+}
+
+/// What the scripts replace is no longer reported; what they use that is not
+/// modeled is.
+#[cfg(feature = "library-access")]
+fn note_script(host: &script::ScriptHost, instrument: &mut ir::Instrument) {
     if host.handles_notes() {
         // The script picks the oscillators now.
         instrument
             .unsupported
             .retain(|u| !u.feature.starts_with("keygroup oscillators all play"));
     }
-    // The scripts run; what they use that is not modeled is listed below.
     instrument
         .unsupported
         .retain(|u| !(u.feature == "script" && u.value.contains("no frontend")));
@@ -1290,11 +1303,35 @@ pub fn load_program_scripted_with_options(
             reason: ir::Reason::NotModeled,
         });
     }
+}
+
+/// [`load_program_scripted`] with the samples streamed from the bank: every zone
+/// is present for the scripts, only their starts are resident.
+#[cfg(feature = "library-access")]
+pub fn load_program_scripted_streamed(
+    bank: &Bank,
+    program: &str,
+    rate: u32,
+    policy: &sampler_kontakt::StreamPolicy,
+) -> Result<scripted::Program, Box<dyn std::error::Error>> {
+    let (text, program_path) = bank.program(program)?;
+    let (instrument, locations, groups) = translate_full(&text, Source::Bank)
+        .map_err(|e| describe(Path::new(program), e))?;
+    let sources = locations
+        .iter()
+        .map(|authored| bank.stream_source(&program_path, authored))
+        .collect();
+    let streamed = assemble_streamed(instrument, locations, sources, rate, policy)?;
+    let host = script::ScriptHost::new(&text, bank.scripts(), script::Config::default())?;
+    let sampler_kontakt::Streamed { loaded, assets, cache, streamer, report } = streamed;
+    let mut instrument = loaded.instrument;
+    note_script(&host, &mut instrument);
     Ok(scripted::Program {
         instrument,
         plan: loaded.plan,
         host,
         groups,
+        stream: Some(scripted::Stream { cache: Some(cache), horizon: report.head_frames, _keep: (streamer, assets) }),
     })
 }
 
@@ -1492,11 +1529,7 @@ mod survey {
     #[cfg(feature = "library-access")]
     fn census_play(bank: &crate::Bank, program: &str, key: u8) -> String {
         use sampler_core::Limits;
-        let options = sampler_kontakt::Options {
-            keys: key.saturating_sub(12)..=key.saturating_add(12).min(127),
-            ..Default::default()
-        };
-        let program = match crate::load_program_scripted_with_options(bank, program, &options) {
+        let program = match crate::load_program_scripted_streamed(bank, program, 48_000, &Default::default()) {
             Ok(p) => p,
             Err(e) => return format!("load-fail {}", e.to_string().chars().take(60).collect::<String>().replace(' ', "_")),
         };

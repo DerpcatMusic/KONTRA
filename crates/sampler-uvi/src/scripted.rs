@@ -60,6 +60,17 @@ pub struct Program {
     pub plan: Prepared,
     pub host: ScriptHost,
     pub groups: Vec<OscGroup>,
+    /// Present when the samples stream.
+    pub stream: Option<Stream>,
+}
+
+/// A streamed program's page cache, and what must outlive it.
+pub struct Stream {
+    /// Handed to the runtime that plays the program.
+    pub cache: Option<sampler_core::StreamCache>,
+    /// Frames each start keeps resident.
+    pub horizon: usize,
+    pub _keep: (sampler_kontakt::Streamer, Vec<sampler_core::Pcm>),
 }
 
 /// Plays made once their originating note was released sound at most this long.
@@ -467,13 +478,28 @@ impl<S: Script> Driver<S> {
 pub struct Player {
     rt: Runtime,
     driver: Driver<ScriptHost>,
+    /// Frames ahead of the clock that streamed voices read, if any stream.
+    horizon: Option<u32>,
+    _stream: Option<Stream>,
 }
 
 impl Player {
     pub fn new(program: Program, limits: Limits, rate: u32) -> Result<Self, Error> {
+        let mut rt = Runtime::new(program.plan, limits)?;
+        let mut horizon = None;
+        let mut stream = program.stream;
+        if let Some(s) = stream.as_mut() {
+            // Heads bound only starts; running voices request a page ahead.
+            horizon = Some((s.horizon.max(sampler_core::PAGE_FRAMES) + 4096) as u32);
+            if let Some(cache) = s.cache.take() {
+                rt = rt.with_stream_cache(cache);
+            }
+        }
         Ok(Self {
-            rt: Runtime::new(program.plan, limits)?,
+            rt,
             driver: Driver::new(program.host, program.groups, rate),
+            horizon,
+            _stream: stream,
         })
     }
 
@@ -510,6 +536,10 @@ impl Player {
             let left = out.len() - done;
             let due = self.driver.wake(&mut self.rt)?;
             let step = due.map_or(left, |d| d.max(1).min(left));
+            if let Some(horizon) = self.horizon {
+                // Pending pages play silent and count as underruns.
+                let _ = self.rt.service_streaming(horizon);
+            }
             self.rt.render(&mut out[done..done + step])?;
             done += step;
         }
