@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 rtrb = "=0.4.0"
+sampler-ir = { path = "../sampler-ir" }
 
 [lints.rust]
 unsafe_code = "deny" # The library forbids it; only allocator instrumentation opts out.

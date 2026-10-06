@@ -135,6 +135,8 @@ pub struct Zone {
     pub pitch: KeyTracking,
     pub tune: Pitch,
     pub gain: Gain,
+    /// How note velocity scales this zone's amplitude.
+    pub velocity: VelocityResponse,
     pub pan: Pan,
     pub playback: Playback,
     /// Voice-scope processing for this zone, before group/bus processing.
@@ -158,12 +160,25 @@ impl Zone {
             pitch: KeyTracking::Tracked { root: 60 },
             tune: Pitch::NONE,
             gain: Gain::UNITY,
+            velocity: VelocityResponse::Linear,
             pan: Pan::CENTER,
             playback: Playback::default(),
             chain: None,
             amplitude: None,
         }
     }
+}
+
+/// Velocity-to-amplitude response; selection always uses the raw velocity.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum VelocityResponse {
+    /// Velocity does not change amplitude.
+    None,
+    /// Amplitude is velocity / 127.
+    #[default]
+    Linear,
+    /// Amplitude is (velocity / 127) ^ exponent.
+    Power(f64),
 }
 
 /// Inclusive MIDI key range.
