@@ -112,6 +112,9 @@ impl Biquad {
 pub enum VoiceProcessor {
     /// Linear amplitude, including polarity inversion. Must be finite.
     Gain(f64),
+    /// Rows are output L/R, columns input L/R. Coefficients must be finite.
+    /// Source profiles own pan/width laws; this stage does not clamp or normalize.
+    StereoMatrix([[f64; 2]; 2]),
     Biquad(Biquad),
     ControlGain(GainControl),
 }
@@ -122,6 +125,7 @@ use control::GainRamp;
 
 enum Processor {
     Gain(f64),
+    StereoMatrix([[f64; 2]; 2]),
     Biquad(Biquad),
     ControlGain(usize),
 }
@@ -138,7 +142,7 @@ pub(super) struct RenderContext<'a> {
     pub at: u64,
 }
 
-/// Serial, stereo-independent processing with an explicit envelope boundary.
+/// Serial stereo processing with an explicit envelope boundary.
 /// Tail frames are an authored maximum after source/envelope completion, not a
 /// guessed silence threshold or a claim that an IIR has a mathematically finite tail.
 pub struct VoiceChain {
@@ -157,6 +161,9 @@ impl VoiceChain {
             .chain(&post_envelope)
             .any(|stage| match stage {
                 VoiceProcessor::Gain(gain) => !gain.is_finite(),
+                VoiceProcessor::StereoMatrix(matrix) => {
+                    matrix.iter().flatten().any(|v| !v.is_finite())
+                }
                 VoiceProcessor::ControlGain(binding) => !binding.valid(),
                 VoiceProcessor::Biquad(_) => false,
             })
@@ -185,6 +192,7 @@ impl VoiceChain {
                 .map(|stage| {
                     Ok(match stage {
                         VoiceProcessor::Gain(gain) => Processor::Gain(gain),
+                        VoiceProcessor::StereoMatrix(matrix) => Processor::StereoMatrix(matrix),
                         VoiceProcessor::Biquad(filter) => {
                             if filter.rate != rate {
                                 return Err(Error::InvalidInput);
@@ -322,6 +330,9 @@ fn process(
     for (stage, state) in stages.iter().zip(states) {
         match stage {
             Processor::Gain(gain) => value = value.map(|v| v * gain),
+            Processor::StereoMatrix(matrix) => {
+                value = matrix.map(|row| row[0] * value[0] + row[1] * value[1]);
+            }
             Processor::ControlGain(lane) => {
                 let gain = gains[*lane].value(at);
                 value = value.map(|v| v * gain);

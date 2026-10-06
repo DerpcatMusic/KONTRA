@@ -326,3 +326,15 @@ reads, including past/future wrap guards. Independent preblended assets now prov
 exact output evidence. No mirrored crossfade implementation or Shortcircuit/vendor
 output equivalence is claimed. Release completes an entered fade and preserves past
 guards; alternative imported exit policies remain explicit follow-up work.
+
+### Stereo placement versus source control laws
+
+Reviewed pinned sfizz
+[`Panning.cpp`](https://github.com/sfztools/sfizz/blob/f5c6e29f23b8057867c08e88f5f6ac6738baa30b/src/sfizz/Panning.cpp)
+and [`effects/Width.cpp`](https://github.com/sfztools/sfizz/blob/f5c6e29f23b8057867c08e88f5f6ac6738baa30b/src/sfizz/effects/Width.cpp).
+Its balance and width operations use different channel combinations, with width
+retaining both inputs before writing either output. This reinforces keeping source
+control laws separate from the shared mixing primitive. The new native static
+matrix stage expresses coefficients explicitly; it does not import sfizz's lookup
+table, assume its law matches Kontakt/Falcon, or add an SFZ frontend. Independent
+matrix/impulse fixtures cover order, channel identity and retained filter tails.
