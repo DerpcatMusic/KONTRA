@@ -461,6 +461,8 @@ pub(crate) struct PartView {
     pub(crate) interfaces: Arc<[sampler_ui_ir::Interface]>,
     /// The translated instrument: articulations, mapping, sound.
     pub(crate) instrument: Option<Arc<sampler_ir::Instrument>>,
+    /// The keys as the scripts colour and name them (128, or none).
+    pub(crate) keys: Arc<[crate::sound::KeyLook]>,
     /// The load's log record ([`crate::diagnostics::LoadTrace`]).
     pub(crate) trace: Option<Arc<serde_json::Value>>,
 }
@@ -863,9 +865,13 @@ impl Shared {
         }
         for slot in changed {
             let Some(part) = self.part(slot) else { continue };
-            let interfaces = part.scripts.lock().unwrap().interfaces();
+            let (interfaces, keys) = {
+                let mut scripts = part.scripts.lock().unwrap();
+                (scripts.interfaces(), scripts.keys())
+            };
             if let Some(v) = self.view.lock().unwrap().parts.get_mut(slot) {
                 v.interfaces = interfaces.into();
+                v.keys = keys;
             }
         }
     }
@@ -1117,6 +1123,7 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
                 .map(|&(id, value)| ControlCell { id, value: AtomicU64::new(value.to_bits()) })
                 .collect();
             v.instrument = loaded.instrument;
+            v.keys = loaded.scripts.keys();
             *atoms.scripts.lock().unwrap() = loaded.scripts;
             v.trace = Some(trace.finish(if missing > 0 { "partial" } else { "loaded" }));
             atoms.load_progress.store(u32::from(Progress::DONE.0), Ordering::Relaxed);
