@@ -87,6 +87,35 @@ impl Table {
     }
 }
 
+/// Support of one decimation step, in frames of the finer level.
+pub(super) const DECIMATION_REACH: i64 = 2 * RADIUS as i64;
+
+/// Octave levels 1..=log2(MAX_STEP), each the previous low-passed by the long
+/// kernel (0.9 of the new Nyquist) and decimated by two, sample j centered on
+/// frame 2j of the finer level. Control-side only.
+pub(super) fn octaves(frames: &[[f32; 2]]) -> Box<[Box<[[f32; 2]]>]> {
+    let table = Kernel::new(ResampleQuality::High).long;
+    let mut levels: Vec<Box<[[f32; 2]]>> = Vec::new();
+    for _ in 0..MAX_STEP.log2() as usize {
+        let finer = levels.last().map_or(frames, |level| level);
+        if finer.len() < 2 {
+            break;
+        }
+        let coarser = (0..finer.len().div_ceil(2) as i64)
+            .map(|j| {
+                table.sample(0.0, 2.0, |offset| {
+                    usize::try_from(2 * j + offset)
+                        .ok()
+                        .and_then(|i| finer.get(i).copied())
+                        .unwrap_or([0.0; 2])
+                })
+            })
+            .collect();
+        levels.push(coarser);
+    }
+    levels.into_boxed_slice()
+}
+
 /// Four-point Catmull-Rom cubic between taps 0 and 1 at `fraction`.
 fn cubic(fraction: f64, mut read: impl FnMut(i64) -> [f32; 2]) -> [f32; 2] {
     let taps = [read(-1), read(0), read(1), read(2)];
