@@ -6,12 +6,16 @@
 //! every failure crosses this boundary as `access::failure_reason`.
 
 use crate::{
+    AccessError,
     access::{self, ReaderNamespaces},
     crypto,
-    ufs::{Directory, Member, Ufs},
+    ufs::{Directory, Member, Protection, Ufs},
 };
 use anyhow::{Context, Result, ensure};
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 /// An open bank. Deliberately not Debug: it holds access values.
 pub struct Bank {
@@ -19,13 +23,31 @@ pub struct Bank {
     directory: Directory,
     content_key: Option<u64>,
     program_namespace: Vec<u8>,
+    /// Duplicate paths remain ambiguous, as in v1's ResourceIndex.
+    paths: HashMap<String, Option<usize>>,
 }
 
 /// `uvi_reader` from the player's settings, as v1's catalog passes it.
-fn configured_reader() -> Option<PathBuf> {
+pub(crate) fn configured_reader() -> Option<PathBuf> {
     let settings = std::fs::read(dirs::config_dir()?.join("kontra/settings.json")).ok()?;
     let value: serde_json::Value = serde_json::from_slice(&settings).ok()?;
     value.get("uvi_reader")?.as_str().map(PathBuf::from)
+}
+
+/// Clear and ZIP-wrapped programs need no installed reader; protected ones do.
+pub(crate) fn program_text(bytes: &[u8]) -> Result<String, AccessError> {
+    let program_error = |e| AccessError::Program(access::failure_reason(&e));
+    match crypto::decode_program_bytes(bytes, &[]) {
+        Ok(text) => Ok(text),
+        Err(error) if error.is::<crypto::NeedsProgramNamespace>() => {
+            let reader_error = |e| AccessError::Reader(access::failure_reason(&e));
+            let reader =
+                access::reader_path(configured_reader().as_deref()).map_err(reader_error)?;
+            let namespaces = ReaderNamespaces::open(&reader).map_err(reader_error)?;
+            crypto::decode_program_bytes(bytes, &namespaces.program).map_err(program_error)
+        }
+        Err(error) => Err(program_error(error)),
+    }
 }
 
 /// v1's private store: `KONTRA_UVI_AUTHORITY_DIR`, else `<config>/kontra/uvi-access`.
@@ -38,27 +60,44 @@ fn store_dir() -> Result<PathBuf> {
 
 impl Bank {
     /// Open and decode the directory of the bank at `path`.
-    pub fn open(path: &Path) -> Result<Self, String> {
-        Self::open_inner(path).map_err(|e| access::failure_reason(&e))
-    }
-
-    fn open_inner(path: &Path) -> Result<Self> {
-        let reader = access::reader_path(configured_reader().as_deref())?;
-        let namespaces = ReaderNamespaces::open(&reader)?;
-        let ufs = Ufs::open(path)?;
-        let directory = ufs.decode_directory(&namespaces.metadata)?;
+    pub fn open(path: &Path) -> Result<Self, AccessError> {
+        let reader_error = |e| AccessError::Reader(access::failure_reason(&e));
+        let bank_error = |e| AccessError::Bank(access::failure_reason(&e));
+        let cache_error = |e| AccessError::PrivateCache(access::failure_reason(&e));
+        let reader = access::reader_path(configured_reader().as_deref()).map_err(reader_error)?;
+        let namespaces = ReaderNamespaces::open(&reader).map_err(reader_error)?;
+        let ufs = Ufs::open(path).map_err(bank_error)?;
+        let directory = ufs
+            .decode_directory(&namespaces.metadata)
+            .map_err(bank_error)?;
         // Only banks with encrypted members need a content state prepared.
-        let content_key = if directory.files.iter().any(|m| m.mode == 2) {
-            let store = store_dir()?;
-            access::ensure_content_state(path, &ufs, &directory, &store)?.map(|state| state.key)
+        let content_key = if directory
+            .files
+            .iter()
+            .any(|m| m.mode == Protection::Content)
+        {
+            let store = store_dir().map_err(cache_error)?;
+            access::ensure_content_state(path, &ufs, &directory, &store)
+                .map_err(cache_error)?
+                .map(|state| state.key)
         } else {
             None
         };
+        let mut paths = HashMap::with_capacity(directory.files.len());
+        for (index, member) in directory.files.iter().enumerate() {
+            if let Some(path) = &member.path {
+                paths
+                    .entry(path.clone())
+                    .and_modify(|entry| *entry = None)
+                    .or_insert(Some(index));
+            }
+        }
         Ok(Self {
             ufs,
             directory,
             content_key,
             program_namespace: namespaces.program,
+            paths,
         })
     }
 
@@ -81,13 +120,13 @@ impl Bank {
     }
 
     /// Decode the program at member `name` to its clear XML and its path.
-    pub fn program(&self, name: &str) -> Result<(String, String), String> {
+    pub fn program(&self, name: &str) -> Result<(String, String), AccessError> {
         self.program_inner(name)
-            .map_err(|e| access::failure_reason(&e))
+            .map_err(|e| AccessError::Program(access::failure_reason(&e)))
     }
 
     fn program_inner(&self, name: &str) -> Result<(String, String)> {
-        let member = resolve(&self.directory, name)?;
+        let member = self.resolve(name)?;
         ensure!(
             member.size <= crypto::PROGRAM_XML_LIMIT as u64,
             "UVI program exceeds 32 MiB"
@@ -103,9 +142,9 @@ impl Bank {
 
     /// Decode a bank-local audio resource relative to `program_path`. A starred
     /// filename is a bundle of mono channels. Returns raw encoded file bytes.
-    pub fn resource(&self, program_path: &str, path: &str) -> Result<Vec<Vec<u8>>, String> {
+    pub fn resource(&self, program_path: &str, path: &str) -> Result<Vec<Vec<u8>>, AccessError> {
         self.resource_inner(program_path, path)
-            .map_err(|e| access::failure_reason(&e))
+            .map_err(|e| AccessError::Resource(access::failure_reason(&e)))
     }
 
     /// Decode a resource or mono-channel bundle without translating the program.
@@ -113,15 +152,27 @@ impl Bank {
         &self,
         program_path: &str,
         path: &str,
-    ) -> Result<sampler_kontakt::Decoded, String> {
-        crate::audio::decode(&self.resource(program_path, path)?).map(|(audio, _)| audio)
+    ) -> Result<sampler_kontakt::Decoded, AccessError> {
+        crate::audio::decode(&self.resource(program_path, path)?)
+            .map(|(audio, _)| audio)
+            .map_err(AccessError::Audio)
     }
 
     fn resource_inner(&self, program_path: &str, path: &str) -> Result<Vec<Vec<u8>>> {
-        resources(&self.directory, program_path, path)?
+        resources(program_path, path, |path| self.resolve(path))?
             .iter()
             .map(|member| self.read(member))
             .collect()
+    }
+
+    fn resolve(&self, path: &str) -> Result<&Member> {
+        let path = normalize(path)?;
+        if let Some(index) = self.paths.get(&path) {
+            return index
+                .map(|i| &self.directory.files[i])
+                .context("Ambiguous UVI member path");
+        }
+        resolve(&self.directory, &path)
     }
 }
 
@@ -168,21 +219,25 @@ fn resolve<'a>(directory: &'a Directory, path: &str) -> Result<&'a Member> {
     Ok(named[0])
 }
 
-fn resource<'a>(directory: &'a Directory, program_path: &str, path: &str) -> Result<&'a Member> {
+fn resource<'a>(
+    program_path: &str,
+    path: &str,
+    resolve: impl Fn(&str) -> Result<&'a Member>,
+) -> Result<&'a Member> {
     let base = program_path.rsplit_once('/').map_or("", |(base, _)| base);
     let path = if path.starts_with('/') {
         normalize(path)?
     } else {
         normalize(&format!("{base}/{path}"))?
     };
-    resolve(directory, &path)
+    resolve(&path)
 }
 
 /// A starred filename is an ordered list of synchronized mono channels.
 fn resources<'a>(
-    directory: &'a Directory,
     program_path: &str,
     path: &str,
+    resolve: impl Fn(&str) -> Result<&'a Member>,
 ) -> Result<Vec<&'a Member>> {
     if let Some((base, names)) = path.split_once('*') {
         ensure!(
@@ -201,10 +256,10 @@ fn resources<'a>(
                     !name.is_empty() && !name.contains(['/', '\\']),
                     "Invalid UVI channel bundle member"
                 );
-                resource(directory, program_path, &format!("{base}{name}"))
+                resource(program_path, &format!("{base}{name}"), &resolve)
             })
             .collect()
     } else {
-        Ok(vec![resource(directory, program_path, path)?])
+        Ok(vec![resource(program_path, path, resolve)?])
     }
 }

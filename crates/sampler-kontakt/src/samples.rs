@@ -157,7 +157,10 @@ impl Samples {
                 file.seek(SeekFrom::Start(entry.offset))
                     .and_then(|_| file.take(entry.size.min(1 << 16)).read_to_end(&mut head))
                     .map_err(|e| LoadError::io(&archive, e))?;
-                if let Some(key) = key {
+                if entry.encoded
+                    && entry.key_index != 0xff
+                    && let Some(key) = key
+                {
                     key.apply(&mut head);
                 }
             }
@@ -405,5 +408,62 @@ mod tests {
             decoded.frames[1],
             [pcm[2] as f32 / 32768.0, pcm[3] as f32 / 32768.0]
         );
+    }
+
+    #[test]
+    fn a_cached_archive_key_does_not_decrypt_clear_member_headers() {
+        struct TestKey;
+        impl LibraryKey for TestKey {
+            fn apply_at(&self, _: u64, bytes: &mut [u8]) {
+                for byte in bytes {
+                    *byte ^= 0x55;
+                }
+            }
+        }
+        let names = ["clear.wav", "protected.wav"];
+        let wav = wav_bytes(1, 1, 16, &[0, 0x40]);
+        let mut bytes = 0x5e70ac54u32.to_le_bytes().to_vec();
+        bytes.extend(0x110u16.to_le_bytes());
+        bytes.extend([0; 8]);
+        bytes.extend(2u32.to_le_bytes());
+        bytes.extend([0; 4]);
+        let mut offset = 22 + names.iter().map(|n| 8 + (n.len() + 1) * 2).sum::<usize>();
+        for (index, name) in names.iter().enumerate() {
+            bytes.extend(((8 + (name.len() + 1) * 2) as u16).to_le_bytes());
+            bytes.extend((offset as u32).to_le_bytes());
+            bytes.extend(0u16.to_le_bytes());
+            for c in name.encode_utf16().chain([0]) {
+                bytes.extend(c.to_le_bytes());
+            }
+            offset += if index == 0 { 22 } else { 31 } + wav.len();
+        }
+        for (magic, size, key) in [(0x2ae905fau32, 22, 0xffu32), (0x16ccf80a, 31, 0x100)] {
+            let mut header = vec![0; size];
+            header[..4].copy_from_slice(&magic.to_le_bytes());
+            header[4..6].copy_from_slice(&0x110u16.to_le_bytes());
+            header[10..14].copy_from_slice(&key.to_le_bytes());
+            let at = if size == 22 { 14 } else { 19 };
+            header[at..at + 4].copy_from_slice(&(wav.len() as u32).to_le_bytes());
+            bytes.extend(header);
+            let mut payload = wav.clone();
+            if key == 0x100 {
+                TestKey.apply(&mut payload);
+            }
+            bytes.extend(payload);
+        }
+        let root = std::env::temp_dir().join(format!("v2-mixed-nkx-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let archive = root.join("authored.nkx");
+        std::fs::write(&archive, bytes).unwrap();
+        let mut samples = Samples::new(&root);
+        samples.keys.insert(archive.clone(), Arc::new(TestKey));
+        for name in names {
+            assert_eq!(samples.frames(&archive.join(name)).unwrap(), 1);
+            assert_eq!(
+                samples.decode(&archive.join(name)).unwrap().frames,
+                [[0.5, 0.5]]
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

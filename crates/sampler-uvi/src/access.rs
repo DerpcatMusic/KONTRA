@@ -1,7 +1,7 @@
 //! Automatic local UFS content preparation. No account state, reader constants, or bank keys are bundled.
 use super::{
     crypto,
-    ufs::{Directory, Member, Ufs},
+    ufs::{Directory, Member, Protection, Ufs},
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -194,7 +194,7 @@ fn candidates(directory: &Directory) -> Vec<&Member> {
         .files
         .iter()
         .filter(|m| {
-            m.mode == 2
+            m.mode == Protection::Content
                 && (45..=16 << 20).contains(&m.size)
                 && m.name.to_ascii_lowercase().ends_with(".png")
         })
@@ -350,7 +350,11 @@ pub(crate) fn ensure_content_state(
     directory: &Directory,
     store: &Path,
 ) -> Result<Option<ContentState>> {
-    if !directory.files.iter().any(|m| m.mode == 2) {
+    if !directory
+        .files
+        .iter()
+        .any(|m| m.mode == Protection::Content)
+    {
         return Ok(None);
     }
     private_directory(store)?;
@@ -539,7 +543,7 @@ mod tests {
                 parent: None,
                 size: plain.len() as u64,
                 offset: 328,
-                mode: 2,
+                mode: Protection::Content,
                 footer: Vec::new(),
             }],
             directories: Vec::new(),
@@ -665,7 +669,7 @@ mod tests {
         directory.files[0].name = "unsupported.bin".into();
         assert!(ensure_content_state(&path, &bank, &directory, &store).is_err());
         assert!(!output.exists());
-        directory.files[0].mode = 0;
+        directory.files[0].mode = Protection::Clear;
         assert!(
             ensure_content_state(&path, &bank, &directory, &root.join("unused"))
                 .unwrap()
