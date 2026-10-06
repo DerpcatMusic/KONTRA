@@ -37,6 +37,12 @@ pub(super) struct Scheduled {
     pub action: Action,
 }
 
+impl Scheduled {
+    fn ends_note(&self, note: NoteId) -> bool {
+        matches!(self.action, Action::Event(Event::KeyUp(id, _) | Event::Release(id)) if id == note)
+    }
+}
+
 impl Runtime {
     pub(super) fn available_commands(&self) -> usize {
         self.command_limit - self.commands.len() - self.reserved_commands
@@ -97,7 +103,7 @@ impl Runtime {
         if self.available_commands() == 0 {
             return Err(Error::Capacity);
         }
-        if let Event::Expression(id, _) = event {
+        if let Event::Expression(id, _) | Event::KeyUp(id, _) | Event::Release(id) = event {
             let n = self.notes.get_mut(id.0).unwrap();
             n.work = n.work.checked_add(1).ok_or(Error::Capacity)?;
         }
@@ -111,6 +117,44 @@ impl Runtime {
 
     pub fn release_at(&mut self, note: NoteId, at: u64) -> Result<(), Error> {
         self.schedule_event(at, Event::Release(note))
+    }
+
+    /// Replace this note's queued key-up/release deadlines with one key-up.
+    /// Validation and capacity failure preserve the previous deadlines. Equal-time
+    /// work already admitted precedes the replacement; pedals still govern the gate.
+    pub fn replace_key_up_at(
+        &mut self,
+        note: NoteId,
+        at: u64,
+        velocity: Option<f64>,
+    ) -> Result<(), Error> {
+        self.check_time(at)?;
+        super::release::validate_velocity(velocity)?;
+        if at == self.now {
+            self.apply_due();
+        }
+        let n = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        if !n.key_down() {
+            return Err(Error::ClosedNote);
+        }
+        let replaced = self.commands.iter().filter(|c| c.ends_note(note)).count();
+        let future = usize::from(at != self.now);
+        if future != 0 && replaced == 0 && self.available_commands() == 0 {
+            return Err(Error::Capacity);
+        }
+        let work = n
+            .work
+            .checked_sub(replaced)
+            .and_then(|n| n.checked_add(future))
+            .ok_or(Error::Capacity)?;
+        self.commands.retain(|command| !command.ends_note(note));
+        self.notes.get_mut(note.0).unwrap().work = work;
+        if future != 0 {
+            self.queue(at, Action::Event(Event::KeyUp(note, velocity)));
+        } else {
+            self.key_up_now(note, velocity)?;
+        }
+        Ok(())
     }
 
     pub(super) fn check_time(&self, at: u64) -> Result<(), Error> {
@@ -175,7 +219,9 @@ impl Runtime {
                     self.voices.get_mut(id.0).unwrap().started = true;
                 }
                 Action::Event(event) => {
-                    if let Event::Expression(id, _) = event {
+                    if let Event::Expression(id, _) | Event::KeyUp(id, _) | Event::Release(id) =
+                        event
+                    {
                         self.notes.get_mut(id.0).unwrap().work -= 1;
                     }
                     if let Event::Control(plan, _) = event {
@@ -213,15 +259,20 @@ impl Runtime {
                 }
             }
             Action::Start(v) => self.voices.get(v.0).is_some(),
-            Action::Event(Event::KeyUp(n, _)) => notes.get(n.0).is_some_and(|n| n.key_down()),
-            Action::Event(Event::Release(n)) => notes.get(n.0).is_some_and(|n| n.gate()),
             Action::Event(Event::ChokeFamily(id, _)) => self.families.get(id.0).is_some(),
             Action::Event(Event::ReleaseFamily(id)) => {
                 self.families.get(id.0).is_some_and(|f| f.gate)
             }
-            Action::Event(Event::Expression(id, _)) => {
+            Action::Event(
+                event @ (Event::Expression(id, _) | Event::KeyUp(id, _) | Event::Release(id)),
+            ) => {
                 let n = notes.get_mut(id.0).unwrap(); // Work pins cannot be consumed by public unpin().
-                if n.gate() {
+                let keep = if matches!(event, Event::KeyUp(..)) {
+                    n.key_down()
+                } else {
+                    n.gate()
+                };
+                if keep {
                     true
                 } else {
                     n.work -= 1;

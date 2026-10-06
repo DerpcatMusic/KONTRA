@@ -257,10 +257,23 @@ numeric corner cases and evaluation equivalence remain unverified.
 Re-read the supplied architecture's sections 4.1–4.2: preserve full generational
 native handles, and translate host/script identities through scoped adapters.
 Read the NI general-command reference for returned `play_note` IDs and the distinct
-key-release behavior of `note_off`. The latter command is not yet exposed by the new
-frontend. Inspected legacy `src/ksp/runtime.rs:384–387` and
+key-release behavior of `note_off`. Its bounded individual-ID form is now exposed by
+the new frontend (see the next section). Inspected legacy `src/ksp/runtime.rs:384–387` and
 `src/ksp/calls.rs:719–722`: its event pool and marked-event encoding are references,
 not the new owner. Native source aliases use a preallocated standard index and
 checked monotonically issued integers; Kontakt uses a restricted export range that
 leaves selector bits free. Numeric allocation parity and vendor event-status lifetime
 semantics remain unverified. No old core service is invoked.
+
+
+## Stored note-end commands
+
+Re-read the pinned NI general-command `note_off` remarks and examples: individual
+event IDs, optional microsecond offsets, fixed-duration preservation without the
+optional override, and release callbacks. Inspected legacy `src/ksp/runtime.rs:869–887`
+and `src/ksp/calls.rs:533–547` for timer replacement and downstream slot routing.
+The native queue now replaces deadlines atomically with retained generational owners;
+source-end retirement and failed replacement are explicit no-heap fixtures. Existing
+single-stage child behavior remains; downstream multi-slot release propagation is
+still missing. No vendor execution or improved-performance claim follows from these
+native tests, and no legacy runtime path is added.

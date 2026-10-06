@@ -11,6 +11,8 @@ pub struct NoteProperties {
 pub(super) struct NoteEvent {
     pub initial: NoteProperties,
     pub current: NoteProperties,
+    /// The generated event was admitted with a positive/fixed duration policy.
+    pub fixed_duration: bool,
     source_id: Option<i32>,
 }
 
@@ -20,6 +22,7 @@ impl NoteEvent {
         Self {
             initial,
             current: initial,
+            fixed_duration: false,
             source_id: None,
         }
     }

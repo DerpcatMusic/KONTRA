@@ -28,6 +28,10 @@
       "implementation": "partial_native_subset",
       "evidence": "KSP_FRONTEND.md"
     },
+    "note_off": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
     "wait": {
       "implementation": "partial_native_subset",
       "evidence": "KSP_FRONTEND.md"

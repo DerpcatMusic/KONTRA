@@ -656,6 +656,21 @@ impl<'a> Parser<'a> {
                     self.emit(Instruction::WaitLocal { local: 0 })?;
                 }
                 Kind::Word("play_note") => self.play(0, false, 0)?,
+                Kind::Word("note_off") => {
+                    self.symbol(b'(')?;
+                    self.scalar(0)?;
+                    let delay = match self.next()?.kind {
+                        Kind::Symbol(b',') => {
+                            self.scalar(1)?;
+                            self.symbol(b')')?;
+                            self.emit(Instruction::MicrosToFrames { local: 1 })?;
+                            Some(1)
+                        }
+                        Kind::Symbol(b')') => None,
+                        _ => return Err(self.error("expected comma or closing parenthesis")),
+                    };
+                    self.emit(Instruction::KeyUpEvent { event: 0, delay })?;
+                }
                 Kind::Word(command @ ("allow_group" | "disallow_group")) => {
                     self.group(command == "allow_group", note)?
                 }
@@ -997,10 +1012,9 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// Compile optional polyphonic declarations followed by note/release callbacks.
-/// Note callbacks require leading ignore_event($EVENT_ID). Bodies accept scalar
-/// assignment, scalar conditionals, exit, literal waits and fixed-velocity play_note.
-/// Microseconds round upward to frames; broader expressions/services are rejected.
+/// Compile the documented native KSP subset into bounded shared-core programs.
+/// Declarations and expressions are prepared off audio; unsupported syntax is
+/// rejected. Microsecond arguments round upward to sample frames.
 pub fn compile(
     source: &str,
     rate: u32,

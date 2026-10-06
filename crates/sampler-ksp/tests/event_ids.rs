@@ -2,6 +2,12 @@ use sampler_core::*;
 #[path = "../../sampler-core/tests/support/mod.rs"]
 mod support;
 fn compile(source: &str) -> Result<sampler_ksp::Script, sampler_ksp::Error> {
+    compile_bound(source, &[])
+}
+fn compile_bound(
+    source: &str,
+    bindings: &[(&str, ControlId)],
+) -> Result<sampler_ksp::Script, sampler_ksp::Error> {
     sampler_ksp::compile(
         source,
         48000,
@@ -11,11 +17,13 @@ fn compile(source: &str) -> Result<sampler_ksp::Script, sampler_ksp::Error> {
             variables: 16,
             array_cells: 16,
         },
-        &[],
+        bindings,
     )
 }
 fn runtime(source: &str) -> Runtime {
-    let script = compile(source).unwrap();
+    runtime_script(compile(source).unwrap())
+}
+fn runtime_script(script: sampler_ksp::Script) -> Runtime {
     let note_cells = script.note_cells() * 12;
     let plan = script
         .bind(
@@ -162,4 +170,115 @@ fn event_expressions_remain_bounded_and_short_circuit_does_not_generate_skipped_
         ")".repeat(65)
     );
     assert!(compile(&nested).is_err());
+}
+
+#[test]
+fn stored_note_off_replaces_durations_and_runs_original_release_once_at_exact_frames() {
+    let source = "on init declare %ids[3] declare $released end on
+      on note
+        ignore_event($EVENT_ID)
+        %ids[0] := play_note(60,127,0,125)
+        %ids[1] := play_note(60,127,0,0)
+        %ids[2] := play_note(60,127,0,-1)
+        note_off(%ids[0])
+        note_off(%ids[1],83)
+        note_off(%ids[2],0)
+        wait(21)
+        note_off(%ids[0],125)
+        note_off($EVENT_ID)
+      end on
+      on release inc($released) note_off($EVENT_ID) end on";
+    for block in [1, 7, 64] {
+        let mut rt = runtime(source);
+        support::without_heap(|| {
+            let original = rt.trigger(input(60), 60, 1.).unwrap();
+            // A queued physical key-up is not a generated fixed duration.
+            rt.schedule_event(10, Event::KeyUp(original, None)).unwrap();
+            let mut audio = [[0.; 2]; 12];
+            for chunk in audio.chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
+            assert_eq!(audio[..4], [[2.; 2]; 4]);
+            assert_eq!(audio[4..8], [[1.; 2]; 4]);
+            assert_eq!(audio[8..], [[0.; 2]; 4]);
+            assert_eq!(rt.release_context(original).unwrap().key.unwrap().at, 2);
+            assert_eq!(
+                rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 3),
+                Ok(1)
+            );
+            rt.flush_behaviors(|_, _, outcome| {
+                assert_eq!(outcome, Outcome::Finished);
+                true
+            });
+            rt.flush_ended(|_| true);
+            assert_eq!((rt.note_count(), rt.pending_commands()), (0, 0));
+        });
+    }
+}
+
+#[test]
+fn ui_can_stop_stored_events_and_stale_ids_cannot_stop_a_reused_slot() {
+    let source = "on init declare $id declare $released declare ui_button $stop end on
+      on note $id := $EVENT_ID end on
+      on release inc($released) end on
+      on ui_control($stop) note_off($id,0) end on";
+    let mut rt = runtime_script(compile_bound(source, &[("$stop", ControlId(17))]).unwrap());
+    support::without_heap(|| {
+        let plan = rt.active_plan();
+        let original = rt.trigger(input(60), 60, 1.).unwrap();
+        rt.invoke_control(
+            plan,
+            None,
+            ControlWrite {
+                id: ControlId(17),
+                value: ControlValue::Integer(1),
+            },
+        )
+        .unwrap();
+        assert!(!rt.key_down(original).unwrap());
+        assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 1), Ok(1));
+        rt.flush_behaviors(|_, _, outcome| {
+            assert_eq!(outcome, Outcome::Finished);
+            true
+        });
+        rt.flush_ended(|_| true);
+        let fresh = rt.note_on(input(60), 60, 1.).unwrap();
+        rt.invoke_control(
+            plan,
+            None,
+            ControlWrite {
+                id: ControlId(17),
+                value: ControlValue::Integer(0),
+            },
+        )
+        .unwrap();
+        assert!(rt.key_down(fresh).unwrap());
+        assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 1), Ok(1));
+        rt.panic();
+        rt.flush_behaviors(|_, _, outcome| {
+            assert_eq!(outcome, Outcome::Finished);
+            true
+        });
+        rt.flush_ended(|_| true);
+        assert_eq!(rt.note_count(), 0);
+    });
+    for invalid in [
+        "on init note_off(1) end on",
+        "on note note_off(1,0,1) end on",
+        "on note note_off($ALL_EVENTS) end on",
+        "on note note_off(by_marks(1)) end on",
+    ] {
+        assert!(compile(invalid).is_err());
+    }
+    let mut rt = runtime("on note note_off($EVENT_ID,-1) end on");
+    let original = rt.trigger(input(60), 60, 1.).unwrap();
+    assert_eq!(rt.pending_commands(), 0);
+    assert_eq!(
+        rt.release_context(original).unwrap().key.unwrap().cause,
+        ReleaseCause::BehaviorFault
+    );
+    rt.flush_behaviors(|_, _, outcome| {
+        assert_eq!(outcome, Outcome::Fault(Error::InvalidInput));
+        true
+    });
 }
