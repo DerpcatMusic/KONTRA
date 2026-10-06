@@ -378,6 +378,7 @@ pub struct Prepared {
     pub(super) voice_limit: Option<super::VoiceLimit>,
     pub(super) voice_limits: Box<[super::VoiceLimit]>,
     pub(super) group_voice_limits: Box<[Option<usize>]>,
+    pub(super) monophonic_release: Box<[bool]>,
     pub(super) group_params: Box<[super::GroupParams]>,
     offsets: [usize; 129],
     phase_offsets: [[usize; 2]; 128],
@@ -540,6 +541,7 @@ impl Prepared {
             voice_limit: None,
             voice_limits: Box::new([]),
             group_voice_limits: Box::new([]),
+            monophonic_release: Box::new([]),
             group_params: Box::new([]),
             phase_offsets: std::array::from_fn(|key| [offsets[key + 1]; 2]),
             release_options: [super::ReleaseOptions::default(); 2],
@@ -670,6 +672,18 @@ impl Prepared {
     /// Script modules a note passes through, in order.
     pub fn stage_count(&self) -> usize {
         self.stages.len()
+    }
+    /// Bytes one voice slot costs under this plan: the voice itself, its chain
+    /// and delay state, and its modulation state. Control side, for sizing
+    /// `Limits::voices` against a memory budget.
+    pub fn voice_state_bytes(&self) -> usize {
+        use std::mem::size_of;
+        let stages = self.voice_chains.iter().map(|c| c.stages()).max().unwrap_or(0);
+        let delay = self.voice_chains.iter().map(|c| c.delay_frames).max().unwrap_or(0);
+        size_of::<crate::Slot<crate::Voice>>()
+            + stages * size_of::<crate::dsp::ProcessorState>()
+            + delay * size_of::<[f64; 2]>()
+            + self.voice_modulation.bytes_per_voice()
     }
     pub fn sample_count(&self) -> usize {
         self.pcm.len()

@@ -11,6 +11,7 @@ realfft = "3.5"
 rtrb = "=0.4.0"
 sampler-ir = { path = "../sampler-ir" }
 sampler-simd = { path = "../sampler-simd" }
+sampler-pool = { path = "../sampler-pool" }
 
 [lints.rust]
 unsafe_code = "deny" # The library forbids it; only allocator instrumentation opts out.

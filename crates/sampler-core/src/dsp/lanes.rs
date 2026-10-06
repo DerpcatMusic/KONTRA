@@ -19,8 +19,6 @@ pub(crate) type LaneBlock = [Lanes; BLOCK];
 pub(crate) struct Batch {
     /// Real voices; later lanes are padding whose results are discarded.
     pub count: usize,
-    /// Cell offset of each voice's chain state.
-    pub cells: [usize; VOICES],
     pub expressions: [Option<(crate::ExpressionId, crate::Expression)>; VOICES],
     /// Frames each lane runs; padding lanes run `len`.
     pub ends: [usize; LANES],
@@ -33,13 +31,16 @@ impl Batch {
     }
 }
 
+/// Each batch voice's chain state.
+pub(crate) type Cells<'a> = [Option<sampler_pool::Claim<'a, ProcessorState>>; VOICES];
+
 /// Run `stages` (cell indices from `first`) over the batch's lanes.
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn process(
     stages: &[PreparedProcessor],
     first: usize,
-    cells: &mut [ProcessorState],
+    cells: &mut Cells<'_>,
     batch: &Batch,
     block: &mut LaneBlock,
     parameters: &[ControlRamp],
@@ -49,7 +50,7 @@ pub(crate) fn process(
     let len = batch.len;
     let uniform = batch.uniform();
     for (index, stage) in stages.iter().enumerate() {
-        let cell = |v: usize| batch.cells[v] + first + index;
+        let cell = first + index;
         match stage {
             PreparedProcessor::Gain(gain) => {
                 for x in &mut block[..len] {
@@ -75,7 +76,7 @@ pub(crate) fn process(
                 // Scalar layout: z[channel] = [z0, z1].
                 let mut z = [[0.; LANES]; 2];
                 for v in 0..batch.count {
-                    let state = cells[cell(v)].z;
+                    let state = cells[v].as_ref().expect("batch voice")[cell].z;
                     for c in 0..2 {
                         (z[0][2 * v + c], z[1][2 * v + c]) = (state[c][0], state[c][1]);
                     }
@@ -86,7 +87,7 @@ pub(crate) fn process(
                     biquad::<true>(&mut z, block, batch, filter.b, filter.a);
                 }
                 for v in 0..batch.count {
-                    cells[cell(v)].z =
+                    cells[v].as_mut().expect("batch voice")[cell].z =
                         std::array::from_fn(|c| [z[0][2 * v + c], z[1][2 * v + c]].map(flush));
                 }
             }
@@ -95,7 +96,7 @@ pub(crate) fn process(
                 let mut s = [[0.; LANES]; 2];
                 let mut refs = [None; VOICES];
                 for v in 0..batch.count {
-                    let state = cells[cell(v)].z;
+                    let state = cells[v].as_ref().expect("batch voice")[cell].z;
                     for c in 0..2 {
                         (s[0][2 * v + c], s[1][2 * v + c]) = (state[0][c], state[1][c]);
                     }
@@ -106,7 +107,7 @@ pub(crate) fn process(
                 let refs = refs.map(|r| r.unwrap_or(refs[0].expect("a batch has a voice")));
                 svf(&mut s, block, batch, uniform, filters, refs);
                 for v in 0..batch.count {
-                    cells[cell(v)].z =
+                    cells[v].as_mut().expect("batch voice")[cell].z =
                         std::array::from_fn(|i| [s[i][2 * v], s[i][2 * v + 1]].map(flush));
                 }
             }

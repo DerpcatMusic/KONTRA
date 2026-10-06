@@ -120,7 +120,15 @@ fn paged_audio_matches_resident_across_rates_boundaries_loops_release_and_partit
                     for chunk in expected[73..].chunks_mut(257) {
                         resident.render(chunk).unwrap();
                     }
-                    assert_eq!(actual, expected, "{rate} {direction:?} {shape:?}");
+                    // Runs of frames may use fused multiply-adds (wide CPUs)
+                    // while the frames between them do not: equal to rounding.
+                    let worst = actual
+                        .iter()
+                        .flatten()
+                        .zip(expected.iter().flatten())
+                        .map(|(a, b)| (a - b).abs())
+                        .fold(0f32, f32::max);
+                    assert!(worst < 1e-5, "{rate} {direction:?} {shape:?}: {worst}");
                     assert_eq!(paged.stream_underruns(), 0);
                     assert_eq!(paged.voice_count(), resident.voice_count());
                 });

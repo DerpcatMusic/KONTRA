@@ -20,11 +20,14 @@
 //! without reloading.
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use sampler_core::{
-    BusMix, ChannelAddress, ControlContext, ControlDefinition, ControlDomain, ControlValue, ControlWrite, Envelope, Expression, Frame, Input, Limits, NoteId, PAGE_FRAMES, Pcm, Playback, Prepared, Protocol,
-    Region, Runtime, Stealing, StreamCache,
+    BusMix, ChannelAddress, ControlContext, ControlDefinition, ControlDomain, ControlValue, ControlWrite, Envelope, Expression, Frame, Input, Limits, NoteId, PAGE_FRAMES, Pcm, PlanControl, Playback, Prepared, Protocol,
+    Region, Runtime, Stealing, StreamCache, Threads,
 };
 use sampler_ir as ir;
 use sampler_midi::{ApplyError, Articulator, Intercept, Mpe, Packets, Zone};
@@ -81,6 +84,44 @@ pub struct Part {
     horizon: Option<u32>,
     /// Kept alive while the part plays; dropped with it, off the audio thread.
     _stream: Option<Arc<Stream>>,
+    /// Grows the voice pool off the audio thread; stopped when the part drops.
+    grower: Option<Grower>,
+}
+
+/// A thread that sleeps until the audio side reports a nearly full voice pool
+/// (or a growth coming back), then doubles the pool up to `ceiling`.
+struct Grower {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Grower {
+    fn start(runtime: &mut Runtime, mut control: PlanControl, ceiling: usize) -> std::io::Result<Self> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = std::thread::Builder::new().name("sampler-grow".into()).spawn({
+            let stop = stop.clone();
+            move || {
+                while !stop.load(Ordering::Relaxed) {
+                    if control.voice_pressure() && control.voice_capacity() < ceiling {
+                        let _ = control.grow_voices((control.voice_capacity() * 2).min(ceiling));
+                    }
+                    std::thread::park();
+                }
+            }
+        })?;
+        runtime.set_growth_waker(thread.thread().clone());
+        Ok(Self { stop, thread: Some(thread) })
+    }
+}
+
+impl Drop for Grower {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            thread.thread().unpark();
+            let _ = thread.join();
+        }
+    }
 }
 
 impl Part {
@@ -109,6 +150,7 @@ impl Part {
             bend_range: 0,
             horizon: None,
             _stream: None,
+            grower: None,
         })
     }
 
@@ -687,9 +729,40 @@ fn number(value: ControlValue) -> f64 {
 #[derive(Default)]
 pub struct V2Loader;
 
-/// Capacities of a part, sized for its plan's script state.
-fn limits(plan: &Prepared) -> Limits {
-    Limits::for_plan(plan, NOTES, 512)
+/// Voice-rendering threads per part: `KONTRA_THREADS` is `auto` or a count.
+/// One (the audio thread alone) unless set.
+fn render_threads() -> Threads {
+    match std::env::var("KONTRA_THREADS").as_deref() {
+        Ok("auto") => Threads::Auto,
+        Ok(n) => Threads::Fixed(n.parse().unwrap_or(1)),
+        Err(_) => Threads::Fixed(1),
+    }
+}
+
+/// Memory a part preallocates for per-voice state. Voices start sized to this,
+/// not to a fixed polyphony, and the pool doubles off the audio thread (see
+/// `Grower`) past three quarters full, up to `GROWTH` times as many. A note is
+/// refused only when that is exhausted too, and it is counted
+/// (`RuntimeStats::voice_drops`).
+const VOICE_BUDGET: usize = 256 << 20;
+const MIN_VOICES: usize = 512;
+const MAX_VOICES: usize = 16384;
+const GROWTH: usize = 4;
+
+/// Capacities of a part, sized for its plan's script state and voice cost, and
+/// the voice count the pool may grow to. Notes, families and decisions are
+/// sized for that ceiling so growing voices is not capped by them.
+fn limits(plan: &Prepared) -> (Limits, usize) {
+    let voices = (VOICE_BUDGET / plan.voice_state_bytes().max(1)).clamp(MIN_VOICES, MAX_VOICES);
+    let ceiling = voices * GROWTH;
+    // Notes outlive their voices only in release, and each holds a few voices.
+    let notes = (ceiling / 4).max(NOTES);
+    let limits = Limits {
+        families: (ceiling / 2).max(256),
+        decisions: (ceiling / 2).max(256),
+        ..Limits::for_plan(plan, notes, voices)
+    };
+    (limits, ceiling)
 }
 
 fn is_wav(path: &Path) -> bool {
@@ -958,10 +1031,11 @@ impl CoreLoader for V2Loader {
             .iter()
             .map(|c| (sampler_ui_ir::ControlId(c.id.0), number(c.default)))
             .collect();
-        let limits = limits(&prepared);
+        let (limits, ceiling) = limits(&prepared);
         report.decoded.script_callbacks = limits.behaviors;
         let voices = limits.voices;
-        let mut runtime = Runtime::new(prepared, limits).map_err(core)?;
+        let (runtime, control) = Runtime::with_plan_updates(prepared, limits, 2, 1).map_err(core)?;
+        let mut runtime = runtime.with_threads(render_threads());
         let streams = cache.is_some();
         if let Some(cache) = cache {
             runtime = runtime.with_stream_cache(cache);
@@ -975,7 +1049,10 @@ impl CoreLoader for V2Loader {
                 runtime.bus_count()
             )));
         }
+        let grower = Grower::start(&mut runtime, control, ceiling)
+            .map_err(|e| CoreError::Invalid(e.to_string()))?;
         let mut part = Part::new(runtime, tree.clone())?;
+        part.grower = Some(grower);
         if let Some(inst) = instrument.as_deref() {
             part.set_drivers(inst);
         }
@@ -1197,7 +1274,7 @@ mod tests {
         };
         let pcm = (0..3).map(|_| Pcm::new(48000, vec![[0.5; 2]; 4800].into_boxed_slice()).unwrap()).collect();
         let plan = sampler_kontakt::prepare(instrument.clone(), pcm, &Default::default()).unwrap().plan;
-        let limits = limits(&plan);
+        let limits = limits(&plan).0;
         let mut part = Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("arts")).unwrap();
         part.articulations = Some(1);
         part.set_drivers(&instrument);
@@ -1276,7 +1353,7 @@ mod tests {
         let plan = plan.with_buses(vec![bus], vec![Some(0)]).unwrap();
         let mut tree = MixTree::instrument("one");
         tree.nodes.push(MixNode { name: "g".into(), kind: NodeKind::Group, parent: Some(0), inserts: vec![], sends: vec![] });
-        let limits = limits(&plan);
+        let limits = limits(&plan).0;
         let part = Box::new(Part::new(Runtime::new(plan, limits).unwrap(), tree).unwrap());
         let mut core = V2Core::with_parts(1, 48000.0);
         core.install(0, Some(part));
@@ -1310,7 +1387,7 @@ mod tests {
             envelope: Envelope::default(), playback: Playback::default(),
         };
         let plan = script.bind(Prepared::new(48000, vec![pcm], vec![region], 1).unwrap()).unwrap();
-        let limits = limits(&plan);
+        let limits = limits(&plan).0;
         let part = Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("s")).unwrap();
         let mut core = V2Core::with_parts(1, 48000.0);
         core.install(0, Some(Box::new(part)));
@@ -1340,7 +1417,7 @@ mod tests {
             envelope: Envelope::default(), playback: Playback::default(),
         };
         let plan = script.bind(Prepared::new(48000, vec![pcm], vec![region], 1).unwrap()).unwrap();
-        let limits = limits(&plan);
+        let limits = limits(&plan).0;
         let part = Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("s")).unwrap();
         let mut core = V2Core::with_parts(1, 48000.0);
         core.install(0, Some(Box::new(part)));
@@ -1371,7 +1448,7 @@ mod tests {
         let one = sampler_ksp::bind_modules(vec![script(0)], Prepared::new(48000, vec![pcm()], vec![region.clone()], 1).unwrap()).unwrap();
         let four = sampler_ksp::bind_modules((0..4).map(script).collect(), Prepared::new(48000, vec![pcm()], vec![region], 1).unwrap()).unwrap();
         assert_eq!((Limits::script_capacity(&one), Limits::script_capacity(&four)), (4 * Limits::SCRIPT_KEYS + 1, 16 * Limits::SCRIPT_KEYS + 4));
-        let limits = limits(&four);
+        let limits = limits(&four).0;
         assert!(Runtime::new(four, limits).is_ok());
     }
 
