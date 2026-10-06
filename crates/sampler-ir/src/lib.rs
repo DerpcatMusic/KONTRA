@@ -514,6 +514,9 @@ pub struct Envelope {
     pub attack_shape: Curve,
     pub decay_shape: Curve,
     pub release_shape: Curve,
+    /// Attack, hold and decay to silence whatever the gate does, then the
+    /// voice ends; sustain and release are unused (Kontakt's AHD mode).
+    pub one_shot: bool,
 }
 
 impl Default for Envelope {
@@ -528,6 +531,7 @@ impl Default for Envelope {
             attack_shape: Curve::Linear,
             decay_shape: Curve::Linear,
             release_shape: Curve::Linear,
+            one_shot: false,
         }
     }
 }

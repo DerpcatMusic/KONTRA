@@ -409,15 +409,17 @@ impl Translation {
                         && !t.shaper.as_ref().is_some_and(|s| s.enabled));
                 let source = match params.modulator {
                     Modulator::Ahdsr(env) => {
-                        if env.unknown_flag != 0 {
-                            self.unsupported(
-                                &at,
-                                "AHD-only envelope mode",
-                                env.unknown_flag,
-                                not_modeled,
-                            );
-                            continue;
-                        }
+                        // The byte after sustain is the AHD mode switch: set on
+                        // release-trigger and legato-transition groups across
+                        // the installed libraries, and read the same way by v1.
+                        let one_shot = match env.unknown_flag {
+                            0 => false,
+                            1 => true,
+                            other => {
+                                self.unsupported(&at, "AHDSR mode", other, ir::Reason::Unknown);
+                                continue;
+                            }
+                        };
                         // Kontakt's stages are exponential (decay and release
                         // fall to 3/43 in their stage time; the attack bends
                         // with its curve). The IR states the authored times;
@@ -435,6 +437,7 @@ impl Translation {
                             decay: ms(env.decay_ms),
                             sustain: f64::from(env.sustain.clamp(0.0, 1.0)),
                             release: ms(env.release_ms),
+                            one_shot,
                             ..Default::default()
                         })
                     }
