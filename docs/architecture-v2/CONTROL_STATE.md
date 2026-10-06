@@ -129,3 +129,36 @@ vendor units/curves and broader destination types remain explicit future work.
 [VOICE_DSP.md](VOICE_DSP.md#shared-controls-driving-gain) records semantics and tests,
 including a waiting KSP UI callback controlling an already-running native voice.
 This does not mean the production window or host automation adapter has been ported.
+
+
+## Timestamped control values
+
+`Event::Control(plan, write)` enters the existing stable sample-time queue. It uses
+the same typed validation and atomic value/DSP edit path, without invoking a UI
+handler. Future admission reserves queue space, the exact plan generation and one
+revision increment. Intervening direct/script edits cannot consume that reserved
+revision space. Execution releases the reservation immediately before committing
+the validated write; immutable prepared schemas keep the type/identity valid.
+
+Equal-time control events and resumed script callbacks follow submission order.
+The exclusive block-end rule also applies to controls; an empty render drains work
+at the current boundary. Immediate writes do not require queue space. Rejection for
+invalid type/range, stale plan, past time, capacity or revision exhaustion publishes
+no new control event or ownership reservation.
+
+`cancel_control_events(plan)` removes only that plan's queued writes, including an
+unexecuted event at the current boundary. It leaves current values and ramps intact.
+Panic cancels all queued writes and releases their reservations; ordinary note/pedal
+cleanup does not discard unrelated control events. A plan with pending controls
+cannot retire even when it has no notes or callbacks. Old-generation events never
+retarget a newly active plan with the same public control IDs.
+
+Tests cover exact PCM ramps across blocks 1/7/64, equal-time writes/callbacks,
+exclusive boundaries, immediate writes under queue saturation, cancellation,
+retirement after execution/cancellation/panic and revision exhaustion at u64::MAX.
+Runtime paths are heap-audited. This is the native timeline primitive; production
+CLAP automation routing, gestures and source-specific callback dispatch remain open.
+
+Timeline validation: all 232 native tests pass in debug, release and Rust 1.92;
+strict all-target Clippy and both root boundary tests pass. Logs use
+`artifacts/control-timeline-{debug,release,msrv,clippy,boundary}.log`.

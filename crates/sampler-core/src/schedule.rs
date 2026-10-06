@@ -3,6 +3,9 @@ use super::{ChannelId, Error, Expression, FamilyId, NoteId, Runtime, VoiceId};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
+    /// A typed value write at sample time, without invoking a UI callback.
+    /// Future admission retains this exact plan and reserves its revision increment.
+    Control(super::PlanId, super::ControlWrite),
     /// Change a musical domain without changing any expressive channel identity.
     Articulation(super::PerformanceId, u32),
     /// Effective downstream controller state with full native 32-bit precision.
@@ -48,6 +51,9 @@ impl Runtime {
             self.apply_due();
         }
         match event {
+            Event::Control(plan, write) => {
+                self.validate_controls(plan, None, &[write])?;
+            }
             Event::Controller(_, controller, _) if controller >= 128 => {
                 return Err(Error::InvalidInput);
             }
@@ -95,6 +101,10 @@ impl Runtime {
             let n = self.notes.get_mut(id.0).unwrap();
             n.work = n.work.checked_add(1).ok_or(Error::Capacity)?;
         }
+        if let Event::Control(plan, _) = event {
+            let state = &mut self.plans.get_mut(plan.0).unwrap().controls;
+            state.pending = state.pending.checked_add(1).ok_or(Error::Capacity)?;
+        }
         self.queue(at, Action::Event(event));
         Ok(())
     }
@@ -119,6 +129,10 @@ impl Runtime {
 
     fn apply_event(&mut self, event: Event) {
         match event {
+            Event::Control(plan, write) => {
+                self.edit_controls_now(plan, None, &[write])
+                    .expect("validated control and reserved revision");
+            }
             Event::Articulation(id, value) => {
                 let index = self.performance_index(id).unwrap();
                 self.articulation_now(index, value);
@@ -163,6 +177,9 @@ impl Runtime {
                 Action::Event(event) => {
                     if let Event::Expression(id, _) = event {
                         self.notes.get_mut(id.0).unwrap().work -= 1;
+                    }
+                    if let Event::Control(plan, _) = event {
+                        self.plans.get_mut(plan.0).unwrap().controls.pending -= 1;
                     }
                     self.apply_event(event);
                 }
@@ -212,11 +229,25 @@ impl Runtime {
                 }
             }
             Action::Event(
-                Event::Sustain(..)
+                Event::Control(..)
+                | Event::Sustain(..)
                 | Event::Sostenuto(..)
                 | Event::Articulation(..)
                 | Event::Controller(..),
             ) => true,
         });
+    }
+
+    /// Remove queued control writes, including an unexecuted boundary event. Does not change
+    /// current values, active ramps, musical notes, or events targeting another plan.
+    pub fn cancel_control_events(&mut self, plan: super::PlanId) -> Result<usize, Error> {
+        let generation = self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?;
+        let count = generation.controls.pending;
+        self.commands.retain(|command| {
+            !matches!(command.action,
+            Action::Event(Event::Control(target, _)) if target == plan)
+        });
+        generation.controls.pending = 0;
+        Ok(count)
     }
 }

@@ -62,12 +62,15 @@ pub struct ControlWrite {
 pub(super) struct ControlState {
     values: Box<[ControlValue]>,
     revision: u64,
+    /// Future writes reserve both this generation and one revision increment each.
+    pub(super) pending: usize,
 }
 impl ControlState {
     pub(super) fn new(plan: &Prepared) -> Self {
         Self {
             values: plan.controls.iter().map(|c| c.default).collect(),
             revision: 0,
+            pending: 0,
         }
     }
 }
@@ -246,13 +249,13 @@ impl Runtime {
         self.edit_controls_now(plan, expected_revision, writes)
     }
 
-    pub(super) fn edit_controls_now(
-        &mut self,
+    pub(super) fn validate_controls(
+        &self,
         plan: PlanId,
         expected_revision: Option<u64>,
         writes: &[ControlWrite],
     ) -> Result<u64, Error> {
-        let generation = self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?;
+        let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
         if expected_revision.is_some_and(|expected| expected != generation.controls.revision) {
             return Err(Error::RevisionConflict);
         }
@@ -271,6 +274,24 @@ impl Runtime {
             .revision
             .checked_add(u64::from(!writes.is_empty()))
             .ok_or(Error::ArithmeticOverflow)?;
+        revision
+            .checked_add(
+                u64::try_from(generation.controls.pending)
+                    .map_err(|_| Error::ArithmeticOverflow)?,
+            )
+            .ok_or(Error::ArithmeticOverflow)?;
+        Ok(revision)
+    }
+
+    pub(super) fn edit_controls_now(
+        &mut self,
+        plan: PlanId,
+        expected_revision: Option<u64>,
+        writes: &[ControlWrite],
+    ) -> Result<u64, Error> {
+        let revision = self.validate_controls(plan, expected_revision, writes)?;
+        let generation = self.plans.get_mut(plan.0).unwrap();
+        let definitions = &generation.prepared;
         for write in writes {
             // All lookups/values validated above; one writer, no reentrancy.
             let index = definitions.control_index(write.id).unwrap();
@@ -281,5 +302,69 @@ impl Runtime {
         }
         generation.controls.revision = revision;
         Ok(revision)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn queued_writes_reserve_revision_space_until_execution_or_cancellation() {
+        let id = ControlId(1);
+        let plan = Prepared::new(48000, vec![], vec![], 0)
+            .unwrap()
+            .with_controls(vec![ControlDefinition {
+                id,
+                domain: ControlDomain::Toggle,
+                default: ControlValue::Toggle(false),
+            }])
+            .unwrap();
+        let mut rt = Runtime::new(
+            plan,
+            crate::Limits {
+                notes: 1,
+                channels: 0,
+                performances: 1,
+                families: 0,
+                expressions: 1,
+                voices: 0,
+                decisions: 0,
+                commands: 2,
+                behaviors: 0,
+                behavior_fuel: 0,
+                behavior_cells: 0,
+                note_cells: 0,
+            },
+        )
+        .unwrap();
+        let plan = rt.active_plan();
+        rt.plans.get_mut(plan.0).unwrap().controls.revision = u64::MAX - 1;
+        let write = ControlWrite {
+            id,
+            value: ControlValue::Toggle(true),
+        };
+        rt.schedule_event(1, crate::Event::Control(plan, write))
+            .unwrap();
+        assert_eq!(
+            rt.edit_controls(plan, None, &[write]),
+            Err(Error::ArithmeticOverflow)
+        );
+        assert_eq!(
+            rt.schedule_event(2, crate::Event::Control(plan, write)),
+            Err(Error::ArithmeticOverflow)
+        );
+        assert_eq!(rt.control_revision(plan), Ok(u64::MAX - 1));
+        assert_eq!(rt.cancel_control_events(plan), Ok(1));
+        rt.schedule_event(1, crate::Event::Control(plan, write))
+            .unwrap();
+        rt.render(&mut [[0.; 2]; 2]).unwrap();
+        assert_eq!(rt.control_revision(plan), Ok(u64::MAX));
+        assert_eq!(rt.control_value(plan, id), Ok(ControlValue::Toggle(true)));
+        assert_eq!(rt.edit_controls(plan, None, &[]), Ok(u64::MAX));
+        assert_eq!(
+            rt.schedule_event(2, crate::Event::Control(plan, write)),
+            Err(Error::ArithmeticOverflow)
+        );
+        assert_eq!(rt.pending_commands(), 0);
     }
 }

@@ -10,6 +10,11 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Schedule typed control values on the native sample timeline, retaining their
+  original plan and reserving revision space. Equal-time writes and script resumes
+  preserve order; cancellation/panic release ownership without applying stale edits.
+  Production host automation routing remains open.
+
 - Connect shared controls to native voice gain processors with generation-owned,
   sample-clock smoothing. Script assignments, queued edits and recall drive the
   same DSP state; new voices join existing ramps. A waiting KSP UI callback now
