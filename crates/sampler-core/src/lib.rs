@@ -112,7 +112,8 @@ mod ops;
 mod script;
 pub use ops::{
     CALL_DEPTH, EFFECT_ARGS, EFFECT_CAPACITY, Effect, HOST_VALUES, IntegerExtra, Op, RealBinary,
-    RealUnary, STORE_KEY, ScriptResources, TEXT_CAPACITY, Text, TextPart, TextRef, real, real_bits,
+    RealUnary, STORE_KEY, ScriptResources, TEXT_CAPACITY, Text, TextPart, TextRef, name_index,
+    real, real_bits,
 };
 pub use script::{ScriptArray, ScriptInstanceId};
 mod schedule;
