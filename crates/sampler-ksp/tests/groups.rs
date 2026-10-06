@@ -178,12 +178,18 @@ fn release_generated_notes_capture_current_groups_and_bad_indices_fault_atomical
     for source in [
         "on init declare $ALL_GROUPS end on",
         "on init declare $NUM_GROUPS end on",
-        "on init allow_group(0) end on",
     ] {
         assert!(compile(source).is_err());
     }
+    // v2: group edits outside note callbacks warn and do nothing.
     assert!(
-        sampler_ksp::compile(
+        !compile("on init allow_group(0) end on")
+            .unwrap()
+            .warnings()
+            .is_empty()
+    );
+    assert!(
+        !sampler_ksp::compile(
             "on init declare ui_button $B end on on ui_control($B) allow_group(0) end on",
             48000,
             sampler_ksp::Limits {
@@ -194,7 +200,9 @@ fn release_generated_notes_capture_current_groups_and_bad_indices_fault_atomical
             },
             &[("$B", sampler_core::ControlId(1))]
         )
-        .is_err()
+        .unwrap()
+        .warnings()
+        .is_empty()
     );
 }
 

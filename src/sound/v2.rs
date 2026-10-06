@@ -1,59 +1,256 @@
-//! [`Core`] over `sampler-core`: one [`Runtime`] per rack part.
+//! [`Core`] over `sampler-core`: one [`Runtime`] per rack part, fed through a
+//! `sampler-midi` zone, mixed through the part's output tree.
 //!
-//! Wired: host and MIDI notes (exact CLAP/VST3 ownership and NOTE_END), all
-//! sound/notes off, rendering, the part gain/mute/solo/output-bus mix, peaks,
-//! the scope tap, audition, voices, panic. Loading: Kontakt instruments through
-//! `sampler-kontakt` (scripts as far as it compiles them; the rest is in
-//! [`Description::unsupported`]), and WAV files as one region across the keyboard.
+//! Wired: host notes (exact CLAP/VST3 ownership and NOTE_END, layered parts)
+//! with per-note tuning, gain, pan, pressure and brightness; MIDI 1.0 and 2.0
+//! channel voice packets (notes, sustain and sostenuto, controllers, pitch bend
+//! with RPN sensitivity, channel and polyphonic pressure, all notes/sound off);
+//! the mixer's part gain, pan, tune, mute, solo, output pair and aux send, pair
+//! faders, peaks and the scope tap; every tree node's gain, pan, mute, solo and
+//! output (its parent or a DAW pair). Loading: Kontakt instruments through
+//! `sampler-kontakt` (cancelable, every group a mixer node), WAV files as one region.
 //!
-//! Not yet (silently ignored on the audio thread, refused by the loader where a
-//! request needs them): script UI and widgets, persistence,
-//! automation and controllers (bend, pressure, CC other than 120/123, pedals),
-//! note expressions and initial tuning, alignment, pan/tune/aux/mic outs, bus
-//! faders, macros, load shedding, streaming, rack growth, sample-rate change
-//! (needs a re-prepare).
+//! Not yet: member-channel MPE (every channel plays the zone's manager channel),
+//! per-note controllers and program changes (counted), streaming, a sample-rate
+//! change without reloading.
 
 use std::path::Path;
 
-use sampler_core::{Envelope, Frame, Input, Limits, Pcm, Playback, Prepared, Protocol, Region, Runtime};
+use sampler_core::{
+    BusMix, ChannelAddress, ControlContext, ControlDefinition, ControlDomain, ControlValue, ControlWrite, Envelope, Expression, Frame, Input, Limits, NoteId, Pcm, Playback, Prepared, Protocol,
+    Region, Runtime,
+};
+use sampler_ir as ir;
+use sampler_midi::{ApplyError, Mpe, Packets, Zone};
 
-use super::event::{HostNote, In};
-use super::mix::{Mix, Peaks};
-use super::view::{Persisted, Refresh};
+use super::event::{Event, HostNote, NoteExpression};
+use super::mix::{Mix, Peaks, balance};
+use super::report::{LoadReport, Missing, RuntimeProblems};
+use super::tree::{self, MixNode, MixTree, NodeKind, NodeMix, NodeOutput};
 use super::{
-    BUSES, Block, BlockInfo, Core, CoreError, CoreLoader, Description, LoadRequest, MAX_BLOCK, Macros, Progress,
-    Rendered, Transport, Voices,
+    BUSES, Block, BlockInfo, Core, CoreError, CoreLoader, Description, LoadRequest, Loaded, MAX_BLOCK, Progress,
+    RACK_SLOTS, Rendered, Voices,
 };
 
 /// Host notes tracked for ownership and NOTE_END across the rack.
 const HELD: usize = 1024;
+/// Notes a part holds at once, sounding or awaiting NOTE_END.
+const NOTES: usize = 128;
 /// [`Held::part`] of a note whose runtime was replaced: ends at the next block.
 const ORPHAN: usize = usize::MAX;
-const AUDITION_CHANNEL: u8 = 15;
+/// Every input reaches a part's zone as MIDI 1.0 on its manager channel, so a
+/// bend, pedal or controller on any channel reaches every note of the part.
+const WIRE: ChannelAddress = ChannelAddress { protocol: Protocol::Midi1, port: 0, group: 0, channel: 0 };
 
-/// A replaced runtime, dropped on a worker.
+/// One playable part: its runtime, the MIDI zone in front of it and its tree.
+pub struct Part {
+    runtime: Runtime,
+    mpe: Mpe,
+    tune: f32,
+    /// Per tree node, its runtime bus (none for the root).
+    buses: Box<[Option<usize>]>,
+    tree: MixTree,
+    /// Node settings as last set, after the root; preallocated to the tree.
+    nodes: Vec<NodeMix>,
+    audible: Box<[bool]>,
+    /// DAW pairs some node plays to directly, as a bit set.
+    direct: u32,
+    problems: RuntimeProblems,
+}
+
+impl Part {
+    fn new(runtime: Runtime, tree: MixTree) -> Result<Self, CoreError> {
+        let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
+        let mpe = Mpe::new(&runtime, WIRE.port, WIRE.group, Zone::Lower, 15, NOTES).map_err(core)?;
+        let count = tree.nodes.len();
+        Ok(Self {
+            runtime,
+            mpe,
+            tune: 0.0,
+            buses: (0..count).map(|n| n.checked_sub(1)).collect(),
+            tree,
+            nodes: vec![NodeMix::default(); count.saturating_sub(1)],
+            audible: vec![true; count].into_boxed_slice(),
+            direct: 0,
+            problems: RuntimeProblems::default(),
+        })
+    }
+
+    /// Apply node settings to the runtime's buses.
+    fn mix_nodes(&mut self, nodes: &[NodeMix]) {
+        for (to, from) in self.nodes.iter_mut().zip(nodes) {
+            *to = *from;
+        }
+        tree::audible(&self.tree, &self.nodes, &mut self.audible);
+        self.direct = 0;
+        for (n, mix) in self.nodes.iter().enumerate() {
+            let Some(bus) = self.buses[n + 1] else { continue };
+            let output = match mix.output {
+                NodeOutput::Pair(pair) if usize::from(pair) < BUSES => {
+                    self.direct |= 1 << pair;
+                    Some(usize::from(pair))
+                }
+                _ => None,
+            };
+            let gain = tree::stereo_gain(mix, self.audible[n + 1]);
+            let _ = self.runtime.set_bus_mix(bus, BusMix { gain, output });
+        }
+    }
+}
+
+/// A replaced part, dropped on a worker.
 #[derive(Default)]
-pub struct Retired(pub Option<Box<Runtime>>);
+pub struct Retired(pub Option<Box<Part>>);
 
 #[derive(Clone, Copy)]
 struct Held {
     part: usize,
     note: HostNote,
+    input: Input,
+    id: NoteId,
 }
 
 pub struct V2Core {
-    parts: Vec<Option<Box<Runtime>>>,
+    parts: Vec<Option<Box<Part>>>,
     rate: f64,
     mix: Mix,
     held: Vec<Held>,
-    auditions: Vec<Option<u8>>,
     /// Notes the ownership table had no room for.
     overflow: u64,
     buses: Box<[Block; BUSES]>,
+    written: [bool; BUSES],
     scratch: Box<[Frame; MAX_BLOCK]>,
+    /// Nodes routed straight to a DAW pair, per pair.
+    direct: Box<[[Frame; MAX_BLOCK]; BUSES]>,
     tap: Option<usize>,
     tapped: Box<[f32; MAX_BLOCK]>,
     peaks: Peaks,
+}
+
+impl Default for V2Core {
+    fn default() -> Self {
+        Self::with_parts(RACK_SLOTS, 48000.0)
+    }
+}
+
+fn wire(key: u8, external_id: Option<i32>) -> Input {
+    Input { protocol: WIRE.protocol, port: WIRE.port, group: WIRE.group, channel: WIRE.channel, key, external_id }
+}
+
+/// A host note's owner on the wire, distinct from MIDI notes by its ID; notes
+/// without one (VST3) get a negative ID per channel.
+fn host_input(note: HostNote) -> Input {
+    wire(note.key, Some(if note.id >= 0 { note.id } else { -1 - i32::from(note.channel) }))
+}
+
+fn peak(x: &[f32]) -> f32 {
+    x.iter().fold(0.0, |p, x| p.max(x.abs()))
+}
+
+/// A MIDI 1.0 channel voice message into `part`'s zone, on its manager channel.
+fn wire_event(part: &mut Part, status: u8, a: u8, b: u8) {
+    wire_packet(part, &[0x2000_0000 | u32::from(status & 0xf0) << 16 | u32::from(a & 127) << 8 | u32::from(b & 127)]);
+}
+
+/// A channel voice packet into `part`'s zone as is, on its group and manager channel.
+fn wire_packet(part: &mut Part, words: &[u32]) {
+    if let Some(Ok(packet)) = Packets::new(words).next()
+        && let Err(ApplyError::Core(sampler_core::Error::Capacity)) = part.mpe.apply(&mut part.runtime, packet)
+    {
+        part.problems.capacity_drops += 1;
+    }
+}
+
+/// Change one note's expression in place.
+fn express(runtime: &mut Runtime, note: NoteId, change: impl FnOnce(&mut Expression)) {
+    let Ok(owner) = runtime.expression_id(note) else { return };
+    let Ok(mut expression) = runtime.expression(owner) else { return };
+    change(&mut expression);
+    expression.gain = expression.gain.clamp(0.0, sampler_core::MAX_EXPRESSION_GAIN);
+    expression.pan = expression.pan.clamp(-1.0, 1.0);
+    let _ = runtime.set_expressions(&[(owner, expression)]);
+}
+
+fn unit_scale(value: f64) -> u32 {
+    (value.clamp(0.0, 1.0) * f64::from(u32::MAX)) as u32
+}
+
+/// `expression` on one held note.
+fn note_expression(part: &mut Part, id: NoteId, expression: NoteExpression) {
+    let tune = f64::from(part.tune);
+    express(&mut part.runtime, id, |e| match expression {
+        NoteExpression::Tune(semitones) => e.pitch_semitones = semitones + tune,
+        NoteExpression::Gain(gain) => e.gain = gain,
+        NoteExpression::Pan(pan) => e.pan = pan,
+        NoteExpression::Pressure(v) => e.pressure = unit_scale(v),
+        NoteExpression::Brightness(v) => e.timbre = unit_scale(v),
+    });
+}
+
+/// A channel voice packet into one part, MIDI 2.0 values at full precision;
+/// per-note messages reach held host notes.
+fn packet(part: &mut Part, index: usize, held: &[Held], words: [u32; 2]) {
+    let [word, data] = words;
+    let (kind, status, a, b) = (word >> 28, (word >> 16) as u8 & 0xf0, (word >> 8) as u8 & 127, word as u8 & 127);
+    let channel = (word >> 16) as u8 & 15;
+    // Per-note messages reach held host notes on the key at full precision.
+    let per_note = |part: &mut Part, expression: NoteExpression| {
+        for h in held.iter().filter(|h| h.part == index && h.note.channel == channel && h.note.key == a) {
+            note_expression(part, h.id, expression);
+        }
+    };
+    match (kind, status) {
+        (2, 0xa0) => per_note(part, NoteExpression::Pressure(f64::from(b) / 127.0)),
+        (4, 0xa0) => per_note(part, NoteExpression::Pressure(f64::from(data) / f64::from(u32::MAX))),
+        // Per-note pitch bend: centre 2^31, ±48 semitones full scale.
+        (4, 0x60) => per_note(part, NoteExpression::Tune((f64::from(data) / 2_147_483_648.0 - 1.0) * 48.0)),
+        (2 | 4, 0xb0) if a == 120 => {
+            let _ = part.runtime.all_sound_off(WIRE);
+        }
+        (2 | 4, 0xb0) if a == 123 => {
+            let _ = part.runtime.all_notes_off(WIRE);
+        }
+        (2, 0x80 | 0x90 | 0xb0 | 0xd0 | 0xe0) => wire_event(part, status, a, b),
+        // Notes, controllers, registered controllers (bend range), pressure, bend.
+        (4, 0x80 | 0x90 | 0xb0 | 0xd0 | 0xe0 | 0x20) => wire_packet(part, &[word & 0xf0f0_ffff, data]),
+        _ => part.problems.ignored_input += 1,
+    }
+}
+
+/// `event` into one part.
+fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u64, event: Event) {
+    match event {
+        Event::NoteOn { note, velocity, tune } => {
+            if held.len() == HELD {
+                *overflow += 1;
+                return;
+            }
+            let input = host_input(note);
+            let id = match part.mpe.trigger(&mut part.runtime, WIRE.channel, input, velocity.clamp(0.0, 1.0)) {
+                Ok(id) => id,
+                Err(ApplyError::Core(sampler_core::Error::Capacity)) => {
+                    part.problems.capacity_drops += 1;
+                    return;
+                }
+                Err(_) => return,
+            };
+            held.push(Held { part: index, note, input, id });
+            if tune != 0.0 {
+                express(&mut part.runtime, id, |e| e.pitch_semitones += tune);
+            }
+        }
+        Event::NoteOff(pattern) | Event::Choke(pattern) => {
+            for h in held.iter().filter(|h| h.part == index && pattern.matches(h.note)) {
+                let _ = part.runtime.note_off(h.input, None);
+            }
+        }
+        Event::Expression(pattern, expression) => {
+            for h in held.iter().filter(|h| h.part == index && pattern.matches(h.note)) {
+                note_expression(part, h.id, expression);
+            }
+        }
+        Event::Ump(words) => packet(part, index, held, words),
+    }
 }
 
 impl V2Core {
@@ -67,94 +264,50 @@ impl V2Core {
             rate: sample_rate,
             mix,
             held: Vec::with_capacity(HELD),
-            auditions: vec![None; parts],
             overflow: 0,
             buses: Box::new([[[0.0; MAX_BLOCK]; 2]; BUSES]),
+            written: [false; BUSES],
             scratch: Box::new([[0.0; 2]; MAX_BLOCK]),
+            direct: Box::new([[[0.0; 2]; MAX_BLOCK]; BUSES]),
             tap: None,
             tapped: Box::new([0.0; MAX_BLOCK]),
             peaks,
         }
     }
 
-    fn reaches(&self, part: usize, port: u8, channel: u8) -> bool {
-        self.mix.parts.get(part).is_some_and(|c| c.port == port && (c.channel < 0 || c.channel == i16::from(channel)))
-    }
-
-    /// `event` to one part, if it has a runtime.
-    fn deliver(&mut self, part: usize, port: u8, event: In) {
-        let Some(Some(rt)) = self.parts.get_mut(part) else { return };
-        let midi = |channel, key| Input { protocol: Protocol::Midi1, port: port.into(), group: 0, channel, key, external_id: None };
-        match event {
-            In::HostOn(note, velocity, _tune) => {
-                if self.held.len() == HELD {
-                    self.overflow += 1;
-                } else if rt.trigger(host_input(note), note.key, f64::from(velocity) / 127.0).is_ok() {
-                    self.held.push(Held { part, note });
-                }
-            }
-            In::HostOff(pattern) | In::HostChoke(pattern) => {
-                for held in self.held.iter().filter(|h| h.part == part && pattern.matches(h.note)) {
-                    let _ = rt.note_off(host_input(held.note), None);
-                }
-            }
-            In::NoteOn(channel, key, 0) | In::NoteOff(channel, key) => {
-                let _ = rt.note_off(midi(channel, key), None);
-            }
-            In::NoteOn(channel, key, velocity) => {
-                let _ = rt.trigger(midi(channel, key), key, f64::from(velocity) / 127.0);
-            }
-            In::Cc(_, 120 | 123, _) => rt.panic(),
-            _ => {}
+    /// Adopt larger worker-prepared storage, keeping every playing part.
+    /// The replaced storage stays in `grown` to be dropped off audio.
+    pub fn adopt(&mut self, grown: &mut Self) {
+        for (old, new) in self.parts.iter_mut().zip(&mut grown.parts) {
+            std::mem::swap(old, new);
         }
-    }
-
-    /// The channel `event` arrives on, for part routing; None reaches every part.
-    fn channel(event: In) -> Option<u8> {
-        match event {
-            In::HostOn(note, ..) => Some(note.channel),
-            In::HostOff(p) | In::HostChoke(p) | In::HostExpression(p, _) => u8::try_from(p.channel).ok(),
-            In::NoteOn(c, ..) | In::NoteOff(c, _) | In::Cc(c, ..) | In::Bend(c, _) | In::Pressure(c, _) | In::PolyAt(c, ..) => {
-                Some(c)
-            }
-            In::NoteTune(c, ..) | In::NotePressure(c, ..) | In::NoteGain(c, ..) | In::NotePan(c, ..) | In::NoteBrightness(c, ..) => {
-                Some(c)
-            }
+        std::mem::swap(&mut self.parts, &mut grown.parts);
+        for (old, new) in self.mix.parts.iter().zip(&mut grown.mix.parts) {
+            *new = *old;
         }
-    }
-
-    fn routed(&mut self, port: u8, event: In, mut reached: Option<&mut [bool]>) {
-        // A host note goes to one part only, so it has exactly one owner.
-        let first_only = matches!(event, In::HostOn(..));
-        for part in 0..self.parts.len() {
-            if self.reaches(part, port, Self::channel(event).unwrap_or(0)) || Self::channel(event).is_none() {
-                self.deliver(part, port, event);
-                if let Some(r) = reached.as_deref_mut().and_then(|r| r.get_mut(part)) {
-                    *r = true;
-                }
-                if first_only {
-                    return;
-                }
-            }
+        std::mem::swap(&mut self.mix.parts, &mut grown.mix.parts);
+        for (old, new) in self.peaks.parts.iter().zip(&mut grown.peaks.parts) {
+            *new = *old;
         }
+        std::mem::swap(&mut self.peaks.parts, &mut grown.peaks.parts);
     }
-}
 
-fn host_input(note: HostNote) -> Input {
-    Input {
-        protocol: if note.clap { Protocol::Clap } else { Protocol::Vst3 },
-        port: note.port.into(),
-        group: 0,
-        channel: note.channel,
-        key: note.key,
-        external_id: (note.id >= 0).then_some(note.id),
+    fn reaches(&self, part: usize, port: u8, channel: Option<u8>) -> bool {
+        self.mix.parts.get(part).is_some_and(|c| {
+            c.port == port && (c.channel < 0 || channel.is_none_or(|channel| c.channel == i16::from(channel)))
+        })
+    }
+
+    fn deliver(&mut self, part: usize, event: Event) {
+        let Some(Some(p)) = self.parts.get_mut(part) else { return };
+        deliver(p, part, &mut self.held, &mut self.overflow, event);
     }
 }
 
 impl Core for V2Core {
-    type Prepared = Box<Runtime>;
+    /// `None` empties the part.
+    type Prepared = Option<Box<Part>>;
     type Retired = Retired;
-    type Live = ();
 
     fn parts(&self) -> usize {
         self.parts.len()
@@ -165,82 +318,124 @@ impl Core for V2Core {
     }
 
     fn reset(&mut self, sample_rate: f64) {
-        // ponytail: runtimes keep their prepared rate; the shell must reload on a rate change.
+        // ponytail: parts keep their prepared rate; the shell reloads them on a rate change.
         self.rate = sample_rate;
         self.panic();
     }
 
     fn panic(&mut self) {
-        for rt in self.parts.iter_mut().flatten() {
-            rt.panic();
+        for p in self.parts.iter_mut().flatten() {
+            p.runtime.panic();
         }
     }
 
-    fn install(&mut self, part: usize, prepared: Box<Runtime>) -> Retired {
-        let Some(slot) = self.parts.get_mut(part) else { return Retired(Some(prepared)) };
+    fn install(&mut self, part: usize, mut prepared: Option<Box<Part>>) -> Retired {
+        let Some(slot) = self.parts.get_mut(part) else { return Retired(prepared) };
         for held in self.held.iter_mut().filter(|h| h.part == part) {
             held.part = ORPHAN;
         }
-        Retired(slot.replace(prepared))
+        let tune = self.mix.parts.get(part).map_or(0.0, |c| c.tune);
+        if let Some(p) = prepared.as_mut()
+            && tune != 0.0
+            && p.mpe.transpose(&mut p.runtime, f64::from(tune)).is_ok()
+        {
+            p.tune = tune;
+        }
+        Retired(std::mem::replace(slot, prepared))
     }
-
-    fn holding(&self, _playing: bool) -> bool {
-        false
-    }
-
-    fn set_transport(&mut self, _transport: Transport) {}
 
     fn begin_block(&mut self, _block: &BlockInfo) {}
 
-    fn event(&mut self, port: u8, event: In, _offset: u32, _holding: bool) {
-        self.routed(port, event, None);
+    fn event(&mut self, port: u8, event: Event) {
+        let channel = event.channel();
+        for part in 0..self.parts.len() {
+            if self.reaches(part, port, channel) {
+                self.deliver(part, event);
+            }
+        }
     }
 
-    fn key_held(&self, channel: u8, key: u8, _holding: bool) -> bool {
+    fn play(&mut self, part: usize, event: Event) {
+        self.deliver(part, event);
+    }
+
+    fn key_held(&self, channel: u8, key: u8) -> bool {
         self.held.iter().any(|h| h.part != ORPHAN && h.note.channel == channel && h.note.key == key)
     }
 
-    fn release_due(&mut self, _at: usize, limit: usize) -> usize {
-        limit
-    }
-
     fn render(&mut self, frames: usize) -> Rendered<'_> {
-        let frames = frames.min(MAX_BLOCK);
+        let n = frames.min(MAX_BLOCK);
         for bus in self.buses.iter_mut() {
-            bus[0][..frames].fill(0.0);
-            bus[1][..frames].fill(0.0);
+            bus[0][..n].fill(0.0);
+            bus[1][..n].fill(0.0);
         }
-        self.tapped[..frames].fill(0.0);
-        let mut live = [false; BUSES];
+        self.written = [false; BUSES];
+        self.tapped[..n].fill(0.0);
         let solo = self.mix.parts.iter().take(self.parts.len()).any(|c| c.solo);
-        for (part, rt) in self.parts.iter_mut().enumerate() {
-            let Some(rt) = rt else { continue };
-            let out = &mut self.scratch[..frames];
-            if rt.render(out).is_err() {
+        for (index, part) in self.parts.iter_mut().enumerate() {
+            let Some(part) = part else { continue };
+            let pairs = |direct: u32| (0..BUSES).filter(move |pair| direct & 1 << pair != 0);
+            for pair in pairs(part.direct) {
+                self.direct[pair][..n].fill([0.0; 2]);
+            }
+            let out = &mut self.scratch[..n];
+            let mut outs: [&mut [Frame]; BUSES] = self.direct.each_mut().map(|d| &mut d[..n]);
+            if part.runtime.render_split(out, &mut outs).is_err() {
                 continue;
             }
-            let c = self.mix.parts[part];
-            let gain = if c.mute || solo && !c.solo { 0.0 } else { c.gain };
-            let bus = usize::from(c.output).min(BUSES - 1);
-            let peak = &mut self.peaks.parts[part];
-            for (i, [l, r]) in out.iter().enumerate() {
-                let (l, r) = (l * gain, r * gain);
-                self.buses[bus][0][i] += l;
-                self.buses[bus][1][i] += r;
-                peak[0] = peak[0].max(l.abs());
-                peak[1] = peak[1].max(r.abs());
-                if self.tap == Some(part) {
-                    self.tapped[i] = (l + r) * 0.5;
+            let c = self.mix.parts[index];
+            if c.mute || solo && !c.solo {
+                continue;
+            }
+            // Nodes routed to their own pairs leave the instrument's fader.
+            for pair in pairs(part.direct) {
+                self.written[pair] = true;
+                let [bl, br] = &mut self.buses[pair];
+                for ((ol, or), [l, r]) in bl[..n].iter_mut().zip(&mut br[..n]).zip(self.direct[pair][..n].iter()) {
+                    *ol += l;
+                    *or += r;
                 }
             }
-            live[bus] = true;
-        }
-        for (bus, peak) in self.peaks.buses.iter_mut().enumerate().filter(|(bus, _)| live[*bus]) {
-            for (peak, signal) in peak.iter_mut().zip(&self.buses[bus]) {
-                *peak = signal[..frames].iter().fold(*peak, |p, x| p.max(x.abs()));
+            let [gl, gr] = balance(c.gain, c.pan);
+            let mut level = [0f32; 2];
+            for [l, r] in out.iter_mut() {
+                *l *= gl;
+                *r *= gr;
+                level = [level[0].max(l.abs()), level[1].max(r.abs())];
+            }
+            let meter = &mut self.peaks.parts[index];
+            *meter = [meter[0].max(level[0]), meter[1].max(level[1])];
+            if level == [0.0; 2] {
+                continue;
+            }
+            if self.tap == Some(index) {
+                for (t, [l, r]) in self.tapped[..n].iter_mut().zip(out.iter()) {
+                    *t = (l + r) * 0.5;
+                }
+            }
+            let aux = usize::from(c.aux) < BUSES && c.aux != c.output && c.aux_gain != 0.0;
+            for (bus, gain) in [(usize::from(c.output), 1.0), (usize::from(c.aux), c.aux_gain)].into_iter().take(1 + usize::from(aux)) {
+                let bus = bus.min(BUSES - 1);
+                self.written[bus] = true;
+                let [bl, br] = &mut self.buses[bus];
+                for ((ol, or), [l, r]) in bl[..n].iter_mut().zip(&mut br[..n]).zip(out.iter()) {
+                    *ol += l * gain;
+                    *or += r * gain;
+                }
             }
         }
-        Rendered { buses: &self.buses, live }
+        let solo = self.mix.buses.iter().any(|c| c.solo);
+        for (bus, c) in self.mix.buses.iter().enumerate().filter(|(bus, _)| self.written[*bus]) {
+            let gains = if c.mute || solo && !c.solo { [0.0; 2] } else { balance(c.gain, c.pan) };
+            let meter = &mut self.peaks.buses[bus];
+            for ((signal, g), m) in self.buses[bus].iter_mut().zip(gains).zip(meter.iter_mut()) {
+                if g != 1.0 {
+                    signal[..n].iter_mut().for_each(|x| *x *= g);
+                }
+                *m = m.max(peak(&signal[..n]));
+            }
+        }
+        Rendered { buses: &self.buses, live: self.written }
     }
 
     fn owns(&self, note: HostNote) -> bool {
@@ -249,27 +444,25 @@ impl Core for V2Core {
 
     fn end_block(&mut self, _frames: usize, end: &mut dyn FnMut(HostNote) -> bool) -> u64 {
         let Self { parts, held, .. } = self;
-        let mut refused = 0;
-        // Notes of replaced runtimes end now; their sound went with the runtime.
+        // A layered note ends once its last part lets it go.
+        let last = |held: &[Held], at: usize| held.iter().filter(|h| h.note == held[at].note).count() == 1;
+        // Notes of replaced parts end now; their sound went with the part.
         let mut i = 0;
         while i < held.len() {
             if held[i].part != ORPHAN {
                 i += 1;
-            } else if !held[i].note.clap || end(held[i].note) {
+            } else if !held[i].note.clap || !last(held, i) || end(held[i].note) {
                 held.swap_remove(i);
             } else {
                 return 1;
             }
         }
-        for (part, rt) in parts.iter_mut().enumerate() {
-            let Some(rt) = rt else { continue };
-            rt.flush_ended(|input| {
-                if !matches!(input.protocol, Protocol::Clap | Protocol::Vst3) {
-                    return true;
-                }
-                let Some(at) = held.iter().position(|h| h.part == part && host_input(h.note) == input) else { return true };
-                let note = held[at].note;
-                if note.clap && !end(note) {
+        let mut refused = 0;
+        for (index, part) in parts.iter_mut().enumerate() {
+            let Some(part) = part else { continue };
+            part.runtime.flush_ended(|input| {
+                let Some(at) = held.iter().position(|h| h.part == index && h.input == input) else { return true };
+                if held[at].note.clap && last(held, at) && !end(held[at].note) {
                     refused = 1;
                     return false;
                 }
@@ -283,56 +476,19 @@ impl Core for V2Core {
         refused
     }
 
-    fn event_recorded(&mut self, port: u8, event: In, reached: &mut [bool]) {
-        self.routed(port, event, Some(reached));
-    }
-
-    fn event_to(&mut self, parts: &mut [bool], event: In) {
-        for (part, marked) in parts.iter_mut().enumerate() {
-            if std::mem::take(marked) {
-                let port = self.mix.parts.get(part).map_or(0, |c| c.port);
-                self.deliver(part, port, event);
-            }
-        }
-    }
-
-    fn play(&mut self, part: usize, event: In) {
-        let port = self.mix.parts.get(part).map_or(0, |c| c.port);
-        self.deliver(part, port, event);
-    }
-
-    fn preview_channel(&self, part: usize) -> u8 {
-        self.mix.parts.get(part).map_or(0, |c| c.channel.clamp(0, 15) as u8)
-    }
-
-    fn audition(&mut self, part: usize, note: Option<u8>) {
-        self.audition_stop(part);
-        let Some(Some(rt)) = self.parts.get_mut(part) else { return };
-        let key = note.unwrap_or(60).min(127);
-        let input = Input { protocol: Protocol::Native, port: 0, group: 0, channel: AUDITION_CHANNEL, key, external_id: None };
-        if rt.trigger(input, key, 100.0 / 127.0).is_ok() {
-            self.auditions[part] = Some(key);
-        }
-    }
-
-    fn audition_stop(&mut self, part: usize) {
-        let Some(key) = self.auditions.get_mut(part).and_then(Option::take) else { return };
-        if let Some(Some(rt)) = self.parts.get_mut(part) {
-            let input = Input { protocol: Protocol::Native, port: 0, group: 0, channel: AUDITION_CHANNEL, key, external_id: None };
-            let _ = rt.note_off(input, None);
-        }
-    }
-
-    fn set_macros(&mut self, _macros: Macros) {}
-
-    fn set_load(&mut self, _load: f32) {}
-
     fn set_mix(&mut self, mix: &Mix) {
         // Field-wise so the parts vector keeps its audio-thread allocation.
         for (to, from) in self.mix.parts.iter_mut().zip(&mix.parts) {
             *to = *from;
         }
         self.mix.buses = mix.buses;
+        for (index, (p, c)) in self.parts.iter_mut().zip(&self.mix.parts).enumerate() {
+            let Some(p) = p else { continue };
+            if p.tune != c.tune && p.mpe.transpose(&mut p.runtime, f64::from(c.tune)).is_ok() {
+                p.tune = c.tune;
+            }
+            p.mix_nodes(mix.nodes.get(index).map_or(&[], Vec::as_slice));
+        }
     }
 
     fn bus_ports(&self) -> [u8; BUSES] {
@@ -351,34 +507,56 @@ impl Core for V2Core {
         &mut self.peaks
     }
 
-    fn ui_control(&mut self, _part: usize, _slot: usize, _control: usize, _value: i32) {}
-
-    fn ui_file_selection(&mut self, _part: usize, _slot: usize, _control: usize, _path: &str) {}
-
-    fn script_revision(&self, _part: usize) -> u64 {
-        0
-    }
-
-    fn refresh_persistence(&self, _part: usize, _saved: &mut [Persisted], at: &mut Refresh, _budget: usize) -> bool {
-        at.changed = false;
-        true
-    }
-
-    fn refresh_live(&self, _part: usize, _live: &mut (), _at: &mut Refresh, _budget: usize, _unchanged: bool) -> bool {
-        true
+    fn take_node_peaks(&mut self, part: usize, each: &mut dyn FnMut(usize, [f32; 2])) {
+        let Some(Some(p)) = self.parts.get_mut(part) else { return };
+        let nodes = &p.buses;
+        p.runtime.take_bus_peaks(|bus, peak| {
+            if let Some(node) = nodes.iter().position(|&b| b == Some(bus)) {
+                each(node, peak);
+            }
+        });
     }
 
     fn voices(&self) -> Voices {
-        let active = self.parts.iter().flatten().map(|rt| rt.voice_count()).sum();
+        let active = self.parts.iter().flatten().map(|p| p.runtime.voice_count()).sum();
         Voices { active, audible: active, dropouts: self.overflow }
     }
 
-    fn underruns(&self, _part: usize) -> u64 {
-        0
+    fn problems(&self, part: usize) -> RuntimeProblems {
+        let Some(Some(p)) = self.parts.get(part) else { return RuntimeProblems::default() };
+        RuntimeProblems { nonfinite: p.runtime.nonfinite_frames(), ..p.problems }
     }
 
     fn latency(&self) -> u32 {
         0
+    }
+
+    fn set_control(&mut self, part: usize, control: sampler_ui_ir::ControlId, value: f64) -> bool {
+        let Some(Some(p)) = self.parts.get_mut(part) else { return false };
+        let rt = &mut p.runtime;
+        let (plan, id) = (rt.active_plan(), sampler_core::ControlId(control.0));
+        let Ok(ControlDefinition { domain, .. }) = rt.control_definition(plan, id) else { return false };
+        let value = match domain {
+            ControlDomain::Integer { min, max } => ControlValue::Integer((value.round() as i64).clamp(min, max)),
+            ControlDomain::Real { min, max } => ControlValue::Real(value.clamp(min, max)),
+            ControlDomain::Toggle => ControlValue::Toggle(value >= 0.5),
+        };
+        let Ok(performance) = rt.performance(0) else { return false };
+        let context = ControlContext { performance, origin: WIRE, channels: 1 };
+        rt.invoke_control(context, plan, None, ControlWrite { id, value }).is_ok()
+    }
+
+    fn control_value(&self, part: usize, control: sampler_ui_ir::ControlId) -> Option<f64> {
+        let rt = &self.parts.get(part)?.as_ref()?.runtime;
+        rt.control_value(rt.active_plan(), sampler_core::ControlId(control.0)).ok().map(number)
+    }
+}
+
+fn number(value: ControlValue) -> f64 {
+    match value {
+        ControlValue::Integer(n) => n as f64,
+        ControlValue::Real(r) => r,
+        ControlValue::Toggle(on) => f64::from(u8::from(on)),
     }
 }
 
@@ -389,7 +567,7 @@ pub struct V2Loader;
 /// Capacities of a part, sized for its plan's script state.
 fn limits(plan: &Prepared) -> Limits {
     Limits {
-        notes: 128,
+        notes: NOTES,
         channels: 16,
         performances: 1,
         families: 256,
@@ -420,21 +598,88 @@ fn unsupported(path: &Path) -> CoreError {
     }
 }
 
-fn report(instrument: &sampler_ir::Instrument) -> Vec<String> {
-    instrument.unsupported.iter().map(|u| format!("{}: {} = {} ({:?})", u.location, u.feature, u.value, u.reason)).collect()
+fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec<String> {
+    let Some(chain) = chain.and_then(|c| instrument.chains.get(c.0)) else { return Vec::new() };
+    chain
+        .pre_amplitude
+        .iter()
+        .chain(&chain.post_amplitude)
+        .map(|p| match p {
+            ir::Processor::Gain(_) => "Gain",
+            ir::Processor::Pan(_) => "Pan",
+            ir::Processor::Filter(_) => "Filter",
+            ir::Processor::Delay { .. } => "Delay",
+        })
+        .map(String::from)
+        .collect()
 }
 
-fn kontakt(request: &LoadRequest, progress: &mut dyn FnMut(Progress)) -> Result<Prepared, CoreError> {
-    let options = sampler_kontakt::Options { rate: request.sample_rate as u32, keys: 0..=127, scripts: true };
-    let loaded = sampler_kontakt::load(&request.path, &options, |p| {
+/// Give every group a bus of its own after the source's buses, so each is a
+/// mixer node, and describe the result as the part's tree: node 0 is the
+/// instrument, node `n > 0` is runtime bus `n - 1`.
+fn nest(instrument: &mut ir::Instrument) -> MixTree {
+    let node = |output: ir::Output| match output {
+        ir::Output::Master => 0,
+        ir::Output::Bus(bus) => bus.0 + 1,
+    };
+    let mut tree = MixTree::instrument(&instrument.name);
+    for bus in &instrument.buses {
+        tree.nodes.push(MixNode {
+            name: bus.name.clone(),
+            kind: NodeKind::Bus,
+            parent: Some(node(bus.output)),
+            inserts: insert_names(instrument, bus.chain),
+            sends: bus.sends.iter().map(|s| (node(s.to), s.gain.linear() as f32)).collect(),
+        });
+    }
+    for index in 0..instrument.groups.len() {
+        let group = &instrument.groups[index];
+        let name = if group.name.is_empty() { format!("Group {}", index + 1) } else { group.name.clone() };
+        tree.nodes.push(MixNode {
+            name: name.clone(),
+            kind: NodeKind::Group,
+            parent: Some(node(group.output)),
+            inserts: insert_names(instrument, group.chain),
+            sends: Vec::new(),
+        });
+        let bus = ir::BusRef(instrument.buses.len());
+        instrument.buses.push(ir::Bus { name, chain: None, sends: Vec::new(), output: group.output });
+        instrument.groups[index].output = ir::Output::Bus(bus);
+    }
+    tree
+}
+
+fn kontakt(
+    request: &LoadRequest,
+    progress: &mut dyn FnMut(Progress),
+    canceled: &(dyn Fn() -> bool + Sync),
+) -> Result<Loaded<Prepared>, CoreError> {
+    let load = |e: sampler_kontakt::LoadError| match e {
+        sampler_kontakt::LoadError::Canceled => CoreError::Canceled,
+        e => CoreError::Load(e.to_string()),
+    };
+    let mut source = sampler_kontakt::read(&request.path).map_err(load)?;
+    let mut report = LoadReport::of(&source.instrument, &request.path, source.locations.len());
+    let tree = nest(&mut source.instrument);
+    let options = sampler_kontakt::Options {
+        rate: request.sample_rate as u32,
+        library: Some(request.path.clone()),
+        ..Default::default()
+    };
+    let progress = |p: sampler_kontakt::Progress<'_>| {
         progress(Progress(match p {
             sampler_kontakt::Progress::Translated { .. } => 50,
             sampler_kontakt::Progress::Decoding { done, total, .. } => (100 + 800 * done / total.max(1)) as u16,
             sampler_kontakt::Progress::Lowering => 950,
         }))
-    })
-    .map_err(|e| CoreError::Load(e.to_string()))?;
-    Ok(loaded.plan)
+    };
+    let loaded = sampler_kontakt::load_read(source, &options, progress, canceled).map_err(load)?;
+    // Loading adds what it found unplayable (samples, keys) and scripts that failed.
+    report.missing = loaded.instrument.unsupported.iter().map(Missing::from).collect();
+    report.decoded.zones = loaded.instrument.zones.len();
+    report.decoded.keys = super::report::key_bits(&loaded.instrument);
+    report.decoded.samples = loaded.plan.sample_count();
+    Ok(Loaded { part: loaded.plan, tree, report, interfaces: loaded.interfaces, controls: Vec::new() })
 }
 
 fn read_wav(path: &Path) -> Result<(u32, Box<[Frame]>), CoreError> {
@@ -456,7 +701,11 @@ fn read_wav(path: &Path) -> Result<(u32, Box<[Frame]>), CoreError> {
     Ok((spec.sample_rate, frames))
 }
 
-fn wav(request: &LoadRequest) -> Result<Prepared, CoreError> {
+fn stem(path: &Path) -> String {
+    path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+fn wav(request: &LoadRequest) -> Result<Loaded<Prepared>, CoreError> {
     let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
     let rate = request.sample_rate as u32;
     let (source_rate, frames) = read_wav(&request.path)?;
@@ -474,7 +723,14 @@ fn wav(request: &LoadRequest) -> Result<Prepared, CoreError> {
         envelope: Envelope::new(0, 0, 0, 1.0, release).map_err(core)?,
         playback: Playback::default(),
     };
-    Prepared::new(rate, vec![pcm], vec![region], 128).map_err(core)
+    let plan = Prepared::new(rate, vec![pcm], vec![region], 128).map_err(core)?;
+    let name = stem(&request.path);
+    let mut report = LoadReport { name: name.clone(), path: request.path.display().to_string(), ..Default::default() };
+    report.decoded.format = "WAV".into();
+    report.decoded.zones = 1;
+    report.decoded.samples = 1;
+    report.decoded.keys = super::report::range_bits(0, 108);
+    Ok(Loaded { part: plan, tree: MixTree::instrument(&name), report, interfaces: Vec::new(), controls: Vec::new() })
 }
 
 impl CoreLoader for V2Loader {
@@ -485,13 +741,10 @@ impl CoreLoader for V2Loader {
         request: &LoadRequest,
         progress: &mut dyn FnMut(Progress),
         canceled: &(dyn Fn() -> bool + Sync),
-    ) -> Result<Box<Runtime>, CoreError> {
-        if request.persisted.iter().any(|p| !p.is_empty()) {
-            return Err(CoreError::Unsupported("restoring script state"));
-        }
+    ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
         let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
-        let prepared = if is_kontakt(&request.path) {
-            kontakt(request, progress)?
+        let Loaded { part: prepared, tree, report, interfaces, .. } = if is_kontakt(&request.path) {
+            kontakt(request, progress, canceled)?
         } else if is_wav(&request.path) {
             wav(request)?
         } else {
@@ -500,10 +753,23 @@ impl CoreLoader for V2Loader {
         if canceled() {
             return Err(CoreError::Canceled);
         }
+        let controls = prepared
+            .controls()
+            .iter()
+            .map(|c| (sampler_ui_ir::ControlId(c.id.0), number(c.default)))
+            .collect();
         let limits = limits(&prepared);
         let runtime = Runtime::new(prepared, limits).map_err(core)?;
+        if runtime.bus_count() + 1 != tree.nodes.len() && tree.nodes.len() > 1 {
+            return Err(CoreError::Invalid(format!(
+                "{} mixer nodes for {} runtime buses",
+                tree.nodes.len() - 1,
+                runtime.bus_count()
+            )));
+        }
+        let part = Part::new(runtime, tree.clone())?;
         progress(Progress::DONE);
-        Ok(Box::new(runtime))
+        Ok(Loaded { part: Some(Box::new(part)), tree, report, interfaces, controls })
     }
 
     fn describe(&self, path: &Path, _program: u32) -> Result<Description, CoreError> {
@@ -513,15 +779,14 @@ impl CoreLoader for V2Loader {
                 name: instrument.name.clone(),
                 zones: instrument.zones.len(),
                 scripts: instrument.behaviors.len(),
-                unsupported: report(&instrument),
+                missing: instrument.unsupported.iter().map(Missing::from).collect(),
             });
         }
         if !is_wav(path) {
             return Err(unsupported(path));
         }
         hound::WavReader::open(path).map_err(|e| CoreError::Load(e.to_string()))?;
-        let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        Ok(Description { name, zones: 1, scripts: 0, unsupported: Vec::new() })
+        Ok(Description { name: stem(path), zones: 1, scripts: 0, missing: Vec::new() })
     }
 }
 
@@ -539,8 +804,17 @@ mod tests {
         w.finalize().unwrap();
     }
 
-    fn loud(r: &Rendered<'_>, frames: usize) -> bool {
-        r.live[0] && r.buses[0][0][..frames].iter().any(|x| x.abs() > 0.01)
+    fn loud(r: &Rendered<'_>, bus: usize, frames: usize) -> bool {
+        r.live[bus] && r.buses[bus][0][..frames].iter().any(|x| x.abs() > 0.01)
+    }
+
+    fn on(note: HostNote) -> Event {
+        Event::NoteOn { note, velocity: 100.0 / 127.0, tune: 0.0 }
+    }
+
+    fn load(path: &Path) -> Option<Box<Part>> {
+        let request = LoadRequest { path: path.into(), sample_rate: 48000.0, ..Default::default() };
+        V2Loader.prepare(&request, &mut |_| {}, &|| false).unwrap().part
     }
 
     #[test]
@@ -552,21 +826,23 @@ mod tests {
         assert_eq!(loader.describe(&path, 0).unwrap().name, "sine");
         let request = LoadRequest { path, sample_rate: 48000.0, ..Default::default() };
         let mut done = None;
-        let prepared = loader.prepare(&request, &mut |p| done = Some(p), &|| false).unwrap();
+        let loaded = loader.prepare(&request, &mut |p| done = Some(p), &|| false).unwrap();
         assert_eq!(done, Some(Progress::DONE));
+        assert_eq!(loaded.tree.nodes.len(), 1);
+        assert_eq!(loaded.report.decoded.format, "WAV");
 
         let mut core = V2Core::with_parts(2, 48000.0);
-        assert!(core.install(0, prepared).0.is_none());
+        assert!(core.install(0, loaded.part).0.is_none());
         let note = HostNote { port: 0, channel: 0, key: 60, id: 7, clap: true };
         core.begin_block(&BlockInfo { frames: 64, ..Default::default() });
-        core.event(0, In::HostOn(note, 100, 0.0), 0, false);
+        core.event(0, on(note));
         assert!(core.owns(note));
-        assert!(core.key_held(0, 60, false));
-        assert!(loud(&core.render(64), 64));
+        assert!(core.key_held(0, 60));
+        assert!(loud(&core.render(64), 0, 64));
         assert_eq!(core.voices().active, 1);
         assert_eq!(core.end_block(64, &mut |_| panic!("still held")), 0);
 
-        core.event(0, In::HostOff(HostPattern { port: -1, channel: -1, key: 60, id: -1, clap: true }), 0, false);
+        core.event(0, Event::NoteOff(HostPattern { port: -1, channel: -1, key: 60, id: -1, clap: true }));
         let mut ended = Vec::new();
         for _ in 0..100 {
             core.render(64);
@@ -577,7 +853,7 @@ mod tests {
         }
         assert_eq!(ended, [note]);
         assert!(!core.owns(note));
-        assert!(!loud(&core.render(64), 64));
+        assert!(!loud(&core.render(64), 0, 64));
     }
 
     #[test]
@@ -585,18 +861,176 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a.wav");
         sine(&path);
-        let request = LoadRequest { path, sample_rate: 48000.0, ..Default::default() };
-        let load = || V2Loader.prepare(&request, &mut |_| {}, &|| false).unwrap();
         let mut core = V2Core::with_parts(1, 48000.0);
-        core.install(0, load());
+        core.install(0, load(&path));
         let note = HostNote { port: 0, channel: 0, key: 64, id: 3, clap: true };
-        core.event(0, In::HostOn(note, 100, 0.0), 0, false);
-        assert!(core.install(0, load()).0.is_some());
+        core.event(0, on(note));
+        assert!(core.install(0, load(&path)).0.is_some());
         assert!(!core.owns(note));
         assert_eq!(core.end_block(64, &mut |_| false), 1);
         let mut ended = Vec::new();
         assert_eq!(core.end_block(64, &mut |n| { ended.push(n); true }), 0);
         assert_eq!(ended, [note]);
+    }
+
+    #[test]
+    fn pedals_bends_and_the_mix_reach_host_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.wav");
+        sine(&path);
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, load(&path));
+        let note = HostNote { port: 0, channel: 3, key: 60, id: 5, clap: true };
+        let off = Event::NoteOff(HostPattern { port: -1, channel: -1, key: -1, id: 5, clap: true });
+        let expression = |core: &V2Core| {
+            let part = core.parts[0].as_ref().unwrap();
+            let h = core.held[0];
+            part.runtime.expression(part.runtime.expression_id(h.id).unwrap()).unwrap()
+        };
+        core.event(0, Event::midi1(0xb3, 64, 127));
+        core.event(0, on(note));
+        core.event(0, Event::midi1(0xe3, 127, 127));
+        assert!((expression(&core).pitch_semitones - 2.0).abs() < 1e-3, "bend on any channel moves the part");
+        // MIDI 2.0 polyphonic pressure reaches the host note at full precision.
+        core.event(0, Event::Ump([0x40a3_3c00, 0x8000_0000]));
+        assert_eq!(expression(&core).pressure, 0x8000_0000);
+        core.event(0, off);
+        for _ in 0..20 {
+            core.render(128);
+            core.end_block(128, &mut |_| panic!("sustain holds the note"));
+        }
+        assert!(core.owns(note));
+
+        let mut mix = Mix::default();
+        mix.parts[0].pan = 1.0;
+        mix.parts[0].tune = -12.0;
+        mix.parts[0].aux = 2;
+        mix.parts[0].aux_gain = 0.5;
+        mix.buses[2].mute = true;
+        core.set_mix(&mix);
+        assert!((expression(&core).pitch_semitones - -10.0).abs() < 1e-3, "tune adds to the bend");
+        let r = core.render(128);
+        assert!(r.live[0] && r.live[2]);
+        assert!(r.buses[0][0][..128].iter().all(|x| *x == 0.0), "panned hard right");
+        assert!(r.buses[0][1][..128].iter().any(|x| x.abs() > 0.01));
+        assert!(r.buses[2][1][..128].iter().all(|x| *x == 0.0), "aux bus muted");
+
+        // MIDI 2.0 sustain off, narrowed to the zone's MIDI 1.0.
+        core.event(0, Event::Ump([0x40b3_4000, 0]));
+        let mut ended = Vec::new();
+        for _ in 0..100 {
+            core.render(128);
+            core.end_block(128, &mut |n| { ended.push(n); true });
+        }
+        assert_eq!(ended, [note]);
+        core.event(0, Event::Ump([0x40c3_0000, 0]));
+        assert_eq!(core.problems(0).ignored_input, 1, "program change is counted, not dropped silently");
+    }
+
+    #[test]
+    fn midi2_per_note_pitch_bend_tunes_the_held_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.wav");
+        sine(&path);
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, load(&path));
+        core.event(0, on(HostNote { port: 0, channel: 0, key: 60, id: 1, clap: true }));
+        core.event(0, Event::Ump([0x4060_3c00, 0xc000_0000]));
+        let part = core.parts[0].as_ref().unwrap();
+        let e = part.runtime.expression(part.runtime.expression_id(core.held[0].id).unwrap()).unwrap();
+        assert!((e.pitch_semitones - 24.0).abs() < 1e-6, "three quarters of full scale is +24");
+        assert_eq!(core.problems(0).ignored_input, 0);
+        // CLAP gain expression up to +12 dB, unclamped.
+        core.event(0, Event::Expression(super::super::event::HostPattern { port: -1, channel: -1, key: -1, id: -1, clap: true }, NoteExpression::Gain(3.0)));
+        let gain = |core: &V2Core| {
+            let part = core.parts[0].as_ref().unwrap();
+            part.runtime.expression(part.runtime.expression_id(core.held[0].id).unwrap()).unwrap().gain
+        };
+        assert_eq!(gain(&core), 3.0);
+        // A MIDI 2.0 channel bend keeps its 32 bits: a quarter up over ±2
+        // semitones (the zone's pitch replaces the per-note bend).
+        core.event(0, Event::Ump([0x40e0_0000, 0xa000_0000]));
+        let part = core.parts[0].as_ref().unwrap();
+        let e = part.runtime.expression(part.runtime.expression_id(core.held[0].id).unwrap()).unwrap();
+        let bend = 2.0 * f64::from(0x2000_0000u32) / f64::from(0x7fff_ffffu32);
+        assert!((e.pitch_semitones - bend).abs() < 1e-9, "{}", e.pitch_semitones);
+        assert_eq!(core.problems(0).narrowed_input, 0);
+    }
+
+    #[test]
+    fn groups_become_nodes_that_mix_and_route_to_their_own_pairs() {
+        let mut instrument = ir::Instrument { name: "kit".into(), ..Default::default() };
+        instrument.buses.push(ir::Bus { name: "room".into(), chain: None, sends: vec![], output: ir::Output::Master });
+        instrument.groups.push(ir::Group { name: "kick".into(), output: ir::Output::Bus(ir::BusRef(0)), ..Default::default() });
+        instrument.groups.push(ir::Group::default());
+        let tree = nest(&mut instrument);
+        let names: Vec<_> = tree.nodes.iter().map(|n| (n.name.as_str(), n.parent)).collect();
+        assert_eq!(names, [("kit", None), ("room", Some(0)), ("kick", Some(1)), ("Group 2", Some(0))]);
+        assert_eq!(instrument.groups[0].output, ir::Output::Bus(ir::BusRef(1)));
+        assert_eq!(instrument.buses[1].output, ir::Output::Bus(ir::BusRef(0)));
+
+        // A one-group part: its group node plays to pair 3 instead of the instrument's pair 0.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.wav");
+        sine(&path);
+        let part = load(&path).unwrap();
+        let plan = part.runtime.bus_count();
+        assert_eq!(plan, 0, "a WAV part has no buses");
+        let pcm = Pcm::new(48000, read_wav(&path).unwrap().1).unwrap();
+        let region = Region {
+            sample: 0, key_low: 0, key_high: 108, root_key: Some(60), velocity_low: 0.0, velocity_high: 1.0, gain: 1.0,
+            envelope: Envelope::default(), playback: Playback::default(),
+        };
+        let bus = sampler_core::Bus { processors: vec![], sends: vec![sampler_core::BusSend { bus: None, gain: 1.0 }], tail_frames: 0 };
+        let plan = Prepared::new(48000, vec![pcm], vec![region], 128).unwrap();
+        let plan = plan.with_buses(vec![bus], vec![Some(0)]).unwrap();
+        let mut tree = MixTree::instrument("one");
+        tree.nodes.push(MixNode { name: "g".into(), kind: NodeKind::Group, parent: Some(0), inserts: vec![], sends: vec![] });
+        let limits = limits(&plan);
+        let part = Box::new(Part::new(Runtime::new(plan, limits).unwrap(), tree).unwrap());
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, Some(part));
+        let mut mix = Mix::default();
+        mix.nodes[0] = vec![NodeMix { output: NodeOutput::Pair(3), ..NodeMix::default() }];
+        core.set_mix(&mix);
+        core.event(0, on(HostNote { port: 0, channel: 0, key: 60, id: 1, clap: true }));
+        let r = core.render(128);
+        assert!(loud(&r, 3, 128) && !loud(&r, 0, 128), "the node left the instrument for pair 4");
+        let mut nodes = Vec::new();
+        core.take_node_peaks(0, &mut |node, peak| nodes.push((node, peak[0] > 0.0)));
+        assert_eq!(nodes, [(1, true)], "the group node meters its signal");
+        mix.nodes[0][0].mute = true;
+        core.set_mix(&mix);
+        assert!(!loud(&core.render(128), 3, 128), "muted node");
+    }
+
+    #[test]
+    fn a_widget_edit_runs_the_scripts_ui_control_callback() {
+        let source = "on init\n declare ui_knob $k(0, 100, 1)\n declare ui_knob $echo(0, 1000, 1)\nend on\n\
+                      on ui_control($k)\n $echo := $k + 1\nend on\n";
+        let script = sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        let id = |name: &str| {
+            let c = script.controls().iter().find(|c| c.variable.ends_with(name)).unwrap();
+            sampler_ui_ir::ControlId(c.definition.id.0)
+        };
+        let (k, echo) = (id("$k"), id("$echo"));
+        let pcm = Pcm::new(48000, vec![[0.0; 2]; 512].into_boxed_slice()).unwrap();
+        let region = Region {
+            sample: 0, key_low: 60, key_high: 60, root_key: Some(60), velocity_low: 0.0, velocity_high: 1.0, gain: 1.0,
+            envelope: Envelope::default(), playback: Playback::default(),
+        };
+        let plan = script.bind(Prepared::new(48000, vec![pcm], vec![region], 1).unwrap()).unwrap();
+        let limits = limits(&plan);
+        let part = Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("s")).unwrap();
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, Some(Box::new(part)));
+        assert!(core.set_control(0, k, 41.6), "rounded into the knob's integer range");
+        core.render(16);
+        assert_eq!((core.control_value(0, k), core.control_value(0, echo)), (Some(42.0), Some(43.0)));
+        assert!(core.set_control(0, k, 500.0));
+        core.render(16);
+        assert_eq!(core.control_value(0, k), Some(100.0), "clamped");
+        assert!(!core.set_control(0, sampler_ui_ir::ControlId(7), 1.0), "no such control");
     }
 
     #[test]
@@ -619,13 +1053,14 @@ mod tests {
         assert!(description.zones > 0);
         let request = LoadRequest { path, sample_rate: 48000.0, ..Default::default() };
         let mut last = Progress(0);
-        let prepared = V2Loader.prepare(&request, &mut |p| last = p, &|| false).unwrap();
+        let loaded = V2Loader.prepare(&request, &mut |p| last = p, &|| false).unwrap();
         assert_eq!(last, Progress::DONE);
+        assert!(loaded.tree.nodes.len() > 1, "groups are mixer nodes");
+        assert!(loaded.report.decoded.zones > 0);
         let mut core = V2Core::with_parts(1, 48000.0);
-        core.install(0, prepared);
-        let note = HostNote { port: 0, channel: 0, key: 60, id: 1, clap: true };
-        core.event(0, In::HostOn(note, 100, 0.0), 0, false);
-        let heard = (0..40).any(|_| loud(&core.render(128), 128));
-        assert!(heard, "no output; unsupported: {:?}", description.unsupported);
+        core.install(0, loaded.part);
+        core.event(0, on(HostNote { port: 0, channel: 0, key: 60, id: 1, clap: true }));
+        let heard = (0..40).any(|_| loud(&core.render(128), 0, 128));
+        assert!(heard, "no output; missing: {:?}", loaded.report.missing);
     }
 }

@@ -197,6 +197,22 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+#[test]
+fn a_canceled_load_stops_before_decoding() {
+    let Some(path) = find("Una Corda Library/Instruments/Una Corda Pure.nki") else {
+        return;
+    };
+    let mut decoded = 0;
+    let result = sampler_kontakt::load_cancelable(
+        &path,
+        &sampler_kontakt::Options::default(),
+        |p| decoded += matches!(p, sampler_kontakt::Progress::Decoding { .. }) as usize,
+        || true,
+    );
+    assert!(matches!(result, Err(sampler_kontakt::LoadError::Canceled)));
+    assert_eq!(decoded, 0);
+}
+
 /// Every installed instrument with authored modulation loads, lowers and
 /// renders; prints per-feature report counts. Slow: run with --ignored.
 #[test]

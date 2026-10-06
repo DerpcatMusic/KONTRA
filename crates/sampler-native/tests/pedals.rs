@@ -178,6 +178,7 @@ fn with_script(
         name: "pedal test".into(),
         language: sampler_ir::Language::Ksp,
         source: source.into(),
+        slot: None,
         state: Vec::new(),
         requires: Vec::new(),
     }];
