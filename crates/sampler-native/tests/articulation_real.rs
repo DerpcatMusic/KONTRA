@@ -213,15 +213,16 @@ fn generated_maps_drive_like_their_keyswitches() {
         }
         drop(keys);
         let note = 0x2090_0000 | u32::from(key) << 8 | 100;
-        let off = 0x2080_0000 | u32::from(key) << 8;
         let (mut same, mut distinct) = (0, 0);
         let default = render(
             decoded.drive(ir::Driver::Controller),
-            &[0x2000_0000, 0x2000_0000, note, off],
+            &[0x2000_0000, 0x2000_0000, note],
         );
         let peak = |out: &[[f32; 2]]| out.iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
         if peak(&default) < 1e-4 {
+            // Nothing to compare: a silent default makes every map vacuous.
             failures.push(format!("{}: silent at key {key}", path.display()));
+            continue;
         }
         for a in &ir.articulations {
             let (Some(&tap), Some(cc)) = (a.switch_keys.first(), a.alternatives.controller) else {
@@ -234,7 +235,6 @@ fn generated_maps_drive_like_their_keyswitches() {
                     0x2090_0064 | u32::from(tap) << 8,
                     0x2080_0000 | u32::from(tap) << 8,
                     note,
-                    off,
                 ],
             );
             let by_cc = render(
@@ -243,7 +243,6 @@ fn generated_maps_drive_like_their_keyswitches() {
                     0x20b0_0000 | u32::from(cc.controller) << 8 | u32::from(cc.low),
                     0x2000_0000,
                     note,
-                    off,
                 ],
             );
             if by_cc != by_key {
