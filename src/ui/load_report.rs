@@ -150,29 +150,41 @@ impl Missing {
 /// A problem while playing; counters are cumulative since the load.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Runtime {
-    ScriptBudget { script: String, overruns: u64, worst_ms: f32 },
+    ScriptBudget { overruns: u64 },
     VoicesDropped { count: u64 },
     StreamUnderruns { count: u64 },
-    NonFinite { location: String, count: u64 },
+    NonFinite { count: u64 },
+    /// MIDI 2.0 values played at MIDI 1.0 precision.
+    InputNarrowed { count: u64 },
+    /// Messages the instrument does not play (per-note controllers, program changes).
+    InputIgnored { count: u64 },
 }
 
 impl Runtime {
     fn text(&self) -> (String, String) {
         match self {
-            Self::ScriptBudget { script, overruns, worst_ms } => (
-                format!("Script \u{201c}{script}\u{201d} over its time budget"),
-                format!("{overruns} times, worst {worst_ms:.1} ms. Its work was deferred, so some notes may be late."),
+            Self::ScriptBudget { overruns } => (
+                format!("Scripts over their time budget {overruns} times"),
+                "Their work was deferred, so some notes may be late.".into(),
             ),
             Self::VoicesDropped { count } => {
-                (format!("{count} voices dropped"), "The voice limit was reached; the oldest voices were stolen.".into())
+                (format!("{count} notes dropped"), "The part ran out of voices.".into())
             }
             Self::StreamUnderruns { count } => (
                 format!("{count} streaming underruns"),
-                "The disk did not keep up; those notes faded out early. A larger preload helps.".into(),
+                "The disk did not keep up; those notes played silent for a moment.".into(),
             ),
-            Self::NonFinite { location, count } => (
-                format!("Invalid audio in {location}"),
-                format!("{count} blocks were silenced to protect your speakers."),
+            Self::NonFinite { count } => (
+                "Invalid audio silenced".into(),
+                format!("{count} frames were replaced with silence to protect your speakers."),
+            ),
+            Self::InputNarrowed { count } => (
+                format!("{count} MIDI 2.0 messages played at MIDI 1.0 precision"),
+                "The instrument reads 7-bit values; finer steps were rounded.".into(),
+            ),
+            Self::InputIgnored { count } => (
+                format!("{count} MIDI messages ignored"),
+                "This instrument does not respond to them yet.".into(),
             ),
         }
     }

@@ -10,14 +10,31 @@
 //! Values live with the caller, keyed by control identity; the view edits
 //! them in place and the caller forwards changes to the control service.
 
-use super::perf_view::{frame, switch_frame};
 use super::theme::*;
-use crate::artwork::Picture;
 use moose::mui::mui::prelude::*;
 use moose::mui::mui::scene::{Fit, Image};
 use sampler_ui_ir::{self as ir, Binding, ControlId, Interface, Kind, PageRef, Presentation, Role as Use, WidgetRef};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// An image cut into its animation frames.
+#[derive(Debug)]
+pub struct Picture {
+    pub frames: Vec<Arc<Image>>,
+}
+
+/// The frame of `frames` a control at `value` in `min..=max` shows.
+fn frame(value: f64, min: f64, max: f64, frames: usize) -> usize {
+    let span = max - min;
+    let t = if span == 0. { 0. } else { ((value - min) / span).clamp(0., 1.) };
+    (t * frames.saturating_sub(1) as f64).round() as usize
+}
+
+/// The frame a switch or button shows: Kontakt's strips run off, on, then
+/// pressed and hovered states.
+fn switch_frame(on: bool, frames: usize) -> usize {
+    usize::from(on).min(frames.saturating_sub(1))
+}
 
 /// Decoded images the interface draws, by asset index; `None` failed to load.
 #[derive(Default)]
