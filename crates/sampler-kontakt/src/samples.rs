@@ -28,6 +28,8 @@ pub struct Samples {
     frame_counts: HashMap<PathBuf, u64>,
     /// Lower-case basename to loose files under `root`, built on first miss.
     loose: Option<HashMap<String, Vec<PathBuf>>>,
+    #[cfg(feature = "library-access")]
+    content_roots: Vec<PathBuf>,
 }
 
 impl Samples {
@@ -39,6 +41,8 @@ impl Samples {
             keys: HashMap::new(),
             frame_counts: HashMap::new(),
             loose: None,
+            #[cfg(feature = "library-access")]
+            content_roots: content_roots(),
         }
     }
 
@@ -75,6 +79,17 @@ impl Samples {
                     return Ok(Some(file));
                 }
             }
+        }
+        #[cfg(feature = "library-access")]
+        if let Some(relative) = name.strip_prefix("Content/")
+            && let Some(file) = content_file(&self.content_roots, relative).map_err(|reason| {
+                LoadError::Invalid {
+                    path: parent.join(&name),
+                    reason,
+                }
+            })?
+        {
+            return Ok(Some(file));
         }
         // Moved loose samples: match by name, preferring the longest unique
         // directory suffix; never silently pick one of several duplicates.
@@ -216,6 +231,123 @@ impl Samples {
         }
         Ok(&self.archives[path])
     }
+}
+
+#[cfg(feature = "library-access")]
+fn content_roots() -> Vec<PathBuf> {
+    if let Some(paths) = std::env::var_os("KONTRA_KONTAKT_CONTENT") {
+        return std::env::split_paths(&paths)
+            .filter_map(|p| p.canonicalize().ok())
+            .collect();
+    }
+    static ROOTS: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
+    ROOTS
+        .get_or_init(|| {
+            let mut roots = Vec::new();
+            let wine = std::env::var_os("WINEPREFIX")
+                .map(PathBuf::from)
+                .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".wine")));
+            let mut bases = vec![PathBuf::from("/mnt/Windows11/Program Files")];
+            if let Some(wine) = wine {
+                bases.push(wine.join("drive_c/Program Files"));
+            }
+            for base in bases {
+                for relative in ["Native Instruments", "Common Files/VST3"] {
+                    // ponytail: bounded standard install discovery; use KONTRA_KONTAKT_CONTENT for custom installs.
+                    find_content(&base.join(relative), 6, false, &mut 4096, &mut roots);
+                }
+            }
+            roots.sort();
+            roots.dedup();
+            roots
+        })
+        .clone()
+}
+
+#[cfg(feature = "library-access")]
+fn find_content(
+    path: &Path,
+    depth: usize,
+    kontakt: bool,
+    budget: &mut usize,
+    roots: &mut Vec<PathBuf>,
+) {
+    if *budget == 0 {
+        return;
+    }
+    *budget -= 1;
+    let name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    if kontakt && name == "content" {
+        if let Ok(root) = path.canonicalize() {
+            roots.push(root);
+        }
+        return;
+    }
+    if depth == 0 {
+        return;
+    }
+    let kontakt = kontakt
+        || name == "kontakt"
+        || name.starts_with("kontakt ")
+        || name.starts_with("kontakt.");
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                find_content(&entry.path(), depth - 1, kontakt, budget, roots);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "library-access")]
+fn content_file(roots: &[PathBuf], relative: &str) -> Result<Option<PathBuf>, String> {
+    use std::io::Read;
+    let relative = Path::new(relative);
+    if !relative
+        .components()
+        .all(|c| matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err("Invalid Kontakt player Content path".into());
+    }
+    let mut matches: Vec<_> = roots
+        .iter()
+        .filter_map(|root| {
+            let file = root.join(relative).canonicalize().ok()?;
+            (file.starts_with(root) && file.is_file()).then_some(file)
+        })
+        .collect();
+    matches.sort();
+    matches.dedup();
+    let Some(first) = matches.first() else {
+        return Ok(None);
+    };
+    // Multiple installed players/backups may provide the same built-in file.
+    // Only byte-identical copies are interchangeable; cap comparison reads.
+    if matches.len() > 1 {
+        let read = |path: &Path| -> Result<Vec<u8>, String> {
+            let mut bytes = Vec::new();
+            File::open(path)
+                .and_then(|f| f.take((32 << 20) + 1).read_to_end(&mut bytes))
+                .map_err(|e| e.to_string())?;
+            if bytes.len() > 32 << 20 {
+                return Err("Kontakt Content comparison exceeds 32 MiB".into());
+            }
+            Ok(bytes)
+        };
+        let bytes = read(first)?;
+        for file in matches.iter().skip(1) {
+            if read(file)? != bytes {
+                return Err(
+                    "Ambiguous Kontakt player Content file; set KONTRA_KONTAKT_CONTENT".into(),
+                );
+            }
+        }
+    }
+    Ok(Some(first.clone()))
 }
 
 /// `(archive, member)` when an ancestor of `path` is an NKX/NKR file.
@@ -370,6 +502,42 @@ fn wav(bytes: &[u8]) -> Result<Decoded, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "library-access")]
+    #[test]
+    fn player_content_is_bounded_and_duplicate_installs_must_agree() {
+        let root = std::env::temp_dir().join(format!("v2-player-content-{}", std::process::id()));
+        let library = root.join("library");
+        let roots = [
+            root.join("Kontakt Authored A/Content"),
+            root.join("Kontakt Authored B/Content"),
+        ];
+        std::fs::create_dir_all(&library).unwrap();
+        let relative = "Tools/Authored/tone.wav";
+        let wav = wav_bytes(1, 1, 16, &[0, 0x40]);
+        for content in &roots {
+            std::fs::create_dir_all(content.join("Tools/Authored")).unwrap();
+            std::fs::write(content.join(relative), &wav).unwrap();
+        }
+        let mut samples = Samples::new(&library);
+        samples.content_roots.clear();
+        find_content(&root, 6, false, &mut 32, &mut samples.content_roots);
+        assert_eq!(samples.content_roots.len(), 2);
+        let file = samples
+            .resolve(&library, &format!("Content/{relative}"))
+            .unwrap()
+            .unwrap();
+        assert!(!file.starts_with(&library));
+        assert_eq!(samples.decode(&file).unwrap().frames, [[0.5, 0.5]]);
+        assert!(content_file(&samples.content_roots, "../../escape.wav").is_err());
+        std::fs::write(roots[1].join(relative), b"different authored data").unwrap();
+        assert!(
+            samples
+                .resolve(&library, &format!("Content/{relative}"))
+                .is_err()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn wav_bytes(tag: u16, channels: u16, bits: u16, data: &[u8]) -> Vec<u8> {
         let mut out = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0".to_vec();
