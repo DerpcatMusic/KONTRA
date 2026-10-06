@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Service live source demand through bounded cache polling and protect every voice
+  before page replacement. Preserve first-use deadlines while resolving overlapping
+  interpolation guards once; verify long sources through a three-page cache.
+
 - Share a seekable WAV parser/range decoder between resident loading and page
   workers. Decode only requested frame ranges with fixed scratch storage; verify
   real-file worker pages through native rendering, including short final pages.

@@ -27,6 +27,8 @@ pub enum PageStatus {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StreamError {
+    NotConfigured,
+    ClockOverflow,
     InvalidRange,
     Capacity,
     Disconnected,
@@ -211,12 +213,19 @@ impl StreamCache {
         let first = frames.start / PAGE_FRAMES;
         let last = (frames.end - 1) / PAGE_FRAMES;
         let mut ready = 0;
-        for entry in self.entries.iter_mut().flatten() {
-            let key = entry.request.key;
-            if key.asset == asset.asset_id() && (first..=last).contains(&key.index) {
-                entry.used = self.epoch;
-                ready += usize::from(entry.status() == PageStatus::Ready);
+        let begin = self.index.partition_point(|(key, _)| {
+            *key < PageKey {
+                asset: asset.asset_id(),
+                index: first,
             }
+        });
+        for &(key, slot) in &self.index[begin..] {
+            if key.asset != asset.asset_id() || key.index > last {
+                break;
+            }
+            let entry = self.entries[slot].as_mut().unwrap();
+            entry.used = self.epoch;
+            ready += usize::from(entry.status() == PageStatus::Ready);
         }
         Ok(ready == last - first + 1)
     }
@@ -496,6 +505,78 @@ impl crate::Runtime {
     }
     pub fn stream_underruns(&self) -> u64 {
         self.stream_underruns
+    }
+
+    /// Poll a bounded batch, protect every live source's horizon, then request its
+    /// pages with first-use deadlines. No voice/clock advancement or worker waiting.
+    /// True means the complete snapshot horizon is resident; false includes pending
+    /// or failed pages (inspect page status and explicitly invalidate failures).
+    /// A queue/cache error leaves accepted requests intact and reports incomplete
+    /// service. Requery after events. Cold onsets require control-side preloading.
+    pub fn service_streaming(&mut self, frames: u32) -> Result<bool, StreamError> {
+        self.now
+            .checked_add(u64::from(frames))
+            .ok_or(StreamError::ClockOverflow)?;
+        let mut cache = self.stream_cache.take().ok_or(StreamError::NotConfigured)?;
+        // Temporarily detach only the audio-owned cache to borrow the immutable
+        // voice/plan snapshot. The visitor cannot execute callbacks or mutate it.
+        let result = self.service_cache(&mut cache, frames);
+        self.stream_cache = Some(cache);
+        result
+    }
+
+    fn service_cache(&self, cache: &mut StreamCache, frames: u32) -> Result<bool, StreamError> {
+        for _ in 0..cache.entries.len() {
+            if cache.poll().is_none() {
+                break;
+            }
+        }
+        cache.begin_epoch()?;
+        let mut ready = true;
+        // Protect all voices before any eviction: admission order must never evict
+        // a page that a later voice already needs in this same snapshot horizon.
+        for requesting in [false, true] {
+            for (index, slot) in self.voices.slots.iter().enumerate() {
+                let Some(voice) = &slot.value else { continue };
+                if voice.source_failed {
+                    continue;
+                }
+                let family = self.families.get(voice.family.0).unwrap();
+                let note = self.notes.get(family.note.0).unwrap();
+                let asset = &self.plans.get(note.plan.0).unwrap().prepared.pcm[voice.sample];
+                if asset.resident_frames().is_some() {
+                    continue;
+                }
+                let mut failure = None;
+                let complete = self
+                    .visit_voice_demand(crate::VoiceId(self.voices.id(index)), frames, |demand| {
+                        if !requesting {
+                            cache
+                                .protect(asset, demand.frames)
+                                .expect("validated source demand");
+                            return true;
+                        }
+                        for page in demand.frames.start / PAGE_FRAMES
+                            ..=(demand.frames.end - 1) / PAGE_FRAMES
+                        {
+                            match cache.request(asset, page, demand.deadline) {
+                                Ok(status) => ready &= status == PageStatus::Ready,
+                                Err(error) => {
+                                    failure = Some(error);
+                                    return false;
+                                }
+                            }
+                        }
+                        true
+                    })
+                    .expect("live voice and validated horizon");
+                if let Some(error) = failure {
+                    return Err(error);
+                }
+                debug_assert!(complete);
+            }
+        }
+        Ok(ready)
     }
 
     pub(crate) fn check_source_ready(

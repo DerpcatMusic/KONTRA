@@ -307,8 +307,10 @@ source semantics and checksum/authentication validation are still required.
   audio-thread destruction. Paged/resident rendering now shares source and DSP
   kernels, rejects missing onset guards atomically and reports live misses while
   draining owned DSP tails. A seekable WAV range decoder now fills worker pages
-  from files. Multicodec resource admission, demand scheduling, preventive
-  fades/recovery and offline readiness remain open.
+  from files. Explicit live service polls bounded completions, protects all voice
+  horizons before eviction and requests first-use pages; overlapping interpolation
+  guards are resolved once. Multicodec resource admission, cold-onset planning,
+  fades/recovery, disk deadline evidence and offline readiness remain open.
 
 - [ ] **P1; dependencies:** V2-09/10.
 - New immutable asset/view identities, decoding, residency, cache and demand service.

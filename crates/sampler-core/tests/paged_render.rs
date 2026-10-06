@@ -251,3 +251,101 @@ fn a_starved_source_drains_its_declared_dsp_tail_once_across_callback_boundaries
         assert_eq!(audio, [[0.; 2]; 64]);
     });
 }
+
+#[test]
+fn live_demand_refills_a_small_cache_across_long_forward_reverse_and_resampled_sources() {
+    let data: Box<[Frame]> = (0..PAGE_FRAMES * 10 + 13)
+        .map(|i| [(i as f32 * 0.13).sin(), (i as f32 * 0.023).cos()])
+        .collect();
+    for rate in [44100, 48000, 768000] {
+        for direction in [Direction::Forward, Direction::Reverse] {
+            let asset = Pcm::streamed(rate, data.len()).unwrap();
+            let (mut cache, mut worker) = StreamCache::new(3).unwrap();
+            for page in if direction == Direction::Forward {
+                [0, 1]
+            } else {
+                [10, 9]
+            } {
+                load(&mut cache, &mut worker, &asset, &data, page);
+            }
+            let playback = Playback {
+                direction,
+                ..Playback::default()
+            };
+            let mut mapped = region(0, playback);
+            mapped.envelope = Envelope::default();
+            let mut rt = runtime(vec![asset.clone()], vec![mapped]).with_stream_cache(cache);
+            let mut reference = runtime(vec![Pcm::new(rate, data.clone()).unwrap()], vec![mapped]);
+            let (mut actual, mut expected) = ([[0.; 2]; 128], [[0.; 2]; 128]);
+            let mut decodes = 0;
+            support::without_heap(|| {
+                rt.trigger(input(), 60, 1.).unwrap();
+                reference.trigger(input(), 60, 1.).unwrap();
+                while reference.voice_count() != 0 {
+                    let before = rt.now();
+                    rt.service_streaming(128).unwrap();
+                    while let Some(mut job) = worker.next_job() {
+                        assert_eq!(job.key().asset, asset.asset_id());
+                        assert!(job.deadline() >= before && job.deadline() < before + 128);
+                        let range = job.range();
+                        job.frames_mut().copy_from_slice(&data[range]);
+                        worker.complete(job, Ok(())).unwrap();
+                        decodes += 1;
+                    }
+                    assert_eq!(rt.service_streaming(128), Ok(true));
+                    assert_eq!(rt.now(), before);
+                    rt.render(&mut actual).unwrap();
+                    reference.render(&mut expected).unwrap();
+                    assert_eq!(actual, expected, "{rate} {direction:?} at {before}");
+                }
+                assert_eq!(rt.voice_count(), 0);
+                assert_eq!(rt.stream_underruns(), 0);
+            });
+            assert_eq!(decodes, 9, "each additional asset page decoded once");
+        }
+    }
+}
+
+#[test]
+fn stream_service_protects_all_voices_before_eviction_and_restores_cache_after_capacity_errors() {
+    let data = vec![[0.5; 2]; PAGE_FRAMES * 2];
+    let a = Pcm::streamed(48000, data.len()).unwrap();
+    let b = Pcm::streamed(48000, data.len()).unwrap();
+    let (mut cache, mut worker) = StreamCache::new(2).unwrap();
+    load(&mut cache, &mut worker, &a, &data, 0);
+    load(&mut cache, &mut worker, &b, &data, 0);
+    let mut rt = runtime(
+        vec![a.clone(), b.clone()],
+        vec![
+            region(0, Playback::default()),
+            region(1, Playback::default()),
+        ],
+    )
+    .with_stream_cache(cache);
+    support::without_heap(|| {
+        rt.trigger(input(), 60, 1.).unwrap();
+        assert_eq!(
+            rt.service_streaming(PAGE_FRAMES as u32 + 1),
+            Err(StreamError::Capacity)
+        );
+        for asset in [&a, &b] {
+            assert_eq!(
+                rt.stream_cache_mut().unwrap().status(PageKey {
+                    asset: asset.asset_id(),
+                    index: 0
+                }),
+                PageStatus::Ready
+            );
+        }
+        assert_eq!(rt.service_streaming(64), Ok(true));
+        assert_eq!(rt.now(), 0);
+        assert_eq!(rt.voice_count(), 2);
+        rt.render(&mut [[0.; 2]; 64]).unwrap();
+        assert_eq!(rt.stream_underruns(), 0);
+    });
+    let mut unconfigured = runtime(vec![], vec![]);
+    assert_eq!(
+        unconfigured.service_streaming(1),
+        Err(StreamError::NotConfigured)
+    );
+}
