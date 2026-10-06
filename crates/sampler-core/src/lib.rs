@@ -577,6 +577,7 @@ impl Runtime {
         if limits.notes == 0 || limits.performances == 0 {
             return Err(Error::InvalidInput);
         }
+        let initial_controllers = plan.initial_controllers.clone();
         let note_stride = limits.note_cells / limits.notes;
         if plan.note_cells > note_stride {
             return Err(Error::Capacity);
@@ -695,10 +696,17 @@ impl Runtime {
                 .into_boxed_slice(),
             selections: vec![performance::NoteSelection::default(); limits.notes]
                 .into_boxed_slice(),
-            performance_state: performance::PerformanceState::new(
-                state_capacity,
-                limits.performances,
-            ),
+            performance_state: {
+                let mut state =
+                    performance::PerformanceState::new(state_capacity, limits.performances);
+                for &(controller, value) in &initial_controllers {
+                    state.states[0].controllers[usize::from(controller)] = value;
+                    for input in state.input_controllers.iter_mut() {
+                        input[usize::from(controller)] = value;
+                    }
+                }
+                state
+            },
         })
     }
 
