@@ -2,7 +2,6 @@
 //! buses (Kontakt's st.1…st.16), each with its own fader and host port.
 
 use super::{Engine, MAX_BLOCK, voice::balance};
-use crate::fx::OUTS;
 
 pub use crate::sound::{BUSES, Block, RACK_SLOTS, TUNE_RANGE};
 pub use crate::sound::mix::{BusControls, Mix, NO_AUX, PartControls, Peaks};
