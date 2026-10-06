@@ -14,6 +14,8 @@ pub enum MissingReason {
     NotModeled,
     /// Recognized, but this value cannot be represented.
     InvalidValue,
+    /// Representable, but how the source maps it to sound is not established.
+    UnknownLaw,
 }
 
 /// One feature that was not translated or not implemented.
@@ -101,6 +103,7 @@ impl From<&sampler_ir::Unsupported> for Missing {
                 sampler_ir::Reason::Unknown => MissingReason::Unknown,
                 sampler_ir::Reason::NotModeled => MissingReason::NotModeled,
                 sampler_ir::Reason::InvalidValue => MissingReason::InvalidValue,
+                sampler_ir::Reason::UnknownLaw => MissingReason::UnknownLaw,
             },
         }
     }

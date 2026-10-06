@@ -110,6 +110,22 @@ pub fn load_read(
         return Err(LoadError::Canceled);
     }
     progress(Progress::Lowering);
+    let labels = kept
+        .iter()
+        .map(|&a| locations[a].display().to_string())
+        .collect();
+    finish(instrument, pcm, labels, options)
+}
+
+/// Fit each zone to its decoded audio (`pcm[i]` and `labels[i]` belong to
+/// asset `i`), drop zones left with nothing to play, and prepare the plan.
+/// Every adjustment is added to `instrument.unsupported`.
+pub fn finish(
+    mut instrument: ir::Instrument,
+    pcm: Vec<Pcm>,
+    labels: Vec<String>,
+    options: &Options,
+) -> Result<Loaded, LoadError> {
     let mut playable = vec![true; instrument.zones.len()];
     for (index, zone) in instrument.zones.iter_mut().enumerate() {
         let mut report = Vec::new();
@@ -120,7 +136,7 @@ pub fn load_read(
         let ratio = f64::from(audio.sample_rate()) / f64::from(options.rate);
         playable[index] = fit(&mut zone.playback, audio.frame_count() as u64, &mut report)
             && fit_keys(zone, group_tune, ratio, &mut report);
-        let location = format!("zone {index} ({})", locations[kept[zone.asset.0]].display());
+        let location = format!("zone {index} ({})", labels[zone.asset.0]);
         instrument
             .unsupported
             .extend(report.into_iter().map(|(feature, value)| ir::Unsupported {
